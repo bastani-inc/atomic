@@ -186,11 +186,8 @@ test("designation replacement, SDK yield and observer disposal leave the same ex
 test("authorization denial admits nothing, scope and wrong-owner IDs are refused, capabilities cannot serialize", async () => {
 	const supervisor = new TaskSupervisor();
 	const scope: C.OwnerScope = {
-		kind: "workflow-stage",
+		kind: "session",
 		sessionId: randomUUID(),
-		runId: "r",
-		stageId: "s",
-		stageAttemptId: "a",
 	};
 	let runners = 0;
 	const host = supervisor.bindHostSession({
@@ -204,7 +201,7 @@ test("authorization denial admits nothing, scope and wrong-owner IDs are refused
 		},
 	});
 	const owner = value(supervisor.openTaskOwner(host, scope));
-	const mismatch = supervisor.openTaskOwner(host, { ...scope, stageAttemptId: "stale" });
+	const mismatch = supervisor.openTaskOwner(host, { ...scope, sessionId: "another-session" });
 	assert.equal(!mismatch.ok && mismatch.error.code, "ScopeMismatch");
 	await assert.rejects(supervisor.startAgentTask(owner, intent, operation()), /existing delegation refusal/);
 	assert.equal(runners, 0);
@@ -227,7 +224,7 @@ test("authorization denial admits nothing, scope and wrong-owner IDs are refused
 		await pending;
 	} finally {
 		value(await other.supervisor.closeTaskOwner(other.owner, "session-close"));
-		value(await supervisor.closeTaskOwner(owner, "stage-close"));
+		value(await supervisor.closeTaskOwner(owner, "session-close"));
 	}
 });
 
@@ -826,7 +823,7 @@ test("Node and Bun preserve UTF-16 code units across S1 records and replay", () 
 		assert.equal(result.exitCode, 0, `${runtime}\n${result.stdout}\n${result.stderr}`);
 		assert.match(
 			result.stdout.toString(),
-			/UTF16 PRESERVED 9 strings 54 variant reports 405 conflicts 27 facade launches/,
+			/UTF16 PRESERVED 9 strings 54 variant reports 396 conflicts 27 facade launches/,
 		);
 	}
 });

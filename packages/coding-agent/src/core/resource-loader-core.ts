@@ -5,8 +5,9 @@ import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import { createEventBus, createStagedEventBus, type EventBus } from "./event-bus.js";
 import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
+import type { LegacyWorkflowFiles } from "./legacy-workflow-files.ts";
 import type { McpServerContribution } from "./mcp-servers.ts";
-import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
+import { DefaultPackageManager, type PathMetadata } from "./package-manager.ts";
 import { registerHostStoragePackagesAsync } from "./package-manager-storage-adapters.js";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import {
@@ -15,12 +16,7 @@ import {
 	updateThemesFromPathsAsync,
 } from "./resource-loader-assets.ts";
 import { clonePackageSources, mergeInheritedStrings } from "./resource-loader-helpers.ts";
-import {
-	collectWorkflowResources,
-	normalizeExtensionPaths,
-	recordExtensionSourceInfo,
-	resolvePackageResourcePaths,
-} from "./resource-loader-package-resources.ts";
+import { normalizeExtensionPaths, recordExtensionSourceInfo } from "./resource-loader-package-resources.ts";
 import { mergeResourcePaths } from "./resource-loader-paths.ts";
 import { loadProjectTrustExtensions, reloadDefaultResourceLoader } from "./resource-loader-reload.ts";
 import type {
@@ -88,7 +84,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private systemPromptSourcePath?: string;
 	private appendSystemPrompt: string[];
 	private appendSystemPromptSourcePaths: string[];
-	private workflowResources: ResolvedResource[];
+	private legacyWorkflowFiles?: LegacyWorkflowFiles;
 	private mcpServerContributions: McpServerContribution[];
 	private trustedBorrowedProjectLocalSources?: Set<string>;
 	private lastSkillPaths: string[];
@@ -178,7 +174,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.agentsFiles = [];
 		this.appendSystemPrompt = [];
 		this.appendSystemPromptSourcePaths = [];
-		this.workflowResources = [];
 		this.mcpServerContributions = [];
 		this.trustedBorrowedProjectLocalSources =
 			inheritanceSnapshot?.trustedBorrowedProjectLocalSources === undefined
@@ -239,8 +234,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return this.appendSystemPromptSourcePaths.map((path) => ({ path }));
 	}
 
-	getWorkflowResources(): ResolvedResource[] {
-		return [...this.workflowResources];
+	getLegacyWorkflowFiles(): LegacyWorkflowFiles | undefined {
+		return this.legacyWorkflowFiles;
 	}
 
 	/** Enabled package-manifest MCP servers discovered by the last reload. */
@@ -271,15 +266,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 				? {}
 				: { trustedBorrowedProjectLocalSources: [...this.trustedBorrowedProjectLocalSources] }),
 		};
-	}
-
-	async refreshWorkflowResources(): Promise<ResolvedResource[]> {
-		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await resolvePackageResourcePaths(this, {
-			trustedBorrowedProjectLocalSources: this.trustedBorrowedProjectLocalSources,
-		});
-		const workflowResources = collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
-		this.workflowResources = workflowResources;
-		return [...this.workflowResources];
 	}
 
 	async extendResources(paths: ResourceExtensionPaths): Promise<void> {
@@ -450,7 +436,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.systemPromptSourcePath = candidate.systemPromptSourcePath;
 		this.appendSystemPrompt = candidate.appendSystemPrompt;
 		this.appendSystemPromptSourcePaths = candidate.appendSystemPromptSourcePaths;
-		this.workflowResources = candidate.workflowResources;
+		this.legacyWorkflowFiles = candidate.legacyWorkflowFiles;
 		this.mcpServerContributions = candidate.mcpServerContributions;
 		this.trustedBorrowedProjectLocalSources = candidate.trustedBorrowedProjectLocalSources;
 		this.lastSkillPaths = candidate.lastSkillPaths;

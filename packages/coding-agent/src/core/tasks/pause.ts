@@ -41,7 +41,7 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 			watch.snapshot.tasks.filter((task) => task.kind === "command" && task.execution.kind !== "settled"),
 			"pause",
 		);
-		if (errors.length) throw new AggregateError(errors, "Workflow stage task cancellation failed");
+		if (errors.length) throw new AggregateError(errors, "Task cancellation failed");
 		await new Promise<void>((resolve, reject) => {
 			watch.onReconcile = (snapshot: OwnerSnapshot) => {
 				if (

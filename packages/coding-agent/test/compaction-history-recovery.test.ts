@@ -108,10 +108,7 @@ describe("recovery from session history after a clear", () => {
 		for (const cleanup of cleanups.splice(0)) await cleanup();
 	});
 
-	async function clearedSession(
-		backend: StoreBackend,
-		options: { stage: boolean },
-	): Promise<{
+	async function clearedSession(backend: StoreBackend): Promise<{
 		session: AgentSession;
 		cwd: string;
 		result: VerbatimCompactionResult;
@@ -121,9 +118,6 @@ describe("recovery from session history after a clear", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-history-recovery-"));
 		const opened = await backend.open(cwd);
 		const manager = opened.manager;
-		if (options.stage) {
-			await manager.markSessionInternal({ runId: "run-4568", stageId: "stage-4568", stageName: "implement" });
-		}
 		const agent = new Agent({
 			getApiKey: () => undefined,
 			initialState: { model: getModel("anthropic", "claude-sonnet-4-5")!, systemPrompt: "test", tools: [] },
@@ -157,7 +151,6 @@ describe("recovery from session history after a clear", () => {
 			cwd,
 			currentSessionId: session.sessionId,
 			sessionStore: () => session.sessionManager.getSessionStore(),
-			workflows: () => undefined,
 		});
 	}
 
@@ -190,56 +183,53 @@ describe("recovery from session history after a clear", () => {
 	}
 
 	for (const backend of STORES) {
-		for (const stage of [false, true]) {
-			const kind = stage ? "a workflow stage session" : "a session";
-			it(`advertises readable history entry positions for ${kind} in ${backend.name} storage (#5250)`, async () => {
-				const { session, cwd, result, entriesBefore, earlierEntries } = await clearedSession(backend, { stage });
-				const url = `history://sessions/${session.sessionId}`;
-				const text = boundaryText(session);
-				assert.equal(text, result.compactedText);
-				assert.ok(text.startsWith("Context cleared."), text);
-				assert.ok(!text.includes(REQUIREMENT), "the requirement left the context window");
+		it(`advertises readable history entry positions for a session in ${backend.name} storage (#5250)`, async () => {
+			const { session, cwd, result, entriesBefore, earlierEntries } = await clearedSession(backend);
+			const url = `history://sessions/${session.sessionId}`;
+			const text = boundaryText(session);
+			assert.equal(text, result.compactedText);
+			assert.ok(text.startsWith("Context cleared."), text);
+			assert.ok(!text.includes(REQUIREMENT), "the requirement left the context window");
 
-				const history = result.history;
-				assert.ok(history, "the result says where the boundary sits");
-				assert.equal(history.sessionId, session.sessionId);
-				assert.ok(text.includes(`entries 1-${entriesBefore} hold the earlier conversation`), text);
-				assert.equal(history.entriesBefore, entriesBefore);
-				assert.equal(history.boundaryEntry, entriesBefore + 1);
-				assert.equal(history.totalEntries, entriesBefore + 1);
-				assert.equal(history.rangeUnit, "entries");
-				const router = historyRouter(session, cwd);
-				const before = await router.readSelected?.(url, { ranges: [{ start: 1, end: entriesBefore }] });
-				assert.ok(before?.includes(REQUIREMENT), before);
-				assert.ok(before?.includes(KEPT_SPAN), before);
-				const boundary = await router.readSelected?.(url, {
-					ranges: [{ start: history.boundaryEntry, end: history.boundaryEntry }],
-				});
-				assert.ok(boundary?.includes(result.compactedText), boundary);
-				assert.equal(session.sessionManager.getLastSeq(), history.totalEntries);
-				assert.deepEqual(
-					session.sessionManager.getEntries().slice(0, entriesBefore),
-					earlierEntries,
-					"every earlier entry is unchanged",
-				);
+			const history = result.history;
+			assert.ok(history, "the result says where the boundary sits");
+			assert.equal(history.sessionId, session.sessionId);
+			assert.ok(text.includes(`entries 1-${entriesBefore} hold the earlier conversation`), text);
+			assert.equal(history.entriesBefore, entriesBefore);
+			assert.equal(history.boundaryEntry, entriesBefore + 1);
+			assert.equal(history.totalEntries, entriesBefore + 1);
+			assert.equal(history.rangeUnit, "entries");
+			const router = historyRouter(session, cwd);
+			const before = await router.readSelected?.(url, { ranges: [{ start: 1, end: entriesBefore }] });
+			assert.ok(before?.includes(REQUIREMENT), before);
+			assert.ok(before?.includes(KEPT_SPAN), before);
+			const boundary = await router.readSelected?.(url, {
+				ranges: [{ start: history.boundaryEntry, end: history.boundaryEntry }],
 			});
+			assert.ok(boundary?.includes(result.compactedText), boundary);
+			assert.equal(session.sessionManager.getLastSeq(), history.totalEntries);
+			assert.deepEqual(
+				session.sessionManager.getEntries().slice(0, entriesBefore),
+				earlierEntries,
+				"every earlier entry is unchanged",
+			);
+		});
 
-			it(`finds pre-boundary entries through the exact URL for ${kind} in ${backend.name} storage (#5250)`, async () => {
-				const { session, cwd } = await clearedSession(backend, { stage });
-				const url = `history://sessions/${session.sessionId}`;
-				const { search, read } = tools(session, cwd);
-				const found = await search("needle-4568", url);
-				const resultLine = found.split("\n").find((row) => row.startsWith(`${url}:`));
-				const match = /^:(\d+): /.exec(resultLine?.slice(url.length) ?? "");
-				assert.ok(match, `search finds the requirement in:\n${found}`);
-				const line = Number(match[1]);
-				assert.ok(line < (boundaryEntryOf(session) ?? 0), "the match is before the boundary");
-				const opened = await read(`${url}:${line}-${line}`);
-				assert.ok(opened.includes(REQUIREMENT), `read opens the requirement in:\n${opened}`);
-				const tagged = await search("keepContext", url);
-				assert.ok(tagged.includes("<keepContext>"), `search finds the tagged span in:\n${tagged}`);
-			});
-		}
+		it(`finds pre-boundary entries through the exact URL for a session in ${backend.name} storage (#5250)`, async () => {
+			const { session, cwd } = await clearedSession(backend);
+			const url = `history://sessions/${session.sessionId}`;
+			const { search, read } = tools(session, cwd);
+			const found = await search("needle-4568", url);
+			const resultLine = found.split("\n").find((row) => row.startsWith(`${url}:`));
+			const match = /^:(\d+): /.exec(resultLine?.slice(url.length) ?? "");
+			assert.ok(match, `search finds the requirement in:\n${found}`);
+			const line = Number(match[1]);
+			assert.ok(line < (boundaryEntryOf(session) ?? 0), "the match is before the boundary");
+			const opened = await read(`${url}:${line}-${line}`);
+			assert.ok(opened.includes(REQUIREMENT), `read opens the requirement in:\n${opened}`);
+			const tagged = await search("keepContext", url);
+			assert.ok(tagged.includes("<keepContext>"), `search finds the tagged span in:\n${tagged}`);
+		});
 	}
 
 	function boundaryEntryOf(session: AgentSession): number | undefined {
@@ -249,7 +239,7 @@ describe("recovery from session history after a clear", () => {
 	}
 
 	it("a broad history search skips the current session, so the prompt names its exact URL", async () => {
-		const { session, cwd, result } = await clearedSession(STORES[1], { stage: false });
+		const { session, cwd, result } = await clearedSession(STORES[1]);
 		const { search } = tools(session, cwd);
 		const broad = await search("needle-4568", "history://sessions");
 		assert.ok(!broad.includes(REQUIREMENT), `a broad search reached the current session:\n${broad}`);
@@ -258,13 +248,13 @@ describe("recovery from session history after a clear", () => {
 	});
 
 	it("tells the agent how to open a tool's full output", async () => {
-		const { result } = await clearedSession(STORES[0], { stage: false });
+		const { result } = await clearedSession(STORES[0]);
 		assert.ok(result.compactedText.includes('"Full output saved to: <location>"'));
 		assert.ok(result.compactedText.includes("tool-output:// or artifact:// URL"));
 	});
 
-	it("reaches the current stage session even when the router runs in another directory", async () => {
-		const { session } = await clearedSession(STORES[1], { stage: true });
+	it("reaches the current session even when the router runs in another directory", async () => {
+		const { session } = await clearedSession(STORES[1]);
 		const elsewhere = mkdtempSync(join(tmpdir(), "atomic-history-recovery-other-"));
 		cleanups.push(async () => rmSync(elsewhere, { recursive: true, force: true }));
 		const url = `history://sessions/${session.sessionId}`;

@@ -11,8 +11,6 @@ import type {
 	RegisteredCommand,
 	RegisteredTool,
 } from "./types.ts";
-import { WorkflowActivityHub } from "./workflow-activity-hub.js";
-import { WorkflowRunControlHub } from "./workflow-run-control-hub.js";
 
 /** Prepared generations do not own session event delivery until bound by a runner. */
 export const boundExtensionRuntimes = new WeakSet<ExtensionRuntime>();
@@ -62,10 +60,6 @@ export function createExtensionRuntime(): ExtensionRuntime {
 
 	const runtime: ExtensionRuntime = {
 		sendMessage: notInitialized,
-		workflowActivityHub: new WorkflowActivityHub((operation) =>
-			extensionWorkOpen(runtime) ? trackExtensionWork(runtime, operation) : Promise.resolve(),
-		),
-		workflowRunControlHub: new WorkflowRunControlHub(),
 		agentPanelSourceHub: new AgentPanelSourceHub(),
 		mcpServerRegistry: new McpServerRegistry(),
 		sendMessages: notInitialized,
@@ -242,12 +236,6 @@ export function createExtensionRuntime(): ExtensionRuntime {
 			if (state.staleMessage) return;
 			state.staleMessage = message ?? STALE_EXTENSION_CONTEXT_MESSAGE;
 			const failures: unknown[] = [];
-			try {
-				runtime.workflowActivityHub.dispose();
-			} catch (error) {
-				failures.push(error);
-			}
-			runtime.workflowRunControlHub.dispose();
 			runtime.agentPanelSourceHub.dispose();
 			for (const unsubscribe of eventBusUnsubscribers) {
 				try {

@@ -1,4 +1,4 @@
-import { type ExtensionAPI, type ExtensionContext, isStaleExtensionContextError } from "@bastani/atomic";
+import { type ExtensionAPI, isStaleExtensionContextError } from "@bastani/atomic";
 import { type IntercomBridgeState, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
 import {
 	buildSubagentResultIntercomPayload,
@@ -132,10 +132,6 @@ export function createForegroundControlNotifier(
 			intercomBridge: data.intercomBridge,
 			event,
 		});
-}
-
-export function workflowStageAcceptsDetachedNotification(ctx: Pick<ExtensionContext, "orchestrationContext">): boolean {
-	return ctx.orchestrationContext?.messageAdmission?.isOpen() !== false;
 }
 
 function resultSummaryForIntercom(result: SingleResult): string {

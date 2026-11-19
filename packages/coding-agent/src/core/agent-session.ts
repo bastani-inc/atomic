@@ -32,7 +32,7 @@ import { agentSessionReleaseMethods } from "./agent-session-release.ts";
 import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
 import { agentSessionSummaryMethods, type SessionSummaryRun } from "./agent-session-summary.ts";
-import { agentSessionTaskMethods, isSubagentChildSession } from "./agent-session-tasks.js";
+import { agentSessionTaskMethods } from "./agent-session-tasks.js";
 import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
 import { agentSessionToolRegistryMethods } from "./agent-session-tool-registry.ts";
 import { agentSessionTreeMethods } from "./agent-session-tree.ts";
@@ -50,12 +50,12 @@ import type {
 	ExtensionMode,
 	ExtensionRunner,
 	ExtensionUIContext,
-	OrchestrationContext,
 	SessionStartEvent,
 	SubagentChildPolicy,
 	ToolDefinition,
 } from "./extensions/index.js";
 import { sessionIntercomFacade } from "./intercom-policy.ts";
+import { MessageAdmissionBoundary } from "./message-admission.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
@@ -74,7 +74,6 @@ import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId 
 import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tools/tool-limits.js";
 import { withWindowsDirectorySecurityOwner } from "./tools/windows-directory-security.ts";
-import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 import { serializeWorkspaceError } from "./worktree-snapshot/errors.ts";
 
 export type { SessionCompactOptions } from "./agent-session-methods.ts";
@@ -151,7 +150,6 @@ class AgentSessionBase {
 	 * streams is rejected by the streaming guard (issue #2362).
 	 */
 	protected _admittedRecoveryTurn: Promise<void> | undefined = undefined;
-	protected _workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined = undefined;
 	protected _activeInterruptAbortMessage: string | undefined = undefined;
 	/** Priority input cancels the native operation, not the host-owned task. */
 	protected _priorityInterruptPending = false;
@@ -268,11 +266,9 @@ class AgentSessionBase {
 	protected _allowedTools?: (name: string) => boolean;
 	protected _excludedTools?: (name: string) => boolean;
 	protected _childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
-	protected _workflowJournal?: import("./storage/provider.js").RunJournalOption;
 	protected _storageAgentDir?: string;
 	protected _baseToolsOverride?: Record<string, AgentTool>;
 	protected _sessionStartEvent: SessionStartEvent;
-	protected _orchestrationContext?: OrchestrationContext;
 	protected _workspace?: import("./workspace/resolve.ts").BoundWorkspace;
 	protected _extensionUIContext?: ExtensionUIContext;
 	protected _extensionHumanInput?: import("./extensions/host-input.js").HostInput | null;
@@ -302,17 +298,14 @@ class AgentSessionBase {
 	protected _tempStorageLease: ProtectedPathLease | undefined;
 	/** Marks the session open in this process, so another process does not delete it (#4971); released on dispose. */
 	protected _sessionOpenMarker: (() => Promise<void>) | undefined;
-	protected _workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
-	protected _subagentMessageAdmission: WorkflowStageAdmissionBoundary | undefined;
-	/** A fresh workflow stage whose own prompt has not started its first run (#3919). */
-	protected _workflowStageAwaitingFirstPrompt = false;
+	protected _subagentMessageAdmission: MessageAdmissionBoundary | undefined;
 	protected _agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;
 	protected _parentCommandTaskOwner: import("./tasks/child-command-owner.js").ChildCommandTaskOwner | undefined;
 	protected _inheritedHistory: import("./tools/history-protocol.ts").ProjectHistory | undefined;
 	protected _resourceAdmission: import("./sdk-types.ts").ResourceAdmission | undefined;
 	protected _childTaskWaits = new ChildTaskWaits();
 	protected _taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
-	protected _taskAdmission: WorkflowStageAdmissionBoundary | undefined;
+	protected _taskAdmission: MessageAdmissionBoundary | undefined;
 	protected _cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
 	protected _worktreeSnapshots: SessionWorktreeSnapshotRecorder;
 	get cacheWarmingStatus(): import("./cache-warmer.ts").CacheWarmingStatus | undefined {
@@ -328,7 +321,7 @@ class AgentSessionBase {
 	 * Stop starting model calls within a turn, or with `undefined` resume normally. While a reason is set, every tool
 	 * call is answered as cancelled with that reason without running, and a turn ends without
 	 * polling steering or follow-ups, so the current turn ends after the model call in flight. A new prompt still makes
-	 * its first model call. A workflow stage uses it to stop at its budget (#5053).
+	 * its first model call.
 	 */
 	stopTurns(reason: string | undefined): void {
 		this._turnStopReason = reason;
@@ -392,11 +385,9 @@ class AgentSessionBase {
 		this._allowedTools = config.allowedToolNames ? createToolNameMatcher(config.allowedToolNames) : undefined;
 		this._excludedTools = config.excludedToolNames ? createToolNameMatcher(config.excludedToolNames) : undefined;
 		this._childSessionOptions = config.childSessionOptions;
-		this._workflowJournal = config.workflowJournal;
 		this._storageAgentDir = config.storageAgentDir;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
-		this._orchestrationContext = config.orchestrationContext;
 		this._workspace = config.workspace;
 		this._subagentPolicy = config.subagentPolicy;
 		this._intercomPolicy = config.intercomPolicy;
@@ -407,10 +398,8 @@ class AgentSessionBase {
 		let removeExecutionEndedListener: (() => void) | undefined;
 		try {
 			if (config.subagentPolicy?.executionEnded !== undefined) {
-				// Reuse the stable-key admission/drain primitive, not workflow identity or task ownership.
-				const admission = WorkflowStageAdmissionBoundary.restore(
+				const admission = MessageAdmissionBoundary.restore(
 					this.sessionManager.getBranch(),
-					undefined,
 					this.sessionManager.getSessionRecoveryState?.().admissionKeys,
 				);
 				this._subagentMessageAdmission = admission;
@@ -434,43 +423,6 @@ class AgentSessionBase {
 			}
 			this._systemPromptTransform = config.systemPromptTransform;
 			this._contextProjectionTransform = config.contextProjectionTransform;
-			const stageContext =
-				config.orchestrationContext?.kind === "workflow-stage" ? config.orchestrationContext : undefined;
-			// A stage keeps its boundary for every session it opens; a session reopened after a release gives it back
-			// the admission keys its transcript records.
-			const stageBoundary = stageContext?.messageAdmission?.boundary;
-			stageBoundary?.restoreCompleted(
-				this.sessionManager.getBranch(),
-				this.sessionManager.getSessionRecoveryState?.().admissionKeys,
-			);
-			this._workflowStageAdmission =
-				stageBoundary ??
-				(stageContext
-					? WorkflowStageAdmissionBoundary.restore(
-							this.sessionManager.getBranch(),
-							undefined,
-							this.sessionManager.getSessionRecoveryState?.().admissionKeys,
-						)
-					: undefined);
-			// #3919: a fresh stage is live before its runner dispatches the stage prompt. Turn-starting
-			// input that arrives in that gap is startup context for the prompt's turn, not a turn of its own.
-			this._workflowStageAwaitingFirstPrompt =
-				stageContext !== undefined &&
-				!this.sessionManager
-					.getBranch()
-					.some((entry) => entry.type === "message" || entry.type === "custom_message" || entry.type === "custom");
-			if (stageContext) {
-				this._workflowStageAdmission?.bindTaskIdentity(
-					this.sessionManager.getSessionId(),
-					stageContext.workflowRunId,
-					stageContext.workflowStageId,
-				);
-			}
-			if (this._workflowStageAdmission && stageContext && stageContext.messageAdmission === undefined) {
-				(stageContext as { messageAdmission?: StageMessageAdmission }).messageAdmission = stageMessageAdmission(
-					this._workflowStageAdmission,
-				);
-			}
 			try {
 				// #4971: another process refuses to delete a session this one runs; released in dispose().
 				this._sessionOpenMarker = this.sessionManager.holdOpen();
@@ -512,8 +464,6 @@ class AgentSessionBase {
 				powerShellAvailable,
 			});
 			internals._restoreToolsFromTranscript({ startup: true });
-			if (this._workflowStageAdmission?.hasAgentTaskHost() && !isSubagentChildSession(internals))
-				internals.getAgentTaskHost();
 		} catch (error) {
 			// No session escapes a failed constructor to release these acquisitions later.
 			const failures: unknown[] = [];
@@ -539,20 +489,6 @@ class AgentSessionBase {
 			throw error;
 		}
 	}
-}
-
-interface StageMessageAdmission {
-	boundary: WorkflowStageAdmissionBoundary;
-	extensionState: Map<string, object>;
-	isOpen(): boolean;
-}
-
-/**
- * A workflow stage keeps this admission for every session it opens, so it is built outside the session's constructor:
- * a closure made there would keep the first session reachable for as long as the stage lives.
- */
-function stageMessageAdmission(boundary: WorkflowStageAdmissionBoundary): StageMessageAdmission {
-	return { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() };
 }
 
 export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {

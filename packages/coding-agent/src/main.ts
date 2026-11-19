@@ -33,6 +33,7 @@ import {
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
 import {
+	APP_NAME,
 	ENV_DEBUG,
 	ENV_OFFLINE,
 	ENV_SESSION_DIR,
@@ -114,7 +115,6 @@ import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-inp
 import { runFirstTimeSetup } from "./main-first-time-setup.ts";
 import { applyCliRuntimeApiKey } from "./main-runtime-api-key.ts";
 import {
-	applyInheritedWorkflowSessionClassification,
 	cliResumeTrust,
 	createResumeProgress,
 	openCliSession,
@@ -159,7 +159,7 @@ import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engin
 import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
-import { deferDeprecationWarnings, loadShownDeprecationNotices } from "./utils/deprecation.js";
+import { deferDeprecationWarnings, loadShownDeprecationNotices, warnDeprecation } from "./utils/deprecation.js";
 import {
 	readInteractiveEngineBootstrap,
 	takeInteractiveEngineBootstrapArg,
@@ -439,6 +439,18 @@ export async function main(argv: string[], options?: MainOptions) {
 	loadShownDeprecationNotices(agentDir);
 	// The interactive engine sends its warnings to the host, which shows them, rather than writing them to its stderr.
 	if (engineEnv.child === "1") deferDeprecationWarnings();
+	else {
+		const removed = [
+			"ATOMIC_WORKFLOWS_JOURNAL",
+			"ATOMIC_WORKFLOW_JOURNAL_PATH",
+			"ATOMIC_WORKFLOW_ARTIFACT_DIR",
+		].filter((name) => process.env[name]);
+		if (removed.length > 0) {
+			warnDeprecation(`Workflow environment variables were removed in 0.10.0. Unset ${removed.join(", ")}.`, {
+				once: "removed-workflow-environment",
+			});
+		}
+	}
 	// Before the first settings load, so a removed routing setting is not also reported as ignored. When another process
 	// holds the file, its migration below tries again, and the load's "ignored" warning waits for that.
 	removeSavedModelRoutingSettings(cwd, { retryLater: true });
@@ -483,8 +495,10 @@ export async function main(argv: string[], options?: MainOptions) {
 		return;
 	}
 	if (args[0] === "worker") {
-		const { runWorkerCommand } = await import("./cli/worker-command.js");
-		process.exitCode = await runWorkerCommand(args.slice(1), { cwd, agentDir });
+		console.error(
+			`Error: "${APP_NAME} worker" was removed in 0.10.0 with workflows. Use subagents for delegated work.`,
+		);
+		process.exitCode = 1;
 		await exitAfterCommand();
 		return;
 	}
@@ -897,7 +911,6 @@ export async function main(argv: string[], options?: MainOptions) {
 				ownedSessionManagerStores.delete(sessionManager);
 				ownedSessionStores.set(startupSession, store);
 			}
-			await applyInheritedWorkflowSessionClassification(sessionManager);
 			if (parsed.name !== undefined) await sessionManager.appendSessionInfo(parsed.name.trim());
 			storageFinalized = true;
 		};

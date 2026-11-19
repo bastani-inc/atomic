@@ -55,11 +55,9 @@ test("invalid environment and inherited child/headless modes never acquire repor
 				fake.dir,
 				SessionManager.inMemory(),
 				{} as never,
-				undefined,
 				scenario.child,
 			);
 			runner.setUIContext(scenario.ui ? { ...noOpUIContext } : undefined, scenario.mode);
-			const observe = vi.spyOn(runtime.workflowActivityHub, "observeWorkflowActivity");
 			const timeout = vi.spyOn(globalThis, "setTimeout");
 			const interval = vi.spyOn(globalThis, "setInterval");
 			try {
@@ -67,11 +65,9 @@ test("invalid environment and inherited child/headless modes never acquire repor
 				await runner.emit({ type: "agent_start" });
 				await runner.emit({ type: "agent_settled" });
 				await runner.emit({ type: "session_shutdown", reason: "quit" });
-				assert.equal(observe.mock.calls.length, 0);
 				assert.equal(timeout.mock.calls.length, 0);
 				assert.equal(interval.mock.calls.length, 0);
 			} finally {
-				observe.mockRestore();
 				timeout.mockRestore();
 				interval.mockRestore();
 				runner.invalidate();
@@ -136,13 +132,6 @@ test("built-in registration keeps llama first and reports alongside loaded legac
 				`a loaded ${path} must not stand the builtin down`,
 			);
 			assert.deepEqual(runner.createContext().getExtensionPaths?.(), ["herdr", path]);
-			// An active builtin takes a workflow-activity lease, and this harness
-			// supplies no workflow store, so the hub reports only that the source is
-			// absent and the observer was torn down. Nothing else may appear.
-			assert.deepEqual([...new Set(runtime.workflowActivityHub.diagnostics().map((entry) => entry.kind))].sort(), [
-				"ObserverDisposed",
-				"SourceUnavailable",
-			]);
 			runner.invalidate();
 			await fake.waitFor(reported + 1);
 			reported = (await fake.calls()).filter((call) => call.phase === "end").length;
@@ -173,13 +162,12 @@ test("settings opt-out is respected and environment is captured at activation ra
 			try {
 				await runner.emit({ type: "session_start" });
 				await runner.emit({ type: "agent_start" });
-				if (optedOut) assert.deepEqual(runtime.workflowActivityHub.diagnostics(), []);
-				else await fake.waitFor(1);
+				if (!optedOut) await fake.waitFor(2);
 			} finally {
 				await runner.emit({ type: "session_shutdown", reason: "quit" });
 				runner.invalidate();
 			}
-			assert.equal((await fake.calls()).length, optedOut ? 0 : 4);
+			assert.equal((await fake.calls()).length, optedOut ? 0 : 6);
 		}
 	} finally {
 		await fake.dispose();

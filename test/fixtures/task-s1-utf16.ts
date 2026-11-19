@@ -16,7 +16,7 @@ function changes(raw: string): C.ActivityReport["change"][] {
 	return [
 		{ kind: "action", tool: raw, text: raw },
 		{ kind: "output", offset: raw, bytesBase64: raw },
-		{ kind: "attention-set", attention: { kind: "input-needed", requestId: raw, prompt: raw, route: { sessionId: raw, promptId: raw, stageAttemptId: raw } } },
+		{ kind: "attention-set", attention: { kind: "input-needed", requestId: raw, prompt: raw, route: { sessionId: raw, promptId: raw } } },
 		{ kind: "attention-set", attention: { kind: "no-recent-activity", lastActivityAt: raw } },
 		{ kind: "attention-clear", requestId: raw },
 		{ kind: "model", model: raw, thinking: raw },
@@ -34,7 +34,7 @@ function mutations(change: C.ActivityReport["change"], raw: string): C.ActivityR
 			return [
 				{ ...change, attention: { ...attention, requestId: raw } },
 				{ ...change, attention: { ...attention, prompt: raw } },
-				...(["sessionId", "promptId", "stageAttemptId"] as const).map((field) => ({ ...change, attention: { ...attention, route: { ...attention.route, [field]: raw } } })),
+				...(["sessionId", "promptId"] as const).map((field) => ({ ...change, attention: { ...attention, route: { ...attention.route, [field]: raw } } })),
 				{ ...change, attention: { ...attention, route: { sessionId: attention.route.sessionId, promptId: attention.route.promptId } } },
 			];
 		}
@@ -60,20 +60,20 @@ let reports = 0;
 // RFC #2884: every caller-owned S1 string stays an ordinary string, not UTF-8 replacement data.
 for (const raw of strings) {
 	const changed = raw === "\ufffd" ? "\ud800" : "\ufffd";
-	const scope: C.OwnerScope = { kind: "workflow-stage", sessionId: `${randomUUID()}${raw}`, runId: raw, stageId: raw, stageAttemptId: raw };
+	const scope: C.OwnerScope = { kind: "session", sessionId: `${randomUUID()}${raw}` };
 	const host = supervisor.bindHostSession({ scope, authorizeLaunch() {}, createRunner() {
 		throw new Error("this owner uses the native runner seam");
 	} });
 	const owner = value(supervisor.openTaskOwner(host, scope));
 	const nativeHost = actor.bindHostSession(scope);
 	const nativeOwner = value(actor.openTaskOwner(nativeHost, scope));
-	for (const field of ["sessionId", "runId", "stageId", "stageAttemptId"] as const) {
-		refused(actor.openTaskOwner(nativeHost, { ...scope, [field]: changed }), "ScopeMismatch");
-	}
-	const sessionScope: C.OwnerScope = { kind: "session", sessionId: scope.sessionId };
+	refused(actor.openTaskOwner(nativeHost, { ...scope, sessionId: changed }), "ScopeMismatch");
+	const sessionScope: native.OwnerScope = { kind: "workflow-stage", sessionId: scope.sessionId, runId: raw, stageId: raw, stageAttemptId: raw };
 	const sessionHost = actor.bindHostSession(sessionScope);
 	const sessionOwner = value(actor.openTaskOwner(sessionHost, sessionScope));
-	refused(actor.openTaskOwner(sessionHost, { ...sessionScope, sessionId: `${scope.sessionId}${changed}` }), "ScopeMismatch");
+	for (const field of ["sessionId", "runId", "stageId", "stageAttemptId"] as const) {
+		refused(actor.openTaskOwner(sessionHost, { ...sessionScope, [field]: changed }), "ScopeMismatch");
+	}
 	const sessionWatch = value(actor.watchOwnerTasks(sessionOwner, () => {}));
 	assert.deepEqual(sessionWatch.snapshot.scope, sessionScope);
 	actor.disposeSubscription(sessionWatch.lease);
@@ -182,7 +182,7 @@ for (const raw of strings) {
 		assert.equal(cleanupEvents.length, 5, "identical cleanup earns no event; each field change is distinct");
 		if (cleanupEvents[0].payload.kind === "cleanup-changed") assert.deepEqual(cleanupEvents[0].payload.cleanup, cleanup);
 		value(actor.acknowledgeTaskCleanup(runner, { kind: "reaped" }));
-		value(await supervisor.closeTaskOwner(owner, "stage-close"));
+		value(await supervisor.closeTaskOwner(owner, "session-close"));
 		assert.deepEqual(value(actor.reportTaskActivity(runner, report)), { ...receipt, disposition: "duplicate" });
 		assert.deepEqual(value(actor.reportTaskOutcome(runner, terminal)), settled);
 		watch.drain();
@@ -194,7 +194,7 @@ for (const raw of strings) {
 		actor.cancelTask(task, "user");
 		actor.disposeSubscription(journal.lease);
 		value(actor.acknowledgeTaskCleanup(runner, { kind: "reaped" }));
-		value(await supervisor.closeTaskOwner(owner, "stage-close"));
+		value(await supervisor.closeTaskOwner(owner, "session-close"));
 	}
 }
 // Completed/cancelled nested output reports share the same exact boundary and replay rules.

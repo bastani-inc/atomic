@@ -145,33 +145,6 @@ export async function getVirtualModules(): Promise<Record<string, object>> {
 	return virtualModulesPromise;
 }
 
-export async function getWorkflowHostModules(): Promise<
-	Record<
-		| "@bastani/atomic"
-		| "@bastani/atomic/storage"
-		| "@bastani/atomic-ai"
-		| "@bastani/atomic-ai/providers/all"
-		| "@bastani/pi-ai"
-		| "@bastani/pi-ai/providers/all",
-		object
-	>
-> {
-	const [atomic, storage, ai, providers] = await Promise.all([
-		import("../../index.ts"),
-		import("../storage/index.js"),
-		import("@bastani/atomic-ai/compat"),
-		import("@bastani/atomic-ai/providers/all"),
-	]);
-	return {
-		"@bastani/atomic": atomic,
-		"@bastani/atomic/storage": storage,
-		"@bastani/atomic-ai": ai,
-		"@bastani/atomic-ai/providers/all": providers,
-		"@bastani/pi-ai": ai,
-		"@bastani/pi-ai/providers/all": providers,
-	};
-}
-
 /**
  * Live host modules for storage adapter modules. Outside single-file builds `@bastani/atomic` resolves lazily through
  * the extension aliases instead, so a process that needs only storage, such as the Intercom broker, never evaluates

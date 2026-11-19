@@ -36,7 +36,7 @@ function gatedOwner() {
 				finished.push(record.childId);
 			},
 		},
-		{ sessionManager, orchestrationContext: undefined },
+		{ sessionManager },
 	);
 	return { sink, gates, started, finished, ownerSessionId: sessionManager.getSessionId() };
 }
@@ -92,7 +92,7 @@ describe("a record that could not be appended", () => {
 					throw new Error("disk full");
 				},
 			},
-			{ sessionManager, orchestrationContext: undefined },
+			{ sessionManager },
 		);
 		return { sink, ownerSessionId: sessionManager.getSessionId() };
 	}
@@ -123,7 +123,7 @@ describe("a record that could not be appended", () => {
 						throw Object.assign(new Error("session closed"), { sessionManager });
 					},
 				},
-				{ sessionManager, orchestrationContext: undefined },
+				{ sessionManager },
 			);
 			sink.record(input("closing", { state: "running" }));
 			await sink.flushed?.();

@@ -78,7 +78,7 @@ test("a task that exactly fits its column is shown whole without truncation and 
 		"\t",
 	];
 	const states = ["input", "running", "queued", "stopping", "done", "failed", "paused", "stopped"] as const;
-	const kinds = ["agent", "workflow", "shell"] as const;
+	const kinds = ["agent", "shell"] as const;
 	let seed = 42;
 	const rand = () => {
 		seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
@@ -127,7 +127,7 @@ test("paused rows remain distinct from stopped rows (#5224)", () => {
 	const row = (state: "paused" | "stopped"): TaskBoardRow => ({
 		id: "run:release",
 		kind: "item",
-		item: { id: "run:release", kind: "workflow", state, name: "release", task: "Build", elapsedMs: 5_000 },
+		item: { id: "run:release", kind: "agent", state, name: "release", task: "Build", elapsedMs: 5_000 },
 	});
 	const paused = stripVTControlCharacters(renderBoardRow(row("paused"), true, 80));
 	const stopped = stripVTControlCharacters(renderBoardRow(row("stopped"), true, 80));
@@ -154,7 +154,7 @@ test("task rows omit invalid metrics and progress instead of displaying non-fini
 					kind: "item",
 					item: {
 						id: "run:invalid",
-						kind: "workflow",
+						kind: "agent",
 						state: "running",
 						name: "release",
 						task: "Build",
@@ -177,7 +177,7 @@ test("a failed workflow row shows its failure reason only once (#5224)", () => {
 		kind: "item",
 		item: {
 			id: "run:failed",
-			kind: "workflow",
+			kind: "agent",
 			state: "failed",
 			name: "release",
 			task: "Build failed",
@@ -192,7 +192,7 @@ test("running shell rows render with ⧗ in /tasks while agents and workflows re
 	assert.deepEqual(stateGlyph("running", "shell"), { glyph: "⧗", color: "accent" });
 	assert.deepEqual(stateGlyph("running", "command"), { glyph: "⧗", color: "accent" });
 	assert.deepEqual(stateGlyph("running", "agent"), { glyph: "∀", color: "accent" });
-	assert.deepEqual(stateGlyph("running", "workflow"), { glyph: "∀", color: "accent" });
+	assert.deepEqual(stateGlyph("running", "agent"), { glyph: "∀", color: "accent" });
 	assert.deepEqual(stateGlyph("running"), { glyph: "∀", color: "accent" });
 
 	const shellTask = taskRecord("shell-1", "command");

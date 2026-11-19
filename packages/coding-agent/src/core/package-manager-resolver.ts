@@ -12,12 +12,7 @@ import {
 } from "./package-manager-npm.ts";
 import { installParsedSource } from "./package-manager-operations.ts";
 import { getBaseDirsForScope, resolvePathFromBase } from "./package-manager-paths.ts";
-import {
-	addResource,
-	createAccumulator,
-	getTargetMap,
-	toResolvedPaths,
-} from "./package-manager-resource-accumulator.ts";
+import { addResource, createAccumulator, toResolvedPaths } from "./package-manager-resource-accumulator.ts";
 import { collectPackageResources, resolveLocalEntries } from "./package-manager-resource-collector.ts";
 import { resolveExtensionEntries } from "./package-manager-resource-files.ts";
 import {
@@ -28,23 +23,26 @@ import {
 } from "./package-manager-resource-patterns.ts";
 import { dedupePackages, getPackageIdentity, getPackageSourceString, parseSource } from "./package-manager-source.ts";
 import type {
+	FileKind,
 	MissingSourceAction,
+	PackageDiscovery,
 	PackageFilter,
 	PackageInstallFailure,
 	PackageManagerContext,
 	PathMetadata,
-	ResolvedPaths,
 	ResolveExtensionSourcesOptions,
 	ResourceAccumulator,
+	ResourceMap,
 	SourceScope,
 } from "./package-manager-types.ts";
+import { RESOURCE_TYPES } from "./package-manager-types.ts";
 import type { PackageSource } from "./settings-manager.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 
 export async function resolvePackages(
 	context: PackageManagerContext,
 	onMissing?: (source: string) => Promise<MissingSourceAction>,
-): Promise<ResolvedPaths> {
+): Promise<PackageDiscovery> {
 	const accumulator = createAccumulator();
 	const globalSettings = context.settingsManager.getGlobalSettings();
 	const projectSettings = context.settingsManager.getProjectSettings();
@@ -67,12 +65,10 @@ export async function resolvePackages(
 	const globalBaseDirs = getBaseDirsForScope(context, "user");
 	const projectBaseDirs = getBaseDirsForScope(context, "project");
 
-	for (const resourceType of ["extensions", "skills", "prompts", "themes", "workflows"] as const) {
-		const target = getTargetMap(accumulator, resourceType);
-		const globalConfigured = globalSettings[resourceType];
-		const projectConfigured = projectSettings[resourceType];
-		const globalEntries = Array.isArray(globalConfigured) ? globalConfigured : (globalConfigured?.paths ?? []);
-		const projectEntries = Array.isArray(projectConfigured) ? projectConfigured : (projectConfigured?.paths ?? []);
+	for (const resourceType of RESOURCE_TYPES) {
+		const target = accumulator[resourceType];
+		const globalEntries = globalSettings[resourceType] ?? [];
+		const projectEntries = projectSettings[resourceType] ?? [];
 		const projectOrigin = context.settingsManager.isFieldInherited("project", resourceType)
 			? "inherited-pi"
 			: "atomic";
@@ -86,6 +82,17 @@ export async function resolvePackages(
 			projectOrigin,
 		);
 		await resolveConfiguredLocalEntries(globalEntries, resourceType, target, "user", globalBaseDirs, globalOrigin);
+	}
+
+	for (const scope of ["project", "user"] as const) {
+		await resolveConfiguredLocalEntries(
+			context.settingsManager.getLegacyWorkflowFilePaths(scope === "project" ? "project" : "global"),
+			"legacyWorkflowFiles",
+			accumulator.legacyWorkflowFiles,
+			scope,
+			scope === "project" ? projectBaseDirs : globalBaseDirs,
+			"atomic",
+		);
 	}
 
 	await addAutoDiscoveredResources(
@@ -120,8 +127,8 @@ export async function resolvePackages(
 
 async function resolveConfiguredLocalEntries(
 	entries: string[],
-	resourceType: "extensions" | "skills" | "prompts" | "themes" | "workflows",
-	target: ReturnType<typeof getTargetMap>,
+	resourceType: FileKind,
+	target: ResourceMap,
 	scope: "project" | "user",
 	baseDirs: string[],
 	fieldOrigin: "atomic" | "inherited-pi",
@@ -157,7 +164,7 @@ export async function resolveExtensionSources(
 	context: PackageManagerContext,
 	sources: PackageSource[],
 	options?: ResolveExtensionSourcesOptions,
-): Promise<ResolvedPaths> {
+): Promise<PackageDiscovery> {
 	const accumulator = createAccumulator();
 	const scope: SourceScope = options?.temporary ? "temporary" : options?.local ? "project" : "user";
 	const packageSources: Array<{ pkg: PackageSource; scope: SourceScope }> = [];

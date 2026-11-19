@@ -311,7 +311,7 @@ pi.on("session_start", (_event, ctx) => {
 
 ## ExtensionToolContext
 
-Tool `execute` callbacks receive an `ExtensionToolContext`, which extends `ExtensionContext` with `tools` and `executeTool(name, args, options?)`. Event and command contexts do not provide these tool-only methods. See [structured results and nested tools](/extensions/authoring#structured-results-and-nested-tools) for permissions, cancellation, result hooks, and exclusive-call requirements.
+Tool `execute` callbacks receive an `ExtensionToolContext`, which extends `ExtensionContext` with `tools`, `executeTool(name, args, options?)`, and `parentToolCallId` for nested invocations. Event and command contexts do not provide these tool-only methods. See [structured results and nested tools](/extensions/authoring#structured-results-and-nested-tools) for permissions, cancellation, result hooks, and exclusive-call requirements.
 
 ## ExtensionCommandContext
 
@@ -638,7 +638,7 @@ Stop promptly when `signal` aborts: the user interrupted the turn, or its sessio
 
 ### pi.sendMessage(message, options?)
 
-Inject a custom message into the session. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(pi.sendMessage(...))` when admission or routing failure must be observed. Atomic's AgentSession runtime returns an admission receipt: it settles after the message is accepted by the local queue or workflow late-message route, without waiting for the resulting model turn to finish.
+Inject a custom message into the session. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(pi.sendMessage(...))` when admission or routing failure must be observed. Atomic's AgentSession runtime returns an admission receipt: it settles after the message is accepted by the local queue, without waiting for the resulting model turn to finish.
 
 ```typescript
 pi.sendMessage({
@@ -923,7 +923,7 @@ if (pi.getFlag("plan")) {
 
 ### pi.registerAgentPanelSource(source)
 
-Add rows to the [agent panel](/background-tasks#the-agent-panel) below the main chat's prompt and to `/tasks`, as the builtin workflows extension adds its runs. The registration is released with the extension generation, and `/reload` re-registers it.
+Add rows to the [agent panel](/background-tasks#the-agent-panel) below the main chat's prompt and to `/tasks`. The registration is released with the extension generation, and `/reload` re-registers it.
 
 ```typescript
 import type { AgentPanelItem, ExtensionAPI } from "@bastani/atomic";
@@ -933,7 +933,7 @@ declare function showDeploy(id: string, options: { onBack: () => void }): void;
 export default function (pi: ExtensionAPI) {
   const listeners = new Set<() => void>();
   let items: AgentPanelItem[] = [
-    { id: "deploys:42", kind: "workflow", state: "running", name: "deploy", task: "stage build", progress: { done: 1, total: 3 } },
+    { id: "deploys:42", kind: "agent", state: "running", name: "deployer", task: "build", progress: { done: 1, total: 3 } },
   ];
   const changed = () => { for (const listener of listeners) listener(); };
 
@@ -965,7 +965,7 @@ Return at most 10,000 rows per source. Atomic ignores additional rows and warns 
 | Field | Meaning |
 | --- | --- |
 | `id` | Unique in the session. Prefix it with your source's name, for example `deploys:42`; `main` and the `task:` prefix are reserved. |
-| `kind` | `"agent"`, `"shell"` or `"workflow"`. It decides the row's layout. A `"shell"` item is listed in `/tasks` only; the main chat's footer counts it while it is not finished. |
+| `kind` | `"agent"` or `"shell"`. It decides the row's layout. A `"shell"` item is listed in `/tasks` only; the main chat's footer counts it while it is not finished. |
 | `state` | `running`, `queued`, `input` (waits for an answer), `paused`, `stopping`, `waiting` (not working, and wakes by itself when what it waits on finishes), `done`, `failed` or `stopped`. It decides the glyph, the state word, the `/tasks` group and whether `x` stops or dismisses. |
 | `name`, `task` | The name and what it works on, for example `stage build`. |
 | `elapsedMs`, `tokens` | Shown on the right. `elapsedMs` is finite, non-negative milliseconds. `tokens` is a non-negative safe integer, at most `Number.MAX_SAFE_INTEGER`. Between your updates, the panel and `/tasks` share the advancing time of running, waiting and stopping items. Paused and finished items keep their last elapsed time. |
@@ -976,7 +976,6 @@ Return at most 10,000 rows per source. Atomic ignores additional rows and warns 
 | `waitingOn` | What a `waiting` item waits on, shown as `waiting on <waitingOn>`. |
 | `queued` | Messages typed to it that it has not taken yet. A non-negative safe integer. |
 | `endedAt` | When a finished item finished, in finite, non-negative epoch milliseconds. |
-| `viewed` | For a finished `workflow` item, whether the user has opened it. A finished workflow row stays in the panel until it is viewed: opening it from the panel or `/tasks` counts, and a source sets `viewed: true` when the user opens the item another way. A `done` or `failed` `agent` row leaves the panel as soon as it finishes. A `stopped` or `paused` `agent` row, and a `paused` `workflow` row, stay while another row is active or a background shell runs, and leave once nothing is. |
 | `runGeneration` | Optional opaque identity of the item's latest run. Use a per-item counter rather than a timestamp: two attempts can start in the same millisecond. Advance it whenever the item runs again (resumed, woken or sent a follow-up), not when the source republishes the same attempt. A `stopped` or `paused` row that left the panel is listed again while other work runs once this changes, even if it ran only briefly between two updates. Without it, such a row comes back only after the panel has seen it in another state. |
 
 Atomic strips terminal control sequences from the text fields before drawing them. An item with invalid fields is skipped, and `items()` or `subscribe` throwing is reported as an extension error. The source's other items, and the other sources, are still shown.
@@ -989,21 +988,7 @@ The actions are optional:
 
 `stop` and `answer` resolve to `{ ok: true }`, or to `{ ok: false, reason }` to show `reason` to the user.
 
-The types are exported from `@bastani/atomic`: `AgentPanelSource`, `AgentPanelItem`, `AgentPanelState`, `AgentPanelActionResult`, `AgentPanelOpenOptions`, `AgentPanelAnswerOptions`, `AgentPanelSourceRegistration` and `AgentPanelSession`. The same rows are available outside extensions. `agentPanelItems(session)` returns the session's tasks and every source's items, `subscribeAgentPanel(session, listener)` notifies on any change, including after a reload, and `openAgentPanelItem`, `stopAgentPanelItem` and `answerAgentPanelItem` run the actions by item id. Obtain the item through `agentPanelItems(session)` before calling these helpers. When calling `answerAgentPanelItem(session, id, text, options)`, pass the question's captured `AgentPanelAnswerOptions` rather than reading a new item immediately before sending. Workflow rows require their captured `promptId`; omitting it or supplying only matching question text is refused, even if a replacement question has identical text. `dismissedAgentPanelItems(session)` is the session's set of dismissed ids, and `agentPanelTaskId(id)` returns the task id of a `task:` item.
-
-### pi.getWorkflowHostModules()
-
-Returns a promise for the running host's in-memory module namespaces. The workflows adapter uses this capability to avoid re-evaluating the host's package graphs for each workflow file.
-
-The returned object has exactly these keys:
-
-- `@bastani/atomic`
-- `@bastani/atomic-ai`, backed by the host's compatibility API
-- `@bastani/atomic-ai/providers/all`
-
-These are shared host instances, not isolated copies. Workflow imports use the host's versions rather than project-local copies of these exact specifiers, preserving identity for exports such as `AuthStorage` and sharing module state. This also supports standalone-binary projects without those packages in `node_modules`. Other deep subpaths and third-party dependencies still resolve from disk. Workflow files and their relative imports are evaluated fresh on `/reload`.
-
-`getWorkflowHostModules()` is required on the current Atomic `ExtensionAPI`. It is optional on the workflows adapter's host interface so older or alternative hosts can omit it. Integrations that support those hosts should check for the method before calling it, for example `await pi.getWorkflowHostModules?.()`. Without it, the workflows adapter retains filesystem package resolution and needs resolvable packages for these imports.
+The types are exported from `@bastani/atomic`: `AgentPanelSource`, `AgentPanelItem`, `AgentPanelState`, `AgentPanelActionResult`, `AgentPanelOpenOptions`, `AgentPanelAnswerOptions`, `AgentPanelSourceRegistration` and `AgentPanelSession`. The same rows are available outside extensions. `agentPanelItems(session)` returns the session's tasks and every source's items, `subscribeAgentPanel(session, listener)` notifies on any change, including after a reload, and `openAgentPanelItem`, `stopAgentPanelItem` and `answerAgentPanelItem` run the actions by item id. Obtain the item through `agentPanelItems(session)` before calling these helpers. When calling `answerAgentPanelItem(session, id, text, options)`, pass the question's captured `AgentPanelAnswerOptions` rather than reading a new item immediately before sending. `dismissedAgentPanelItems(session)` is the session's set of dismissed ids, and `agentPanelTaskId(id)` returns the task id of a `task:` item.
 
 ### pi.exec(command, args, options?)
 
@@ -1080,7 +1065,7 @@ unsubscribe();
 
 `pi.events` belongs to the extension instance that received it. Register listeners again when that instance reloads, and do not retain the object for later use: calling `on()` or `emit()` through a captured handle after reload or disposal throws. To keep in-memory state across `/reload`, pass this facade to [`sessionScopedExtensionState`](/extensions/authoring#session-scoped-in-memory-state); do not capture the facade itself.
 
-If you implement an `ExtensionRuntime` for an embedded host, provide `trackEventBusSubscription(unsubscribe)` and retain each returned subscription until that extension runtime is reloaded or disposed. `ExtensionUIContext.getChatRenderSettings()` must return `markdownTransformers`; it may also return `renderLatex` to control terminal math rendering, and `fullscreenScrollbar` and `fullscreenWheelScrollLines` for transcripts that an overlay scrolls itself, such as attached workflow chats. These fields keep event subscriptions and display transforms scoped to the active extension instance.
+If you implement an `ExtensionRuntime` for an embedded host, provide `trackEventBusSubscription(unsubscribe)` and retain each returned subscription until that extension runtime is reloaded or disposed. `ExtensionUIContext.getChatRenderSettings()` must return `markdownTransformers`; it may also return `renderLatex` to control terminal math rendering, and `fullscreenScrollbar` and `fullscreenWheelScrollLines` for transcripts that an overlay scrolls itself. These fields keep event subscriptions and display transforms scoped to the active extension instance.
 
 
 ### Native providers
@@ -1217,7 +1202,7 @@ Registered servers are the lowest-precedence MCP layer. They replace a same-name
 ## Error Handling
 
 - Extension errors are logged, agent continues
-- In the interactive terminal, a `session_start` or `resources_discover` handler that throws, at startup, with `-c`/`--resume`, on `/new`, `/resume`, `/fork` or `/reload`, is shown once with the extension's path and error, and the session keeps working. The extension stays loaded, so its commands, tools and other handlers still run. Print mode (`-p`), standalone RPC mode (`--mode rpc`), SDK sessions and workflow stages instead fail startup with `ExtensionStartupError`, which names each failing extension.
+- In the interactive terminal, a `session_start` or `resources_discover` handler that throws, at startup, with `-c`/`--resume`, on `/new`, `/resume`, `/fork` or `/reload`, is shown once with the extension's path and error, and the session keeps working. The extension stays loaded, so its commands, tools and other handlers still run. Print mode (`-p`), standalone RPC mode (`--mode rpc`), and SDK sessions instead fail startup with `ExtensionStartupError`, which names each failing extension.
 - `tool_call` errors block the tool (fail-safe)
 - Tool `execute` errors must be signaled by throwing; the thrown error is caught, reported to the LLM with `isError: true`, and execution continues
 

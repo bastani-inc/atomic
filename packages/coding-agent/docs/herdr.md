@@ -14,15 +14,14 @@ The integration runs only for interactive Atomic sessions. It stays inactive out
 
 | Status | Meaning |
 |---|---|
-| Working | Atomic, a workflow, a subagent, or a background shell command is still running. |
+| Working | Atomic, a subagent, or a background shell command is still running. |
 | Blocked | Work needs your input or approval, and no independent work is running. |
 | Idle / Done | No work is running. Herdr may show a newly completed turn as Done. |
 
 Quiet periods such as provider waits, retries, and tool execution still count as working. Background work keeps the pane working after Atomic finishes its response.
 
-Opening `/tasks`, `/agents`, or `/workflows` does not count as an approval request. Neither does a subagent asking its supervisor for guidance. Actual permission requests and workflow budget approvals can show Blocked.
+Opening `/tasks` or `/agents` does not count as an approval request. Neither does a subagent asking its supervisor for guidance. Actual permission requests can show Blocked.
 
-A failed workflow can remain marked blocked in Atomic after its execution ends, while the pane returns to Idle. Check the workflow details for its result; the pane indicator is not a success or failure verdict. Sending a message acknowledges existing workflow attention for the indicator, but does not resume the workflow or approve a budget increase.
 
 ## Restore after a Herdr restart
 
@@ -58,8 +57,8 @@ If Atomic does not appear in Herdr:
 
 For custom launchers, Herdr must provide `HERDR_ENV=1` and nonempty `HERDR_BIN_PATH`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH` values. See [Herdr's integration guide](https://herdr.dev/docs/integrations/#integrate-your-own-agent).
 
-Reloading or compacting a session should not remove Atomic from the pane. If status stops updating, check Herdr's connection and reload Atomic. Reporting failures do not stop your agent or workflow, and reconnect polling is not automatic.
+Reloading or compacting a session should not remove Atomic from the pane. If status stops updating, check Herdr's connection and reload Atomic. Reporting failures do not stop your agent, and reconnect polling is not automatic.
 
 ## Privacy
 
-Atomic sends status, generic attention messages, the parent session's ID and local session path, and the resume command to the local Herdr server. The resume command contains only `atomic --session` with the session ID (or, for an ID that reads as a path, the session file) and, for a custom session directory, the `--session-dir` path. Atomic does not send prompt text, tool arguments, transcripts, or workflow output.
+Atomic sends status, generic attention messages, the parent session's ID and local session path, and the resume command to the local Herdr server. The resume command contains only `atomic --session` with the session ID (or, for an ID that reads as a path, the session file) and, for a custom session directory, the `--session-dir` path. Atomic does not send prompt text, tool arguments, or transcripts.

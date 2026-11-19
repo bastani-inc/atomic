@@ -193,7 +193,7 @@ function removeUnownedModelHeaders(
 function sessionIntercomPolicyFor(options: CreateAgentSessionOptions): SessionIntercomPolicy | undefined {
 	const parent = options.parentIntercomPolicy;
 	if (parent !== undefined) {
-		const own = options.subagentPolicy?.intercomGroup ?? options.orchestrationContext?.intercomGroup;
+		const own = options.subagentPolicy?.intercomGroup;
 		return SessionIntercomPolicy.forChild(own !== undefined && own.trim().length > 0 ? own : parent.home, parent);
 	}
 	return options.intercom === undefined ? undefined : SessionIntercomPolicy.fromOptions(options.intercom);
@@ -424,19 +424,6 @@ async function constructAgentSession(
 	}
 
 	if (workspace !== undefined && persistInitialState) await recordSessionWorkspace(sessionManager, workspace);
-
-	// Mark workflow-created sessions as internal so they are excluded from the
-	// standard `/resume` history while remaining resumable via `/workflow resume`.
-	// Only stamped when the orchestration context identifies a workflow stage;
-	// reattaching to an already-marked session preserves its existing marker.
-	if (options.orchestrationContext?.kind === "workflow-stage") {
-		const ctx = options.orchestrationContext;
-		await sessionManager.markSessionInternal({
-			runId: ctx.workflowRunId,
-			stageId: ctx.workflowStageId,
-			stageName: ctx.workflowStageName,
-		});
-	}
 
 	if (!resourceLoader) {
 		resourceLoader = new DefaultResourceLoader({
@@ -1010,7 +997,6 @@ async function constructAgentSession(
 	);
 	const childHistory: ProjectHistory = {
 		sessionStore: () => session.extensionRunner.getProjectHistory().sessionStore(),
-		workflows: () => session.extensionRunner.getProjectHistory().workflows(),
 	};
 	try {
 		// One sink per session, so every resolved child configuration carries the same callback identity.
@@ -1026,7 +1012,6 @@ async function constructAgentSession(
 			settingsManager,
 			cwd,
 			powerShellAvailable,
-			workflowJournal: options.journal ?? options.storage,
 			storageAgentDir: agentDir,
 			worktreeSnapshots:
 				options.snapshots === undefined
@@ -1080,7 +1065,6 @@ async function constructAgentSession(
 			excludedToolNames: excludedTools,
 			extensionRunnerRef,
 			sessionStartEvent: options.sessionStartEvent,
-			orchestrationContext: options.orchestrationContext,
 			subagentPolicy,
 			intercomPolicy,
 			parentCommandTaskOwner: options.parentCommandTaskOwner,

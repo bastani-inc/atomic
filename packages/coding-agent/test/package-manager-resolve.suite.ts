@@ -100,18 +100,19 @@ describe("DefaultPackageManager", () => {
 			expect(result.extensions.some((r) => r.path === extPath && r.enabled)).toBe(true);
 		});
 
-		it("resolves object-form workflow paths without treating database settings as paths (#3416)", async () => {
-			const workflowPath = join(agentDir, "configured.ts");
-			writeFileSync(workflowPath, "export default {};");
-			const workflowSettings = SettingsManager.inMemory({
-				workflows: {
-					paths: ["configured.ts"],
-					journal: { path: "workflow-runs.sqlite" },
-				},
+		it("locates recipes from old workflow settings without loading them as resources", async () => {
+			const recipe = join(agentDir, "configured.ts");
+			writeFileSync(recipe, "throw new Error('not an extension');");
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ workflows: { paths: ["configured.ts"] } }));
+			const manager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager: SettingsManager.create(tempDir, agentDir),
 			});
-			const configured = new DefaultPackageManager({ cwd: tempDir, agentDir, settingsManager: workflowSettings });
-			const resolved = await configured.resolve();
-			expect(resolved.workflows.some((resource) => resource.path === workflowPath && resource.enabled)).toBe(true);
+			const result = await manager.resolve();
+			expect(result).not.toHaveProperty("workflows");
+			expect(result.legacyWorkflowFiles.filter((file) => file.enabled).map((file) => file.path)).toEqual([recipe]);
+			expect(result.extensions.map((extension) => extension.path)).not.toContain(recipe);
 		});
 
 		it("should resolve skill paths from settings", async () => {
@@ -288,7 +289,7 @@ Content`,
 			expect(result.extensions.some((r) => pathEndsWith(r.path, "helper.ts"))).toBe(false);
 		});
 
-		it("should resolve package-declared workflows from atomic and legacy manifests", async () => {
+		it("locates legacy recipe files from atomic and pi manifests without loading them", async () => {
 			const atomicPkg = join(tempDir, "atomic-workflows-pkg");
 			const piPkg = join(tempDir, "pi-workflows-pkg");
 			const singularPkg = join(tempDir, "pi-workflow-singular-pkg");
@@ -325,10 +326,10 @@ Content`,
 
 			const result = await packageManager.resolve();
 
-			expect(result.workflows.some((r) => isEnabled(r, join("workflows", "atomic.ts")))).toBe(true);
-			expect(result.workflows.some((r) => isEnabled(r, join("workflows", "legacy.ts")))).toBe(true);
-			expect(result.workflows.some((r) => isEnabled(r, join("workflow", "singular.ts")))).toBe(true);
-			expect(result.workflows.every((r) => r.metadata.origin === "package")).toBe(true);
+			expect(result.legacyWorkflowFiles.some((r) => isEnabled(r, join("workflows", "atomic.ts")))).toBe(true);
+			expect(result.legacyWorkflowFiles.some((r) => isEnabled(r, join("workflows", "legacy.ts")))).toBe(true);
+			expect(result.legacyWorkflowFiles.some((r) => isEnabled(r, join("workflow", "singular.ts")))).toBe(true);
+			expect(result.legacyWorkflowFiles.every((r) => r.metadata.origin === "package")).toBe(true);
 		});
 
 		it("ignores malformed manifest resource fields without dropping valid fields", async () => {

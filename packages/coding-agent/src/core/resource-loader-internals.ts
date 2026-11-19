@@ -1,10 +1,11 @@
 import type { Theme } from "../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { EventBus } from "./event-bus.js";
-import type { WorkflowResourceProvider } from "./extensions/loader.ts";
+import type { PackageMcpServerSource } from "./extensions/loader.ts";
 import type { ExtensionRuntime, InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
+import type { LegacyWorkflowFiles } from "./legacy-workflow-files.ts";
 import type { McpServerContribution } from "./mcp-servers.ts";
-import type { DefaultPackageManager, PathMetadata, ResolvedResource } from "./package-manager.ts";
+import type { DefaultPackageManager, PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "./resource-loader-types.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
@@ -63,7 +64,7 @@ export interface ResourceLoaderInternals {
 	systemPromptSourcePath?: string;
 	appendSystemPrompt: string[];
 	appendSystemPromptSourcePaths: string[];
-	workflowResources: ResolvedResource[];
+	legacyWorkflowFiles?: LegacyWorkflowFiles;
 	mcpServerContributions: McpServerContribution[];
 	trustedBorrowedProjectLocalSources?: Set<string>;
 	lastSkillPaths: string[];
@@ -79,12 +80,11 @@ export interface ResourceLoaderInternals {
 	lastThemePaths: string[];
 	loaded: boolean;
 	getInheritanceSnapshot(): DefaultResourceLoaderInheritanceSnapshot;
-	refreshWorkflowResources(): Promise<ResolvedResource[]>;
 }
 
 export interface ExtensionLoadDependencies {
 	runtime: ExtensionRuntime;
-	workflowResourceProvider: WorkflowResourceProvider;
+	packageMcpServerSource: PackageMcpServerSource;
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot;
 }
 

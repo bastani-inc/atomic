@@ -3,23 +3,10 @@ import { isModelType } from "@bastani/atomic-ai";
 import { getCapabilities, type SettingItem } from "@bastani/atomic-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import { formatModelLabel } from "../../../core/model-label.ts";
-import type { Settings } from "../../../core/settings-schema.ts";
 import { keyDisplayText } from "./keybinding-hints.js";
 import { DEFAULT_PROJECT_TRUST_LABELS } from "./settings-selector-options.ts";
 import { SelectSubmenu, ThemeSubmenu, WarningSettingsSubmenu } from "./settings-selector-submenus.ts";
 import type { SettingsCallbacks, SettingsConfig } from "./settings-selector-types.ts";
-
-/** Where /settings saves each decision setting: the project when it already sets it, otherwise global settings. */
-export function decisionSettingScopes(project: Pick<Settings, "decisionModel" | "workflows">): {
-	readonly decisionModelScope: "global" | "project";
-	readonly autoAdvanceAfterSteerScope: "global" | "project";
-} {
-	const workflows = Array.isArray(project.workflows) ? undefined : project.workflows;
-	return {
-		decisionModelScope: project.decisionModel === undefined ? "global" : "project",
-		autoAdvanceAfterSteerScope: workflows?.autoAdvanceAfterSteer === undefined ? "global" : "project",
-	};
-}
 
 /**
  * Sentinel row shown when no default-model catalog entry exists to configure.
@@ -306,7 +293,7 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 		{
 			id: "decision-model",
 			label: "Decision model",
-			description: `Saves to ${config.decisionModelScope ?? "global"} settings; decides structured output, stage predictions and readiness after a steer, not the chat model`,
+			description: `Saves to ${config.decisionModelScope ?? "global"} settings; decides structured output, not the chat model`,
 			currentValue: config.decisionModel && config.decisionModel !== "auto" ? config.decisionModel : "Automatic",
 			submenu: (_currentValue, done) => {
 				const current = config.decisionModel === "auto" ? "" : (config.decisionModel ?? "");
@@ -354,13 +341,6 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					true,
 				);
 			},
-		},
-		{
-			id: "auto-advance-after-steer",
-			label: "Auto-advance after steer",
-			description: `Saves to ${config.autoAdvanceAfterSteerScope ?? "global"} settings; after you steer a workflow stage, the decision model advances it or keeps it open instead of asking, and asks when unsure`,
-			currentValue: config.autoAdvanceAfterSteer === false ? "false" : "true",
-			values: ["true", "false"],
 		},
 		{
 			id: "compaction-model",

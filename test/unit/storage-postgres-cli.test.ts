@@ -3,11 +3,6 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { parseStorageCommand, runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
-import {
-	parseWorkerCommand,
-	WorkerCommandError,
-	workerJournalSelection,
-} from "../../packages/coding-agent/src/cli/worker-command.js";
 import { isTeamProfileConfigError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	POSTGRES_ADAPTER_PACKAGE,
@@ -160,51 +155,6 @@ describe("atomic storage join postgres:// arguments (#4793)", () => {
 		assert.throws(() => parseStorageCommand(["import", "in", "--limit", "2"]), /Unknown option --limit/);
 		assert.throws(() => parseStorageCommand(["join", URL_, "--storage", "{}"]), /Unknown option --storage/);
 		assert.throws(() => parseStorageCommand(["join", URL_, "--auth"]), /--auth needs a value/);
-	});
-});
-
-describe("atomic worker --db postgres:// (#4793)", () => {
-	test("passes the password by file reference to a Postgres journal selection (#4793)", () => {
-		const command = parseWorkerCommand(["start", "--db", URL_, "--password-file", "pg-password", "--prefix", "p_"], {
-			cwd: root,
-			cpus: 4,
-		});
-		assert.equal(command.kind, "start");
-		assert.ok(command.kind === "start" && command.database !== undefined);
-		assert.deepEqual(workerJournalSelection(command.database), {
-			adapter: POSTGRES_ADAPTER_PACKAGE,
-			options: { url: URL_ },
-			secrets: { password: { file: passwordFile } },
-			prefix: "p_",
-		});
-		const tokenCommand = parseWorkerCommand(["status", "--db", URL_, "--token-file", passwordFile], { cwd: root });
-		assert.ok(tokenCommand.kind === "status" && tokenCommand.database !== undefined);
-		assert.deepEqual(workerJournalSelection(tokenCommand.database).secrets, { password: { file: passwordFile } });
-		const auth = parseWorkerCommand(["start", "--db", URL_, "--auth", "gcp"], { cwd: root });
-		assert.ok(auth.kind === "start" && auth.database !== undefined);
-		assert.deepEqual(workerJournalSelection(auth.database), {
-			adapter: POSTGRES_ADAPTER_PACKAGE,
-			options: { url: URL_, auth: "gcp-iam" },
-		});
-	});
-
-	test("refuses a Postgres --db without one credential source, or with a password in it (#4793)", () => {
-		const refused = (args: readonly string[], field: string) =>
-			assert.throws(
-				() => parseWorkerCommand(args, { cwd: root }),
-				(error: unknown) =>
-					error instanceof WorkerCommandError && error.field === field && !error.message.includes(PASSWORD),
-				args.join(" "),
-			);
-		refused(["start", "--db", URL_], "--password-file");
-		refused(
-			["start", "--db", URL_, "--password-file", "a", "--token-file", "b"],
-			"--password-file, --token-file, --auth",
-		);
-		refused(["start", "--db", `postgres://atomic:${PASSWORD}@db/atomic`, "--auth", "aws"], "--db");
-		refused(["start", "--db", "libsql://pool.example.turso.io", "--password-file", "a"], "--password-file");
-		refused(["start", "--password-file", "a"], "--password-file");
-		refused(["start", "--auth", "aws"], "--auth");
 	});
 });
 

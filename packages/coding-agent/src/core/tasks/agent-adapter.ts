@@ -6,6 +6,7 @@ import { defaultTaskHeartbeatMs, type TaskHeartbeatDelivery, TaskHeartbeatMonito
 import { cancelPausedOwnerTasks } from "./pause.js";
 import {
 	automaticWaitBudgetMs,
+	DEFAULT_AGENT_WAIT_BUDGET_MS,
 	type FakeExecution,
 	type FakeRunnerContext,
 	type OwnerLease,
@@ -36,7 +37,7 @@ const runners = new AsyncLocalStorage<RunnerHandoff>();
 
 /**
  * Runs a callback in the async context of this module's load, outside every session. An owner can outlive the
- * session that first bound it (a workflow stage's), so what it keeps for its lifetime must not start in that
+ * session that first bound it, so what it keeps for its lifetime must not start in that
  * session's async context, which would keep the session reachable.
  */
 const outsideAnySession = AsyncLocalStorage.snapshot();
@@ -178,6 +179,11 @@ export class AgentTaskHost {
 		return automaticWaitBudgetMs(this.binding.tasks?.wait, true);
 	}
 
+	/** Budget for an explicit bounded observation, including when this owner's normal policy waits until settled. */
+	get boundedAgentWaitBudgetMs(): number {
+		return automaticWaitBudgetMs(this.binding.tasks?.wait, false) ?? DEFAULT_AGENT_WAIT_BUDGET_MS;
+	}
+
 	/** Let inbound routing reach SDK admission instead of waiting for this owner to become idle. */
 	get hasActiveTaskWaits(): boolean {
 		return this.messageWaits.size > 0;
@@ -233,7 +239,7 @@ export class AgentTaskHost {
 		this.tasksPaused = false;
 	}
 	private authorizeTaskLaunch(): void {
-		if (this.tasksPaused) throw new Error("Workflow stage tasks are paused");
+		if (this.tasksPaused) throw new Error("Tasks are paused");
 		this.launched = true;
 		this.watchHeartbeats();
 	}

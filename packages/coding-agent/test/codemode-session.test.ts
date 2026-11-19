@@ -1505,11 +1505,12 @@ test("codemode discovery names model-only tools instead of returning nothing (#3
 		const description = harness.session.agent.state.tools.find((tool) => tool.name === "codemode")?.description ?? "";
 		assert.match(description, /tools, ALL_TOOLS and searchTools\(\) matches cover only script-callable tools/);
 		assert.match(description, /cannot be called from inside a codemode script/);
-		assert.match(description, /separate top-level subagent or workflow tool/);
-		assert.match(description, /never try to reach it through codemode/);
+		assert.match(description, /call the separate top-level tool directly/);
 		assert.match(description, /call it directly as a top-level tool, not from a script/);
-		assert.match(harness.session.systemPrompt, /cannot be called from inside a `codemode` script/);
-		assert.match(harness.session.systemPrompt, /call the separate top-level `subagent` or `workflow` tool directly/);
+		assert.match(
+			harness.session.systemPrompt,
+			/call the separate top-level tool directly, not from a `codemode` script/,
+		);
 		harness.setResponses([
 			fauxAssistantMessage(
 				[

@@ -1,7 +1,5 @@
 import type { SessionHeader, SessionWorkflowMetadata } from "./session-manager-types.ts";
 
-export const WORKFLOW_SESSION_METADATA_ENV = "ATOMIC_WORKFLOW_SESSION_METADATA";
-
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.trim().length > 0;
 }
@@ -32,16 +30,4 @@ export function isClassifiedWorkflowSession(
 	header: Pick<SessionHeader, "internal" | "workflow"> | null | undefined,
 ): boolean {
 	return classifiedWorkflowMetadata(header) !== undefined;
-}
-
-export function workflowSessionMetadataFromEnv(
-	env: Record<string, string | undefined> = process.env,
-): SessionWorkflowMetadata | undefined {
-	const serialized = env[WORKFLOW_SESSION_METADATA_ENV];
-	if (!serialized) return undefined;
-	try {
-		return validSessionWorkflowMetadata(JSON.parse(serialized));
-	} catch {
-		return undefined;
-	}
 }

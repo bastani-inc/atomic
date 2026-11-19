@@ -49,7 +49,6 @@ class BuiltinResourceLoader implements ResourceLoader {
 	}
 	private async resolveResourceRealPaths(): Promise<void> {
 		await this.resolveRealPaths([
-			...(this.delegate.getWorkflowResources?.() ?? []).map((resource) => resource.path),
 			...[this.delegate.getSkills(), this.assets.getSkills()].flatMap(({ skills }) =>
 				skills.flatMap((skill) => [skill.filePath, dirname(skill.filePath)]),
 			),
@@ -144,7 +143,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 			locations.map((location) => location.packageDir),
 			{ temporary: true },
 		);
-		await this.resolveRealPaths([...resources.extensions, ...resources.workflows].map((resource) => resource.path));
+		await this.resolveRealPaths(resources.extensions.map((resource) => resource.path));
 		const paths = resources.extensions.filter(
 			(resource) =>
 				resource.enabled &&
@@ -154,25 +153,11 @@ class BuiltinResourceLoader implements ResourceLoader {
 						this.canonical(resource.path).startsWith(`${this.canonical(location.packageDir)}${sep}`),
 				),
 		);
-		const mergeWorkflows = (caller: ResolvedResource[]) => {
-			const workflows = new Map<string, ResolvedResource>();
-			for (const resource of [...resources.workflows, ...caller]) {
-				if (!this.isDisabledPath(resource.path)) workflows.set(this.canonical(resource.path), resource);
-			}
-			return [...workflows.values()];
-		};
 		const loaded = await loadExtensions(
 			paths.map((resource) => resource.path),
 			this.cwd,
 			getExtensionRuntimeEventBus(target.runtime),
 			{
-				get: () => mergeWorkflows(this.delegate.getWorkflowResources?.() ?? []),
-				refresh: async () => {
-					const caller =
-						(await this.delegate.refreshWorkflowResources?.()) ?? this.delegate.getWorkflowResources?.() ?? [];
-					await this.resolveRealPaths(caller.map((resource) => resource.path));
-					return mergeWorkflows(caller);
-				},
 				getMcpServers: () => this.delegate.getMcpServerContributions?.() ?? [],
 			},
 			target.runtime,
@@ -238,6 +223,9 @@ class BuiltinResourceLoader implements ResourceLoader {
 			],
 			diagnostics: [...caller.diagnostics, ...builtin.diagnostics],
 		};
+	}
+	getLegacyWorkflowFiles() {
+		return this.delegate.getLegacyWorkflowFiles?.();
 	}
 	getAgentsFiles() {
 		return this.delegate.getAgentsFiles();

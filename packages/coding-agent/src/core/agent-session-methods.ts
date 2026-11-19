@@ -43,7 +43,6 @@ import type {
 	ExtensionMode,
 	ExtensionRunner,
 	ExtensionUIContext,
-	OrchestrationContext,
 	ReplacedSessionContext,
 	SendMessageOptions,
 	SendMessagesOptions,
@@ -53,8 +52,6 @@ import type {
 	ToolDefinition,
 	ToolInfo,
 } from "./extensions/index.js";
-import type { SessionWorkflows } from "./extensions/workflow-run-control.js";
-import type { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ExtensionProviderTransaction, ModelRuntime } from "./model-runtime.js";
 import type { PathMetadata } from "./package-manager.ts";
@@ -123,7 +120,6 @@ export interface AgentSessionQueuePauseControl {
 }
 
 export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl {
-	readonly orchestrationContext: import("./extensions/index.js").OrchestrationContext | undefined;
 	readonly modelRuntime: ModelRuntime;
 	readonly state: AgentState;
 	readonly model: Model<Api> | undefined;
@@ -161,8 +157,6 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly isBashRunning: boolean;
 	readonly hasPendingBashMessages: boolean;
 	readonly extensionRunner: ExtensionRunner;
-	/** Typed management of the workflow runs this session owns. */
-	readonly workflows: SessionWorkflows;
 
 	_handleAgentEvent(event: AgentEvent): Promise<void> | void;
 	_getRequiredRequestAuth(
@@ -217,7 +211,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getAgentTaskHost(): import("./tasks/agent-adapter.js").AgentTaskHost;
 	_getCommandTaskOwner(): import("./tools/bash-pty-native.js").SupervisedCommandOwner | undefined;
 	closeSessionTasks(): Promise<void>;
-	/** Internal workflow pause: cancel owned execution without closing message admission. */
+	/** Cancel owned execution without closing message admission. */
 	pauseTasks(): Promise<void>;
 	resumeTasks(): void;
 
@@ -457,9 +451,6 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	): Promise<string>;
 	getLastAssistantText(): string | undefined;
 	createReplacedSessionContext(): ReplacedSessionContext;
-	sealWorkflowStageGeneration(): void;
-	closeWorkflowStageGeneration(): Promise<void>;
-	transferWorkflowStageDeliveriesTo(target: object): void;
 	hasExtensionHandlers(eventType: string): boolean;
 	getPersistenceFailure(): PersistenceFailure | undefined;
 	getUnsavedInput(): UnsavedInput | undefined;
@@ -469,7 +460,6 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 export interface AgentSessionPublicSurface
 	extends Pick<
 		AgentSessionMethodSurface,
-		| "orchestrationContext"
 		| "getAgentTaskHost"
 		| "closeSessionTasks"
 		| "modelRuntime"
@@ -504,7 +494,6 @@ export interface AgentSessionPublicSurface
 		| "isBashRunning"
 		| "hasPendingBashMessages"
 		| "extensionRunner"
-		| "workflows"
 		| "queuedMessagesPaused"
 		| "pauseQueuedMessages"
 		| "resumeQueuedMessages"
@@ -627,7 +616,6 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_queuedMessagesPauseAbortBoundary: Promise<void> | undefined;
 	_admittedQueuedMessageAwaitingReply: string | undefined;
 	_admittedRecoveryTurn: Promise<void> | undefined;
-	_workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined;
 	_activeInterruptAbortMessage: string | undefined;
 	_pendingNextTurnMessages: CustomMessage[];
 	_pendingCustomMessages: CustomMessage[];
@@ -662,7 +650,6 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_pendingBashMessages: BashExecutionMessage[];
 	_runOnlyBashMessages?: WeakSet<object>;
 	_extensionRunner: ExtensionRunner;
-	_workflows?: SessionWorkflowsHandle;
 	_turnIndex: number;
 	readonly _entryIdsByMessage: WeakMap<object, string>;
 	readonly _boundaryDispatchedMessages: WeakSet<object>;
@@ -697,15 +684,13 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_allowedTools?: (name: string) => boolean;
 	_excludedTools?: (name: string) => boolean;
 	_childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
-	_workflowJournal?: import("./storage/provider.js").RunJournalOption;
 	_storageAgentDir?: string;
 	_baseToolsOverride?: Record<string, AgentTool>;
 	_sessionStartEvent: SessionStartEvent;
-	_orchestrationContext?: OrchestrationContext;
 	_workspace?: import("./workspace/resolve.ts").BoundWorkspace;
 	_subagentPolicy?: import("./extensions/index.js").SubagentChildPolicy;
 	_intercomPolicy?: import("./intercom-policy.ts").SessionIntercomPolicy;
-	_subagentMessageAdmission?: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary;
+	_subagentMessageAdmission?: import("./message-admission.ts").MessageAdmissionBoundary;
 	_extensionUIContext?: ExtensionUIContext;
 	_extensionHumanInput?: import("./extensions/host-input.js").HostInput | null;
 	_extensionDiagnosticListener?: (diagnostic: import("./extensions/host-input.js").HostDiagnostic) => void;
@@ -737,13 +722,11 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;
 	_sessionOpenMarker: (() => Promise<void>) | undefined;
-	_workflowStageAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
-	_workflowStageAwaitingFirstPrompt: boolean;
 	_agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;
 	_parentCommandTaskOwner: import("./tasks/child-command-owner.js").ChildCommandTaskOwner | undefined;
 	_inheritedHistory: import("./tools/history-protocol.ts").ProjectHistory | undefined;
 	_resourceAdmission: import("./sdk-types.ts").ResourceAdmission | undefined;
 	_childTaskWaits: import("./tasks/child-command-owner.js").ChildTaskWaits;
 	_taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
-	_taskAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
+	_taskAdmission: import("./message-admission.ts").MessageAdmissionBoundary | undefined;
 }

@@ -15,7 +15,6 @@ import { onDebugSettingChange } from "../../core/debug-setting.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ExtensionError } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
-import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
@@ -135,7 +134,6 @@ export function engineAgentPanelCounts(
 		needsInput: message.needsInput,
 		shells: message.shells ?? 0,
 		subagents: message.subagents ?? 0,
-		...(message.hiddenWorkflow ? { hiddenWorkflow: true } : {}),
 	};
 }
 
@@ -199,6 +197,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private resourceOverlaps: ResourceOverlap[] = [];
 	private readonly resourceExtensionsListeners: ResourceExtensionsListener[] = [];
 	private resourceExtensions: RpcResourceExtension[] = [];
+	private legacyWorkflowFileCount = 0;
 	private resourceIssues: EngineResourceIssues = { errors: [], warnings: [] };
 	private resourcesInitializedGeneration = 0;
 	private resourceInitialization: { generation: number; promise: Promise<void> } | undefined;
@@ -364,7 +363,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async setStopAllNotice(text: string | undefined): Promise<void> {
 		await this.client.requestInternal({ type: "set_stop_all_notice", ...(text === undefined ? {} : { text }) });
 	}
-	/** The engine owns the session's tasks and workflow runs, so it stops them. */
+	/** The engine owns the session's tasks, so it stops them. */
 	async stopAllBackgroundWork(): Promise<StopAllBackgroundOutcome> {
 		return this.client.requestInternal<StopAllBackgroundOutcome>({ type: "stop_all_background" });
 	}
@@ -566,10 +565,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	onEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
 		return this.client.onInteractiveEngineMessage(listener);
-	}
-	/** Workflow activity of the engine child, starting from its current snapshot. */
-	onWorkflowActivity(listener: (frame: WorkflowActivityFrame) => void): () => void {
-		return this.client.onInteractiveEngineWorkflowActivity(listener);
 	}
 	onKeybindingState(listener: (state: EngineKeybindingState) => void): () => void {
 		return this.client.onInteractiveEngineKeybindingState(listener);
@@ -773,10 +768,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	getResourceIssues(): EngineResourceIssues {
 		return this.resourceIssues;
 	}
+	async getStartupLegacyWorkflowFileCount(): Promise<number> {
+		await this.waitUntilResourcesReady();
+		return this.legacyWorkflowFileCount;
+	}
 	private updateResources(
-		state: Pick<RpcSessionState, "resourceExtensions" | "resourceErrors" | "resourceWarnings">,
+		state: Pick<
+			RpcSessionState,
+			"resourceExtensions" | "resourceErrors" | "resourceWarnings" | "legacyWorkflowFileCount"
+		>,
 		forNextView = false,
 	): void {
+		this.legacyWorkflowFileCount = state.legacyWorkflowFileCount ?? 0;
 		this.resourceIssues = { errors: state.resourceErrors ?? [], warnings: state.resourceWarnings ?? [] };
 		this.resourceExtensions = [...(state.resourceExtensions ?? [])];
 		for (const listener of [...this.resourceExtensionsListeners]) {

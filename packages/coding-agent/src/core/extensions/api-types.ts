@@ -8,7 +8,6 @@ import type { EventBus } from "../event-bus.js";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { McpServerConfig, McpServerContribution } from "../mcp-servers.ts";
 import type { CustomMessage } from "../messages.ts";
-import type { ResolvedResource } from "../package-manager.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "../resource-loader.ts";
 import type { SlashCommandInfo } from "../slash-commands.js";
 import type {
@@ -86,14 +85,6 @@ import type {
 } from "./session-events.ts";
 import type { ToolCallEvent, ToolResultEvent } from "./tool-events.ts";
 import type { ToolDefinition, ToolInfo, ToolRendererResolver } from "./tool-types.ts";
-import type {
-	WorkflowActivityChangedEvent,
-	WorkflowActivityPublisher,
-	WorkflowHeartbeatEvent,
-	WorkflowLifecycleEvent,
-	WorkflowStageCompletedEvent,
-} from "./workflow-events.js";
-import type { WorkflowRunControl, WorkflowRunControlRegistration } from "./workflow-run-control.js";
 
 /** Handler function type for events */
 // biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements
@@ -107,9 +98,6 @@ export interface ExtensionAPI {
 	getSettings(): import("../settings-types.ts").Settings;
 	/** @internal Owning runtime identity, retained across generation replacement. */
 	lifecycleScope?: object;
-	registerWorkflowActivityPublisher(): WorkflowActivityPublisher;
-	/** Register the implementation behind `session.workflows`; disposed with this extension generation. */
-	registerWorkflowRunControl(control: WorkflowRunControl): WorkflowRunControlRegistration;
 	registerAgentPanelSource(
 		source: import("../tasks/agent-panel-source.ts").AgentPanelSource,
 	): import("../tasks/agent-panel-source.ts").AgentPanelSourceRegistration;
@@ -117,10 +105,6 @@ export interface ExtensionAPI {
 		event: "cache_warming_decision",
 		handler: ExtensionHandler<CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult>,
 	): () => void;
-	on(event: "workflow_lifecycle", handler: ExtensionHandler<WorkflowLifecycleEvent>): () => void;
-	on(event: "workflow_activity_changed", handler: ExtensionHandler<WorkflowActivityChangedEvent>): () => void;
-	on(event: "workflow_stage_completed", handler: ExtensionHandler<WorkflowStageCompletedEvent>): () => void;
-	on(event: "workflow_heartbeat", handler: ExtensionHandler<WorkflowHeartbeatEvent>): () => void;
 	// =========================================================================
 	// Event Subscription
 	// =========================================================================
@@ -235,19 +219,6 @@ export interface ExtensionAPI {
 	/** Get the value of a registered CLI flag. */
 	getFlag(name: string): boolean | string | undefined;
 
-	getWorkflowHostModules(): Promise<
-		Record<"@bastani/atomic" | "@bastani/atomic-ai" | "@bastani/atomic-ai/providers/all", object>
-	>;
-
-	/** Return package-provided workflow files discovered for this session. */
-	getWorkflowResources(): ResolvedResource[];
-
-	/**
-	 * Re-read package/settings workflow resources and return the updated snapshot when supported by the host.
-	 * Does not reload extensions, skills, prompts, themes, or context files.
-	 */
-	refreshWorkflowResources?: () => Promise<ResolvedResource[]>;
-
 	/**
 	 * Contribute an MCP server to this session, using the same schema as an `mcpServers` entry in `mcp.json`.
 	 * Call it from the factory or from `session_start`; registering a name again replaces the earlier entry.
@@ -268,8 +239,6 @@ export interface ExtensionAPI {
 	getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot;
 	/** Internal owner-bound defaults and capability ceiling for builtin child adapters. */
 	getChildSessionOptions?: import("../child-session-options.ts").ChildSessionOptionsResolver;
-	/** Internal: the workflow journal the owning SDK session was created with, if any. */
-	getWorkflowJournal?: () => import("../storage/provider.js").RunJournalOption | undefined;
 	/** Internal: the agent directory the owning session resolved its storage against. */
 	getStorageAgentDir?: () => string | undefined;
 

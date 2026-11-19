@@ -25,7 +25,7 @@ beforeAll(() => initTheme("dark"));
 function panelHub(): AgentPanelSourceHub {
 	const hub = new AgentPanelSourceHub();
 	hub.register({
-		items: () => [{ id: "fixture:run", kind: "workflow", state: "running", name: "review", task: "stage one" }],
+		items: () => [{ id: "fixture:run", kind: "agent", state: "running", name: "review", task: "stage one" }],
 		subscribe: () => () => {},
 	});
 	return hub;

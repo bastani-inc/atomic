@@ -23,27 +23,22 @@ import { arg, fakeHerdr } from "./helpers/herdr.js";
 import { createHarnessWithExtensions } from "./test-harness.js";
 
 test("independent subagents keep Herdr working while the parent is settled or awaiting approval", () => {
-	for (const availability of ["ready", "recovering", "unavailable"] as const) {
-		for (const openPromptCount of [0, 1]) {
-			assert.deepEqual(
-				deriveSessionActivity({
-					agentRunning: false,
-					tasksRunning: true,
-					openPromptCount,
-					roots: [],
-					availability,
-				}),
-				{ state: "working", reason: "executing" },
-			);
-		}
+	for (const openPromptCount of [0, 1]) {
+		assert.deepEqual(
+			deriveSessionActivity({
+				agentRunning: false,
+				tasksRunning: true,
+				openPromptCount,
+			}),
+			{ state: "working", reason: "executing" },
+		);
 	}
 });
 
 test("Herdr observes overlapping owner tasks and reattaches without losing running subagents", async () => {
 	const fake = await fakeHerdr();
 	const runtime = createExtensionRuntime();
-	const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-	publisher.publishSnapshot({ availability: "ready", roots: [] });
+
 	const session = SessionManager.inMemory();
 	const host = new AgentTaskHost({
 		scope: { kind: "session", sessionId: session.getSessionId() },
@@ -183,7 +178,6 @@ test.each(["need_decision", "interview_request"] as const)(
 				createHerdrExtension({ env: fake.env, enabled: () => true }),
 				observePrompts,
 				(pi) => {
-					pi.registerWorkflowActivityPublisher().publishSnapshot({ availability: "ready", roots: [] });
 					deliver = createIncomingMessageSender({
 						pi,
 						currentGeneration: () => 1,

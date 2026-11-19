@@ -22,7 +22,7 @@ import { taskFixture } from "../helpers/task-projection.js";
 
 const healthyItem: AgentPanelItem = {
 	id: "run:healthy",
-	kind: "workflow",
+	kind: "agent",
 	state: "running",
 	name: "healthy",
 	task: "implement",
@@ -398,7 +398,7 @@ test("malformed source items and non-iterable item lists are dropped and reporte
 	const { hub, session } = panelFixture();
 	const validSibling: AgentPanelItem = {
 		id: "run:sibling",
-		kind: "workflow",
+		kind: "agent",
 		state: "input",
 		name: "sibling",
 		task: "stage ask",
@@ -1286,7 +1286,7 @@ for (const location of ["next", "step", "done"] as const) {
 	});
 }
 
-test("resumed quit workflow runs and removed extension items are pruned from dismissedAgentPanelItems without restoring dismissed native tasks (#5239)", async () => {
+test("resumed extension agents and removed extension items are pruned from dismissedAgentPanelItems without restoring dismissed native tasks (#5239)", async () => {
 	const fixture = taskFixture();
 	try {
 		await fixture.start("settled background task");
@@ -1296,8 +1296,8 @@ test("resumed quit workflow runs and removed extension items are pruned from dis
 
 		const hub = new AgentPanelSourceHub();
 		let currentItems: AgentPanelItem[] = [
-			{ id: "run:r1", kind: "workflow", state: "stopped", name: "ralph", task: "stage implement" },
-			{ id: "run:gone", kind: "workflow", state: "done", name: "cleanup", task: "stage finish" },
+			{ id: "run:r1", kind: "agent", state: "stopped", name: "ralph", task: "stage implement" },
+			{ id: "run:gone", kind: "agent", state: "done", name: "cleanup", task: "stage finish" },
 		];
 		let notify = () => {};
 		hub.register({
@@ -1324,13 +1324,13 @@ test("resumed quit workflow runs and removed extension items are pruned from dis
 		);
 
 		// Resume run:r1 (stopped -> running) and drop run:gone from the source; taskRowId stays settled in the store.
-		currentItems = [{ id: "run:r1", kind: "workflow", state: "running", name: "ralph", task: "stage implement" }];
+		currentItems = [{ id: "run:r1", kind: "agent", state: "running", name: "ralph", task: "stage implement" }];
 		notify();
 
 		assert.deepEqual(
 			agentPanelItems(session).map((item) => item.id),
 			["run:r1"],
-			"resumed workflow run is visible again while dismissed settled native task stays hidden",
+			"resumed extension agent is visible again while dismissed settled native task stays hidden",
 		);
 		assert.equal(dismissedAgentPanelItems(session).has("run:r1"), false, "resumed run is removed from dismissed set");
 		assert.equal(
@@ -1362,7 +1362,7 @@ test("well-behaved Promise subclasses returned by stop and answer keep their con
 		items: () => [
 			{
 				id: "run:sub",
-				kind: "workflow",
+				kind: "agent",
 				state: "input",
 				name: "ralph",
 				task: "Approve?",
@@ -1423,23 +1423,21 @@ test("duplicate item id errors strip terminal control sequences before reaching 
 	assert.equal(/[\x00-\x1f\x7f-\x9f\u202e\u2028\u2029]/u.test(emittedCross[0]!), false, emittedCross[0]);
 });
 
-test("validateItem rejects non-string promptId and non-boolean viewed while keeping valid sibling rows (#5239)", () => {
+test("validateItem rejects non-string promptId while keeping valid sibling rows (#5239)", () => {
 	const hub = new AgentPanelSourceHub();
 	hub.register({
 		items: () =>
 			[
 				{
 					id: "run:valid-before",
-					kind: "workflow",
+					kind: "agent",
 					state: "input",
 					name: "a",
 					task: "t",
 					promptId: "p-ok",
-					viewed: false,
 				},
-				{ id: "run:bad-prompt-num", kind: "workflow", state: "input", name: "b", task: "t", promptId: 42 },
-				{ id: "run:bad-viewed-str", kind: "workflow", state: "done", name: "c", task: "t", viewed: "true" },
-				{ id: "run:valid-after", kind: "workflow", state: "done", name: "d", task: "t", viewed: true },
+				{ id: "run:bad-prompt-num", kind: "agent", state: "input", name: "b", task: "t", promptId: 42 },
+				{ id: "run:valid-after", kind: "agent", state: "done", name: "d", task: "t" },
 			] as unknown as readonly AgentPanelItem[],
 		subscribe: () => () => {},
 	});
@@ -1448,19 +1446,19 @@ test("validateItem rejects non-string promptId and non-boolean viewed while keep
 		errors.push(error.message),
 	);
 	assert.deepEqual(
-		rows.map((item) => ({ id: item.id, promptId: item.promptId, viewed: item.viewed })),
+		rows.map((item) => ({ id: item.id, promptId: item.promptId })),
 		[
-			{ id: "run:valid-before", promptId: "p-ok", viewed: false },
-			{ id: "run:valid-after", promptId: undefined, viewed: true },
+			{ id: "run:valid-before", promptId: "p-ok" },
+			{ id: "run:valid-after", promptId: undefined },
 		],
 	);
 	assert.deepEqual(errors, ["Invalid agent panel item."]);
 });
 
-test("openAgentPanelItem notifies subscribeAgentPanel listeners after marking the item viewed (#5239)", () => {
+test("openAgentPanelItem notifies subscribeAgentPanel listeners after opening the item (#5239)", () => {
 	const hub = new AgentPanelSourceHub();
 	hub.register({
-		items: () => [{ id: "run:quiet-open", kind: "workflow", state: "done", name: "release", task: "ship" }],
+		items: () => [{ id: "run:quiet-open", kind: "agent", state: "done", name: "release", task: "ship" }],
 		subscribe: () => () => {},
 		open: () => true,
 	});
@@ -1500,7 +1498,7 @@ test("dismissed finished items stay dismissed across a failed source read (#5239
 	let notify = () => {};
 	const item: AgentPanelItem = {
 		id: "run:done1",
-		kind: "workflow",
+		kind: "agent",
 		state: "done",
 		name: "release",
 		task: "t",

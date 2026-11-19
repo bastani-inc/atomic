@@ -126,7 +126,6 @@ import type {
 	MarkdownTransformer,
 	MessageEndEvent,
 	MessageRenderer,
-	OrchestrationContext,
 	ProviderConfig,
 	RegisteredTool,
 	ResolvedCommand,
@@ -145,12 +144,6 @@ import type {
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
-import type {
-	WorkflowActivityObserver,
-	WorkflowActivitySnapshotFrame,
-	WorkflowActivitySubscription,
-} from "./workflow-events.js";
-import type { WorkflowRunControl } from "./workflow-run-control.js";
 
 export type {
 	ExtensionErrorListener,
@@ -221,7 +214,6 @@ export class ExtensionRunner {
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
-	private orchestrationContext: OrchestrationContext | undefined;
 	private subagentPolicy: SubagentChildPolicy | undefined;
 	private intercomPolicy: import("../intercom-policy.ts").IntercomPolicyView | undefined;
 	private taskHostBinding: (() => import("../tasks/agent-adapter.js").AgentTaskHost) | undefined;
@@ -239,41 +231,23 @@ export class ExtensionRunner {
 	): void {
 		this.runtime.getChildSessionOptions = resolver;
 	}
-	bindWorkflowJournal(
-		journal: import("../storage/provider.js").RunJournalOption | undefined,
-		storageAgentDir: string | undefined,
-	): void {
-		this.runtime.workflowJournal = journal;
+	bindStorageAgentDir(storageAgentDir: string | undefined): void {
 		this.runtime.storageAgentDir = storageAgentDir;
 	}
 	getAgentPanelSourceHub(): import("../tasks/agent-panel-source.ts").AgentPanelSourceHub {
 		return this.runtime.agentPanelSourceHub;
 	}
-	/** The run-control implementation registered by the current extension generation, if any. */
-	getWorkflowRunControl(): WorkflowRunControl | undefined {
-		return this.runtime.workflowRunControlHub.current();
-	}
-	/** The history of the session that launched this one: a workflow stage's or a subagent's launching session. */
+	/** The history of the session that launched this subagent. */
 	bindInheritedHistory(history: ProjectHistory | undefined): void {
 		this.inheritedHistory = history;
 	}
 	/**
-	 * Where history:// reads this project's history: sessions from the launching session's store, else this session's;
-	 * workflow runs through this session's run control, else the launching session's.
+	 * Where history:// reads this project's sessions: the launching session's store, else this session's.
 	 */
 	getProjectHistory(): ProjectHistory {
 		return {
 			sessionStore: () => this.inheritedHistory?.sessionStore() ?? this.sessionManager.getSessionStore(),
-			workflows: () => this.getWorkflowRunControl() ?? this.inheritedHistory?.workflows(),
 		};
-	}
-	/** Observe this generation's workflow activity: snapshot first, then FIFO changes. */
-	observeWorkflowActivity(observer: WorkflowActivityObserver): WorkflowActivitySubscription {
-		return this.runtime.workflowActivityHub.observeWorkflowActivity(observer);
-	}
-	/** This generation's current workflow activity snapshot. */
-	getWorkflowActivitySnapshot(): WorkflowActivitySnapshotFrame {
-		return this.runtime.workflowActivityHub.getSnapshotFrame();
 	}
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
 		const inherited =
@@ -300,7 +274,6 @@ export class ExtensionRunner {
 	private abortFn: () => void = () => {};
 	private hasPendingMessagesFn: () => boolean = () => false;
 	private isSessionSummaryEnabledFn: ExtensionContextActions["isSessionSummaryEnabled"];
-	private generateWorkflowSummaryFn: ExtensionContextActions["generateWorkflowSummary"];
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
@@ -333,19 +306,16 @@ export class ExtensionRunner {
 		cwd: string,
 		sessionManager: SessionManager,
 		modelRegistry: ModelRegistry,
-		orchestrationContext?: OrchestrationContext,
 		subagentPolicy?: SubagentChildPolicy,
 		intercomPolicy?: import("../intercom-policy.ts").IntercomPolicyView,
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
 		sessionLifecycleScopes.set(this, lifecycleScopeForOwner(runtime));
-		this.runtime.workflowActivityHub.bindDispatcher((event, isCurrent) => this.emit(event, isCurrent));
 		this.uiContext = noOpUIContext;
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
-		this.orchestrationContext = orchestrationContext;
 		this.subagentPolicy = subagentPolicy;
 		this.intercomPolicy = intercomPolicy;
 	}
@@ -386,7 +356,6 @@ export class ExtensionRunner {
 		this.abortFn = contextActions.abort;
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.isSessionSummaryEnabledFn = contextActions.isSessionSummaryEnabled;
-		this.generateWorkflowSummaryFn = contextActions.generateWorkflowSummary;
 		this.shutdownHandler = contextActions.shutdown;
 		this.getContextUsageFn = contextActions.getContextUsage;
 		this.compactFn = contextActions.compact;
@@ -547,12 +516,6 @@ export class ExtensionRunner {
 				},
 			},
 			this.presentationInput,
-			this.orchestrationContext?.kind === "workflow-stage"
-				? {
-						workflowRunId: this.orchestrationContext.workflowRunId,
-						workflowStageId: this.orchestrationContext.workflowStageId,
-					}
-				: {},
 		);
 		this.uiContext = this.wrapUIPromptContext(bridged, this.uiPromptBinding);
 		copyHostQuestionnaire(bridged, this.uiContext);
@@ -910,6 +873,18 @@ export class ExtensionRunner {
 		return createExtensionContext(this.createContextSource(), this.contextOwner);
 	}
 
+	private readonly nestedTool = new AsyncLocalStorage<{ id: string; parentId: string }>();
+
+	runNestedTool<T>(id: string, parentId: string, run: () => T): T {
+		return this.nestedTool.run({ id, parentId }, run);
+	}
+
+	/** The exact call this runner is executing, not a later direct call in work it started. */
+	parentToolCallId(id: string): string | undefined {
+		const nested = this.nestedTool.getStore();
+		return nested?.id === id ? nested.parentId : undefined;
+	}
+
 	/** Bound to the actual executing parent, not an extension-supplied caller identity. */
 	createToolContext(toolCallId: string, signal: AbortSignal | undefined): ExtensionToolContext {
 		const invoke = AsyncLocalStorage.bind(async (name: string, args: unknown, options: ExecuteToolOptions = {}) => {
@@ -929,6 +904,7 @@ export class ExtensionRunner {
 			return this.executeToolFn(toolCallId, name, args, { ...options, signal: callSignal });
 		});
 		return Object.defineProperties(this.createContext() as ExtensionToolContext, {
+			parentToolCallId: { value: this.parentToolCallId(toolCallId) },
 			tools: {
 				get: () => {
 					this.assertActive();
@@ -949,7 +925,6 @@ export class ExtensionRunner {
 			assertAction: () => assertExtensionAction(this.runtime),
 			getChildSessionOptions: (options) => this.runtime.getChildSessionOptions?.(options) ?? options,
 			getExtensionPaths: () => this.getExtensionPaths(),
-			observeWorkflowActivity: (observer) => this.runtime.workflowActivityHub.observeWorkflowActivity(observer),
 			getProjectHistory: () => this.getProjectHistory(),
 			...(this.taskHostBinding ? { getAgentTaskHost: this.taskHostBinding } : {}),
 			getUIContext: () => this.uiContext,
@@ -965,7 +940,6 @@ export class ExtensionRunner {
 			getIntercomPolicy: () => this.intercomPolicy,
 			getScopedModels: () => this.getScopedModels(),
 			getThinkingLevel: () => this.runtime.getThinkingLevel(),
-			getOrchestrationContext: () => this.orchestrationContext,
 			isIdle: () => this.isIdleFn(),
 			isProjectTrusted: () => this.isProjectTrustedFn(),
 			getSignal: () => this.getSignalFn(),
@@ -973,8 +947,6 @@ export class ExtensionRunner {
 			abort: () => this.abortFn(),
 			hasPendingMessages: () => this.hasPendingMessagesFn(),
 			isSessionSummaryEnabled: () => this.isSessionSummaryEnabledFn?.() ?? false,
-			generateWorkflowSummary: (text, signal, options) =>
-				this.generateWorkflowSummaryFn?.(text, signal, options) ?? Promise.resolve(undefined),
 			shutdown: () => this.shutdownHandler(),
 			getContextUsage: () => this.getContextUsageFn(),
 			compact: (options) => this.compactFn(options),

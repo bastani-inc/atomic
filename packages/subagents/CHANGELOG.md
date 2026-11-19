@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Workflow stages no longer launch, hold, or resume subagents. Instead of nesting delegation through stages, launch children side by side from the parent session, directly or with codemode. Wait for a child by its task id and resume it by its child id. Reopening the parent session still restores its unfinished children; records left by former workflow stages are not resumed.
+
+### Added
+
+- `/skill:workflow-files` guides the parent chat through an earlier workflow definition without executing the module, preserving its dependencies, checks, and approval gates.
+- Codemode scripts can launch single or parallel subagents, get task IDs immediately, observe or control their session's children, and resume a child from its saved session. Scripts can inspect agent definitions and the configured model catalog; creating or changing definitions still requires a direct call.
+
 ## [0.9.90] - 2026-11-19
 
 ### Breaking Changes

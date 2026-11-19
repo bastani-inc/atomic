@@ -18,67 +18,17 @@ import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 import { createFauxStreamFn, fauxModel } from "./test-harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
-// Real SDK creation and reload each load the workflows builtin and mandatory Intercom.
+// Real SDK creation and reload each load the default builtins and mandatory Intercom.
 // Two full loader passes need structural headroom under default-parallel suite load.
 const REAL_SDK_BUILTIN_RELOAD_TIMEOUT_MS = 120_000;
 
-test.each([
-	{ availability: "recovering" as const, shutdownFirst: false },
-	{ availability: "unavailable" as const, shutdownFirst: false },
-	{ availability: "recovering" as const, shutdownFirst: true },
-	{ availability: "unavailable" as const, shutdownFirst: true },
-])(
-	"reload preserves registration with $availability activity (shutdown first: $shutdownFirst) without another prompt",
-	async ({ availability, shutdownFirst }) => {
-		const fake = await fakeHerdr();
-		const loaded = await createTestExtensionsResult(
-			[createHerdrExtension({ env: fake.env, enabled: () => true })],
-			fake.dir,
-		);
-		const publisher = loaded.runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-		publisher.publishSnapshot({ availability: "ready", roots: [] });
-		const manager = SessionManager.inMemory();
-		const runners = [0, 1].map(() => {
-			const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, manager, {} as never);
-			runner.setUIContext({ ...noOpUIContext }, "tui");
-			return runner;
-		});
-		try {
-			await runners[0].emit({ type: "session_start" });
-			await fake.waitFor(1);
-			publisher.publishSnapshot({ availability });
-			if (shutdownFirst) await runners[0].emit({ type: "session_shutdown", reason: "reload" });
-			await runners[1].emit({ type: "session_start", reason: "reload" });
-			await runners[0].emit({ type: "session_shutdown", reason: "reload" });
-			assert.deepEqual(
-				(await fake.calls()).filter((call) => call.phase === "start").map((call) => call.args[1]),
-				["report-agent"],
-				"unknown workflow activity must retain the registered agent, not release it",
-			);
-			await runners[1].emit({ type: "session_shutdown", reason: "quit" });
-			assert.deepEqual(
-				(await fake.calls()).filter((call) => call.phase === "start").map((call) => call.args[1]),
-				["report-agent", "release-agent"],
-				"quit releases the inherited registration even without a successor report",
-			);
-		} finally {
-			for (const runner of runners) {
-				await runner.emit({ type: "session_shutdown", reason: "quit" });
-				runner.invalidate();
-			}
-			await fake.dispose();
-		}
-	},
-);
-
-test("recovery snapshots retain unchanged pane activity but a new claim republishes identity (#3468)", async () => {
+test("a new pane claim republishes session identity (#3468)", async () => {
 	const fake = await fakeHerdr();
 	const loaded = await createTestExtensionsResult(
 		[createHerdrExtension({ env: fake.env, enabled: () => true })],
 		fake.dir,
 	);
-	const publisher = loaded.runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-	publisher.publishSnapshot({ availability: "ready", roots: [] });
+
 	const manager = await SessionManager.create(fake.dir, fake.dir);
 	const runners = [0, 1].map(() => {
 		const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, manager, {} as never);
@@ -88,15 +38,7 @@ test("recovery snapshots retain unchanged pane activity but a new claim republis
 	try {
 		await runners[0].emit({ type: "session_start" });
 		await fake.waitFor(1);
-		publisher.publishSnapshot({ availability: "recovering" });
-		publisher.publishSnapshot({ availability: "ready", roots: [] });
-		await runners[0].drainWork();
 		await runners[0].emit({ type: "session_shutdown", reason: "reload" });
-		assert.equal(
-			(await fake.calls()).filter((call) => call.phase === "start").length,
-			1,
-			"recovery returning to unchanged activity must retain the existing pane report",
-		);
 		await runners[1].emit({ type: "session_start", reason: "reload" });
 		await fake.waitFor(2);
 		await runners[1].emit({ type: "session_shutdown", reason: "quit" });
@@ -125,7 +67,7 @@ test.each([
 	{ established: false, queuedDuringFlight: true },
 	{ established: true, queuedDuringFlight: true },
 ])(
-	"identical snapshot retries failed delivery (established: $established, queued during flight: $queuedDuringFlight) (#3468)",
+	"repeated activity retries failed delivery (established: $established, queued during flight: $queuedDuringFlight) (#3468)",
 	async ({ established, queuedDuringFlight }) => {
 		// An unestablished report first offers the resume argv, so Herdr must fail it and its retry without one.
 		const failedCalls = established ? [1] : [0, 1];
@@ -157,8 +99,7 @@ else {
 			],
 			fake.dir,
 		);
-		const publisher = loaded.runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-		publisher.publishSnapshot({ availability: "ready", roots: [] });
+
 		const manager = await SessionManager.create(fake.dir, fake.dir);
 		const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, manager, {} as never);
 		runner.setUIContext({ ...noOpUIContext }, "tui");
@@ -170,13 +111,17 @@ else {
 			}
 			await fake.waitForStarted(established ? 2 : 1);
 			if (queuedDuringFlight) {
-				publisher.publishSnapshot({ availability: "ready", roots: [] });
+				await runner.emit({ type: established ? "agent_start" : "agent_settled" });
 				await runner.drainWork();
 			}
 			await writeFile(allowFailure, "");
 			await failedReport.promise;
 			assert.deepEqual(diagnostics, [{ kind: "protocol_rejected" }]);
-			if (!queuedDuringFlight) publisher.publishSnapshot({ availability: "ready", roots: [] });
+			if (!queuedDuringFlight) {
+				// The diagnostic runs inside the report flight. Exercise a refresh after that flight has settled.
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				await runner.emit({ type: established ? "agent_start" : "agent_settled" });
+			}
 			await fake.waitFor(3);
 			await runner.emit({ type: "session_shutdown", reason: "reload" });
 			const reports = (await fake.calls()).filter(
@@ -216,18 +161,14 @@ test(
 				],
 				fake.dir,
 			);
-			loaded.runtime.workflowActivityHub
-				.registerWorkflowActivityPublisher()
-				.publishSnapshot({ availability: "ready", roots: [] });
+
 			let committed = false;
 			const resourceLoader = {
 				...createTestResourceLoader(),
 				getExtensions: () => loaded,
 				prepareReload: async () => {
 					const candidate = { ...loaded, runtime: createExtensionRuntime() };
-					candidate.runtime.workflowActivityHub
-						.registerWorkflowActivityPublisher()
-						.publishSnapshot({ availability: "ready", roots: [] });
+
 					return {
 						loader: createTestResourceLoader({ extensionsResult: candidate }),
 						activate: () => {},
@@ -374,9 +315,7 @@ if (args.includes("working")) {
 		],
 		fake.dir,
 	);
-	loaded.runtime.workflowActivityHub
-		.registerWorkflowActivityPublisher()
-		.publishSnapshot({ availability: "ready", roots: [] });
+
 	const sessionManager = await SessionManager.create(fake.dir, fake.dir);
 	const [retiring, successor] = [0, 1].map(() => {
 		const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, sessionManager, {} as never);
@@ -510,16 +449,12 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 				],
 				fake.dir,
 			);
-			loaded.runtime.workflowActivityHub
-				.registerWorkflowActivityPublisher()
-				.publishSnapshot({ availability: "ready", roots: [] });
+
 			const resourceLoader = {
 				...createTestResourceLoader({ extensionsResult: loaded }),
 				prepareReload: async () => {
 					const candidate = { ...loaded, runtime: createExtensionRuntime() };
-					candidate.runtime.workflowActivityHub
-						.registerWorkflowActivityPublisher()
-						.publishSnapshot({ availability: "ready", roots: [] });
+
 					return {
 						loader: {
 							...createTestResourceLoader({ extensionsResult: candidate }),

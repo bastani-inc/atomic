@@ -69,7 +69,7 @@ export {
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";
 export { type ParsedSlashCommand, parseSlashCommand } from "./core/slash-commands.js";
 export * from "./core/storage/index.js";
-// Outside the storage barrel: workflow durability setup imports that barrel in every test worker.
+// Process-level storage selection is separate from the storage adapter entry point.
 export {
 	type ProcessStorageChoice,
 	processSharedStorageSelection,
@@ -350,7 +350,6 @@ export {
 	PACKAGE_NAME,
 	setEnvValue,
 	VERSION,
-	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
 } from "./config.js";
 export {
 	AgentRehydrateError,
@@ -841,16 +840,11 @@ export {
 	type SessionProjection,
 	type SessionSummaryEntry,
 	type SessionTreeNode,
-	type SessionWorkflowMetadata,
 	sessionEntryToContextMessages,
 	type ThinkingLevelChangeEntry,
 	type WorktreeRestoreHostWarning,
 	type WorktreeSnapshotEntry,
 } from "./core/session-manager.ts";
-export {
-	WORKFLOW_SESSION_METADATA_ENV,
-	workflowSessionMetadataFromEnv,
-} from "./core/session-manager-classification.ts";
 export {
 	type PublishedChatActivity,
 	retryStatusUpdate,
@@ -1097,7 +1091,6 @@ export {
 	TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES,
 } from "./core/trust-manager.ts";
 export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
-export { parkWorkflowStageForRelease } from "./core/workflow-stage-admission.ts";
 // Workspace bindings (#3109)
 export {
 	type AcquireWorkspaceWriterLeaseOptions,

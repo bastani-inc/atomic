@@ -14,7 +14,7 @@ import {
 const thenProperty = "then";
 const healthyItem: AgentPanelItem = {
 	id: "run:healthy",
-	kind: "workflow",
+	kind: "agent",
 	state: "running",
 	name: "healthy",
 	task: "implement",
