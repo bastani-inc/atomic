@@ -240,4 +240,6 @@ export type ToolInfo = Pick<
 	| "annotations"
 > & {
 	sourceInfo: SourceInfo;
+	/** A `-name` modifier explicitly removed this tool from the defaults; not a hard exclusion. */
+	explicitDefaultOptOut?: true;
 };

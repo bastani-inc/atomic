@@ -82,8 +82,7 @@ export interface CreateAgentSessionOptions {
 	 *
 	 * When omitted, Atomic uses the resolved `defaultTools` setting for the initial
 	 * built-in selection when configured. Otherwise it enables the default
-	 * built-in tools (read, bash, edit, write, find, search, ask_user_question,
-	 * todo). Extension/custom tools remain enabled unless `noTools` changes
+	 * built-in tools (including codemode when its extension is loaded). Extension/custom tools remain enabled unless `noTools` changes
 	 * that default. MCP tools stay registered for codemode and tool search unless
 	 * an entry starts with `mcp__`; only matching tools are declared directly.
 	 * `excludedTools` applies afterwards. `noTools: "all"` overrides this selection.

@@ -227,7 +227,7 @@ Atomic exposes `builtin:llama.cpp`, `builtin:codemode`, and `builtin:tool-search
 { "extensions": ["-builtin:codemode"] }
 ```
 
-A trusted project `"+builtin:codemode"` entry can override a global exclusion. Explicit loading also works with `--no-extensions`: `atomic --no-extensions -e builtin:codemode --tools read,codemode`. Loading the resource registers the tool; activating it still requires `defaultTools` or `--tools` because codemode and tool search are inactive by default.
+A trusted project `"+builtin:codemode"` entry can override a global exclusion. Explicit loading also works with `--no-extensions`: `atomic --no-extensions -e builtin:codemode --tools read,codemode`. Loading the resource registers the tool. Codemode is in the default selection; a replacement tool list must name it. Tool search is opt-in.
 
 Codemode and tool search are replaceable: an extension that registers the same tool, command, or flag can take over. Atomic reports the replacement and names its owner. Disable that extension through `atomic config` when you want the built-in implementation instead.
 

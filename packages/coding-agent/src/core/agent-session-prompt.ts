@@ -44,7 +44,7 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { expandSkillCommand, getSkillCatalog } from "./skill-catalog.ts";
-import { parseSlashCommand } from "./slash-commands.js";
+import { isRetiredWorkflowCommand, parseSlashCommand } from "./slash-commands.js";
 import { ToolDetachmentError } from "./tool-detachment-errors.ts";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
@@ -86,7 +86,7 @@ function assistantHasRecoverableOutput(message: AgentMessage): boolean {
 	});
 }
 
-/** Dispatch registered extension slash commands without changing the raw queue pause gate. */
+/** Dispatch immediate slash commands (including removal notices) without changing the raw queue pause gate. */
 export async function tryExecuteSessionSlashCommand(
 	session: Pick<AgentSession, "_tryExecuteExtensionCommand">,
 	text: string,
@@ -274,7 +274,7 @@ function isSessionClosed(error: unknown): boolean {
 function isExtensionCommand(session: AgentSession, text: string): boolean {
 	if (!text.startsWith("/")) return false;
 	const commandName = parseSlashCommand(text).name;
-	return session._extensionRunner?.getCommand(commandName) !== undefined;
+	return isRetiredWorkflowCommand(commandName) || session._extensionRunner?.getCommand(commandName) !== undefined;
 }
 
 /** Extension commands and extension-delivered messages run immediately rather than in submission order. */
@@ -1123,12 +1123,22 @@ async function answerAdmittedQueuedMessage(session: AgentSession): Promise<void>
 }
 
 /**
- * Try to execute an extension command. Returns true if command was found and executed.
+ * Dispatch a removal notice or a registered extension command. Unknown commands remain ordinary prompts.
  */
 
 export async function _tryExecuteExtensionCommand(this: AgentSession, text: string): Promise<boolean> {
 	// Parse command name and args
 	const { name: commandName, args } = parseSlashCommand(text);
+	if (isRetiredWorkflowCommand(commandName)) {
+		const notice = `/${commandName} was removed. Workflows are now skills. Ask Atomic to convert your old workflow files into skills for use with codemode and subagents.`;
+		if (this._extensionRunner.hasUI()) this._extensionRunner.getUIContext().notify(notice, "info");
+		else
+			await this.sendCustomMessage(
+				{ customType: "command-notice", content: notice, display: true },
+				{ triggerTurn: false },
+			);
+		return true;
+	}
 
 	const quitSignal = sessionQuitSignal(this);
 	const command = this._extensionRunner.getCommand(commandName, quitSignal);
@@ -1203,7 +1213,13 @@ async function admittedQueueUserInput(
 ): Promise<QueuedInputDisposition> {
 	const lifetime = sessionLifetime(session);
 	// Literal text is never a command, so it is never refused for looking like one.
-	if (expandPromptTemplates && text.startsWith("/")) session._throwIfExtensionCommand(text);
+	if (expandPromptTemplates && text.startsWith("/")) {
+		if (isRetiredWorkflowCommand(parseSlashCommand(text).name)) {
+			await session._tryExecuteExtensionCommand(text);
+			return "handled";
+		}
+		session._throwIfExtensionCommand(text);
+	}
 	const admission =
 		source === "extension" ? UNORDERED_ADMISSION : reserveQueuedInputAdmission(session, behavior, lifetime);
 	const typed = text;
