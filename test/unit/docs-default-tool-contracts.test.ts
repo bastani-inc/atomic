@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Value } from "typebox/value";
 import { test } from "vitest";
 import { createBashTool } from "../../packages/coding-agent/src/core/tools/bash.js";
-import { getDefaultToolNames } from "../../packages/coding-agent/src/core/tools/index.js";
+import { defaultToolSelectionFor } from "../../packages/coding-agent/src/core/tools/index.js";
 import { readText } from "../helpers/runtime.js";
 
 const docsRoot = new URL("../../packages/coding-agent/docs/", import.meta.url);
@@ -11,7 +11,7 @@ const readDoc = (path: string) => readText(fileURLToPath(new URL(path, docsRoot)
 
 function assertInventory(text: string, powerShellAvailable: boolean) {
 	const names = [...text.matchAll(/`([a-z_]+)`/g)].map((match) => match[1]);
-	const expected = getDefaultToolNames({ powerShellAvailable });
+	const expected = defaultToolSelectionFor(powerShellAvailable);
 	assert.deepEqual(names.filter((name) => name !== "powershell" || powerShellAvailable).sort(), [...expected].sort());
 	assert.match(text, /native Windows.*when a PowerShell executable is available/);
 }

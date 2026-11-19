@@ -23,7 +23,7 @@ This page shows minimal and full `models.json` examples you can copy. [Models Co
 
 ## Use classifier models
 
-Classifier models answer typed questions about JSON state instead of chatting. They do not appear in `/model`. Enable [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")`, and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
+Classifier models answer typed questions about JSON state instead of chatting. They do not appear in `/model`. In [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")`, and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
 
 GitHub Copilot offers the text-only `github-copilot/microsoft-decision-1` classifier through its System One endpoint. It uses GitHub Copilot OAuth or `COPILOT_GITHUB_TOKEN`, with a 32,768-token context window.
 

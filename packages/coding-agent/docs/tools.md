@@ -22,13 +22,13 @@ If a model finishes a tool call with malformed JSON arguments, Atomic rejects th
 
 ## `codemode`
 
-Codemode lets the model compose permitted tool calls in JavaScript and return only the useful output. It is shipped but inactive by default. Enable it alongside Atomic's defaults in `~/.atomic/agent/settings.json` or project `.atomic/settings.json`:
+Codemode lets the model compose permitted tool calls in JavaScript and return only the useful output. It is active by default. Its tool description can add to the model's prompt; `codemode.inlineBudget` bounds the inline tool declarations (default: 3000 estimated tokens). To remove it from the default set, add this to `~/.atomic/agent/settings.json` or project `.atomic/settings.json`:
 
 ```json
-{ "defaultTools": ["+codemode"] }
+{ "defaultTools": ["-codemode"] }
 ```
 
-For one invocation, use `atomic --tools +codemode` to keep the defaults and add codemode. Plain-name lists remain replacement allowlists, for example `atomic --tools read,search,find,codemode`; include every tool you want available, including `intercom` when needed. `codemode({ code: "..." })` accepts top-level `await` and `return`, for example:
+For one invocation, use `atomic --tools -codemode`. An explicit tool list must name `codemode` to select it, for example `atomic --tools read,search,find,codemode`; `--tools` allowlists must include every tool you want available. MCP servers with codemode exposure can still activate it if a `defaultTools` list merely omits it, but not after an explicit `-codemode`. `codemode({ code: "..." })` accepts top-level `await` and `return`, for example:
 
 ```js
 const files = await Promise.all([

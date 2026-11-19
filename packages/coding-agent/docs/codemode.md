@@ -5,7 +5,7 @@ description: "The codemode script reference: globals, tool calls, stored values,
 
 # Codemode
 
-The `codemode` tool lets the model write a JavaScript script that calls Atomic's other tools and runs non-LLM models, such as classifiers and image models. Only the script's output reaches the model, so a script can run calls in parallel and filter large results before the model sees them. To turn it on, see [`codemode` in Built-in tools](/tools#codemode). The sandbox is the [`@bastani/atomic-codemode`](/libraries/codemode) library, which you can also use in your own apps.
+The `codemode` tool lets the model write a JavaScript script that calls Atomic's other tools and runs non-LLM models, such as classifiers and image models. Only the script's output reaches the model, so a script can run calls in parallel and filter large results before the model sees them. It is active by default; to change that selection, see [`codemode` in Built-in tools](/tools#codemode). The sandbox is the [`@bastani/atomic-codemode`](/libraries/codemode) library, which you can also use in your own apps.
 
 ## Scripts
 
@@ -60,7 +60,7 @@ While `codemode` is active, `codemode.mode` in [settings](/settings#tools) decid
 
 Tools without script access, such as `ask_user_question`, are not in `tools` or `ALL_TOOLS`, and `searchTools()` never ranks them as matches. They cannot be called from inside a `codemode` script; when one is needed and available in the session, the model calls that separate top-level tool directly instead of trying to reach it through `codemode`, so a missing entry in `tools` does not mean the tool is unavailable. While such a tool is active, `searchTools()` and `describeTool()` answer its exact name, such as `describeTool("ask_user_question")`, with a hint to call it directly as a top-level tool, not from a script. The hint does not make the tool callable from scripts.
 
-Some model-only tools let scripts use part of them. `tools.subagent({ agent, task })` or `tools.subagent({ tasks })` returns task IDs at admission. Its children keep running if the script ends or fails; use `status`, a bounded `wait`, or the parent session's completion notices to follow them. Scripts can also pause, quit or resume this session's children and inspect agent definitions and the model catalog. See [Subagents from codemode scripts](/subagents#from-codemode-scripts).
+Some model-only tools let scripts use part of them. `tools.subagent({ agent, task })` or `tools.subagent({ tasks })` returns task IDs at admission. Use `status`, a bounded `wait`, or the parent session's completion notices to follow its children. The script's deadline cancels any in-progress wait, not the child; admitted children also keep running if the script returns or throws. Scripts can also pause, quit or resume this session's children and inspect agent definitions and the model catalog. See [Subagents from codemode scripts](/subagents#from-codemode-scripts).
 
 `intercom` is in `tools` with `list`, `status`, `pending`, and `send` to an exact target, each resolving to a structured value; its other actions, and sends to globs or `subagents:` targets, fail with a message to call the tool directly. See [Intercom from codemode scripts](/intercom/reference#from-codemode-scripts).
 
