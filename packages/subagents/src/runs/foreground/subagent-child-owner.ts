@@ -15,11 +15,14 @@ interface HostWriter {
 }
 const acquireWriter = Symbol.for("atomic.subagents/acquire-child-record-writer@1");
 type BuiltinOwnerAPI = ChildOwnerAPI & { [acquireWriter]?: (ownerId: string) => HostWriter };
+// A closing workflow stage saves through its store once its session is given up, so that refusal is not a failure.
+const appendUnlessClosed = Symbol.for("@bastani/subagents/child-record-append-unless-closed@1");
+type OwnerWriter = Writer & { readonly [appendUnlessClosed]?: Writer["appendEntry"] };
 interface OwnerBinding {
 	readonly sessionId: string;
 	current?: { readonly pi: ChildOwnerAPI; readonly ctx: ExtensionContext; readonly hostWriter?: HostWriter };
 	fallback?: HostWriter["save"];
-	readonly writer: Writer;
+	readonly writer: OwnerWriter;
 }
 
 // Reload keeps the session manager even when it reevaluates every module in the extension.
@@ -31,25 +34,36 @@ processState[KEY] ??= { owners: new WeakMap(), apis: new WeakMap() };
 const bindings = processState[KEY];
 
 function createOwnerBinding(sessionId: string): OwnerBinding {
+	const append = async (type: string, record: unknown, closedHandled: boolean): Promise<void> => {
+		const active = binding.current;
+		if (active && active.hostWriter?.writable() !== false) return active.pi.appendEntry(type, record);
+		try {
+			const refusal = `No writable owner for subagent-child record in session ${sessionId}.`;
+			if (type !== "subagent-child" || !record || typeof record !== "object") throw new Error(refusal);
+			// No generation and no host writer: the owner gave its session up, refused as its closed API refuses it.
+			if (!binding.fallback) throw Object.assign(new Error(refusal), { code: "SessionClosed" });
+			// During reload use the same manager and mutation queue, never a second writer.
+			await binding.fallback(record);
+		} catch (error) {
+			if (!closedHandled || (error as { code?: unknown }).code !== "SessionClosed")
+				console.error("Failed to save a subagent-child record through its owner:", error);
+			throw error;
+		}
+	};
 	const binding: OwnerBinding = {
 		sessionId,
 		writer: {
-			async appendEntry(type, record) {
-				const active = binding.current;
-				if (active && active.hostWriter?.writable() !== false) return active.pi.appendEntry(type, record);
-				try {
-					if (!binding.fallback || type !== "subagent-child" || !record || typeof record !== "object")
-						throw new Error(`No writable owner for subagent-child record in session ${sessionId}.`);
-					// During reload use the same manager and mutation queue, never a second writer.
-					await binding.fallback(record);
-				} catch (error) {
-					console.error("Failed to save a subagent-child record through its owner:", error);
-					throw error;
-				}
-			},
+			appendEntry: (type, record) => append(type, record, false),
+			[appendUnlessClosed]: (type, record) => append(type, record, true),
 		},
 	};
 	return binding;
+}
+
+/** The writer a closing workflow stage saves through: a session its owner gave up is the stage's to handle. */
+export function subagentChildStageCloseWriter(pi: Writer): Writer {
+	const append = (pi as OwnerWriter)[appendUnlessClosed];
+	return append ? { appendEntry: append } : pi;
 }
 
 /** Publish at commit: neither an uncommitted candidate nor cleanup of its predecessor owns pending work. */

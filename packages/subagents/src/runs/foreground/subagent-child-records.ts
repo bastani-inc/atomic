@@ -32,7 +32,7 @@ import {
 	unsavedSubagentChildRecordsOf,
 } from "./subagent-child-card-state.js";
 
-import { subagentChildOwnerWriter } from "./subagent-child-owner.js";
+import { subagentChildOwnerWriter, subagentChildStageCloseWriter } from "./subagent-child-owner.js";
 
 export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE, SUBAGENT_CHILD_RELEASED_STATUS };
 
@@ -614,7 +614,7 @@ function saveStageClosed(
 	const sessionId = full.owner.sessionId;
 	void inOrder(sessionId, async () => {
 		try {
-			await appendObserved(stage.pi, full);
+			await appendObserved(subagentChildStageCloseWriter(stage.pi), full);
 		} catch (error) {
 			if (!refusedByGivenUpSession(error as Error)) throw error;
 			const stored = await SessionManager.open(stage.sessionManager.getSessionStore(), sessionId, undefined, {

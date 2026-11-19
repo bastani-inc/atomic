@@ -963,8 +963,11 @@ export class SessionManager {
 			manager.runMutation(async () => {
 				if (typeof data?.childId !== "string" || data.owner?.sessionId !== ownerId)
 					throw new Error("Cannot save a subagent-child record belonging to another owner.");
-				if (manager.sessionId !== ownerId || !live() || manager.deletedFromStore)
-					throw new Error(`Cannot save subagent-child record: session ${ownerId} no longer owns its writer.`);
+				const refusal = `Cannot save subagent-child record: session ${ownerId} no longer owns its writer.`;
+				// A session its owner gave up refuses the record as its closed extension API does.
+				if (manager.sessionId !== ownerId || !live())
+					throw Object.assign(new Error(refusal), { code: "SessionClosed" });
+				if (manager.deletedFromStore) throw new Error(refusal);
 				await manager.appendCustomEntryAtLeaf("subagent-child", data);
 			});
 	}
