@@ -156,7 +156,7 @@ function isVerbatimCompaction(entry: SessionEntry): entry is CompactionEntry {
 	);
 }
 
-function completionIdOf(entry: SessionEntry): string | undefined {
+export function completionIdOf(entry: SessionEntry): string | undefined {
 	if (entry.type !== "custom") return undefined;
 	const completionId = (entry.data as { completionId?: unknown } | undefined)?.completionId;
 	return typeof completionId === "string" ? completionId : undefined;
@@ -815,7 +815,7 @@ export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.lea
 }
 
 /** The resume fold appends these pairs in acknowledgement sequence order. */
-function intentForAcknowledgement(index: SessionResumeIndex, ack: number): number | undefined {
+export function intentForAcknowledgement(index: SessionResumeIndex, ack: number): number | undefined {
 	let low = 0;
 	let high = index.acks.length - 1;
 	while (low <= high) {

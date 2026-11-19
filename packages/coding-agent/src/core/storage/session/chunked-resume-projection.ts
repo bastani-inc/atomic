@@ -299,7 +299,7 @@ export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uin
 					coveredThroughEntryId: true,
 					targetId: true,
 					label: "truth",
-					data: { hash: "hash" },
+					data: { hash: "hash", completionId: "op" },
 					id: true,
 					parentId: true,
 					timestamp: true,
@@ -344,6 +344,11 @@ export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uin
 		...link,
 		customType: typeof e.customType === "string" ? e.customType : undefined,
 		hash: e.customType === "atomic.tool-output" && typeof hash === "string" ? hash : undefined,
+		completionId:
+			(e.customType === "task-completion-intent" || e.customType === "task-completion-ack") &&
+			typeof object(e.data).completionId === "string"
+				? String(object(e.data).completionId)
+				: undefined,
 	};
 }
 

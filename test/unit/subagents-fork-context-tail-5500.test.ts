@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { test, vi } from "vitest";
+import { convertToLlm } from "../../packages/coding-agent/src/core/messages.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { pendingTaskCompletionIntents } from "../../packages/coding-agent/src/core/tasks/completion.js";
+import { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import { countingDatabase } from "../helpers/counting-database.js";
 
@@ -304,6 +309,95 @@ test("a fork reads saved JSONL labels without reparsing retired messages (#5500)
 		await rm(dir, { recursive: true, force: true, maxRetries: 10 });
 	}
 });
+
+for (const setup of ["current", "rebranched", "no-acknowledgement", "nonmatching", "sibling", "ordinary"] as const)
+	test(`a ${setup} fork retains only the acknowledged stop evidence its legacy card needs (#5500, #5690)`, async () => {
+		initTheme("dark");
+		const db = await openNodeSqliteDatabase(":memory:"),
+			store = await SqlSessionStore.open(db);
+		try {
+			const parent = await SessionManager.create(store, process.cwd());
+			const first = await parent.appendMessage({ role: "user", content: "retired", timestamp: 1 });
+			const data = {
+				taskKind: "agent",
+				taskId: "task-1",
+				ownerId: "owner-1-0",
+				terminalSequence: "7",
+				result: { kind: "cancelled", cause: "execution-timeout" },
+			};
+			await parent.appendCustomEntry("task-completion-intent", { ...data, completionId: "other" });
+			await parent.appendCustomEntry("task-completion-ack", { completionId: "other" });
+			const receipt = await parent.appendCustomEntry("task-completion-intent", {
+				...data,
+				completionId: "matching",
+				...(setup === "nonmatching" ? { taskId: "another-task" } : {}),
+			});
+			if (setup === "sibling") await parent.branch(first);
+			await parent.appendCompaction("cleared", null, 300, cleared);
+			const title = "Subagent docs worker timed out: quit · paused, awaiting resume: check the queue";
+			await parent.appendCustomMessageEntry(
+				"task-completion",
+				title,
+				true,
+				{
+					notification: {
+						status: "cancelled",
+						preview: "",
+						taskId: "task-1",
+						title,
+						...(setup === "ordinary" ? { agentName: "docs worker" } : {}),
+					},
+				},
+				undefined,
+				undefined,
+				"matching",
+			);
+			if (setup !== "no-acknowledgement")
+				await parent.appendCustomEntry("task-completion-ack", { completionId: "matching" });
+			await parent.appendMessage({ role: "user", content: "current", timestamp: 2 });
+			const expected = JSON.stringify(convertToLlm(parent.buildSessionContext().messages));
+			const launch = createForkContextResolver(parent, "fork");
+			if (setup === "rebranched") {
+				await parent.branch(first);
+				for (let i = 0; i < 2; i++)
+					await parent.appendMessage({ role: "user", content: `side ${i}`, timestamp: 3 + i });
+			}
+			const child = await launch.sessionManagerForIndex(0);
+			assert.ok(child);
+			const evidence = setup === "current" || setup === "rebranched";
+			for (const manager of [
+				child,
+				await SessionManager.open(store, child.getSessionId()),
+				await SessionManager.open(store, child.getSessionId(), undefined, { history: "tail" }),
+			]) {
+				assert.deepEqual(
+					pendingTaskCompletionIntents(manager),
+					[],
+					"reopened evidence must never enter delivery recovery",
+				);
+				const messages = manager.buildSessionContext().messages;
+				assert.equal(JSON.stringify(convertToLlm(messages)), expected);
+				const notice = messages.find((m) => m.role === "custom" && m.customType === "task-completion");
+				assert.ok(notice?.role === "custom");
+				const card = TaskCompletionMessage.fromMessage(notice, false);
+				assert.ok(card);
+				assert.equal(
+					stripVTControlCharacters(card.render(120)[0]!).trim(),
+					evidence || setup === "ordinary"
+						? "◼ docs worker stopped"
+						: "⏸ docs worker timed out: quit · awaiting resume",
+				);
+			}
+			const raw = (await store.load(child.getSessionId())).entries;
+			assert.deepEqual(
+				raw.filter((e) => e.type === "custom" && e.customType === "task-completion-intent").map((e) => e.id),
+				evidence ? [receipt] : [],
+			);
+		} finally {
+			await store.close();
+			await db.close();
+		}
+	});
 
 test("a mentioned pre-clear tool output keeps the original branch and opaque receipt bytes (#5500)", async () => {
 	const store = new MemorySessionStore();

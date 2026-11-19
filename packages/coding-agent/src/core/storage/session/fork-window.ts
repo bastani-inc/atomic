@@ -1,7 +1,19 @@
 import { convertToLlm, VERBATIM_COMPACTION_PREFIX, verbatimRecallHint } from "../../messages.ts";
 import { buildSessionProjection, getBranchPath } from "../../session-manager-history.ts";
 import type { LabelEntry, ModelChangeEntry, SessionEntry } from "../../session-manager-types.ts";
-import { branchRanges, isBranchCustomState, latestCompactionOf, type SessionResumeIndex } from "./session-resume.js";
+import {
+	type LegacyCompletionTarget,
+	legacyCompletionTarget,
+	resolvesCompletionHeader,
+} from "../../tasks/reopened-completion.js";
+import {
+	branchRanges,
+	completionIdOf,
+	intentForAcknowledgement,
+	isBranchCustomState,
+	latestCompactionOf,
+	type SessionResumeIndex,
+} from "./session-resume.js";
 import type { SessionForkWindow, SessionRecordHeader, SessionSnapshot, SessionStoredEntry } from "./types.js";
 
 export interface ForkMetadata {
@@ -12,6 +24,7 @@ export interface ForkMetadata {
 	readonly boundary?: { first: string | null; covered?: string };
 	readonly customType?: string;
 	readonly hash?: string;
+	readonly completionId?: string;
 	readonly assistantModel?: ModelChangeEntry;
 	readonly label?: LabelEntry;
 	readonly labelTarget?: string;
@@ -38,6 +51,9 @@ export function forkMetadata(seq: number, entry: SessionEntry): ForkMetadata {
 			type: entry.type,
 			...link,
 			customType: entry.customType,
+			...(entry.customType === "task-completion-intent" || entry.customType === "task-completion-ack"
+				? { completionId: completionIdOf(entry) }
+				: {}),
 			...(entry.customType === "atomic.tool-output" && typeof hash === "string" ? { hash } : {}),
 		};
 	}
@@ -122,6 +138,8 @@ export async function locateFork(
 		covered = -1;
 	const jumps: Array<readonly [number, number, number]> = [];
 	const states: number[] = [];
+	const waitingAcks = new Map<string, number>(),
+		acks: Array<readonly [number, number]> = [];
 	let labels = false,
 		bindings = false;
 	let nameSeq: number | undefined, summarySeq: number | null | undefined;
@@ -131,7 +149,25 @@ export async function locateFork(
 		for (let i = page.length - 1; i >= 0; i--) {
 			const m = page[i]!;
 			if (unindexed && m.type === "label") labels = true;
-			if (next === null || m.id !== next) continue;
+			const ancestor = next !== null && m.id === next;
+			// Reconstruct only links for acknowledgements on the selected window. An intervening sibling
+			// intent or acknowledgement consumes the association; it never becomes the child's evidence.
+			if (unindexed && m.completionId !== undefined) {
+				if (m.customType === "task-completion-ack") {
+					const inWindow =
+						!point ||
+						(point.boundary?.first
+							? first < 0
+							: point.boundary?.covered !== undefined && covered < 0 && point.boundary.covered !== m.id);
+					if (ancestor && inWindow) waitingAcks.set(m.completionId, m.seq);
+					else waitingAcks.delete(m.completionId);
+				} else if (m.customType === "task-completion-intent") {
+					const ack = waitingAcks.get(m.completionId);
+					if (ancestor && ack !== undefined) acks.push([m.seq, ack]);
+					waitingAcks.delete(m.completionId);
+				}
+			}
+			if (!ancestor) continue;
 			if (nameSeq === undefined && m.type === "session_info") nameSeq = m.seq;
 			if (summarySeq === undefined && (m.type === "session_summary" || m.type === "branch_summary"))
 				summarySeq = m.type === "branch_summary" ? null : m.seq;
@@ -170,6 +206,7 @@ export async function locateFork(
 			jumps: jumps.reverse(),
 			compactions,
 			state,
+			acks: unindexed ? acks.sort((a, b) => a[1] - b[1]) : index.acks,
 			nameSeq,
 			summarySeq: summarySeq ?? undefined,
 		},
@@ -181,6 +218,50 @@ export function fullForkWindow(snapshot: SessionSnapshot, entryId: string): Sess
 	const path = getBranchPath(entryId, new Map(snapshot.entries.map((entry) => [entry.id, entry])));
 	if (!path.length) return undefined;
 	return { ...snapshot, entries: path, labels: snapshot.entries.filter((e): e is LabelEntry => e.type === "label") };
+}
+
+/** The retained acknowledgement makes this one older row inert on both live and tail reopens. */
+async function earlierStopEvidence(
+	index: SessionResumeIndex,
+	rows: readonly SessionStoredEntry[],
+	before: (seq: number) => boolean,
+	readMany: (seqs: readonly number[]) => Promise<readonly SessionStoredEntry[]>,
+): Promise<SessionStoredEntry[]> {
+	if (!index.acks.length) return [];
+	const cards = new Map<string, Array<{ entry: SessionEntry; target: LegacyCompletionTarget }>>();
+	for (const { entry } of rows) {
+		const target = legacyCompletionTarget(entry);
+		if (!target) continue;
+		const group = cards.get(target.id) ?? [];
+		group.push({ entry, target });
+		cards.set(target.id, group);
+	}
+	if (!cards.size) return [];
+	const candidates = new Map<string, number | null>();
+	for (const { entry, seq } of rows) {
+		const id = completionIdOf(entry);
+		if (!id || !cards.has(id) || entry.type !== "custom") continue;
+		if (entry.customType === "task-completion-intent") {
+			cards.delete(id);
+			candidates.delete(id);
+		} else if (entry.customType === "task-completion-ack") {
+			const intent = intentForAcknowledgement(index, seq);
+			if (intent !== undefined && before(intent))
+				candidates.set(id, candidates.has(id) && candidates.get(id) !== intent ? null : intent);
+		}
+	}
+	const seqs = [...candidates.values()].filter((seq): seq is number => seq !== null);
+	if (!seqs.length) return [];
+	return (await readMany(seqs)).filter(({ entry, seq }) => {
+		const id = completionIdOf(entry);
+		return (
+			entry.type === "custom" &&
+			entry.customType === "task-completion-intent" &&
+			!!id &&
+			candidates.get(id) === seq &&
+			cards.get(id)?.some((c) => resolvesCompletionHeader(c.entry, c.target, entry.data)) === true
+		);
+	});
 }
 
 /** Read from a single store snapshot. The index supplies ancestry even when an older branch was selected. */
@@ -267,6 +348,7 @@ export async function indexedForkWindow(
 			}
 		}
 		if (!archived) {
+			for (const row of await earlierStopEvidence(index, rows, onEarlierBranch, readMany)) rows.push(row);
 			if (nameSeq) keep.add(nameSeq);
 			if (summarySeq) keep.add(summarySeq);
 			// The branch-state index contains tool policies, codemode writes, snapshots and explicit thinking/model changes.
