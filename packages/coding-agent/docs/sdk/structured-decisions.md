@@ -5,7 +5,7 @@ description: Make a schema-validated structured decision without starting an age
 
 # Structured decisions
 
-Atomic has one decision service. [`decide()`](#decide) asks the user's configured [`decisionModel`](/settings#decisionmodel) typed questions and returns typed answers with probabilities. Workflow stage predictions and [readiness after a steer](/workflows/operations#readiness-after-a-steer) decide through it. The `structured_output` tool starts on the same decision model, resolved the same way, and its failures there are `DecisionError`s. `generateStructuredOutput()` from `@bastani/atomic` makes one schema-validated decision on the models the caller names, through the same engine. None of them starts a child agent, executes the caller's other tools, authorizes an action, or changes the selected chat model.
+Atomic has one decision service. [`decide()`](#decide) asks the user's configured [`decisionModel`](/settings#decisionmodel) typed questions and returns typed answers with probabilities. The `structured_output` tool starts on the same decision model, resolved the same way, and its failures there are `DecisionError`s. `generateStructuredOutput()` from `@bastani/atomic` makes one schema-validated decision on the models the caller names, through the same engine. None of them starts a child agent, executes the caller's other tools, authorizes an action, or changes the selected chat model.
 
 ## decide
 
@@ -72,7 +72,7 @@ Legacy `routerModel` settings migrate to `decisionModel` automatically; they do 
 ## Where the decision model decides
 
 - **The `structured_output` tool** without its own `model` starts on `decisionModel`, resolved as `decide()` resolves it: a classifier answers when the result schema is a finite Choice, and otherwise the call's `fallbackModels` and then the current chat model answer. An unregistered or invalid `decisionModel` rejects with `DecisionModelUnavailableError` or `DecisionConfigError`, and a call that no candidate answers rejects with `DecisionOutputError` or `DecisionProviderError`.
-- **Readiness after a steer** asks an advance/stay Choice and a yes/no companion; see [Readiness after a steer](/workflows/operations#readiness-after-a-steer).
+- **Readiness after a steer** asks an advance/stay Choice and a yes/no companion.
 - **`generateStructuredOutput()`** uses only the models it names and the current chat model; pass `settings` to start it on `decisionModel` as the tool does.
 
 ## Select the inference model

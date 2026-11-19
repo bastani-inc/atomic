@@ -402,5 +402,6 @@ Moved to [Intercom operations](/intercom/operations#limitations).
 ## Related Docs
 
 - [Subagents](/subagents) for delegated child runs, supervisor coordination, and result delivery.
+- [Orchestration](/orchestration) for multi-step tasks and child completion notices.
 - [Skills](/skills) for reusable instructions like `/skill:intercom`.
 - [Usage](/usage) for environment variables and the bundled-extension overview.
