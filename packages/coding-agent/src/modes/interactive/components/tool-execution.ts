@@ -35,7 +35,7 @@ import {
 	ToolBlockRecords,
 	type ToolBlockStatus,
 	type ToolGroupRole,
-	TRANSCRIPT_TITLE_ROWS,
+	type TranscriptTitleLayout,
 	transcriptRenderContext,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
@@ -90,7 +90,8 @@ export class ToolExecutionComponent extends Container {
 	private elapsedMs: number | undefined;
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
-	private rendererState: Record<string | symbol, unknown> = {};
+	private rendererState: Record<string, unknown> = {};
+	private transcriptLayout?: TranscriptTitleLayout;
 	private imageComponents: Image[] = [];
 	private imageSpacers: Spacer[] = [];
 	private toolName: string;
@@ -182,31 +183,35 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
-		return transcriptRenderContext({
-			args: this.args,
-			toolCallId: this.toolCallId,
-			invalidate: () => {
-				if (this.disposed) return;
-				this.invalidate();
-				this.ui.requestRender();
+		this.transcriptLayout ??= {};
+		return transcriptRenderContext(
+			{
+				args: this.args,
+				toolCallId: this.toolCallId,
+				invalidate: () => {
+					if (this.disposed) return;
+					this.invalidate();
+					this.ui.requestRender();
+				},
+				lastComponent,
+				state: this.rendererState,
+				cwd: this.cwd,
+				executionStarted: this.executionStarted,
+				argsComplete: this.argsComplete,
+				isPartial: this.isPartial,
+				expanded: this.expanded,
+				showImages: this.showImages,
+				isError: this.result?.isError ?? false,
+				durationMs: this.isPartial ? undefined : (this.result?.durationMs ?? this.elapsedMs),
+				outputPad: this.outputPad,
+				getTaskRecord: this.taskRecordReader,
+				getElapsedMs: () => this.currentElapsedMs(),
+				getToolDefinition: this.toolRendererReader,
+				keyText,
+				keyHint,
 			},
-			lastComponent,
-			state: this.rendererState,
-			cwd: this.cwd,
-			executionStarted: this.executionStarted,
-			argsComplete: this.argsComplete,
-			isPartial: this.isPartial,
-			expanded: this.expanded,
-			showImages: this.showImages,
-			isError: this.result?.isError ?? false,
-			durationMs: this.isPartial ? undefined : (this.result?.durationMs ?? this.elapsedMs),
-			outputPad: this.outputPad,
-			getTaskRecord: this.taskRecordReader,
-			getElapsedMs: () => this.currentElapsedMs(),
-			getToolDefinition: this.toolRendererReader,
-			keyText,
-			keyHint,
-		});
+			this.transcriptLayout,
+		);
 	}
 
 	private createCallFallback(): Component {
@@ -365,6 +370,10 @@ export class ToolExecutionComponent extends Container {
 		this.clearRendererStateTimer(SUBAGENT_RESULT_ANIMATION_TIMER_KEY, SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY);
 		this.clearRendererStateTimer("interval");
 		this.rendererState = {};
+		if (this.transcriptLayout) {
+			this.transcriptLayout.title = undefined;
+			this.transcriptLayout.cache = undefined;
+		}
 		// Drop the last drawn child as well as today's children: Container keeps the former for mouse hit testing.
 		this.contentContainer?.clear();
 		this.contentContainer = undefined;
@@ -524,9 +533,8 @@ export class ToolExecutionComponent extends Container {
 			}
 		} else call = this.createCallFallback();
 		// A decorating renderer may delegate to the stock call and then replace its component entirely.
-		const titleRows = this.rendererState[TRANSCRIPT_TITLE_ROWS] === call;
-		if (!titleRows && this.rendererState[TRANSCRIPT_TITLE_ROWS] !== undefined)
-			delete this.rendererState[TRANSCRIPT_TITLE_ROWS];
+		const titleRows = this.transcriptLayout?.title === call;
+		if (!titleRows && this.transcriptLayout) this.transcriptLayout.title = undefined;
 		let details: Component | undefined;
 		if (canonicalResult && presentation) {
 			details = presentation.details;

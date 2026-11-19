@@ -12,13 +12,13 @@ import { getTextOutput, replaceTabs, str } from "../../core/tools/render-utils.t
 import { keyHintIfBound } from "../../modes/interactive/components/keybinding-hints.js";
 import {
 	collapseToolBlockLines,
-	isTranscriptRenderContext,
+	getTranscriptTitleLayout,
 	TOOL_BLOCK_LIMITS,
 	ToolBlock,
 	ToolBlockGroup,
 	ToolBlockRecords,
 	type ToolBlockTitleRows,
-	TRANSCRIPT_TITLE_ROWS,
+	type TranscriptTitleLayout,
 } from "../../modes/interactive/components/tool-block.ts";
 import {
 	builtinToolBlockPresentation,
@@ -35,12 +35,14 @@ import {
 } from "../../utils/terminal-text.ts";
 import type { CodemodeNestedCall, CodemodeToolDetails, codemodeSchema } from "./tool.js";
 
-const SCRIPT_LAYOUT = Symbol("codemode layout");
 interface CodemodeRenderState {
 	scriptHighlighter?: CodeHighlighter;
-	[SCRIPT_LAYOUT]?: { source: ScriptSource; folded?: CodemodeScriptTitle; open?: CodemodeScriptTitle };
-	[TRANSCRIPT_TITLE_ROWS]?: CodemodeScriptTitle;
 }
+type ScriptLayout = TranscriptTitleLayout<{
+	source: ScriptSource;
+	folded?: CodemodeScriptTitle;
+	open?: CodemodeScriptTitle;
+}>;
 
 const SCRIPT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n$/;
 const NESTED_CALL_LIMIT = 8;
@@ -334,25 +336,25 @@ export const codemodeRenderers: Pick<
 > = {
 	renderCall(args, theme, context) {
 		const code = str(args?.code);
-		if (!isTranscriptRenderContext(context)) return new CodemodeCall(code, theme);
-		const state = context.state as CodemodeRenderState;
-		if (!state[SCRIPT_LAYOUT] || state[SCRIPT_LAYOUT].source.code !== code)
-			state[SCRIPT_LAYOUT] = { source: new ScriptSource(code) };
-		const layout = state[SCRIPT_LAYOUT];
+		const state = getTranscriptTitleLayout(context) as ScriptLayout | undefined;
+		if (!state) return new CodemodeCall(code, theme);
+		if (!state.cache || state.cache.source.code !== code) state.cache = { source: new ScriptSource(code) };
+		const layout = state.cache;
 		const slot = context.expanded ? "open" : "folded";
 		layout[slot] ??= new CodemodeScriptTitle(layout.source, theme, context.expanded);
 		const title = layout[slot];
-		state[TRANSCRIPT_TITLE_ROWS] = title;
+		state.title = title;
 		return title;
 	},
 	renderResult(result, options, theme, context) {
 		const records: Component[] = [];
 		const code = str(context.args?.code);
 		if (options.expanded && code) {
-			const state = context.state as CodemodeRenderState;
-			const layout = isTranscriptRenderContext(context) ? state[SCRIPT_LAYOUT] : undefined;
+			const transcript = getTranscriptTitleLayout(context) as ScriptLayout | undefined;
+			const layout = transcript?.cache;
 			// Only the returned expanded title for these actual arguments replaces the standard source record.
-			if (!layout?.open || layout.source.code !== code || layout.open !== state[TRANSCRIPT_TITLE_ROWS]) {
+			if (!layout?.open || layout.source.code !== code || layout.open !== transcript?.title) {
+				const state = context.state as CodemodeRenderState;
 				state.scriptHighlighter ??= new CodeHighlighter();
 				records.push(
 					new Text(

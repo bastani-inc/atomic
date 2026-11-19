@@ -38,20 +38,23 @@ export interface ToolBlockTitleRows extends Component {
 	render(width: number, metadataWidth?: number): string[];
 }
 
-/** A renderer opts its returned component into source-row layout. Shared with separately loaded extensions. */
-export const TRANSCRIPT_TITLE_ROWS = Symbol.for("@bastani/atomic:transcript-title-rows");
+/** Private transcript layout, not the public state object that an extension may keep or freeze. */
+export interface TranscriptTitleLayout<Cache = object> {
+	title?: ToolBlockTitleRows;
+	cache?: Cache;
+}
 
 // The host and the builtin tool may use separate module loaders. Recognize actual host contexts by identity,
 // without asking a third-party component or a forwarding extension's older context for a new capability.
-const contextsKey = Symbol.for("@bastani/atomic:transcript-render-contexts");
-const shared = globalThis as typeof globalThis & { [contextsKey]?: WeakSet<object> };
-export function transcriptRenderContext<T extends object>(context: T): T {
-	shared[contextsKey] ??= new WeakSet();
-	shared[contextsKey].add(context);
+const contextsKey = Symbol.for("@bastani/atomic:transcript-title-layouts");
+const shared = globalThis as typeof globalThis & { [contextsKey]?: WeakMap<object, TranscriptTitleLayout> };
+export function transcriptRenderContext<T extends object>(context: T, layout: TranscriptTitleLayout): T {
+	shared[contextsKey] ??= new WeakMap();
+	shared[contextsKey].set(context, layout);
 	return context;
 }
-export function isTranscriptRenderContext(context: object): boolean {
-	return shared[contextsKey]?.has(context) === true;
+export function getTranscriptTitleLayout(context: object): TranscriptTitleLayout | undefined {
+	return shared[contextsKey]?.get(context);
 }
 
 export const TOOL_BLOCK_LIMITS = {

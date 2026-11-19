@@ -341,6 +341,7 @@ test("a stock codemode title leaves a custom result's renderer state alone (#552
 			...codemodeRenderers,
 			renderResult: (_r, _o, _t, ctx) => {
 				const state = ctx.state as { scriptHighlighter?: (value: string) => string };
+				assert.deepEqual(Reflect.ownKeys(state), []);
 				state.scriptHighlighter ??= (value) => `Custom: ${value}`;
 				const text = state.scriptHighlighter("2");
 				return { invalidate() {}, render: () => [text] };
