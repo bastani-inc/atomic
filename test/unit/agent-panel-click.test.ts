@@ -75,7 +75,7 @@ function click(component: MouseComponent, y: number, width: number, height: numb
 
 const plain = (lines: readonly string[]) => lines.map((line) => stripVTControlCharacters(line).trimEnd());
 
-function mountWidget(session: object, inspector?: TaskInspectorUi) {
+function mountWidget(session: object, inspector?: TaskInspectorUi, requestRender = () => {}) {
 	let widget: MouseComponent | undefined;
 	const dispose = bindAgentPanel(
 		session as never,
@@ -83,7 +83,7 @@ function mountWidget(session: object, inspector?: TaskInspectorUi) {
 			setWidget(_key: string, content: unknown) {
 				widget = typeof content === "function" ? (content({} as never, {} as never) as MouseComponent) : undefined;
 			},
-			requestRender() {},
+			requestRender,
 		} as never,
 		undefined,
 		inspector,
@@ -194,7 +194,8 @@ test("a click opens the row that was painted under it, even after the rows chang
 		open: (id) => opened.push(id),
 	});
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	const widget = mountWidget(session, noInspector);
+	let repaint = () => {};
+	const widget = mountWidget(session, noInspector, () => repaint());
 	const painted = plain(widget.render(80));
 	const row = 0;
 	const [top, other] = painted[row]?.includes("run-a") ? ["a", "b"] : ["b", "a"];
@@ -204,8 +205,10 @@ test("a click opens the row that was painted under it, even after the rows chang
 		{ ...workflow(`run:${other}`, `run-${other}`), state: "input", question: "Ship it?" },
 		workflow(`run:${top}`, `run-${top}`),
 	];
+	const refreshed = Promise.withResolvers<void>();
+	repaint = refreshed.resolve;
 	for (const listener of listeners) listener();
-	await new Promise<void>((resolve) => queueMicrotask(resolve));
+	await refreshed.promise;
 
 	click(widget, row, 80, painted.length);
 	assert.deepEqual(opened, [`run:${top}`], "the click opens the row the reader saw");
