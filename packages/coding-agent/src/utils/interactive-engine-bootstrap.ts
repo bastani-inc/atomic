@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { getRuntimeScratchDir } from "../config.js";
 import { getRuntimeScratchDirSync } from "../config-runtime-scratch.ts";
 import type { SessionTrustDecisions } from "../core/project-trust-state.ts";
+import { INTERACTIVE_ENGINE_BOOTSTRAP_FLAG } from "./interactive-engine-flags.ts";
 
 /**
  * Private startup channel for the isolated interactive engine.
@@ -26,13 +27,13 @@ import type { SessionTrustDecisions } from "../core/project-trust-state.ts";
  * writer, which holds an {@link InteractiveEngineBootstrapHandle} for the
  * directory it created, may remove that directory recursively.
  */
-export const INTERACTIVE_ENGINE_BOOTSTRAP_FLAG = "--internal-engine-bootstrap";
+export { INTERACTIVE_ENGINE_BOOTSTRAP_FLAG };
 export const INTERACTIVE_ENGINE_BOOTSTRAP_VERSION = 1;
 /**
  * The only argument of an engine child an interactive host starts before it knows the engine's arguments: the child
  * loads the application, then reads them from its first stdin line (see engine-prewarm.ts).
  */
-export { INTERACTIVE_ENGINE_PREWARM_FLAG } from "./interactive-engine-prewarm-flag.ts";
+export { INTERACTIVE_ENGINE_PREWARM_FLAG } from "./interactive-engine-flags.ts";
 
 export interface InteractiveEngineBootstrap {
 	version: number;

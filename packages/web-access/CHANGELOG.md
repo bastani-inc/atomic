@@ -9,6 +9,8 @@ All notable changes to this project will be documented in this file.
 - On Windows, an aborted or timed-out GitHub clone has its process tree terminated once. Atomic no longer terminates it again when the clone's exit arrives ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 - On Windows, a GitHub clone aborted as it starts, when `gh` or `git` cannot be started, now ends without a clone as an aborted clone does, instead of failing with `kill EINVAL` ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 
+- Temporary browser database copies use the process's private run directory and are removed after the read.
+
 ## [0.9.89] - 2026-11-18
 
 ### Changed

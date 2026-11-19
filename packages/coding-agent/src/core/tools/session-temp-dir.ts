@@ -1,18 +1,10 @@
 /**
  * Owner- and session-scoped temp storage for tool output files.
  *
- * Every file a tool spills to the system temp directory (bash overflow logs,
- * `OutputAccumulator` spill files, and the in-memory-session tool-result fallback)
- * lands under:
- *
- * ```text
- * <tmpdir>/<APP_NAME>-<owner>/<sanitized-session-id>/
- * ```
- *
- * The owner segment keeps accounts in separate trees: a shared multi-user
- * temp directory must never let one account write into or read another
- * account's tree. The session segment makes the tree reapable as a unit by
- * the age-based sweeper in `session-temp-cleanup.ts` once the session is gone.
+ * Bash overflow logs, output accumulator spills and in-memory tool-result files
+ * live under the process's private run directory, in a directory per session.
+ * SDK hosts that explicitly set TMPDIR keep the historical owner/session layout
+ * and retention policy. Never adopt another account's tree in either layout.
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -38,7 +30,12 @@ import {
 	getRuntimeScratchDir,
 	useManagedSessionScratch,
 } from "../../config.js";
-import { getRuntimeScratchDirSync, plannedRuntimeScratchDir, removeRunSession } from "../../config-runtime-scratch.ts";
+import {
+	getRuntimeScratchDirSync,
+	plannedRuntimeScratchDir,
+	preferredRuntimeScratchDir,
+	removeRunSession,
+} from "../../config-runtime-scratch.ts";
 import { createModuleRequire } from "../../utils/module-require.js";
 import { getErrnoCode } from "./errno.ts";
 import {
@@ -569,6 +566,17 @@ export async function ensureAgentScratchParentAsync(cache: string): Promise<stri
 	return ensurePrivateChainAsync(cache, cache, ["tmp", "runs"]);
 }
 
+/** Predictable owner roots only; housekeeping never needs to scan a dense shared temporary directory. */
+export function fallbackRunParents(): string[] {
+	const runtime = process.env.XDG_RUNTIME_DIR;
+	return [
+		resolve(systemTempRootDir(), "runs"),
+		...(process.platform !== "win32" && runtime && isAbsolute(runtime)
+			? [join(runtime, sanitizeTempPathComponent(APP_NAME, "atomic"), "runs")]
+			: []),
+	];
+}
+
 /** Try each private fallback through the actual allocation: a pre-existing parent may still be on a full disk. */
 export function createFallbackRun(prefix: string): string {
 	for (const attempt of privateTempDirAttempts(["runs"], false)) {
@@ -794,12 +802,12 @@ async function ensureWindowsOwnedDirectoryAsync(path: string, options: { backgro
 
 function managedSessionParts(dir: string): string[] | undefined {
 	if (!useManagedSessionScratch()) return undefined;
-	const root = getTempRootDir();
-	return dir === root
-		? ["sessions"]
-		: dir.startsWith(`${root}${sep}`)
-			? ["sessions", ...dir.slice(root.length + 1).split(sep)]
-			: undefined;
+	// A caller may have obtained the preferred path before another operation selected a fallback.
+	for (const root of [getTempRootDir(), join(preferredRuntimeScratchDir(), "sessions")]) {
+		if (dir === root) return ["sessions"];
+		if (dir.startsWith(`${root}${sep}`)) return ["sessions", ...dir.slice(root.length + 1).split(sep)];
+	}
+	return undefined;
 }
 
 export async function ensureTempDirAsync(
@@ -930,7 +938,11 @@ export function setActiveSessionTempId(sessionId: string): string {
 function startPrivateRootVerification(): void {
 	void trackWindowsDirectorySecurityWork(async () => {
 		try {
-			if (useManagedSessionScratch()) return;
+			if (useManagedSessionScratch()) {
+				const run = await getRuntimeScratchDir();
+				await ensurePrivateChainAsync(run, run, ["sessions"]);
+				return;
+			}
 			const ownerRoot = canonicalTempChild(systemTempRootDir(), await baseTempDirsAsync());
 			if (ownerRoot !== undefined) await ensureWindowsOwnedDirectoryAsync(ownerRoot, { background: true });
 		} catch {}

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, readlinkSync, rmSync, type Stats, writeFileSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, type Stats, writeFileSync } from "node:fs";
+import { lstat, mkdir, readdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { getRuntimeScratchCache, reportRuntimeStorageFallback } from "./config.js";
@@ -10,7 +10,23 @@ import {
 	createFallbackRunAsync,
 	ensureAgentScratchParent,
 	ensureAgentScratchParentAsync,
+	fallbackRunParents,
 } from "./core/tools/session-temp-dir.ts";
+
+import { isPathInside } from "./utils/path-inside.ts";
+import { resolvePhysicalPathAsync } from "./utils/physical-path.ts";
+
+/** A snapshot must not create even an empty agent directory in the checkout it is observing. */
+export async function checkoutScratchCache(
+	cache: string,
+	checkout: { readonly root: string; readonly gitDir?: string },
+): Promise<string> {
+	const physical = await realpath(cache)
+		.catch(() => resolvePhysicalPathAsync(cache))
+		.catch(() => undefined);
+	if (physical !== undefined && !isPathInside(checkout.root, physical)) return cache;
+	return getRuntimeScratchCache(join(checkout.gitDir ?? join(checkout.root, ".git"), "atomic-runtime"));
+}
 
 // A shared home can contain runs from other hosts. Only this host can interpret its PIDs.
 function hostPrefix(): string {
@@ -27,8 +43,11 @@ let exitRegistered = false;
 
 /** Path-only resolution lets a session name its spill directory before a tool needs to write. */
 export function plannedRuntimeScratchDir(cache = getRuntimeScratchCache()): string {
+	return directories.get(cache) ?? preferredRuntimeScratchDir(cache);
+}
+export function preferredRuntimeScratchDir(cache = getRuntimeScratchCache()): string {
 	suffix ??= `${runPrefix()}${randomBytes(6).toString("hex")}`;
-	return directories.get(cache) ?? join(cache, "tmp", "runs", suffix);
+	return join(cache, "tmp", "runs", suffix);
 }
 
 /** An unambiguous ESRCH proves that the process is gone; uncertainty preserves its files. */
@@ -58,6 +77,7 @@ export async function sweepRuntimeScratch(): Promise<void> {
 	const primary = join(getRuntimeScratchCache(), "tmp", "runs");
 	const parents = new Set([
 		primary,
+		...fallbackRunParents(),
 		...[...owned.keys()].map((dir) => dirname(dir)).filter((dir) => basename(dir) === "runs"),
 	]);
 	const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -65,7 +85,7 @@ export async function sweepRuntimeScratch(): Promise<void> {
 	const expected = marker(await ownNamespace());
 	for (const parent of parents) {
 		try {
-			if (parent === primary) await assertPrivateDirectoryAsync(dirname(parent));
+			await assertPrivateDirectoryAsync(dirname(parent));
 			await assertPrivateDirectoryAsync(parent);
 			for (const entry of await readdir(parent, { withFileTypes: true })) {
 				if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
@@ -120,9 +140,15 @@ function remember(key: string, dir: string, stat: Stats): string {
 		process.once("exit", cleanOwnScratch);
 		exitRegistered = true;
 	}
+	if (!directories.has(key))
+		setTimeout(() => {
+			void sweepRuntimeScratch().catch(() => {});
+		}, 10_000).unref();
 	owned.set(dir, stat);
-	directories.set(key, dir);
-	return dir;
+	// A synchronous caller can finish while an asynchronous allocation is in flight. Both use the first published tree.
+	const canonical = directories.get(key) ?? dir;
+	directories.set(key, canonical);
+	return canonical;
 }
 
 /** Release only an actual run of this process, never a path that was merely planned. */
@@ -159,8 +185,10 @@ async function createRunDirectory(cache: string): Promise<string> {
 		return remember(cache, path, await lstat(path));
 	};
 	try {
-		dir = plannedRuntimeScratchDir(cache);
+		dir = preferredRuntimeScratchDir(cache);
 		await ensureAgentScratchParentAsync(cache);
+		const alreadyCreated = directories.get(cache);
+		if (alreadyCreated) return alreadyCreated;
 		await mkdir(dir, { mode: 0o700 });
 		return await initialize(dir);
 	} catch {
@@ -191,21 +219,29 @@ export function getRuntimeScratchDirSync(): string {
 		}
 		directories.delete(cache);
 	}
-	let dir: string;
+	const initialize = (dir: string) => {
+		let namespace: string;
+		try {
+			namespace = ownNamespaceSync();
+		} catch {
+			namespace = "unverified";
+		}
+		try {
+			writeFileSync(join(dir, ".gitignore"), marker(namespace), { flag: "wx", mode: 0o600 });
+			return remember(cache, dir, lstatSync(dir));
+		} catch (error) {
+			rmSync(dir, { recursive: true, force: true });
+			throw error;
+		}
+	};
 	try {
-		dir = plannedRuntimeScratchDir(cache);
-		ensureAgentScratchParent(cache);
+		const parent = ensureAgentScratchParent(cache);
+		if (pending.has(cache)) return initialize(mkdtempSync(join(parent, runPrefix())));
+		const dir = preferredRuntimeScratchDir(cache);
 		mkdirSync(dir, { mode: 0o700 });
+		return initialize(dir);
 	} catch {
 		reportRuntimeStorageFallback();
-		dir = createFallbackRun(runPrefix());
+		return initialize(createFallbackRun(runPrefix()));
 	}
-	let namespace: string;
-	try {
-		namespace = ownNamespaceSync();
-	} catch {
-		namespace = "unverified";
-	}
-	writeFileSync(join(dir, ".gitignore"), marker(namespace), { flag: "wx", mode: 0o600 });
-	return remember(cache, dir, lstatSync(dir));
 }

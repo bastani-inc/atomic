@@ -600,9 +600,13 @@ export function getRuntimeScratchCache(agent = getAgentDir()): string {
 }
 
 /** Private scratch shared by the operations of this process, removed on exit. */
-export async function getRuntimeScratchDir(): Promise<string> {
+export async function getRuntimeScratchDir(checkout?: {
+	readonly root: string;
+	readonly gitDir?: string;
+}): Promise<string> {
 	const cache = getRuntimeScratchCache();
-	return (await import("./config-runtime-scratch.ts")).runtimeScratchDirectory(cache);
+	const storage = await import("./config-runtime-scratch.ts");
+	return storage.runtimeScratchDirectory(checkout ? await storage.checkoutScratchCache(cache, checkout) : cache);
 }
 
 const CACHE_GENERATION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -625,15 +629,17 @@ export function getRuntimeCacheDir(kind: "node" | "workflows"): string {
 	const current = join(parent, String(generation));
 	if (!prunedRuntimeCaches.has(current)) {
 		prunedRuntimeCaches.add(current);
-		void readdir(parent, { withFileTypes: true })
-			.then(async (entries) => {
-				for (const entry of entries) {
-					if (entry.isDirectory() && /^\d+$/.test(entry.name) && Number(entry.name) < generation - 1) {
-						await rm(join(parent, entry.name), { recursive: true, force: true }).catch(() => {});
+		setTimeout(() => {
+			void readdir(parent, { withFileTypes: true })
+				.then(async (entries) => {
+					for (const entry of entries) {
+						if (entry.isDirectory() && /^\d+$/.test(entry.name) && Number(entry.name) < generation - 1) {
+							await rm(join(parent, entry.name), { recursive: true, force: true }).catch(() => {});
+						}
 					}
-				}
-			})
-			.catch(() => {});
+				})
+				.catch(() => {});
+		}, 10_000).unref();
 	}
 	return current;
 }

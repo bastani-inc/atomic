@@ -14,7 +14,7 @@ import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecy
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import { enablePersistentCompileCache } from "./utils/compile-cache.ts";
 import { headlessHeapRelaunchArgs, relaunchWithHeap } from "./utils/heap-relaunch.ts";
-import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "./utils/interactive-engine-prewarm-flag.ts";
+import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "./utils/interactive-engine-flags.ts";
 
 installLifecycleTraceFromEnv();
 markLifecycleTiming("process-entry");

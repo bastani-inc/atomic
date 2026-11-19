@@ -13,7 +13,8 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, it } from "vitest";
+import { afterEach, beforeEach, it, vi } from "vitest";
+import { getRuntimeCacheDir } from "../src/config.js";
 
 let root: string;
 let agent: string;
@@ -36,6 +37,24 @@ it("the CLI enables its persistent compile cache without writing to the system t
 	assert.equal(child.status, 0, child.stderr);
 	assert.deepEqual(readdirSync(systemTemp), []);
 	assert.ok(existsSync(join(agent, "cache", "node")));
+});
+
+it("prunes obsolete bytecode generations but keeps the current and previous generations and unrelated files", async () => {
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agent);
+	vi.useFakeTimers();
+	try {
+		vi.setSystemTime(new Date(10 * 30 * 24 * 60 * 60 * 1000));
+		const cache = join(agent, "cache", "node");
+		for (const name of ["8", "9", "10", "unrelated"]) mkdirSync(join(cache, name), { recursive: true });
+		assert.equal(getRuntimeCacheDir("node"), join(cache, "10"));
+		assert.ok(existsSync(join(cache, "8")), "no scan on the startup path");
+		await vi.runOnlyPendingTimersAsync();
+		vi.useRealTimers();
+		await vi.waitFor(() => assert.deepEqual(readdirSync(cache).sort(), ["10", "9", "unrelated"]));
+	} finally {
+		vi.useRealTimers();
+		vi.unstubAllEnvs();
+	}
 });
 
 it("an unusable agent directory preserves both caches and private scratch with one notice", () => {
@@ -116,50 +135,57 @@ it("default tool output follows the process scratch root, even with an unusual s
 	assert.equal(existsSync(child.stdout.trim()), false);
 });
 
-it("startup housekeeping collects old crashed runs but not live, recent or unrecognized directories", () => {
-	const config = new URL("../dist/config.js", import.meta.url).href;
-	const crash = () => {
+it.each([false, true])(
+	"startup collects crashed scratch but preserves live, recent and unrecognized directories (fallback: %s)",
+	(fallback) => {
+		delete env.XDG_RUNTIME_DIR;
+		if (fallback) writeFileSync(agent, "not writable");
+		const config = new URL("../dist/config.js", import.meta.url).href;
+		const crash = () => {
+			const child = spawnSync(
+				process.execPath,
+				[
+					"--input-type=module",
+					"-e",
+					`
+			import { writeSync } from 'node:fs';
+			const { getRuntimeScratchDir } = await import(${JSON.stringify(config)});
+			writeSync(1, await getRuntimeScratchDir());
+			process.reallyExit(23);
+		`,
+				],
+				{ env, encoding: "utf8" },
+			);
+			assert.equal(child.status, 23, child.stderr);
+			return child.stdout;
+		};
+		const abandoned = crash();
+		const recent = crash();
+		// Housekeeping must still find a fallback run after the agent directory becomes writable again.
+		if (fallback) rmSync(agent);
+		const parent = dirname(abandoned);
+		const live = join(parent, `${basename(abandoned).split("-")[0]}-${process.pid}-abc123`);
+		const unrelated = join(parent, "keep-me");
+		mkdirSync(live, { mode: 0o700 });
+		copyFileSync(join(abandoned, ".gitignore"), join(live, ".gitignore"));
+		mkdirSync(unrelated, { mode: 0o700 });
+		const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+		for (const path of [abandoned, live, unrelated]) utimesSync(path, old, old);
+		const cleanup = new URL("../dist/core/tools/session-temp-cleanup.js", import.meta.url).href;
 		const child = spawnSync(
 			process.execPath,
 			[
 				"--input-type=module",
 				"-e",
 				`
-			import { writeSync } from 'node:fs';
-			const { getRuntimeScratchDir } = await import(${JSON.stringify(config)});
-			writeSync(1, await getRuntimeScratchDir());
-			process.reallyExit(23);
-		`,
-			],
-			{ env, encoding: "utf8" },
-		);
-		assert.equal(child.status, 23, child.stderr);
-		return child.stdout;
-	};
-	const abandoned = crash();
-	const recent = crash();
-	const parent = dirname(abandoned);
-	const live = join(parent, `${basename(abandoned).split("-")[0]}-${process.pid}-abc123`);
-	const unrelated = join(parent, "keep-me");
-	mkdirSync(live, { mode: 0o700 });
-	copyFileSync(join(abandoned, ".gitignore"), join(live, ".gitignore"));
-	mkdirSync(unrelated, { mode: 0o700 });
-	const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
-	for (const path of [abandoned, live, unrelated]) utimesSync(path, old, old);
-	const cleanup = new URL("../dist/core/tools/session-temp-cleanup.js", import.meta.url).href;
-	const child = spawnSync(
-		process.execPath,
-		[
-			"--input-type=module",
-			"-e",
-			`
 		const { runSessionTempCleanup } = await import(${JSON.stringify(cleanup)});
 		await runSessionTempCleanup({sessionsRoots: []});
 	`,
-		],
-		{ env, encoding: "utf8" },
-	);
-	assert.equal(child.status, 0, child.stderr);
-	assert.equal(existsSync(abandoned), false);
-	for (const path of [recent, live, unrelated]) assert.ok(existsSync(path), path);
-});
+			],
+			{ env, encoding: "utf8" },
+		);
+		assert.equal(child.status, 0, child.stderr);
+		assert.equal(existsSync(abandoned), false);
+		for (const path of [recent, live, unrelated]) assert.ok(existsSync(path), path);
+	},
+);
