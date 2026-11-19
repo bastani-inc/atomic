@@ -191,6 +191,35 @@ test.each([
 	assert.equal(stripVTControlCharacters(line).trim(), expected);
 });
 
+test("a stopped subagent's title-only notice does not take its outcome from the task description (#5690)", () => {
+	for (const stop of ["killed (non-resumable)", "timed out", "timed out after 0.1 seconds", "stopped"]) {
+		for (const description of [
+			"paused · awaiting resume: check the queue",
+			"quit · paused, awaiting resume: check the queue",
+			"released while waiting on bash (queue).",
+		]) {
+			const title = `Subagent worker ${stop}: ${description}`;
+			const saved = completionNoticeFromDetails({ notification: { ...savedNotices.stopped088, title } });
+			assert.ok(saved);
+			const [line] = new TaskCompletionMessage(saved, false).render(120);
+			assert.equal(stripVTControlCharacters(line!).trim(), "◼ worker stopped", title);
+		}
+	}
+	for (const [name, agentName] of [
+		["triage:", undefined],
+		["triage stopped:", "triage stopped:"],
+	] as const) {
+		const named = completionNoticeFromDetails({
+			notification: { ...savedNotices.pause088, agentName, title: `Subagent ${name} paused · awaiting resume.` },
+		});
+		assert.ok(named);
+		assert.equal(
+			stripVTControlCharacters(new TaskCompletionMessage(named, false).render(120)[0]!).trim(),
+			`⏸ ${name} paused · awaiting resume`,
+		);
+	}
+});
+
 test("the saved result distinguishes a release from punctuation and release wording in a name (#5563)", () => {
 	const released = completionNoticeFromDetails(savedNotices.punctuated088Details);
 	const stopped = completionNoticeFromDetails(savedNotices.killed088Details);

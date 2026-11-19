@@ -82,7 +82,7 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 		...(line === undefined ? {} : { line }),
 	};
 	if (!line && parsed.status === "cancelled" && parsed.taskKind !== "command") {
-		const stop = legacyStop(parsed.title, "result" in details ? details.result : undefined);
+		const stop = legacyStop(parsed.title, "result" in details ? details.result : undefined, parsed.agentName);
 		if (stop) {
 			parsed.line = stop.line;
 			if (stop.agentName !== undefined) parsed.agentName = stop.agentName;
@@ -137,9 +137,11 @@ function agentNoticeOutcome(status: NoticeLineSpec["status"], line: TaskNoticeLi
 const RELEASE_WORDING = "released while waiting on ";
 const PAUSE_WORDING = "paused · awaiting resume";
 const QUIT_WORDING = "quit · paused, awaiting resume";
+const STOP_BEFORE_DESCRIPTION =
+	/ (?:killed \(non-resumable\)|timed out(?: after \S+ seconds?)?|stopped(?: \([^()]+\)| by a pause)?|interrupted by (?:a restart|a pause)):$/u;
 
 /** Before notices had a line, the title held the outcome, followed by `: <task description>` or a final period. */
-function legacyStopWording(title: string, result: unknown): string | undefined {
+function legacyStopWording(title: string, result: unknown, agentName: string | undefined): string | undefined {
 	if (result !== undefined) {
 		const saved = result as { kind?: string; cause?: string; released?: { waitingOn?: unknown } } | null;
 		if (saved?.kind !== "cancelled") return undefined;
@@ -162,13 +164,20 @@ function legacyStopWording(title: string, result: unknown): string | undefined {
 			title,
 		);
 	if (!prefix || prefix[1]?.includes(": ")) return undefined;
+	// The separating space can also be the space of `: <description>`. A name may itself end in a colon,
+	// so rule it out only when a stop in the saved title already introduced the description.
+	if (prefix[1] && prefix[1] !== agentName && STOP_BEFORE_DESCRIPTION.test(prefix[1])) return undefined;
 	if (prefix[2] !== RELEASE_WORDING) return prefix[2];
 	const calls = /^(a tool call|.+?\))(?:: |\.$)/su.exec(title.slice(prefix[0].length))?.[1];
 	return calls ? RELEASE_WORDING + calls : undefined;
 }
 
-function legacyStop(title: string, result: unknown): { line: TaskNoticeLine; agentName?: string } | undefined {
-	const wording = legacyStopWording(title, result);
+function legacyStop(
+	title: string,
+	result: unknown,
+	agentName: string | undefined,
+): { line: TaskNoticeLine; agentName?: string } | undefined {
+	const wording = legacyStopWording(title, result, agentName);
 	if (wording === undefined) return undefined;
 	// The space after "Subagent" introduces its name, even if the name itself starts with the recorded outcome.
 	const end = title.indexOf(` ${wording}: `, title.startsWith("Subagent ") ? "Subagent ".length : 0);
