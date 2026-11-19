@@ -1,8 +1,11 @@
+import { DatabaseSync } from "node:sqlite";
 import { stripVTControlCharacters } from "node:util";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { renderBoardRow } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import {
 	createWorkflowLifecycleNotificationState,
 	installWorkflowLifecycleNotifications,
@@ -13,6 +16,7 @@ import { createExtensionRuntime } from "../../packages/workflows/src/extension/r
 import { createGraphStageActions } from "../../packages/workflows/src/extension/workflow-graph-stage-actions.js";
 import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
+import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { runIndicatorStatus } from "../../packages/workflows/src/shared/run-indicator-status.js";
@@ -26,12 +30,8 @@ import { assert, createStore, run, test, workflow } from "./executor-shared.js";
 import { defaultTheme } from "./overlay-graph-helpers.js";
 import { counters, detachingAdapters, FakeCiService } from "./waiting-stage-helpers.js";
 
-test("a woken stage whose session store stays unreachable shows a block until the graph resumes it (#5534)", async () => {
-	initTheme("dark", false);
-	const store = createStore();
-	const backend = await createMemoryTestBackend();
-	const service = new FakeCiService();
-	const definition = workflow({
+function reopenDefinition() {
+	return workflow({
 		name: "reopen-after-wait",
 		description: "",
 		inputs: {},
@@ -41,6 +41,67 @@ test("a woken stage whose session store stays unreachable shows a block until th
 			return {};
 		},
 	});
+}
+
+for (const refused of ["checkpoint", "blocked status"] as const) {
+	test(`a refused ${refused} write does not replace the stage reopen diagnostic`, async () => {
+		const sql = new DatabaseSync(":memory:");
+		const backend = await JournalDurableBackend.open(await openSqlRunJournal(sql));
+		const store = createStore();
+		const service = new FakeCiService();
+		const runId = "journal-refusal";
+		let reopens = 0;
+		const adapters = detachingAdapters(service, counters(), {
+			resumable: true,
+			failCreationAfter: 1,
+			creationFailure: () => {
+				reopens++;
+				return new StorageUnavailableError({ adapter: "libsql", location: "sessions" }, new Error("offline"));
+			},
+		});
+		const off = store.subscribe(() => {
+			if (store.run(runId)?.blockedAt === undefined) return;
+			const when =
+				refused === "checkpoint"
+					? "INSERT ON wf_events WHEN NEW.type='CheckpointRecorded'"
+					: "UPDATE OF status ON wf_runs WHEN NEW.status='blocked'";
+			sql.exec(`CREATE TRIGGER IF NOT EXISTS quota BEFORE ${when} BEGIN SELECT RAISE(ABORT,'quota exhausted'); END`);
+		});
+		try {
+			const result = await run(
+				reopenDefinition(),
+				{},
+				{
+					runId,
+					store,
+					durableBackend: backend,
+					releaseWhenWaiting: { afterMs: 0 },
+					adapters,
+					onStageLifecycleEvent: (_id, event) => {
+						if (event.type === "stage_waiting") service.finishAll();
+					},
+				},
+			);
+			assert.equal(reopens, 3);
+			assert.equal(service.dispatches, 1);
+			assert.equal(result.failure?.disposition, "active_blocked");
+			assert.match(result.error ?? "", /implement.*session-unavailable/);
+			assert.equal(backend.getWorkflow(runId)?.status, refused === "checkpoint" ? "blocked" : "running");
+			if (refused === "blocked status")
+				assert.ok(store.notices().some((notice) => notice.message.includes("quota exhausted")));
+		} finally {
+			off();
+			await backend.close();
+		}
+	});
+}
+
+test("a woken stage whose session store stays unreachable shows a block until the graph resumes it (#5534)", async () => {
+	initTheme("dark", false);
+	const store = createStore();
+	const backend = await createMemoryTestBackend();
+	const service = new FakeCiService();
+	const definition = reopenDefinition();
 	const adapters = detachingAdapters(service, counters(), {
 		resumable: true,
 		failCreationAfter: 1,
@@ -112,7 +173,7 @@ test("a woken stage whose session store stays unreachable shows a block until th
 						.find((row) => row.id === `run:${id}`)
 						?.description?.startsWith("blocked · "),
 					statusCard: renderResult(status, { plain: true, width: 160 }).includes(`${source.name}  blocked`),
-					toolList: status.action === "status" && status.runs[0]?.status,
+					toolList: renderWorkflowToolContent(status, { action: "status" }).includes(`${source.name}  blocked`),
 					toolDetail: detail.action === "statusDetail" && "detail" in detail && detail.detail.status,
 					tasks: /‖.*paused/u.test(
 						stripVTControlCharacters(renderBoardRow({ kind: "item", id: item.id, item }, false, 120)),
@@ -127,7 +188,7 @@ test("a woken stage whose session store stays unreachable shows a block until th
 					graphPause: false,
 					listing: true,
 					statusCard: true,
-					toolList: "blocked",
+					toolList: true,
 					toolDetail: "blocked",
 					tasks: true,
 					panelRows: [],

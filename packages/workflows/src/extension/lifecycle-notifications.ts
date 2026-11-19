@@ -608,8 +608,10 @@ function returnedNoticeError(run: RunSnapshot, kind: "completed" | "failed" | "b
 }
 
 function terminalRunKey(kind: "completed" | "failed" | "blocked", run: RunSnapshot): string {
-	const occurrence = kind === "blocked" ? (run.runGeneration ?? lifecycleOccurrenceAt(run, kind)) : "";
-	return occurrence === undefined ? `${kind}:${run.id}` : `${kind}:${run.id}:${occurrence}`;
+	if (kind !== "blocked") return `${kind}:${run.id}:`;
+	// Block generations restart when a different workflow is registered under the same id.
+	const occurrence = run.runGeneration ?? lifecycleOccurrenceAt(run, kind);
+	return `${kind}:${run.id}:${run.startedAt}:${occurrence ?? ""}`;
 }
 function budgetWarningKey(run: RunSnapshot, dimension: BudgetDimension): string {
 	return `budget_warning:${run.id}:${dimension}`;

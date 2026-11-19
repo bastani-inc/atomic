@@ -317,7 +317,12 @@ export interface DurableWorkflowBackend {
 	 * owner's lease over to write to the run, for example to answer a prompt (#5167).
 	 */
 	holdsIdleWorkflowLease?(workflowId: string): boolean;
-	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
+	persistSummary?(
+		workflowId: string,
+		summary: string,
+		summarizedThrough: number,
+		expectedCreatedAt?: number,
+	): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	commitWorkflowRegistration(handle: WorkflowRegistrationInput): Promise<void>;
 	/**

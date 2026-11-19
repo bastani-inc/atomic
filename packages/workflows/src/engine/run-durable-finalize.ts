@@ -17,7 +17,7 @@ import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
 import { recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
 import type { DurableWorkflowStatus } from "../durable/types.js";
 import { describeErrorWithCauses } from "../shared/error-with-causes.js";
-import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { hasRecordedRunBlock, runResultStatus } from "../shared/returned-run-status.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 
@@ -52,7 +52,25 @@ async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput):
 		await input.recordUsage?.();
 		return;
 	}
-	const status = effectiveRunStatus(input.runSnapshot);
+	const status = runResultStatus(input.runSnapshot);
+	if (status === "running" && hasRecordedRunBlock(input.runSnapshot)) {
+		// The stage has already returned its resumable diagnostic. Publish the live block, not a terminal
+		// result or timing checkpoint; failure to save this status must not replace the SDK result.
+		try {
+			await input.durableBackend.commitWorkflowStatus(
+				input.runId,
+				"blocked",
+				undefined,
+				input.runSnapshot.resumable,
+				undefined,
+				input.runSnapshot.runGeneration,
+				input.runSnapshot.finishSequence,
+			);
+		} catch (error) {
+			if (input.store) recordDurableEndingFailure(input.store, input.runSnapshot, error, "is blocked");
+		}
+		return;
+	}
 	const isExitTerminal = input.runSnapshot.exited === true && status !== "running";
 	const isBlocked =
 		status === "blocked" && (input.runSnapshot.endedAt !== undefined || input.runSnapshot.blockedAt !== undefined);
@@ -139,13 +157,18 @@ function failedToolUnrecorded(input: DurableTerminalFinalizeInput): boolean {
  * The run's memory already says it ended, so a durable ending that could not be recorded leaves the journal
  * saying `running` with nobody holding the lease. Say so where the host can see it.
  */
-function recordDurableEndingFailure(store: Store, runSnapshot: RunSnapshot, error: unknown): void {
+function recordDurableEndingFailure(
+	store: Store,
+	runSnapshot: RunSnapshot,
+	error: unknown,
+	outcome = `ended ${runSnapshot.status}`,
+): void {
 	const detail = describeErrorWithCauses(error);
 	store.recordNotice({
 		id: `workflow-durable-ending-failed:${runSnapshot.id}`,
 		runId: runSnapshot.id,
 		level: "error",
-		message: `Workflow "${runSnapshot.name}" ended ${runSnapshot.status}, but its final state could not be saved to the workflow journal: ${detail}. Readers of the journal may report it as crashed.`,
+		message: `Workflow "${runSnapshot.name}" ${outcome}, but its final state could not be saved to the workflow journal: ${detail}. Readers of the journal may report it as crashed.`,
 		createdAt: Date.now(),
 	});
 }
