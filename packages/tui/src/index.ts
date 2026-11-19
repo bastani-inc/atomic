@@ -11,6 +11,7 @@ export {
 } from "./autocomplete.ts";
 // Clickable key hints
 export {
+	bindBundledHintCommands,
 	clickableHint,
 	clickableHintText,
 	clickableKeysHint,

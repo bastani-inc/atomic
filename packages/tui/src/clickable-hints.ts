@@ -4,7 +4,8 @@
  * renderer strips the markers before writing a frame and remembers where each hint was painted.
  */
 
-import { BUNDLED_COMMAND_NAMES, CORE_COMMAND_NAMES } from "./builtin-command-names.ts";
+import { CORE_COMMAND_NAMES } from "./builtin-command-names.ts";
+import { getKeybindings, type KeybindingsManager } from "./keybindings.ts";
 import { type KeyId, keyInputData } from "./keys.ts";
 import { extractAnsiCode, HINT_CLOSE, HINT_OPEN, visibleWidth } from "./utils.ts";
 
@@ -75,7 +76,13 @@ export function clickableKeysHint(parts: readonly HintKeyPart[], label = ""): st
 }
 
 const ARROW_GLYPHS = new Set(["↑", "↓", "←", "→"]);
-const BUILTIN_COMMANDS = new Set<string>([...CORE_COMMAND_NAMES, ...BUNDLED_COMMAND_NAMES]);
+const CORE_COMMANDS = new Set<string>(CORE_COMMAND_NAMES);
+const bundledCommandLookups = new WeakMap<KeybindingsManager, (name: string) => boolean>();
+
+/** Resolve bundled command hints against the live registrations of the session that owns these bindings. */
+export function bindBundledHintCommands(bindings: KeybindingsManager, isRegistered: (name: string) => boolean): void {
+	bundledCommandLookups.set(bindings, isRegistered);
+}
 
 /** Key names a hint shows, by the key id they stand for. */
 const HINT_KEY_IDS: Record<string, string> = {
@@ -201,7 +208,9 @@ export function clickableHintText(text: string, bindings?: readonly KeyId[]): st
 			const lead = /^\s*/.exec(segment)?.[0] ?? "";
 			const body = segment.slice(lead.length);
 			const command = /^\/([\w:-]+)(?:\s|$)/.exec(body)?.[1];
-			if (command && BUILTIN_COMMANDS.has(command)) return lead + slashCommandHint(body);
+			if (command && (CORE_COMMANDS.has(command) || bundledCommandLookups.get(getKeybindings())?.(command))) {
+				return lead + slashCommandHint(body);
+			}
 			if (/^\d+(?:\s*\/\s*\d+)+(?:\s|$)/.test(body)) return segment;
 			const { parts, label } = parseHintKeys(body, configured);
 			return lead + clickableKeysHint(parts, label);

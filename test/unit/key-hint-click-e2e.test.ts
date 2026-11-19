@@ -10,6 +10,7 @@ import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import {
 	type Component,
 	Container,
+	clickableHintText,
 	clickableKeyTextHint,
 	getKeybindings,
 	matchesKey,
@@ -35,7 +36,7 @@ import { shouldHandleFullscreenViewportInput } from "../../packages/coding-agent
 import { createFullscreenTui } from "../../packages/coding-agent/src/modes/interactive/interactive-tui.js";
 import { getEditorTheme, initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
-import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
+import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
 	type InteractiveEngineCommand,
 	type InteractiveEngineMessage,
@@ -417,7 +418,7 @@ type InputListener = (data: string) => { consume?: boolean; data?: string } | un
  * The main chat's prompt and footer on the fullscreen renderer, with the key handlers `InteractiveMode` sets up and
  * one agent in the panel.
  */
-async function mainChat() {
+async function mainChat(commandHost?: "in-process" | "isolated") {
 	const keybindings = new KeybindingsManager();
 	setKeybindings(keybindings);
 	let editor: CustomEditor | undefined;
@@ -428,8 +429,15 @@ async function mainChat() {
 		items: () => [{ id: "fixture:agent", kind: "agent", state: "running", name: "worker", task: "job" }],
 		subscribe: () => () => {},
 	});
+	const liveCommands = new Set(["llama"]);
 	const session = {
-		extensionRunner: { getAgentPanelSourceHub: () => hub },
+		extensionRunner: {
+			getAgentPanelSourceHub: () => hub,
+			getCommand: (name: string) =>
+				commandHost === "in-process" && liveCommands.has(name)
+					? { sourceInfo: { configurationOrigin: "bundled" } }
+					: undefined,
+		},
 		settingsManager: {},
 		isStreaming: true,
 		isCompacting: false,
@@ -479,7 +487,17 @@ async function mainChat() {
 		hostCustomUiStateListeners: new Set(),
 		programStatus: { setBlocked: noop },
 		footerDataProvider: { setExtensionStatus: noop },
-		runtimeHost: { session },
+		runtimeHost:
+			commandHost === "isolated"
+				? Object.assign(Object.create(IsolatedInteractiveRuntime.prototype), {
+						getRemoteCommands: () =>
+							[...liveCommands].map((name) => ({
+								name,
+								source: "extension",
+								sourceInfo: { configurationOrigin: "bundled" },
+							})),
+					})
+				: { session },
 		session,
 		ui: ui.tui,
 		addTuiInputListener: (listener: InputListener) => ui.tui.addInputListener(listener),
@@ -505,8 +523,41 @@ async function mainChat() {
 	}) as unknown as { setupKeyHandlers(): Promise<void> };
 	await host.setupKeyHandlers();
 	ui.tui.renderNow();
-	return { ui, editor, extensionDialogs };
+	return { ui, editor, extensionDialogs, liveCommands };
 }
+
+test.each(["in-process", "isolated"] as const)(
+	"command hint clicks use live registrations on the %s host (#5528)",
+	async (host) => {
+		const { ui, editor, liveCommands } = await mainChat(host);
+		const submitted: string[] = [];
+		editor.onSubmit = (text) => {
+			submitted.push(text);
+		};
+		try {
+			// These strings may outlive registration, like a widget or a row in the transcript.
+			ui.mount(
+				new Text(
+					[
+						clickableHintText("/mcp-auth to connect"),
+						clickableHintText("/llama to manage"),
+						slashCommandHint("/llama now"),
+					].join("\n"),
+					0,
+					0,
+				),
+			);
+			await ui.click(/to connect/, "to connect");
+			await ui.click(/to manage/, "to manage");
+			assert.deepEqual(submitted, ["/llama"]);
+			liveCommands.clear();
+			await ui.click(/llama now/, "now");
+			assert.deepEqual(submitted, ["/llama"], "a stale hint never falls through to a user prompt");
+		} finally {
+			ui.tui.stop();
+		}
+	},
+);
 
 test("the main chat's footer hints run their keys over a typed prompt, and /tasks runs the command", async () => {
 	const { ui, editor, extensionDialogs } = await mainChat();

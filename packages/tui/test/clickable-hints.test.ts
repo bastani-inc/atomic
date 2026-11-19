@@ -262,10 +262,17 @@ describe("a click on a key hint runs its key", () => {
 	});
 
 	it("recognizes built-in slash commands but does not guess paths or extension commands (#5528)", () => {
-		for (const name of ["/tasks", "/workflows", "/resume", "/settings", "/reload"]) {
+		for (const name of ["/tasks", "/resume", "/settings", "/reload"]) {
 			assert.strictEqual(clickableHintText(`${name} to open`), slashCommandHint(`${name} to open`));
 		}
-		for (const text of ["/tmp", "/README", "/usr/bin", "/tasks/output", "/ext-command to open"]) {
+		for (const text of [
+			"/tmp",
+			"/README",
+			"/usr/bin",
+			"/tasks/output",
+			"/workflows before registration",
+			"/ext-command to open",
+		]) {
 			assert.strictEqual(clickableHintText(text), text);
 		}
 		assert.deepStrictEqual(
