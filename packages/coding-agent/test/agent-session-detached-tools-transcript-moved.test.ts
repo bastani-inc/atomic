@@ -414,7 +414,7 @@ describe("input that would start a turn while a call is detached (#4580)", () =>
 				return fauxAssistantMessage("ci passed, child finished");
 			},
 		]);
-		const recovery = await reopened.session.startPendingRecovery("workflow_stage_resume");
+		const recovery = await reopened.session.startPendingRecovery("resume");
 		assert.equal(recovery.replayed, 1);
 		await reopened.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);
 

@@ -2,7 +2,6 @@ import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-
 import { join } from "path";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import { validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
 	type BranchSummaryEntry,
 	type CompactionEntry,
@@ -21,7 +20,6 @@ import {
 	type SessionMessageEntry,
 	type SessionNameState,
 	type SessionSummaryEntry,
-	type SessionWorkflowMetadata,
 	type ThinkingLevelChangeEntry,
 	type WorktreeRestoreHostWarning,
 	type WorktreeSnapshotEntry,
@@ -45,10 +43,7 @@ export function createSessionHeader(
 	cwd: string,
 	timestamp: string = new Date().toISOString(),
 	parentSession?: string,
-	internal?: boolean,
-	workflow?: SessionWorkflowMetadata,
 ): SessionHeader {
-	const validWorkflow = internal === true ? validSessionWorkflowMetadata(workflow) : undefined;
 	return {
 		type: "session",
 		version: CURRENT_SESSION_VERSION,
@@ -56,7 +51,6 @@ export function createSessionHeader(
 		createdAt: timestamp,
 		cwd,
 		...(parentSession === undefined ? {} : { parentSessionId: parentSession }),
-		...(validWorkflow === undefined ? {} : { internal: true, workflow: validWorkflow }),
 	};
 }
 

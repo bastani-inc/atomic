@@ -1,8 +1,3 @@
-/**
- * What a stage keeps once its session is released (#4309): a detached call's work, the stage's task host and its
- * admission boundary hold nothing of the closed session, and what they hold for the stage carries over to the session
- * the stage reopens.
- */
 import assert from "node:assert/strict";
 import v8 from "node:v8";
 import vm from "node:vm";
@@ -10,13 +5,9 @@ import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import type { DetachedToolCall } from "../src/core/agent-session-detached-tools.js";
-import type { ToolDefinition, WorkflowStageOrchestrationContext } from "../src/core/extensions/index.js";
-import { SessionManager } from "../src/core/session-manager.js";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
-import type { AgentTaskHost } from "../src/core/tasks/agent-adapter.js";
+import type { ToolDefinition } from "../src/core/extensions/index.js";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.js";
-import type { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
-import { isToolDetachmentError, parkWorkflowStageForRelease } from "../src/index.js";
+import { isToolDetachmentError } from "../src/index.js";
 import { waitTool } from "./helpers/detached-tools.js";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
@@ -49,22 +40,6 @@ const harnesses: Harness[] = [];
 afterEach(async () => {
 	while (harnesses.length > 0) await harnesses.pop()?.cleanup();
 });
-
-function stageContext(): WorkflowStageOrchestrationContext {
-	return {
-		kind: "workflow-stage",
-		workflowRunId: crypto.randomUUID(),
-		workflowStageId: "stage-a",
-		workflowStageName: "Stage A",
-		constraints: { disableWorkflowTool: true },
-	};
-}
-
-function boundaryOf(context: WorkflowStageOrchestrationContext): WorkflowStageAdmissionBoundary {
-	const boundary = context.messageAdmission?.boundary;
-	assert.ok(boundary !== undefined, "the stage's first session gave the stage its admission boundary");
-	return boundary;
-}
 
 describe("a detached call's work (#4309)", () => {
 	test("that reports progress and holds its context keeps no closed session reachable (#4309)", async () => {
@@ -127,91 +102,6 @@ describe("a detached call's work (#4309)", () => {
 	});
 });
 
-describe("a released stage's task host (#4309)", () => {
-	test("keeps no session of a stage that ran bash reachable once the stage is parked and the session closed (#4309)", async () => {
-		const context = stageContext();
-
-		async function ranBashThenReleased(): Promise<WeakRef<object>> {
-			const harness = await createHarness({ orchestrationContext: context });
-			harness.setResponses([
-				fauxAssistantMessage([fauxToolCall("bash", { command: "echo stage" }, { id: "bash-1" })], {
-					stopReason: "toolUse",
-				}),
-				fauxAssistantMessage("done"),
-			]);
-			await harness.session.prompt("run it");
-			assert.equal(boundaryOf(context).hasAgentTaskHost(), true, "bash bound the stage's task host");
-			parkWorkflowStageForRelease(context);
-			const released = new WeakRef<object>(harness.session);
-			await harness.cleanup();
-			return released;
-		}
-
-		const released = await ranBashThenReleased();
-
-		assert.equal(await collected(released), true, "the released stage session was collected");
-		await boundaryOf(context).close();
-	});
-
-	test("delivers the completion of a task that settled while the stage was released to the session it reopens (#4309)", async () => {
-		const context = stageContext();
-		const store = new MemorySessionStore();
-		const manager = await SessionManager.create(store, process.cwd());
-		const first = await createHarness({ orchestrationContext: context, sessionManager: manager });
-		first.setResponses([
-			fauxAssistantMessage(
-				[
-					fauxToolCall(
-						"bash",
-						{ command: "sleep 0.3; echo settled-while-released", wait: { kind: "background" } },
-						{ id: "bash-1" },
-					),
-				],
-				{ stopReason: "toolUse" },
-			),
-			fauxAssistantMessage("started it"),
-		]);
-		await first.session.prompt("start the build");
-		const host: AgentTaskHost = first.session.getAgentTaskHost();
-		parkWorkflowStageForRelease(context);
-		await first.session.dispose();
-		harnesses.push(first);
-
-		await vi.waitFor(
-			() => {
-				const watched = host.watchOwnerTasks();
-				assert.ok(watched.ok);
-				const { tasks } = watched.value.snapshot;
-				const settled = tasks.length > 0 && tasks.every((task) => task.execution.kind === "settled");
-				watched.value.dispose();
-				assert.equal(settled, true);
-			},
-			{ timeout: 10_000, interval: 20 },
-		);
-
-		const reopened = await createHarness({
-			orchestrationContext: context,
-			sessionManager: await SessionManager.open(store, manager.getSessionId()),
-		});
-		harnesses.push(reopened);
-
-		await vi.waitFor(
-			() => {
-				const entries = reopened.sessionManager.getEntries();
-				const notice = entries.find(
-					(entry) => entry.type === "custom_message" && entry.customType === TASK_COMPLETION_MESSAGE_TYPE,
-				);
-				assert.ok(notice?.type === "custom_message", "the completion reached the reopened session");
-				assert.match(String(notice.content), /settled-while-released/);
-				assert.ok(entries.some((entry) => entry.type === "custom" && entry.customType === "task-completion-ack"));
-			},
-			{ timeout: 5_000, interval: 20 },
-		);
-		assert.equal(reopened.getPendingResponseCount(), 0, "the notice started no turn of its own");
-		await boundaryOf(context).close();
-	});
-});
-
 describe("a task completion while the transcript waits on a detached call (#4309)", () => {
 	test("waits for the detached turn to resume, so nothing comes between the call and its result (#4309)", async () => {
 		const ci = waitTool();
@@ -271,72 +161,5 @@ describe("a task completion while the transcript waits on a detached call (#4309
 		assert.deepEqual(after.slice(call, call + 4), ["assistant", "toolResult", "toolResult", "assistant"]);
 		assert.ok(after.indexOf(`custom:${TASK_COMPLETION_MESSAGE_TYPE}`) > call + 3, "the notice follows the answer");
 		assert.equal(after.at(-1), "assistant");
-	});
-});
-
-describe("a released stage's admission boundary (#4309)", () => {
-	test("forgets admission keys while released and takes back only those the reopened transcript records (#4309)", async () => {
-		const context = stageContext();
-		const store = new MemorySessionStore();
-		const manager = await SessionManager.create(store, process.cwd());
-		const first = await createHarness({ orchestrationContext: context, sessionManager: manager });
-		const boundary = boundaryOf(context);
-		await first.session.sendCustomMessage(
-			{ customType: "note", content: "saved with its key", display: true },
-			{ triggerTurn: false, stageAdmissionKey: "saved-key" },
-		);
-		await boundary.admit(
-			"unsaved-key",
-			() => {},
-			() => {},
-		).completion;
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.equal(
-			boundary.admit(
-				"saved-key",
-				() => {},
-				() => {},
-			).decision,
-			"duplicate",
-		);
-		assert.equal(
-			boundary.admit(
-				"unsaved-key",
-				() => {},
-				() => {},
-			).decision,
-			"duplicate",
-		);
-
-		for (let release = 0; release < 3; release++) {
-			parkWorkflowStageForRelease(context);
-			const current = release === 0 ? first : harnesses.pop();
-			await current?.cleanup();
-			const reopened = await createHarness({
-				orchestrationContext: context,
-				sessionManager: await SessionManager.open(store, manager.getSessionId()),
-			});
-			harnesses.push(reopened);
-
-			assert.equal(context.messageAdmission?.boundary, boundary, "the stage keeps one boundary");
-			assert.equal(
-				boundary.admit(
-					"saved-key",
-					() => {},
-					() => {},
-				).decision,
-				"duplicate",
-			);
-		}
-		assert.equal(
-			boundary.admit(
-				"unsaved-key",
-				() => {},
-				() => {},
-			).decision,
-			"admitted",
-			"a key no transcript records is not carried across a release",
-		);
-		await boundary.close();
 	});
 });

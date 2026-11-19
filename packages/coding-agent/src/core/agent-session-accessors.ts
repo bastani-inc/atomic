@@ -62,11 +62,6 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				return getLatestSessionSummary(this.sessionManager.getBranch());
 			},
 		},
-		orchestrationContext: {
-			get() {
-				return this._orchestrationContext;
-			},
-		},
 		modelRuntime: {
 			get() {
 				return this._modelRuntime;

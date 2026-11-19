@@ -102,7 +102,6 @@ function makeContext(cwd: string, subagentPolicy?: SubagentChildPolicy): Executo
 			hasFullHistory: () => true,
 			getEntries: (): SessionEntry[] => [],
 		} as ExecutorContextForTest["sessionManager"],
-		orchestrationContext: undefined,
 		...(subagentPolicy === undefined ? {} : { subagentPolicy }),
 		isIdle: () => true,
 		isProjectTrusted: () => true,

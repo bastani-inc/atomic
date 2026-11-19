@@ -7,8 +7,7 @@ import type { ScopedModel } from "../model-resolver.ts";
 import type { ReadonlySessionManager, SessionManager } from "../session-manager.ts";
 import type { SkillCatalog } from "../skill-catalog.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
-import type { WorkflowStageAdmissionBoundary } from "../workflow-stage-admission.ts";
-import type { SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
+import type { SendMessageOptions } from "./message-types.ts";
 import type { ExtensionUIContext } from "./ui-types.js";
 export interface ExecuteToolOptions {
 	signal?: AbortSignal;
@@ -47,107 +46,6 @@ export interface CompactOptions {
 	onError?: (error: Error) => void;
 }
 
-/**
- * Late routes settle as delivery acknowledgements: resolution means the route
- * accepted delivery, while rejection means delivery was not fully accepted. A
- * sequential batch may have delivered a prefix before it rejects; stale-context
- * rejection identifies the dropped route, and other failures reject unchanged.
- */
-export interface WorkflowStageLateMessageRouter {
-	routeMessage<T>(
-		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: SendMessageOptions,
-	): void | Promise<void>;
-	routeMessages<T>(
-		messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
-		options?: SendMessagesOptions,
-	): void | Promise<void>;
-}
-
-export interface WorkflowStageMessageAdmission {
-	/** Internal generation-owned boundary shared by every model-fallback session. */
-	readonly boundary: WorkflowStageAdmissionBoundary;
-	/** Internal extension state that must survive model-fallback session replacement. */
-	readonly extensionState: Map<string, object>;
-	isOpen(): boolean;
-}
-
-export interface WorkflowPendingStageSender {
-	readonly id: string;
-	readonly name?: string;
-	readonly cwd: string;
-	readonly model: string;
-	readonly pid: number;
-	readonly startedAt: number;
-	readonly lastActivity: number;
-	readonly status?: string;
-	readonly group?: string;
-}
-
-export interface WorkflowPendingStageMessage {
-	readonly id: string;
-	readonly timestamp: number;
-	readonly replyTo?: string;
-	readonly expectsReply?: boolean;
-	readonly replyError?: string;
-	readonly content: {
-		readonly text: string;
-		readonly attachments?: readonly {
-			readonly type: "file" | "snippet" | "context";
-			readonly name: string;
-			readonly content: string;
-			readonly language?: string;
-		}[];
-	};
-}
-
-export interface WorkflowPendingStageDelivery {
-	/**
-	 * Process-private authority proving this stage belongs to the workflow run route. Absent for a stage that runs on a
-	 * worker host where the run's route is not announced: Intercom registers no live route for it, and its messages
-	 * arrive only through `deliverPending`.
-	 */
-	readonly routeCapability?: string;
-	deliverPending(
-		deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
-		recipient?: { readonly sessionId: string; readonly receivedMessageIds: readonly string[] },
-	): Promise<void>;
-	ready(sessionId?: string): Promise<void> | undefined;
-	/**
-	 * Terminal signal from a delivery owner that has run out of recovery: the
-	 * queued messages can no longer be drained, so the stage must fail at its own
-	 * lifecycle boundary rather than run without the instructions it was given.
-	 * Idempotent — the first reason wins, and `ready()` then settles with a
-	 * stage-scoped error instead of waiting for a delivery that will not come.
-	 *
-	 * Required, not optional: `ready()` has no timeout, so a delivery that cannot
-	 * be settled leaves its stage parked forever. Every implementer must be able
-	 * to answer that no delivery is coming.
-	 */
-	fail(reason: Error): void;
-}
-
-export interface WorkflowStageOrchestrationContext {
-	readonly kind: "workflow-stage";
-	readonly workflowRunId: string;
-	readonly workflowStageId: string;
-	readonly workflowStageName: string;
-	readonly constraints: {
-		readonly disableWorkflowTool: true;
-	};
-	/** Internal lifecycle seam for surfacing detached results after this stage closes. */
-	readonly lateMessageRouter?: WorkflowStageLateMessageRouter;
-	/** Internal synchronous boundary used before producer reply/turn side effects. */
-	readonly messageAdmission?: WorkflowStageMessageAdmission;
-	/**
-	 * Resolved per-session intercom home group for this stage. Concrete, already
-	 * normalized upstream. Read by the intercom extension (buildRegistration) and
-	 * inherited by subagents this stage spawns. Absent => no group override.
-	 */
-	readonly intercomGroup?: string;
-	/** Durable pre-start intercom delivery, drained by the intercom extension before the first turn. */
-	readonly pendingStageDelivery?: WorkflowPendingStageDelivery;
-}
 /** Typed child intercom identity and supervisor capability issued at admission. */
 export interface SubagentIntercomIdentity {
 	readonly orchestratorTarget: string;
@@ -207,8 +105,6 @@ export interface SubagentChildPolicy {
 	/** Resolved intercom group for this admitted child, when one was assigned. */
 	readonly intercomGroup?: string;
 }
-// Union alias kept for forward-compatible orchestration context variants.
-export type OrchestrationContext = WorkflowStageOrchestrationContext;
 
 /**
  * Context passed to extension event handlers.
@@ -225,17 +121,14 @@ export interface ExtensionContext {
 	/**
 	 * Internal: a child-options resolver that stays valid after this context's session is replaced or closed (#3981).
 	 * A queued or restored child calls it when it starts, possibly after this context is stale. It answers from the
-	 * owning session's live successor (a workflow stage replaced by model fallback), or from the owning session's last
-	 * state when it has none. Obtain it while the context is live; the call itself asserts that.
+	 * owning session’s last state. Obtain it while the context is live; the call itself asserts that.
 	 */
 	getChildSessionOptionsResolver?(): import("../child-session-options.ts").ChildSessionOptionsResolver;
-	/** Session-scoped orchestration policy for child runtimes such as workflow stages. */
-	readonly orchestrationContext?: OrchestrationContext;
 	/** Typed capability policy for an in-process subagent child, when this session is one. */
 	readonly subagentPolicy?: SubagentChildPolicy;
 	/**
 	 * the session's Intercom home group and reach, when its host set one with `createAgentSession({ intercom })`
-	 * or it is a workflow stage or subagent of such a session.
+	 * or it is a subagent of such a session.
 	 */
 	readonly intercomPolicy?: import("../intercom-policy.ts").IntercomPolicyView;
 	/** UI methods for user interaction */

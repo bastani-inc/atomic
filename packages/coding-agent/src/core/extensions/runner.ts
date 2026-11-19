@@ -126,7 +126,6 @@ import type {
 	MarkdownTransformer,
 	MessageEndEvent,
 	MessageRenderer,
-	OrchestrationContext,
 	ProviderConfig,
 	RegisteredTool,
 	ResolvedCommand,
@@ -215,7 +214,6 @@ export class ExtensionRunner {
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
-	private orchestrationContext: OrchestrationContext | undefined;
 	private subagentPolicy: SubagentChildPolicy | undefined;
 	private intercomPolicy: import("../intercom-policy.ts").IntercomPolicyView | undefined;
 	private taskHostBinding: (() => import("../tasks/agent-adapter.js").AgentTaskHost) | undefined;
@@ -308,7 +306,8 @@ export class ExtensionRunner {
 		cwd: string,
 		sessionManager: SessionManager,
 		modelRegistry: ModelRegistry,
-		orchestrationContext?: OrchestrationContext,
+		// Keep the positions of both session policy arguments for existing SDK hosts.
+		_reserved?: undefined,
 		subagentPolicy?: SubagentChildPolicy,
 		intercomPolicy?: import("../intercom-policy.ts").IntercomPolicyView,
 	) {
@@ -319,7 +318,6 @@ export class ExtensionRunner {
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
-		this.orchestrationContext = orchestrationContext;
 		this.subagentPolicy = subagentPolicy;
 		this.intercomPolicy = intercomPolicy;
 	}
@@ -520,12 +518,6 @@ export class ExtensionRunner {
 				},
 			},
 			this.presentationInput,
-			this.orchestrationContext?.kind === "workflow-stage"
-				? {
-						workflowRunId: this.orchestrationContext.workflowRunId,
-						workflowStageId: this.orchestrationContext.workflowStageId,
-					}
-				: {},
 		);
 		this.uiContext = this.wrapUIPromptContext(bridged, this.uiPromptBinding);
 		copyHostQuestionnaire(bridged, this.uiContext);
@@ -953,7 +945,6 @@ export class ExtensionRunner {
 			getIntercomPolicy: () => this.intercomPolicy,
 			getScopedModels: () => this.getScopedModels(),
 			getThinkingLevel: () => this.runtime.getThinkingLevel(),
-			getOrchestrationContext: () => this.orchestrationContext,
 			isIdle: () => this.isIdleFn(),
 			isProjectTrusted: () => this.isProjectTrustedFn(),
 			getSignal: () => this.getSignalFn(),

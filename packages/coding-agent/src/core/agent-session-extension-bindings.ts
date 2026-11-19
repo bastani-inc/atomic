@@ -2,7 +2,6 @@ import { basename, dirname } from "node:path";
 import type { Provider } from "@bastani/atomic-ai";
 import { clampThinkingLevel, resetApiProviders } from "@bastani/atomic-ai/compat";
 import { isPowerShellAvailableAsync } from "../utils/shell.ts";
-import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { sessionCloseReason } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
@@ -454,20 +453,6 @@ export function getExtensionSourceLabel(this: AgentSession, extensionPath: strin
 	return `extension:${name}`;
 }
 
-/**
- * Child session defaults from this session's live successor (#3981). A child queued or restored by a workflow stage
- * session can start after model fallback replaced that session; it then inherits the replacement's current model,
- * settings and tool ceiling. A session with no successor (it was not replaced, or it closed for good) answers with its
- * own last state, which is what it had when it admitted the child.
- */
-function liveChildSessionOptions(
-	session: AgentSession,
-): import("./child-session-options.ts").ChildSessionOptionsResolver | undefined {
-	const own = session._childSessionOptions;
-	if (!own) return undefined;
-	return (options) => (resolveWorkflowStageDeliveryTarget(session)._childSessionOptions ?? own)(options);
-}
-
 export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRunner): void {
 	runner.setHostBindings(
 		this._extensionHumanInput,
@@ -478,7 +463,7 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 	runner.setUIContext(this._extensionUIContext, this._extensionMode, presentationOnlyBindings.get(this) ?? false);
 	runner.setStatusSink(statusSinks.get(this));
 	runner.bindCommandContext(this._extensionCommandContextActions);
-	runner.bindChildSessionOptions(liveChildSessionOptions(this));
+	runner.bindChildSessionOptions(this._childSessionOptions);
 	runner.bindInheritedHistory(this._inheritedHistory);
 	runner.bindStorageAgentDir(this._storageAgentDir);
 
@@ -1020,7 +1005,7 @@ async function reloadOwnedGeneration(
 		this._cwd,
 		this.sessionManager,
 		new ModelRegistry(this._modelRuntime),
-		this._orchestrationContext,
+		undefined,
 		this._subagentPolicy,
 		this._intercomPolicy,
 	);
@@ -1063,7 +1048,7 @@ async function reloadOwnedGeneration(
 		);
 		candidateRunner.setStatusSink(statusSinks.get(this));
 		candidateRunner.bindCommandContext(this._extensionCommandContextActions);
-		candidateRunner.bindChildSessionOptions(liveChildSessionOptions(this));
+		candidateRunner.bindChildSessionOptions(this._childSessionOptions);
 		candidateRunner.bindInheritedHistory(this._inheritedHistory);
 		candidateRunner.bindStorageAgentDir(this._storageAgentDir);
 		if (options?.failOnExtensionErrors && errors.length > 0)

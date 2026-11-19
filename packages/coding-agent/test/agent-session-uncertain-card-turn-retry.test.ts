@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
-import type { SendMessagesOptions } from "../src/core/extensions/index.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { StorageTransientError } from "../src/core/storage/errors.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
@@ -15,10 +14,7 @@ afterEach(async () => {
 	while (harnesses.length > 0) await harnesses.pop()!.cleanup();
 });
 
-async function uncertainHarness(
-	stage: boolean,
-	applied = true,
-): Promise<{
+async function uncertainHarness(applied = true): Promise<{
 	harness: Harness;
 	store: MemorySessionStore;
 	failure: StorageTransientError;
@@ -53,17 +49,6 @@ async function uncertainHarness(
 	const manager = await SessionManager.create(faulty, process.cwd());
 	const harness = await createHarness({
 		sessionManager: manager,
-		...(stage
-			? {
-					orchestrationContext: {
-						kind: "workflow-stage" as const,
-						workflowRunId: crypto.randomUUID(),
-						workflowStageId: "uncertain-turn-retry",
-						workflowStageName: "Uncertain turn retry",
-						constraints: { disableWorkflowTool: true },
-					},
-				}
-			: {}),
 	});
 	harnesses.push(harness);
 	return { harness, store, failure };
@@ -91,112 +76,10 @@ async function assertSavedOnce(harness: Harness, store: MemorySessionStore): Pro
 	}
 }
 
-test.each([
-	{ form: "batch", otherForm: "single" },
-	{ form: "batch", otherForm: "batch" },
-	{ form: "single", otherForm: "single" },
-	{ form: "single", otherForm: "batch" },
-] as const)(
-	"an uncertain startup $form retried after the stage prompt reuses its card after intervening keyed $otherForm input (#5318)",
-	async ({ form, otherForm }) => {
-		const { harness, store, failure } = await uncertainHarness(true);
-		const options = {
-			triggerTurn: true,
-			persistWhenStreaming: true,
-			stageAdmissionKey: "uncertain-startup-key",
-		} satisfies SendMessagesOptions;
-		const send = () =>
-			form === "batch"
-				? harness.session.sendCustomMessages([original], options)
-				: harness.session.sendCustomMessage(original, options);
-		await assert.rejects(send(), (error) => error === failure);
-		const otherOptions = { stageAdmissionKey: "intervening-key" };
-		if (otherForm === "single") await harness.session.sendCustomMessage(intervening, otherOptions);
-		else await harness.session.sendCustomMessages([intervening], otherOptions);
-		const contexts: string[] = [];
-		harness.setResponses(
-			Array.from({ length: 5 }, () => (context) => {
-				contexts.push(JSON.stringify(context.messages));
-				return fauxAssistantMessage("completed the admitted task");
-			}),
-		);
-		await harness.session.prompt("perform the stage task");
-		const settled = Promise.withResolvers<void>();
-		const unsubscribe = harness.session.subscribe((event) => {
-			if (event.type === "agent_settled") settled.resolve();
-		});
-		try {
-			await send();
-			if (harness.session.isStreaming) await settled.promise;
-			await harness.session.agent.waitForIdle();
-		} finally {
-			unsubscribe();
-		}
-		await harness.session.prompt("inspect the saved context");
-		assert.equal(contexts.length, 2, "the already-consumed retry starts no model turn");
-		for (const context of contexts) assert.equal(context.split(original.content).length - 1, 1);
-		await assertSavedOnce(harness, store);
-	},
-);
-
-test.each([true, false])(
-	"an idle stage answers an uncertain single-message retry and accepts a later prompt with applied=%s (#5318)",
-	async (applied) => {
-		const { harness, store, failure } = await uncertainHarness(true, applied);
-		const options = { triggerTurn: true, stageAdmissionKey: "uncertain-single-turn-key" };
-		await assert.rejects(harness.session.sendCustomMessage(original, options), (error) => error === failure);
-		const contexts: string[] = [];
-		harness.setResponses(
-			Array.from({ length: 4 }, () => (context) => {
-				contexts.push(JSON.stringify(context.messages));
-				return fauxAssistantMessage("completed the admitted stage input");
-			}),
-		);
-		await harness.session.prompt("perform the stage task");
-		assert.equal(contexts.length, 1);
-		assert.equal(contexts[0]!.includes(original.content), false, "the failed startup write was not consumed");
-		const settled = Promise.withResolvers<void>();
-		const unsubscribe = harness.session.subscribe((event) => {
-			if (event.type === "agent_settled") settled.resolve();
-		});
-		try {
-			await harness.session.sendCustomMessage(original, options);
-			await settled.promise;
-			await harness.session.agent.waitForIdle();
-		} finally {
-			unsubscribe();
-		}
-		assert.equal(harness.session.isStreaming, false);
-		assert.equal(contexts.length, 2, "the retry starts exactly one turn");
-		assert.equal(contexts[1]!.split(original.content).length - 1, 1, "the retry turn sees the card once");
-		await harness.session.prompt("accept a later stage task");
-		assert.equal(contexts.length, 3, "the stage accepts a later prompt");
-		assert.equal(contexts[2]!.split(original.content).length - 1, 1);
-		const reopened = await SessionManager.open(store, harness.sessionManager.getSessionId());
-		for (const manager of [harness.sessionManager, reopened]) {
-			assert.equal(
-				manager.getBranch().filter((entry) => entry.type === "custom_message" && entry.content === original.content)
-					.length,
-				1,
-				"the live and reopened branches each contain one card",
-			);
-		}
-		for (const type of ["message_start", "message_end"] as const) {
-			assert.equal(
-				harness
-					.eventsOfType(type)
-					.filter((event) => event.message.role === "custom" && event.message.content === original.content).length,
-				1,
-				"the card is displayed once",
-			);
-		}
-	},
-);
-
 test.each([undefined, false])(
 	"an uncertain ordinary batch retried while streaming keeps one input with triggerTurn=%s (#5318)",
 	async (triggerTurn) => {
-		const { harness, store, failure } = await uncertainHarness(false);
+		const { harness, store, failure } = await uncertainHarness();
 		const options = { triggerTurn, stageAdmissionKey: "uncertain-ordinary-key" };
 		await assert.rejects(harness.session.sendCustomMessages([original], options), (error) => error === failure);
 		await harness.session.sendCustomMessage(intervening, { stageAdmissionKey: "intervening-key" });
@@ -293,7 +176,7 @@ test.each([
 ] as const)(
 	"concurrent uncertain $form retries save one card with excluded=$excluded and applied=$applied (#5318)",
 	async ({ form, excluded, applied }) => {
-		const { harness, store, failure } = await uncertainHarness(false, applied);
+		const { harness, store, failure } = await uncertainHarness(applied);
 		const options = { stageAdmissionKey: "concurrent-uncertain-key", excludeFromContext: excluded };
 		const send = () =>
 			form === "single"
@@ -315,58 +198,3 @@ test.each([
 		await assertSavedOnce(harness, store);
 	},
 );
-
-test("a partial startup batch retried after the first prompt keeps its saved prefix and admits its unsaved tail (#5318)", async () => {
-	const { harness, store, failure } = await uncertainHarness(true);
-	const prefix = { ...original, content: "confirmed startup prefix" };
-	const tail = { ...original, content: "unsaved startup tail" };
-	const batch = [prefix, original, tail];
-	const options = {
-		triggerTurn: true,
-		persistWhenStreaming: true,
-		stageAdmissionKey: "partial-startup-batch-key",
-	} satisfies SendMessagesOptions;
-	await assert.rejects(harness.session.sendCustomMessages(batch, options), (error) => error === failure);
-	await harness.session.sendCustomMessages([intervening], { stageAdmissionKey: "intervening-key" });
-	const contexts: string[] = [];
-	harness.setResponses(
-		Array.from({ length: 5 }, () => (context) => {
-			contexts.push(JSON.stringify(context.messages));
-			return fauxAssistantMessage("completed the admitted startup input");
-		}),
-	);
-	await harness.session.prompt("perform the stage task");
-	const settled = Promise.withResolvers<void>();
-	const unsubscribe = harness.session.subscribe((event) => {
-		if (event.type === "agent_settled") settled.resolve();
-	});
-	try {
-		await harness.session.sendCustomMessages(batch, options);
-		if (harness.session.isStreaming) await settled.promise;
-		await harness.session.agent.waitForIdle();
-	} finally {
-		unsubscribe();
-	}
-	await harness.session.prompt("inspect the context including the newly admitted tail");
-	assert.equal(contexts.length, 3, "only the newly admitted tail starts another model turn");
-	for (const context of contexts) {
-		assert.equal(context.split(prefix.content).length - 1, 1, "the confirmed prefix is not delivered again");
-		assert.equal(context.split(original.content).length - 1, 1, "the uncertain prefix is not delivered again");
-	}
-	assert.equal(contexts[0]!.includes(tail.content), false);
-	for (const context of contexts.slice(1)) assert.equal(context.split(tail.content).length - 1, 1);
-	await assertSavedOnce(harness, store);
-	for (const content of [prefix.content, tail.content]) {
-		assert.equal(
-			harness.sessionManager
-				.getBranch()
-				.filter(
-					(entry) =>
-						entry.type === "custom_message" &&
-						entry.customType === original.customType &&
-						entry.content === content,
-				).length,
-			1,
-		);
-	}
-});

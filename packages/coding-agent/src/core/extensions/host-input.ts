@@ -21,8 +21,6 @@ export interface HostInputOptions {
 	requestId: string;
 	sessionId: string;
 	timeout?: number;
-	workflowRunId?: string;
-	workflowStageId?: string;
 }
 
 export interface HostInput {
@@ -52,23 +50,6 @@ export function copyHostQuestionnaire(source: ExtensionUIContext, target: Extens
 	if (questionnaire) questionnaires.set(target, questionnaire);
 }
 
-// Private runner/builtin seam. Symbol identity survives the separately bundled
-// workflow extension; no request minting or host adapter is exposed publicly.
-const WORKFLOW_INPUT = Symbol.for("atomic-coding-agent/workflow-input@1");
-const STAGE_DIALOG = Symbol.for("atomic-coding-agent/stage-dialog@1");
-type StageDialogDescriptor = {
-	kind: "confirm" | "select" | "input" | "editor";
-	message: string;
-	choices?: readonly string[];
-	initial?: string;
-};
-type StageDialogAnswer = string | boolean | undefined;
-type StageDialogRoute = (
-	descriptor: StageDialogDescriptor,
-	identity: HostInputOptions,
-	answerWithHost?: () => Promise<StageDialogAnswer>,
-) => Promise<StageDialogAnswer>;
-type WorkflowIdentity = Pick<HostInputOptions, "workflowRunId" | "workflowStageId"> & { sessionId?: string };
 /** One runner owns request settlement; host promises cannot revive a retired request. */
 export class HostInputBridge {
 	private adapter: HostInput | undefined;
@@ -76,7 +57,6 @@ export class HostInputBridge {
 	private bindingRevision = 0;
 	private closed = false;
 	private readonly pending = new Set<AbortController>();
-	private readonly bindingListeners = new Set<() => void>();
 
 	private readonly sessionId: () => string;
 	private readonly signal: () => AbortSignal | undefined;
@@ -100,7 +80,6 @@ export class HostInputBridge {
 		if (adapter === this.adapter && !bindingChanged) return;
 		this.cancel();
 		this.adapter = adapter;
-		for (const listener of this.bindingListeners) queueMicrotask(listener);
 	}
 
 	get available(): boolean {
@@ -114,73 +93,34 @@ export class HostInputBridge {
 	close(): void {
 		this.closed = true;
 		this.cancel();
-		for (const listener of this.bindingListeners) queueMicrotask(listener);
 	}
 
-	wrap(ui: ExtensionUIContext, presentationHost?: HostInput, scope: WorkflowIdentity = {}): ExtensionUIContext {
-		const stageDialog = (ui as ExtensionUIContext & { [STAGE_DIALOG]?: StageDialogRoute })[STAGE_DIALOG];
-		const requestDialog = <T extends StageDialogAnswer>(
-			descriptor: StageDialogDescriptor,
-			invoke: (host: HostInput, identity: HostInputOptions) => Promise<T>,
-			valid: (value: T) => boolean,
-			options: ExtensionUIDialogOptions | undefined,
-			onCallerCancel: () => T,
-		): Promise<T> => {
-			let hostPending = false;
-			return this.request(
-				(host, identity) => {
-					if (!stageDialog) return invoke(host, identity);
-					const answerWithHost = async () => {
-						hostPending = true;
-						try {
-							const value = await invoke(host, identity);
-							if (!valid(value)) throw hostInputError("InvalidHostInput");
-							return value;
-						} finally {
-							hostPending = false;
-						}
-					};
-					return stageDialog(
-						descriptor,
-						identity,
-						host === presentationHost ? undefined : answerWithHost,
-					) as Promise<T>;
-				},
-				valid,
-				{ ...options, ...scope },
-				onCallerCancel,
-				() => hostPending,
-			);
-		};
+	wrap(ui: ExtensionUIContext, presentationHost?: HostInput): ExtensionUIContext {
 		const wrapped: ExtensionUIContext = {
 			...ui,
 			confirm: (title, message, options) =>
-				requestDialog(
-					{ kind: "confirm", message: `${title}\n\n${message}` },
+				this.request(
 					(host, identity) => host.confirm(title, message, identity),
 					(value) => typeof value === "boolean",
 					options,
 					() => false,
 				),
 			select: (title, choices, options) =>
-				requestDialog(
-					{ kind: "select", message: title, choices },
+				this.request(
 					(host, identity) => host.select(title, choices, identity),
 					(value) => value === undefined || (typeof value === "string" && choices.includes(value)),
 					options,
 					() => undefined,
 				),
 			input: (title, placeholder, options) =>
-				requestDialog(
-					{ kind: "input", message: placeholder ? `${title}\n\n${placeholder}` : title },
+				this.request(
 					(host, identity) => host.input(title, placeholder, identity),
 					validText,
 					options,
 					() => undefined,
 				),
 			editor: (title, initial, options) =>
-				requestDialog(
-					{ kind: "editor", message: title, initial },
+				this.request(
 					(host, identity) => host.editor(title, initial, identity),
 					validText,
 					options,
@@ -192,37 +132,17 @@ export class HostInputBridge {
 				(host, identity) =>
 					host === presentationHost && present ? present(identity.signal) : host.questionnaire(params, identity),
 				(value) => validQuestionnaire(value, params),
-				{ signal, ...scope },
+				{ signal },
 			),
 		);
-		Object.assign(wrapped, {
-			[WORKFLOW_INPUT]: {
-				active: () => !this.closed,
-				available: () => this.available,
-				bindingRevision: () => this.bindingRevision,
-				subscribe: (listener: () => void) => {
-					this.bindingListeners.add(listener);
-					return () => this.bindingListeners.delete(listener);
-				},
-				scope: (workflowRunId: string, workflowStageId: string, sessionId?: string) => {
-					const scoped = this.wrap(ui, presentationHost, {
-						workflowRunId,
-						workflowStageId,
-						...(sessionId === undefined ? {} : { sessionId }),
-					});
-					return { ui: scoped, questionnaire: getHostQuestionnaire(scoped)! };
-				},
-			},
-		});
 		return wrapped;
 	}
 
 	private request<T>(
 		invoke: (host: HostInput, identity: HostInputOptions) => Promise<T>,
 		valid: (value: T) => boolean,
-		options?: ExtensionUIDialogOptions & WorkflowIdentity,
+		options?: ExtensionUIDialogOptions,
 		onCallerCancel?: () => T,
-		dismissUnsettledHost?: () => boolean,
 	): Promise<T> {
 		if (this.closed) return Promise.reject(hostInputError("SessionClosed"));
 		const host = this.adapter;
@@ -251,7 +171,6 @@ export class HostInputBridge {
 			ownerSignal?.removeEventListener("abort", abort);
 			if (onAbort) controller.signal.removeEventListener("abort", onAbort);
 			this.pending.delete(controller);
-			if (dismissUnsettledHost?.()) controller.abort();
 		};
 		if (options?.signal?.aborted || ownerSignal?.aborted) {
 			if (options?.signal?.aborted) cancelCaller();
@@ -267,10 +186,8 @@ export class HostInputBridge {
 				invoke(host, {
 					signal: controller.signal,
 					requestId: randomUUID(),
-					sessionId: options?.sessionId ?? this.sessionId(),
+					sessionId: this.sessionId(),
 					...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
-					...(options?.workflowRunId !== undefined ? { workflowRunId: options.workflowRunId } : {}),
-					...(options?.workflowStageId !== undefined ? { workflowStageId: options.workflowStageId } : {}),
 				}),
 			);
 		} catch (error) {

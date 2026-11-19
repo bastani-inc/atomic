@@ -564,103 +564,6 @@ test("deletion after a failed card admission reports deletion once and releases 
 	);
 });
 
-test("a persistent batch retried before a stage's first prompt skips its saved prefix (#5318)", async () => {
-	const manager = await SessionManager.create(new MemorySessionStore(), process.cwd());
-	const harness = await createHarness({
-		sessionManager: manager,
-		orchestrationContext: {
-			kind: "workflow-stage",
-			workflowRunId: crypto.randomUUID(),
-			workflowStageId: "batch-startup",
-			workflowStageName: "Batch startup",
-			constraints: { disableWorkflowTool: true },
-		},
-	});
-	harnesses.push(harness);
-	const failure = failThirdCardOnce(manager);
-	await assert.rejects(harness.session.sendCustomMessages(messages, sharedOptions), (error) => error === failure);
-	await harness.session.sendCustomMessages(messages, sharedOptions);
-	assertCardsSavedOnce(manager);
-	const contexts: string[] = [];
-	harness.setResponses([
-		(context) => {
-			contexts.push(JSON.stringify(context.messages));
-			return fauxAssistantMessage("completed the stage task");
-		},
-	]);
-	await harness.session.prompt("perform the stage task with startup input");
-	assert.equal(contexts.length, 1);
-	for (const content of CONTENTS) assert.equal(contexts[0]!.split(content).length - 1, 1);
-});
-
-test("a stage-startup batch reuses a saved card after losing its acknowledgement and first read-back (#5318)", async () => {
-	const store = new MemorySessionStore();
-	const failure = new StorageTransientError(store.descriptor, {
-		code: "connection-lost",
-		outcome: "unknown",
-		attempts: 1,
-	});
-	let armed = false;
-	let lostAcknowledgement = false;
-	let failReadBack = false;
-	const faulty: SessionStore = Object.assign(Object.create(store) as SessionStore, {
-		async append(...args: Parameters<SessionStore["append"]>) {
-			const result = await store.append(...args);
-			if (
-				armed &&
-				!lostAcknowledgement &&
-				args[1].some((entry) => entry.type === "custom_message" && entry.content === CONTENTS[2])
-			) {
-				lostAcknowledgement = true;
-				failReadBack = true;
-				throw failure;
-			}
-			return result;
-		},
-		async readRange(...args: Parameters<MemorySessionStore["readRange"]>) {
-			if (failReadBack) {
-				failReadBack = false;
-				throw failure;
-			}
-			return store.readRange(...args);
-		},
-	});
-	const manager = await SessionManager.create(faulty, process.cwd());
-	const harness = await createHarness({
-		sessionManager: manager,
-		orchestrationContext: {
-			kind: "workflow-stage",
-			workflowRunId: crypto.randomUUID(),
-			workflowStageId: "uncertain-startup",
-			workflowStageName: "Uncertain startup",
-			constraints: { disableWorkflowTool: true },
-		},
-	});
-	harnesses.push(harness);
-	armed = true;
-	await assert.rejects(harness.session.sendCustomMessages(messages, sharedOptions), (error) => error === failure);
-	await harness.session.sendCustomMessages(messages, sharedOptions);
-	assertCardsSavedOnce(manager);
-	assertCardsSavedOnce(await SessionManager.open(store, manager.getSessionId()));
-	assert.deepEqual(
-		harness
-			.eventsOfType("message_end")
-			.flatMap((event) =>
-				event.message.role === "custom" && event.message.customType === CARD_TYPE ? [event.message.content] : [],
-			),
-		CONTENTS,
-	);
-	const contexts: string[] = [];
-	harness.setResponses([
-		(context) => {
-			contexts.push(JSON.stringify(context.messages));
-			return fauxAssistantMessage("completed the stage startup");
-		},
-	]);
-	await harness.session.prompt("perform the stage task");
-	for (const content of CONTENTS) assert.equal(contexts[0]!.split(content).length - 1, 1);
-});
-
 test("reopening a partial excluded batch displays only its missing card on retry (#5318)", async () => {
 	const store = new MemorySessionStore();
 	const manager = await SessionManager.create(store, process.cwd());
@@ -695,103 +598,84 @@ test("reopening a partial excluded batch displays only its missing card on retry
 });
 
 for (const form of ["single", "batch"] as const) {
-	for (const state of ["stage startup", "idle excluded input"] as const) {
-		test.each(["keyed single", "keyed batch", "unkeyed single"] as const)(
-			`an uncertain ${state} ${form} survives intervening %s input without duplicate storage or context (#5318)`,
-			async (intervening) => {
-				const store = new MemorySessionStore();
-				const failure = new StorageTransientError(store.descriptor, {
-					code: "connection-lost",
-					outcome: "unknown",
-					attempts: 1,
-				});
-				let lostAcknowledgement = false;
-				let failReadBack = false;
-				const faulty: SessionStore = Object.assign(Object.create(store) as SessionStore, {
-					async append(...args: Parameters<SessionStore["append"]>) {
-						const result = await store.append(...args);
-						if (
-							!lostAcknowledgement &&
-							args[1].some((entry) => entry.type === "custom_message" && entry.content === CONTENTS[0])
-						) {
-							lostAcknowledgement = true;
-							failReadBack = true;
-							throw failure;
-						}
-						return result;
-					},
-					async readRange(...args: Parameters<SessionStore["readRange"]>) {
-						if (failReadBack) {
-							failReadBack = false;
-							throw failure;
-						}
-						return store.readRange(...args);
-					},
-				});
-				const manager = await SessionManager.create(faulty, process.cwd());
-				const harness = await createHarness({
-					sessionManager: manager,
-					...(state === "stage startup"
-						? {
-								orchestrationContext: {
-									kind: "workflow-stage" as const,
-									workflowRunId: crypto.randomUUID(),
-									workflowStageId: "intervening-startup",
-									workflowStageName: "Intervening startup",
-									constraints: { disableWorkflowTool: true },
-								},
-							}
-						: {}),
-				});
-				harnesses.push(harness);
-				const options =
-					state === "stage startup"
-						? sharedOptions
-						: { stageAdmissionKey: sharedOptions.stageAdmissionKey, excludeFromContext: true };
-				const intended = form === "batch" ? messages : [messages[0]!];
-				const send = () =>
-					form === "batch"
-						? harness.session.sendCustomMessages(intended, options)
-						: harness.session.sendCustomMessage(intended[0]!, options);
-				await assert.rejects(send(), (error) => error === failure);
-				const other = { customType: "intervening-card", content: "other keyed input", display: true };
-				const otherOptions = intervening === "unkeyed single" ? {} : { stageAdmissionKey: "intervening-card-key" };
-				if (intervening === "keyed batch") await harness.session.sendCustomMessages([other], otherOptions);
-				else await harness.session.sendCustomMessage(other, otherOptions);
-				await send();
-				const reopened = await SessionManager.open(store, manager.getSessionId());
-				for (const current of [manager, reopened]) {
-					for (const entries of [current.getEntries(), current.getBranch()]) {
-						assert.equal(
-							entries.filter((entry) => entry.type === "custom_message" && entry.customType === CARD_TYPE)
-								.length,
-							intended.length,
-						);
+	test.each(["keyed single", "keyed batch", "unkeyed single"] as const)(
+		`an uncertain excluded ${form} survives intervening %s input without duplicate storage or context (#5318)`,
+		async (intervening) => {
+			const store = new MemorySessionStore();
+			const failure = new StorageTransientError(store.descriptor, {
+				code: "connection-lost",
+				outcome: "unknown",
+				attempts: 1,
+			});
+			let lostAcknowledgement = false;
+			let failReadBack = false;
+			const faulty: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+				async append(...args: Parameters<SessionStore["append"]>) {
+					const result = await store.append(...args);
+					if (
+						!lostAcknowledgement &&
+						args[1].some((entry) => entry.type === "custom_message" && entry.content === CONTENTS[0])
+					) {
+						lostAcknowledgement = true;
+						failReadBack = true;
+						throw failure;
 					}
-				}
-				const contexts: string[] = [];
-				harness.setResponses([
-					(context) => {
-						contexts.push(JSON.stringify(context.messages));
-						return fauxAssistantMessage("completed after recovery");
-					},
-				]);
-				await harness.session.prompt("perform the task after the retried input");
-				assert.equal(contexts.length, 1);
-				for (const message of intended)
-					assert.equal(contexts[0]!.split(message.content).length - 1, state === "stage startup" ? 1 : 0);
-				for (const type of ["message_start", "message_end"] as const) {
+					return result;
+				},
+				async readRange(...args: Parameters<SessionStore["readRange"]>) {
+					if (failReadBack) {
+						failReadBack = false;
+						throw failure;
+					}
+					return store.readRange(...args);
+				},
+			});
+			const manager = await SessionManager.create(faulty, process.cwd());
+			const harness = await createHarness({
+				sessionManager: manager,
+			});
+			harnesses.push(harness);
+			const options = { stageAdmissionKey: sharedOptions.stageAdmissionKey, excludeFromContext: true };
+			const intended = form === "batch" ? messages : [messages[0]!];
+			const send = () =>
+				form === "batch"
+					? harness.session.sendCustomMessages(intended, options)
+					: harness.session.sendCustomMessage(intended[0]!, options);
+			await assert.rejects(send(), (error) => error === failure);
+			const other = { customType: "intervening-card", content: "other keyed input", display: true };
+			const otherOptions = intervening === "unkeyed single" ? {} : { stageAdmissionKey: "intervening-card-key" };
+			if (intervening === "keyed batch") await harness.session.sendCustomMessages([other], otherOptions);
+			else await harness.session.sendCustomMessage(other, otherOptions);
+			await send();
+			const reopened = await SessionManager.open(store, manager.getSessionId());
+			for (const current of [manager, reopened]) {
+				for (const entries of [current.getEntries(), current.getBranch()]) {
 					assert.equal(
-						harness
-							.eventsOfType(type)
-							.filter((event) => event.message.role === "custom" && event.message.customType === CARD_TYPE)
-							.length,
+						entries.filter((entry) => entry.type === "custom_message" && entry.customType === CARD_TYPE).length,
 						intended.length,
 					);
 				}
-			},
-		);
-	}
+			}
+			const contexts: string[] = [];
+			harness.setResponses([
+				(context) => {
+					contexts.push(JSON.stringify(context.messages));
+					return fauxAssistantMessage("completed after recovery");
+				},
+			]);
+			await harness.session.prompt("perform the task after the retried input");
+			assert.equal(contexts.length, 1);
+			for (const message of intended) assert.equal(contexts[0]!.split(message.content).length - 1, 0);
+			for (const type of ["message_start", "message_end"] as const) {
+				assert.equal(
+					harness
+						.eventsOfType(type)
+						.filter((event) => event.message.role === "custom" && event.message.customType === CARD_TYPE).length,
+					intended.length,
+				);
+			}
+		},
+	);
 }
 
 test.each(["ordinary", "protected", "excluded"] as const)(
