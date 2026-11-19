@@ -11,7 +11,12 @@ import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
 import { RUN_JOURNAL_SCHEMA_VERSION, RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED } from "../storage/run-journal.js";
-import type { WorkspaceCollectionError } from "./errors.ts";
+import {
+	type RenameBlocker,
+	recordRenameBlocker,
+	renameBlockerCandidates,
+	type WorkspaceCollectionError,
+} from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
 /** Every blob hash a snapshot needs to be restored: its chain's patches and its bundle. */
@@ -1521,8 +1526,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				// installed are dropped, and the current one is installed again on the new table.
 				await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs));
 				await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete_all`, t.blobs));
-				await transaction.exec(`ALTER TABLE ${t.blobChunks} RENAME TO ${retired}`);
-				await transaction.exec(`ALTER TABLE ${next} RENAME TO ${t.blobChunks}`);
+				try {
+					await transaction.exec(`ALTER TABLE ${t.blobChunks} RENAME TO ${retired}`);
+					await transaction.exec(`ALTER TABLE ${next} RENAME TO ${t.blobChunks}`);
+				} catch (error) {
+					await this.confirmRenameBlocker(transaction, error);
+					throw error;
+				}
 				await transaction.exec(this.dialect.renderTrigger(chunksDeleteTrigger(t)));
 				return true;
 			});
@@ -1530,6 +1540,33 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			if (moved) break;
 		}
 		await this.dropRetiredChunks(options);
+	}
+
+	/**
+	 * Records on `error`, a rename that failed in `transaction`, the trigger or view SQLite named in it, when the schema
+	 * holds exactly one trigger or view that the error's words can name (#5622). The failed statement left the
+	 * transaction open on the schema SQLite checked, so that object is the one SQLite named. Otherwise, or when the schema
+	 * cannot be read, nothing is recorded and the collection warning names no object.
+	 */
+	private async confirmRenameBlocker(transaction: SqliteExecutor, error: unknown): Promise<void> {
+		const candidates = renameBlockerCandidates(error);
+		if (candidates.length === 0) return;
+		const names = JSON.stringify([...new Set(candidates.map((candidate) => candidate.name))]);
+		const objects = (schema: string) =>
+			`SELECT type, name FROM ${schema} WHERE type IN ('trigger', 'view') AND name IN (SELECT value FROM ${this.dialect.jsonValues("?")})`;
+		const rows = await transaction
+			.all<SqliteRow & RenameBlocker>(
+				`${objects("sqlite_master")} UNION ALL ${objects("sqlite_temp_master")}`,
+				names,
+				names,
+			)
+			.catch(() => undefined);
+		if (rows === undefined) return;
+		const named = rows.filter((row) =>
+			candidates.some((candidate) => candidate.type === row.type && candidate.name === row.name),
+		);
+		const [only] = named;
+		if (named.length === 1 && only !== undefined) recordRenameBlocker(error, only);
 	}
 
 	/**

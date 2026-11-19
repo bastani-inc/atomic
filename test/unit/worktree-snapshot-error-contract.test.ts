@@ -948,7 +948,7 @@ describe("WorkspaceCollectionError (#4355)", () => {
 		);
 	});
 
-	test("names the trigger or view SQLite reports when one that refers to a missing table blocks the chunk table move (#5622)", () => {
+	test("names no trigger or view from the storage failure's words alone, which can mean another object of a longer or shorter name (#5622)", () => {
 		const remote = new StorageUnavailableError(
 			{ adapter: "libsql", location: "https://db.example" },
 			new Error("SQLITE_UNKNOWN: SQLite error: error in trigger audit_log: no such table: main.audit", {
@@ -960,21 +960,23 @@ describe("WorkspaceCollectionError (#4355)", () => {
 			new Error("error in view report view: no such table: main.sales"),
 			"error in view report view: no such table: main.sales (SQLite code 1)",
 		);
-		for (const [cause, summary, hint] of [
+		for (const [cause, summary] of [
 			[
 				remote,
 				"Snapshot blob collection failed while deleting unreferenced blobs from team_snapshot_blobs: SQLite error: error in trigger audit_log: no such table: main.audit",
-				'Fix the trigger audit_log, or drop it with DROP TRIGGER "audit_log", and the next collection finishes the move.',
 			],
 			[
 				local,
 				"Snapshot blob collection failed while deleting unreferenced blobs from team_snapshot_blobs: error in view report view: no such table: main.sales",
-				'Fix the view report view, or drop it with DROP VIEW "report view", and the next collection finishes the move.',
 			],
 			[
 				new Error('error in view 売上"q after rename: no such column: total'),
 				'Snapshot blob collection failed while deleting unreferenced blobs from team_snapshot_blobs: error in view 売上"q after rename: no such column: total',
-				'Fix the view 売上"q, or drop it with DROP VIEW "売上""q", and the next collection finishes the move.',
+			],
+			// A view `sales after tax`, or a view `sales` reported with a suffix: only the database can tell.
+			[
+				new Error("error in view sales after tax: no such table: main.archive"),
+				"Snapshot blob collection failed while deleting unreferenced blobs from team_snapshot_blobs: error in view sales after tax: no such table: main.archive",
 			],
 		] as const) {
 			const blocked = new WorkspaceCollectionError(
@@ -984,7 +986,7 @@ describe("WorkspaceCollectionError (#4355)", () => {
 			assert.equal(blocked.summary, summary);
 			assert.equal(
 				blocked.hint,
-				`A trigger or view that refers to a missing table blocks moving the snapshot chunk table to its new layout until it is fixed or dropped: SQLite renames no table while one exists. ${hint} No blob a retained snapshot needs was deleted, and snapshots keep working meanwhile; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.`,
+				"No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.",
 			);
 			assert.equal(blocked.message, `${summary} (collection-failed). ${blocked.hint}`);
 			assert.deepEqual(blocked.fields, { table: "team_snapshot_blobs", phase: "sweep", deleted: 2 });
@@ -1042,5 +1044,31 @@ describe("WorkspaceCollectionError (#4355)", () => {
 		assert.equal(rehydrated.retryable, true);
 		assert.equal(rehydrated.message, error.message);
 		assert.equal((rehydrated.cause as Error).message, "database is locked");
+	});
+
+	test("keeps the message, hint and summary an earlier version sent, whatever its cause says (#5622)", () => {
+		const hint =
+			"No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.";
+		const summary = "Snapshot blob collection failed while deleting unreferenced blobs from snapshot_blobs";
+		// What 0.9.89 sends for a collection that a broken view stopped.
+		const sent: SerializedWorkspaceError = {
+			name: "WorkspaceCollectionError",
+			code: "collection-failed",
+			hint,
+			fields: { table: "snapshot_blobs", phase: "sweep", deleted: 0 },
+			retryable: true,
+			message: `${summary} (collection-failed). ${hint}`,
+			cause: { name: "Error", message: "error in view sales: no such table: main.missing" },
+		};
+
+		const received = rehydrateWorkspaceError(sent);
+
+		assert.ok(received instanceof WorkspaceCollectionError);
+		assert.equal(received.message, sent.message);
+		assert.equal(received.hint, hint);
+		assert.equal(received.summary, summary);
+		assert.deepEqual(received.fields, sent.fields);
+		assert.equal(received.retryable, true);
+		assert.equal((received.cause as Error).message, "error in view sales: no such table: main.missing");
 	});
 });

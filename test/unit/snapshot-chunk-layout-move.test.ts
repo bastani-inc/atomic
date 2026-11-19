@@ -12,7 +12,12 @@ import {
 	SNAPSHOT_CHUNK_MOVE_ROWS,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
-import type { WorkspaceCollectionError } from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
+import {
+	rehydrateWorkspaceError,
+	type SerializedWorkspaceError,
+	serializeWorkspaceError,
+	WorkspaceCollectionError,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
 import {
 	resetSnapshotCollectionScheduleForTesting,
 	scheduleSnapshotCollection,
@@ -587,6 +592,87 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 					assert.equal(warnings.length, 1);
 				});
 			}
+
+			/** A failed automatic collection of a 0.9.89 store, whose `views` refer to a table, dropped unless the view is `working`. */
+			async function failedCollection(
+				views: Readonly<Record<string, "working" | "broken">>,
+			): Promise<{ database: SqliteDatabase; store: SqlSnapshotBlobStore; error: WorkspaceCollectionError }> {
+				const database = await release0989Store();
+				await database.exec("CREATE TABLE view_source (x)");
+				await database.exec("CREATE TABLE view_gone (x)");
+				for (const [name, state] of Object.entries(views))
+					await database.exec(
+						`CREATE VIEW "${name.replaceAll('"', '""')}" AS SELECT x FROM ${state === "working" ? "view_source" : "view_gone"}`,
+					);
+				await database.exec("DROP TABLE view_gone");
+				const store = await SqlSnapshotBlobStore.open(database, prefix);
+				const outcome = await scheduleSnapshotCollection(
+					store,
+					{ autoCollect: true, collectIntervalSeconds: 60, graceSeconds: 3_600 },
+					{ onFailure: () => {} },
+				);
+				assert.equal(outcome.status, "failed");
+				return { database, store, error: (outcome as { error: WorkspaceCollectionError }).error };
+			}
+
+			for (const [blocker, named] of [
+				["sales after tax", true],
+				["sales after rename", false],
+			] as const) {
+				test(`the collection warning never says to drop the working view sales when the view '${blocker}' blocks the move (#5622)`, async () => {
+					const { database, store, error } = await failedCollection({ sales: "working", [blocker]: "broken" });
+
+					assert.match(
+						error.summary,
+						new RegExp(`: error in view ${blocker}: no such table: main\\.view_gone$`, "u"),
+					);
+					assert.doesNotMatch(error.message, /DROP VIEW "sales"/u);
+					const drop =
+						/or drop it with (DROP VIEW "(?:[^"]|"")*"), and the next collection finishes the move\./u.exec(
+							error.hint,
+						)?.[1];
+					if (named) {
+						// SQLite reports a table rename's broken view without a suffix: only `sales after tax` is meant.
+						assert.equal(drop, `DROP VIEW "${blocker}"`, error.hint);
+					} else {
+						// SQLite also writes `<name> after rename` for a view named `sales`: the warning cannot say which.
+						assert.equal(
+							error.hint,
+							"No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.",
+						);
+					}
+
+					await database.exec(drop ?? `DROP VIEW "${blocker}"`);
+					assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
+					assert.equal(await layoutOf(database), "rowid");
+					assert.deepEqual(
+						await database.all("SELECT name FROM sqlite_schema WHERE type = 'view' ORDER BY name"),
+						[{ name: "sales" }],
+					);
+					await database.all("SELECT x FROM sales");
+				});
+			}
+
+			test("a collection warning sent to another process keeps its message and hint, even with the blocking view as its eighth cause (#5622)", async () => {
+				const { error } = await failedCollection({ 'report "q"': "broken" });
+				let wrapped = error.cause as Error;
+				for (let wrapper = 1; wrapper < 8; wrapper++) wrapped = new Error(`wrapper ${wrapper}`, { cause: wrapped });
+				const deep = new WorkspaceCollectionError(
+					{ table: error.table, phase: error.phase, deleted: error.deleted },
+					wrapped,
+				);
+
+				for (const sent of [error, deep]) {
+					assert.match(sent.hint, /or drop it with DROP VIEW "report ""q""", and the next collection/u);
+					const received = rehydrateWorkspaceError(
+						JSON.parse(JSON.stringify(serializeWorkspaceError(sent))) as SerializedWorkspaceError,
+					);
+					assert.ok(received instanceof WorkspaceCollectionError);
+					assert.equal(received.message, sent.message);
+					assert.equal(received.hint, sent.hint);
+					assert.equal(received.summary, sent.summary);
+				}
+			});
 		});
 	}
 }
