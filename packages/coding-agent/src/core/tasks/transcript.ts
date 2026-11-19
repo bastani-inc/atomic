@@ -25,7 +25,75 @@ export type TaskTranscriptPage = {
 	omittedEarlier: boolean;
 };
 export type TranscriptError = "UnknownTask" | "ScopeMismatch" | "TranscriptUnavailable";
-const PAGE_ITEMS = 100;
+export const TASK_TRANSCRIPT_PAGE_ITEMS = 100;
+const PAGE_ITEMS = TASK_TRANSCRIPT_PAGE_ITEMS;
+
+/** A stored row's public item identities without copying its body. A reader moving backward can stop at the
+ * page boundary even when one assistant message has thousands of visible blocks. */
+export function* taskEntryReferences(
+	entry: ReturnType<TaskTranscriptSource["getEntries"]>[number],
+	sessionId: string,
+	backward: boolean,
+): Generator<TaskTranscriptItem> {
+	const id = entry.id,
+		source = { sessionId, entryId: id };
+	if (entry.type === "compaction" || entry.type === "branch_summary") {
+		if (sessionEntryToContextMessages(entry).length)
+			yield { id, kind: entry.type === "compaction" ? "compaction" : "branch-summary", source };
+		return;
+	}
+	if (entry.type === "custom_message") {
+		if (entry.display) yield { id, kind: "custom-message", source };
+		return;
+	}
+	if (entry.type !== "message") return;
+	const message = entry.message;
+	switch (message.role) {
+		case "user":
+			yield { id, kind: "prompt", source };
+			return;
+		case "toolResult":
+			yield { id, kind: "tool-result", source, toolCallId: message.toolCallId };
+			return;
+		case "bashExecution":
+			yield { id, kind: "shell", source };
+			return;
+		case "custom":
+			if (message.display) yield { id, kind: "custom-message", source };
+			return;
+		case "branchSummary":
+			yield { id, kind: "branch-summary", source };
+			return;
+		case "assistant": {
+			let visible = false;
+			for (
+				let i = backward ? message.content.length - 1 : 0;
+				i >= 0 && i < message.content.length;
+				i += backward ? -1 : 1
+			) {
+				const block = message.content[i]!;
+				if (block.type !== "toolCall" && block.type !== "text" && block.type !== "thinking") continue;
+				visible = true;
+				const sourcePart = { ...source, contentIndex: i },
+					key = `${id}:${i}`;
+				if (block.type === "toolCall")
+					yield { id: key, kind: "tool-call", source: sourcePart, toolCallId: block.id };
+				else
+					yield {
+						id: key,
+						kind:
+							block.type === "thinking" ? "thinking" : message.stopReason === "stop" ? "response" : "assistant",
+						source: sourcePart,
+					};
+			}
+			if (
+				!visible &&
+				(message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length")
+			)
+				yield { id, kind: "assistant", source };
+		}
+	}
+}
 
 /**
  * References existing session entries; never copies message text into task history. A finished task's history is read
@@ -38,6 +106,12 @@ export async function readTaskTranscript(
 	const bound = taskTranscriptSource(task);
 	if (!bound.ok) return bound;
 	const { session, taskId } = bound.value;
+	const earlier = session.getEarlierCursor?.();
+	if (session.loadHistory || (earlier && session.readHistory)) {
+		const { readArchivedTaskReferences } = await import("./task-reference-archive.js");
+		const archived = await readArchivedTaskReferences(session, taskId, cursor, earlier);
+		if (archived) return archived;
+	}
 	if (!session.loadHistory) return readTaskTranscriptSnapshot(task, cursor);
 	const history = await session.loadHistory();
 	if (history.unavailable !== undefined)
@@ -89,55 +163,12 @@ export function taskTranscriptPageWithCuts(
 	}
 	const items: TaskTranscriptItem[] = [];
 	const seen = new Set<string>();
-	const add = (item: TaskTranscriptItem) => {
-		if (seen.has(item.id)) return;
-		seen.add(item.id);
-		items.push(item);
-	};
-	for (const entry of entries) {
-		const source = { sessionId, entryId: entry.id };
-		if (entry.type === "compaction" || entry.type === "branch_summary") {
-			if (sessionEntryToContextMessages(entry).length > 0)
-				add({ id: entry.id, kind: entry.type === "compaction" ? "compaction" : "branch-summary", source });
-			continue;
+	for (const entry of entries)
+		for (const item of taskEntryReferences(entry, sessionId, false)) {
+			if (seen.has(item.id)) continue;
+			seen.add(item.id);
+			items.push(item);
 		}
-		if (entry.type === "custom_message") {
-			if (entry.display) add({ id: entry.id, kind: "custom-message", source });
-			continue;
-		}
-		if (entry.type !== "message") continue;
-		const message = entry.message;
-		if (message.role === "user") {
-			add({ id: entry.id, kind: "prompt", source });
-		} else if (message.role === "toolResult") {
-			add({ id: entry.id, kind: "tool-result", source, toolCallId: message.toolCallId });
-		} else if (message.role === "bashExecution") {
-			add({ id: entry.id, kind: "shell", source });
-		} else if (message.role === "custom" && message.display) {
-			add({ id: entry.id, kind: "custom-message", source });
-		} else if (message.role === "branchSummary") {
-			add({ id: entry.id, kind: "branch-summary", source });
-		} else if (message.role === "assistant") {
-			let hasContent = false;
-			for (const [contentIndex, block] of message.content.entries()) {
-				const identity = { id: `${entry.id}:${contentIndex}`, source: { ...source, contentIndex } };
-				if (block.type === "toolCall") {
-					add({ ...identity, kind: "tool-call", toolCallId: block.id });
-				} else if (block.type === "text") {
-					add({ ...identity, kind: message.stopReason === "stop" ? "response" : "assistant" });
-				} else if (block.type === "thinking") {
-					add({ ...identity, kind: "thinking" });
-				} else continue;
-				hasContent = true;
-			}
-			// The terminal notice is visible even if no content block could be displayed.
-			if (
-				!hasContent &&
-				(message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length")
-			)
-				add({ id: entry.id, kind: "assistant", source });
-		}
-	}
 	if (items.length === 0) {
 		return { ok: false, error: { code: "TranscriptUnavailable", message: "Transcript unavailable" } };
 	}

@@ -1070,32 +1070,37 @@ function withArchivedPages(
 	unsaved?: SessionEntry,
 ): TranscriptSource {
 	if (store)
-		return withTaskTranscriptArchive(source, async (project, loadSnapshot) => {
-			let records: SessionEntry[];
-			let entries: SessionEntry[];
-			let version: string | undefined;
-			try {
-				const loaded = await loadSnapshot(store, sessionId);
-				records = [...loaded.snapshot.entries];
-				entries = withUnsavedAnswer(records, unsaved);
-				version = loaded.generation;
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				return {
-					ok: false,
-					error: {
-						message: message.startsWith("History unavailable:")
-							? message
-							: await historyUnavailable(undefined, error),
-					},
-				};
-			}
-			return project(
-				entries,
-				records.length,
-				async () => version && createHash("sha256").update(`store:${version}`).digest("base64url"),
-			);
-		});
+		return withTaskTranscriptArchive(
+			source,
+			async (project, loadSnapshot) => {
+				let records: SessionEntry[];
+				let entries: SessionEntry[];
+				let version: string | undefined;
+				try {
+					const loaded = await loadSnapshot(store, sessionId);
+					records = [...loaded.snapshot.entries];
+					entries = withUnsavedAnswer(records, unsaved);
+					version = loaded.generation;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return {
+						ok: false,
+						error: {
+							message: message.startsWith("History unavailable:")
+								? message
+								: await historyUnavailable(undefined, error),
+						},
+					};
+				}
+				return project(
+					entries,
+					records.length,
+					async () => version && createHash("sha256").update(`store:${version}`).digest("base64url"),
+				);
+			},
+			undefined,
+			unsaved,
+		);
 	if (file === undefined) return source;
 	return withTaskTranscriptArchive(
 		source,
@@ -1194,7 +1199,7 @@ function settledTranscript(
 	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
-		...(store !== undefined && unsaved === undefined
+		...(store !== undefined
 			? {
 					readHistory: (options) => readSessionHistory(store, sessionId, options),
 					readHistoryChunks: (ref, options) => readSessionHistoryChunks(store, ref, options),

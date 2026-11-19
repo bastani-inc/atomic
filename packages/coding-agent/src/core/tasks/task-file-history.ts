@@ -17,6 +17,7 @@ export interface FileTaskPage {
 	adjacent: { current: string; older?: string; newer?: string };
 	nextCursor?: string;
 	file: true;
+	generation: string;
 }
 type Span = { start: number; end: number; next: number };
 type FileCut = {
@@ -157,6 +158,8 @@ async function filePage(
 	signal?: AbortSignal,
 	initialBackward = true,
 	detail?: { throughId?: string },
+	metadataOnly = false,
+	expectedGeneration?: string,
 ): Promise<FileTaskPage> {
 	const source = digest(JSON.stringify([path, id]));
 	const cut = cursor === undefined ? undefined : decode(cursor, source);
@@ -182,6 +185,7 @@ async function filePage(
 			if (!(await matchesHeader(lines, header, id)))
 				throw new Error(`History unavailable: its session file now belongs to another session (${path}).`);
 			let limit = size,
+				generationStamp = stamp,
 				at = initialBackward ? size : header.next;
 			if (cut) {
 				const same =
@@ -190,14 +194,19 @@ async function filePage(
 						(size > cut.size && digest(await lines.bytes(Math.max(0, cut.size - 64), cut.size)) === cut.witness));
 				if (same) {
 					limit = cut.size;
+					generationStamp = cut.stamp;
 					at = cut.at;
 				} else at = await rebind(lines, header.next, size, cut);
 			}
+			const generation = digest(`${inode}:${generationStamp}:${limit}`);
+			if (expectedGeneration !== undefined && generation !== expectedGeneration)
+				throw new Error(`History unavailable: the session file changed while it was being read (${path}).`);
+			if (at < header.next || at > limit) throw new Error("Invalid saved file cursor");
 			const backward = cut?.backward ?? initialBackward;
 			const base = {
 				source,
 				inode,
-				stamp,
+				stamp: generationStamp,
 				size: limit,
 				witness: digest(await lines.bytes(Math.max(0, limit - 64), limit)),
 			};
@@ -214,7 +223,13 @@ async function filePage(
 				const bytes = span.end - span.start;
 				if (items.length && bytes > BUDGET - used) break;
 				let item: FileTaskPage["items"][number] | undefined;
-				if (bytes > BUDGET) {
+				if (metadataOnly && span.end !== size) {
+					for await (const part of lines.chunks(span.start, span.end))
+						if (part.some((c) => c !== 32 && c !== 9 && c !== 13)) {
+							item = { seq: span.start, bytes };
+							break;
+						}
+				} else if (bytes > BUDGET || metadataOnly) {
 					if (span.next === size && span.end === size) {
 						const checker = new JsonTextChecker();
 						for await (const b of lines.chunks(span.start, span.end)) checker.feed(b);
@@ -275,7 +290,13 @@ async function filePage(
 				: position(low, lowAfter, false, top, "before");
 			const end = await file.stat({ bigint: true });
 			if (end.size !== stat.size || end.mtimeNs !== stat.mtimeNs || end.ctimeNs !== stat.ctimeNs) continue;
-			return { file: true, items, adjacent: { current, older, newer }, nextCursor: backward ? older : newer };
+			return {
+				file: true,
+				generation,
+				items,
+				adjacent: { current, older, newer },
+				nextCursor: backward ? older : newer,
+			};
 		}
 		throw new Error(`History unavailable: the session file changed while it was being read (${path}).`);
 	} finally {
@@ -288,6 +309,8 @@ export async function* taskFilePages(
 	sessionId: string,
 	options: {
 		cursor?: string;
+		metadataOnly?: boolean;
+		expectedGeneration?: string;
 		signal?: AbortSignal;
 		direction?: "forward" | "backward";
 		detail?: { throughId?: string };
@@ -303,6 +326,8 @@ export async function* taskFilePages(
 			options.signal,
 			options.direction !== "forward",
 			options.detail,
+			options.metadataOnly,
+			options.expectedGeneration,
 		);
 		yield page;
 		if (!page.nextCursor) return;

@@ -75,6 +75,7 @@ export interface FileArchive {
 	readonly unsaved?: Entries[number];
 }
 const fileArchives = new WeakMap<TaskTranscriptSource, FileArchive>();
+const unsavedAnswers = new WeakMap<TaskTranscriptSource, Entries[number]>();
 const archives = new WeakMap<
 	TaskTranscriptSource,
 	{ load: TaskTranscriptSource["loadHistory"]; read: ArchiveReader }
@@ -94,7 +95,7 @@ export function taskTranscriptFile(source: TaskTranscriptSource): FileArchive | 
 
 /** @internal The final answer a first-party source shows after its saved history because its session could not save it. */
 export function taskTranscriptUnsavedAnswer(source: TaskTranscriptSource): Entries[number] | undefined {
-	return taskTranscriptFile(source)?.unsaved;
+	return archiveReader(source) ? (unsavedAnswers.get(source) ?? fileArchives.get(source)?.unsaved) : undefined;
 }
 
 /** @internal A first-party archive reader supplies the identity of the records it returned. */
@@ -102,12 +103,15 @@ export function withTaskTranscriptArchive<T extends TaskTranscriptSource>(
 	source: T,
 	reader: ArchiveReader | TaskTranscriptSource,
 	file?: FileArchive,
+	unsaved?: Entries[number],
 ): T {
 	const archive = typeof reader === "function" ? reader : archiveReader(reader);
 	if (archive) {
 		archives.set(source, { load: source.loadHistory, read: archive });
 		const bound = file ?? (typeof reader === "function" ? undefined : fileArchives.get(reader));
 		if (bound) fileArchives.set(source, bound);
+		const answer = unsaved ?? (typeof reader === "function" ? undefined : unsavedAnswers.get(reader));
+		if (answer) unsavedAnswers.set(source, answer);
 	}
 	return source;
 }
@@ -415,9 +419,14 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			}
 			if (source.ok && source.value.session.readHistory && source.value.session.loadHistory) {
 				const { session, inheritedThroughId } = source.value;
-				return savedTaskDetailText(session, inheritedThroughId).catch(() =>
-					detailText(session.getFallbackEntries?.()),
-				);
+				return savedTaskDetailText(session, inheritedThroughId)
+					.then((value) => {
+						const answer = taskTranscriptUnsavedAnswer(session);
+						return answer?.type === "message" && answer.message.role === "assistant"
+							? { ...value, output: messageText(answer.message) }
+							: value;
+					})
+					.catch(() => detailText(session.getFallbackEntries?.()));
 			}
 			// A finished task keeps its history in its session store, not in memory (#5186).
 			if (taskTranscriptSourceLoads(task.value))
@@ -689,11 +698,40 @@ async function savedTranscriptView(
 						},
 					},
 		);
-		const unsaved = file?.unsaved;
+		const unsaved = taskTranscriptUnsavedAnswer(session);
 		if (!page.adjacent?.newer && unsaved?.type === "message") {
-			const last = entries.findLast((e) => e.type === "message");
-			if (last?.type !== "message" || JSON.stringify(last.message) !== JSON.stringify(unsaved.message))
-				entries.push(unsaved);
+			const { taskAnswerMissing } = await import("./task-unsaved-answer.js");
+			const records = async function* (span: typeof page) {
+				for (let i = span.items.length - 1; i >= 0; i--) {
+					const row = span.items[i]!;
+					if ("entry" in row) yield row;
+					else if (file) {
+						const { taskFileEntryChunks } = await import("./task-file-history.js");
+						yield {
+							chunks: () =>
+								taskFileEntryChunks(
+									file.path,
+									file.sessionId,
+									span.adjacent!.current!,
+									row.seq,
+									row.bytes,
+									signal,
+								),
+						};
+					} else if ("epoch" in row && session.readHistoryChunks)
+						yield { chunks: () => session.readHistoryChunks!(row, { signal }) };
+				}
+			};
+			const missing = await taskAnswerMissing(
+				unsaved,
+				(async function* () {
+					yield* records(page);
+					const prior = page.adjacent?.older;
+					if (prior)
+						for await (const older of read({ cursor: prior, adjacent: true, signal })) yield* records(older);
+				})(),
+			);
+			if (missing) entries.push(unsaved);
 		}
 		const origins = new Map<AgentMessage, string>();
 		let from = 0,
@@ -754,6 +792,9 @@ async function savedTranscriptView(
 		}
 		offset = undefined;
 	}
+	const last = taskTranscriptUnsavedAnswer(session);
+	if (cursor === undefined && last?.type === "message")
+		return { ok: true, value: { messages: [last.message], savedWindow: true } };
 	return { ok: false, error: { message: "Transcript unavailable" } };
 }
 

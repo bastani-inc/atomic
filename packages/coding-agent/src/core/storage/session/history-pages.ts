@@ -1,6 +1,11 @@
 import { hash } from "fast-sha256";
 import { SessionConflictError } from "./errors.js";
-import { type HistoryPacketReader, historySnapshotFor } from "./history-snapshot.js";
+import {
+	type HistoryPacketReader,
+	historySnapshotFor,
+	observeReferenceCut,
+	referenceMetadataRead,
+} from "./history-snapshot.js";
 import { snapshotChunk, snapshotHead, snapshotPage } from "./snapshot-cut.js";
 import {
 	type OversizedSessionEntry,
@@ -139,7 +144,18 @@ export async function* historyPages(
 			const edge = reverse ? through : from;
 			if (!first || first.seq !== edge) throw new Error(`Missing session history at entry ${edge}`);
 			low = high = edge;
-			if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
+			if (referenceMetadataRead(options)) {
+				low = from;
+				high = through;
+				// Internal raw-reference verification takes byte locators, not decoded conversation payloads.
+				page = sized.sizes.map((s) => ({
+					kind: "oversized" as const,
+					seq: s.seq,
+					bytes: s.bytes,
+					epoch: stamp!,
+					sessionId,
+				}));
+			} else if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
 				page = [{ kind: "oversized", sessionId, epoch: stamp, seq: edge, bytes: first.bytes }];
 			} else {
 				let used = 0;
@@ -165,6 +181,7 @@ export async function* historyPages(
 		const hasNext = reverse ? hasOlder : hasNewer;
 		const cursorFor = (from: number, to: number, backward: boolean) =>
 			`${scope}.${from}.${to}${backward ? ".b" : ""}${options.adjacent || leaf !== undefined ? `.${firstSeq}.${lastSeq}` : ""}${leaf === undefined ? "" : `.p${leaf}`}${snapshotOnly ? `.s${cut}` : ""}`;
+		observeReferenceCut(options, store, sessionId, stamp, cut);
 		yield {
 			items: page,
 			...(hasNext ? { nextCursor: cursorFor(start, end, reverse) } : {}),
@@ -192,7 +209,12 @@ export async function* readSessionHistory(
 	options.signal?.throwIfAborted();
 	const snapshot = historySnapshotFor(store);
 	// Branch spans may need a separate index snapshot. Never request one from inside a single-connection reader.
-	if (snapshot && options.branchLeafSeq === undefined && !options.cursor?.includes(".p")) {
+	if (
+		snapshot &&
+		!referenceMetadataRead(options) &&
+		options.branchLeafSeq === undefined &&
+		!options.cursor?.includes(".p")
+	) {
 		let request = options;
 		for (;;) {
 			options.signal?.throwIfAborted();
