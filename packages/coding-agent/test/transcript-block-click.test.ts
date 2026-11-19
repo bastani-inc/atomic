@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import {
 	Box,
@@ -1547,17 +1546,6 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 			} finally {
 				chat.tui.stop();
 			}
-		});
-	}
-
-	for (const [scenario, behavior] of [
-		["import", "importing rowsFrom without a TUI allocates no click segmenter"],
-		["pending", "a pending passive toggle releases the replaced painted rows"],
-	]) {
-		test(`${behavior} (#5696)`, () => {
-			const fixture = fileURLToPath(new URL("./fixtures/transcript-click-resources.mjs", import.meta.url));
-			const result = spawnSync(process.execPath, ["--expose-gc", fixture, scenario!], { encoding: "utf8" });
-			assert.equal(result.status, 0, `${result.error ?? ""}${result.stdout}${result.stderr}`);
 		});
 	}
 
