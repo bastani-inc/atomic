@@ -24,6 +24,9 @@ const boundary = vi.hoisted(() => ({
 	links: {} as Record<string, { target: string; type: "file" | "dir" | "junction" }>,
 	failClone: false,
 	cloneScript: "",
+	/** The clone command cannot start, as when git or gh is missing; `onCloneSpawn` runs as it is started. */
+	cloneSpawnFails: false,
+	onCloneSpawn: undefined as (() => void) | undefined,
 	/** `gh api` output keyed by `<endpoint> <jq filter>`; any other request fails. */
 	api: {} as Record<string, string>,
 }));
@@ -53,6 +56,11 @@ vi.mock("node:child_process", async (importOriginal) => {
 		return Object.assign(new EventEmitter(), { kill: () => true });
 	};
 	const spawn = (command: string, args: string[] = [], options: object = {}) => {
+		if (args[0] === "repo" && args[1] === "clone" && boundary.cloneSpawnFails) {
+			boundary.calls.push(args);
+			boundary.onCloneSpawn?.();
+			return actual.spawn("atomic-command-that-does-not-exist", [], options);
+		}
 		if (args[0] === "repo" && args[1] === "clone" && boundary.cloneScript) {
 			boundary.calls.push(args);
 			return actual.spawn(process.execPath, ["-e", boundary.cloneScript], options);
@@ -136,6 +144,8 @@ beforeEach(async () => {
 	boundary.links = {};
 	boundary.failClone = false;
 	boundary.cloneScript = "";
+	boundary.cloneSpawnFails = false;
+	boundary.onCloneSpawn = undefined;
 	boundary.api = {};
 	writeFileSync(boundary.configPath, JSON.stringify({ githubClone: { clonePath } }));
 	await clearCloneCache();
@@ -647,4 +657,13 @@ test("aborting a clone terminates its process tree once, also when the clone's e
 	controller.abort();
 	assert.equal(await clone, null);
 	assert.deepEqual(containment.events, ["contain", "terminate", "close"]);
+});
+
+test("a clone aborted as it starts, whose command cannot start, ends without a clone instead of failing (#5601)", async () => {
+	const controller = new AbortController();
+	boundary.cloneSpawnFails = true;
+	// The abort lands while the clone command is being started, so the clone stops a child that never started.
+	boundary.onCloneSpawn = () => controller.abort();
+	assert.equal(await extractGitHub("https://github.com/octo/widgets", controller.signal, true), null);
+	assert.equal(cloneTargets().length, 1, "the clone was started");
 });
