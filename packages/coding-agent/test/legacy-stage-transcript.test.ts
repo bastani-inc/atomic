@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { it } from "vitest";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { TreeSelectorComponent } from "../src/modes/interactive/components/tree-selector.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { SessionManager } from "../src/core/session-manager.js";
+import { TreeSelectorComponent } from "../src/modes/interactive/components/tree-selector.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 it("opens and displays a saved 0.9.x stage transcript without a workflow backend", async () => {
 	initTheme("dark");

@@ -8,7 +8,7 @@ import { isSubagentChildSession } from "./agent-session-tasks.js";
 import { syncSessionHistoryTool } from "./agent-session-tool-registry.ts";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
-import { legacyWorkflowSection } from "./legacy-workflow-files.ts";
+import { legacyWorkflowSection } from "./legacy-workflow-files.js";
 import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import {
