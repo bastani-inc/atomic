@@ -376,11 +376,13 @@ export async function askReadinessViaStageBroker(
 	stageId: string,
 	signal: AbortSignal,
 	stageUiBroker: StageUiBroker,
+	owner?: AbortSignal,
 ): Promise<ReadinessDecision> {
 	const gatePromptId = `readiness-gate-${stageId}-${crypto.randomUUID()}`;
 	try {
 		const result = await presentStageQuestion({
 			broker: stageUiBroker,
+			owner,
 			runId,
 			stageId,
 			promptId: gatePromptId,
@@ -390,6 +392,6 @@ export async function askReadinessViaStageBroker(
 		}).result;
 		return result === undefined ? { action: "advance" } : interpretReadinessResult(result);
 	} finally {
-		stageUiBroker.clearStagePrompt(runId, stageId);
+		stageUiBroker.clearStagePrompt(runId, stageId, owner);
 	}
 }

@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "../../core/extension
 import { formatBytes, LlamaClient, type LlamaModelInfo, normalizeLlamaServerUrl } from "./client.js";
 import { isLlamaServerUnreachableError } from "./errors.ts";
 import { findHuggingFaceToken, HuggingFaceClient } from "./huggingface.js";
-import { createLlamaProvider, LLAMA_PROVIDER_ID } from "./provider.js";
+import { createLlamaProvider, LLAMA_PROVIDER_ID, type LlamaProviderController } from "./provider.js";
 import { type LlamaUi, runWithProgress, showLlamaUi } from "./ui.js";
 
 function modelIsLoaded(model: LlamaModelInfo): boolean {
@@ -45,7 +45,24 @@ async function configuredClient(ctx: ExtensionCommandContext): Promise<LlamaClie
 export default function llamaExtension(pi: ExtensionAPI): void {
 	const provider = createLlamaProvider();
 	pi.registerProvider(provider.provider);
+	pi.registerCommand("llama", llamaCommand(provider));
+}
 
+/** The CLI is finishing its own deferred load after quit; its SDK registration may already be closed. */
+export function finishLlamaAfterQuit(pi: ExtensionAPI): void {
+	const provider = createLlamaProvider();
+	const registration = pi.registerProvider(provider.provider);
+	try {
+		pi.registerCommand("llama", llamaCommand(provider));
+	} catch (error) {
+		// The closed SDK facade also rejected the preceding registration. Keep the command's diagnostic
+		// without leaving a second, unhandled rejection behind it.
+		void registration.catch(() => {});
+		throw error;
+	}
+}
+
+function llamaCommand(provider: LlamaProviderController): Parameters<ExtensionAPI["registerCommand"]>[1] {
 	const syncCatalog = async (
 		ctx: ExtensionCommandContext,
 		client: LlamaClient,
@@ -183,7 +200,7 @@ export default function llamaExtension(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Downloaded ${model}`);
 	};
 
-	pi.registerCommand("llama", {
+	return {
 		description: "Manage llama.cpp router models",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") {
@@ -229,5 +246,5 @@ export default function llamaExtension(pi: ExtensionAPI): void {
 				}
 			});
 		},
-	});
+	};
 }

@@ -1232,7 +1232,7 @@ export async function openPostgresDatabase(options) {
 			// The locks nest: one without a domain holds the whole database's lock, and one with a domain holds that lock
 			// shared, so it waits for and excludes whole-database transactions, but not those of other domains. The locks,
 			// and every row lock after them, wait at most `lockWaitMs`; the statement timeout starts after them.
-			const lock =
+			const lock = begin.readOnly === true ? "" :
 				concurrency.kind !== "serial"
 					? concurrency.excludesSerial === true
 						? `SELECT pg_advisory_xact_lock_shared(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}); `
@@ -1247,7 +1247,7 @@ export async function openPostgresDatabase(options) {
 					client,
 					() =>
 						client.query(
-							`BEGIN; SET LOCAL lock_timeout = ${lockWaitMs}; ${lock}SET LOCAL statement_timeout = ${statementTimeoutMs}; ${searchPathSql()}`,
+							`${begin.readOnly === true ? "BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ" : "BEGIN"}; SET LOCAL lock_timeout = ${lockWaitMs}; ${lock}SET LOCAL statement_timeout = ${statementTimeoutMs}; ${searchPathSql()}`,
 						),
 					lockWaitMs + clientTimeoutMs,
 				);

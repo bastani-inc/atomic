@@ -19,12 +19,13 @@ import type {
 } from "../../core/extensions/workflow-run-control.js";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
 import type { SaveCredentialOptions } from "../../core/model-runtime.js";
-import type { SessionEntry, SessionSummaryEntry } from "../../core/session-manager.ts";
+import type { SessionSummaryEntry } from "../../core/session-manager.ts";
 import type { OversizedSessionEntry } from "../../core/storage/session/types.js";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import type {
 	RpcAutocompleteItem,
 	RpcCommand,
+	RpcContextWindow,
 	RpcForkMessagePage,
 	RpcHistoryChunk,
 	RpcHistoryPage,
@@ -279,9 +280,7 @@ export abstract class RpcClientApi {
 	async getForkMessages(cursor?: string): Promise<RpcForkMessagePage> {
 		return this.data(await this.request({ type: "get_fork_messages", cursor }));
 	}
-	async getEntries(options: {
-		readonly windowOnly: true;
-	}): Promise<{ entries: SessionEntry[]; leafId: string | null }>;
+	async getEntries(options: { readonly windowOnly: true }): Promise<RpcContextWindow>;
 	async getEntries(options?: {
 		readonly since?: string;
 		readonly cursor?: string;
@@ -296,7 +295,7 @@ export abstract class RpcClientApi {
 			readonly fromSeq?: number;
 			readonly toSeq?: number;
 		} = {},
-	): Promise<RpcHistoryPage | { entries: SessionEntry[]; leafId: string | null }> {
+	): Promise<RpcHistoryPage | RpcContextWindow> {
 		if (options.windowOnly) return this.data(await this.request({ type: "get_context_window" }));
 		return this.data(await this.request({ type: "get_entries", ...options }));
 	}

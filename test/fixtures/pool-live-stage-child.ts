@@ -31,25 +31,25 @@ async function released(gatePath: string, signal: AbortSignal | undefined): Prom
 export const child = workflow({
 	name: "pool-live-stage-child",
 	description: "Local worker stage that streams slowly",
-	inputs: { gatePath: Type.String() },
+	inputs: { gatePath: Type.String(), failPrimary: Type.Optional(Type.Boolean()), failFirstAt: Type.Optional(Type.String()) },
 	outputs: { text: Type.String() },
 	async run(ctx) {
 		const options = await poolStageOptions(ctx.cwd!, false, process.pid);
+		let failFirstAt = ctx.inputs.failFirstAt;
+		if (failFirstAt !== undefined) options.settingsManager.setRetryEnabled(true);
 		options.modelRuntime.registerProvider("pool-fixture", {
 			api: "openai-completions",
 			baseUrl: "https://example.invalid",
 			apiKey: "fixture",
-			models: [
-				{
-					id: "fixture",
-					name: "Fixture",
+			models: (ctx.inputs.failPrimary ? ["fixture", "fallback"] : ["fixture"]).map((id) => ({
+					id,
+					name: id,
 					reasoning: false,
 					input: ["text"],
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 					contextWindow: 100000,
 					maxTokens: 1000,
-				},
-			],
+				})),
 			streamSimple(model, _context, streamOptions) {
 				const stream = createAssistantMessageEventStream();
 				const partial = (text: string): AssistantMessage => ({
@@ -70,6 +70,15 @@ export const child = workflow({
 					},
 				});
 				void (async () => {
+					if (failFirstAt !== undefined) {
+						const gate = failFirstAt;
+						failFirstAt = undefined;
+						const failed = await released(gate, streamOptions?.signal);
+						const reason = failed ? "error" : "aborted";
+						stream.push({ type: "error", reason, error: { ...partial(""), content: [], stopReason: reason, errorMessage: "529 overloaded" } });
+						stream.end();
+						return;
+					}
 					const full = LIVE_STAGE_FIRST_DELTA + LIVE_STAGE_SECOND_DELTA;
 					stream.push({ type: "start", partial: partial("") });
 					stream.push({ type: "text_start", contentIndex: 0, partial: partial("") });
@@ -85,6 +94,11 @@ export const child = workflow({
 						stream.end();
 						return;
 					}
+					if (ctx.inputs.failPrimary && model.id === "fixture") {
+						stream.push({ type: "error", reason: "error", error: { ...partial(LIVE_STAGE_FIRST_DELTA), stopReason: "error", errorMessage: "404 model not found" } });
+						stream.end();
+						return;
+					}
 					stream.push({ type: "text_delta", contentIndex: 0, delta: LIVE_STAGE_SECOND_DELTA, partial: partial(full) });
 					stream.push({ type: "text_end", contentIndex: 0, content: full, partial: partial(full) });
 					stream.push({ type: "done", reason: "stop", message: partial(full) });
@@ -93,7 +107,7 @@ export const child = workflow({
 				return stream;
 			},
 		});
-		const stage = ctx.stage("agent", options as never);
+		const stage = ctx.stage("agent", { ...options, ...(ctx.inputs.failPrimary ? { fallbackModels: ["pool-fixture/fallback"] } : {}) } as never);
 		return { text: await stage.complete("Stream a reply") };
 	},
 });

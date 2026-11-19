@@ -186,6 +186,36 @@ it("a cleared parent releases a giant workflow identity after its route ends (#5
 	expect(JSON.stringify(resume).length).toBeLessThan(SESSION_HISTORY_PAGE_BYTES);
 });
 
+it("live stage and Intercom receipts survive repeated clears without retaining their message bodies (#5554)", async () => {
+	const store = await sqlStore();
+	const live = await SessionManager.create(store, "/project");
+	for (const n of [1, 2]) {
+		await live.appendCustomEntry("atomic-pooled-delivery-op", { op: `op${n}` });
+		await live.appendCustomMessageEntry("intercom_message", `m${n}`, true, { message: { id: `m${n}` } });
+		await live.appendCompaction(`clear${n}`, null, 100, details);
+	}
+	const reopened = await SessionManager.open(store, live.getSessionId());
+	for (const holder of [live, reopened]) {
+		const recovery = holder.getSessionRecoveryState();
+		expect(recovery.intercomDeliveredIds).toEqual(["m1", "m2"]);
+		expect(recovery.deliveryOpIds).toEqual(["op1", "op2"]);
+		expect(holder.getEntries().map((entry) => entry.type)).toEqual(["compaction"]);
+	}
+});
+
+it("moving to an older branch restores that window but does not hydrate abandoned conversations (#5554)", async () => {
+	const store = await sqlStore();
+	const { id, firstPreTail } = await compactedSession(store, 100);
+	const session = await SessionManager.open(store, id),
+		otherLeaf = session.getLeafId();
+	await session.branchWithSummary(firstPreTail, "summary of the branch we left");
+	const summary = session.getLeafEntry();
+	expect(summary?.type === "branch_summary" && summary.fromId).toBe(otherLeaf);
+	expect(session.getEntryCount()).toBeLessThan(30);
+	expect(session.getBranch().at(-2)?.id).toBe(firstPreTail);
+	expect(await session.findEntrySeq(otherLeaf!)).toBeDefined();
+});
+
 it("a default open reads the same window as a tail open without reading the whole store (#5554)", async () => {
 	const store = await sqlStore();
 	const { id, firstPreTail } = await compactedSession(store);
@@ -197,6 +227,71 @@ it("a default open reads the same window as a tail open without reading the whol
 	expect(manager.getEntry(firstPreTail)).toBeUndefined();
 	expect(manager.getEntries()).toEqual(expected.getEntries());
 	expect(manager.buildSessionContext()).toEqual(expected.buildSessionContext());
+});
+
+it("an in-flight historical lookup never returns a different session's entry with the same ID (#5554)", async () => {
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, "/project");
+	const old = await manager.appendMessage({ role: "user", content: "original owner", timestamp: 1 });
+	const raw = manager.getEntry(old)!;
+	await manager.appendCompaction("cleared", null, 100, details);
+	const original = manager.getSessionId();
+	const found = Promise.withResolvers<void>(),
+		finish = Promise.withResolvers<void>();
+	const lookup = store.findEntrySeq.bind(store);
+	store.findEntrySeq = async (sessionId, id) => {
+		const seq = await lookup(sessionId, id);
+		if (sessionId === original && id === old) {
+			found.resolve();
+			await finish.promise;
+		}
+		return seq;
+	};
+	try {
+		const inFlight = manager.readEntry(old);
+		await found.promise;
+		await manager.newSession();
+		await store.append(
+			manager.getSessionId(),
+			[
+				{
+					type: "message",
+					id: old,
+					parentId: null,
+					timestamp: raw.timestamp,
+					message: { role: "user", content: "different owner", timestamp: 2 },
+				},
+			],
+			{ expectSeq: 0 },
+		);
+		await manager.refreshFromStore();
+		finish.resolve();
+		expect(await inFlight).toEqual(raw);
+	} finally {
+		finish.resolve();
+		await store.close();
+	}
+});
+
+it("labels a retired oversized entry without decoding it or accepting a different writer's future target (#5554)", async () => {
+	const store = new MemorySessionStore();
+	try {
+		const manager = await SessionManager.create(store, "/project");
+		const old = await manager.appendMessage({
+			role: "user",
+			content: "x".repeat(SESSION_HISTORY_PAGE_BYTES + 20),
+			timestamp: 1,
+		});
+		await manager.appendCompaction("cleared", null, 100, details);
+		await manager.appendLabelChange(old, "hello");
+		expect(manager.getLabel(old)).toBe("hello");
+		expect(manager.getEntry(old)).toBeUndefined();
+		const peer = await SessionManager.open(store, manager.getSessionId());
+		const future = await peer.appendMessage({ role: "user", content: "peer", timestamp: 2 });
+		expect(await manager.findEntrySeq(future)).toBeUndefined();
+	} finally {
+		await store.close();
+	}
 });
 
 it("a reader can stop after its first page without hydrating older messages into the manager (#5554)", async () => {

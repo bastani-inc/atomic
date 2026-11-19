@@ -989,7 +989,7 @@ Missing required outputs, schema type mismatches, and non-JSON-serializable retu
 
 Pass only imported workflow definitions to `ctx.workflow(...)`, not registry names or paths. Missing modules or invalid exports fail discovery. Nested children count against `maxDepth`, default `3` total workflow levels.
 
-A missing, empty, or invalid child graph retains a boundary summary rather than displaying unrelated nodes. Failed or skipped boundaries also retain summaries. Use `stageName` for a concise custom boundary label.
+A failed or skipped boundary still shows the stages and tools of a child it actually started. A missing, empty, or invalid child graph retains a boundary summary rather than displaying unrelated nodes. Use `stageName` for a concise custom boundary label.
 
 If the parent exits while a child runs, the child is cleaned up and becomes `cancelled`, non-resumable; active child stages and prompts are skipped. No further child work starts after parent exit.
 

@@ -5,7 +5,7 @@ import type { ToolDefinition } from "../../../src/core/extensions/types.ts";
 import { KeybindingsManager } from "../../../src/core/keybindings.ts";
 import { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../../../src/utils/ansi.ts";
+import { stripAnsi } from "../../helpers/visible-text.js";
 
 const previousKeybindings = getKeybindings();
 

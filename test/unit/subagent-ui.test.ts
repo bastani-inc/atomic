@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { CURSOR_MARKER, getKeybindings, setKeybindings, type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -21,6 +20,7 @@ import { taskToolResult } from "../../packages/subagents/src/runs/foreground/tas
 import { AgentBrowser } from "../../packages/subagents/src/tui/agent-browser.js";
 import { moduleDir, readText } from "../helpers/runtime.js";
 import { taskRecord } from "../helpers/task-record.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const agent = (name: string, source: AgentConfig["source"]): AgentConfig => ({
 	name,

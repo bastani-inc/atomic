@@ -14,7 +14,11 @@ import {
 } from "../../../core/messages.ts";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import { confirmQueuedChatSessionMessages, flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
-import { chatSessionWorkingMeta } from "./chat-session-host-rendering.ts";
+import {
+	chatSessionTokenCount,
+	chatSessionWorkingMeta,
+	restoreChatSessionTokens,
+} from "./chat-session-host-rendering.ts";
 import {
 	afterChatSessionEvent,
 	decrementOptimisticUserSignature,
@@ -43,6 +47,19 @@ import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 export type { CompactionReason } from "../../../core/agent-session-types.js";
 
 /**
+ * A retry or a model fallback ended the turn it waited in, cancelled or out of attempts: the turn's worked line counts
+ * from its start to now, through every attempt and wait, as it would have counted on through the next attempt.
+ */
+function endRetriedTurn<TExtraEntry extends ChatTranscriptEntryLike>(state: ChatSessionHostState<TExtraEntry>): void {
+	const continued = state.retryContinuesRun;
+	state.retryContinuesRun = false;
+	const turn = continued ? state.workingRunMeter.endedRunSnapshot() : undefined;
+	if (turn === undefined) return;
+	const message = state.workedRun?.message ?? state.lastWorkingMessage;
+	state.workedRun = { message, snapshot: { ...turn, tokens: chatSessionTokenCount(state) } };
+}
+
+/**
  * A retry waits out its backoff: `retrying…` is the working line until the next attempt's `agent_start`, or the
  * retry's `auto_retry_end`, clears it.
  */
@@ -52,6 +69,19 @@ export function showChatSessionRetryWait<TExtraEntry extends ChatTranscriptEntry
 	state.sdkBusy = true;
 	state.workingMessage = undefined;
 	state.statusMessage = CHAT_SESSION_RETRYING_STATUS;
+	stopChatSessionWorkingLifecycle(state);
+}
+
+/**
+ * A move to a fallback model: `switching model…` is the working line until the next model's `agent_start`, or the
+ * switch's `model_fallback_end`, clears it.
+ */
+export function showChatSessionModelSwitch<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	state.sdkBusy = true;
+	state.workingMessage = undefined;
+	state.statusMessage = CHAT_SESSION_SWITCHING_MODEL_STATUS;
 	stopChatSessionWorkingLifecycle(state);
 }
 
@@ -145,31 +175,35 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 	state: ChatSessionHostState<TExtraEntry>,
 	result: VerbatimCompactionResult,
 ): void {
-	const compactedMessages = state.getAgentSession?.()?.messages;
-	if (compactedMessages && hasVerbatimCompactionMessage(compactedMessages)) {
-		if (state.bodyViewport.getScrollFromBottom() > 0) {
-			state.newMessages.observe(false, countableTranscriptLength(state));
-		}
-		const firstUser = firstRawUserExactText(compactedMessages);
-		state.seenFirstRawUser = firstUser.seenUser;
-		state.firstUserEntryExactText = firstUser.exactText;
-		state.replaceTranscriptWindow(compactedMessages);
-		syncFirstUserEntry(state);
-		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
-		return;
-	}
+	const session = state.getAgentSession?.();
+	const manager = session?.sessionManager;
+	// The session's transcript keeps rows a context edit left out of the next request. A session or session manager
+	// that cannot give one shows its messages.
+	const compactedMessages =
+		session?.transcriptMessages ??
+		(typeof manager?.buildSessionProjection === "function"
+			? manager.buildSessionProjection("transcript").messages
+			: session?.messages);
 	// A session in another process sent its compacted messages as plain data, so its boundary is
 	// recognised by its custom type rather than by identity.
-	const remoteMessages = state.getAgentSession?.() === undefined ? state.getSessionMessages?.() : undefined;
-	if (remoteMessages?.some((message) => message.role === "custom" && message.customType === "compaction") === true) {
+	const remoteMessages = session === undefined ? state.getSessionMessages?.() : undefined;
+	const messages =
+		compactedMessages && hasVerbatimCompactionMessage(compactedMessages)
+			? compactedMessages
+			: remoteMessages?.some((message) => message.role === "custom" && message.customType === "compaction")
+				? remoteMessages
+				: undefined;
+	if (messages) {
 		if (state.bodyViewport.getScrollFromBottom() > 0) {
 			state.newMessages.observe(false, countableTranscriptLength(state));
 		}
-		const firstUser = firstRawUserExactText(remoteMessages);
+		const firstUser = firstRawUserExactText(messages);
 		state.seenFirstRawUser = firstUser.seenUser;
 		state.firstUserEntryExactText = firstUser.exactText;
-		state.replaceTranscriptWindow(remoteMessages);
+		state.replaceTranscriptWindow(messages);
 		syncFirstUserEntry(state);
+		const meter = state.getSessionContextMeter?.(messages);
+		if (meter) restoreChatSessionTokens(state, meter);
 		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
 		return;
 	}
@@ -221,8 +255,12 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	}
 	let changed = false;
 	switch (type) {
-		case "agent_start":
-			state.workingRunMeter.start();
+		case "agent_start": {
+			// The attempt after a retry's wait or a model fallback continues its turn, and its time and tokens with it.
+			const { turnStartedAt } = event as Extract<AgentSessionEvent, { type: "agent_start" }>;
+			if (state.retryContinuesRun) state.workingRunMeter.continueRun(turnStartedAt);
+			else state.workingRunMeter.start(turnStartedAt);
+			state.retryContinuesRun = false;
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
 			state.lastWorkingMessage = undefined;
@@ -233,6 +271,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			changed = true;
 			state.compactionPromptStarted?.();
 			break;
+		}
 		case "agent_end": {
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
 			const interrupted = state.interruptedTurnSnapshot;
@@ -382,21 +421,24 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			break;
 		case "auto_retry_start":
 			showChatSessionRetryWait(state);
+			state.retryContinuesRun = true;
 			changed = true;
 			break;
 		case "model_fallback_start":
-			state.sdkBusy = true;
-			state.workingMessage = undefined;
-			state.statusMessage = CHAT_SESSION_SWITCHING_MODEL_STATUS;
-			stopChatSessionWorkingLifecycle(state);
+			// A fallback after a failed answer continues that turn; one before a turn's first request starts it.
+			state.retryContinuesRun = state.retryContinuesRun || state.workingRunMeter.endedOnFailedAttempt();
+			showChatSessionModelSwitch(state);
 			changed = true;
 			break;
 		case "model_fallback_end": {
 			const fallback = event as Extract<AgentSessionEvent, { type: "model_fallback_end" }>;
-			state.statusMessage = fallback.success ? "" : (fallback.finalError ?? "model fallback failed");
+			// A fallback that ended without an error to report (the turn was stopped) leaves no notice.
+			state.statusMessage = fallback.success ? "" : (fallback.finalError ?? "");
 			state.workingMessage = undefined;
 			if (!fallback.success) {
+				endRetriedTurn(state);
 				state.workingRunMeter.stop();
+				state.workingRunMeter.endTurn();
 				state.sdkBusy = false;
 				state.compacting = false;
 				state.compactionStartedAt = undefined;
@@ -410,7 +452,9 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.statusMessage = "";
 			state.workingMessage = undefined;
 			if (!retry.success) {
+				endRetriedTurn(state);
 				state.workingRunMeter.stop();
+				state.workingRunMeter.endTurn();
 				state.sdkBusy = false;
 				state.compacting = false;
 				state.compactionStartedAt = undefined;

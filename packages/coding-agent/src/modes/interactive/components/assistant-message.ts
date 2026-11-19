@@ -1,3 +1,4 @@
+import { isProxy } from "node:util/types";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { type Component, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@bastani/atomic-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
@@ -10,6 +11,14 @@ import { ToolBlock } from "./tool-block.ts";
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+
+const noticeRules = new WeakMap<object, (message: AssistantMessage) => boolean>();
+/** Each task chat with a split reply has its own card prototype. Ordinary cards have no paging state. */
+export function scopedAssistantCard(repeats: (message: AssistantMessage) => boolean): typeof AssistantMessageComponent {
+	class TaskAssistantCard extends AssistantMessageComponent {}
+	noticeRules.set(TaskAssistantCard.prototype, repeats);
+	return TaskAssistantCard;
+}
 
 /**
  * Component that renders a complete assistant message
@@ -251,6 +260,7 @@ export class AssistantMessageComponent extends Container {
 				new ToolBlock({ status: "stopped", title: "Interrupted", meta, outputPad: this.outputPad }),
 			);
 		} else if (!hasToolCalls && message.stopReason === "error") {
+			if (!isProxy(this) && noticeRules.get(Object.getPrototypeOf(this))?.(message)) return;
 			const errorMsg = message.errorMessage || "Unknown error";
 			this.contentContainer.addChild(new Spacer(1));
 			this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), this.outputPad, 0));

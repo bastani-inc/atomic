@@ -3,8 +3,8 @@
  *
  * Visual contract (DESIGN.md §5):
  *  - Rounded border `╭╮╰╯` only. No square or ASCII art.
- *  - Border colour carries status. `running` pulses via sine lerp
- *    against the dim border (focus locks the pulse). `paused`,
+ *  - Border colour carries status. Live borders dim and brighten in
+ *    their own hue (focus locks the pulse at peak). `paused`,
  *    `completed` / `failed` stay status-coloured regardless of focus.
  *    `pending` sits on `borderDim` and lifts to `borderActive` when focused.
  *  - When focused, the centred title segment becomes a compact accent
@@ -35,7 +35,7 @@ import {
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
 import { boundedToolTitleText } from "../shared/tool-payload-bounds.js";
-import { boldOn, DEFAULT_BG, hexToAnsi, lerpColor, paint, RESET } from "./color-utils.js";
+import { boldOn, DEFAULT_BG, hexToAnsi, paint, pulseForeground, RESET } from "./color-utils.js";
 import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { NODE_H, NODE_W } from "./layout.js";
@@ -73,46 +73,46 @@ function queuedBadgeText(count: number): string {
 	return `✉ ${count} queued`;
 }
 
-function pickBorder(status: StageDisplayStatus, focused: boolean, phase: number, theme: GraphTheme): string {
+function pickBorder(
+	status: StageDisplayStatus,
+	focused: boolean,
+	phase: number,
+	theme: GraphTheme,
+	statusFg: string,
+): string {
 	switch (status) {
 		case "running":
-			// Focus locks the pulse at peak. Status colour wins either way.
-			if (focused) return theme.warning;
-			return lerpColor(theme.borderDim, theme.warning, pulseT(phase));
+		case "awaiting_input": {
+			const color = status === "running" ? theme.warning : theme.info;
+			return focused ? statusFg : pulseForeground(color, statusFg, pulseT(phase));
+		}
 		case "paused":
-			return theme.warning;
-		case "awaiting_input":
-			if (focused) return theme.info;
-			return lerpColor(theme.borderDim, theme.info, pulseT(phase));
 		case "completed":
-			return theme.success;
 		case "failed":
-			return theme.error;
 		case "blocked":
-			return theme.dim;
 		case "skipped":
-			return theme.dim;
+			return statusFg;
 		default:
-			// Pending has no semantic colour; the focused-tab carries the
-			// cursor signal, so we only lift the border one step.
-			return focused ? theme.borderActive : theme.borderDim;
+			// Pending has no semantic colour; focus only lifts the border one step.
+			return hexToAnsi(focused ? theme.borderActive : theme.borderDim);
 	}
 }
 
-function durationColor(status: StageDisplayStatus, theme: GraphTheme): string {
+function statusForeground(status: StageDisplayStatus, theme: GraphTheme): string {
 	switch (status) {
 		case "running":
-			return theme.warning;
+		case "awaiting_input": {
+			const role = status === "running" ? "warning" : "info";
+			return theme.stagePaletteFg?.(role) ?? hexToAnsi(theme[role]);
+		}
 		case "paused":
-			return theme.warning;
-		case "awaiting_input":
-			return theme.info;
+			return hexToAnsi(theme.warning);
 		case "completed":
-			return theme.success;
+			return hexToAnsi(theme.success);
 		case "failed":
-			return theme.error;
+			return hexToAnsi(theme.error);
 		default:
-			return theme.dim;
+			return hexToAnsi(theme.dim);
 	}
 }
 
@@ -265,7 +265,7 @@ function centreColored(content: string, width: number, fg: string, bg: string, o
 	const left = Math.max(0, Math.floor(pad / 2));
 	const right = Math.max(0, pad - left);
 	const bold = opts.bold ? boldOn() : "";
-	return `${bg}${" ".repeat(left)}` + `${hexToAnsi(fg)}${bold}${safe}${RESET}` + `${bg}${" ".repeat(right)}`;
+	return `${bg}${" ".repeat(left)}` + `${fg}${bold}${safe}${RESET}` + `${bg}${" ".repeat(right)}`;
 }
 
 /**
@@ -325,8 +325,8 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 
 	// A stage on a local worker whose session has not started reads as queued, with what it is doing.
 	const status = stageDisplayStatus(stage);
-	const borderHex = pickBorder(status, focused, phase, theme);
-	const bc = hexToAnsi(borderHex);
+	const bodyFg = statusForeground(status, theme);
+	const bc = pickBorder(status, focused, phase, theme, bodyFg);
 	// Node interiors share the unpainted canvas. Reset after the focused
 	// title tab so its accent background does not spill into the card.
 	const bg = DEFAULT_BG;
@@ -360,28 +360,27 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 			: stage.status === "blocked"
 				? blockedBadgeText(stage, opts.stages, innerWidth)
 				: (pooledStageStartingText(stage) ?? durationText(stage));
-	const bodyHex = durationColor(status, theme);
 
 	const statusText = `${statusIcon(stage.toolStatus === "cancelled" ? "cancelled" : status)} ${stage.toolStatus ?? statusLabel(status)}`;
 	const queuedCount = queuedBadgeCount(opts.queuedMessageCount);
 	const statusLine =
 		`${bg}${bc}│${RESET}` +
-		centreColored(statusText, innerWidth, bodyHex, bg, {
+		centreColored(statusText, innerWidth, bodyFg, bg, {
 			bold: status === "running" || status === "awaiting_input",
 		}) +
 		`${bg}${bc}│${RESET}`;
 	const durLine =
 		`${bg}${bc}│${RESET}` +
-		centreColored(bodyText, innerWidth, bodyHex, bg, {
+		centreColored(bodyText, innerWidth, bodyFg, bg, {
 			bold: stage.status === "blocked",
 		}) +
 		`${bg}${bc}│${RESET}`;
 
 	const contentRows = Math.max(0, height - 2);
 	const model = modelText(stage, innerWidth);
-	const modelLine = `${bg}${bc}│${RESET}${centreColored(model, innerWidth, theme.textMuted, bg)}${bg}${bc}│${RESET}`;
+	const modelLine = `${bg}${bc}│${RESET}${centreColored(model, innerWidth, hexToAnsi(theme.textMuted), bg)}${bg}${bc}│${RESET}`;
 	const childRunLines = workflowChildRunRows(stage, innerWidth).map(
-		(row) => `${bg}${bc}│${RESET}${centreColored(row, innerWidth, theme.dim, bg)}${bg}${bc}│${RESET}`,
+		(row) => `${bg}${bc}│${RESET}${centreColored(row, innerWidth, hexToAnsi(theme.dim), bg)}${bg}${bc}│${RESET}`,
 	);
 	const childMeta = workflowChildMetaText(stage);
 	const childSummary = childMeta === undefined ? undefined : joinCompactStatusMeta(statusText, childMeta, innerWidth);
@@ -389,7 +388,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 		childSummary === undefined
 			? undefined
 			: `${bg}${bc}│${RESET}` +
-				centreColored(childSummary, innerWidth, bodyHex, bg, {
+				centreColored(childSummary, innerWidth, bodyFg, bg, {
 					bold: stage.status === "running" || stage.status === "awaiting_input",
 				}) +
 				`${bg}${bc}│${RESET}`;
@@ -398,7 +397,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 		queuedCount > 0
 			? [
 					`${bg}${bc}│${RESET}` +
-						centreColored(queuedBadgeText(queuedCount), innerWidth, theme.info, bg, { bold: true }) +
+						centreColored(queuedBadgeText(queuedCount), innerWidth, hexToAnsi(theme.info), bg, { bold: true }) +
 						`${bg}${bc}│${RESET}`,
 				]
 			: [];
@@ -411,13 +410,13 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 					...(model === "" && queuedCount === 0
 						? [
 								`${bg}${bc}│${RESET}` +
-									centreColored("waiting for response", innerWidth, theme.info, bg) +
+									centreColored("waiting for response", innerWidth, bodyFg, bg) +
 									`${bg}${bc}│${RESET}`,
 							]
 						: []),
 					...queuedLines,
 					`${bg}${bc}│${RESET}` +
-						centreColored("↵ enter to respond", innerWidth, theme.dim, bg) +
+						centreColored("↵ enter to respond", innerWidth, hexToAnsi(theme.dim), bg) +
 						`${bg}${bc}│${RESET}`,
 				]
 			: childSummaryLine === undefined

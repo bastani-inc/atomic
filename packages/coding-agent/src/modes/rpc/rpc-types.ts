@@ -98,6 +98,12 @@ export type RpcSessionInfo = Omit<SessionInfo, "created" | "modified"> & {
 };
 
 export type RpcHistoryPage = SessionHistoryPage & { readonly leafId: string | null };
+export interface RpcContextWindow {
+	entries: SessionEntry[];
+	leafId: string | null;
+	/** Only for an unsaved session with archived rows: the generation-pinned cursor and positions of current rows. */
+	privateArchive?: { sessionId: string; cursor: string; seqs: number[] };
+}
 export interface RpcForkMessagePage {
 	readonly items: readonly (
 		| { readonly seq: number; readonly entryId: string; readonly text: string }
@@ -134,7 +140,12 @@ export type RpcCommand =
 	| { id?: string; type: "list_workflow_runs"; status?: WorkflowRunFilterStatus }
 	| { id?: string; type: "get_workflow_run_summary"; runId: string }
 	| { id?: string; type: "get_workflow_resume_entries"; target?: string }
-	| { id?: string; type: "resume_workflow_from_picker"; target: string }
+	| {
+			id?: string;
+			type: "resume_workflow_from_picker";
+			target: string;
+			selection?: HostSessionPickerRow["resumeSelection"];
+	  }
 	| { id?: string; type: "delete_workflow_from_picker"; runId: string }
 	| { id?: string; type: "open_task_inspector"; taskId?: string }
 	| { id?: string; type: "stop_all_background" }
@@ -280,6 +291,9 @@ export interface RpcSessionState {
 	modelFallbackReason?: ModelFallbackReason;
 	thinkingLevel: ThinkingLevel;
 	isStreaming: boolean;
+	/** The pending automatic retry or fallback switch, if its next request has not started yet. */
+	retryStatus?: import("../../core/session-retry-status.js").SessionRetryStatus;
+	turnStartedAt?: number;
 	isCompacting: boolean;
 	compactionReason?: CompactionReason;
 	compactionStartedAt?: number;
@@ -294,6 +308,8 @@ export interface RpcSessionState {
 	queuedMessagesPaused: boolean;
 	/** Authoritative engine trust state; absent while the engine is still deciding, and on older RPC peers. */
 	projectTrusted?: boolean;
+	/** Only while startup trust is pending: whether this folder's own resources may load. Absent on older peers. */
+	pendingProjectResourcesTrusted?: boolean;
 	/**
 	 * Internal to the interactive engine child: the trust decisions it made in its session, answers for this session only
 	 * included. They are never saved; the interactive host hands them to an engine it starts to replace this one.
@@ -553,7 +569,7 @@ export type RpcResponse =
 			type: "response";
 			command: "get_context_window";
 			success: true;
-			data: { entries: SessionEntry[]; leafId: string | null };
+			data: RpcContextWindow;
 	  }
 	| { id?: string; type: "response"; command: "get_history_chunk"; success: true; data: RpcHistoryChunk }
 	| {

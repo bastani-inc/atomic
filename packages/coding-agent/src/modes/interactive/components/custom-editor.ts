@@ -4,6 +4,7 @@ import {
 	type EditorAutocompleteHintEntry,
 	type EditorOptions,
 	type EditorTheme,
+	isHintActivation,
 	isKeyRepeat,
 	type KeyId,
 	matchesKey,
@@ -392,6 +393,7 @@ export class CustomEditor extends Editor {
 		// it into a clear, terminate, or engine-restart handler.
 		if (isPhysicalEscape(data) || this.keybindings.matches(data, "app.interrupt")) {
 			if (!this.isShowingAutocomplete()) {
+				this.dismissEmptyAutocomplete();
 				// Use dynamic onEscape if set, otherwise registered handler
 				const handler = this.onEscape ?? this.actionHandlers.get("app.interrupt");
 				if (handler) {
@@ -414,9 +416,9 @@ export class CustomEditor extends Editor {
 			// Fall through to editor handling for delete-char-forward when not empty
 		}
 
+		// A click on the `? keys` hint opens the keys whatever the prompt holds; a typed `?` does only on an empty one.
 		if (
-			this.getText().length === 0 &&
-			!this.isShowingAutocomplete() &&
+			(isHintActivation() || (this.getText().length === 0 && !this.isShowingAutocomplete())) &&
 			this.keybindings.matches(data, "app.keys.help")
 		) {
 			const handler = this.actionHandlers.get("app.keys.help");

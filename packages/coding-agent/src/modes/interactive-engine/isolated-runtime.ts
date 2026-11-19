@@ -17,8 +17,10 @@ import type { ExtensionError, HostSessionPickerRow } from "../../core/extensions
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
-import { SessionManager } from "../../core/session-manager.ts";
+import { type SessionEntry, SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
+import { retryStatusUpdate, type SessionRetryStatus } from "../../core/session-retry-status.js";
+import type { OversizedSessionEntry } from "../../core/storage/session/types.js";
 import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
@@ -42,6 +44,7 @@ import type {
 	RpcEvent,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcHistoryPage,
 	RpcModelCatalog,
 	RpcPersistedModelDefaults,
 	RpcResourceExtension,
@@ -69,7 +72,7 @@ export interface EngineResourceIssues {
 	errors: Array<{ path: string; error: string }>;
 	warnings: Array<{ path: string; warning: string }>;
 }
-type ResourceExtensionsListener = (extensions: readonly RpcResourceExtension[]) => void;
+type ResourceExtensionsListener = (extensions: readonly RpcResourceExtension[], forNextView?: true) => void;
 type QueueSnapshot = { steering: string[]; followUp: string[] };
 
 /** An extension error of the engine's session, as its RPC binding reports it on the event stream. */
@@ -135,6 +138,7 @@ export function engineAgentPanelCounts(
 		needsInput: message.needsInput,
 		shells: message.shells ?? 0,
 		subagents: message.subagents ?? 0,
+		...(message.hiddenWorkflow ? { hiddenWorkflow: true } : {}),
 	};
 }
 
@@ -150,9 +154,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private mirroringPersistedModelDefault = false;
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
+	private streamingEpoch = 0;
+	private turnStartedAt?: number;
+	private retryStatus?: SessionRetryStatus;
+	private retryStatusEpoch = 0;
 	private panelCounts: AgentPanelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 	private compacting = false;
-	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
+	/** Whether the engine has a retry or fallback in progress. */
 	private retrying = false;
 	private compactionReason: CompactionReason | undefined;
 	private compactionStartedAt: number | undefined;
@@ -173,9 +181,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private autoRetryEnabled = true;
 	/** Whether the engine reported a trust decision for its current session; it reports none while still deciding. */
 	private engineProjectTrustReported = false;
+	/** The next engine catalog for this session follows a startup view drawn without the folder's resources. */
+	private readonly restrictedStartupCatalogs = new WeakSet<AgentSession>();
 	/** The engine's trust decisions in this host session, handed to an engine started to replace it. */
 	private knownTrust: SessionTrustDecisions = { projects: {}, extensionSources: {} };
-	private readonly projectTrustListeners = new Set<() => void>();
+	private readonly projectTrustListeners = new Set<(resourcesChanged: boolean) => void>();
 	private remoteSessionName: string | undefined;
 	private remoteSessionId: string | undefined;
 	private remoteSessionFile: string | undefined;
@@ -250,6 +260,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			clearActivity: () => {
 				this.streaming = false;
+				this.streamingEpoch++;
+				this.turnStartedAt = undefined;
+				this.retryStatus = undefined;
+				this.retryStatusEpoch++;
 				this.compacting = false;
 				this.retrying = false;
 				this.compactionReason = undefined;
@@ -300,6 +314,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, {
 					[message.scope]: { [message.path]: message.trusted },
 				});
+				if (message.scope === "projects" && !this.engineProjectTrustReported)
+					this.applyProjectDecisionWhilePending(message.path, message.trusted);
 				return;
 			}
 			if (message.type === "engine_deprecation_warning") {
@@ -366,10 +382,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		return validateWorkflowResumeEntries(response?.entries);
 	}
-	async resumeWorkflowFromPicker(target: string): Promise<boolean> {
+	async resumeWorkflowFromPicker(
+		target: string,
+		selection?: HostSessionPickerRow["resumeSelection"],
+	): Promise<boolean> {
 		const response = await this.client.requestInternal<{ handled: boolean }>({
 			type: "resume_workflow_from_picker",
 			target,
+			...(selection === undefined ? {} : { selection }),
 		});
 		return response.handled;
 	}
@@ -392,6 +412,49 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		await this.initializationTail;
 	}
 
+	/**
+	 * The project's own decision, made while startup still decides other trust (an `-e` source's question, which also
+	 * keeps the engine's other requests waiting for its resources). Each source follows its own decision, so the
+	 * project's resources load, or stay out, now instead of when startup has decided. It is no startup decision: the
+	 * warning still waits for that (#5693).
+	 */
+	private applyProjectDecisionWhilePending(path: string, trusted: boolean): void {
+		const generation = this.client.getGeneration?.();
+		const apply = async () => {
+			const session = super.session;
+			if (this.disposed || this.engineProjectTrustReported) return;
+			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
+			const [decided, current] = await Promise.all([
+				canonicalizePathAsync(path),
+				canonicalizePathAsync(session.sessionManager.getCwd()),
+			]);
+			if (decided !== current || session !== super.session || this.engineProjectTrustReported) return;
+			if (session.settingsManager.isProjectTrusted() === trusted) return;
+			await session.settingsManager.setProjectTrustedAsync(trusted);
+			// Withholding a folder did not invalidate user settings. The setter has loaded its project layer.
+			if (this.restrictedStartupCatalogs.has(session))
+				await session.resourceLoader.reload({ useLoadedSettings: true });
+			else {
+				await session.settingsManager.reload();
+				await session.resourceLoader.reload();
+			}
+			if (
+				this.disposed ||
+				session !== super.session ||
+				(generation !== undefined && !this.isCurrentResourceGeneration(generation))
+			)
+				return;
+			for (const listener of [...this.projectTrustListeners]) listener(true);
+		};
+		// After any synchronization in flight, so an earlier report cannot undo the decision.
+		const run = (this.initializationTail ?? Promise.resolve()).then(apply);
+		const tail = run.catch(() => {});
+		this.initializationTail = tail;
+		void tail.then(() => {
+			if (this.initializationTail === tail) this.initializationTail = undefined;
+		});
+	}
+
 	/** Keep a live engine's report as soon as it arrives, before the caller waits on other engine or session work. */
 	private async getEngineState(): Promise<RpcSessionState> {
 		const generation = this.client.getGeneration?.();
@@ -408,6 +471,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.sessionStats.reset();
 			this.pendingEnabledModelsSync = undefined;
 			const modelEpoch = this.modelEpoch;
+			const retryStatusEpoch = this.retryStatusEpoch;
+			const streamingEpoch = this.streamingEpoch;
 			const thinkingEpoch = this.thinkingEpoch;
 			const scope = this.remoteModelCatalog.getScopeSnapshot();
 			const state = await this.getEngineState();
@@ -431,22 +496,27 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			}
 			const session = super.session;
 			const trustBefore = [session.settingsManager.isProjectTrusted(), this.engineProjectTrustReported] as const;
-			if (
-				state.projectTrusted !== undefined &&
-				session.settingsManager.isProjectTrusted() !== state.projectTrusted
-			) {
+			const followsRestrictedCatalog = this.restrictedStartupCatalogs.has(session);
+			if (state.pendingProjectResourcesTrusted === false) this.restrictedStartupCatalogs.add(session);
+			else if (state.projectTrusted !== undefined) this.restrictedStartupCatalogs.delete(session);
+			const resourcesTrusted = state.projectTrusted ?? state.pendingProjectResourcesTrusted;
+			if (resourcesTrusted !== undefined && session.settingsManager.isProjectTrusted() !== resourcesTrusted) {
 				// The child owns trust hooks/decisions. The host only mirrors their result.
-				await session.settingsManager.setProjectTrustedAsync(state.projectTrusted);
-				await session.settingsManager.reload();
-				await session.resourceLoader.reload();
+				await session.settingsManager.setProjectTrustedAsync(resourcesTrusted);
+				if (followsRestrictedCatalog || state.pendingProjectResourcesTrusted !== undefined) {
+					await session.resourceLoader.reload({ useLoadedSettings: true });
+				} else {
+					await session.settingsManager.reload();
+					await session.resourceLoader.reload();
+				}
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
+			// A pending report keeps the project's resources out until the engine decides; it is no decision to warn about.
 			this.engineProjectTrustReported = state.projectTrusted !== undefined;
-			if (
-				trustBefore[0] !== session.settingsManager.isProjectTrusted() ||
-				trustBefore[1] !== this.engineProjectTrustReported
-			) {
-				for (const listener of [...this.projectTrustListeners]) listener();
+			if (this.engineProjectTrustReported) session.settingsManager.trackEditsWhileProjectTrustPending(false);
+			const resourcesChanged = trustBefore[0] !== session.settingsManager.isProjectTrusted();
+			if (resourcesChanged || trustBefore[1] !== this.engineProjectTrustReported) {
+				for (const listener of [...this.projectTrustListeners]) listener(resourcesChanged);
 			}
 			this.remoteModelCatalog.apply(catalog, scope);
 			this.remoteModelCatalog.patch(session);
@@ -460,11 +530,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			session.agent.followUpMode = state.followUpMode;
 			this.autoCompactionEnabled = state.autoCompactionEnabled;
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
-			this.updateResources(state);
+			this.updateResources(state, followsRestrictedCatalog);
 			this.remoteSessionName = state.sessionName;
 			this.remoteSessionId = state.sessionId;
 			this.remoteSessionFile = state.sessionLocation;
-			this.streaming = state.isStreaming;
+			if (retryStatusEpoch === this.retryStatusEpoch) this.retryStatus = state.retryStatus;
+			if (streamingEpoch === this.streamingEpoch) {
+				this.streaming = state.isStreaming;
+				this.turnStartedAt = state.turnStartedAt;
+			}
 			this.compacting = state.isCompacting;
 			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
 			this.compactionStartedAt = state.isCompacting
@@ -479,7 +553,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.health.markCooperativeAbortSettled();
 			// Non-blocking refresh so isolated autocomplete lists engine-only extension
 			// commands after bind/restart/reload/new/resume/fork. See RemoteCommandCatalog.
-			this.remoteCommands.refresh();
+			this.remoteCommands.refresh(followsRestrictedCatalog || state.pendingProjectResourcesTrusted === false);
 		} catch (error) {
 			if (this.disposed && isRpcTransportFailure(error)) return;
 			throw error;
@@ -587,12 +661,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override isProjectTrustPending(): boolean {
 		return !this.engineProjectTrustReported;
 	}
+	/** A catalog request started from a restricted startup view must not replace that view with a later catalog. */
+	captureStartupCatalog(): (() => boolean) | undefined {
+		const session = super.session;
+		if (!this.restrictedStartupCatalogs.has(session)) return undefined;
+		const trusted = session.settingsManager.isProjectTrusted();
+		return () =>
+			this.restrictedStartupCatalogs.has(session) && session.settingsManager.isProjectTrusted() === trusted;
+	}
 	/** The trust decisions the engine reported in this host session. */
 	override trustDecisions(): SessionTrustDecisions {
 		return this.knownTrust;
 	}
 	/** Called when this host's trust for its session, or whether the engine has decided it, changes. */
-	onProjectTrustChanged(listener: () => void): () => void {
+	onProjectTrustChanged(listener: (resourcesChanged: boolean) => void): () => void {
 		this.projectTrustListeners.add(listener);
 		return () => this.projectTrustListeners.delete(listener);
 	}
@@ -717,10 +799,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 	private updateResources(
 		state: Pick<RpcSessionState, "resourceExtensions" | "resourceErrors" | "resourceWarnings">,
+		forNextView = false,
 	): void {
 		this.resourceIssues = { errors: state.resourceErrors ?? [], warnings: state.resourceWarnings ?? [] };
 		this.resourceExtensions = [...(state.resourceExtensions ?? [])];
-		for (const listener of [...this.resourceExtensionsListeners]) listener(this.resourceExtensions);
+		for (const listener of [...this.resourceExtensionsListeners]) {
+			if (forNextView) listener(this.resourceExtensions, true);
+			else listener(this.resourceExtensions);
+		}
 	}
 	async synchronize(): Promise<void> {
 		const generation = this.client.getGeneration();
@@ -729,7 +815,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteSessionFile = state.sessionLocation;
 		this.remoteSessionName = state.sessionName;
 		this.resourceOverlaps = state.resourceOverlaps ?? [];
-		this.updateResources(state);
+		this.updateResources(state, this.restrictedStartupCatalogs.has(super.session));
 	}
 
 	setEngineCallbackActive(active: boolean): void {
@@ -913,11 +999,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				},
 			}),
 			isStreaming: { configurable: true, get: () => this.streaming },
+			retryStatus: { configurable: true, get: () => this.retryStatus },
+			turnStartedAt: { configurable: true, get: () => this.turnStartedAt },
 			isCompacting: { configurable: true, get: () => this.compacting },
 			compactionReason: { configurable: true, get: () => this.compactionReason },
 			compactionStartedAt: { configurable: true, get: () => this.compactionStartedAt },
 			isBashRunning: { configurable: true, get: () => this.activeBashRequestIds.size > 0 },
-			isRetrying: { configurable: true, get: () => this.retrying },
+			isRetrying: { configurable: true, get: () => this.retrying || this.retryStatus !== undefined },
 			sessionName: { configurable: true, get: () => this.remoteSessionName },
 			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
 			autoCompactionEnabled: { configurable: true, get: () => this.autoCompactionEnabled },
@@ -1416,16 +1504,59 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * (#4703).
 	 */
 	private async openUnpersistedSessionView(current: SessionManager): Promise<SessionManager> {
-		const { entries, leafId } = await this.client.getEntries({ windowOnly: true });
+		const { entries, leafId, privateArchive } = await this.client.getEntries({ windowOnly: true });
 		const header = current.getHeader();
-		const view = await SessionManager.inMemory(
-			current.getCwd(),
-			undefined,
-			header ? [{ ...header, id: this.remoteSessionId ?? header.id }, ...entries] : entries,
-		);
+		const id = privateArchive?.sessionId ?? this.remoteSessionId ?? header?.id;
+		const headers = header ? [{ ...header, id: id ?? header.id }] : [];
+		const cwd = current.getCwd();
+		let view: SessionManager;
+		if (!privateArchive) {
+			view = await SessionManager.inMemory(cwd, undefined, [...headers, ...entries]);
+		} else {
+			// The engine's unsaved archive disappears if the engine dies. Keep a separate private, writable
+			// host backend as before; never proxy host-local writes or spill private SDK data to disk.
+			const seed = await SessionManager.inMemory(cwd, { id: privateArchive.sessionId }, headers);
+			const store = seed.getSessionStore();
+			try {
+				const currentRows = new Map(privateArchive.seqs.map((seq, index) => [seq, entries[index]!]));
+				let last = 0;
+				let cursor: string | undefined = privateArchive.cursor;
+				do {
+					const page: RpcHistoryPage = await this.client.getEntries({ cursor });
+					const batch: SessionEntry[] = [];
+					for (const item of page.items) {
+						if (item.seq !== last + batch.length + 1) throw new Error("Incomplete unsaved engine history");
+						batch.push(
+							currentRows.get(item.seq) ?? ("entry" in item ? item.entry : await this.readUnsavedEntry(item)),
+						);
+					}
+					last = (await store.append(privateArchive.sessionId, batch, { expectSeq: last })).lastSeq;
+					cursor = page.nextCursor;
+				} while (cursor !== undefined);
+				view = await SessionManager.open(store, privateArchive.sessionId, cwd);
+			} catch (error) {
+				await store.close();
+				throw error;
+			}
+		}
 		if (leafId === null) await view.resetLeaf();
 		else if (leafId !== view.getLeafId()) await view.branch(leafId);
 		return view;
+	}
+
+	private async readUnsavedEntry(ref: OversizedSessionEntry): Promise<SessionEntry> {
+		const decoder = new TextDecoder("utf-8", { fatal: true });
+		let json = "";
+		for (let offset = 0; offset < ref.bytes; ) {
+			const result = await this.client.getHistoryChunk(ref, offset);
+			const chunk = Buffer.from(result.data, "base64");
+			const end = offset + chunk.length;
+			if (end <= offset || end > ref.bytes || (result.nextOffset ?? ref.bytes) !== end)
+				throw new Error("Incomplete unsaved engine entry");
+			json += decoder.decode(chunk, { stream: end < ref.bytes });
+			offset = end;
+		}
+		return JSON.parse(json) as SessionEntry;
 	}
 
 	private observeEvent(event: RpcEvent): void {
@@ -1447,13 +1578,27 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			else this.heldExtensionErrors.push(error);
 			return;
 		}
+		const status = retryStatusUpdate(event);
+		if (status !== undefined) {
+			this.retryStatus = status ?? undefined;
+			this.retryStatusEpoch++;
+		}
 		switch (event.type) {
 			case "agent_start":
+				this.turnStartedAt = event.turnStartedAt;
+				this.streamingEpoch++;
 				this.streaming = true;
 				break;
 			case "agent_end":
+				this.streamingEpoch++;
 				this.streaming = false;
+				this.retrying = event.retryPending === true;
 				this.dispatchBestEffort("refresh session view", this.refreshSessionView());
+				break;
+			case "agent_settled":
+				this.streamingEpoch++;
+				this.retrying = false;
+				this.turnStartedAt = undefined;
 				break;
 			case "compaction_start":
 				this.compacting = true;
@@ -1467,9 +1612,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				if (!event.aborted && event.errorMessage === undefined) this.sessionStats.refresh();
 				break;
 			case "auto_retry_start":
+			case "model_fallback_start":
 				this.retrying = true;
 				break;
 			case "auto_retry_end":
+			case "model_fallback_end":
 				this.retrying = false;
 				break;
 			case "message_end":

@@ -9,7 +9,7 @@ import {
 
 export { Key, visibleWidth };
 
-const ANSI_ESCAPE_RE = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x1b]*(?:\x1b\\))/;
+const ANSI_ESCAPE_RE = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07\x1b]*(?:\x07|\x1b\\))/;
 const MODIFY_OTHER_KEYS_RE = /^\x1b\[27;(\d+);(\d+)~$/;
 const SHIFT_MODIFIER = 1;
 const LOCK_MODIFIER_MASK = 64 + 128;

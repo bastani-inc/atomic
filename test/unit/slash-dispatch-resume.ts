@@ -183,7 +183,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 			.join("\n");
 		assert.match(content, /Resumed 1 stage\(s\)/);
 	});
-	test.sequential("exact paused nested child remains excluded from top-level resume targets", async () => {
+	test.sequential("exact paused nested child names its root instead of reporting a missing run (#5569)", async () => {
 		async function createCatalogCountingBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), { completedCatalogCalls: 0 });
 			const baselistCompletedWorkflows = backend.listCompletedWorkflows.bind(backend);
@@ -231,7 +231,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 
 		await assert.rejects(
 			handler(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } }),
-			/No resumable workflow found for id:/,
+			new RegExp(`Workflow ${runId} is nested; resume its root parent-run`),
 		);
 
 		assert.ok(backend.completedCatalogCalls > 0, "nested child must continue through the top-level resolver");

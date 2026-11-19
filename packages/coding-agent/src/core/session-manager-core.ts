@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path";
+import { isProxy } from "node:util/types";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
@@ -30,12 +31,10 @@ import {
 } from "./session-manager-entries.ts";
 import { SessionDeletedError, SessionEntryError } from "./session-manager-errors.js";
 import {
-	applyContextEdit,
 	buildContextEntries,
 	buildSessionIndex,
 	buildSessionProjection,
 	buildSessionTree,
-	collectContextEdits,
 	getBranchPath,
 	isLeafMoveEntry,
 	LEAF_MOVE_ENTRY_TYPE,
@@ -94,8 +93,8 @@ import {
 	SessionNotFoundError,
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
-import { historyChunks, historyPages } from "./storage/session/history-pages.js";
-import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
+import { firstHistoryCursor, historyChunks, historyPages } from "./storage/session/history-pages.js";
+import { bindSessionFile, JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { SessionKeyDigests } from "./storage/session/key-digests.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import {
@@ -166,6 +165,7 @@ async function openSessionFileWindow(path: string, cwd: string | undefined, opti
 		await store.create(header, [], path);
 		id = header.id;
 	}
+	store[bindSessionFile](id, path);
 	return { store, opened: await readStoredSession(store, id, options) };
 }
 
@@ -177,6 +177,26 @@ function openedHeader(opened: OpenedSession): SessionRecordHeader {
 export interface MessageCompanionEntry {
 	readonly customType: string;
 	readonly data?: SessionJsonValue;
+}
+
+/** Private host/builtin bridge, not re-exported by session-manager or the SDK. */
+export let appendOwnedSubagentChildRecord: (
+	manager: SessionManager,
+	ownerId: string,
+	data: { readonly childId?: string; readonly owner?: { readonly sessionId?: string } },
+	live: () => boolean,
+) => Promise<void>;
+
+// A child factory and its host can load independent SDK copies. Their constructors are not
+// interchangeable, but both can identify the physical header without calling virtual host methods.
+const forkGeneration = Symbol.for("atomic.session-manager/fork-generation@1");
+
+/** @internal Read only the native manager's local generation. Unknown/virtual hosts have no receipt. */
+export function physicalForkHeader(manager: SessionManager): SessionHeader | undefined {
+	if (isProxy(manager)) return undefined;
+	const prototype: object | null = Object.getPrototypeOf(manager);
+	const read = prototype && !isProxy(prototype) && Object.getOwnPropertyDescriptor(prototype, forkGeneration)?.value;
+	return typeof read === "function" ? read.call(manager) : undefined;
 }
 
 /** An in-memory session tree whose mutations await the backing store. */
@@ -206,17 +226,17 @@ export class SessionManager {
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
+	private contextEdits = 0;
+	/** Whether a retained row at this leaf differs between the transcript and model projections. */
+	private projectedEdits: { leafId: string | null; visible: boolean } | undefined;
 	private leafId: string | null = null;
 	private historyIndex = new SessionHistoryIndex();
 
 	private historyStartSeq = 1;
 
 	private entrySeqs = new Map<string, number>();
-	/** Entries whose original payload is no longer in the live window; keep their original tool-call count for billing. */
-	private readonly editedPayloads = new Map<string, number>();
 	private historyEpoch: string | undefined;
 	private lastEntryId: string | null = null;
-	private compactionSeq = 0;
 	private recoveryState: SessionRecoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
 	private admissionKeys = new SessionKeyDigests();
 	private workflowStarts: Record<string, number> = {};
@@ -284,7 +304,6 @@ export class SessionManager {
 		this.entrySeqs = new Map(held.map(({ seq, entry }) => [entry.id, seq]));
 		this.historyEpoch = resume.epoch;
 		this.lastEntryId = resume.lastEntryId;
-		this.compactionSeq = resume.compaction?.seq ?? 0;
 		const { workflowStarts, ...recovery } = resume.recovery;
 		this.recoveryState = { ...recovery, admissionDigests: "" };
 		this.workflowStarts = { ...workflowStarts };
@@ -299,7 +318,6 @@ export class SessionManager {
 		const path = [...resume.state.filter((e) => e.onBranch), ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.branchLinks = new Map(path.slice(1).map((held, i) => [held.entry.id, path[i]!.entry.id]));
 		this.leafId = resume.leafId;
-		if (held.some(({ entry }) => entry.type === "context_edit")) this.releaseEditedPayloads();
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
 
@@ -315,7 +333,6 @@ export class SessionManager {
 			readonly links: ReadonlyMap<string, string>;
 		},
 	): void {
-		this.editedPayloads.clear();
 		this.fileEntries = [{ type: "session", ...header }, ...entries];
 		this.sessionId = header.id;
 		this.lastSeq = lastSeq;
@@ -325,7 +342,6 @@ export class SessionManager {
 		this.entrySeqs = new Map(entries.map((entry, i) => [entry.id, i + 1]));
 		this.lastEntryId = entries.at(-1)?.id ?? null;
 		this.historyEpoch = undefined;
-		this.compactionSeq = 0;
 		this.recoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
 		this.admissionKeys = new SessionKeyDigests();
 		this.workflowStarts = {};
@@ -340,7 +356,7 @@ export class SessionManager {
 	}
 
 	hasFullHistory(): boolean {
-		return this.historyStartSeq <= 1 && this.editedPayloads.size === 0;
+		return this.historyStartSeq <= 1;
 	}
 
 	loadFullHistory(): Promise<void> {
@@ -360,7 +376,7 @@ export class SessionManager {
 		const held = new Map<number, SessionEntry>();
 		for (const entry of this.getEntries()) {
 			const seq = this.entrySeqs.get(entry.id);
-			if (seq !== undefined && !this.editedPayloads.has(entry.id)) held.set(seq, entry);
+			if (seq !== undefined) held.set(seq, entry);
 		}
 		for (let start = Math.max(1, fromSeq); start <= watermark; ) {
 			const entry = held.get(start);
@@ -399,9 +415,7 @@ export class SessionManager {
 		await this.forEachStoredEntry(1, (entry, seq) => held.set(seq, entry));
 		if (this.store !== store || this.sessionId !== sessionId || this.historyEpoch !== historyEpoch) return;
 		const leafId = this.leafId;
-		for (const entry of this.getEntries())
-			if (!this.editedPayloads.has(entry.id)) held.set(this.entrySeqs.get(entry.id)!, entry);
-		this.editedPayloads.clear();
+		for (const entry of this.getEntries()) held.set(this.entrySeqs.get(entry.id)!, entry);
 		const ordered = [...held].sort((a, b) => a[0] - b[0]);
 		this.fileEntries = [this.fileEntries[0]!, ...ordered.map(([, entry]) => entry)];
 		this.entrySeqs = new Map(ordered.map(([seq, entry]) => [entry.id, seq]));
@@ -443,6 +457,19 @@ export class SessionManager {
 	getLastSeq(): number {
 		return this.lastSeq;
 	}
+
+	/** @internal The host of an unsaved isolated session owns an independent private backend. These positions
+	 * let it combine the live (possibly locally mutated) rows with the same generation's archived bytes. */
+	getPrivateMirrorArchive(
+		entries: readonly SessionEntry[],
+	): { sessionId: string; cursor: string; seqs: number[] } | undefined {
+		if (this.isPersisted() || entries.length === this.lastSeq || this.historyEpoch === undefined) return undefined;
+		return {
+			sessionId: this.sessionId,
+			cursor: firstHistoryCursor(this.sessionId, this.historyEpoch, this.lastSeq),
+			seqs: entries.map((e) => this.entrySeqs.get(e.id)!),
+		};
+	}
 	getSessionRecoveryState(): SessionRecoveryState {
 		return { ...this.recoveryState, admissionDigests: this.admissionKeys.serialize() };
 	}
@@ -480,14 +507,28 @@ export class SessionManager {
 	async findEntrySeq(id: string): Promise<number | undefined> {
 		const held = this.entrySeqs.get(id);
 		if (held !== undefined) return held;
-		if (this.store.findEntrySeq) return this.store.findEntrySeq(this.sessionId, id);
-		for await (const { items } of this.readHistory()) {
-			for (const item of items) {
-				if (!("entry" in item))
-					throw new TypeError(
-						`Session store ${this.store.descriptor.adapter} must implement findEntrySeq to locate an oversized entry`,
-					);
-				if (item.entry.id === id) return item.seq;
+		const { store, sessionId, historyEpoch, lastSeq } = this;
+		if (store.findEntrySeq) {
+			const seq = await store.findEntrySeq(sessionId, id);
+			if (historyEpoch !== undefined && store.readEntrySizes) {
+				const head = await store.readEntrySizes(sessionId, 1, 0);
+				if (head.epoch !== historyEpoch || head.lastSeq < lastSeq)
+					throw new SessionConflictError(sessionId, lastSeq, head.lastSeq);
+			}
+			return seq !== undefined && seq <= lastSeq ? seq : undefined;
+		}
+		for await (const { items } of historyPages(store, sessionId, historyEpoch, lastSeq, { direction: "backward" })) {
+			for (let i = items.length - 1; i >= 0; i--) {
+				const item = items[i]!;
+				if (
+					"entry" in item
+						? item.entry.id === id
+						: await (await import("./storage/session/chunked-resume-projection.js")).chunkedEntryHasId(
+								historyChunks(store, sessionId, historyEpoch, item, {}),
+								id,
+							)
+				)
+					return item.seq;
 			}
 		}
 		return undefined;
@@ -501,11 +542,7 @@ export class SessionManager {
 	}
 
 	getOmittedHistoryTotals(): SessionHistoryTotals | undefined {
-		let difference = 0;
-		for (const [id, count] of this.editedPayloads) difference += count - this.storedCalls(this.byId.get(id));
-		if (!difference) return this.omittedTotals;
-		const totals = this.omittedTotals ?? EMPTY_SESSION_HISTORY_TOTALS;
-		return { ...totals, toolCalls: totals.toolCalls + difference };
+		return this.omittedTotals;
 	}
 
 	/**
@@ -658,6 +695,8 @@ export class SessionManager {
 		this.byId = index.byId;
 		this.labelsById = index.labelsById;
 		this.labelTimestampsById = index.labelTimestampsById;
+		this.contextEdits = index.contextEdits;
+		this.projectedEdits = undefined;
 		this.leafId = index.leafId;
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
@@ -760,7 +799,12 @@ export class SessionManager {
 		}
 		const location = store instanceof JsonlSessionStore ? await store.findFile(sessionId) : undefined;
 		if (location !== undefined) {
-			store = await JsonlSessionStore.open(dirname(location), { exactDirectory: true, scanExisting: false });
+			const selected = await JsonlSessionStore.open(dirname(location), {
+				exactDirectory: true,
+				scanExisting: false,
+			});
+			selected[bindSessionFile](sessionId, location);
+			store = selected;
 			opened = await readStoredSession(store, sessionId, options);
 		}
 		const header = openedHeader(opened);
@@ -794,23 +838,26 @@ export class SessionManager {
 		}
 	}
 
-	private _appendEntry(entry: SessionEntry): Promise<void> {
-		return this._appendEntries([entry]);
+	private _appendEntry(entry: SessionEntry, target?: SessionResume): Promise<void> {
+		return this._appendEntries([entry], target);
 	}
 
-	private async _appendEntries(entries: readonly SessionEntry[]): Promise<void> {
+	private async _appendEntries(entries: readonly SessionEntry[], target?: SessionResume): Promise<void> {
 		if (this.appendHalt !== undefined) throw this.appendHalt;
 		// #4971: the session was deleted from its store; that was reported once, and nothing more is saved.
-		if (this.deletedFromStore) return this.applyAppended(entries);
+		if (this.deletedFromStore) {
+			if (target) this.restoreOpened({ resume: target }, this.sessionFile);
+			return this.applyAppended(entries);
+		}
 		for (let attempt = 1; ; attempt++) {
 			const expectSeq = this.lastSeq;
 			try {
-				this.lastSeq = (
-					await this.store.append(this.sessionId, entries, {
-						expectSeq,
-						...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
-					})
-				).lastSeq;
+				const written = await this.store.append(this.sessionId, entries, {
+					expectSeq,
+					...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
+				});
+				if (target) this.restoreOpened({ resume: target }, this.sessionFile);
+				this.lastSeq = written.lastSeq;
 			} catch (error) {
 				if (error instanceof SessionNotFoundError) {
 					this.deletedFromStore = true;
@@ -818,7 +865,7 @@ export class SessionManager {
 				}
 				if (appendFailureWroteNothing(error) || attempt > MAX_APPEND_RECONCILES) throw error;
 				const unknown = isStorageTransientError(error) && error.outcome === "unknown";
-				if (await this.reconcileAppend(entries, error, unknown, expectSeq)) return;
+				if (await this.reconcileAppend(entries, error, unknown, expectSeq, target)) return;
 				continue;
 			}
 			this.applyAppended(entries);
@@ -833,48 +880,13 @@ export class SessionManager {
 			this.lastEntryId = entry.id;
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
+			if (entry.type === "context_edit") this.contextEdits++;
+			else if (entry.type !== "compaction" && this.projectedEdits?.leafId === entry.parentId)
+				this.projectedEdits.leafId = entry.id;
 			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
 		if (entries.some((entry) => entry.type === "compaction")) this.releaseEarlierWindow();
-		if (entries.some((entry) => entry.type === "context_edit")) this.releaseEditedPayloads();
-	}
-
-	private storedCalls(entry: SessionEntry | undefined): number {
-		return entry?.type === "message" && entry.message.role === "assistant" && Array.isArray(entry.message.content)
-			? entry.message.content.filter((block) => block.type === "toolCall").length
-			: 0;
-	}
-
-	private releaseEditedPayloads(): void {
-		const edits = collectContextEdits(this.buildContextEntries());
-		if (!edits.size) return;
-		const leaf = this.leafId;
-		this.fileEntries = this.fileEntries.map((entry) => {
-			if (entry.type === "session") return entry;
-			if (
-				entry.type === "context_edit" &&
-				edits.has(entry.targetId) &&
-				edits.get(entry.targetId)?.id !== entry.id &&
-				entry.replacement !== null
-			) {
-				this.editedPayloads.set(entry.id, 0);
-				return { ...entry, replacement: null };
-			}
-			const edit = edits.get(entry.id);
-			if (!edit) return entry;
-			if (!this.editedPayloads.has(entry.id)) this.editedPayloads.set(entry.id, this.storedCalls(entry));
-			if (entry.type === "message")
-				return {
-					...entry,
-					message: applyContextEdit([entry.message], edit)[0] ?? { ...entry.message, content: [] },
-				};
-			if (entry.type === "custom_message")
-				return { ...entry, content: (edit.replacement?.content ?? []) as typeof entry.content };
-			return entry;
-		});
-		this._buildIndex();
-		this.leafId = leaf;
 	}
 
 	/** Retire the old window in the same mutation as the boundary. Never reread after a committed append: a read
@@ -890,8 +902,16 @@ export class SessionManager {
 		const resume = sessionResumeOf(this.recordHeader(), linked, this.leafId ?? undefined);
 		if (!resume.compaction) return;
 		this.admissionKeys.mergeEncoded(resume.recovery.admissionDigests);
+		this.recoveryState = {
+			...this.recoveryState,
+			intercomDeliveredIds: [
+				...new Set([...this.recoveryState.intercomDeliveredIds, ...resume.recovery.intercomDeliveredIds]),
+			],
+			deliveryOpIds: [
+				...new Set([...(this.recoveryState.deliveryOpIds ?? []), ...(resume.recovery.deliveryOpIds ?? [])]),
+			],
+		};
 		const keep = new Set([...resume.branch, ...resume.state].map(({ entry }) => entry.id));
-		const boundarySeq = this.entrySeqs.get(resume.compaction.entry.id)!;
 		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
 		const leaf = this.leafId;
 		const path = this.getBranch().filter((entry) => keep.has(entry.id));
@@ -901,11 +921,6 @@ export class SessionManager {
 			if (keep.has(entry.id)) retained.push(entry);
 			else {
 				totals = addEntryToHistoryTotals(totals, entry);
-				const original = this.editedPayloads.get(entry.id);
-				if (original !== undefined) {
-					totals = { ...totals, toolCalls: totals.toolCalls + original - this.storedCalls(entry) };
-					this.editedPayloads.delete(entry.id);
-				}
 				const seq = this.entrySeqs.get(entry.id)!;
 				if (
 					entry.type === "message" &&
@@ -916,7 +931,6 @@ export class SessionManager {
 				this.entrySeqs.delete(entry.id);
 			}
 		}
-		this.compactionSeq = boundarySeq;
 		this.fileEntries = retained;
 		if (keep.size < this.lastSeq) {
 			this.historyStartSeq = Math.max(2, start);
@@ -943,6 +957,7 @@ export class SessionManager {
 		error: unknown,
 		unknown: boolean,
 		expectSeq: number,
+		target?: SessionResume,
 	): Promise<boolean> {
 		// Entries of an append that failed for certain are never in the store, so marking them too changes nothing.
 		for (const entry of entries) this.unconfirmed.add(entry.id);
@@ -964,6 +979,15 @@ export class SessionManager {
 		const tail = (stored.slice(1) as SessionEntry[]).map((entry) => own.get(entry.id) ?? entry);
 		const saved = tail.some((entry) => own.has(entry.id));
 		const foreign = tail.some((entry) => !this.unconfirmed.has(entry.id));
+		if (target && saved) this.restoreOpened({ resume: target }, this.sessionFile);
+		if (target && !saved && tail.length > 0) {
+			const stop =
+				error instanceof SessionConflictError
+					? error
+					: new SessionConflictError(this.sessionId, expectSeq, read.lastSeq);
+			if (this.appendHaltPolicy?.() === true) this.appendHalt ??= stop;
+			throw stop;
+		}
 		const leafId = saved ? entries.at(-1)!.id : this.leafId;
 		for (const [i, entry] of tail.entries()) {
 			this.entrySeqs.set(entry.id, this.lastSeq + i + 1);
@@ -1096,8 +1120,8 @@ export class SessionManager {
 	): Promise<string> {
 		return this.runMutation(async () => {
 			precondition?.();
-			if (firstKeptEntryId !== null) await this.requireEntry(firstKeptEntryId);
-			if (coveredThroughEntryId !== undefined) await this.requireEntry(coveredThroughEntryId);
+			if (firstKeptEntryId !== null) await this.requireEntryExists(firstKeptEntryId);
+			if (coveredThroughEntryId !== undefined) await this.requireEntryExists(coveredThroughEntryId);
 			const built =
 				typeof compactedText === "string" ? { text: compactedText, details } : compactedText(this.getLastSeq());
 			precondition?.();
@@ -1182,13 +1206,29 @@ export class SessionManager {
 		});
 	}
 
+	static {
+		appendOwnedSubagentChildRecord = (manager, ownerId, data, live) =>
+			manager.runMutation(async () => {
+				if (typeof data?.childId !== "string" || data.owner?.sessionId !== ownerId)
+					throw new Error("Cannot save a subagent-child record belonging to another owner.");
+				const refusal = `Cannot save subagent-child record: session ${ownerId} no longer owns its writer.`;
+				// A session its owner gave up refuses the record as its closed extension API does.
+				if (manager.sessionId !== ownerId || !live())
+					throw Object.assign(new Error(refusal), { code: "SessionClosed" });
+				if (manager.deletedFromStore) throw new Error(refusal);
+				await manager.appendCustomEntryAtLeaf("subagent-child", data);
+			});
+	}
+
+	private async appendCustomEntryAtLeaf<T>(customType: string, data?: T): Promise<string> {
+		const entry = createCustomEntry(customType, data, this.byId, this.leafId);
+		await this._appendEntry(entry);
+		return entry.id;
+	}
+
 	/** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
 	appendCustomEntry<T = SessionJsonValue>(customType: string, data?: T): Promise<string> {
-		return this.runMutation(async () => {
-			const entry = createCustomEntry(customType, data, this.byId, this.leafId);
-			await this._appendEntry(entry);
-			return entry.id;
-		});
+		return this.runMutation(() => this.appendCustomEntryAtLeaf(customType, data));
 	}
 
 	/**
@@ -1315,7 +1355,7 @@ export class SessionManager {
 	/** Append a generated resume summary anchored to the message it describes. Returns entry id. */
 	appendSessionSummary(summary: string, summarizedThroughId: string, usage?: Usage): Promise<string> {
 		return this.runMutation(async () => {
-			await this.requireEntry(summarizedThroughId);
+			await this.requireEntryExists(summarizedThroughId);
 			const entry = createSessionSummaryEntry(summary, summarizedThroughId, usage, this.byId, this.leafId);
 			await this._appendEntry(entry);
 			return entry.id;
@@ -1365,10 +1405,14 @@ export class SessionManager {
 
 	async readEntry(id: string): Promise<SessionEntry | undefined> {
 		const held = this.byId.get(id);
-		if (held && !this.editedPayloads.has(id)) return held;
+		if (held) return held;
+		const { store, sessionId, historyEpoch, lastSeq } = this;
 		const seq = await this.findEntrySeq(id);
-		if (seq !== undefined) {
-			for await (const { items } of this.readHistory({ fromSeq: seq, toSeq: seq })) {
+		if (seq !== undefined && seq <= lastSeq) {
+			for await (const { items } of historyPages(store, sessionId, historyEpoch, lastSeq, {
+				fromSeq: seq,
+				toSeq: seq,
+			})) {
 				const item = items[0];
 				if (item && !("entry" in item))
 					throw Object.assign(
@@ -1381,6 +1425,11 @@ export class SessionManager {
 			}
 		}
 		return undefined;
+	}
+
+	/** A label, summary anchor or boundary pointer names an entry; it does not read that entry's body. */
+	private async requireEntryExists(id: string): Promise<void> {
+		if (!this.byId.has(id) && (await this.findEntrySeq(id)) === undefined) throw new SessionEntryError(id, "missing");
 	}
 
 	private async requireEntry(id: string): Promise<SessionEntry> {
@@ -1424,7 +1473,7 @@ export class SessionManager {
 	/** Set or clear a label on an entry. */
 	appendLabelChange(targetId: string, label: string | undefined): Promise<string> {
 		return this.runMutation(async () => {
-			await this.requireEntry(targetId);
+			await this.requireEntryExists(targetId);
 			const entry = createLabelEntry(targetId, label, this.byId, this.leafId);
 			await this._appendEntry(entry);
 			if (label) {
@@ -1451,9 +1500,29 @@ export class SessionManager {
 		return buildContextEntries(this.getEntries(), this.leafId, this.byId, this.activeBranch());
 	}
 
-	/** Build provenance-preserving, compaction-aware model context from the current leaf. */
-	buildSessionProjection(): SessionProjection {
-		return buildSessionProjection(this.getEntries(), this.leafId, this.byId, this.sessionId, this.activeBranch());
+	/** Project the current leaf and its compaction boundary. Transcript rows keep the content shown before model-only edits. */
+	buildSessionProjection(purpose: "model" | "transcript" = "model", leafId = this.leafId): SessionProjection {
+		let visible = false;
+		const projection = buildSessionProjection(
+			this.getEntries(),
+			leafId,
+			this.byId,
+			this.sessionId,
+			leafId === this.leafId ? this.activeBranch() : leafId === null ? undefined : this.getBranch(leafId),
+			purpose,
+			() => {
+				visible = true;
+			},
+		);
+		if (leafId === this.leafId) this.projectedEdits = { leafId, visible };
+		return projection;
+	}
+
+	/** Whether an edit on the active branch changes a row still shown in its transcript. */
+	hasContextEdits(): boolean {
+		if (this.contextEdits === 0 || this.leafId === null) return false;
+		if (this.projectedEdits?.leafId !== this.leafId) this.buildSessionProjection();
+		return this.projectedEdits!.visible;
 	}
 
 	/** The active branch when the leaf is an entry of this session; undefined lets a stale leaf fall back as before. */
@@ -1467,6 +1536,12 @@ export class SessionManager {
 	buildSessionContext(): SessionContext {
 		const { messages, thinkingLevel, model } = this.buildSessionProjection();
 		return { messages, thinkingLevel, model };
+	}
+
+	/** @internal Starting or replacing a session installs a new header in slot zero, even for the same public ID. */
+	[forkGeneration](): SessionHeader | undefined {
+		const header = this.fileEntries[0];
+		return header?.type === "session" ? header : undefined;
 	}
 
 	/** Get session header. */
@@ -1490,28 +1565,62 @@ export class SessionManager {
 		return buildSessionTree(this.getEntries(), this.labelsById, this.labelTimestampsById);
 	}
 
-	private async requireBranchTarget(id: string): Promise<void> {
-		if (this.editedPayloads.size && id !== this.leafId && this.store.readResume) {
-			const resume = await this.store.readResume(this.sessionId, id);
-			if (resume.leafId !== id) throw new SessionEntryError(id, "missing");
+	private async prepareBranchTarget(id: string): Promise<SessionResume | undefined> {
+		if (!this.hasFullHistory() && id !== this.leafId) {
+			if (!this.store.readResume)
+				throw new TypeError(`Session store ${this.store.descriptor.adapter} must implement readResume`);
+			let resume: SessionResume;
+			if (this.store.readResumeAt) resume = await this.store.readResumeAt(this.sessionId, id, this.lastSeq);
+			else {
+				resume = await this.store.readResume(this.sessionId, id);
+				if (
+					resume.lastSeq > this.lastSeq &&
+					(this.historyEpoch === undefined || resume.epoch === this.historyEpoch)
+				) {
+					if (this.store.readEntrySizes && this.store.readEntryChunk) {
+						const { pinnedBranchResume } = await import("./storage/session/pinned-branch-resume.js");
+						resume = await pinnedBranchResume(
+							this.store,
+							this.recordHeader(),
+							this.historyEpoch ?? resume.epoch,
+							this.lastSeq,
+							id,
+						);
+					} else {
+						// A legacy custom store has neither a pinned index nor byte pages. Only this explicitly
+						// requested local navigation may borrow its snapshot; it never becomes the manager's history.
+						const snapshot = await this.store.load(this.sessionId);
+						const knownEpoch =
+							snapshot.epoch ??
+							(await this.store.readRange!(this.sessionId, 1, 0)).epoch ??
+							(await this.store.readResume(this.sessionId, id)).epoch;
+						if (
+							snapshot.lastSeq < this.lastSeq ||
+							snapshot.entries[this.lastSeq - 1]?.id !== this.lastEntryId ||
+							(this.historyEpoch !== undefined && knownEpoch !== this.historyEpoch)
+						)
+							throw new SessionConflictError(this.sessionId, this.lastSeq, snapshot.lastSeq);
+						resume = {
+							...sessionResumeOf(this.recordHeader(), snapshot.entries.slice(0, this.lastSeq), id),
+							epoch: snapshot.epoch ?? resume.epoch,
+						};
+					}
+				}
+			}
 			if (resume.lastSeq !== this.lastSeq || (this.historyEpoch !== undefined && resume.epoch !== this.historyEpoch))
 				throw new SessionConflictError(this.sessionId, this.lastSeq, resume.lastSeq);
-			this.restoreOpened({ resume }, this.sessionFile);
-			return;
+			if (resume.leafId !== id) throw new SessionEntryError(id, "missing");
+			return resume;
 		}
-		const seq = this.entrySeqs.get(id);
-		if (
-			!this.hasFullHistory() &&
-			(seq === undefined || seq < this.compactionSeq || !this.getBranch().some((entry) => entry.id === id))
-		)
-			await this.loadFullHistory();
 		await this.requireEntry(id);
+		return undefined;
 	}
 
 	/** Start a new branch from an earlier entry. */
 	branch(branchFromId: string): Promise<void> {
 		return this.runMutation(async () => {
-			await this.requireBranchTarget(branchFromId);
+			const target = await this.prepareBranchTarget(branchFromId);
+			if (target) this.restoreOpened({ resume: target }, this.sessionFile);
 			this.leafId = branchFromId;
 		});
 	}
@@ -1529,8 +1638,8 @@ export class SessionManager {
 	 */
 	recordBranch(branchFromId: string | null): Promise<void> {
 		return this.runMutation(async () => {
-			if (branchFromId !== null) await this.requireBranchTarget(branchFromId);
-			await this._appendEntry(createCustomEntry(LEAF_MOVE_ENTRY_TYPE, undefined, this.byId, branchFromId));
+			const target = branchFromId === null ? undefined : await this.prepareBranchTarget(branchFromId);
+			await this._appendEntry(createCustomEntry(LEAF_MOVE_ENTRY_TYPE, undefined, this.byId, branchFromId), target);
 			this.leafId = branchFromId;
 		});
 	}
@@ -1545,17 +1654,18 @@ export class SessionManager {
 		fromId?: string,
 	): Promise<string> {
 		return this.runMutation(async () => {
-			if (branchFromId !== null) await this.requireBranchTarget(branchFromId);
+			const previous = fromId ?? this.leafId ?? "root";
+			const target = branchFromId === null ? undefined : await this.prepareBranchTarget(branchFromId);
 			const entry: BranchSummaryEntry = createBranchSummaryEntry(
 				branchFromId,
-				fromId ?? this.leafId ?? "root",
+				previous,
 				summary,
 				details,
 				usage,
 				fromHook,
 				this.byId,
 			);
-			await this._appendEntry(entry);
+			await this._appendEntry(entry, target);
 			return entry.id;
 		});
 	}

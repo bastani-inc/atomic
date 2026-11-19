@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isProxy } from "node:util/types";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
+import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
-import { taskOutputText } from "./command-output.js";
+import { readTaskOutputTail } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
@@ -19,8 +21,9 @@ import {
 	taskTranscriptSource,
 	watchTaskExtensionStatuses,
 } from "./supervisor.js";
+import { loadArchiveSnapshot } from "./task-archive-snapshot.ts";
 import { taskResumer } from "./task-resumer.ts";
-import { taskTranscriptPage } from "./transcript.js";
+import { taskTranscriptPageWithCuts } from "./transcript.js";
 
 export type TaskViewResult<T> =
 	| { readonly ok: true; readonly value: T }
@@ -48,12 +51,85 @@ export interface TaskTranscriptView {
 	readonly activeToolStarts?: readonly ToolExecutionStart[];
 }
 
+/** @internal Only split assistants with a standalone provider error participate. No tool data or error text is sent. */
+export interface TaskTranscriptFragments {
+	readonly notices: readonly NoticePosition[];
+}
+type NoticePosition = { index: number; occurrence: string; cut: "before" | "after" | "both" };
+type PageResult = TaskViewResult<TaskTranscriptView>;
+type Entries = ReturnType<TaskTranscriptSource["getEntries"]>;
+type ArchiveReader = (
+	project: (
+		entries: Entries,
+		storedRows: number,
+		generation: () => Promise<string | undefined>,
+		identifyRow?: (generation: string, row: number) => string | undefined,
+	) => PageResult | Promise<PageResult>,
+	loadSnapshot: typeof loadArchiveSnapshot,
+) => Promise<PageResult>;
+const archives = new WeakMap<
+	TaskTranscriptSource,
+	{ load: TaskTranscriptSource["loadHistory"]; read: ArchiveReader }
+>();
+
+function archiveReader(source: TaskTranscriptSource): ArchiveReader | undefined {
+	const archive = archives.get(source);
+	return archive && !isProxy(source) && archive.load === Object.getOwnPropertyDescriptor(source, "loadHistory")?.value
+		? archive.read
+		: undefined;
+}
+
+/** @internal A first-party archive reader supplies the identity of the records it returned. */
+export function withTaskTranscriptArchive<T extends TaskTranscriptSource>(
+	source: T,
+	reader: ArchiveReader | TaskTranscriptSource,
+): T {
+	const archive = typeof reader === "function" ? reader : archiveReader(reader);
+	if (archive) archives.set(source, { load: source.loadHistory, read: archive });
+	return source;
+}
+
+const liveRecords = new WeakMap<object, { reply: WeakRef<object>; token: string }>();
+function replyOccurrence(entry: object, message: object): string {
+	const previous = liveRecords.get(entry);
+	if (previous?.reply.deref() === message) return previous.token;
+	const token = randomUUID();
+	liveRecords.set(entry, { reply: new WeakRef(message), token });
+	return token;
+}
+
+/** An SDK can compute a block kind on demand. Don't consume it again just to elide a duplicate. */
+export function plainNoticeBlock(block: object): boolean {
+	if (!block || typeof block !== "object" || isProxy(block)) return false;
+	const kind = Object.getOwnPropertyDescriptor(block, "type")?.value;
+	return kind === "text" || kind === "thinking";
+}
+
+const fragmentsByResult = new WeakMap<TaskViewResult<TaskTranscriptView>, TaskTranscriptFragments>();
+
+/** @internal Only the page producer and its worker transport know which durable entries the window cuts. */
+export function bindTaskTranscriptFragments(
+	result: TaskViewResult<TaskTranscriptView>,
+	fragments: TaskTranscriptFragments,
+): void {
+	fragmentsByResult.set(result, fragments);
+}
+
+/** @internal Foreign SDK page objects keep their existing contract, without property probes. */
+export function taskTranscriptFragments(
+	result: TaskViewResult<TaskTranscriptView>,
+): TaskTranscriptFragments | undefined {
+	return fragmentsByResult.get(result);
+}
+
 /** How an open transcript of a task follows it: through its live session, or by reading it again. */
 export interface TaskTranscriptFollow {
 	/** The task's session in this process, when it publishes live updates. */
 	readonly session?: TaskTranscriptSource;
 	/** The transcript has no live tail; a view reads it again when the task changes. */
 	readonly historyOnly: boolean;
+	/** Latest activity from a worker that publishes task state rather than live session events. */
+	readonly publishedActivity?: PublishedChatActivity;
 }
 
 /** What a chat of an agent task completes, as plain data: its session's cwd and the skill commands it offers. */
@@ -268,13 +344,8 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		async readTaskOutput(id, range) {
 			const task = lease(id);
 			if (!task.ok) return { ok: false, error: { message: task.error.message } };
-			const page = await store.supervisor.readTaskOutput(task.value, {
-				start: range.start,
-				maximumBytes: range.maximumBytes,
-			});
-			return page.ok
-				? { ok: true, value: { text: taskOutputText(page.value), omitted: page.value.omittedRanges.length > 0 } }
-				: { ok: false, error: { message: page.error.message } };
+			const page = await readTaskOutputTail(store.supervisor, task.value, range);
+			return page.ok ? page : { ok: false, error: { message: page.error.message } };
 		},
 		taskDetailText(id) {
 			const task = lease(id);
@@ -300,7 +371,9 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			if (session.readHistory && session.loadHistory && !session.subscribe)
 				return savedTranscriptView(session, taskId, session.readHistory.bind(session), cursor);
 			// A finished task keeps its history in its session store, not in memory (#5186).
-			if (session.loadHistory)
+			if (session.loadHistory) {
+				const archive = archiveReader(session);
+				if (archive) return readArchivedPage(session, taskId, cursor, archive);
 				return session
 					.loadHistory()
 					.then((history) =>
@@ -308,6 +381,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 							? transcriptView(session, taskId, history.entries, cursor)
 							: { ok: false, error: { message: history.unavailable } },
 					);
+			}
 			return transcriptView(session, taskId, session.getEntries(), cursor);
 		},
 		followTaskTranscript(id) {
@@ -550,43 +624,110 @@ async function savedTranscriptView(
 	return { ok: false, error: { message: "Transcript unavailable" } };
 }
 
+/** A record's ordinal identifies it within a file generation, not across a replacement of that file. */
+function readArchivedPage(
+	session: TaskTranscriptSource,
+	taskId: string,
+	cursor: string | undefined,
+	read: ArchiveReader,
+): Promise<PageResult> {
+	return read((entries, storedRows, generation, identifyRow) => {
+		const records: { row: number; notice: NoticePosition }[] = [];
+		const page = transcriptView(session, taskId, entries, cursor, {
+			storedRows,
+			collect: (row, notice) => records.push({ row, notice }),
+		});
+		if (!records.length) return page;
+		return generation().then((key) => {
+			let missing = key === undefined;
+			if (key !== undefined) {
+				for (const { row, notice } of records) {
+					const record = identifyRow ? identifyRow(key, row) : key;
+					if (record === undefined) missing = true;
+					else notice.occurrence = `${record}:${row}`;
+				}
+			}
+			if (missing) {
+				// Without a record identity keep both failures. An unsaved final answer still has its live identity.
+				const notices = fragmentsByResult.get(page)!.notices.filter((notice) => notice.occurrence !== "");
+				if (notices.length) bindTaskTranscriptFragments(page, { notices });
+				else fragmentsByResult.delete(page);
+			}
+			return page;
+		});
+	}, loadArchiveSnapshot);
+}
+
 /** The page of a task's transcript ending before `cursor`, read from `entries`, its session's history. */
 function transcriptView(
 	session: TaskTranscriptSource,
 	taskId: string,
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor: string | undefined,
+	archive?: { storedRows: number; collect: (row: number, notice: NoticePosition) => void },
 ): TaskViewResult<TaskTranscriptView> {
-	const page = taskTranscriptPage(taskId, session.getSessionId(), entries, cursor);
+	let fromEarlier: string | undefined;
+	let intoLater: string | undefined;
+	const page = taskTranscriptPageWithCuts(taskId, session.getSessionId(), entries, cursor, (first, last) => {
+		fromEarlier = first;
+		intoLater = last;
+	});
 	if (!page.ok && !session.subscribe) return { ok: false, error: { message: "Transcript unavailable" } };
 	const items = page.ok ? page.value.items : [];
 	const entryIds = new Set(items.map((item) => item.source.entryId));
 	const itemIds = new Set(items.map((item) => item.id));
-	const messages = entries.flatMap<AgentMessage>((entry) => {
-		if (!entryIds.has(entry.id)) return [];
-		if (entry.type !== "message") return sessionEntryToContextMessages(entry);
+	let notices: NoticePosition[] | undefined;
+	let repeats: Map<string, number> | undefined;
+	let nextMessageIndex = 0;
+	const messages = entries.flatMap<AgentMessage>((entry, row) => {
+		const id = entry.id;
+		if (!entryIds.has(id)) return [];
+		if (entry.type !== "message") {
+			const projected = sessionEntryToContextMessages(entry);
+			nextMessageIndex += projected.length;
+			return projected;
+		}
+		const index = nextMessageIndex++;
 		const message = entry.message;
-		if (message.role === "assistant")
-			return [
-				{
-					...message,
-					content: message.content.filter((_, index) => itemIds.has(`${entry.id}:${index}`)),
-				},
-			];
-		return message.role === "user" || message.role === "toolResult" ? [message] : [];
+		if (message.role !== "assistant") return [message];
+		const projected = { ...message };
+		let standalone = (fromEarlier === id || intoLater === id) && projected.stopReason === "error";
+		projected.content = message.content.filter((block, blockIndex) => {
+			if (!itemIds.has(`${id}:${blockIndex}`)) return false;
+			if (standalone && !plainNoticeBlock(block)) standalone = false;
+			return true;
+		});
+		if (standalone) {
+			const notice: NoticePosition = {
+				index,
+				occurrence: "",
+				cut: fromEarlier === id ? (intoLater === id ? "both" : "before") : "after",
+			};
+			if (archive && row < archive.storedRows) archive.collect(row, notice);
+			else {
+				const token = replyOccurrence(entry, message);
+				const count = repeats?.get(token) ?? 0;
+				repeats ??= new Map();
+				repeats.set(token, count + 1);
+				notice.occurrence = `${token}:${count}`;
+			}
+			notices ??= [];
+			notices.push(notice);
+		}
+		return [projected];
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
 	const activeToolStarts =
 		cursor === undefined && session.chatSession !== undefined ? activeToolExecutionStarts(session.chatSession) : [];
-	return {
-		ok: true,
-		value: {
-			messages,
-			...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
-			...(compactionReason === undefined ? {} : { compactionReason }),
-			...(compactionStartedAt === undefined ? {} : { compactionStartedAt }),
-			...(activeToolStarts.length === 0 ? {} : { activeToolStarts }),
-		},
+	const value: TaskTranscriptView = {
+		messages,
+		...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
+		...(compactionReason === undefined ? {} : { compactionReason }),
+		...(compactionStartedAt === undefined ? {} : { compactionStartedAt }),
+		...(activeToolStarts.length === 0 ? {} : { activeToolStarts }),
 	};
+	const result = { ok: true, value } as const;
+	if (notices) bindTaskTranscriptFragments(result, { notices });
+	return result;
 }

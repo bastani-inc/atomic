@@ -9,7 +9,12 @@ import {
 	type TUI,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
-import { type NavKey, navActionText, renderNavHintLine } from "../../modes/interactive/components/nav-keys.ts";
+import {
+	type NavKey,
+	navActionText,
+	navFirstKeyText,
+	renderNavHintLine,
+} from "../../modes/interactive/components/nav-keys.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { HuggingFaceModel } from "./huggingface.js";
 
@@ -150,7 +155,7 @@ export class HuggingFaceSearch extends Container implements Focusable {
 		}
 		entries.push({ keys: "type", label: "to search" });
 		entries.push({
-			keys: navActionText(this.keybindings, "tui.select.cancel").split("/")[0] || "esc",
+			keys: navFirstKeyText(this.keybindings, "tui.select.cancel") || "esc",
 			label: "back",
 		});
 		return entries;

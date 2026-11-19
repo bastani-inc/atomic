@@ -537,11 +537,11 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `branchWithSummary(entryId, summary, details?, fromHook?)` - Branch with context summary
 
 ### Instance Methods - Context & Info
-- `buildSessionProjection()` - Get the context-edited projection: source entries with their model-visible messages, plus thinkingLevel and model
+- `buildSessionProjection()` - Get the context-edited projection: source entries with their model-visible messages, plus thinkingLevel and model. Use `buildSessionProjection("transcript")` for saved chat rows: it keeps the original content of displayed entries changed or omitted for the model, while hidden custom messages follow the model. For a live session, `session.transcriptMessages` also includes messages the session holds but has not saved, such as a prompt whose save is in progress or failed, or shell output recorded for this run only. A tool call whose result was never saved appears as interrupted.
 - `buildSessionContext()` - Get messages, thinkingLevel, and model for LLM
 - `buildContextEntries()` - Active branch entries after the latest compaction boundary
 - `appendContextEdit(targetId, replacement)` - Append a branch-local context edit (`null` omits the target; `{ content }` replaces only its content)
-- `getEntries()` - Entries the manager currently holds, excluding the header. A context edit releases the target’s superseded content from this live view. To read the originally recorded entry, use `readHistory()` or `readEntry(id)`
+- `getEntries()` - Raw entries in the manager's current window, excluding the header. A context edit changes only the provider projection: while its target is in the window, the target and the edit are both retained. For an older entry outside the window, use `readHistory()` or `readEntry(id)`
 - `hasFullHistory()` - Whether every stored entry is held
 - `readHistory({ fromSeq?, toSeq?, direction?, signal? }?)` - Iterate pages between the inclusive bounds. Use `direction: "backward"` to start with the latest page and page toward the start; entries within each page always stay in append order. A page has `items` and, when there are more, `nextCursor`. To resume a stopped read, pass `{ cursor: nextCursor }` without new bounds. Items are `{ seq, entry }` except that an entry over 1 MiB is an oversized reference with `kind: "oversized"`, `seq` and `bytes`, not a truncated entry. A replaced or recreated session is rejected rather than mixing generations
 - `readHistoryChunks(reference, { offset?, signal? }?)` - Read an oversized entry’s original encoded bytes in chunks of at most 64 KiB. Track the number of bytes consumed to resume at a byte offset; use a streaming text decoder when decoding UTF-8

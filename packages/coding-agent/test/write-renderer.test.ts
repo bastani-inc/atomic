@@ -5,7 +5,7 @@ import type { ToolRenderContext } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { writeRenderers } from "../src/core/tools/renderers/write.js";
 import { highlightCode, initTheme, type Theme } from "../src/modes/interactive/theme/theme.js";
-import { stripAnsi } from "../src/utils/ansi.js";
+import { stripAnsi } from "./helpers/visible-text.js";
 
 const theme = {
 	fg: (color: string, text: string) => `<${color}>${text}</${color}>`,

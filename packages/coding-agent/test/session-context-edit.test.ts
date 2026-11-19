@@ -61,7 +61,7 @@ function projectedTexts(session: SessionManager): string[] {
 }
 
 describe("session context edits", () => {
-	it("releases tool output replaced by a context edit while its original bytes remain in history (#5554)", async () => {
+	it("keeps edited raw entries and their identity until they leave the active window (#5554)", async () => {
 		const session = SessionManager.inMemory();
 		const make = async () => {
 			const block = { type: "text" as const, text: "old-output ".repeat(8192) };
@@ -73,14 +73,24 @@ describe("session context edits", () => {
 				isError: false,
 				content: [block],
 			});
+			const entry = session.getEntry(id)!;
+			await session.appendContextEdit(id, { content: "reduced" });
+			expect(session.getEntry(id)).toBe(entry);
+			expect(session.getEntries()[0]).toBe(entry);
+			expect(session.getBranch()[0]).toBe(entry);
 			return { id, weak: new WeakRef(block) };
 		};
 		const { id, weak } = await make();
-		await session.appendContextEdit(id, { content: "reduced" });
+		expect(projectedTexts(session)).toEqual(["reduced"]);
+		const mirror = await session.inMemoryBranch("/project");
+		expect(projectedTexts(mirror)).toEqual(["reduced"]);
+		await mirror.branch(id);
+		expect(projectedTexts(mirror)).toEqual(["old-output ".repeat(8192)]);
+		await mirror.getSessionStore().close();
+		await session.appendCompaction("cleared", null, 100, verbatimDetails);
 		const { collectGarbage } = await import("../../../test/helpers/collect-garbage.js");
 		await collectGarbage();
 		expect(weak.deref() === undefined).toBe(true);
-		expect(projectedTexts(session)).toEqual(["reduced"]);
 		const raw = await session.readEntry(id);
 		expect(raw).toMatchObject({
 			type: "message",
@@ -109,7 +119,7 @@ describe("session context edits", () => {
 
 		expect(session.getBranch().filter((entry) => entry.type === "message")).toHaveLength(3);
 		expect(session.buildSessionProjection().messages.map((message) => message.role)).toEqual(["user"]);
-		expect(((await session.readEntry(resultId)) as { message: ToolResultMessage }).message).toEqual(result);
+		expect((session.getEntry(resultId) as { message: ToolResultMessage }).message).toBe(result);
 	});
 
 	it("replaces only content and lets the latest edit win", async () => {
@@ -124,7 +134,7 @@ describe("session context edits", () => {
 		if (projected.role !== "assistant") throw new Error("expected assistant");
 		expect(text(projected)).toBe("restored");
 		expect(projected.usage.totalTokens).toBe(11);
-		expect(text(((await session.readEntry(targetId)) as { message: AssistantMessage }).message)).toBe("original");
+		expect(text((session.getEntry(targetId) as { message: AssistantMessage }).message)).toBe("original");
 	});
 
 	it("normalizes string replacements for array-only assistant and tool-result roles", async () => {

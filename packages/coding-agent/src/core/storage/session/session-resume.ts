@@ -728,17 +728,25 @@ export function latestCompactionOf(
 export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number, windowOnly = false): number[] {
 	const ranges = branchRanges(index, index.leafSeq);
 	const lastAssistant = index.assistants.findLast((at) => onBranch(ranges, at));
+	// Older senders put an empty replyTo on ordinary sends. Such a delivery can settle only an ask whose
+	// actual ID was the empty string. Preserve that case, and any independently pending inbox/protected row.
+	const omitEmptyReply = windowOnly && !Object.hasOwn(index.pending, "ask:");
 	const retained = [
 		index.nameSeq,
 		index.summarySeq,
 		lastAssistant,
 		...index.intents.map(([, seq]) => seq),
-		...Object.entries(index.latest).flatMap(([key, seqs]) =>
-			key.startsWith("model-transition:") ? (windowOnly ? [] : seqs.filter((seq) => onBranch(ranges, seq))) : seqs,
-		),
+		...Object.entries(index.latest).flatMap(([key, seqs]) => {
+			if (omitEmptyReply && key === "pending:reply:") return [];
+			return key.startsWith("model-transition:")
+				? windowOnly
+					? []
+					: seqs.filter((seq) => onBranch(ranges, seq))
+				: seqs;
+		}),
 		...Object.values(index.fields).flatMap((items) => items.map(([at]) => at)),
 		...Object.values(index.firstChildren),
-		...Object.values(index.pending),
+		...Object.entries(index.pending).flatMap(([key, seq]) => (omitEmptyReply && key === "reply:" ? [] : [seq])),
 		...Object.values(index.parks).flatMap((park) => [park.seq, ...park.notified]),
 	];
 	const seqs = new Set(retained.filter((seq): seq is number => seq !== undefined && seq < fromSeq));

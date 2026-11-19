@@ -12,6 +12,7 @@ import type { TaskId } from "../../../core/tasks/contracts.js";
 import {
 	bindTaskClock,
 	liveElapsedFromRead,
+	shownSpanMs,
 	TaskElapsedClocks,
 	taskClockOf,
 	taskClockRunning,
@@ -19,6 +20,7 @@ import {
 import { getGlobalTheme } from "../theme/global-theme.ts";
 import { ATOMIC_WORKING_FRAMES, atomicWorkingGlyph } from "./atomic-working-status.ts";
 import {
+	clickableKeyTextHint,
 	type NavKey,
 	type NavKeybindings,
 	type NavKeyStyle,
@@ -244,6 +246,13 @@ export class AgentPanelModel {
 	withElapsed(row: AgentPanelRow, now = this.now(), state: AgentPanelState = row.state): AgentPanelRow {
 		row = this.baseOf(row);
 		if (state === "queued") return row;
+		if (row.elapsedSpan) {
+			const sourceClocks = taskClockOf(row);
+			if (sourceClocks === undefined) this.hasLocalClocks = true;
+			const taskId = agentPanelTaskId(row.id) ?? row.id;
+			const elapsedMs = shownSpanMs(taskId, row.elapsedSpan, sourceClocks ?? this.elapsedClocks, now);
+			return elapsedMs === row.elapsedMs ? row : this.copyOf(row, { ...row, elapsedMs });
+		}
 		const running = taskClockRunning(state);
 		if (row.kind === "workflow") {
 			if (!running || row.elapsedMs === undefined) return row;
@@ -836,13 +845,21 @@ export function renderAgentPanelHint(
 	if (finished !== undefined) {
 		const key = filtered?.getKeys?.("app.list.stop")?.[0] ?? "x";
 		return style.warning(
-			truncateToWidth(`  ${panelText(finished.name)} finished · ${key} to ${focus.finishedAction()}`, width),
+			truncateToWidth(
+				`  ${panelText(finished.name)} finished · ${clickableKeyTextHint(key, ` to ${focus.finishedAction()}`)}`,
+				width,
+			),
 		);
 	}
 	const pending = focus.pendingStop();
 	if (pending !== undefined) {
 		const key = filtered?.getKeys?.("app.list.stop")?.[0] ?? "x";
-		return style.warning(truncateToWidth(`  Press ${key} again within 3s to stop ${panelText(pending.name)}`, width));
+		return style.warning(
+			truncateToWidth(
+				`  Press ${clickableKeyTextHint(key, " again")} within 3s to stop ${panelText(pending.name)}`,
+				width,
+			),
+		);
 	}
 	return renderNavHintLine(agentPanelKeys(selected, keybindings), width, style, filtered);
 }

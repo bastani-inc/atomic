@@ -11,6 +11,7 @@ import {
 	type ProgramStatus,
 } from "./program-status.ts";
 import { StdinBuffer } from "./stdin-buffer.ts";
+import { getTerminalColorMode } from "./terminal-image.ts";
 import { replaceControlCharacters } from "./utils.ts";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
@@ -110,6 +111,9 @@ export interface Terminal {
 
 	flush?(): Promise<void>;
 
+	/** Foreground colour depth of the display in bits, when known. */
+	readonly colorDepth?: number;
+
 	// Get terminal dimensions
 	get columns(): number;
 	get rows(): number;
@@ -182,10 +186,22 @@ function createWriteLog(target: string): ((data: string) => void) | undefined {
 	};
 }
 
+function displayColorDepth(): number | undefined {
+	const depth = process.stdout.getColorDepth?.();
+	if (depth === undefined || depth === 1 || process.env.FORCE_COLOR !== undefined) return depth;
+	// The runtime can report basic colour for a direct-colour display, or direct colour for every multiplexer.
+	if (getTerminalColorMode() === "truecolor") return 24;
+	const term = process.env.TERM;
+	if (term === "linux") return 4;
+	if (term?.endsWith("-256color") || term?.endsWith("-direct")) return 8;
+	return depth;
+}
+
 /**
  * Real terminal using process.stdin/stdout
  */
 export class ProcessTerminal implements Terminal {
+	readonly colorDepth = displayColorDepth();
 	private wasRaw = false;
 	private inputHandler?: (data: string) => void;
 	private resizeHandler?: () => void;

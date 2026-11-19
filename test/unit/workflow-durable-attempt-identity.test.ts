@@ -115,8 +115,7 @@ function toolStatus(status: string): string {
 
 /**
  * The runs the root reaches through the boundary stages of its graph. A child run left in the live store by an earlier
- * attempt that the latest attempt never reached hangs off no stage of it. Durable reconstruction prunes the child of a
- * failed or skipped boundary whatever the attempt, so the live view leaves it out too.
+ * attempt that the latest attempt never reached hangs off no stage of it. Failed or skipped boundaries count only a child they actually started.
  */
 function graph(runs: readonly RunSnapshot[], rootId: string): readonly GraphView[] {
 	const views: GraphView[] = [];
@@ -129,7 +128,10 @@ function graph(runs: readonly RunSnapshot[], rootId: string): readonly GraphView
 		});
 		const boundaries = new Set(
 			snapshot.stages
-				.filter((stage) => stage.status !== "failed" && stage.status !== "skipped")
+				.filter(
+					(stage) =>
+						stage.startedChildRunId !== undefined || (stage.status !== "failed" && stage.status !== "skipped"),
+				)
 				.map((stage) => stage.id),
 		);
 		for (const childRun of runs)

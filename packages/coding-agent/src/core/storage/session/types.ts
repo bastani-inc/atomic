@@ -351,6 +351,8 @@ export interface SessionStore {
 
 	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
 	readResume?(sessionId: string, leafId?: string): Promise<SessionResume>;
+	/** A local navigation from a stale manager may select a branch as of its original sequence watermark. */
+	readResumeAt?(sessionId: string, leafId: string, throughSeq: number): Promise<SessionResume>;
 	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;

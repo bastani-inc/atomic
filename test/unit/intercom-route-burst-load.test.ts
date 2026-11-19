@@ -251,6 +251,7 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 		sessionId,
 		sessionName,
 		emittedEvents,
+		events: pi.events,
 		start: () => fire("session_start", { type: "session_start", reason: "startup" }),
 		shutdown: () => fire("session_shutdown", { type: "session_shutdown", reason: "quit" }),
 		/** Ends the context's session without shutting the extension down: its in-flight connects are left running. */
@@ -263,6 +264,11 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 			pi.events.emit("atomic:workflow-pending-stage-route", payload);
 			assert.ok(payload.completion, "the Intercom relay must claim every route event");
 			return payload.completion;
+		},
+		retireRoute(runId: string, group: string) {
+			const event = { runId, group, completion: undefined as Promise<void> | undefined };
+			pi.events.emit("atomic:workflow-pending-stage-route-retired", event);
+			return event.completion;
 		},
 		execute(params: { action: string }): Promise<ToolResult> {
 			const execute = tools.get("intercom")?.execute;
@@ -398,6 +404,148 @@ test("a standalone owner registers the routes of every run in one invocation gro
 		await owner.closeGroup(group);
 	}
 });
+
+test("a standalone owner retires one run on a shared broker connection (#5561)", async () => {
+	const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
+	const owner = createWorkflowRouteOwner(repoRoot);
+	const root = runIdFor("55610001", 0),
+		child = runIdFor("55610001", 1),
+		group = runGroup(root);
+	const observer = await connectObserver([group]);
+	try {
+		for (const id of [root, child]) {
+			const route = routePayload(id, 1, undefined, group);
+			owner.events.emit("atomic:workflow-pending-stage-route", route);
+			await route.completion;
+		}
+		await waitForRoster(observer, [root, child]);
+		const retirement = { runId: child, group, completion: undefined as Promise<void> | undefined };
+		owner.events.emit("atomic:workflow-pending-stage-route-retired", retirement);
+		await retirement.completion;
+		const remaining = await rosterRunIds(observer);
+		assert.ok(remaining.has(root));
+		assert.ok(!remaining.has(child));
+		assert.equal(await owner.registered(child), false);
+	} finally {
+		await owner.closeGroup(group);
+	}
+});
+
+test("a delayed withdrawal removes neither a new generation nor a different socket's registration (#5561)", async () => {
+	const id = runIdFor("55610003", 0),
+		group = runGroup(id);
+	const owner = new IntercomClient("withdraw-owner");
+	const peer = new IntercomClient("withdraw-peer");
+	for (const client of [owner, peer]) {
+		client.on("error", () => {});
+		openClients.add(client);
+		await client.connect(registration("withdraw-peer", group));
+	}
+	const register = (generation: string) =>
+		owner.registerPendingStageRouteAcknowledged(
+			id,
+			group,
+			"capability",
+			routePayload(id, 1).stages,
+			undefined,
+			undefined,
+			false,
+			undefined,
+			generation,
+		);
+	await register("previous");
+	await register("current");
+	await owner.withdrawPendingStageRoute(id, "previous");
+	assert.ok((await rosterRunIds(peer)).has(id));
+	await peer.withdrawPendingStageRoute(id, "current");
+	assert.ok((await rosterRunIds(peer)).has(id));
+	await owner.withdrawPendingStageRoute(id, "current");
+	assert.ok(!(await rosterRunIds(peer)).has(id));
+});
+
+test("an older broker retires by connection and the host reports the fallback only once (#5561)", async () => {
+	proxy.transformBrokerFrames((frame) => {
+		if (frame.type !== "registered") return frame;
+		const { withdrawsPendingStageRoutes: _feature, ...legacy } = frame;
+		return legacy as WireFrame;
+	});
+	const root = runIdFor("55610002", 0),
+		child = runIdFor("55610002", 1),
+		group = runGroup(root);
+	const observer = await connectObserver([group]);
+	const host = createHost();
+	const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const framesBefore = proxy.toBroker.length;
+	await withHost(host, async () => {
+		for (const id of [root, child]) await host.publishRoute(id, 1, undefined, group);
+		await host.retireRoute(child, group);
+		assert.ok((await rosterRunIds(observer)).has(child), "the older broker still owns both routes on the socket");
+		await host.retireRoute(root, group);
+		await waitFor("connection-level retirement", async () =>
+			(await rosterRunIds(observer)).has(child) ? undefined : true,
+		);
+		assert.equal(
+			warnings.mock.calls.filter(([line]) => String(line).includes("individual route retirement")).length,
+			1,
+		);
+		assert.ok(!proxy.toBroker.slice(framesBefore).some(({ frame }) => frame.type === "withdraw_pending_stage_route"));
+	});
+});
+
+for (const kind of ["extension", "standalone"] as const) {
+	test(`a stage's previous session name reaches its replacement after its ${kind} owner rotates the capability`, async () => {
+		const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
+		const runId = runIdFor("55610003", kind === "extension" ? 1 : 2);
+		const group = runGroup(runId);
+		const target = `${group}/reviewer-1`;
+		const owner = kind === "extension" ? createHost() : createWorkflowRouteOwner(repoRoot);
+		if ("start" in owner) await owner.start();
+		owner.events.on("atomic:workflow-pending-stage-message", (payload) => {
+			const request = payload as { live?: boolean; handled: boolean; completion?: Promise<object> };
+			request.handled = true;
+			request.completion = Promise.resolve(
+				request.live ? { outcome: "forward", target } : { outcome: "queued", position: 1 },
+			);
+		});
+		const publish = async (capability: string) => {
+			const route = routePayload(runId, 1, capability);
+			owner.events.emit("atomic:workflow-pending-stage-route", route);
+			await route.completion;
+		};
+		const stage = async (name: string, capability: string) => {
+			const client = new IntercomClient(name);
+			openClients.add(client);
+			client.on("error", () => {});
+			await client.connect(registration(name, group));
+			await client.registerLiveWorkflowStageRoute(runId, ["reviewer-1"], capability);
+			return client;
+		};
+		try {
+			const sender = await connectObserver([group]);
+			const oldName = `first-stage-${kind}`;
+			await publish("first");
+			const first = await stage(oldName, "first");
+			const originalId = first.sessionId;
+			await first.disconnect();
+			await waitFor("the original stage session to leave", async () =>
+				(await sender.listSessions()).some((session) => session.id === originalId) ? undefined : true,
+			);
+			assert.equal((await sender.send(oldName, { text: "while suspended" })).queued, true);
+
+			await publish("second");
+			const replacement = await stage(`second-stage-${kind}`, "second");
+			const received: string[] = [];
+			replacement.on("message", (_from, message) => received.push(message.content.text));
+			const sent = await sender.send(oldName, { text: "after replacement" });
+			assert.equal(sent.delivered, true, sent.reason);
+			await vi.waitFor(() => assert.deepEqual(received, ["after replacement"]));
+			await replacement.disconnect();
+		} finally {
+			if ("shutdown" in owner) await owner.shutdown();
+			else await owner.closeGroup(group);
+		}
+	});
+}
 
 const HEALTHY_RUN_COUNT = 5;
 /** Runs whose route the broker refuses; only these may get a route connection of their own. */

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stripVTControlCharacters as stripAnsi } from "node:util";
+import { stripHintMarkers } from "@bastani/atomic-tui";
 import { describe, it } from "vitest";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
@@ -36,6 +36,7 @@ import {
 	invalidDefinitionsFromDiagnostics,
 	workflowsListingItems,
 } from "../../packages/workflows/src/tui/workflows-listing.js";
+import { stripVTControlCharacters as stripAnsi } from "../helpers/visible-text.ts";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { defaultTheme, makeStage } from "./overlay-graph-helpers.js";
 
@@ -95,7 +96,8 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 			{ ...makeStage("b"), name: `second-${EVIL}-${"y".repeat(40)}` },
 		];
 		const rows = renderSwitcher(stages, { query: "", selectedIndex: 1 }, { width: 44, theme: defaultTheme });
-		const joined = rows.join("\n");
+		// The hint row's click markers are the renderer's own and never reach the terminal.
+		const joined = stripHintMarkers(rows.join("\n"));
 		assert.doesNotMatch(joined, RAW_UNSAFE);
 		const plainRows = rows.map((row) => stripAnsi(row));
 		const firstRow = plainRows.find((row) => row.includes("first-"));

@@ -1,5 +1,5 @@
-import { formatTokenSegment, keyHintIfBound, navEntryKeys } from "@bastani/atomic";
-import { type Component, Container, getKeybindings, Text } from "@bastani/atomic-tui";
+import { formatTokenSegment, keyHintIfBound, navEntryKeyParts } from "@bastani/atomic";
+import { type Component, Container, clickableKeysHint, getKeybindings, Text } from "@bastani/atomic-tui";
 import { formatDuration, shortenPath } from "../shared/formatters.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getSingleResultOutput } from "../shared/utils.js";
@@ -76,8 +76,11 @@ function renderSingleCompactAtWidth(
 				count: r.progress.tokens,
 			}),
 		]);
-		const manageKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" });
-		const hint = manageKey ? `${manageKey} to manage` : keyHintIfBound("app.tools.expand", "for live detail");
+		const manageKeys = navEntryKeyParts(getKeybindings(), { action: "app.agents.focus", label: "to manage" });
+		const hint =
+			manageKeys.length > 0
+				? clickableKeysHint(manageKeys, " to manage")
+				: keyHintIfBound("app.tools.expand", "for live detail");
 		const runningLine = `${running}${hint ? ` ${theme.fg("dim", "·")} ${theme.fg("dim", hint)}` : ""}`;
 		c.addChild(new Text(truncLine(`  ${theme.fg("dim", "⎿")}  ${runningLine}`, width), 0, 0));
 		if (r.artifactPaths)

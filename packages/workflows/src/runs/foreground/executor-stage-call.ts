@@ -105,7 +105,13 @@ export function createTrackedStageCaller(input: {
 			);
 			return ready ? { action: "advance" } : { action: "stay" };
 		}
-		return await askReadinessViaStageBroker(runtime.runId, runtime.stageId, signal, runtime.stageUiBroker);
+		return await askReadinessViaStageBroker(
+			runtime.runId,
+			runtime.stageId,
+			signal,
+			runtime.stageUiBroker,
+			runtime.stageUiSignal,
+		);
 	};
 	/**
 	 * Readiness after a steer: the decision model advances the stage or keeps it open without asking. An uncertain or

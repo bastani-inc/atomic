@@ -1,11 +1,11 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it } from "vitest";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { handleWorkflowsCommand, openWorkflowRun } from "../../packages/workflows/src/extension/workflow-open-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { stripVTControlCharacters as stripAnsi } from "../helpers/visible-text.ts";
 import * as h from "./overlay-graph-helpers.js";
 
 const { makeStage, makeRun, makeStore } = h;

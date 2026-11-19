@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { ReadonlyFooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
@@ -16,6 +15,7 @@ import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import { initTheme, refreshColorEnvironment } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskRecord } from "../helpers/task-record.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const identity = (text: string): string => text;
 const plain = (rows: readonly string[]) => rows.map((row) => stripVTControlCharacters(row));

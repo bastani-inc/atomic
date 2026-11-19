@@ -14,6 +14,7 @@ import type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedF
 import type { LegacyWaitingStatus } from "../shared/legacy-waiting-status.js";
 import type {
 	PendingStageMessage,
+	RunStatus,
 	WorkflowActor,
 	WorkflowFailureCode,
 	WorkflowFailureDisposition,
@@ -50,6 +51,8 @@ export interface DurableWorkflowHandle {
 	readonly createdAt: number;
 	/** Last update timestamp (ms since epoch). */
 	readonly updatedAt: number;
+	/** The host's order of terminal transitions; later writes to this handle do not change it. */
+	readonly finishSequence?: number;
 	/** Stable identity of the latest status transition, preserved by summary writes. */
 	readonly transitionClaimId?: string;
 	/** Current durable status. */
@@ -247,6 +250,8 @@ export type DurableWorkflowBoundaryTopology = DurableWorkflowBoundaryIdentity &
 		| { readonly event: "start"; readonly status: "running" }
 		| {
 				readonly event: "terminal";
+				/** A failed or skipped boundary's child actually ran, though there is no replayable child result. */
+				readonly startedChildStatus?: RunStatus;
 				readonly status: Extract<DurableStageLifecycleStatus, "completed" | "failed" | "skipped">;
 		  }
 	);
@@ -386,6 +391,7 @@ export interface DurableWorkflowMetadata {
 	readonly pendingPrompts: number;
 	readonly createdAt: number;
 	readonly promptReservationEpoch: string;
+	readonly finishSequence?: number;
 	/** Executor id of the Atomic process that wrote this metadata generation. */
 	readonly ownerExecutorId?: string;
 	/** Unique winner token for a first-writer-wins status-transition generation. */

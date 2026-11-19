@@ -200,6 +200,8 @@ export interface HostSessionPickerRow {
 	path: string;
 	id: string;
 	cwd: string;
+	/** A workflow selection must still match this journal version when it is resumed. */
+	resumeSelection?: { readonly updatedAt: number };
 	/** Creation time in epoch milliseconds. */
 	createdAt: number;
 	/** Last-modified time in epoch milliseconds. */

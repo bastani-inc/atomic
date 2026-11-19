@@ -3,10 +3,13 @@ import { tmpdir } from "node:os";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import {
 	Container,
+	getKeybindings,
 	MULTI_CLICK_INTERVAL_MS,
+	matchesKey,
 	resetCapabilitiesCache,
 	ScrollView,
 	setCapabilities,
+	setKeybindings,
 	stripTerminalSequences,
 	Text,
 	type TuiAltScreen,
@@ -16,6 +19,7 @@ import {
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js";
 import type { MessageRenderer } from "../src/core/extensions/types.js";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionEntry } from "../src/core/session-manager.js";
 import type { TaskCompletionEnvelope } from "../src/core/tasks/completion.js";
 import { taskCompletionMessage } from "../src/core/tasks/completion-message.js";
@@ -403,6 +407,29 @@ describe("clicking transcript blocks in the main chat", () => {
 			assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
 		} finally {
 			chat.tui.stop();
+		}
+	});
+
+	test("a click on a key hint inside a tool block runs the hint's key once and does not also toggle the block", async () => {
+		const previousKeys = getKeybindings();
+		setKeybindings(new KeybindingsManager());
+		const chat = await mountChat(100, 60);
+		const keys: string[] = [];
+		const stopListening = chat.tui.addInputListener((data) => {
+			keys.push(data);
+			return undefined;
+		});
+		try {
+			const header = chat.rowOf(/Bash\(first-command\)/);
+			const hidden = chat.screen().findIndex((line, row) => row > header && /earlier lines.*ctrl\+o/.test(line));
+			assert.notEqual(hidden, -1, chat.screen().join("\n"));
+			chat.click(chat.columnOf(hidden, "ctrl+o"), hidden);
+			assert.equal(keys.filter((data) => matchesKey(data, "ctrl+o")).length, 1, "the hint presses ctrl+o once");
+			assert.ok(!chat.expanded("first"), "the block's own click does not also toggle it");
+		} finally {
+			stopListening();
+			chat.tui.stop();
+			setKeybindings(previousKeys);
 		}
 	});
 

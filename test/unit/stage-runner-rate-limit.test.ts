@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { recordProviderRateLimit } from "@bastani/atomic";
+import { fauxProvider } from "@bastani/atomic-ai";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { AgentSessionAdapter, InternalStageContext, StageSessionRuntime } from "./stage-runner-helpers.js";
 import {
@@ -225,6 +226,42 @@ test("pause holds a cooldown retry and resume replaces its objective (#3864)", a
 		await ctx.__resume("replacement objective");
 		assert.equal(await pending, "ok");
 		assert.deepEqual(texts, ["old objective", "replacement objective"]);
+	} finally {
+		await ctx.abort();
+		await pending.catch(() => {});
+	}
+});
+
+test("a pause as the provider cooldown expires wins before the stage sends its request (#5564)", async () => {
+	const provider = "pause-at-cooldown-end";
+	recordProviderRateLimit(provider, { status: 429, retryAfterMs: 2000 });
+	const calls: string[] = [];
+	let waiting = false;
+	let pause: Promise<void> | undefined;
+	const { session } = makeMockSession({
+		model: fauxProvider({ provider }).getModel(),
+		async prompt(text) {
+			calls.push(text);
+			return "done";
+		},
+	});
+	const ctx = createStageContext(
+		makeOpts({
+			adapters: { agentSession: { create: async () => ({ session }) } },
+			onModelFallbackMetaChange(meta) {
+				if (meta.rateLimits?.some((limit) => limit.waitingUntil !== undefined)) waiting = true;
+				else if (waiting && !pause) pause = ctx.__requestPause();
+			},
+		}),
+	) as InternalStageContext;
+	const pending = ctx.prompt("cancelled");
+	try {
+		await vi.advanceTimersByTimeAsync(2000);
+		assert.ok(pause, "the stage was paused as its wait ended");
+		await pause;
+		await ctx.__resume();
+		await pending;
+		assert.deepEqual(calls, []);
 	} finally {
 		await ctx.abort();
 		await pending.catch(() => {});

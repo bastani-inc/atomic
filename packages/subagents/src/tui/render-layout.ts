@@ -9,6 +9,8 @@ export function getTermWidth(): number {
 }
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** SGR styling, or an APC marker such as a clickable key hint's; neither takes a column. */
+const ZERO_WIDTH_CODE = /^(?:\x1b\[[0-9;]*m|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\))/;
 
 /**
  * Truncate a line to maxWidth, preserving ANSI styling through the ellipsis.
@@ -29,14 +31,14 @@ export function truncLine(text: string, maxWidth: number): string {
 	let i = 0;
 
 	while (i < text.length) {
-		const ansiMatch = text.slice(i).match(/^\x1b\[[0-9;]*m/);
+		const ansiMatch = text.slice(i).match(ZERO_WIDTH_CODE);
 		if (ansiMatch) {
 			const code = ansiMatch[0];
 			result += code;
 
 			if (code === "\x1b[0m" || code === "\x1b[m") {
 				activeStyles = [];
-			} else {
+			} else if (code.startsWith("\x1b[")) {
 				activeStyles.push(code);
 			}
 			i += code.length;
@@ -44,7 +46,7 @@ export function truncLine(text: string, maxWidth: number): string {
 		}
 
 		let end = i;
-		while (end < text.length && !text.slice(end).match(/^\x1b\[[0-9;]*m/)) {
+		while (end < text.length && !text.slice(end).match(ZERO_WIDTH_CODE)) {
 			end++;
 		}
 

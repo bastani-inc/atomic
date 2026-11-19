@@ -18,6 +18,7 @@ import {
 } from "./agent-session-persistent-custom-messages.ts";
 import { markQueuedMessageImages, waitForCustomMessagePreparation } from "./agent-session-prompt.ts";
 import { abort, interruptTurn, pauseQueuedMessages, resumeQueuedMessages } from "./agent-session-queue-pause.ts";
+import { abortTurnRetries } from "./agent-session-retry.ts";
 import { transferWorkflowStageDeliveriesTo } from "./agent-session-transfer.ts";
 import {
 	forgetAllTypedQueuedTexts,
@@ -449,7 +450,7 @@ async function sendInterruptCustomMessageUnlocked<T>(
 ): Promise<void> {
 	assertSessionOpen(session);
 	const lifetime = sessionLifetime(session);
-	session.abortRetry();
+	abortTurnRetries.call(session);
 	session._ensureActiveInterruptQueueHold();
 	await waitForCustomMessagePreparation(session);
 	if (session.isStreaming || session._isPreparingRun) {

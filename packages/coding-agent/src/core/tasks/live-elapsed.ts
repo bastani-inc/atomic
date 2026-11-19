@@ -1,5 +1,5 @@
 import type { AgentPanelState } from "./agent-panel-source.ts";
-import type { Execution, TaskRecord } from "./contracts.js";
+import { type Execution, spanElapsedMs, type TaskElapsedSpan, type TaskRecord } from "./contracts.js";
 
 export function taskClockRunning(state: Execution["kind"] | AgentPanelState): boolean {
 	return state === "running" || state === "cancelling" || state === "stopping" || state === "input";
@@ -14,7 +14,16 @@ export function liveElapsedFromRead(
 	return reportedMs === undefined || !running ? reportedMs : reportedMs + Math.max(0, now - readAt);
 }
 
-type ElapsedClock = { since: number; displayed: number; frozen?: number; settled?: boolean; ended?: boolean };
+/** The most a view has shown for one dispatch, which a wall-clock step back must not lower. */
+type ShownSpan = { dispatchedAt: number; shownMs: number };
+type ElapsedClock = {
+	since: number;
+	displayed: number;
+	frozen?: number;
+	settled?: boolean;
+	ended?: boolean;
+	span?: ShownSpan;
+};
 type ClockReference = {
 	readonly table: Map<string, WeakRef<ElapsedClock>>;
 	readonly taskId: string;
@@ -44,14 +53,49 @@ function readClock(
 	}
 	if (entry === undefined || entry.frozen !== undefined) {
 		const resumedMs = entry?.ended ? (reportedMs ?? 0) : Math.max(reportedMs ?? 0, entry?.frozen ?? 0);
-		entry = { since: now - resumedMs, displayed: resumedMs };
-		const reference = new WeakRef(entry);
-		table.set(taskId, reference);
-		released.register(entry, { table, taskId, reference });
+		const span = entry?.span;
+		entry = { since: now - resumedMs, displayed: resumedMs, ...(span === undefined ? {} : { span }) };
+		trackClock(table, taskId, entry);
 	}
 	if (reportedMs !== undefined) entry.since = Math.min(entry.since, now - reportedMs);
 	entry.displayed = Math.max(entry.displayed, reportedMs ?? 0, now - entry.since);
 	return { elapsedMs: entry.displayed, clock: entry };
+}
+
+function trackClock(table: Map<string, WeakRef<ElapsedClock>>, taskId: string, entry: ElapsedClock): void {
+	const reference = new WeakRef(entry);
+	table.set(taskId, reference);
+	released.register(entry, { table, taskId, reference });
+}
+
+function readSpanClock(
+	table: Map<string, WeakRef<ElapsedClock>>,
+	taskId: string,
+	span: TaskElapsedSpan,
+	now: number,
+): { readonly elapsedMs: number; readonly clock: ElapsedClock } {
+	const elapsedMs = spanElapsedMs(span, now);
+	let entry = table.get(taskId)?.deref();
+	if (entry === undefined) {
+		entry = { since: now - elapsedMs, displayed: elapsedMs };
+		trackClock(table, taskId, entry);
+	}
+	if (entry.span?.dispatchedAt === span.dispatchedAt) entry.span.shownMs = Math.max(entry.span.shownMs, elapsedMs);
+	else entry.span = { dispatchedAt: span.dispatchedAt, shownMs: elapsedMs };
+	return { elapsedMs: entry.span.shownMs, clock: entry };
+}
+
+/**
+ * A dispatch's elapsed time as a view shows it: never less than that view already showed for the same dispatch, even
+ * if the wall clock steps back. A new dispatch starts from its own time.
+ */
+export function shownSpanMs(
+	taskId: string,
+	span: TaskElapsedSpan,
+	clocks?: TaskElapsedClocks,
+	now = Date.now(),
+): number {
+	return clocks?.spanMs(taskId, span, now) ?? readSpanClock(defaultTable, taskId, span, now).elapsedMs;
 }
 
 export function liveElapsedMs(
@@ -62,6 +106,21 @@ export function liveElapsedMs(
 	ended = false,
 ): number | undefined {
 	return readClock(defaultTable, taskId, reportedMs, running, now, ended).elapsedMs;
+}
+
+/** A dispatched child carries its own clock, including over a late or remote observation. */
+export function taskElapsedMs(
+	task: TaskRecord,
+	running: boolean,
+	clocks = taskClockOf(task),
+	now = Date.now(),
+): number | undefined {
+	if (task.elapsedSpan) return shownSpanMs(task.ref.taskId, task.elapsedSpan, clocks, now);
+	const reported = task.metrics?.elapsedMs;
+	return (
+		clocks?.elapsedMs(task.ref.taskId, reported, running, now) ??
+		liveElapsedMs(task.ref.taskId, reported, running, now)
+	);
 }
 
 export class TaskElapsedClocks {
@@ -90,6 +149,13 @@ export class TaskElapsedClocks {
 	): number | undefined {
 		const { elapsedMs, clock } = readClock(this.table, taskId, reportedMs, running, now, ended);
 		if (clock !== undefined) this.retained.set(taskId, clock);
+		return elapsedMs;
+	}
+
+	/** See `shownSpanMs`. */
+	spanMs(taskId: string, span: TaskElapsedSpan, now = Date.now()): number {
+		const { elapsedMs, clock } = readSpanClock(this.table, taskId, span, now);
+		this.retained.set(taskId, clock);
 		return elapsedMs;
 	}
 

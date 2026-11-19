@@ -102,6 +102,16 @@ function trustDecisionsState(decisions: SessionTrustDecisions | undefined): Pick
 	return count > 0 ? { trustDecisions: decisions } : {};
 }
 
+/** Older hosts treat even an explicit false in projectTrusted as a settled decision. */
+function projectTrustState(
+	runtimeHost: AgentSessionRuntime,
+	session: AgentSession,
+): Pick<RpcSessionState, "projectTrusted" | "pendingProjectResourcesTrusted"> {
+	return runtimeHost.isProjectTrustPending?.()
+		? { pendingProjectResourcesTrusted: runtimeHost.pendingProjectResourcesTrusted?.() === true }
+		: { projectTrusted: session.settingsManager.isProjectTrusted?.() === true };
+}
+
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 	switch (command.type) {
 		case "abort":
@@ -316,7 +326,7 @@ export function createRpcCommandHandler({
 			case "resume_workflow_from_picker": {
 				try {
 					return createRpcSuccessResponse(id, command.type, {
-						handled: await resumeWorkflowFromPicker(session, command.target),
+						handled: await resumeWorkflowFromPicker(session, command.target, command.selection),
 					});
 				} catch (error: unknown) {
 					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
@@ -339,6 +349,8 @@ export function createRpcCommandHandler({
 					modelFallbackReason: runtimeHost.modelFallbackReason,
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
+					retryStatus: session.retryStatus,
+					turnStartedAt: session.turnStartedAt,
 					isCompacting: session.isCompacting,
 					compactionReason: session.compactionReason,
 					...(session.compactionStartedAt === undefined
@@ -353,10 +365,7 @@ export function createRpcCommandHandler({
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					queuedMessagesPaused: session.queuedMessagesPaused,
-					// No report while startup is still deciding: the settings read untrusted until then (see isProjectTrustPending).
-					...(runtimeHost.isProjectTrustPending?.()
-						? {}
-						: { projectTrusted: session.settingsManager.isProjectTrusted?.() === true }),
+					...projectTrustState(runtimeHost, session),
 					...trustDecisionsState(runtimeHost.trustDecisions?.()),
 					resourceOverlaps: extensionResult.overlaps ?? [],
 					resourceErrors: extensionResult.errors,
@@ -722,11 +731,16 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "clone", { cancelled: result.cancelled });
 			}
 
-			case "get_context_window":
+			case "get_context_window": {
+				const manager = session.sessionManager;
+				const entries = manager.getEntries();
+				const privateArchive = manager.getPrivateMirrorArchive(entries);
 				return createRpcSuccessResponse(id, command.type, {
-					entries: session.sessionManager.getEntries(),
-					leafId: session.sessionManager.getLeafId(),
+					entries,
+					leafId: manager.getLeafId(),
+					...(privateArchive && { privateArchive }),
 				});
+			}
 
 			case "get_history_chunk": {
 				const next = await session.sessionManager

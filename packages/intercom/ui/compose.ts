@@ -1,5 +1,5 @@
 import type { Component, TUI } from "@bastani/atomic-tui";
-import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { clickableKeysHint, type KeyId, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { KeybindingsManager, Theme } from "@bastani/atomic";
 import type { IntercomClient } from "../broker/client.js";
 import type { SessionInfo } from "../types.js";
@@ -19,8 +19,12 @@ function formatKeyLabel(key: string): string {
     .join("+");
 }
 
-function formatKeys(keys: readonly string[]): string {
-  return keys.map(formatKeyLabel).join("/");
+/** `Enter: Send`: the keys and what they do. A click on a key's text presses that key. */
+function keysHint(keys: readonly KeyId[], label: string): string {
+  return clickableKeysHint(
+    keys.map((key, index) => ({ text: `${formatKeyLabel(key)}${index < keys.length - 1 ? "/" : ""}`, key })),
+    label,
+  );
 }
 
 export interface ComposeResult {
@@ -134,7 +138,7 @@ export class ComposeOverlay implements Component {
   render(width: number): string[] {
     const innerWidth = Math.max(24, Math.min(width - 2, 72));
     const contentWidth = Math.max(1, innerWidth - 2);
-    const footer = `${formatKeys(this.keybindings.getKeys("tui.select.confirm"))}: Send • ${formatKeys(this.keybindings.getKeys("tui.select.cancel"))}: Close`;
+    const footer = `${keysHint(this.keybindings.getKeys("tui.select.confirm"), ": Send")} • ${keysHint(this.keybindings.getKeys("tui.select.cancel"), ": Close")}`;
     const border = (text: string) => this.theme.fg("accent", text);
     const row = (text = "") => {
       const clipped = truncateToWidth(text, contentWidth, "", true);

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import {
 	Container,
 	getKeybindings,
@@ -29,6 +28,7 @@ import {
 	InteractiveModeBase,
 	shouldHandleFullscreenViewportInput,
 } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-extension-context.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-extension-custom-ui.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-selectors.ts";

@@ -16,13 +16,14 @@ export interface RemoteStageWatch {
  */
 export class RemoteStageWatches {
 	private readonly watches = new Map<WatchId, RemoteStageWatch>();
-	private readonly attempts = new Map<string, PoolWorkToken>();
+	private readonly generations = new Map<string, number>();
+	private readonly runs = new Map<string, { work: PoolWorkToken; liveStages: ReadonlySet<string> }>();
 
 	constructor(private readonly isLive: (stage: StageSnapshot) => boolean) {}
 
 	/** The attempt on another host whose activity relayed `runId` last; undefined once no other host runs it. */
 	attemptOf(runId: string): PoolWorkToken | undefined {
-		return this.attempts.get(runId);
+		return this.runs.get(runId)?.work;
 	}
 
 	/**
@@ -30,7 +31,12 @@ export class RemoteStageWatches {
 	 * reconnects to this one, and a view of a stage that finished.
 	 */
 	relayed(work: PoolWorkToken, runs: readonly RunSnapshot[]): [WatchId, WatchEndReason][] {
-		for (const run of runs) this.attempts.set(run.id, work);
+		this.generations.set(work.id, work.generation);
+		for (const run of runs)
+			this.runs.set(run.id, {
+				work,
+				liveStages: new Set(run.stages.filter(this.isLive).map((s) => s.id)),
+			});
 		const ended: [WatchId, WatchEndReason][] = [];
 		for (const [id, watch] of this.watches) {
 			if (watch.work.id !== work.id) continue;
@@ -49,18 +55,26 @@ export class RemoteStageWatches {
 	 * them end as fenced, to reconnect to that worker's attempt.
 	 */
 	takenOver(workId: string): WatchId[] {
-		for (const [runId, work] of [...this.attempts]) if (work.id === workId) this.attempts.delete(runId);
+		this.generations.delete(workId);
+		for (const [id, run] of this.runs) if (run.work.id === workId) this.runs.delete(id);
 		const ended = [...this.watches].filter(([, watch]) => watch.work.id === workId).map(([id]) => id);
 		for (const id of ended) this.watches.delete(id);
 		return ended;
 	}
 
-	/** Opens a view of `stageId` of `runId` on the attempt that relayed it, while the stage is live; undefined otherwise. */
-	open(id: WatchId, runId: string, stageId: string, stage: StageSnapshot): PoolWorkToken | undefined {
-		const work = this.attempts.get(runId);
-		if (work === undefined || !this.isLive(stage)) return undefined;
-		this.watches.set(id, { work, runId, stageId });
-		return work;
+	/** A fence or finish takes effect at relay time; a new watch uses only the root's acknowledged attempt. */
+	open(
+		id: WatchId,
+		runId: string,
+		stage: StageSnapshot,
+		accepted: PoolWorkToken | undefined,
+	): PoolWorkToken | "pending" | undefined {
+		const run = this.runs.get(runId);
+		if (!run?.liveStages.has(stage.id)) return undefined;
+		if (accepted?.id !== run.work.id || accepted.generation !== this.generations.get(run.work.id)) return "pending";
+		if (!this.isLive(stage)) return undefined;
+		this.watches.set(id, { work: accepted, runId, stageId: stage.id });
+		return accepted;
 	}
 
 	get(id: WatchId): RemoteStageWatch | undefined {

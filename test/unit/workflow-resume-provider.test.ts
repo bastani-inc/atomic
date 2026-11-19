@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setKeybindings } from "@bastani/atomic-tui";
+import { setKeybindings, stripHintMarkers } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, onTestFinished, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
@@ -809,7 +809,7 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 							new KeybindingsManager() as never,
 							() => {},
 						);
-						plainLines = component.render(160);
+						plainLines = component.render(160).map(stripHintMarkers);
 						component.handleInput?.("\x1b");
 						return false;
 					},
