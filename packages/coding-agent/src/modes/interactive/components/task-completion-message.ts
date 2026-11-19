@@ -2,7 +2,14 @@ import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
-import { releasedWaitingOn, type TaskCompletionNotice, type TaskNoticeLine } from "../../../core/tasks/completion.js";
+import type { CustomMessage } from "../../../core/messages.ts";
+import {
+	completionTitleDescription,
+	completionTitleText,
+	releasedWaitingOn,
+	type TaskCompletionNotice,
+	type TaskNoticeLine,
+} from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { TaskTranscriptHistory, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
@@ -25,7 +32,7 @@ function previewRow(row: string): string {
 }
 
 const NOTICE_LINE_STATUSES = new Set(["success", "failure", "stopped", "warning", "paused", "waiting"]);
-const parsedNotices = new WeakMap<object, TaskCompletionNotice>();
+const parsedNotices = new WeakMap<object, { titleOnly: boolean; notice: TaskCompletionNotice }>();
 
 /**
  * A line's status as saved. Earlier versions saved the line of a subagent released while it waits as paused; its
@@ -50,10 +57,22 @@ function noticeLineFrom(value: unknown): TaskNoticeLine | undefined {
 	};
 }
 
-export function completionNoticeFromDetails(details: unknown): TaskCompletionNotice | undefined {
+/** Empty content or an exact copy of the title carries no separate body, even if split across text blocks. */
+function isTitleOnly(content: CustomMessage["content"] | undefined, title: string): boolean {
+	if (typeof content === "string") return content === "" || content === title;
+	let length = 0;
+	for (const block of content ?? []) {
+		if (block.type !== "text" || !title.startsWith(block.text, length)) return false;
+		length += block.text.length;
+	}
+	return length === 0 || length === title.length;
+}
+
+export function completionNoticeFromDetails(
+	details: unknown,
+	content?: CustomMessage["content"],
+): TaskCompletionNotice | undefined {
 	if (!details || typeof details !== "object" || !("notification" in details)) return undefined;
-	const existing = parsedNotices.get(details);
-	if (existing !== undefined) return existing;
 	const notice = details.notification;
 	if (!notice || typeof notice !== "object") return undefined;
 	if (
@@ -67,6 +86,9 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 	)
 		return undefined;
 	if (notice.status !== "completed" && notice.status !== "failed" && notice.status !== "cancelled") return undefined;
+	const titleOnly = isTitleOnly(content, notice.title);
+	const existing = parsedNotices.get(details);
+	if (existing?.titleOnly === titleOnly) return existing.notice;
 	const line = "line" in notice ? noticeLineFrom(notice.line) : undefined;
 	const parsed: TaskCompletionNotice = {
 		title: notice.title,
@@ -82,13 +104,14 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 		...(line === undefined ? {} : { line }),
 	};
 	if (!line && parsed.status === "cancelled" && parsed.taskKind !== "command") {
-		const stop = legacyStop(parsed.title, "result" in details ? details.result : undefined);
+		const result = "result" in details ? details.result : undefined;
+		const stop = legacyStop(parsed.title, result, parsed.agentName, titleOnly);
 		if (stop) {
 			parsed.line = stop.line;
 			if (stop.agentName !== undefined) parsed.agentName = stop.agentName;
 		}
 	}
-	parsedNotices.set(details, parsed);
+	parsedNotices.set(details, { titleOnly, notice: parsed });
 	return parsed;
 }
 
@@ -137,9 +160,23 @@ function agentNoticeOutcome(status: NoticeLineSpec["status"], line: TaskNoticeLi
 const RELEASE_WORDING = "released while waiting on ";
 const PAUSE_WORDING = "paused · awaiting resume";
 const QUIT_WORDING = "quit · paused, awaiting resume";
+// Named agents could time out, but only shells recorded a timeout duration or a restart.
+const AGENT_STOP_SUFFIX =
+	/ (?:killed \(non-resumable\)|timed out|stopped(?: \((?:task owner closed|session closed|workflow stage closed|Atomic shut down)\))?):$/u;
+
+/** A named agent's stop followed by the colon introducing its task, in the legacy writer's spelling. */
+function stoppedAgentName(label: string): string | undefined {
+	const stop = AGENT_STOP_SUFFIX.exec(label);
+	return stop ? label.slice(0, stop.index) : undefined;
+}
 
 /** Before notices had a line, the title held the outcome, followed by `: <task description>` or a final period. */
-function legacyStopWording(title: string, result: unknown): string | undefined {
+function legacyStopWording(
+	title: string,
+	result: unknown,
+	agentName: string | undefined,
+	titleOnly: boolean,
+): string | undefined {
 	if (result !== undefined) {
 		const saved = result as { kind?: string; cause?: string; released?: { waitingOn?: unknown } } | null;
 		if (saved?.kind !== "cancelled") return undefined;
@@ -156,19 +193,34 @@ function legacyStopWording(title: string, result: unknown): string | undefined {
 		}
 		return saved.cause === "pause" ? PAUSE_WORDING : saved.cause === "quit" ? QUIT_WORDING : undefined;
 	}
-	// Only the notification survived. Never read a quoted notice in the task description as this task's outcome.
 	const prefix =
 		/^(?:Subagent (.+?)|Background task) (released while waiting on |(?:paused · awaiting resume|quit · paused, awaiting resume)(?=: |\.$))/su.exec(
 			title,
 		);
 	if (!prefix || prefix[1]?.includes(": ")) return undefined;
+	// Only reinterpret a title-only notice. With any separate body, keep the legacy reading.
+	if (titleOnly && prefix[1]) {
+		const name = stoppedAgentName(prefix[1]);
+		const description = title.slice("Subagent ".length + prefix[1].length + 1);
+		if (
+			name !== undefined &&
+			name === completionTitleText(agentName ?? name) &&
+			description === completionTitleDescription(description)
+		)
+			return undefined;
+	}
 	if (prefix[2] !== RELEASE_WORDING) return prefix[2];
 	const calls = /^(a tool call|.+?\))(?:: |\.$)/su.exec(title.slice(prefix[0].length))?.[1];
 	return calls ? RELEASE_WORDING + calls : undefined;
 }
 
-function legacyStop(title: string, result: unknown): { line: TaskNoticeLine; agentName?: string } | undefined {
-	const wording = legacyStopWording(title, result);
+function legacyStop(
+	title: string,
+	result: unknown,
+	agentName: string | undefined,
+	titleOnly: boolean,
+): { line: TaskNoticeLine; agentName?: string } | undefined {
+	const wording = legacyStopWording(title, result, agentName, titleOnly);
 	if (wording === undefined) return undefined;
 	// The space after "Subagent" introduces its name, even if the name itself starts with the recorded outcome.
 	const end = title.indexOf(` ${wording}: `, title.startsWith("Subagent ") ? "Subagent ".length : 0);
