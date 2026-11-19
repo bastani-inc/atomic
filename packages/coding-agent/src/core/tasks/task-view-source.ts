@@ -5,7 +5,6 @@ import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
-import { loadArchiveSnapshot } from "../storage/session/snapshot-generation.ts";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { readTaskOutputTail } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
@@ -22,6 +21,7 @@ import {
 	taskTranscriptSource,
 	watchTaskExtensionStatuses,
 } from "./supervisor.js";
+import { loadArchiveSnapshot } from "./task-archive-snapshot.ts";
 import { taskResumer } from "./task-resumer.ts";
 import { taskTranscriptPageWithCuts } from "./transcript.js";
 
