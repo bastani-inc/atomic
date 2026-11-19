@@ -33,6 +33,7 @@ import {
 } from "../shared/start-progress.js";
 import { scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
 import { endedChildMark, markEndedChildren, reserveReleasedChildTargets } from "./released-child-reservations.js";
+import { recordSubagentAdmission } from "./released-child-resume.js";
 import {
 	forwardDetachedResults,
 	routeReleasedChildShellCompletions,
@@ -993,6 +994,15 @@ export async function runAgentTask(input: {
 		// Nothing of a queued launch survives a restart but its records: they say how to start it fresh then.
 		queuedAtAdmission ? subagentChildLaunch(input.task, input.intentTask, input.options) : undefined,
 	);
+	if (input.recordChild?.ownerSessionId !== undefined)
+		recordSubagentAdmission(started.value.lease, {
+			ownerSessionId: input.recordChild.ownerSessionId,
+			childId: subagentChildId(runId, index),
+			runId,
+			agent: input.agent,
+			taskId: started.value.taskId,
+			intercomTarget: input.options.intercomSessionName,
+		});
 	if (queuedAtAdmission)
 		queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false, finishWorktree });
 	const observation = input.host.observeAgentLaunch(started.value.taskId, undefined, () => registered.resolve());

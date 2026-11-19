@@ -228,7 +228,7 @@ export async function boundedWorktreeReply(
 			observed = run.sweeping;
 			await observed;
 		} while (observed !== run.sweeping);
-		return run.sweepNote ?? (run.holds.size || run.launching.size ? BATCH_KEPT : undefined);
+		return run.holds.size || run.launching.size ? BATCH_KEPT : run.sweepNote;
 	};
 	const interrupted = Promise.withResolvers<string>();
 	const endWait = () => interrupted.resolve(CLEANUP_IN_BACKGROUND);
