@@ -51,6 +51,9 @@ export interface CreateAgentSessionOptions {
 	 */
 	storage?: SessionStorageOption;
 
+	/** Cancel waiting for the selected provider's missing model list without cancelling session creation. */
+	signal?: AbortSignal;
+
 	/** Canonical model/auth runtime. Defaults to agentDir/auth.json and models.json. */
 	modelRuntime?: ModelRuntime;
 
