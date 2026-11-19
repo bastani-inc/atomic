@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { PerformanceObserver } from "node:perf_hooks";
 import { describe, it } from "vitest";
 import type {
 	WorkflowRunDetail,
@@ -14,70 +13,14 @@ import {
 } from "../src/core/tools/history-protocol.js";
 import { textLines, timestamp, wrapLine } from "../src/core/tools/history-transcript.js";
 import type { InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
+import { assertFewStalls, type WatchedTurns, watchEventLoopTurns } from "./helpers/event-loop-turns.js";
 
 const PROJECT = resolve("/projects/workflow-bounded");
 const BASE = Date.parse("2026-11-01T00:00:00.000Z");
 const RUN_COUNT = 25;
 const RENDER_BLOCK_LIMIT_MS = 10;
-const STALLS_ALLOWED = 3;
-const STALL_CEILING_MS = 100;
 const LARGE_RUN_TIMEOUT_MS = 120_000;
 const HUGE_TEXT_CHARS = 32 * 1024 * 1024;
-
-function cpuMs(): number {
-	const used = typeof process.threadCpuUsage === "function" ? process.threadCpuUsage() : process.cpuUsage();
-	return (used.user + used.system) / 1000;
-}
-
-interface Interval {
-	readonly start: number;
-	readonly end: number;
-}
-
-function overlapMs(turn: Interval, pauses: readonly Interval[]): number {
-	return pauses.reduce(
-		(sum, pause) => sum + Math.max(0, Math.min(turn.end, pause.end) - Math.max(turn.start, pause.start)),
-		0,
-	);
-}
-
-function watchEventLoopTurns(): () => Promise<number[]> {
-	const turns: (Interval & { readonly cpu: number })[] = [];
-	const collections: Interval[] = [];
-	const collected = (entries: readonly PerformanceEntry[]) => {
-		for (const entry of entries) collections.push({ start: entry.startTime, end: entry.startTime + entry.duration });
-	};
-	const observer = new PerformanceObserver((list) => collected(list.getEntries()));
-	observer.observe({ entryTypes: ["gc"] });
-	let watching = true;
-	let last = performance.now();
-	let lastCpu = cpuMs();
-	const turn = () => {
-		const now = performance.now();
-		const cpu = cpuMs();
-		turns.push({ start: last, end: now, cpu: cpu - lastCpu });
-		last = now;
-		lastCpu = cpu;
-		if (watching) setImmediate(turn);
-	};
-	setImmediate(turn);
-	return async () => {
-		watching = false;
-		turn();
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		collected(observer.takeRecords());
-		observer.disconnect();
-		return turns.map((item) => Math.max(0, Math.min(item.end - item.start, item.cpu) - overlapMs(item, collections)));
-	};
-}
-
-function assertFewStalls(turns: readonly number[], limitMs: number, what: string): void {
-	const stalls = turns.filter((ms) => ms > limitMs).sort((a, b) => b - a);
-	assert.ok(
-		stalls.length <= STALLS_ALLOWED && (stalls[0] ?? 0) < STALL_CEILING_MS,
-		`${what} held the event loop for more than ${limitMs} ms ${stalls.length} times in ${turns.length} turns: ${stalls.slice(0, 8).map(Math.round).join(", ")} ms`,
-	);
-}
 
 function continuation(text: string): string | undefined {
 	return /continue with (history:\/\/\S+?)\]?$/m.exec(text)?.[1];
@@ -241,9 +184,9 @@ describe("history:// workflow runs stay bounded (#5250)", () => {
 			const objectRun = runDetail("run-object", BASE + 1_000, largeObject(250_000));
 			const { router, read } = historyOf([stringRun, objectRun]);
 			for (const detail of [stringRun, objectRun]) {
-				const stopWatching = watchEventLoopTurns();
+				const stopWatching = watchEventLoopTurns(RENDER_BLOCK_LIMIT_MS);
 				let output: string;
-				let turns: number[];
+				let turns: WatchedTurns;
 				try {
 					output = await read(`history://workflows/${detail.runId}`);
 				} finally {
@@ -260,7 +203,7 @@ describe("history:// workflow runs stay bounded (#5250)", () => {
 					`[read lines 1-${shown.length} of ${expected.length}; the byte budget ran out; continue with history://workflows/${detail.runId}?cursor=${shown.length + 1}:${shown.length + 1}-${expected.length}]`,
 				);
 
-				const stopSearchWatching = watchEventLoopTurns();
+				const stopSearchWatching = watchEventLoopTurns(RENDER_BLOCK_LIMIT_MS);
 				let found: string;
 				try {
 					found =
@@ -292,9 +235,9 @@ describe("history:// workflow runs stay bounded (#5250)", () => {
 			const stringRun = runDetail("run-text", BASE, { text: hugeText(2 * HUGE_TEXT_CHARS) });
 			const { router } = historyOf([stringRun]);
 			for (const pattern of ["needle-token run-text\\n", "(?<=summary: )needle-token run-text\\n"]) {
-				const stopWatching = watchEventLoopTurns();
+				const stopWatching = watchEventLoopTurns(RENDER_BLOCK_LIMIT_MS);
 				let found: string;
-				let turns: number[];
+				let turns: WatchedTurns;
 				try {
 					found =
 						(await router.search?.("history://workflows/run-text", {

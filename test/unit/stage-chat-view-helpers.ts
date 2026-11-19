@@ -17,7 +17,14 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentSession, type AgentSessionEvent, initTheme, SessionManager } from "@bastani/atomic";
-import { type Component, CURSOR_MARKER, type EditorComponent, setKeybindings, type TUI } from "@bastani/atomic-tui";
+import {
+	type Component,
+	CURSOR_MARKER,
+	type EditorComponent,
+	setKeybindings,
+	stripHintMarkers,
+	type TUI,
+} from "@bastani/atomic-tui";
 import { beforeAll } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
@@ -273,7 +280,9 @@ export function fakeFooterAgentSession(isStreaming = false): AgentSession {
 }
 
 export function stripAnsi(text: string): string {
-	return text.replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+	return stripHintMarkers(text)
+		.replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
+		.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
 export const CTRL_X_VARIANTS = ["\x18", "\x1b[120;5u", "\x1b[120;5:1u", "\x1b[27;5;120~"];

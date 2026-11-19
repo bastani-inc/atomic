@@ -408,6 +408,8 @@ tmux capture-pane -p -t <pane-id>
 
 Use literal text and a separate Enter to avoid interpreting arbitrary text as key names. On psmux, inspect `psmux list-panes` and use `psmux capture-pane -p -t <pane-id>` as documented in its [scripting guide](https://github.com/psmux/psmux/blob/master/docs/scripting.md). Discover IDs rather than assuming `%0` is your pane. Clean up only the session or pane created for the task. Never use a global server-kill command as routine cleanup.
 
+When waiting for a completion marker, use the tmux skill's `scripts/wait-for-text.sh -t <pane-id> -F -p <marker> -T <seconds>`. It exits nonzero if it cannot confirm the match before the timeout, including when a pane capture stalls. If it times out, inspect the pane before retrying the command: the command may still be running or may already have finished.
+
 For modified-key setup in Atomic, see [tmux setup](/tmux). For behavioral checks and recordings, see [terminal evidence](/workflows/verification#terminal-changes).
 
 ## macOS

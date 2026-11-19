@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
-import { type TUI, visibleWidth } from "@bastani/atomic-tui";
+import { readHintSpans, type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import type { ToolRenderers } from "../../packages/coding-agent/src/core/extensions/tool-types.js";
 import type { MessageRenderer } from "../../packages/coding-agent/src/core/extensions/types.js";
@@ -36,6 +35,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { Store, StoreInvalidationListener } from "../../packages/workflows/src/shared/store-public-types.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { runFailureText } from "../../packages/workflows/src/tui/run-display-state.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const RUN_ID = "wf-run-1";
 const START = 1_000_000;
@@ -203,9 +203,16 @@ describe("the workflow tool call header (#5224)", () => {
 
 describe("the workflow tool's result line (#5224)", () => {
 	test("a running run renders Running in background · stage 3/5 implement · 12m · ↓ 61.0k tokens · ↓ to manage", () => {
-		const lines = plain(block(fiveStageStore(), () => {}, false, 12 * 60_000).render(160));
+		const rendered = block(fiveStageStore(), () => {}, false, 12 * 60_000).render(160);
+		const lines = plain(rendered);
 		assert.equal(lines.length, 1);
 		assert.equal(lines[0], "  ⎿  Running in background · stage 3/5 implement · 12m · ↓ 61.0k tokens · ↓ to manage");
+		const manage = lines[0]!.lastIndexOf("↓ to manage");
+		assert.deepEqual(
+			readHintSpans(rendered[0]!).spans.map((span) => [span.start, span.end, span.action]),
+			[[manage, manage + "↓ to manage".length, { kind: "key", key: "down" }]],
+			"a click on ↓ to manage presses ↓",
+		);
 	});
 
 	test("a completed run renders ✓ Completed in 4s · 3 stages · 32.4k tokens", () => {

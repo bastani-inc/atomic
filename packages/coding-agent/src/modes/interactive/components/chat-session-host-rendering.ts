@@ -37,7 +37,7 @@ import { FooterComponent, UsageMeterComponent } from "./footer.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import { taskDisplayText } from "./task-row.js";
 import { toolGroupRoleKey } from "./tool-group-tracker.ts";
-import { isClickExpandableBlock, sameRows } from "./transcript-block-clicks.ts";
+import { isClickExpandableBlock, sameRows, withBlockRenderTime } from "./transcript-block-clicks.ts";
 import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
@@ -378,6 +378,7 @@ export function expandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
 export function dropExpandedOverrides<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): void {
+	state.expansionGeneration++;
 	state.expandedOverrides = new Map();
 	state.expandedEntryOverrides = new WeakMap();
 }
@@ -658,7 +659,7 @@ export function entryExpands<TExtraEntry extends ChatTranscriptEntryLike>(
 			disposeRenderer(component);
 		}
 	};
-	return !sameRows(rows(false), rows(true));
+	return withBlockRenderTime(() => !sameRows(rows(false), rows(true)));
 }
 
 /** Whether `entry` is drawn expanded now: as a click last set it, or else as the chat's setting draws it. */

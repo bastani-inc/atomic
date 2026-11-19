@@ -137,13 +137,21 @@ export function panelHintParts(
 	};
 }
 
-/** The worded hint segments for `parts`, in order. `focusKey` names the key that focuses the panel. */
-export function panelHintText(parts: PanelHintParts, focusKey: string): string[] {
-	const segments: string[] = [];
-	if (parts.agents > 0) segments.push(`${focusKey} ${parts.agents} ${parts.agents === 1 ? "agent" : "agents"}`);
-	if (parts.needsInput > 0) segments.push(`${parts.needsInput} needs input`);
-	if (parts.shells > 0) segments.push(`${parts.shells} ${parts.shells === 1 ? "shell" : "shells"}`);
-	if (parts.tasks === "manage") segments.push("/tasks to manage");
-	else if (parts.tasks === "subagents") segments.push("/tasks to see subagents");
+/** One worded hint segment: `agents` follows the focus key, and `tasks` names the /tasks command. */
+export interface PanelHintSegment {
+	readonly kind: "agents" | "needsInput" | "shells" | "tasks";
+	readonly text: string;
+}
+
+/** The worded hint segments for `parts`, in order, by kind. `focusKey` names the key that focuses the panel. */
+export function panelHintSegments(parts: PanelHintParts, focusKey: string): PanelHintSegment[] {
+	const segments: PanelHintSegment[] = [];
+	if (parts.agents > 0)
+		segments.push({ kind: "agents", text: `${focusKey} ${parts.agents} ${parts.agents === 1 ? "agent" : "agents"}` });
+	if (parts.needsInput > 0) segments.push({ kind: "needsInput", text: `${parts.needsInput} needs input` });
+	if (parts.shells > 0)
+		segments.push({ kind: "shells", text: `${parts.shells} ${parts.shells === 1 ? "shell" : "shells"}` });
+	if (parts.tasks === "manage") segments.push({ kind: "tasks", text: "/tasks to manage" });
+	else if (parts.tasks === "subagents") segments.push({ kind: "tasks", text: "/tasks to see subagents" });
 	return segments;
 }
