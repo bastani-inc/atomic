@@ -77,6 +77,7 @@
 - A Windows command that keeps its background processes no longer fails after completion just because its idle input thread was paused while holding the input queue lock ([#5702](https://github.com/bastani-inc/atomic/issues/5702)).
 - Quitting at the first prompt after declining project trust no longer crashes if the bundled local model provider is still loading ([#5639](https://github.com/bastani-inc/atomic/issues/5639)).
 - `atomic --export <session.jsonl>` shows an agent card when a single subagent launch on the selected branch has a recorded child transcript or background handoff. Expand it to see the saved prompt, tool calls and answer, or a note when the child history is not included. The original arguments and receipt remain available beneath the card ([#5658](https://github.com/bastani-inc/atomic/issues/5658)).
+- When a reopened subagent notice has no saved outcome, its separately saved agent name can distinguish a stop from pause or wait wording in the task description. A title alone is ambiguous: an agent's name can end in `killed (non-resumable):`. Notices without a separate name, or with a body or preview, keep their previous reading ([#5690](https://github.com/bastani-inc/atomic/issues/5690)).
 
 ## [0.9.89] - 2026-11-18
 
