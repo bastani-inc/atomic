@@ -35,12 +35,13 @@ export interface ToolBlockSpec {
 
 /** A script title keeps its source rows rather than flattening them into one header. */
 export interface ToolBlockTitleRows extends Component {
-	render(width: number, metadataWidth?: number): string[];
+	render(width: number, metadataWidth?: number, running?: boolean): string[];
 }
 
 /** Private transcript layout, not the public state object that an extension may keep or freeze. */
 export interface TranscriptTitleLayout<Cache = object> {
 	title?: ToolBlockTitleRows;
+	mounted?: ToolBlockTitleRows;
 	cache?: Cache;
 }
 
@@ -227,7 +228,7 @@ export function renderToolBlockTitleRows(spec: ToolBlockSpec, title: ToolBlockTi
 	const meta = (spec.meta ?? []).map((part) => ` · ${part}`).join("");
 	// Use the same eight-cell minimum as an ordinary component title, including multiline script titles.
 	const suffix = available - visibleWidth(meta) >= 8 ? meta : "";
-	const rows = title.render(available, visibleWidth(suffix));
+	const rows = title.render(available, visibleWidth(suffix), spec.status === "running");
 	const showSuffix = visibleWidth(rows.at(-1) ?? "") + visibleWidth(suffix) <= available;
 	const header = rows.map((row, i) => {
 		const text = `${i === 0 ? `${glyph} ` : " ".repeat(indent)}${row}${i === rows.length - 1 && showSuffix ? theme.fg("dim", suffix) : ""}`;

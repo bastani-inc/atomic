@@ -50,13 +50,22 @@ for (const [name, language] of Object.entries(eagerLanguages)) {
 }
 
 let allLanguagesPromise: Promise<void> | undefined;
+// The interactive host loads the grammars; an extension rendered by a separate loader can share its highlighter.
+const grammarRevision = Symbol.for("@bastani/atomic:highlight-grammar-revision");
+const revisions = globalThis as typeof globalThis & { [grammarRevision]?: number };
+export function getHighlightGrammarRevision(): number {
+	return revisions[grammarRevision] ?? 0;
+}
 
 export function loadAllHighlightLanguages(): Promise<void> {
 	if (!allLanguagesPromise) {
 		allLanguagesPromise = new Promise((resolve) => {
 			setImmediate(() => {
 				void import("highlight.js/lib/index.js").then(
-					() => resolve(),
+					() => {
+						revisions[grammarRevision] = getHighlightGrammarRevision() + 1;
+						resolve();
+					},
 					() => {
 						// Eager languages and plaintext fallback remain available.
 						resolve();

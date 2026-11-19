@@ -372,6 +372,7 @@ export class ToolExecutionComponent extends Container {
 		this.rendererState = {};
 		if (this.transcriptLayout) {
 			this.transcriptLayout.title = undefined;
+			this.transcriptLayout.mounted = undefined;
 			this.transcriptLayout.cache = undefined;
 		}
 		// Drop the last drawn child as well as today's children: Container keeps the former for mouse hit testing.
@@ -534,7 +535,10 @@ export class ToolExecutionComponent extends Container {
 		} else call = this.createCallFallback();
 		// A decorating renderer may delegate to the stock call and then replace its component entirely.
 		const titleRows = this.transcriptLayout?.title === call;
-		if (!titleRows && this.transcriptLayout) this.transcriptLayout.title = undefined;
+		if (this.transcriptLayout) {
+			this.transcriptLayout.mounted = undefined;
+			if (!titleRows) this.transcriptLayout.title = undefined;
+		}
 		let details: Component | undefined;
 		if (canonicalResult && presentation) {
 			details = presentation.details;
@@ -602,6 +606,7 @@ export class ToolExecutionComponent extends Container {
 				});
 			}
 		} else {
+			if (titleRows && this.transcriptLayout) this.transcriptLayout.mounted = call;
 			this.contentContainer.addChild({
 				invalidate() {
 					call.invalidate();

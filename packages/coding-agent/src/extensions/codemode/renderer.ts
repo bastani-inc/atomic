@@ -24,9 +24,10 @@ import {
 	builtinToolBlockPresentation,
 	formatToolBlockElapsed,
 } from "../../modes/interactive/components/tool-block-families.ts";
+import { colorEnvironment } from "../../modes/interactive/theme/color-utils.ts";
 import { getGlobalTheme } from "../../modes/interactive/theme/global-theme.ts";
 import { CodeHighlighter, type Theme } from "../../modes/interactive/theme/theme.js";
-import { getHighlightLanguageCount } from "../../utils/syntax-highlight.ts";
+import { getHighlightGrammarRevision } from "../../utils/syntax-highlight.ts";
 import {
 	escapeBidiControls,
 	singleLineDisplayText,
@@ -40,6 +41,7 @@ interface CodemodeRenderState {
 }
 type ScriptLayout = TranscriptTitleLayout<{
 	source: ScriptSource;
+	theme: Theme;
 	folded?: CodemodeScriptTitle;
 	open?: CodemodeScriptTitle;
 }>;
@@ -63,8 +65,12 @@ function scriptSource(code: string): string {
  */
 function wrapScriptLine(line: string, width: number): string[] {
 	if (visibleWidth(line) <= width) return [line];
-	const indent = /^ */.exec(stripTerminalSequences(line))?.[0].length ?? 0;
-	const hang = indentWithin(width, Math.min(indent + 2, Math.floor(width / 2)));
+	const plain = stripTerminalSequences(line);
+	const indent = /^ */.exec(plain)?.[0].length ?? 0;
+	let widest = 2;
+	if (/[^\x00-\x7f]/u.test(plain))
+		for (const { segment } of graphemes(plain)) widest = Math.max(widest, visibleWidth(segment));
+	const hang = Math.max(0, Math.min(width - widest, indent + 2, Math.floor(width / 2)));
 	const room = width - hang;
 	// Prose wrapping drops word separators. Break at cell boundaries ourselves so spaces inside literals survive;
 	// the TUI then carries the highlight colours across the inserted newlines without reflowing the text.
@@ -105,41 +111,84 @@ function graphemes(text: string): Intl.Segments {
 	return segmenter.segment(text);
 }
 
-/** Stands for a character two columns wide on rows one column wide, where it cannot be drawn. */
+/** Stands for a grapheme wider than an entire source row, where it cannot be drawn intact. */
 export const WIDE_CHARACTER_PLACEHOLDER = "\uFFFD";
 
-/** `text` with each character wider than one column replaced by {@link WIDE_CHARACTER_PLACEHOLDER}. */
-function placeholdWideCharacters(text: string): string {
+/** Replace only graphemes too wide for the whole row. */
+function placeholdWideCharacters(text: string, width: number): string {
+	if (!/[^\x00-\x7f]/u.test(text)) return text;
 	let narrowed = "";
 	for (const { segment } of graphemes(text))
-		narrowed += visibleWidth(segment) > 1 ? WIDE_CHARACTER_PLACEHOLDER : segment;
+		narrowed += visibleWidth(segment) > width ? WIDE_CHARACTER_PLACEHOLDER : segment;
 	return narrowed;
 }
 
-/** Index line boundaries once per argument snapshot. Keep only the ten spans needed for a folded paint. */
+/** Only a mounted, visible folded title needs the delimiter census. */
 class ScriptSource {
 	readonly code: string | null;
-	readonly preview: [number, number][] = [];
-	readonly omitted: number;
+	private index?: ReturnType<typeof scriptPreviewIndex>;
 	constructor(code: string | null) {
 		this.code = code;
-		const text = code ?? "";
-		let start = 0;
-		const breaks = /\r\n?|\n/g;
-		while (this.preview.length < SCRIPT_PREVIEW_LINES) {
-			const next = breaks.exec(text);
-			this.preview.push([start, next?.index ?? text.length]);
-			if (!next) {
-				this.omitted = 0;
-				return;
-			}
-			start = breaks.lastIndex;
-		}
-		// An exact omission count needs the delimiters, not the contents or a string/array per hidden line.
-		let omitted = 1;
-		while (breaks.test(text)) omitted++;
-		this.omitted = omitted;
 	}
+	folded(width: number) {
+		// With four cells or fewer, the truncation mark comes before the first digit in `… +N lines`.
+		const needCount = width >= 5;
+		if (!this.index || (needCount && this.index.omitted === "more"))
+			this.index = scriptPreviewIndex(this.code ?? "", needCount);
+		return this.index;
+	}
+}
+
+/** Count logical rows once; retain just the first ten spans, never an array of the hidden source. */
+function scriptPreviewIndex(
+	text: string,
+	needCount: boolean,
+): { preview: [number, number][]; omitted: number | "more" } {
+	if (needCount && !text.includes("\n") && !text.includes("\r")) return { preview: [[0, text.length]], omitted: 0 };
+	// Only control strings can consume line breaks. Jump over their payloads with the display parser.
+	const events = /\r\n?|\n|\x1b[PX\x5d-\x5f]|[\x90\x98\x9d-\x9f]/g;
+	const nextBreak = () => {
+		for (;;) {
+			const event = events.exec(text);
+			if (!event || event[0][0] === "\n" || event[0][0] === "\r") return event;
+			events.lastIndex = afterControlString(text, event[0], events.lastIndex);
+		}
+	};
+	const preview: [number, number][] = [];
+	let start = 0;
+	while (preview.length < SCRIPT_PREVIEW_LINES) {
+		const end = nextBreak();
+		preview.push([start, end?.index ?? text.length]);
+		if (!end) return { preview, omitted: 0 };
+		start = events.lastIndex;
+	}
+	if (!needCount) return { preview, omitted: "more" };
+	let omitted = 1;
+	if (text.includes("\n", start) || text.includes("\r", start)) {
+		const openers = /\x1b[PX\x5d-\x5f]|[\x90\x98\x9d-\x9f]/g;
+		openers.lastIndex = start;
+		if (openers.test(text)) {
+			while (nextBreak()) omitted++;
+		} else {
+			const breaks = /\r\n?|\n/g;
+			breaks.lastIndex = start;
+			while (breaks.test(text)) omitted++;
+		}
+	}
+	return { preview, omitted };
+}
+
+/** Step through the bounded payload with the display parser, including its tab and CRLF length rules. */
+function afterControlString(text: string, opener: string, start: number): number {
+	const parser = new TerminalTextSanitizer();
+	parser.write(opener);
+	while (start < text.length && parser.inControlString) {
+		const begin = start;
+		const ch = text[start++];
+		if (ch === "\r" && text[start] === "\n") start++;
+		if (parser.write(ch === "\r" ? "\n" : ch === "\t" ? "   " : ch).endsWith("\n")) return begin;
+	}
+	return start;
 }
 
 /** Read only enough source to fill the row. Invisible controls and combining marks may take several chunks. */
@@ -147,18 +196,21 @@ function foldedLine(code: string, start: number, end: number, width: number, nar
 	if (width < 1) return "";
 	const sanitizer = new TerminalTextSanitizer();
 	let text = "";
-	const chunk = width + 1;
+	let chunk = width + 1;
 	while (start < end) {
 		let stop = Math.min(end, start + chunk);
 		if (stop < end && code.charCodeAt(stop - 1) >= 0xd800 && code.charCodeAt(stop - 1) <= 0xdbff) stop++;
-		text += escapeBidiControls(sanitizer.write(replaceTabs(code.slice(start, stop))));
+		if (stop < end && code[stop - 1] === "\r" && code[stop] === "\n") stop++;
+		text += escapeBidiControls(sanitizer.write(replaceTabs(code.slice(start, stop).replace(/\r\n?/g, "\n"))));
 		start = stop;
 		if (start === end) text += sanitizer.end();
-		const display = narrow ? placeholdWideCharacters(text) : text;
-		if (start === end || visibleWidth(display) > width) {
-			// truncateToWidth closes ANSI styles; the JavaScript lexer needs plain source, not those resets.
-			return visibleWidth(display) <= width ? display : stripTerminalSequences(truncateToWidth(display, width, "…"));
-		}
+		const display = narrow ? placeholdWideCharacters(text, 1) : text;
+		// No width-cache entries for temporary prefixes. Geometric lookahead makes even a single huge combining
+		// cluster linear in its own length, without reaching farther as an offscreen tail grows.
+		if (truncateToWidth(display, width, "") !== display)
+			return `${stripTerminalSequences(truncateToWidth(display, width - 1, ""))}…`;
+		if (start === end) return display;
+		chunk *= 2;
 	}
 	return text;
 }
@@ -173,10 +225,12 @@ class CodemodeScriptTitle implements ToolBlockTitleRows {
 	private readonly source: ScriptSource;
 	private readonly theme: Theme;
 	private readonly expanded: boolean;
+	private timeRowWidth?: number;
 	private readonly highlighter = new CodeHighlighter();
 	private last?: {
 		width: number;
 		metadataWidth: number;
+		running: boolean;
 		colors: boolean;
 		theme?: Theme;
 		languages: number;
@@ -191,28 +245,39 @@ class CodemodeScriptTitle implements ToolBlockTitleRows {
 	invalidate(): void {
 		this.last = undefined;
 	}
-	render(width: number, metadataWidth = 0): string[] {
+	render(width: number, metadataWidth?: number, running = false): string[] {
 		if (width < 1) return [];
-		const colors = process.env.NO_COLOR === undefined;
+		// A foreign title wrapper gets the normal component contract: a one-row summary, not flattened source rows.
+		if (metadataWidth === undefined) return new CodemodeCall(this.source.code, this.theme).render(width);
 		const theme = getGlobalTheme();
-		const languages = colors ? getHighlightLanguageCount() : 0;
-		const hint = !this.expanded && this.source.omitted ? keyHintIfBound("app.tools.expand", "to expand") : "";
+		const colors = process.env.NO_COLOR === undefined && !colorEnvironment().off;
+		const languages = colors ? getHighlightGrammarRevision() : 0;
+		const folded = this.expanded ? undefined : this.source.folded(Math.max(1, width - indentWithin(width, 2)));
+		const hint = folded?.omitted && folded.omitted !== "more" ? keyHintIfBound("app.tools.expand", "to expand") : "";
 		const last = this.last;
 		if (
 			last &&
 			last.width === width &&
 			last.metadataWidth === metadataWidth &&
+			last.running === running &&
 			last.colors === colors &&
 			last.theme === theme &&
 			last.languages === languages &&
 			last.hint === hint
 		)
 			return last.rows;
-		const rows = this.layout(width, metadataWidth, colors, hint);
-		this.last = { width, metadataWidth, colors, theme, languages, hint, rows };
+		const rows = this.layout(width, metadataWidth, colors, hint, running, folded);
+		this.last = { width, metadataWidth, running, colors, theme, languages, hint, rows };
 		return rows;
 	}
-	private layout(width: number, metadataWidth: number, colors: boolean, hint: string): string[] {
+	private layout(
+		width: number,
+		metadataWidth: number,
+		colors: boolean,
+		hint: string,
+		running: boolean,
+		folded?: ReturnType<typeof scriptPreviewIndex>,
+	): string[] {
 		const name = this.theme.fg("toolTitle", this.theme.bold("codemode"));
 		const open = `${name}${this.theme.fg("text", "(")}`;
 		const close = this.theme.fg("text", ")");
@@ -224,16 +289,14 @@ class CodemodeScriptTitle implements ToolBlockTitleRows {
 		const indent = indentWithin(width, 2);
 		const codeWidth = Math.max(1, width - indent);
 		// Rows one column wide cannot hold a wide character: it shows as a placeholder rather than not at all.
-		const omitted = this.expanded ? 0 : this.source.omitted;
+		const omitted = folded?.omitted;
 		let preview: string;
-		if (this.expanded) {
+		if (!folded) {
 			preview = scriptSource(code);
-			if (codeWidth === 1) preview = placeholdWideCharacters(preview);
+			preview = placeholdWideCharacters(preview, codeWidth);
 		} else {
-			const room = this.source.preview.length === 1 ? inlineWidth : codeWidth;
-			preview = this.source.preview
-				.map(([start, end]) => foldedLine(code, start, end, room, codeWidth === 1))
-				.join("\n");
+			const room = folded.preview.length === 1 ? inlineWidth : codeWidth;
+			preview = folded.preview.map(([start, end]) => foldedLine(code, start, end, room, codeWidth === 1)).join("\n");
 		}
 		const lines = colors ? this.highlighter.highlight(preview, "javascript") : preview.split("\n");
 		if (lines.length === 1) {
@@ -241,7 +304,12 @@ class CodemodeScriptTitle implements ToolBlockTitleRows {
 			if (!this.expanded) return [truncateToWidth(inline, titleWidth, "…")];
 			if (visibleWidth(inline) <= width) {
 				// A clock tick must not move code out from under a mouse selection. Put the time on its own row if needed.
-				return visibleWidth(inline) + metadataWidth > width && metadataWidth <= width ? [inline, ""] : [inline];
+				// Reserve its row before the first tick as well: details below the title may already be selected.
+				// Even the full span of representable JS dates has at most ten hours digits.
+				const timeRoom = running && width >= 13 ? " · 4800000000h 59m".length : metadataWidth;
+				if (visibleWidth(inline) + timeRoom > width) this.timeRowWidth = width;
+				// Settling this same call must not move its following rows under an in-flight selection either.
+				return this.timeRowWidth === width ? [inline, ""] : [inline];
 			}
 		}
 		const rows = this.expanded
@@ -338,7 +406,8 @@ export const codemodeRenderers: Pick<
 		const code = str(args?.code);
 		const state = getTranscriptTitleLayout(context) as ScriptLayout | undefined;
 		if (!state) return new CodemodeCall(code, theme);
-		if (!state.cache || state.cache.source.code !== code) state.cache = { source: new ScriptSource(code) };
+		if (!state.cache || state.cache.source.code !== code || state.cache.theme !== theme)
+			state.cache = { source: new ScriptSource(code), theme };
 		const layout = state.cache;
 		const slot = context.expanded ? "open" : "folded";
 		layout[slot] ??= new CodemodeScriptTitle(layout.source, theme, context.expanded);
@@ -352,18 +421,29 @@ export const codemodeRenderers: Pick<
 		if (options.expanded && code) {
 			const transcript = getTranscriptTitleLayout(context) as ScriptLayout | undefined;
 			const layout = transcript?.cache;
-			// Only the returned expanded title for these actual arguments replaces the standard source record.
-			if (!layout?.open || layout.source.code !== code || layout.open !== transcript?.title) {
+			const sourceRecord = () => {
 				const state = context.state as CodemodeRenderState;
 				state.scriptHighlighter ??= new CodeHighlighter();
-				records.push(
-					new Text(
-						state.scriptHighlighter.highlight(terminalDisplayText(replaceTabs(code)), "javascript").join("\n"),
-						0,
-						0,
-					),
+				return new Text(
+					state.scriptHighlighter.highlight(terminalDisplayText(replaceTabs(code)), "javascript").join("\n"),
+					0,
+					0,
 				);
-			}
+			};
+			if (layout?.open && layout.source.code === code && layout.open === transcript?.title) {
+				// An extension may wrap this result in a whole replacement block. The host knows whether it mounted
+				// the script title only after the result renderer returns; do not omit source on its promise alone.
+				const title = layout.open;
+				let record: Text | undefined;
+				records.push({
+					invalidate: () => record?.invalidate(),
+					render(width) {
+						if (transcript.mounted === title) return [];
+						record ??= sourceRecord();
+						return record.render(width);
+					},
+				});
+			} else records.push(sourceRecord());
 		}
 		const calls = result.details?.calls ?? [];
 		if (calls.length) {
