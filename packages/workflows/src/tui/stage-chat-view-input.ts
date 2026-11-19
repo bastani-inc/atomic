@@ -1,5 +1,5 @@
 import { isNavHelpKey, TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
-import { getKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, isHintActivation } from "@bastani/atomic-tui";
 import {
 	coercePrimitivePromptAnswer,
 	isPrimitivePrompt,
@@ -139,14 +139,19 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (
 		!readOnlyArchive &&
 		!isBlocked(ctx) &&
-		!ctx.chatHost.hasInputText() &&
+		(!ctx.chatHost.hasInputText() || isHintActivation()) &&
 		hasStageChatTasks(ctx) &&
 		matchesAction(keybindings, data, "app.agents.focus")
 	) {
 		ctx.chatHost.openTasks();
 		return true;
 	}
-	if (!readOnlyArchive && !isBlocked(ctx) && isNavHelpKey(keybindings, data) && !ctx.chatHost.hasInputText()) {
+	if (
+		!readOnlyArchive &&
+		!isBlocked(ctx) &&
+		isNavHelpKey(keybindings, data) &&
+		(!ctx.chatHost.hasInputText() || isHintActivation())
+	) {
 		ctx.helpOpen = true;
 		ctx.requestRender?.();
 		return true;
@@ -172,7 +177,10 @@ function isBackToGraphInput(ctx: StageChatViewContext, data: string): boolean {
 	if (matchesKey(data, Key.escape)) return false;
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	// At the start of a typed prompt, ← leaves too; the draft stays for the return.
-	return matchesNavAction(keybindings, data, APP_ACTION.navBack) && ctx.chatHost.inputCursorAtStart();
+	return (
+		matchesNavAction(keybindings, data, APP_ACTION.navBack) &&
+		(ctx.chatHost.inputCursorAtStart() || isHintActivation())
+	);
 }
 
 function isClosableQuestion(kind: string): boolean {

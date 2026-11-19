@@ -38,6 +38,7 @@ import {
 } from "./run-worktrees.js";
 import { indexSubagentChildOwner, observedSubagentRunIds } from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
+import { subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
 	currentWakeFailure,
 	findSubagentChildRecord,
@@ -729,10 +730,13 @@ export function subagentChildStoppedForResume(ctx: ExtensionContext, id: string)
 export function subagentChildrenAwaitingResume(ctx: ExtensionContext, id?: string): string[] {
 	const records = ownedRecords(ctx);
 	const failure = takeChildRecordFailure(subagentChildOwner(ctx).sessionId, id?.trim() ? id : undefined);
+	// The message already names the code and the hint, and names the subagent when the failure has no child id (#5551).
 	const failureLine =
 		failure === undefined
 			? undefined
-			: `Subagent ${failure.childId}: ${failure.message} (${failure.code}). ${failure.hint}`;
+			: failure.childId === undefined
+				? failure.message
+				: `Subagent ${failure.childId}: ${failure.message}`;
 	if (id?.trim()) {
 		const resolved = resolveRecord(records, id);
 		return [...(typeof resolved === "object" ? statusLines(resolved) : []), ...(failureLine ? [failureLine] : [])];
@@ -754,6 +758,9 @@ export function controlSubagentChildren(
 		return Promise.resolve(errorResult(request.action, "Pass either id or all: true, not both."));
 	if (!request.all && !request.id?.trim() && request.action !== "resume")
 		return Promise.resolve(errorResult(request.action, `${request.action} needs the id of a child, or all: true.`));
+	const owner = subagentChildOwnerOperations(deps.pi, ctx);
+	deps = { ...deps, pi: owner.pi };
+	ctx = owner.ctx;
 	if (request.action === "resume") return resumeChild(deps, ctx, request, signal);
 	const action = request.action;
 	// A child that does not stop yet keeps its stop waiting: the interrupted turn ends, and the stop goes on.

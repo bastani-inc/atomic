@@ -7,6 +7,7 @@ import { Container, Text } from "@bastani/atomic-tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { APP_NAME } from "../../config.js";
+import { slashCommandHint } from "../../modes/interactive/components/nav-keys.ts";
 import { theme } from "../../modes/interactive/theme/theme.js";
 import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
 import {
@@ -406,7 +407,10 @@ function rebuildBashResultRenderComponent(
 		component.addChild(new Text(theme.fg("accent", "∀ Continued in background"), 0, 0));
 		component.addChild(
 			new Text(
-				theme.fg("dim", `/tasks to inspect output or stop${options.expanded ? ` · ${observation.taskId}` : ""}`),
+				theme.fg(
+					"dim",
+					`${slashCommandHint("/tasks to inspect output or stop")}${options.expanded ? ` · ${observation.taskId}` : ""}`,
+				),
 				0,
 				0,
 			),

@@ -99,6 +99,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		get status() {
 			return runtime.stageSnapshot.status;
 		},
+		stageRecord: runtime.stageSnapshot,
+		stageUiSignal: runtime.stageUiSignal,
 		get sessionStore() {
 			return runtime.innerCtx.__agentSession()?.sessionManager.getSessionStore();
 		},
@@ -359,6 +361,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 					runtime.innerCtx.__idleForRelease()
 				);
 			},
+			chatHolds: holds,
 			holdsTaken: () => holds.holdsTaken,
 			onHoldLifted: (listener) => holds.onLifted(listener),
 		},

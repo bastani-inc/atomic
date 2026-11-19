@@ -160,7 +160,7 @@ function resultSummaryForIntercom(result: SingleResult): string {
  * Reuses the detached completion pipeline (dedupe, ordering barrier, triggerTurn).
  */
 export function notifyDetachedForegroundChildExit(input: {
-	pi: ExtensionAPI;
+	pi: Pick<ExtensionAPI, "events">;
 	runId: string;
 	mode: SubagentRunMode;
 	index: number;
