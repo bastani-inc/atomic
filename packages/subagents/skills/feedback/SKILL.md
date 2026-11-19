@@ -9,9 +9,9 @@ Classify the report as a bug or enhancement. Ask an ordinary question if the kin
 
 ## Investigate bugs only
 
-For a bug, delegate exactly once to the bundled `debugger` subagent using `agent: "debugger"`, `context: "fresh"` and `wait: { kind: "foreground" }`. Omit model overrides and parallel tasks. Ask it to investigate, not implement a fix; report supported findings, unknowns and any created paths as paths only. Give it the report and relevant context, never credentials. Scrub any report text before passing it to the debugger using the script below.
+For a bug, delegate exactly once to the bundled `debugger` subagent using `agent: "debugger"` and `context: "fresh"`, then wait for it with `subagent({ action: "wait", id })` using the task id the launch returned. Omit model overrides and parallel tasks. Ask it to investigate, not implement a fix; report supported findings, unknowns and any created paths as paths only. Give it the report and relevant context, never credentials. Scrub any report text before passing it to the debugger using the script below.
 
-If observation yields, wait for that same run, not another launch. Summarize supported findings and unknowns, and list reported created paths only. Do not read those files to include their contents. If the debugger is unavailable, fails or is inconclusive, say so and leave the cause unknown; do not retry or claim an investigation succeeded. Revisions do not launch another debugger.
+If the wait ends before the debugger finishes, wait for that same run again, not another launch. Summarize supported findings and unknowns, and list reported created paths only. Do not read those files to include their contents. If the debugger is unavailable, fails or is inconclusive, say so and leave the cause unknown; do not retry or claim an investigation succeeded. Revisions do not launch another debugger.
 
 For an enhancement, never launch a subagent.
 
