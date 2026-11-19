@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-import { setImmediate as nextTurn } from "node:timers/promises";
 import { withCleanup } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
 import { StoragePayloadTooLargeError } from "./errors.js";
@@ -7,6 +5,13 @@ import { StoragePayloadTooLargeError } from "./errors.js";
 /** A conservative text budget: even four-byte characters and JSON escaping fit below a server's response limit. */
 const CATALOG_PAGE_CHARS = 1024 * 1024;
 const CATALOG_PAGE_ROWS = 256;
+
+function nextTurn(): Promise<void> {
+	return new Promise((resolve) => {
+		if (typeof setImmediate === "function") setImmediate(resolve);
+		else setTimeout(resolve, 0);
+	});
+}
 
 export interface SqlCatalogReadOptions {
 	readonly sql: string;
@@ -138,7 +143,7 @@ export async function reduceSqlCatalog<Row extends SqliteRow, Result>(
 	if (db.privateSqliteMemory) {
 		// Only this connection can see its database. Copy just the catalog in one statement, then page the
 		// indexed temporary copy without occupying the connection between reads. No persistent data changes.
-		const table = `catalog_${randomUUID().replaceAll("-", "")}`;
+		const table = `catalog_${crypto.randomUUID().replaceAll("-", "")}`;
 		await executor.run(`CREATE TEMP TABLE ${table} AS ${options.sql}`, ...(options.params ?? []));
 		return withCleanup(
 			async () => {
