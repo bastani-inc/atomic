@@ -211,7 +211,7 @@ Listing, reading and searching workflow runs count each run and stage transcript
 
 A history search always returns its ordinary first page, including file locations, budget notes and any `skip` hint. A completed page never starts a task, even with `wait: { kind: "background" }`. Without a task owner, use the returned cursor yourself.
 
-If the returned page contains a budget stop and the session can run background work, Atomic starts a task to search the printed continuation URLs. Each URL gets an ordinary search with the same pattern and settings. A `skip` hint or a normal end-of-page link is yours to follow, not a budget stop.
+When a search of `history://sessions/<id>` stops at an entry cursor and the native task owner is available, a task can search that continuation with the same pattern and settings. You can still follow the printed URL yourself. Session discovery and workflow streams can hold their place in a single-use iterator. Their URLs are for manual continuation, as are `skip` hints and normal end-of-page links.
 
 - **Observe:** omit `wait` for your session’s shell observation budget, set `wait: { kind: "foreground", budgetMs }`, or request `wait: { kind: "background" }`. An owned launch includes `details.observation.taskId`, whether it yielded or settled.
 - **Read:** `search({ action: "wait", id })` returns one continuation page at a time, with its own text and file locations. `details.remainingPages` counts further pages already available. If the task is still running it can produce more. When a cursor cannot advance or the next whole page exceeds the task’s output allowance, `details.continueWith` lists the URLs still to search.

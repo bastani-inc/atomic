@@ -30,6 +30,7 @@ import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
 import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.js";
 import { matchLinesInWorker } from "./history-regex-worker.js";
+import { historyCursorCache, seekableHistoryStop } from "./history-search-continuations.js";
 import { HistorySearchOrder, ORDER_TOKEN } from "./history-search-order.ts";
 import {
 	type BudgetStop,
@@ -194,7 +195,7 @@ interface ParkedRunListing {
 	readonly timer: ReturnType<typeof setTimeout>;
 }
 
-const parkedRunListings = new WeakMap<WorkflowRunHistory, ParkedRunListing>();
+const publicRunListings = new WeakMap<WorkflowRunHistory, ParkedRunListing>();
 
 const HISTORY_URL = /^history:\/\/([^/?#]*)(?:\/([^?#]*))?(?:\?([^#]*))?$/;
 
@@ -1272,10 +1273,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const store = requireStore();
 		const scope = projectScope(target);
 		const keyOf = (cursor: string) => JSON.stringify([scope.cwd ?? null, cursor, pin ?? null]);
-		let parkedHere = parkedDiscoveries.get(store);
+		const discoveries = historyCursorCache(parkedDiscoveries, () => new WeakMap());
+		let parkedHere = discoveries.get(store);
 		if (!parkedHere) {
 			parkedHere = new Map<string, ParkedDiscovery>();
-			parkedDiscoveries.set(store, parkedHere);
+			discoveries.set(store, parkedHere);
 		}
 		const byKey = parkedHere;
 		const requestKey = target.cursor === undefined ? undefined : keyOf(cursorText(target.cursor));
@@ -1340,6 +1342,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 
 	async function recentRuns(budget: HistoryCallBudget, wanted?: string, fresh = false): Promise<WorkflowRunSummary[]> {
 		const control = requireWorkflows();
+		const parkedRunListings = historyCursorCache(publicRunListings, () => new WeakMap());
 		const parked = fresh ? undefined : parkedRunListings.get(control);
 		if (parked) {
 			clearTimeout(parked.timer);
@@ -1686,12 +1689,17 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const cursor = formatSearchCursor(resume);
 			const totalText = Number.isFinite(result.lastSeq) && result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
 			const reason = stopText(result.stopped.reason);
+			// Unlike discovery and workflow line streams, this position is seekable without a parked iterator.
+			const url = sessionUrl(id, target, cursor, remainingRanges);
 			return (room) => [
-				fittingLine(
-					(clause) =>
-						`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd}${totalText}; ${reason}${clause}; continue with ${sessionUrl(id, target, cursor, remainingRanges)}]`,
-					skippedClauses(result.skipped),
-					room - linesBytes([...windowNote, ...result.lines]),
+				seekableHistoryStop(
+					fittingLine(
+						(clause) =>
+							`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd}${totalText}; ${reason}${clause}; continue with ${url}]`,
+						skippedClauses(result.skipped),
+						room - linesBytes([...windowNote, ...result.lines]),
+					),
+					url,
 				),
 				...windowNote,
 				...result.lines,
@@ -2013,7 +2021,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				runId,
 				`history://workflows/${runId}`,
 				(pacer) => runLines(detail, pacer),
-				parkedRunStreams,
+				historyCursorCache(parkedRunStreams, () => new Map()),
 				request,
 				{
 					fromLine: Math.max(1, start?.seq ?? 1),

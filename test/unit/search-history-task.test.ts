@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { TaskOutputDecoder } from "../../packages/coding-agent/src/core/tasks/command-output.js";
 import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
@@ -9,6 +10,7 @@ import { formatTaskHeartbeat } from "../../packages/coding-agent/src/core/tasks/
 import { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { TOOL_TASK_OUTPUT_MAX_BYTES } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import { createHistoryRouter } from "../../packages/coding-agent/src/core/tools/history-protocol.js";
 import { createKillToolDefinition } from "../../packages/coding-agent/src/core/tools/kill.js";
 import type { InternalSearchRequest } from "../../packages/coding-agent/src/core/tools/resource-selectors.js";
 import {
@@ -19,20 +21,36 @@ import { executeSupervisedToolTask } from "../../packages/coding-agent/src/core/
 import { taskListSections } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import { sleep } from "../helpers/runtime.js";
 
-/**
- * A history:// router whose search returns one page per URL: a match, and a `continue with` stop note naming the next
- * page, until the last. Each page takes `pageMs` and honours the call's abort.
- */
-function pagedRouter(pages: number, pageMs = 0, matchText = (page: number) => `needle ${page}`) {
+/** One real session entry per page. A delayed provider call still honours the task's abort. */
+const sessionUrl = "history://sessions/s";
+function pagedRouter(pages: number, pageMs = 0) {
 	const calls: InternalSearchRequest[] = [];
-	const url = (page: number) => (page === 0 ? "history://sessions" : `history://sessions?offset=${page}`);
+	const store = new MemorySessionStore();
+	const timestamp = new Date(0).toISOString();
+	const ready = store.create(
+		{ id: "s", cwd: process.cwd(), version: 4, createdAt: timestamp },
+		Array.from({ length: pages }, (_, i) => ({
+			type: "message",
+			id: `m${i}`,
+			parentId: i ? `m${i - 1}` : null,
+			timestamp,
+			message: { role: "user", content: `needle ${i}`, timestamp: i },
+		})),
+	);
+	const router = createHistoryRouter({
+		cwd: process.cwd(),
+		currentSessionId: "s",
+		sessionStore: () => store,
+		workflows: () => undefined,
+		budget: { rows: 1 },
+	});
 	return {
 		calls,
 		context: {
 			internalResourceRouter: {
 				search: async (requested: string, request: InternalSearchRequest) => {
 					calls.push(request);
-					const page = requested === "history://sessions" ? 0 : Number(/offset=(\d+)/.exec(requested)?.[1]);
+					await ready;
 					if (pageMs > 0) {
 						const until = Date.now() + pageMs;
 						while (Date.now() < until) {
@@ -41,10 +59,7 @@ function pagedRouter(pages: number, pageMs = 0, matchText = (page: number) => `n
 						}
 					}
 					request.signal?.throwIfAborted();
-					const match = `history://sessions/s${page}:1: ${matchText(page)}`;
-					return page + 1 < pages
-						? `${match}\nhistory://sessions:0: [searched sessions ${page + 1}-${page + 1} of ${pages}; the time budget ran out; continue with ${url(page + 1)}]`
-						: match;
+					return router.search!(requested, request);
 				},
 			},
 		},
@@ -94,11 +109,7 @@ test("a history:// search yields at the owner's automatic budget and goes on as 
 	const owner = host(60, notices);
 	const router = pagedRouter(4, 80);
 	try {
-		const result = await run(
-			searchTool(owner).search,
-			{ pattern: "needle", paths: "history://sessions" },
-			router.context,
-		);
+		const result = await run(searchTool(owner).search, { pattern: "needle", paths: sessionUrl }, router.context);
 		const observation = (result.details as { observation?: { kind: string; taskId?: TaskId } }).observation;
 		assert.equal(observation?.kind, "yielded");
 		const ordinary = createSearchPageDefinition(process.cwd());
@@ -110,7 +121,7 @@ test("a history:// search yields at the owner's automatic budget and goes on as 
 				undefined,
 				pagedRouter(4).context as never,
 			);
-		const first = await expected("history://sessions");
+		const first = await expected(sessionUrl);
 		assert.deepEqual(result, { ...first, details: { ...first.details, observation } });
 		const id = observation!.taskId!;
 		const record = await settledRecord(owner, id);
@@ -122,7 +133,7 @@ test("a history:// search yields at the owner's automatic budget and goes on as 
 		assert.equal(notices.filter((notice) => notice.taskId === id).length, 1);
 		for (const index of [1, 2, 3]) {
 			const waited = await run(searchTool(owner).search, { action: "wait", id }, router.context);
-			const next = await expected(`history://sessions?offset=${index}`);
+			const next = await expected(`${sessionUrl}?cursor=${index + 1}`);
 			assert.equal(waited.details?.observation?.kind, "settled");
 			assert.deepEqual(waited, {
 				...next,
@@ -142,10 +153,11 @@ test("cancelling the caller during a continuation aborts that ordinary search wi
 	const entered = Promise.withResolvers<AbortSignal>();
 	const path = "history://sessions/s",
 		next = `${path}?cursor=2`;
+	const fixture = pagedRouter(2);
 	const ctx = {
 		internalResourceRouter: {
 			search: async (url: string, q: InternalSearchRequest) => {
-				if (url === path) return `${path}:0: [the row budget ran out; continue with ${next}]`;
+				if (url === path) return fixture.context.internalResourceRouter.search(url, q);
 				assert.equal(url, next);
 				const signal = q.signal!;
 				entered.resolve(signal);
@@ -187,14 +199,14 @@ test("explicit background yields at once, and a foreground budget yields when it
 	try {
 		const background = await run(
 			searchTool(owner).search,
-			{ pattern: "needle", paths: "history://sessions", wait: { kind: "background" } },
+			{ pattern: "needle", paths: sessionUrl, wait: { kind: "background" } },
 			pagedRouter(3, 50).context,
 		);
 		assert.equal((background.details as { observation?: { kind: string } }).observation?.kind, "yielded");
 		const started = Date.now();
 		const foreground = await run(
 			searchTool(owner).search,
-			{ pattern: "needle", paths: "history://sessions", wait: { kind: "foreground", budgetMs: 40 } },
+			{ pattern: "needle", paths: sessionUrl, wait: { kind: "foreground", budgetMs: 40 } },
 			pagedRouter(3, 200).context,
 		);
 		assert.equal((foreground.details as { observation?: { kind: string } }).observation?.kind, "yielded");
@@ -209,7 +221,7 @@ test("a history:// search's execution timeout stops it with the URL to continue 
 	try {
 		const result = await run(
 			searchTool(owner).search,
-			{ pattern: "needle", paths: "history://sessions", timeout: 0.15 },
+			{ pattern: "needle", paths: sessionUrl, timeout: 0.15 },
 			pagedRouter(10, 60).context,
 		);
 		const observed = result.details?.observation;
@@ -217,7 +229,7 @@ test("a history:// search's execution timeout stops it with the URL to continue 
 		assert.equal(observed.result.cause, "execution-timeout");
 		assert.match(text(result), /needle 0/);
 		const waited = await run(searchTool(owner).search, { action: "wait", id: observed.taskId }, {});
-		assert.match(waited.details!.continueWith![0]!, /^history:\/\/sessions\?offset=\d+$/);
+		assert.match(waited.details!.continueWith![0]!, /^history:\/\/sessions\/s\?cursor=\d+$/);
 	} finally {
 		await owner.close("session-close");
 	}
@@ -227,11 +239,7 @@ test("kill stops a background history:// search", async () => {
 	const owner = host(0);
 	const tools = searchTool(owner);
 	try {
-		const launched = await run(
-			tools.search,
-			{ pattern: "needle", paths: "history://sessions" },
-			pagedRouter(100, 50).context,
-		);
+		const launched = await run(tools.search, { pattern: "needle", paths: sessionUrl }, pagedRouter(100, 50).context);
 		const id = (launched.details as { observation?: { taskId?: TaskId } }).observation?.taskId;
 		assert.ok(id);
 		await tools.kill.execute("stop", { id }, undefined, undefined, {} as never);
@@ -248,7 +256,7 @@ test("/tasks lists a background search in its own section, never as an agent", a
 	try {
 		const launched = await run(
 			searchTool(owner).search,
-			{ pattern: "needle", paths: "history://sessions" },
+			{ pattern: "needle", paths: sessionUrl },
 			pagedRouter(20, 50).context,
 		);
 		const id = (launched.details as { observation?: { taskId?: TaskId } }).observation?.taskId;

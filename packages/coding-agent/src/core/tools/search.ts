@@ -77,7 +77,8 @@ export const searchToolSystemPromptContribution = Object.freeze({
 		'When a history:// search returns a task ID, use search({ action: "wait", id }) for its continuation pages or kill({ id }) to stop it. A skip hint is a separate search, not a background task.',
 	] as const),
 } as const);
-export type SearchToolInput = Static<typeof taskSchema>;
+/** Pattern-bearing search calls exposed to SDK hooks. A wait only observes an existing task. */
+export type SearchToolInput = Exclude<Static<typeof taskSchema>, { action: "wait" }>;
 export type SearchToolOptions = GrepToolOptions & {
 	contextBefore?: number;
 	contextAfter?: number;
