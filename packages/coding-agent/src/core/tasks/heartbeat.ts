@@ -17,7 +17,6 @@ import {
 	type TaskSupervisor,
 	taskOwnTranscriptEntries,
 } from "./supervisor.js";
-import { isShellLikeTask } from "./task-kind.js";
 
 export * from "./heartbeat-notice.js";
 
@@ -227,7 +226,7 @@ export class TaskHeartbeatMonitor {
 
 	private hasSampledShells(): boolean {
 		for (const entry of this.tracked.values())
-			if (isShellLikeTask(entry.record.kind) && entry.intervalMs > 0) return true;
+			if (entry.record.kind === "command" && entry.intervalMs > 0) return true;
 		return false;
 	}
 
@@ -334,9 +333,6 @@ export class TaskHeartbeatMonitor {
 			more: rest.slice(0, TASK_HEARTBEAT_LIST_LIMIT).map((entry) => ({
 				taskId: entry.taskId,
 				kind: entry.record.kind,
-				...(entry.record.toolName === undefined
-					? {}
-					: { toolName: singleLine(entry.record.toolName, TITLE_CHARS) }),
 				title: singleLine(entry.record.title, TITLE_CHARS),
 			})),
 			moreCount: rest.length,
@@ -351,14 +347,13 @@ export class TaskHeartbeatMonitor {
 			kind: task.kind,
 			title: singleLine(task.title, TITLE_CHARS),
 			...(task.agentName === undefined ? {} : { agentName: singleLine(task.agentName, TITLE_CHARS) }),
-			...(task.toolName === undefined ? {} : { toolName: singleLine(task.toolName, TITLE_CHARS) }),
 			...(task.kind === "agent" && task.model !== undefined ? { model: task.model } : {}),
 			...(task.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
 			...(task.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),
 			elapsedMs: task.elapsedSpan ? spanElapsedMs(task.elapsedSpan) : Math.max(0, at - entry.startedAt),
 			intervalMs: entry.intervalMs,
 		};
-		if (isShellLikeTask(task.kind) && lease) {
+		if (task.kind === "command" && lease) {
 			const end = await this.observeOutput(entry, lease, at);
 			if (end !== undefined) described.output = { bytes: Number(end), tail: await this.outputTail(lease, end) };
 		}
@@ -393,7 +388,7 @@ export class TaskHeartbeatMonitor {
 
 	private async sampleShellOutput(at: number): Promise<void> {
 		for (const entry of [...this.tracked.values()]) {
-			if (!isShellLikeTask(entry.record.kind) || entry.intervalMs === 0) continue;
+			if (entry.record.kind !== "command" || entry.intervalMs === 0) continue;
 			const lease = this.lease(entry.taskId);
 			if (lease) await this.observeOutput(entry, lease, at);
 		}

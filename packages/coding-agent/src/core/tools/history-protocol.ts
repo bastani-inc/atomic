@@ -30,8 +30,6 @@ import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
 import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.js";
 import { matchLinesInWorker } from "./history-regex-worker.js";
-import { historyCursorCache, seekableHistoryStop } from "./history-search-continuations.js";
-import { HistorySearchOrder, ORDER_TOKEN } from "./history-search-order.ts";
 import {
 	type BudgetStop,
 	cutTextToUtf8Bytes,
@@ -127,7 +125,6 @@ interface HistoryTarget {
 	readonly session?: string;
 	readonly run?: string;
 	readonly after?: SessionKey;
-	readonly order?: string;
 	readonly cursor?: HistoryCursor;
 }
 
@@ -195,7 +192,7 @@ interface ParkedRunListing {
 	readonly timer: ReturnType<typeof setTimeout>;
 }
 
-const publicRunListings = new WeakMap<WorkflowRunHistory, ParkedRunListing>();
+const parkedRunListings = new WeakMap<WorkflowRunHistory, ParkedRunListing>();
 
 const HISTORY_URL = /^history:\/\/([^/?#]*)(?:\/([^?#]*))?(?:\?([^#]*))?$/;
 
@@ -224,12 +221,9 @@ function parseTarget(url: string): HistoryTarget {
 	if (domain === undefined && idText) throw new Error(`Unknown history resource: ${idText}`);
 	const params = new URLSearchParams(queryText ?? "");
 	const allowed = QUERY_KEYS[domain ?? "root"];
-	const order = params.get("order");
 	for (const key of params.keys())
-		if (!allowed.includes(key) && !(key === "order" && domain !== undefined && !idText))
+		if (!allowed.includes(key))
 			throw new Error(`Unsupported history query parameter: ${key}; supported: ${allowed.join(", ")}`);
-	if (order !== null && (!ORDER_TOKEN.test(order) || params.getAll("order").length !== 1))
-		throw new Error("history order must be the token a search gave");
 	const limitText = params.get("limit");
 	const limit = limitText === null ? DEFAULT_LIMIT : Number.parseInt(limitText, 10);
 	if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT)
@@ -261,7 +255,6 @@ function parseTarget(url: string): HistoryTarget {
 		offset,
 		...(project === undefined ? {} : { project }),
 		...(session === undefined ? {} : { session }),
-		...(order === null ? {} : { order }),
 		...(run === undefined ? {} : { run }),
 		...(afterMatch && afterId !== undefined
 			? { after: { activeMs: Number(afterMatch[1]), createdMs: Number(afterMatch[2]), id: afterId } }
@@ -1273,11 +1266,10 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const store = requireStore();
 		const scope = projectScope(target);
 		const keyOf = (cursor: string) => JSON.stringify([scope.cwd ?? null, cursor, pin ?? null]);
-		const discoveries = historyCursorCache(parkedDiscoveries, () => new WeakMap());
-		let parkedHere = discoveries.get(store);
+		let parkedHere = parkedDiscoveries.get(store);
 		if (!parkedHere) {
 			parkedHere = new Map<string, ParkedDiscovery>();
-			discoveries.set(store, parkedHere);
+			parkedDiscoveries.set(store, parkedHere);
 		}
 		const byKey = parkedHere;
 		const requestKey = target.cursor === undefined ? undefined : keyOf(cursorText(target.cursor));
@@ -1342,7 +1334,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 
 	async function recentRuns(budget: HistoryCallBudget, wanted?: string, fresh = false): Promise<WorkflowRunSummary[]> {
 		const control = requireWorkflows();
-		const parkedRunListings = historyCursorCache(publicRunListings, () => new WeakMap());
 		const parked = fresh ? undefined : parkedRunListings.get(control);
 		if (parked) {
 			clearTimeout(parked.timer);
@@ -1622,7 +1613,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		request: InternalSearchRequest,
 		prefilter: LiteralQuery | undefined,
 		budget: HistoryCallBudget,
-		order: HistorySearchOrder,
 	): Promise<(room: number) => string[]> {
 		if (target.id !== undefined) {
 			const fromSeq = Math.max(1, target.cursor?.first ?? 1);
@@ -1689,17 +1679,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const cursor = formatSearchCursor(resume);
 			const totalText = Number.isFinite(result.lastSeq) && result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
 			const reason = stopText(result.stopped.reason);
-			// Unlike discovery and workflow line streams, this position is seekable without a parked iterator.
-			const url = sessionUrl(id, target, cursor, remainingRanges);
 			return (room) => [
-				seekableHistoryStop(
-					fittingLine(
-						(clause) =>
-							`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd}${totalText}; ${reason}${clause}; continue with ${url}]`,
-						skippedClauses(result.skipped),
-						room - linesBytes([...windowNote, ...result.lines]),
-					),
-					url,
+				fittingLine(
+					(clause) =>
+						`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd}${totalText}; ${reason}${clause}; continue with ${sessionUrl(id, target, cursor, remainingRanges)}]`,
+					skippedClauses(result.skipped),
+					room - linesBytes([...windowNote, ...result.lines]),
 				),
 				...windowNote,
 				...result.lines,
@@ -1727,12 +1712,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		}
 		const store = requireStore();
 		const candidateKeys: SessionKey[] = [];
-		const live = discovered.sessions.filter((summary, index) => {
+		const candidates = discovered.sessions.filter((summary, index) => {
 			if (summary.id === sources.currentSessionId) return false;
 			candidateKeys.push(discovered.keys[index]!);
 			return true;
 		});
-		const { rows: candidates, start: savedStart } = order.arrange(live, (s) => s.id, target.after?.id, true);
 		const resuming = target.cursor !== undefined && target.cursor.first > 0;
 		const pinnedAt =
 			resuming && target.session !== undefined
@@ -1742,12 +1726,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const pinned = pinnedAt === -1 ? undefined : candidates[pinnedAt];
 		const after = target.after;
 		const restStart =
-			savedStart ??
-			(after !== undefined
+			after !== undefined
 				? candidateKeys.findIndex((key) => compareSessionKeys(key, after) > 0)
 				: pinned !== undefined
 					? Math.max(target.offset, pinnedAt) + 1
-					: target.offset);
+					: target.offset;
 		const restFrom = restStart === -1 ? candidates.length : restStart;
 		const scope: HistoryTarget = { ...target, offset: pinned === undefined ? restFrom : Math.max(0, restFrom - 1) };
 		const rest = candidates
@@ -2021,7 +2004,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				runId,
 				`history://workflows/${runId}`,
 				(pacer) => runLines(detail, pacer),
-				historyCursorCache(parkedRunStreams, () => new Map()),
+				parkedRunStreams,
 				request,
 				{
 					fromLine: Math.max(1, start?.seq ?? 1),
@@ -2100,7 +2083,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		request: InternalSearchRequest,
 		prefilter: LiteralQuery | undefined,
 		budget: HistoryCallBudget,
-		order: HistorySearchOrder,
 	): Promise<string[]> {
 		requireWorkflows();
 		const start =
@@ -2134,15 +2116,10 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				: [];
 			return [...unreadableNotes, ...stopLines, ...lines];
 		}
-		const { rows: runs, start: savedStart } = order.arrange(
-			await recentRuns(budget),
-			(run) => run.runId,
-			target.run,
-			false,
-		);
+		const runs = await recentRuns(budget);
 		const pinnedAt = target.run === undefined ? -1 : runs.findIndex((run) => run.runId === target.run);
 		const pinnedGone = target.run !== undefined && pinnedAt === -1;
-		const scope: HistoryTarget = { ...target, offset: savedStart ?? (pinnedAt === -1 ? target.offset : pinnedAt) };
+		const scope: HistoryTarget = pinnedAt === -1 ? target : { ...target, offset: pinnedAt };
 		const resume = pinnedGone ? undefined : start;
 		const resumeCursor = resume === undefined || target.cursor === undefined ? undefined : cursorText(target.cursor);
 		const window = runs.slice(scope.offset, scope.offset + scope.limit);
@@ -2277,53 +2254,29 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			if (!rawUrl.startsWith("history://")) return undefined;
 			const { url, request } = normalizeInlineSearchRequest(rawUrl, rawRequest);
 			const target = parseTarget(url);
-			// The optional order token must not reduce the room the ordinary search leaves for matches and notes.
-			const budgetUrl = target.order === undefined ? url : url.replace(`&order=${target.order}`, "");
-			const makeOrder = (domain: Domain) =>
-				new HistorySearchOrder(
-					JSON.stringify([domain, sources.cwd, target.project, sources.currentSessionId]),
-					target.order,
-					target.after === undefined &&
-						target.run === undefined &&
-						target.session === undefined &&
-						target.order === undefined,
-				);
-			const sessionOrder = makeOrder("sessions");
-			const workflowOrder = makeOrder("workflows");
 			const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
 			const budget = newBudget(
 				request.signal,
-				noteBytes(budgetUrl, target, request.ranges, target.id === undefined ? 2 : 1, multiline),
+				noteBytes(url, target, request.ranges, target.id === undefined ? 2 : 1, multiline),
 			);
 			selectRegexEngine(normalizeSearchPattern(request.pattern, request.ignoreCase), request.literal, multiline);
 			const prefilter = multiline ? undefined : indexLiterals(request.pattern, request.ignoreCase, request.literal);
 			try {
-				if (target.domain === "sessions") {
-					const lines = (await searchSessions(target, request, prefilter, budget, sessionOrder))(limits.bytes);
-					sessionOrder.attach(lines, "sessions", () => limits.bytes + 1 - linesBytes(lines));
-					return bounded(lines.join("\n"));
-				}
-				if (target.domain === "workflows") {
-					const lines = await searchWorkflows(target, request, prefilter, budget, workflowOrder);
-					workflowOrder.attach(lines, "workflows", () => limits.bytes + 1 - linesBytes(lines));
-					return bounded(lines.join("\n"));
-				}
+				if (target.domain === "sessions")
+					return bounded((await searchSessions(target, request, prefilter, budget))(limits.bytes).join("\n"));
+				if (target.domain === "workflows")
+					return bounded((await searchWorkflows(target, request, prefilter, budget)).join("\n"));
 			} catch (error) {
 				if (isHistoryDeadlineError(error)) {
 					const ranges =
 						request.ranges !== undefined && request.ranges.length > 0 ? `:${rangeText(request.ranges)}` : "";
-					const lines = [
-						`${budgetUrl}:0: [the time budget ran out waiting for the store; continue with ${budgetUrl}${ranges}]`,
-					];
-					if (target.domain && target.order) {
-						const order = target.domain === "sessions" ? sessionOrder : workflowOrder;
-						order.attach(lines, target.domain, () => limits.bytes + 1 - linesBytes(lines));
-					}
-					return bounded(lines[0]!);
+					return bounded(
+						`${url}:0: [the time budget ran out waiting for the store; continue with ${url}${ranges}]`,
+					);
 				}
 				throw error;
 			}
-			const domainNoteBytes = noteBytes(budgetUrl, target, request.ranges, 2, multiline);
+			const domainNoteBytes = noteBytes(url, target, request.ranges, 2, multiline);
 			const sessionRows = Math.ceil(limits.rows / 2);
 			const workflowRows = limits.rows - sessionRows;
 			const workflowBytes = workflowRows > 0 ? Math.floor(limits.bytes / 2) : 0;
@@ -2341,7 +2294,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 								request.signal,
 								domainNoteBytes,
 							),
-							sessionOrder,
 						)
 					: Promise.resolve(() => notSearched("sessions", "sessions")),
 				workflowRows > 0
@@ -2354,7 +2306,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 								request.signal,
 								domainNoteBytes,
 							),
-							workflowOrder,
 						)
 					: Promise.resolve(notSearched("workflows", "workflow runs")),
 			]);
@@ -2389,9 +2340,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				sessions.status === "fulfilled"
 					? sessions.value(limits.bytes - linesBytes(workflowLines))
 					: results("sessions", "sessions", sessions);
-			const spare = () => limits.bytes + 1 - linesBytes(sessionLines) - linesBytes(workflowLines);
-			sessionOrder.attach(sessionLines, "sessions", spare);
-			workflowOrder.attach(workflowLines, "workflows", spare);
 			return bounded([...sessionLines, ...workflowLines].join("\n"));
 		},
 	};

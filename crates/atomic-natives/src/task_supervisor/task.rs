@@ -4,16 +4,6 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentTaskKind {
 	Agent,
-	/// In-process work a tool runs past its call, such as a search: never an agent, never a process.
-	Tool,
-}
-impl AgentTaskKind {
-	fn text(self) -> &'static str {
-		match self {
-			Self::Agent => "agent",
-			Self::Tool => "tool",
-		}
-	}
 }
 
 /// Caller-provided strings retain their exact JavaScript UTF-16 code units.
@@ -491,7 +481,7 @@ impl Actor {
 			parent_task_id: intent.parent_task_id.clone(),
 			launch_group_id: None,
 			launch_ordinal: ordinal,
-			kind: intent.kind.text().into(),
+			kind: "agent".into(),
 			title,
 			agent_name: Some(intent.agent.clone()),
 			model: None,

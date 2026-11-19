@@ -2,16 +2,7 @@ import { setTimeout as poll } from "node:timers/promises";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createModuleRequire } from "../../utils/module-require.js";
 import { getShellConfigAsync, getShellEnvAsync, type ShellConfig } from "../../utils/shell.ts";
-import type { ToolTaskRunnerFactory } from "../tasks/agent-adapter.js";
-import type {
-	OperationId,
-	Result,
-	StartFailure,
-	TaskId,
-	ToolIntent,
-	WaitOutcome,
-	WaitPolicy,
-} from "../tasks/contracts.js";
+import type { OperationId, TaskId, WaitOutcome, WaitPolicy } from "../tasks/contracts.js";
 import type { CommandLaunchOrigin, OwnerLease, TaskLease, TaskSupervisor, WaitLease } from "../tasks/supervisor.js";
 import { OutputAccumulator, type OutputAccumulatorOptions } from "./output-accumulator.ts";
 import { completeUtf8PrefixLength } from "./persisted-output-file.ts";
@@ -84,15 +75,6 @@ function loadNativePtyBinding(): NativeLoadResult {
 export interface SupervisedCommandOwner {
 	supervisor: TaskSupervisor;
 	owner: OwnerLease;
-	/**
-	 * Admit a tool call's in-process work as a task of this owner (a background `search`), observed like a shell.
-	 * Absent where the owner cannot run in-process tasks; such tools then run in the foreground.
-	 */
-	startToolTask?: (
-		intent: ToolIntent,
-		operation: OperationId,
-		runner: ToolTaskRunnerFactory,
-	) => Promise<Result<{ taskId: TaskId; lease: TaskLease }, StartFailure>>;
 	waitForTask?: (
 		taskId: TaskId,
 		budgetMs?: number,

@@ -15,7 +15,7 @@ function isNamedTask(value: unknown): value is TaskHeartbeatDetails["more"][numb
 	const task = value as Partial<TaskHeartbeatTask>;
 	return (
 		typeof task.taskId === "string" &&
-		(task.kind === "agent" || task.kind === "command" || task.kind === "tool") &&
+		(task.kind === "agent" || task.kind === "command") &&
 		typeof task.title === "string"
 	);
 }
@@ -65,7 +65,7 @@ export class TaskHeartbeatMessage implements Component {
 		const shown = this.expanded ? tasks : tasks.slice(0, TASK_HEARTBEAT_COLLAPSED_TASKS);
 		const records: HeartbeatRow[][] = shown.map((task) => {
 			const rows: HeartbeatRow[] = [
-				`${theme.fg("accent", `${taskHeartbeatKindLabel(task.kind, task.toolName)} ${clean(task.taskId)}`)} ${theme.fg("text", clean(task.title))}${theme.fg("dim", ` · ${formatTaskHeartbeatDuration(task.elapsedMs)}`)}`,
+				`${theme.fg("accent", `${taskHeartbeatKindLabel(task.kind)} ${clean(task.taskId)}`)} ${theme.fg("text", clean(task.title))}${theme.fg("dim", ` · ${formatTaskHeartbeatDuration(task.elapsedMs)}`)}`,
 			];
 			if (!this.expanded) return rows;
 			rows.push({ text: theme.fg("muted", clean(formatTaskHeartbeatStatus(task))), wrap: true });

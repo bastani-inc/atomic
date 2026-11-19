@@ -176,11 +176,6 @@ export type FakeRunnerContext = {
 	setExtensionStatus(statusKey: string, text: string | undefined): void;
 	/** Drop every status the task's session set: its session ended or was replaced. */
 	clearExtensionStatuses(): void;
-	/**
-	 * Append to a `tool` task's output, which its waits, notices and /tasks read as they read a command's. Absent for
-	 * an agent, whose output is its transcript.
-	 */
-	appendOutput?(bytes: Uint8Array): void;
 };
 /** Independent cleanup evidence: an outcome alone never proves resource release. */
 export type FakeExecution = {
@@ -200,8 +195,6 @@ export type TrustedTaskHost = {
 	/** The existing host/tool refusal throws here, before native admission. */
 	authorizeCommandLaunch?(intent: C.CommandIntent, origin: CommandLaunchOrigin): void;
 	authorizeLaunch(intent: C.AgentIntent): void;
-	/** The host's refusal for a tool call's in-process task, before native admission; omitted, the owner admits it. */
-	authorizeToolLaunch?(intent: C.ToolIntent): void;
 	resourceAdmission?: ResourceAdmission;
 	/** Internal host/test configuration only; never tool input or user settings. */
 	commandResources?: Pick<native.CommandResourceOptions, "terminationGraceMs">;
@@ -212,8 +205,6 @@ export type TrustedTaskHost = {
 	/** Heartbeat cadence for a launch that names none, fixed on its record at admission; omitted, none is recorded. */
 	defaultHeartbeatMs?(): number | undefined;
 	createRunner(context: FakeRunnerContext, intent: C.AgentIntent): FakeExecution;
-	/** Runs a tool call's in-process work as a task; a host without it admits no tool tasks. */
-	createToolRunner?(context: FakeRunnerContext, intent: C.ToolIntent): FakeExecution;
 };
 type HeldPermit = { readonly admission: ResourceAdmission; readonly release: ResourcePermit };
 type HostState = { native: native.HostSession; binding: TrustedTaskHost };
@@ -261,10 +252,7 @@ type TaskState = {
 	ref: C.NativeTaskRef;
 	operation: C.OperationId;
 	controller: AbortController;
-	/** Omitted for an agent. */
-	kind?: "command" | "tool";
-	/** What a `tool` task printed: its runner's output reports, kept here because no process spools them. */
-	toolOutput?: ToolTaskOutput;
+	kind?: "command";
 	execution?: Promise<C.Result<C.Cleanup, C.ReportError>>;
 	transcript?: TaskTranscriptSource;
 
@@ -279,138 +267,6 @@ type WaitState = {
 	/** The waited task's owner's metadata, which its settled outcome names. */
 	launches: LaunchMetadata;
 };
-
-/**
- * The most of the start of a `tool` task's output it keeps; output past it is reported as omitted, as a command's
- * spool cap does, except its last {@link TOOL_TASK_OUTPUT_TAIL_BYTES}.
- */
-export const TOOL_TASK_OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
-/**
- * The most of the end of a `tool` task's output it keeps past {@link TOOL_TASK_OUTPUT_MAX_BYTES}: how its work ended,
- * for example where a search that stopped continues from, is printed last and must not be lost with the middle.
- */
-export const TOOL_TASK_OUTPUT_TAIL_BYTES = 64 * 1024;
-/** Most bytes one page of a `tool` task's output returns, matching a command's live page. */
-const TOOL_TASK_OUTPUT_PAGE_BYTES = 64 * 1024;
-
-type OutputChunk = { readonly start: number; readonly bytes: Uint8Array };
-
-/** The chunks of `chunks` from index `first` on (in offset order) that overlap `[start, end)`, cut to it. */
-function chunksWithin(
-	chunks: readonly OutputChunk[],
-	first: number,
-	start: number,
-	end: number,
-): C.OutputPage["chunks"] {
-	let low = first;
-	let high = chunks.length;
-	while (low < high) {
-		const middle = (low + high) >>> 1;
-		const chunk = chunks[middle]!;
-		if (chunk.start + chunk.bytes.length <= start) low = middle + 1;
-		else high = middle;
-	}
-	const within: C.OutputPage["chunks"] = [];
-	for (let index = low; index < chunks.length && chunks[index]!.start < end; index++) {
-		const chunk = chunks[index]!;
-		const from = Math.max(start, chunk.start);
-		const to = Math.min(end, chunk.start + chunk.bytes.length);
-		within.push({
-			offsets: { start: String(from), end: String(to) },
-			bytes: chunk.bytes.subarray(from - chunk.start, to - chunk.start),
-		});
-	}
-	return within;
-}
-
-/**
- * What a `tool` task printed, in order. Offsets are byte offsets into everything it printed. It keeps the first
- * {@link TOOL_TASK_OUTPUT_MAX_BYTES} and the last {@link TOOL_TASK_OUTPUT_TAIL_BYTES}; what lies between reads back as
- * one omitted range. Once sealed, at its task's settlement, it refuses further writes.
- */
-export class ToolTaskOutput {
-	readonly #head: OutputChunk[] = [];
-	#tail: OutputChunk[] = [];
-	/** Index of the first tail chunk still kept; the ones before it were dropped and are compacted away in batches. */
-	#tailFirst = 0;
-	#headBytes = 0;
-	#tailBytes = 0;
-	#total = 0;
-	#sealed = false;
-	get byteCount(): number {
-		return this.#total;
-	}
-	/** The task ended: its output is final, and later writes are refused. */
-	seal(): void {
-		this.#sealed = true;
-	}
-	append(bytes: Uint8Array): void {
-		if (this.#sealed || bytes.length === 0) return;
-		const room = Math.max(0, TOOL_TASK_OUTPUT_MAX_BYTES - this.#headBytes);
-		const headPart = Math.min(room, bytes.length);
-		if (headPart > 0) {
-			this.#head.push({ start: this.#total, bytes: bytes.slice(0, headPart) });
-			this.#headBytes += headPart;
-		}
-		if (headPart < bytes.length) {
-			// Only the last tail's worth of what does not fit the head is kept: the rest is cut before it is copied.
-			const from = Math.max(headPart, bytes.length - TOOL_TASK_OUTPUT_TAIL_BYTES);
-			this.#tail.push({ start: this.#total + from, bytes: bytes.slice(from) });
-			this.#tailBytes += bytes.length - from;
-			while (this.#tailBytes - this.#tail[this.#tailFirst]!.bytes.length >= TOOL_TASK_OUTPUT_TAIL_BYTES) {
-				this.#tailBytes -= this.#tail[this.#tailFirst]!.bytes.length;
-				this.#tailFirst++;
-			}
-			if (this.#tailFirst > 1024 && this.#tailFirst * 2 > this.#tail.length) {
-				this.#tail = this.#tail.slice(this.#tailFirst);
-				this.#tailFirst = 0;
-			}
-			const excess = this.#tailBytes - TOOL_TASK_OUTPUT_TAIL_BYTES;
-			if (excess > 0) {
-				const first = this.#tail[this.#tailFirst]!;
-				this.#tail[this.#tailFirst] = { start: first.start + excess, bytes: first.bytes.slice(excess) };
-				this.#tailBytes -= excess;
-			}
-		}
-		this.#total += bytes.length;
-	}
-	page(range: C.OutputRange): C.Result<C.OutputPage, C.OutputError> {
-		if (!/^\d+$/.test(range.start)) return { ok: false, error: { code: "OutputUnavailable", message: "bad offset" } };
-		const start = Number(range.start);
-		const limit = Math.max(0, Math.min(TOOL_TASK_OUTPUT_PAGE_BYTES, Math.floor(range.maximumBytes)));
-		// What is not kept lies between the head and the tail; a page that reaches it reports all of it at once and ends
-		// there, so a reader steps over it in one page whatever its size.
-		const gapStart = this.#headBytes;
-		const gapEnd = this.#tail[this.#tailFirst]?.start ?? gapStart;
-		let end = Math.min(this.#total, start + limit);
-		const omittedRanges: C.OutputPage["omittedRanges"] = [];
-		if (start < gapEnd && end > gapStart) {
-			omittedRanges.push({ start: String(Math.max(start, gapStart)), end: String(gapEnd) });
-			end = gapEnd;
-		}
-		const chunks = [
-			...chunksWithin(this.#head, 0, start, end),
-			...chunksWithin(this.#tail, this.#tailFirst, start, end),
-		];
-		return {
-			ok: true,
-			value: {
-				requested: { start: range.start, end: String(Math.max(start, end)) },
-				chunks,
-				omittedRanges,
-				...(end < this.#total ? { nextOffset: String(end) } : {}),
-			},
-		};
-	}
-}
-
-/**
- * Whether a task's waits follow a shell command's observation: the command budget (bash's automatic 10s yield) and a
- * foreground first wait when none is named. A tool call's in-process task is observed like the shell it stands beside.
- */
-function observedLikeShell(state: Pick<TaskState, "kind">): boolean {
-	return state.kind === "command" || state.kind === "tool";
-}
 
 // Native supervisors share one actor per environment; their JS continuations must too.
 const environment = {
@@ -665,11 +521,6 @@ export type LaunchMetadata = {
 	readonly launchers: Map<string, string>;
 	/** When each command was launched, by launch operation: its completion notice says how long it ran. */
 	readonly launchedAt: Map<string, number>;
-	/**
-	 * What each tool task printed so far, by task id. No native spool counts it, so its record's output size is read
-	 * here, live, rather than the native admission's zero.
-	 */
-	readonly toolOutputs: Map<string, ToolTaskOutput>;
 	/** The active span each dispatched subagent owns, including its endpoint once it stops. */
 	readonly agentSpans: Map<string, C.TaskElapsedSpan>;
 	/** Counts registered spans, so that a read looks again at records that had none. */
@@ -769,8 +620,7 @@ function timedRecords(
 	return { snapshot, revision: last.revision, live: last.live, tasks, at: now, spans };
 }
 function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecord {
-	if (value.kind !== "agent" && value.kind !== "command" && value.kind !== "tool")
-		throw new Error(`Invalid native task kind: ${value.kind}`);
+	if (value.kind !== "agent" && value.kind !== "command") throw new Error(`Invalid native task kind: ${value.kind}`);
 	const requestedModel = launches.requestedModels.get(value.ref.taskId);
 	const heartbeatMs = launches.launchHeartbeats.get(value.launchOperationId)?.heartbeatMs;
 	const launchedBy = launches.launchers.get(value.launchOperationId);
@@ -783,12 +633,7 @@ function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecor
 		launchOrdinal: value.launchOrdinal,
 		kind: value.kind,
 		title: value.title,
-		// A tool task's native record carries its tool's name where an agent's carries the agent's.
-		...(value.agentName === undefined
-			? {}
-			: value.kind === "tool"
-				? { toolName: value.agentName }
-				: { agentName: value.agentName }),
+		...(value.agentName === undefined ? {} : { agentName: value.agentName }),
 		...(value.model === undefined ? {} : { model: value.model }),
 		...(value.thinking === undefined ? {} : { thinking: value.thinking }),
 		...(requestedModel === undefined ? {} : { requestedModel }),
@@ -810,13 +655,9 @@ function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecor
 						...(value.metrics.tokenCount === undefined ? {} : { tokenCount: value.metrics.tokenCount }),
 					},
 				}),
-		output: toolOutputRef(output(value.output), launches.toolOutputs.get(value.ref.taskId)),
+		output: output(value.output),
 	};
 	return timedRecord(task, launches);
-}
-/** A tool task's output reference with what it has printed so far; any other task's as native reports it. */
-function toolOutputRef(ref: C.OutputRef, printed: ToolTaskOutput | undefined): C.OutputRef {
-	return printed === undefined ? ref : { ...ref, byteCount: String(printed.byteCount) };
 }
 function snapshot(value: native.OwnerSnapshot, launches: LaunchMetadata): C.OwnerSnapshot {
 	if (value.state !== "open" && value.state !== "closing" && value.state !== "closed")
@@ -1246,7 +1087,6 @@ export class TaskSupervisor {
 						requestedModels: new Map(),
 						launchHeartbeats: new Map(),
 						executionTimeouts: new Map(),
-						toolOutputs: new Map(),
 						releases: new Map(),
 						launchers: new Map(),
 						launchedAt: new Map(),
@@ -1339,7 +1179,6 @@ export class TaskSupervisor {
 		if (state.launches.launchHeartbeats.get(operation)?.taskId === taskId)
 			state.launches.launchHeartbeats.delete(operation);
 		state.launches.executionTimeouts.delete(taskId);
-		state.launches.toolOutputs.delete(taskId);
 		state.launches.releases.delete(taskId);
 		state.launches.launchers.delete(operation);
 		state.launches.launchedAt.delete(operation);
@@ -1664,8 +1503,6 @@ export class TaskSupervisor {
 		return explainEviction(written, stdin.taskId);
 	}
 	async readTaskOutput(task: TaskLease, range: C.OutputRange): Promise<C.Result<C.OutputPage, C.OutputError>> {
-		const toolOutput = this.#task(task).toolOutput;
-		if (toolOutput !== undefined) return toolOutput.page(range);
 		const read = mapped(
 			await this.#native.readTaskOutput(this.#task(task).native, range),
 			(page) => ({
@@ -1686,42 +1523,7 @@ export class TaskSupervisor {
 	): Promise<C.Result<TaskLease, C.StartFailure>> {
 		const state = this.#owner(owner);
 		state.host.binding.authorizeLaunch(intent);
-		const { heartbeatMs, requestedModel: _requestedModel, ...nativeIntent } = intent;
-		return this.#startInProcessTask(state, intent, nativeIntent, operation, heartbeatMs, schedule);
-	}
-	/**
-	 * Admit a tool call's in-process work as a task of `owner`, observed like a shell command: it runs `runner` in this
-	 * process, its output is what the runner appends, and it settles with the runner's result.
-	 */
-	async startToolTask(
-		owner: OwnerLease,
-		intent: C.ToolIntent,
-		operation: C.OperationId,
-		schedule?: (dispatch: () => Promise<void>) => void,
-	): Promise<C.Result<TaskLease, C.StartFailure>> {
-		const state = this.#owner(owner);
-		state.host.binding.authorizeToolLaunch?.(intent);
-		// The native record names the tool where an agent's names the agent, and is titled with the task's label.
-		const nativeIntent: native.AgentIntent = {
-			kind: "tool",
-			agent: intent.tool,
-			task: intent.label,
-			description: intent.label,
-			...(intent.cwd === undefined ? {} : { cwd: intent.cwd }),
-			...(intent.parentTaskId === undefined ? {} : { parentTaskId: intent.parentTaskId }),
-		};
-		if (intent.launchedBy !== undefined && !state.closing.signal.aborted)
-			state.launches.launchers.set(operation, intent.launchedBy);
-		return this.#startInProcessTask(state, intent, nativeIntent, operation, intent.heartbeatMs, schedule);
-	}
-	async #startInProcessTask(
-		state: OwnerState,
-		intent: C.AgentIntent | C.ToolIntent,
-		nativeIntent: native.AgentIntent,
-		operation: C.OperationId,
-		heartbeatMs: number | undefined,
-		schedule?: (dispatch: () => Promise<void>) => void,
-	): Promise<C.Result<TaskLease, C.StartFailure>> {
+		const { heartbeatMs, ...nativeIntent } = intent;
 		const cadence = heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.();
 		const admitted = mapped(
 			this.#native.startAgentTask(state.native, nativeIntent, operation),
@@ -1735,14 +1537,7 @@ export class TaskSupervisor {
 		const existing = state.tasks.get(id);
 		if (existing) return { ok: true, value: existing };
 		claimLaunchHeartbeat(state.launches, operation, id, cadence);
-		if (intent.kind === "agent" && intent.requestedModel)
-			state.launches.requestedModels.set(id, intent.requestedModel);
-		if (intent.kind === "tool") {
-			state.launches.launchedAt.set(operation, Date.now());
-			// Named on its record so a notice of the timeout that stopped it says after how long.
-			if (intent.executionTimeoutMs !== undefined)
-				state.launches.executionTimeouts.set(id, intent.executionTimeoutMs);
-		}
+		if (intent.requestedModel) state.launches.requestedModels.set(id, intent.requestedModel);
 		const task = new TaskCapability();
 		Object.freeze(task);
 		const taskState: TaskState = {
@@ -1753,9 +1548,7 @@ export class TaskSupervisor {
 			controller: new AbortController(),
 			statuses: new Map(),
 			statusListeners: new Set(),
-			...(intent.kind === "tool" ? { kind: "tool" as const, toolOutput: new ToolTaskOutput() } : {}),
 		};
-		if (taskState.toolOutput !== undefined) state.launches.toolOutputs.set(id, taskState.toolOutput);
 		this.#tasks.set(task, taskState);
 		state.tasks.set(id, task);
 		const dispatch = AsyncResource.bind(async () => {
@@ -1764,26 +1557,21 @@ export class TaskSupervisor {
 			if (!runner.ok) throw new Error(`${runner.error.code}: ${runner.error.message}`);
 			let execution: FakeExecution;
 			try {
-				const runnerContext: FakeRunnerContext = {
-					ref: reference(taskState.ref),
-					signal: taskState.controller.signal,
-					bindTranscript: (session) => {
-						taskState.inherited ??= { throughId: session.getEntries().at(-1)?.id ?? null };
-						taskState.transcript = session;
+				execution = state.host.binding.createRunner(
+					{
+						ref: reference(taskState.ref),
+						signal: taskState.controller.signal,
+						bindTranscript: (session) => {
+							taskState.inherited ??= { throughId: session.getEntries().at(-1)?.id ?? null };
+							taskState.transcript = session;
+						},
+						reportActivity: (report) =>
+							mapped(this.#native.reportTaskActivity(runner.value, report), reportReceipt, reportErrors),
+						setExtensionStatus: (statusKey, text) => setTaskStatus(taskState, statusKey, text),
+						clearExtensionStatuses: () => clearTaskStatuses(taskState),
 					},
-					reportActivity: (report) =>
-						mapped(this.#native.reportTaskActivity(runner.value, report), reportReceipt, reportErrors),
-					setExtensionStatus: (statusKey, text) => setTaskStatus(taskState, statusKey, text),
-					clearExtensionStatuses: () => clearTaskStatuses(taskState),
-					...(taskState.toolOutput === undefined
-						? {}
-						: { appendOutput: (bytes: Uint8Array) => taskState.toolOutput?.append(bytes) }),
-				};
-				if (intent.kind === "tool") {
-					const createToolRunner = state.host.binding.createToolRunner;
-					if (createToolRunner === undefined) throw new Error("This task owner cannot run tool tasks");
-					execution = createToolRunner.call(state.host.binding, runnerContext, intent);
-				} else execution = state.host.binding.createRunner(runnerContext, intent);
+					intent,
+				);
 			} catch (error) {
 				const message = rejectionMessage(error);
 				execution = {
@@ -1801,8 +1589,6 @@ export class TaskSupervisor {
 			const outcome = execution.result
 				.catch((error) => ({ kind: "failed" as const, code: "RunnerFailed", message: rejectionMessage(error) }))
 				.then((result) => {
-					// The outcome settles the task: what it printed is what its notice and reads report, whatever writes later.
-					taskState.toolOutput?.seal();
 					// The native outcome has no release: the host keeps it, and reads it back with the result (#5031).
 					if (result.kind === "cancelled" && result.released !== undefined) {
 						const { released, ...native } = result;
@@ -1836,8 +1622,6 @@ export class TaskSupervisor {
 				});
 				// The task ended: nothing of its session's presentation outlives it.
 				clearTaskStatuses(taskState);
-				// A stop settles it at this acknowledgement, without an outcome: its output is final from here too.
-				taskState.toolOutput?.seal();
 				const acknowledged = mapped(
 					this.#native.acknowledgeTaskCleanup(runner.value, evidence),
 					(cleanup) => cleanup,
@@ -1889,7 +1673,7 @@ export class TaskSupervisor {
 		const registered = mapped(
 			this.#native.waitForTask(
 				this.#task(task).native,
-				this.#agentBudget(this.#task(task).owner, budgetMs, observedLikeShell(this.#task(task))),
+				this.#agentBudget(this.#task(task).owner, budgetMs, this.#task(task).kind === "command"),
 				designation ? this.#host(designation).native : undefined,
 			),
 			(lease) => this.#register(lease, this.#task(task).owner.launches),
@@ -1929,7 +1713,7 @@ export class TaskSupervisor {
 				this.#agentBudget(
 					this.#owner(owner),
 					budgetMs,
-					known !== undefined && observedLikeShell(this.#task(known)),
+					known !== undefined && this.#task(known).kind === "command",
 				),
 			),
 			(lease) => this.#register(lease, this.#owner(owner).launches),
@@ -1965,12 +1749,12 @@ export class TaskSupervisor {
 		onRegistered?: (wait: WaitLease) => void,
 	): Promise<C.Result<C.WaitOutcome, C.WaitError>> {
 		const state = this.#task(task);
-		policy ??= observedLikeShell(state) ? { kind: "foreground" } : undefined;
+		policy ??= state.kind === "command" ? { kind: "foreground" } : undefined;
 		const registered = mapped(
 			this.#native.waitForTask(
 				state.native,
 				policy?.kind === "foreground"
-					? this.#agentBudget(state.owner, policy.budgetMs, observedLikeShell(state))
+					? this.#agentBudget(state.owner, policy.budgetMs, state.kind === "command")
 					: undefined,
 				state.owner.host.native,
 			),

@@ -799,17 +799,13 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 }
 
-/**
- * The retained tail of a shell task's output on the shared viewport, or, for a tool call's background work (`tool`
- * names it, such as `search`), the start of its output: a search's results read from the top.
- */
+/** The retained tail of a shell task's output on the shared viewport. */
 export class TaskCommandOutputPage implements TaskTranscriptPage {
 	static readonly TAIL_BYTES = 8192;
 	status = "Loading output…";
 	private readonly source: TaskViewSource;
 	private readonly taskId: TaskId;
 	private readonly byteCount: () => bigint;
-	private readonly tool: string | undefined;
 	private readonly requestRender: () => void;
 	private readonly viewport: ScrollableComponentViewport;
 	private output = new Text("", 0, 0);
@@ -823,12 +819,10 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 		byteCount: () => bigint,
 		env: Pick<TaskTranscriptEnvironment, "keybindings" | "getChatRenderSettings"> | undefined,
 		requestRender: () => void,
-		tool?: string,
 	) {
 		this.source = source;
 		this.taskId = taskId;
 		this.byteCount = byteCount;
-		this.tool = tool;
 		this.requestRender = requestRender;
 		this.viewport = new ScrollableComponentViewport(env?.keybindings, {
 			wheelScrollLines: () => env?.getChatRenderSettings?.()?.fullscreenWheelScrollLines,
@@ -845,8 +839,7 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 			return;
 		}
 		this.loading = true;
-		const tool = this.tool;
-		const count = tool === undefined ? this.byteCount() : 0n;
+		const count = this.byteCount();
 		const tail = BigInt(TaskCommandOutputPage.TAIL_BYTES);
 		try {
 			const page = await this.source.readTaskOutput(this.taskId, {
@@ -857,14 +850,7 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 			const text = page.ok ? page.value.text : page.error.message;
 			this.output = new Text(text.split("\n").map(taskDisplayText).join("\n") || "No output available", 0, 0);
 			this.viewport.setComponents([this.output]);
-			this.status =
-				tool !== undefined
-					? page.ok && page.value.more === true
-						? `Showing the first 8 KiB of the ${taskDisplayText(tool)} output · read all of it with ${taskDisplayText(tool)} action wait`
-						: `Retained ${taskDisplayText(tool)} output`
-					: count > tail
-						? "Earlier output omitted · showing retained 8 KiB tail"
-						: "Retained shell output";
+			this.status = count > tail ? "Earlier output omitted · showing retained 8 KiB tail" : "Retained shell output";
 		} catch (error) {
 			if (!this.disposed) this.status = error instanceof Error ? error.message : String(error);
 		} finally {
@@ -904,15 +890,7 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 	}
 
 	async interrupt(): Promise<TaskViewResult<undefined>> {
-		return {
-			ok: false,
-			error: {
-				message:
-					this.tool === undefined
-						? "A shell's output has no turn to interrupt."
-						: `A ${taskDisplayText(this.tool)}'s output has no turn to interrupt; stop it from the task list instead.`,
-			},
-		};
+		return { ok: false, error: { message: "A shell's output has no turn to interrupt." } };
 	}
 
 	render(width: number, rows: number): string[] {

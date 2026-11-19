@@ -16,9 +16,7 @@ import {
 } from "./supervisor.js";
 
 export type AgentTaskRunnerFactory = (context: FakeRunnerContext, intent: C.AgentIntent) => FakeExecution;
-/** Runs a tool call's in-process work as a task: the runner appends its output and settles with its result. */
-export type ToolTaskRunnerFactory = (context: FakeRunnerContext, intent: C.ToolIntent) => FakeExecution;
-export type AgentTaskHostBinding = Omit<TrustedTaskHost, "createRunner" | "createToolRunner"> & {
+export type AgentTaskHostBinding = Omit<TrustedTaskHost, "createRunner"> & {
 	/** The owner's chat for periodic task heartbeats; omitted, the owner's tasks never heartbeat. */
 	heartbeat?: TaskHeartbeatDelivery;
 };
@@ -30,7 +28,7 @@ export type AgentTaskHostBinding = Omit<TrustedTaskHost, "createRunner" | "creat
  * it closes over, only until the dispatch takes it.
  */
 interface RunnerHandoff {
-	factory: ((context: FakeRunnerContext, intent: C.AgentIntent | C.ToolIntent) => FakeExecution) | undefined;
+	factory: AgentTaskRunnerFactory | undefined;
 }
 
 // S1 converges repeated live-scope bindings on one owner, so dispatch context is shared too.
@@ -58,18 +56,8 @@ export class AgentTaskHost {
 		this.watchHeartbeats();
 	}
 	/** Internal projection binding; never serialize these native-backed capabilities. */
-	get ownerBinding(): {
-		supervisor: TaskSupervisor;
-		owner: OwnerLease;
-		waitForTask: AgentTaskHost["waitForTask"];
-		startToolTask: AgentTaskHost["startToolTask"];
-	} {
-		return {
-			supervisor: this.supervisor,
-			owner: this.owner,
-			waitForTask: this.waitForTask.bind(this),
-			startToolTask: this.startToolTask.bind(this),
-		};
+	get ownerBinding(): { supervisor: TaskSupervisor; owner: OwnerLease; waitForTask: AgentTaskHost["waitForTask"] } {
+		return { supervisor: this.supervisor, owner: this.owner, waitForTask: this.waitForTask.bind(this) };
 	}
 
 	constructor(binding: AgentTaskHostBinding) {
@@ -87,10 +75,6 @@ export class AgentTaskHost {
 				this.authorizeTaskLaunch();
 				this.binding.authorizeCommandLaunch?.(intent, origin);
 			},
-			authorizeToolLaunch: (intent) => {
-				this.authorizeTaskLaunch();
-				this.binding.authorizeToolLaunch?.(intent);
-			},
 			onTaskSettled: (ref, receipt, timing) => this.binding.onTaskSettled?.(ref, receipt, timing),
 			onTaskCleanupQuarantined: (ref, resources) => this.binding.onTaskCleanupQuarantined?.(ref, resources),
 			defaultHeartbeatMs: () =>
@@ -99,13 +83,6 @@ export class AgentTaskHost {
 				const handoff = runners.getStore();
 				const runner = handoff?.factory;
 				if (!handoff || !runner) throw new Error("Agent runner factory missing from launch context");
-				handoff.factory = undefined;
-				return runner(context, intent);
-			},
-			createToolRunner: (context, intent) => {
-				const handoff = runners.getStore();
-				const runner = handoff?.factory;
-				if (!handoff || !runner) throw new Error("Tool runner factory missing from launch context");
 				handoff.factory = undefined;
 				return runner(context, intent);
 			},
@@ -132,39 +109,11 @@ export class AgentTaskHost {
 		runner: AgentTaskRunnerFactory,
 		schedule?: (dispatch: () => Promise<void>) => void,
 	): Promise<C.Result<{ taskId: C.TaskId; lease: TaskLease }, C.StartFailure>> {
-		const factory: RunnerHandoff["factory"] = (context, launched) => {
-			if (launched.kind !== "agent") throw new Error("An agent runner cannot run a tool task");
-			return runner(context, launched);
-		};
-		const started = await runners.run({ factory }, () =>
+		const started = await runners.run({ factory: runner }, () =>
 			this.supervisor.startAgentTask(this.owner, intent, operation, schedule),
 		);
 		if (started.ok)
 			trackAdmittedAgentTask({ host: this, taskId: this.supervisor.taskReference(started.value).taskId });
-		return started.ok
-			? {
-					ok: true as const,
-					value: { taskId: this.supervisor.taskReference(started.value).taskId, lease: started.value },
-				}
-			: started;
-	}
-	/**
-	 * Run a tool call's in-process work as a task of this owner, observed like a shell command (#history search). Its
-	 * runner appends output with `context.appendOutput` and settles with its result; cancelling the task aborts
-	 * `context.signal`.
-	 */
-	async startToolTask(
-		intent: C.ToolIntent,
-		operation: C.OperationId,
-		runner: ToolTaskRunnerFactory,
-	): Promise<C.Result<{ taskId: C.TaskId; lease: TaskLease }, C.StartFailure>> {
-		const factory: RunnerHandoff["factory"] = (context, launched) => {
-			if (launched.kind !== "tool") throw new Error("A tool runner cannot run an agent task");
-			return runner(context, launched);
-		};
-		const started = await runners.run({ factory }, () =>
-			this.supervisor.startToolTask(this.owner, intent, operation),
-		);
 		return started.ok
 			? {
 					ok: true as const,

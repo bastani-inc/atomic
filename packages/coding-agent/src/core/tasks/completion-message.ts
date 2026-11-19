@@ -1,11 +1,6 @@
 import type { AgentTaskHost } from "./agent-adapter.js";
 import type { TaskCompletionMessage } from "./child-command-owner.js";
-import {
-	COMMAND_DETAIL_TAIL_BYTES,
-	type OmissionSpan,
-	readTaskOutputTail,
-	taskOutputHeadText,
-} from "./command-output.js";
+import { COMMAND_DETAIL_TAIL_BYTES, type OmissionSpan, readTaskOutputTail } from "./command-output.js";
 import {
 	formatTaskCompletion,
 	TASK_COMPLETION_MESSAGE_TYPE,
@@ -44,27 +39,6 @@ export async function commandOutputExcerpt(
 		// A missing output never drops the notice.
 	}
 	return { text: COMMAND_OUTPUT_UNAVAILABLE, omissions: [] };
-}
-
-/** Most of a tool task's output its completion notice quotes, from its start: a search's results read top-down. */
-export const TOOL_NOTICE_HEAD_BYTES = 8192;
-
-/**
- * The start of a `tool` task's output for its completion notice: its first results, and a note when more follows. All
- * of it stays readable through the tool's `action: "wait"` and `/tasks`.
- */
-export async function toolOutputExcerpt(host: AgentTaskHost, lease: TaskLease): Promise<string> {
-	try {
-		const page = await host.ownerBinding.supervisor.readTaskOutput(lease, {
-			start: "0",
-			maximumBytes: TOOL_NOTICE_HEAD_BYTES,
-		});
-		if (!page.ok) return COMMAND_OUTPUT_UNAVAILABLE;
-		const text = taskOutputHeadText(page.value);
-		return page.value.nextOffset === undefined ? text : `${text}\n[Later output omitted]`;
-	} catch {
-		return COMMAND_OUTPUT_UNAVAILABLE;
-	}
 }
 
 /** The model-facing completion notice of a settled task, with its structured envelope in the details. */

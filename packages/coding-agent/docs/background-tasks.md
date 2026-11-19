@@ -32,9 +32,9 @@ Below the main chat's prompt, the **agent panel** lists the session's active bac
 - **Finished subagents** leave the panel as soon as they finish; `/tasks` still lists them. A stopped, paused or interrupted subagent, and a workflow run that is paused or blocked on a failed stage, stays while another subagent, workflow run or background shell is still running, and leaves once nothing is running. Switching chats or starting unrelated work does not bring it back. If it resumes and stops again while other work is running, it reappears as one row, even if the panel was closed during the resume. `/tasks` and `/workflows` still list a paused run. A stopped row, and a finished workflow run, read dim after 30 seconds. A finished workflow run stays until you have opened it. Narrow terminals drop the token count and the stage bar.
 - **Up to four rows** show while the prompt has focus, then `+N more`; the focused panel shows eight at a time. The main row does not count toward either.
 
-The main footer shows `↓ N agents` for the subagent rows the panel lists. Workflow runs are not agents: a panel that lists only workflow runs shows no `↓` count, though **↓** still focuses it. `N needs input` counts every row that waits for an answer, workflow runs included. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but `/tasks` lists subagents of this chat, the footer shows `/tasks to see subagents`; while background shells or searches run, `N shells · N searches · /tasks to manage` takes its place. If a paused or blocked workflow run has left the panel, `/workflows to see runs` points to it until it runs again or is gone. This extra hint appears only when there is room beside the status and the other hints. You can still type `/workflows` when the hint is hidden.
+The main footer shows `↓ N agents` for the subagent rows the panel lists. Workflow runs are not agents: a panel that lists only workflow runs shows no `↓` count, though **↓** still focuses it. `N needs input` counts every row that waits for an answer, workflow runs included. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but `/tasks` lists subagents of this chat, the footer shows `/tasks to see subagents`; while background shells run, `N shells · /tasks to manage` takes its place. If a paused or blocked workflow run has left the panel, `/workflows to see runs` points to it until it runs again or is gone. This extra hint appears only when there is room beside the status and the other hints. You can still type `/workflows` when the hint is hidden.
 
-Background shells are not panel rows. The footer counts the running ones, for example `2 shells`; with no rows in the panel it adds `/tasks to manage`. Open, read and stop shells in [`/tasks`](#open-the-task-inspector). Background searches are not rows either: the footer counts them on their own, for example `1 search`, and unlike a shell a running search does not keep stopped subagents in the panel.
+Background shells are not panel rows. The footer counts the running ones, for example `2 shells`; with no rows in the panel it adds `/tasks to manage`. Open, read and stop shells in [`/tasks`](#open-the-task-inspector).
 
 Press **↓** on an empty prompt to focus the panel. It then works like every list:
 
@@ -49,7 +49,7 @@ In fullscreen mode you can also click a row, focused or not, to open it as Enter
 
 Going back from what you opened returns to the main chat with the panel focused on the same row. The subagent chat's hint reads `← main chat`; press **←** on its empty prompt. A workflow graph uses **Esc** to return.
 
-A workflow stage chat or a subagent's chat lists its own active subagents below its prompt in the same row format, and counts its running shells and searches on the line under them, for example `2 shells · 1 search`, adding `/tasks to manage` when it has no subagent rows. Attached subagent chats identify the sender with `› from main` and echo the initial prompt. Their composer's top rule, in the accent colour, names the recipient, task and state. Stage chats use `stage · <name>` labels. **?** on an empty prompt shows the chat's live keys. **Esc** interrupts without navigating away, also while the agent waits to retry a failed request (`retrying…`): the retry is cancelled, as in the main chat.
+A workflow stage chat or a subagent's chat lists its own active subagents below its prompt in the same row format, and counts its running shells on the line under them, for example `2 shells`, adding `/tasks to manage` when it has no subagent rows. Attached subagent chats identify the sender with `› from main` and echo the initial prompt. Their composer's top rule, in the accent colour, names the recipient, task and state. Stage chats use `stage · <name>` labels. **?** on an empty prompt shows the chat's live keys. **Esc** interrupts without navigating away, also while the agent waits to retry a failed request (`retrying…`): the retry is cancelled, as in the main chat.
 
 If the panel warns that an extension source failed, its invalid rows are hidden while the other rows and chat remain usable. A source that cannot list its rows is hidden entirely. The warning appears once per source, including during startup. Fix or update the extension, then use `/reload` to register it again; new rows continue updating without reopening the panel. If a reload closes the focused panel, press ↓ on the empty prompt to open it again. A failed stop or answer reports the source's error without closing the chat.
 
@@ -195,10 +195,10 @@ Completion notices are unshaded. Long titles shorten to fit one terminal row, an
 
 ## Task heartbeats
 
-A shell, background search or subagent that keeps running sends its chat a **task heartbeat** every 15 minutes by default, the same cadence as [workflow heartbeats](/workflows/api-reference#heartbeatintervalminutes). It is a periodic check, not a failure signal. The model sees how long each task has run and how recently it produced output or reported activity, then decides whether it is still making progress:
+A shell or subagent that keeps running sends its chat a **task heartbeat** every 15 minutes by default, the same cadence as [workflow heartbeats](/workflows/api-reference#heartbeatintervalminutes). It is a periodic check, not a failure signal. The model sees how long each task has run and how recently it produced output or reported activity, then decides whether it is still making progress:
 
 - If it is progressing, the model lets it run.
-- If it looks runaway, stale or stuck, the model inspects it (`/tasks`, or a shell, search or subagent `wait` on its task ID), steers it (an Intercom message to a subagent, or pausing it and resuming it with a message), or stops it (`kill({ id })` for a shell or search, `subagent({ action: "quit", id })` for a subagent).
+- If it looks runaway, stale or stuck, the model inspects it (`/tasks`, or a shell or subagent `wait` on its task ID), steers it (an Intercom message to a subagent, or pausing it and resuming it with a message), or stops it (`kill({ id })` for a shell, `subagent({ action: "quit", id })` for a subagent).
 - It does not relaunch a task that is still running.
 
 A heartbeat never stops, restarts or relaunches a task by itself. In chat it is a notice that lists each task, up to five, and counts the rest; expand it (Ctrl+O) for each task's status line and output:
@@ -304,10 +304,6 @@ Shell details show the command, available exit information, and a bounded output
 
 Completed, failed, and stopped tasks retain inspection but do not offer execution controls.
 
-## Background searches
-
-A `search` of `history://` computes its first page in the foreground. If the page offers a seekable session-entry continuation and the native owner is available, the continuation is observed like a shell command: after the automatic observation budget it goes on as a background task, listed under **Searches** in `/tasks` and counted in the footer as `1 search`, with heartbeats, one completion notice, `search({ action: "wait", id })` and `kill({ id })`. It runs in Atomic's own process, so it has no process ID, input or terminal. See [Searching history in the background](/sessions#searching-history-in-the-background).
-
 ## Background shells
 
 Model `bash` calls on POSIX and native Windows, and `powershell` calls on native Windows, use the session's task owner. Subagent shells use their parent's owner; see [Shells started by subagents](#shells-started-by-subagents). A long command can outlive its foreground observation budget and return a task ID while continuing to run. Its status then appears below the prompt and under **Shells** in `/tasks`. An explicit execution timeout still ends the command; it is separate from observation yielding.
@@ -346,7 +342,7 @@ Do not combine `action: "wait"` with `command`, `timeout`, `wait`, `env`, `cwd`,
 
 ### Stop a shell task from a tool call
 
-Use the `kill` tool with the exact task ID returned by `bash`, `powershell` or a `history://` `search`, whether it launched explicitly in the background or automatically yielded:
+Use the `kill` tool with the exact task ID returned by `bash` or `powershell`, whether it launched explicitly in the background or automatically yielded:
 
 ```ts
 kill({ id: taskId })

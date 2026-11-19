@@ -23,7 +23,6 @@ import {
 	taskClocksFor,
 } from "../../../core/tasks/live-elapsed.js";
 import { backgroundTaskScope } from "../../../core/tasks/session-scope.js";
-import { pluralNoun, toolTaskNoun } from "../../../core/tasks/task-kind.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_IDLE_ROWS, AgentPanelModel, renderAgentPanelRows } from "./agent-panel.ts";
@@ -78,23 +77,10 @@ export function taskListSections(
 		return (launchOrder.get(b.ref.taskId) ?? 0) - (launchOrder.get(a.ref.taskId) ?? 0);
 	};
 	const ordered = [...tasks].sort((a, b) => statusRank(a) - statusRank(b) || newerFirst(a, b));
-	const sections: TaskListSection[] = [];
-	const agents = ordered.filter((task) => task.kind === "agent");
-	if (agents.length) sections.push({ title: "Agents", tasks: agents });
-	const shells = ordered.filter((task) => task.kind === "command");
-	if (shells.length) sections.push({ title: "Shells", tasks: shells });
-	// A tool call's background work is listed beside the shells, one section per tool: `Searches`.
-	const tools = new Map<string, TaskRecord[]>();
-	for (const task of ordered) {
-		if (task.kind !== "tool") continue;
-		const noun = toolTaskNoun(task);
-		tools.set(noun, [...(tools.get(noun) ?? []), task]);
-	}
-	for (const [noun, selected] of tools) {
-		const plural = pluralNoun(noun);
-		sections.push({ title: plural.charAt(0).toUpperCase() + plural.slice(1), tasks: selected });
-	}
-	return sections;
+	return (["agent", "command"] as const).flatMap((kind) => {
+		const selected = ordered.filter((task) => task.kind === kind);
+		return selected.length ? [{ title: kind === "agent" ? "Agents" : "Shells", tasks: selected }] : [];
+	});
 }
 /**
  * Terminal results remain inspectable but no longer advertise active work. A subagent released while it waits is not
@@ -133,7 +119,6 @@ export function renderTaskFooter(
 		if (owner) footerRetired.set(owner, memory);
 	}
 	let shells = 0;
-	let searches = 0;
 	const candidates: TaskRecord[] = [];
 	const superseded = supersededSettledAttempts(tasks);
 	for (let index = tasks.length - 1; index >= 0; index--) {
@@ -141,10 +126,7 @@ export function renderTaskFooter(
 		if (superseded.has(task.ref.taskId)) continue;
 		const role = taskPanelRole(task);
 		if (role !== "agent") {
-			if (isActiveBackgroundTask(task)) {
-				if (role === "shell") shells++;
-				else searches++;
-			}
+			if (role === "shell" && isActiveBackgroundTask(task)) shells++;
 			continue;
 		}
 		if (task.observation.kind === "background" || task.wasBackground === true) candidates.push(task);
@@ -169,10 +151,9 @@ export function renderTaskFooter(
 	const listed = [...input, ...running, ...other, ...finished];
 	const total = listed.length;
 	// The chat's own key hint already offers ↓ to its task list, so this line never adds the subagents pointer.
-	const hint = panelHintSegments(
-		panelHintParts({ total, agents: 0, needsInput: 0 }, { shells, searches }, 0, true),
-		"",
-	).map((segment) => (segment.kind === "tasks" ? slashCommandHint(segment.text) : segment.text));
+	const hint = panelHintSegments(panelHintParts({ total, agents: 0, needsInput: 0 }, shells, 0, true), "").map(
+		(segment) => (segment.kind === "tasks" ? slashCommandHint(segment.text) : segment.text),
+	);
 	const shellLine =
 		hint.length === 0
 			? []

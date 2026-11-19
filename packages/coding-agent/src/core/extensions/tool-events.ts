@@ -202,7 +202,6 @@ export function isLsToolResult(e: ToolResultEvent): e is LsToolResultEvent {
  *
  * Note: Direct narrowing via `event.toolName === "bash"` doesn't work because
  * CustomToolCallEvent.toolName is `string` which overlaps with all literals.
- * For `search`, this narrows pattern-bearing calls; a wait only observes an existing task.
  */
 export function isToolCallEventType(toolName: "bash", event: ToolCallEvent): event is BashToolCallEvent;
 export function isToolCallEventType(toolName: "powershell", event: ToolCallEvent): event is PowerShellToolCallEvent;
@@ -217,8 +216,5 @@ export function isToolCallEventType<TName extends string, TInput extends Record<
 	event: ToolCallEvent,
 ): event is ToolCallEvent & { toolName: TName; input: TInput };
 export function isToolCallEventType(toolName: string, event: ToolCallEvent): boolean {
-	return (
-		event.toolName === toolName &&
-		(toolName !== "search" || ("pattern" in event.input && typeof event.input.pattern === "string"))
-	);
+	return event.toolName === toolName;
 }

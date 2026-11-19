@@ -286,8 +286,6 @@ export function createChildCommandTaskOwner(
 						waits.track(supervisor, wait);
 						onRegistered?.(wait);
 					}),
-				// A subagent's background searches run in its parent's owner, named for the subagent like its shells.
-				startToolTask: (intent, operation, runner) => host.startToolTask(intent, operation, runner),
 			};
 		},
 	};
