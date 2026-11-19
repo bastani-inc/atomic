@@ -72,20 +72,25 @@ export function copiesOutputToLog(platform: NodeJS.Platform): boolean {
 }
 
 /**
- * How many times, and how far apart, a process Windows refuses to start for a moment is tried: about two seconds in
- * all. Windows refuses with EPERM while no one may execute the file and with EBUSY while another program holds it open
- * for writing, as an antivirus scan or the installer that just wrote it can. A refused process was never created, so
- * trying again cannot run a step twice.
+ * How many times, and how far apart, a process the system refuses to start for a moment is tried: about two seconds in
+ * all. A refused process was never created, so trying again cannot run a step twice.
  */
 const SPAWN_TRIES = 40;
 const SPAWN_RETRY_MS = 50;
-const PASSING_SPAWN_REFUSALS: ReadonlySet<string> = new Set(["EPERM", "EBUSY"]);
+
+/**
+ * The refusals that pass once another program lets go of the file, as an antivirus scan or the installer that just wrote
+ * it does. Windows refuses with EPERM while no one may execute the file and with EBUSY while a program holds it open for
+ * writing; Linux refuses with ETXTBSY while a program holds it open for writing.
+ */
+function passingRefusals(platform: NodeJS.Platform): readonly string[] {
+	return platform === "win32" ? ["EPERM", "EBUSY"] : ["ETXTBSY"];
+}
 
 /** Whether a start refused with `error` on try `tries`, `elapsedMs` into a step allowed `timeoutMs`, is tried again. */
 function triesStartAgain(error: unknown, tries: number, elapsedMs: number, timeoutMs: number): boolean {
 	return (
-		process.platform === "win32" &&
-		PASSING_SPAWN_REFUSALS.has((error as NodeJS.ErrnoException).code ?? "") &&
+		passingRefusals(process.platform).includes((error as NodeJS.ErrnoException).code ?? "") &&
 		tries < SPAWN_TRIES &&
 		elapsedMs + SPAWN_RETRY_MS < timeoutMs
 	);
@@ -113,9 +118,9 @@ function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
 /**
  * Runs `run` with its output appended to `log`, in its own process group (POSIX) so stopping it stops everything it
  * started. Resolves how it ended: exited, stopped by a signal, timed out after `timeoutMs`, or could not be started
- * (`spawnError`), including when the system refuses to start it at once. On Windows a refusal that passes by itself
- * (EPERM, EBUSY) is tried again for about two seconds first, within `timeoutMs`. Rejects with `signal.reason` when
- * `options.signal` aborts, since cancelling is not a failure.
+ * (`spawnError`), including when the system refuses to start it at once. A refusal that passes by itself (EPERM or
+ * EBUSY on Windows, ETXTBSY on Linux) is tried again for about two seconds first, within `timeoutMs`. Rejects with
+ * `signal.reason` when `options.signal` aborts, since cancelling is not a failure; nothing starts once it has.
  */
 export async function runLoggedProcess(
 	run: LoggedProcess,
@@ -128,6 +133,8 @@ export async function runLoggedProcess(
 	let started: ChildProcess;
 	for (let tries = 1; ; tries++) {
 		buildProcessStarting();
+		// Also cancelled while it waited to try again, or by what ran in between: then nothing may start.
+		options.signal?.throwIfAborted();
 		try {
 			started = spawn(run.command, [...run.args], {
 				cwd: run.cwd,
@@ -142,7 +149,7 @@ export async function runLoggedProcess(
 			});
 			break;
 		} catch (error) {
-			// spawn throws, rather than emitting "error", when the system refuses at once (EPERM, EBUSY, ENOTDIR): nothing started.
+			// spawn throws, rather than emitting "error", when the system refuses at once (EPERM, EBUSY, ETXTBSY, ENOTDIR).
 			const elapsedMs = Date.now() - startedAt;
 			if (!triesStartAgain(error, tries, elapsedMs, options.timeoutMs)) {
 				return { exitStatus: null, signal: null, timedOut: false, elapsedMs, spawnError: error as Error };
