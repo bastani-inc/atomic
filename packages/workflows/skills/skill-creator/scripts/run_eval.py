@@ -278,9 +278,12 @@ class _Command:
         return process
 
     def _launch_in_job(self, args, options):
-        # Suspended until it is in its job, so nothing it starts can escape the job.
+        # Until assignment the job cannot protect the suspended process itself. Windows ends a debuggee if
+        # its debugger thread dies: keep that protection from creation until the job takes over, then detach
+        # before running any of the command's code. No second process or inherited debug session is needed.
         windows = _windows()
-        flags = options.pop("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED
+        flags = (options.pop("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP
+                 | windows.CREATE_SUSPENDED | windows.DEBUG_ONLY_THIS_PROCESS)
         job = windows.new_job()
         try:
             process = subprocess.Popen(args, creationflags=flags, **options)
@@ -289,10 +292,14 @@ class _Command:
             raise
         try:
             windows.assign(job, process)
+            windows.detach(process)
         except BaseException:
-            process.kill()
-            process.wait()
-            windows.close(job)
+            try:
+                process.kill()  # Keep the launch guard until termination is requested, even if assignment failed.
+                windows.detach(process, required=False)
+                process.wait()
+            finally:
+                windows.close(job)
             raise
         self._job = job
         return process
@@ -514,6 +521,7 @@ class _WindowsJobs:
     """Kill-on-close job objects and console events, through the Windows API."""
 
     CREATE_SUSPENDED = 0x00000004
+    DEBUG_ONLY_THIS_PROCESS = 0x00000002
 
     def __init__(self):
         import ctypes
@@ -556,6 +564,8 @@ class _WindowsJobs:
         kernel32.SetInformationJobObject.restype = wintypes.BOOL
         kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
         kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.DebugActiveProcessStop.argtypes = [wintypes.DWORD]
+        kernel32.DebugActiveProcessStop.restype = wintypes.BOOL
         kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
         kernel32.TerminateJobObject.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -588,6 +598,10 @@ class _WindowsJobs:
 
     def assign(self, job, process):
         if not self._kernel32.AssignProcessToJobObject(job, int(process._handle)):
+            self._fail()
+
+    def detach(self, process, required=True):
+        if not self._kernel32.DebugActiveProcessStop(process.pid) and required:
             self._fail()
 
     def resume(self, process):

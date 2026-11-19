@@ -5,6 +5,7 @@ Scenarios:
   triggers   a query whose command uses the skill is counted as a trigger
   improve    the description improver returns the command's answer and ends what the command left running
   terminate  the evaluator is terminated outright (TerminateProcess) while its queries run
+  terminate-at-launch  the evaluator is terminated after Windows creates a command, before Popen returns
   break      Ctrl+Break to the evaluator's process group while its queries run
   ctrl-c     Ctrl+C in the evaluator's console while its queries run
   close      the evaluator's console is closed while its queries run
@@ -32,6 +33,8 @@ kernel32.OpenProcess.restype = wintypes.HANDLE
 kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
 kernel32.GetConsoleWindow.restype = wintypes.HWND
 kernel32.GenerateConsoleCtrlEvent.argtypes = [wintypes.DWORD, wintypes.DWORD]
 kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
@@ -141,7 +144,7 @@ def host(scenario, root):
 
 def scenario(name, root):
     root.mkdir(parents=True, exist_ok=True)
-    project = setup(root, ["first question", "second question"] if name not in ("triggers", "improve") else ["question"])
+    project = setup(root, ["question"] if name in ("triggers", "improve", "terminate-at-launch") else ["first question", "second question"])
     if name == "triggers":
         program = subprocess.run(evaluator(root), cwd=project, env=environment(root, "trigger"), capture_output=True, text=True, timeout=120)
         output = json.loads(program.stdout) if program.returncode == 0 else None
@@ -158,6 +161,34 @@ def scenario(name, root):
         program = subprocess.run(program_command(root, "scripts.improve_description", *args), cwd=project, env=env, capture_output=True, text=True, timeout=120)
         output = json.loads(program.stdout) if program.returncode == 0 else None
         return {"status": program.returncode, "description": output and output["description"], "stderr": program.stderr[-2000:], **leftovers(root, project)}
+    if name == "terminate-at-launch":
+        # Stop one real launch at the creation boundary instead of waiting for the command to run any code.
+        created = root / "created"
+        env = {**environment(root, "wait"), "FAKE_CLAUDE_PAUSE_AT_CREATE": str(created)}
+        program = subprocess.Popen(evaluator(root), cwd=project, env=env)
+        handle = None
+        try:
+            deadline = time.monotonic() + 30
+            while not created.exists():
+                if program.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError("no query command was created")
+                time.sleep(0.01)
+            pid = int(created.read_text())
+            handle = kernel32.OpenProcess(0x00100001, False, pid)  # SYNCHRONIZE | PROCESS_TERMINATE
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            program.kill()
+            program.wait(timeout=10)
+            return {"exited": kernel32.WaitForSingleObject(handle, 5000) == 0}
+        finally:
+            if program.poll() is None:
+                program.kill()
+                program.wait(timeout=10)
+            if handle:
+                if kernel32.WaitForSingleObject(handle, 0) == 258:  # WAIT_TIMEOUT: clean up even on the old code.
+                    kernel32.TerminateProcess(handle, 1)
+                    kernel32.WaitForSingleObject(handle, 5000)
+                kernel32.CloseHandle(handle)
     if name == "terminate":
         program = subprocess.Popen(evaluator(root), cwd=project, env=environment(root, "wait"))
         wait_for_fakes(root, 2)
@@ -183,9 +214,18 @@ def program(root, module, args):
 
     class FakeClaude(real):
         def __init__(self, command, *rest, **options):
-            if isinstance(command, list) and command[:1] == ["claude"]:
+            is_claude = isinstance(command, list) and command[:1] == ["claude"]
+            pause = os.environ.get("FAKE_CLAUDE_PAUSE_AT_CREATE") if is_claude else None
+            if pause:
+                command = [sys.executable, "-c", "import time; time.sleep(1)"]
+            elif is_claude:
                 command = [sys.executable, str(FAKE), *command[1:]]
             super().__init__(command, *rest, **options)
+            if pause:
+                partial = Path(pause).with_suffix(".tmp")
+                partial.write_text(str(self.pid))
+                partial.replace(pause)
+                time.sleep(30)  # An unscheduled launcher, not a simulated process or termination.
 
     subprocess.Popen = FakeClaude
     sys.argv = [module, *args]

@@ -432,6 +432,12 @@ describe.runIf(!posix && hasPython)("skill-creator description scripts on Window
 		assert.deepEqual(report.running, []);
 	});
 
+	test("terminating the evaluator during command creation does not strand a suspended process (#5625)", {
+		timeout: 200_000,
+	}, () => {
+		assert.equal(windowsScenario("terminate-at-launch").exited, true, "the command did not exit");
+	});
+
 	for (const event of ["break", "ctrl-c", "close"] as const) {
 		const what = { break: "Ctrl+Break", "ctrl-c": "Ctrl+C", close: "closing the console" }[event];
 		test(`${what} stops every query command and its children and removes the command files (#5625)`, {
