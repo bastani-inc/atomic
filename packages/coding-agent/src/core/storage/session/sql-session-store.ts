@@ -15,6 +15,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { tryCleanupForkStaging } from "./fork-staging-maintenance.js";
 import { nativeForkReader, registerForkScope } from "./fork-store-scope.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import {
@@ -609,7 +610,7 @@ export class SqlSessionStore implements SessionStore {
 		const staging = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, options.prefix).forkStaging;
 		const stagingProbe = dialectOf(database).tableExists(staging);
 		const staged =
-			database.readOnly === true
+			database.readOnly === true || !database.tryMaintenance
 				? Promise.resolve(false)
 				: database.get(stagingProbe.sql, ...stagingProbe.params).then(
 						(row) => row !== undefined,
@@ -638,8 +639,7 @@ export class SqlSessionStore implements SessionStore {
 	 */
 	private async cleanupForkStaging(): Promise<void> {
 		try {
-			const { cleanupForkStaging, FORK_STAGING_OPEN_CLEANUPS } = await import("./fork-staging.js");
-			await cleanupForkStaging(this.database, this.dialect, this.forkStagingTable, FORK_STAGING_OPEN_CLEANUPS);
+			await tryCleanupForkStaging(this.database, this.dialect, this.forkStagingTable);
 		} catch {}
 	}
 
@@ -817,8 +817,9 @@ export class SqlSessionStore implements SessionStore {
 	 */
 	async prepareForkStaging(): Promise<void> {
 		this.assertOpen();
-		const { ensureForkStagingTable } = await import("./fork-staging.js");
+		const { cleanupForkStaging, ensureForkStagingTable } = await import("./fork-staging.js");
 		await ensureForkStagingTable(this.database, this.dialect, this.forkStagingTable);
+		await cleanupForkStaging(this.database, this.dialect, this.forkStagingTable, Number.POSITIVE_INFINITY);
 	}
 
 	private forkStagingTarget(): import("./fork-staging.js").ForkStagingTarget {

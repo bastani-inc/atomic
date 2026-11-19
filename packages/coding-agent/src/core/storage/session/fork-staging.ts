@@ -6,6 +6,7 @@ import { SessionBlobError, StorageError } from "../errors.js";
 import { SessionExistsError } from "./errors.js";
 import { encodedForkRow } from "./fork-row-bytes.js";
 import { foldForkRow } from "./fork-row-index.js";
+import { FORK_STAGING_CLEANUP_ROWS, FORK_STAGING_LEASE_KIND as LEASE } from "./fork-staging-maintenance.js";
 import { foldSessionResume, type SessionResumeIndex } from "./session-resume.js";
 import { applySessionSummaryEntries, type SessionSummaryState } from "./session-summary.js";
 import type {
@@ -45,15 +46,10 @@ export const FORK_STAGING_READ_CACHE_BYTES = 8 * 1024 * 1024;
 /** What a staged row costs besides its text and bytes, for the batch's bound. */
 const STAGED_ROW_BYTES = 64;
 
-/** Rows one cleanup transaction removes, so it never holds the write lock for long. */
-export const FORK_STAGING_CLEANUP_ROWS = 32;
-/** Cleanup transactions a store's open spends on transfers whose lease lapsed (a process that stopped mid-copy). */
-export const FORK_STAGING_OPEN_CLEANUPS = 4;
-/** Cleanup transactions a staged clone spends on other lapsed transfers when it starts and when it ends. */
+/** Finishing a staged clone spends no more than this many housekeeping transactions on newly expired transfers. */
 export const FORK_STAGING_TRANSFER_CLEANUPS = 8;
 
 /** What a staged row holds; the lease row of each transfer comes first and goes last. */
-const LEASE = 0;
 const ENTRY = 1;
 const ENTRY_CHUNK = 2;
 const SEARCH_TEXT = 3;
@@ -518,7 +514,7 @@ async function stageAndPublish(
 			return wholeSourceFork(target, header, stream, source, true);
 		}
 	}
-	await cleanupForkStaging(database, dialect, table, FORK_STAGING_TRANSFER_CLEANUPS).catch(() => {});
+	await cleanupForkStaging(database, dialect, table, Number.POSITIVE_INFINITY).catch(() => {});
 	const transfer = randomId();
 	const token = randomId();
 	await destinationWrite(

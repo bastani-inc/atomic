@@ -17,10 +17,9 @@ import { completeSessionForkStream } from "../../packages/coding-agent/src/core/
 import {
 	ensureForkStagingTable,
 	FORK_STAGING_BATCH_BYTES,
-	FORK_STAGING_CLEANUP_ROWS,
-	FORK_STAGING_OPEN_CLEANUPS,
 	forkStagingLegacyCut,
 } from "../../packages/coding-agent/src/core/storage/session/fork-staging.js";
+import { FORK_STAGING_CLEANUP_ROWS } from "../../packages/coding-agent/src/core/storage/session/fork-staging-maintenance.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import {
 	SESSION_BLOB_CHUNK_BYTES,
@@ -790,9 +789,11 @@ for (const backend of storageBackends) {
 					assert.equal(await dest.readHeader("child"), undefined);
 					assert.deepEqual(await dest.snapshotBlobs.collectGarbage({ graceSeconds: 0 }), []);
 
-					// Its process stopped: the lease lapses, and the next open removes the rows.
+					// Its process stopped. Explicit migration reclaims the lapsed transfer on all backends.
 					await destDb.run(`UPDATE ${stagingTable(destPrefix)} SET size = 0 WHERE kind = 0`);
-					await (await SqlSessionStore.open(await scope.connect(), { prefix: destPrefix })).close();
+					const reopened = await SqlSessionStore.open(await scope.connect(), { prefix: destPrefix });
+					await reopened.prepareForkStaging();
+					await reopened.close();
 					assert.equal(await stagedRows(destDb, destPrefix), 0);
 
 					// Should it run again after all, it fails rather than publishing part of a child.
@@ -837,9 +838,11 @@ for (const backend of storageBackends) {
 					await (await SqlSessionStore.open(await target.connect(), { prefix: destPrefix })).close();
 					assert.equal(await stagedRows(destDb, destPrefix), staged);
 
-					// Once the lease lapsed, the next open removes them, and nothing of the child was ever published.
+					// Another clone reclaims the lapsed transfer on all backends; nothing of the killed child was published.
 					await destDb.run(`UPDATE ${stagingTable(destPrefix)} SET size = 0 WHERE kind = 0`);
-					await (await SqlSessionStore.open(await target.connect(), { prefix: destPrefix })).close();
+					await source.create(header("next"), []);
+					await stagedClone(source, "next", dest, header("later", "next"));
+					await dest.delete("later");
 					assert.equal(await stagedRows(destDb, destPrefix), 0);
 					assert.equal(await dest.readHeader("child"), undefined);
 					assert.deepEqual(await listedIds(dest), []);
@@ -848,7 +851,54 @@ for (const backend of storageBackends) {
 		);
 
 		test(
-			"each open removes a bounded share of a stopped clone's rows and never a live clone's",
+			"open and the first read do not wait for a peer to release an expired transfer's write lock",
+			() =>
+				withScope(async (scope) => {
+					const prefix = `${scope.prefix}d_`;
+					const seeded = await scope.connect();
+					const dest = await SqlSessionStore.open(seeded, { prefix });
+					await dest.create(header("visible"), []);
+					await dest.prepareForkStaging();
+					const table = stagingTable(prefix);
+					await seeded.run(
+						`INSERT INTO ${table} (transfer_id,kind,seq,idx,size,body) VALUES ('old',0,0,0,0,'old')`,
+					);
+					const reader = await scope.connect();
+					const peer = await scope.connect();
+					const holder = gate();
+					const writing = peer.transaction(
+						async (tx) => {
+							await tx.run(`UPDATE ${table} SET size=0 WHERE transfer_id='old'`);
+							await holder.wait();
+						},
+						{ concurrency: { kind: "serial", domain: table } },
+					);
+					await holder.reached;
+					try {
+						await within(
+							(async () => {
+								const reopened = await SqlSessionStore.open(reader, { prefix });
+								assert.ok(await reopened.readHeader("visible"));
+								await reopened.close();
+							})(),
+							"open and first read while the peer holds its writer lock",
+							3000,
+						);
+					} finally {
+						holder.release();
+						await writing;
+					}
+					assert.equal(
+						await stagedRows(seeded, prefix),
+						1,
+						"a skipped open does not queue a sweep behind its first caller",
+					);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"an idle open can sweep a bounded share when the driver supports a no-wait write; maintenance never sweeps a live clone",
 			() =>
 				withScope(async (scope) => {
 					const destPrefix = `${scope.prefix}d_`;
@@ -856,7 +906,7 @@ for (const backend of storageBackends) {
 					await (await SqlSessionStore.open(database, { prefix: destPrefix })).close();
 					const table = stagingTable(destPrefix);
 					await ensureForkStagingTable(database, dialectOf(database), table);
-					const rows = 3 * FORK_STAGING_OPEN_CLEANUPS * FORK_STAGING_CLEANUP_ROWS;
+					const rows = 3 * FORK_STAGING_CLEANUP_ROWS;
 					await database.transaction(async (tx) => {
 						for (const [transfer, size] of [
 							["stopped", 0],
@@ -878,15 +928,21 @@ for (const backend of storageBackends) {
 					});
 					const left = async (transfer: string) =>
 						Number((await database.get(`SELECT count(*) AS n FROM ${table} WHERE transfer_id = ?`, transfer))!.n);
+					if (!database.tryMaintenance) {
+						const opened = await SqlSessionStore.open(await scope.connect(), { prefix: destPrefix });
+						assert.equal(await left("stopped"), rows + 1, "no unbounded cleanup on open");
+						await opened.prepareForkStaging();
+						await opened.close();
+						assert.equal(await left("stopped"), 0);
+						assert.equal(await left("live"), rows + 1);
+						return;
+					}
 					let opens = 0;
 					for (let before = await left("stopped"); before > 0; opens++) {
 						await (await SqlSessionStore.open(await scope.connect(), { prefix: destPrefix })).close();
 						const after = await left("stopped");
 						assert.ok(after < before, "every open makes progress");
-						assert.ok(
-							before - after <= FORK_STAGING_OPEN_CLEANUPS * FORK_STAGING_CLEANUP_ROWS,
-							`one open removed ${before - after} rows`,
-						);
+						assert.ok(before - after <= FORK_STAGING_CLEANUP_ROWS + 1, `one open removed ${before - after} rows`);
 						before = after;
 					}
 					assert.ok(opens > 1, `the cleanup took ${opens} opens`);
