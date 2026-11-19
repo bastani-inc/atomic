@@ -64,7 +64,13 @@ function transcript(): { entries: SessionEntry[]; listed: { id: string; text: st
 		]),
 		user("p3", "p1", "an abandoned branch prompt"),
 		user("p4", "p2", LONG),
-		user("p5", "p4", [{ type: "image", data: "aGk=", mimeType: "image/png" }]),
+		// A long block whose type is read after its text: counted when it is text, taken back when it is not.
+		user("p8", "p4", [{ text: LONG, type: "text" }]),
+		user("p9", "p8", [
+			{ text: LONG, type: "image", data: "aGk=", mimeType: "image/png" },
+			{ text: "after the image", type: "text" },
+		]),
+		user("p5", "p9", [{ type: "image", data: "aGk=", mimeType: "image/png" }]),
 		user("p6", "p5", " \n "),
 		{
 			type: "compaction",
@@ -85,6 +91,8 @@ function transcript(): { entries: SessionEntry[]; listed: { id: string; text: st
 			{ id: "p2", text: "second part" },
 			{ id: "p3", text: "an abandoned branch prompt" },
 			{ id: "p4", text: LONG },
+			{ id: "p8", text: LONG },
+			{ id: "p9", text: "after the image" },
 			{ id: "p6", text: " \n " },
 			{ id: "p7", text: "the current prompt" },
 		],
@@ -168,18 +176,21 @@ describe("/fork picker on a session opened at its context window (#5554)", () =>
 			const { manager, listed } = await openWindowed(open);
 			const { selector } = await openForkPicker(manager);
 
-			assert.deepEqual(ids(selector), ["p1", "p2", "p3", "p4", "p6", "p7"]);
+			assert.deepEqual(ids(selector), ["p1", "p2", "p3", "p4", "p8", "p9", "p6", "p7"]);
 			assert.equal(selector.selector.getSelected()?.id, "p7");
 			const labels = new Map(selector.selector.state.getVisible().map((item) => [item.id, item.label]));
 			assert.equal(labels.get("p2"), "second part");
 			assert.equal(labels.get("p6"), "");
-			const long = labels.get("p4") ?? "";
-			assert.ok(long.length <= FORK_LABEL_CHARS, `label of ${long.length} code units`);
-			assert.ok(LONG.replace(/\s+/g, " ").trim().startsWith(long) && long.length > 0);
+			assert.equal(labels.get("p9"), "after the image");
+			for (const id of ["p4", "p8"]) {
+				const long = labels.get(id) ?? "";
+				assert.ok(long.length <= FORK_LABEL_CHARS, `label of ${long.length} code units`);
+				assert.ok(long.length > FORK_LABEL_CHARS - 16 && LONG.replace(/\s+/g, " ").trim().startsWith(long), long);
+			}
 			assert.equal(manager.hasFullHistory(), false);
 			assert.equal(manager.getEntry("p1"), undefined);
 			assert.equal(manager.getEntry("p4"), undefined);
-			assert.equal(listed.length, 6);
+			assert.equal(listed.length, 8);
 		});
 	}
 
@@ -187,7 +198,7 @@ describe("/fork picker on a session opened at its context window (#5554)", () =>
 		const { manager } = await openWindowed(stores[2]![1]);
 		const { selector, fork } = await openForkPicker(manager);
 		type(selector, "needle beyond");
-		await vi.waitFor(() => assert.deepEqual(ids(selector), ["p4"]));
+		await vi.waitFor(() => assert.deepEqual(ids(selector), ["p4", "p8"]));
 		selector.handleInput("\r");
 		await vi.waitFor(() => assert.deepEqual(fork.mock.calls, [["p4"]]));
 		assert.equal(manager.hasFullHistory(), false);

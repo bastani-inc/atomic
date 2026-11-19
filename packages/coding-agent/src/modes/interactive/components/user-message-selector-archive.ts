@@ -28,7 +28,12 @@ interface TextSink {
 	push(piece: string): void;
 	mark(): unknown;
 	reset(mark: unknown): void;
+	/** Text that is certain to count can no longer change the result. */
+	readonly full: boolean;
 }
+
+/** Thrown by a reader whose sink is full, to stop reading the rest of the entry. */
+const ENOUGH = new Error("The prompt's label is complete");
 
 /** The prompt's label as the picker shows it (`text.replace(/\s+/g, " ").trim()`), kept to `limit` code units. */
 class LabelSink implements TextSink {
@@ -42,6 +47,10 @@ class LabelSink implements TextSink {
 
 	constructor(limit: number) {
 		this.limit = limit;
+	}
+
+	get full(): boolean {
+		return this.cut;
 	}
 
 	push(piece: string): void {
@@ -85,6 +94,7 @@ class LabelSink implements TextSink {
 /** The prompt's whole text, joined as the in-memory picker joins it. Lives only while one search reads one row. */
 class WholeTextSink implements TextSink {
 	readonly pieces: string[] = [];
+	readonly full = false;
 	push(piece: string): void {
 		if (piece) this.pieces.push(piece);
 	}
@@ -109,8 +119,12 @@ function heldPromptText(entry: SessionEntry): string | undefined {
 	return "";
 }
 
-function* stringPieces(sink: TextSink): Reader<null> {
-	for (let token = yield; token.name === "stringChunk"; token = yield) sink.push(token.value);
+/** `counts`: the string is known to be part of the prompt's text, so a full sink ends the read. */
+function* stringPieces(sink: TextSink, counts: boolean): Reader<null> {
+	for (let token = yield; token.name === "stringChunk"; token = yield) {
+		sink.push(token.value);
+		if (counts && sink.full) throw ENOUGH;
+	}
 	return null;
 }
 
@@ -128,16 +142,17 @@ function* blockText(first: Token, sink: TextSink): Reader<null> {
 		const value = yield;
 		if (key === "type" && value.name === "startString") type = yield* stringValue(5);
 		else if (key === "text" && value.name === "startString" && (type === undefined || type === "text")) {
-			yield* stringPieces(sink);
+			yield* stringPieces(sink, type === "text");
 			pushed = true;
 		} else yield* skip(value);
 	}
 	if (pushed && type !== "text") sink.reset(mark);
+	else if (sink.full) throw ENOUGH;
 	return null;
 }
 
 function* contentText(first: Token, sink: TextSink): Reader<null> {
-	if (first.name === "startString") return yield* stringPieces(sink);
+	if (first.name === "startString") return yield* stringPieces(sink, true);
 	if (first.name !== "startArray") {
 		yield* skip(first);
 		return null;
@@ -146,14 +161,18 @@ function* contentText(first: Token, sink: TextSink): Reader<null> {
 	return null;
 }
 
-/** Streams a saved user prompt's text into `sink` without parsing the entry into an object. */
+/** Streams a saved user prompt's text into `sink` without parsing the entry into an object, until the sink is full. */
 async function readPromptText(chunks: AsyncIterable<Uint8Array>, sink: TextSink): Promise<void> {
-	await read(
-		chunks,
-		(function* (): Reader<unknown> {
-			return yield* readValue(yield, { message: { content: (first: Token) => contentText(first, sink) } });
-		})(),
-	);
+	try {
+		await read(
+			chunks,
+			(function* (): Reader<unknown> {
+				return yield* readValue(yield, { message: { content: (first: Token) => contentText(first, sink) } });
+			})(),
+		);
+	} catch (error) {
+		if (error !== ENOUGH) throw error;
+	}
 }
 
 /**
