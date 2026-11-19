@@ -20,6 +20,7 @@ Below the main chat's prompt, the **agent panel** lists the session's active bac
 ```
 
 - **Each row shows** the status, the agent's name (a workflow's name for a run), what it works on, and how long it has run. Agents and workflow runs also show the tokens they have used. A workflow row shows stage progress; a waiting row shows its question instead.
+- The task title in the panel and in an attached chat header stops at a whole character. A shortened title ends in `…`.
 - **Status glyphs:**
   - `∀` running
   - `◆` needs input, with its question when it waits on one
@@ -73,6 +74,7 @@ Run `/tasks` to inspect work without stopping it:
 - Enter or Right on a row opens it: a workflow run's graph, a subagent's chat or a shell's output, or its detail page when no transcript is available.
 - `/` filters the list by name or task; Enter keeps the filter and Escape clears it. Up or Down selects a row and keeps the filter.
 - Paused workflow runs remain in Working with a `‖ paused` status. Their elapsed time stays frozen, and `x` twice stops them rather than dismissing them as finished.
+- A shell's completion notice and output page take the last 8 KiB of retained output. If that window starts partway through a UTF-8 character, the excerpt starts at the next character. If the completion notice must shorten the output further, it keeps whole graphemes and shows an omission label only if the entire label fits.
 - Detail and transcript pages use the full screen. A shell's input stays in the sheet, under `Input to <command>`, with `enter send · ← back to list`.
 - Escape returns to the picker with your selection preserved, then to chat.
 - Completed background work remains available, including after a later wait for it. A shell command its tool call still waits on is excluded.

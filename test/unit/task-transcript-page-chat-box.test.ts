@@ -220,6 +220,17 @@ describe("a subagent's chat label (#4640, #5224)", () => {
 		page.dispose();
 	});
 
+	test("an attached chat's header keeps whole emoji at its short title cutoff (#5654)", async () => {
+		const prefix = "x".repeat(58);
+		const page = subagentPage(treeSource([record("child", "agent", undefined, { title: `${prefix}👩‍💻more` })]));
+		try {
+			await page.load();
+			assert.ok(labelRows(page.render(110, 12))[0]?.includes(`agent-child · ${prefix}… · running`));
+		} finally {
+			page.dispose();
+		}
+	});
+
 	test("falls back to the session's name, then to `subagent`, when the task has no agent name (#5224)", async () => {
 		const sessions = new Map([["child", session("child", "subagent-worker-aabcf28b-1")]]);
 		const named = subagentPage(treeSource([record("child", "agent", undefined, { agentName: undefined })], sessions));
