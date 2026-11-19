@@ -411,6 +411,29 @@ describe("a resumed run replays its results under the replay keys its journal re
 		});
 	});
 
+	test("a writer that has not seen an older run cannot change its step order by registering it again (#5683)", async () => {
+		const path = journalPath();
+		const runId = "late-registration";
+		const writer = await JournalDurableBackend.open(await openSqlRunJournal(path));
+		try {
+			await writePreviousReleaseJournal(runId, path);
+			assert.equal(writer.getWorkflow(runId), undefined);
+			await writer.commitWorkflowRegistration({
+				workflowId: runId,
+				name: runId,
+				inputs: {},
+				createdAt: 1,
+				status: "running",
+				launchStepKeys: true,
+			});
+		} finally {
+			await writer.close();
+		}
+		const resumed = await runProgram("chain", runId, path);
+		assert.deepEqual(resumed.outputs, ["first b", "second b"]);
+		assert.deepEqual(resumed.prompts, ["a fails"]);
+	});
+
 	for (const group of ["chain", "parallel"] as const) {
 		test(`a run a previous release recorded replays each task's own result after a failed ${group} (#5481)`, async () => {
 			const path = journalPath();

@@ -1839,7 +1839,7 @@ async function executeRun(
 				const registration = {
 					...durableRootRegistration,
 					// Record the format before the body can stop, without counting the registration as saved work.
-					...(existingHandle === undefined ? { launchStepKeys: true as const } : {}),
+					launchStepKeys: true as const,
 					...(runSnapshot.runGeneration !== undefined ? { runGeneration: runSnapshot.runGeneration } : {}),
 					...(definitionSource === undefined ? {} : { definitionSource }),
 					modelOwner: runSnapshot.modelOwner,
