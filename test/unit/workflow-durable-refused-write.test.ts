@@ -171,7 +171,9 @@ function graph(runs: readonly RunSnapshot[], rootId: string): unknown {
 					candidate.parentRunId === snapshot.id &&
 					snapshot.stages.some(
 						(stage) =>
-							stage.id === candidate.parentStageId && stage.status !== "failed" && stage.status !== "skipped",
+							stage.id === candidate.parentStageId &&
+							(stage.startedChildRunId === candidate.id ||
+								(stage.status !== "failed" && stage.status !== "skipped")),
 					),
 			)
 			.map(visit),

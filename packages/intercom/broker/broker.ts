@@ -230,6 +230,7 @@ function exitBecauseLiveBrokerOwnsSocket(): never {
 
 interface PendingStageRouteRegistration {
   readonly sessionId: string;
+  readonly generation?: string;
   readonly group: string;
   readonly capability: string;
   /** Registered by a restarted owner for an interrupted run; yields to the process that resumes it (#3760). */
@@ -2152,6 +2153,7 @@ class IntercomBroker {
             ...(supervisorId ? { supervisorSessionId: supervisorId } : {}),
             ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
             acknowledgesPendingStageRoutes: true as const,
+            withdrawsPendingStageRoutes: true as const,
             refusesPendingStageRoutesInPlace: true as const,
             brokerStatus: true as const,
             claimsWorkflowInvocations: true as const,
@@ -2776,6 +2778,20 @@ class IntercomBroker {
         break;
       }
 
+      case "withdraw_pending_stage_route": {
+        const { runId, generation, requestId } = clientMessage;
+        if (typeof runId !== "string" || !runId || typeof generation !== "string" || !generation || typeof requestId !== "string")
+          throw new Error("Invalid pending-stage route withdrawal");
+        const owner = this.pendingStageRoutes.get(runId);
+        if (owner?.sessionId === currentId && owner.generation === generation && this.sessions.get(currentId)?.socket === socket) {
+          this.forgetPendingStageRoute(runId);
+          this.dispatchHeldSends(this.releaseInvocationOrphans(owner.group));
+        }
+        // A stale request is also settled. Never disclose or remove the replacement owner.
+        writeMessageIfOpen(socket, { type: "pending_stage_route_registered", requestId });
+        break;
+      }
+
       case "register_pending_stage_route": {
         if (
           typeof clientMessage.runId !== "string" ||
@@ -2784,6 +2800,7 @@ class IntercomBroker {
           typeof clientMessage.capability !== "string" ||
           !clientMessage.capability ||
           (clientMessage.requestId !== undefined && typeof clientMessage.requestId !== "string") ||
+          (clientMessage.generation !== undefined && (typeof clientMessage.generation !== "string" || !clientMessage.generation)) ||
           (clientMessage.launcherCapability !== undefined &&
             (typeof clientMessage.launcherCapability !== "string" || !clientMessage.launcherCapability))
         ) {
@@ -2903,6 +2920,7 @@ class IntercomBroker {
         }
         this.pendingStageRoutes.set(clientMessage.runId, {
           sessionId: currentId,
+          generation: clientMessage.generation,
           group: ownerGroup,
           capability: clientMessage.capability,
           ...(dormant ? { dormant: true as const } : {}),
@@ -3849,6 +3867,20 @@ class IntercomBroker {
     this.afterDeparture(() => writeMessageIfOpen(socket, frame));
   };
 
+  private forgetPendingStageRoute(runId: string): void {
+    this.pendingStageRoutes.delete(runId);
+    this.workflowRosters.delete(runId);
+    this.workflowStageAliases.forgetRun(runId);
+    this.returnPaths.forgetRun(runId);
+  }
+
+  /** Only the last route of an invocation releases its orphaned children. */
+  private releaseInvocationOrphans(invocation: string): HeldSend[] {
+    for (const route of this.pendingStageRoutes.values()) if (route.group === invocation) return [];
+    const inInvocation = (group: string) => invocationOwnsGroup(invocation, group);
+    return [...this.restoringRecipients.dropOrphans(inInvocation), ...this.departedChildren.dropOrphans(inInvocation)];
+  }
+
   private departSession(sessionId: string, ended: boolean): void {
     const departed = this.sessions.get(sessionId);
     if (!departed) return;
@@ -3986,18 +4018,11 @@ class IntercomBroker {
     const endedInvocations = new Set<string>();
     for (const [runId, owner] of this.pendingStageRoutes) {
       if (owner.sessionId !== sessionId) continue;
-      this.pendingStageRoutes.delete(runId);
-      this.workflowRosters.delete(runId);
-      this.workflowStageAliases.forgetRun(runId);
-      this.returnPaths.forgetRun(runId);
-      endedInvocations.add(normalizeGroup(owner.group));
+      this.forgetPendingStageRoute(runId);
+      endedInvocations.add(owner.group);
     }
     // #4639: once no route of a run is left, the released children its stages kept while away go with it.
-    for (const invocation of endedInvocations) {
-      if ([...this.pendingStageRoutes.values()].some((route) => normalizeGroup(route.group) === invocation)) continue;
-      unreserved.push(...this.restoringRecipients.dropOrphans((group) => invocationOwnsGroup(invocation, group)));
-      unreserved.push(...this.departedChildren.dropOrphans((group) => invocationOwnsGroup(invocation, group)));
-    }
+    for (const invocation of endedInvocations) unreserved.push(...this.releaseInvocationOrphans(invocation));
     for (const [requestId, pending] of this.pendingStageAcknowledgments) {
       if (pending.ownerSessionId !== sessionId) continue;
       clearTimeout(pending.timeout);
