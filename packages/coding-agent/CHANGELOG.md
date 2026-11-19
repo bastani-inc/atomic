@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
+
 ### Fixed
 
 - On Linux and macOS, worktree pool leases and session-open markers are aged by the shared filesystem's time when the clock reading finishes, as on Windows, so the cleanup of the reading's probe file no longer makes them look younger than they are. A change to this machine's wall clock during the reading is not counted as elapsed time ([#5674](https://github.com/bastani-inc/atomic/issues/5674)).
