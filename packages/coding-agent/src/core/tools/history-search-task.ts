@@ -67,6 +67,8 @@ export interface HistorySearchRun {
 	readonly resources: InternalResourceContext | undefined;
 	/** Step budget override, for tests; omitted, {@link HISTORY_SEARCH_STEP_MS}. */
 	readonly stepMs?: number;
+	/** End offsets in the decoded output, one per requested target, if no target failed or needed a continuation. */
+	readonly onTargetsComplete?: (ends: readonly number[]) => void;
 }
 
 /**
@@ -99,6 +101,8 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 		const pending = [...run.urls];
 		let printedAny = false;
 		let printedBytes = 0;
+		let printedChars = 0;
+		let targetEnds: number[] | undefined = run.onTargetsComplete ? [] : undefined;
 		let full = false;
 		let failure: Error | undefined;
 		let succeeded = false;
@@ -106,6 +110,7 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			if (text.length === 0) return;
 			const chunk = `${printedAny ? "\n" : ""}${text}`;
 			write(chunk);
+			printedChars += chunk.length;
 			printedBytes += Buffer.byteLength(chunk, "utf8");
 			printedAny = true;
 		};
@@ -150,6 +155,7 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 					pending.unshift(url);
 					break;
 				}
+				targetEnds = undefined;
 				// One source failing does not lose the others: say which, and where it could continue, and go on.
 				failure ??= error instanceof Error ? error : new Error(String(error));
 				const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
@@ -157,11 +163,20 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 				continue;
 			}
 			succeeded = true;
+			const lines = text.split("\n");
+			if (targetEnds && !lines.some((line) => historyContinuation(line) !== undefined)) {
+				// Independently requested targets may have identical answers. They are separate groups for skip,
+				// not a repeated continuation. Record boundaries without keeping a second copy of their text.
+				if (text && text !== "No matches found") print(text);
+				targetEnds.push(printedChars);
+				continue;
+			}
+			targetEnds = undefined;
 			const digest = createHash("sha256").update(text).digest("hex");
 			if (answered.has(digest)) {
 				const stuck: string[] = [];
 				const waiting: string[] = [];
-				for (const line of text.split("\n")) {
+				for (const line of lines) {
 					const continuation = historyContinuation(line);
 					if (continuation === undefined) continue;
 					if (TIME_STOP.test(line)) waiting.push(continuation);
@@ -180,7 +195,7 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			answered.add(digest);
 			if (answered.size > REMEMBERED_ANSWERS) answered.delete(answered.values().next().value!);
 			const next: string[] = [];
-			const kept = text.split("\n").flatMap((line) => {
+			const kept = lines.flatMap((line) => {
 				const continuation = historyContinuation(line);
 				if (continuation === undefined) return [line];
 				next.push(continuation);
@@ -205,6 +220,7 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 		}
 		// Nothing could be searched at all: the search failed, as a single call would.
 		if (failure !== undefined && !succeeded) throw failure;
+		if (targetEnds && printedBytes <= TOOL_TASK_OUTPUT_MAX_BYTES) run.onTargetsComplete?.(targetEnds);
 		if (!printedAny) print("No matches found");
 		return "finished";
 	};

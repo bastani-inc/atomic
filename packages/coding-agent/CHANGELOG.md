@@ -47,6 +47,7 @@
 - An engine restart while Atomic loads models or waits for another trust answer no longer repeats a session-only trust question you already answered for a project or `-e` extension source ([#5568](https://github.com/bastani-inc/atomic/issues/5568)).
 - Reopening a session that recorded a subagent's release only in its notice title now shows `◌` and the tool calls it was waiting on, instead of `◼ stopped`. Older notices that recorded a pause or quit show `⏸` ([#5563](https://github.com/bastani-inc/atomic/issues/5563)).
 - Switching between subagent chats no longer brings a stopped child back into its chat footer. A workflow that resumes and blocks again between panel updates reappears alongside active work, even within the same millisecond ([#5567](https://github.com/bastani-inc/atomic/issues/5567)).
+- History searches that finish without a budget stop keep the usual 20-file page and 20-match per-file limit. Multiple paths keep their result blocks, and overlapping paths no longer repeat rows or lose the page selected by `skip` ([#5479](https://github.com/bastani-inc/atomic/pull/5479)).
 
 ## [0.9.89] - 2026-11-18
 

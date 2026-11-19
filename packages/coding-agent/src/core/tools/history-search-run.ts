@@ -63,8 +63,11 @@ export interface HistorySearchShape {
 	readonly cwd: string;
 	/** What the call searched, as its result's details name it: its URLs without their `:N-M` selections. */
 	readonly scopePath: string;
-	/** The page of everything the search found that the call's `skip` selects, with that page's details. */
-	readonly skipPage?: (text: string) => { readonly text: string; readonly details: SearchToolDetails };
+	readonly skip: number;
+	/** The page selected from the targets, or undefined for the full output of a continuation chain. */
+	readonly page: (
+		text: string,
+	) => { readonly text: string; readonly details?: SearchToolDetails | undefined } | undefined;
 }
 
 export interface HistorySearchCall extends HistorySearchRun {
@@ -264,8 +267,9 @@ async function historyResult(
 	tempDir: string | undefined,
 	shape: HistorySearchShape | undefined,
 ): Promise<AgentToolResult<HistorySearchDetails>> {
-	if (shape?.skipPage && observation.kind === "settled" && observation.result.kind === "completed") {
-		const page = shape.skipPage(text);
+	const page =
+		observation.kind === "settled" && observation.result.kind === "completed" ? shape?.page(text) : undefined;
+	if (page && shape && shape.skip > 0) {
 		return {
 			content: [{ type: "text", text: page.text }],
 			details: {
@@ -276,12 +280,12 @@ async function historyResult(
 			},
 		};
 	}
-	const result = settledResult(observation, await formatHistoryOutput(text, tempDir), timeoutSeconds);
+	const result = settledResult(observation, await formatHistoryOutput(page?.text ?? text, tempDir), timeoutSeconds);
 	if (shape === undefined || observation.kind !== "settled") return result;
 	const shown = result.content.map((item) => (item.type === "text" ? item.text : "")).join("\n");
 	return {
 		...result,
-		details: { ...buildSearchDetails(undefined, shown, shape.cwd, shape.scopePath), ...result.details },
+		details: { ...buildSearchDetails(page?.details, shown, shape.cwd, shape.scopePath), ...result.details },
 	};
 }
 

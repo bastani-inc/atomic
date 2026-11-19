@@ -86,6 +86,68 @@ describe("a history:// search gives what the single call it replaces gave (#5479
 		);
 	});
 
+	it("counts overlapping target groups separately before applying skip (#5479)", async () => {
+		const path = "history://sessions/s";
+		const router = sessionsRouter(await storeWith([{ id: "s", day: 1, texts: ["needle   "] }]));
+		const result = await search(router, { paths: [path, `${path}:1-1`], pattern: "needle", skip: 1 });
+		assert.equal(textOf(result), `${path}:1: needle   `);
+		assert.deepEqual(result.details?.fileMatches, { [path]: 1 });
+	});
+
+	it("removes repeated rows across partially overlapping target blocks (#5479)", async () => {
+		const path = "history://sessions/c";
+		const router = sessionsRouter(await storeWith([{ id: "c", day: 1, texts: ["needle 0", "needle 1"] }]));
+		const result = await search(router, { paths: [path, `${path}:1-1`], pattern: "needle" });
+		assert.equal(textOf(result), `${path}:1: needle 0\n${path}:2: needle 1\n`);
+	});
+
+	it("separates matching targets with a blank line (#5479)", async () => {
+		const paths = ["history://sessions/s", "history://sessions/b"];
+		const router = sessionsRouter(
+			await storeWith([
+				{ id: "s", day: 1, texts: ["needle   "] },
+				{ id: "b", day: 2, texts: ["needle b"] },
+			]),
+		);
+		assert.equal(
+			textOf(await search(router, { paths, pattern: "needle" })),
+			`${paths[0]}:1: needle   \n\n${paths[1]}:1: needle b`,
+		);
+	});
+
+	it("names each target that had no matches (#5479)", async () => {
+		const paths = ["history://sessions/s", "history://sessions/b"];
+		const router = sessionsRouter(
+			await storeWith([
+				{ id: "s", day: 1, texts: ["one"] },
+				{ id: "b", day: 2, texts: ["two"] },
+			]),
+		);
+		assert.equal(
+			textOf(await search(router, { paths, pattern: "needle" })),
+			`# ${paths[0]}\nNo matches found\n\n# ${paths[1]}\nNo matches found`,
+		);
+	});
+
+	it("shows the first twenty matching sessions and the skip to the next page (#5479)", async () => {
+		const ids = Array.from({ length: 23 }, (_, i) => `s${String(i).padStart(2, "0")}`);
+		const router = sessionsRouter(await storeWith(ids.map((id) => ({ id, day: 1, texts: ["needle"] }))));
+		const result = await search(router, { paths: "history://sessions?limit=25", pattern: "needle" });
+		const files = ids.slice(0, 20).map((id) => `history://sessions/${id}`);
+		assert.equal(
+			textOf(result),
+			`${files.map((file) => `${file}:1: needle`).join("\n")}\n\n[20 matching files shown. Use skip=20 to view more.]`,
+		);
+		assert.deepEqual(result.details?.files, files);
+	});
+
+	it("shows at most twenty matches from a workflow that finishes in one step (#5479)", async () => {
+		const path = "history://workflows/many";
+		const rows = Array.from({ length: 21 }, (_, i) => `${path}:${i + 1}: needle ${i}`);
+		const result = await search({ search: async () => rows.join("\n") }, { paths: path, pattern: "needle" });
+		assert.equal(textOf(result), rows.slice(0, 20).join("\n"));
+	});
+
 	it("carries the result details an SDK caller reads (#5479)", async () => {
 		const router = sessionsRouter(await storeWith([{ id: "s", day: 1, texts: ["needle"] }]));
 		const result = await search(router, { paths: "history://sessions/s:1-1", pattern: "needle" });

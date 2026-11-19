@@ -560,18 +560,30 @@ function formatSearchGroups(groups: SearchOutputGroup[], limit: number, perFileL
 		.join("\n");
 }
 
+/** Consume one virtual target's groups from the first page's remaining file slots. */
+function firstTargetPage(text: string, groups: SearchOutputGroup[], remaining: number, limit: number) {
+	if (groups.length === 0) {
+		return { text: text || "No matches found", used: text && text !== "No matches found" ? 1 : 0, more: false };
+	}
+	const more = groups.length > remaining;
+	return {
+		text: formatSearchGroups(groups, remaining) + (more ? `\n\n${continuationHint(limit, 0)}` : ""),
+		used: Math.min(remaining, groups.length),
+		more,
+	};
+}
+
 /**
  * The page `skip` selects from all a history:// search found, as a search call pages the matches of its targets: the
  * next {@link DEFAULT_LIMIT} sessions, runs or notes after the first `skip`, and how to page further.
  */
 function historySkipPage(
-	text: string,
+	groups: SearchOutputGroup[],
 	skip: number,
 	cwd: string,
 	scopePath: string,
 ): { text: string; details: SearchToolDetails } {
 	const limit = DEFAULT_LIMIT;
-	const groups = groupSearchOutput(text);
 	const details: SearchToolDetails = {};
 	const renderedPages: string[] = [];
 	let remainingMatches = limit;
@@ -591,6 +603,45 @@ function historySkipPage(
 		content += `\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]`;
 	}
 	return { text: content, details: buildSearchDetails(details, content, cwd, scopePath) };
+}
+
+/** Page a completed, one-step-per-target history search at the same boundaries as other virtual targets. */
+function historyTargetPage(
+	text: string,
+	ends: readonly number[],
+	paths: string[],
+	skip: number,
+	cwd: string,
+	scope: string,
+) {
+	const groups: SearchOutputGroup[] = [];
+	const blocks: string[] = [];
+	let remaining = DEFAULT_LIMIT,
+		more = false,
+		start = 0;
+	for (const end of ends) {
+		const answer = text.slice(start, end);
+		start = end === 0 ? 0 : end + 1; // The task separates nonempty answers with one newline.
+		const outputGroups = groupSearchOutput(answer);
+		if (skip > 0) {
+			groups.push(...outputGroups);
+		} else if (remaining > 0) {
+			const page = firstTargetPage(answer, outputGroups, remaining, DEFAULT_LIMIT);
+			blocks.push(page.text);
+			remaining -= page.used;
+			more ||= page.more;
+		} else if (outputGroups.length > 0) {
+			more = true;
+			break;
+		}
+	}
+	if (skip > 0) return historySkipPage(groups, skip, cwd, scope);
+	if (blocks.length === 1) return { text: blocks[0]! };
+	const output = blocks.map((block, index) => (block === "No matches found" ? `# ${paths[index]}\n${block}` : block));
+	return {
+		text: dedupeRenderedSearchOutput(output.join("\n\n") + (more ? `\n\n${continuationHint(DEFAULT_LIMIT, 0)}` : "")),
+		details: more ? fileLimitDetails(DEFAULT_LIMIT) : undefined,
+	};
 }
 
 function filterTargetLineRanges(
@@ -702,7 +753,9 @@ export function createSearchToolDefinition(
 				for (const path of rawPaths) historyTargets.push(await normalizeSearchTarget(path, executionCwd));
 				const skip = normalizeSkip(params.skip);
 				validateBashWait(params.wait, owner?.startToolTask !== undefined);
-				const scopePath = historyTargets.map((target) => target.path).join(", ");
+				const paths = historyTargets.map((target) => target.path);
+				const scopePath = paths.join(", ");
+				let targetEnds: readonly number[] | undefined;
 				return runHistorySearch({
 					urls: rawPaths,
 					pattern: params.pattern,
@@ -716,12 +769,19 @@ export function createSearchToolDefinition(
 					...(signal === undefined ? {} : { signal }),
 					owner,
 					tempDir,
+					onTargetsComplete: (ends) => {
+						targetEnds = ends;
+					},
 					shape: {
 						cwd: executionCwd,
 						scopePath,
-						...(skip > 0
-							? { skipPage: (text: string) => historySkipPage(text, skip, executionCwd, scopePath) }
-							: {}),
+						skip,
+						page: (text) =>
+							targetEnds
+								? historyTargetPage(text, targetEnds, paths, skip, executionCwd, scopePath)
+								: skip > 0
+									? historySkipPage(groupSearchOutput(text), skip, executionCwd, scopePath)
+									: undefined,
 					},
 					...(onUpdate === undefined
 						? {}
@@ -876,17 +936,12 @@ export function createSearchToolDefinition(
 								group,
 							})),
 						);
-					else if (outputGroups.length > 0) {
-						const hadMore = outputGroups.length > remaining;
-						text = formatSearchGroups(outputGroups, remaining);
-						if (hadMore) {
-							text += `\n\n${continuationHint(limit, skip)}`;
-							pageFullWithMore = true;
-						}
-						remaining -= Math.min(remaining, outputGroups.length);
-					} else if (text && text !== "No matches found") {
-						remaining--;
-					} else text = "No matches found";
+					else {
+						const page = firstTargetPage(text, outputGroups, remaining, limit);
+						text = page.text;
+						remaining -= page.used;
+						pageFullWithMore ||= page.more;
+					}
 					if (skip === 0) results.push({ content: [{ type: "text" as const, text }], details: undefined });
 					continue;
 				}
