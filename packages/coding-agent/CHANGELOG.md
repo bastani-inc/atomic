@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- Forking into another store copies the current context and keeps the parent session ID; it no longer transfers the parent's private history. For a complete independent copy, use `atomic storage export` and `atomic storage import` ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
+- A fork into a store that Atomic can tell is a different store, such as with `manager.forkTo(cwd, otherStore)`, copies the current context and keeps the parent session ID; it no longer transfers the parent's private history. Forks within one store, including `atomic --fork` and **Fork** for a session whose working directory is missing, still copy the whole session, every branch included, and so does a fork between stores Atomic cannot tell apart. `/fork` and `/clone` still copy the complete selected path. For a complete independent copy, use `atomic storage export` and `atomic storage import` ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
 - Sessions and extensions open at the current context window. `getEntries()` and `getTree()` describe the resident entries. Use `for await (const page of manager.readHistory())` for older entries or `await manager.readEntry(id)` for one entry ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - RPC `get_entries`, `get_tree` and `get_fork_messages` still return `entries`, `tree` and `messages` respectively, but their contents are limited to the resident window. Use `get_history_page` and its `nextCursor` for the archive, and `get_history_chunk` to read an oversized item ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - The session picker rejects `re:` patterns that rely on backreferences, lookaround or paired start/end anchors instead of silently reporting no matches. Use a narrower pattern or a quoted phrase ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
@@ -15,6 +15,12 @@
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Custom session stores can implement `readForkWindow(sessionId, entryId)` to supply a subagent's retained branch and labels without opening the whole parent. Stores without the method keep their existing fork behavior ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
+
+### Fixed
+
+- A forked subagent that waits for a slot forks at its launch entry, with the settings recorded there, and reads only that context from the store instead of the parent's whole conversation after the parent has moved on. A forked subagent also no longer reopens the parent's subagents, acknowledges its deliveries or shows its subagent and Intercom cards, and a finished forked child releases its session ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
+- Expanding a subagent's launch block reads only the fields it shows from the child's saved session (the prompt, the final answer, and each tool call's arguments and result) instead of reopening the child's session, and releases them when the block collapses or leaves the chat, or when you switch or close the session ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
+- `/fork` and `/clone` stream the selected path into the new session instead of loading the whole session first; in a SQL store, the copy holds one worktree snapshot record at a time. A fork of a path or of the current context between separately opened SQL store handles copies its entries and their saved tool outputs one at a time, reading each whole ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
 
 ## [0.9.90] - 2026-11-19
 
