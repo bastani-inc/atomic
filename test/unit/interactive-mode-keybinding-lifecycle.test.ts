@@ -100,8 +100,8 @@ async function createMode(agentDir: string, extensionFactory?: ExtensionFactory)
 		});
 		assert.equal(
 			services.resourceLoader.getExtensions().extensions.length,
-			(extensionFactory ? 6 : 5) + defaultBuiltinExtensions.length,
-			"#3105: service creation loads all five shipped builtins, the inline builtins, and explicit factories",
+			4 + defaultBuiltinExtensions.length + (extensionFactory ? 1 : 0),
+			"#3105: service creation loads all four shipped builtins, the inline builtins, and explicit factories",
 		);
 		return {
 			...(await createAgentSessionFromServices({

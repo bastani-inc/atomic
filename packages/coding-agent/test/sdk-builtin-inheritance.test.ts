@@ -37,7 +37,7 @@ export default function (pi) {
 `,
 		);
 		vi.spyOn(builtinPackages, "getBuiltinPackageLocations").mockReturnValue([
-			{ packageName: "@bastani/workflows", distDirName: "workflows", packageDir: bundled },
+			{ packageName: "@bastani/subagents", distDirName: "subagents", packageDir: bundled },
 		]);
 		const settingsManager = SettingsManager.inMemory();
 		const factory = () => {};

@@ -226,7 +226,6 @@ async function migrateAs(roles: Roles, role: "owner" | "runtime", prefix = PREFI
 				agentDir,
 				log: (line) => out.push(line),
 				error: (line) => err.push(line),
-				loadWorkerModule: async () => workerHost,
 				loadBrokerState: () => import("../../packages/intercom/broker/open-broker-state.js"),
 			},
 		);
@@ -379,7 +378,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 		ROLES_BUDGET.timeoutMs,
 	);
 
-	test("atomic storage migrate as the owner sets every store up, after which the runtime role opens them all without DDL (#5218)", async () => {
+	test("atomic storage migrate sets sessions and Intercom up for the runtime role without granting it DDL (#5218)", async () => {
 		await withRoles(async (_scope, roles) => {
 			// The runtime role cannot set the schema up, and is told who can.
 			const refused = await migrateAs(roles, "runtime");
@@ -393,7 +392,11 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			assert.match(migrated.out, /set up for this version/);
 			await grantRuntime(await roles.open("owner"), roles);
 			const statements: string[] = [];
-			await openEveryStore(async () => recording(await roles.open("runtime"), statements), PREFIX);
+			const open = async () => recording(await roles.open("runtime"), statements);
+			await (await SqlSessionStore.open(await open(), { prefix: PREFIX })).close();
+			const broker = await openIntercomBrokerState({ prefix: PREFIX, openDatabase: open });
+			await broker.bus.close();
+			await broker.state.close();
 			assert.deepEqual(statements.flatMap(ddl), []);
 			// Again, as after an upgrade with nothing new: still nothing to change.
 			const again = await migrateAs(roles, "owner");
@@ -691,14 +694,14 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			assert.equal(migrated.code, 0, migrated.err);
 			const owner = await roles.open("owner");
 			const refusal = async () => {
-				const error = await SqlRunJournal.open(await roles.open("runtime"), { prefix: PREFIX }).then(
-					async (journal) => {
-						await journal.close();
+				const error = await SqlSessionStore.open(await roles.open("runtime"), { prefix: PREFIX }).then(
+					async (store) => {
+						await store.close();
 						return undefined;
 					},
 					(caught: Error) => caught,
 				);
-				assert.ok(error !== undefined, "the runtime role opened the journal");
+				assert.ok(error !== undefined, "the runtime role opened the session store");
 				return inspect(error, { depth: null });
 			};
 			// No USAGE on the schema.

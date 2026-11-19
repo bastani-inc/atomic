@@ -22,7 +22,7 @@ import type { SessionStore } from "./storage/session/types.js";
 /** A `createAgentSession({ storage })` selection: a database path, a caller-owned database, memory, or an adapter. */
 export type SessionStorageOption = Exclude<RunJournalOption, RunJournal>;
 
-export type AtomicBuiltin = "workflows" | "subagents" | "mcp" | "web-access" | "intercom";
+export type AtomicBuiltin = "subagents" | "mcp" | "web-access" | "intercom";
 
 export interface CreateAgentSessionOptions {
 	/** Shipped packages are enabled unless explicitly false. Independent of tool selection. */

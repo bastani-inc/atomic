@@ -98,7 +98,7 @@ async function fallbackPrompts(transform: boolean, appendInHandler: boolean): Pr
 		sessionManager: SessionManager.inMemory(),
 		resourceLoader: createTestResourceLoader(extensionsResult ? { extensionsResult } : undefined),
 		...(transform ? { systemPromptTransform: (prompt: string) => `Transformed child prompt.\n${prompt}` } : {}),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 	});
 	cleanups.push(() => session.dispose());

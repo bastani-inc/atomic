@@ -73,6 +73,7 @@ import type {
 } from "./chat-session-host-types.ts";
 import { firstRawUserExactText, syncFirstUserEntry } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
+import { type RetryWaitEvent, retryWaitFromEvent } from "./retry-status-line.ts";
 import { isSingleLeftClick } from "./single-click.ts";
 import { TaskChatDecoration } from "./task-chat-decoration.js";
 import { TaskInspector } from "./task-inspector.js";
@@ -443,11 +444,12 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	/**
 	 * Show the retry wait of a session this host attached to after its `auto_retry_start`: a session between two
-	 * attempts streams nothing, so a running turn's hydration shows none of it. The wait reads as that event shows it
-	 * and ends as it does, with the next attempt's `agent_start` or the retry's `auto_retry_end`. With the session's
-	 * messages, the next attempt's working line counts from the turn's start, as it does in a chat that saw the turn.
+	 * attempts streams nothing, so a running turn's hydration shows none of it. The wait reads as that event shows it,
+	 * with the details of `retry`, the session's pending `auto_retry_start`, when the session has it, and ends as it
+	 * does, with the next attempt's `agent_start` or the retry's `auto_retry_end`. With the session's messages, the next
+	 * attempt's working line counts from the turn's start, as it does in a chat that saw the turn.
 	 */
-	hydrateRetryWait(messages?: readonly MeteredRunMessage[], turnStartedAt?: number): void {
+	hydrateRetryWait(messages?: readonly MeteredRunMessage[], turnStartedAt?: number, retry?: RetryWaitEvent): void {
 		if (this.state.disposed) return;
 		const run = messages === undefined ? undefined : runInProgress(messages);
 		const startedAt = turnStartedAt ?? run?.startedAt;
@@ -455,7 +457,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			this.state.workingRunMeter.awaitRetry(startedAt, run?.settledTokens ?? 0);
 			this.state.retryContinuesRun = true;
 		}
-		showChatSessionRetryWait(this.state);
+		showChatSessionRetryWait(this.state, retry === undefined ? undefined : retryWaitFromEvent(retry));
 		this.syncAnimationTick();
 		this.state.requestRender?.();
 	}

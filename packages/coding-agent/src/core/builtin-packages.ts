@@ -36,7 +36,6 @@ interface WorkspaceBuiltinSpec {
 }
 
 const WORKSPACE_BUILTINS: readonly (WorkspaceBuiltinSpec & { mandatory?: boolean })[] = [
-	{ packageName: "@bastani/workflows", workspaceDirName: "workflows", distDirName: "workflows" },
 	{ packageName: "@bastani/subagents", workspaceDirName: "subagents", distDirName: "subagents" },
 	{ packageName: "@bastani/mcp", workspaceDirName: "mcp", distDirName: "mcp" },
 	{ packageName: "@bastani/web-access", workspaceDirName: "web-access", distDirName: "web-access" },

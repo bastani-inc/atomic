@@ -677,7 +677,7 @@ for (const reason of ["stage_finished", "pool_closed", "worker_exited", "attempt
 		const view = new StageChatView(options);
 		let fresh: StageChatView | undefined;
 		try {
-			assert.equal(line(view), "∀ retrying…");
+			assert.equal(line(view), "∀ Retrying…");
 			const before = frames;
 			opened.handle.receive({ kind: "ended", reason });
 			assert.equal(opened.handle.turnStartedAt, undefined, "the retired attempt no longer owns a turn");
@@ -917,10 +917,10 @@ test("a nested subagent and its task observers drop the retry on worker exit wit
 			},
 		} as never as AgentSessionEvent);
 		await view.load();
-		assert.equal(line(), "∀ retrying…");
+		assert.equal(line(), "∀ Retrying…");
 		opened.handle.receive({ kind: "ended", reason: "worker_exited" });
 		assert.equal(line(), undefined);
-		assert.deepEqual(observed, ["∀ retrying…", undefined]);
+		assert.deepEqual(observed, ["∀ Retrying…", undefined]);
 		assert.deepEqual(source.tasks, [task]);
 	} finally {
 		unsubscribe();

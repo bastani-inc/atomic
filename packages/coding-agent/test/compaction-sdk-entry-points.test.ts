@@ -17,7 +17,7 @@ import {
 	SettingsManager,
 } from "../src/index.ts";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 const CONTEXT_WINDOW = 200_000;
 const RESERVE_TOKENS = 20_000;
 /** About 185k tokens: with the system prompt the answer's reported usage is over the trigger and inside the window. */

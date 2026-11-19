@@ -9,7 +9,6 @@ const [mode, directory, children, workers, scenario = "fanout"] = process.argv.s
 const ROOT = process.env.SHARED_POOL_ROOT;
 const jiti = createJiti(import.meta.url, { fsCache: true });
 const load = (relative) => jiti.import(fileURLToPath(new URL(relative, import.meta.url)));
-await load("../setup-packaged-local-worker.ts");
 const { workflow } = await load("../../packages/workflows/src/authoring/workflow.ts");
 const { JournalDurableBackend } = await load("../../packages/workflows/src/durable/journal/journal-backend.ts");
 const { resolveRunJournal } = await load("../../packages/workflows/src/durable/journal/resolution.ts");

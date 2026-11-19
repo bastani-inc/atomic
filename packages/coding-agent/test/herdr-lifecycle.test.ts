@@ -227,13 +227,14 @@ test("child shutdown cannot cancel a parent claim waiting for a timed-out predec
 		const starting = parent.emit({ type: "session_start" });
 		await child.emit({ type: "session_shutdown", reason: "quit" });
 		await starting;
+		await fake.waitFor(1); // parent idle (hung predecessor report has no end)
 		await parent.emit({ type: "agent_start" });
-		await fake.waitFor(1); // parent working (hung predecessor report has no end)
+		await fake.waitFor(2);
 		await parent.emit({ type: "session_shutdown", reason: "quit" });
 		const calls = (await fake.calls()).filter((call) => call.phase === "start");
 		assert.deepEqual(
 			calls.map((call) => call.args[1]),
-			["report-agent", "report-agent", "release-agent"],
+			["report-agent", "report-agent", "report-agent", "release-agent"],
 		);
 		assert.deepEqual(diagnostics, [{ kind: "timeout" }]);
 		for (let index = 0; index < calls.length; index++) {
@@ -242,7 +243,7 @@ test("child shutdown cannot cancel a parent claim waiting for a timed-out predec
 			if (index) assert.ok(Number(seq) > Number(arg(calls[index - 1].args, "--seq")));
 			assert.deepEqual(args, [
 				"pane",
-				index === 2 ? "release-agent" : "report-agent",
+				index === 3 ? "release-agent" : "report-agent",
 				fake.environment.paneId,
 				"--source",
 				"custom:atomic",
@@ -250,13 +251,17 @@ test("child shutdown cannot cancel a parent claim waiting for a timed-out predec
 				"atomic",
 				"--seq",
 				seq,
-				...(index === 2
+				...(index === 3
 					? []
 					: [
 							"--state",
-							"working",
-							"--agent-session-id",
-							index === 0 ? "predecessor" : parent.createContext().sessionManager.getSessionId(),
+							index === 1 ? "idle" : "working",
+							...(index < 2
+								? [
+										"--agent-session-id",
+										index === 0 ? "predecessor" : parent.createContext().sessionManager.getSessionId(),
+									]
+								: []),
 						]),
 			]);
 			assert.equal(calls[index].socket, fake.environment.socketPath);
@@ -283,7 +288,14 @@ test("SDK successor reuses the loaded reporter after owning shutdown and continu
 			fake.dir,
 		);
 		const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(fake.dir, "auth.json") });
-		const faux = createFauxStreamFn(["First answer", "Successor answer"]);
+		const faux = createFauxStreamFn(
+			["First answer", "Successor answer"].map((text, i) => ({
+				text,
+				beforeEmit: async () => {
+					await fake.waitFor(i * 3 + 2);
+				},
+			})),
+		);
 		modelRuntime.registerProvider(fauxModel.provider, {
 			baseUrl: fauxModel.baseUrl,
 			apiKey: "faux-key",
@@ -314,8 +326,10 @@ test("SDK successor reuses the loaded reporter after owning shutdown and continu
 				extensionBindings: { mode: "tui", uiContext: { ...noOpUIContext } },
 			});
 			try {
+				await fake.waitFor(index * 3 + 1);
 				await session.bindExtensions({ mode: "tui", uiContext: { ...noOpUIContext } });
 				await session.prompt(index === 0 ? "First turn" : "Continue working in the successor");
+				await fake.waitFor(index * 3 + 3);
 				assert.equal(session.agent.state.errorMessage, undefined);
 				assert.deepEqual(session.messages.at(-1)?.content, [
 					{ type: "text", text: index === 0 ? "First answer" : "Successor answer" },
@@ -329,15 +343,23 @@ test("SDK successor reuses the loaded reporter after owning shutdown and continu
 		const calls = (await fake.calls()).filter((call) => call.phase === "start");
 		assert.deepEqual(
 			calls.map((call) => call.args[1]),
-			["report-agent", "report-agent", "release-agent"],
+			[
+				"report-agent",
+				"report-agent",
+				"report-agent",
+				"report-agent",
+				"report-agent",
+				"report-agent",
+				"release-agent",
+			],
 		);
 		for (const [index, call] of calls.entries()) {
 			const seq = arg(call.args, "--seq")!;
 			if (index) assert.ok(Number(seq) > Number(arg(calls[index - 1].args, "--seq")));
-			const manager = managers[Math.min(index, 1)];
+			const manager = managers[Math.min(Math.floor(index / 3), 1)];
 			assert.deepEqual(call.args, [
 				"pane",
-				index === 2 ? "release-agent" : "report-agent",
+				index === 6 ? "release-agent" : "report-agent",
 				fake.environment.paneId,
 				"--source",
 				"custom:atomic",
@@ -345,16 +367,20 @@ test("SDK successor reuses the loaded reporter after owning shutdown and continu
 				"atomic",
 				"--seq",
 				seq,
-				...(index === 2
+				...(index === 6
 					? []
 					: [
 							"--state",
-							"working",
-							"--agent-session-id",
-							manager.getSessionId(),
-							"--agent-session-path",
-							manager.getSessionFile()!,
-							...resumeArgs(manager),
+							index % 3 === 1 ? "working" : "idle",
+							...(index % 3 === 0
+								? [
+										"--agent-session-id",
+										manager.getSessionId(),
+										"--agent-session-path",
+										manager.getSessionFile()!,
+										...resumeArgs(manager),
+									]
+								: []),
 						]),
 			]);
 			assert.equal(call.socket, fake.environment.socketPath);
