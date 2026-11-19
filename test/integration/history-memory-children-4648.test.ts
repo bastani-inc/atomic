@@ -91,7 +91,6 @@ function scriptedModel(recalls: Map<Recaller, Recall>): FauxResponseFactory {
 					fauxToolCall("subagent", {
 						agent: "recall-4648",
 						task: "Recall the project's earlier work.",
-						wait: { kind: "foreground", budgetMs: REAL_STAGE_AND_SUBAGENT_TIMEOUT_MS },
 					}),
 				],
 				{ stopReason: "toolUse" },
