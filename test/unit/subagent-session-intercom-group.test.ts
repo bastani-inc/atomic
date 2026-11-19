@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import type net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CreateAgentSessionOptions, ExtensionContext } from "@bastani/atomic";
+import type { ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
@@ -15,7 +15,6 @@ import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { createStore, mockSession, run, workflow } from "./executor-shared.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
@@ -30,10 +29,7 @@ function makeState(): ExecutorDeps["state"] {
 	};
 }
 
-function stageContext(
-	cwd: string,
-	orchestrationContext: NonNullable<CreateAgentSessionOptions["orchestrationContext"]>,
-): ExtensionContext {
+function parentContext(cwd: string, group: string): ExtensionContext {
 	const ui: Pick<ExtensionContext["ui"], "custom"> = {
 		custom: async <T>() => undefined as T,
 	};
@@ -42,7 +38,7 @@ function stageContext(
 	};
 	const sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionFile" | "getSessionId" | "getLeafId"> = {
 		getSessionFile: () => undefined,
-		getSessionId: () => "workflow-stage-session",
+		getSessionId: () => "parent-session",
 		getLeafId: () => null,
 	};
 	return {
@@ -55,7 +51,13 @@ function stageContext(
 		scopedModels: [],
 		modelRegistry: modelRegistry as ExtensionContext["modelRegistry"],
 		sessionManager: sessionManager as ExtensionContext["sessionManager"],
-		orchestrationContext,
+		subagentPolicy: {
+			managementActions: "full",
+			fanoutAuthorized: true,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			intercomGroup: group,
+		},
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		signal: undefined,
@@ -71,37 +73,9 @@ function stageContext(
 	} satisfies ExtensionContext;
 }
 
-test("a real foreground subagent inherits its workflow group and stays outside default chat", async () => {
-	let stageOrchestrationContext: CreateAgentSessionOptions["orchestrationContext"];
-	const definition = workflow({
-		name: "subagent-invocation-group-inheritance",
-		description: "",
-		inputs: {},
-		outputs: {},
-		run: async (ctx) => {
-			await ctx.task("launcher", { prompt: "launch" });
-			return {};
-		},
-	});
-	const workflowResult = await run(
-		definition,
-		{},
-		{
-			store: createStore(),
-			adapters: {
-				agentSession: {
-					async create(options) {
-						stageOrchestrationContext = options.orchestrationContext;
-						return mockSession();
-					},
-				},
-			},
-		},
-	);
-	assert.equal(workflowResult.status, "completed");
-	assert.ok(stageOrchestrationContext?.intercomGroup);
-
-	const root = mkdtempSync(join(tmpdir(), "atomic-workflow-group-subagent-"));
+test("a real foreground subagent inherits its parent’s group and stays outside default chat", async () => {
+	const parentGroup = "review-team";
+	const root = mkdtempSync(join(tmpdir(), "atomic-session-group-subagent-"));
 	const childGroups: Array<string | undefined> = [];
 	const runSync: SubagentExecutorRuntimeDeps["runSync"] = async (_cwd, _agents, agent, task, options) => {
 		childGroups.push(options.intercomGroup);
@@ -109,7 +83,7 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 	};
 	const pi: Pick<ExecutorDeps["pi"], "events" | "getSessionName"> = {
 		events: { on: () => () => {}, emit: () => {} },
-		getSessionName: () => "workflow-stage",
+		getSessionName: () => "parent-session",
 	};
 	try {
 		const executor = createSubagentExecutor({
@@ -135,7 +109,7 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 			}),
 			runtime: { runSync },
 		});
-		const context = stageContext(root, stageOrchestrationContext);
+		const context = parentContext(root, parentGroup);
 		for (const params of [
 			{ agent: "worker", task: "inherit" },
 			{ agent: "worker", task: "named", group: "child-group" },
@@ -168,9 +142,7 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 		rmSync(root, { recursive: true, force: true });
 	}
 
-	const workflowGroup = stageOrchestrationContext.intercomGroup;
-	assert.deepEqual(childGroups, [workflowGroup, "child-group", "default", "parallel-group", "default"]);
-	assert.ok(workflowGroup);
+	assert.deepEqual(childGroups, [parentGroup, "child-group", "default", "parallel-group", "default"]);
 	const childSocket = {} as net.Socket;
 	const mainSocket = {} as net.Socket;
 	const sessionInfo = (id: string, name: string, group?: string): SessionInfo => ({
@@ -184,7 +156,7 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 		lastActivity: 1,
 	});
 	const sessions = new Map<string, BrokerConnectedSession>([
-		["child", { socket: childSocket, info: sessionInfo("child", "workflow-child", workflowGroup) }],
+		["child", { socket: childSocket, info: sessionInfo("child", "team-child", parentGroup) }],
 		["main", { socket: mainSocket, info: sessionInfo("main", "main-chat") }],
 	]);
 	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
@@ -214,7 +186,7 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 test("in-process child resolves intercom group through typed admission without an env bridge", async () => {
 	const previousGroup = process.env.ATOMIC_INTERCOM_GROUP;
 	process.env.ATOMIC_INTERCOM_GROUP = "ambient-group";
-	const dir = mkdtempSync(join(tmpdir(), "atomic-workflow-group-inprocess-"));
+	const dir = mkdtempSync(join(tmpdir(), "atomic-session-group-inprocess-"));
 	try {
 		const agent = {
 			name: "worker",
@@ -229,7 +201,7 @@ test("in-process child resolves intercom group through typed admission without a
 		const result = await runInProcessSync(dir, [agent], "worker", "work", {
 			cwd: dir,
 			runId: "inprocess-group",
-			intercomGroup: "workflow:root",
+			intercomGroup: "review-team",
 			testSession: { output: "done" },
 		});
 		assert.equal(result.status, "ok");
