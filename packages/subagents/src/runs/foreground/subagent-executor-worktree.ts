@@ -7,9 +7,7 @@ import { ensureNamedWorktree, type NamedWorktree, type NamedWorktreeOptions } fr
 import { resolveSingleOutputPath } from "../shared/single-output.js";
 import {
 	createWorktrees,
-	diffWorktrees,
 	findWorktreeTaskCwdConflict,
-	formatWorktreeDiffSummary,
 	formatWorktreeTaskCwdConflict,
 	type WorktreeSetup,
 } from "../shared/worktree.js";
@@ -68,22 +66,6 @@ export function resolveParallelTaskCwd(
 /** Where a parallel run saves each `worktree: true` child's edits as a patch: a directory of its own per run. */
 export function parallelWorktreeDiffsDir(artifactsDir: string, runId: string): string {
 	return path.join(artifactsDir, "worktree-diffs", runId.replaceAll("/", "+"));
-}
-
-export async function buildParallelWorktreeSuffix(
-	worktreeSetup: WorktreeSetup | undefined,
-	artifactsDir: string,
-	runId: string,
-	tasks: TaskParam[],
-): Promise<string> {
-	if (!worktreeSetup) return "";
-	const diffsDir = parallelWorktreeDiffsDir(artifactsDir, runId);
-	const diffs = await diffWorktrees(
-		worktreeSetup,
-		tasks.map((task) => task.agent),
-		diffsDir,
-	);
-	return formatWorktreeDiffSummary(diffs);
 }
 
 export function findDuplicateParallelOutputPath(input: {

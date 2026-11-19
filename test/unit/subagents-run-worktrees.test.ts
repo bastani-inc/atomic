@@ -92,7 +92,21 @@ function assertAtomicSetupPresent(worktreePath: string, why: string): void {
 	);
 }
 
-test("resuming a paused child in its kept worktree restores the node_modules link and settings its run's diff removed (#3784)", async () => {
+test("saving a worktree patch does not recreate a missing index (#5600)", async () => {
+	const repo = await repositoryWithSetupSources();
+	const { setup } = await worktreeRun(repo);
+	const tree = setup.worktrees[0]!;
+	const index = join((await runGitChecked(tree.path, ["rev-parse", "--absolute-git-dir"])).trimEnd(), "index");
+	unlinkSync(index);
+	writeFileSync(join(tree.path, "draft.txt"), "include this draft\n");
+	const [diff] = await diffWorktrees(setup, ["worker"], join(repo, "..", "diffs"));
+	assert.ok(diff);
+	assert.equal(diff.captureError, undefined);
+	assert.match(readFileSync(diff.patchPath, "utf8"), /include this draft/);
+	assert.equal(existsSync(index), false);
+});
+
+test("resuming a paused child in its kept worktree restores missing setup without losing edits (#3784, #5600)", async () => {
 	const repo = await repositoryWithSetupSources();
 	const { runId, setup } = await worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
@@ -106,7 +120,11 @@ test("resuming a paused child in its kept worktree restores the node_modules lin
 	await diffWorktrees(setup, ["worker"], join(repo, "..", "diffs"));
 	await run.release();
 	assert.equal(existsSync(worktree.path), true, "the paused child's worktree with unsaved work is kept");
-	assert.equal(existsSync(join(worktree.path, "node_modules")), false, "the diff removed the node_modules link");
+	assertAtomicSetupPresent(worktree.path, "patch capture keeps the checkout intact");
+	// Resume also supports worktrees left by older versions, which removed setup during capture.
+	unlinkSync(join(worktree.path, "node_modules"));
+	unlinkSync(join(worktree.path, ".atomic", "settings.local.json"));
+	assert.equal(existsSync(join(worktree.path, "node_modules")), false);
 
 	const releaseResume = await resumeRunWorktree({ runId, index: 0, cwd: worktree.agentCwd, agent: "worker" });
 	const resumedExecution = holdRunWorktree(runId, 0);

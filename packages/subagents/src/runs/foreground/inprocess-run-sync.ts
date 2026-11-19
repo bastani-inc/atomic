@@ -681,11 +681,13 @@ async function launchSingleInProcess(
 					} finally {
 						// Failed output delivery cannot leave a finished child registered as live.
 						forgetIfReleased(control, continuedOutcome);
-						options.onDetachedExit?.(recovered);
+						await options.onDetachedExit?.(recovered);
 					}
 				},
-				(error: unknown) => {
-					options.onDetachedExit?.(refusedResult(agent.name, task, String(error), { ...options, elapsedSpan }));
+				async (error: unknown) => {
+					await options.onDetachedExit?.(
+						refusedResult(agent.name, task, String(error), { ...options, elapsedSpan }),
+					);
 					throw error;
 				},
 			)

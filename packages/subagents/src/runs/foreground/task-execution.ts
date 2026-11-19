@@ -22,7 +22,13 @@ import type { AgentConfig } from "../../agents/agents.js";
 import { sendTaskTranscriptMessage } from "../../intercom/task-message.js";
 import { checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { taskRecordModel } from "../../shared/model-info.js";
-import type { IntercomEventBus, RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
+import type {
+	Details,
+	IntercomEventBus,
+	RunSyncOptions,
+	SingleResult,
+	SubagentToolResult,
+} from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
 import { type ExecutionScheduler, isExecutionTicket } from "../shared/parallel-utils.js";
@@ -46,13 +52,15 @@ import {
 	wakeReleasedChildWithHeldResults,
 } from "./released-children.js";
 import {
+	beginWorktreeExecution,
 	claimRunWorktree,
-	holdRunWorktree,
+	currentChildWorktreeNote,
+	observeChildWorktreeAtReply,
 	parkRunWorktree,
 	runWorktreeRecord,
 	unparkRunWorktree,
 } from "./run-worktrees.js";
-import { readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
+import { readableSubagentChildRecordOf, subagentChildCardRecord } from "./subagent-child-card-state.js";
 import {
 	observeChildRecordFailure,
 	pendingMessagesOfResult,
@@ -144,6 +152,7 @@ function settledOutputSection(
 		path?: string;
 		requestedPath?: string;
 		saveError?: string;
+		worktreeNote?: string;
 	},
 	ranOn: string | undefined,
 ): string {
@@ -151,7 +160,10 @@ function settledOutputSection(
 		output.shown < output.total
 			? `, first ${output.shown} shown${output.path ? "; read the full output file for the rest" : ""}`
 			: "";
-	const lines = [`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):`];
+	// Keep the observation in the header, not in the answer a replayed card extracts from this section.
+	const lines = [
+		`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):${output.worktreeNote ? ` ${output.worktreeNote}` : ""}`,
+	];
 	if (ranOn) lines.push(ranOn);
 	if (output.requestedPath) lines.push(`Requested output: ${output.requestedPath}`);
 	if (output.saveError) lines.push(`Output file error: ${output.saveError}`);
@@ -164,26 +176,40 @@ async function readSettledOutput(
 	host: AgentTaskHost,
 	settled: SettledTaskOutput,
 	record: TaskRecord | undefined,
+	signal?: AbortSignal,
 ): Promise<string | undefined> {
 	const output = settled.result.output;
-	if (!output) return undefined;
+	const kept = output && retainedTaskOutput(output.ownerId, output.taskId);
+	const tree = kept
+		? kept.worktree
+		: record?.kind === "agent"
+			? subagentChildCardRecord(undefined, settled.taskId)
+			: undefined;
+	const observeWorktree = () => tree && observeChildWorktreeAtReply(tree.runId, tree.index, undefined, signal);
+	if (!output) {
+		const note = await observeWorktree();
+		return note ? `${settled.taskId}: ${note}` : undefined;
+	}
 	const label = subagentTaskResultLabel(settled.result);
 	// A child that ran on another model than its launch asked for says so beside its output (#4188).
 	const ranOn = ranOnModelLine(record);
-	const kept = retainedTaskOutput(output.ownerId, output.taskId);
 	if (kept) {
 		return settledOutputSection(
 			settled.taskId,
 			label,
 			{
 				...kept,
+				worktreeNote: await observeWorktree(),
 				shown: Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES),
 				total: kept.totalBytes,
 			},
 			ranOn,
 		);
 	}
-	const unavailable = (reason: string) => `Output of ${settled.taskId} (${label}) is unavailable: ${reason}`;
+	const unavailable = async (reason: string) =>
+		[`Output of ${settled.taskId} (${label}) is unavailable: ${reason}`, await observeWorktree()]
+			.filter(Boolean)
+			.join("\n");
 	const lease = host.resolveTask(settled.taskId);
 	if (!lease.ok) return unavailable(lease.error.message);
 	try {
@@ -196,7 +222,12 @@ async function readSettledOutput(
 		const head =
 			page.value.chunks.map((chunk) => decoder.decode(chunk.bytes, { stream: true })).join("") + decoder.decode();
 		const shown = page.value.chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
-		return settledOutputSection(settled.taskId, label, { head, shown, total: Number(output.byteCount) }, ranOn);
+		return settledOutputSection(
+			settled.taskId,
+			label,
+			{ head, shown, total: Number(output.byteCount), worktreeNote: await observeWorktree() },
+			ranOn,
+		);
 	} catch (error) {
 		return unavailable(error instanceof Error ? error.message : String(error));
 	}
@@ -206,6 +237,7 @@ async function readSettledOutput(
 export async function settledTaskOutputText(
 	host: AgentTaskHost | undefined,
 	settled: readonly SettledTaskOutput[],
+	signal?: AbortSignal,
 ): Promise<string> {
 	if (!host || settled.length === 0) return "";
 	const records = ownerTaskRecords(new Set(settled.map((entry) => entry.taskId)), host);
@@ -215,6 +247,7 @@ export async function settledTaskOutputText(
 				host,
 				entry,
 				records.find((record) => record.ref.taskId === entry.taskId),
+				signal,
 			),
 		),
 	);
@@ -270,6 +303,23 @@ export async function parallelTaskToolResultWithOutput(
 	};
 }
 
+/** Report a rejected slot's current worktree state separately from the host response and any sibling's output. */
+export function withRejectedWorktrees(
+	result: SubagentToolResult,
+	trees: Details["rejectedWorktrees"],
+): SubagentToolResult {
+	if (!result.details || !trees?.some(Boolean)) return result;
+	const notes = trees.flatMap((tree, slot) => {
+		const note = tree && currentChildWorktreeNote(tree.runId, tree.index);
+		return note ? [{ type: "text" as const, text: `Task ${slot + 1}: ${note}` }] : [];
+	});
+	return {
+		...result,
+		details: { ...result.details, rejectedWorktrees: trees },
+		content: [...result.content, ...notes],
+	};
+}
+
 /** Snapshot execution metadata for receipt playback, scoped to this response only. */
 export function taskResponseRecords(
 	response: ModelSingleResponse | ModelParallelResponse,
@@ -308,7 +358,14 @@ export interface QueuedSubagentChildStart {
 }
 
 /** Children the host admitted but has not dispatched yet, by task id; `stopped` once they never will be. */
-const queuedChildren = new Map<string, { readonly start: QueuedSubagentChildStart; stopped: boolean }>();
+const queuedChildren = new Map<
+	string,
+	{
+		readonly start: QueuedSubagentChildStart;
+		finishWorktree?: ReturnType<typeof beginWorktreeExecution>;
+		stopped: boolean;
+	}
+>();
 
 /** Whether the host admitted this task but has not dispatched it yet. */
 export function isQueuedSubagentChild(taskId: string): boolean {
@@ -319,10 +376,14 @@ export function isQueuedSubagentChild(taskId: string): boolean {
  * Call after cancelling a task: whether it was still queued. A cancelled task is never dispatched, so nothing records
  * how it stopped; the caller records it, and {@link takeStoppedQueuedSubagentChild} later starts it.
  */
-export function stopQueuedSubagentChild(taskId: string): boolean {
+export async function stopQueuedSubagentChild(taskId: string): Promise<boolean> {
 	const queued = queuedChildren.get(taskId);
 	if (queued?.stopped !== false) return false;
 	queued.stopped = true;
+	// The host will skip this dispatch. Don't hold the batch until a scheduler slot eventually opens.
+	const finish = queued.finishWorktree;
+	queued.finishWorktree = undefined;
+	if (finish) await finish();
 	return true;
 }
 
@@ -409,6 +470,11 @@ export function forgetRunMembership(runId: string, index: number): void {
 }
 
 const closingChildren = new Map<string, Promise<void>>();
+const finishingWorktreeTasks = new Set<TaskId>();
+
+export function isFinishingWorktreeTask(taskId: TaskId): boolean {
+	return finishingWorktreeTasks.has(taskId);
+}
 
 export function subagentChildClosed(runId: string, index: number): Promise<void> {
 	return closingChildren.get(subagentChildId(runId, index)) ?? Promise.resolve();
@@ -576,12 +642,17 @@ export async function runAgentTask(input: {
 		queued.stopped = true;
 	};
 	let scheduled = false;
+	let finishWorktree: ReturnType<typeof beginWorktreeExecution>;
 	// Every dispatch holds the run's worktrees with a hold of its own, released once that dispatch drains: a cancelled
 	// dispatch the host skips never releases the hold of a later execution of the same child.
 	const schedule = (dispatch: () => Promise<void>) => {
-		const release = holdRunWorktree(runId, index);
+		finishWorktree = beginWorktreeExecution(runId, index);
+		const drained = () => {
+			if (admittedTaskId) finishingWorktreeTasks.delete(admittedTaskId);
+			void finishWorktree?.();
+		};
 		if (!input.schedule) {
-			void dispatch().finally(release);
+			void dispatch().finally(drained);
 			return;
 		}
 		scheduled = true;
@@ -589,7 +660,7 @@ export async function runAgentTask(input: {
 			dispatch().finally(() => {
 				if (!dispatched) ticket?.onEntered();
 				if (!dispatched && admittedTaskId !== undefined) void settleSkipped(admittedTaskId);
-				release();
+				drained();
 			}),
 		);
 	};
@@ -650,7 +721,7 @@ export async function runAgentTask(input: {
 				// This execution owns the child's worktree now; a stopped child's worktree was kept for it until here.
 				claimRunWorktree(runId, index);
 				const cleaned = Promise.withResolvers<Cleanup>();
-				let executionBound = false;
+				let executionCleanup: Promise<Cleanup> | undefined;
 				const ownerClosed = () =>
 					context.signal.aborted &&
 					(context.signal.reason === "owner-close" || context.signal.reason === "shutdown");
@@ -763,7 +834,7 @@ export async function runAgentTask(input: {
 								toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
 								reportStart,
 								onExecution: (execution) => {
-									executionBound = true;
+									executionCleanup = execution.cleanup;
 									trackChildClosing(childId, execution.cleanup);
 									void Promise.allSettled([result])
 										.then(() => execution.cleanup)
@@ -804,6 +875,16 @@ export async function runAgentTask(input: {
 							parkRunWorktree(runId, index);
 						if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
 						if (released) forgetChildSchedule(runId, index);
+						let worktreeOutput: string | undefined;
+						if (finishWorktree) {
+							finishingWorktreeTasks.add(context.ref.taskId);
+							worktreeOutput = getSingleResultOutput(child);
+							// Retain requested files inside the worktree before releasing the dispatch's hold.
+							const saved = released
+								? undefined
+								: retainTaskOutput(child, worktreeOutput, context.ref, { runId, index });
+							child.worktreeNote = await finishWorktree(Promise.all([executionCleanup, saved]));
+						}
 						if (released && child.released) {
 							// The record goes first: a result forwarded before it would find the child still recorded running.
 							recordChild(
@@ -869,8 +950,8 @@ export async function runAgentTask(input: {
 								context.ref.taskId,
 								wokenWith,
 							);
-						const text = getSingleResultOutput(child);
-						if (!released) await retainTaskOutput(child, text, context.ref);
+						const text = worktreeOutput ?? getSingleResultOutput(child);
+						if (!released && !finishWorktree) await retainTaskOutput(child, text, context.ref);
 						const bytes = Buffer.from(text);
 						context.reportActivity({
 							reportId: "terminal-output",
@@ -924,6 +1005,10 @@ export async function runAgentTask(input: {
 					} catch (error) {
 						elapsedSpan.endedAt ??= Date.now();
 						if (takeSubagentChildStop(context.ref.taskId) !== undefined) unparkRunWorktree(runId, index);
+						if (finishWorktree) {
+							finishingWorktreeTasks.add(context.ref.taskId);
+							await finishWorktree(executionCleanup);
+						}
 						if (!ownerClosed()) recordChild("terminal", "error");
 						else if (input.recordChild?.ownerEndedForGood?.()) {
 							forgetRunMembership(runId, index);
@@ -934,7 +1019,7 @@ export async function runAgentTask(input: {
 						ticket?.onEntered();
 						recordSubagentStartProgress(context.ref.taskId, undefined);
 						// A refusal before session admission has no session resources to reap.
-						if (!executionBound) cleaned.resolve({ kind: "reaped" });
+						if (!executionCleanup) cleaned.resolve({ kind: "reaped" });
 					}
 				});
 				return { result, cleanup: cleaned.promise, elapsedSpan };
@@ -970,7 +1055,8 @@ export async function runAgentTask(input: {
 			taskId: started.value.taskId,
 			intercomTarget: input.options.intercomSessionName,
 		});
-	if (queuedAtAdmission) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
+	if (queuedAtAdmission)
+		queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false, finishWorktree });
 	const observation = input.host.observeAgentLaunch(started.value.taskId, undefined, () => registered.resolve());
 	registered.resolve();
 	ticket?.onObserved();
