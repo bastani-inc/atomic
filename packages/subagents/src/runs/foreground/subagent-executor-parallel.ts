@@ -54,7 +54,7 @@ import {
 	parallelWorktreeDiffsDir,
 	resolveParallelTaskCwd,
 } from "./subagent-executor-worktree.js";
-import { parallelTaskToolResultWithOutput } from "./task-execution.js";
+import { parallelTaskToolResultWithOutput, withRejectedWorktrees } from "./task-execution.js";
 
 /** The error a parallel run with more tasks than its limit fails with. */
 export function parallelTaskLimitError(taskCount: number, maxParallelTasks: number): SubagentToolResult | undefined {
@@ -322,7 +322,14 @@ export async function runParallelPath(
 					},
 				})),
 			};
-			return parallelTaskToolResultWithOutput(response, ctx.getAgentTaskHost());
+			const reply = await parallelTaskToolResultWithOutput(response, ctx.getAgentTaskHost());
+			return withRejectedWorktrees(
+				reply,
+				runWorktrees &&
+					response.slots.map(({ ordinal, outcome }) =>
+						outcome.kind === "unstarted" && outcome.reason.kind === "rejected" ? { runId, index: ordinal } : null,
+					),
+			);
 		}
 		// A child's note was read when it finished, while a sibling may still have held the batch: every child has
 		// finished now, so read the batch's worktree state again, without waiting.

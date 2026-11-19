@@ -280,6 +280,8 @@ export interface Details {
 		| import("../../../coding-agent/src/core/tasks/contracts.js").ModelSingleResponse
 		| import("../../../coding-agent/src/core/tasks/contracts.js").ModelParallelResponse;
 	taskRecords?: import("../../../coding-agent/src/core/tasks/contracts.js").TaskRecord[];
+	/** Rejected slots have no task id. Keep their worktree identities, not a snapshot of a sibling's hold. */
+	rejectedWorktrees?: readonly ({ readonly runId: string; readonly index: number } | null)[];
 	/** The session that launched these children and holds their records, so a replayed card can find them. */
 	ownerSessionId?: string;
 	taskError?: string;

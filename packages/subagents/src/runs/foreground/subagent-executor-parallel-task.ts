@@ -413,18 +413,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			ticket?.release();
 		}
 		const abandoned = input.runWorktrees?.abandonLaunch(index);
-		if (abandoned) {
-			result.worktreeNote = await boundedWorktreeReply(input.runId, abandoned);
-			const failed = result.taskResponse;
-			if (result.worktreeNote && failed?.kind === "unstarted" && failed.reason.kind === "rejected")
-				result.taskResponse = {
-					...failed,
-					reason: {
-						...failed.reason,
-						error: { ...failed.reason.error, message: `${failed.reason.error.message}. ${result.worktreeNote}` },
-					},
-				};
-		}
+		if (abandoned) result.worktreeNote = await boundedWorktreeReply(input.runId, abandoned);
 		return result;
 	}).finally(() => {
 		for (const ticket of tickets) ticket?.release();

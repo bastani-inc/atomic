@@ -20,7 +20,13 @@ import type { AgentConfig } from "../../agents/agents.js";
 import { sendTaskTranscriptMessage } from "../../intercom/task-message.js";
 import { checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { taskRecordModel } from "../../shared/model-info.js";
-import type { IntercomEventBus, RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
+import type {
+	Details,
+	IntercomEventBus,
+	RunSyncOptions,
+	SingleResult,
+	SubagentToolResult,
+} from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
 import { type ExecutionScheduler, isExecutionTicket } from "../shared/parallel-utils.js";
@@ -46,6 +52,7 @@ import {
 import {
 	beginWorktreeExecution,
 	claimRunWorktree,
+	currentChildWorktreeNote,
 	observeChildWorktreeAtReply,
 	parkRunWorktree,
 	runWorktreeRecord,
@@ -288,6 +295,23 @@ export async function parallelTaskToolResultWithOutput(
 			taskRecords: taskResponseRecords(response, host),
 		},
 		...(parallelResponseNeverStarted(response) ? { isError: true } : {}),
+	};
+}
+
+/** Report a rejected slot's current worktree state separately from the host response and any sibling's output. */
+export function withRejectedWorktrees(
+	result: SubagentToolResult,
+	trees: Details["rejectedWorktrees"],
+): SubagentToolResult {
+	if (!result.details || !trees?.some(Boolean)) return result;
+	const notes = trees.flatMap((tree, slot) => {
+		const note = tree && currentChildWorktreeNote(tree.runId, tree.index);
+		return note ? [{ type: "text" as const, text: `Task ${slot + 1}: ${note}` }] : [];
+	});
+	return {
+		...result,
+		details: { ...result.details, rejectedWorktrees: trees },
+		content: [...result.content, ...notes],
 	};
 }
 

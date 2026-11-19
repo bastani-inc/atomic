@@ -3427,6 +3427,114 @@ test("waiting for a finished child checks a batch sweep already started by its s
 	}
 });
 
+function listedWorktrees(h: Harness): string[] {
+	return gitOutput(h.cwd, ["worktree", "list", "--porcelain"])
+		.split("\n")
+		.filter((line) => line.startsWith("worktree "))
+		.map((line) => line.slice("worktree ".length).trimEnd());
+}
+
+function launchCard(h: Harness, launch: SubagentToolResult, args: Parameters<Harness["call"]>[0], expanded: boolean) {
+	initTheme("dark", false);
+	const card = renderSubagentToolResult(launch, { expanded, isPartial: false }, theme, {
+		state: {},
+		toolCallId: "launch",
+		args,
+		invalidate() {},
+		getTaskRecord: (id) => h.host.taskRecords(new Set([id]))[0],
+	});
+	return () => card.render(160).map(stripTerminalSequences).join("\n");
+}
+
+test("a batch whose children failed to start reports only their errors after both worktrees are removed (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const reasons = ["First authorization timed out", "Second authorization timed out"];
+	const requests: PromiseWithResolvers<never>[] = [];
+	const emit = h.deps.pi.events.emit.bind(h.deps.pi.events);
+	const auth = vi.spyOn(h.deps.pi.events, "emit").mockImplementation((channel, data) => {
+		if (channel !== SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT) return emit(channel, data);
+		const request = Promise.withResolvers<never>();
+		requests.push(request);
+		(data as { completion?: Promise<never> }).completion = request.promise;
+	});
+	const args = { tasks: ["first", "second"].map((task) => ({ agent: "worker", task })), worktree: true };
+	try {
+		const pending = h.call(args);
+		await vi.waitFor(() => assert.equal(requests.length, 2), { timeout: RECORD_WAIT_MS });
+		const checkouts = listedWorktrees(h);
+		assert.equal(checkouts.length, 3);
+		requests[0]!.reject(new Error(reasons[0]));
+		await new Promise<void>((resolve) => setImmediate(resolve)); // The second reservation still holds both trees.
+		requests[1]!.reject(new Error(reasons[1]));
+		const launch = await pending;
+		assert.equal(launch.isError, true);
+		assert.equal(h.runs.length, 0);
+		assert.equal(listedWorktrees(h).length, 1);
+		assert.equal(checkouts.filter((path) => existsSync(path)).length, 1);
+		const response = launch.details?.taskResponse;
+		assert.ok(response?.kind === "parallel");
+		assert.deepEqual(
+			response.slots.map(({ outcome }) => outcome),
+			reasons.map((message) => ({
+				kind: "unstarted",
+				reason: { kind: "rejected", error: { code: "SpawnFailed", message } },
+			})),
+		);
+		for (const observed of [text(launch), launchCard(h, launch, args, true)()]) {
+			for (const reason of reasons) assert.ok(observed.includes(reason), observed);
+			assert.doesNotMatch(observed, /worktree kept until/i);
+		}
+	} finally {
+		auth.mockRestore();
+	}
+});
+
+test("a failed launch reports the worktree hold separately and drops it when its sibling finishes (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	bindSubagentChildCards(h.ctx);
+	const reason = "Launch not authorized";
+	h.host.updateBinding({
+		authorizeLaunch(intent) {
+			if (intent.task === "refused") throw new Error(reason);
+		},
+	});
+	const finish = Promise.withResolvers<void>();
+	h.finishOn.set("admitted", finish);
+	const args = { tasks: ["refused", "admitted"].map((task) => ({ agent: "worker", task })), worktree: true };
+	const hold = /Worktree kept until the other children in this batch finish\./;
+	try {
+		const launch = await h.call(args);
+		assert.notEqual(launch.isError, true, text(launch));
+		const response = launch.details?.taskResponse;
+		assert.ok(response?.kind === "parallel");
+		const sibling = response.slots[1]?.outcome;
+		assert.ok(sibling?.kind === "admitted");
+		const checkouts = listedWorktrees(h);
+		assert.equal(checkouts.length, 3);
+		const cards = [false, true].map((expanded) => launchCard(h, launch, args, expanded));
+		assert.match(text(launch), hold);
+		for (const paint of cards) assert.match(paint(), hold);
+		finish.resolve();
+		await settled(h, sibling.observation.taskId);
+		assert.equal(listedWorktrees(h).length, 1);
+		assert.equal(checkouts.filter((path) => existsSync(path)).length, 1);
+		for (const paint of cards) {
+			const replay = paint();
+			assert.match(replay, /Launch not authorized/);
+			assert.match(replay, /Done/);
+			assert.doesNotMatch(replay, hold);
+		}
+		assert.deepEqual(response.slots[0]?.outcome, {
+			kind: "unstarted",
+			reason: { kind: "rejected", error: { code: "SpawnFailed", message: reason } },
+		});
+	} finally {
+		finish.resolve();
+	}
+});
+
 test("the original launch card shows the answers after the last sibling releases the batch worktrees (#5600)", async () => {
 	const h = harness();
 	initGitRepository(h.cwd);

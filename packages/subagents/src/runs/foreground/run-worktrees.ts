@@ -220,10 +220,10 @@ function idleWorktreeNote(run: RunWorktrees): string | undefined {
 	return run.holds.size || run.launching.size ? BATCH_KEPT : run.sweepNote;
 }
 
-/** A card renders synchronously: report the current sweep or hold without starting or waiting for work. */
+/** Sample a child's current sweep or hold for a reply or card without starting or waiting for work. */
 export function currentChildWorktreeNote(runId: string, index: number): string | undefined {
 	const run = runs.get(runId);
-	if (!run?.setup.worktrees.some((tree) => tree.index === index)) return undefined;
+	if (!run || run.removed.has(index) || !run.setup.worktrees.some((tree) => tree.index === index)) return undefined;
 	return run.finishing.has(index) || run.sweeping ? CLEANUP_IN_BACKGROUND : idleWorktreeNote(run);
 }
 

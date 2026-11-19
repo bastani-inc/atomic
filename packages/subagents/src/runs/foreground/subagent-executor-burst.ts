@@ -22,7 +22,7 @@ import {
 	type SubagentParamsLike,
 	type TaskParam,
 } from "./subagent-executor-types.js";
-import { parallelTaskToolResultWithOutput, taskToolResultWithOutput } from "./task-execution.js";
+import { parallelTaskToolResultWithOutput, taskToolResultWithOutput, withRejectedWorktrees } from "./task-execution.js";
 
 interface BurstItem {
 	id: string;
@@ -506,7 +506,11 @@ export function createExecutionBurstDispatcher(input: {
 							projectResult(result, merged.routes![index]!),
 					),
 				);
-				for (let index = 0; index < items.length; index++) resolveItem(items[index]!, projections[index]!);
+				for (let index = 0; index < items.length; index++) {
+					const route = merged.routes![index]!;
+					const trees = result.details?.rejectedWorktrees?.slice(route.start, route.start + route.length);
+					resolveItem(items[index]!, withRejectedWorktrees(projections[index]!, trees));
+				}
 			}
 		} catch (error) {
 			const rejection = error instanceof Error ? error : new Error(String(error));

@@ -688,6 +688,7 @@ function releasedWaitingTools(result: TaskResult): string | undefined {
 }
 
 function buildOutcomeToolBlock(input: {
+	readonly slot: number;
 	readonly outcome:
 		| Extract<NonNullable<Details["taskResponse"]>, { kind: "admitted" | "unstarted" }>
 		| NonNullable<Extract<NonNullable<Details["taskResponse"]>, { kind: "parallel" }>["slots"][number]["outcome"]>;
@@ -705,10 +706,20 @@ function buildOutcomeToolBlock(input: {
 		if (outcome.reason.kind === "rejected") {
 			const reason = firstDisplayLine(outcome.reason.error.message || "Not started");
 			const statusLine = theme.fg("error", ["Failed", reason].filter(Boolean).join(" · "));
+			const tree = result.details?.rejectedWorktrees?.[input.slot];
 			const block = new ToolBlock({
 				status: "failure",
 				title: "Agent",
 				args,
+				body: tree
+					? {
+							invalidate() {},
+							render(width) {
+								const note = currentChildWorktreeNote(tree.runId, tree.index);
+								return note ? new Text(theme.fg("dim", note), 0, 0).render(width) : [];
+							},
+						}
+					: undefined,
 				details: expanded
 					? buildExpandedDetails({
 							statusLine,
@@ -1217,6 +1228,7 @@ export function renderSubagentToolResult(
 		const labels = request && !burst ? expandParallelTasks(request) : [];
 		const blocks = outcomes.map((outcome, index) =>
 			buildOutcomeToolBlock({
+				slot: index,
 				outcome,
 				identity: labels[index],
 				result,
