@@ -247,7 +247,7 @@ test.each(["completion", "pause"] as const)("an SDK handoff keeps the launch liv
 	const owner = SessionManager.inMemory(env.root);
 	const sink = createSubagentChildRecordSink(
 		{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
-		{ sessionManager: owner, orchestrationContext: undefined },
+		{ sessionManager: owner },
 	);
 	const card = subagentLaunchCard(env.root, { agent: agent.name, task: "stand by" });
 	const detach = new AbortController();
@@ -457,7 +457,7 @@ test("a launch card outside the task host freezes on turn interrupt and follows 
 			}),
 			recordChild: createSubagentChildRecordSink(
 				{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
-				{ sessionManager: owner, orchestrationContext: undefined },
+				{ sessionManager: owner },
 			),
 		});
 		assert.ok(response.kind === "admitted");
@@ -624,7 +624,7 @@ test(
 				runtime: { runSync },
 				recordChild: createSubagentChildRecordSink(
 					{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
-					{ sessionManager: owner, orchestrationContext: undefined },
+					{ sessionManager: owner },
 				),
 				onTerminal: (value) => {
 					child = value;
@@ -704,7 +704,7 @@ test(
 			wakeDispatcher: new AgentWakeDispatcher(),
 			recordChild: createSubagentChildRecordSink(
 				{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
-				{ sessionManager: owner, orchestrationContext: undefined },
+				{ sessionManager: owner },
 			),
 			runtime: { runSync },
 		});

@@ -18,7 +18,6 @@ import type {
 	SubagentState,
 	SubagentToolResult,
 } from "../../shared/types.js";
-import { workflowSessionMetadataFromContext } from "../../shared/types-depth.js";
 import { mapConcurrent } from "../../shared/utils.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
@@ -29,7 +28,7 @@ import type { WorktreeSetup } from "../shared/worktree.js";
 import { runOwnerlessChild } from "./ownerless-children.js";
 import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
-import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
+import { isScriptSubagentCall, type SubagentExecutorRuntimeDeps, type TaskParam } from "./subagent-executor-types.js";
 import { resolveParallelTaskCwd } from "./subagent-executor-worktree.js";
 import { runAgentTask } from "./task-execution.js";
 
@@ -54,7 +53,6 @@ interface ForegroundParallelRunInput {
 	maxOutput?: MaxOutputConfig;
 	paramsCwd: string;
 	parentDepth?: number;
-	workflowStageSubagentGuard?: boolean;
 	availableModels: ModelInfo[];
 	knownModelProviders: string[];
 	resolveCandidateModel: CandidateModelResolver;
@@ -256,8 +254,6 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			outputPath,
 			outputMode: behavior?.outputMode,
 			parentDepth: input.parentDepth,
-			workflowStageSubagentGuard: input.workflowStageSubagentGuard,
-			workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
 			controlConfig: input.controlConfig,
 			onControlEvent: input.onControlEvent,
 			intercomSessionName: childIntercomTarget,
@@ -335,6 +331,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			runOptions.intercomDetachSignal = undefined;
 			runOptions.onIntercomDetachCommit = undefined;
 			let terminalChild: SingleResult | undefined;
+			if (isScriptSubagentCall(input.ctx)) input.signal.throwIfAborted();
 			const response = await runAgentTask({
 				host,
 				cwd: input.ctx.cwd,

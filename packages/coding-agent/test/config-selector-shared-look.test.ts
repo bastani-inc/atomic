@@ -39,7 +39,7 @@ function groups(count: number): ResourceGroup[] {
 }
 
 function emptyPaths(): ResolvedPaths {
-	return { extensions: [], skills: [], prompts: [], themes: [], legacyWorkflowFiles: [], mcpServers: [] };
+	return { extensions: [], skills: [], prompts: [], themes: [], mcpServers: [] };
 }
 
 function render(list: ResourceList, width = 100): string[] {
@@ -286,7 +286,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 	});
 
 	it("fits the complete config frame after a narrow resize (#5256)", () => {
-		const empty = { extensions: [], skills: [], prompts: [], themes: [], legacyWorkflowFiles: [], mcpServers: [] };
+		const empty = { extensions: [], skills: [], prompts: [], themes: [], mcpServers: [] };
 		const selector = new ConfigSelectorComponent(
 			{ global: empty, project: empty },
 			{} as SettingsManager,

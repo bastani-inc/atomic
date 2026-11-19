@@ -29,7 +29,7 @@ function mean(values: readonly number[]): number {
 }
 
 /**
- * Classify a score series using the same deterministic hysteresis as workflows.
+ * Classify a score series using the change in mean score between successive windows.
  * The result is evidence only: it carries no run action or terminal status.
  */
 export function classify_trend(series: readonly number[], config: TrendConfig = {}): TrendResult {

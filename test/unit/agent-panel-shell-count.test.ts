@@ -77,7 +77,7 @@ function mountPanel(session: object, onCounts?: (counts: AgentPanelCounts) => vo
 
 const workflowRow: AgentPanelItem = {
 	id: "run:wf",
-	kind: "workflow",
+	kind: "agent",
 	state: "running",
 	name: "ralph",
 	task: "stage build",
@@ -113,35 +113,6 @@ for (const width of [80, 160]) {
 		}
 	});
 }
-
-test("a panel with only workflow runs shows no main row, focused or not", () => {
-	const session = workflowSession([workflowRow]);
-	const panel = mountPanel(session);
-	try {
-		const lines = panel.lines(80);
-		assert.equal(lines.length, 1, lines.join("\n"));
-		assert.match(lines[0]!, /^ {2}\S ralph/);
-	} finally {
-		panel.dispose();
-	}
-
-	const calls: string[] = [];
-	const focus = new AgentPanelFocus(new KeybindingsManager(), {
-		open: (row) => calls.push(`open ${row.id}`),
-		stop: () => {},
-		dismiss: () => {},
-		close: () => calls.push("close"),
-	});
-	focus.update([workflowRow as AgentPanelRow]);
-	focus.enter();
-	assert.equal(focus.showMain, false);
-	assert.equal(focus.selectedId, "run:wf");
-	const press = (data: string) => focus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
-	press("\x1b[H");
-	assert.equal(focus.selectedId, "run:wf", "Home stays on the first row when there is no main row");
-	press("\x1b[A");
-	assert.deepEqual(calls, ["close"], "↑ on the first row returns to the prompt");
-});
 
 test("with only shells running there are no rows: the hint counts them and points to /tasks", () => {
 	const session = {};

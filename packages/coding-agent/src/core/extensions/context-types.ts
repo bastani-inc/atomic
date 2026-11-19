@@ -16,6 +16,8 @@ export interface ExecuteToolOptions {
 
 /** Tool-only context. Nested calls retain session validation and permission hooks. */
 export interface ExtensionToolContext extends ExtensionContext {
+	/** The calling tool's id for a nested invocation; absent for a direct call from the model. */
+	readonly parentToolCallId?: string;
 	readonly tools: readonly import("@bastani/atomic-agent-core").AgentTool[];
 	executeTool(
 		name: string,

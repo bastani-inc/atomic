@@ -28,9 +28,9 @@ import {
 	cleanupWorktrees,
 	createWorktrees,
 	diffWorktrees,
+	runGitChecked,
 	type WorktreeSetup,
 } from "../../packages/subagents/src/runs/shared/worktree.js";
-import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 
 const sweepCapture = vi.hoisted((): { directory?: string; reached?: () => void; proceed?: Promise<void> } => ({}));
 

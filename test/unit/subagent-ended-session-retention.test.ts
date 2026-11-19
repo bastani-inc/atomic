@@ -37,7 +37,6 @@ function parentOf(path: string, session: object): ParentContext {
 		sessionId: `session-of-${path}`,
 		intercomGroup: "group",
 		getChildSessionOptions: (options) => ({ ...options, parentSession: session }) as typeof options,
-		orchestrationContext: { kind: "workflow-stage", session } as never,
 	};
 }
 

@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { type AgentTool, runToolCall } from "@bastani/atomic-agent-core";
 import { type ToolCall, validateToolArguments } from "@bastani/atomic-ai";
 import type { ToolResultMessage } from "@bastani/atomic-ai/compat";
@@ -8,10 +7,6 @@ import { NestedToolCallRunner } from "./nested-tool-calls.js";
 import { combineUsage } from "./usage-totals.ts";
 
 const runners = new WeakMap<AgentSession, NestedToolCallRunner>();
-const parentCall = new AsyncLocalStorage<string>();
-export function getParentToolCallId(): string | undefined {
-	return parentCall.getStore();
-}
 
 export function getCallableTools(session: AgentSession, active = new Set(session.getActiveToolNames())): AgentTool[] {
 	return [...session._toolRegistry.values()].flatMap((tool): AgentTool[] => {
@@ -73,30 +68,30 @@ export function executeNestedToolCall(
 						},
 						isError: true,
 					});
-				return runToolCall(toolCall, {
-					tools: getCallableTools(session).map(
-						(tool): AgentTool =>
-							session.agent.toolExecution === "sequential" || tool.executionMode === "sequential"
-								? {
-										...tool,
-										execute: (...args) =>
-											session._toolExecutionScheduler.schedule("exclusive", () => {
-												if (args[2]?.aborted) throw new Error("Operation aborted");
-												return tool.execute(...args);
-											}),
-									}
-								: tool,
-					),
-					assistantMessage,
-					context: { messages: session.agent.state.messages, tools: session.agent.state.tools },
-					// The nested call's signal reaches the hooks, so interrupting it also stops its wait for a blueprint build.
-					beforeToolCall: (context, hookSignal) =>
-						parentCall.run(parentId, async () => session.agent.beforeToolCall?.(context, hookSignal)),
-					afterToolCall: (context, hookSignal) =>
-						parentCall.run(parentId, async () => session.agent.afterToolCall?.(context, hookSignal)),
-					signal,
-					onUpdate,
-				});
+				return session.extensionRunner.runNestedTool(toolCall.id, parentId, () =>
+					runToolCall(toolCall, {
+						tools: getCallableTools(session).map(
+							(tool): AgentTool =>
+								session.agent.toolExecution === "sequential" || tool.executionMode === "sequential"
+									? {
+											...tool,
+											execute: (...args) =>
+												session._toolExecutionScheduler.schedule("exclusive", () => {
+													if (args[2]?.aborted) throw new Error("Operation aborted");
+													return tool.execute(...args);
+												}),
+										}
+									: tool,
+						),
+						assistantMessage,
+						context: { messages: session.agent.state.messages, tools: session.agent.state.tools },
+						// The nested call's signal reaches the hooks, so interrupting it also stops its wait for a blueprint build.
+						beforeToolCall: session.agent.beforeToolCall,
+						afterToolCall: session.agent.afterToolCall,
+						signal,
+						onUpdate,
+					}),
+				);
 			},
 			emit: async (event) => {
 				await session.extensionRunner.emit(event);

@@ -25,11 +25,11 @@ import { dedupePackages, getPackageIdentity, getPackageSourceString, parseSource
 import type {
 	FileKind,
 	MissingSourceAction,
+	PackageDiscovery,
 	PackageFilter,
 	PackageInstallFailure,
 	PackageManagerContext,
 	PathMetadata,
-	ResolvedPaths,
 	ResolveExtensionSourcesOptions,
 	ResourceAccumulator,
 	ResourceMap,
@@ -42,7 +42,7 @@ import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 export async function resolvePackages(
 	context: PackageManagerContext,
 	onMissing?: (source: string) => Promise<MissingSourceAction>,
-): Promise<ResolvedPaths> {
+): Promise<PackageDiscovery> {
 	const accumulator = createAccumulator();
 	const globalSettings = context.settingsManager.getGlobalSettings();
 	const projectSettings = context.settingsManager.getProjectSettings();
@@ -164,7 +164,7 @@ export async function resolveExtensionSources(
 	context: PackageManagerContext,
 	sources: PackageSource[],
 	options?: ResolveExtensionSourcesOptions,
-): Promise<ResolvedPaths> {
+): Promise<PackageDiscovery> {
 	const accumulator = createAccumulator();
 	const scope: SourceScope = options?.temporary ? "temporary" : options?.local ? "project" : "user";
 	const packageSources: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
