@@ -7,7 +7,6 @@ import type {
 	OperationId,
 	SettlementReceipt,
 	TaskResult,
-	WaitPolicy,
 } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 
@@ -171,45 +170,34 @@ test("same-scope hosts dispatch each original launch factory", async () => {
 	assert.equal((await first.close("session-close")).ok, true);
 });
 
-// RFC #2884: an exact Intercom commit releases its registered observation, not execution.
-test("agent launch exposes an exact wait yield without settling the original runner", async () => {
-	const owner = host();
+test("an agent launch a JavaScript caller still asks to observe in the foreground runs in the background", async () => {
+	const owner = new AgentTaskHost({
+		scope: { kind: "session", sessionId: randomUUID() },
+		// A foreground observation that is still honoured would hold this test until it times out.
+		tasks: { wait: { kind: "until-settled" } },
+		authorizeLaunch() {},
+	});
 	const result = deferred<TaskResult>();
-	const cleanup = deferred<Cleanup>();
-	let starts = 0;
-	const started = await owner.startAgentTask(intent, operation(), () => {
-		starts++;
-		return { result: result.promise, cleanup: cleanup.promise };
-	});
-	assert.ok(started.ok);
-	let commit: (() => void) | undefined;
-	const observation = owner.observeAgentLaunch(started.value.taskId, { kind: "foreground" }, (yieldWait) => {
-		commit = () => {
-			yieldWait("intercom-coordination");
-		};
-	});
-	assert.ok(commit);
-	commit();
-	const yielded = await observation;
-	assert.ok(yielded.ok);
-	assert.equal(yielded.value.kind, "yielded");
-	if (yielded.value.kind === "yielded") assert.equal(yielded.value.reason, "intercom-coordination");
-	assert.equal(starts, 1);
-	const terminal: TaskResult = { kind: "failed", code: "Expected", message: "Original runner completed" };
-	result.resolve(terminal);
-	assert.deepEqual(await owner.waitForTask(started.value.taskId), {
-		ok: true,
-		value: { kind: "settled", taskId: started.value.taskId, result: terminal },
-	});
-	cleanup.resolve({ kind: "reaped" });
-	assert.equal((await owner.close("session-close")).ok, true);
+	try {
+		const started = await owner.startAgentTask(intent, operation(), () => ({
+			result: result.promise,
+			cleanup: result.promise.then(() => ({ kind: "reaped" as const })),
+		}));
+		assert.ok(started.ok);
+		const untyped: unknown = { kind: "foreground" };
+		const observed = await owner.observeAgentLaunch(started.value.taskId, untyped as { kind: "background" });
+		assert.ok(observed.ok && observed.value.kind === "yielded");
+		assert.equal(observed.value.reason, "default-background");
+	} finally {
+		result.resolve({ kind: "cancelled", cause: "user" });
+		await owner.close("session-close");
+	}
 });
 
 for (const [label, policy, reason] of [
 	["explicit background", { kind: "background" }, "explicit"],
-	["explicit foreground budget", { kind: "foreground", budgetMs: 1 }, "elapsed"],
-	["owner foreground budget", { kind: "foreground" }, "elapsed"],
-] satisfies Array<[string, WaitPolicy, string]>) {
+	["default background", undefined, "default-background"],
+] satisfies Array<[string, { readonly kind: "background" } | undefined, string]>) {
 	test(`${label} releases observation while the same subagent completes later`, async () => {
 		const settled = deferred<SettlementReceipt>();
 		const owner = new AgentTaskHost({
@@ -367,19 +355,20 @@ test("owner message yields all host waits, not other owners or independent SDK o
 		const first = await owner.startAgentTask(intent, operation(), runner);
 		const second = await other.startAgentTask(intent, operation(), runner);
 		assert.ok(first.ok && second.ok);
-		const launch = owner.observeAgentLaunch(first.value.taskId, { kind: "foreground" });
+		await owner.observeAgentLaunch(first.value.taskId);
 		const explicit = owner.waitForTask(first.value.taskId);
+		const again = owner.waitForTask(first.value.taskId);
 		const { supervisor } = owner.ownerBinding;
 		let independentFinished = false;
 		const independent = Promise.all([
-			other.observeAgentLaunch(second.value.taskId, { kind: "foreground" }),
+			other.waitForTask(second.value.taskId),
 			supervisor.waitForTask(first.value.lease),
 		]).then((outcomes) => {
 			independentFinished = true;
 			return outcomes;
 		});
 		owner.yieldTaskWaits("intercom-coordination");
-		for (const outcome of await Promise.all([launch, explicit])) {
+		for (const outcome of await Promise.all([explicit, again])) {
 			assert.ok(outcome.ok && outcome.value.kind === "yielded");
 			assert.equal(outcome.value.reason, "intercom-coordination");
 			assert.equal(outcome.value.taskId, first.value.taskId);
@@ -406,7 +395,7 @@ test("owner message yields all host waits, not other owners or independent SDK o
 });
 
 test.each(["elapsed", "settled", "owner-close"] as const)(
-	"%s launch observation releases its owner-message registration",
+	"%s explicit wait releases its owner-message registration",
 	async (ending) => {
 		const owner = host();
 		const result = deferred<TaskResult>();
@@ -416,10 +405,8 @@ test.each(["elapsed", "settled", "owner-close"] as const)(
 				cleanup: Promise.resolve({ kind: "reaped" }),
 			}));
 			assert.ok(started.ok);
-			const waiting = owner.observeAgentLaunch(started.value.taskId, {
-				kind: "foreground",
-				budgetMs: ending === "elapsed" ? 0 : 60_000,
-			});
+			await owner.observeAgentLaunch(started.value.taskId);
+			const waiting = owner.waitForTask(started.value.taskId, ending === "elapsed" ? 0 : 60_000);
 			if (ending === "settled") result.resolve({ kind: "failed", code: "Expected", message: "done" });
 			if (ending === "owner-close") await owner.close("session-close");
 			assert.ok((await waiting).ok);

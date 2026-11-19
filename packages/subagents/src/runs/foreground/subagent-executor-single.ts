@@ -1,5 +1,6 @@
 import { rm } from "node:fs/promises";
 import * as path from "node:path";
+import type { AgentConfig } from "../../agents/agents.js";
 import { normalizeSkillInput } from "../../agents/skills.js";
 import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
 import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
@@ -27,7 +28,6 @@ import { resolveSubagentAutoModel } from "../shared/auto-model.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId, resolveModelCandidate, resultRanOnLine } from "../shared/model-fallback.js";
-import { isExecutionTicket } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import {
 	finalizeSingleOutput,
@@ -47,11 +47,11 @@ import {
 	notifyDetachedForegroundChildExit,
 	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
-import {
-	BURST_EXECUTION_SCHEDULE,
-	type ExecutionContextData,
-	type ForegroundControl,
-	type ResolvedExecutorDeps,
+import type {
+	ExecutionContextData,
+	ForegroundControl,
+	ResolvedExecutorDeps,
+	SubagentParamsLike,
 } from "./subagent-executor-types.js";
 import { runAgentTask, taskToolResultWithOutput } from "./task-execution.js";
 
@@ -101,6 +101,29 @@ export function createForwardSingleUpdate(
 		}
 		onUpdate(update);
 	};
+}
+
+/** The error a single run fails with for its output settings: a file-only output without a file. */
+export function singleOutputSetupError(
+	params: SubagentParamsLike,
+	agentConfig: AgentConfig,
+	ctxCwd: string,
+	effectiveCwd: string,
+): SubagentToolResult | undefined {
+	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
+	const outputPath = resolveSingleOutputPath(
+		normalizeSingleOutputOverride(rawOutput, agentConfig.output),
+		ctxCwd,
+		effectiveCwd,
+	);
+	const validationError = validateFileOnlyOutputMode(
+		params.outputMode ?? "inline",
+		outputPath,
+		`Single run (${params.agent})`,
+	);
+	return validationError === undefined
+		? undefined
+		: { content: [{ type: "text", text: validationError }], isError: true, details: { mode: "single", results: [] } };
 }
 
 export async function runSinglePath(
@@ -159,14 +182,8 @@ export async function runSinglePath(
 	}
 	const cleanTask = task;
 	const outputPath = resolveSingleOutputPath(effectiveOutput, ctx.cwd, effectiveCwd);
-	const validationError = validateFileOnlyOutputMode(effectiveOutputMode, outputPath, `Single run (${params.agent})`);
-	if (validationError) {
-		return {
-			content: [{ type: "text", text: validationError }],
-			isError: true,
-			details: { mode: "single", results: [] },
-		};
-	}
+	const outputError = singleOutputSetupError(params, agentConfig, ctx.cwd, effectiveCwd);
+	if (outputError) return outputError;
 	// Single-agent progress is isolated by run so the injected contract cannot
 	// overwrite a project's own progress.md or collide with another child.
 	const progressDir = progress ? path.join(artifactsDir, "progress", runId) : undefined;
@@ -284,7 +301,8 @@ export async function runSinglePath(
 			skills: effectiveSkills,
 		};
 		if (ctx.getAgentTaskHost) {
-			let settledChild: SingleResult | undefined;
+			// A task-hosted child runs in the background: the launch returns once it is admitted, and the child reports
+			// by its completion notice.
 			let progressCleanup: Promise<void> | undefined;
 			const response = await runAgentTask({
 				host: ctx.getAgentTaskHost(),
@@ -294,36 +312,21 @@ export async function runSinglePath(
 				task,
 				intentTask: handoffTaskContext,
 				options: runOptions,
-				wait: params.wait,
 				...(params.heartbeatMs === undefined ? {} : { heartbeatMs: params.heartbeatMs }),
-				schedule: params[BURST_EXECUTION_SCHEDULE],
 				runtime: deps.runtime,
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				onTerminal: (child) => {
-					settledChild = child;
 					startHold?.settle(child);
 					progressCleanup = cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				},
-				outputText: (child) =>
-					parentAsk && child.interrupted
-						? formatParentAskHandoffOutput({
-								askingChildIndex: 0,
-								releasedChildIndices: [0],
-								unlaunchedChildIndices: [],
-								request: parentAsk,
-							})
-						: getSingleResultOutput(child),
 			});
 			if (response.kind === "unstarted") startHold?.settle();
 			await progressCleanup;
-			if (!parentAsk || !settledChild?.interrupted)
-				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
-			r = settledChild;
+			return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 		} else {
-			// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
-			// context throws on every read. The working directory is fixed at launch.
+			// #3981: model fallback can retire the launching session while the child runs, and its context then throws on
+			// every read. The working directory is fixed at launch.
 			const launchCwd = ctx.cwd;
-			const schedule = params[BURST_EXECUTION_SCHEDULE];
 			// No task host owns this launch: it is recorded in this session like one, so run control reaches it.
 			r = await runOwnerlessChild({
 				agent: params.agent!,
@@ -332,7 +335,6 @@ export async function runSinglePath(
 				cwd: effectiveCwd,
 				options: runOptions,
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
-				...(schedule ? { schedule } : {}),
 				runSync: (childTask, options) => deps.runtime.runSync(launchCwd, agents, params.agent!, childTask, options),
 			}).result.finally(() => startHold?.settle());
 		}
@@ -340,10 +342,6 @@ export async function runSinglePath(
 		startHold?.settle();
 		await cleanupTransientProgress(progressDir, artifactConfig.enabled);
 		throw error;
-	} finally {
-		if (isExecutionTicket(params[BURST_EXECUTION_SCHEDULE])) {
-			params[BURST_EXECUTION_SCHEDULE].release();
-		}
 	}
 	// Detached children still own this storage until their process closes.
 	if (!r.detached) await cleanupTransientProgress(progressDir, artifactConfig.enabled);

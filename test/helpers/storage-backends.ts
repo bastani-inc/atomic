@@ -121,6 +121,16 @@ const FACADE_SUITE_TABLES = ["children", "parents", "items", "concurrent_items",
  */
 export async function dropLibsqlScope(database: SqliteDatabase, prefix: string, facadeTables = false): Promise<void> {
 	const fixed = facadeTables ? FACADE_SUITE_TABLES : [];
+	// The scope's triggers go first. One whose table outlives a table it writes fails every `ALTER TABLE ... RENAME` on the
+	// server until its own table goes, because SQLite checks every trigger of the database when it renames a table, and
+	// other suites on the server rename tables (a snapshot chunk table's move, #5541).
+	const triggers = await database.all(
+		`SELECT name FROM sqlite_schema WHERE type = 'trigger' AND (substr(tbl_name, 1, length(?)) = ? OR tbl_name IN (${fixed.map(() => "?").join(", ")}))`,
+		prefix,
+		prefix,
+		...fixed,
+	);
+	for (const { name } of triggers) await database.exec(`DROP TRIGGER IF EXISTS "${String(name)}"`);
 	// `pragma_table_list` tells virtual tables and the shadow tables they own from ordinary tables. A virtual table
 	// drops its own shadow tables; dropping one of those first leaves the virtual table undroppable on sqld ("vtable
 	// constructor failed"), which happens when the virtual table's drop meets a busy server and the pass moves on to

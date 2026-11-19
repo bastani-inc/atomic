@@ -254,7 +254,6 @@ function harness(options: { stage?: boolean; sessionManager?: SessionManager } =
 					orchestratorIntercomTarget: "parent",
 					...extra,
 				},
-				wait: { kind: "background" },
 				recordChild: createSubagentChildRecordSink(pi, state.ctx),
 				runtime: { runSync: runtime },
 			});
@@ -701,38 +700,6 @@ test("a release policy its launch gave is kept (#4326)", async () => {
 	assert.equal(h.runs[0]?.options.releaseWhenWaiting, own);
 });
 
-test("a foreground child is never released while it waits: its parent's turn is awaiting it (#4326)", async () => {
-	const h = harness();
-	const policies: Array<RunSyncOptions["releaseWhenWaiting"]> = [];
-	const runtime = async (...args: Parameters<typeof runSync>): Promise<SingleResult> => {
-		const [parentCwd, agents, agentName, task, options] = args;
-		policies.push(options.releaseWhenWaiting);
-		return runSync(parentCwd, agents, agentName, task, { ...options, testSession: { output: "done" } });
-	};
-	for (const wait of [{ kind: "foreground" }, { kind: "background" }] as const) {
-		const response = await runAgentTask({
-			host: h.host,
-			cwd: h.cwd,
-			agents: [agent],
-			agent: "worker",
-			task: ORIGINAL_TASK,
-			options: {
-				cwd: h.cwd,
-				runId: `policy-${wait.kind}`,
-				index: 0,
-				sessionDir: join(h.cwd, "children", wait.kind),
-			},
-			wait,
-			recordChild: createSubagentChildRecordSink(h.deps.pi, h.ctx),
-			runtime: { runSync: runtime },
-		});
-		assert.ok(response.kind === "admitted");
-		await settled(h, response.observation.taskId);
-	}
-
-	assert.deepEqual(policies, [undefined, { afterMs: SUBAGENT_RELEASE_AFTER_MS }]);
-});
-
 test("a child launched with no owner record, or one with no owning session, is never released and still runs (#4326)", async () => {
 	const h = harness();
 	const policies: Array<RunSyncOptions["releaseWhenWaiting"]> = [];
@@ -752,7 +719,6 @@ test("a child launched with no owner record, or one with no owning session, is n
 			agent: "worker",
 			task: ORIGINAL_TASK,
 			options: { cwd: h.cwd, runId: `policy-${label}`, index: 0, sessionDir: join(h.cwd, "children", label) },
-			wait: { kind: "background" },
 			...(recordChild ? { recordChild } : {}),
 			runtime: { runSync: runtime },
 		});
