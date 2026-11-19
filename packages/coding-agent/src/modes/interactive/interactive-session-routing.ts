@@ -494,8 +494,8 @@ async function resumeCatalogSelection(mode: InteractiveModeBase, selected: Sessi
 		try {
 			const handled =
 				mode.runtimeHost instanceof IsolatedInteractiveRuntime
-					? await mode.runtimeHost.resumeWorkflowFromPicker(selected.id)
-					: await resumeWorkflowFromPicker(mode.session, selected.id);
+					? await mode.runtimeHost.resumeWorkflowFromPicker(selected.id, selected.resumeSelection)
+					: await resumeWorkflowFromPicker(mode.session, selected.id, selected.resumeSelection);
 			if (!handled) mode.showError("Workflow resume is unavailable. Reload Atomic and try again.");
 		} catch (error) {
 			mode.showError(error instanceof Error ? error.message : String(error));

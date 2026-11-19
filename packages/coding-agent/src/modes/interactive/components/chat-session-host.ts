@@ -2,6 +2,7 @@ import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@
 import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
+import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
 import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
@@ -25,6 +26,7 @@ import {
 import {
 	applyChatSessionAgentEvent,
 	compactionStatusMessage,
+	showChatSessionModelSwitch,
 	showChatSessionRetryWait,
 } from "./chat-session-host-events.ts";
 import {
@@ -39,6 +41,7 @@ import {
 	renderChatSessionPendingMessages,
 	renderChatSessionUsage,
 	renderChatSessionWorkingStatus,
+	restoreChatSessionTokens,
 	setExpandedOverride,
 	transcriptCacheKey,
 	transcriptEntryName,
@@ -70,7 +73,7 @@ import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
 import { isClickedGroup } from "./transcript-block-clicks.ts";
-import { type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
+import { type AgentTokenMeterSnapshot, type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
 
 export type {
 	ChatSessionHostBashRequest,
@@ -176,7 +179,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	handleTaskInput(data: string): boolean {
 		return this.taskInspector?.handleInput(data) === true;
 	}
-	appendMessages(messages: readonly AgentSnapshotMessage[]): void {
+	appendMessages(messages: readonly AgentSnapshotMessage[], settledTokens?: AgentTokenMeterSnapshot): void {
 		const hadFirstUser = this.state.seenFirstRawUser;
 		if (!hadFirstUser && messages.length > 0) {
 			const firstUser = firstRawUserExactText(messages);
@@ -189,6 +192,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (!hadFirstUser && this.state.seenFirstRawUser) {
 			syncFirstUserEntry(this.state);
 		}
+		if (settledTokens) restoreChatSessionTokens(this.state, settledTokens);
 	}
 
 	/** Earlier history, shown above every entry while a reader scrolled away from the end keeps their place. */
@@ -235,6 +239,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			this.state.interruptedTurnSnapshot = undefined;
 		}
 		this.state.workingRunMeter.stop();
+		this.state.retryContinuesRun = false;
 		this.state.manualCompactionTakeoverPending = false;
 		this.state.compacting = false;
 		this.state.compactionStartedAt = undefined;
@@ -244,7 +249,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.seenFirstRawUser = false;
 		this.state.firstUserEntryExactText = undefined;
 		this.state.firstUserEntry = undefined;
-		if (this.state.statusMessage !== this.state.lastWarningMessage) this.state.statusMessage = "";
+		this.state.statusMessage = "";
+		if (this.state.noticeMessage !== this.state.lastWarningMessage) this.state.noticeMessage = "";
 		this.state.pendingSteeringMessages = [];
 		this.state.pendingFollowUpMessages = [];
 		this.state.unconfirmedQueuedMessages = [];
@@ -284,7 +290,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		let messages: readonly AgentSnapshotMessage[];
 		try {
 			const manager = await SessionManager.open(store, sessionId, undefined, { history: "tail" });
-			messages = repairOrphanToolResults(manager.buildSessionContext().messages, {
+			messages = repairOrphanToolResults(manager.buildSessionProjection("transcript").messages, {
 				repairTrailing: true,
 				...(inFlightToolCallIds === undefined ? {} : { inFlightToolCallIds }),
 			}) as readonly AgentSnapshotMessage[];
@@ -401,11 +407,35 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	/**
 	 * Show the retry wait of a session this host attached to after its `auto_retry_start`: a session between two
 	 * attempts streams nothing, so a running turn's hydration shows none of it. The wait reads as that event shows it
-	 * and ends as it does, with the next attempt's `agent_start` or the retry's `auto_retry_end`.
+	 * and ends as it does, with the next attempt's `agent_start` or the retry's `auto_retry_end`. With the session's
+	 * messages, the next attempt's working line counts from the turn's start, as it does in a chat that saw the turn.
 	 */
-	hydrateRetryWait(): void {
+	hydrateRetryWait(messages?: readonly MeteredRunMessage[], turnStartedAt?: number): void {
 		if (this.state.disposed) return;
+		const run = messages === undefined ? undefined : runInProgress(messages);
+		const startedAt = turnStartedAt ?? run?.startedAt;
+		if (startedAt !== undefined) {
+			this.state.workingRunMeter.awaitRetry(startedAt, run?.settledTokens ?? 0);
+			this.state.retryContinuesRun = true;
+		}
 		showChatSessionRetryWait(this.state);
+		this.syncAnimationTick();
+		this.state.requestRender?.();
+	}
+
+	/**
+	 * Show the move to a fallback model of a turn whose start (`turnStartedAt`) this host did not see: nothing streams
+	 * until the next model's request, which counts from the turn's start, as it does in a chat that saw the turn. A host
+	 * that saw the turn's failed request keeps its own count. The move ends as `model_fallback_start` shows it does,
+	 * with that request's `agent_start` or the switch's `model_fallback_end`.
+	 */
+	hydrateModelSwitch(turnStartedAt?: number, messages?: readonly MeteredRunMessage[]): void {
+		if (this.state.disposed) return;
+		if (turnStartedAt !== undefined && !this.state.retryContinuesRun) {
+			this.state.workingRunMeter.awaitRetry(turnStartedAt, messages ? runInProgress(messages).settledTokens : 0);
+			this.state.retryContinuesRun = true;
+		}
+		showChatSessionModelSwitch(this.state);
 		this.syncAnimationTick();
 		this.state.requestRender?.();
 	}
@@ -474,8 +504,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return renderChatSessionPendingMessages(this.state, width);
 	}
 
-	renderWorkingStatus(width: number): string[] {
-		return renderChatSessionWorkingStatus(this.state, width);
+	renderWorkingStatus(width: number, published?: PublishedChatActivity): string[] {
+		return renderChatSessionWorkingStatus(this.state, width, published);
 	}
 
 	renderUsage(width: number): string[] {
@@ -668,11 +698,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	statusText(): string {
-		return this.state.statusMessage;
+		return this.state.noticeMessage || this.state.statusMessage;
 	}
 
 	showWarning(message: string): void {
-		this.state.statusMessage = message;
+		this.state.noticeMessage = message;
 		this.state.lastWarningMessage = message;
 		this.state.requestRender?.();
 	}
@@ -754,12 +784,26 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return startChatSessionExternalPromptLifecycle(this.state);
 	}
 
-	hydrateRunningTurn(messages: readonly MeteredRunMessage[], streaming?: MeteredRunMessage): void {
+	/**
+	 * Show the turn a session runs now, read from its `messages` and the answer it `streaming`s. A turn that went on in
+	 * this session after it moved from another model counts from `turnStartedAt`, its first request's start, which
+	 * this session's messages do not hold.
+	 */
+	hydrateRunningTurn(
+		messages: readonly MeteredRunMessage[],
+		streaming?: MeteredRunMessage,
+		turnStartedAt?: number,
+		requestSide?: boolean,
+	): void {
 		if (this.state.disposed) return;
 		if (!this.state.workingLifecycleActive) startChatSessionWorkingLifecycle(this.state);
 		if (this.state.workingRunMeter.snapshot() === undefined) {
 			const run = runInProgress(messages, streaming);
-			this.state.workingRunMeter.resume(run.startedAt, run.settledTokens, run.requesting);
+			this.state.workingRunMeter.resume(
+				turnStartedAt ?? run.startedAt,
+				run.settledTokens,
+				requestSide ?? run.requesting,
+			);
 			if (streaming !== undefined) this.state.workingRunMeter.streaming(streaming);
 		}
 		if (this.state.workingMessage === undefined) {

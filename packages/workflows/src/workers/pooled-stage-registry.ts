@@ -62,6 +62,11 @@ export class RegisteredPooledStageHandle implements StageControlHandle {
 	get messages(): AgentSession["messages"] {
 		return this.current()?.messages ?? [];
 	}
+	contextMeter(
+		displayed: readonly AgentSession["messages"][number][],
+	): ReturnType<NonNullable<StageControlHandle["contextMeter"]>> {
+		return this.current()?.contextMeter?.(displayed);
+	}
 	queuedUserMessages(): StageQueuedUserMessages {
 		return this.current()?.queuedUserMessages?.() ?? EMPTY_STAGE_QUEUED_USER_MESSAGES;
 	}
@@ -84,14 +89,14 @@ export class RegisteredPooledStageHandle implements StageControlHandle {
 		await this.use(async () => {});
 	}
 
-	subscribe(listener: AgentSessionEventListener): () => void {
+	subscribe(listener: AgentSessionEventListener, onWatchEnd?: () => void): () => void {
 		this.listeners.add(listener);
 		this.users++;
 		const opening = this.open();
 		let subscribed = true;
 		let unsubscribe: (() => void) | undefined;
 		void opening.then((lease) => {
-			if (subscribed) unsubscribe = lease?.handle.subscribe((event) => this.emit(listener, event));
+			if (subscribed) unsubscribe = lease?.handle.subscribe((event) => this.emit(listener, event), onWatchEnd);
 		});
 		return () => {
 			if (!subscribed) return;
