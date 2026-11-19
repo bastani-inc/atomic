@@ -197,9 +197,7 @@ export async function boundedWorktreeReply(
 			observed = run.sweeping;
 			await observed;
 		} while (observed !== run.sweeping);
-		return (
-			run.sweepNote ?? (run.holds.size ? "Worktree kept until the other children in this batch finish." : undefined)
-		);
+		return run.holds.size ? "Worktree kept until the other children in this batch finish." : run.sweepNote;
 	};
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {

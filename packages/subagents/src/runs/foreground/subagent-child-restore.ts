@@ -1058,7 +1058,7 @@ export async function restoreSubagentChild(
 			kind: "unrestorable" as const,
 			childId: record.childId,
 			record,
-			reason: note ? `${reason}. ${note}` : reason,
+			reason: note ? `${reason.replace(/\.$/, "")}. ${note.replace(/\.$/, "")}` : reason,
 		};
 	};
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {

@@ -3148,14 +3148,18 @@ test(
 	async () => {
 		const h = harness();
 		initGitRepository(h.cwd);
-		const finish = Promise.withResolvers<void>();
-		h.finishOn.set("pause-this", finish);
-		const [a] = await launchWorktreeRun(h, ["pause-this"]);
-		assert.ok(a);
+		const sibling = Promise.withResolvers<void>();
+		h.finishOn.set("pause-this", Promise.withResolvers<void>());
+		h.finishOn.set("sibling", sibling);
+		const [a, b] = await launchWorktreeRun(h, ["pause-this", "sibling"]);
+		assert.ok(a && b?.taskId);
 		await h.waitForLatest(a.childId, (record) => !!record.childSessionId);
 		const draft = join(a.cwd, "draft.md");
 		writeFileSync(draft, "keep this");
 		await h.call({ action: "pause", id: a.childId });
+		sibling.resolve();
+		await settled(h, b.taskId);
+		await waitForWorktreeCleanup(h, b);
 		const tools = join(h.cwd, ".git", "monitor-test");
 		mkdirSync(tools);
 		const marker = join(tools, "port"),
@@ -3214,6 +3218,22 @@ test(
 			clearTimeout(release);
 			writeFileSync(stop, "release");
 			process.env.PATH = savedPath;
+			if (process.platform === "win32") gitOutput(h.cwd, ["config", "--unset", "core.fsmonitor"]);
+			Object.defineProperty(h, "agentDefined", { value: true, writable: true });
+		}
+		const resumedSibling = Promise.withResolvers<void>();
+		h.finishOn.set("keep running", resumedSibling);
+		const task = resumedTaskId(await h.call({ action: "resume", id: b.childId, message: "keep running" }));
+		try {
+			await h.waitForLatest(b.childId, (record) => record.taskId === task && !!record.childSessionId);
+			h.agentDefined = false;
+			const again = await h.call({ action: "resume", id: a.childId });
+			assert.match(text(again), /worktree kept until the other children in this batch finish\.$/i);
+			assert.doesNotMatch(text(again), /timed out/);
+		} finally {
+			resumedSibling.resolve();
+			await settled(h, task);
+			await waitForWorktreeCleanup(h, b);
 		}
 	},
 	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
