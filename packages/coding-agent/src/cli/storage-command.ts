@@ -638,7 +638,7 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 		}
 		if (command.kind === "search-session") {
 			const { searchStoredSession } = await import("./storage-search-session.js");
-			await searchStoredSession(command, options.cwd, log, options.log ? undefined : process.stdout);
+			await searchStoredSession(command, options.cwd, options.log);
 			return 0;
 		}
 		if (command.kind === "status") return await status(command.json, options, log);

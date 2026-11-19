@@ -1,14 +1,12 @@
-import { once } from "node:events";
-import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ExtensionToolContext } from "../core/extensions/context-types.ts";
-import { openNodeSqliteDatabase } from "../core/storage/node-sqlite.js";
 import { renderStorageIdentifiers } from "../core/storage/prefix.js";
 import { SESSION_TABLES, SqlSessionStore } from "../core/storage/session/sql-session-store.js";
 import { createHistoryRouter } from "../core/tools/history-protocol.ts";
 import type { InternalResourceRouter } from "../core/tools/resource-selectors.ts";
 import { createSearchToolDefinition } from "../core/tools/search.ts";
 import type { StorageCommand } from "./storage-command.js";
+import { openSearchDatabase } from "./storage-search-database.js";
 
 type Cursor = readonly [seq: number, match: number, line: number];
 
@@ -39,11 +37,36 @@ function budgetCursor(note: string, base: string): string | undefined {
 	return note.slice(end + link.length, -1);
 }
 
+/** Unlike Bun's global console, a Console bound to the stream reports pipe errors through that stream. */
+async function printPage(output: { log(line: string): void }, text: string): Promise<boolean> {
+	const stdout = process.stdout;
+	let failure: Error | undefined;
+	const onError = (error: Error) => {
+		failure = error;
+	};
+	stdout.on("error", onError);
+	try {
+		output.log(text);
+		// The empty write is a flush barrier for the log above, not another output record.
+		await new Promise<void>((resolve, reject) => stdout.write("", (error) => (error ? reject(error) : resolve())));
+		if (failure) throw failure;
+		return true;
+	} catch (error) {
+		if (((failure ?? error) as NodeJS.ErrnoException)?.code === "EPIPE") {
+			// The one-shot CLI must not try to flush this broken pipe again on exit.
+			stdout.end();
+			return false;
+		}
+		throw error;
+	} finally {
+		stdout.off("error", onError);
+	}
+}
+
 export async function searchStoredSession(
 	{ file, sessionId, pattern, cursor }: Extract<StorageCommand, { kind: "search-session" }>,
 	cwd: string,
-	log: (text: string) => void | Promise<void>,
-	stdout?: NodeJS.WriteStream,
+	log?: (text: string) => void | Promise<void>,
 ): Promise<void> {
 	if (!sessionId || /[^A-Za-z0-9_-]/.test(sessionId))
 		throw new Error(
@@ -55,10 +78,12 @@ export async function searchStoredSession(
 	const path = resolve(cwd, file);
 	if (file === ":memory:" || /^(?:[a-z][a-z\d+.-]*:\/\/|file:|[/\\]{2})/i.test(file) || /^[/\\]{2}/.test(path))
 		throw new Error("An existing local SQLite session file is required; no configured store is substituted.");
-	if (!(await stat(path)).isFile()) throw new Error(`Not a local SQLite file: ${path}`);
-	const db = await openNodeSqliteDatabase(path, { readOnly: true });
+	const output = log
+		? undefined
+		: (new console.Console({ stdout: process.stdout, ignoreErrors: false }) as Console & Pick<typeof console, "log">);
+	const db = await openSearchDatabase(path);
 	try {
-		const store = await SqlSessionStore.open(db);
+		const store = await SqlSessionStore.openTranscriptReader(db);
 		try {
 			// Check the selected transcript, not the database's change counter: unrelated writers can continue.
 			// Do not hold a read transaction (and its WAL pages) across an output write or a continuation.
@@ -85,16 +110,16 @@ export async function searchStoredSession(
 					cwd,
 					internalResourceRouter: router,
 				} as ExtensionToolContext);
+				const reopened = await db.refresh();
 				if ((await revision()) !== initial)
 					throw new Error(
 						"The session changed during the search; rerun it or follow the last printed cursor manually.",
 					);
+				if (reopened) continue;
 				const text = page.content[0];
 				if (text?.type !== "text") throw new Error("Expected a text page from history search");
-				await log(text.text);
-				// Use the storage command's normal output route; don't read ahead of a full CLI pipe.
-				if (stdout?.errored) throw stdout.errored;
-				if (stdout?.writableNeedDrain) await once(stdout, "drain");
+				if (log) await log(text.text);
+				else if (!(await printPage(output!, text.text))) return;
 				// Old rows have no revision until their next write. Their ordinary page and manual URL still work.
 				if (
 					typeof initial !== "string" ||

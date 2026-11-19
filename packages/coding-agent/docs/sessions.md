@@ -213,6 +213,8 @@ By default only the current project's history is visible. Other projects' sessio
 
 From the session's project directory, `atomic storage search-session <sqlite-file> <session-id> <pattern> [cursor]` searches **one session in the SQLite file you name**, read-only. It prints the ordinary first page, including its cursor, before following any advancing entry-budget, byte-budget or time-budget link. It leaves `+N more` links for you to follow. To start at a printed entry cursor instead of the beginning, pass just its numeric value (for example `6` or `6.2`) as the last argument.
 
+The search scans the stored entries without building or updating a search index or joining the writer queue. It leaves the database and Atomic's lock files alone. On a cleanly closed database it writes no files: no `-wal` or `-shm` is needed, even in a read-only directory. On a live database it reads the existing WAL and shared-memory index without updating their contents. If the last writer closes just as SQLite opens the WAL, SQLite can leave an empty `-wal` file. For an unchanged directory, start the search after the writer has closed. If the WAL and its index are incomplete, retry against a cleanly closed database; do not delete the WAL. The usual CLI settings startup still runs. A closed output pipe stops the search quietly.
+
 For example, to work on something else while the search runs, use the usual shell tool:
 
 ```json
