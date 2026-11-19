@@ -380,20 +380,32 @@ export async function* taskFileEntryChunks(
 		signal?.throwIfAborted();
 		if (!same) throw new Error(`History unavailable: the session file changed while it was being read (${path}).`);
 	};
+	let started = false;
+	let verified = false;
 	try {
 		await verify();
+		started = true;
 		const end = offset + bytes;
 		let at = offset;
 		for await (const part of new Lines(file, end).chunks(offset, end)) {
 			signal?.throwIfAborted();
 			at += part.length;
 			// Check the generation again once the last byte is read, before the caller sees it.
-			if (at >= end) await verify();
+			if (at >= end) {
+				await verify();
+				verified = true;
+			}
 			yield part;
 		}
+		verified = true;
 	} finally {
-		signal?.removeEventListener("abort", closeOnAbort);
-		await file.close().catch(() => {});
+		try {
+			// A reader that stopped early, once it had its fields, still only used bytes of this generation.
+			if (started && !verified && !signal?.aborted) await verify();
+		} finally {
+			signal?.removeEventListener("abort", closeOnAbort);
+			await file.close().catch(() => {});
+		}
 	}
 }
 

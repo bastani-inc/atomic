@@ -269,6 +269,8 @@ async function projectSavedHistory(
 			const text = await fields.savedUserText(item.chunks());
 			if (text !== undefined) fold.userText(text);
 		} else if (header.role === "assistant") {
+			// A long answer or its thinking without a call is passed over without tokenizing it.
+			if (!(await fields.savedRowMayHold(item.chunks(), "toolCall"))) continue;
 			for (const call of await fields.savedToolCalls(item.chunks())) fold.call(call.id, call.name, call.arguments);
 		} else if (header.role === "toolResult") {
 			if (header.longToolCallId) fold.longResultId();

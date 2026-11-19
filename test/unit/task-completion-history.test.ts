@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AssistantMessage, ToolResultMessage } from "@bastani/atomic-ai/compat";
 import { setKeybindings } from "@bastani/atomic-tui";
 import { test } from "vitest";
@@ -13,7 +14,10 @@ import {
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
-import { taskCompletionNotice } from "../../packages/coding-agent/src/core/tasks/completion.js";
+import {
+	TASK_COMPLETION_MESSAGE_TYPE,
+	taskCompletionNotice,
+} from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type {
 	Cleanup,
 	OperationId,
@@ -21,6 +25,7 @@ import type {
 	Sequence,
 	TaskId,
 } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { bindOwnerTaskStore, type OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
 	loadTaskOwnTranscriptHistory,
 	type TaskTranscriptSource,
@@ -32,6 +37,11 @@ import {
 	type TaskCompletionMessageOptions,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { EngineRenderService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-render-service.js";
+import {
+	parseInteractiveEngineMessage,
+	serializeInteractiveEngineFrame,
+} from "../../packages/coding-agent/src/modes/interactive-engine/protocol.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import { agent } from "../helpers/released-task-launch.js";
@@ -412,6 +422,60 @@ test.each(["in a page", "too large for a page"] as const)(
 	},
 );
 
+test("a call in a large saved row is found however the row escapes its characters (#5593)", async () => {
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager());
+	const root = makeTempDirectory("task-completion-escaped-");
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: "completion-escaped" },
+		authorizeLaunch() {},
+	});
+	try {
+		const sessionId = "escaped-session";
+		const path = join(root, "session.jsonl");
+		const row = (id: string, message: unknown) =>
+			JSON.stringify({ type: "message", id, parentId: null, timestamp: "1", message });
+		const big = oversized("unshown-answer");
+		const lines = [
+			JSON.stringify({ type: "session", id: sessionId, version: 3, timestamp: "1", cwd: root }),
+			row("inherited", { role: "user", content: "inherited prompt", timestamp: 1 }),
+			row("prompt", { role: "user", content: "Fix the lock", timestamp: 1 }),
+			// Written by a serializer that escapes letters: the row never spells the block's type.
+			row(
+				"escaped",
+				assistant([
+					{ type: "text", text: big },
+					{ type: "toolCall", id: "c1", name: "probe", arguments: { target: "escaped" } },
+				]),
+			).replace('"type":"toolCall"', '"type":"tool\\u0043all"'),
+			row("plain", assistant([{ type: "text", text: big }])),
+			row("result", result("c1", "escaped output")),
+		];
+		assert.ok(!lines[3]!.includes("toolCall") && lines[3]!.length > 1_048_576);
+		writeFileSync(path, `${lines.join("\n")}\n`);
+		const entries = lines.slice(1).map((line) => JSON.parse(line));
+		const task = await boundTask(
+			host,
+			withTaskTranscriptArchive(
+				{ getSessionId: () => sessionId, getEntries: () => [], loadHistory: async () => ({ entries }) },
+				async () => ({ ok: false, error: { message: "unused" } }),
+				{ path, sessionId },
+			),
+			"inherited",
+		);
+		const whole = await expandedRows(task.taskId, { loadTranscript: () => loadTaskOwnTranscriptHistory(task.lease) });
+		const paged = await expandedRows(task.taskId, {
+			loadTranscript: (_taskId, options) => readTaskCompletionHistory(task.lease, options?.signal),
+		});
+		assert.equal(task.loads(), 1, "only the reference read the whole file");
+		assert.deepEqual(paged, whole);
+		assert.match(paged.map((r) => stripVTControlCharacters(r)).join("\n"), /probe\(escaped\)[\s\S]*escaped output/);
+	} finally {
+		await host.close("session-close");
+		removeTempDirectory(root);
+	}
+});
+
 test("folding or closing an expanded completion card stops the read only no other expanded card waits for (#5593)", async () => {
 	initTheme("dark");
 	setKeybindings(new KeybindingsManager());
@@ -448,4 +512,91 @@ test("folding or closing an expanded completion card stops the read only no othe
 	assert.equal(signals[1]!.aborted, false, "the other expanded card still waits for it");
 	second.dispose();
 	assert.equal(signals[1]!.aborted, true, "closing the last card stops it");
+});
+
+test("a completion card the isolated engine draws shows its transcript again each time it is expanded (#5593)", async () => {
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager());
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "completion-engine" }, authorizeLaunch() {} });
+	const service = new EngineRenderService((line) => {
+		const message = parseInteractiveEngineMessage(line.trim());
+		if (message?.type === "engine_custom_frame") frames.push(message.lines);
+		if (message?.type === "engine_custom_invalidate") invalidations++;
+	});
+	const frames: (readonly string[])[] = [];
+	let invalidations = 0;
+	try {
+		const entry = (id: string, message: unknown) => ({
+			type: "message",
+			id,
+			parentId: null,
+			timestamp: "1",
+			message,
+		});
+		const entries = [
+			entry("inherited", { role: "user", content: "inherited prompt", timestamp: 1 }),
+			entry("prompt", { role: "user", content: "Fix the lock", timestamp: 1 }),
+			entry("call", assistant([{ type: "toolCall", id: "c1", name: "probe", arguments: { target: "lock" } }])),
+			entry("result", result("c1", "probe output")),
+		] as never[];
+		const task = await boundTask(
+			host,
+			{ getSessionId: () => "child", getEntries: () => [], loadHistory: async () => ({ entries }) },
+			"inherited",
+		);
+		const session = {
+			extensionRunner: { getMessageRenderer: () => undefined, resolveToolRenderers: () => undefined },
+			getToolDefinition: () => undefined,
+			sessionManager: { getCwd: () => "/" },
+		};
+		bindOwnerTaskStore(session, { resolveTask: (id: TaskId) => host.resolveTask(id) } as unknown as OwnerTaskStore);
+		service.bindSession(session as never);
+		const message = {
+			role: "custom",
+			customType: TASK_COMPLETION_MESSAGE_TYPE,
+			content: "Subagent debugger completed",
+			display: true,
+			details: { notification: notice(task.taskId) },
+			timestamp: 1,
+		};
+		const until = async (done: () => boolean, what: string) => {
+			for (let i = 0; i < 400 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+			assert.ok(done(), what);
+		};
+		let requestId = 0;
+		const render = async (expanded: boolean) => {
+			const before = frames.length;
+			service.handleLine(
+				serializeInteractiveEngineFrame({
+					type: "engine_message_render",
+					componentId: "completion-card",
+					requestId: ++requestId,
+					width: 100,
+					message,
+					expanded,
+					outputPad: 1,
+				}).trim(),
+			);
+			await until(() => frames.length > before, "the engine draws the row");
+			return frames
+				.at(-1)!
+				.map((row) => stripVTControlCharacters(row))
+				.join("\n");
+		};
+		// The host repaints a row only when the engine says it changed; let each step's checks finish, as a reader does.
+		const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+		for (const expansion of ["first", "second"]) {
+			const seen = invalidations;
+			await render(true);
+			await until(() => invalidations > seen, `the ${expansion} expansion asks the host to draw its transcript`);
+			await settle();
+			assert.match(await render(true), /Prompt[\s\S]*Fix the lock[\s\S]*probe output/, `${expansion} expansion`);
+			await settle();
+			assert.doesNotMatch(await render(false), /Tool calls/);
+			await settle();
+		}
+	} finally {
+		service.dispose();
+		await host.close("session-close");
+	}
 });
