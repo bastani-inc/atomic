@@ -14,7 +14,7 @@ try {
 	let toolCalls: number;
 	if (mode === "joined") {
 		// The previous algorithm's ordered join and native metadata projection, on exactly the stored rows.
-		// All fixture rows are assistant messages: this reference needs no other entry kinds or protocol fields.
+		// These fixtures need only the tool count; the kept user row has empty content and compaction has none.
 		const rows = await db.all<{ tools: number }>(`WITH encoded AS MATERIALIZED (
 			SELECT seq,entry_id,chunks,entry_json FROM session_entries WHERE session_id='session' ORDER BY seq LIMIT 512
 		), payloads AS MATERIALIZED (

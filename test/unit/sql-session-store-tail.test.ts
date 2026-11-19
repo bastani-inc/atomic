@@ -347,15 +347,16 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		});
 	});
 
-	it("rebuilds fitting chunked entries within the cost of projecting their joined rows (#5590)", async () => {
-		const path = databasePath();
-		const chunkedEntries = 12;
-		const targetBytes = 3 * SESSION_ENTRY_CHUNK_BYTES;
-		const fragment = 'line "a"\\b\n';
-		const text = fragment.repeat(Math.floor(targetBytes / (JSON.stringify(fragment).length - 2)));
-		await writeSession(
-			path,
-			Array.from({ length: chunkedEntries }, (_, i) =>
+	it.each(["text and tool calls", "retired errors"] as const)(
+		"rebuilds %s within the cost of projecting their joined rows (#5590)",
+		async (shape) => {
+			const path = databasePath();
+			const errors = shape === "retired errors";
+			const chunkedEntries = errors ? 8 : 12;
+			const targetBytes = (errors ? 8 : 3) * SESSION_ENTRY_CHUNK_BYTES;
+			const fragment = errors ? "a" : 'line "a"\\b\n';
+			const text = fragment.repeat(Math.floor(targetBytes / (JSON.stringify(fragment).length - 2)));
+			const entries = Array.from({ length: chunkedEntries }, (_, i) =>
 				entry(i + 1, {
 					message: {
 						role: "assistant",
@@ -363,11 +364,14 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 						provider: "p",
 						model: "m",
 						api: "openai-completions",
-						stopReason: "stop",
-						content: [
-							{ type: "text", text },
-							{ type: "toolCall", id: "t", name: "edit", arguments: {} },
-						],
+						stopReason: errors ? "error" : "stop",
+						...(errors ? { errorMessage: text } : {}),
+						content: errors
+							? []
+							: [
+									{ type: "text", text },
+									{ type: "toolCall", id: "t", name: "edit", arguments: {} },
+								],
 						usage: {
 							input: 1,
 							output: 1,
@@ -378,32 +382,53 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 						},
 					},
 				}),
-			),
-		);
-		const measure = (mode: string) =>
-			JSON.parse(
-				execFileSync(
-					process.execPath,
-					["--expose-gc", "--import", "jiti/register", "test/fixtures/session-resume-rebuild-cost.ts", path, mode],
-					{ encoding: "utf8" },
-				),
-			) as { micros: number; peakBytes: number; toolCalls: number };
-		// CPU time excludes time waiting for other test workers. Bracket the run with two independent controls
-		// to measure allocator and timer noise on this machine rather than setting a machine-specific RSS/time limit.
-		const first = measure("joined");
-		const actual = measure("stored");
-		const second = measure("joined");
-		assert.equal(first.toolCalls, chunkedEntries);
-		assert.equal(actual.toolCalls, chunkedEntries);
-		const cpuJitterFraction = 0.2;
-		const allocatorSlackBytes = 2 * SESSION_ENTRY_CHUNK_BYTES;
-		const cpuBudget = Math.max(first.micros, second.micros) * (1 + cpuJitterFraction);
-		const peakBudget = Math.max(first.peakBytes, second.peakBytes) + allocatorSlackBytes;
-		assert.ok(
-			actual.micros <= cpuBudget && actual.peakBytes <= peakBudget,
-			JSON.stringify({ actual, first, second }),
-		);
-	}, 120_000);
+			);
+			if (errors) {
+				const kept = entry(chunkedEntries + 1, { message: { role: "user", timestamp: 1, content: [] } });
+				entries.push(kept, {
+					type: "compaction",
+					id: "boundary",
+					parentId: kept.id,
+					timestamp: createdAt,
+					summary: "done",
+					firstKeptEntryId: kept.id,
+					tokensBefore: chunkedEntries,
+				});
+			}
+			await writeSession(path, entries);
+			const measure = (mode: string) =>
+				JSON.parse(
+					execFileSync(
+						process.execPath,
+						[
+							"--expose-gc",
+							"--import",
+							"jiti/register",
+							"test/fixtures/session-resume-rebuild-cost.ts",
+							path,
+							mode,
+						],
+						{ encoding: "utf8" },
+					),
+				) as { micros: number; peakBytes: number; toolCalls: number };
+			// CPU time excludes time waiting for other test workers. Bracket the run with two independent controls
+			// to measure allocator and timer noise on this machine rather than setting a machine-specific RSS/time limit.
+			const first = measure("joined");
+			const actual = measure("stored");
+			const second = measure("joined");
+			assert.equal(first.toolCalls, errors ? 0 : chunkedEntries);
+			assert.equal(actual.toolCalls, first.toolCalls);
+			const cpuJitterFraction = 0.2;
+			const allocatorSlackBytes = 2 * SESSION_ENTRY_CHUNK_BYTES;
+			const cpuBudget = Math.max(first.micros, second.micros) * (1 + cpuJitterFraction);
+			const peakBudget = Math.max(first.peakBytes, second.peakBytes) + allocatorSlackBytes;
+			assert.ok(
+				actual.micros <= cpuBudget && actual.peakBytes <= peakBudget,
+				JSON.stringify({ actual, first, second }),
+			);
+		},
+		120_000,
+	);
 
 	it("a slower reader cannot replace a peer's published index with its checkpoint (#5590)", async () => {
 		const path = databasePath();

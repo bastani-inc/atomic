@@ -1520,6 +1520,13 @@ export class SqlSessionStore implements SessionStore {
 				this.dialect.name === "sqlite"
 					? `(SELECT COALESCE(json_group_array(key),'[]') FROM json_each(entry_json,'$.data'))`
 					: `(SELECT COALESCE(json_agg(key)::text,'[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(parsed.value->'data')='object' THEN parsed.value->'data' ELSE '{}'::jsonb END) AS key)`;
+			const embedded = this.database.descriptor.adapter === "node-sqlite";
+			// Walk only the content array. node:sqlite can pass it as JSONB without rendering large blocks back to text.
+			const toolBlocks = sqlite
+				? this.dialect.jsonValues(
+						embedded ? "jsonb_extract(entry_json, '$.message.content')" : j("message", "content"),
+					)
+				: "jsonb_array_elements_text(parsed.value #> '{message,content}') AS blocks(value)";
 			const columns = [
 				["dataFields", `CASE WHEN ${j("type")} = 'custom' THEN ${dataFieldNames} ELSE '[]' END`],
 				...projected,
@@ -1533,7 +1540,7 @@ export class SqlSessionStore implements SessionStore {
 				[
 					"toolCalls",
 					`CASE WHEN ${j("message", "role")} = 'assistant' AND ${jsonType("message", "content")} = 'array' THEN
-						(SELECT count(*) FROM ${sqlite ? "json_each(entry_json, '$.message.content')" : "jsonb_array_elements_text(parsed.value #> '{message,content}') AS blocks(value)"}
+						(SELECT count(*) FROM ${toolBlocks}
 						WHERE ${this.dialect.jsonText("value", "type")} = 'toolCall') ELSE 0 END`,
 				],
 			];
@@ -1558,10 +1565,12 @@ export class SqlSessionStore implements SessionStore {
 			const joined = sqlite
 				? `(SELECT group_concat(text, '') FROM (SELECT CAST(data AS TEXT) AS text ${parts("sized")} ORDER BY idx))`
 				: `(SELECT convert_from(string_agg(data, ''::bytea ORDER BY idx), 'UTF8') ${parts("sized")})`;
-			// Materialize once, so every projected field shares the same joined input. Only metadata leaves SQL.
-			const nativePage = `${page}, sized AS MATERIALIZED (
+			// On file SQLite, check each entry just before joining its chunks, not a whole page ahead of the reads.
+			// OFFSET 0 prevents SQLite from flattening the size check and evaluating it twice for the same entry.
+			// Materialize the joined payloads once so all projected fields share them. Only metadata leaves SQL.
+			const nativePage = `${page}, sized AS ${embedded ? "NOT MATERIALIZED" : "MATERIALIZED"} (
 				SELECT page.*, CASE WHEN chunks = 0 OR EXISTS (SELECT 1 ${parts("page")} GROUP BY seq
-					HAVING count(*) = page.chunks AND ${fits}) THEN 0 ELSE chunks END AS remaining FROM page
+					HAVING count(*) = page.chunks AND ${fits}) THEN 0 ELSE chunks END AS remaining FROM page${embedded ? " LIMIT -1 OFFSET 0" : ""}
 			), payloads AS MATERIALIZED (
 				SELECT seq,entry_id,remaining AS chunks,CASE WHEN chunks > 0 AND remaining = 0 THEN ${joined} ELSE entry_json END AS entry_json
 				FROM sized
