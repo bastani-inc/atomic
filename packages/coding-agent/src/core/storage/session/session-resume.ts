@@ -69,6 +69,12 @@ export interface SessionResumeIndex {
 	readonly lastStateSeq: number;
 	readonly totals: SessionHistoryTotals;
 	readonly latestAssistantSeq?: number;
+	/**
+	 * Every entry an extension saved with `pi.appendEntry` (see {@link isExtensionCustomState}), on any branch. They
+	 * remain history; a subagent fork copies those on its branch. Absent from an index an earlier build saved or
+	 * extended, which a fork then compensates for by scanning.
+	 */
+	readonly extensionState?: readonly number[];
 }
 
 const ZERO_USAGE: SessionUsageTotals = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
@@ -173,6 +179,47 @@ const BRANCH_CUSTOM_STATE_TYPES = new Set([
 ]);
 export function isBranchCustomState(customType: string | undefined): boolean {
 	return customType !== undefined && BRANCH_CUSTOM_STATE_TYPES.has(customType);
+}
+/**
+ * Custom entry types that Atomic and its bundled extensions write, or still read from older sessions. Every other
+ * type is state an extension saved with `pi.appendEntry`, which a subagent fork copies from its branch as the
+ * complete-branch copy did (#5500). A type missing here is copied too, so the list only limits what a fork copies.
+ */
+const ATOMIC_CUSTOM_TYPES = new Set([
+	...BRANCH_CUSTOM_STATE_TYPES,
+	LEAF_MOVE_TYPE,
+	TASK_COMPLETION_INTENT_TYPE,
+	TASK_COMPLETION_ACK_TYPE,
+	DELIVERY_OP_TYPE,
+	"atomic.fork-anchor",
+	"atomic.share",
+	"atomic.tool-output",
+	"intercom_ask",
+	"intercom_ask_settled",
+	"intercom_control_error",
+	"intercom_inbox",
+	"intercom_inbox_handled",
+	"intercom_received",
+	"intercom_reply_wait",
+	"intercom_result_error",
+	"intercom_sent",
+	"intercom_session_identity",
+	"intercom_session_memberships",
+	"resume_timings",
+	"subagent-child",
+	"subagent-slash-final-snapshot",
+	"web-search-results",
+	"workflow-stage-parked-tasks",
+	"workflow.run.blocked",
+	"workflow.run.end",
+	"workflow.run.start",
+	"workflow.stage.end",
+	"workflow.stage.progress",
+	"workflow.stage.start",
+	"workspace_binding",
+]);
+export function isExtensionCustomState(customType: string | undefined): boolean {
+	return !!customType && !ATOMIC_CUSTOM_TYPES.has(customType);
 }
 export function isSessionHistoryEntry(entry: SessionEntry): boolean {
 	if (entry.type === "message") return entry.message?.role !== "system";
@@ -475,6 +522,8 @@ export function foldSessionResume(
 	let lastStateSeq = previous?.lastStateSeq ?? 0;
 	let totals = previous?.totals ?? EMPTY_SESSION_HISTORY_TOTALS;
 	let latestAssistantSeq = previous?.latestAssistantSeq;
+	// An index an earlier build saved does not list extension state, so extending it cannot either.
+	const extensionState = previous === undefined ? [] : previous.extensionState && [...previous.extensionState];
 	let needsBranchRebuild = previous?.needsBranchRebuild ?? false;
 	const own = new Map<string, number>(lastId === null ? [] : [[lastId, seq]]);
 	const resolve = (id: string | null | undefined): number =>
@@ -523,6 +572,7 @@ export function foldSessionResume(
 			state = state === "" ? delta : `${state}.${delta}`;
 			lastStateSeq = seq;
 		}
+		if (entry.type === "custom" && isExtensionCustomState(entry.customType)) extensionState?.push(seq);
 		totals = addEntryToHistoryTotals(totals, entry);
 		if (entry.type === "message" && entry.message?.role === "assistant" && countedUsage(entry.message.usage)) {
 			latestAssistantSeq = seq;
@@ -549,6 +599,7 @@ export function foldSessionResume(
 		lastStateSeq,
 		totals,
 		...(latestAssistantSeq !== undefined ? { latestAssistantSeq } : {}),
+		...(extensionState ? { extensionState } : {}),
 	};
 }
 
@@ -569,7 +620,10 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 		typeof index.state === "string" &&
 		typeof index.lastStateSeq === "number" &&
 		typeof index.totals === "object" &&
-		index.totals !== null
+		index.totals !== null &&
+		(index.extensionState === undefined ||
+			(Array.isArray(index.extensionState) &&
+				index.extensionState.every((seq) => Number.isSafeInteger(seq) && seq > 0 && seq <= lastSeq)))
 	);
 }
 
