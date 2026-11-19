@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import pg from "pg";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type { SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
@@ -91,45 +91,219 @@ for (const backend of storageBackends) {
 			await scope.close();
 		}
 	});
-	if (backend.name !== "Postgres") {
-		run(`a wide session key preserves logical chunk order on ${backend.name} (#5590)`, async () => {
+	run(`an interrupted page scan restarts without publishing a prefix on ${backend.name} (#5590)`, async () => {
+		const scope = await backend.openScope();
+		try {
+			const db = await scope.connect();
+			const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+			const page = SESSION_RESUME_REBUILD.pageEntries;
+			await store.create(
+				header,
+				Array.from({ length: page + 1 }, (_, i) => ({
+					type: "custom",
+					customType: "atomic-pooled-delivery-op",
+					id: `e${i + 1}`,
+					parentId: i ? `e${i}` : null,
+					timestamp,
+					data: { op: `op${i}` },
+				})),
+			);
+			const table = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).sessions;
+			const summary = async () =>
+				(await db.get<{ summary_state: string }>(`SELECT summary_state FROM ${table} WHERE id = ?`, header.id))!
+					.summary_state;
+			const { resume, ...base } = JSON.parse(await summary());
+			const missing = JSON.stringify(base);
+			await db.run(`UPDATE ${table} SET summary_state = ? WHERE id = ?`, missing, header.id);
+			const realNow = performance.now.bind(performance);
+			let elapsed = 0;
+			const clock = vi.spyOn(performance, "now").mockImplementation(() => realNow() + elapsed);
+			const all = db.all.bind(db);
+			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const rows = await all<T>(sql, ...args);
+				if (rows[0] && "resume_type" in rows[0]) {
+					if (elapsed) throw new Error("lost reader on page two");
+					elapsed = 60_001;
+				}
+				return rows;
+			};
+			try {
+				await assert.rejects(() => store.findLatestCompaction(header.id), /lost reader on page two/);
+			} finally {
+				clock.mockRestore();
+				await store.close();
+			}
+			assert.equal(await summary(), missing);
+			const next = await scope.connect();
+			const reopened = await SqlSessionStore.open(next, { prefix: scope.prefix });
+			const read = next.all.bind(next);
+			const starts: number[] = [];
+			next.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const rows = await read<T>(sql, ...args);
+				if (rows[0] && "resume_type" in rows[0]) starts.push(Number(rows[0].seq));
+				return rows;
+			};
+			assert.equal(await reopened.findLatestCompaction(header.id), undefined);
+			assert.deepEqual(starts, [1, page + 1]);
+			assert.equal(JSON.stringify(JSON.parse(await summary()).resume), JSON.stringify(resume));
+			await reopened.close();
+		} finally {
+			await scope.close();
+		}
+	});
+	run(`a native JSON error in an inline entry stays final on ${backend.name} (#5590)`, async () => {
+		const scope = await backend.openScope();
+		try {
+			const db = await scope.connect();
+			const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+			const [large, kept, boundary] = transcript("p".repeat(2 * SESSION_ENTRY_CHUNK_BYTES));
+			const legacy = {
+				type: "message",
+				id: "legacy",
+				parentId: large!.id,
+				timestamp,
+				message: { role: "assistant", timestamp: 0, content: ["legacy plain text"] },
+			} as unknown as SessionEntry;
+			await store.create(header, [large!, legacy, { ...kept!, parentId: "legacy" }, boundary!]);
+			const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
+			await db.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, header.id);
+			let projections = 0;
+			let chunkProbes = 0;
+			const all = db.all.bind(db);
+			db.all = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				if (sql.includes("resume_toolcalls")) projections++;
+				return all<T>(sql, ...args);
+			};
+			const get = db.get.bind(db);
+			db.get = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				if (sql.includes(tables.entryChunks)) chunkProbes++;
+				return get<T>(sql, ...args);
+			};
+			await assert.rejects(() => store.findLatestCompaction(header.id), { name: "StorageUnavailableError" });
+			assert.deepEqual({ projections, chunkProbes }, { projections: 1, chunkProbes: 0 });
+		} finally {
+			await scope.close();
+		}
+	});
+	run(
+		`counts encoded tool calls alongside legacy text in a fitting chunked message on ${backend.name} (#5590)`,
+		async () => {
 			const scope = await backend.openScope();
 			try {
 				const db = await scope.connect();
 				const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
-				const id = "w".repeat(4096);
-				const entries = transcript("");
-				await store.create({ ...header, id }, entries);
-				const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
-				const json = JSON.stringify(entries[0]);
-				const at = json.indexOf("🙂");
-				const pieces = [json.slice(0, at), "🙂", json.slice(at + 2)].map((s) => Buffer.from(s));
-				await db.transaction(async (tx) => {
-					await tx.run(
-						`UPDATE ${tables.entries} SET chunks = 3, entry_json = ? WHERE session_id = ? AND seq = 1`,
-						JSON.stringify({ type: "custom", id: "receipt", parentId: null }),
-						id,
-					);
-					for (const idx of [0, 2, 1])
-						await tx.run(
-							`INSERT INTO ${tables.entryChunks} (session_id,seq,idx,data) VALUES (?,1,?,?)`,
-							id,
-							idx,
-							pieces[idx]!,
-						);
-					await tx.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, id);
-				});
-				const get = db.get.bind(db);
-				db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
-					const row = await get<T>(sql, ...args);
-					assert.ok(!(row?.data instanceof Uint8Array), "fitting metadata stays in the database");
-					return row;
-				};
-				assert.deepEqual((await store.readResume(id)).recovery.deliveryOpIds, [op]);
+				const [, kept, boundary] = transcript("");
+				const encoded = backend.name === "Postgres" ? '{"type":"toolCall"}' : "/* legacy */ {type:'toolCall'}";
+				const legacy = {
+					type: "message",
+					id: "receipt",
+					parentId: null,
+					timestamp,
+					message: {
+						role: "assistant",
+						timestamp: 0,
+						content: ["legacy plain text", encoded],
+						errorMessage: "x".repeat(2 * SESSION_ENTRY_CHUNK_BYTES),
+					},
+				} as unknown as SessionEntry;
+				await store.create(header, [legacy, kept!, boundary!]);
+				const table = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).sessions;
+				await db.run(`UPDATE ${table} SET summary_state = '{}' WHERE id = ?`, header.id);
+				assert.equal((await store.findLatestCompaction(header.id))?.entry.id, "boundary");
+				const state = (await db.get<{ summary_state: string }>(
+					`SELECT summary_state FROM ${table} WHERE id = ?`,
+					header.id,
+				))!;
+				assert.equal(JSON.parse(state.summary_state).resume.totals.toolCalls, 1);
 			} finally {
 				await scope.close();
 			}
-		});
+		},
+	);
+	run(`a malformed field in a fitting chunked extension stays final on ${backend.name} (#5590)`, async () => {
+		const scope = await backend.openScope();
+		try {
+			const db = await scope.connect();
+			const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+			const entries = transcript("");
+			const receipt = entries[0]!;
+			assert.ok(receipt.type === "custom");
+			receipt.customType = "third-party";
+			receipt.data = { owner: "{bad", ignored: "x".repeat(SESSION_ENTRY_CHUNK_BYTES + 37) };
+			await store.create(header, entries);
+			const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
+			await db.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, header.id);
+			let projections = 0;
+			let chunkReads = 0;
+			const all = db.all.bind(db);
+			db.all = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				if (sql.includes("resume_toolcalls")) projections++;
+				return all<T>(sql, ...args);
+			};
+			const get = db.get.bind(db);
+			db.get = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				if (sql.includes(tables.entryChunks)) chunkReads++;
+				return get<T>(sql, ...args);
+			};
+			await assert.rejects(() => store.findLatestCompaction(header.id), SyntaxError);
+			assert.deepEqual({ projections, chunkReads }, { projections: 1, chunkReads: 0 });
+			assert.equal(
+				(await db.get(`SELECT summary_state FROM ${tables.sessions} WHERE id = ?`, header.id))?.summary_state,
+				"{}",
+			);
+		} finally {
+			await scope.close();
+		}
+	});
+	if (backend.name !== "Postgres") {
+		for (const shadowed of [false, true]) {
+			run(
+				`a wide session key preserves logical chunk order on ${backend.name}${shadowed ? " with a declared rowid" : ""} (#5590)`,
+				async () => {
+					const scope = await backend.openScope();
+					try {
+						const db = await scope.connect();
+						const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
+						// An application column can shadow SQLite's physical rowid; its values are not chunk addresses.
+						if (shadowed)
+							await db.exec(`CREATE TABLE ${tables.entryChunks} (
+					session_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,
+					rowid INTEGER DEFAULT 1, PRIMARY KEY(session_id,seq,idx)) STRICT`);
+						const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+						const id = "w".repeat(4096);
+						const entries = transcript("");
+						await store.create({ ...header, id }, entries);
+						const json = JSON.stringify(entries[0]);
+						const at = json.indexOf("🙂");
+						const pieces = [json.slice(0, at), "🙂", json.slice(at + 2)].map((s) => Buffer.from(s));
+						await db.transaction(async (tx) => {
+							await tx.run(
+								`UPDATE ${tables.entries} SET chunks = 3, entry_json = ? WHERE session_id = ? AND seq = 1`,
+								JSON.stringify({ type: "custom", id: "receipt", parentId: null }),
+								id,
+							);
+							for (const idx of [0, 2, 1])
+								await tx.run(
+									`INSERT INTO ${tables.entryChunks} (session_id,seq,idx,data) VALUES (?,1,?,?)`,
+									id,
+									idx,
+									pieces[idx]!,
+								);
+							await tx.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, id);
+						});
+						const get = db.get.bind(db);
+						db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+							const row = await get<T>(sql, ...args);
+							assert.ok(!(row?.data instanceof Uint8Array), "fitting metadata stays in the database");
+							return row;
+						};
+						assert.deepEqual((await store.readResume(id)).recovery.deliveryOpIds, [op]);
+					} finally {
+						await scope.close();
+					}
+				},
+			);
+		}
 	}
 	if (backend.name === "Postgres") {
 		run("a resume lookup does not wait for chunk tables it does not read (#5590)", async () => {
