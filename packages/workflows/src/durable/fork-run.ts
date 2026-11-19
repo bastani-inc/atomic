@@ -64,7 +64,6 @@ import {
 	type ForkStorageScope,
 	ForkTargetNotFoundError,
 } from "./fork-errors.js";
-import { cancellableRunListings } from "./journal/internal.js";
 import {
 	decodeJournalEventHandle,
 	isJournalDurableBackend,
@@ -303,13 +302,10 @@ async function inJournal<T>(
 	journal: RunJournal,
 	context: { readonly runId: string; readonly phase: ForkJournalPhase; readonly forkRunId?: string },
 	operation: () => Promise<T>,
-	signal?: AbortSignal,
 ): Promise<T> {
 	try {
-		signal?.throwIfAborted();
 		return await operation();
 	} catch (error) {
-		if (signal?.aborted === true && error === signal.reason) throw error;
 		if (!(error instanceof StorageError)) throw error;
 		throw new ForkJournalUnavailableError({ ...context, storage: journalStorage(journal) }, { cause: error });
 	}
@@ -319,44 +315,29 @@ async function readForkSource(
 	backend: JournalDurableBackend,
 	target: string,
 	rootRunOf: ForkSourceOptions["rootRunOf"],
-	signal?: AbortSignal,
 ): Promise<ForkSource> {
 	const journal = backend.journal;
 	if (!isFullRunId(target) && !isRunIdPrefix(target))
 		throw new ForkSourceNotFoundError({ runId: target, reason: "malformed" });
-	const { runId, entries } = await inJournal(
-		journal,
-		{ runId: target, phase: "read" },
-		async () => {
-			const runIds = isFullRunId(target)
-				? (await journal.getRun(target)) === undefined
-					? []
-					: [target]
-				: (
-						await (signal && cancellableRunListings.has(journal.listRuns)
-							? journal.listRuns(undefined, { signal })
-							: journal.listRuns())
-					).map((run) => run.runId);
-			signal?.throwIfAborted();
-			const resolution = resolveRunIdTarget(target, runIds);
-			if (resolution.kind === "ambiguous")
-				throw new ForkSourceNotFoundError({ runId: target, reason: "ambiguous", matches: resolution.matches });
-			if (resolution.kind !== "exact" && resolution.kind !== "unique_prefix") {
-				const rootRunId = rootRunOf?.(target);
-				throw rootRunId === undefined || rootRunId === target
-					? new ForkSourceNotFoundError({ runId: target, reason: "not-found", storage: journalStorage(journal) })
-					: new ForkSourceNotFoundError({ runId: target, reason: "not-root", rootRunId });
-			}
-			const read: JournalEntry[] = [];
-			for await (const entry of journal.read(resolution.runId)) {
-				signal?.throwIfAborted();
-				read.push(entry);
-			}
-			signal?.throwIfAborted();
-			return { runId: resolution.runId, entries: read };
-		},
-		signal,
-	);
+	const { runId, entries } = await inJournal(journal, { runId: target, phase: "read" }, async () => {
+		const runIds = isFullRunId(target)
+			? (await journal.getRun(target)) === undefined
+				? []
+				: [target]
+			: (await journal.listRuns()).map((run) => run.runId);
+		const resolution = resolveRunIdTarget(target, runIds);
+		if (resolution.kind === "ambiguous")
+			throw new ForkSourceNotFoundError({ runId: target, reason: "ambiguous", matches: resolution.matches });
+		if (resolution.kind !== "exact" && resolution.kind !== "unique_prefix") {
+			const rootRunId = rootRunOf?.(target);
+			throw rootRunId === undefined || rootRunId === target
+				? new ForkSourceNotFoundError({ runId: target, reason: "not-found", storage: journalStorage(journal) })
+				: new ForkSourceNotFoundError({ runId: target, reason: "not-root", rootRunId });
+		}
+		const read: JournalEntry[] = [];
+		for await (const entry of journal.read(resolution.runId)) read.push(entry);
+		return { runId: resolution.runId, entries: read };
+	});
 	let handle: DurableWorkflowHandle | undefined;
 	const checkpoints: CheckpointEvent[] = [];
 	for (const entry of entries) {
@@ -744,14 +725,12 @@ interface SourceClaim {
 async function claimSource(
 	backend: JournalDurableBackend,
 	runId: string,
-	request: Pick<DurableForkRequest, "isLiveRun" | "signal">,
+	request: Pick<DurableForkRequest, "isLiveRun">,
 ): Promise<SourceClaim> {
-	request.signal?.throwIfAborted();
 	if (hasForkClaim(backend, runId)) throw new ForkSourceBusyError({ runId, reason: "fork-in-progress" });
 	if (hasResumeClaim(backend, runId)) throw new ForkSourceBusyError({ runId, reason: "resume-in-progress" });
-	const live = backend.hasWorkflowExecution(runId) || request.isLiveRun?.(runId) === true;
-	request.signal?.throwIfAborted();
-	if (live) throw new ForkSourceBusyError({ runId, reason: "live-execution" });
+	if (backend.hasWorkflowExecution(runId) || request.isLiveRun?.(runId) === true)
+		throw new ForkSourceBusyError({ runId, reason: "live-execution" });
 	const claims = claimsOf(pendingForks, backend);
 	claims.add(runId);
 	const releaseLocal = () => {
@@ -759,8 +738,7 @@ async function claimSource(
 	};
 	try {
 		const claim = { runId, phase: "claim" } as const;
-		const current = await inJournal(backend.journal, claim, () => backend.journal.leaseState(runId), request.signal);
-		request.signal?.throwIfAborted();
+		const current = await inJournal(backend.journal, claim, () => backend.journal.leaseState(runId));
 		// This process already holds the source's lease (its run ended here): that lease is kept alive and checked
 		// like one the fork takes, and left to its holder at the end.
 		if (current?.holderId === backend.holderId)
@@ -770,16 +748,11 @@ async function claimSource(
 				releaseLocal,
 				false,
 			);
-		const outcome = await inJournal(
-			backend.journal,
-			claim,
-			() => backend.journal.takeoverExpired(runId, `fork:${randomUUID()}`, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
-			request.signal,
+		const outcome = await inJournal(backend.journal, claim, () =>
+			backend.journal.takeoverExpired(runId, `fork:${randomUUID()}`, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
 		);
-		if (outcome.status === "held") {
-			request.signal?.throwIfAborted();
+		if (outcome.status === "held")
 			throw new ForkSourceBusyError({ runId, reason: "foreign-lease", holderId: outcome.holderId ?? undefined });
-		}
 		return heldSourceClaim(backend, outcome.lease, releaseLocal, true);
 	} catch (error) {
 		releaseLocal();
@@ -1421,14 +1394,14 @@ export async function forkDurableRun<
 	let request = forkRequest as ResolvedForkRequest;
 	request.signal?.throwIfAborted();
 	const journalBackend = forkJournal(backend);
-	const preview = await readForkSource(journalBackend, request.runId, request.rootRunOf, request.signal);
+	const preview = await readForkSource(journalBackend, request.runId, request.rootRunOf);
 	request.signal?.throwIfAborted();
 	forkRequest.validateSource?.(preview.handle);
 	const claim = await claimSource(journalBackend, preview.runId, request);
 	const cleanup = new ForkCleanup(preview.runId);
 	let primary: unknown;
 	try {
-		const source = await readForkSource(journalBackend, preview.runId, request.rootRunOf, request.signal);
+		const source = await readForkSource(journalBackend, preview.runId, request.rootRunOf);
 		forkRequest.validateSource?.(source.handle);
 		request = { ...forkRequest, cwd: forkDestinationCwd(forkRequest.cwd, source.handle) };
 		request.signal?.throwIfAborted();

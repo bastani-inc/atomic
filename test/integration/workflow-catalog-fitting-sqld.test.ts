@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StoragePayloadTooLargeError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { runJournalTables } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -101,7 +102,7 @@ for (const backend of storageBackends) {
 			}
 		});
 
-		it("restarts from the first key in a fresh snapshot after a later size refusal (#5537)", async () => {
+		it("does not replay the fitting prefix when a later recovery page is refused (#5537)", async () => {
 			const scope = await backend.openScope();
 			try {
 				const db = await scope.connect();
@@ -112,12 +113,15 @@ for (const backend of storageBackends) {
 					await db.run(
 						`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 5000) INSERT INTO ${runs}(run_id,name,cwd,created_at,status,header_json) SELECT 'm-'||i,'r','/p',1,'completed','{"runId":"m-'||i||'","name":"r","cwd":"/p","createdAt":1,"status":"completed"}' FROM n`,
 					);
+					const failure = new StoragePayloadTooLargeError(0, 0, { kind: "response" });
 					let accepted = false;
 					let refused = false;
+					let replays = 0;
 					const restore = observeSqlReads(db, {
 						after: async (rows, _sql, pinned) => {
 							if (!rows.some((row) => typeof row.header_json === "string")) return;
-							if (!pinned) throw new StoragePayloadTooLargeError(0, 0, { kind: "response" });
+							if (!pinned) throw failure;
+							if (refused) replays += rows.length;
 							if (accepted && !refused) {
 								await peer.run(
 									`INSERT INTO ${runs}(run_id,name,cwd,created_at,status,header_json) VALUES ('a-first','r','/p',1,'completed','{"runId":"a-first","name":"r","cwd":"/p","createdAt":1,"status":"completed"}')`,
@@ -128,12 +132,23 @@ for (const backend of storageBackends) {
 							accepted = true;
 						},
 					});
+					// A capped server can refuse the ordinary request before the test ceiling sees its rows.
+					const direct = db.all.bind(db);
+					let ordinaryFailure: unknown;
+					db.all = <Row extends SqliteRow>(sql: string, ...args: SqliteValue[]) =>
+						direct<Row>(sql, ...args).catch((error: unknown) => {
+							ordinaryFailure = error;
+							throw error;
+						});
 					try {
-						expect((await journal.listRuns()).map((r) => r.runId)).toEqual([
-							"a-first",
-							...Array.from({ length: 5000 }, (_, i) => `m-${i + 1}`).sort(),
-						]);
+						const result = await journal.listRuns().then(
+							() => undefined,
+							(error: unknown) => error,
+						);
+						expect(ordinaryFailure).toBeInstanceOf(StoragePayloadTooLargeError);
+						expect(result).toBe(ordinaryFailure);
 						expect(refused).toBe(true);
+						expect(replays).toBe(0);
 					} finally {
 						restore();
 					}

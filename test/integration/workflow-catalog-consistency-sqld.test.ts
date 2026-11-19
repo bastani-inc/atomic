@@ -89,10 +89,14 @@ for (const backend of storageBackends) {
 					await reader.createRun(header);
 					await reader.createRun({ ...header, runId: "unselected" });
 					let fetchedOther = false;
+					let selectedHeaders = 0;
 					const release = limitHeaderResponse(database, (rows) => rows.length <= 1);
 					const restore = observeSqlReads(database, {
 						after: (rows) => {
 							if (rows.some((row) => row.run_id === "unselected")) fetchedOther = true;
+							selectedHeaders += rows.filter(
+								(row) => row.run_id === header.runId && "header_json" in row,
+							).length;
 						},
 					});
 					try {
@@ -103,6 +107,7 @@ for (const backend of storageBackends) {
 						);
 						expect(result.written).toEqual([header.runId]);
 						expect(fetchedOther).toBe(false);
+						expect(selectedHeaders).toBe(1);
 					} finally {
 						restore();
 						release();
@@ -242,7 +247,7 @@ async function refusedAddress() {
 
 const sqld = storageBackends.find((backend) => backend.name.includes("sqld"))!;
 describe.skipIf(sqld.skipReason !== undefined)("warm sqld catalog", () => {
-	it("restarts the entire snapshot after a refusal on a later page (#5537)", async () => {
+	it("does not replay the catalog after losing the recovery connection (#5537)", async () => {
 		const scope = await sqld.openScope();
 		try {
 			const db = await scope.connect();
@@ -254,10 +259,12 @@ describe.skipIf(sqld.skipReason !== undefined)("warm sqld catalog", () => {
 				const fetch = globalThis.fetch;
 				let armed = false;
 				let failed = false;
+				let headersAfterFailure = 0;
 				const send = vi.spyOn(globalThis, "fetch");
 				const releaseLimit = limitHeaderResponse(db, (rows) => rows.length <= 4096);
 				const restore = observeSqlReads(db, {
 					after: async (rows) => {
+						if (failed) headersAfterFailure += rows.filter((row) => typeof row.header_json === "string").length;
 						if (armed || !rows.some((row) => typeof row.header_json === "string")) return;
 						await writer.createRun({ ...header, runId: "a-first" });
 						armed = true;
@@ -268,9 +275,9 @@ describe.skipIf(sqld.skipReason !== undefined)("warm sqld catalog", () => {
 					},
 				});
 				try {
-					const ids = (await journal.listRuns()).map((run) => run.runId);
+					await expect(journal.listRuns()).rejects.toThrow();
 					expect(failed).toBe(true);
-					expect(ids).toEqual(["a-first", ...Array.from({ length: 5000 }, (_, i) => `m-${i + 1}`).sort()]);
+					expect(headersAfterFailure).toBe(0);
 				} finally {
 					send.mockRestore();
 					restore();

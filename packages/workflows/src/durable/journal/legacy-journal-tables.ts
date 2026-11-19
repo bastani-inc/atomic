@@ -107,14 +107,6 @@ export class LegacyJournalRuns {
 		}, JOURNAL_TRANSACTION);
 	}
 
-	get pendingSource(): string {
-		return PENDING_LEGACY_RUNS;
-	}
-
-	get versionSource(): string {
-		return `SELECT pending.${c.runId}, ${latestEventColumns(JOURNAL_TABLES.events, "pending")} FROM (${PENDING_LEGACY_RUNS}) AS pending`;
-	}
-
 	async pending(executor: SqliteExecutor, filter?: { cwd?: string }): Promise<LegacyRunRow[]> {
 		return executor.all<LegacyRunRow>(
 			`${PENDING_LEGACY_RUNS}${filter?.cwd === undefined ? "" : ` AND ${c.cwd} = ?`}`,
@@ -128,7 +120,9 @@ export class LegacyJournalRuns {
 
 	/** Latest event of each pending legacy run; the legacy tables are never modified. */
 	async versions(executor: SqliteExecutor): Promise<RunVersionRow[]> {
-		return executor.all<RunVersionRow>(this.versionSource);
+		return executor.all<RunVersionRow>(
+			`SELECT pending.${c.runId}, ${latestEventColumns(JOURNAL_TABLES.events, "pending")} FROM (${PENDING_LEGACY_RUNS}) AS pending`,
+		);
 	}
 
 	/** Events of an unconverted legacy run, read in place. */

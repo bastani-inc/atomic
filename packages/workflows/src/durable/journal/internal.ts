@@ -26,9 +26,6 @@ import {
 
 export type { RunJournalBatchAppend as JournalBatchAppend, RunSnapshotTail, RunVersion } from "./types.js";
 
-/** Methods known to accept cancellation. An adapter or decorator with the original signature keeps its original call. */
-export const cancellableRunListings = new WeakSet<RunJournal["listRuns"]>();
-
 export const JOURNAL_READ_PAGE_SIZE = 256;
 /**
  * The most characters of event payload one journal read returns, by the payload's `length()`, so a page of large

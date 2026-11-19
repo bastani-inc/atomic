@@ -2508,7 +2508,7 @@ for (const repointed of [true, false])
 										);
 									for (const table of ["wf_events", "wf_leases", "wf_runs"])
 										raw(source, `DELETE FROM ${table} WHERE run_id = 'r'`);
-								} else readEvents = sql.includes("SELECT * FROM wf_events");
+								} else readEvents = sql.startsWith("SELECT * FROM wf_events");
 							}
 							return prepare.call(this, sql);
 						} as typeof prepare;

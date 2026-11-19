@@ -73,9 +73,9 @@ it.each(["catalog refusal", "completed catalog recovery", "event refusal", "run 
 				};
 				return db;
 			};
-			await expect(exportWorkflowRuns({ ...storage, open: openReader }, directory, { runs: [id] })).rejects.toThrow(
-				cut.startsWith("run deleted") ? /not in this workflow journal/ : /unsupported journal schema version/,
-			);
+			const exported = exportWorkflowRuns({ ...storage, open: openReader }, directory, { runs: [id] });
+			if (cut.includes("event refusal")) await expect(exported).rejects.toBe(failure);
+			else await expect(exported).rejects.toThrow(/unsupported journal schema version/);
 			expect(changed).toBe(true);
 			expect(await readFile(file)).toEqual(previous);
 		} finally {
