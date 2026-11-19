@@ -14,6 +14,7 @@ import { ScrollView } from "../src/components/scroll-view.ts";
 import { SelectList } from "../src/components/select-list.ts";
 import { Text } from "../src/components/text.ts";
 import { VStack } from "../src/components/v-stack.ts";
+import { WindowedContainer, type WindowRequest } from "../src/components/windowed-container.ts";
 import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "../src/keybindings.ts";
 import {
 	encodeKitty,
@@ -1635,6 +1636,52 @@ describe("TuiAltScreen", () => {
 		assert.ok(terminal.getViewport().every((line) => !line.includes("Copied!")));
 
 		tui.stop();
+	});
+
+	it("checks multi-page selection endpoints without reading the selected transcript before copy (#5593)", async () => {
+		const terminal = new RecordingTerminal(30, 4);
+		const rows = Array.from({ length: 300 }, (_, i) => `界-${i}-e\u0301`);
+		let reads = 0,
+			copied = "";
+		class SavedRows extends WindowedContainer {
+			override layoutWindow(request: WindowRequest) {
+				return {
+					top: request.top,
+					length: rows.length,
+					at(index: number) {
+						reads++;
+						return rows[index];
+					},
+				};
+			}
+		}
+		const transcript = new ScrollView(new SavedRows(), { primary: true });
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copyOnSelect: false,
+			copySelection: async (value) => {
+				copied = value;
+				return true;
+			},
+		});
+		tui.setLayoutRoot(transcript);
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<0;1;1M");
+			transcript.scrollTo(200);
+			tui.requestRender();
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<32;2;2M");
+			terminal.sendInput("\x1b[<0;2;2m");
+			await terminal.waitForRender();
+			const before = reads;
+			assert.equal(tui.hasActiveSelection(), true);
+			assert.equal(reads, before, "selection presence read every selected row");
+			assert.equal(await tui.copyActiveSelectionToClipboard(), true);
+			assert.equal(copied, [...rows.slice(0, 201), "界"].join("\n"));
+		} finally {
+			tui.stop();
+		}
 	});
 
 	it("copies an active selection programmatically", async () => {
