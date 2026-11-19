@@ -1,5 +1,12 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Container, type ResourceDiagnostic, type SourceInfo, Spacer, theme } from "./interactive-mode-deps.ts";
+import {
+	type Component,
+	type Container,
+	type ResourceDiagnostic,
+	type SourceInfo,
+	Spacer,
+	theme,
+} from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
 
 InteractiveModeBase.prototype.formatDiagnostics = function (
@@ -63,6 +70,23 @@ InteractiveModeBase.prototype.formatDiagnostics = function (
 	return lines.join("\n");
 };
 
+class ResourceSection extends ExpandableText {
+	readonly name: string;
+	readonly collapsedBody: string;
+	readonly expandedBody: string;
+
+	constructor(name: string, collapsedBody: string, expandedBody: string, expanded: boolean) {
+		super(
+			() => `${theme.fg("mdHeading", `[${name}]`)}\n${collapsedBody}`,
+			() => `${theme.fg("mdHeading", `[${name}]`)}\n${expandedBody}`,
+			expanded,
+		);
+		this.name = name;
+		this.collapsedBody = collapsedBody;
+		this.expandedBody = expandedBody;
+	}
+}
+
 InteractiveModeBase.prototype.addResourceDisclosure = function (
 	this: InteractiveModeBase,
 	options: {
@@ -76,6 +100,7 @@ InteractiveModeBase.prototype.addResourceDisclosure = function (
 			prompts?: string;
 			extensions?: string;
 		};
+		previousSections?: readonly Component[];
 		targetContainer?: Container;
 	},
 ): void {
@@ -88,14 +113,14 @@ InteractiveModeBase.prototype.addResourceDisclosure = function (
 	const addSection = (name: string, labels: string[], expandedBody?: string, sort = true): void => {
 		if (labels.length === 0) return;
 		const collapsedBody = compactList(labels, sort);
+		const body = expandedBody ?? collapsedBody;
+		const previous = options.previousSections?.find(
+			(child): child is ResourceSection => child instanceof ResourceSection && child.name === name,
+		);
 		targetContainer.addChild(
-			new ExpandableText(
-				() => `${theme.fg("mdHeading", `[${name}]`)}\n${collapsedBody}`,
-				() => `${theme.fg("mdHeading", `[${name}]`)}\n${expandedBody ?? collapsedBody}`,
-				this.getStartupExpansionState(),
-				0,
-				0,
-			),
+			previous && previous.collapsedBody === collapsedBody && previous.expandedBody === body
+				? previous
+				: new ResourceSection(name, collapsedBody, body, previous?.isExpanded() ?? this.getStartupExpansionState()),
 		);
 		targetContainer.addChild(new Spacer(1));
 	};

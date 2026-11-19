@@ -137,6 +137,7 @@ function getOverlapNoticeFingerprint(
 InteractiveModeBase.prototype.showLoadedResources = function (
 	this: InteractiveModeBase,
 	options?: {
+		preserveExpansion?: boolean;
 		extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
 		force?: boolean;
 		showDiagnosticsWhenQuiet?: boolean;
@@ -149,6 +150,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 	if (!showListing && !showDiagnostics) {
 		return;
 	}
+	const previousSections = options?.preserveExpansion ? [...targetContainer.children] : undefined;
 	if (targetContainer === this.resourceDisclosureContainer) targetContainer.clear();
 
 	const skillsResult = this.session.resourceLoader.getSkills();
@@ -249,6 +251,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			prompts,
 			extensions,
 			expandedSections,
+			previousSections,
 			targetContainer,
 		});
 	}

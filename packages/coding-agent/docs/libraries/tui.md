@@ -720,6 +720,8 @@ const provider = new CombinedAutocompleteProvider(
 editor.setAutocompleteProvider(provider);
 ```
 
+Replacing the provider normally closes the menu. To update its items without dropping the user's selection, call `editor.setAutocompleteProvider(provider, { preserveSelection: true })`. If the selected value is still present, it stays highlighted even if its position changes.
+
 **Features:**
 - Type `/` to see slash commands
 - Press `Tab` for file path completion

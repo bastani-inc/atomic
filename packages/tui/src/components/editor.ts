@@ -256,6 +256,12 @@ interface EditorSnapshot {
 	pasteCounter: number;
 }
 
+interface AutocompleteRequestOptions {
+	force: boolean;
+	explicitTab: boolean;
+	preserveSelection?: boolean;
+}
+
 interface LayoutLine {
 	text: string;
 	hasCursor: boolean;
@@ -465,10 +471,18 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
-	setAutocompleteProvider(provider: AutocompleteProvider): void {
-		this.cancelAutocomplete();
+	setAutocompleteProvider(provider: AutocompleteProvider, options?: { preserveSelection?: boolean }): void {
 		this.autocompleteProvider = provider;
 		this.setAutocompleteTriggerCharacters(provider.triggerCharacters ?? []);
+		if (options?.preserveSelection && this.autocompleteState) {
+			this.requestAutocomplete({
+				force: this.autocompleteState === "force",
+				explicitTab: false,
+				preserveSelection: true,
+			});
+		} else {
+			this.cancelAutocomplete();
+		}
 	}
 
 	private renderAutocompleteHint(width: number): string | undefined {
@@ -2386,7 +2400,7 @@ export class Editor implements Component, Focusable {
 		this.requestAutocomplete({ force: true, explicitTab });
 	}
 
-	private requestAutocomplete(options: { force: boolean; explicitTab: boolean }): void {
+	private requestAutocomplete(options: AutocompleteRequestOptions): void {
 		if (!this.autocompleteProvider) return;
 
 		if (options.force) {
@@ -2417,10 +2431,7 @@ export class Editor implements Component, Focusable {
 		void this.startAutocompleteRequest(startToken, options);
 	}
 
-	private async startAutocompleteRequest(
-		startToken: number,
-		options: { force: boolean; explicitTab: boolean },
-	): Promise<void> {
+	private async startAutocompleteRequest(startToken: number, options: AutocompleteRequestOptions): Promise<void> {
 		const previousTask = this.autocompleteRequestTask;
 		this.autocompleteRequestTask = (async () => {
 			await previousTask;
@@ -2469,7 +2480,7 @@ export class Editor implements Component, Focusable {
 		snapshotText: string,
 		snapshotLine: number,
 		snapshotCol: number,
-		options: { force: boolean; explicitTab: boolean },
+		options: AutocompleteRequestOptions,
 	): Promise<void> {
 		if (!this.autocompleteProvider) return;
 
@@ -2511,7 +2522,7 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		this.applyAutocompleteSuggestions(suggestions, options.force ? "force" : "regular");
+		this.applyAutocompleteSuggestions(suggestions, options);
 		this.tui.requestRender();
 	}
 
@@ -2531,18 +2542,25 @@ export class Editor implements Component, Focusable {
 		);
 	}
 
-	private applyAutocompleteSuggestions(suggestions: AutocompleteSuggestions, state: "regular" | "force"): void {
+	private applyAutocompleteSuggestions(
+		suggestions: AutocompleteSuggestions,
+		options: AutocompleteRequestOptions,
+	): void {
+		// Read the live selection: navigation may have moved it while the provider was answering.
+		const selected = options.preserveSelection ? this.autocompleteList?.getSelectedItem() : undefined;
+		const retainedIndex = selected ? suggestions.items.findIndex((item) => item.value === selected.value) : -1;
 		this.autocompletePrefix = suggestions.prefix;
 		this.autocompleteCompleteOnConfirm = suggestions.completeOnConfirm !== false;
-		this.autocompleteSelectionMoved = false;
+		this.autocompleteSelectionMoved = retainedIndex >= 0 && this.autocompleteSelectionMoved;
 		this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
 
-		const bestMatchIndex = this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
+		const bestMatchIndex =
+			retainedIndex >= 0 ? retainedIndex : this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
 		if (bestMatchIndex >= 0) {
 			this.autocompleteList.setSelectedIndex(bestMatchIndex);
 		}
 
-		this.autocompleteState = state;
+		this.autocompleteState = options.force ? "force" : "regular";
 	}
 
 	private cancelAutocompleteRequest(): void {

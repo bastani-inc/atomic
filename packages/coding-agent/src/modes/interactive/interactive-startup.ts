@@ -203,8 +203,9 @@ InteractiveModeBase.prototype.showManagedToolStatus = function (this: Interactiv
 	this.ui.requestRender();
 };
 
-function refreshResourceDisclosure(mode: InteractiveModeBase): void {
+function refreshResourceDisclosure(mode: InteractiveModeBase, options?: { preserveExpansion?: boolean }): void {
 	mode.showLoadedResources({
+		...options,
 		force: true,
 		showDiagnosticsWhenQuiet: true,
 		targetContainer: mode.resourceDisclosureContainer,
@@ -282,8 +283,8 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	onInteractiveEngineProjectTrustChanged(this.runtimeHost, () => {
 		// The folder's decision can reload local resources while another source still holds up the engine catalog.
 		if (this.isInitialized && this.runtimeHost.isProjectTrustPending()) {
-			refreshResourceDisclosure(this);
-			this.setupAutocompleteProvider();
+			refreshResourceDisclosure(this, { preserveExpansion: true });
+			this.setupAutocompleteProvider({ preserveSelection: true });
 		}
 		this.refreshProjectTrustWarning();
 	});
