@@ -9,6 +9,7 @@
 ### Added
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
+- Extension tools can distinguish nested calls from model-issued calls with `ctx.parentToolCallId`.
 
 ### Fixed
 
