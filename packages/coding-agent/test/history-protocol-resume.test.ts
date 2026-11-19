@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { describe, it, vi } from "vitest";
+import { collectGarbage } from "../../../test/helpers/collect-garbage.js";
 import type {
 	WorkflowRunDetail,
 	WorkflowRunStageSummary,
@@ -179,6 +180,31 @@ function matchRows(outputs: readonly string[]): string[] {
 }
 
 describe("history:// continuations keep whole records and positions (#5250)", () => {
+	it("remembering short workflow IDs does not retain the records they were sliced from (#5692)", async () => {
+		const search = async (n: number, recordBytes: number) => {
+			const list = async () =>
+				[0, 1].map((i) => {
+					const record = `wf-${String(2 * n + i).padStart(24, "0")}\t${"z".repeat(recordBytes)}`;
+					return summary(record.slice(0, record.indexOf("\t")), BASE + i);
+				});
+			const router = routerOver(
+				{ listRuns: list, listProjectRuns: list, getRun: async (id) => detail(id, BASE, "needle") },
+				30_000,
+			);
+			assert.match((await router.search!("history://workflows?limit=1", request("needle")))!, /&order=/);
+		};
+		const retainedBytes = async () => {
+			await collectGarbage(2);
+			const { heapUsed, arrayBuffers } = process.memoryUsage();
+			return heapUsed + arrayBuffers;
+		};
+		await search(100, 0);
+		const before = await retainedBytes();
+		for (let i = 0; i < 12; i++) await search(i, 2 * 1024 * 1024);
+		const growth = (await retainedBytes()) - before;
+		assert.ok(growth < 8 * 1024 * 1024, `${growth} bytes retained for 24 short IDs`);
+	});
+
 	it("a multi-session search resumed in a session after newer sessions appear does not search earlier sessions again (#5250)", async () => {
 		for (const added of [1, 2, 3]) {
 			const store = new MemorySessionStore();

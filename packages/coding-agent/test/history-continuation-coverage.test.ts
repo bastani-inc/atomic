@@ -6,6 +6,7 @@ import { MemorySessionStore } from "../src/core/storage/session/memory-session-s
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
 import type { InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
 
 /**
  * Following every `continue with` URL a history:// search hands back covers each entry exactly once: nothing is
@@ -97,6 +98,61 @@ describe("history:// continuation chains cover each entry once", () => {
 			["s6", "s5", "s4", "s3", "s2", "s1"],
 			pages.join("\n"),
 		);
+	});
+
+	async function searchPaths(store: MemorySessionStore, paths: string[], observe?: (text: string) => void) {
+		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+		const search = async (url: string, request: InternalSearchRequest) => {
+			const text = await router.search!(url, request);
+			if (text !== undefined) observe?.(text);
+			return text;
+		};
+		return createSearchToolDefinition(PROJECT, { contextBefore: 0, contextAfter: 0 }).execute(
+			"search",
+			{ pattern: "needle", paths },
+			undefined,
+			undefined,
+			{ cwd: PROJECT, internalResourceRouter: { search } } as never,
+		);
+	}
+
+	it("overlapping listings share a continuation and count its note once (#5692)", async () => {
+		const store = new MemorySessionStore();
+		await addSession(store, "s1", BASE, ["needle first"]);
+		await addSession(store, "s2", BASE + 1, ["needle second"]);
+		const path = "history://sessions?limit=1";
+		const cursors: (string | undefined)[] = [];
+		const result = await searchPaths(store, [path, path], (text) => cursors.push(continuation(text)));
+		assert.equal(cursors.length, 2);
+		assert.equal(cursors[0], cursors[1]);
+		const block = result.content[0];
+		assert.ok(block?.type === "text");
+		assert.equal(block.text.match(/&order=[A-Za-z0-9_-]{22}/g)?.length, 1, block.text);
+		assert.equal(result.details?.matchCount, 2);
+		assert.deepEqual(result.details?.fileMatches, { [path]: 1, "history://sessions/s2": 1 });
+	});
+
+	it.each([
+		{ sessions: 10, padding: 473, matches: 100, skipHint: false },
+		{ sessions: 20, padding: 230, matches: 190, skipHint: true },
+	])("an order token never displaces the last match or skip hint ($matches matches, #5692)", async (fixture) => {
+		const store = new MemorySessionStore();
+		await addSession(store, "older", BASE, ["needle older"]);
+		for (let s = 1; s <= fixture.sessions; s++) {
+			const rows = Array.from({ length: 10 }, (_, i) => `needle ${s} ${i} ${"x".repeat(fixture.padding)}`);
+			await addSession(store, `s${s}`, BASE + s * 60_000, rows);
+		}
+		const paths = [
+			"history://sessions?limit=1",
+			...Array.from({ length: fixture.sessions - 1 }, (_, i) => `history://sessions/s${fixture.sessions - 1 - i}`),
+		];
+		const result = await searchPaths(store, paths);
+		const block = result.content[0];
+		assert.ok(block?.type === "text");
+		assert.equal(block.text.match(/: needle /g)?.length, fixture.matches);
+		assert.equal(block.text.endsWith("[20 matching files shown. Use skip=20 to view more.]"), fixture.skipHint);
+		assert.equal(result.details?.matchCount, fixture.matches + 1);
+		assert.equal(result.details?.truncation, undefined);
 	});
 
 	it("a page keeps the legacy URL rather than dropping a match to fit an order token (#5692)", async () => {

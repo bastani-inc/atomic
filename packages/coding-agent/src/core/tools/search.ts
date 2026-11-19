@@ -10,6 +10,7 @@ import type { SupervisedCommandOwner } from "./bash-pty-native.js";
 import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
+import { HistorySearchPage } from "./history-search-order.ts";
 import { historySearchSchema, runSearchWithTasks, type SearchTaskDetails } from "./history-search-run.ts";
 import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
@@ -22,7 +23,7 @@ import {
 	resolveInternalSelector,
 	type SqliteSelector,
 	searchArchiveSelector,
-	searchInternalSelector,
+	searchInternalSelector as searchResource,
 	searchSqliteSelector,
 	sqliteSelectorForPath,
 } from "./resource-selectors.ts";
@@ -488,7 +489,7 @@ function filterTargetLineRanges(
 	return filterSearchOutputByLineRange(text, target?.lineRanges, contextBefore, contextAfter);
 }
 
-function dedupeRenderedSearchOutput(content: string): string {
+function dedupeRenderedSearchOutput(content: string, historyPage?: HistorySearchPage): string {
 	const out: string[] = [],
 		seen = new Set<string>();
 	let blockCounts = new Map<string, number>();
@@ -512,7 +513,7 @@ function dedupeRenderedSearchOutput(content: string): string {
 		let key = "";
 		if (row) {
 			const base = row[1]!.startsWith("history://")
-				? `${row[1]}:${row[2] ?? row[3]}:${line.slice(row[0].length)}`
+				? `${row[1]}:${row[2] ?? row[3]}:${(historyPage?.originals.get(line) ?? line).slice(row[0].length)}`
 				: `${row[1]}:${row[2] ?? row[3]}`;
 			if (row[1]!.startsWith("history://")) {
 				const count = (blockCounts.get(base) ?? 0) + 1;
@@ -569,6 +570,21 @@ export function createSearchPageDefinition(
 			const executionCwd = ctx?.cwd || cwd;
 			if (params.pattern.trim() === "") throw new Error("Pattern must not be empty");
 			const targets = await normalizeSearchTargets(params.paths, executionCwd);
+			let historyPage: HistorySearchPage | undefined;
+			const searchInternalSelector = (...args: Parameters<typeof searchResource>) => {
+				if (!args[0].startsWith("history://")) return searchResource(...args);
+				historyPage ??= new HistorySearchPage();
+				return historyPage.read(() => searchResource(...args));
+			};
+			const fitOrderNotes = (content: string) => {
+				const originals = historyPage?.originals;
+				if (!originals?.size || Buffer.byteLength(content) <= DEFAULT_MAX_BYTES) return content;
+				// Only remove tags this page actually added; match text and ordinary continuations are untouched.
+				return content
+					.split("\n")
+					.map((line) => originals.get(line) ?? line)
+					.join("\n");
+			};
 			const ignoreCase = params.i === true || params.case === false;
 			const contextBefore = options?.contextBefore ?? 1,
 				contextAfter = options?.contextAfter ?? 3,
@@ -838,7 +854,7 @@ export function createSearchPageDefinition(
 				const capNotice = internalSearchCapped && !hasMorePages ? `\n\n${internalCapHint()}` : "";
 				const output = `${renderedPages.join("\n\n") || `No more results (skip=${skip})`}${hasMorePages ? `\n\n${continuationHint(limit, skip)}` : ""}${capNotice}`;
 				if (hasMorePages || cappedBeforeRequestedPage || capNotice) markFileLimit(details, limit);
-				const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
+				const truncation = truncateHead(fitOrderNotes(output), { maxLines: Number.MAX_SAFE_INTEGER });
 				let content = truncation.content;
 				if (truncation.truncated) {
 					details.truncation = truncation;
@@ -868,7 +884,9 @@ export function createSearchPageDefinition(
 					const renderedText = isVirtualSearchTarget(targets[0])
 						? text
 						: await cwdRelativeSearchOutput(text, executionCwd, targets[0]?.path ?? ".");
-					const pagedText = `${hasFileLimit(result.details) ? `${renderedText}\n\n${continuationHint(limit, skip)}` : renderedText}${skipNotice}`;
+					const pagedText = fitOrderNotes(
+						`${hasFileLimit(result.details) ? `${renderedText}\n\n${continuationHint(limit, skip)}` : renderedText}${skipNotice}`,
+					);
 					const truncation = truncateHead(pagedText, { maxLines: Number.MAX_SAFE_INTEGER });
 					if (truncation.truncated)
 						return {
@@ -922,9 +940,10 @@ export function createSearchPageDefinition(
 			);
 			const content = dedupeRenderedSearchOutput(
 				`${renderedResults.join("\n\n")}${skippedMissingPaths.length > 0 ? `\n\n[Skipped missing paths: ${skippedMissingPaths.join(", ")}]` : ""}${pageFullWithMore ? `\n\n${continuationHint(limit, skip)}` : ""}${internalSearchCapped && !pageFullWithMore ? `\n\n${internalCapHint()}` : ""}`,
+				historyPage,
 			);
 			if (pageFullWithMore || internalSearchCapped) markFileLimit(details, limit);
-			const truncation = truncateHead(content, { maxLines: Number.MAX_SAFE_INTEGER });
+			const truncation = truncateHead(fitOrderNotes(content), { maxLines: Number.MAX_SAFE_INTEGER });
 			let output = truncation.content;
 			if (truncation.truncated) {
 				details.truncation = truncation;
