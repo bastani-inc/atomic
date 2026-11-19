@@ -115,7 +115,7 @@ function connectHostAndEngine(host: { fullscreen: boolean; colorDepth?: number }
 	return { engineUi, proxies, paint, switchRenderer, dispose };
 }
 
-test("a multiplexed display without direct colour advertises its native stage palette (#5596)", () => {
+test("the terminal advertises the stage palette supported by its display (#5596)", () => {
 	const saved = Object.getOwnPropertyDescriptor(process.stdout, "getColorDepth");
 	try {
 		Object.defineProperty(process.stdout, "getColorDepth", {
@@ -134,6 +134,12 @@ test("a multiplexed display without direct colour advertises its native stage pa
 			vi.stubEnv("TERM", term);
 			assert.equal(new ProcessTerminal().colorDepth, expected, term);
 		}
+		vi.stubEnv("TMUX", undefined);
+		vi.stubEnv("TERM", "xterm-direct");
+		vi.stubEnv("TERM_PROGRAM", undefined);
+		vi.stubEnv("CI", undefined);
+		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
+		assert.equal(new ProcessTerminal().colorDepth, 24, "direct colour without a separate colour hint");
 	} finally {
 		if (saved) Object.defineProperty(process.stdout, "getColorDepth", saved);
 		else Reflect.deleteProperty(process.stdout, "getColorDepth");

@@ -189,11 +189,11 @@ function createWriteLog(target: string): ((data: string) => void) | undefined {
 function displayColorDepth(): number | undefined {
 	const depth = process.stdout.getColorDepth?.();
 	if (depth === undefined || depth === 1 || process.env.FORCE_COLOR !== undefined) return depth;
+	// The runtime can report basic colour for a direct-colour display, or direct colour for every multiplexer.
+	if (getTerminalColorMode() === "truecolor") return 24;
 	const term = process.env.TERM;
-	// The runtime assumes every multiplexed display is direct colour. Respect its advertised palette instead.
-	if ((term === "linux" || term?.endsWith("-256color")) && getTerminalColorMode() === "256color") {
-		return term === "linux" ? 4 : 8;
-	}
+	if (term === "linux") return 4;
+	if (term?.endsWith("-256color") || term?.endsWith("-direct")) return 8;
 	return depth;
 }
 
