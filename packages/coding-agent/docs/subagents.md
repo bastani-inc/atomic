@@ -228,7 +228,7 @@ A single `{ agent, task }` launch returns the same `{ action: "launch", tasks }`
 
 - `list` returns executable `agents`; `get` with `agent` returns matching `definitions`. `models` returns the configured catalog, with `fullId`, `isCurrent`, and `availableThinkingLevels`. Creating, updating, and deleting definitions requires a direct tool call.
 - `status` returns `children` launched by this session, including their state and an available `resumeCall`. Pass `id` for one child. After reopening the parent, rediscover its children this way instead of repeating a launch, even if the script failed before storing its receipt.
-- `wait` takes a **task** id and optional `budgetMs` (the owner's agent wait budget, normally 30 seconds; `0` checks immediately). A script deadline can stop it sooner. An owner configured to wait indefinitely uses a 30-second default in scripts. An `outcome` of `settled` includes `result.status` and available output; `outputPath`, when present, points to the full output beyond the excerpt. `running` means observation yielded; ending a wait or interrupting its script does not stop the child.
+- `wait` takes a **task** id and optional `budgetMs` (the owner's agent wait budget, normally 30 seconds; `0` checks immediately). If the script reaches its own deadline first, the script ends and its wait is cancelled; the child continues running and sends its completion notice to the parent. An owner configured to wait indefinitely uses a 30-second default in scripts. An `outcome` of `settled` includes `result.status` and available output; `outputPath`, when present, points to the full output beyond the excerpt. `running` means observation yielded; ending a wait or interrupting its script does not stop the child.
 - `pause` and `quit` take `id` or `all: true` for this session's children. `resume` takes `id` and an optional `message`; it continues the child's saved session and returns the new task id in `children`. Use `id`, not the legacy `runId` alias, from scripts.
 
 For temporary worktrees, `status` can show `finishing` while `wait` still returns `running`. A `worktreeNote` on a status row or wait reply, or `worktreeNotes` on a stop reply, tells you when cleanup is pending or another child still holds the batch. Do not remove the directory while either is true. These notes are separate from the child's output.
@@ -392,7 +392,7 @@ Each workflow invocation automatically receives one stable, non-`"default"` Inte
 Subagents can run with fresh or forked context:
 
 - `context: "fresh"` starts a separate in-process child session with only the task and selected agent context.
-- `context: "fork"` creates a real branched child session from the parent session leaf. It fails fast if the parent session cannot be forked; it does not silently downgrade to fresh context.
+- `context: "fork"` creates a branched child session at the parent's last settled entry. After a clear or compaction, the child normally copies only its retained context and settings. To read earlier turns, follow the boundary's history link or open the parent session. A store without a fork-window reader, or a child whose context refers to a saved tool output from before the boundary, keeps the full branch as before. If the parent session cannot be forked, the launch fails; it does not silently downgrade to fresh context.
 
 For adversarial review or research, prefer fresh context so the specialist inspects the repository directly. Use forked context when a writer needs the parent conversation history in a separate branch.
 
