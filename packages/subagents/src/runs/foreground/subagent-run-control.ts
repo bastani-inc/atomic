@@ -273,11 +273,11 @@ async function stopHostChild(
 	host: AgentTaskHost,
 	record: SubagentChildRecord,
 	status: SubagentChildStopStatus,
-): Promise<string | undefined> {
+): Promise<{ readonly failure?: string; readonly neverStarted?: boolean }> {
 	const taskId = record.taskId as TaskId;
 	if (isFinishingWorktreeTask(taskId)) {
 		await waitForSettlement(host, taskId);
-		return undefined;
+		return {};
 	}
 	requestSubagentChildStop(taskId, status);
 	// It stays resumable: its worktree is kept if it has unsaved work when its run's worktrees are removed.
@@ -287,26 +287,26 @@ async function stopHostChild(
 	if (!cancelled.ok) {
 		takeSubagentChildStop(taskId);
 		const note = await boundedWorktreeReply(record.runId, unparkRunWorktree(record.runId, record.index));
-		return [cancelled.error.message, note].filter(Boolean).join(" ");
+		return { failure: [cancelled.error.message, note].filter(Boolean).join(" ") };
 	}
 	// It settled on its own before the stop reached it: nothing takes the stop, and its worktree is not stopped (#5172).
 	if (cancelled.value.decision === "already-settled") {
 		takeSubagentChildStop(taskId);
 		await boundedWorktreeReply(record.runId, unparkRunWorktree(record.runId, record.index));
-		return undefined;
+		return {};
 	}
 	// A child cancelled while still queued never starts, so nothing else records how it stopped.
-	const queued = stopQueuedSubagentChild(taskId);
+	const queued = await stopQueuedSubagentChild(taskId);
 	await waitForSettlement(host, taskId);
 	if (queued) {
 		takeSubagentChildStop(taskId);
 		await recordSubagentChildStatus(deps.pi, record, status);
 	}
-	return undefined;
+	return { neverStarted: queued };
 }
 
 type LiveChildStop =
-	| { readonly kind: "stopped" }
+	| { readonly kind: "stopped"; readonly neverStarted: boolean }
 	/** The child settled on its own before the stop took effect, with this terminal status. */
 	| { readonly kind: "settled"; readonly status: string }
 	| { readonly kind: "failed"; readonly reason: string };
@@ -322,11 +322,14 @@ async function stopLiveChild(
 	record: SubagentChildRecord,
 	status: SubagentChildStopStatus,
 ): Promise<LiveChildStop> {
-	if (record.taskId !== undefined && isLiveOwnerlessChild(record.taskId))
+	let neverStarted = false;
+	if (record.taskId !== undefined && isLiveOwnerlessChild(record.taskId)) {
+		neverStarted = isQueuedOwnerlessChild(record.taskId);
 		await stopOwnerlessChild(record.taskId, status);
-	else if (host) {
-		const failure = await stopHostChild(deps, host, record, status);
-		if (failure) return { kind: "failed", reason: failure };
+	} else if (host) {
+		const stop = await stopHostChild(deps, host, record, status);
+		if (stop.failure) return { kind: "failed", reason: stop.failure };
+		neverStarted = stop.neverStarted === true;
 	} else return { kind: "failed", reason: "it is not running in this process" };
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const key = childHoldKey(ownerSessionId, record.childId);
@@ -345,7 +348,7 @@ async function stopLiveChild(
 		).catch(() => undefined);
 		if (hold) parkPausedChildHold(key, hold);
 	}
-	return { kind: "stopped" };
+	return { kind: "stopped", neverStarted };
 }
 
 /**
@@ -417,6 +420,8 @@ async function stopChildren(
 			return;
 		}
 		children.push(childDetails(record, status));
+		if (stop.neverStarted && record.worktree && !record.worktree.named)
+			lines.push(`${label(record)} never started; no child process ran in its worktree.`);
 		lines.push(
 			action === "pause"
 				? `Paused ${label(record)} · awaiting resume. Its queued messages are held until resume; resume it with { action: "resume", id: "${record.childId}", message? }.`

@@ -318,7 +318,14 @@ export interface QueuedSubagentChildStart {
 }
 
 /** Children the host admitted but has not dispatched yet, by task id; `stopped` once they never will be. */
-const queuedChildren = new Map<string, { readonly start: QueuedSubagentChildStart; stopped: boolean }>();
+const queuedChildren = new Map<
+	string,
+	{
+		readonly start: QueuedSubagentChildStart;
+		finishWorktree?: ReturnType<typeof beginWorktreeExecution>;
+		stopped: boolean;
+	}
+>();
 
 /** Whether the host admitted this task but has not dispatched it yet. */
 export function isQueuedSubagentChild(taskId: string): boolean {
@@ -329,10 +336,14 @@ export function isQueuedSubagentChild(taskId: string): boolean {
  * Call after cancelling a task: whether it was still queued. A cancelled task is never dispatched, so nothing records
  * how it stopped; the caller records it, and {@link takeStoppedQueuedSubagentChild} later starts it.
  */
-export function stopQueuedSubagentChild(taskId: string): boolean {
+export async function stopQueuedSubagentChild(taskId: string): Promise<boolean> {
 	const queued = queuedChildren.get(taskId);
 	if (queued?.stopped !== false) return false;
 	queued.stopped = true;
+	// The host will skip this dispatch. Don't hold the batch until a scheduler slot eventually opens.
+	const finish = queued.finishWorktree;
+	queued.finishWorktree = undefined;
+	if (finish) await finish();
 	return true;
 }
 
@@ -982,7 +993,8 @@ export async function runAgentTask(input: {
 		// Nothing of a queued launch survives a restart but its records: they say how to start it fresh then.
 		queuedAtAdmission ? subagentChildLaunch(input.task, input.intentTask, input.options) : undefined,
 	);
-	if (queuedAtAdmission) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
+	if (queuedAtAdmission)
+		queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false, finishWorktree });
 	const observation = input.host.observeAgentLaunch(started.value.taskId, undefined, () => registered.resolve());
 	registered.resolve();
 	ticket?.onObserved();

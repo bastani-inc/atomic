@@ -64,7 +64,11 @@ import {
 	SUBAGENT_STILL_RUNNING_RESULT,
 	subagentWakeKey,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
-import { holdRunWorktree, WORKTREE_REPLY_WAIT_MS } from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
+import {
+	holdRunWorktree,
+	registerRunWorktrees,
+	WORKTREE_REPLY_WAIT_MS,
+} from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
 import {
 	observeSubagentChildRecord,
 	subagentChildRecordOf,
@@ -2712,6 +2716,30 @@ async function waitForWorktreeCleanup(h: Harness, child: SubagentChildRecord): P
 		interval: 10,
 	});
 }
+
+test("stopping a queued worktree child releases its reservation without waiting for dispatch (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const runId = randomUUID();
+	const setup = await worktrees.createWorktrees(h.cwd, runId, 1);
+	const batch = registerRunWorktrees(runId, setup);
+	batch.beginLaunches();
+	const scheduled = Promise.withResolvers<() => Promise<void>>();
+	const child = setup.worktrees[0]!;
+	const taskId = await h.admit(runId, scheduled.resolve, { cwd: child.path });
+	try {
+		const stopped = await h.call({ action: "quit", id: `${runId}:0` });
+		assert.notEqual(stopped.isError, true, text(stopped));
+		await settled(h, taskId);
+		assert.equal(h.runs.length, 0, "no child session ran in the worktree");
+		assert.equal(existsSync(child.path), false, "the queued reservation no longer keeps the sole worktree");
+		assert.match(text(stopped), /never started.*worktree/i);
+	} finally {
+		await (await scheduled.promise)();
+		await batch.release();
+		await waitForWorktreeCleanup(h, await h.waitForLatest(`${runId}:0`, (record) => record.state === "terminal"));
+	}
+});
 
 test("a queued worktree child resumed behind its cancelled dispatch starts in its worktree after the sibling finishes (#3760 run control)", async () => {
 	const h = harness();
