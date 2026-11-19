@@ -420,7 +420,8 @@ test("wait and status report OutputUnavailable for SDK output that never had a p
 		);
 		assert.ok(started.ok);
 		const id = started.value.taskId;
-		const expected = `Output of ${id} (completed) is unavailable: OutputUnavailable`;
+		// A completed agent stays resumable: the line also names the call that continues it, under its launch id.
+		const expected = `Output of ${id} (completed) is unavailable: OutputUnavailable Resume it with subagent({ action: "resume", id: "sdk-output", message: "…" }) to continue it with a follow-up.`;
 		for (const action of ["wait", "status"] as const) {
 			const result = await execute.execute(action, { action, id }, new AbortController().signal, undefined, ctx);
 			assert.equal(text(result).split("\n\n").at(-1), expected, action);
@@ -531,9 +532,18 @@ test("owner cancellation of one parallel child preserves its sibling's execution
 		const sibling = await host.waitForTask(ids[1]!, 0);
 		assert.ok(sibling.ok && sibling.value.kind === "yielded");
 		gate.resolve();
-		assert.match(text(await call("wait-first", { action: "wait", id: ids[0]! })), /Killed.*cannot be resumed/);
+		const killedWait = text(await call("wait-first", { action: "wait", id: ids[0]! }));
+		assert.match(killedWait, /Killed.*cannot be resumed/);
+		assert.doesNotMatch(killedWait, /Resume it/);
 		const completed = await call("wait-second", { action: "wait", id: ids[1]! });
-		assert.match(text(completed), /Output of task-[\w-]+ \(completed, \d+ bytes\):\nFull output: /);
+		// The header names the call that continues the completed child, by its child id; the killed one names none.
+		const runId = launched.details.taskRecords?.[1]?.launchOperationId.replace(/:1$/, "");
+		assert.match(
+			text(completed),
+			new RegExp(
+				`Output of task-[\\w-]+ \\(completed, \\d+ bytes\\): Resume it with subagent\\(\\{ action: "resume", id: "${runId}:1", message: "…" \\}\\) to continue it with a follow-up\\.\\nFull output: `,
+			),
+		);
 	} finally {
 		gate.resolve();
 		await host.close("session-close");

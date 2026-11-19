@@ -14,6 +14,7 @@
 ### Changed
 
 - A subagent launched with `context: "fork"` starts faster and copies less data after a clear or compaction. Its saved session keeps the conversation through its original fork point, without duplicating retired turns. Earlier history remains in the parent session ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
+- The `wait` and `status` output of a subagent that completed or failed names the call that continues it, after its `Output of <task-id> (…):` header. A codemode script's settled `wait` also returns the child's `childId`, and a `resumeCall` when the child completed, failed, or was paused or quit, like the one `status` returns ([#5968](https://github.com/bastani-inc/atomic/pull/5968)).
 
 ### Fixed
 
