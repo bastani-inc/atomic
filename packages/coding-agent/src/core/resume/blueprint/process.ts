@@ -93,7 +93,11 @@ function passingRefusals(platform: NodeJS.Platform): readonly string[] {
 export function startElapsedMs(): () => number {
 	const wallStart = Date.now();
 	const monoStart = performance.now();
-	return () => Math.max(Date.now() - wallStart, Math.floor(performance.now() - monoStart));
+	return () => {
+		// Keep the monotonic interval inside the wall interval, even if descheduled between reads.
+		const activeMs = Math.floor(performance.now() - monoStart);
+		return Math.max(Date.now() - wallStart, activeMs);
+	};
 }
 
 /** Whether a start refused with `error` on try `tries`, `elapsedMs` into a step allowed `timeoutMs`, is tried again. */

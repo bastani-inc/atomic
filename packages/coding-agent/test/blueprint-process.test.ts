@@ -29,6 +29,7 @@ import {
 	openStepLog,
 	type ProcessExit,
 	runLoggedProcess,
+	startElapsedMs,
 	startsProcessGroup,
 	stepProcessWatcher,
 	stepStartingWatcher,
@@ -136,6 +137,25 @@ function isAlive(pid: number): boolean {
 		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
 }
+
+test("an ordinary elapsed time matches the wall sample even if the thread is descheduled between reads (#5707)", () => {
+	let now = 0;
+	const wall = vi.spyOn(Date, "now").mockReturnValue(1_000);
+	const monotonic = vi.spyOn(performance, "now").mockImplementation(() => now);
+	try {
+		const elapsedMs = startElapsedMs();
+		now = 450;
+		wall.mockImplementation(() => {
+			// The wall clock samples 450 ms; the thread loses another 20 ms before it can read anything else.
+			now += 20;
+			return 1_450;
+		});
+		assert.equal(elapsedMs(), 450);
+	} finally {
+		monotonic.mockRestore();
+		wall.mockRestore();
+	}
+});
 
 describe("running a logged process (#4588)", () => {
 	test("both output streams are appended to the log and the exit status is reported (#4588)", async () => {
