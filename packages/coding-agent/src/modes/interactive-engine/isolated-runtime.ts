@@ -441,7 +441,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				await session.resourceLoader.reload();
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
-			this.engineProjectTrustReported = state.projectTrusted !== undefined;
+			// A pending report keeps the project's resources out until the engine decides; it is no decision to warn about.
+			this.engineProjectTrustReported = state.projectTrusted !== undefined && state.projectTrustPending !== true;
 			if (
 				trustBefore[0] !== session.settingsManager.isProjectTrusted() ||
 				trustBefore[1] !== this.engineProjectTrustReported

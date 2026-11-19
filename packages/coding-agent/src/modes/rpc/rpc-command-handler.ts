@@ -99,6 +99,21 @@ function trustDecisionsState(decisions: SessionTrustDecisions | undefined): Pick
 	return count > 0 ? { trustDecisions: decisions } : {};
 }
 
+/**
+ * The engine's project trust. While startup is still deciding, the settings read untrusted only to load what the
+ * decision needs, which is no decision (see isProjectTrustPending). A decision nothing can turn untrusted is not
+ * reported, so the interactive host keeps the trust it looked up and loads the project once. One that can still come
+ * out untrusted is reported untrusted and pending: the host loads none of the project's resources before it is made,
+ * and warns only once it is.
+ */
+function projectTrustState(
+	runtimeHost: AgentSessionRuntime,
+	trusted: boolean,
+): Pick<RpcSessionState, "projectTrusted" | "projectTrustPending"> {
+	if (!runtimeHost.isProjectTrustPending?.()) return { projectTrusted: trusted };
+	return runtimeHost.projectTrustMayBeDeclined?.() ? { projectTrusted: false, projectTrustPending: true } : {};
+}
+
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 	switch (command.type) {
 		case "abort":
@@ -348,10 +363,7 @@ export function createRpcCommandHandler({
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					queuedMessagesPaused: session.queuedMessagesPaused,
-					// No report while startup is still deciding: the settings read untrusted until then (see isProjectTrustPending).
-					...(runtimeHost.isProjectTrustPending?.()
-						? {}
-						: { projectTrusted: session.settingsManager.isProjectTrusted?.() === true }),
+					...projectTrustState(runtimeHost, session.settingsManager.isProjectTrusted?.() === true),
 					...trustDecisionsState(runtimeHost.trustDecisions?.()),
 					resourceOverlaps: extensionResult.overlaps ?? [],
 					resourceErrors: extensionResult.errors,

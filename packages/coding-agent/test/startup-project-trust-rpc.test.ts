@@ -286,53 +286,148 @@ for (const scenario of [
 }
 
 // The interactive host copies this report into its own settings and warns when it says untrusted, so a report made
-// while the engine is still deciding showed a trusted project as untrusted.
+// while the engine is still deciding showed a trusted project as untrusted. A saved "Trust" that no project_trust hook
+// can overturn is not reported until the decision is made: the host keeps its own lookup and loads the project once.
 test(
-	"isolated startup reports no project trust until the engine decides, then the saved decision",
+	"isolated startup reports no project trust until the engine decides, then the saved decision no hook could decline",
 	async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-startup-rpc-pending-"));
 		const cwd = join(root, "project");
+		const source = join(root, "borrowed");
 		const agentDir = join(root, "agent");
 		mkdirSync(join(cwd, ".atomic"), { recursive: true });
 		writeFileSync(join(cwd, ".atomic", "settings.json"), "{}");
-		mkdirSync(join(agentDir, "extensions"), { recursive: true });
+		// The -e source's own trust question holds the startup decision open; no extension handles project_trust.
+		mkdirSync(join(source, ".atomic", "extensions"), { recursive: true });
+		mkdirSync(join(source, "extensions"), { recursive: true });
+		writeFileSync(join(source, "extensions", "authorized.ts"), "export default function() {}");
+		writeFileSync(join(source, ".atomic", "extensions", "borrowed.ts"), "export default function() {}");
+		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [realpathSync(cwd)]: true }));
-		// Holds the decision open until the test answers, then leaves it to the saved decision.
-		writeFileSync(
-			join(agentDir, "extensions", "hold-trust.ts"),
-			`
-			export default function(pi) {
-				pi.on('project_trust', async (_event, ctx) => {
-					await ctx.ui.confirm('Hold trust', 'Continue?');
-					return { trusted: 'undecided' };
-				});
-			}
-		`,
-		);
 		const client = new RpcClient({
 			cliPath,
 			cwd,
 			runtimeExecutable: bunExecutable(),
-			args: ["--no-session", "--offline", "--no-skills", "--no-themes", "--no-prompt-templates"],
+			args: ["--no-session", "--offline", "--no-skills", "--no-themes", "--no-prompt-templates", "-e", source],
 			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
 			interactiveEngine: { onDiagnostic: () => {} },
 		});
-		let held!: (request: RpcExtensionUIRequest) => void;
-		const holding = new Promise<RpcExtensionUIRequest>((resolve) => {
-			held = resolve;
-		});
-		client.onExtensionUIRequest((request) => {
-			if (request.method === "confirm") held(request);
-		});
+		const holding = holdTrustQuestion(client, (request) => request.title.startsWith("Trust extension source?"));
 		try {
 			await client.start();
 			const request = await holding;
-			assert.equal((await client.getState()).projectTrusted, undefined);
-			await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, confirmed: true });
+			const pending = await client.getState();
+			assert.equal(pending.projectTrusted, undefined);
+			assert.equal(pending.projectTrustPending, undefined);
+			await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, value: "Do not trust" });
 			await client.waitForInteractiveEngineResources();
 			assert.equal((await client.getState()).projectTrusted, true);
 		} finally {
 			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
+/** A saved "Trust" with a project_trust hook that holds its answer until the test releases it, then declines. */
+function decliningHookFixture(prefix: string) {
+	const root = mkdtempSync(join(tmpdir(), prefix));
+	const cwd = join(root, "project");
+	const agentDir = join(root, "agent");
+	mkdirSync(join(cwd, ".atomic", "prompts"), { recursive: true });
+	writeFileSync(join(cwd, ".atomic", "settings.json"), "{}");
+	writeFileSync(join(cwd, ".atomic", "prompts", "projprompt.md"), "---\ndescription: project prompt\n---\nbody\n");
+	mkdirSync(join(agentDir, "extensions"), { recursive: true });
+	writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [realpathSync(cwd)]: true }));
+	writeFileSync(
+		join(agentDir, "extensions", "policy.ts"),
+		`
+			export default function(pi) {
+				pi.on('project_trust', async (_event, ctx) => {
+					await ctx.ui.confirm('Policy check', 'Continue?');
+					return { trusted: 'no' };
+				});
+			}
+		`,
+	);
+	const client = new RpcClient({
+		cliPath,
+		cwd,
+		runtimeExecutable: bunExecutable(),
+		args: ["--no-session", "--offline", "--no-skills", "--no-themes"],
+		env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+		interactiveEngine: { onDiagnostic: () => {} },
+	});
+	const holding = holdTrustQuestion(client, (request) => request.method === "confirm");
+	return { root, cwd, agentDir, client, holding };
+}
+
+// A project_trust hook can overturn a saved "Trust", so the decision is still open: the project's resources must not
+// load before it is made, and the host must not warn either (#5693).
+test(
+	"a saved trust that a project_trust hook can still decline is reported untrusted and pending until it decides (#5693)",
+	async () => {
+		const { root, client, holding } = decliningHookFixture("atomic-startup-rpc-hook-");
+		try {
+			await client.start();
+			const request = await holding;
+			const pending = await client.getState();
+			assert.equal(pending.projectTrusted, false);
+			assert.equal(pending.projectTrustPending, true);
+			await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, confirmed: true });
+			await client.waitForInteractiveEngineResources();
+			const decided = await client.getState();
+			assert.equal(decided.projectTrusted, false);
+			assert.equal(decided.projectTrustPending, undefined);
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
+// The interactive host itself: while the hook decides, it loads none of the project's resources (it did before #5475,
+// whose host kept the saved "Trust" it looked up until the engine decided), and it shows no warning yet (#5693).
+test(
+	"an isolated host loads no project resources while a project_trust hook can still decline the saved trust (#5693)",
+	async () => {
+		const { root, cwd, agentDir, client, holding } = decliningHookFixture("atomic-startup-rpc-hook-host-");
+		const harness = await createHarness({ cwd, sessionManager: SessionManager.inMemory(cwd) });
+		const { modelRuntime, settingsManager, resourceLoader } = harness.session;
+		// The host's own lookup: the saved "Trust".
+		settingsManager.setProjectTrusted(true);
+		const reload = vi.spyOn(resourceLoader, "reload");
+		const unusedFactory = async () => {
+			throw new Error("unexpected session switch");
+		};
+		const local = new AgentSessionRuntime(
+			harness.session,
+			{ cwd, agentDir, modelRuntime, settingsManager, resourceLoader, diagnostics: [] },
+			unusedFactory,
+		);
+		const runtime = new IsolatedInteractiveRuntime(local, unusedFactory, client);
+		try {
+			await client.start();
+			const request = await holding;
+			await runtime.initializeFromEngine();
+			assert.equal(
+				settingsManager.isProjectTrusted(),
+				false,
+				"the host trusted the project before the hook decided",
+			);
+			assert.ok(reload.mock.calls.length > 0, "the host kept the project's resources loaded");
+			assert.equal(runtime.isProjectTrustPending(), true, "the host treated the open decision as made");
+
+			await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, confirmed: true });
+			await client.waitForInteractiveEngineResources();
+			await runtime.initializeFromEngine();
+			assert.equal(settingsManager.isProjectTrusted(), false);
+			assert.equal(runtime.isProjectTrustPending(), false);
+		} finally {
+			await runtime.dispose();
+			await harness.cleanup();
 			rmSync(root, { recursive: true, force: true });
 		}
 	},
@@ -558,6 +653,18 @@ test(
 	},
 	REAL_STARTUP_RPC_TIMEOUT_MS,
 );
+
+/** Resolves with the first extension UI request `matches` accepts, leaving it unanswered. */
+function holdTrustQuestion(
+	client: RpcClient,
+	matches: (request: RpcExtensionUIRequest) => boolean,
+): Promise<RpcExtensionUIRequest> {
+	const held = Promise.withResolvers<RpcExtensionUIRequest>();
+	client.onExtensionUIRequest((request) => {
+		if (matches(request)) held.resolve(request);
+	});
+	return held.promise;
+}
 
 /** Answers each trust question whose title starts with `title`, and records it. */
 function answerTrustQuestions(

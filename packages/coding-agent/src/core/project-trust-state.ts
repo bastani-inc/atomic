@@ -10,6 +10,11 @@ export interface SessionProjectTrust {
 	 * that only what the decision needs loads, which is not a decision.
 	 */
 	readonly pending: boolean;
+	/**
+	 * While `pending`: whether the decision can still come out untrusted (see projectTrustMayBeDeclined). The project's
+	 * resources wait for such a decision.
+	 */
+	readonly mayBeDeclined: boolean;
 	/** Ends a decision that was still to be made but will not be: startup failed before it could make it. */
 	abandon(): void;
 	/**
@@ -56,6 +61,22 @@ export function startupProjectTrust(input: {
 		trusted: input.override ?? input.sessionDecision ?? input.saved ?? !input.hasTrustInputs,
 		decide: input.override === undefined && input.sessionDecision === undefined && input.hasTrustInputs,
 	};
+}
+
+/**
+ * Whether a project trust decision still to be made can come out untrusted. `--approve` or `--no-approve`, or a decision
+ * made earlier in this session, settles it before anything else runs. Otherwise a project_trust hook answers before
+ * the saved decision does, so only a saved "trust" that no hook could overturn is certain; without a saved decision
+ * the prompt or `defaultProjectTrust` can decline.
+ */
+export function projectTrustMayBeDeclined(input: {
+	readonly override: boolean | undefined;
+	readonly sessionDecision: boolean | undefined;
+	readonly saved: boolean | null;
+	readonly hasTrustHook: boolean;
+}): boolean {
+	const settled = input.override ?? input.sessionDecision ?? (input.hasTrustHook ? undefined : input.saved);
+	return settled !== true;
 }
 
 /**

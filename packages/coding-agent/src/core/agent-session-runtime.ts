@@ -254,6 +254,14 @@ export class AgentSessionRuntime {
 	}
 
 	/**
+	 * While the decision is still to be made: whether it can still come out untrusted, because a project_trust hook can
+	 * overturn the saved decision or there is none. Until it is made, such a project's resources wait for it.
+	 */
+	projectTrustMayBeDeclined(): boolean {
+		return this.services.projectTrust?.pending === true && this.services.projectTrust.mayBeDeclined;
+	}
+
+	/**
 	 * Startup failed before `completeStartup` decided the project's trust, for example because an extension failed to
 	 * start. No decision is coming, so the session stays as untrusted as its settings read.
 	 */
