@@ -7,7 +7,7 @@ import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
 import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
-import { findSessionCompaction, readSessionTail, sessionResumeOf } from "./session-resume.js";
+import { findSessionCompaction, readSessionTail } from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
 	OversizedSessionEntry,
@@ -175,17 +175,16 @@ export class LegacySessionStore implements SessionStore {
 	}
 
 	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+		if (!this.inner.readResume)
+			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement readResume`);
 		await this.convert(sessionId);
-		if (this.inner.readResume) return this.inner.readResume(sessionId, leafId);
-		const snapshot = await this.inner.load(sessionId);
-		return sessionResumeOf(snapshot.header, snapshot.entries, leafId);
+		return this.inner.readResume(sessionId, leafId);
 	}
 	async findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {
+		if (!this.inner.findEntrySeq)
+			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement findEntrySeq`);
 		await this.convert(sessionId);
-		if (this.inner.findEntrySeq) return this.inner.findEntrySeq(sessionId, entryId);
-		const entries = (await this.inner.load(sessionId)).entries;
-		const index = entries.findLastIndex((e) => e.id === entryId);
-		return index < 0 ? undefined : index + 1;
+		return this.inner.findEntrySeq(sessionId, entryId);
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
@@ -368,11 +367,21 @@ export class LegacySessionStore implements SessionStore {
 		return this.legacy;
 	}
 
+	/**
+	 * A second connection to the default database. It writes only in transactions, which wait for the write lock without
+	 * holding the event loop and queue behind this process's other transactions on the file, never in a statement of its
+	 * own, which would wait for the lock synchronously while another connection of this process holds it (#5530).
+	 */
 	private deletionDatabase(): Promise<SqliteDatabase> {
 		this.deletions ??= openNodeSqliteDatabase(this.databasePath).then(async (database) => {
-			await database.exec(
-				`CREATE TABLE IF NOT EXISTS ${DELETED_TABLE}(id TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL)`,
-			);
+			// Read first, so a database that has the table, as every one this store opened before does, takes no write lock.
+			const exists = `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${DELETED_TABLE}'`;
+			if ((await database.get(exists)) === undefined)
+				await database.transaction((transaction) =>
+					transaction.exec(
+						`CREATE TABLE IF NOT EXISTS ${DELETED_TABLE}(id TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL)`,
+					),
+				);
 			return database;
 		});
 		return this.deletions;
@@ -385,7 +394,9 @@ export class LegacySessionStore implements SessionStore {
 
 	private async markDeleted(sessionId: string): Promise<void> {
 		const database = await this.deletionDatabase();
-		await database.run(`INSERT INTO ${DELETED_TABLE} VALUES (?, ?) ON CONFLICT DO NOTHING`, sessionId, Date.now());
+		await database.transaction((transaction) =>
+			transaction.run(`INSERT INTO ${DELETED_TABLE} VALUES (?, ?) ON CONFLICT DO NOTHING`, sessionId, Date.now()),
+		);
 	}
 }
 

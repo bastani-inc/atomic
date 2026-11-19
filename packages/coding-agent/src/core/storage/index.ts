@@ -90,6 +90,7 @@ export {
 	type TeamStorageSelection,
 	teamProfileSelection,
 } from "./selection.js";
+export { readSessionHistory, readSessionHistoryChunks } from "./session/history-pages.js";
 export type {
 	OversizedSessionEntry,
 	SessionBlob,

@@ -9,6 +9,7 @@ const agentSrcIndex = fileURLToPath(new URL("./src/index.ts", import.meta.url));
 export default defineConfig({
 	test: {
 		globals: true,
+		clearMocks: true, // vi.restoreAllMocks() keeps spy records for the rest of the file (#5552)
 		environment: "node",
 		testTimeout: 30000, // 30 seconds for API calls
 		reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],

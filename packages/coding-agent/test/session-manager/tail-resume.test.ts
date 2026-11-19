@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
@@ -14,6 +15,7 @@ import {
 } from "../../src/core/session-manager.ts";
 import { getBranchPath } from "../../src/core/session-manager-history.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../../src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../../src/core/storage/session/sql-session-store.js";
 import {
 	SESSION_HISTORY_CHUNK_BYTES,
@@ -139,6 +141,51 @@ it("a live manager drops earlier windows after each compaction without deleting 
 	expect(first.lastSeq).toBe(windows * (messagesPerWindow + 1));
 });
 
+it("discovers interrupted workflows across a clear without keeping their inputs, outputs or closed runs (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	const payload = "界".repeat(SESSION_HISTORY_PAGE_BYTES);
+	const runId = "active\ud800workflow";
+	for (const id of ["completed", runId]) {
+		await writer.appendCustomEntry("workflow.run.start", { inputs: { payload }, runId: id, name: "work", ts: 1 });
+		await writer.appendCustomEntry("workflow.stage.end", { runId: id, output: payload });
+	}
+	await writer.appendCustomEntry("workflow.run.end", { runId: "completed" });
+	await writer.appendCompaction("cleared", null, 1000, details);
+	const resumed = await SessionManager.open(store, writer.getSessionId());
+	for (const manager of [writer, resumed]) {
+		expect(await manager.readOpenWorkflowIds()).toEqual([runId]);
+		expect(manager.getEntries().map((entry) => entry.type)).toEqual(["compaction"]);
+	}
+	await resumed.appendCustomEntry("workflow.run.end", { runId });
+	expect(await resumed.readOpenWorkflowIds()).toEqual([]);
+});
+
+it("a cleared parent releases a giant workflow identity after its route ends (#5554)", async () => {
+	const store = await sqlStore();
+	const parent = await SessionManager.create(store, "/project");
+	const { collectGarbage } = await import("../../../../test/helpers/collect-garbage.js");
+	const makeRun = async () => {
+		const runId = Array.from({ length: 2048 }, () => "r".repeat(1024)).join("");
+		const start = { runId, name: "work", ts: 1 };
+		const end = { runId };
+		const first = await parent.appendCustomEntry("workflow.run.start", start);
+		await parent.appendCompaction("cleared", null, 1000, details);
+		expect(await parent.readOpenWorkflowIds()).toEqual([runId]);
+		const last = await parent.appendCustomEntry("workflow.run.end", end);
+		await parent.appendCompaction("cleared again", null, 1000, details);
+		return { entries: [first, last], payloads: [new WeakRef(start), new WeakRef(end)] };
+	};
+	const { entries, payloads } = await makeRun();
+	await collectGarbage();
+	expect(payloads.every((payload) => payload.deref() === undefined)).toBe(true);
+	expect(entries.every((id) => !parent.getEntry(id))).toBe(true);
+	expect(await parent.readOpenWorkflowIds()).toEqual([]);
+	const resume = await store.readResume!(parent.getSessionId());
+	expect(resume.recovery.workflowStarts).toEqual({});
+	expect(JSON.stringify(resume).length).toBeLessThan(SESSION_HISTORY_PAGE_BYTES);
+});
+
 it("a default open reads the same window as a tail open without reading the whole store (#5554)", async () => {
 	const store = await sqlStore();
 	const { id, firstPreTail } = await compactedSession(store);
@@ -194,6 +241,57 @@ it("a giant historical entry is an exact byte stream, never one decoded entry (#
 	expect(manager.getEntry(id)).toBeUndefined();
 });
 
+it("2 MiB entry identities survive create, append, import, seed, copy and fork unchanged (#5554)", async () => {
+	const store = await sqlStore();
+	const dir = mkdtempSync(join(tmpdir(), "atomic-long-identity-"));
+	directories.push(dir);
+	const timestamp = new Date(0).toISOString();
+	const header = { id: "long-ids", version: 4 as const, createdAt: timestamp, cwd: dir };
+	const ids = ["a", "b"].map((char) => char.repeat(2 * 1024 * 1024));
+	const entries: SessionEntry[] = ids.map((id, i) => ({
+		type: "message",
+		id,
+		parentId: i ? ids[0]! : null,
+		timestamp,
+		message: { role: "user", content: `message ${i}`, timestamp: i },
+	}));
+	await store.create(header, [entries[0]!]);
+	await store.append(header.id, [entries[1]!], { expectSeq: 1 });
+	const source = await SessionManager.open(store, header.id);
+	const file = join(dir, "export.jsonl");
+	await writeFile(
+		file,
+		[{ type: "session", ...header }, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+	);
+	const target = new MemorySessionStore();
+	closers.push(() => target.close());
+	const imported = await SessionManager.importFromJsonl(file, dir, target);
+	const seeded = await SessionManager.inMemory(dir, undefined, entries);
+	const forked = await source.forkTo(dir, target);
+	const copied = new MemorySessionStore();
+	closers.push(() => copied.close());
+	await imported.rebindStore(copied, false);
+	for (const manager of [source, imported, seeded, forked]) {
+		const branch = manager.getBranch();
+		expect(branch.length).toBe(2);
+		expect(branch[0]!.id === ids[0] && branch[1]!.id === ids[1] && branch[1]!.parentId === ids[0]).toBe(true);
+	}
+	await source.appendCompaction("cleared", null, 100, details);
+	const firstWindow = source.getEntries();
+	expect(firstWindow.length).toBe(1);
+	expect(firstWindow[0]!.parentId === ids[1]).toBe(true);
+	await source.appendMessage({ role: "user", content: "later", timestamp: 3 });
+	await source.appendCompaction("cleared again", null, 100, details);
+	expect(source.getEntryCount()).toBe(1);
+	expect(Buffer.byteLength(JSON.stringify(source.getEntries()))).toBeLessThan(4096);
+	const result = await source.readHistory({ fromSeq: 2, toSeq: 2 }).next();
+	const ref = result.value?.items[0];
+	if (!ref || !("kind" in ref)) throw new Error("historical identity did not use a bounded entry reference");
+	const chunks = [];
+	for await (const chunk of source.readHistoryChunks(ref)) chunks.push(chunk);
+	expect(Buffer.concat(chunks).equals(Buffer.from(JSON.stringify(entries[1])))).toBe(true);
+});
+
 it("a seeded private session yields while storing its input and initially owns only the current window (#5554)", async () => {
 	const timestamp = new Date(0).toISOString();
 	const history: SessionEntry[] = Array.from({ length: 400 }, (_, i) => ({
@@ -225,6 +323,56 @@ it("a seeded private session yields while storing its input and initially owns o
 		expect(await manager.readEntry("old0")).toEqual(history[0]);
 	} finally {
 		clearImmediate(turn);
+	}
+});
+
+it("a resume does not retain previous system instructions or superseded model settings (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	for (let i = 0; i < 32; i++) {
+		await writer.appendModelChange("test", `model-${i}`);
+		await writer.appendThinkingLevelChange(i % 2 ? "high" : "low");
+		await writer.appendMessage({ role: "system", content: `instruction ${i}`, timestamp: i });
+	}
+	await writer.appendCompaction("cleared", null, 100, details);
+	const manager = await SessionManager.open(store, writer.getSessionId());
+	const kept = manager.getEntries();
+	expect(kept.filter((e) => e.type === "model_change")).toHaveLength(1);
+	expect(kept.filter((e) => e.type === "thinking_level_change")).toHaveLength(1);
+	expect(kept.filter((e) => e.type === "message" && e.message.role === "system")).toHaveLength(0);
+	const full = [...(await store.load(writer.getSessionId())).entries];
+	expect(manager.buildSessionProjection()).toEqual(
+		buildSessionProjection(full, writer.getLeafId(), undefined, writer.getSessionId()),
+	);
+});
+
+it("a live window does not retain one identical checkout reference per old turn (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	const root = "/project";
+	const snapshot = {
+		id: "one",
+		root,
+		tree: "t",
+		chain: [],
+		omitted: [],
+		filters: null,
+		bundle: null,
+	} as unknown as import("../../src/core/worktree-snapshot/types.js").WorktreeSnapshot;
+	await writer.appendWorktreeSnapshot(root, snapshot.id, snapshot);
+	for (let i = 0; i < 100; i++)
+		await writer.appendWorktreeSnapshot(root, snapshot.id, undefined, undefined, undefined, undefined, i);
+	await writer.appendCompaction("cleared", null, 100, details);
+	const manager = await SessionManager.open(store, writer.getSessionId());
+	for (const view of [writer, manager]) {
+		expect(view.getEntries().filter((e) => e.type === "worktree_snapshot").length).toBeLessThanOrEqual(3);
+		expect(view.getLatestWorktreeSnapshots().get(root)).toEqual(snapshot);
+		expect(
+			view
+				.getEntries()
+				.filter((e) => e.type === "worktree_snapshot")
+				.at(-1)?.captureMs,
+		).toBe(99);
 	}
 });
 

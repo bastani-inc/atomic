@@ -33,6 +33,7 @@ import {
 	sliceHead,
 	watchHeldPromptAttention,
 } from "@bastani/atomic";
+import { readSessionHistory } from "@bastani/atomic/storage";
 import {
 	type Api,
 	type AssistantMessage,
@@ -1109,6 +1110,9 @@ function settledTranscript(
 	return {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
+		...(store !== undefined && unsaved === undefined
+			? { readHistory: (options) => readSessionHistory(store, sessionId, options) }
+			: {}),
 		loadHistory: async () => {
 			try {
 				return { entries: await read() };
@@ -1182,6 +1186,7 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 	return {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
+		...(store !== undefined ? { readHistory: (options) => readSessionHistory(store, sessionId, options) } : {}),
 		...(store === undefined && sessionFile === undefined
 			? {}
 			: {
@@ -2283,7 +2288,8 @@ export class SubagentControlRuntime {
 			}
 			const transcriptSession = session;
 			const interruptTurn = async (): Promise<void> => {
-				if (!transcriptSession.isStreaming || termination !== undefined) return;
+				// A turn is interrupted while it streams, and between two attempts of a retry, where nothing streams.
+				if ((!transcriptSession.isStreaming && !transcriptSession.isRetrying) || termination !== undefined) return;
 				interruptedTurnSettlement = nextTurnSettled(
 					transcriptSession,
 					[signals.abort, signals.interrupt, executionEnded.signal],

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "../src/core/session-manager.ts";
-import { filterAndSortSessions } from "../src/modes/interactive/components/session-selector-search.ts";
+import {
+	filterAndSortSessions,
+	parseSearchQuery,
+} from "../src/modes/interactive/components/session-selector-search.ts";
 
 function makeSession(
 	overrides: Partial<SessionInfo> & { id: string; modified: Date; allMessagesText: string },
@@ -21,6 +24,15 @@ function makeSession(
 }
 
 describe("session selector search", () => {
+	it("explains why a query that needs the joined transcript cannot be searched as message pages (#5554)", () => {
+		const pattern = String.raw`^(.+) \1$`;
+		const records = Array.from({ length: 512 }, (_, i) => `word${i} ${"x".repeat(2048)}`);
+		const sequence = records.join(" ");
+		assert.equal(new RegExp(pattern, "i").test(`${sequence} ${sequence}`), true);
+		assert.match(parseSearchQuery(`re:${pattern}`).error ?? "", /message.*narrower/i);
+		assert.equal(parseSearchQuery(String.raw`re:colou?r`).error, undefined);
+	});
+
 	it("filters by quoted phrase with whitespace normalization", () => {
 		const sessions: SessionInfo[] = [
 			makeSession({

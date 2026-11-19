@@ -92,6 +92,30 @@ export async function* historyPages(
 	}
 }
 
+/** Read an existing saved session without creating a live session manager, model context or recovery bindings. */
+export async function* readSessionHistory(
+	store: SessionStore,
+	sessionId: string,
+	options: SessionHistoryReadOptions = {},
+): AsyncGenerator<SessionHistoryPage, void> {
+	if (!store.readEntrySizes)
+		throw new TypeError(
+			`Session store ${store.descriptor.adapter} must implement readEntrySizes for a history reader`,
+		);
+	options.signal?.throwIfAborted();
+	const head = await store.readEntrySizes(sessionId, 1, 0);
+	options.signal?.throwIfAborted();
+	yield* historyPages(store, sessionId, head.epoch, head.lastSeq, options);
+}
+
+export function readSessionHistoryChunks(
+	store: SessionStore,
+	reference: OversizedSessionEntry,
+	options: { readonly offset?: number; readonly signal?: AbortSignal } = {},
+): AsyncGenerator<Uint8Array, void> {
+	return historyChunks(store, reference.sessionId, reference.epoch, reference, options);
+}
+
 export async function* historyChunks(
 	store: SessionStore,
 	sessionId: string,

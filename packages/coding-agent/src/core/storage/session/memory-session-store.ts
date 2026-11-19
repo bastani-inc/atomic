@@ -2,6 +2,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { getErrnoCode } from "../../tools/errno.ts";
 import { SessionSpillError, type SessionSpillErrorCode, type SessionSpillErrorFields } from "../errors.js";
 import { sha256Hex } from "./blob-hash.js";
+import { branchStatePages } from "./branch-state-pages.js";
 import { EntryTypeReader } from "./entry-type.js";
 import {
 	SessionConflictError,
@@ -19,8 +20,8 @@ import {
 	refoldSessionResume,
 	resumeIndexNeedsRefold,
 	type SessionResumeIndex,
+	selectResumeLeaf,
 	sessionResumeFrom,
-	sessionResumeOf,
 	sessionResumePlan,
 	sessionTailFrom,
 	stateSeqsBefore,
@@ -54,12 +55,7 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import {
-	validateNewSessionId,
-	validateSessionEntries,
-	validateSessionHeader,
-	validateSessionText,
-} from "./validation.js";
+import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
@@ -279,8 +275,7 @@ export class MemorySessionStore implements SessionStore {
 	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
-		validateNewSessionId("header.id", header.id);
-		validateSessionEntries(entries, "new");
+		validateSessionEntries(entries);
 		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
 		const record = this.encodeSession(header, entries);
 		this.records.set(header.id, record);
@@ -293,7 +288,7 @@ export class MemorySessionStore implements SessionStore {
 		options: SessionWriteOptions,
 	): Promise<{ readonly lastSeq: number }> {
 		const record = this.forWrite(sessionId, options);
-		validateSessionEntries(entries, "new");
+		validateSessionEntries(entries);
 		if (entries.length === 0) return { lastSeq: record.lastSeq };
 		const index = this.appendedIndex(record, entries);
 		const encoded = this.encodeEntries(entries);
@@ -350,7 +345,7 @@ export class MemorySessionStore implements SessionStore {
 	): Promise<SessionWriteResult> {
 		const previous = this.forWrite(sessionId, options);
 		validateSessionHeader(header);
-		validateSessionEntries(entries, "new");
+		validateSessionEntries(entries);
 		if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 		const record = this.encodeSession(header, entries);
 		this.records.set(sessionId, record);
@@ -475,14 +470,44 @@ export class MemorySessionStore implements SessionStore {
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
 		for (;;) {
 			const record = await this.settledRecord(sessionId);
-			const index = await this.resumeIndex(sessionId, record);
+			let index = await this.resumeIndex(sessionId, record);
 			if (index === undefined) continue;
 			const leafSeq =
 				leafId === undefined ? index.leafSeq : ((await this.seqOfEntry(sessionId, record, leafId)) ?? 0);
 			if (leafSeq !== index.leafSeq) {
-				const snapshot = await this.decode(sessionId, record);
-				if (snapshot === undefined) continue;
-				return { ...sessionResumeOf(snapshot.header, snapshot.entries, leafId), epoch: index.epoch };
+				const held = this.held(record);
+				if (held.directory && !held.directory.readRange)
+					throw new TypeError(
+						"A released session history directory must implement readRange to resume a historical branch",
+					);
+				const pages = branchStatePages(index.seq, {
+					bytes: (seq) => {
+						const [start, end] = this.spanOf(held, seq, seq);
+						return end - start;
+					},
+					read: async (seqs) => {
+						const [start, end] = this.spanOf(held, seqs[0]!, seqs.at(-1)!);
+						return this.parseRun(sessionId, held, await this.bytesOf(sessionId, held, start, end)).map(
+							(entry, i) => ({ seq: seqs[i]!, entry }),
+						);
+					},
+					chunk: (seq, offset, length) => {
+						const start = this.spanOf(held, seq, seq)[0] + offset;
+						return this.bytesOf(sessionId, held, start, start + length);
+					},
+				});
+				const base = index;
+				const selected = await this.whileHeld(sessionId, record, held, () =>
+					selectResumeLeaf(base, leafSeq, pages),
+				);
+				if (
+					!selected ||
+					this.records.get(sessionId) !== record ||
+					record.lastSeq !== base.seq ||
+					record.file !== held.file
+				)
+					continue;
+				index = selected;
 			}
 			const plan = sessionResumePlan(index);
 			const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));

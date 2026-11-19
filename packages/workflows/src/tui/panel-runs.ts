@@ -122,15 +122,6 @@ function panelState(status: RunStatus, awaiting: boolean, live: boolean): AgentP
 	return live ? "running" : "stopped";
 }
 
-/**
- * The identity of a paused or blocked run's latest run (`AgentPanelItem.runGeneration`): when its current pause or
- * block began. A pause always gets a later time than the resume before it, so a run that is resumed and pauses or
- * blocks again rests under a new identity, however briefly it ran.
- */
-function restingRunGeneration(run: RunSnapshot): string {
-	return String(run.pausedAt ?? run.blockedAt ?? run.endedAt ?? run.startedAt);
-}
-
 function rawChoicesOf(
 	runs: readonly RunSnapshot[],
 	[ownerRunId, stageId, promptId]: readonly [string, string | null, string],
@@ -475,7 +466,7 @@ export function panelItemsFromSnapshot(
 			...(promptId === undefined ? {} : { promptId }),
 			...(reason === undefined ? {} : { reason }),
 			...(endedAt === undefined ? {} : { endedAt }),
-			...(state === "paused" ? { runGeneration: restingRunGeneration(run) } : {}),
+			...(state === "paused" ? { runGeneration: String(run.runGeneration ?? 0) } : {}),
 		};
 		return { run, item };
 	});

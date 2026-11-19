@@ -499,13 +499,23 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return (this.taskSource?.backgroundTasks.length ?? 0) > 0;
 	}
 
+	private footerTaskSource(): TaskViewSource | undefined {
+		const agent = this.state.getAgentSession?.();
+		const session = agent ?? this.state.getChatBoxSession?.();
+		const store = session && getOwnerTaskStore(session);
+		return (
+			(agent ? undefined : this.state.getTaskSource?.()) ?? (store ? ownerTaskViewSource(store) : this.taskSource)
+		);
+	}
+
 	renderTaskFooter(width: number): string[] {
-		if (this.taskSource === undefined) return [];
-		return renderTaskFooter(this.taskSource.backgroundTasks, width, taskClocksFor(this.taskSource));
+		const source = this.footerTaskSource();
+		return source ? renderTaskFooter(source, width) : [];
 	}
 	renderFooter(width: number, navigationActive = false): string[] {
 		const footer = renderChatSessionFooter(
 			this.state,
+			() => this.footerTaskSource(),
 			width,
 			navigationActive || (this.hasTaskInspector && !this.taskInspectorFullscreen),
 		);
@@ -575,8 +585,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const clicked = state.transcriptComponent.clickedEntries(hit.width, hit.row);
 		if (clicked === undefined) return undefined;
 		// The entries are drawn again with the click's expansion.
-		const expandEntries = (expand: boolean) => {
-			for (const entry of clicked.entries) {
+		const expandEntries = (entries: readonly ChatSessionHostEntry<TExtraEntry>[], expand: boolean) => {
+			for (const entry of entries) {
 				setExpandedOverride(state, entry, expand);
 				state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
 			}
@@ -589,13 +599,26 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		// The blocks as drawn may be redrawn by the time the click settles, by another click on them among others: the
 		// entries are asked then how they are drawn and whether they change, and a group always changes as its calls
 		// fold or show.
-		const [entry] = clicked.entries;
+		const generation = state.expansionGeneration;
+		const target = transcriptEntryName(state, clicked.target);
 		return {
 			handled: true,
 			whenSingleClick: () => {
-				if (entry === undefined) return;
-				const changes = isClickedGroup(clicked.blocks) || entryExpands(state, entry, hit.width);
-				if (changes) expandEntries(!entryIsExpanded(state, entry));
+				if (
+					state.disposed ||
+					this.bodyLayout.taskView ||
+					generation !== state.expansionGeneration ||
+					(state.getChatRenderSettings?.()?.toolOutputExpanded === true) !== state.expandedOverridesFor
+				)
+					return;
+				const entry = state.transcript.find((item) => transcriptEntryName(state, item) === target);
+				if (!entry) return;
+				const width = state.bodyViewport.paintedContentWidth;
+				const group = state.transcriptComponent.currentClickGroup(width, entry);
+				const head = group?.entries[0];
+				if (group && head && (isClickedGroup(group.blocks) || entryExpands(state, head, width))) {
+					expandEntries(group.entries, !entryIsExpanded(state, head));
+				}
 			},
 		};
 	}
@@ -622,7 +645,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const hit = state.bodyViewport.componentAtRow(row);
 		if (hit === undefined || hit.component !== state.transcriptComponent) return undefined;
 		const drawn = state.transcriptComponent.paintedEntryAt(hit.width, hit.row);
-		return drawn === undefined ? undefined : `${transcriptEntryName(state, drawn.entry)}#${drawn.row}`;
+		return drawn === undefined
+			? undefined
+			: `${state.expansionGeneration}:${transcriptEntryName(state, drawn.entry)}#${drawn.row}`;
 	}
 
 	bodyMaxScroll(): number {

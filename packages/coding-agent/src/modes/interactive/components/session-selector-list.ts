@@ -579,7 +579,8 @@ export class SessionList implements Component, Focusable {
 	}
 
 	private emptyText(): string {
-		if (this.searchInput.getValue().trim()) return `No matches for "${this.searchInput.getValue().trim()}"`;
+		const query = this.searchInput.getValue().trim();
+		if (query) return parseSearchQuery(query).error ?? `No matches for "${query}"`;
 		if (this.variant === "runs") return "No workflow runs to resume.";
 		const toggleKey = keyText("app.session.toggleNamedFilter");
 		const tabKey = keyText("tui.input.tab");

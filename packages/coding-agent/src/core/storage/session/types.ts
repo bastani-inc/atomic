@@ -3,7 +3,6 @@ import type { CompactionEntry, SessionEntry, SessionWorkflowMetadata } from "../
 import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
-export const SESSION_ID_MAX_BYTES = 4096;
 
 /** @internal Platform-owned stores inject filesystem identity without coupling portable adapters to it. */
 export type SessionCwdMatcher = (cwd: string) => (candidate: string | undefined) => boolean | Promise<boolean>;
@@ -142,7 +141,9 @@ export interface SessionCompactionPoint {
 }
 
 export interface SessionRecoveryState {
-	readonly admissionKeys: readonly string[];
+	readonly workflowStarts?: Readonly<Record<string, number>>;
+	/** Sorted, packed 128-bit admission-key digests, encoded as base64. Does not expose original keys. */
+	readonly admissionDigests: string;
 	readonly intercomDeliveredIds: readonly string[];
 	readonly deliveryOpIds?: readonly string[];
 }

@@ -1,6 +1,7 @@
 import { setCallbackActivityReporter } from "../../core/callback-activity.ts";
 import { findDecisionError, serializeDecisionError } from "../../core/decision/errors.js";
 import { writeRawStdoutControl } from "../../core/output-guard.ts";
+import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { setDeprecationWarningSink } from "../../utils/deprecation.js";
 import { interactiveEngineStartupEnv } from "../../utils/interactive-engine-env.ts";
 import { startParentProcessGuardian } from "../../utils/shell.ts";
@@ -9,6 +10,7 @@ import { INTERACTIVE_ENGINE_PROTOCOL_VERSION, serializeInteractiveEngineMessage 
 export interface InteractiveEngineLiveness {
 	ready(): void;
 	bound(): void;
+	trustDecision(scope: keyof SessionTrustDecisions, path: string, trusted: boolean): void;
 	projectTrustResolved(): void;
 	resourcesReady(): void;
 	resourcesFailed(error: Error): void;
@@ -24,6 +26,7 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 		return {
 			ready: () => {},
 			bound: () => {},
+			trustDecision: () => {},
 			projectTrustResolved: () => {},
 			resourcesReady: () => {},
 			resourcesFailed: () => {},
@@ -64,6 +67,7 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 			boundSent = true;
 			send({ type: "engine_bound" });
 		},
+		trustDecision: (scope, path, trusted) => send({ type: "engine_trust_decision", scope, path, trusted }),
 		projectTrustResolved: () => {
 			if (projectTrustResolvedSent) return;
 			projectTrustResolvedSent = true;

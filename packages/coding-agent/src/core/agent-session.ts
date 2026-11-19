@@ -211,6 +211,8 @@ class AgentSessionBase {
 	protected _longStreamCutRetries = 0;
 	protected _retryPromise: Promise<void> | undefined = undefined;
 	protected _retryResolve: (() => void) | undefined = undefined;
+	/** {@link abortRetry} cancelled the pending retry: no further attempt starts until another failure opens a retry. */
+	protected _retryCancelled = false;
 	protected _bashAbortControllers = new Map<string | symbol, Set<AbortController>>();
 	protected _pendingBashMessages: BashExecutionMessage[] = [];
 	protected _extensionRunner!: ExtensionRunner;
@@ -403,7 +405,8 @@ class AgentSessionBase {
 				const admission = WorkflowStageAdmissionBoundary.restore(
 					this.sessionManager.getBranch(),
 					undefined,
-					this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+					undefined,
+					this.sessionManager.getSessionRecoveryState?.().admissionDigests,
 				);
 				this._subagentMessageAdmission = admission;
 				this._subagentPolicy = {
@@ -433,7 +436,8 @@ class AgentSessionBase {
 			const stageBoundary = stageContext?.messageAdmission?.boundary;
 			stageBoundary?.restoreCompleted(
 				this.sessionManager.getBranch(),
-				this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+				undefined,
+				this.sessionManager.getSessionRecoveryState?.().admissionDigests,
 			);
 			this._workflowStageAdmission =
 				stageBoundary ??
@@ -441,7 +445,8 @@ class AgentSessionBase {
 					? WorkflowStageAdmissionBoundary.restore(
 							this.sessionManager.getBranch(),
 							undefined,
-							this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+							undefined,
+							this.sessionManager.getSessionRecoveryState?.().admissionDigests,
 						)
 					: undefined);
 			// #3919: a fresh stage is live before its runner dispatches the stage prompt. Turn-starting

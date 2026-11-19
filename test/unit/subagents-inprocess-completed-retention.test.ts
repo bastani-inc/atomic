@@ -56,8 +56,6 @@ test("a completed in-process child keeps its transcript but not its session (#36
 			onExecution(execution) {
 				cleanup = execution.cleanup;
 			},
-			yieldTaskWait() {},
-			isParentObserving: () => false,
 		};
 		let session: WeakRef<object> | undefined;
 
@@ -106,8 +104,6 @@ test("a running in-process child offers its live session to a chat of its task, 
 			onExecution(execution) {
 				cleanup = execution.cleanup;
 			},
-			yieldTaskWait() {},
-			isParentObserving: () => false,
 		};
 
 		await runSingleInProcess(root, analysisAgent(), "inspect the fixture", {
@@ -151,8 +147,6 @@ test("a running and a completed in-process child offer their chat the child's ow
 			onExecution(execution) {
 				cleanup = execution.cleanup;
 			},
-			yieldTaskWait() {},
-			isParentObserving: () => false,
 		};
 
 		await runSingleInProcess(root, analysisAgent(), "inspect the fixture", {
@@ -195,8 +189,6 @@ test("a finished child whose session file is gone still shows its prompt and ans
 			onExecution(execution) {
 				cleanup = execution.cleanup;
 			},
-			yieldTaskWait() {},
-			isParentObserving: () => false,
 		};
 		const result = await runSingleInProcess(root, analysisAgent(), "inspect the fixture", {
 			cwd: root,
@@ -241,8 +233,6 @@ test("reading a finished child's history takes no lock, so it never waits on a c
 			onExecution(execution) {
 				cleanup = execution.cleanup;
 			},
-			yieldTaskWait() {},
-			isParentObserving: () => false,
 		};
 		const result = await runSingleInProcess(root, analysisAgent(), "inspect the fixture", {
 			cwd: root,
