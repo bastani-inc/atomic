@@ -4,6 +4,7 @@
 
 ### Added
 
+- The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Custom session stores can implement `readForkWindow(sessionId, entryId)` to supply a subagent's retained branch and labels without opening the whole parent. Stores without the method keep their existing fork behavior ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
 
 ## [0.9.90] - 2026-11-19
