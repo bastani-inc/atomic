@@ -791,6 +791,16 @@ export class SqlSessionStore implements SessionStore {
 		return createStagedFork(this.forkStagingTarget(), header, stream, source);
 	}
 
+	/**
+	 * Creates the fork staging table unless it exists, as `atomic storage migrate` does as the owner role (#5594): a
+	 * runtime role without DDL privileges then stages bounded clones too. Opens never create it.
+	 */
+	async prepareForkStaging(): Promise<void> {
+		this.assertOpen();
+		const { ensureForkStagingTable } = await import("./fork-staging.js");
+		await ensureForkStagingTable(this.database, this.dialect, this.forkStagingTable);
+	}
+
 	private forkStagingTarget(): import("./fork-staging.js").ForkStagingTarget {
 		return {
 			database: this.database,
@@ -807,6 +817,7 @@ export class SqlSessionStore implements SessionStore {
 			transaction: (body) => this.transaction(body, SESSION_TRANSACTION),
 			saveSummary: (tx, header, lastSeq, summary, index) =>
 				this.saveSummary(tx, header.id, { header, entries: [], lastSeq }, summary, index),
+			create: (header, entries) => this.create(header, entries),
 			rebuildResume: async (sessionId) => {
 				await this.prepareResume(sessionId);
 			},

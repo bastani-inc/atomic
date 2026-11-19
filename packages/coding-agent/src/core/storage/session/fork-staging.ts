@@ -87,6 +87,8 @@ export interface ForkStagingTarget {
 	readonly chunkedSchemaVersion: number;
 	/** False when the destination's blob methods are not its own SQL: blobs are then left to `putBlob`. */
 	readonly ownsBlobs: boolean;
+	/** The destination's `create`: one transaction with every entry. */
+	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult>;
 	/** The destination's session transaction, which checks the sessions schema version first. */
 	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
 	/** Writes the child's sessions row, as `create` does, from the summary and index the clone folded. */
@@ -227,6 +229,70 @@ export async function cleanupForkStaging(
 }
 
 /**
+ * A statement the database refused for a privilege the role lacks: the PostgreSQL adapter's `missing-privilege`, which
+ * the database facade reports as the cause of its `StorageUnavailableError`.
+ */
+function missingPrivilege(error: unknown): boolean {
+	let at = error;
+	for (let depth = 0; depth < 4 && typeof at === "object" && at !== null; depth++) {
+		if ((at as { reason?: unknown }).reason === "missing-privilege") return true;
+		at = (at as { cause?: unknown }).cause;
+	}
+	return false;
+}
+
+let missingStagingHinted = false;
+
+/**
+ * The clone as main makes it, for a role that may not create the staging table and finds none (#5594): the whole
+ * source read into one array, then the child created in one transaction; its blobs are left to `copySessionBlobs`, as
+ * main copies them. Hints once per process that `atomic storage migrate`, run as the owner role, enables bounded clones.
+ */
+async function wholeSourceFork(
+	target: ForkStagingTarget,
+	header: SessionRecordHeader,
+	stream: SessionForkStream,
+	source: ForkArchiveSource,
+): Promise<SessionWriteResult & { readonly remainingBlobs: readonly string[] }> {
+	if (!missingStagingHinted) {
+		missingStagingHinted = true;
+		globalThis.process?.emitWarning?.(
+			`This database role may not create the fork staging table ${target.table}, so whole-session clones into it are read into memory. Run \`atomic storage migrate\` as the owner role to copy them a page at a time.`,
+		);
+	}
+	const entries: SessionEntry[] = [];
+	const ids = new Set<string>();
+	for await (const row of stream.read(source.store, async (id) => ids.has(id))) {
+		let entry = row.entry;
+		if (row.reference !== undefined) {
+			const encoded = await encodedForkRow(source.store, row);
+			const bytes = new Uint8Array(encoded.size);
+			let used = 0;
+			for await (const part of encoded.chunks()) {
+				if (used + part.length > bytes.length)
+					throw new StorageError(`Historical entry ${entries.length + 1} grew while it was copied`);
+				bytes.set(part, used);
+				used += part.length;
+			}
+			entry = JSON.parse(new TextDecoder().decode(bytes)) as SessionEntry;
+		}
+		entries.push(entry);
+		ids.add(entry.id);
+	}
+	const hashes = new Set<string>(source.store.getBlob === undefined ? [] : source.hashes);
+	if (source.store.getBlob !== undefined)
+		for (const entry of entries) {
+			const hash =
+				entry.type === "custom" && entry.customType === "atomic.tool-output"
+					? (entry.data as { hash?: unknown } | null | undefined)?.hash
+					: undefined;
+			if (typeof hash === "string") hashes.add(hash);
+		}
+	const created = await target.create(header, entries);
+	return { ...created, remainingBlobs: [...hashes] };
+}
+
+/**
  * Clone a complete session from `source`, a store on a handle this one cannot prove to be its own connection, as a new
  * child `header.id` (#5594). Each page is read from the source and released before it is written to the staging
  * table, so no transaction is ever held on both handles and two handles that share one queued connection cannot wait
@@ -246,7 +312,16 @@ export async function createStagedFork(
 	const options = stagingTransaction(table);
 	if ((await database.get(`SELECT id FROM ${target.tables.sessions} WHERE id = ?`, header.id)) !== undefined)
 		throw new SessionExistsError(header.id);
-	await ensureForkStagingTable(database, dialect, table);
+	try {
+		await ensureForkStagingTable(database, dialect, table);
+	} catch (error) {
+		// Another role, such as the owner's `atomic storage migrate`, may have created it meanwhile: stage into it.
+		const probe = dialect.tableExists(table);
+		if ((await database.get(probe.sql, ...probe.params)) === undefined) {
+			if (!missingPrivilege(error)) throw error;
+			return wholeSourceFork(target, header, stream, source);
+		}
+	}
 	await cleanupForkStaging(database, dialect, table, FORK_STAGING_TRANSFER_CLEANUPS).catch(() => {});
 	const transfer = randomId();
 	const token = randomId();

@@ -734,7 +734,14 @@ async function migrate(
 	} finally {
 		await opened.close();
 	}
-	await (await new StorageProvider().openSessionStore(selection, { agentDir, domain: "sessions" })).close();
+	const sessions = await new StorageProvider().openSessionStore(selection, { agentDir, domain: "sessions" });
+	try {
+		// The fork staging table, which a runtime role without DDL cannot create when its first bounded clone needs it (#5594).
+		const { SqlSessionStore } = await import("../core/storage/session/sql-session-store.js");
+		if (sessions instanceof SqlSessionStore) await sessions.prepareForkStaging();
+	} finally {
+		await sessions.close();
+	}
 	const workflows = await (options.loadWorkerModule ?? loadWorkerHostModule)();
 	if (workflows.migrateWorkflowStorage === undefined)
 		throw new Error("The bundled workflows package cannot migrate storage; reinstall Atomic.");
