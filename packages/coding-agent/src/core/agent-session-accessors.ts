@@ -74,6 +74,24 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				return this.agent.state.messages;
 			},
 		},
+		transcriptMessages: {
+			get(this: AgentSession) {
+				const saving = this._transcriptAppend;
+				const beforeSave =
+					saving && this._messagesAwaitingPersistence.has(saving.message) ? saving.previousLeaf : undefined;
+				const { entries, messages } = this.sessionManager.buildSessionProjection("transcript", beforeSave);
+				const pending = this.messages.filter((message) => this._messagesAwaitingPersistence.has(message));
+				if (pending.length === 0) return messages;
+				const saved = new Set(entries.map(({ sourceEntry }) => sourceEntry.id));
+				return [
+					...messages,
+					...pending.filter((message) => {
+						const id = this._entryIdsByMessage.get(message);
+						return id === undefined || !saved.has(id);
+					}),
+				];
+			},
+		},
 		steeringMode: {
 			get() {
 				return this.agent.steeringMode;

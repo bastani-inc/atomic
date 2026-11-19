@@ -1,5 +1,6 @@
 import { describe } from "vitest";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
+import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import {
 	inheritedRunElapsedMs,
 	priorRunElapsedMs,
@@ -9,10 +10,12 @@ import {
 import { recordStageSessionCheckpoint } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engine/run-durable-finalize.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
+import { recordActiveBlockedFailure } from "../../packages/workflows/src/runs/foreground/executor-lifecycle.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
-import { appendRunStart } from "../../packages/workflows/src/shared/persistence-session-entries.js";
+import { appendRunBlocked, appendRunStart } from "../../packages/workflows/src/shared/persistence-session-entries.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { elapsedRunMs } from "../../packages/workflows/src/shared/timing.js";
+import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
 import {
@@ -298,6 +301,45 @@ describe("resumed runs inherit elapsed time", () => {
 	});
 });
 
+test("a restored block keeps its generation without creating workflow progress (#5567)", async () => {
+	const backend = await JournalTestBackend.create();
+	await backend.commitWorkflowRegistration({
+		workflowId: RUN_ID,
+		name: "timing",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
+	const store = createStore();
+	store.recordRunStart(makeRun());
+	store.recordRunPaused(RUN_ID, 2);
+	store.recordRunResumed(RUN_ID, 2);
+	store.recordRunBlocked(RUN_ID, "provider unavailable", {
+		failureKind: "provider",
+		failureRecoverability: "recoverable",
+		failureDisposition: "active_blocked",
+		resumable: true,
+		blockedAt: 2,
+	});
+	const before = panelItemsFromSnapshot(store.graphSnapshot())[0]!.runGeneration;
+	await finalizeDurableTerminalStatus({
+		runId: RUN_ID,
+		runSnapshot: store.run(RUN_ID)!,
+		isRoot: true,
+		durableBackend: backend,
+	});
+	const reopened = await backend.reopen();
+	const handle = reopened.getWorkflow(RUN_ID)!;
+	assert.equal(handle.completedCheckpoints, 0);
+	const restored = durableWorkflowRunSnapshots(reopened, handle);
+	assert.equal(panelItemsFromSnapshot(restored)[0]!.runGeneration, before);
+	const resumed = createStore();
+	resumed.recordRunStart(restored[0]!);
+	resumed.recordRunStart(makeRun());
+	resumed.recordRunPaused(RUN_ID, 2);
+	assert.ok(Number(panelItemsFromSnapshot(resumed.graphSnapshot())[0]!.runGeneration) > Number(before));
+});
+
 describe("run elapsed persistence at pause/failure boundaries", () => {
 	test("quitRun persists the exact accumulated run elapsed durably", async () => {
 		const backend = getDurableBackend();
@@ -344,6 +386,122 @@ describe("run elapsed persistence at pause/failure boundaries", () => {
 		assert.equal(priorRunElapsedMs(backend, RUN_ID), 5555);
 		assert.equal(backend.getWorkflow(RUN_ID)?.status, "failed");
 	});
+});
+
+test("replaying a chat's blocked workflow preserves the last pause sequence without advertising a resume (#5567)", async () => {
+	const entries: SessionEntry[] = [];
+	const api = {
+		appendEntry(type: string, payload: Record<string, unknown>) {
+			entries.push({ id: String(entries.length), type, payload: payload as SessionEntry["payload"] });
+		},
+	};
+	const owner = createStore();
+	const snapshot = makeRun();
+	owner.recordRunStart(snapshot);
+	await appendRunStart(api, { runId: RUN_ID, name: snapshot.name, inputs: {}, ts: 1 });
+	owner.recordRunPaused(RUN_ID, 2);
+	owner.recordRunResumed(RUN_ID, 2);
+	await recordActiveBlockedFailure(RUN_ID, snapshot, owner, api, {
+		errorMessage: "provider unavailable",
+		failureKind: "provider",
+		failureRecoverability: "recoverable",
+		failureDisposition: "active_blocked",
+		failureMessage: "provider unavailable",
+		failedStageId: "work",
+		resumable: true,
+	});
+	const restored = createStore();
+	const frames: string[] = [];
+	restored.subscribe(() => {
+		frames.push(panelItemsFromSnapshot(restored.graphSnapshot())[0]!.state);
+	});
+	const recover = () =>
+		restoreOnSessionStart({ getEntries: () => entries }, { resumeInFlight: "auto", persistRuns: true }, restored);
+	for (let replay = 0; replay < 2; replay++) {
+		recover();
+		assert.equal(
+			panelItemsFromSnapshot(restored.graphSnapshot())[0]!.runGeneration,
+			panelItemsFromSnapshot(owner.graphSnapshot())[0]!.runGeneration,
+		);
+	}
+	assert.ok(
+		frames.every((state) => state === "paused"),
+		`a replay published ${frames.join(", ")}`,
+	);
+});
+
+test("restoring a returned block or a failed run never advertises a resume (#5567)", async () => {
+	for (const ending of ["blocked", "failed", "invalid-exit"] as const) {
+		const status = ending === "blocked" ? "blocked" : "failed";
+		const store = createStore();
+		const entries: SessionEntry[] = [];
+		const persistence = {
+			appendEntry(type: string, payload: Record<string, unknown>) {
+				entries.push({ id: String(entries.length), type, payload: payload as SessionEntry["payload"] });
+			},
+		};
+		const def = workflow({
+			name: "review",
+			description: "",
+			inputs: {},
+			outputs: { status: Type.String() },
+			run: async (ctx) => {
+				await ctx.stage("work").complete("go");
+				store.recordRunPaused(RUN_ID);
+				store.recordRunResumed(RUN_ID);
+				if (ending === "invalid-exit") return ctx.exit({ outputs: { status: 1 as never } });
+				if (ending === "failed") throw new Error("review failed");
+				return { status: "needs_human" };
+			},
+		});
+		const result = await run(
+			def,
+			{},
+			{
+				runId: RUN_ID,
+				store,
+				persistence,
+				durableBackend: await createMemoryTestBackend(),
+				adapters: { complete: { complete: async () => "done" } },
+			},
+		);
+		assert.equal(result.status, status);
+		for (const id of ["peer", "stage-block"])
+			await appendRunStart(persistence, { runId: id, name: id, inputs: {}, ts: 1 });
+		await appendRunBlocked(persistence, {
+			runId: "stage-block",
+			failedStageId: "review",
+			error: "wait",
+			failureKind: "provider",
+			failureRecoverability: "recoverable",
+			resumable: true,
+			runGeneration: 3,
+			ts: 2,
+		});
+		for (const mode of ["auto", "ask"] as const) {
+			const restored = createStore();
+			const frames: string[][] = [];
+			const observe = () =>
+				panelItemsFromSnapshot(restored.graphSnapshot())
+					.map((row) => `${row.name}:${row.state}`)
+					.sort();
+			restored.subscribe(() => frames.push(observe()));
+			const callbacks: string[][] = [];
+			const onRestore = () => callbacks.push(observe());
+			restoreOnSessionStart({ getEntries: () => entries }, { resumeInFlight: mode, persistRuns: true }, restored, {
+				onResume: onRestore,
+				onCrashed: onRestore,
+			});
+			const complete = [
+				`peer:${mode === "auto" ? "running" : "failed"}`,
+				`review:${status === "blocked" ? "paused" : "failed"}`,
+				"stage-block:paused",
+			];
+			assert.deepEqual(frames, [complete], ending);
+			assert.deepEqual(callbacks, [complete], ending);
+			assert.equal(restored.run(RUN_ID)?.runGeneration, status === "blocked" ? 2 : 1, ending);
+		}
+	}
 });
 
 describe("run.start persistence round-trip", () => {
