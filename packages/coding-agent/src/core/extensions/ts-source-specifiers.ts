@@ -82,10 +82,18 @@ interface TraversalCache {
 	clear(): void;
 }
 
-// The compiler indexes traversal paths and scopes by syntax node. Letting those weak tables grow across a cold
-// extension graph makes a later major collection pause the interactive host, even when it is idle.
-const traversalCaches = new Set<TraversalCache>();
-let activeTransforms = 0;
+const pendingReleases = new WeakSet<TraversalCache>();
+
+function releaseAfterTraversal(cache: TraversalCache): void {
+	if (pendingReleases.has(cache)) return;
+	pendingReleases.add(cache);
+	// Other jiti hosts share these tables. Even after our transform returns, a caller's plugin can still be
+	// traversing its own file. Release once per compiler runtime after the synchronous stack unwinds.
+	setImmediate(() => {
+		pendingReleases.delete(cache);
+		cache.clear();
+	});
+}
 
 function typeScriptSourceSpecifierPlugin(
 	babel: { traverse: { cache: TraversalCache } },
@@ -94,7 +102,7 @@ function typeScriptSourceSpecifierPlugin(
 	return {
 		name: "atomic-typescript-source-specifiers",
 		pre() {
-			traversalCaches.add(babel.traverse.cache);
+			releaseAfterTraversal(babel.traverse.cache);
 		},
 		visitor: {
 			"ImportDeclaration|ExportNamedDeclaration|ExportAllDeclaration"(nodePath: NodePath<ModuleSourceNode>) {
@@ -153,19 +161,6 @@ function writeCached(file: string, code: string): Promise<void> {
 
 type BabelHost = ReturnType<CreateJiti>;
 
-function compileModule(host: BabelHost, options: JitiTransformOptions): string {
-	activeTransforms++;
-	try {
-		return host.transform(options);
-	} finally {
-		// Plugins may transform another file synchronously. Finish all visits and code generation before clearing.
-		if (--activeTransforms === 0) {
-			for (const cache of traversalCaches) cache.clear();
-			traversalCaches.clear();
-		}
-	}
-}
-
 const babelHosts = new WeakMap<CreateJiti, Map<string, BabelHost>>();
 
 /** One Babel host per jiti implementation and id, so a transform per cache directory stays cheap. */
@@ -197,7 +192,7 @@ export function createTypeScriptSourceSpecifierTransform(
 	const babelHost = babelHostFor(createJitiImpl, id);
 	const writes = new Set<Promise<void>>();
 	const transform: JitiTransform = (options: JitiTransformOptions) => {
-		if (!options.filename) return { code: compileModule(babelHost, options) };
+		if (!options.filename) return { code: babelHost.transform(options) };
 		const rewrites = planRewrites(options.source, options.filename);
 		const directory = cacheDir();
 		const cached = directory ? cacheFile(directory, options, rewrites) : undefined;
@@ -206,7 +201,7 @@ export function createTypeScriptSourceSpecifierTransform(
 		const plugins: ReadonlyArray<string | object> = Array.isArray(options.babel?.plugins)
 			? options.babel.plugins
 			: [];
-		const code = compileModule(babelHost, {
+		const code = babelHost.transform({
 			...options,
 			babel: { ...options.babel, plugins: [...plugins, [typeScriptSourceSpecifierPlugin, { rewrites }]] },
 		});
