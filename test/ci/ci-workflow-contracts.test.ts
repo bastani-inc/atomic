@@ -38,11 +38,7 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 		default: { test?: { projects?: { test?: { name?: string; testTimeout?: number } }[] } };
 	};
 	const projects = config.default.test?.projects ?? [];
-	assert.equal(
-		projects.length,
-		5,
-		"one vitest project per suite directory, plus the integration load gate and the interactive event-loop gate",
-	);
+	assert.equal(projects.length, 4, "one vitest project per suite directory, plus the interactive event-loop gate");
 
 	const budgets = new Set<number>();
 	for (const script of ["test:unit", "test:integration", "test:ci-contracts"]) {
@@ -66,20 +62,6 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 	// No script may reintroduce a second declaration beside the config one.
 	for (const command of Object.values(manifest.scripts)) {
 		assert.doesNotMatch(command, /--timeout[= ]\d+/u, `the budget lives in vitest.config.ts only: ${command}`);
-	}
-});
-
-test("workflows workspace test scripts delegate to the root Vitest suites", async () => {
-	const manifest = await readJson<{ scripts: Record<string, string> }>(join(root, "packages/workflows/package.json"));
-	// npm test visits workspace test scripts after running the root suites.
-	// Delegate to the same root entry points as CI, never back to root `test`.
-	for (const [entry, target] of Object.entries({
-		test: "test:unit",
-		"test:unit": "test:unit",
-		"test:integration": "test:integration",
-		"test:all": "test:all",
-	})) {
-		assert.equal(manifest.scripts[entry], `npm --prefix ../.. run ${target} --`, `${entry} bypasses root test setup`);
 	}
 });
 
@@ -119,7 +101,7 @@ test("global setups attribute lost workers, isolate Herdr, provider credentials 
 	const herdrSetup = "./test/global-setup-herdr-isolation.ts";
 	const providerCredentialSetup = "./test/global-setup-provider-credential-isolation.ts";
 	const debugSetup = "./test/global-setup-debug-isolation.ts";
-	const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
+	const artifactSetup = "./test/global-setup-test-directory.ts";
 	const nativeSetup = "./test/global-setup-natives.ts";
 	for (const name of ["unit", "integration", "ci"]) {
 		const project = projects.find((entry) => entry.test?.name === name);
@@ -303,7 +285,7 @@ function createMuslSmokeProbe(): MuslSmokeProbe {
 	const payloadRoot = join(probeRoot, "payload");
 	const atomicRoot = join(payloadRoot, "atomic");
 	for (const directory of [
-		join(atomicRoot, "builtin", "workflows"),
+		join(atomicRoot, "builtin", "subagents"),
 		join(atomicRoot, "node_modules", "@bastani", "atomic-natives"),
 		join(atomicRoot, "lib"),
 	]) {
@@ -313,7 +295,7 @@ function createMuslSmokeProbe(): MuslSmokeProbe {
 		join(atomicRoot, "atomic"),
 		join(atomicRoot, "app.js"),
 		join(atomicRoot, "package.json"),
-		join(atomicRoot, "builtin", "workflows", "package.json"),
+		join(atomicRoot, "builtin", "subagents", "package.json"),
 		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "package.json"),
 		join(atomicRoot, "lib", "libgcc_s.so.1"),
 		join(atomicRoot, "lib", "libstdc++.so.6"),

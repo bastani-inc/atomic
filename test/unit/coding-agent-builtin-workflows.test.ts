@@ -8,14 +8,13 @@ import { describe, test } from "vitest";
 import { INSTALLED_EXTENSION_ENTRIES } from "../../packages/coding-agent/src/core/builtin-install-layout.js";
 import { getBuiltinPackagePaths } from "../../packages/coding-agent/src/core/builtin-packages.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
-import { type PackageSource, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 
 function tempDir(prefix: string): string {
 	return mkdtempSync(join(tmpdir(), prefix));
 }
 
 const expectedBuiltinPackages = [
-	resolve("packages/workflows"),
 	resolve("packages/subagents"),
 	resolve("packages/mcp"),
 	resolve("packages/web-access"),
@@ -23,7 +22,6 @@ const expectedBuiltinPackages = [
 ];
 
 const builtinPackageFixtures = [
-	{ packageName: "@bastani/workflows", dirname: "workflows", requiredEntry: join("src", "extension", "index.ts") },
 	{ packageName: "@bastani/subagents", dirname: "subagents", requiredEntry: join("src", "extension", "index.ts") },
 	{ packageName: "@bastani/mcp", dirname: "mcp", requiredEntry: "index.ts" },
 	{ packageName: "@bastani/web-access", dirname: "web-access", requiredEntry: "index.ts" },
@@ -87,134 +85,6 @@ describe("coding-agent builtin resources", () => {
 		}
 	});
 
-	test("loads compiled workflow resources from package directories", async () => {
-		const cwd = tempDir("atomic-workflow-package-cwd-");
-		const agentDir = tempDir("atomic-workflow-package-agent-");
-		const packageDir = join(cwd, "workflow-package");
-		const workflowsDir = join(packageDir, "workflows");
-		const workflowPath = join(workflowsDir, "custom.ts");
-		mkdirSync(workflowsDir, { recursive: true });
-		writeFileSync(
-			join(packageDir, "package.json"),
-			JSON.stringify({
-				name: "workflow-package",
-				keywords: ["atomic-package"],
-				atomic: {
-					extensions: ["./index.ts"],
-					workflows: ["./workflows/custom.ts"],
-				},
-			}),
-			"utf-8",
-		);
-		writeFileSync(
-			workflowPath,
-			"import { workflow } from '@bastani/atomic/workflows';\nimport { Type } from 'typebox';\nexport default workflow({ name: 'Custom', description: '', inputs: { prompt: Type.String({ default: 'validation smoke' }) }, outputs: {}, run: async (ctx) => { await ctx.task('validation-smoke', { prompt: ctx.inputs.prompt }); return {}; } });\n",
-			"utf-8",
-		);
-		writeFileSync(
-			join(packageDir, "index.ts"),
-			[
-				"export default function(pi) {",
-				"  const resources = pi.getWorkflowResources?.() ?? [];",
-				"  pi.registerCommand('workflow-resource-count', {",
-				"    description: `workflow resources: $" + "{resources.filter((r) => r.enabled).length}` ,",
-				"    handler() {},",
-				"  });",
-				"}",
-			].join("\n"),
-			"utf-8",
-		);
-
-		const settingsManager = SettingsManager.inMemory();
-		settingsManager.setPackages([packageDir]);
-		const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, builtinPackagePaths: [] });
-
-		await loader.reload();
-
-		assert.deepEqual(
-			loader.getWorkflowResources().map((resource) => resource.path),
-			[workflowPath],
-		);
-		const extensions = loader.getExtensions();
-		assert.deepEqual(extensions.errors, []);
-		const command = extensions.extensions[0]?.commands.get("workflow-resource-count");
-		assert.equal(command?.description, "workflow resources: 1");
-	}, 20_000);
-
-	test(
-		"registers package workflow names in /workflow completions",
-		async () => {
-			const cwd = tempDir("atomic-workflow-command-cwd-");
-			const agentDir = tempDir("atomic-workflow-command-agent-");
-			const packageDir = join(cwd, "workflow-command-package");
-			const workflowsDir = join(packageDir, "workflows");
-			mkdirSync(workflowsDir, { recursive: true });
-			writeFileSync(
-				join(packageDir, "package.json"),
-				JSON.stringify({ name: "workflow-command-package", keywords: ["atomic-package"] }),
-				"utf-8",
-			);
-			writeFileSync(
-				join(workflowsDir, "package-command.ts"),
-				[
-					`import { workflow } from "@bastani/atomic/workflows";`,
-					``,
-					`export default workflow({`,
-					`  name: "package-command",`,
-					`  description: "Package command workflow",`,
-					`  inputs: {},`,
-					`  outputs: {},`,
-					`  run: async (ctx) => {`,
-					`    await ctx.task("validation-smoke", { prompt: "validation smoke" });`,
-					`    return {};`,
-					`  },`,
-					`});`,
-				].join("\n"),
-				"utf-8",
-			);
-
-			const settingsManager = SettingsManager.inMemory();
-			settingsManager.setPackages([packageDir]);
-			const loader = new DefaultResourceLoader({
-				cwd,
-				agentDir,
-				settingsManager,
-				builtinPackagePaths: [resolve("packages/workflows")],
-			});
-
-			await loader.reload();
-
-			const extensions = loader.getExtensions();
-			assert.deepEqual(extensions.errors, []);
-			const workflowExtension = extensions.extensions.find((extension) =>
-				extension.path.replace(/\\/g, "/").endsWith("packages/workflows/src/extension/index.ts"),
-			);
-			assert.equal(workflowExtension?.commands.has("workflow"), false);
-			assert.equal(workflowExtension?.commands.has("workflows"), true);
-			assert.equal(workflowExtension?.commands.has("workflow-authoring"), true);
-			const workflowTool = workflowExtension?.tools.get("workflow")?.definition;
-			assert.notEqual(workflowTool, undefined);
-
-			let labels: string[] = [];
-			for (let attempt = 0; attempt < 20; attempt++) {
-				const listed = await workflowTool!.execute(`list-${attempt}`, { action: "list" }, undefined, undefined, {
-					cwd,
-					hasUI: false,
-					ui: { notify: () => {} },
-				} as never);
-				const items = ((listed.details as { items?: Array<{ name: string }> } | undefined)?.items ?? []).map(
-					(item) => item.name,
-				);
-				labels = items;
-				if (labels.includes("package-command")) break;
-				await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
-			}
-
-			assert.ok(labels.includes("package-command"), `expected package workflow in ${labels.join(", ")}`);
-		},
-		REAL_BUILTIN_RESOURCE_LOADER_TIMEOUT_MS,
-	);
-
 	test(
 		"loads builtin pi package resources",
 		async () => {
@@ -234,7 +104,6 @@ describe("coding-agent builtin resources", () => {
 
 			const extensionPaths = extensions.extensions.map((extension) => extension.path.replace(/\\/g, "/"));
 			for (const suffix of [
-				"packages/workflows/src/extension/index.ts",
 				"packages/subagents/src/extension/index.ts",
 				"packages/mcp/index.ts",
 				"packages/web-access/index.ts",
@@ -259,20 +128,15 @@ describe("coding-agent builtin resources", () => {
 	);
 
 	test(
-		"can disable the workflows extension while keeping bundled package skills",
+		"ships the bundled skills without loading workflow tooling",
 		async () => {
 			const cwd = tempDir("atomic-stage-builtin-skills-cwd-");
 			const agentDir = tempDir("atomic-stage-builtin-skills-agent-");
-			const stageBuiltinPackages: PackageSource[] = expectedBuiltinPackages.map((packagePath) =>
-				packagePath.replace(/\\/g, "/").endsWith("/workflows")
-					? { source: packagePath, extensions: [] }
-					: packagePath,
-			);
 			const loader = new DefaultResourceLoader({
 				cwd,
 				agentDir,
 				settingsManager: SettingsManager.inMemory(),
-				builtinPackagePaths: stageBuiltinPackages,
+				builtinPackagePaths: expectedBuiltinPackages,
 			});
 
 			await loader.reload();

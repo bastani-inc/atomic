@@ -4,12 +4,19 @@
 
 ### Breaking Changes
 
+- The `subagents` builtin now ships the 11 general-purpose skills previously bundled with `workflows`. Default `/skill:` names and contents are unchanged. SDK hosts that disable `subagents` also disable those skills; to keep the skills without allowing delegation, leave `subagents` enabled and set `excludedTools: ["subagent"]`.
+- Atomic no longer ships the `workflow` tool, `/workflows`, `/workflow-authoring`, or the F2 workflow shortcut. Workflows are now skills: ask Atomic to convert an old definition into a skill that uses codemode and subagents. The original file stays untouched. Use `/tasks` to inspect background work and `/resume` to reopen a saved session, not a workflow run.
+- The SDK no longer accepts `workflows` in the `builtins` option. Remove that key from session options. The `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin` and `@bastani/atomic/workflows/builtin/*` imports are no longer published; keep a pre-0.10 installation if you still need to execute a definition with the old SDK.
+- RPC no longer accepts `list_workflow_runs`, `get_workflow_run_summary`, `get_workflow_resume_entries`, `resume_workflow_from_picker` or `delete_workflow_from_picker`. `RpcClient.listWorkflowRuns()` and `getWorkflowRunSummary()` are removed. For saved conversations, use `list_sessions`, `get_session_summary` and `switch_session`.
+- `atomic storage migrate` still sets up sessions and Intercom, but no longer creates workflow or worker-pool tables. Existing workflow data is not deleted.
+- Source checkouts no longer include the `@bastani/workflows` extension or its builtin workflow definitions. If you linked that directory into another host, remove the link. To reuse a definition, ask Atomic to read it and carry out its steps with codemode and subagents.
 - Workflow definitions are no longer loadable resources. Atomic ignores the old `workflows` and `intercom.showUnknownTargetWarnings` settings. Package manifests and package filters no longer load workflows; package a skill for repeated use instead. Existing files can stay in place: ask the agent to convert an old definition into a project or global skill that runs with codemode and subagents. Nothing is written automatically at startup.
 - SDK hosts no longer receive `ResolvedPaths.workflows`, and resource loaders no longer expose `getWorkflowResources()` or `refreshWorkflowResources()`. `SettingsManager` no longer offers workflow path or auto-advance getters and setters.
 - A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
 
 ### Added
 
+- The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged.
 
 ## [0.9.90] - 2026-11-19

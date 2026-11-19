@@ -8,11 +8,7 @@ const root = resolve(moduleDir(import.meta.url), "../..");
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
 
 describe("removed provider active surfaces", () => {
-	test("builtin workflow and subagent model policies contain no removed-provider candidates", () => {
-		for (const path of ["packages/workflows/builtin/open-claude-design-runner.ts"]) {
-			assert.doesNotMatch(read(path), /cursor\//iu, path);
-		}
-
+	test("builtin subagent model policies contain no removed-provider candidates", () => {
 		const agentsDir = join(root, "packages/subagents/agents");
 		for (const name of readdirSync(agentsDir).filter((entry) => entry.endsWith(".md"))) {
 			const frontmatter = readFileSync(join(agentsDir, name), "utf8").split("---", 2)[1] ?? "";
@@ -27,7 +23,7 @@ describe("removed provider active surfaces", () => {
 	});
 
 	test("Impeccable ships no removed-editor compatibility adapter", () => {
-		const skill = "packages/workflows/skills/impeccable";
+		const skill = "packages/subagents/skills/impeccable";
 		assert.equal(existsSync(join(root, skill, "scripts/hook-before-edit.mjs")), false);
 		for (const path of [
 			`${skill}/SKILL.md`,

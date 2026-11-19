@@ -113,7 +113,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 				settingsManager,
 				sessionManager: SessionManager.inMemory(),
 				model: getModel("anthropic", "claude-sonnet-4-5")!,
-				builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+				builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 			});
 			try {
 				const runtimeHost = isolated ? Object.create(IsolatedInteractiveRuntime.prototype) : {};
@@ -181,7 +181,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 			settingsManager,
 			sessionManager,
 			resourceLoader,
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: true },
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: true },
 		});
 		try {
 			expect(session.getActiveToolNames()).not.toContain("startup_tool");
@@ -325,7 +325,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: true },
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: true },
 		});
 		try {
 			await session.bindExtensions({ commandContextActions: createCommandActions() });

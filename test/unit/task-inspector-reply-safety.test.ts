@@ -17,7 +17,6 @@ import {
 	TaskInspector,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { coercePrimitivePromptAnswer } from "../../packages/workflows/src/shared/prompt-answer.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { stripVTControlCharacters } from "../helpers/visible-text.ts";
@@ -153,9 +152,7 @@ test("peek-card digit shortcuts resolve exact raw choices when display labels sa
 			items: () => [item],
 			subscribe: () => () => {},
 			answer: async (_id, text) => {
-				const coerced = coercePrimitivePromptAnswer({ kind: "select", choices: variant.choices } as never, text);
-				if (!coerced.ok) return { ok: false, reason: "Invalid select answer" };
-				resolved.push(coerced.value);
+				resolved.push(text);
 				return { ok: true };
 			},
 		};
@@ -238,9 +235,7 @@ test("peek card draws up to 9 choices in a tall viewport and accepts digits 8 an
 		items: () => [item],
 		subscribe: () => () => {},
 		answer: async (_id, text) => {
-			const coerced = coercePrimitivePromptAnswer({ kind: "select", choices } as never, text);
-			if (!coerced.ok) return { ok: false, reason: "Invalid choice" };
-			resolved.push(coerced.value);
+			resolved.push(text);
 			return { ok: true };
 		},
 	};

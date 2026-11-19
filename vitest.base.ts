@@ -13,11 +13,7 @@ import type { Alias } from "vite";
 /** Repository root, with a trailing separator. */
 export const repositoryRoot = fileURLToPath(new URL(".", import.meta.url));
 
-/**
- * `@bastani/atomic` resolves to its unbuilt source under test. Without this,
- * packages/workflows/src/engine/workflow-activity.ts fails to resolve the host
- * entry and takes test/unit/executor-concurrency-limiter.test.ts down with it.
- */
+/** `@bastani/atomic` resolves to the same unbuilt host source in every test project. */
 export const atomicSrcIndex = fileURLToPath(
 	new URL("./packages/coding-agent/src/index.ts", import.meta.url),
 );

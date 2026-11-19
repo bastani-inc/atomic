@@ -208,7 +208,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 		if (connection.client?.isConnected()) return Promise.resolve(connection.client);
 		connection.connecting ??= (async () => {
 			const [extensionDir] = getBuiltinPackagePaths({
-				workflows: false,
+
 				subagents: false,
 				mcp: false,
 				"web-access": false,

@@ -87,15 +87,15 @@ Moved to [Authentication](/getting-started/authentication#option-2-api-key).
 
 Moved to [First session](/getting-started/first-session#first-session-2).
 
-Full detail: starting Atomic, the built-in workflows, monitoring and steering a run, top skills, creating a workflow in natural language, and the default tools and prompts.
+Full detail: starting Atomic, delegating work to subagents, top skills, and the default tools and prompts.
 
 ### Try the built-in workflows
 
-Moved to [First session](/getting-started/first-session#try-the-built-in-workflows).
+Workflows are now skills. Ask Atomic to convert an old workflow file to a skill. See [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task) for the alternative.
 
 ### Monitor and steer a run
 
-Moved to [First session](/getting-started/first-session#monitor-and-steer-a-run).
+Use `/tasks` to inspect background subagents. See [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task).
 
 ### Top skills to invoke directly
 
@@ -103,7 +103,7 @@ Moved to [First session](/getting-started/first-session#top-skills-to-invoke-dir
 
 ### Create your own workflow in natural language
 
-Moved to [First session](/getting-started/first-session#create-your-own-workflow-in-natural-language).
+Describe the task to Atomic, or give it an existing workflow definition and ask it to convert the file to a skill. See [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task).
 
 ### Default tools and prompts
 

@@ -16,8 +16,7 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
-import { runStageTaskAction, snapshotStageTasks } from "../../packages/workflows/src/workers/stage-watch-tasks.js";
+
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
 
@@ -56,11 +55,6 @@ test("a task transcript's latest page names the tool calls its session is runnin
 			["slow"],
 		);
 		assert.ok(starts[0]!.startedAt >= before && starts[0]!.startedAt <= after);
-		const relayed = await runStageTaskAction(source, taskId, { kind: "transcript" });
-		assert.deepEqual(
-			relayed.kind === "transcript" && relayed.result.ok ? relayed.result.value.activeToolStarts : undefined,
-			starts,
-		);
 		emitOn(chatSession, {
 			type: "tool_execution_end",
 			toolCallId: "slow",
@@ -71,69 +65,6 @@ test("a task transcript's latest page names the tool calls its session is runnin
 		const ended = await source.readTaskTranscript(taskId);
 		assert.equal(ended.ok ? ended.value.activeToolStarts : "unread", undefined);
 	} finally {
-		await fixture.dispose();
-	}
-});
-
-test("a subagent chat on a worker follows its published retry, model switch and next request (#5572)", async () => {
-	initTheme("dark");
-	const fixture = taskFixture();
-	const history = SessionManager.inMemory();
-	await history.appendMessage(fauxAssistantMessage("Earlier reply"));
-	const session = { isStreaming: true, retryStatus: undefined } as {
-		isStreaming: boolean;
-		retryStatus: ChatBoxSession["retryStatus"];
-	};
-	await fixture.start("Review changes");
-	fixture.runners[0]!.context.bindTranscript({
-		getSessionId: () => history.getSessionId(),
-		getEntries: () => history.getEntries(),
-		chatSession: session as ChatBoxSession,
-		isRunning: () => session.isStreaming,
-	});
-	const source = ownerTaskViewSource(fixture.store);
-	const pooled = new PooledStageTaskSource((id, action) => runStageTaskAction(source, id, action));
-	const view = new TaskAgentTranscriptPage(
-		pooled,
-		fixture.store.tasks[0]!.ref.taskId,
-		taskTranscriptEnvironment(),
-		() => {},
-	);
-	const line = () =>
-		view
-			.render(80, 24)
-			.map(stripVTControlCharacters)
-			.find((row) => row.includes("∀"))
-			?.trim();
-	try {
-		session.retryStatus = {
-			type: "auto_retry_start",
-			attempt: 1,
-			maxAttempts: 1,
-			delayMs: 2000,
-			retryAt: Date.now() + 2000,
-			errorMessage: "busy",
-		};
-		pooled.apply(snapshotStageTasks(source));
-		await view.load();
-		assert.equal(line(), "∀ retrying…");
-		session.retryStatus = {
-			type: "model_fallback_start",
-			from: "primary",
-			to: "fallback",
-			reason: "busy",
-			attempt: 1,
-		};
-		pooled.apply(snapshotStageTasks(source));
-		assert.equal(line(), "∀ switching model…");
-		session.retryStatus = undefined;
-		pooled.apply(snapshotStageTasks(source));
-		assert.equal(line(), "∀ Working…");
-		session.isStreaming = false;
-		pooled.apply(snapshotStageTasks(source));
-		assert.equal(line(), undefined);
-	} finally {
-		view.dispose();
 		await fixture.dispose();
 	}
 });

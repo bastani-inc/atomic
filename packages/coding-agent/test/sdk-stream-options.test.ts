@@ -136,7 +136,7 @@ describe("createAgentSession stream options", () => {
 			modelRuntime,
 			settingsManager,
 			sessionManager,
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, "web-access": false },
 		});
 
 		try {

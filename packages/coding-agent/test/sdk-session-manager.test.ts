@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveRunJournal } from "../../workflows/src/durable/journal/resolution.ts";
+
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -17,7 +17,7 @@ import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { StoreClosedError } from "../src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 const missingApiKeyEnv = "ATOMIC_SDK_SESSION_MANAGER_MISSING_KEY";
 const testModel = (id: string) => ({
@@ -214,7 +214,7 @@ describe("createAgentSession session manager defaults", () => {
 		}
 	});
 
-	it("keeps other SDK acquisitions and the shared journal alive during disposal", async () => {
+	it("keeps other SDK session acquisitions alive during disposal", async () => {
 		const path = join(tempDir, "shared.sqlite");
 		const modelRuntime = await createSelectionRuntime();
 		const options = {
@@ -227,7 +227,6 @@ describe("createAgentSession session manager defaults", () => {
 		};
 		const first = (await createAgentSession(options)).session;
 		const second = (await createAgentSession(options)).session;
-		const journal = await resolveRunJournal({ journal: { path } });
 		try {
 			await first.dispose();
 			await assert.rejects(first.sessionManager.getSessionStore().load(first.sessionId), StoreClosedError);
@@ -236,15 +235,10 @@ describe("createAgentSession session manager defaults", () => {
 				(await second.sessionManager.getSessionStore().load(second.sessionId)).header.id,
 				second.sessionId,
 			);
-			await journal.createRun({ runId: "shared", name: "shared", cwd, createdAt: 1, status: "running" });
 			await second.dispose();
-			assert.equal((await journal.getRun("shared"))?.name, "shared");
-			await journal.createRun({ runId: "after-disposal", name: "after", cwd, createdAt: 2, status: "running" });
-			assert.equal((await journal.getRun("after-disposal"))?.name, "after");
 		} finally {
 			await first.dispose();
 			await second.dispose();
-			await journal.close();
 		}
 	});
 

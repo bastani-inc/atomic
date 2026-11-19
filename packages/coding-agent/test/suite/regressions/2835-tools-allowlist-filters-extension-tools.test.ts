@@ -11,7 +11,7 @@ import { SettingsManager } from "../../../src/core/settings-manager.ts";
 import { isSyntheticPath } from "../../../src/core/source-info.ts";
 import { linkSharedTranspileCache } from "../../helpers/shared-transpile-cache.ts";
 
-const ONLY_INTERCOM = { workflows: false, subagents: false, mcp: false, "web-access": false } as const;
+const ONLY_INTERCOM = { subagents: false, mcp: false, "web-access": false } as const;
 
 describe("regression #2835: tool allowlists filter extension tools", () => {
 	let tempDir: string;

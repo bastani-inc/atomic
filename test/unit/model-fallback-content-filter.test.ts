@@ -1,7 +1,7 @@
 /**
  * A provider content-filter refusal, such as OpenAI's HTTP 422 `cyber_policy`, is a verdict on the request for that
- * model: sending it again gets the same refusal. It spends the next `fallbackModels` candidate at once, for workflow
- * stages and for subagents, and `retry.fallbackOnContentFilter: false` keeps the refusal on the model that gave it.
+ * model: sending it again gets the same refusal. It spends the next `fallbackModels` candidate at once, for
+ * subagents, and `retry.fallbackOnContentFilter: false` keeps the refusal on the model that gave it.
  * Real AgentSessions against local providers; no network is contacted.
  */
 
@@ -25,18 +25,11 @@ import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js"
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { AuthStorage, ModelRuntime } from "../../packages/coding-agent/src/index.js";
-import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
+
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
-import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
-import {
-	type AgentSessionAdapter,
-	createStageContext,
-	type InternalStageContext,
-	makeOpts,
-} from "./stage-runner-helpers.js";
 
 /** Structural cost, not a slow test: each case builds real AgentSessions, and a subagent case a real child session. */
 const REAL_SESSION_TIMEOUT_MS = 90_000;
@@ -146,45 +139,6 @@ function retrySettings(fallbackOnContentFilter: boolean | undefined) {
 	});
 }
 
-async function stagePrompt(refusal: string, fallbackOnContentFilter?: boolean) {
-	const { runtime, calls } = await providers(refusal);
-	const sessions: StageSessionRuntime[] = [];
-	cleanups.push(async () => {
-		for (const session of sessions) await session.dispose();
-	});
-	const agentSession: AgentSessionAdapter = {
-		async create(options) {
-			const requested =
-				typeof options.model === "string" ? String(options.model).split("/")[0]! : options.model!.provider;
-			const { session } = await createAgentSession({
-				cwd: process.cwd(),
-				agentDir: process.cwd(),
-				builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
-				modelRuntime: runtime,
-				model: runtime.getModel(requested, "m")!,
-				fallbackModels: options.fallbackModels,
-				settingsManager: retrySettings(fallbackOnContentFilter),
-				sessionManager: SessionManager.inMemory(),
-				resourceLoader: createTestResourceLoader(),
-			});
-			sessions.push(session as unknown as StageSessionRuntime);
-			return session as unknown as StageSessionRuntime;
-		},
-	};
-	const ctx = createStageContext(
-		makeOpts({
-			adapters: { agentSession },
-			stageOptions: { model: "refusing/m", fallbackModels: ["spare/m"] },
-		}),
-	) as InternalStageContext;
-	cleanups.push(() => ctx.abort());
-	const outcome = await ctx.prompt("go").then(
-		(text) => ({ text }),
-		(error: unknown) => ({ error }),
-	);
-	return { outcome, calls, meta: ctx.__modelFallbackMeta() };
-}
-
 /** A refused tool call is about that call, not the request's content: another model gets the same tool call. */
 const TOOL_REFUSALS = [
 	"tool call refused by provider due to safety policy",
@@ -230,49 +184,6 @@ describe("a refused tool call is not a content-filter refusal", () => {
 			assert.equal(isRetryableModelFailure(failure), true, code);
 		}
 	});
-
-	test(
-		"a workflow stage whose tool call is refused under a safety policy does not move to its fallback model",
-		async () => {
-			const { outcome, calls } = await stagePrompt(TOOL_REFUSALS[0]);
-
-			assert.ok("error" in outcome, "the refused tool call is the stage's failure");
-			assert.equal(calls.spare, undefined, "no fallback candidate was asked");
-		},
-		REAL_SESSION_TIMEOUT_MS,
-	);
-});
-
-describe("workflow stage fallbackModels on a content-filter refusal", () => {
-	test.each(REFUSALS)(
-		"$label spends the next candidate without retrying the refusing model, and records the refusal",
-		async ({ errorMessage }) => {
-			const { outcome, calls, meta } = await stagePrompt(errorMessage);
-
-			assert.deepEqual(outcome, { text: "ok" });
-			assert.deepEqual(calls, { refusing: 1, spare: 1 });
-			assert.deepEqual(
-				meta.modelAttempts?.map(({ model, success, error }) => ({ model, success, error })),
-				[
-					{ model: "refusing/m", success: false, error: errorMessage },
-					{ model: "spare/m", success: true, error: undefined },
-				],
-			);
-		},
-		REAL_SESSION_TIMEOUT_MS,
-	);
-
-	test(
-		"retry.fallbackOnContentFilter: false keeps the refusal on the model that gave it",
-		async () => {
-			const { outcome, calls } = await stagePrompt(REFUSALS[0].errorMessage, false);
-
-			assert.ok("error" in outcome, "the refusal is the stage's failure");
-			assert.match(String(outcome.error), /cybersecurity risk/);
-			assert.equal(calls.spare, undefined, "no fallback candidate was asked");
-		},
-		REAL_SESSION_TIMEOUT_MS,
-	);
 });
 
 async function subagentRun(refusal: string, fallbackOnContentFilter?: boolean) {
@@ -286,7 +197,7 @@ async function subagentRun(refusal: string, fallbackOnContentFilter?: boolean) {
 		model: runtime.getModel("spare", "m")!,
 		settingsManager: retrySettings(fallbackOnContentFilter),
 		sessionManager: await SessionManager.create(cwd, join(cwd, "parent-sessions")),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 	});
 	cleanups.push(() => {

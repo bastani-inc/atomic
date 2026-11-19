@@ -15,8 +15,6 @@ import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pendi
 import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
-import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import {
 	type OpenSharedStoreFixture,
 	registerBrokerLeaseStoreConformance,
@@ -31,15 +29,12 @@ import {
 	registerSentMessageAuthorityConformance,
 } from "../helpers/intercom-multinode-contract.js";
 import { openMemoryOutboxFixture, openMemoryWakeUpBusFixture } from "../helpers/intercom-multinode-memory-reference.js";
-import { observeJournalRead } from "../helpers/journal-read-observation.js";
-import { registerPoolStoreConformance } from "../helpers/pool-store-conformance.js";
 import { databaseSubject, type StorageBackend, storageBackends } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 /**
- * Every store's behavioural contract on every storage backend (#4793): the database facade, sessions, the workflow
- * run journal, Intercom's multi-node routing state and the worker pool's stores, each on a SQLite file, a libSQL server
- * and Postgres. test/helpers/storage-backends.ts says how to point it at servers.
+ * Every store's behavioural contract on every storage backend (#4793): the database facade, sessions and Intercom's
+ * multi-node routing state, each on a SQLite file, a libSQL server and Postgres.
  */
 
 useTemporaryAgentDir();
@@ -202,33 +197,6 @@ for (const backend of storageBackends) {
 		}
 	});
 
-	registerRunJournalConformance(
-		run,
-		`SqlRunJournal on ${name}`,
-		async () => {
-			const scope = await backend.openScope();
-			try {
-				const journal = await SqlRunJournal.open(await scope.connect(), { prefix: scope.prefix });
-				const close = journal.close.bind(journal);
-				// The suite closes a journal more than once; the scope closes with the first.
-				let scopeClosed: Promise<void> | undefined;
-				journal.close = async () => {
-					try {
-						await close();
-					} finally {
-						scopeClosed ??= scope.close();
-						await scopeClosed;
-					}
-				};
-				return journal;
-			} catch (error) {
-				await scope.close();
-				throw error;
-			}
-		},
-		observeJournalRead,
-	);
-
 	const intercom = `Intercom routing on ${name}`;
 	registerBrokerLeaseStoreConformance(run, intercom, scopeFixture(backend, openSqlBrokerLeaseStore));
 	registerKnownSessionStoreConformance(run, intercom, scopeFixture(backend, openSqlKnownSessionStore));
@@ -243,7 +211,6 @@ for (const backend of storageBackends) {
 		openPendingAsks: scopeFixture(backend, openSqlPendingAskStore),
 		openBus: openMemoryWakeUpBusFixture,
 	});
-	registerPoolStoreConformance(run, `worker pool on ${name}`, () => backend.openScope());
 	registerCrossNodeHeldRoundTripConformance(run, intercom, {
 		openReservations: scopeFixture(backend, openSqlRestoringReservationStore),
 		openHeldSends: scopeFixture(backend, openSqlHeldSendStore),

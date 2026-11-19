@@ -10,7 +10,7 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { isSyntheticPath } from "../src/core/source-info.js";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 it("reports unhandled MCP servers once per name at startup, reload and later registration", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-unhandled-mcp-"));

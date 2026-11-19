@@ -339,8 +339,7 @@ jobs:
     name: storage-conformance (linux-x64)
     if: ${{ !github.event.pull_request.draft }}
     runs-on: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.storage-conformance.linux-amd64
-    # Setup as in an integration shard (about 5 min) plus the shared-pool scale cases, whose own budgets are 10 min
-    # each; see docs/ci.md ("Per-job time limits").
+    # Setup as in an integration shard, plus service startup and storage adapter conformance.
     timeout-minutes: 30
     services:
       postgres:
@@ -443,19 +442,11 @@ jobs:
         shell: bash
         timeout-minutes: 1
         run: until curl -fsS "$ATOMIC_TEST_LIBSQL_URL/health"; do sleep 1; done
-      # The file filters select the matrix, the Postgres adapter's own tests, the worker pool's and Intercom's tests that need a
-      # PostgreSQL server, and every integration file that needs a libSQL server. The shared-pool scale cases (#4790) run
-      # in the next step.
+      # Run the adapter conformance matrix, the Postgres adapter and Intercom tests, and all libSQL server tests.
       - name: Storage conformance and libSQL server tests
         run: >-
           bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64)"
-          -- npm run test:integration -- storage-conformance-matrix storage-postgres pool-postgres fleet-safety-postgres intercom-postgres sqld
-      # The shared-pool scale cases start fleets of up to 16 hosts and 64 workers against the same server (#4768): run
-      # alongside the files above they starve them and each other of the runner's cores, so they run on their own.
-      - name: Shared-pool scale on the libSQL server
-        run: >-
-          bun run scripts/run-test-suite.ts --label "shared-pool scale (linux-x64)"
-          -- npm run test:integration -- shared-pool-scale
+          -- npm run test:integration -- storage-conformance-matrix storage-postgres intercom-postgres sqld
       - name: Upload test diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -824,8 +815,6 @@ jobs:
           "$smoke_dir/atomic/atomic" --version
           bun run scripts/assert-builtin-set.ts "$smoke_dir/atomic/builtin"
           for required_path in \
-            builtin/workflows/package.json \
-            builtin/workflows/src/extension/index.bundle.mjs \
             builtin/subagents/package.json \
             builtin/subagents/src/extension/index.bundle.mjs \
             builtin/mcp/package.json \
@@ -876,8 +865,6 @@ jobs:
           }
           bun run scripts/assert-builtin-set.ts (Join-Path $smokeDir "builtin")
           foreach ($requiredPath in @(
-            "builtin/workflows/package.json",
-            "builtin/workflows/src/extension/index.bundle.mjs",
             "builtin/subagents/package.json",
             "builtin/subagents/src/extension/index.bundle.mjs",
             "builtin/mcp/package.json",
