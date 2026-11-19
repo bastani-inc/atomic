@@ -192,7 +192,8 @@ export function clearChatSessionBusyForTerminalWorkflowStage<TExtraEntry extends
 		state.transcriptComponent.invalidate();
 	}
 	state.liveChat.clearPendingTools();
-	if (state.statusMessage !== state.lastWarningMessage) state.statusMessage = "";
+	state.statusMessage = "";
+	if (state.noticeMessage !== state.lastWarningMessage) state.noticeMessage = "";
 	syncChatSessionAnimationTick(state);
 }
 
@@ -213,7 +214,7 @@ export function notifyChatSessionWarning<TExtraEntry extends ChatTranscriptEntry
 	state: ChatSessionHostState<TExtraEntry>,
 	message: string,
 ): void {
-	state.statusMessage = message;
+	state.noticeMessage = message;
 	state.showWarning?.(message);
 	state.requestRender?.();
 }
@@ -222,7 +223,7 @@ export function notifyChatSessionStatus<TExtraEntry extends ChatTranscriptEntryL
 	state: ChatSessionHostState<TExtraEntry>,
 	message: string,
 ): void {
-	state.statusMessage = message;
+	state.noticeMessage = message;
 	state.showStatus?.(message);
 	state.requestRender?.();
 }

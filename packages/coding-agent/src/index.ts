@@ -118,11 +118,13 @@ export type {
 	Cleanup,
 	OperationId,
 	ResourceFailure,
+	TaskElapsedSpan,
 	TaskId,
 	TaskRecord,
 	TaskResult,
 	WaitPolicy,
 } from "./core/tasks/contracts.js";
+export { spanElapsedMs } from "./core/tasks/contracts.js";
 export {
 	FINISHED_TASK_RETENTION,
 	findTaskEvictedError,
@@ -855,6 +857,12 @@ export {
 	WORKFLOW_SESSION_METADATA_ENV,
 	workflowSessionMetadataFromEnv,
 } from "./core/session-manager-classification.ts";
+export {
+	type PublishedChatActivity,
+	retryStatusUpdate,
+	type SessionRetryStatus,
+	sessionWaitsToRetry,
+} from "./core/session-retry-status.js";
 export {
 	findSessionStartError,
 	isRetryableSessionStartError,
