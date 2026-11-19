@@ -186,7 +186,8 @@ test("ChatSessionHost ignores callbacks from replaced timers and after disposal"
 		assert.deepEqual(timers.timeoutDelays(), [], "content paints on the next frame, with no event timer");
 		host.applyAgentEvent({ type: "auto_retry_end", success: true } as never);
 		host.applyAgentEvent({ type: "turn_start" } as never);
-		const activeTick = timers.capturedAnimationCallbacks()[1]!;
+		// The retry's wait animated on a clock of its own, which its end replaced too.
+		const activeTick = timers.capturedAnimationCallbacks().at(-1)!;
 		const baseline = renderRequests;
 		const activeLine = workingLine(host);
 
