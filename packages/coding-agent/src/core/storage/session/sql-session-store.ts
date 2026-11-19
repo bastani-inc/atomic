@@ -1819,8 +1819,9 @@ export class SqlSessionStore implements SessionStore {
 
 	private async seqOfEntry(executor: SqliteExecutor, sessionId: string, entryId: string): Promise<number | undefined> {
 		const tables = snapshotIndexTables(this.prefix);
+		// A negative watermark marks an index awaiting its rebuild, whose rows may be stale or partly removed (#5553).
 		const source = await executor.get<SqliteRow & { complete: number }>(
-			`SELECT CASE WHEN backfilled_through >= watermark THEN 1 ELSE 0 END AS complete FROM ${tables.sources} WHERE source = 'session-entries'`,
+			`SELECT CASE WHEN watermark >= 0 AND backfilled_through >= watermark THEN 1 ELSE 0 END AS complete FROM ${tables.sources} WHERE source = 'session-entries'`,
 		);
 		if (Number(source?.complete) === 1) {
 			const linked = await executor.get<SqliteRow & { seq: number }>(
