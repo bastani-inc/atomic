@@ -847,8 +847,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			}
 			if (event.type === "message_end") {
 				// The receipt arrives with the end of the message the row was drawn from as it streamed.
-				const receipt = session.entryReceipt?.(event.message);
-				if (receipt !== undefined) noteSavedSeq(event.message, receipt.seq);
+				const sent = event as { seq?: unknown };
+				const seq =
+					session.entryReceipt?.(event.message)?.seq ?? (typeof sent.seq === "number" ? sent.seq : undefined);
+				if (seq !== undefined) noteSavedSeq(event.message, seq);
 			}
 			this.chat.applyAgentEvent(event);
 			if (event.type === "compaction_end" && event.result && !event.aborted && session.getEarlierCursor?.()) {
@@ -856,7 +858,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				// private SDK rows merely because they arrived before a new boundary.
 				this.cancelAdjacent();
 				this.windowGeneration++;
-				if (this.chat.bodyScrollFromBottom() === 0 && this.newerCursor === undefined) void this.load();
+				if (!session.getEntrySeq && !session.entryReceipt && this.chat.hasUnplacedWidget()) {
+					// With neither occurrence capability, only the original live transcript can place this stateful
+					// widget. Keep that view, including its new boundary. Never guess by text or display it twice.
+					this.behind = false;
+					this.parkOnLoad = false;
+				} else if (this.chat.bodyScrollFromBottom() === 0 && this.newerCursor === undefined) void this.load();
 				else if (session.getEntrySeq) {
 					// A reader above the end keeps only the rows they see; the rest of the retired window is released.
 					this.parkOnLoad = true;

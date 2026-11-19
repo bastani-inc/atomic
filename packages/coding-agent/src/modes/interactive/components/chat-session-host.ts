@@ -266,6 +266,10 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.requestRender?.();
 	}
 
+	hasUnplacedWidget(): boolean {
+		return this.state.hasUnplacedWidget();
+	}
+
 	/** Keep painted occurrences when a saved context is replaced; never infer a stored position from text. */
 	parkedRows(current: number): ParkedTaskRows | undefined {
 		const { state } = this;

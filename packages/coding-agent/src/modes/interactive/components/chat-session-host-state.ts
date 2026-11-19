@@ -192,6 +192,14 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		return origin === undefined ? undefined : `${origin}:0:${source!.part}`;
 	}
 
+	/** A legacy live source cannot retire an unplaced widget: no identifier tells its saved lookalikes apart. */
+	hasUnplacedWidget(): boolean {
+		return this.transcript.some((entry) => {
+			const widget = this.renderedRows.get(entry);
+			return !!widget && this.rowKey(entry) === undefined && this.savedRenderers?.needsOriginal(widget) === true;
+		});
+	}
+
 	/** A retired row's stateful renderer stays the instance its saved row shows when it is read again. */
 	keepRetiredRenderers(previous: readonly object[]): void {
 		const store = this.savedRenderers;

@@ -409,9 +409,14 @@ test("a live subagent chat reads across a clear without missing output that arri
 	}
 });
 
-test.each([false, true])(
-	"a live task chat keeps a stateful card's instance across a compaction and when the card is read again (keep %s, #5593)",
-	async (keep) => {
+test.each([
+	[false, true],
+	[true, true],
+	[false, false],
+	[true, false],
+])(
+	"a live task chat keeps a stateful card's instance across a compaction and when the card is read again (keep %s, receipts %s, #5593)",
+	async (keep, withReceipts) => {
 		const session = SessionManager.inMemory();
 		for (let i = 0; i < 60; i++) await session.appendMessage({ role: "user", content: `turn ${i}`, timestamp: i });
 		let event: ((e: AgentSessionEvent) => void) | undefined;
@@ -421,11 +426,15 @@ test.each([false, true])(
 			getSessionId: () => session.getSessionId(),
 			getEntries: () => session.getTaskTranscriptEntries(),
 			getEarlierCursor: () => session.getEarlierCursor(),
-			getEntrySeq: (id) => session.getEntrySeq(id),
-			entryReceipt: (message) => {
-				const seq = receipts.get(message);
-				return seq === undefined ? undefined : { seq };
-			},
+			...(withReceipts
+				? {
+						getEntrySeq: (id: string) => session.getEntrySeq(id),
+						entryReceipt: (message: AgentMessage) => {
+							const seq = receipts.get(message);
+							return seq === undefined ? undefined : { seq };
+						},
+					}
+				: {}),
 			readHistory: session.readHistory.bind(session),
 			subscribe(listener) {
 				event = listener;
@@ -449,11 +458,43 @@ test.each([false, true])(
 				}),
 			},
 		});
+		// A non-paging source follows the original live transcript path: compare every row, including its boundary.
+		let controlEvent: ((e: AgentSessionEvent) => void) | undefined;
+		const control = withReceipts
+			? undefined
+			: await openTranscript(
+					{
+						...source,
+						getEarlierCursor: undefined,
+						readHistory: undefined,
+						subscribe(listener) {
+							controlEvent = listener;
+							return () => {
+								controlEvent = undefined;
+							};
+						},
+					},
+					{
+						height: 30,
+						environment: {
+							getChatRenderSettings: () => ({
+								getCustomMessageRenderer: (name) =>
+									name === "stateful-card"
+										? () => ({ render: () => ["widget incarnation 1"], invalidate() {} })
+										: undefined,
+							}),
+						},
+					},
+				);
+		const send = (e: AgentSessionEvent) => {
+			event?.(e);
+			controlEvent?.(e);
+		};
 		const shown = () => /widget incarnation (\d+)/.exec(host.text())?.[1];
 		const emit = async (message: AgentMessage, save: () => Promise<string>) => {
-			event?.({ type: "message_start", message } as AgentSessionEvent);
+			send({ type: "message_start", message } as AgentSessionEvent);
 			receipts.set(message, session.getEntrySeq(await save())!);
-			event?.({ type: "message_end", message } as AgentSessionEvent);
+			send({ type: "message_end", message } as AgentSessionEvent);
 			await flush();
 		};
 		try {
@@ -465,8 +506,9 @@ test.each([false, true])(
 				await emit(message, () => session.appendMessage(message));
 			}
 			assert.equal(shown(), "1");
+			if (control) assert.deepEqual(host.frame(), control.frame());
 			await session.appendCompaction("new context", keep ? cardId : null, 100, verbatimDetails);
-			event?.({
+			send({
 				type: "compaction_end",
 				reason: "manual",
 				aborted: false,
@@ -482,6 +524,12 @@ test.each([false, true])(
 				},
 			});
 			await flush();
+			if (control)
+				assert.deepEqual(
+					host.frame(),
+					control.frame(),
+					"a source without occurrence receipts preserves the original live screen",
+				);
 			if (keep) assert.equal(shown(), "1", "the card kept in the new context is the instance that was shown");
 			const readBack = async () => {
 				for (let i = 0; i < 60 && shown() === undefined; i++) {
@@ -500,6 +548,7 @@ test.each([false, true])(
 			assert.equal(await readBack(), "1", "reading the card again does not create another instance");
 			assert.equal(built, 1);
 		} finally {
+			await control?.dispose();
 			await host.dispose();
 			await session.getSessionStore().close();
 		}

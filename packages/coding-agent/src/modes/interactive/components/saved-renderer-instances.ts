@@ -31,19 +31,19 @@ export class SavedRendererInstances {
 			? !declaresHistoryReplayable(c)
 			: c.selectionTextMayChangeOnReplay === true && c.historyReplayable !== true;
 	}
-	private needed(c: Component): boolean {
+	needsOriginal(c: Component): boolean {
 		return this.stateful(c) && !remoteHistoryRow(c)?.unrendered;
 	}
 	/** Register a widget already drawn in the live transcript, before compaction gives its occurrence to a saved page. */
 	rememberLive(key: string, component: Component): boolean {
-		if (!this.needed(component)) return false;
-		if (this.owner.get(component) !== key) this.remember(key, [component]);
+		if (!this.needsOriginal(component)) return false;
+		if (!this.kept.get(key)?.includes(component)) this.remember(key, [component]);
 		return true;
 	}
 
 	private settle(key: string): void {
 		const group = this.kept.get(key);
-		if (!group || !this.retired.has(group) || group.some((c) => this.needed(c))) return;
+		if (!group || !this.retired.has(group) || group.some((c) => this.needsOriginal(c))) return;
 		this.kept.delete(key);
 		for (const component of group) disposeRenderer(component);
 	}
@@ -67,7 +67,7 @@ export class SavedRendererInstances {
 		if (!key) return false;
 		const group = this.kept.get(key);
 		if (!group) return false;
-		if (group.some((c) => this.needed(c))) {
+		if (group.some((c) => this.needsOriginal(c))) {
 			this.retired.add(group);
 			return true;
 		}

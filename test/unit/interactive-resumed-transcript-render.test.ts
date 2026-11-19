@@ -493,6 +493,7 @@ function terminalSelect(tui: TuiAltScreen): void {
 
 test("a compaction while the reader is above the end keeps their rows on screen and releases the rest (#5593)", async () => {
 	const { mode, tui, transcript } = await parkAboveTheEnd(100);
+	const copies = recordCopies(tui);
 	terminalSelect(tui);
 	assert.equal(tui.hasActiveSelection(), true);
 	const parked = plainScreen(tui);
@@ -503,6 +504,7 @@ test("a compaction while the reader is above the end keeps their rows on screen 
 	assert.deepEqual(plainScreen(tui), parked, "the reader keeps their pinned prompt and the rows they were reading");
 	assert.equal(transcript.isFollowingEnd, false);
 	assert.equal(tui.hasActiveSelection(), true, "the reader keeps their selection");
+	assert.ok(copies[0], "selecting the original rows copied their text");
 	assertHoldsOnlyWhatIsShown(mode, tui);
 	// Earlier saved messages continue right above the kept rows, once each.
 	for (let i = 0; i < 40 && !heldTurns(mode).includes(80); i++) {
