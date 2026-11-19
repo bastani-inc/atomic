@@ -702,8 +702,9 @@ test("a forked session never restores or reports the background children of the 
 		const sessionFile = original.getSessionFile();
 		assert.ok(sessionFile, "the original session is file-backed");
 
-		// `/fork` and `atomic --fork` copy every entry, the child records included, into a new session.
-		const forkedFrom = await SessionManager.forkFrom(sessionFile, cwd, join(cwd, "forks"));
+		// `/fork` and `atomic --fork` copy every entry, the child records included, into a new session. A file forked
+		// into its own directory is copied whole, as main copied it; a proven other store gets only the window.
+		const forkedFrom = await SessionManager.forkFrom(sessionFile, cwd, join(cwd, "sessions"));
 		const branched = await SessionManager.open(sessionFile, undefined, cwd);
 		await branched.createBranchedSession(branched.getLeafId()!);
 		for (const fork of [forkedFrom, branched]) {
