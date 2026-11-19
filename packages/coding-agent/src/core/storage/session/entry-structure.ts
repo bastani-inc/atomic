@@ -117,7 +117,7 @@ function validPayload(entry: SessionEntry): boolean {
 
 const LEFTOVER_KINDS = new Set<string>(["worktree", "record", "records-directory"]);
 
-function validRestoreHostWarning(warning: WorktreeRestoreHostWarning | null): boolean {
+export function validRestoreHostWarning(warning: WorktreeRestoreHostWarning | null): boolean {
 	if (warning?.code === "lfs-objects-unavailable") {
 		return Array.isArray(warning.paths) && warning.paths.every((path) => typeof path === "string");
 	}

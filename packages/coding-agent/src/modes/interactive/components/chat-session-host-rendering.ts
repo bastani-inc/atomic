@@ -3,12 +3,10 @@ import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth }
 import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskSession, getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import {
-	type ChatBoxSession,
-	loadTaskOwnTranscriptHistory,
-	taskTranscriptSource,
-} from "../../../core/tasks/supervisor.js";
+import { type ChatBoxSession, taskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import { readTaskCompletionHistory } from "../../../core/tasks/task-completion-history.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import { savedTaskRowKey } from "../../../core/tasks/transcript-origin.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import {
@@ -378,11 +376,17 @@ class EchoedInitialPromptComponent implements Component {
 	}
 }
 
-/** The key a click's expansion is kept under for a tool call: its call id, which outlives the replaced entry objects. */
-function toolCallKey<TExtraEntry extends ChatTranscriptEntryLike>(
+/**
+ * The key a click's expansion is kept under: a saved row's place in its saved history, which outlives its page being
+ * released and read again, or a live tool call's id, which outlives the replaced entry objects.
+ */
+function expansionKey<TExtraEntry extends ChatTranscriptEntryLike>(
 	entry: ChatSessionHostEntry<TExtraEntry>,
 ): string | undefined {
-	return isChatMessageEntry(entry) && entry.kind === "tool" ? `tool:${entry.toolCallId}` : undefined;
+	if (!isChatMessageEntry(entry)) return undefined;
+	const saved = savedTaskRowKey(entry);
+	if (saved !== undefined) return `saved:${saved}`;
+	return entry.kind === "tool" ? `tool:${entry.toolCallId}` : undefined;
 }
 
 /** Whether a click expanded (true) or collapsed (false) `entry`, or undefined when the chat's setting applies. */
@@ -390,7 +394,7 @@ export function expandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	entry: ChatSessionHostEntry<TExtraEntry>,
 ): boolean | undefined {
-	const key = toolCallKey(entry);
+	const key = expansionKey(entry);
 	return key === undefined ? state.expandedEntryOverrides.get(entry) : state.expandedOverrides.get(key);
 }
 
@@ -403,12 +407,12 @@ export function dropExpandedOverrides<TExtraEntry extends ChatTranscriptEntryLik
 	state.expandedEntryOverrides = new WeakMap();
 }
 
-/** A name for `entry` that a repaint keeps: a tool call's id, which outlives its replaced entry objects, or the entry's. */
+/** A name for `entry` that a repaint keeps: its expansion key, which outlives its replaced entry objects, or the entry's. */
 export function transcriptEntryName<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	entry: ChatSessionHostEntry<TExtraEntry>,
 ): string {
-	return toolCallKey(entry) ?? `entry:${renderIdentityKey(state, entry)}`;
+	return expansionKey(entry) ?? `entry:${renderIdentityKey(state, entry)}`;
 }
 
 export function setExpandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -416,7 +420,7 @@ export function setExpandedOverride<TExtraEntry extends ChatTranscriptEntryLike>
 	entry: ChatSessionHostEntry<TExtraEntry>,
 	expanded: boolean,
 ): void {
-	const key = toolCallKey(entry);
+	const key = expansionKey(entry);
 	if (key === undefined) state.expandedEntryOverrides.set(entry, expanded);
 	else state.expandedOverrides.set(key, expanded);
 }
@@ -567,12 +571,12 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 			if (lease?.ok && taskTranscriptSource(lease.value).ok) return true;
 			return inherited?.hasTaskTranscript?.(taskId) ?? false;
 		},
-		loadTaskTranscript: async (taskId: TaskId) => {
+		loadTaskTranscript: async (taskId: TaskId, options?: { readonly signal?: AbortSignal }) => {
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
 			const lease = store?.resolveTask(taskId);
-			if (lease?.ok) return loadTaskOwnTranscriptHistory(lease.value);
-			return inherited?.loadTaskTranscript?.(taskId);
+			if (lease?.ok) return readTaskCompletionHistory(lease.value, options?.signal);
+			return inherited?.loadTaskTranscript?.(taskId, options);
 		},
 	};
 }

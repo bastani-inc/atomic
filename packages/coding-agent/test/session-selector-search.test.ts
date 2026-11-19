@@ -24,13 +24,25 @@ function makeSession(
 }
 
 describe("session selector search", () => {
-	it("explains why a query that needs the joined transcript cannot be searched as message pages (#5554)", () => {
-		const pattern = String.raw`^(.+) \1$`;
-		const records = Array.from({ length: 512 }, (_, i) => `word${i} ${"x".repeat(2048)}`);
-		const sequence = records.join(" ");
-		assert.equal(new RegExp(pattern, "i").test(`${sequence} ${sequence}`), true);
-		assert.match(parseSearchQuery(`re:${pattern}`).error ?? "", /message.*narrower/i);
-		assert.equal(parseSearchQuery(String.raw`re:colou?r`).error, undefined);
+	it("matches backreferences, lookaround and paired anchors against the joined message text (#5554)", () => {
+		const repeated = makeSession({
+			id: "repeated",
+			modified: new Date("2026-01-02T00:00:00.000Z"),
+			allMessagesText: "deploy staging deploy staging",
+		});
+		const followed = makeSession({
+			id: "followed",
+			modified: new Date("2026-01-01T00:00:00.000Z"),
+			allMessagesText: "deploy staging then prod",
+		});
+		const ids = (query: string) => filterAndSortSessions([repeated, followed], query, "recent").map((s) => s.id);
+
+		assert.equal(parseSearchQuery(String.raw`re:^(.+) \1$`).error, undefined);
+		assert.deepEqual(ids(String.raw`re:^(.+) \1$`), ["repeated"]);
+		assert.deepEqual(ids(String.raw`re:(?<word>deploy) staging \k<word>`), ["repeated"]);
+		assert.deepEqual(ids("re:staging(?= then)"), ["followed"]);
+		assert.deepEqual(ids("re:(?<!then )prod$"), []);
+		assert.deepEqual(ids("re:^deploy.*prod$"), ["followed"]);
 	});
 
 	it("filters by quoted phrase with whitespace normalization", () => {

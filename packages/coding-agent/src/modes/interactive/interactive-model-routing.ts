@@ -394,10 +394,17 @@ InteractiveModeBase.prototype.showModelsSelector = function showModelsSelector(
 
 InteractiveModeBase.prototype.showUserMessageSelector = async function (this: InteractiveModeBase): Promise<void> {
 	await this.ensureDeferredStartupComplete();
-	await this.session.sessionManager?.loadFullHistory?.();
-	const userMessages = this.session.getUserMessagesForForking();
+	// A session opened at its context window lists its older prompts from the store, keeping only their labels' starts.
+	const manager = this.session.sessionManager;
+	const stored =
+		manager?.hasFullHistory?.() === false
+			? await (await import("./components/user-message-selector-archive.js")).ForkPromptArchive.open(manager)
+			: undefined;
+	const userMessages: Array<{ entryId: string; text: string; partial?: true }> =
+		stored?.prompts ?? this.session.getUserMessagesForForking();
 
 	if (userMessages.length === 0) {
+		stored?.archive.dispose();
 		this.showStatus("No messages to fork from");
 		return;
 	}
@@ -407,7 +414,7 @@ InteractiveModeBase.prototype.showUserMessageSelector = async function (this: In
 	this.showSelector((done) => {
 		let selectionHandled = false;
 		const selector = new UserMessageSelectorComponent(
-			userMessages.map((m) => ({ id: m.entryId, text: m.text })),
+			userMessages.map((m) => ({ id: m.entryId, text: m.text, ...(m.partial ? { partial: true } : {}) })),
 			async (entryId) => {
 				if (selectionHandled) return;
 				selectionHandled = true;
@@ -434,8 +441,22 @@ InteractiveModeBase.prototype.showUserMessageSelector = async function (this: In
 				this.ui.requestRender();
 			},
 			initialSelectedId,
+			stored
+				? {
+						readText: (id, signal) => stored.archive.readText(id, signal),
+						onUpdate: () => this.ui.requestRender(),
+						onError: (error) => this.showError(error.message),
+					}
+				: {},
 		);
-		return { component: selector, focus: selector.getMessageList() };
+		return {
+			component: selector,
+			focus: selector.getMessageList(),
+			dispose: () => {
+				selector.dispose();
+				stored?.archive.dispose();
+			},
+		};
 	});
 };
 

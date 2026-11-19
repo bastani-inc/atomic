@@ -17,6 +17,7 @@ export interface FileTaskPage {
 	adjacent: { current: string; older?: string; newer?: string };
 	nextCursor?: string;
 	file: true;
+	generation: string;
 }
 type Span = { start: number; end: number; next: number };
 type FileCut = {
@@ -157,6 +158,9 @@ async function filePage(
 	signal?: AbortSignal,
 	initialBackward = true,
 	detail?: { throughId?: string },
+	metadataOnly = false,
+	expectedGeneration?: string,
+	entries = LIMIT,
 ): Promise<FileTaskPage> {
 	const source = digest(JSON.stringify([path, id]));
 	const cut = cursor === undefined ? undefined : decode(cursor, source);
@@ -182,6 +186,7 @@ async function filePage(
 			if (!(await matchesHeader(lines, header, id)))
 				throw new Error(`History unavailable: its session file now belongs to another session (${path}).`);
 			let limit = size,
+				generationStamp = stamp,
 				at = initialBackward ? size : header.next;
 			if (cut) {
 				const same =
@@ -190,14 +195,19 @@ async function filePage(
 						(size > cut.size && digest(await lines.bytes(Math.max(0, cut.size - 64), cut.size)) === cut.witness));
 				if (same) {
 					limit = cut.size;
+					generationStamp = cut.stamp;
 					at = cut.at;
 				} else at = await rebind(lines, header.next, size, cut);
 			}
+			const generation = digest(`${inode}:${generationStamp}:${limit}`);
+			if (expectedGeneration !== undefined && generation !== expectedGeneration)
+				throw new Error(`History unavailable: the session file changed while it was being read (${path}).`);
+			if (at < header.next || at > limit) throw new Error("Invalid saved file cursor");
 			const backward = cut?.backward ?? initialBackward;
 			const base = {
 				source,
 				inode,
-				stamp,
+				stamp: generationStamp,
 				size: limit,
 				witness: digest(await lines.bytes(Math.max(0, limit - 64), limit)),
 			};
@@ -208,13 +218,19 @@ async function filePage(
 				high = at,
 				lowAfter = after,
 				highAfter = after;
-			for (let visited = 0; visited < LIMIT && (backward ? at > header.next : at < limit); visited++) {
+			for (let visited = 0; visited < entries && (backward ? at > header.next : at < limit); visited++) {
 				signal?.throwIfAborted();
 				const span = backward ? await lines.backward(at, header.next) : await lines.forward(at, limit);
 				const bytes = span.end - span.start;
 				if (items.length && bytes > BUDGET - used) break;
 				let item: FileTaskPage["items"][number] | undefined;
-				if (bytes > BUDGET) {
+				if (metadataOnly && span.end !== size) {
+					for await (const part of lines.chunks(span.start, span.end))
+						if (part.some((c) => c !== 32 && c !== 9 && c !== 13)) {
+							item = { seq: span.start, bytes };
+							break;
+						}
+				} else if (bytes > BUDGET || metadataOnly) {
 					if (span.next === size && span.end === size) {
 						const checker = new JsonTextChecker();
 						for await (const b of lines.chunks(span.start, span.end)) checker.feed(b);
@@ -275,7 +291,13 @@ async function filePage(
 				: position(low, lowAfter, false, top, "before");
 			const end = await file.stat({ bigint: true });
 			if (end.size !== stat.size || end.mtimeNs !== stat.mtimeNs || end.ctimeNs !== stat.ctimeNs) continue;
-			return { file: true, items, adjacent: { current, older, newer }, nextCursor: backward ? older : newer };
+			return {
+				file: true,
+				generation,
+				items,
+				adjacent: { current, older, newer },
+				nextCursor: backward ? older : newer,
+			};
 		}
 		throw new Error(`History unavailable: the session file changed while it was being read (${path}).`);
 	} finally {
@@ -288,12 +310,17 @@ export async function* taskFilePages(
 	sessionId: string,
 	options: {
 		cursor?: string;
+		metadataOnly?: boolean;
+		expectedGeneration?: string;
 		signal?: AbortSignal;
 		direction?: "forward" | "backward";
 		detail?: { throughId?: string };
+		/** At most this many entries per page, never more than a page holds. */
+		limit?: number;
 	},
 ): AsyncGenerator<FileTaskPage, void> {
 	let cursor = options.cursor;
+	const entries = Math.max(1, Math.min(LIMIT, Math.floor(options.limit ?? LIMIT)));
 	for (;;) {
 		options.signal?.throwIfAborted();
 		const page = await filePage(
@@ -303,11 +330,100 @@ export async function* taskFilePages(
 			options.signal,
 			options.direction !== "forward",
 			options.detail,
+			options.metadataOnly,
+			options.expectedGeneration,
+			entries,
 		);
 		yield page;
 		if (!page.nextCursor) return;
 		cursor = page.nextCursor;
 	}
+}
+
+/**
+ * The bytes of one saved line too large for a page, `bytes` long at byte `offset`, from the file generation the page
+ * that returned it read: `cursor` is that page's `adjacent.current`. The file must still be that session's, unchanged
+ * or only appended to, before the first read and after the last; the caller never sees bytes of another generation.
+ */
+export async function* taskFileEntryChunks(
+	path: string,
+	sessionId: string,
+	cursor: string,
+	offset: number,
+	bytes: number,
+	signal?: AbortSignal,
+): AsyncGenerator<Uint8Array, void> {
+	const cut = decode(cursor, digest(JSON.stringify([path, sessionId])));
+	if (
+		!Number.isSafeInteger(offset) ||
+		!Number.isSafeInteger(bytes) ||
+		offset < 0 ||
+		bytes < 0 ||
+		offset + bytes > cut.size
+	)
+		throw new RangeError("Invalid saved file entry range");
+	signal?.throwIfAborted();
+	const file = await open(path, "r").catch((error: NodeJS.ErrnoException) => {
+		if (error.code === "ENOENT")
+			throw new Error(`History unavailable: the session file was moved or deleted (${path}).`);
+		throw error;
+	});
+	const closeOnAbort = () => {
+		void file.close().catch(() => {});
+	};
+	signal?.addEventListener("abort", closeOnAbort, { once: true });
+	const verify = async () => {
+		signal?.throwIfAborted();
+		const stat = await file.stat({ bigint: true });
+		const size = Number(stat.size);
+		const lines = new Lines(file, size);
+		const same =
+			`${stat.dev}:${stat.ino}:${stat.birthtimeNs}` === cut.inode &&
+			((size === cut.size && `${stat.mtimeNs}:${stat.ctimeNs}` === cut.stamp) ||
+				(size > cut.size && digest(await lines.bytes(Math.max(0, cut.size - 64), cut.size)) === cut.witness)) &&
+			(await matchesHeader(lines, await lines.forward(0, size), sessionId));
+		signal?.throwIfAborted();
+		if (!same) throw new Error(`History unavailable: the session file changed while it was being read (${path}).`);
+	};
+	let started = false;
+	let verified = false;
+	try {
+		await verify();
+		started = true;
+		const end = offset + bytes;
+		let at = offset;
+		for await (const part of new Lines(file, end).chunks(offset, end)) {
+			signal?.throwIfAborted();
+			at += part.length;
+			// Check the generation again once the last byte is read, before the caller sees it.
+			if (at >= end) {
+				await verify();
+				verified = true;
+			}
+			yield part;
+		}
+		verified = true;
+	} finally {
+		try {
+			// A reader that stopped early, once it had its fields, still only used bytes of this generation.
+			if (started && !verified && !signal?.aborted) await verify();
+		} finally {
+			signal?.removeEventListener("abort", closeOnAbort);
+			await file.close().catch(() => {});
+		}
+	}
+}
+
+/** Why a task's saved file could not be read, worded as its runner words a failed whole read. */
+export async function taskFileUnavailable(path: string, error: unknown): Promise<string> {
+	const message = error instanceof Error ? error.message : String(error);
+	if (message.startsWith("History unavailable:")) return message;
+	const exists = await stat(path).then(
+		() => true,
+		() => false,
+	);
+	if (!exists) return `History unavailable: the session file was moved or deleted (${path}).`;
+	return `History unavailable: ${error instanceof Error ? error.message : String(error ?? "its session could not be read")}`;
 }
 
 /** A detail card needs the first prompt and last response, not the intervening conversation. */

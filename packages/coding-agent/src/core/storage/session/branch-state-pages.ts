@@ -15,6 +15,7 @@ export async function* branchStatePages(
 		readonly read: (seqs: readonly number[]) => Promise<readonly SessionStoredEntry[]>;
 		readonly chunk: (seq: number, offset: number, length: number) => Promise<Uint8Array>;
 	},
+	prefixToolCalls?: (count: number) => void,
 ): AsyncGenerator<readonly SessionStoredEntry[]> {
 	for (let seq = 1; seq <= lastSeq; ) {
 		const size = source.bytes(seq);
@@ -29,8 +30,12 @@ export async function* branchStatePages(
 					if (offset < size) await yieldToEventLoop();
 				}
 			}
-			const { chunkedBranchState } = await import("./chunked-resume-projection.js");
-			yield [{ seq: current, entry: await chunkedBranchState(chunks) }];
+			const { chunkedBranchState, chunkedPrefixFields } = await import("./chunked-resume-projection.js");
+			if (prefixToolCalls) {
+				const { entry, toolCalls } = await chunkedPrefixFields(chunks);
+				prefixToolCalls(toolCalls);
+				yield [{ seq: current, entry }];
+			} else yield [{ seq: current, entry: await chunkedBranchState(chunks) }];
 		} else {
 			const seqs = [seq++];
 			let total = size;

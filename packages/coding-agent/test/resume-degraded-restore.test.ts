@@ -547,6 +547,63 @@ describe("a degraded resume keeps the best state it reaches and reports it accur
 		assert.equal(await sandbox.git(restored.to, "rev-parse", "HEAD"), recorded);
 	});
 
+	test("a session reopened at its context window tries the same earlier snapshots as one holding its whole history (#5554)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+		const base = await sandbox.git(clone, "rev-parse", "HEAD");
+		// The session's first snapshot is of a commit that is never pushed, then dropped.
+		sandbox.write(join(clone, "abandoned.txt"), "never pushed\n");
+		await sandbox.commitAll(clone, "abandoned work");
+		const { manager, snapshot: first } = await recordSession(clone);
+		const blobs = manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore;
+		const bundles: string[] = [first.bundle!.blob];
+		await sandbox.git(clone, "reset", "-q", "--hard", base);
+		sandbox.write(join(clone, "pushed.txt"), "pushed\n");
+		const recorded = await sandbox.commitAll(clone, "pushed work");
+		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
+		const capture = async () => {
+			const captured = await captureWorktreeSnapshot(clone, { settings, blobs });
+			if (captured.status !== "captured") throw new Error(captured.status);
+			await manager.appendWorktreeSnapshot(clone, captured.snapshot.id, captured.snapshot);
+			await manager.appendMessage({ role: "user", content: "next step", timestamp: Date.now() });
+			return captured.snapshot;
+		};
+		const pushed = await capture();
+		for (const step of [1, 2, 3, 4, 5]) {
+			sandbox.write(join(clone, "local.txt"), `unpushed ${step}\n`);
+			await sandbox.commitAll(clone, `unpushed ${step}`);
+			bundles.push((await capture()).bundle!.blob);
+		}
+		await manager.appendCompaction("compacted", null, 1000, {
+			strategy: "verbatim-lines",
+			promptVersion: 6,
+			parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+			stats: {
+				linesBefore: 2,
+				linesDeleted: 1,
+				linesKept: 1,
+				rangeCount: 1,
+				tokensBefore: 100,
+				tokensAfter: 50,
+				percentReduction: 50,
+			},
+			rung: "planned",
+		});
+		await loseSnapshotBlobs(blobs, bundles);
+		await sandbox.git(clone, "checkout", "-q", "--detach", recorded);
+		await sandbox.git(clone, "commit", "-q", "--allow-empty", "-m", "the branch moved on");
+		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
+		const window = await SessionManager.open(manager.getSessionStore(), manager.getSessionId());
+		assert.equal(window.hasFullHistory(), false);
+		assert.equal(window.getWorktreeSnapshotRecords().has(pushed.id), false, "the pushed snapshot is archived");
+
+		const prepared = ready(await prepareSessionResume(window, options()));
+
+		const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(restored.degraded?.basis, "earlier-snapshot", JSON.stringify(restored.degraded));
+		assert.equal(await sandbox.git(restored.to, "rev-parse", "HEAD"), recorded);
+	});
+
 	test("the missing-commit list leaves out commits the restored history holds (#4744)", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
 		sandbox.write(join(clone, "first.txt"), "first\n");

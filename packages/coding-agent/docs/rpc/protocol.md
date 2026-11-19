@@ -963,7 +963,7 @@ If an extension cancelled the clone:
 
 #### get_fork_messages
 
-Get one page of user messages available for forking. Follow `nextCursor` with another `get_fork_messages` request; a page can have no matching prompts and still have a continuation. An oversized item is a reference, as in `get_entries`.
+Get user messages available for forking in the resident window. To find an older prompt, iterate `get_history_page`; its original entry ID can be passed to `fork`.
 
 ```json
 {"type": "get_fork_messages"}
@@ -976,9 +976,9 @@ Response:
   "command": "get_fork_messages",
   "success": true,
   "data": {
-    "items": [
-      {"seq": 1, "entryId": "abc123", "text": "First prompt..."},
-      {"seq": 3, "entryId": "def456", "text": "Second prompt..."}
+    "messages": [
+      {"entryId": "abc123", "text": "First prompt..."},
+      {"entryId": "def456", "text": "Second prompt..."}
     ]
   }
 }
@@ -986,7 +986,7 @@ Response:
 
 #### get_entries
 
-Read a page in append order, excluding the session header. Unlike `get_messages`, this can traverse pre-compaction history and abandoned branches. A page contains up to 64 entries and 1 MiB of ordinary encoded entries. A larger entry comes back alone as `{ "kind": "oversized", "sessionId": "…", "epoch": "…", "seq": 12, "bytes": 2000000 }`.
+Get resident session entries in append order, excluding the session header. `entries` includes the current context window and the earlier state needed to resume it. Use `get_history_page` for pre-compaction history and abandoned branches.
 
 Entry IDs are stable in the append-only tree. Use the last entry ID you have seen as `since` to get only entries strictly after it, even across client restarts.
 
@@ -994,7 +994,7 @@ Entry IDs are stable in the append-only tree. Use the last entry ID you have see
 {"type": "get_entries"}
 ```
 
-Start after an entry ID, or set inclusive `fromSeq` and `toSeq`. When a response has `nextCursor`, pass that opaque string as `cursor` instead of specifying another range. The cursor fixes the generation and last sequence; later appends do not move the end of the read.
+With a cursor:
 ```json
 {"type": "get_entries", "since": "abc123"}
 ```
@@ -1006,8 +1006,8 @@ Response:
   "command": "get_entries",
   "success": true,
   "data": {
-    "items": [
-      {"seq": 2, "entry": {"type": "message", "id": "def456", "parentId": "abc123", "timestamp": "...", "message": {"role": "user", "...": "..."}}}
+    "entries": [
+      {"type": "message", "id": "def456", "parentId": "abc123", "timestamp": "...", "message": {"role": "user", "...": "..."}}
     ],
     "leafId": "def456"
   }
@@ -1016,13 +1016,17 @@ Response:
 
 `leafId` is the id of the current leaf entry (`null` for an empty session), so a client can tell in one round trip whether the active branch moved. If `since` does not match any entry id, the response is `success: false`.
 
+#### get_history_page
+
+Read one page of the saved session in append order, including abandoned branches. Pass optional inclusive `fromSeq` and `toSeq`. A response's `data.items` contains `{seq, entry}` records up to 64 entries and 1 MiB per page; a larger entry returns alone as an oversized reference. Pass `cursor: data.nextCursor` instead of a range to get the next page. Later appends do not change the captured end. `get_tree` and `get_fork_messages` do not need to be called before reading pages.
+
 #### get_history_chunk
 
-Read one chunk of the exact UTF-8 bytes of an oversized entry. Pass the complete `reference` from the page and an `offset` in bytes (start at 0). Decode `data` from base64. If present, `nextOffset` is the offset to pass on the next call. An entry recreated or replaced since the page was read is rejected, never mixed with the old bytes.
+Read up to 64 KiB of the original UTF-8 bytes of one oversized item. Pass `reference` (the complete item from `get_history_page`) and `offset` (0 for the first chunk). Decode `data.data` from base64 and continue at `data.nextOffset` if present. A replacement is rejected instead of mixing generations.
 
 #### get_tree
 
-Get a page of tree nodes. Each ordinary item includes `seq`, `entry` and, when set, `label` and `labelTimestamp`. Connect nodes by `entry.parentId`; a parent can be on another page. An oversized node is a reference as in `get_entries`. Continue with `cursor: nextCursor` until no cursor is returned.
+Get the resident window as a tree of entries. Each node is `{entry, children, label?, labelTimestamp?}`. A well-formed session has a single root; orphaned entries (broken parent chain) also appear as roots.
 
 ```json
 {"type": "get_tree"}
@@ -1035,9 +1039,13 @@ Response:
   "command": "get_tree",
   "success": true,
   "data": {
-    "items": [
-      {"seq": 1, "entry": {"type": "message", "id": "abc123", "parentId": null, "...": "..."}},
-      {"seq": 2, "entry": {"type": "message", "id": "def456", "parentId": "abc123", "...": "..."}}
+    "tree": [
+      {
+        "entry": {"type": "message", "id": "abc123", "parentId": null, "...": "..."},
+        "children": [
+          {"entry": {"type": "message", "id": "def456", "parentId": "abc123", "...": "..."}, "children": []}
+        ]
+      }
     ],
     "leafId": "def456"
   }
@@ -1218,8 +1226,11 @@ Emitted when a message begins and completes. The `message` field contains an `Ag
 
 ```json
 {"type": "message_start", "message": {...}}
-{"type": "message_end", "message": {...}}
+{"type": "message_end", "message": {...}, "entryId": "a1b2c3d4", "seq": 42}
 ```
+
+When the session saved the message before ending it, `message_end` also carries the saved entry's `entryId` and its
+sequence `seq` in the session's history. Both are absent for a message the session did not save.
 
 ### message_update (Streaming)
 

@@ -13,6 +13,7 @@ export function treeOutlineEntry(seq: number, entry: SessionEntry): SessionTreeO
 	const { id, parentId, timestamp, type } = entry;
 	const base = { seq, id, parentId, timestamp, type };
 	if (type === "label") return { ...base, labelTarget: entry.targetId, label: entry.label?.slice(0, 128) };
+	if (type === "custom" && entry.customType === "subagent-child") return { ...base, childRecord: true };
 	if (type === "custom" && entry.customType === "atomic.leaf") return { ...base, leafMove: true };
 	if (type !== "message") return base;
 	const msg = entry.message;
@@ -20,7 +21,18 @@ export function treeOutlineEntry(seq: number, entry: SessionEntry): SessionTreeO
 		msg.role === "assistant" &&
 		(!msg.stopReason || msg.stopReason === "stop" || msg.stopReason === "toolUse") &&
 		!msg.content.some((block) => block?.type === "text" && block.text?.trim());
-	return { ...base, role: msg.role, ...(hidden ? { hideAssistant: true } : {}) };
+	const callIds =
+		msg.role === "assistant" && Array.isArray(msg.content)
+			? msg.content.flatMap((block) =>
+					block?.type === "toolCall" && typeof block.id === "string" ? [block.id] : [],
+				)
+			: [];
+	return {
+		...base,
+		role: msg.role,
+		...(hidden ? { hideAssistant: true } : {}),
+		...(callIds.length ? { callIds } : {}),
+	};
 }
 
 /** Snapshot adapters necessarily deliver whole objects; native stores project headers in SQL or stream the

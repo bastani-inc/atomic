@@ -1,7 +1,8 @@
-import { Container, type Focusable, Spacer, Text } from "@bastani/atomic-tui";
+import { Container, type Focusable, getKeybindings, Spacer, Text } from "@bastani/atomic-tui";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
+import type { StoredTreeView } from "./stored-tree-view.js";
 import { SearchLine, TreeHelp } from "./tree-selector-help.ts";
 import { LabelInput } from "./tree-selector-label-input.ts";
 import { TreeList } from "./tree-selector-list.ts";
@@ -16,6 +17,9 @@ export class TreeSelectorComponent extends Container implements Focusable {
 	private treeContainer: Container;
 	private onLabelChangeCallback?: (entryId: string, label: string | undefined) => void | Promise<void>;
 	private labelPending = false;
+	// Reading the whole of a stored label before the input opens with it; Escape abandons the read.
+	private labelLoad?: AbortController;
+	private readonly archive?: StoredTreeView;
 	public onLabelError?: (error: Error) => void;
 	public onLabelUpdate?: () => void;
 
@@ -41,16 +45,18 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		onLabelChange?: (entryId: string, label: string | undefined) => void | Promise<void>,
 		initialSelectedId?: string,
 		initialFilterMode?: FilterMode,
+		archive?: StoredTreeView,
 	) {
 		super();
 
 		this.onLabelChangeCallback = onLabelChange;
+		this.archive = archive;
 		const maxVisibleLines = Math.max(5, Math.floor(terminalHeight / 2));
 
-		this.treeList = new TreeList(tree, currentLeafId, maxVisibleLines, initialSelectedId, initialFilterMode);
+		this.treeList = new TreeList(tree, currentLeafId, maxVisibleLines, initialSelectedId, initialFilterMode, archive);
 		this.treeList.onSelect = onSelect;
 		this.treeList.onCancel = onCancel;
-		this.treeList.onLabelEdit = (entryId, currentLabel) => this.showLabelInput(entryId, currentLabel);
+		this.treeList.onLabelEdit = (entryId, currentLabel) => this.editLabel(entryId, currentLabel);
 		this.searchLine = new SearchLine(this.treeList);
 
 		this.treeContainer = new Container();
@@ -73,6 +79,38 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		if (tree.length === 0) {
 			setTimeout(() => onCancel(), 100);
 		}
+	}
+
+	/** A stored row shows at most the start of a long label. Open the input with all of it, as a loaded session does. */
+	private editLabel(entryId: string, currentLabel: string | undefined): void {
+		const archive = this.archive;
+		if (!archive?.labelIsSnippet(entryId)) {
+			this.showLabelInput(entryId, currentLabel);
+			return;
+		}
+		const load = new AbortController();
+		this.labelLoad = load;
+		this.treeContainer.clear();
+		this.labelInputContainer.clear();
+		this.labelInputContainer.addChild(new Text(theme.fg("dim", "Loading label…"), 2, 0));
+		const settle = () => {
+			if (load.signal.aborted || !archive.open) return false;
+			this.labelLoad = undefined;
+			return true;
+		};
+		archive.fullLabel(entryId, load.signal).then(
+			(label) => {
+				if (!settle()) return;
+				this.showLabelInput(entryId, label);
+				this.onLabelUpdate?.();
+			},
+			(error: Error) => {
+				if (!settle()) return;
+				this.hideLabelInput();
+				this.onLabelError?.(error);
+				this.onLabelUpdate?.();
+			},
+		);
 	}
 
 	private showLabelInput(entryId: string, currentLabel: string | undefined): void {
@@ -117,6 +155,14 @@ export class TreeSelectorComponent extends Container implements Focusable {
 
 	handleInput(keyData: string): boolean {
 		if (this.labelPending) return true;
+		if (this.labelLoad) {
+			if (getKeybindings().matches(keyData, "tui.select.cancel")) {
+				this.labelLoad.abort();
+				this.labelLoad = undefined;
+				this.hideLabelInput();
+			}
+			return true;
+		}
 		if (this.labelInput) {
 			this.labelInput.handleInput(keyData);
 			return true;

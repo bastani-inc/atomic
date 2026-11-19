@@ -3,7 +3,7 @@ import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
-import { savedTaskRowKey } from "../../../core/tasks/transcript-origin.js";
+import { rowSource, savedRowKey, savedSeqOf, savedTaskRowKey } from "../../../core/tasks/transcript-origin.js";
 import { theme } from "../theme/theme.js";
 import { atomicWorkingFrame } from "./atomic-working-status.ts";
 import { type ChatMessageEntry, LiveChatEntriesController } from "./chat-message-renderer.ts";
@@ -24,6 +24,7 @@ import {
 import type { FooterComponent } from "./footer.ts";
 import { NewMessageCounter, pinnedPromptLine } from "./jump-to-latest.ts";
 import { keyText } from "./keybinding-hints.js";
+import type { ParkedTaskRows } from "./parked-rows.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import { SavedRendererInstances } from "./saved-renderer-instances.js";
 import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
@@ -156,6 +157,9 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	nextRenderIdentityId = 1;
 	liveChat: LiveChatEntriesController;
 	readonly savedRenderers?: SavedRendererInstances;
+	readonly liveRowOrigin: ((seq: number) => string | undefined) | undefined;
+	/** The component each row drew, for keeping a stateful one when its row is retired. Weak: rows own nothing. */
+	private readonly renderedRows = new WeakMap<object, Component>();
 	editor: EditorComponent | undefined;
 	optimisticUserSignatureCounts = new Map<string, number>();
 	/**
@@ -167,22 +171,54 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	 */
 	streamingTailWindowEnabled = true;
 
-	replaceTranscriptWindow(messages: Parameters<LiveChatEntriesController["replaceMessages"]>[0]): void {
+	replaceTranscriptWindow(
+		messages: Parameters<LiveChatEntriesController["replaceMessages"]>[0],
+		parked?: ParkedTaskRows,
+	): void {
+		const previous = [...this.transcript];
 		this.liveChat.replaceMessages(messages, this.extraEntries);
+		if (parked) this.liveChat.keepParkedEntries(parked.rows, parked.adopted, savedRowKey);
+		this.keepRetiredRenderers(previous);
 		this.releaseRetiredRows();
 	}
 
+	/** The saved-page key of a row: its page's origin, or a live row's from its save receipt. */
+	rowKey(entry: object): string | undefined {
+		const saved = savedTaskRowKey(entry);
+		if (saved !== undefined || this.liveRowOrigin === undefined) return saved;
+		const source = rowSource(entry);
+		const seq = savedSeqOf(source?.message);
+		const origin = seq === undefined ? undefined : this.liveRowOrigin(seq);
+		return origin === undefined ? undefined : `${origin}:0:${source!.part}`;
+	}
+
+	/** A retired row's stateful renderer stays the instance its saved row shows when it is read again. */
+	keepRetiredRenderers(previous: readonly object[]): void {
+		const store = this.savedRenderers;
+		if (!store) return;
+		const current = new Set<object>(this.transcript);
+		for (const entry of previous) {
+			if (current.has(entry)) continue;
+			const component = this.renderedRows.get(entry);
+			const key = component && this.rowKey(entry);
+			if (key && !store.get(key)?.includes(component)) store.remember(key, [component]);
+		}
+	}
+
 	releaseRetiredRows(): void {
-		this.bodyViewport.retainSegmentAnchors(this.transcriptComponent, new Set(this.transcript));
-		this.transcriptComponent.invalidate();
+		const retained = new Set(this.transcript);
+		this.bodyViewport.retainSegmentAnchors(this.transcriptComponent, retained);
+		this.transcriptComponent.releaseRetired(retained);
 		this.replacedEntryKeys.clear();
 		if (this.expandedOverrides.size) {
 			const tools = new Set(
 				this.transcript.flatMap((entry) =>
-					"kind" in entry && entry.kind === "tool" && "toolCallId" in entry ? [entry.toolCallId] : [],
+					"kind" in entry && entry.kind === "tool" && "toolCallId" in entry ? [`tool:${entry.toolCallId}`] : [],
 				),
 			);
-			for (const key of this.expandedOverrides.keys()) if (!tools.has(key)) this.expandedOverrides.delete(key);
+			// A click on a saved row stays chosen for when its page is read again, until Ctrl+O or the chat closes.
+			for (const key of this.expandedOverrides.keys())
+				if (key.startsWith("tool:") && !tools.has(key)) this.expandedOverrides.delete(key);
 		}
 	}
 
@@ -232,13 +268,18 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.liveChat = new LiveChatEntriesController(this.transcript);
 		const store = opts.savedTaskPages ? new SavedRendererInstances() : undefined;
 		this.savedRenderers = store;
+		this.liveRowOrigin = store ? opts.liveRowOrigin : undefined;
 		this.transcriptComponent = new ChatTranscriptComponent(
 			this.transcript,
 			(entry) => {
-				const key = store && savedTaskRowKey(entry);
+				const key = store && this.rowKey(entry);
 				const kept = key && store?.get(key)?.[0];
-				if (kept) return kept;
+				if (kept) {
+					this.renderedRows.set(entry, kept);
+					return kept;
+				}
 				const component = callbacks.renderEntry(this, entry);
+				if (store) this.renderedRows.set(entry, component);
 				if (key) store?.remember(key, [component]);
 				return component;
 			},

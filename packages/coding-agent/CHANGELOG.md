@@ -4,12 +4,16 @@
 
 ### Breaking Changes
 
-- Sessions and extensions open at the current context window. Replace `history: "full"` and calls to `loadFullHistory()` with `for await (const page of manager.readHistory())` to visit older entries, or use `await manager.readEntry(id)` to look up one entry ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - `SessionManager.getEntries()` returns the current window, not the complete recorded conversation. A custom task transcript source that needs off-branch rows must supply those rows or a pager for them ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
-- RPC `get_entries`, `get_tree` and `get_fork_messages` now return pages (`items`, `nextCursor`) rather than complete entry, tree or prompt arrays. Read additional pages by passing `cursor: nextCursor`; use `get_history_chunk` for oversized items, or `get_context_window` for the entries resident in the engine. Update `RpcClient.getEntries()` consumers to use the paged result ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
-- The session picker rejects `re:` patterns that rely on backreferences, lookaround or paired start/end anchors instead of silently reporting no matches. Use a narrower pattern or a quoted phrase ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- Sessions and extensions open at the current context window. `getEntries()` and `getTree()` describe the resident entries. Use `for await (const page of manager.readHistory())` for older entries or `await manager.readEntry(id)` for one entry ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- RPC `get_entries`, `get_tree` and `get_fork_messages` still return `entries`, `tree` and `messages` respectively, but their contents are limited to the resident window. Use `get_history_page` and its `nextCursor` for the archive, and `get_history_chunk` to read an oversized item ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Replace `sessionManager.getSessionRecoveryState().admissionKeys.includes(key)` with `sessionManager.getAdmissionKeys().has(key)`. Admission remains synchronous; old keys are no longer retained as strings ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Await `SessionManager.inMemory(cwd, options, entries)` when seeding a private session. Creating an empty `inMemory()` manager stays synchronous ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- `SessionManager.getWorktreeSnapshotRecords()` returns only the snapshot records the session holds: all of them while `hasFullHistory()` is true, otherwise the ones its resume needs (the latest snapshot of each checkout on the active branch and the snapshots its restores name) and those recorded in its window. Replace a lookup of an older record with `await manager.loadWorktreeSnapshotRecords(ids)`, or read every snapshot entry with `for await (const page of manager.readWorktreeSnapshotPages())`; both reject with the store's error instead of returning an empty map. `getLatestWorktreeSnapshots()` is unchanged ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+
+### Added
+
+- RPC `message_end` events carry `entryId` and `seq` when the session saved the message, so a client can tell which saved entry it shows ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 
 ### Changed
 
@@ -19,6 +23,7 @@
 ### Fixed
 
 - A hidden subagent or stage chat releases the rendered rows of a replaced transcript without waiting to be shown again ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+- A compaction while you are scrolled up in the main chat or a live subagent chat keeps the rows you are reading, your selection and the unread count where they were, releases the rest of the earlier conversation, and reads it again page by page on either side as you scroll. A stateful extension card keeps its instance when a compaction keeps or retires it ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 
 ## [0.9.90] - 2026-11-19
 

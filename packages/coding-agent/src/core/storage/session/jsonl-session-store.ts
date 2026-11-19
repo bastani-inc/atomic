@@ -47,6 +47,7 @@ import {
 import { summarizeLegacySession } from "./legacy-session-summary.js";
 import {
 	branchRanges,
+	childCatalogCut,
 	foldSessionResume,
 	foreignResumeIds,
 	isSessionResumeIndex,
@@ -1049,7 +1050,10 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
-	readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+	readChildCatalogCut(sessionId: string) {
+		return this.run(async () => childCatalogCut((await this.indexed(sessionId)).jsonl.index));
+	}
+	readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		return this.run(async () => {
 			if (leafId !== undefined) validateSessionText("entry.id", leafId);
 			const { path, header, jsonl } = await this.indexed(sessionId);
@@ -1067,7 +1071,7 @@ export class JsonlSessionStore implements SessionStore {
 								chunk: (seq, offset, length) => readBytes(path, spanStart(jsonl, seq) + offset, length),
 							}),
 						);
-			const plan = sessionResumePlan(index);
+			const plan = sessionResumePlan(index, index.leafSeq, options?.deferChildRecords);
 			const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));
 			const read = await this.entriesAt(path, jsonl, [...branchSeqs, ...plan.state]);
 			const inBranch = new Set(branchSeqs);
@@ -1083,7 +1087,7 @@ export class JsonlSessionStore implements SessionStore {
 				)
 					throw new SessionConflictError(sessionId, index.seq, index.seq);
 			}
-			return sessionResumeFrom(index, header, branch, state, leaf);
+			return sessionResumeFrom(index, header, branch, state, leaf, plan.children);
 		});
 	}
 
@@ -1209,69 +1213,113 @@ export class JsonlSessionStore implements SessionStore {
 		const spans: number[] = [];
 		const hashes: number[] = [];
 		const ids = new Map<string, number>();
-		let batch: SessionEntry[] = [];
+		let batch: SessionEntry[] = [],
+			batchBytes = 0,
+			extraToolCalls = 0;
 		const flush = () => {
-			if (batch.length === 0) return;
-			validateSessionEntries(batch);
+			if (!batch.length) return;
 			index = foldSessionResume(index, batch, (id) => ids.get(id), activeSeq);
+			if (extraToolCalls)
+				index = { ...index, totals: { ...index.totals, toolCalls: index.totals.toolCalls + extraToolCalls } };
 			batch = [];
+			batchBytes = 0;
+			extraToolCalls = 0;
 		};
-		const take = (start: number, line: Buffer) => {
-			const text = line.toString("utf8");
-			if (!text.trim()) return;
-			const entry = JSON.parse(text) as SessionEntry;
-			validateSessionEntryStructure([entry], path);
-			spans.push(start, start + line.length);
+		let parts: Buffer[] = [],
+			lineStart = 0,
+			position = 0,
+			header = true,
+			large = false;
+		const take = (entry: SessionEntry, end: number, toolCalls = 0) => {
+			const bytes = end - lineStart;
+			if (batch.length && batchBytes + bytes > SCAN_WINDOW_BYTES) flush();
+			spans.push(lineStart, end);
 			hashes.push(idHash(entry.id));
-			batch.push(entry);
 			ids.set(entry.id, spans.length / 2);
-			if (batch.length >= INDEX_BATCH_ENTRIES) flush();
+			batch.push(entry);
+			batchBytes += bytes;
+			extraToolCalls += toolCalls;
+			if (batch.length >= INDEX_BATCH_ENTRIES || batchBytes >= SCAN_WINDOW_BYTES) flush();
 		};
-		const input = createReadStream(path, { highWaterMark: SCAN_WINDOW_BYTES });
-		let parts: Buffer[] = [];
-		let lineStart = 0;
-		let position = 0;
-		let header = true;
+		const file = await open(path, "r");
+		const input = file.createReadStream({ highWaterMark: SCAN_WINDOW_BYTES, autoClose: false });
+		const add = (part: Buffer, end: number) => {
+			if (!header && !large) {
+				if (end - lineStart > SCAN_WINDOW_BYTES) {
+					parts = [];
+					large = true;
+				} else parts.push(part);
+			}
+		};
+		const shortLine = (end: number, closed: boolean) => {
+			const line = parts.length === 1 ? parts[0]! : Buffer.concat(parts);
+			const text = line.toString("utf8");
+			if (closed && !text.trim()) return true;
+			const entry = closed ? (JSON.parse(text) as SessionEntry) : parseUnterminated(text);
+			if (!entry && !closed) return false;
+			validateSessionEntryStructure([entry!], path);
+			validateSessionEntries([entry!]);
+			take(entry!, end);
+			return true;
+		};
+		const longLine = async (end: number, closed: boolean) => {
+			const start = lineStart;
+			async function* chunks() {
+				for (let at = start; at < end; ) {
+					const b = await readFrom(file, at, Math.min(SESSION_HISTORY_CHUNK_BYTES, end - at));
+					if (!b.length) throw new Error("Session file changed during index build");
+					yield b;
+					at += b.length;
+				}
+			}
+			const checker = new JsonTextChecker(),
+				decoder = new TextDecoder();
+			let blank = true;
+			for await (const b of chunks()) {
+				checker.feed(b);
+				if (blank) blank = !decoder.decode(b, { stream: true }).trim();
+			}
+			if (closed && blank && !decoder.decode().trim()) return true;
+			if (!checker.finish()) {
+				if (!closed) return false;
+				// Only corrupt data reaches the native parser, to preserve its exact diagnostic and offset.
+				JSON.parse((await readFrom(file, start, end - start)).toString("utf8"));
+			}
+			const parsed = await (await import("./jsonl-entry-projection.js")).jsonlEntryProjection(path, chunks);
+			take(parsed.entry, end, parsed.toolCalls);
+			return true;
+		};
 		try {
 			for await (const chunk of input as AsyncIterable<Buffer>) {
 				let from = 0;
 				for (let newline = chunk.indexOf(10); newline !== -1; newline = chunk.indexOf(10, from)) {
-					parts.push(chunk.subarray(from, newline));
-					const line = parts.length === 1 ? (parts[0] as Buffer) : Buffer.concat(parts);
-					parts = [];
+					const end = position + newline;
+					add(chunk.subarray(from, newline), end);
 					if (header) header = false;
-					else take(lineStart, line);
+					else if (large) await longLine(end, true);
+					else shortLine(end, true);
 					from = newline + 1;
 					lineStart = position + from;
+					parts = [];
+					large = false;
 				}
-				if (from < chunk.length) parts.push(chunk.subarray(from));
+				if (from < chunk.length) add(chunk.subarray(from), position + chunk.length);
 				position += chunk.length;
 			}
+			const terminated = lineStart === position;
+			const torn = !terminated && !header && !(large ? await longLine(position, false) : shortLine(position, false));
+			flush();
+			if (torn) reportTornLine(path);
+			return { index, spans, ids: hashes, size: torn ? lineStart : position, terminated: torn || terminated, torn };
 		} finally {
 			input.destroy();
+			await file.close();
 		}
-		const rest = parts.length === 0 ? undefined : Buffer.concat(parts);
-		if (rest === undefined || header) {
-			flush();
-			return { index, spans, ids: hashes, size: position, terminated: rest === undefined, torn: false };
-		}
-		const unterminated = parseUnterminated(rest.toString("utf8"));
-		if (unterminated === undefined) {
-			flush();
-			reportTornLine(path);
-			return { index, spans, ids: hashes, size: lineStart, terminated: true, torn: true };
-		}
-		validateSessionEntryStructure([unterminated], path);
-		spans.push(lineStart, position);
-		hashes.push(idHash(unterminated.id));
-		batch.push(unterminated);
-		ids.set(unterminated.id, spans.length / 2);
-		flush();
-		return { index, spans, ids: hashes, size: position, terminated: false, torn: false };
 	}
 
 	private async catchUp(path: string, cached: JsonlIndex, stats: BigIntStats): Promise<JsonlIndex | undefined> {
 		const from = cached.size - cached.witness.length;
+		if (Number(stats.size) - from > SCAN_WINDOW_BYTES) return undefined; // Rebuild with the streaming reader, never retain a large appended suffix.
 		const bytes = await readBytes(path, from, Number(stats.size) - from);
 		let offset = cached.size;
 		let appended = bytes.subarray(cached.witness.length);

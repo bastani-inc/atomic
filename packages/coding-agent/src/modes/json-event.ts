@@ -14,8 +14,17 @@ type JsonMessageUpdateEvent = {
 	assistantMessageEvent: ToJsonAssistantMessageEvent<MessageUpdateEvent["assistantMessageEvent"]>;
 };
 
+/** A finished message. Over RPC it carries where the session saved it, when it did: its entry ID and sequence. */
+type JsonMessageEndEvent = Extract<AgentSessionEvent, { type: "message_end" }> & {
+	readonly entryId?: string;
+	readonly seq?: number;
+};
+
 /** Session event shape emitted by the JSON and RPC stdout protocols. */
-export type JsonAgentSessionEvent = Exclude<AgentSessionEvent, { type: "message_update" }> | JsonMessageUpdateEvent;
+export type JsonAgentSessionEvent =
+	| Exclude<AgentSessionEvent, { type: "message_update" | "message_end" }>
+	| JsonMessageUpdateEvent
+	| JsonMessageEndEvent;
 
 function toJsonAssistantMessageEvent(
 	event: MessageUpdateEvent["assistantMessageEvent"],

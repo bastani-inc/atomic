@@ -1,4 +1,4 @@
-import type { SessionManager } from "../session-manager.js";
+import type { SessionManager } from "../session-manager.ts";
 import { SessionConflictError, SessionNotFoundError } from "../storage/session/errors.js";
 import { historyChunks, historyPages } from "../storage/session/history-pages.js";
 import type { OversizedSessionEntry } from "../storage/session/types.js";

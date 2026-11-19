@@ -1,6 +1,12 @@
 import { hash } from "fast-sha256";
 import { SessionConflictError } from "./errors.js";
-import { type HistoryPacketReader, historySnapshotFor } from "./history-snapshot.js";
+import {
+	type HistoryPacketReader,
+	historySnapshotFor,
+	observeReferenceCut,
+	referenceMetadataRead,
+} from "./history-snapshot.js";
+import { snapshotChunk, snapshotHead, snapshotPage } from "./snapshot-cut.js";
 import {
 	type OversizedSessionEntry,
 	SESSION_HISTORY_CHUNK_BYTES,
@@ -26,6 +32,26 @@ export function earlierTranscriptCursor(sessionId: string, epoch: string, throug
 	return `${cursorScope(sessionId, epoch)}.1.${through}.b.1.${through}`;
 }
 
+/**
+ * The cursor of an append-order transcript's saved prefix (`earlierTranscriptCursor`), narrowed to visit `[start, end]`
+ * in one direction. Its pages keep the prefix's bounds, so reading on from them continues past `[start, end]`.
+ * Undefined when nothing of the prefix lies in that range.
+ */
+export function transcriptCursorWithin(
+	earlier: string,
+	start: number,
+	end: number,
+	backward: boolean,
+): string | undefined {
+	const match = /^([A-Za-z0-9_-]+)\.\d+\.\d+\.b\.(\d+)\.(\d+)$/.exec(earlier);
+	if (!match) return undefined;
+	const first = Number(match[2]);
+	const last = Number(match[3]);
+	const from = Math.max(first, start);
+	const to = Math.min(last, end);
+	return from <= to ? `${match[1]}.${from}.${to}${backward ? ".b" : ""}.${first}.${last}` : undefined;
+}
+
 /** A lazy sequence of pages of the generation and watermark the caller observed. Metadata is sized before any
  * payload read. A new generation is rejected by readRange inside the same snapshot that reads the payload. */
 export async function* historyPages(
@@ -45,6 +71,11 @@ export async function* historyPages(
 	let firstSeq = start,
 		lastSeq = end;
 	let reverse = options.direction === "backward";
+	// A reader that needs only the entries next to a page it shows reads fewer per page; never more than a page holds.
+	const perPage = Math.max(
+		1,
+		Math.min(SESSION_HISTORY_PAGE_ENTRIES, Math.floor(options.limit ?? SESSION_HISTORY_PAGE_ENTRIES)),
+	);
 	let stamp = epoch;
 	let scope = epoch === undefined ? undefined : cursorScope(sessionId, epoch);
 	if (options.cursor !== undefined) {
@@ -102,8 +133,8 @@ export async function* historyPages(
 		}
 		const left = span?.start ?? start,
 			right = span?.end ?? end;
-		const from = reverse ? Math.max(left, right - SESSION_HISTORY_PAGE_ENTRIES + 1) : left;
-		const through = reverse ? right : Math.min(right, left + SESSION_HISTORY_PAGE_ENTRIES - 1);
+		const from = reverse ? Math.max(left, right - perPage + 1) : left;
+		const through = reverse ? right : Math.min(right, left + perPage - 1);
 		let page: SessionHistoryPage["items"];
 		let low: number, high: number;
 		if (packet) {
@@ -117,15 +148,7 @@ export async function* historyPages(
 			low = first.seq;
 			high = last.seq;
 		} else if (snapshotOnly) {
-			const result = await (await import("./snapshot-history.js")).snapshotPage(
-				store,
-				sessionId,
-				from,
-				through,
-				reverse,
-				cut,
-				stamp,
-			);
+			const result = await snapshotPage(store, sessionId, from, through, reverse, cut, stamp);
 			options.signal?.throwIfAborted();
 			stamp = result.epoch;
 			scope = cursorScope(sessionId, stamp);
@@ -146,7 +169,18 @@ export async function* historyPages(
 			const edge = reverse ? through : from;
 			if (!first || first.seq !== edge) throw new Error(`Missing session history at entry ${edge}`);
 			low = high = edge;
-			if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
+			if (referenceMetadataRead(options)) {
+				low = from;
+				high = through;
+				// Internal raw-reference verification takes byte locators, not decoded conversation payloads.
+				page = sized.sizes.map((s) => ({
+					kind: "oversized" as const,
+					seq: s.seq,
+					bytes: s.bytes,
+					epoch: stamp!,
+					sessionId,
+				}));
+			} else if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
 				page = [{ kind: "oversized", sessionId, epoch: stamp, seq: edge, bytes: first.bytes }];
 			} else {
 				let used = 0;
@@ -172,6 +206,7 @@ export async function* historyPages(
 		const hasNext = reverse ? hasOlder : hasNewer;
 		const cursorFor = (from: number, to: number, backward: boolean) =>
 			`${scope}.${from}.${to}${backward ? ".b" : ""}${options.adjacent || leaf !== undefined ? `.${firstSeq}.${lastSeq}` : ""}${leaf === undefined ? "" : `.p${leaf}`}${snapshotOnly ? `.s${cut}` : ""}`;
+		observeReferenceCut(options, store, sessionId, stamp, cut);
 		yield {
 			items: page,
 			...(hasNext ? { nextCursor: cursorFor(start, end, reverse) } : {}),
@@ -199,7 +234,12 @@ export async function* readSessionHistory(
 	options.signal?.throwIfAborted();
 	const snapshot = historySnapshotFor(store);
 	// Branch spans may need a separate index snapshot. Never request one from inside a single-connection reader.
-	if (snapshot && options.branchLeafSeq === undefined && !options.cursor?.includes(".p")) {
+	if (
+		snapshot &&
+		!referenceMetadataRead(options) &&
+		options.branchLeafSeq === undefined &&
+		!options.cursor?.includes(".p")
+	) {
 		let request = options;
 		for (;;) {
 			options.signal?.throwIfAborted();
@@ -216,14 +256,19 @@ export async function* readSessionHistory(
 			if (!page) return;
 			yield page;
 			if (!page.nextCursor) return;
-			request = { cursor: page.nextCursor, signal: options.signal, adjacent: options.adjacent };
+			request = {
+				cursor: page.nextCursor,
+				signal: options.signal,
+				adjacent: options.adjacent,
+				...(options.limit === undefined ? {} : { limit: options.limit }),
+			};
 			await yieldToEventLoop();
 		}
 	}
 	const head =
 		store.readEntrySizes && store.readRange
 			? await store.readEntrySizes(sessionId, 1, 0)
-			: await (await import("./snapshot-history.js")).snapshotHead(store, sessionId);
+			: await snapshotHead(store, sessionId);
 	options.signal?.throwIfAborted();
 	yield* historyPages(store, sessionId, head.epoch, head.lastSeq, options);
 }
@@ -263,7 +308,7 @@ export async function* historyChunks(
 		const data =
 			store.readEntryChunk && store.readEntrySizes && store.readRange
 				? await store.readEntryChunk(reference, offset)
-				: await (await import("./snapshot-history.js")).snapshotChunk(store, reference, offset);
+				: await snapshotChunk(store, reference, offset);
 		options.signal?.throwIfAborted();
 		if (!data.length || data.length > SESSION_HISTORY_CHUNK_BYTES || offset + data.length > reference.bytes)
 			throw new Error(`Incomplete or invalid historical entry ${reference.seq}`);

@@ -1,19 +1,10 @@
-import { type Component, type HistoryLeaf, WindowedContainer } from "@bastani/atomic-tui";
-import {
-	RemoteCustomMessageComponent,
-	RemoteToolExecutionComponent,
-} from "../../interactive-engine/remote-renderer.ts";
-import { disposeRenderer } from "./renderer-disposal.js";
-
-/** What drawing a saved page uses: an instance kept for a key, and the hook that marks and keeps a new one. */
-export interface SavedRenderers {
-	get(key: string): Component[] | undefined;
-	remember(key: string, components: Component[], position?: { seq: number; block: number }): void;
-}
+import { type Component, WindowedContainer } from "@bastani/atomic-tui";
+import { remoteHistoryRow } from "../../interactive-engine/remote-renderer.ts";
+import { declaresHistoryReplayable, disposeRenderer, isChatFactoryProduct } from "./renderer-disposal.js";
 
 /** A renderer may keep widget state that is not in the stored row. Only these exceptions (not stock rows or
  * their page) survive eviction, keyed by the saved occurrence and sub-block within this session. */
-export class SavedRendererInstances implements SavedRenderers {
+export class SavedRendererInstances {
 	/** The saved source that every saved row of this session is marked with. */
 	readonly source = Symbol();
 	private readonly kept = new Map<string, Component[]>();
@@ -24,12 +15,24 @@ export class SavedRendererInstances implements SavedRenderers {
 		if (group) this.retired.delete(group);
 		return group;
 	}
+	/** The instances kept for `key`, without returning them to use. */
+	peek(key: string): Component[] | undefined {
+		return this.kept.get(key);
+	}
+	/** Whether `component` is a kept instance, which a scratch drawing must not dispose. */
+	keeps(component: Component): boolean {
+		const key = this.owner.get(component);
+		return key !== undefined && this.kept.get(key)?.includes(component) === true;
+	}
+	private stateful(c: Component): boolean {
+		const remote = remoteHistoryRow(c);
+		if (remote) return !remote.historyReplayable;
+		return isChatFactoryProduct(c)
+			? !declaresHistoryReplayable(c)
+			: c.selectionTextMayChangeOnReplay === true && c.historyReplayable !== true;
+	}
 	private needed(c: Component): boolean {
-		return (
-			c.selectionTextMayChangeOnReplay === true &&
-			c.historyReplayable !== true &&
-			!((c instanceof RemoteToolExecutionComponent || c instanceof RemoteCustomMessageComponent) && c.unrendered)
-		);
+		return this.stateful(c) && !remoteHistoryRow(c)?.unrendered;
 	}
 	private settle(key: string): void {
 		const group = this.kept.get(key);
@@ -41,13 +44,14 @@ export class SavedRendererInstances implements SavedRenderers {
 		if (position)
 			for (let part = 0; part < components.length; part++)
 				WindowedContainer.markHistoryComponent(components[part]!, this.source, position.seq, position.block, part);
-		if (!components.some((c) => c.selectionTextMayChangeOnReplay === true && c.historyReplayable !== true)) return;
+		if (!components.some((c) => this.stateful(c))) return;
 		this.kept.set(key, components);
 		for (const component of components) {
 			this.owner.set(component, key);
-			if (component instanceof RemoteToolExecutionComponent || component instanceof RemoteCustomMessageComponent) {
+			const remote = remoteHistoryRow(component);
+			if (remote) {
 				const weak = new WeakRef(this);
-				component.onReplayabilityChange(() => weak.deref()?.settle(key));
+				remote.onReplayabilityChange(() => weak.deref()?.settle(key));
 			}
 		}
 	}
@@ -62,37 +66,6 @@ export class SavedRendererInstances implements SavedRenderers {
 		}
 		this.kept.delete(key);
 		return false;
-	}
-	/** Draw saved rows without keeping new instances: reuse a kept one, and only note where each new row belongs. */
-	transient(positions: Map<Component, HistoryLeaf>): SavedRenderers & { owns(component: Component): boolean } {
-		const reused = new Set<Component>();
-		return {
-			get: (key) => {
-				const group = this.kept.get(key);
-				const [seq, block] = key.split(":");
-				for (let part = 0; group && part < group.length; part++) {
-					reused.add(group[part]!);
-					positions.set(group[part]!, {
-						source: this.source,
-						seq: Number(seq),
-						block: block === "entry" ? 0 : Number(block),
-						part,
-					});
-				}
-				return group;
-			},
-			remember: (_key, components, position) => {
-				if (!position) return;
-				for (let part = 0; part < components.length; part++)
-					positions.set(components[part]!, {
-						source: this.source,
-						seq: position.seq,
-						block: position.block,
-						part,
-					});
-			},
-			owns: (component) => reused.has(component),
-		};
 	}
 	dispose(): void {
 		for (const group of this.kept.values()) for (const c of group) disposeRenderer(c);

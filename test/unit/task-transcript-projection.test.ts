@@ -7,6 +7,11 @@ import {
 	type VerbatimCompactionDetails,
 } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import {
+	readSessionHistory,
+	readSessionHistoryChunks,
+} from "../../packages/coding-agent/src/core/storage/session/history-pages.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { OperationId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import {
 	type TaskLease,
@@ -135,6 +140,224 @@ test("reading a saved task page keeps shell commands and visible extension messa
 	} finally {
 		await fixture.dispose();
 		await session.getSessionStore().close();
+	}
+});
+
+test("reading saved task references never loads the entire conversation (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	const ids: string[] = [];
+	for (let i = 0; i < 130; i++)
+		ids.push(await session.appendMessage({ role: "user", content: `saved-${i}`, timestamp: i }));
+	try {
+		await withTranscript(
+			{
+				getSessionId: () => session.getSessionId(),
+				getEntries: () => [],
+				readHistory: session.readHistory.bind(session),
+				loadHistory: async () => {
+					throw new Error("whole archive read");
+				},
+			},
+			async (task) => {
+				let cursor: string | undefined,
+					seen: string[] = [];
+				do {
+					const page = await readTaskTranscript(task, cursor);
+					assert.ok(page.ok);
+					assert.ok(page.value.items.length <= 100);
+					seen = [...page.value.items.map((x) => x.source.entryId), ...seen];
+					cursor = page.value.nextCursor;
+				} while (cursor);
+				assert.deepEqual(seen, ids);
+			},
+		);
+	} finally {
+		await session.getSessionStore().close();
+	}
+});
+
+test("a raw task reference returns a legacy identifier larger than a page without reading its whole message (#5593)", async () => {
+	const id = "r".repeat(1024 * 1024 + 17),
+		store = new MemorySessionStore();
+	await store.create({ version: 4, id: "wide", createdAt: "2026-01-01T00:00:00Z", cwd: "/project" }, [
+		{
+			type: "message",
+			id,
+			parentId: null,
+			timestamp: "2026-01-01T00:00:01Z",
+			message: { role: "user", content: "unrelated".repeat(320_000), timestamp: 1 },
+		},
+	]);
+	store.readRange = async () => {
+		throw new Error("giant body fetched");
+	};
+	try {
+		await withTranscript(
+			{
+				getSessionId: () => "wide",
+				getEntries: () => [],
+				readHistory: (opts) => readSessionHistory(store, "wide", opts),
+				readHistoryChunks: (item, opts) => readSessionHistoryChunks(store, item, opts),
+				loadHistory: async () => {
+					throw new Error("whole archive read");
+				},
+			},
+			async (task) => {
+				const page = await readTaskTranscript(task);
+				assert.ok(page.ok);
+				assert.equal(page.value.items.length, 1);
+				const [row] = page.value.items;
+				assert.equal(row.kind, "prompt");
+				assert.equal(row.id, id);
+				assert.deepEqual(row.source, { sessionId: "wide", entryId: id });
+				assert.equal(page.value.nextCursor, undefined);
+			},
+		);
+	} finally {
+		await store.close();
+	}
+});
+
+test("a legacy task cursor can continue inside an oversized failed assistant reply, retaining the original content indices (#5593)", async () => {
+	const store = new MemorySessionStore();
+	const message = fauxAssistantMessage("unused");
+	message.content = Array.from({ length: 141 }, (_, i) =>
+		i === 8
+			? { type: "toolCall", id: "call-eight", name: "read", arguments: { irrelevant: "x".repeat(2 * 1024 * 1024) } }
+			: i === 100
+				? { type: "thinking", thinking: "large" }
+				: { type: "text", text: `part-${i}` },
+	);
+	message.stopReason = "error";
+	await store.create({ version: 4, id: "blocks", createdAt: "2026-01-01T00:00:00Z", cwd: "/project" }, [
+		{ type: "message", id: "id:with:colon", parentId: null, timestamp: "2026-01-01T00:00:01Z", message },
+	]);
+	try {
+		await withTranscript(
+			{
+				getSessionId: () => "blocks",
+				getEntries: () => [],
+				readHistory: (opts) => readSessionHistory(store, "blocks", opts),
+				readHistoryChunks: (item, opts) => readSessionHistoryChunks(store, item, opts),
+				loadHistory: async () => {
+					throw new Error("whole archive read");
+				},
+			},
+			async (task) => {
+				const end = await readTaskTranscript(task);
+				assert.ok(end.ok && end.value.nextCursor);
+				assert.equal(end.value.items[0].id, "id:with:colon:41");
+				assert.equal(end.value.items[59].kind, "thinking");
+				const earlier = await readTaskTranscript(task, end.value.nextCursor);
+				assert.ok(earlier.ok);
+				assert.equal(earlier.value.items.length, 41);
+				assert.deepEqual(earlier.value.items[8], {
+					id: "id:with:colon:8",
+					kind: "tool-call",
+					toolCallId: "call-eight",
+					source: { sessionId: "blocks", entryId: "id:with:colon", contentIndex: 8 },
+				});
+				assert.equal(earlier.value.items.at(-1)?.id, "id:with:colon:40");
+				assert.equal(earlier.value.nextCursor, undefined);
+			},
+		);
+	} finally {
+		await store.close();
+	}
+});
+
+test("a raw reference page verifies distant duplicate IDs using metadata, without fetching earlier complete messages (#5593)", async () => {
+	const store = new MemorySessionStore();
+	const ids = ["A", ...Array.from({ length: 300 }, (_, i) => `B-${i}`), "A"];
+	await store.create(
+		{ version: 4, id: "distant", cwd: "/project", createdAt: "2026-01-01T00:00:00Z" },
+		ids.map((id) => ({
+			type: "message",
+			id,
+			parentId: null,
+			timestamp: "2026-01-01T00:00:01Z",
+			message: { role: "user", content: "unselected payload", timestamp: 1 },
+		})),
+	);
+	const range = store.readRange.bind(store);
+	let earliest = Infinity;
+	store.readRange = async (id, a, b, epoch) => {
+		earliest = Math.min(earliest, a);
+		return range(id, a, b, epoch);
+	};
+	try {
+		await withTranscript(
+			{
+				getSessionId: () => "distant",
+				getEntries: () => [],
+				readHistory: (opts) => readSessionHistory(store, "distant", opts),
+				readHistoryChunks: (item, opts) => readSessionHistoryChunks(store, item, opts),
+				loadHistory: async () => {
+					throw new Error("whole archive read");
+				},
+			},
+			async (task) => {
+				const latest = await readTaskTranscript(task);
+				assert.ok(latest.ok);
+				assert.deepEqual(
+					latest.value.items.map((i) => i.id),
+					ids.slice(201, 301),
+				);
+				assert.ok(earliest > 128, `earlier complete rows were read from ${earliest}`);
+				let all = latest.value.items,
+					cur = latest.value.nextCursor;
+				while (cur) {
+					const page = await readTaskTranscript(task, cur);
+					assert.ok(page.ok);
+					all = [...page.value.items, ...all];
+					cur = page.value.nextCursor;
+				}
+				assert.deepEqual(
+					all.map((i) => i.id),
+					ids.slice(0, -1),
+				);
+			},
+		);
+	} finally {
+		await store.close();
+	}
+});
+
+test("saved task references retain the first occurrence of a repeated public item id (#5593)", async () => {
+	const store = new MemorySessionStore();
+	const raw = (id: string) => ({
+		type: "message" as const,
+		id,
+		parentId: null,
+		timestamp: "2026-01-01T00:00:01Z",
+		message: { role: "user" as const, content: id, timestamp: 1 },
+	});
+	await store.create({ version: 4, id: "repeated", createdAt: "2026-01-01T00:00:00Z", cwd: "/project" }, [
+		raw("repeated"),
+		raw("middle"),
+		raw("repeated"),
+	]);
+	try {
+		await withTranscript(
+			{
+				getSessionId: () => "repeated",
+				getEntries: () => [],
+				readHistory: (opts) => readSessionHistory(store, "repeated", opts),
+				loadHistory: async () => {
+					throw new Error("whole archive read");
+				},
+			},
+			async (task) => {
+				const page = await readTaskTranscript(task);
+				assert.ok(page.ok);
+				assert.deepEqual(
+					page.value.items.map((i) => i.id),
+					["repeated", "middle"],
+				);
+			},
+		);
+	} finally {
+		await store.close();
 	}
 });
 

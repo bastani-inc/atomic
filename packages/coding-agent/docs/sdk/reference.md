@@ -1441,6 +1441,8 @@ Only Atomic's interactive hosts with a task inspector hold child prompts automat
 
 Task inspectors show references to the bound child conversation: prompts, responses, provider errors, thinking blocks, tool calls and results, shell commands and their output, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and entries a chat does not render are left out. An unbound or empty history reports `Transcript unavailable`. Saved history is not authority to restart or control a task.
 
+`readTaskTranscript(task, cursor?)` returns the same task-scoped item references and continuation cursors for saved and live tasks. The first occurrence of a repeated public item ID wins. An indexed store checks candidate records by sequence. With an archive that lacks this index, an explicit reference lookup can scan earlier metadata in bounded pages; the work is proportional to the history before the requested window. The chat's ordinary scroll and repaint do not run that scan. Reference pages contain at most 100 items and normally at most 1 MiB of identifiers. For compatibility, if a requested item has an identifier larger than this, it is returned whole, by itself: `source.entryId` remains the real string, not a placeholder. Its unrelated message text, arguments and results are not assembled.
+
 `TaskViewSource.sendTaskMessage(id, text)` sends text typed into an agent task's transcript to that task through its Intercom target and resolves once Intercom confirms delivery. A task view that cannot message tasks omits the method. A failure rejects with a `TaskMessageError`:
 
 | Class | `code` | When | Fields | What to do |

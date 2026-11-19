@@ -10,6 +10,15 @@ export function declaresHistoryReplayable(component: Component | undefined): boo
 	);
 }
 
+const factoryProducts = new WeakSet<Component>();
+/** The fact that a host supplied a component is provenance. Don't infer it from how the widget looks. */
+export function fromChatComponentFactory<T extends Component>(component: T): T {
+	if (component && (typeof component === "object" || typeof component === "function")) factoryProducts.add(component);
+	return component;
+}
+export function isChatFactoryProduct(component: Component): boolean {
+	return factoryProducts.has(component);
+}
 type DisposableRenderer = Component & { dispose?: () => void };
 
 export function disposeRenderer(component: Component | undefined): void {

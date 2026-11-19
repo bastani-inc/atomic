@@ -159,9 +159,7 @@ describe("RPC bash ownership across session replacement", () => {
 		const hasBash = (response: typeof sourceEntries) =>
 			response?.success &&
 			response.command === "get_entries" &&
-			response.data.items.some(
-				(item) => "entry" in item && item.entry.type === "message" && item.entry.message.role === "bashExecution",
-			);
+			response.data.entries.some((entry) => entry.type === "message" && entry.message.role === "bashExecution");
 		expect(hasBash(sourceEntries)).toBe(true);
 		expect(hasBash(targetEntries)).toBe(false);
 		expect(context.first.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(1);

@@ -6,7 +6,8 @@ import type { CustomMessage } from "../../core/messages.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import type { OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
-import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
+import { taskTranscriptSource } from "../../core/tasks/supervisor.js";
+import { readTaskCompletionHistory } from "../../core/tasks/task-completion-history.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
 import { disposeRenderer, runRendererCleanup } from "../interactive/components/renderer-disposal.js";
@@ -352,14 +353,16 @@ export class EngineRenderService {
 						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
 						return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
 					},
-					loadTranscript: async (taskId) => {
+					loadTranscript: async (taskId, options) => {
 						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
-						return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
+						return lease?.ok ? readTaskCompletionHistory(lease.value, options?.signal) : undefined;
 					},
 					getToolDefinition: (name) =>
 						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
 					cwd: session.sessionManager.getCwd(),
-					requestRender: () => tui.requestRender(),
+					// A card read its transcript for an expansion. The last check may have seen the same rows on an
+					// earlier expansion, before a fold the host drew without it: repaint without comparing to it.
+					requestRender: () => tui.requestRender(true),
 				},
 			);
 			tui.addChild(component);

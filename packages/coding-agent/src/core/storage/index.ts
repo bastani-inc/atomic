@@ -90,8 +90,24 @@ export {
 	type TeamStorageSelection,
 	teamProfileSelection,
 } from "./selection.js";
-export { readSessionHistory, readSessionHistoryChunks } from "./session/history-pages.js";
+export async function readSessionChildCatalog(
+	...args: Parameters<typeof import("./session/child-reader.js").readSessionChildCatalog>
+) {
+	return (await import("./session/child-reader.js")).readSessionChildCatalog(...args);
+}
+// Ordinary storage setup does not open a transcript reader or import its encoders.
+export async function* readSessionHistory(
+	...args: Parameters<typeof import("./session/history-pages.js").readSessionHistory>
+) {
+	yield* (await import("./session/history-pages.js")).readSessionHistory(...args);
+}
+export async function* readSessionHistoryChunks(
+	...args: Parameters<typeof import("./session/history-pages.js").readSessionHistoryChunks>
+) {
+	yield* (await import("./session/history-pages.js")).readSessionHistoryChunks(...args);
+}
 export type {
+	ArchivedChildCatalogEntry,
 	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,
@@ -114,12 +130,10 @@ export type {
 	SessionStore,
 	SessionStoredEntry,
 	SessionTail,
+	SessionTaskReferenceCandidate,
+	SessionTaskReferenceDuplicatePage,
+	SessionTaskReferenceDuplicateQuery,
 	SessionUsageTotals,
-} from "./session/types.js";
-export {
-	SESSION_HISTORY_CHUNK_BYTES,
-	SESSION_HISTORY_PAGE_BYTES,
-	SESSION_HISTORY_PAGE_ENTRIES,
 } from "./session/types.js";
 export * from "./sqlite-facade.js";
 export type {

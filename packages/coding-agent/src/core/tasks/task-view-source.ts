@@ -5,6 +5,7 @@ import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
+import { transcriptCursorWithin } from "../storage/session/history-pages.js";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { readTaskOutputTail } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
@@ -25,7 +26,7 @@ import { loadArchiveSnapshot } from "./task-archive-snapshot.ts";
 import type { FileTaskPage } from "./task-file-history.js";
 import { taskResumer } from "./task-resumer.ts";
 import { taskTranscriptPageWithCuts } from "./transcript.js";
-import { bindSavedTaskOrigins } from "./transcript-origin.js";
+import { bindSavedTaskOrigins, noteSavedSeq } from "./transcript-origin.js";
 
 export type TaskViewResult<T> =
 	| { readonly ok: true; readonly value: T }
@@ -69,12 +70,13 @@ type ArchiveReader = (
 	) => PageResult | Promise<PageResult>,
 	loadSnapshot: typeof loadArchiveSnapshot,
 ) => Promise<PageResult>;
-interface FileArchive {
+export interface FileArchive {
 	readonly path: string;
 	readonly sessionId: string;
 	readonly unsaved?: Entries[number];
 }
 const fileArchives = new WeakMap<TaskTranscriptSource, FileArchive>();
+const unsavedAnswers = new WeakMap<TaskTranscriptSource, Entries[number]>();
 const archives = new WeakMap<
 	TaskTranscriptSource,
 	{ load: TaskTranscriptSource["loadHistory"]; read: ArchiveReader }
@@ -87,17 +89,30 @@ function archiveReader(source: TaskTranscriptSource): ArchiveReader | undefined 
 		: undefined;
 }
 
+/** @internal The session file a first-party archive reader bound to exactly this source reads, if any. */
+export function taskTranscriptFile(source: TaskTranscriptSource): FileArchive | undefined {
+	return archiveReader(source) ? fileArchives.get(source) : undefined;
+}
+
+/** @internal The final answer a first-party source shows after its saved history because its session could not save it. */
+export function taskTranscriptUnsavedAnswer(source: TaskTranscriptSource): Entries[number] | undefined {
+	return archiveReader(source) ? (unsavedAnswers.get(source) ?? fileArchives.get(source)?.unsaved) : undefined;
+}
+
 /** @internal A first-party archive reader supplies the identity of the records it returned. */
 export function withTaskTranscriptArchive<T extends TaskTranscriptSource>(
 	source: T,
 	reader: ArchiveReader | TaskTranscriptSource,
 	file?: FileArchive,
+	unsaved?: Entries[number],
 ): T {
 	const archive = typeof reader === "function" ? reader : archiveReader(reader);
 	if (archive) {
 		archives.set(source, { load: source.loadHistory, read: archive });
 		const bound = file ?? (typeof reader === "function" ? undefined : fileArchives.get(reader));
 		if (bound) fileArchives.set(source, bound);
+		const answer = unsaved ?? (typeof reader === "function" ? undefined : unsavedAnswers.get(reader));
+		if (answer) unsavedAnswers.set(source, answer);
 	}
 	return source;
 }
@@ -405,9 +420,14 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			}
 			if (source.ok && source.value.session.readHistory && source.value.session.loadHistory) {
 				const { session, inheritedThroughId } = source.value;
-				return savedTaskDetailText(session, inheritedThroughId).catch(() =>
-					detailText(session.getFallbackEntries?.()),
-				);
+				return savedTaskDetailText(session, inheritedThroughId)
+					.then((value) => {
+						const answer = taskTranscriptUnsavedAnswer(session);
+						return answer?.type === "message" && answer.message.role === "assistant"
+							? { ...value, output: messageText(answer.message) }
+							: value;
+					})
+					.catch(() => detailText(session.getFallbackEntries?.()));
 			}
 			// A finished task keeps its history in its session store, not in memory (#5186).
 			if (taskTranscriptSourceLoads(task.value))
@@ -633,6 +653,101 @@ function savedTaskScope(taskId: string, sessionId: string): string {
 		.digest("base64url")}:`;
 }
 
+/**
+ * The saved-row origin of a live task message stored at `seq`: what the saved page that shows it again calls it.
+ * Known once the session has saved history before its live context, which is when a row can leave the window.
+ */
+export function liveTaskRowOrigin(session: TaskTranscriptSource, taskId: string, seq: number): string | undefined {
+	const generation = session.getEarlierCursor?.()?.split(".", 1)[0];
+	return generation ? `${savedTaskScope(taskId, session.getSessionId())}${generation}:${seq}` : undefined;
+}
+
+/**
+ * Cursors of a live task's saved prefix before and after the saved sequences `first` to `last`, which a page the
+ * reader keeps on screen shows. Reading on from either continues through the whole prefix.
+ */
+export function taskCursorsAround(
+	session: TaskTranscriptSource,
+	taskId: string,
+	first: number,
+	last: number,
+): { readonly older?: string; readonly newer?: string } {
+	const earlier = session.getEarlierCursor?.();
+	if (earlier === undefined) return {};
+	const scope = savedTaskScope(taskId, session.getSessionId());
+	const older = transcriptCursorWithin(earlier, 1, first - 1, true);
+	const newer = transcriptCursorWithin(earlier, last + 1, Number.MAX_SAFE_INTEGER, false);
+	return {
+		...(older === undefined ? {} : { older: `${scope}${older}~b` }),
+		...(newer === undefined ? {} : { newer: `${scope}${newer}~f` }),
+	};
+}
+
+const BOUNDARY_MARKS = /!([c1])$/;
+
+/**
+ * The cursor that reads only the one saved entry next to a shown page, toward `cursor`'s page: a view that finishes a
+ * tool card cut at a page's edge reads that entry, not the page. With `calls`, a reply keeps only its tool calls and
+ * a result only its call's identity. A reader that cannot read one entry reads the page, as `cursor` does.
+ */
+export function savedBoundaryCursor(cursor: string, calls: boolean): string {
+	return `${cursor}!${calls ? "c" : "1"}`;
+}
+
+/** What a boundary read keeps of a saved message: a reply's calls and outcome, a result, and only the role of the rest. */
+function boundaryMessage(message: AgentMessage, calls: boolean): AgentMessage | undefined {
+	switch (message.role) {
+		case "assistant":
+			return { ...message, content: calls ? message.content.filter((block) => block.type === "toolCall") : [] };
+		case "toolResult":
+			return calls ? { ...message, content: [] } : message;
+		case "user":
+			return { ...message, content: [] };
+		default:
+			return undefined;
+	}
+}
+
+async function savedBoundaryView(
+	read: (
+		options: Parameters<NonNullable<TaskTranscriptSource["readHistory"]>>[0],
+	) => AsyncIterable<import("../storage/session/types.js").SessionHistoryPage | FileTaskPage>,
+	raw: string,
+	scope: string,
+	calls: boolean,
+	file: FileArchive | undefined,
+	signal: AbortSignal | undefined,
+): Promise<TaskViewResult<TaskTranscriptView>> {
+	for await (const page of read({ cursor: raw, adjacent: true, limit: 1, ...(signal ? { signal } : {}) })) {
+		signal?.throwIfAborted();
+		const messages: AgentMessage[] = [];
+		const origins = new Map<AgentMessage, string>();
+		for (const item of page.items) {
+			if (!("entry" in item) || item.entry.type !== "message") continue;
+			const message = boundaryMessage(item.entry.message, calls);
+			if (message === undefined) continue;
+			messages.push(message);
+			const record = file
+				? createHash("sha256").update(JSON.stringify(item.entry)).digest("base64url")
+				: page.adjacent?.current?.split(".", 1)[0];
+			if (record) origins.set(message, `${scope}${record}:${item.seq}:0`);
+		}
+		bindSavedTaskOrigins(messages, origins);
+		const older = page.adjacent?.older;
+		const newer = page.adjacent?.newer;
+		return {
+			ok: true,
+			value: {
+				messages,
+				savedWindow: true,
+				...(older ? { nextCursor: `${scope}${older}~b` } : {}),
+				...(newer ? { newerCursor: `${scope}${newer}~f` } : {}),
+			},
+		};
+	}
+	return { ok: true, value: { messages: [], savedWindow: true } };
+}
+
 /** One saved page at a time; skipping a page of invisible bookkeeping doesn't keep that page alive. */
 async function savedTranscriptView(
 	session: TaskTranscriptSource,
@@ -648,7 +763,9 @@ async function savedTranscriptView(
 	const scope = savedTaskScope(taskId, sessionId);
 	if (cursor !== undefined && !cursor.startsWith(scope))
 		return { ok: false, error: { message: "Transcript cursor belongs to another task or session" } };
-	const encoded = cursor?.slice(scope.length);
+	const marked = cursor?.slice(scope.length);
+	const boundary = marked === undefined ? undefined : BOUNDARY_MARKS.exec(marked)?.[1];
+	const encoded = boundary === undefined ? marked : marked!.slice(0, -2);
 	// Also page within a single saved entry: a reply can contain hundreds of independently shown blocks.
 	const slice = encoded === undefined ? undefined : /^(.*)~([fb])(\d*)$/.exec(encoded);
 	const raw = slice ? slice[1] : encoded;
@@ -656,6 +773,9 @@ async function savedTranscriptView(
 	let offset = slice?.[3] ? Number(slice[3]) : undefined;
 	if (offset !== undefined && !Number.isSafeInteger(offset))
 		return { ok: false, error: { message: "Invalid transcript cursor" } };
+	// A cut inside one saved reply continues in the same saved entry: that is read as a page, as before.
+	if (boundary !== undefined && raw !== undefined && offset === undefined)
+		return savedBoundaryView(read, raw, scope, boundary === "c", file, signal);
 	for await (const page of read({
 		...(raw === undefined ? { direction: "backward" as const } : { cursor: raw }),
 		adjacent: true,
@@ -679,11 +799,40 @@ async function savedTranscriptView(
 						},
 					},
 		);
-		const unsaved = file?.unsaved;
+		const unsaved = taskTranscriptUnsavedAnswer(session);
 		if (!page.adjacent?.newer && unsaved?.type === "message") {
-			const last = entries.findLast((e) => e.type === "message");
-			if (last?.type !== "message" || JSON.stringify(last.message) !== JSON.stringify(unsaved.message))
-				entries.push(unsaved);
+			const { taskAnswerMissing } = await import("./task-unsaved-answer.js");
+			const records = async function* (span: typeof page) {
+				for (let i = span.items.length - 1; i >= 0; i--) {
+					const row = span.items[i]!;
+					if ("entry" in row) yield row;
+					else if (file) {
+						const { taskFileEntryChunks } = await import("./task-file-history.js");
+						yield {
+							chunks: () =>
+								taskFileEntryChunks(
+									file.path,
+									file.sessionId,
+									span.adjacent!.current!,
+									row.seq,
+									row.bytes,
+									signal,
+								),
+						};
+					} else if ("epoch" in row && session.readHistoryChunks)
+						yield { chunks: () => session.readHistoryChunks!(row, { signal }) };
+				}
+			};
+			const missing = await taskAnswerMissing(
+				unsaved,
+				(async function* () {
+					yield* records(page);
+					const prior = page.adjacent?.older;
+					if (prior)
+						for await (const older of read({ cursor: prior, adjacent: true, signal })) yield* records(older);
+				})(),
+			);
+			if (missing) entries.push(unsaved);
 		}
 		const origins = new Map<AgentMessage, string>();
 		let from = 0,
@@ -697,6 +846,8 @@ async function savedTranscriptView(
 			{
 				storedRows: entries.length,
 				origin(row, message, fragment) {
+					const seq = page.items[row]?.seq;
+					if (!file && seq !== undefined) noteSavedSeq(message, seq);
 					const record = file
 						? createHash("sha256").update(JSON.stringify(entries[row])).digest("base64url")
 						: page.adjacent?.current?.split(".", 1)[0];
@@ -744,6 +895,9 @@ async function savedTranscriptView(
 		}
 		offset = undefined;
 	}
+	const last = taskTranscriptUnsavedAnswer(session);
+	if (cursor === undefined && last?.type === "message")
+		return { ok: true, value: { messages: [last.message], savedWindow: true } };
 	return { ok: false, error: { message: "Transcript unavailable" } };
 }
 
@@ -817,6 +971,14 @@ function transcriptView(
 	const messages = entries.flatMap<AgentMessage>((entry, row) => {
 		const id = entry.id;
 		if (!entryIds.has(id)) return [];
+		// A live row keeps where its message was saved: the saved page that shows it again keeps its stateful renderer.
+		const seq = archive ? undefined : session.getEntrySeq?.(id);
+		const shown = projectEntry(entry, row);
+		if (seq !== undefined) for (const message of shown) noteSavedSeq(message, seq);
+		return shown;
+	});
+	function projectEntry(entry: (typeof entries)[number], row: number): AgentMessage[] {
+		const id = entry.id;
 		if (entry.type !== "message") {
 			const projected = sessionEntryToContextMessages(entry);
 			nextMessageIndex += projected.length;
@@ -857,7 +1019,7 @@ function transcriptView(
 		}
 		archive?.origin?.(row, projected, fragment ?? 0);
 		return [projected];
-	});
+	}
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
 	const activeToolStarts =

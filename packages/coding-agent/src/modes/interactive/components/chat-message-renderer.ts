@@ -11,7 +11,7 @@ import {
 } from "../../../core/messages.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import type { OwnerTaskStore, TaskActivity } from "../../../core/tasks/owner-store.js";
-import { savedTaskRows } from "../../../core/tasks/transcript-origin.js";
+import { carryRowSource, noteRowSource, rowSource, savedTaskRows } from "../../../core/tasks/transcript-origin.js";
 import {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
@@ -24,6 +24,7 @@ import { BranchSummaryMessageComponent } from "./branch-summary-message.ts";
 import { extractMessageText } from "./chat-session-host-utils.ts";
 import { compactionBoundaryFromMessage } from "./compaction-boundary-message.ts";
 import { CustomMessageComponent } from "./custom-message.ts";
+import { fromChatComponentFactory } from "./renderer-disposal.js";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 import type { TaskCompletionMessageOptions } from "./task-completion-message.js";
 import { countTasksBy, TaskRow, taskNameAndTitle, taskSiblings } from "./task-row.js";
@@ -105,7 +106,7 @@ export interface ChatMessageRenderOptions {
 	) => Component;
 	createCustomMessageComponent?: (message: CustomMessage<unknown>, context?: ChatRendererContext) => Component;
 }
-type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
+export type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
 export interface ChatEntryGrouping {
 	readonly tracker?: ToolGroupTracker;
 	readonly groupBash?: boolean;
@@ -181,6 +182,77 @@ function inferInterruptedToolActivity(
 	const names = [...new Set(interrupted.map((entry) => entry.toolName).filter(Boolean))];
 	return names.length > 0 ? names : undefined;
 }
+/** Tool cards drawn from a saved result whose call was not among the messages they were drawn with. */
+const resultsWithoutCall = new WeakSet<object>();
+
+/** Whether `entry` is a tool card drawn from a result alone: its call is on an earlier page, if anywhere. */
+export function isResultWithoutCall(entry: object): boolean {
+	return resultsWithoutCall.has(entry);
+}
+
+function isTurnStart(
+	entry: ChatMessageEntry | { role: string },
+): entry is Extract<ChatMessageEntry, { kind: "assistant" | "user" }> {
+	return isChatMessageEntry(entry) && (entry.kind === "assistant" || entry.kind === "user");
+}
+
+/**
+ * The calls of the last assistant message in `entries` that have no result there. When `entries` are a page of saved
+ * history with a later page, their results are saved after the page's end: they are not still running.
+ */
+export function callsAwaitingLaterResults(entries: readonly (ChatMessageEntry | { role: string })[]): ToolChatEntry[] {
+	const calls: ToolChatEntry[] = [];
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index]!;
+		if (isTurnStart(entry)) break;
+		if (
+			isChatMessageEntry(entry) &&
+			entry.kind === "tool" &&
+			entry.isPartial !== false &&
+			entry.result === undefined &&
+			!resultsWithoutCall.has(entry)
+		)
+			calls.unshift(entry);
+	}
+	return calls;
+}
+
+/**
+ * Whether `entry`, drawn after a page that ends with calls awaiting results, shows that their results were never
+ * saved: a call's result is saved before the next prompt and before the next reply. The entry `first` after the page
+ * may be the rest of the reply the page cut, so only a prompt shows it there.
+ */
+export function endsAwaitedResults(entry: ChatMessageEntry | { role: string }, first: boolean): boolean {
+	return isTurnStart(entry) && !(first && entry.kind === "assistant");
+}
+
+/**
+ * Draws `calls`, which `entry` showed never got results, as a whole transcript draws them: still pending, or failed
+ * with the error of the reply that ended the run.
+ */
+export function settleUnansweredCalls(
+	entry: ChatMessageEntry | { role: string },
+	calls: readonly ToolChatEntry[],
+): void {
+	const message = isChatMessageEntry(entry) && entry.kind === "assistant" ? entry.message : undefined;
+	if (message?.stopReason !== "aborted" && message?.stopReason !== "error") return;
+	const text =
+		message.stopReason === "aborted"
+			? message.errorMessage || "Operation aborted"
+			: message.errorMessage || "Unknown error";
+	for (const call of calls) {
+		call.result = {
+			role: "toolResult",
+			toolCallId: call.toolCallId,
+			toolName: call.toolName,
+			content: [{ type: "text", text }],
+			isError: true,
+			timestamp: message.timestamp,
+		};
+		call.isPartial = false;
+	}
+}
+
 function buildChatEntries(
 	messages: readonly AgentMessage[],
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
@@ -243,9 +315,12 @@ function buildChatEntries(
 				if (toolEntry) {
 					toolEntry.result = message;
 					toolEntry.isPartial = false;
+					carryRowSource(toolEntry, toolEntry, message);
 					pendingTools.delete(message.toolCallId);
+					// A saved card is known by its result: the same card whether a page cut fell between call and result.
+					onSourceRow?.(toolEntry, message, 0);
 				} else {
-					entries.push({
+					const card: ToolChatEntry = {
 						role: "tool",
 						kind: "tool",
 						toolName: message.toolName,
@@ -254,7 +329,9 @@ function buildChatEntries(
 						result: message,
 						isPartial: false,
 						argsComplete: true,
-					});
+					};
+					resultsWithoutCall.add(card);
+					entries.push(card);
 				}
 				break;
 			}
@@ -301,7 +378,10 @@ function buildChatEntries(
 				break;
 			}
 		}
-		if (onSourceRow) for (let i = first; i < entries.length; i++) onSourceRow(entries[i]!, message, i - first);
+		for (let i = first; i < entries.length; i++) {
+			noteRowSource(entries[i]!, { message, part: i - first });
+			onSourceRow?.(entries[i]!, message, i - first);
+		}
 	}
 	return entries;
 }
@@ -328,6 +408,8 @@ interface ToolEntryUpdate {
 	executionStarted?: boolean;
 	startedAt?: number;
 	breakBefore?: boolean;
+	/** The assistant message whose call this row shows, and the row's position among that message's rows. */
+	source?: { readonly message: object; readonly part: number };
 }
 export class LiveChatEntriesController {
 	private streamingAssistantIndex: number | undefined;
@@ -409,6 +491,15 @@ export class LiveChatEntriesController {
 		this.entries.push(...grouped.entries);
 		this.reindexPendingTools();
 	}
+	/** Adds saved history at `index`, as a newer saved page above a live window, keeping a stream in place. */
+	insertMessages(index: number, messages: readonly AgentMessage[]): void {
+		const entries = chatEntriesFromAgentMessages(messages, undefined, { groupBash: this.groupBash });
+		if (entries.length === 0) return;
+		this.entries.splice(index, 0, ...entries);
+		if (this.streamingAssistantIndex !== undefined && this.streamingAssistantIndex >= index)
+			this.streamingAssistantIndex += entries.length;
+		this.reindexPendingTools();
+	}
 	/** Adds earlier history ahead of every entry, keeping a stream in progress and its pending tools in place. */
 	prependMessages(messages: readonly AgentMessage[]): void {
 		const entries = chatEntriesFromAgentMessages(messages, undefined, { groupBash: this.groupBash });
@@ -450,6 +541,21 @@ export class LiveChatEntriesController {
 		this.entries.splice(0, this.entries.length, ...retained);
 		this.streamingAssistantIndex =
 			streaming && retained.includes(streaming) ? retained.indexOf(streaming) : undefined;
+		this.regroup();
+	}
+	/** Put saved entries back after `after`, as `dropSavedEntries` leaves the entries around them. */
+	restoreSavedEntries(after: LiveChatEntry, restored: readonly LiveChatEntry[]): void {
+		const at = this.entries.indexOf(after);
+		if (at < 0 || restored.length === 0) return;
+		const streaming =
+			this.streamingAssistantIndex === undefined ? undefined : this.entries[this.streamingAssistantIndex];
+		this.entries.splice(at + 1, 0, ...restored);
+		if (streaming !== undefined) this.streamingAssistantIndex = this.entries.indexOf(streaming);
+		this.regroup();
+	}
+	/** Groups every entry again; a call that no longer groups is drawn on its own, not with its old role. */
+	private regroup(): void {
+		for (const entry of this.entries) if (this.isToolEntry(entry)) entry.groupRole = undefined;
 		this.tracker.reset();
 		this.carriedToolBreak = groupChatEntries(this.entries, this.tracker);
 		this.reindexPendingTools();
@@ -458,6 +564,25 @@ export class LiveChatEntriesController {
 		this.entries.push({ role: "user", kind: "user", text });
 		this.tracker.break();
 		this.carriedToolBreak = false;
+	}
+	/**
+	 * Keep the rows a reader parked above the end sees through a replaced window: `kept` stay ahead of it, and a new row
+	 * of a message the reader sees is replaced by the row they see, found by its saved row key.
+	 */
+	keepParkedEntries(
+		kept: readonly object[],
+		adopted: ReadonlyMap<string, object>,
+		keyOf: (entry: object) => string | undefined,
+	): void {
+		const next = this.entries.map((entry) => {
+			const key = keyOf(entry);
+			return ((key === undefined ? undefined : adopted.get(key)) ?? entry) as LiveChatEntry;
+		});
+		this.entries.splice(0, this.entries.length, ...(kept as LiveChatEntry[]), ...next);
+		this.streamingAssistantIndex = undefined;
+		this.tracker.reset();
+		this.carriedToolBreak = groupChatEntries(this.entries, this.tracker);
+		this.reindexPendingTools();
 	}
 	/**
 	 * Seed the assistant message a chat mounted mid-stream never saw start.
@@ -541,7 +666,12 @@ export class LiveChatEntriesController {
 		}
 		if (message.role === "toolResult") {
 			const toolResult = message as ToolResultMessage;
-			if (this.findToolEntryIndex(toolResult.toolCallId) >= 0) return true;
+			const index = this.findToolEntryIndex(toolResult.toolCallId);
+			if (index >= 0) {
+				const row = this.entries[index]!;
+				carryRowSource(row, row, message);
+				return true;
+			}
 		}
 		const grouped = groupedChatEntries([message as AgentMessage], this.tracker, this.carriedToolBreak);
 		this.carriedToolBreak = grouped.carried;
@@ -593,21 +723,26 @@ export class LiveChatEntriesController {
 		);
 		if (existingIndex !== undefined) {
 			const previous = this.entries[existingIndex] as Extract<ChatMessageEntry, { kind: "assistant" }>;
-			this.entries[existingIndex] = {
+			const next = {
 				...previous,
 				message,
 				...(interruptedActivity ? { interruptedActivity } : {}),
 			};
+			this.entries[existingIndex] = next;
+			noteRowSource(next, { message, part: 0 });
 		} else {
-			this.entries.push({
+			const next: ChatMessageEntry = {
 				role: "assistant",
 				kind: "assistant",
 				message,
 				...(interruptedActivity ? { interruptedActivity } : {}),
-			});
+			};
+			this.entries.push(next);
+			noteRowSource(next, { message, part: 0 });
 			this.streamingAssistantIndex = this.entries.length - 1;
 		}
 		const calls = assistantCallBreaks(message.content, this.carriedToolBreak);
+		let part = 0;
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;
 			this.upsertToolEntry({
@@ -617,6 +752,7 @@ export class LiveChatEntriesController {
 				isPartial: true,
 				argsComplete,
 				breakBefore: calls.breakBefore.has(content.id),
+				source: { message, part: ++part },
 			});
 		}
 		return true;
@@ -649,10 +785,15 @@ export class LiveChatEntriesController {
 			this.entries.push(next);
 			this.tracker.append(toolCallId, next.toolName, toolEntryState(next), toolEntryRoleSink(next));
 		}
+		if (update.source) {
+			const result = rowSource(next)?.result;
+			noteRowSource(next, result === undefined ? update.source : { ...update.source, result });
+		}
 		this.pendingToolIndexes.set(toolCallId, index >= 0 ? index : this.entries.length - 1);
 		return true;
 	}
 	private replaceToolEntry(index: number, next: ToolChatEntry): void {
+		carryRowSource(this.entries[index], next);
 		this.entries[index] = next;
 		this.tracker.bind(next.toolCallId, toolEntryRoleSink(next));
 		this.tracker.settle(next.toolCallId, toolEntryState(next));
@@ -842,7 +983,7 @@ export function renderHostedChatEntry(
 					}),
 				);
 				seeding = false;
-				return component;
+				return fromChatComponentFactory(component);
 			}
 			let seeding = true;
 			const ui = {
@@ -918,7 +1059,7 @@ export function renderHostedChatEntry(
 					}),
 				);
 				seeding = false;
-				return component;
+				return fromChatComponentFactory(component);
 			}
 			const component = new CustomMessageComponent(
 				messageEntry.message,

@@ -1,0 +1,364 @@
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { ToolResultMessage } from "@bastani/atomic-ai/compat";
+import { type Component, Container } from "@bastani/atomic-tui";
+import {
+	SESSION_HISTORY_PAGE_ENTRIES,
+	type SessionHistoryPage,
+	type SessionHistoryReadOptions,
+} from "../../core/storage/session/types.js";
+import {
+	type ChatMessageEntry,
+	endsAwaitedResults,
+	renderChatMessageEntry,
+	settleUnansweredCalls,
+	type ToolChatEntry,
+} from "./components/chat-message-renderer.ts";
+import { disposeRenderer } from "./components/renderer-disposal.js";
+import type { SavedRendererInstances } from "./components/saved-renderer-instances.js";
+import { isClickExpandableBlock, observeClickExpansion } from "./components/transcript-block-clicks.ts";
+import type { InteractiveModeBase } from "./interactive-mode-base.ts";
+
+/** A tool card whose call's arguments can arrive after it is drawn. */
+type ArgumentsCard = Component & { updateArgs(args: unknown): void };
+
+function isArgumentsCard(component: Component): component is ArgumentsCard {
+	return typeof (component as Partial<ArgumentsCard>).updateArgs === "function";
+}
+
+/** The chat the saved pages are drawn in: it says whether a row is laid out in it now. */
+type SavedChat = Container & { windowRowSpan?(component: Component): unknown };
+
+/** A page edge never needs more entries than a page holds. */
+const BOUNDARY_ENTRIES = SESSION_HISTORY_PAGE_ENTRIES;
+
+/** The saved session the pages are read from. */
+interface SavedHistory {
+	readHistory(options: SessionHistoryReadOptions): AsyncGenerator<SessionHistoryPage, void>;
+}
+
+/** The saved result of a held call, the row it is saved as, and its card on the page after, when one was drawn. */
+interface HeldAnswer {
+	readonly message: ToolResultMessage;
+	readonly key: string;
+	card?: Component;
+}
+
+/**
+ * Where a call a page ends with is drawn by that page: nothing while the page after it shows the call's result card;
+ * the finished card while that page is not shown; or, when the entries after it prove no result was saved, the call
+ * as a whole transcript draws it.
+ */
+class HeldCallSlot extends Container {
+	answer?: HeldAnswer;
+	private revealed = false;
+	private readonly chat: SavedChat;
+	private readonly draw: (entry: ToolChatEntry, key: string, own: boolean) => Component[];
+	private readonly scope: SavedRendererInstances;
+	readonly entry: ToolChatEntry;
+	readonly key: string | undefined;
+
+	constructor(
+		entry: ToolChatEntry,
+		key: string | undefined,
+		chat: SavedChat,
+		scope: SavedRendererInstances,
+		draw: (entry: ToolChatEntry, key: string, own: boolean) => Component[],
+	) {
+		super();
+		this.entry = entry;
+		this.key = key;
+		this.chat = chat;
+		this.scope = scope;
+		this.draw = draw;
+	}
+
+	get waiting(): boolean {
+		return !this.revealed && this.answer === undefined;
+	}
+
+	/** No result was saved for the call: it shows as `turn`, the turn after it, leaves it. */
+	reveal(turn: ChatMessageEntry | undefined): void {
+		if (!this.waiting) return;
+		this.revealed = true;
+		if (turn) settleUnansweredCalls(turn, [this.entry]);
+		this.children.push(...this.draw(this.entry, this.key ?? "", true));
+	}
+
+	override render(width: number): string[] {
+		const answer = this.answer;
+		if (answer !== undefined && !this.revealed) {
+			const resultShown = answer.card !== undefined && this.chat.windowRowSpan?.(answer.card) !== undefined;
+			if (resultShown) {
+				this.release();
+				return [];
+			}
+			if (this.children.length === 0)
+				this.children.push(
+					...this.draw(
+						{ ...this.entry, result: answer.message, isPartial: false, argsComplete: true },
+						answer.key,
+						false,
+					),
+				);
+		}
+		return super.render(width);
+	}
+
+	private release(): void {
+		for (const child of this.children.splice(0)) if (!this.scope.protect(child)) disposeRenderer(child);
+	}
+
+	dispose(): void {
+		this.release();
+	}
+}
+
+/** What a drawn saved page shares with the pages drawn beside it. */
+interface SavedPageCalls {
+	readonly first: number;
+	readonly last: number;
+	readonly scope: SavedRendererInstances;
+	/** Calls the page ends with whose results may start the page after it. */
+	readonly held: Map<string, HeldCallSlot>;
+	/** Results drawn alone, whose calls may end the page before it: their entries, cards and saved rows. */
+	readonly results: Map<
+		string,
+		{ readonly entry: ToolChatEntry; readonly card: ArgumentsCard | undefined; readonly key: string; filled: boolean }
+	>;
+	/** The page's first prompt or reply: a later result answers no call made before the page. */
+	turn?: ChatMessageEntry;
+}
+
+/** A drawn page's calls, kept on an empty row at its start: they are released with the page's rows. */
+const pageCalls = new WeakMap<Component, SavedPageCalls>();
+
+/**
+ * Expansions a click chose for saved rows, by their row in the saved session, kept while their page is released and
+ * drawn again. Ctrl+O and another session forget them; only rows a click changed from the chat's setting are kept.
+ */
+const chosenExpansions = new WeakMap<
+	InteractiveModeBase,
+	{ readonly scope: SavedRendererInstances; readonly chosen: Map<string, boolean> }
+>();
+
+function chosenFor(mode: InteractiveModeBase, scope: SavedRendererInstances): Map<string, boolean> {
+	let choices = chosenExpansions.get(mode);
+	if (choices?.scope !== scope) {
+		choices = { scope, chosen: new Map() };
+		chosenExpansions.set(mode, choices);
+	}
+	return choices.chosen;
+}
+
+/** Ctrl+O sets every block: the expansions clicks chose for saved rows no longer apply. */
+export function forgetChosenSavedExpansions(mode: InteractiveModeBase): void {
+	chosenExpansions.delete(mode);
+}
+
+/** Draws `components`, the row `key` of a saved page, as a click last chose, and keeps each later click's choice. */
+export function followChosenExpansion(
+	mode: InteractiveModeBase,
+	scope: SavedRendererInstances,
+	key: string,
+	components: readonly Component[],
+): void {
+	const chosen = chosenFor(mode, scope);
+	const expanded = chosen.get(key);
+	for (const component of components) {
+		if (!isClickExpandableBlock(component)) continue;
+		if (expanded !== undefined) component.setExpanded(expanded);
+		observeClickExpansion(component, (choice) => {
+			// A row of a session the chat no longer shows keeps no choice for the one it shows now.
+			const shown = chosenExpansions.get(mode);
+			if (shown !== undefined && shown.scope !== scope) return;
+			const current = chosenFor(mode, scope);
+			if (choice === mode.toolOutputExpanded) current.delete(key);
+			else current.set(key, choice);
+		});
+	}
+}
+
+/** A saved prompt or reply, as the entry that decides whether the calls before it were answered. */
+function turnEntry(message: AgentMessage): ChatMessageEntry | undefined {
+	if (message.role === "assistant") return { role: "assistant", kind: "assistant", message };
+	if (message.role === "user") return { role: "user", kind: "user", text: "" };
+	return undefined;
+}
+
+/** A saved page under construction: what it holds back and draws from results alone. */
+export class SavedPageCallsBuilder {
+	private readonly calls: SavedPageCalls;
+	private readonly mode: InteractiveModeBase;
+	private readonly chat: SavedChat;
+	constructor(mode: InteractiveModeBase, chat: Container, seqs: readonly number[], scope: SavedRendererInstances) {
+		this.mode = mode;
+		this.chat = chat;
+		this.calls = {
+			first: seqs[0] ?? 0,
+			last: seqs.at(-1) ?? 0,
+			scope,
+			held: new Map(),
+			results: new Map(),
+		};
+	}
+
+	/** Holds `entry` back: its slot draws nothing until the entries after the page show what became of it. */
+	hold(entry: ToolChatEntry, key: string | undefined): Component {
+		const { mode } = this;
+		const scope = this.calls.scope;
+		const slot = new HeldCallSlot(entry, key, this.chat, scope, (card, row, own) => {
+			const kept = row ? scope.get(row) : undefined;
+			const components = kept ?? [renderChatMessageEntry(card, mode.chatMessageRenderOptions())];
+			// The finished card stands in for the result's own card, which keeps any renderer state; the call's own card
+			// is this page's row.
+			if (!kept && own && row) {
+				const [seq, block] = row.split(":");
+				scope.remember(row, components, { seq: Number(seq), block: Number(block) });
+			}
+			if (row) followChosenExpansion(mode, scope, row, components);
+			return [...components];
+		});
+		this.calls.held.set(entry.toolCallId, slot);
+		return slot;
+	}
+
+	/** `components` draw a result whose call is not on this page; `key` is its saved row. */
+	drewResult(entry: ToolChatEntry, components: readonly Component[], key: string): void {
+		this.calls.results.set(entry.toolCallId, { entry, card: components.find(isArgumentsCard), key, filled: false });
+	}
+
+	/** `entry` was drawn: the next prompt or reply ends what can answer a call of the page before. */
+	drew(entry: ChatMessageEntry): void {
+		// A page never ends inside a saved entry here, so the entry after it is never the rest of a cut reply.
+		if (this.calls.turn === undefined && endsAwaitedResults(entry, false)) this.calls.turn = entry;
+	}
+
+	/**
+	 * Joins the page's calls with the pages drawn beside it in the chat, and reads, one saved entry at a time, what its
+	 * edge cards need from pages that are not drawn: a result's card shows its call's arguments, and a held call shows
+	 * as its saved result or, when none was saved, as a whole transcript shows it. Returns the row that keeps the
+	 * page's calls, to draw first.
+	 */
+	finish(
+		manager: SavedHistory,
+		adjacent: { readonly older?: string; readonly newer?: string } | undefined,
+	): Component {
+		const page = this.calls;
+		const head = new Container();
+		pageCalls.set(head, page);
+		let before: SavedPageCalls | undefined;
+		let after: SavedPageCalls | undefined;
+		for (const child of this.chat.children) {
+			const other = pageCalls.get(child);
+			if (other === undefined || other === page || other.scope !== page.scope) continue;
+			if (other.last < page.first && (before === undefined || other.last > before.last)) before = other;
+			if (other.first > page.last && (after === undefined || other.first < after.first)) after = other;
+		}
+		if (before) joinPages(before, page);
+		if (after) joinPages(page, after);
+		const alive = () => this.mode.sessionManager === manager && this.chat.children.includes(head);
+		if (!after && adjacent?.newer && [...page.held.values()].some((slot) => slot.waiting))
+			void readAfter(this.mode, manager, page, adjacent.newer, alive);
+		const needing = [...page.results.values()].filter((result) => !result.filled);
+		if (!before && adjacent?.older && needing.length > 0)
+			void readBefore(this.mode, manager, needing, adjacent.older, alive);
+		return head;
+	}
+}
+
+function joinPages(older: SavedPageCalls, newer: SavedPageCalls): void {
+	for (const [id, slot] of older.held) {
+		const result = newer.results.get(id);
+		if (result) {
+			if (!result.filled) {
+				result.filled = true;
+				result.card?.updateArgs(slot.entry.args);
+			}
+			if (result.entry.result !== undefined)
+				slot.answer = { message: result.entry.result as ToolResultMessage, key: result.key, card: result.card };
+			continue;
+		}
+		if (newer.turn !== undefined) slot.reveal(newer.turn);
+	}
+}
+
+/** The one saved entry a single-entry read from `cursor` returns, with the cursors next to it. */
+async function readOneEntry(manager: SavedHistory, cursor: string) {
+	const reader = manager.readHistory({ cursor, adjacent: true, limit: 1 });
+	try {
+		const page = await reader.next();
+		if (page.done) return undefined;
+		const item = page.value.items[0];
+		return { entry: item && "entry" in item ? item.entry : undefined, seq: item?.seq, adjacent: page.value.adjacent };
+	} finally {
+		await reader.return();
+	}
+}
+
+/** Reads the entries after a page one at a time until its held calls' results, or the turn that ends them, show. */
+async function readAfter(
+	mode: InteractiveModeBase,
+	manager: SavedHistory,
+	page: SavedPageCalls,
+	cursor: string,
+	alive: () => boolean,
+): Promise<void> {
+	const waiting = () => [...page.held.values()].filter((slot) => slot.waiting);
+	let next: string | undefined = cursor;
+	try {
+		for (let step = 0; next !== undefined && step < BOUNDARY_ENTRIES && waiting().length > 0; step++) {
+			const read = await readOneEntry(manager, next);
+			if (!alive()) return;
+			next = read?.adjacent?.newer;
+			const entry = read?.entry;
+			if (entry?.type !== "message") continue;
+			const message = entry.message;
+			if (message.role === "toolResult") {
+				const slot = page.held.get(message.toolCallId);
+				if (slot?.waiting) slot.answer = { message, key: `${read!.seq}:0` };
+				continue;
+			}
+			const turn = turnEntry(message);
+			if (turn && endsAwaitedResults(turn, false)) for (const slot of waiting()) slot.reveal(turn);
+		}
+		// Nothing more is saved: as at the end of a whole transcript, the calls show as they were saved.
+		if (next === undefined && alive()) for (const slot of waiting()) slot.reveal(undefined);
+	} catch {
+		// A failed read leaves the calls held: nothing shown claims they are running.
+	}
+	mode.ui.requestRender();
+}
+
+/** Reads the entries before a page one at a time back to the reply whose calls its first result cards answer. */
+async function readBefore(
+	mode: InteractiveModeBase,
+	manager: SavedHistory,
+	needing: readonly { readonly entry: ToolChatEntry; readonly card: ArgumentsCard | undefined; filled: boolean }[],
+	cursor: string,
+	alive: () => boolean,
+): Promise<void> {
+	let next: string | undefined = cursor;
+	try {
+		for (let step = 0; next !== undefined && step < BOUNDARY_ENTRIES; step++) {
+			const read = await readOneEntry(manager, next);
+			if (!alive()) return;
+			next = read?.adjacent?.older;
+			const entry = read?.entry;
+			if (entry?.type !== "message") continue;
+			const message = entry.message;
+			if (message.role === "user") return;
+			if (message.role !== "assistant") continue;
+			for (const block of message.content) {
+				if (block.type !== "toolCall") continue;
+				const result = needing.find((candidate) => candidate.entry.toolCallId === block.id);
+				if (result === undefined || result.filled) continue;
+				result.filled = true;
+				result.card?.updateArgs(block.arguments);
+			}
+			mode.ui.requestRender();
+			return;
+		}
+	} catch {
+		// A failed read leaves the cards as their results alone show them.
+	}
+}
