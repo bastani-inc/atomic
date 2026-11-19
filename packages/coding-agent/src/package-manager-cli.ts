@@ -96,6 +96,8 @@ export async function refreshModelCatalogs(
 		const modelRuntime = await ModelRuntime.create({
 			credentials: AuthStorage.create(authPaths),
 			modelsPath: join(agentDir, "models.json"),
+			// The forced refresh below reads every list; reading a missing one first would read it twice.
+			allowModelNetwork: false,
 		});
 		const extensionsResult = resourceLoader.getExtensions();
 		if (extensionsResult.errors.length > 0) {

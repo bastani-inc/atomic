@@ -98,6 +98,7 @@ import {
 	resolveCliPaths,
 	resolveExcludedToolsForAppMode,
 	shouldStartRpcCatalogRefresh,
+	startupModelNetwork,
 	toPrintOutputMode,
 } from "./main-app-mode.ts";
 import {
@@ -625,6 +626,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			cwd,
 			agentDir,
 			settingsManager: startupSettingsManager,
+			allowModelNetwork: startupModelNetwork(parsed, appMode, engineEnv.child === "1"),
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderOptions: {
 				additionalExtensionPaths: resolvedExtensionPaths,
@@ -891,6 +893,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			cwd,
 			agentDir,
 			settingsManager: runtimeSettingsManager,
+			allowModelNetwork: startupModelNetwork(parsed, appMode, engineEnv.child === "1"),
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderReloadOptions: deferExtensions
 				? { deferExtensions: true, deferResources: true }

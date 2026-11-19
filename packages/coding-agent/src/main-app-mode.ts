@@ -52,6 +52,22 @@ export function shouldStartRpcCatalogRefresh(offline: boolean, interactiveEngine
 	return !offline && !interactiveEngineChild;
 }
 
+/**
+ * `allowModelNetwork` for the model runtime of a CLI session. Interactive startup, and the engine child that serves
+ * it, refresh model catalogs in the background once the UI is up, so their runtime reads nothing before that. `--help`
+ * needs no model list. Every other mode, `--list-models` included, reads a configured provider's account model list
+ * once when none is cached: `undefined` keeps the runtime's default.
+ */
+export function startupModelNetwork(
+	parsed: Pick<Args, "help" | "listModels">,
+	appMode: AppMode,
+	interactiveEngineChild: boolean,
+): false | undefined {
+	if (parsed.help) return false;
+	if (parsed.listModels !== undefined) return undefined;
+	return appMode === "interactive" || interactiveEngineChild ? false : undefined;
+}
+
 export async function prepareInitialMessage(
 	parsed: Args,
 	stdinContent?: string,

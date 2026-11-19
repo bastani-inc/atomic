@@ -359,6 +359,8 @@ async function constructAgentSession(
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
+	// Before the cache-only refresh: a cache-only pass would cancel a read still in flight for a supplied runtime.
+	await modelRuntime.fetchMissingModelLists();
 	await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));

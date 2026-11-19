@@ -57,6 +57,8 @@ export interface CreateAgentSessionServicesOptions {
 	agentDir?: string;
 	settingsManager?: SettingsManager;
 	modelRuntime?: ModelRuntime;
+	/** `allowModelNetwork` for the model runtime created when `modelRuntime` is omitted; see `ModelRuntime.create`. */
+	allowModelNetwork?: boolean;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
@@ -197,6 +199,7 @@ async function prepareOwnedAgentSessionServices(
 		(await ModelRuntime.create({
 			authPath: join(agentDir, "auth.json"),
 			modelsPath: join(agentDir, "models.json"),
+			allowModelNetwork: options.allowModelNetwork,
 		}));
 	endTimingSpan(modelRuntimeSpan);
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");

@@ -122,10 +122,15 @@ if (auto) {
 
 `ModelRuntime.create()` restores cached catalogs from local persistence but does not download
 the models.dev catalog unless you opt in. Pass `catalogBaseUrl` (or set `ATOMIC_MODEL_CATALOG_URL`) to read
-`<url>/api.json` from your own models.dev mirror instead of https://models.dev. `allowModelNetwork` (default `false`) enables a create-time network
-refresh, and `modelRefreshTimeoutMs` (default `15_000`) bounds how long that refresh may run
-before it is aborted. Pass `refreshOnCreate: false` to skip the initial catalog and
-availability refresh entirely; built-in models remain available.
+`<url>/api.json` from your own models.dev mirror instead of https://models.dev.
+
+`allowModelNetwork` decides what the runtime fetches by itself:
+
+- Omitted (the default): when a configured provider whose model list depends on your account (GitHub Copilot's account list, OpenRouter's per-key list) has no cached list yet, the runtime reads that list once, before models are resolved or listed, and caches it as a normal refresh does. `ModelRuntime.create()`, `getAvailable()`, `getAllAvailable()`, `getAvailableOfType()` and `createAgentSession()` all wait for it, so a model only your account offers resolves without running `atomic update --models` first. A provider with a cached list, even an old one, makes no request. Every runtime on one models store in a process shares one read, and a read that fails is not repeated in that process.
+- `true`: create() refreshes every catalog over the network.
+- `false`: the runtime never fetches a model catalog by itself.
+
+`modelRefreshTimeoutMs` (default `15_000`) bounds the create-time refresh and each missing-list read. Pass `signal` to stop create() waiting for them; `getAvailable()` and its variants stop waiting when their own `signal` aborts, and a read nobody waits for any more is cancelled. When a list cannot be read in time, offline, or the provider refuses the credential, the runtime keeps the bundled catalog and hides nothing. Pass `refreshOnCreate: false` to skip the initial catalog and availability refresh entirely; built-in models remain available.
 
 ```typescript
 const refreshedRuntime = await ModelRuntime.create({

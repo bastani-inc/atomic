@@ -7,10 +7,17 @@ export interface CreateModelRuntimeOptions {
 	modelsPath?: string | null;
 	modelsStore?: ModelsStore;
 	modelsStorePath?: string;
-	/** Allow create() to refresh model catalogs over the network. Defaults to false. */
+	/**
+	 * Model network use. `true`: create() refreshes every model catalog over the network. `false`: the runtime never
+	 * fetches a model catalog by itself. Omitted: a configured provider whose model list depends on the account
+	 * (GitHub Copilot, OpenRouter) and has never been cached gets its list read once, before models are resolved or
+	 * listed, and cached as a normal refresh caches it. Offline mode turns all of it off.
+	 */
 	allowModelNetwork?: boolean;
-	/** Timeout for the create-time network model refresh. */
+	/** Deadline for create()'s network model refresh, and for reading a missing model list. Defaults to 15 seconds. */
 	modelRefreshTimeoutMs?: number;
+	/** Stops create() waiting for model lists from the network; it then resolves with the cached catalogs. */
+	signal?: AbortSignal;
 	/** Skip the initial catalog and availability refresh. Static models remain available. */
 	refreshOnCreate?: boolean;
 	/** Base URL of the models.dev catalog (`<url>/api.json`) refreshes read. Default: `ATOMIC_MODEL_CATALOG_URL`, else https://models.dev. */

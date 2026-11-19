@@ -18,16 +18,21 @@ const CONFIGURED_DEFAULT_MODEL_UNAVAILABLE_MESSAGE =
 
 /**
  * Explain a saved GitHub Copilot model an authenticated catalog lacks. Copilot models beyond the
- * built-in catalog come from the account's model list, which is cached only after a catalog refresh.
+ * built-in catalog come from the account's model list, which is cached after a catalog refresh, or
+ * read once by a runtime that found none cached. A list read that way is current, so the hint does
+ * not ask for a refresh; a cached list may be old, and one that could not be read is not there.
  */
 export function uncachedCopilotModelHint(
 	provider: string,
 	modelId: string,
-	modelRuntime: Pick<ModelRuntime, "getModel" | "hasConfiguredAuth">,
+	modelRuntime: Pick<ModelRuntime, "getModel" | "hasConfiguredAuth" | "hasReadMissingModelList">,
 ): string | undefined {
 	provider = normalizeProviderId(provider);
 	if (provider !== "github-copilot" || modelRuntime.getModel(provider, modelId)) return undefined;
 	if (!modelRuntime.hasConfiguredAuth(provider)) return undefined;
+	if (modelRuntime.hasReadMissingModelList(provider)) {
+		return "it is not in the model list GitHub Copilot returned for this account; enable the model for your Copilot account";
+	}
 	return `it is not in the cached GitHub Copilot model list; run "${APP_NAME} update --models" to refresh it`;
 }
 

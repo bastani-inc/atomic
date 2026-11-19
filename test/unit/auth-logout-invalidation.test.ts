@@ -344,7 +344,11 @@ describe("logout credential invalidation (#1919)", () => {
 			deleteCalls += 1;
 			return originalDelete(...args);
 		};
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 		let reloadCalls = 0;
 		let reloadOptions: { refreshAvailability?: boolean } | undefined;
 		const originalReloadCredentials = modelRuntime.reloadCredentials.bind(modelRuntime);
