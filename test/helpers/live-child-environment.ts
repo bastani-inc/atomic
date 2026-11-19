@@ -101,7 +101,7 @@ export async function liveChildEnvironment(cleanups: Array<() => void>, liveOpti
 			modelRuntime,
 			...(liveOptions.fallbackModels ? { fallbackModels: [...liveOptions.fallbackModels] } : {}),
 			customTools: [waitTool, blockTool],
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, "web-access": false },
 		}),
 		...extra,
 	});

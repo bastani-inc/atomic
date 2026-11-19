@@ -17,7 +17,7 @@ import {
 const roots: string[] = [];
 const originalPackageDir = process.env.ATOMIC_PACKAGE_DIR;
 
-function createInstall(options: { spoof?: "workflows" } = {}): string {
+function createInstall(options: { spoof?: "subagents" } = {}): string {
 	const packageDir = mkdtempSync(join(tmpdir(), "atomic-native-builtins-"));
 	roots.push(packageDir);
 	for (const dirName of BUILTIN_PACKAGE_DIR_NAMES) {
@@ -49,7 +49,7 @@ afterEach(() => {
 	while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-test("trusts exactly the five identity-verified installed builtin entries", async () => {
+test("trusts exactly the four identity-verified installed builtin entries", async () => {
 	const packageDir = createInstall();
 	const expected = BUILTIN_PACKAGE_DIR_NAMES.map((dirName) =>
 		resolve(packageDir, "builtin", dirName, INSTALLED_EXTENSION_ENTRIES[dirName]),
@@ -62,27 +62,27 @@ test("does not infer builtin trust from suffixes, filenames, manifests, or sourc
 	const packageDir = createInstall();
 	const arbitrary = join(packageDir, "arbitrary.mjs");
 	writeFileSync(arbitrary, "export default function register() {}\n");
-	const workflowsDir = join(packageDir, "builtin", "workflows");
-	const sibling = join(workflowsDir, "sibling.mjs");
+	const subagentsDir = join(packageDir, "builtin", "subagents");
+	const sibling = join(subagentsDir, "sibling.mjs");
 	writeFileSync(sibling, "export default function register() {}\n");
 
 	expect(await isNativeBuiltinExtensionPath(arbitrary)).toBe(false);
-	expect(await isNativeBuiltinExtensionPath(join(workflowsDir, "manifest-only.bundle.mjs"))).toBe(false);
+	expect(await isNativeBuiltinExtensionPath(join(subagentsDir, "manifest-only.bundle.mjs"))).toBe(false);
 	expect(await isNativeBuiltinExtensionPath(sibling)).toBe(false);
-	expect(await isNativeBuiltinExtensionPath(join(workflowsDir, SOURCE_EXTENSION_ENTRIES.workflows))).toBe(false);
+	expect(await isNativeBuiltinExtensionPath(join(subagentsDir, SOURCE_EXTENSION_ENTRIES.subagents))).toBe(false);
 });
 
 test("rejects an installed-looking entry when the package identity is not Atomic-owned", async () => {
-	const packageDir = createInstall({ spoof: "workflows" });
-	const spoofedEntry = resolve(packageDir, "builtin", "workflows", INSTALLED_EXTENSION_ENTRIES.workflows);
+	const packageDir = createInstall({ spoof: "subagents" });
+	const spoofedEntry = resolve(packageDir, "builtin", "subagents", INSTALLED_EXTENSION_ENTRIES.subagents);
 
 	expect(await isNativeBuiltinExtensionPath(spoofedEntry)).toBe(false);
-	expect((await getNativeBuiltinExtensionEntries()).size).toBe(4);
+	expect((await getNativeBuiltinExtensionEntries()).size).toBe(3);
 });
 
 test("does not retain installed builtin factories in the native cache under Node", async () => {
 	const packageDir = createInstall();
-	const entry = resolve(packageDir, "builtin", "workflows", INSTALLED_EXTENSION_ENTRIES.workflows);
+	const entry = resolve(packageDir, "builtin", "subagents", INSTALLED_EXTENSION_ENTRIES.subagents);
 
 	expect(await isNativeBuiltinExtensionPath(entry)).toBe(true);
 	const factory = await loadExtensionModule(entry);

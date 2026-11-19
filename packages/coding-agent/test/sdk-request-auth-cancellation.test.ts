@@ -20,7 +20,7 @@ import { createTestResourceLoader } from "./utilities.ts";
 const REQUEST_AUTH_PREPARATION_TIMEOUT_MS = 15_000;
 const FIRST_AUTH_DELAY_MS = 14_000;
 const DEFAULT_AGENT_RETRY_BACKOFF_MS = 14_000;
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 /**
  * How long a wait may take for real session-store I/O (lock directories and JSONL

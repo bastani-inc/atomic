@@ -1,25 +1,19 @@
 ---
 title: First session
-description: Start Atomic, run a first task, invoke a built-in workflow, and steer a run.
+description: Start Atomic, run a first task, and inspect background work.
 ---
 
 # First session
 
-**Outcome:** You complete one interactive task and know how to monitor and steer it.
+**Outcome:** You complete one interactive task and know where to find its saved session.
 
 **Prerequisites:** [Authentication](/getting-started/authentication) is complete.
 
 ## First session
 
-On a fresh install with no prior startup state, Atomic shows a one-time explanation of its coding-agent runtime and verifiable workflows. It appears after any What's New notes, directly above the input box. Returning users with prior startup state skip it automatically; stored credentials alone do not skip it.
+On a fresh install with no prior startup state, Atomic shows a one-time explanation of the coding agent. It appears after any What's New notes, directly above the input box. Returning users with prior startup state skip it automatically; stored credentials alone do not skip it.
 
-The normal Atomic input is ready from the start. Type a message, run `/login` if no provider is connected, or launch a workflow command. No separate onboarding step is required.
-
-The agent decides whether a workflow fits. Non-trivial work with structure and a verifiable objective runs as a workflow unless you ask for inline execution: implementation, bug fixes, debugging, migrations, multi-file changes with validation, and requests phrased as "repeat until" or "fix until green". Brainstorming, discussion, unclear goals, tiny low-risk answers or edits, or an explicit request to work inline, quickly or without a workflow stays inline. To launch, inspect the input contract with `workflow inputs`, then call `workflow run` with the registered workflow name and inputs. Ask only for genuinely missing information.
-
-Atomic can discover and run named builtin, project, user, and package workflows; author a rich custom TypeScript `workflow({...})` inline; and compositionally import reusable workflow definitions—including builtins from `@bastani/atomic/workflows/builtin`—into parent workflows with `ctx.workflow(...)`. Nested children can nest again within `maxDepth`, so custom graphs can combine proven research, implementation, design, verification, and approval workflows instead of copying them. They can also classify and branch, dynamically fan out and synthesize artifacts, run adversarial repair cycles, tournament-rank candidates, and loop until checks pass with explicit bounds.
-
-Atomic turns repeatable engineering loops into executable stages with inspectable evidence instead of relying on a markdown checklist the model may or may not follow.
+The normal Atomic input is ready from the start. Type a message, run `/login` if no provider is connected, or use `/agents` to browse the available subagents. No separate onboarding step is required.
 
 ## Verify the session
 
@@ -43,61 +37,17 @@ Expected result: the session picker lists the run you just finished. That sessio
 
 With a session working, these are the fuller capabilities to reach for next. None of them is required for a first successful session.
 
-### Try the built-in workflows
+### Delegate a larger task
 
-Atomic ships with nine workflows you can run immediately. Ask the agent which workflows are installed and what inputs one takes; it checks them with the `workflow` tool.
-
-| Workflow | When to use | Example request |
-|---|---|---|
-| `classify-and-act` | Route requests through structured classification and low-confidence human fallback. | `Run classify-and-act to triage and handle this request` |
-| `fan-out-and-synthesize` | Partition independent slices, including repository-focused research, and synthesize their artifact evidence. | `Run fan-out-and-synthesize to map payment retries by subsystem and synthesize cited findings` |
-| `adversarial-verification` | Challenge a candidate with fresh verifiers and bounded repair. | `Run adversarial-verification on the migration patch` |
-| `generate-and-filter` | Generate, dedupe, filter, optionally judge, and shortlist candidates. | `Run generate-and-filter to propose names for the new command` |
-| `tournament` | Compare whole solutions through balanced pairwise judging. | `Run tournament to design the retry strategy` |
-| `loop-until-done` | Iterate with a durable ledger until completion or bound exhaustion. | `Run loop-until-done to repair failures until the test suite passes` |
-| `goal` | Autonomous work that needs a durable ledger, bounded sub-agent orchestration, receipts, and reviewer-gated completion. | `Run goal to update the CLI docs, add one example, and validate the docs build` |
-| `ralph` | Research-first autonomous work with prompt refinement, delegated implementation, and iterative multi-model review. | `Run ralph to implement specs/rate-limit.md and validate burst traffic` |
-| `open-claude-design` | UI and design-system work with one generated preview, one live review session, and export. | `Run open-claude-design to refresh the settings page hierarchy as a page` |
-
-The agent starts a workflow with the `workflow` tool, passing inputs as typed JSON values. Goal and Ralph support `git_worktree_dir` only when you explicitly want a reusable worktree, and skip PR creation unless you set `create_pr` to `true` for the post-approval final stage.
-
-Describe the task in chat and ask Atomic to run a matching installed workflow or author a task-specific one:
+Ask Atomic to split independent work between [subagents](/subagents). For example:
 
 ```text
-Fan out repository research by subsystem, save cited findings as artifacts, and synthesize the evidence.
+Ask one subagent to trace the retry logic and another to find its tests. Compare their findings and show me any gaps.
 ```
 
-```text
-Create a worker → fresh verifier → reducer workflow that updates the CLI docs, runs the docs build, and repairs evidence-backed findings until it passes or reaches a bounded stop.
-```
+Open `/tasks` to inspect background work and read a subagent's output. Use `/resume` to return to a saved conversation.
 
-```text
-Use goal to update the CLI docs, include one example, run the docs build, and finish only when reviewers approve the evidence.
-```
-
-```text
-Use ralph to research and implement specs/rate-limit.md, then review and repair it within three loops.
-```
-
-For these requests, Atomic decides between inline work and a workflow as described above and preserves your explicit approval gates. When you name a workflow, the agent runs that workflow. Goal provides a durable ledger and receipt-backed reviewer gate; Ralph provides a research-first implementation/review loop. Custom graphs can add domain-specific deterministic checks and bounded repairs.
-
-### Monitor and steer a run
-
-Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. `/workflows <id>` accepts the full id or a unique short prefix. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
-
-```text
-/workflows                         # browse running and completed workflows in this session
-/workflows <run-id>                # see agents working; chat with or steer each stage (F2 also opens latest)
-/resume                            # resume a run left by an earlier session or interrupted by a restart
-```
-
-`/workflows` lists each run's state and progress. In a run's graph, `p` pauses the run, `r` resumes it, and `q` twice quits it while keeping it resumable; the hint line lists the keys that work at that moment.
-
-Each run has a row in the agent panel below the prompt with its stage progress, current stage and elapsed time; a run waiting on one question shows it on the row; with several questions or a custom prompt, the row shows `needs input`. Press ↓ on an empty prompt and Enter on the run's row to open its graph.
-
-Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals. Open `/workflows <run-id>` and select the waiting node to answer them. The agent panel row shows that a run waits, and Enter on it opens the graph.
-
-Atomic also posts main-chat lifecycle notices when a run completes, fails, or awaits input. If you answer a workflow prompt in the graph or attached stage chat, the main chat receives a display-only answer summary for audit; it does not wake the model, enter LLM context, or answer later prompts. See [Workflow Operations](/workflows/operations) for the full run-control reference.
+Workflows are now skills. To use an older workflow, give Atomic the path and ask it to convert the file to a skill. In a trusted project, Atomic reads the definition as text and uses `skill-creator` to save a skill under `.atomic/skills/<name>/` for a project workflow, or `~/.atomic/agent/skills/<name>/` for a global one. The new skill uses codemode and subagents, with deterministic helper code in `scripts/`. Nothing is converted at startup. The old file is never executed, edited or deleted, and the conversion does not overwrite existing skills.
 
 ### Top skills to invoke directly
 
@@ -117,30 +67,6 @@ Skills are reusable expert instructions. Trigger one with `/skill:<name>` follow
 | `show-me` | Explain a topic visually with concise diagrams, code-shape sketches, or focused HTML artifacts. HumanLayer, MIT licensed. | `/skill:show-me` |
 
 Impeccable 4.9.1 runs its commands (`context`, `live`, `detect`, hooks, and the rest) through a self-contained engine binary instead of Node scripts. The bundled launcher, `scripts/impeccable` (`impeccable.cmd` on Windows), looks for a binary next to itself, then in `~/.impeccable/bin/`, and otherwise downloads the pinned engine release for your platform into `~/.impeccable/bin/<version>/` and verifies it against the SHA-256 digest that ships with the skill (`scripts/engine-checksums.txt`) before running it, so the first use needs network access. A download or a cached engine that does not match its digest is refused, and a binary next to the launcher that reports a different engine version is skipped. Point `IMPECCABLE_BIN` at a preinstalled engine or set `IMPECCABLE_HOME` to a writable cache when that is not possible. Atomic's launcher keeps the engine's anonymous telemetry pings and its `npx impeccable update` check switched off, since the skill ships with each Atomic release. A concept roll still fetches its catalog with a `GET /api/roll` request to `impeccable.style`, which carries the scope, mode, a short seed key, and a re-roll counter, but no project files, prompts, code, or conversation. Live sessions resolve to the selected app root and support SvelteKit, Nuxt, TanStack Start, Astro, Next.js, Vite, and static HTML injection. The image fallback runs only with `OPENAI_API_KEY`, sends prompts and optional reference images to OpenAI, or to the endpoint in `OPENAI_BASE_URL` when that variable is set, and spends that account's API credit. Generated image prompts are embedded in the image or a sidecar, so do not include secrets.
-
-Use `/skill:research-codebase` for a focused subsystem or question. For repository-wide research, use `fan-out-and-synthesize` with distinct repository partitions and an artifact synthesis barrier. Use Goal for ledger-backed bounded orchestration and Ralph for research-first delegated implementation with iterative review; task size alone does not select either workflow.
-
-### Create your own workflow in natural language
-
-Named workflows may be builtin, project, user, or package supplied. You do not have to hand-write TypeScript to add a new workflow. Describe what you want in plain chat and Atomic will design and write it for you using [Builtins and Dynamic Workflows](/workflows/builtins) and the [Custom Workflow Authoring](/workflows/authoring) reference as its source of truth:
-
-```text
-Create a reusable Atomic workflow called review-changes. It takes one
-required text input `target` (a diff, PR, or review focus). Run two reviewers
-in parallel with fresh context — one for correctness and missing tests, one
-for edge cases and maintainability — then a synthesis stage that
-consolidates findings into blockers vs. suggestions and returns
-{ consolidated_review, decision }.
-```
-
-Atomic will:
-
-- ask clarifying questions if stage purpose, inputs, models, or handoffs are ambiguous,
-- write a `.atomic/workflows/<name>.ts` definition that uses `workflow({ ... })` and imports `Type` from `typebox`,
-- run `/reload` so the generated workflow is rediscovered and can be launched,
-- then report the generated workflow folder so you can inspect the code it wrote, using `Custom workflow created. You can inspect its code at: <workflow-folder-path>` (for example, `.atomic/workflows/`); Atomic does this only for newly created custom workflows, never builtin or pre-existing workflows.
-
-The same plain-chat approach works for editing or hardening an existing workflow. For the full authoring reference, see [Custom Workflow Authoring](/workflows/authoring), including composition with user-defined workflows and all nine builtins from `@bastani/atomic/workflows/builtin`.
 
 ### Default tools and prompts
 

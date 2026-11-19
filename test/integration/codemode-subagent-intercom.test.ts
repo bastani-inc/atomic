@@ -27,7 +27,7 @@ test(
 			initialActiveToolNames: ["codemode", "subagent"],
 			childSessions: {
 				agentDir: broker.agentDir,
-				builtins: { workflows: false, subagents: false, intercom: true, mcp: false, "web-access": false },
+				builtins: { subagents: false, intercom: true, mcp: false, "web-access": false },
 			},
 		});
 		const target = Promise.withResolvers<string>();

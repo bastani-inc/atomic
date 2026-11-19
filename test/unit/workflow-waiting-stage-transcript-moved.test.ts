@@ -21,7 +21,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 const NOTIFICATION = { customType: "subagent-notify", content: "child finished", display: true } as const;
 const NOTIFICATION_OPTIONS = { triggerTurn: true, stageAdmissionKey: "subagent:child-1" } as const;
 

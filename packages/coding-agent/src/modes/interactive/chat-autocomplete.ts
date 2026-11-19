@@ -5,6 +5,7 @@ import {
 	CombinedAutocompleteProvider,
 	type SlashCommand,
 } from "@bastani/atomic-tui";
+import { isRetiredWorkflowCommand } from "../../core/slash-commands.js";
 
 const AT_MENTION_PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
 
@@ -69,10 +70,9 @@ class AtMentionFallbackAutocompleteProvider implements AutocompleteProvider {
 	): Promise<AutocompleteSuggestions | null> {
 		const primarySuggestions = await this.primary.getSuggestions(lines, cursorLine, cursorCol, options);
 		if (primarySuggestions || options.signal.aborted) {
-			if (
-				primarySuggestions?.prefix === "/workflow" &&
-				!primarySuggestions.items.some((item) => item.value === "workflow")
-			) {
+			// Submit the exact retired command on Enter; a fuzzy skill match is still selectable with Tab.
+			const prefix = primarySuggestions?.prefix;
+			if (primarySuggestions && prefix?.startsWith("/") && isRetiredWorkflowCommand(prefix.slice(1))) {
 				return { ...primarySuggestions, completeOnConfirm: false };
 			}
 			return primarySuggestions;

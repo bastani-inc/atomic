@@ -11,7 +11,7 @@ import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wir
 import type { StageSessionCreateResult } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 
 test("reattached stage reconstructs its saved custom model rather than using settings or parent models (#3432)", async () => {
 	const cwd = makeTempDirectory("atomic-stage-saved-custom-");

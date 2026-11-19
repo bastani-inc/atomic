@@ -13,7 +13,7 @@ import type {
 } from "../../core/agent-session-types.js";
 import { onDebugSettingChange } from "../../core/debug-setting.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
-import type { ExtensionError, HostSessionPickerRow } from "../../core/extensions/index.js";
+import type { ExtensionError } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
@@ -22,7 +22,6 @@ import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
 import { retryStatusUpdate, type SessionRetryStatus } from "../../core/session-retry-status.js";
 import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
-import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
 import { warnDeprecation } from "../../utils/deprecation.js";
@@ -377,27 +376,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** The engine owns extensions and tools; the host session has neither. */
 	async getToolStatus(): Promise<ToolStatusReport> {
 		return this.client.requestInternal<ToolStatusReport>({ type: "get_tools" });
-	}
-	async getWorkflowResumeEntries(target?: string): Promise<readonly HostSessionPickerRow[]> {
-		const response = await this.client.requestInternal<{ entries: readonly HostSessionPickerRow[] }>({
-			type: "get_workflow_resume_entries",
-			...(target !== undefined ? { target } : {}),
-		});
-		return validateWorkflowResumeEntries(response?.entries);
-	}
-	async resumeWorkflowFromPicker(
-		target: string,
-		selection?: HostSessionPickerRow["resumeSelection"],
-	): Promise<boolean> {
-		const response = await this.client.requestInternal<{ handled: boolean }>({
-			type: "resume_workflow_from_picker",
-			target,
-			...(selection === undefined ? {} : { selection }),
-		});
-		return response.handled;
-	}
-	async deleteWorkflowFromPicker(runId: string): Promise<void> {
-		await this.client.requestInternal<void>({ type: "delete_workflow_from_picker", runId });
 	}
 	async initializeFromEngine(generation = this.client.getGeneration?.()): Promise<void> {
 		const run = this.initializationTail

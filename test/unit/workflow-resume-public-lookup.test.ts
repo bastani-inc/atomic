@@ -6,7 +6,6 @@ import { Type } from "typebox";
 import { onTestFinished, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
-import { createEngineHostPair } from "../../packages/coding-agent/test/helpers/in-process-engine-pair.js";
 import "../../packages/coding-agent/src/modes/interactive/interactive-session-routing.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -86,96 +85,6 @@ async function publicResumeFixture(reblock = false) {
 	} as unknown as InteractiveModeBase;
 	return { backend, journal, runtime, deps, ctx, provider, errors, mode, executeBody, definition };
 }
-
-test("interactive /resume checks hidden stored roots for prefix collisions before executing (#5569)", async () => {
-	const { backend, errors, mode, executeBody, definition, provider } = await publicResumeFixture();
-	const eligible = id.replace("1111", "2222");
-	for (const workflowId of [id, eligible]) {
-		await backend.commitWorkflowRegistration({
-			workflowId,
-			name: definition.name,
-			inputs: {},
-			createdAt: 1,
-			status: "failed",
-			resumable: workflowId === eligible,
-		});
-		await backend.releaseWorkflow(workflowId);
-	}
-	assert.deepEqual(
-		(await provider.listResumeEntries()).map((row) => row.id),
-		[eligible],
-	);
-	await InteractiveModeBase.prototype.handleResumeTarget.call(mode, id.slice(0, 8).toUpperCase());
-	assert.equal(executeBody.mock.calls.length, 0);
-	assert.match(errors[0] ?? "", /ambiguous/);
-	for (const workflowId of [id, eligible]) assert.ok(errors[0]!.includes(workflowId));
-	await InteractiveModeBase.prototype.handleResumeTarget.call(mode, id);
-	assert.match(errors[1] ?? "", /not resumable/);
-	assert.equal(executeBody.mock.calls.length, 0);
-});
-
-test.each(["between listing and picking", "during the pick's lookup"] as const)(
-	"an isolated host cannot resume a newer block %s (#5569)",
-	async (when) => {
-		const { backend, runtime, deps, ctx, mode, provider, errors, executeBody, definition } =
-			await publicResumeFixture(true);
-		await backend.commitWorkflowRegistration({
-			workflowId: id,
-			name: definition.name,
-			inputs: {},
-			createdAt: 1,
-			status: "blocked",
-			resumable: true,
-		});
-		await backend.releaseWorkflow(id);
-		const execute = makeExecuteWorkflowTool(runtime, () => undefined, deps.ensureWorkflowResourcesLoaded, deps.owner);
-		const pair = await createEngineHostPair({
-			engineExtensions: [
-				(pi) => {
-					pi.registerWorkflowRunControl({
-						...createSessionRunControl({ ...deps.owner, context: () => ctx, execute }),
-						...provider,
-					});
-				},
-			],
-		});
-		onTestFinished(() => pair.cleanup());
-		mode.runtimeHost = pair.runtime;
-		const lookup = Promise.withResolvers<void>();
-		const release = Promise.withResolvers<void>();
-		const getRows = pair.runtime.getWorkflowResumeEntries.bind(pair.runtime);
-		vi.spyOn(pair.runtime, "getWorkflowResumeEntries").mockImplementation(async (target) => {
-			const rows = await getRows(target);
-			assert.ok(rows.some((row) => row.id === id));
-			if (when === "between listing and picking") lookup.resolve();
-			else
-				vi.spyOn(deps, "ensureWorkflowResourcesLoaded").mockImplementationOnce(async () => {
-					lookup.resolve();
-					await release.promise;
-				});
-			return rows;
-		});
-		if (when === "between listing and picking")
-			vi.spyOn(SessionManager, "listAll").mockImplementationOnce(async () => {
-				await release.promise;
-				return [];
-			});
-		const picking = InteractiveModeBase.prototype.handleResumeTarget.call(mode, id);
-		try {
-			await lookup.promise;
-			const competing = await runtime.resumeDurableWorkflow(id, { definition });
-			assert.ok(competing.ok, competing.message);
-			await deps.owner.jobs.get(id)?.promise;
-			assert.equal(deps.owner.store.run(id)?.status, "blocked");
-			assert.equal(executeBody.mock.calls.length, 1);
-		} finally {
-			release.resolve();
-			await picking;
-		}
-		assert.equal(executeBody.mock.calls.length, 1);
-		assert.match(errors.join("\n"), /changed.*refresh|stale.*refresh/i);
-	},
-);
 
 test("a local run without progress cannot hide a stored prefix collision from the resume command (#5569)", async () => {
 	const { backend, deps, ctx, errors, definition, executeBody } = await publicResumeFixture();
@@ -269,7 +178,7 @@ test.each(["workflow tool", "session SDK", "slash handler", "interactive host"] 
 				break;
 			case "interactive host":
 				await InteractiveModeBase.prototype.handleResumeTarget.call(mode, id);
-				assert.match(errors[0] ?? "", /No session or resumable workflow matches/);
+				assert.match(errors[0] ?? "", /No session matches/);
 				break;
 		}
 		assert.deepEqual(

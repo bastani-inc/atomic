@@ -25,7 +25,7 @@ import type { TaskSupervisor } from "../src/core/tasks/supervisor.js";
 import type { BashToolDetails } from "../src/core/tools/bash.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 type Kind = "session" | "process";
 

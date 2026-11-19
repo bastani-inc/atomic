@@ -1696,7 +1696,7 @@ describe("read-only reviewers in a workflow (#3109)", () => {
 				model,
 				modelRuntime,
 				settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
-				builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+				builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 			});
 			let text = "";
 			const parent = workflow({

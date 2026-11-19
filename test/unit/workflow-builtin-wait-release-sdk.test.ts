@@ -28,7 +28,7 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
 
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 const STAGES = 2;
 /**
  * Structural cost: each stage runs on the real `AgentSession` runtime with the SQLite session store, which loads the
