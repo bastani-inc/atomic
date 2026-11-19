@@ -116,6 +116,31 @@ test("a noted result stays the latest while an earlier result folds, and once it
 	assertReadsAsJournal();
 });
 
+test("folding an older retry restores pending task, answer and tool lookups without overriding a later completion (#5480)", async () => {
+	const first = [
+		taskResult("old", 500),
+		answer("old", 500),
+		toolResult("old-tie", "tie", 500),
+		toolResult("old-skew", "skew", 900),
+	];
+	const later = [
+		taskResult("new", 400),
+		answer("new", 400),
+		toolResult("new-tie", "tie", 500),
+		toolResult("new-skew", "skew", 600),
+	];
+	for (const c of first) await writer.commitCheckpoint(c);
+	for (const c of [...later, ...first]) reader.noteRecordedCheckpoint(c);
+	await reader.catchUpWorkflow("root");
+	assert.equal(reader.getStageOutput("root", "child:task"), "new");
+	assert.equal(reader.getUiResponse("root", "child:proceed"), "new");
+	assert.equal(reader.getToolOutput("root", "tie"), "new-tie");
+	assert.equal(reader.getToolOutput("root", "skew"), "old-skew");
+	for (const c of later) await writer.commitCheckpoint(c);
+	await reader.catchUpWorkflow("root");
+	assertReadsAsJournal();
+});
+
 test("a later noted result keeps its stage when an earlier noted result ships (#4768)", async () => {
 	const first = taskResult("first", 1_000);
 	const second = taskResult("second", 2_000);

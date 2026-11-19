@@ -702,11 +702,25 @@ interface JournalWorkflowRecord {
 	/** The highest attempt record folded, kept or only counted (#4874). */
 	attempt: number;
 	/**
-	 * Keys of the checkpoints noted before the run's journal held them (`noteCheckpoint`) whose events are not recorded
-	 * yet. The journal appends each after every event it held when it was noted, so until then each is later than every
-	 * checkpoint recorded.
+	 * Keys of locally acknowledged checkpoints whose journal events this reader has not folded, in receipt order.
+	 * A lost reply can delay a receipt past its checkpoint's shipment and past another checkpoint's receipt.
 	 */
 	noted?: Set<string>;
+	/** Pending receipts sharing each kind's lookup identity, so reconciling one does not visit unrelated work. */
+	notedByLookup?: Map<string, Set<string>>;
+}
+
+function checkpointLookupGroup(c: DurableCheckpoint): string {
+	return c.kind === "stage" ? `stage:${c.replayKey}` : c.kind === "tool" ? `tool:${c.argsHash}` : `ui:${c.promptHash}`;
+}
+
+function removeNoted(rec: JournalWorkflowRecord, key: string, c: DurableCheckpoint): boolean {
+	if (!rec.noted?.delete(key)) return false;
+	const identity = checkpointLookupGroup(c);
+	const group = rec.notedByLookup!.get(identity)!;
+	group.delete(key);
+	if (group.size === 0) rec.notedByLookup!.delete(identity);
+	return true;
 }
 
 export function checkpointKey(c: DurableCheckpoint): string {
@@ -953,32 +967,46 @@ class JournalProjection {
 		if (!rec) return;
 		const key = checkpointKey(recorded);
 		// The event of a noted checkpoint: the run holds it and counts it already, and from here on the journal orders it.
-		const shipped = rec.noted?.delete(key) === true ? normalizedCheckpoint(recorded) : undefined;
-		if (shipped !== undefined) {
+		const noted = rec.noted;
+		let shipped: DurableCheckpoint | undefined;
+		if (noted?.has(key)) {
+			// A retry after a lost reply can note an already shipped event after a newer unshipped receipt.
+			const group = rec.notedByLookup!.get(checkpointLookupGroup(recorded))!;
+			const outOfOrder = group.size > 1 && group.values().next().value !== key;
+			removeNoted(rec, key, recorded);
+			shipped = normalizedCheckpoint(recorded);
 			// Use the journal's payload: a snapshot whose blobs were collected before shipping is no longer in it.
 			rec.checkpoints.delete(key);
 			rec.checkpoints.set(key, shipped);
 			rec.sortedCheckpoints = undefined;
 			rec.nestedSnapshotVersion.record(shipped);
 			this.indexLookups(rec, shipped, false);
+			// The folded event belongs before the remaining receipts, including ones it had displaced at note time.
+			// FIFO shipments cannot have displaced a receipt that is still pending and need no replay.
+			if (outOfOrder) for (const id of group) this.indexLookups(rec, rec.checkpoints.get(id)!, true);
 		}
 		const checkpoint = shipped ?? this.index(rec, recorded);
 		if (checkpoint !== undefined) this.recordInHandle(rec, checkpoint);
 	}
 
 	/**
-	 * Records a checkpoint the run's journal does not hold yet, as `recordCheckpoint` does: one the journal will append
-	 * after every event it holds now, such as a pooled worker's checkpoint its host accepted and ships later (#4768).
-	 * Until its own event is recorded, a checkpoint recorded meanwhile is the earlier one and does not take its lookups;
-	 * that event then sets the run's handle as it would, and is not counted again.
+	 * Records a pooled worker's locally accepted checkpoint before the reader folds its journal event (#4768). Until
+	 * that event is folded, pending receipts follow the folded prefix in receipt order. The event then places the
+	 * checkpoint at its journal position without counting it again, including after a lost reply and retry.
 	 */
 	noteCheckpoint(recorded: DurableCheckpoint): void {
 		const rec = this.workflows.get(recorded.workflowId);
 		if (!rec) return;
 		const checkpoint = this.index(rec, recorded, true);
 		if (checkpoint === undefined) return;
+		const key = checkpointKey(checkpoint);
 		rec.noted ??= new Set();
-		rec.noted.add(checkpointKey(checkpoint));
+		rec.noted.add(key);
+		rec.notedByLookup ??= new Map();
+		const identity = checkpointLookupGroup(checkpoint);
+		const group = rec.notedByLookup.get(identity);
+		if (group) group.add(key);
+		else rec.notedByLookup.set(identity, new Set([key]));
 		this.recordInHandle(rec, checkpoint);
 	}
 
@@ -1019,6 +1047,7 @@ class JournalProjection {
 		rec.released += rec.checkpoints.size - pending.length;
 		if (pending.length) rec.handle = { ...rec.handle, completedCheckpoints: rec.released };
 		rec.noted = undefined;
+		rec.notedByLookup = undefined;
 		rec.checkpoints.clear();
 		rec.sortedCheckpoints = undefined;
 		rec.toolByHash.clear();
@@ -1046,7 +1075,7 @@ class JournalProjection {
 			if (checkpoint === undefined) continue;
 			rec.checkpoints.delete(key);
 			rec.sortedCheckpoints = undefined;
-			if (rec.noted?.delete(key) !== true) rec.released++;
+			if (!removeNoted(rec, key, checkpoint)) rec.released++;
 			if (checkpoint.kind === "tool") rec.toolByHash.delete(checkpoint.argsHash);
 			else if (checkpoint.kind === "ui") rec.uiByHash.delete(checkpoint.promptHash);
 			else {

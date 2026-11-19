@@ -1724,11 +1724,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return this.executions.has(runId);
 	}
 	/**
-	 * Notes a checkpoint the run recorded through another journal that this backend's journal does not hold yet: a pooled
-	 * worker's checkpoint its host accepted and will ship to the root's journal (#4768). Reads find it from now on, as if
-	 * it were folded after every event the journal holds now: an earlier event a catch-up folds meanwhile, even between
-	 * the turns of one fold, does not replace it (#5480). Once its own event is folded, the journal's stored payload
-	 * replaces the local one; the run reads as the journal does and counts it once.
+	 * Notes a checkpoint a pooled worker's host acknowledged locally (#4768). Pending receipts follow the journal
+	 * prefix this reader has folded, even between the turns of a catch-up. Once the receipt's own event folds, it takes
+	 * its position and payload from the journal, ahead of the remaining pending receipts, without counting it twice.
+	 * The row may already have shipped when a retry obtains the receipt for a lost reply (#5480).
 	 */
 	noteRecordedCheckpoint(checkpoint: DurableCheckpoint): void {
 		validateCheckpointInvocationFingerprint(checkpoint);
