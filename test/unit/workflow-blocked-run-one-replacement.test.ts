@@ -293,6 +293,21 @@ describe("two resumes of the same block start one replacement (#5534)", () => {
 		assert.equal(attempts.count, 2, "no third attempt");
 	});
 
+	test("a run that blocks again after its resume is resumed again by a request made after that block", async () => {
+		const { attempts, store, jobs, runId, runtime } = await recordedBlock();
+		const first = await runtime.resumeFailedRun(runId);
+		assert.ok(first.ok, first.message);
+		await jobs.get(runId)?.promise;
+		assert.equal(attempts.count, 2);
+		assert.equal(effectiveRunStatus(store.run(runId)!), "blocked", "the replacement blocked again");
+
+		const second = await runtime.resumeDurableWorkflow(runId, { actor: "user" });
+		assert.ok(second.ok, second.ok ? undefined : second.message);
+		await jobs.get(runId)?.promise;
+		assert.equal(attempts.count, 3, "the new block was resumed");
+		assert.equal(effectiveRunStatus(store.run(runId)!), "completed");
+	});
+
 	test("a resume that started nothing leaves the block to a request that saw it", async () => {
 		const { attempts, store, jobs, runId, runtime, holdNextRead } = await recordedBlock();
 		const read = holdNextRead();
