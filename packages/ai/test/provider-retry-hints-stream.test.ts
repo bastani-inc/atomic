@@ -7,6 +7,7 @@ import { stream as streamOpenAICompletions } from "../src/api/openai-completions
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
 import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
 import type { Model } from "../src/types.ts";
+import { createFetchWithAdmission } from "../src/utils/request-admission.ts";
 import { assistantRetryDelayMs } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -138,6 +139,24 @@ test.each([
 	assert.equal(result.stopReason, "error");
 	assert.match(result.errorMessage ?? "", /520/);
 	assert.equal(result.retryAfterMs, 45_000);
+});
+
+test("a retry that was on time before waiting for a provider slot is not sent after its deadline (#5627)", async () => {
+	const now = vi.spyOn(performance, "now").mockReturnValue(10);
+	const fetch = vi.fn(async () => new Response("busy", { status: 503, headers: { "retry-after-ms": "1" } }));
+	let admissions = 0;
+	const admitted = createFetchWithAdmission(fetch, async () => {
+		if (++admissions === 2) now.mockReturnValue(70);
+	});
+	const result = await streamOpenAICompletions(completionsModel, context, {
+		apiKey: "k",
+		maxRetries: 1,
+		retryDeadline: 60,
+		fetch: admitted,
+	}).result();
+	assert.equal(admissions, 2);
+	assert.equal(fetch.mock.calls.length, 1);
+	assert.equal(result.stopReason, "aborted");
 });
 
 test("openai-responses takes the larger of Retry-After and the body retry_after (#3623)", async () => {

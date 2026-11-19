@@ -7,6 +7,7 @@ import type {
 	ClassifierResult,
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import {
 	type ClassifierHttpError,
 	isRecord,
@@ -184,7 +185,7 @@ export const classify: ClassifierFunction<ClassifierOptions> = async (model, con
 		return output;
 	} catch (error) {
 		output.answers = {};
-		output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+		output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 		output.errorMessage = errorMessage(error);
 		return output;
 	}
