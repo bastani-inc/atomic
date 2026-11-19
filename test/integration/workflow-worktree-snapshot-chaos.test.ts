@@ -1,24 +1,18 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openNodeSqliteDatabase, SqlSnapshotBlobStore } from "@bastani/atomic/storage";
-import { Type } from "typebox";
+
 import { describe, test } from "vitest";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
 import { SNAPSHOT_INDEX_BACKFILL_BATCH } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
-import {
-	collectSnapshotGarbage,
-	snapshotBlob,
-	snapshotBlobHashes,
-} from "../../packages/coding-agent/src/core/worktree-snapshot/index.js";
+import { collectSnapshotGarbage, snapshotBlob } from "../../packages/coding-agent/src/core/worktree-snapshot/index.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { LegacySnapshotRows } from "../helpers/legacy-snapshot-rows.js";
+
 import { bunExecutable, spawnProcess } from "../helpers/runtime.js";
 import {
 	ageBlobs,
@@ -33,7 +27,6 @@ import {
 	syntheticSnapshot,
 	textBlob,
 } from "../helpers/snapshot-reference-index.js";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 const REAL_PROCESS_TIMEOUT_MS = 120_000;
 
@@ -48,133 +41,8 @@ const REAL_PROCESS_TIMEOUT_MS = 120_000;
 const RACE_GRACE_SECONDS = REAL_PROCESS_TIMEOUT_MS / 1000;
 
 /** The stall that loaded runner had between storing a blob and recording its checkpoint, rounded up. */
-const OBSERVED_STALL_SECONDS = 4;
 
 /** The grace window the race used before, shorter than {@link OBSERVED_STALL_SECONDS}. */
-const SHORT_GRACE_SECONDS = 2;
-
-const CAPTURE_CHILD = `
-import { openNodeSqliteDatabase } from "./packages/coding-agent/src/core/storage/node-sqlite.ts";
-import { SqlSnapshotBlobStore } from "./packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
-import { captureWorktreeSnapshot } from "./packages/coding-agent/src/core/worktree-snapshot/capture.ts";
-import { setWorktreeSnapshotGit } from "./packages/coding-agent/src/core/worktree-snapshot/git.ts";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-setWorktreeSnapshotGit(async () => ({ path: "git", env: { GIT_CONFIG_GLOBAL: process.env.FIXTURE_GIT_CONFIG, GIT_CONFIG_NOSYSTEM: "1" } }));
-const database = await openNodeSqliteDatabase(process.env.FIXTURE_DATABASE);
-const blobs = await SqlSnapshotBlobStore.open(database);
-writeFileSync(join(process.env.FIXTURE_REPO, "changed.txt"), "T2\\n");
-await captureWorktreeSnapshot(process.env.FIXTURE_REPO, {
-  previous: JSON.parse(process.env.FIXTURE_PREVIOUS),
-  blobs: {
-    getBlob: blobs.getBlob.bind(blobs),
-    refreshBlobs: blobs.refreshBlobs.bind(blobs),
-    listBlobHashes: blobs.listBlobHashes.bind(blobs),
-    async putBlobs(values) {
-      await blobs.putBlobs(values);
-      process.stdout.write("BLOBS_STORED\\n");
-      await new Promise(() => {});
-    },
-  },
-});
-`;
-
-test(
-	"SIGKILL between blob write and checkpoint publication leaves only resumable references (#4245)",
-	async () => {
-		const sandbox = new GitSandbox();
-		const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
-		process.env.ATOMIC_CODING_AGENT_DIR = sandbox.path("agent");
-		let child: ReturnType<typeof spawnProcess> | undefined;
-		let database: Awaited<ReturnType<typeof openNodeSqliteDatabase>> | undefined;
-		let backend: JournalDurableBackend | undefined;
-		try {
-			const { clone } = await sandbox.remoteWithClone();
-			const databasePath = sandbox.path("shared.sqlite");
-			database = await openNodeSqliteDatabase(databasePath);
-			let journal = await SqlRunJournal.open(database);
-			backend = await JournalDurableBackend.open(journal, { runs: [] });
-			let attempt = 0;
-			let calls = 0;
-			let resumedCwd = "";
-			const definition = workflow({
-				name: "capture-crash",
-				description: "",
-				inputs: {},
-				outputs: { ok: Type.Boolean() },
-				run: async (ctx) => {
-					await ctx.tool("write", {}, async () => {
-						calls++;
-						sandbox.write(join(ctx.cwd!, "changed.txt"), "T1\n");
-						return "done";
-					});
-					if (attempt++ === 0) throw new Error("interrupted");
-					resumedCwd = ctx.cwd!;
-					assert.equal(readFileSync(join(ctx.cwd!, "changed.txt"), "utf8"), "T1\n");
-					return { ok: true };
-				},
-			});
-			const first = await run(definition, {}, { cwd: clone, durableBackend: backend, store: createStore() });
-			assert.equal(first.status, "failed");
-			const before = await listWorkflowSnapshotBoundaries(journal, first.runId);
-			assert.equal(before.length, 1);
-			await backend.close();
-			backend = undefined;
-			await database.close();
-			database = undefined;
-			child = spawnProcess([bunExecutable(), "-e", CAPTURE_CHILD], {
-				cwd: process.cwd(),
-				env: {
-					...process.env,
-					FIXTURE_GIT_CONFIG: sandbox.globalConfig,
-					FIXTURE_DATABASE: databasePath,
-					FIXTURE_REPO: clone,
-					FIXTURE_PREVIOUS: JSON.stringify(before[0]!.snapshot),
-				},
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			assert.ok(child.stdout);
-			const read = child.stdout.getReader();
-			const message = await read.read();
-			assert.equal(new TextDecoder().decode(message.value), "BLOBS_STORED\n");
-			child.kill("SIGKILL");
-			await child.exited;
-			assert.equal(child.signalCode, "SIGKILL");
-			child = undefined;
-			database = await openNodeSqliteDatabase(databasePath);
-			journal = await SqlRunJournal.open(database);
-			backend = await JournalDurableBackend.open(journal, { runs: [first.runId] });
-			const after = await listWorkflowSnapshotBoundaries(journal, first.runId);
-			assert.equal(after.length, 1);
-			assert.equal(after[0]!.checkpointId, before[0]!.checkpointId);
-			for (const boundary of after) {
-				for (const hash of snapshotBlobHashes(boundary.snapshot))
-					assert.ok(await journal.snapshotBlobs.getBlob(hash));
-			}
-			const resumed = await run(
-				definition,
-				{},
-				{ runId: first.runId, cwd: clone, durableBackend: backend, store: createStore() },
-			);
-			assert.equal(resumed.status, "completed");
-			assert.equal(calls, 1);
-			assert.notEqual(resumedCwd, clone);
-			assert.equal(readFileSync(join(clone, "changed.txt"), "utf8"), "T2\n");
-		} finally {
-			if (child) {
-				child.kill("SIGKILL");
-				await child.exited;
-			}
-			await backend?.close();
-			await database?.close();
-			if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-			else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
-			sandbox.dispose();
-		}
-	},
-	REAL_PROCESS_TIMEOUT_MS,
-);
 
 test(
 	"sixteen concurrent journal connections deduplicate overlapping snapshot blobs (#4245)",
@@ -201,41 +69,6 @@ test(
 	REAL_PROCESS_TIMEOUT_MS,
 );
 
-test.each([
-	{ graceSeconds: SHORT_GRACE_SECONDS, outcome: "refused" },
-	{ graceSeconds: RACE_GRACE_SECONDS, outcome: "recorded" },
-] as const)(
-	"a capture that stalls between storing its blob and recording it, under a $graceSeconds s grace window, is $outcome (#4245)",
-	async ({ graceSeconds, outcome }) => {
-		const directory = await mkdtemp(join(tmpdir(), "workflow-snapshot-gc-stall-"));
-		const database = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
-		let journal: SqlRunJournal | undefined;
-		try {
-			journal = await SqlRunJournal.open(database);
-			const lease = await startRun(journal, "stalled");
-			await journal.append(lease, statusEvent("stalled", { status: "running" }, "RunStarted"));
-			const entry = textBlob("stored before the stall");
-			await journal.snapshotBlobs.putBlobs([entry]);
-			// The stall, on the database clock: collection runs once the unreferenced blob is that much older.
-			await ageBlobs(database, journal.snapshotBlobs.table, OBSERVED_STALL_SECONDS);
-			await collectSnapshotGarbage(journal.snapshotBlobs, { graceSeconds });
-			const recording = journal.append(lease, checkpointEvent([syntheticSnapshot(entry.hash, [entry.hash])]));
-			if (outcome === "recorded") {
-				await recording;
-				assert.deepEqual(await journal.snapshotBlobs.getBlob(entry.hash), entry.data);
-			} else {
-				// Collection took the blob during the stall, so the journal records nothing rather than an unrestorable snapshot.
-				await assert.rejects(recording, (error: Error & { code?: string }) => error.code === "blobs-collected");
-				assert.equal(await journal.snapshotBlobs.getBlob(entry.hash), undefined);
-			}
-		} finally {
-			await journal?.close();
-			await database.close();
-			await rm(directory, { recursive: true, force: true });
-		}
-	},
-);
-
 test(
 	"concurrent captures and garbage collection on one SQLite file never lose a blob that a capture referenced (#4245, #4355)",
 	async () => {
@@ -246,7 +79,9 @@ test(
 			Array.from({ length: WRITERS + 2 }, () => openNodeSqliteDatabase(join(directory, "shared.sqlite"))),
 		);
 		try {
-			const journals = await Promise.all(connections.map((database) => SqlRunJournal.open(database)));
+			// The tables are historical data, not something concurrent 0.10 hosts initialize.
+			await LegacySnapshotRows.open(connections[0]!);
+			const journals = await Promise.all(connections.map((database) => LegacySnapshotRows.open(database)));
 			const publishedBlobs: string[] = [];
 			const missing: string[] = [];
 			let writing = true;
@@ -306,7 +141,6 @@ test(
 				"the orphan was never collected",
 			);
 			assert.equal(new Set(await journals[0]!.snapshotBlobs.listBlobHashes()).size, new Set(publishedBlobs).size);
-			await Promise.all(journals.map((journal) => journal.close()));
 		} finally {
 			await Promise.all(connections.map((database) => database.close()));
 			await rm(directory, { recursive: true, force: true });
@@ -370,7 +204,7 @@ describe.each([
 			const databasePath = join(directory, "shared.sqlite");
 			const shared = await openSharedSnapshotDatabase(databasePath);
 			const writerDatabase = await openNodeSqliteDatabase(databasePath);
-			const writer = await SqlRunJournal.open(writerDatabase);
+			const writer = await LegacySnapshotRows.open(writerDatabase);
 			let child: ReturnType<typeof spawnProcess> | undefined;
 			try {
 				const blobs = Array.from({ length: 1200 }, (_, index) => textBlob(`blob-${index}`));
@@ -453,7 +287,7 @@ describe.each([
 					child.kill("SIGKILL");
 					await child.exited;
 				}
-				await writer.close();
+
 				await writerDatabase.close();
 				await shared.close();
 				await rm(directory, { recursive: true, force: true });
@@ -520,11 +354,11 @@ describe.each([
 			const databasePath = join(directory, "shared.sqlite");
 			const database = await openNodeSqliteDatabase(databasePath);
 			let child: ReturnType<typeof spawnProcess> | undefined;
-			let stores: { journal: SqlRunJournal; sessions: SqlSessionStore } | undefined;
+			let stores: { journal: LegacySnapshotRows; sessions: SqlSessionStore } | undefined;
 			try {
 				const written = {
 					sessions: await SqlSessionStore.open(database),
-					journal: await SqlRunJournal.open(database),
+					journal: await LegacySnapshotRows.open(database),
 				};
 				const lease = await startRun(written.journal, "big");
 				await written.journal.append(lease, statusEvent("big", { status: "running" }, "RunStarted"));
@@ -544,7 +378,7 @@ describe.each([
 				await written.journal.append(lease, statusEvent("big", { status: "failed" }));
 				await written.journal.snapshotBlobs.putBlobs([textBlob("unreferenced a"), textBlob("unreferenced b")]);
 				await database.run("UPDATE snapshot_blobs SET created_at = 1");
-				await written.journal.close();
+
 				await written.sessions.close();
 				await dropSnapshotIndex(database);
 
@@ -571,7 +405,10 @@ describe.each([
 					"only the batches that committed before the kill are recorded",
 				);
 				assert.ok(events!.backfilled_through < events!.watermark);
-				stores = { sessions: await SqlSessionStore.open(database), journal: await SqlRunJournal.open(database) };
+				stores = {
+					sessions: await SqlSessionStore.open(database),
+					journal: await LegacySnapshotRows.open(database),
+				};
 
 				const { deleted } = await collectSnapshotGarbage(stores.journal.snapshotBlobs);
 
@@ -591,7 +428,7 @@ describe.each([
 					child.kill("SIGKILL");
 					await child.exited;
 				}
-				await stores?.journal.close();
+
 				await stores?.sessions.close();
 				await database.close();
 				await rm(directory, { recursive: true, force: true });

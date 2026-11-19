@@ -293,7 +293,7 @@ test("reopening a session store and run journal finds their index triggers and c
 	for (let attempt = 0; attempt < 2; attempt++) {
 		const counted = countingDatabase(await openNodeSqliteDatabase(path));
 		const sessions = await SqlSessionStore.open(counted.wrapped);
-		const journal = await LegacySnapshotRows.open(counted.wrapped);
+		await LegacySnapshotRows.open(counted.wrapped);
 		opens.push(counted.statements.filter((statement) => statement.sql.includes("CREATE TRIGGER")).length);
 		closers.push(async () => {
 			await sessions.close();

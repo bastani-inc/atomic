@@ -9,6 +9,7 @@ import {
 	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
 } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { SqlSnapshotBlobStore } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
@@ -19,15 +20,8 @@ import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pendi
 import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
-import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
-import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
-import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
-import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
-import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
-import { openPoolSessions } from "../../packages/workflows/src/workers/pool-session-store.js";
-import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
+import { seedLegacyWorkflowTables } from "../helpers/legacy-store-0990.js";
+
 import { type PostgresScope, postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { moduleDir } from "../helpers/runtime.js";
 
@@ -92,22 +86,9 @@ const INTERCOM_STORES = [
 /** Opens every store Atomic keeps on a PostgreSQL database: sessions, the run journal, the worker pool and the Intercom broker state, as a broker does. */
 async function openEveryStore(scope: PostgresScope, prefix: string): Promise<void> {
 	const database = await scope.open();
+	// Exercise current identifiers alongside a real pre-0.10 schema, including the snapshot trigger upgrade.
+	await seedLegacyWorkflowTables(database, { prefix });
 	await (await SqlSessionStore.open(database, { prefix })).close();
-	const journal = await SqlRunJournal.open(database, { prefix });
-	try {
-		// The worker pool's stores, which live beside the run journal (#4793).
-		const queue = await openSqlPoolQueue(journal);
-		await openSqlPoolUsage(journal);
-		await SqlSharedPool.open(journal, queue);
-		await SqlFleetStore.open(journal);
-		await SqlRateBuckets.open(journal);
-		await SqlResourceAdmission.open(journal, { root: "root", holder: "holder" });
-		await (await openPoolSessions(sqlPoolStorage(journal)!)).close();
-	} finally {
-		await journal.close();
-	}
-	// The snapshot store indexes the pool's tables once they exist, as the next journal to open finds them.
-	await (await SqlRunJournal.open(database, { prefix })).close();
 	const intercom = await openIntercomBrokerState({ prefix, openDatabase: () => scope.open() });
 	await intercom.bus.close();
 	await intercom.state.close();
@@ -141,21 +122,14 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 			await withPostgresDatabase(async (scope) => {
 				const database = await scope.open();
 				const prefix = prefixOfLength(length);
-				const provider = new StorageProvider({
-					memory: () => assert.fail("a database selection opens no memory journal"),
-					sql: (database, options) => SqlRunJournal.open(database, options),
-				});
+				const provider = new StorageProvider();
 				const context = { agentDir: "/unused", domain: "sessions" } as const;
 				await assert.rejects(
 					provider.openSessionStore({ kind: "database", database, prefix }, context),
 					tooLong(prefix),
 				);
-				await assert.rejects(
-					provider.openRunJournal({ kind: "database", database, prefix }, { ...context, domain: "journal" }),
-					tooLong(prefix),
-				);
 				await assert.rejects(SqlSessionStore.open(database, { prefix }), tooLong(prefix));
-				await assert.rejects(SqlRunJournal.open(database, { prefix }), tooLong(prefix));
+
 				await assert.rejects(
 					openIntercomBrokerState({ prefix, openDatabase: () => scope.open() }),
 					tooLong(prefix),
@@ -178,12 +152,12 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 				return true;
 			};
 			await assert.rejects(SqlSessionStore.open(database, { prefix }), uppercase);
-			await assert.rejects(SqlRunJournal.open(database, { prefix }), uppercase);
+
 			await assert.rejects(openIntercomBrokerState({ prefix, openDatabase: () => scope.open() }), uppercase);
 			for (const open of INTERCOM_STORES) await assert.rejects(open({ database, prefix }), uppercase);
 			assert.deepEqual(await createdIdentifiers(database), []);
 			// The lowercase form works.
-			await (await SqlRunJournal.open(database, { prefix: "team_" })).close();
+			await (await SqlSessionStore.open(database, { prefix: "team_" })).close();
 		});
 	});
 
@@ -308,12 +282,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 				expectedSuffixes(prefix),
 				"no function of the earlier build's is left",
 			);
-			const journal = await SqlRunJournal.open(database, { prefix });
-			try {
-				await journal.snapshotBlobs.completeIndex();
-			} finally {
-				await journal.close();
-			}
+			await (await SqlSnapshotBlobStore.open(database, prefix)).completeIndex();
 			assert.deepEqual(
 				await carried(),
 				[{ owner: "root:root", hash: "missed-hash" }],
