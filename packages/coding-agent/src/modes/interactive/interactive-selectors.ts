@@ -4,6 +4,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
 	configureHttpDispatcher,
+	decisionSettingScopes,
 	getAvailableThemes,
 	refreshCustomThemes,
 	SettingsSelectorComponent,
@@ -79,7 +80,7 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 				availableClassifierModels: [...this.session.modelRuntime.getModelsOfType("classifier")],
 				modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
 				decisionModel: this.settingsManager.getDecisionModel(),
-				decisionModelScope: project.decisionModel === undefined ? "global" : "project",
+				...decisionSettingScopes(project),
 				availableCompactorModels: [...this.session.modelRuntime.getModelsOfType("compactor")],
 				morphAuthenticated: this.session.modelRuntime.hasConfiguredAuth("morph"),
 				compactionModel: this.settingsManager.getCompactionModel(),

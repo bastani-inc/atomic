@@ -10,7 +10,10 @@ import { isDecisionModelUnavailableError } from "../src/core/decision/errors.js"
 import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
-import { SettingsSelectorComponent } from "../src/modes/interactive/components/settings-selector.js";
+import {
+	decisionSettingScopes,
+	SettingsSelectorComponent,
+} from "../src/modes/interactive/components/settings-selector.js";
 import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.js";
 import { SelectSubmenu } from "../src/modes/interactive/components/settings-selector-submenus.js";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.js";
@@ -404,7 +407,7 @@ test("router menu edits the project override including Automatic without changin
 		writeFileSync(projectFile, JSON.stringify({ decisionModel: "typesafe/jev-latest", quietStartup: true }));
 		const manager = SettingsManager.create(directory, directory);
 		for (const next of ["", "test/nested/model"]) {
-			const scope = manager.getProjectSettings().decisionModel !== undefined ? "project" : "global";
+			const { decisionModelScope: scope } = decisionSettingScopes(manager.getProjectSettings());
 			const menu = openRouterSubmenu(
 				settingsConfig({
 					decisionModel: manager.getDecisionModel(),
