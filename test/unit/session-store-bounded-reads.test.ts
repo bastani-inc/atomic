@@ -224,6 +224,43 @@ function spillFiles(): {
 	};
 }
 
+for (const backend of ["memory", "jsonl"] as const) {
+	it(`an older ${backend} fork point can be resumed without decoding a giant message outside its window (#5554)`, async () => {
+		const spill = spillFiles();
+		const store =
+			backend === "memory"
+				? new MemorySessionStore(undefined, spill.historyFiles)
+				: await JsonlSessionStore.open(temporaryDirectory(), { exactDirectory: true });
+		const entries = compacted(22);
+		const cold = entries[2]!;
+		assert.ok(cold.type === "message" && cold.message.role === "user");
+		cold.message.content = "giant-retired-body".repeat(130_000);
+		const point = entries.at(-1)!.id;
+		entries.push(user("other", "m0", "other branch", 200));
+		await store.create(header, entries);
+		await store.readResume(header.id);
+		if (store instanceof MemorySessionStore) await store.releaseSession(header.id);
+		const expected = withoutEpoch(sessionResumeOf(header, entries, point));
+		const parse = JSON.parse;
+		const spy = vi.spyOn(JSON, "parse").mockImplementation((text, reviver) => {
+			assert.ok(
+				text.length < 1_048_576 || !text.includes("giant-retired-body"),
+				"decoded a giant retired conversation message",
+			);
+			return parse(text, reviver);
+		});
+		try {
+			const selected = await store.readResume(header.id, point);
+			assert.deepEqual(withoutEpoch(selected), expected);
+			assert.equal(spill.wholeReads(), 0);
+			assert.equal((await store.readResume(header.id)).leafId, "other");
+		} finally {
+			spy.mockRestore();
+			await store.close();
+		}
+	});
+}
+
 describe("bounded memory session reads (#5249)", () => {
 	it("reads a compacted session's tail, ranges and resume without decoding its history (#5249)", async () => {
 		for (const history of [20, 200]) {

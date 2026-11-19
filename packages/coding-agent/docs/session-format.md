@@ -16,7 +16,7 @@ For an explicitly selected JSONL store, sessions can be removed by deleting thei
 
 Delete individual sessions from `/resume`: select a session, press `CTRL+D`, then confirm. Database stores delete the selected session record. JSONL stores use the `trash` CLI when available.
 
-Newly assigned session and entry IDs must fit in 4,096 UTF-8 bytes. Existing sessions remain readable; a parent link can still refer to an older stored ID.
+An entry in the current window keeps its exact `id` and `parentId` strings. A multi-megabyte ID counts toward that window's memory even when its message is short, or when the only current record referencing it is a compaction boundary. Atomic does not shorten these IDs when copying or importing a session.
 
 ## Session Version
 

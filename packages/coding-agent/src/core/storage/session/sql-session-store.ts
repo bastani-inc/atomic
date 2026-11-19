@@ -62,12 +62,7 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import {
-	validateNewSessionId,
-	validateSessionEntries,
-	validateSessionHeader,
-	validateSessionText,
-} from "./validation.js";
+import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 /**
  * The newest sessions schema this build reads and writes. Version 2 stores long entries in chunks (#4954), which a build
@@ -614,8 +609,7 @@ export class SqlSessionStore implements SessionStore {
 	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
-		validateNewSessionId("header.id", header.id);
-		validateSessionEntries(entries, "new");
+		validateSessionEntries(entries);
 		return this.transaction(async (tx) => {
 			if (await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, header.id)) {
 				throw new SessionExistsError(header.id);
@@ -635,7 +629,7 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		return this.transaction(async (tx) => {
 			const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true);
-			validateSessionEntries(entries, "new");
+			validateSessionEntries(entries);
 			// A new snapshot record is written only while every blob it references is still stored (#5077).
 			await this.blobTable.assertStored(
 				tx,
@@ -667,7 +661,7 @@ export class SqlSessionStore implements SessionStore {
 		return this.transaction(async (tx) => {
 			await this.forWrite(tx, sessionId, options);
 			validateSessionHeader(header);
-			validateSessionEntries(entries, "new");
+			validateSessionEntries(entries);
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 			await this.searchIndex?.forgetWithin(tx, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);

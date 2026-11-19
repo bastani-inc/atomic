@@ -21,6 +21,7 @@ import lockfile from "proper-lockfile";
 import { createSessionCwdMatcherAsync } from "../../../utils/canonical-path.ts";
 import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
+import { branchStatePages } from "./branch-state-pages.js";
 import { validateSessionEntryStructure } from "./entry-structure.js";
 import { EntryTypeReader, JsonTextChecker } from "./entry-type.js";
 import {
@@ -52,8 +53,8 @@ import {
 	latestCompactionOf,
 	resumeIndexNeedsRefold,
 	type SessionResumeIndex,
+	selectResumeLeaf,
 	sessionResumeFrom,
-	sessionResumeOf,
 	sessionResumePlan,
 	sessionTailFrom,
 	stateSeqsBefore,
@@ -85,12 +86,7 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import {
-	validateNewSessionId,
-	validateSessionEntries,
-	validateSessionHeader,
-	validateSessionText,
-} from "./validation.js";
+import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 interface SessionFileState {
 	readonly stamp: string;
@@ -588,8 +584,7 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<SessionWriteResult> {
 		return this.run(async () => {
 			validateSessionHeader(header);
-			validateNewSessionId("header.id", header.id);
-			validateSessionEntries(entries, "new");
+			validateSessionEntries(entries);
 			if (await this.claimed(header.id)) throw new SessionExistsError(header.id);
 			const payload = this.encode(header, entries);
 			const path = location === undefined ? this.locationFor(header) : resolve(location);
@@ -621,7 +616,7 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		return this.run(async () => {
 			const { path, state } = await this.forWrite(sessionId, options);
-			validateSessionEntries(entries, "new");
+			validateSessionEntries(entries);
 			if (entries.length === 0) return { lastSeq: state.lastSeq };
 			if (state.torn) await truncate(path, state.size);
 			const lines = entries.map((entry) => JSON.stringify(entry));
@@ -676,7 +671,7 @@ export class JsonlSessionStore implements SessionStore {
 		return this.run(async () => {
 			const { path } = await this.forWrite(sessionId, options);
 			validateSessionHeader(header);
-			validateSessionEntries(entries, "new");
+			validateSessionEntries(entries);
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 			return { lastSeq: entries.length, epoch: await this.commit(path, header, entries) };
 		});
@@ -1044,12 +1039,18 @@ export class JsonlSessionStore implements SessionStore {
 			const { path, header, jsonl } = await this.indexed(sessionId);
 			const leafSeq =
 				leafId === undefined ? jsonl.index.leafSeq : ((await this.seqInFile(path, jsonl, leafId)) ?? 0);
-			if (leafSeq !== jsonl.index.leafSeq) {
-				const read = await this.entriesAt(path, jsonl, seqRange(1, jsonl.index.seq));
-				const entries = read.map((held) => held.entry);
-				return { ...sessionResumeOf(header, entries, leafId), epoch: jsonl.index.epoch };
-			}
-			const index = jsonl.index;
+			const index =
+				leafSeq === jsonl.index.leafSeq
+					? jsonl.index
+					: await selectResumeLeaf(
+							jsonl.index,
+							leafSeq,
+							branchStatePages(jsonl.index.seq, {
+								bytes: (seq) => spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+								read: (seqs) => this.entriesAt(path, jsonl, seqs),
+								chunk: (seq, offset, length) => readBytes(path, spanStart(jsonl, seq) + offset, length),
+							}),
+						);
 			const plan = sessionResumePlan(index);
 			const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));
 			const read = await this.entriesAt(path, jsonl, [...branchSeqs, ...plan.state]);
@@ -1057,6 +1058,15 @@ export class JsonlSessionStore implements SessionStore {
 			const branch = read.filter((held) => inBranch.has(held.seq));
 			const state = read.filter((held) => !inBranch.has(held.seq));
 			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
+			if (leafSeq !== jsonl.index.leafSeq) {
+				const stats = await stat(path, { bigint: true });
+				if (
+					`${stats.dev}:${stats.ino}` !== jsonl.identity ||
+					String(stats.mtimeNs) !== jsonl.mtimeNs ||
+					Number(stats.size) !== jsonl.fileSize
+				)
+					throw new SessionConflictError(sessionId, index.seq, index.seq);
+			}
 			return sessionResumeFrom(index, header, branch, state, leaf);
 		});
 	}

@@ -450,6 +450,49 @@ export function updateWorkflowStarts(open: Record<string, number>, entry: Sessio
 	else if (typeof data.name === "string" && typeof data.ts === "number") open[key] = seq;
 }
 
+function applyBranchState(
+	protocols: ResumeProtocols,
+	assistants: number[],
+	entry: SessionEntry,
+	seq: number,
+	active: boolean,
+	modelTransition: boolean,
+): boolean {
+	if (active && (entry.type === "model_change" || entry.type === "thinking_level_change"))
+		protocols.keepLatest(`setting:${entry.type}`, seq);
+	if (entry.type === "message" && entry.message?.role === "assistant") {
+		if (modelTransition) protocols.keepLatest(`model-transition:${seq}`, seq);
+		if (active) assistants.splice(0, assistants.length, seq);
+	}
+	protocols.apply(entry, seq, active);
+	if (entry.type !== "worktree_snapshot" || !active) return false;
+	if (entry.restore || entry.unrestored || entry.degradedFrom) return true;
+	protocols.keepLatest(`snapshot-ref:${JSON.stringify([entry.root, entry.snapshotId])}`, seq);
+	if (entry.captureMs != null) protocols.keepLatest(`snapshot-capture:${entry.root}`, seq);
+	return false;
+}
+
+/** Select another leaf without changing the saved index. Topology and billing do not depend on the selected
+ * branch. Fold only recovery state again; the supplied pages never collect the prior conversation. */
+export async function selectResumeLeaf(
+	index: SessionResumeIndex,
+	leafSeq: number,
+	pages: AsyncIterable<readonly SessionStoredEntry[]>,
+): Promise<SessionResumeIndex> {
+	const protocols = new ResumeProtocols();
+	const assistants: number[] = [];
+	const ranges = branchRanges(index, leafSeq);
+	const transitions = new Set(index.models.map(([seq]) => seq));
+	let hasRestoreHistory = false;
+	for await (const page of pages) {
+		for (const { entry, seq } of page) {
+			if (applyBranchState(protocols, assistants, entry, seq, onBranch(ranges, seq), transitions.has(seq)))
+				hasRestoreHistory = true;
+		}
+	}
+	return { ...index, ...protocols.serialize(), leafSeq, assistants, hasRestoreHistory };
+}
+
 export function foldSessionResume(
 	previous: SessionResumeIndex | undefined,
 	entries: readonly SessionEntry[],
@@ -516,30 +559,19 @@ export function foldSessionResume(
 		else if (entry.type === "branch_summary") summarySeq = undefined;
 		const branchActive = activeSeq?.(seq) ?? true;
 		if (entry.type === "model_change") models.push([seq, `${entry.provider}/${entry.modelId}`]);
-		if (branchActive && (entry.type === "model_change" || entry.type === "thinking_level_change"))
-			protocols.keepLatest(`setting:${entry.type}`, seq);
+		let modelTransition = false;
 		if (entry.type === "message" && entry.message?.role === "assistant") {
 			const key = `${entry.message.provider}/${entry.message.model}`;
 			const ranges = branchRanges({ jumps }, parentSeq);
 			const effective = models.findLast(([at]) => onBranch(ranges, at));
 			if (effective?.[1] !== key) {
 				models.push([seq, key]);
-				protocols.keepLatest(`model-transition:${seq}`, seq);
+				modelTransition = true;
 			}
-			if (branchActive) assistants.splice(0, assistants.length, seq);
 		}
-		protocols.apply(entry, seq, branchActive);
+		if (applyBranchState(protocols, assistants, entry, seq, branchActive, modelTransition)) hasRestoreHistory = true;
 		const plainSnapshot =
 			entry.type === "worktree_snapshot" && !entry.restore && !entry.unrestored && !entry.degradedFrom;
-		if (entry.type === "worktree_snapshot" && branchActive) {
-			if (!plainSnapshot) hasRestoreHistory = true;
-			else {
-				// With no restore/pin transitions, only the last occurrence of each checkout/record can affect
-				// its latest snapshot or ordered fallback heads. The record itself is retained independently.
-				protocols.keepLatest(`snapshot-ref:${JSON.stringify([entry.root, entry.snapshotId])}`, seq);
-				if (entry.captureMs != null) protocols.keepLatest(`snapshot-capture:${entry.root}`, seq);
-			}
-		}
 		if (!isSessionHistoryEntry(entry)) {
 			if (
 				(entry.type === "worktree_snapshot" && entry.snapshot !== undefined) ||
