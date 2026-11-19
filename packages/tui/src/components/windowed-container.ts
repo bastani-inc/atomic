@@ -9,12 +9,31 @@ export interface HistoryRowPosition {
 }
 const archivePositions = new WeakMap<Component, Omit<HistoryRowPosition, "line">>();
 
+/** The rows just outside a run of saved rows from one source, which stay in place when the run is released. */
+export interface HistoryRunEdges {
+	readonly source: symbol;
+	/** The last row above the run, if any. */
+	readonly above?: () => number | undefined;
+	/** The first row below the run, if any. */
+	readonly below?: () => number | undefined;
+}
+
 export interface WindowRows {
 	readonly length: number;
 	at(index: number): string | undefined;
 	/** A weak position within a painted leaf; resolving it never draws or requests history. */
 	trackRow?(index: number): (() => number | undefined) | undefined;
 	historyRow?(index: number): HistoryRowPosition | undefined;
+	/** Weak positions of the rows around the saved run that holds `index`; no render, read or retained leaf. */
+	historyEdges?(index: number): HistoryRunEdges | undefined;
+	/** Visit the rows of the mounted saved entries around `index` from `from` through `to`, in order, drawing an entry
+	 * not yet drawn at this width as the background sweep would. Never requests an unmounted page. */
+	visitHistoryRun?(
+		index: number,
+		from: HistoryRowPosition | undefined,
+		to: HistoryRowPosition | undefined,
+		visit: (line: string, position: HistoryRowPosition) => void,
+	): void;
 	/** Visit already rendered, non-replayable rows of an active selection, without requesting historical content. */
 	visitVolatileRows?(
 		first: number,
@@ -64,6 +83,11 @@ function weakRowPosition(
 		const span = component && owner.deref()?.windowRowSpan(component);
 		return span && span.bottom > span.top ? span.top + Math.min(within, span.bottom - span.top - 1) : undefined;
 	};
+}
+
+/** Order of two saved leaves, ignoring the row within them. */
+function compareLeaves(a: Omit<HistoryRowPosition, "line">, b: Omit<HistoryRowPosition, "line">): number {
+	return a.seq - b.seq || a.block - b.block || a.part - b.part;
 }
 
 const entries = new WeakMap<Component, Entry>();
@@ -167,6 +191,33 @@ export class WindowedContainer extends Container {
 				const anchor = this.locateAnchor(index);
 				const position = anchor && archivePositions.get(anchor.entry.component);
 				return position && anchor ? { ...position, line: anchor.within } : undefined;
+			},
+			historyEdges: (index) => {
+				const run = index >= 0 && index < length ? this.historyRunAt(index) : undefined;
+				if (!run) return undefined;
+				const owner = new WeakRef(this);
+				const edge = (index: number, within: number) =>
+					weakRowPosition(owner, new WeakRef(this.laidOut[index]!.component), within);
+				return {
+					source: run.source,
+					...(run.first > 0 ? { above: edge(run.first - 1, Number.MAX_SAFE_INTEGER) } : {}),
+					...(run.last + 1 < this.laidOut.length ? { below: edge(run.last + 1, 0) } : {}),
+				};
+			},
+			visitHistoryRun: (index, from, to, visit) => {
+				const run = index >= 0 && index < length ? this.historyRunAt(index) : undefined;
+				if (!run) return;
+				let moved = false;
+				for (let i = run.first; i <= run.last; i++) {
+					const entry = this.laidOut[i]!;
+					const position = archivePositions.get(entry.component);
+					if (position?.source !== run.source) continue;
+					if (from && compareLeaves(position, from) < 0) continue;
+					if (to && compareLeaves(position, to) > 0) continue;
+					if (!entry.current || entry.width !== this.width) moved = this.renderEntry(entry, this.width) || moved;
+					for (let line = 0; line < entry.lines.length; line++) visit(entry.lines[line]!, { ...position, line });
+				}
+				if (moved) this.requestRender?.();
 			},
 			visitVolatileRows: (first, last, visit) => {
 				if (!length || first >= length || last < 0) return;
@@ -276,6 +327,20 @@ export class WindowedContainer extends Container {
 			else high = middle - 1;
 		}
 		return Math.max(0, low);
+	}
+
+	/** The laid-out entries of the saved run around `row`: one source, possibly with empty rows between. */
+	private historyRunAt(row: number): { source: symbol; first: number; last: number } | undefined {
+		if (this.laidOut.length === 0) return undefined;
+		const at = this.indexAt(row);
+		const source = archivePositions.get(this.laidOut[at]!.component)?.source;
+		if (!source) return undefined;
+		const inRun = (entry: Entry) => entry.height === 0 || archivePositions.get(entry.component)?.source === source;
+		let first = at,
+			last = at;
+		while (first > 0 && inRun(this.laidOut[first - 1]!)) first--;
+		while (last + 1 < this.laidOut.length && inRun(this.laidOut[last + 1]!)) last++;
+		return { source, first, last };
 	}
 
 	private locateAnchor(top: number): { entry: Entry; within: number } | undefined {
