@@ -1,10 +1,11 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { ToolResultMessage } from "@bastani/atomic-ai/compat";
 import { type Component, Container } from "@bastani/atomic-tui";
-import {
-	SESSION_HISTORY_PAGE_ENTRIES,
-	type SessionHistoryPage,
-	type SessionHistoryReadOptions,
+import { chunkedToolResult, chunkedToolResultEntry } from "../../core/storage/session/chunked-tool-result.js";
+import type {
+	OversizedSessionEntry,
+	SessionHistoryPage,
+	SessionHistoryReadOptions,
 } from "../../core/storage/session/types.js";
 import {
 	type ChatMessageEntry,
@@ -28,12 +29,57 @@ function isArgumentsCard(component: Component): component is ArgumentsCard {
 /** The chat the saved pages are drawn in: it says whether a row is laid out in it now. */
 type SavedChat = Container & { windowRowSpan?(component: Component): unknown };
 
-/** A page edge never needs more entries than a page holds. */
-const BOUNDARY_ENTRIES = SESSION_HISTORY_PAGE_ENTRIES;
-
 /** The saved session the pages are read from. */
 interface SavedHistory {
 	readHistory(options: SessionHistoryReadOptions): AsyncGenerator<SessionHistoryPage, void>;
+	readHistoryChunks(
+		reference: OversizedSessionEntry,
+		options?: { readonly signal?: AbortSignal },
+	): AsyncGenerator<Uint8Array, void>;
+}
+
+/** Where to read the original bytes of a saved row too large to show. */
+function oversizedNote(item: OversizedSessionEntry): string {
+	return `Saved entry ${item.seq} is ${item.bytes} bytes. Read the original bytes with the session history reader or export this session.`;
+}
+
+/**
+ * The tool result a saved row too large to show holds, read field by field from its stored text without decoding its
+ * body, as the entry its card draws; undefined for any other row or when its bytes cannot be read.
+ */
+async function oversizedToolResult(
+	history: SavedHistory,
+	item: OversizedSessionEntry,
+	signal?: AbortSignal,
+): Promise<SessionHistoryPage["items"][number] | undefined> {
+	try {
+		const result = await chunkedToolResult(history.readHistoryChunks(item, signal ? { signal } : {}));
+		return (
+			result && {
+				seq: item.seq,
+				entry: chunkedToolResultEntry(result, `oversized-${item.seq}`, oversizedNote(item)),
+			}
+		);
+	} catch {
+		signal?.throwIfAborted();
+		return undefined;
+	}
+}
+
+/**
+ * `page` with each tool result too large to show read as its card needs it, so its call shows finished or failed as a
+ * whole read shows it; other oversized rows stay as they were read.
+ */
+export async function withOversizedToolResults(
+	history: SavedHistory,
+	page: SessionHistoryPage,
+	signal?: AbortSignal,
+): Promise<SessionHistoryPage> {
+	if (page.items.every((item) => "entry" in item)) return page;
+	const items: SessionHistoryPage["items"][number][] = [];
+	for (const item of page.items)
+		items.push(("entry" in item ? undefined : await oversizedToolResult(history, item, signal)) ?? item);
+	return { ...page, items };
 }
 
 /** The saved result of a held call, the row it is saved as, and its card on the page after, when one was drawn. */
@@ -285,14 +331,16 @@ function joinPages(older: SavedPageCalls, newer: SavedPageCalls): void {
 /** The one saved entry a single-entry read from `cursor` returns, with the cursors next to it. */
 async function readOneEntry(manager: SavedHistory, cursor: string) {
 	const reader = manager.readHistory({ cursor, adjacent: true, limit: 1 });
+	let page: SessionHistoryPage;
 	try {
-		const page = await reader.next();
-		if (page.done) return undefined;
-		const item = page.value.items[0];
-		return { entry: item && "entry" in item ? item.entry : undefined, seq: item?.seq, adjacent: page.value.adjacent };
+		const next = await reader.next();
+		if (next.done) return undefined;
+		page = next.value;
 	} finally {
 		await reader.return();
 	}
+	const [item] = (await withOversizedToolResults(manager, page)).items;
+	return { entry: item && "entry" in item ? item.entry : undefined, seq: item?.seq, adjacent: page.adjacent };
 }
 
 /** Reads the entries after a page one at a time until its held calls' results, or the turn that ends them, show. */
@@ -306,7 +354,8 @@ async function readAfter(
 	const waiting = () => [...page.held.values()].filter((slot) => slot.waiting);
 	let next: string | undefined = cursor;
 	try {
-		for (let step = 0; next !== undefined && step < BOUNDARY_ENTRIES && waiting().length > 0; step++) {
+		// No cap: entries are read one at a time, bounded each, until the result or a real turn boundary decides.
+		while (next !== undefined && waiting().length > 0) {
 			const read = await readOneEntry(manager, next);
 			if (!alive()) return;
 			next = read?.adjacent?.newer;
@@ -339,7 +388,7 @@ async function readBefore(
 ): Promise<void> {
 	let next: string | undefined = cursor;
 	try {
-		for (let step = 0; next !== undefined && step < BOUNDARY_ENTRIES; step++) {
+		while (next !== undefined) {
 			const read = await readOneEntry(manager, next);
 			if (!alive()) return;
 			next = read?.adjacent?.older;

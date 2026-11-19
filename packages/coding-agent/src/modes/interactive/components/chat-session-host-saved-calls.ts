@@ -1,6 +1,5 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { ToolResultMessage } from "@bastani/atomic-ai/compat";
-import { SESSION_HISTORY_PAGE_ENTRIES } from "../../../core/storage/session/types.js";
 import { bindSavedTaskRowKey, savedTaskRowKey, savedTaskRows } from "../../../core/tasks/transcript-origin.js";
 import {
 	type ChatMessageEntry,
@@ -24,9 +23,6 @@ export interface SavedPageNeighbours {
 	/** The entries after the page, oldest first. Present when a later page follows the page. */
 	readonly after?: SavedEntryReader;
 }
-
-/** A page edge never needs more entries than a page holds. */
-const BOUNDARY_ENTRIES = SESSION_HISTORY_PAGE_ENTRIES;
 
 interface HeldCall {
 	readonly call: ToolChatEntry;
@@ -267,7 +263,8 @@ export class SavedPageCalls<TExtraEntry extends ChatTranscriptEntryLike> {
 		const entries = read();
 		let first = true;
 		try {
-			for (let step = 0; step < BOUNDARY_ENTRIES; step++) {
+			// No cap: one saved entry per step, until the result or a real turn boundary decides.
+			for (;;) {
 				const next = await entries.next();
 				if (!this.pages.includes(record)) return;
 				// Nothing is saved after the page: as at the end of a whole transcript, the calls stay as they were saved.
@@ -307,7 +304,7 @@ export class SavedPageCalls<TExtraEntry extends ChatTranscriptEntryLike> {
 	): Promise<void> {
 		const entries = read();
 		try {
-			for (let step = 0; step < BOUNDARY_ENTRIES; step++) {
+			for (;;) {
 				const next = await entries.next();
 				if (!this.pages.includes(record) || next.done) return;
 				// Read newest first: a reply is the first prompt or reply before its results.

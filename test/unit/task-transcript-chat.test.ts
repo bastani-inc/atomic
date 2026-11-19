@@ -678,16 +678,33 @@ async function openSavedTranscript(session: SessionManager) {
 	 * matching `holdAfter` is read, later page reads wait for `release`.
 	 */
 	const gate = Promise.withResolvers<void>();
-	const reads: { entries: number; pages: number; holdAfter?: RegExp; held?: Promise<void>; release(): void } = {
+	const reads: {
+		entries: number;
+		pages: number;
+		/** Bytes of saved rows too large for a page, read in chunks. */
+		streamed: number;
+		holdAfter?: RegExp;
+		held?: Promise<void>;
+		release(): void;
+	} = {
 		entries: 0,
 		pages: 0,
+		streamed: 0,
 		release: () => gate.resolve(),
 	};
+	const chunks = session.readHistoryChunks.bind(session);
 	const host = await openTranscript(
 		{
 			getSessionId: () => session.getSessionId(),
 			getEntries: () => [],
 			readHistory: session.readHistory.bind(session),
+			readHistoryChunks: (reference, options) =>
+				(async function* () {
+					for await (const chunk of chunks(reference, options)) {
+						reads.streamed += chunk.length;
+						yield chunk;
+					}
+				})(),
 			loadHistory: async () => {
 				throw new Error("whole transcript loaded");
 			},
@@ -873,6 +890,110 @@ test.each([
 		}
 	},
 );
+
+/** A 2 MiB tool output: twice what a history page holds, so its saved row is read in chunks, not decoded. */
+const twoMiB = Array.from({ length: 66_000 }, (_, i) => `big line ${String(i).padStart(22, "0")}`).join("\n");
+
+/** Runs `run` counting what it decodes with JSON.parse: the largest text. */
+async function largestParse(run: () => Promise<void>): Promise<number> {
+	const parse = JSON.parse;
+	let largest = 0;
+	JSON.parse = ((text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+		largest = Math.max(largest, text.length);
+		return parse(text, reviver);
+	}) as typeof JSON.parse;
+	try {
+		await run();
+		return largest;
+	} finally {
+		JSON.parse = parse;
+	}
+}
+
+test("a saved task chat shows a call whose result is too large for a page finished, as a whole read does, without decoding it (#5593)", async () => {
+	assert.ok(twoMiB.length >= 2 * 1024 * 1024);
+	// The whole transcript, read in memory as before paging: the card shows its call finished.
+	const whole = SessionManager.inMemory();
+	await whole.appendMessage({ role: "user", content: "P-000", timestamp: 0 });
+	await whole.appendMessage(
+		assistant([{ type: "toolCall", id: "call-big", name: "read", arguments: { path: "big.txt" } }], "toolUse"),
+	);
+	await whole.appendMessage({
+		role: "toolResult",
+		toolCallId: "call-big",
+		toolName: "read",
+		content: [{ type: "text", text: twoMiB }],
+		isError: false,
+		timestamp: 2,
+	});
+	await whole.appendMessage({ role: "user", content: "P-001", timestamp: 3 });
+	const main = await openTranscript({
+		getSessionId: () => whole.getSessionId(),
+		getEntries: () => whole.getEntries(),
+	});
+	let header: string | undefined;
+	try {
+		for (let i = 0; i < 20 && !/Read\(big\.txt\)/.test(main.text()); i++) await flush();
+		header = main.frame().find((row) => /Read\(big\.txt\)/.test(row));
+		assert.match(header ?? "", /● Read\(big\.txt\)/, "a whole read shows the call finished");
+	} finally {
+		await main.dispose();
+	}
+
+	// Read back from entry 301, the result at 174 is a page of its own and 110..173 ends with its call: read on again
+	// after the start, the call's page is shown at the bottom before the result's.
+	const session = await sessionWithCalls(299, 171, [
+		{ id: "call-big", name: "read", args: { path: "big.txt" }, result: twoMiB },
+	]);
+	const { host, held, reads } = await openSavedTranscript(session);
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 40 && !host.text().includes("P-000"); i++) await flush();
+		assert.match(held(), /P-000/);
+		reads.entries = 0;
+		reads.streamed = 0;
+		reads.holdAfter = /P-171/;
+		const largest = await largestParse(async () => {
+			for (let i = 0; i < 80 && !/P-171/.test(held()); i++) {
+				host.inspector.handleInput(PAGE_DOWN);
+				await flush();
+			}
+			for (let i = 0; i < 40 && !/Read\(big\.txt\)/.test(held()); i++) await flush();
+		});
+		const rows = held();
+		assert.doesNotMatch(rows, /P-172/, "the result's page is not shown");
+		assert.equal(rows.match(/Read\(big\.txt\)/g)?.length, 1, rows);
+		assert.doesNotMatch(rows, /∀/, "the call is not drawn as still running");
+		assert.equal(
+			rows.split("\n").find((row) => /Read\(big\.txt\)/.test(row)),
+			header,
+			"the card shows the call finished as a whole read does",
+		);
+		assert.equal(reads.entries, 1, "one saved entry is read for the card");
+		assert.ok(largest < 64 * 1024, `the saved result is not decoded whole (largest parse ${largest})`);
+		assert.ok(
+			reads.streamed >= twoMiB.length && reads.streamed < 3 * 1024 * 1024,
+			`its bytes are streamed once (${reads.streamed})`,
+		);
+
+		// Its own page shows the same finished card, and the call's page none of its own.
+		reads.holdAfter = undefined;
+		reads.release();
+		for (let i = 0; i < 80 && !/P-180/.test(held()); i++) {
+			host.inspector.handleInput(PAGE_DOWN);
+			await flush();
+		}
+		const joined = held();
+		assert.equal(joined.match(/Read\(big\.txt\)/g)?.length, 1, joined);
+		assert.equal(
+			joined.split("\n").find((row) => /Read\(big\.txt\)/.test(row)),
+			header,
+		);
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
 
 test.each([
 	["at the end of the saved history", 69],
