@@ -51,13 +51,13 @@ function isParentAskHandoffRequest(payload: unknown): payload is ParentAskHandof
 
 /**
  * Claim a blocking ask only for the exact live child attempt that issued it, and only while
- * the parent tool call still waits on that child so the handoff can become its result.
+ * the parent tool call still waits on that child so the handoff can become its result: a child no task host runs.
+ * A task-hosted child runs in the background, so its ask reaches its supervisor over Intercom and it waits for the reply.
  */
 export function registerExecutionParentAskHandoff(options: RunSyncOptions, state: ExecutionParentAskState): () => void {
-	if (!options.onParentAskHandoff) return () => {};
+	if (!options.onParentAskHandoff || options.taskExecution) return () => {};
 	const handleRequest = (payload: unknown): void => {
 		if (state.isUnavailable() || !isParentAskHandoffRequest(payload)) return;
-		if (options.taskExecution && !options.taskExecution.isParentObserving()) return;
 		if (
 			payload.claimed ||
 			payload.runId !== options.runId ||

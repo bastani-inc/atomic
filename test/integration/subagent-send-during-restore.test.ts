@@ -202,7 +202,6 @@ async function launchInterruptedChild(cwd: string, sessionManager: SessionManage
 			intercomGroup: "default",
 			orchestratorIntercomTarget: "send-parent",
 		},
-		wait: { kind: "background" },
 		recordChild: createSubagentChildRecordSink(pi, { sessionManager, orchestrationContext: undefined }),
 		runtime: {
 			runSync: (...args) =>
