@@ -749,6 +749,7 @@ class JournalProjection {
 			createdAt: handle.createdAt,
 			status: handle.status,
 			transitionClaimId: handle.transitionClaimId ?? existing?.handle.transitionClaimId,
+			...(handle.launchStepKeys || existing?.handle.launchStepKeys ? { launchStepKeys: true } : {}),
 			...((handle.runGeneration ?? existing?.handle.runGeneration) !== undefined
 				? { runGeneration: Math.max(handle.runGeneration ?? 0, existing?.handle.runGeneration ?? 0) }
 				: {}),

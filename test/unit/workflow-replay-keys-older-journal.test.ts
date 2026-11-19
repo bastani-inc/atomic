@@ -193,6 +193,7 @@ async function writePreviousReleaseJournal(runId: string, path: string): Promise
 }
 
 async function checkForkReplay(
+	format: "older" | "current",
 	expected: string[],
 	program: (ctx: WorkflowRunContext, replay: boolean, source: SessionManager) => Promise<string[]>,
 ): Promise<void> {
@@ -219,6 +220,15 @@ async function checkForkReplay(
 		});
 		const backend = await JournalDurableBackend.open(await openSqlRunJournal(path));
 		try {
+			// The older writer registered without a step-key format, then admitted its tasks one at a time.
+			if (format === "older" && !replay)
+				await backend.commitWorkflowRegistration({
+					workflowId: runId,
+					name: runId,
+					inputs: {},
+					status: "running",
+					createdAt: 1,
+				});
 			const result = await run(
 				definition,
 				{},
@@ -306,7 +316,7 @@ describe("a resumed run replays its results under the replay keys its journal re
 	);
 
 	test("a forked parallel and a same-named task replay in call order from an older journal (#5481)", async () => {
-		await checkForkReplay(["first b", "second b"], async (ctx, replay, source) => {
+		await checkForkReplay("older", ["first b", "second b"], async (ctx, replay, source) => {
 			const fork = {
 				context: "fork" as const,
 				forkFromSessionId: source.getSessionId(),
@@ -324,7 +334,7 @@ describe("a resumed run replays its results under the replay keys its journal re
 	test.each(["chain", "parallel"] as const)(
 		"a %s between a cached fork and a standalone task keeps its admitted worker's place (#5481)",
 		async (kind) => {
-			await checkForkReplay(["left", "middle", "last"], async (ctx, replay, source) => {
+			await checkForkReplay("older", ["left", "middle", "last"], async (ctx, replay, source) => {
 				const fork = {
 					context: "fork" as const,
 					forkFromSessionId: source.getSessionId(),
@@ -343,7 +353,7 @@ describe("a resumed run replays its results under the replay keys its journal re
 	);
 
 	test("a standalone task keeps its slot before a queued same-named worker from an older journal (#5481)", async () => {
-		await checkForkReplay(["first", "queued", "standalone"], async (ctx, replay, source) => {
+		await checkForkReplay("older", ["first", "queued", "standalone"], async (ctx, replay, source) => {
 			const fork = {
 				context: "fork" as const,
 				forkFromSessionId: source.getSessionId(),
@@ -367,7 +377,7 @@ describe("a resumed run replays its results under the replay keys its journal re
 	});
 
 	test("a forked parallel leaves every authored stage name available in an older journal (#5481)", async () => {
-		await checkForkReplay(["group", "first answer", "second answer"], async (ctx, replay, source) => {
+		await checkForkReplay("older", ["group", "first answer", "second answer"], async (ctx, replay, source) => {
 			const fork = {
 				context: "fork" as const,
 				forkFromSessionId: source.getSessionId(),
@@ -386,7 +396,7 @@ describe("a resumed run replays its results under the replay keys its journal re
 	});
 
 	test("a standalone task between two same-named parallels keeps its place across the first launch-record write (#5481)", async () => {
-		await checkForkReplay(["first", "second", "third"], async (ctx, _replay, source) => {
+		await checkForkReplay("current", ["first", "second", "third"], async (ctx, _replay, source) => {
 			const fork = {
 				context: "fork" as const,
 				forkFromSessionId: source.getSessionId(),
@@ -452,6 +462,62 @@ describe("a resumed run replays its results under the replay keys its journal re
 			assert.deepEqual(prompts, [], "no completed step runs again");
 		});
 
+		test.each(["task", "stage", "tool", "nested task"] as const)(
+			`a run stopped after a %s replays each overlapping ${group}'s own steps (#5683)`,
+			async (prefix) => {
+				const path = journalPath();
+				const runId = `early-stop-${prefix}-${group}`;
+				const tool = vi.fn(async () => "x");
+				for (const attempt of [1, 2, 3]) {
+					const outputs: string[][] = [];
+					const secondFinished = Promise.withResolvers<void>();
+					const program = overlappingProgram(group, "steps", outputs, async (ctx) => {
+						if (prefix === "task" || prefix === "nested task") await ctx.task("x", { prompt: "x" });
+						else if (prefix === "stage") await ctx.stage("x").prompt("x");
+						else await ctx.tool("x", {}, tool);
+						if (attempt === 1) throw new Error("stop before either group");
+					});
+					const definition =
+						prefix === "nested task"
+							? workflow({
+									name: runId,
+									description: "",
+									inputs: {},
+									outputs: {},
+									run: async (ctx) => {
+										await ctx.workflow(program);
+										return {};
+									},
+								})
+							: program;
+					const prompts = await runInJournal(definition, runId, path, async (text) => {
+						const step = stepOf(text);
+						if (step === "first a" && attempt === 2) await secondFinished.promise;
+						if (step === "second b") secondFinished.resolve();
+						return step;
+					});
+					assert.deepEqual(
+						prompts.map(stepOf).sort(),
+						attempt === 2
+							? ["first a", "first b", "second a", "second b"]
+							: attempt === 1 && prefix !== "tool"
+								? ["x"]
+								: [],
+					);
+					assert.equal(tool.mock.calls.length, prefix === "tool" ? 1 : 0);
+					assert.deepEqual(
+						outputs,
+						attempt === 1
+							? []
+							: [
+									["first a", "first b"],
+									["second a", "second b"],
+								],
+					);
+				}
+			},
+		);
+
 		test(`a ${group} starts none of its steps when the run cannot record how it keys them (#5481)`, async () => {
 			const path = journalPath();
 			const runId = `unrecorded-${group}`;
@@ -487,13 +553,19 @@ function stepOf(text: string): string {
 }
 
 /** Two `ctx.chain`s, or two `ctx.parallel`s with one slot, of steps a and b, launched at once; the run then stops. */
-function overlappingProgram(group: Group, runId: string, outputs: string[][]) {
+function overlappingProgram(
+	group: Group,
+	runId: string,
+	outputs: string[][],
+	before?: (ctx: WorkflowRunContext) => Promise<void>,
+) {
 	return workflow({
 		name: runId,
 		description: "",
 		inputs: {},
 		outputs: {},
 		run: async (ctx) => {
+			if (before !== undefined) await before(ctx);
 			const launch = (which: string) => {
 				const steps = [
 					{ name: "a", prompt: `${which} a` },

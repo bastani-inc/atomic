@@ -3,9 +3,8 @@ import type { DurableCheckpoint } from "./types.js";
 
 /**
  * The run-level record of a run whose chains and parallels take their steps' replay keys when each is called (#5481).
- * A run whose record has results but not this one, such as a run an earlier release started, took its steps' keys
- * when they started and keeps doing so when it resumes, so each finds its result under the key it was recorded with.
- * It names no graph node of its own.
+ * An older run that has saved work but neither this checkpoint nor launch keys in its registration keeps taking
+ * keys when steps start, so each step finds its recorded result. The checkpoint names no graph node.
  */
 export const LAUNCH_REPLAY_KEYS_CHECKPOINT_NAME = "launch-replay-keys";
 
@@ -17,14 +16,14 @@ export function isLaunchReplayKeysCheckpointHash(argsHash: string): boolean {
 }
 
 /**
- * How a chain or parallel of run `workflowId` takes its steps' replay keys when it is called: from `nextReplayKey`, in a
- * run that has the launch record or no records at all; undefined in a run whose record has results but not the
- * launch record, whose steps take theirs when they start. A run without the record writes it as its first launch takes a key: `recorded`
- * gets the write, which the run lets no task start before, and which fails the run when it fails.
+ * Returns a launch-time allocator for runs registered for launch keys, runs with the launch checkpoint, and empty
+ * journals. Older runs with saved work but neither marker take keys at admission instead. The first launch still
+ * writes the checkpoint if absent; `recorded` holds tasks until the write succeeds and fails the run on refusal.
  */
 export function launchReplayKeys(input: {
 	readonly backend: DurableWorkflowBackend;
 	readonly workflowId: string;
+	readonly registeredForLaunchKeys: boolean;
 	/** The run's records when it started. */
 	readonly priorCheckpoints: readonly DurableCheckpoint[];
 	readonly nextReplayKey: (name: string) => string;
@@ -33,7 +32,7 @@ export function launchReplayKeys(input: {
 	let marked = input.priorCheckpoints.some(
 		(checkpoint) => checkpoint.kind === "tool" && checkpoint.argsHash === LAUNCH_REPLAY_KEYS_CHECKPOINT_NAME,
 	);
-	if (!marked && input.priorCheckpoints.length > 0) return undefined;
+	if (!input.registeredForLaunchKeys && !marked && input.priorCheckpoints.length > 0) return undefined;
 	return (name) => {
 		if (!marked) {
 			marked = true;

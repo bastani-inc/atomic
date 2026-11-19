@@ -1390,12 +1390,14 @@ async function executeRun(
 			return stage;
 		},
 	});
-	// A run resumed from a record that has results but no launch-time keys, such as one an earlier release started,
-	// keeps taking its steps' keys when they start, as it recorded its results (#5481).
+	// A child uses its root's registration; its first group may come after a restart too.
+	const replayKeyRoot =
+		opts.parentRun === undefined ? existingRootHandle : rootBackend.getWorkflow(opts.parentRun.rootRunId);
 	let launchKeysRecord: Promise<void> | undefined;
 	const launchKeys = launchReplayKeys({
 		backend: durableBackend,
 		workflowId: runId,
+		registeredForLaunchKeys: replayKeyRoot?.launchStepKeys === true,
 		priorCheckpoints,
 		nextReplayKey: (name) => stageReplayKeyGenerator(name),
 		recorded: (write) => {
@@ -1836,6 +1838,8 @@ async function executeRun(
 				const { branch: _invocationBranch, ...invocationPaths } = invocationMetadata;
 				const registration = {
 					...durableRootRegistration,
+					// Record the format before the body can stop, without counting the registration as saved work.
+					...(existingHandle === undefined ? { launchStepKeys: true as const } : {}),
 					...(runSnapshot.runGeneration !== undefined ? { runGeneration: runSnapshot.runGeneration } : {}),
 					...(definitionSource === undefined ? {} : { definitionSource }),
 					modelOwner: runSnapshot.modelOwner,
