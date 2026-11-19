@@ -2,7 +2,14 @@ import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
-import { releasedWaitingOn, type TaskCompletionNotice, type TaskNoticeLine } from "../../../core/tasks/completion.js";
+import { formatTimeoutSeconds } from "../../../core/tasks/cancel-reason.js";
+import {
+	completionTitleDescription,
+	completionTitleText,
+	releasedWaitingOn,
+	type TaskCompletionNotice,
+	type TaskNoticeLine,
+} from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { TaskTranscriptHistory, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
@@ -25,7 +32,7 @@ function previewRow(row: string): string {
 }
 
 const NOTICE_LINE_STATUSES = new Set(["success", "failure", "stopped", "warning", "paused", "waiting"]);
-const parsedNotices = new WeakMap<object, TaskCompletionNotice>();
+const parsedNotices = new WeakMap<object, { body?: string; notice: TaskCompletionNotice }>();
 
 /**
  * A line's status as saved. Earlier versions saved the line of a subagent released while it waits as paused; its
@@ -50,10 +57,10 @@ function noticeLineFrom(value: unknown): TaskNoticeLine | undefined {
 	};
 }
 
-export function completionNoticeFromDetails(details: unknown): TaskCompletionNotice | undefined {
+export function completionNoticeFromDetails(details: unknown, body?: string): TaskCompletionNotice | undefined {
 	if (!details || typeof details !== "object" || !("notification" in details)) return undefined;
 	const existing = parsedNotices.get(details);
-	if (existing !== undefined) return existing;
+	if (existing && existing.body === body) return existing.notice;
 	const notice = details.notification;
 	if (!notice || typeof notice !== "object") return undefined;
 	if (
@@ -82,13 +89,15 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 		...(line === undefined ? {} : { line }),
 	};
 	if (!line && parsed.status === "cancelled" && parsed.taskKind !== "command") {
-		const stop = legacyStop(parsed.title, "result" in details ? details.result : undefined);
+		const result = "result" in details ? details.result : undefined;
+		const reason = result === undefined ? legacyBodyStopReason(body, parsed.title, parsed.taskId) : undefined;
+		const stop = legacyStop(parsed.title, result, parsed.agentName, reason);
 		if (stop) {
 			parsed.line = stop.line;
 			if (stop.agentName !== undefined) parsed.agentName = stop.agentName;
 		}
 	}
-	parsedNotices.set(details, parsed);
+	parsedNotices.set(details, { body, notice: parsed });
 	return parsed;
 }
 
@@ -137,9 +146,36 @@ function agentNoticeOutcome(status: NoticeLineSpec["status"], line: TaskNoticeLi
 const RELEASE_WORDING = "released while waiting on ";
 const PAUSE_WORDING = "paused · awaiting resume";
 const QUIT_WORDING = "quit · paused, awaiting resume";
+const AGENT_STOP_SUFFIX =
+	/ (?:killed \(non-resumable\)|timed out(?: after (\S+) seconds?)?|stopped(?: \((?:task owner closed|session closed|workflow stage closed|Atomic shut down)\))?):$/u;
+
+/** A named agent's stop followed by the colon introducing its task, in the legacy writer's spelling. */
+function stoppedAgentName(label: string): string | undefined {
+	const stop = AGENT_STOP_SUFFIX.exec(label);
+	if (!stop) return undefined;
+	if (stop[1] !== undefined) {
+		const ms = Number(stop[1]) * 1000;
+		if (!Number.isFinite(ms) || stop[0] !== ` timed out after ${formatTimeoutSeconds(ms)}:`) return undefined;
+	}
+	return label.slice(0, stop.index);
+}
+
+/** Only the header the writer placed after the title names the cause; an output excerpt can quote another notice. */
+function legacyBodyStopReason(body: string | undefined, title: string, taskId: string): string | undefined {
+	const header = `${title}\nTask: ${taskId} · Owner: `;
+	if (!body?.startsWith(header)) return undefined;
+	return /^[^\n]+\n(?:Model: [^\n]+\n)?Stop reason: (released|pause|quit|user|shutdown|owner-close|execution-timeout|output-limit|parent-handoff)(?: \([^\n]*\))?(?:\n|$)/u.exec(
+		body.slice(header.length),
+	)?.[1];
+}
 
 /** Before notices had a line, the title held the outcome, followed by `: <task description>` or a final period. */
-function legacyStopWording(title: string, result: unknown): string | undefined {
+function legacyStopWording(
+	title: string,
+	result: unknown,
+	agentName: string | undefined,
+	bodyReason?: string,
+): string | undefined {
 	if (result !== undefined) {
 		const saved = result as { kind?: string; cause?: string; released?: { waitingOn?: unknown } } | null;
 		if (saved?.kind !== "cancelled") return undefined;
@@ -156,19 +192,41 @@ function legacyStopWording(title: string, result: unknown): string | undefined {
 		}
 		return saved.cause === "pause" ? PAUSE_WORDING : saved.cause === "quit" ? QUIT_WORDING : undefined;
 	}
-	// Only the notification survived. Never read a quoted notice in the task description as this task's outcome.
-	const prefix =
-		/^(?:Subagent (.+?)|Background task) (released while waiting on |(?:paused · awaiting resume|quit · paused, awaiting resume)(?=: |\.$))/su.exec(
-			title,
-		);
-	if (!prefix || prefix[1]?.includes(": ")) return undefined;
+	if (bodyReason !== undefined && bodyReason !== "released") {
+		return bodyReason === "pause" ? PAUSE_WORDING : bodyReason === "quit" ? QUIT_WORDING : undefined;
+	}
+	// The body can establish a release even when there is stop wording in the agent's name.
+	const prefix = (
+		bodyReason === "released"
+			? /^(?:Subagent (.+?)|Background task) (released while waiting on )/su
+			: /^(?:Subagent (.+?)|Background task) (released while waiting on |(?:paused · awaiting resume|quit · paused, awaiting resume)(?=: |\.$))/su
+	).exec(title);
+	if (!prefix) return undefined;
+	// The space before the matched wording can belong to `: <description>`. Prefer that reading only
+	// if the entire title could have been written for the stopped child, including its saved name.
+	if (bodyReason === undefined && prefix[1]) {
+		if (prefix[1].includes(": ")) return undefined;
+		const name = stoppedAgentName(prefix[1]);
+		const description = title.slice("Subagent ".length + prefix[1].length + 1);
+		if (
+			name !== undefined &&
+			name === completionTitleText(agentName ?? name) &&
+			description === completionTitleDescription(description)
+		)
+			return undefined;
+	}
 	if (prefix[2] !== RELEASE_WORDING) return prefix[2];
 	const calls = /^(a tool call|.+?\))(?:: |\.$)/su.exec(title.slice(prefix[0].length))?.[1];
 	return calls ? RELEASE_WORDING + calls : undefined;
 }
 
-function legacyStop(title: string, result: unknown): { line: TaskNoticeLine; agentName?: string } | undefined {
-	const wording = legacyStopWording(title, result);
+function legacyStop(
+	title: string,
+	result: unknown,
+	agentName: string | undefined,
+	bodyReason?: string,
+): { line: TaskNoticeLine; agentName?: string } | undefined {
+	const wording = legacyStopWording(title, result, agentName, bodyReason);
 	if (wording === undefined) return undefined;
 	// The space after "Subagent" introduces its name, even if the name itself starts with the recorded outcome.
 	const end = title.indexOf(` ${wording}: `, title.startsWith("Subagent ") ? "Subagent ".length : 0);

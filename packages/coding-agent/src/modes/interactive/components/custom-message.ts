@@ -154,7 +154,10 @@ export class CustomMessageComponent extends Container {
 		}
 		this.removeChild(this.box);
 		if (this.message.customType === TASK_COMPLETION_MESSAGE_TYPE) {
-			const notice = completionNoticeFromDetails(this.message.details);
+			const notice = completionNoticeFromDetails(
+				this.message.details,
+				typeof this.message.content === "string" ? this.message.content : undefined,
+			);
 			if (notice) {
 				this.spacer = new Spacer(1);
 				this.customComponent = new TaskCompletionMessage(notice, this._expanded, this.completionOptions);

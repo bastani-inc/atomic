@@ -151,6 +151,25 @@
 			"taskKind": "agent"
 		}
 	},
+	"releaseOrStop088": {
+		"releasedBody": "Subagent triage stopped: released while waiting on bash (ci): Review docs\nTask: worker-1 · Owner: owner\nStop reason: released\n\nNothing stopped it: it was released while waiting on bash (ci), and it wakes by itself when that finishes and goes on with its task. Nothing needs to be done meanwhile; its next notice reports what it did.",
+		"stoppedBody": "Subagent triage stopped: released while waiting on bash (ci): Review docs\nTask: worker-1 · Owner: owner\nStop reason: shutdown\n\nThis execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
+		"detailsWithoutResult": {
+			"completionId": "completion-1",
+			"ownerId": "owner",
+			"taskId": "worker-1",
+			"terminalSequence": "1",
+			"display": false,
+			"taskKind": "agent",
+			"notification": {
+				"title": "Subagent triage stopped: released while waiting on bash (ci): Review docs",
+				"preview": "",
+				"status": "cancelled",
+				"taskId": "worker-1",
+				"taskKind": "agent"
+			}
+		}
+	},
 	"release089": {
 		"title": "Subagent worker released while waiting on bash (toolu_1): Update docs and changelog",
 		"preview": "",

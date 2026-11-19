@@ -173,7 +173,7 @@ Completion adds one notice line to the owning chat without depending on a model 
  ◌ worker is waiting on bash (toolu_01) · 16m 16s
 ```
 
-The main chat, a workflow stage's chat and a subagent's view show the same line. When you reopen an older session, a notice that recorded a release shows `◌`. Atomic 0.9.86 and 0.9.87 recorded releases as pauses, so those notices still show `⏸`.
+The main chat, a workflow stage's chat and a subagent's view show the same line. When you reopen an older session, a notice that recorded a release shows `◌`. Atomic 0.9.86 and 0.9.87 recorded releases as pauses, so those notices still show `⏸`. A stopped child's notice stays `◼` even if its task description begins with the wording of a pause or release. When the saved result is missing, the stop reason in the original message distinguishes a release from a stop even if their titles are identical.
 
 The parent model also receives the result context. Delivery retries do not relaunch the child. Workflow completions stay in their owning stage chat, not the main conversation.
 
