@@ -466,6 +466,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					this.sessionManager.getEntries(),
 					event.message,
 					createCacheMissModelSource(this.session.modelRuntime),
+					this.session.publishingReplyId?.(event.message),
 				);
 				if (miss) this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
 			}

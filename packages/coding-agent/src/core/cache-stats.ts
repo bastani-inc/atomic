@@ -122,11 +122,12 @@ export function advanceCacheHistory(
 	return prev;
 }
 
-function scan(entries: SessionEntry[], models: ModelPriceSource) {
+function scan(entries: SessionEntry[], models: ModelPriceSource, beforeId?: string) {
 	let prev: PreviousRequest | undefined;
 	const totals: CacheWasteTotals = { missedTokens: 0, missedCost: 0, missCount: 0, unpricedCount: 0 };
 	const misses = new Map<AssistantMessage, CacheMiss>();
 	for (const entry of entries) {
+		if (beforeId !== undefined && entry.id === beforeId) break;
 		if (entry.type !== "message" || entry.message.role !== "assistant") {
 			prev = advanceCacheHistory(prev, entry);
 			continue;
@@ -157,8 +158,9 @@ export function detectCacheMiss(
 	entries: SessionEntry[],
 	message: AssistantMessage,
 	models: ModelPriceSource,
+	beforeId?: string,
 ): CacheMiss | undefined {
-	return cacheMissAfter(scan(entries, models).prev, message, models);
+	return cacheMissAfter(scan(entries, models, beforeId).prev, message, models);
 }
 
 /**

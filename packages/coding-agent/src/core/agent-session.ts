@@ -224,6 +224,10 @@ class AgentSessionBase {
 	protected _turnIndex = 0;
 	/** Source entry IDs for projected messages, so boundaries and omissions resolve provenance. */
 	protected readonly _entryIdsByMessage = new WeakMap<object, string>();
+	/** @internal An in-process UI receives message_end after persistence. An isolated mirror has no local receipt. */
+	publishingReplyId(message: AssistantMessage): string | undefined {
+		return this._transcriptAppend?.message === message ? this._entryIdsByMessage.get(message) : undefined;
+	}
 	/** Assistant messages whose actionable turn_end already ran from finishTurn. */
 	protected readonly _boundaryDispatchedMessages = new WeakSet<object>();
 	/** Messages whose message_end processing, including their save, has not settled yet. */

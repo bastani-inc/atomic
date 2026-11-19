@@ -106,6 +106,7 @@ describe("InteractiveMode assistant diagnostics", () => {
 			updateEditorBorderColor: () => undefined,
 			chatContainer,
 			settingsManager: { getShowCacheMissNotices: () => true },
+			sessionManager: { getEntry: (id: string): SessionEntry | undefined => (id === entry.id ? entry : undefined) },
 			session: { modelRuntime: { getModel: () => undefined } },
 			ui: { requestRender: () => undefined },
 			addRenderedChatEntry: ({ kind }: { kind: string }) => {
@@ -134,6 +135,29 @@ describe("InteractiveMode assistant diagnostics", () => {
 			"Prompt cache miss: 30,000 tokens re-billed (cost unknown)",
 			"user",
 		]);
+		// The same saved reply reference twice in-process still owns only one cache notice, at its last miss.
+		chatContainer.clear();
+		renderSessionEntries.call(mode, [warm, entry, between, { ...entry, id: "m2" }]);
+		assert.deepEqual(output(), [
+			"assistant",
+			"Anthropic dropped 1 thinking block (details in session)",
+			"user",
+			"assistant",
+			"Prompt cache miss: 30,000 tokens re-billed (cost unknown)",
+		]);
+		// A summary can hide the preceding reply without resetting the provider's cumulative drop count.
+		chatContainer.clear();
+		const boundary: SessionEntry = {
+			type: "compaction",
+			id: "c",
+			parentId: entry.id,
+			timestamp: entry.timestamp,
+			summary: "older turn",
+			firstKeptEntryId: null,
+			tokensBefore: 30_000,
+		};
+		renderSessionEntries.call(mode, [boundary, { ...entry, id: "after", parentId: boundary.id }]);
+		assert.deepEqual(output(), ["assistant"]);
 		mode.settingsManager.getShowCacheMissNotices = () => false;
 		chatContainer.clear();
 		renderSessionEntries.call(mode, entries);

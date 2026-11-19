@@ -94,11 +94,12 @@ InteractiveModeBase.prototype.maybeShowAssistantDiagnostics = function (
 	const count = countDroppedThinkingBlocks(message);
 	if (count === 0) return;
 	let previousCount = 0;
-	// The live message_end notification precedes persistence of this response.
+	// The local host has already committed this occurrence; the isolated mirror may still end at its predecessor.
+	const publishing = this.session?.publishingReplyId?.(message);
 	const branch = this.sessionManager.getBranch();
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i];
-		if (entry.type === "message" && entry.message.role === "assistant") {
+		if (entry.type === "message" && entry.message.role === "assistant" && entry.id !== publishing) {
 			previousCount = countDroppedThinkingBlocks(entry.message);
 			break;
 		}
@@ -782,15 +783,64 @@ interface ReplyNotices {
 	previousReply: AssistantMessage | undefined;
 	previousRequest: PreviousRequest | undefined;
 	models: ModelPriceSource;
+	summarizedParent?: string;
+	repeated?: {
+		occurrences: ReplyNotices[];
+		resolved?: true;
+		owner?: ReplyNotices;
+		miss?: ReturnType<typeof cacheMissAfter>;
+	};
+}
+
+function missForOccurrence(notes: ReplyNotices): ReturnType<typeof cacheMissAfter> {
+	const group = notes.repeated;
+	if (!group) return cacheMissAfter(notes.previousRequest, notes.message, notes.models);
+	// The cache statistics fold records the last miss for each saved object. Retain its exact occurrence,
+	// even when a later occurrence of that same object wasn't a miss. Distinct equal objects remain distinct.
+	if (!group.resolved) {
+		group.resolved = true;
+		for (let i = group.occurrences.length - 1; i >= 0; i--) {
+			const candidate = group.occurrences[i]!;
+			const miss = cacheMissAfter(candidate.previousRequest, candidate.message, candidate.models);
+			if (miss) {
+				group.owner = candidate;
+				group.miss = miss;
+				break;
+			}
+		}
+	}
+	return group.owner === notes ? group.miss : undefined;
+}
+
+function precedingDropCount(mode: InteractiveModeBase, notes: ReplyNotices): number | undefined {
+	if (notes.previousReply) return countDroppedThinkingBlocks(notes.previousReply);
+	// The provider's cumulative count does not start over at a summary. Only the first visible reply can
+	// need an omitted predecessor. Do not fetch old message bodies or guess when a tail-only reader lacks it.
+	let id = notes.summarizedParent;
+	if (id === undefined) return 0;
+	const seen = new Set<string>();
+	while (!seen.has(id)) {
+		seen.add(id);
+		const entry = mode.sessionManager?.getEntry(id);
+		if (!entry) return undefined;
+		if (entry.type === "message" && entry.message.role === "assistant")
+			return countDroppedThinkingBlocks(entry.message);
+		if (!entry.parentId) return 0;
+		id = entry.parentId;
+	}
+	return undefined;
 }
 
 function paintReplyNotices(mode: InteractiveModeBase, notes: ReplyNotices): void {
-	const { message, previousReply, previousRequest, models } = notes;
+	const { message } = notes;
 	if (message.stopReason !== "aborted" && message.stopReason !== "error") {
 		const count = countDroppedThinkingBlocks(message);
-		if (count > 0) addThinkingDrop(mode, count, previousReply ? countDroppedThinkingBlocks(previousReply) : 0);
+		if (count > 0) {
+			const previous = precedingDropCount(mode, notes);
+			if (previous !== undefined) addThinkingDrop(mode, count, previous);
+		}
 	}
-	const miss = cacheMissAfter(previousRequest, message, models);
+	const miss = missForOccurrence(notes);
 	if (miss) mode.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
 }
 
@@ -820,6 +870,13 @@ function planTranscript(
 	let previousReply: AssistantMessage | undefined;
 	const replyGroups: ReplyNotices[] = [];
 	let firstMessage = true;
+	const firstOccurrence = models && new WeakMap<AssistantMessage, ReplyNotices>();
+	const boundary = sessionEntries[0];
+	const firstParent = sessionEntries[1]?.parentId;
+	const summarizedParent =
+		boundary?.type === "compaction"
+			? ((firstParent === boundary.id ? boundary.parentId : firstParent) ?? undefined)
+			: undefined;
 	const flushMessages = (): void => {
 		if (options.suppressCompactionBoundary && firstMessage) {
 			// A boundary replays after the system prompt it recorded, so the boundary is the first non-system message.
@@ -865,8 +922,15 @@ function planTranscript(
 			const messages = sessionEntryToContextMessages(entry);
 			for (const message of messages) {
 				messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
-				if (models && message.role === "assistant") {
-					replyGroups.push({ message, previousReply, previousRequest, models });
+				if (models && firstOccurrence && message.role === "assistant") {
+					const notes: ReplyNotices = { message, previousReply, summarizedParent, previousRequest, models };
+					const saved = entry.type === "message" && entry.message.role === "assistant" ? entry.message : message;
+					const first = firstOccurrence.get(saved);
+					if (first) {
+						notes.repeated = first.repeated ??= { occurrences: [first] };
+						notes.repeated.occurrences.push(notes);
+					} else firstOccurrence.set(saved, notes);
+					replyGroups.push(notes);
 					previousReply = message;
 				}
 			}
