@@ -711,7 +711,8 @@ function isLocalSessionsPin(value: NonNullable<Settings["sessions"]>["storage"])
 
 /** Every token file the given settings reference. */
 function referencedTokenFiles(settings: Settings, agentDir: string): string[] {
-	const journal = Array.isArray(settings.workflows) ? undefined : settings.workflows?.journal;
+	// Do not remove token files still referenced by an older Atomic installation.
+	const journal = (settings as Settings & { workflows?: { journal?: StorageSettingsSelection } }).workflows?.journal;
 	const sessions = settings.sessions?.storage;
 	const selections: (StorageSettingsSelection | undefined)[] = [
 		settings.storage,

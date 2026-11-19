@@ -39,9 +39,8 @@ import {
 import { resourceInternals } from "./resource-loader-internals.ts";
 import {
 	collectMcpServerContributions,
-	collectWorkflowResources,
 	createInheritanceSnapshotProvider,
-	createWorkflowResourceProvider,
+	createPackageMcpServerSource,
 	resolvePackageResourcePaths,
 	resolveTrustedBorrowedProjectLocalSources,
 } from "./resource-loader-package-resources.ts";
@@ -165,10 +164,8 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 		metadataByPath,
 		state.noExtensions,
 	);
-	const workflowResources = collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
-	state.workflowResources = workflowResources;
 	state.mcpServerContributions = collectMcpServerContributions(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
-	const workflowResourceProvider = createWorkflowResourceProvider(loader);
+	const packageMcpServerSource = createPackageMcpServerSource(loader);
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
 	// The builtin Herdr reporter supersedes the installed file integration in a
 	// Herdr pane; see extensions/herdr-file-integration.ts.
@@ -190,14 +187,14 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	const extensionsResult = await loadExtensionPaths(
 		loader,
 		extensionPaths,
-		workflowResourceProvider,
+		packageMcpServerSource,
 		inheritanceSnapshotProvider,
 	);
 	mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
 	const inlineExtensions = await loadExtensionFactories(
 		loader,
 		extensionsResult.runtime,
-		workflowResourceProvider,
+		packageMcpServerSource,
 		inheritanceSnapshotProvider,
 	);
 	extensionsResult.extensions.push(...inlineExtensions.extensions);
@@ -271,7 +268,6 @@ export async function prepareDefaultResourceLoaderReload(
 			state.extensionPromptSourceInfos = new Map();
 			state.extensionThemeSourceInfos = new Map();
 			state.legacyWorkflowFiles = undefined;
-			state.workflowResources = [];
 			state.mcpServerContributions = [];
 			state.resourceMetadataByPath = new Map();
 			state.lastSkillPaths = [];
@@ -363,17 +359,15 @@ export async function prepareDefaultResourceLoaderReload(
 				projectTrusted: state.settingsManager.isProjectTrusted(),
 				trustedBorrowedSources: state.trustedBorrowedProjectLocalSources,
 			},
-			resolvedPaths.workflows,
-			cliExtensionPaths.workflows,
+			resolvedPaths.legacyWorkflowFiles,
+			cliExtensionPaths.legacyWorkflowFiles,
 		);
-		const workflowResources = collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
-		state.workflowResources = workflowResources;
 		state.mcpServerContributions = collectMcpServerContributions(
 			resolvedPaths,
 			cliExtensionPaths,
 			builtinPackagePaths,
 		);
-		const workflowResourceProvider = createWorkflowResourceProvider(loader);
+		const packageMcpServerSource = createPackageMcpServerSource(loader);
 
 		// The builtin Herdr reporter supersedes the installed file integration in a
 		// Herdr pane; see extensions/herdr-file-integration.ts.
@@ -400,7 +394,7 @@ export async function prepareDefaultResourceLoaderReload(
 					loader,
 					extensionPaths,
 					preTrustExtensions,
-					workflowResourceProvider,
+					packageMcpServerSource,
 					inheritanceSnapshotProvider,
 					startupSessionQuit,
 				);
