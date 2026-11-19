@@ -322,14 +322,17 @@ describe("running a logged process (#4588)", () => {
 		},
 	);
 
-	test.skipIf(!refusesHeldPrograms)(
-		"a refused program is never started once the step's time has run out, even when its next try wakes late (#5678)",
-		async () => {
+	test.skipIf(!refusesHeldPrograms).each([0, -1_000])(
+		"a late retry never starts a refused program after its deadline with a wall-clock correction of %i ms (#5678, #5707)",
+		async (correction) => {
 			const held = heldNode();
 			const marker = path("started late");
 			const timeoutMs = 200;
 			const sleeper = new Int32Array(new SharedArrayBuffer(4));
 			const started: number[] = [];
+			const wallNow = Date.now.bind(Date);
+			const clock = vi.spyOn(Date, "now");
+			let releaseTimer: NodeJS.Timeout | undefined;
 			try {
 				const { result } = await counting(
 					() =>
@@ -346,21 +349,54 @@ describe("running a logged process (#4588)", () => {
 						if (tries !== 1) return;
 						// While it waits to be tried again, the program is released and the event loop stays busy past the
 						// step's timeout, so the next try wakes after it.
-						setTimeout(() => {
+						releaseTimer = setTimeout(() => {
+							clock.mockImplementation(() => wallNow() + correction);
 							held.release();
 							Atomics.wait(sleeper, 0, 0, timeoutMs + 150);
 						}, 10);
 					},
 				);
 				assert.deepEqual(started, []);
+				assert.ok(result.exit.elapsedMs >= timeoutMs, `elapsed ${result.exit.elapsedMs} ms`);
 				assert.equal((result.exit.spawnError as NodeJS.ErrnoException).code, held.refusal);
 				assert.equal(result.exit.exitStatus, null);
 				assert.equal(result.exit.timedOut, false);
 				assert.equal(result.output, "");
 			} finally {
+				clearTimeout(releaseTimer);
+				clock.mockRestore();
 				held.release();
 			}
 			assert.equal(existsSync(marker), false);
+		},
+	);
+
+	test.skipIf(process.platform !== "linux")(
+		"a refused program is not started when its retry deadline passes during system suspend (#5678, #5707)",
+		async () => {
+			const held = heldNode();
+			const wall = vi.spyOn(Date, "now").mockReturnValue(1_000);
+			const monotonic = vi.spyOn(performance, "now").mockReturnValue(0);
+			try {
+				const { result, tries } = await counting(
+					() => execute(held.run('console.log("started")'), { timeoutMs: 200 }),
+					(attempt) => {
+						if (attempt !== 2) return;
+						// Linux's monotonic clock counts the 50 ms retry delay, but not the 350 ms spent asleep.
+						wall.mockReturnValue(1_400);
+						monotonic.mockReturnValue(50);
+						held.release();
+					},
+				);
+				assert.equal(tries, 2);
+				assert.equal((result.exit.spawnError as NodeJS.ErrnoException | undefined)?.code, "ETXTBSY");
+				assert.equal(result.output, "");
+				assert.equal(result.exit.elapsedMs, 400);
+			} finally {
+				monotonic.mockRestore();
+				wall.mockRestore();
+				held.release();
+			}
 		},
 	);
 

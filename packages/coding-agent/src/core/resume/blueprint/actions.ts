@@ -392,7 +392,7 @@ function succeeded(exit: ProcessExit): boolean {
 }
 
 function elapsed(context: RunContext): number {
-	return Date.now() - context.startedAt;
+	return Math.floor(performance.now() - context.startedAt);
 }
 
 function timedOut(context: RunContext): ProcessExit {
@@ -798,7 +798,7 @@ async function runProcess(
 	request: ProcessRequest,
 ): Promise<{ exit: ProcessExit; outputs: Record<string, string>; state: Record<string, string> }> {
 	context.options.signal?.throwIfAborted();
-	const remaining = context.deadline - Date.now();
+	const remaining = context.deadline - performance.now();
 	if (remaining <= 0) return { exit: timedOut(context), outputs: {}, state: {} };
 	const files = await createFileCommands(context.runnerTemp);
 	try {
@@ -1092,7 +1092,7 @@ async function createContext(options: RunActionOptions, startedAt: number): Prom
  */
 export async function runAction(options: RunActionOptions): Promise<ProcessExit> {
 	options.signal?.throwIfAborted();
-	const startedAt = Date.now();
+	const startedAt = performance.now();
 	const context = await createContext(options, startedAt);
 	let reference: ActionReference;
 	try {
@@ -1104,5 +1104,5 @@ export async function runAction(options: RunActionOptions): Promise<ProcessExit>
 		throw error;
 	}
 	const { exit } = await executeAction(context, { reference, inputs: options.step.inputs, env: {}, depth: 0 });
-	return { ...exit, elapsedMs: Date.now() - startedAt };
+	return { ...exit, elapsedMs: elapsed(context) };
 }
