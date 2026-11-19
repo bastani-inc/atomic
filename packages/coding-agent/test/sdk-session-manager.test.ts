@@ -537,35 +537,6 @@ describe("createAgentSession session manager defaults", () => {
 		await session.dispose();
 	});
 
-	it("marks workflow-stage sessions internal with their orchestration identity", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5");
-		expect(model).toBeTruthy();
-		const sessionManager = SessionManager.inMemory(cwd);
-
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir,
-			model: model!,
-			sessionManager,
-			orchestrationContext: {
-				kind: "workflow-stage",
-				workflowRunId: "run-42",
-				workflowStageId: "stage-7",
-				workflowStageName: "build",
-				constraints: { disableWorkflowTool: true },
-			},
-			builtins: NO_BUILTINS,
-		});
-
-		expect(sessionManager.getHeader()?.internal).toBe(true);
-		expect(sessionManager.getHeader()?.workflow).toEqual({
-			runId: "run-42",
-			stageId: "stage-7",
-			stageName: "build",
-		});
-		await session.dispose();
-	});
-
 	it("reports session-restore fallback reason and selected replacement model", async () => {
 		const modelRuntime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory({ openai: { type: "api_key", key: "test-key" } }),

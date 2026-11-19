@@ -35,7 +35,7 @@ export type DecisionRequestErrorReason =
  * Why no model could answer: `not-in-catalog` (the configured model is not a registered chat or classifier model),
  * `no-chat-model` (no `decisionModel` is set and no concrete chat model is selected), `no-probabilities` (the
  * request requires probabilities and the decision model is a chat model, whose answers carry none), `host-unsupported`
- * (the host running the extension or workflow provides no decision model settings or model registry).
+ * (the host running the extension provides no decision model settings or model registry).
  */
 export type DecisionModelUnavailableReason =
 	| "not-in-catalog"

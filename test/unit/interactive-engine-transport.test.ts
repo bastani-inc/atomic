@@ -138,9 +138,9 @@ test("activity watchdog retains nested and concurrent attribution", async () => 
 		onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
 		thresholds: { diagnosticMs: 10, unresponsiveMs: 20, pollMs: 1 },
 	});
-	watchdog.activityStarted({ id: "outer", kind: "workflow.run", name: "outer", startedAt: 0 });
-	watchdog.activityStarted({ id: "inner-a", kind: "workflow.ctx_tool", name: "a", startedAt: 1 });
-	watchdog.activityStarted({ id: "inner-b", kind: "workflow.stage_adapter", name: "b", startedAt: 2 });
+	watchdog.activityStarted({ id: "outer", kind: "extension.hook", name: "outer", startedAt: 0 });
+	watchdog.activityStarted({ id: "inner-a", kind: "tool.execute", name: "a", startedAt: 1 });
+	watchdog.activityStarted({ id: "inner-b", kind: "tool.prepare", name: "b", startedAt: 2 });
 	watchdog.activityFinished("inner-a");
 	watchdog.start();
 	now = 12;

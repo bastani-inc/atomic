@@ -236,10 +236,9 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 	const appendSystemPrompt = loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 	const loadedSkills = getSkillCatalog(this._resourceLoader).modelSkills();
 	const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
-	const legacyWorkflows =
-		isSubagentChildSession(this) || this._orchestrationContext?.kind === "workflow-stage"
-			? undefined
-			: legacyWorkflowSection(this._resourceLoader.getLegacyWorkflowFiles?.());
+	const legacyWorkflows = isSubagentChildSession(this)
+		? undefined
+		: legacyWorkflowSection(this._resourceLoader.getLegacyWorkflowFiles?.());
 	const previousBase = this._baseSystemPromptOptions;
 	const previousForcedPrompt = previousBase?.forceSystemPrompt;
 	const hiddenTools = validToolNames.filter((name) => isToolDeclarationHidden(this, name));
@@ -354,7 +353,6 @@ export function _preparePromptAndToolLoadout(
 export function preservesInitialToolLoadout(session: AgentSession): boolean {
 	return (
 		(!session._usesDefaultTools && session._initialActiveToolNames !== undefined) ||
-		session._orchestrationContext?.kind === "workflow-stage" ||
 		(session._subagentPolicy?.depth ?? 0) >= 1
 	);
 }

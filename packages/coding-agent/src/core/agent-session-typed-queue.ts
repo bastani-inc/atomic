@@ -42,14 +42,6 @@ export function forgetTypedQueuedText(session: AgentSession, lane: QueueLane, qu
 	return record.typed;
 }
 
-/** Move the submitted text of `source`'s queued messages ahead of `next`'s, as their queues move. */
-export function transferTypedQueuedTexts(source: AgentSession, next: AgentSession): void {
-	const moved = typedQueuedTexts.get(source);
-	if (!moved) return;
-	typedQueuedTexts.delete(source);
-	typedQueuedTexts.set(next, [...moved, ...(typedQueuedTexts.get(next) ?? [])]);
-}
-
 /** The session's queue was cleared. */
 export function forgetAllTypedQueuedTexts(session: AgentSession): void {
 	typedQueuedTexts.delete(session);

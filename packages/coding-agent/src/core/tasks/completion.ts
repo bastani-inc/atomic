@@ -21,8 +21,7 @@ export type TaskCompletionEnvelope = {
 	 */
 	taskKind?: TaskRecord["kind"];
 	/**
-	 * Set when Atomic restarted while the task's workflow stage was released: the task no longer runs, and what it did
-	 * was not kept (#5079).
+	 * An earlier version recorded that a restart interrupted the task and its output was not retained.
 	 */
 	interruptedByRestart?: true;
 	/**
@@ -415,7 +414,7 @@ export function formatTaskCompletion(
 		waitingOn
 			? `Nothing stopped it: it was released while waiting on ${waitingOn}, and it wakes by itself when that finishes and goes on with its task. Nothing needs to be done meanwhile; its next notice reports what it did.`
 			: interruptedByRestart
-				? "Atomic restarted while this workflow stage was released, so this command no longer runs and its result and output were not kept. If its result is still needed, run the command again."
+				? "Atomic restarted, so this command no longer runs and its result and output were not kept. If its result is still needed, run the command again."
 				: interruptedByPause
 					? "A pause interrupted this command before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, re-running the command if its result is still needed."
 					: pausedUnknownKind

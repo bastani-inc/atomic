@@ -6,7 +6,6 @@ import type { AgentSession } from "../src/core/agent-session.js";
 import type { ToolDefinition } from "../src/core/extensions/index.js";
 import type { OperationId, TaskId } from "../src/core/tasks/contracts.js";
 import type { BashToolDetails } from "../src/core/tools/bash.js";
-import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
 import { createHarness, type Harness } from "./suite/harness.js";
 
 const MINUTE = 60_000;
@@ -435,7 +434,7 @@ test("a heartbeat during a paused but still running turn stays in the pause (#47
 	assert.equal(session.queuedMessagesPaused, true);
 });
 
-test("a heartbeat wakes an idle paused main chat but not a workflow stage or subagent chat (#4795)", async () => {
+test("a heartbeat wakes an idle paused main chat but not a subagent chat (#4795)", async () => {
 	const policy = {
 		managementActions: "restricted",
 		fanoutAuthorized: false,
@@ -444,7 +443,6 @@ test("a heartbeat wakes an idle paused main chat but not a workflow stage or sub
 	} as const;
 	const kinds = {
 		main: undefined,
-		stage: undefined,
 		child: { ...policy, depth: 1 },
 		ending: { ...policy, executionEnded: new AbortController().signal },
 	} as const;
@@ -453,8 +451,7 @@ test("a heartbeat wakes an idle paused main chat but not a workflow stage or sub
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"], shouldAdvanceTime: true });
 		const harness = await createHarness({ ...(subagentPolicy ? { subagentPolicy } : {}) });
 		harnesses.push(harness);
-		const session = harness.session as AgentSession & { _workflowStageAdmission?: WorkflowStageAdmissionBoundary };
-		if (kind === "stage") session._workflowStageAdmission = new WorkflowStageAdmissionBoundary();
+		const session = harness.session;
 		const seen = answerHeartbeats(harness, 1);
 		session.pauseQueuedMessages();
 		await session.sendCustomMessage(probe(1), WAKE);
@@ -463,7 +460,7 @@ test("a heartbeat wakes an idle paused main chat but not a workflow stage or sub
 		woke[kind] = seen.length === 1;
 		assert.equal(session.queuedMessagesPaused, !woke[kind]);
 	}
-	assert.deepEqual(woke, { main: true, stage: false, child: false, ending: false });
+	assert.deepEqual(woke, { main: true, child: false, ending: false });
 });
 
 test.runIf(process.platform !== "win32")(
