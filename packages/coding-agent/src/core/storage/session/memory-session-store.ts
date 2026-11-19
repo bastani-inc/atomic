@@ -943,6 +943,18 @@ export class MemorySessionStore implements SessionStore {
 		let last = held.lastSeq;
 		let window = SPILL_BLOCK_BYTES;
 		while (last >= 1) {
+			const [low, high] = this.spanOf(held, last, last);
+			if (high - low > SCAN_WINDOW_BYTES && (!held.directory || held.directory.readRange)) {
+				const { chunkedEntryHasId } = await import("./chunked-resume-projection.js");
+				const read = (start: number, end: number) => this.bytesOf(sessionId, held, start, end);
+				async function* parts() {
+					for (let start = low; start < high; start += SESSION_HISTORY_CHUNK_BYTES)
+						yield await read(start, Math.min(high, start + SESSION_HISTORY_CHUNK_BYTES));
+				}
+				if (await chunkedEntryHasId(parts(), entryId)) return last;
+				last--;
+				continue;
+			}
 			let first = last;
 			while (first > 1) {
 				const [start] = this.spanOf(held, first - 1, last);

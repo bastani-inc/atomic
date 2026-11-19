@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../../test/helpers/temporary-agent-dir.js";
 import { SessionManager } from "../../src/core/session-manager.js";
 import { sessionBlobOutput } from "../../src/core/session-tool-output.js";
@@ -15,6 +15,34 @@ import { SqlSessionStore } from "../../src/core/storage/session/sql-session-stor
 import type { SessionStore } from "../../src/core/storage/session/types.js";
 
 useTemporaryAgentDir();
+
+test("finding a historical fork point by ID does not decode its giant body in a memory store (#5594)", async () => {
+	const store = new MemorySessionStore();
+	try {
+		const parent = await SessionManager.create(store, process.cwd());
+		const id = await parent.appendMessage({
+			role: "user",
+			content: "fork-target-probe" + "x".repeat(2 * 1024 * 1024),
+			timestamp: 0,
+		});
+		await parent.appendMessage({ role: "user", content: "later", timestamp: 1 });
+		const original = JSON.parse;
+		const probe = vi.spyOn(JSON, "parse").mockImplementation((raw, ...args) => {
+			assert.ok(
+				raw.length < 1024 * 1024 || !raw.includes("fork-target-probe"),
+				"decoded a historical user entry for an ID lookup",
+			);
+			return original(raw, ...args);
+		});
+		try {
+			assert.equal(await store.findEntrySeq(parent.getSessionId(), id), 1);
+		} finally {
+			probe.mockRestore();
+		}
+	} finally {
+		await store.close();
+	}
+});
 
 test.each(["memory", "sqlite", "jsonl"])(
 	"a %s child archives a referenced historical receipt without decoding it or carrying unrelated history (#5594)",
