@@ -106,6 +106,11 @@ import {
 	sessionResumeOf,
 	updateWorkflowStarts,
 } from "./storage/session/session-resume.js";
+import {
+	findWorktreeSnapshotRecords,
+	type StoredWorktreeSnapshotEntry,
+	worktreeSnapshotPages,
+} from "./storage/session/snapshot-records.js";
 import type {
 	OversizedSessionEntry,
 	SessionBlob,
@@ -1489,7 +1494,7 @@ export class SessionManager {
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
 				throw new WorkspaceConfigError("sdk", "snapshot", "a snapshot whose id is snapshotId");
 			}
-			if (snapshot === undefined && !this.getWorktreeSnapshotRecords().has(snapshotId)) {
+			if (snapshot === undefined && !(await this.hasWorktreeSnapshotRecord(snapshotId))) {
 				throw new WorkspaceConfigError("sdk", "snapshotId", "the id of a snapshot recorded in this session");
 			}
 			if (restore !== undefined && (restore.to !== root || restore.snapshotId !== snapshotId)) {
@@ -1503,7 +1508,7 @@ export class SessionManager {
 			}
 			if (
 				degradedFrom !== undefined &&
-				(degradedFrom === snapshotId || !this.getWorktreeSnapshotRecords().has(degradedFrom))
+				(degradedFrom === snapshotId || !(await this.hasWorktreeSnapshotRecord(degradedFrom)))
 			) {
 				throw new WorkspaceConfigError(
 					"sdk",
@@ -1538,9 +1543,60 @@ export class SessionManager {
 		return this.historyIndex.worktreePathContinuations(this.leafId, this.byId, this.branchLinks);
 	}
 
-	/** Every snapshot record in the session, by id. */
+	/**
+	 * The snapshot records this manager holds, by id: every one in the session while it holds the whole history, else
+	 * those its current resume depends on (the latest snapshot of each checkout root on the active branch and the ones
+	 * its restores name) and those its window's entries carry. Use {@link loadWorktreeSnapshotRecords} or
+	 * {@link readWorktreeSnapshotPages} for any other record of the session.
+	 */
 	getWorktreeSnapshotRecords(): Map<string, WorktreeSnapshot> {
 		return this.historyIndex.worktreeSnapshotRecords(this.fileEntries);
+	}
+
+	/**
+	 * The record of each of `ids` the session holds, from the latest entry carrying it on any branch, read from the store
+	 * when this manager does not hold it. An id the session never recorded is left out. Rejects with the store's error
+	 * (`StorageUnavailableError` names its adapter and location) when the store cannot be read.
+	 */
+	async loadWorktreeSnapshotRecords(
+		ids: Iterable<string>,
+		options: { readonly signal?: AbortSignal } = {},
+	): Promise<Map<string, WorktreeSnapshot>> {
+		const held = this.getWorktreeSnapshotRecords();
+		const records = new Map<string, WorktreeSnapshot>();
+		const missing: string[] = [];
+		for (const id of new Set(ids)) {
+			const record = held.get(id);
+			if (record === undefined) missing.push(id);
+			else records.set(id, record);
+		}
+		if (missing.length === 0 || this.hasFullHistory()) return records;
+		for (const [id, record] of await findWorktreeSnapshotRecords(this.captureArchive(), missing, options))
+			records.set(id, record);
+		return records;
+	}
+
+	/**
+	 * The session's `worktree_snapshot` entries, held or stored, a page at a time, as the session stands when the read
+	 * starts: every one in append order, or with `branch` those on the active branch. Pages are not kept by the manager.
+	 * Rejects with the store's error when the store cannot be read.
+	 */
+	readWorktreeSnapshotPages(
+		options: {
+			readonly branch?: boolean;
+			readonly direction?: "forward" | "backward";
+			readonly signal?: AbortSignal;
+		} = {},
+	): AsyncGenerator<readonly StoredWorktreeSnapshotEntry[], void> {
+		const { branch, ...read } = options;
+		if (!branch) return worktreeSnapshotPages(this.captureArchive(), read);
+		const leafSeq = this.leafId === null ? undefined : this.entrySeqs.get(this.leafId);
+		if (leafSeq === undefined) return (async function* () {})();
+		return worktreeSnapshotPages(this.captureArchive(), { ...read, branchLeafSeq: leafSeq });
+	}
+
+	private async hasWorktreeSnapshotRecord(id: string): Promise<boolean> {
+		return (await this.loadWorktreeSnapshotRecords([id])).has(id);
 	}
 
 	/** The latest snapshot of each checkout root on the active branch, keyed by the root it was last recorded under. */

@@ -26,8 +26,21 @@ const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
-/** Version 9 preserves historic task aliases after the observation carrying them is superseded. */
-const RESUME_INDEX_VERSION = 9;
+/** Rebuild older projections once to recover prior task aliases and the exact records named by active checkouts. */
+const RESUME_INDEX_VERSION = 10;
+
+type SnapshotHead = readonly [seq: number, snapshotId: string];
+/**
+ * The plain snapshot entries (no restore, unrestored or degraded record) a resume keeps of one checkout root on the
+ * active branch: the first, which keeps the order roots appear in; the latest, which is what the checkout holds; and
+ * the latest naming another snapshot than the latest, which ends a restore notice of that root as every one between
+ * them would. Restore history entries are kept whole. Earlier entries are read from the archive on demand.
+ */
+export interface SnapshotHeads {
+	readonly first: SnapshotHead;
+	readonly latest: SnapshotHead;
+	readonly other?: SnapshotHead;
+}
 
 export interface SessionResumeIndex {
 	readonly version: typeof RESUME_INDEX_VERSION;
@@ -69,9 +82,15 @@ export interface SessionResumeIndex {
 	readonly lastStateSeq: number;
 	readonly settingsHistory: string;
 	readonly lastSettingSeq: number;
+	/** Every plain snapshot entry (no restore, unrestored or degraded record), as deltas. */
 	readonly snapshotRefs: string;
 	readonly lastSnapshotRef: number;
-	readonly hasRestoreHistory: boolean;
+	/** By checkout root, the plain snapshot entries of the active branch a resume keeps. */
+	readonly snapshotHeads: Readonly<Record<string, SnapshotHeads>>;
+	/** The snapshot ids the active branch's restore history names: its own and the ones it is degraded from. */
+	readonly snapshotPins: readonly string[];
+	/** The latest entry carrying each snapshot record, by snapshot id, on any branch. */
+	readonly snapshotRecords: Readonly<Record<string, number>>;
 	readonly totals: SessionHistoryTotals;
 	readonly latestAssistantSeq?: number;
 }
@@ -265,6 +284,8 @@ type ResumeProtocolIndex = Pick<
 	| "parks"
 	| "intents"
 	| "acks"
+	| "snapshotHeads"
+	| "snapshotPins"
 >;
 class ResumeProtocols {
 	readonly latest: Record<string, readonly number[]>;
@@ -280,6 +301,8 @@ class ResumeProtocols {
 	readonly parks: Record<string, { seq: number; remaining: readonly string[]; notified: readonly number[] }>;
 	readonly intents: Map<string, number>;
 	readonly acks: (readonly [number, number])[];
+	readonly snapshotHeads: Record<string, SnapshotHeads>;
+	readonly snapshotPins: Set<string>;
 	constructor(previous?: ResumeProtocolIndex) {
 		this.latest = { ...previous?.latest };
 		this.fields = { ...previous?.fields };
@@ -294,9 +317,35 @@ class ResumeProtocols {
 		this.parks = { ...previous?.parks };
 		this.intents = new Map(previous?.intents ?? []);
 		this.acks = [...(previous?.acks ?? [])];
+		this.snapshotHeads = { ...previous?.snapshotHeads };
+		this.snapshotPins = new Set(previous?.snapshotPins ?? []);
 	}
 	keepLatest(key: string, seq: number): void {
 		this.latest[key] = [seq];
+	}
+	/** A snapshot entry on the active branch. Restore history is kept whole; of the plain entries only the heads. */
+	snapshot(entry: Extract<SessionEntry, { type: "worktree_snapshot" }>, seq: number): void {
+		if (entry.restore || entry.unrestored || entry.degradedFrom) {
+			this.snapshotPins.add(entry.snapshotId);
+			// Chunked projections carry only whether an entry names one.
+			if (typeof entry.degradedFrom === "string") this.snapshotPins.add(entry.degradedFrom);
+			return;
+		}
+		const head: SnapshotHead = [seq, entry.snapshotId];
+		const heads = this.snapshotHeads[entry.root];
+		this.snapshotHeads[entry.root] =
+			heads === undefined
+				? { first: head, latest: head }
+				: {
+						first: heads.first,
+						latest: head,
+						...(heads.latest[1] !== entry.snapshotId
+							? { other: heads.latest }
+							: heads.other
+								? { other: heads.other }
+								: {}),
+					};
+		if (entry.captureMs != null) this.keepLatest(`snapshot-capture:${entry.root}`, seq);
 	}
 	private keepPending(key: string, seq: number): void {
 		if (this.settled.has(key)) return;
@@ -458,6 +507,8 @@ class ResumeProtocols {
 			parks: this.parks,
 			intents: [...this.intents],
 			acks: this.acks,
+			snapshotHeads: this.snapshotHeads,
+			snapshotPins: [...this.snapshotPins],
 		};
 	}
 }
@@ -484,7 +535,7 @@ function applyBranchState(
 	seq: number,
 	active: boolean,
 	modelTransition: boolean,
-): boolean {
+): void {
 	if (active && (entry.type === "model_change" || entry.type === "thinking_level_change"))
 		protocols.keepLatest(`setting:${entry.type}`, seq);
 	if (entry.type === "message" && entry.message?.role === "assistant") {
@@ -492,11 +543,7 @@ function applyBranchState(
 		if (active) assistants.splice(0, assistants.length, seq);
 	}
 	protocols.apply(entry, seq, active);
-	if (entry.type !== "worktree_snapshot" || !active) return false;
-	if (entry.restore || entry.unrestored || entry.degradedFrom) return true;
-	protocols.keepLatest(`snapshot-ref:${JSON.stringify([entry.root, entry.snapshotId])}`, seq);
-	if (entry.captureMs != null) protocols.keepLatest(`snapshot-capture:${entry.root}`, seq);
-	return false;
+	if (entry.type === "worktree_snapshot" && active) protocols.snapshot(entry, seq);
 }
 
 /** Select another leaf without changing the saved index. Topology and billing do not depend on the selected
@@ -510,14 +557,11 @@ export async function selectResumeLeaf(
 	const assistants: number[] = [];
 	const ranges = branchRanges(index, leafSeq);
 	const transitions = new Set(index.models.map(([seq]) => seq));
-	let hasRestoreHistory = false;
 	for await (const page of pages) {
-		for (const { entry, seq } of page) {
-			if (applyBranchState(protocols, assistants, entry, seq, onBranch(ranges, seq), transitions.has(seq)))
-				hasRestoreHistory = true;
-		}
+		for (const { entry, seq } of page)
+			applyBranchState(protocols, assistants, entry, seq, onBranch(ranges, seq), transitions.has(seq));
 	}
-	return { ...index, ...protocols.serialize(), leafSeq, assistants, hasRestoreHistory };
+	return { ...index, ...protocols.serialize(), leafSeq, assistants };
 }
 
 export function foldSessionResume(
@@ -556,7 +600,7 @@ export function foldSessionResume(
 	let lastSettingSeq = previous?.lastSettingSeq ?? 0;
 	let snapshotRefs = previous?.snapshotRefs ?? "";
 	let lastSnapshotRef = previous?.lastSnapshotRef ?? 0;
-	let hasRestoreHistory = previous?.hasRestoreHistory ?? false;
+	const snapshotRecords: Record<string, number> = { ...previous?.snapshotRecords };
 	let totals = previous?.totals ?? EMPTY_SESSION_HISTORY_TOTALS;
 	let latestAssistantSeq = previous?.latestAssistantSeq;
 	let needsBranchRebuild = previous?.needsBranchRebuild ?? false;
@@ -596,15 +640,12 @@ export function foldSessionResume(
 				modelTransition = true;
 			}
 		}
-		if (applyBranchState(protocols, assistants, entry, seq, branchActive, modelTransition)) hasRestoreHistory = true;
+		applyBranchState(protocols, assistants, entry, seq, branchActive, modelTransition);
 		const plainSnapshot =
 			entry.type === "worktree_snapshot" && !entry.restore && !entry.unrestored && !entry.degradedFrom;
+		if (entry.type === "worktree_snapshot" && entry.snapshot !== undefined) snapshotRecords[entry.snapshotId] = seq;
 		if (!isSessionHistoryEntry(entry)) {
-			if (
-				(entry.type === "worktree_snapshot" && entry.snapshot !== undefined) ||
-				(entry.type === "custom" && entry.customType.startsWith("event_subscription"))
-			)
-				universal.push(seq);
+			if (entry.type === "custom" && entry.customType.startsWith("event_subscription")) universal.push(seq);
 			if (
 				entry.type === "model_change" ||
 				entry.type === "thinking_level_change" ||
@@ -613,7 +654,7 @@ export function foldSessionResume(
 				const delta = (seq - lastSettingSeq).toString(36);
 				settingsHistory = settingsHistory === "" ? delta : `${settingsHistory}.${delta}`;
 				lastSettingSeq = seq;
-			} else if (plainSnapshot && entry.type === "worktree_snapshot" && entry.snapshot === undefined) {
+			} else if (plainSnapshot) {
 				const delta = (seq - lastSnapshotRef).toString(36);
 				snapshotRefs = snapshotRefs === "" ? delta : `${snapshotRefs}.${delta}`;
 				lastSnapshotRef = seq;
@@ -651,7 +692,7 @@ export function foldSessionResume(
 		lastSettingSeq,
 		snapshotRefs,
 		lastSnapshotRef,
-		hasRestoreHistory,
+		snapshotRecords,
 		totals,
 		...(latestAssistantSeq !== undefined ? { latestAssistantSeq } : {}),
 	};
@@ -680,7 +721,11 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 		typeof index.lastSettingSeq === "number" &&
 		typeof index.snapshotRefs === "string" &&
 		typeof index.lastSnapshotRef === "number" &&
-		typeof index.hasRestoreHistory === "boolean" &&
+		typeof index.snapshotHeads === "object" &&
+		index.snapshotHeads !== null &&
+		Array.isArray(index.snapshotPins) &&
+		typeof index.snapshotRecords === "object" &&
+		index.snapshotRecords !== null &&
 		typeof index.totals === "object" &&
 		index.totals !== null
 	);
@@ -827,6 +872,7 @@ export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number, wind
 		...Object.values(index.firstChildren),
 		...Object.entries(index.pending).flatMap(([key, seq]) => (omitEmptyReply && key === "reply:" ? [] : [seq])),
 		...Object.values(index.parks).flatMap((park) => [park.seq, ...park.notified]),
+		...snapshotSeqs(index),
 	];
 	const seqs = new Set(retained.filter((seq): seq is number => seq !== undefined && seq < fromSeq));
 	let seq = 0;
@@ -847,9 +893,24 @@ export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number, wind
 		}
 	};
 	if (!windowOnly) includeHistory(index.settingsHistory);
-	if (!windowOnly || index.hasRestoreHistory) includeHistory(index.snapshotRefs);
+	if (!windowOnly) includeHistory(index.snapshotRefs);
 	for (const [intentSeq, ackSeq] of index.acks) if (seqs.has(intentSeq) && ackSeq < fromSeq) seqs.add(ackSeq);
 	return [...seqs].sort((left, right) => left - right);
+}
+
+/** The plain snapshot entries each checkout root keeps, and the entries holding the records they and the restore
+ * history name. Every other snapshot record stays in the store, read on demand (#5554). */
+function snapshotSeqs(index: SessionResumeIndex): number[] {
+	const seqs: number[] = [];
+	const ids = new Set(index.snapshotPins);
+	for (const { first, latest, other } of Object.values(index.snapshotHeads)) {
+		for (const [seq, id] of other ? [first, latest, other] : [first, latest]) {
+			seqs.push(seq);
+			ids.add(id);
+		}
+	}
+	for (const id of ids) if (Object.hasOwn(index.snapshotRecords, id)) seqs.push(index.snapshotRecords[id]!);
+	return seqs;
 }
 
 export function omittedTotals(
