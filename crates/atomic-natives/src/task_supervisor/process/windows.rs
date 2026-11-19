@@ -119,13 +119,41 @@ pub(super) fn raw(handle: &impl AsRawHandle) -> HANDLE {
 /// paused virtual machine, a starved scheduler) can let the whole grace pass before the writer ran at all; once it
 /// runs it reports within a few of its polls, while a writer that is really stuck never does.
 const STDIN_WRITER_LATE_REPORT: Duration = Duration::from_millis(100);
+#[derive(Default)]
+struct StdinWriterStop {
+	requested: AtomicBool,
+	// Held only across delivery of nonempty bytes, not an idle poll or queue cleanup.
+	writes_closed: Mutex<bool>,
+}
+impl StdinWriterStop {
+	fn deliver(&self, write: impl FnOnce() -> io::Result<usize>) -> io::Result<usize> {
+		let closed = self.writes_closed.lock().unwrap();
+		if *closed {
+			return Err(io::ErrorKind::BrokenPipe.into());
+		}
+		write()
+	}
+	fn close_input_between_writes(&self, input: &Mutex<InputQueue>) -> bool {
+		match input.try_lock() {
+			Ok(mut queue) => {
+				queue.close();
+				true
+			},
+			// With the queue busy, fence future deliveries without waiting for its holder to run.
+			Err(std::sync::TryLockError::WouldBlock) => {
+				self.writes_closed.try_lock().map(|mut closed| *closed = true).is_ok()
+			},
+			Err(std::sync::TryLockError::Poisoned(_)) => false,
+		}
+	}
+}
 /// Stops the stdin writer and confirms it. `job_ended` says the command's job has exited with no process left in it: the
 /// pipe the writer feeds then has no reader, so a writer that the host has not yet scheduled can no longer deliver input
 /// to anything of the command, and it is left to end on its own instead of failing a command that ran to completion.
 /// A writer of a job that still has processes, such as a command that keeps its background processes on exit, is
 /// confirmed the same way when it is not in a write (see `close_input_between_writes`).
 fn finish_stdin_writer(
-	stop_input: &AtomicBool,
+	stop_input: &StdinWriterStop,
 	writer: std::thread::JoinHandle<()>,
 	writer_done: &std::sync::mpsc::Receiver<()>,
 	input: &Mutex<InputQueue>,
@@ -134,7 +162,7 @@ fn finish_stdin_writer(
 	job_ended: bool,
 ) -> (Option<std::thread::JoinHandle<()>>, Option<String>) {
 	let deadline = Instant::now() + timeout;
-	stop_input.store(true, Ordering::Release);
+	stop_input.requested.store(true, Ordering::Release);
 	writer.thread().unpark();
 	// The writer reports its stop only after it closed the input and dropped the stdin handle, so from then on it
 	// holds nothing of the command and is left to end on its own: its thread's end is no cleanup of the command, and
@@ -152,19 +180,12 @@ fn finish_stdin_writer(
 		(None, failure)
 	} else if writer_done.recv_timeout(late_report).is_ok()
 		|| job_ended
-		|| close_input_between_writes(input)
+		|| stop_input.close_input_between_writes(input)
 	{
 		(None, None)
 	} else {
 		(writer, Some("Windows stdin worker stop was not confirmed".into()))
 	}
-}
-/// The writer delivers input only while it holds the input queue's lock, so a free lock means it is between deliveries:
-/// parked, or not yet scheduled by a loaded host. Closing the queue under that lock leaves it nothing it could ever
-/// write, so once it runs it only closes the stdin handle and ends; it can no longer block on the command's pipe. A
-/// writer that holds the lock may be blocked in a write that nothing reads, and stays unconfirmed (#5512).
-fn close_input_between_writes(input: &Mutex<InputQueue>) -> bool {
-	input.try_lock().map(|mut queue| queue.close()).is_ok()
 }
 struct RetainedWindows {
 	resource: WindowsProcess,
@@ -471,16 +492,20 @@ impl Actor {
 			},
 		};
 		let WindowsLaunch { mut resource, stdin, mut stdout, mut stderr } = launch;
-		let stop_input = Arc::new(AtomicBool::new(false));
+		let stop_input = Arc::new(StdinWriterStop::default());
 		let stopped = stop_input.clone();
 		let input_command = command.clone();
 		let (writer_done_tx, writer_done_rx) = std::sync::mpsc::channel();
 		let writer = std::thread::Builder::new().name("task-stdin".into()).spawn(move || {
 			let writer_done = writer_done_tx;
 			let mut stdin = Some(stdin);
-			while !stopped.load(Ordering::Acquire) {
-				input_command.input.lock().unwrap().drain(&mut stdin);
-				if !stopped.load(Ordering::Acquire) {
+			while !stopped.requested.load(Ordering::Acquire) {
+				input_command
+					.input
+					.lock()
+					.unwrap()
+					.drain_with(&mut stdin, |pipe, bytes| stopped.deliver(|| pipe.write(bytes)));
+				if !stopped.requested.load(Ordering::Acquire) {
 					std::thread::park_timeout(PROCESS_POLL);
 				}
 			}
@@ -605,7 +630,7 @@ impl Actor {
 				&& !cancelling
 				&& failure.is_none()
 			{
-				stop_input.store(true, Ordering::Release);
+				stop_input.requested.store(true, Ordering::Release);
 				writer.thread().unpark();
 				for _ in 0..16 {
 					let before = command.output.lock().unwrap().byte_count;
@@ -638,7 +663,7 @@ impl Actor {
 				if let Err(error) = resource.kill() {
 					failure = Some(error.to_string());
 				}
-				stop_input.store(true, Ordering::Release);
+				stop_input.requested.store(true, Ordering::Release);
 				writer.thread().unpark();
 				if let Some(pty) = &mut resource.pty {
 					pty.begin_close();
@@ -877,18 +902,64 @@ mod tests {
 		);
 		assert_eq!(record.cleanup, Cleanup::Reaped {});
 	}
+	#[test]
+	fn completed_command_with_busy_idle_stdin_queue_and_kept_background_is_reaped_5702() {
+		let actor = Actor::new();
+		let scope = OwnerScope::Session { session_id: "windows-idle-input".into() };
+		let owner = actor.open(&actor.bind(scope.clone()), scope).unwrap();
+		let dir = std::env::temp_dir().join(format!("atomic-idle-input-{}", std::process::id()));
+		std::fs::create_dir(&dir).unwrap();
+		let mut waiting = intent(
+			"node -e \"const fs=require('node:fs'); const t=setInterval(()=>{if(fs.existsSync('exit'))clearInterval(t)},10)\"",
+		);
+		waiting.cwd = Some(dir.to_string_lossy().to_string().into());
+		let options =
+			CommandResourceOptions { keep_background_on_exit: Some(true), ..Default::default() };
+		let task = actor.start_command_configured(&owner, waiting, "job".into(), options).unwrap();
+		let command = actor.command_resource(&task).unwrap();
+		// Hold the empty queue through settlement: an idle writer stalled under this lock cannot be writing to a pipe.
+		let held = command.input.lock().unwrap();
+		std::fs::write(dir.join("exit"), "").unwrap();
+		let deadline = Instant::now() + PROCESS_DRAIN_GRACE + STDIN_WRITER_TEST_WAIT;
+		let record = loop {
+			let record = actor.snapshot(&owner).unwrap().tasks[0].clone();
+			if !matches!(record.cleanup, Cleanup::Active {} | Cleanup::Draining {}) {
+				break record;
+			}
+			assert!(Instant::now() < deadline, "command did not settle: {record:?}");
+			std::thread::sleep(PROCESS_POLL);
+		};
+		drop(held);
+		actor.shutdown();
+		std::fs::remove_dir_all(dir).unwrap();
+		assert!(
+			matches!(&record.execution, Execution::Settled { result: TaskResult::Completed { exit_code: Some(code), .. } } if *code == 0.0),
+			"{record:?}"
+		);
+		assert_eq!(record.cleanup, Cleanup::Reaped {});
+	}
+	#[test]
+	fn confirming_idle_stdin_while_the_queue_is_locked_fences_the_next_delivery_5702() {
+		let stop = StdinWriterStop::default();
+		let input = Mutex::new(InputQueue::default());
+		let _idle_poll = input.lock().unwrap();
+		assert!(stop.close_input_between_writes(&input));
+		let mut bytes = Vec::new();
+		assert!(stop.deliver(|| bytes.write(b"late")).is_err());
+		assert!(bytes.is_empty());
+	}
 	const STDIN_WRITER_TEST_WAIT: Duration = Duration::from_secs(10);
 	#[test]
 	fn stdin_writer_completion_notifies_without_poll_delay_and_bounds_blocked_worker_5202_5340() {
 		let mut durations = Vec::new();
 		for _ in 0..5 {
-			let stop_input = Arc::new(AtomicBool::new(false));
+			let stop_input = Arc::new(StdinWriterStop::default());
 			let stopped = stop_input.clone();
 			let (ready_tx, ready_rx) = std::sync::mpsc::channel();
 			let (done_tx, done_rx) = std::sync::mpsc::channel();
 			let writer = std::thread::spawn(move || {
 				ready_tx.send(()).unwrap();
-				while !stopped.load(Ordering::Acquire) {
+				while !stopped.requested.load(Ordering::Acquire) {
 					std::thread::park_timeout(Duration::from_secs(5));
 				}
 				let _ = done_tx.send(());
@@ -916,7 +987,7 @@ mod tests {
 			PROCESS_POLL
 		);
 
-		let stop_panic = Arc::new(AtomicBool::new(false));
+		let stop_panic = StdinWriterStop::default();
 		let (panic_done_tx, panic_done_rx) = std::sync::mpsc::channel();
 		let panic_writer = std::thread::spawn(move || {
 			let _done = panic_done_tx;
@@ -935,7 +1006,8 @@ mod tests {
 		assert_eq!(failure.as_deref(), Some("Windows stdin worker panicked"));
 
 		// A writer blocked in a write to the command's stdin holds the input queue's lock for as long as the write lasts.
-		let stop_blocked = Arc::new(AtomicBool::new(false));
+		let stop_blocked = Arc::new(StdinWriterStop::default());
+		let blocked_delivery = stop_blocked.clone();
 		let blocked_input = Arc::new(Mutex::new(InputQueue::default()));
 		let writing = blocked_input.clone();
 		let (blocked_ready_tx, blocked_ready_rx) = std::sync::mpsc::channel();
@@ -944,8 +1016,13 @@ mod tests {
 		let blocked_writer = std::thread::spawn(move || {
 			let _done = blocked_done_tx;
 			let _write = writing.lock().unwrap();
-			blocked_ready_tx.send(()).unwrap();
-			let _ = release_rx.recv_timeout(STDIN_WRITER_TEST_WAIT);
+			blocked_delivery
+				.deliver(|| {
+					blocked_ready_tx.send(()).unwrap();
+					let _ = release_rx.recv_timeout(STDIN_WRITER_TEST_WAIT);
+					Ok(1)
+				})
+				.unwrap();
 		});
 		blocked_ready_rx.recv_timeout(STDIN_WRITER_TEST_WAIT).unwrap();
 		let started = Instant::now();
@@ -964,7 +1041,8 @@ mod tests {
 		release_tx.send(()).unwrap();
 		retained.unwrap().join().unwrap();
 
-		let stop_stalled = Arc::new(AtomicBool::new(false));
+		let stop_stalled = Arc::new(StdinWriterStop::default());
+		let stalled_delivery = stop_stalled.clone();
 		let stalled_input = Arc::new(Mutex::new(InputQueue::default()));
 		let stalled_write = stalled_input.clone();
 		let (stall_ready_tx, stall_ready_rx) = std::sync::mpsc::channel();
@@ -973,8 +1051,13 @@ mod tests {
 		let stalled_writer = std::thread::spawn(move || {
 			drop(stall_done_tx);
 			let _write = stalled_write.lock().unwrap();
-			stall_ready_tx.send(()).unwrap();
-			let _ = stall_release_rx.recv();
+			stalled_delivery
+				.deliver(|| {
+					stall_ready_tx.send(()).unwrap();
+					let _ = stall_release_rx.recv();
+					Ok(1)
+				})
+				.unwrap();
 		});
 		stall_ready_rx.recv_timeout(STDIN_WRITER_TEST_WAIT).unwrap();
 		let started = Instant::now();
@@ -997,7 +1080,7 @@ mod tests {
 	// than the grace to end, and a command that ran to completion must not fail on that.
 	#[test]
 	fn stdin_writer_that_reported_its_stop_is_confirmed_while_its_thread_still_ends_5340() {
-		let stop_input = Arc::new(AtomicBool::new(false));
+		let stop_input = StdinWriterStop::default();
 		let (done_tx, done_rx) = std::sync::mpsc::channel();
 		let (ready_tx, ready_rx) = std::sync::mpsc::channel();
 		let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -1030,14 +1113,14 @@ mod tests {
 	#[test]
 	fn stdin_writer_that_reports_its_stop_just_after_the_grace_is_confirmed_5340() {
 		let grace = Duration::from_millis(10);
-		let stop_input = Arc::new(AtomicBool::new(false));
+		let stop_input = Arc::new(StdinWriterStop::default());
 		let stopped = stop_input.clone();
 		let (ready_tx, ready_rx) = std::sync::mpsc::channel();
 		let (done_tx, done_rx) = std::sync::mpsc::channel();
 		let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
 		let writer = std::thread::spawn(move || {
 			ready_tx.send(()).unwrap();
-			while !stopped.load(Ordering::Acquire) {
+			while !stopped.requested.load(Ordering::Acquire) {
 				std::thread::park_timeout(PROCESS_POLL);
 			}
 			std::thread::sleep(grace + STDIN_WRITER_TEST_WAIT / 2);
@@ -1063,7 +1146,7 @@ mod tests {
 	// that ran to completion must not fail on that (#5202); the writer still ends on its own once it runs.
 	#[test]
 	fn stdin_writer_not_yet_scheduled_after_its_job_ended_does_not_fail_the_command_5202() {
-		let stop_input = Arc::new(AtomicBool::new(false));
+		let stop_input = StdinWriterStop::default();
 		let input = Arc::new(Mutex::new(InputQueue::default()));
 		let pass = input.clone();
 		let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -1101,7 +1184,7 @@ mod tests {
 	// ends. A command that ran to completion must not fail on that (#5512).
 	#[test]
 	fn stdin_writer_not_yet_scheduled_while_kept_background_runs_does_not_fail_5512() {
-		let stop_input = Arc::new(AtomicBool::new(false));
+		let stop_input = Arc::new(StdinWriterStop::default());
 		let stopped = stop_input.clone();
 		let input = Arc::new(Mutex::new(InputQueue::default()));
 		let queue = input.clone();
@@ -1110,7 +1193,7 @@ mod tests {
 		let (ended_tx, ended_rx) = std::sync::mpsc::channel();
 		let writer = std::thread::spawn(move || {
 			let _ = release_rx.recv_timeout(STDIN_WRITER_TEST_WAIT);
-			assert!(stopped.load(Ordering::Acquire));
+			assert!(stopped.requested.load(Ordering::Acquire));
 			queue.lock().unwrap().close();
 			let _ = done_tx.send(());
 			ended_tx.send(()).unwrap();
