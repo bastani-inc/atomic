@@ -103,7 +103,7 @@ async function openStore(kind: "memory" | "jsonl" | "sqlite" | "legacy"): Promis
 /** The calls to each store read that `read` makes. */
 async function countReads<T>(store: SessionStore, read: () => Promise<T>): Promise<[T, Record<string, number>]> {
 	const counts: Record<string, number> = {};
-	const names = ["readBranchSpan", "readEntrySizes", "readRange", "readEntryChunk"] as const;
+	const names = ["readBranchSpan", "readEntrySizes", "readRange", "readScanPage", "readEntryChunk"] as const;
 	const own = store as unknown as Record<string, unknown>;
 	for (const name of names) {
 		const original = store[name] as ((...args: unknown[]) => Promise<unknown>) | undefined;
@@ -164,16 +164,23 @@ describe.each(["memory", "jsonl", "sqlite", "legacy"] as const)("a scan of a %s 
 			);
 			assert.ok(scanned.length <= pages.length, label);
 			assert.ok((scanReads.readEntrySizes ?? 0) <= (defaultReads.readEntrySizes ?? 0), label);
-			assert.ok((scanReads.readRange ?? 0) <= (defaultReads.readRange ?? 0), label);
+			assert.ok((scanReads.readRange ?? 0) + (scanReads.readScanPage ?? 0) <= (defaultReads.readRange ?? 0), label);
 		}
 		const [whole, wholeReads] = await countReads(store, () =>
 			pagesOf(store, { pageEntries: SESSION_HISTORY_SCAN_ENTRIES }),
 		);
 		// Before the entry larger than a page, that entry, and after it.
 		assert.equal(whole.length, 3);
-		assert.equal(wholeReads.readRange, 2);
-		// One read of the session's head, and the sizes read for the first page serve the other two.
-		assert.equal(wholeReads.readEntrySizes, 2);
+		if (store.readScanPage) {
+			// One read of the session's head, then one read a page, which sizes it too (#5571).
+			assert.equal(wholeReads.readScanPage, 3);
+			assert.equal(wholeReads.readRange ?? 0, 0);
+			assert.equal(wholeReads.readEntrySizes, 1);
+		} else {
+			assert.equal(wholeReads.readRange, 2);
+			// One read of the session's head, and the sizes read for the first page serve the other two.
+			assert.equal(wholeReads.readEntrySizes, 2);
+		}
 		const [, branchReads] = await countReads(store, () =>
 			pagesOf(store, { branchLeafSeq: leaf, pageEntries: SESSION_HISTORY_SCAN_ENTRIES }),
 		);
