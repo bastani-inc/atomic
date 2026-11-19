@@ -42,6 +42,8 @@ interface RunWorktrees {
 	/** Initial launches not yet handed to their execution. Protects slow and queued siblings. */
 	readonly launching: Set<number>;
 	readonly finishing: Map<number, Promise<void>>;
+	/** The execution is done with its session and output; only the batch's Git work can hold up publication. */
+	readonly beforeSweep: Map<number, Promise<void>>;
 	/** Children stopped resumably (paused, quit, owner closed, stage paused): their worktree is kept while it has unsaved work. */
 	readonly stopped: Set<number>;
 	readonly removed: Set<number>;
@@ -171,6 +173,7 @@ function track(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs): R
 		holds: new Set(),
 		launching: new Set(),
 		finishing: new Map(),
+		beforeSweep: new Map(),
 		stopped: new Set(),
 		removed: new Set(),
 		returned: false,
@@ -268,6 +271,11 @@ export async function observeChildWorktreeAtReply(
 	return currentChildWorktreeNote(runId, index);
 }
 
+/** Stop-all may visit the next target during Git, but not during the preceding child's native stop. */
+export function childWorktreeSweepStart(runId: string, index: number): Promise<void> | undefined {
+	return runs.get(runId)?.beforeSweep.get(index);
+}
+
 /** The execution's hold ends after session cleanup, even when the reply's deadline expires first. */
 export function beginWorktreeExecution(runId: string, index: number) {
 	const run = runs.get(runId);
@@ -275,12 +283,18 @@ export function beginWorktreeExecution(runId: string, index: number) {
 	run.launching.delete(index);
 	const held = hold(run);
 	// An ordinary execution's release: nothing of its sweep is stopped, whatever `closed` settles with.
-	const release = () => held();
+	const start = Promise.withResolvers<void>();
+	run.beforeSweep.set(index, start.promise);
+	const release = () => {
+		if (run.returned && run.holds.size === 1 && !run.launching.size) start.resolve();
+		return held();
+	};
 	let reply: Promise<string | undefined> | undefined;
 	return (closed?: Promise<unknown>) => {
 		if (reply) return reply;
 		const swept = (closed ? closed.then(release, release) : release()).finally(() => {
 			if (run.finishing.get(index) === swept) run.finishing.delete(index);
+			if (run.beforeSweep.get(index) === start.promise) run.beforeSweep.delete(index);
 		});
 		run.finishing.set(index, swept);
 		reply = boundedWorktreeReply(runId, swept);

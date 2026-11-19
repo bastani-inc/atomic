@@ -179,17 +179,20 @@ async function readSettledOutput(
 	signal?: AbortSignal,
 ): Promise<string | undefined> {
 	const output = settled.result.output;
-	if (!output) return undefined;
-	const label = subagentTaskResultLabel(settled.result);
-	// A child that ran on another model than its launch asked for says so beside its output (#4188).
-	const ranOn = ranOnModelLine(record);
-	const kept = retainedTaskOutput(output.ownerId, output.taskId);
+	const kept = output && retainedTaskOutput(output.ownerId, output.taskId);
 	const tree = kept
 		? kept.worktree
 		: record?.kind === "agent"
 			? subagentChildCardRecord(undefined, settled.taskId)
 			: undefined;
 	const observeWorktree = () => tree && observeChildWorktreeAtReply(tree.runId, tree.index, undefined, signal);
+	if (!output) {
+		const note = await observeWorktree();
+		return note ? `${settled.taskId}: ${note}` : undefined;
+	}
+	const label = subagentTaskResultLabel(settled.result);
+	// A child that ran on another model than its launch asked for says so beside its output (#4188).
+	const ranOn = ranOnModelLine(record);
 	if (kept) {
 		return settledOutputSection(
 			settled.taskId,
@@ -1002,14 +1005,15 @@ export async function runAgentTask(input: {
 					} catch (error) {
 						elapsedSpan.endedAt ??= Date.now();
 						if (takeSubagentChildStop(context.ref.taskId) !== undefined) unparkRunWorktree(runId, index);
-						if (finishWorktree) finishingWorktreeTasks.add(context.ref.taskId);
-						const note = finishWorktree && (await finishWorktree(executionCleanup));
+						if (finishWorktree) {
+							finishingWorktreeTasks.add(context.ref.taskId);
+							await finishWorktree(executionCleanup);
+						}
 						if (!ownerClosed()) recordChild("terminal", "error");
 						else if (input.recordChild?.ownerEndedForGood?.()) {
 							forgetRunMembership(runId, index);
 							recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
 						}
-						if (note) throw new Error(`${String(error)}. ${note}`, { cause: error });
 						throw error;
 					} finally {
 						ticket?.onEntered();

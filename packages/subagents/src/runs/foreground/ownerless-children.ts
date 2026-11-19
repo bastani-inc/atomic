@@ -137,6 +137,7 @@ export function runOwnerlessChild(input: {
 		"launchModel" | "launchThinkingLevel" | "launchLeafId" | "launchLeafSeq"
 	> = {};
 	let elapsedSpan: TaskElapsedSpan | undefined;
+	let exitTime: number | undefined;
 	let stoppedBeforeDispatch = false;
 	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
 	const record = (
@@ -153,7 +154,7 @@ export function runOwnerlessChild(input: {
 			...(input.agentSource ? { agentSource: input.agentSource } : {}),
 			forked,
 			state,
-			elapsedMs: elapsedSpan ? spanElapsedMs(elapsedSpan) : 0,
+			elapsedMs: elapsedSpan ? spanElapsedMs(elapsedSpan, exitTime) : 0,
 			elapsedSpan: elapsedSpan ? { ...elapsedSpan } : null,
 			cwd: input.cwd,
 			taskId: launchId,
@@ -236,6 +237,7 @@ export function runOwnerlessChild(input: {
 		// Its owner closed, which ends nothing: it stays restorable, with its worktree and unread messages.
 		if (ownerClosed) parkRunWorktree(runId, index);
 		if (finishWorktree) {
+			exitTime = Date.now();
 			finishing = true;
 			child.worktreeNote = await finishWorktree();
 		}
@@ -308,12 +310,14 @@ export function runOwnerlessChild(input: {
 			}
 			return child;
 		} catch (error) {
-			// Setup can throw before the runner freezes its span. Waiting for Git is not execution time.
-			elapsedSpan.endedAt ??= Date.now();
 			if (isExecutionTicket(input.schedule)) input.schedule.onEntered();
 			if (takeSubagentChildStop(launchId) !== undefined) unparkRunWorktree(runId, index);
-			finishing = !!finishWorktree;
-			if (finishWorktree) await finishWorktree();
+			if (finishWorktree) {
+				// Sample at failure without adding an end to a span the runner left open.
+				exitTime = Date.now();
+				finishing = true;
+				await finishWorktree();
+			}
 			// Its owner closed: its latest record stays `running`, so reopening the owner restores it.
 			if (input.ownerSignal?.aborted !== true) record("terminal", "error");
 			finish();

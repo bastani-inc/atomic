@@ -3818,8 +3818,8 @@ function holdGitFilter(cwd: string, pattern: string) {
 	};
 }
 
-function rejectSdkInput(h: Harness, prepare?: (cwd: string) => void) {
-	const refused = Promise.withResolvers<{ childId: string; error: Error }>();
+function rejectChildInput(h: Harness, prepare?: (cwd: string) => void) {
+	const refused = Promise.withResolvers<{ childId: string; error: Error; span: RunSyncOptions["elapsedSpan"] }>();
 	const storage = vi.spyOn(artifactStorage, "getArtifactsDir").mockResolvedValue(join(h.cwd, "artifacts"));
 	cleanups.push(async () => {
 		storage.mockRestore();
@@ -3839,7 +3839,11 @@ function rejectSdkInput(h: Harness, prepare?: (cwd: string) => void) {
 					return await runSync(cwd, agents, agent, task, options);
 				} catch (error) {
 					assert.ok(error instanceof Error);
-					refused.resolve({ childId: `${options.runId}:${options.index}`, error });
+					refused.resolve({
+						childId: `${options.runId}:${options.index}`,
+						error,
+						span: options.elapsedSpan && { ...options.elapsedSpan },
+					});
 					throw error;
 				}
 			},
@@ -3864,7 +3868,7 @@ for (const sibling of ["finishes", "hands off"] as const)
 		initGitRepository(h.cwd);
 		const done = Promise.withResolvers<void>();
 		h.finishOn.set("live-sibling", done);
-		const sdk = rejectSdkInput(h);
+		const sdk = rejectChildInput(h);
 		const batch = sdk.launch("refuse-input", "live-sibling");
 		const { childId, error } = await sdk.refused;
 		const failed = await h.waitForLatest(childId, (r) => r.terminalStatus === "error");
@@ -3901,14 +3905,48 @@ for (const sibling of ["finishes", "hands off"] as const)
 		}
 	});
 
+test("an admitted host failure keeps the original error after its sibling releases the worktrees (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const done = Promise.withResolvers<void>();
+	h.finishOn.set("live-sibling", done);
+	const host = rejectChildInput(h);
+	const launch = host.launch("refuse-input", "live-sibling");
+	try {
+		await launch;
+		const { childId, error } = await host.refused;
+		assert.match(error.message, /EISDIR|EPERM/);
+		const failed = await h.waitForLatest(childId, (r) => r.terminalStatus === "error");
+		assert.ok(failed.taskId);
+		const held = await h.call({ action: "wait", id: failed.taskId });
+		done.resolve();
+		await waitForWorktreeCleanup(h, failed);
+		const replay = await h.call({ action: "wait", id: failed.taskId });
+		for (const reply of [replay, held]) {
+			const response = reply.details.taskResponse;
+			assert.ok(response?.kind === "admitted" && response.observation.kind === "settled");
+			assert.deepEqual(response.observation.result, {
+				kind: "failed",
+				code: "RunnerFailed",
+				message: error.message,
+			});
+		}
+		assert.match(text(held), /worktree kept until/i);
+		assert.doesNotMatch(text(replay), /worktree kept until/i);
+	} finally {
+		done.resolve();
+		await launch;
+	}
+});
+
 test("an SDK input write failure stops the execution clock before Git captures the worktree (#5600)", async () => {
 	const h = harness({ ownerless: true });
 	initGitRepository(h.cwd);
 	const filter = holdGitFilter(h.cwd, "*.slow");
-	const sdk = rejectSdkInput(h, (cwd) => writeFileSync(join(cwd, "edited.slow"), "save this edit\n"));
+	const sdk = rejectChildInput(h, (cwd) => writeFileSync(join(cwd, "edited.slow"), "save this edit\n"));
 	const batch = sdk.launch("refuse-input");
 	try {
-		const { childId, error } = await sdk.refused;
+		const { childId, error, span } = await sdk.refused;
 		assert.match(error.message, /EISDIR|EPERM/);
 		await filter.started();
 		const duringCleanup = Date.now();
@@ -3916,6 +3954,7 @@ test("an SDK input write failure stops the execution clock before Git captures t
 		filter.release();
 		await batch;
 		const record = await h.waitForLatest(childId, (r) => r.terminalStatus === "error");
+		assert.deepEqual(record.elapsedSpan, span, "publication preserves the runner's original span");
 		assert.ok(record.elapsedSpan && record.elapsedMs !== undefined);
 		assert.ok(
 			record.elapsedMs <= duringCleanup - record.elapsedSpan.dispatchedAt,
@@ -3926,6 +3965,47 @@ test("an SDK input write failure stops the execution clock before Git captures t
 		await batch;
 	}
 });
+
+for (const action of ["pause", "quit"] as const)
+	test.each([false, true])(
+		`${action} all keeps a sibling's answer while an earlier native stop is still settling (worktree: %s, #5600)`,
+		async (managed) => {
+			const h = harness();
+			if (managed) initGitRepository(h.cwd);
+			const first = Promise.withResolvers<void>();
+			const second = Promise.withResolvers<void>();
+			h.stuckOn.set("opening-session", first);
+			h.finishOn.set("finishing-sibling", second);
+			if (managed) await launchWorktreeRun(h, ["opening-session"]);
+			else await h.call({ agent: "worker", task: "opening-session" });
+			await vi.waitFor(() => assert.ok(h.runs.some((run) => run.task.includes("opening-session"))));
+			const [earlier] = readSubagentChildRecords(h.sessionManager.getEntries()).values();
+			assert.ok(earlier?.taskId);
+			await h.call({ agent: "worker", task: "finishing-sibling" });
+			const later = await vi.waitFor(
+				() => {
+					const row = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+						(r) => r.childId !== earlier.childId && r.childSessionId,
+					);
+					assert.ok(row);
+					return row;
+				},
+				{ timeout: RECORD_WAIT_MS },
+			);
+			const stop = h.call({ action, all: true });
+			try {
+				await vi.waitFor(() => assert.equal(taskExecutionKind(h, earlier.taskId!), "cancelling"));
+				second.resolve();
+				const finished = await h.waitForLatest(later.childId, (r) => r.state === "terminal");
+				assert.equal(taskExecutionKind(h, earlier.taskId), "cancelling");
+				assert.equal(finished.terminalStatus, "ok");
+			} finally {
+				first.resolve();
+				second.resolve();
+				await stop;
+			}
+		},
+	);
 
 for (const action of ["pause", "quit"] as const)
 	test(`${action} all stops a plain child before waiting for a different child's Git cleanup (#5600)`, async () => {
@@ -3968,9 +4048,12 @@ for (const action of ["pause", "quit"] as const)
 		}
 	});
 
-test("pausing after an SDK handoff preserves staged and unstaged edits in the retained worktree (#5600)", async () => {
+test("pausing after an SDK handoff preserves local settings and staged and unstaged edits in the retained worktree (#5600)", async () => {
 	const h = harness({ ownerless: true });
 	initGitRepository(h.cwd);
+	const settings = join(".atomic", "settings.local.json");
+	mkdirSync(join(h.cwd, ".atomic"), { recursive: true });
+	writeFileSync(join(h.cwd, settings), '{"theme":"light"}');
 	const done = Promise.withResolvers<void>();
 	h.finishOn.set("handoff", done);
 	const launch = h.call({ tasks: [{ agent: "worker", task: "handoff" }], worktree: true });
@@ -3989,6 +4072,8 @@ test("pausing after an SDK handoff preserves staged and unstaged edits in the re
 		writeFileSync(file, "staged draft\n");
 		gitOutput(child.cwd, ["add", "seed.txt"]);
 		writeFileSync(file, "unstaged edit\n");
+		assert.equal(readFileSync(join(child.cwd, settings), "utf8"), '{"theme":"light"}');
+		writeFileSync(join(child.cwd, settings), '{"theme":"dark"}');
 		assert.ok(h.runs[0]?.options.onIntercomDetachCommit);
 		h.runs[0].options.onIntercomDetachCommit();
 		assert.ok((await launch).details.results[0]?.detached);
@@ -3998,6 +4083,17 @@ test("pausing after an SDK handoff preserves staged and unstaged edits in the re
 		assert.notEqual(paused.isError, true, text(paused));
 		assert.equal(gitOutput(child.cwd, ["show", ":seed.txt"]), staged);
 		assert.equal(readFileSync(file, "utf8"), "unstaged edit\n");
+		assert.equal(readFileSync(join(child.cwd, settings), "utf8"), '{"theme":"dark"}');
+		h.finishOn.set("read settings", done);
+		const resumed = await h.call({ action: "resume", id: child.childId, message: "read settings" });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		try {
+			await vi.waitFor(() => assert.ok(h.runs.some((run) => run.task.includes("read settings"))));
+			assert.equal(readFileSync(join(child.cwd, settings), "utf8"), '{"theme":"dark"}');
+		} finally {
+			done.resolve();
+			await waitForWorktreeCleanup(h, child);
+		}
 	} finally {
 		done.resolve();
 		await launch;
@@ -6951,6 +7047,29 @@ for (const action of ["pause", "quit"] as const) {
 		await settled(h, resumedTaskId(resumed));
 		assert.equal(h.runs.length, runsBefore + 1);
 		assert.equal(h.runs.at(-1)?.task, lateToolResultMessage(green), "resume delivers the held result once");
+	});
+}
+
+for (const action of ["pause", "quit"] as const) {
+	test(`${action} all holds a released child's result when it arrives during a later live stop (#5600)`, async () => {
+		const h = harness();
+		const runId = "released-first";
+		const childId = `${runId}:0`;
+		const dispatcher = await releasedWithWakes(h, runId);
+		const later = await h.launch("later-live");
+		const before = h.runs.length;
+		const green = waitResult("CI green");
+		duringCancelOf(h, later.taskId, () =>
+			dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), childId), {
+				id: "tool-result:ci-1",
+				kind: "tool-result",
+				toolResult: green,
+			}),
+		);
+		await h.call({ action, all: true });
+		assert.equal(h.runs.length, before, "a result arriving after the child's stop does not wake it");
+		assert.equal(h.latest(childId)?.terminalStatus, action === "pause" ? "paused" : "quit");
+		assert.deepEqual(h.latest(childId)?.heldToolResults, [green]);
 	});
 }
 

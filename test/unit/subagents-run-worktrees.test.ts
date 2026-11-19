@@ -106,7 +106,7 @@ test("saving a worktree patch does not recreate a missing index (#5600)", async 
 	assert.equal(existsSync(index), false);
 });
 
-test("resuming a paused child in its kept worktree restores the node_modules link and settings its run's diff removed (#3784)", async () => {
+test("resuming a paused child in its kept worktree restores missing setup without losing edits (#3784, #5600)", async () => {
 	const repo = await repositoryWithSetupSources();
 	const { runId, setup } = await worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
@@ -120,7 +120,11 @@ test("resuming a paused child in its kept worktree restores the node_modules lin
 	await diffWorktrees(setup, ["worker"], join(repo, "..", "diffs"));
 	await run.release();
 	assert.equal(existsSync(worktree.path), true, "the paused child's worktree with unsaved work is kept");
-	assert.equal(existsSync(join(worktree.path, "node_modules")), false, "the diff removed the node_modules link");
+	assertAtomicSetupPresent(worktree.path, "patch capture keeps the checkout intact");
+	// Resume also supports worktrees left by older versions, which removed setup during capture.
+	unlinkSync(join(worktree.path, "node_modules"));
+	unlinkSync(join(worktree.path, ".atomic", "settings.local.json"));
+	assert.equal(existsSync(join(worktree.path, "node_modules")), false);
 
 	const releaseResume = await resumeRunWorktree({ runId, index: 0, cwd: worktree.agentCwd, agent: "worker" });
 	const resumedExecution = holdRunWorktree(runId, 0);
