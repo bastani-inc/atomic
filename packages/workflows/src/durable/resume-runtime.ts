@@ -23,6 +23,7 @@ import {
 } from "../runs/foreground/executor-child-helpers.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
+import { busyStageChat, stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
 import type { WorkflowDefinition, WorkflowInputValues } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
@@ -38,7 +39,7 @@ import { availableRunDurableBackend, bindRunDurableBackend, durableRootRunIdForR
 import { restorePreconditionsChecked, resumeClaim, resumeLaunchCwd } from "./run-restore-preconditions.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectoryAsync, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
-import { durableWaitingStages } from "./stage-primitive.js";
+import { durableWaitingStages, resumingStageChats } from "./stage-primitive.js";
 import { requireStoreDurableBackend } from "./store-backend.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
 import type { DurableWorkflowHandle, ResumableWorkflowEntry } from "./types.js";
@@ -154,6 +155,14 @@ export async function resumeDurableWorkflow(
 	let handle = backend.getWorkflow(id);
 	if (handle?.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, id))
 		return alreadyRunningResult(handle.name, id);
+	if (handle !== undefined) {
+		const controls = deps.baseRunOpts.stageControlRegistry ?? stageControlRegistry;
+		for (const stage of resumingStageChats(backend, id)) {
+			const current = controls.peek(stage.runId, stage.stageId);
+			const message = current && busyStageChat(current);
+			if (message) return { ok: false, reason: "not_resumable", message };
+		}
+	}
 	const finishing = deps.jobs?.get(id);
 	if (
 		finishing !== undefined &&

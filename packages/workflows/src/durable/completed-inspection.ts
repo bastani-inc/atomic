@@ -2,6 +2,7 @@ import type { SessionStore } from "@bastani/atomic";
 import { createPostMortemStageHandle } from "../runs/foreground/postmortem-stage-chat.js";
 import {
 	stageControlRegistry as defaultStageControlRegistry,
+	disposeAfterStageHolds,
 	type StageControlHandle,
 	type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
@@ -9,6 +10,7 @@ import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { stageSessionStore } from "../shared/stage-session-store.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
+import { publishRunForOwner, runAttachmentOwner } from "../shared/workflow-run-ownership.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { completedWorkflowRunSnapshots, resolveCompletedWorkflow } from "./completed-catalog.js";
 import { bindRunDurableBackend } from "./run-owner-backend.js";
@@ -72,27 +74,30 @@ export async function openCompletedDurableWorkflow(
 		);
 	}
 
-	const existing = deps.store.run(resolved.snapshot.id);
-	if (existing !== undefined && existing.status !== "completed") {
-		return failure(
-			"active",
-			`Workflow ${resolved.snapshot.id} is already active in this session; open it with /workflows ${resolved.snapshot.id} instead.`,
-		);
-	}
 	// The selected run may belong to a different journal than the store's default. Take its finish order from
 	// the same handle as the historical graph, not from the time of this inspection or a later journal write.
 	const finishSequence = deps.durableBackend.getWorkflow(resolved.entry.workflowId)?.finishSequence;
 	const snapshots = await completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry, selectedStore);
+	const existing = [resolved.snapshot, ...snapshots]
+		.map((run) => deps.store.run(run.id))
+		.find((run) => run !== undefined && run.status !== "completed");
+	if (existing !== undefined) {
+		return failure(
+			"active",
+			`Workflow ${existing.id} is already active in this session; open it with /workflows ${existing.id} instead.`,
+		);
+	}
 	const snapshot = snapshots.find((run) => run.id === resolved.snapshot.id) ?? resolved.snapshot;
 	deps.beforeRestore?.(snapshots);
 	for (const restored of snapshots) {
 		const previous = deps.store.run(restored.id);
 		if (previous !== undefined) deps.store.removeRun(previous.id);
+		let run = restored;
 		if (restored.id === snapshot.id) {
-			const root = { ...restored, finishSequence: finishSequence ?? restored.endedAt };
-			bindRunDurableBackend(root, deps.durableBackend);
-			deps.store.recordRunStart(root);
-		} else deps.store.recordRunStart(restored);
+			run = { ...restored, finishSequence: finishSequence ?? restored.endedAt };
+			bindRunDurableBackend(run, deps.durableBackend);
+		}
+		deps.store.recordRunStart(previous ? publishRunForOwner(run, runAttachmentOwner(previous)) : run);
 		registerCompletedChatHandles(restored, deps, selectedStore);
 	}
 	const hasReopenableStage = snapshots.some((run) => run.stages.some((stage) => stage.sessionId !== undefined));
@@ -130,15 +135,9 @@ function registerCompletedChatHandles(
 	for (const stage of snapshot.stages) {
 		if (stage.sessionId === undefined) continue;
 		const key = completedChatKey(snapshot.id, stage.id);
-		const registration = registrations.get(key)?.deref();
 		const existing = registry.peek(snapshot.id, stage.id);
 		if (existing?.sessionId === stage.sessionId && existing.sessionStore === sessionStore && !existing.isDisposed)
 			continue;
-		if (registration !== undefined) {
-			removeCompletedChatRegistration(registrations, key);
-		} else if (existing !== undefined) {
-			disposeCompletedChatHandle(existing);
-		}
 		const handle = createPostMortemStageHandle(
 			snapshot.id,
 			stage,
@@ -163,11 +162,7 @@ function removeCompletedChatRegistration(registrations: Map<string, WeakRef<Stag
 	registrations.delete(key);
 	if (handle === undefined) return;
 	completedChatUnregisters.get(handle)?.();
-	disposeCompletedChatHandle(handle);
-}
-
-function disposeCompletedChatHandle(handle: StageControlHandle): void {
-	void Promise.resolve(handle.dispose?.()).catch((error: Error) => {
+	void Promise.resolve(disposeAfterStageHolds(handle)).catch((error: Error) => {
 		console.warn("atomic-workflows: completed chat handle dispose failed", error);
 	});
 }
