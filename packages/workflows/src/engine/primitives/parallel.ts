@@ -11,15 +11,10 @@ import {
 import type { ParallelFailFastScope, ParallelFailFastStage } from "../../runs/foreground/executor-types.js";
 import { normalizeAutoGroupSentinel } from "../../shared/intercom-group.js";
 import { validateStepsReleaseWhenWaiting } from "../../shared/stage-wait.js";
-import type {
-	WorkflowParallelOptions,
-	WorkflowTaskOptions,
-	WorkflowTaskResult,
-	WorkflowTaskStep,
-} from "../../shared/types.js";
+import type { WorkflowParallelOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
 import { WorkflowBudgetExceededError } from "../run-budget.js";
 import type { EngineRuntime } from "../runtime.js";
-import { captureParallelForks, readParallelForkLength } from "./parallel-fork.js";
+import { ParallelForks } from "./parallel-fork.js";
 import type { WorkflowTaskPrimitive } from "./task.js";
 
 export function createParallelPrimitive(input: {
@@ -29,7 +24,8 @@ export function createParallelPrimitive(input: {
 	return async (
 		steps: readonly WorkflowTaskStep[],
 		options: WorkflowParallelOptions = {},
-		applyFork: ((task: WorkflowTaskOptions, slot: number) => WorkflowTaskOptions) | null | undefined = undefined,
+		forks = new ParallelForks(),
+		capture?: (step: WorkflowTaskStep) => void,
 	): Promise<WorkflowTaskResult[]> => {
 		input.runtime.exit.throwIfWorkflowExitSelected();
 		validateStepsReleaseWhenWaiting(steps, options.releaseWhenWaiting);
@@ -37,10 +33,11 @@ export function createParallelPrimitive(input: {
 		// whether this invocation needs one shared auto-group UUID.
 		const normalizeGroup = <T extends { group?: string | true }>(value: T): T =>
 			value.group === undefined ? value : { ...value, group: normalizeAutoGroupSentinel(value.group) };
-		const captured =
-			applyFork === undefined ? captureParallelForks(steps, options, readParallelForkLength) : applyFork;
 		const normalizedOptions = normalizeGroup(options);
-		const normalizedSteps = steps.map(normalizeGroup);
+		const normalizedSteps = steps.map((step) => {
+			capture?.(step);
+			return normalizeGroup(step);
+		});
 		const needsAutoGroup = normalizedOptions.group === true || normalizedSteps.some((step) => step.group === true);
 		const autoGroup = needsAutoGroup ? randomUUID() : undefined;
 		const resolveAutoGroup = <T extends { group?: string | true }>(value: T): T =>
@@ -80,14 +77,16 @@ export function createParallelPrimitive(input: {
 			resolvedSteps,
 			resolvedOptions.concurrency,
 			resolvedOptions.failFast,
-			async (step, index) => {
+			async (step) => {
 				input.runtime.exit.throwIfWorkflowExitSelected();
 				const prompt = replaceTaskPlaceholder(
 					step.prompt ?? step.task ?? fallback,
 					resolvedOptions.task ?? fallback,
 				);
 				const task = taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), resolvedOptions);
-				return await input.task(step.name, captured?.(task, index) ?? task, parallelScope);
+				if (task.context === "fork" && task.forkFromSessionId !== undefined && task.forkFromEntryId === undefined)
+					task.parallelForkLength = forks.length;
+				return await input.task(step.name, task, parallelScope);
 			},
 			async (error) => {
 				if (!failFastEnabled) return;

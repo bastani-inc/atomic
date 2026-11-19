@@ -574,6 +574,36 @@ export class JsonlSessionStore implements SessionStore {
 		return { adapter: "jsonl", location: this.directory };
 	}
 
+	get forkSourceKey(): string {
+		return JSON.stringify(["jsonl", this.directory, this.exactDirectory]);
+	}
+
+	async readForkLength(sessionId: string): Promise<number | undefined> {
+		if (this.closed) throw new StoreClosedError(this.descriptor);
+		const located = await this.locate(sessionId);
+		if (!located) return undefined;
+		const { path, state, stats } = located;
+		if (state?.stamp === this.stamp(stats)) return state.lastSeq;
+		// Use a private range index, not the store queue, lock or on-disk sidecar. Stop at the size
+		// observed during lookup even if an independent handle appends while we count the lines.
+		const reader = new JsonlSessionStore(this.directory, this.exactDirectory);
+		const file = await open(path, "r");
+		try {
+			const { page, changed } = await reader.readRangeFrom(
+				file,
+				path,
+				{ fromSeq: 1, toSeq: 0 },
+				located.stored,
+				stats,
+				undefined,
+				true,
+			);
+			return changed || !Number.isFinite(page.lastSeq) ? undefined : page.lastSeq;
+		} finally {
+			await file.close();
+		}
+	}
+
 	create(
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
@@ -774,6 +804,7 @@ export class JsonlSessionStore implements SessionStore {
 		stored: StoredSessionHeader,
 		stats: BigIntStats,
 		state: SessionFileState | undefined,
+		countToEnd = false,
 	): Promise<{
 		readonly page: SessionEntriesPage;
 		readonly boundary: { witness: Buffer; witnessEnd: number };
@@ -878,10 +909,12 @@ export class JsonlSessionStore implements SessionStore {
 				index.completeEnd > 0
 					? { offset: index.completeEnd, seq: index.completeCount, header: false }
 					: { offset: 0, seq: 0, header: true };
-			const end = Math.min(
-				size,
-				start.offset + Math.max(0, Math.min(query.maxChars ?? RANGE_PROBE_BYTES, RANGE_PROBE_BYTES)),
-			);
+			const end = countToEnd
+				? size
+				: Math.min(
+						size,
+						start.offset + Math.max(0, Math.min(query.maxChars ?? RANGE_PROBE_BYTES, RANGE_PROBE_BYTES)),
+					);
 			const probe = await scanSessionLines(file, end, end === size, start, index, query.signal, {
 				skipTypes: [],
 				begin: () => "pass",

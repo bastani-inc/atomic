@@ -1,3 +1,4 @@
+import { isProxy } from "node:util/types";
 import {
 	formatWorktreeRestoreNotice,
 	formatWorktreeRestoreWarning,
@@ -77,7 +78,6 @@ import {
 	createGitWorktreeSetupCacheOwner,
 	inputsSelectGitWorktree,
 	resolveInvocationGitBranch,
-	stageOptionsWithInputDefaults,
 	workflowCwdWithInputWorktree,
 	workflowInvocationMetadata,
 } from "../runs/foreground/executor-direct-helpers.js";
@@ -121,7 +121,7 @@ import {
 	type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
 import { disposeStageIdleReleaser, settleReleasedStages } from "../runs/foreground/stage-idle-release.js";
-import { readReplayedStageMessages, stageStoreOptions } from "../runs/foreground/stage-runner-options.js";
+import { readReplayedStageMessages } from "../runs/foreground/stage-runner-options.js";
 import type { StageWaitHandoff } from "../runs/foreground/stage-wake-dispatcher.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
 import { prepareRunGit } from "../runs/shared/worktree-git-runner.js";
@@ -160,7 +160,7 @@ import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBo
 import { createChainPrimitive } from "./primitives/chain.js";
 import { createWorkflowExitManager } from "./primitives/exit.js";
 import { createParallelPrimitive } from "./primitives/parallel.js";
-import { captureParallelForks, readParallelForkLength } from "./primitives/parallel-fork.js";
+import { captureBeforeReplay, ParallelForks, suppliedForkCapture } from "./primitives/parallel-fork.js";
 import { createWorkflowEventPrimitives } from "./primitives/subscribe.js";
 import { createSubscriberReports } from "./primitives/subscriber-report.js";
 import { createWorkflowTaskRunners } from "./primitives/task.js";
@@ -1377,6 +1377,20 @@ async function executeRun(
 	const gatedTask: typeof durableTask = (...args) => whenRunning(() => durableTask(...args));
 	const chain = createChainPrimitive({ runtime, task: gatedTask });
 	const parallel = createParallelPrimitive({ runtime, task: gatedTask });
+	// Do not predict or reserve replay ordinals. If the journal could supply a task of this name,
+	// only a live session open may establish its source prefix.
+	let recordedTaskNames: Set<string> | undefined;
+	const possibleCachedTasks = () => {
+		if (recordedTaskNames === undefined) {
+			recordedTaskNames = new Set();
+			for (const checkpoint of priorCheckpoints) {
+				if (checkpoint.kind !== "stage" || checkpoint.output === undefined) continue;
+				const match = /^stage:task:([\s\S]*):\d+$/.exec(checkpoint.replayKey);
+				if (match) recordedTaskNames.add(match[1]!);
+			}
+		}
+		return recordedTaskNames;
+	};
 	const ui = buildExitGatedUiContext({
 		opts,
 		throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
@@ -1525,23 +1539,29 @@ async function executeRun(
 		task: (...args) => rejectionScope.watch(gatedTask(...args)),
 		chain: (...args) => rejectionScope.watch(whenRunning(() => chain(...args))),
 		parallel: (steps, options) => {
-			// Capture only the source position before replay persistence. Leave all admission, prompt and key
-			// ordering inside the existing gate. A paused or aborted call still does nothing until released.
-			const capture = () =>
-				captureParallelForks(steps, options, async (source, id) => {
-					const selected = stageOptionsWithInputDefaults(source, inputRuntimeDefaults) ?? source;
-					if (selected.workspace !== undefined || selected.gitWorktreeDir !== undefined) return undefined;
-					const mapped = mapRestoredOptions === undefined ? selected : await mapRestoredOptions(selected);
-					return readParallelForkLength(
-						stageStoreOptions(mapped, { adapters: opts.adapters, defaultCwd: workflowInvocationCwd }),
-						id,
-						opts.defaultSessionDir,
-					);
-				}) ?? null;
-			const points = scheduler.isRunPaused() || ownController.signal.aborted ? undefined : capture();
-			return rejectionScope.watch(
-				whenRunning(() => parallel(steps, options, points === undefined ? capture() : points)),
-			);
+			const points = new ParallelForks();
+			let capture =
+				opts.continuation || isProxy(steps) || (options && isProxy(options))
+					? undefined
+					: suppliedForkCapture(
+							points,
+							options,
+							inputRuntimeDefaults,
+							opts.adapters?.sessionStore,
+							possibleCachedTasks(),
+						);
+			// Normally the ordinary parallel step walk can sample live sources. Only look at plain source
+			// coordinates ahead of that walk when a previous replay write is currently holding it back.
+			if (
+				capture &&
+				!scheduler.isRunPaused() &&
+				!ownController.signal.aborted &&
+				(cachedStageDrain !== undefined || cachedStagePersistence.length > 0)
+			) {
+				captureBeforeReplay(steps, capture);
+				capture = undefined;
+			}
+			return rejectionScope.watch(whenRunning(() => parallel(steps, options, points, capture)));
 		},
 		workflow: (...args) =>
 			rejectionScope.watch(
