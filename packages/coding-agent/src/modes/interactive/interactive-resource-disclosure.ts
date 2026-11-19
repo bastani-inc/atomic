@@ -15,8 +15,8 @@ InteractiveModeBase.prototype.formatDiagnostics = function (
 	this: InteractiveModeBase,
 	diagnostics: readonly ResourceDiagnostic[],
 	sourceInfos: Map<string, SourceInfo>,
-): string {
-	const lines: string[] = [];
+): ResourceRow[] {
+	const rows: ResourceRow[] = [];
 
 	// Group collision diagnostics by name
 	const collisions = new Map<string, ResourceDiagnostic[]>();
@@ -36,45 +36,83 @@ InteractiveModeBase.prototype.formatDiagnostics = function (
 	for (const [name, collisionList] of collisions) {
 		const first = collisionList[0]?.collision;
 		if (!first) continue;
-		lines.push(theme.fg("warning", `  "${name}" collision:`));
-		lines.push(
-			theme.fg(
+		rows.push({ key: JSON.stringify(["collision", name]), text: theme.fg("warning", `  "${name}" collision:`) });
+		rows.push({
+			key: JSON.stringify(["winner", name, first.winnerPath]),
+			text: theme.fg(
 				"dim",
 				`    ${theme.fg("success", "✓")} ${this.formatPathWithSource(first.winnerPath, this.findSourceInfoForPath(first.winnerPath, sourceInfos))}${
 					first.winnerSelector ? ` (default /skill:${name}; exact /skill:${first.winnerSelector})` : ""
 				}`,
 			),
-		);
+		});
 		for (const d of collisionList) {
 			if (d.collision) {
-				lines.push(
-					theme.fg(
+				rows.push({
+					key: JSON.stringify(["loser", name, d.collision.loserPath]),
+					text: theme.fg(
 						"dim",
 						`    ${theme.fg("warning", d.collision.loserSelector ? "•" : "✗")} ${this.formatPathWithSource(d.collision.loserPath, this.findSourceInfoForPath(d.collision.loserPath, sourceInfos))}${
 							d.collision.loserSelector ? ` (/skill:${d.collision.loserSelector})` : " (skipped)"
 						}`,
 					),
-				);
+				});
 			}
 		}
 	}
 
 	for (const d of otherDiagnostics) {
-		if (d.path) {
-			const formattedPath = this.formatPathWithSource(d.path, this.findSourceInfoForPath(d.path, sourceInfos));
-			lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${formattedPath}`));
-			lines.push(theme.fg(d.type === "error" ? "error" : "warning", `    ${d.message}`));
-		} else {
-			lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${d.message}`));
-		}
+		const color = d.type === "error" ? "error" : "warning";
+		const path = d.path && this.formatPathWithSource(d.path, this.findSourceInfoForPath(d.path, sourceInfos));
+		rows.push({
+			key: JSON.stringify([d.type, d.path, d.message]),
+			text: path
+				? `${theme.fg(color, `  ${path}`)}\n${theme.fg(color, `    ${d.message}`)}`
+				: theme.fg(color, `  ${d.message}`),
+		});
 	}
 
-	return lines.join("\n");
+	return rows;
 };
 
 export interface ResourceRow {
 	key: string;
 	text: string;
+}
+
+/** Retain the component for each diagnostic, including the reader's offset within a wrapped message. */
+export class DiagnosticSection extends WindowedContainer {
+	readonly name: string;
+	readonly spacer = new Spacer(1);
+	private readonly heading: ThemedText;
+	private buildRows: () => ResourceRow[] = () => [];
+	private rows = new Map<string, Text[]>();
+
+	constructor(name: string) {
+		super();
+		this.name = name;
+		this.heading = new ThemedText(() => theme.fg("warning", `[${name}]`));
+	}
+
+	update(buildRows: () => ResourceRow[]): void {
+		this.buildRows = buildRows;
+		this.invalidate();
+	}
+
+	override invalidate(): void {
+		const previous = this.rows;
+		this.rows = new Map();
+		this.children = [this.heading];
+		for (const { key, text } of this.buildRows()) {
+			const matches = this.rows.get(key) ?? [];
+			const row = previous.get(key)?.[matches.length] ?? new Text("", 0, 0);
+			row.setText(text);
+			matches.push(row);
+			this.rows.set(key, matches);
+			this.addChild(row);
+		}
+		super.invalidate();
+	}
 }
 
 export type ResourceDetails = Partial<Record<"context" | "skills" | "prompts" | "extensions", ResourceRow[]>>;

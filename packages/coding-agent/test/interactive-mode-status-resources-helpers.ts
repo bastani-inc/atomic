@@ -86,7 +86,7 @@ export function createShowLoadedResourcesThis(options: {
 		) => (InteractiveMode as any).prototype.getCompactNonPackageExtensionLabel.call(fakeThis, p, index, allPaths),
 		getCompactExtensionLabels: (extensions: ExtensionFixture[]) =>
 			(InteractiveMode as any).prototype.getCompactExtensionLabels.call(fakeThis, extensions),
-		formatDiagnostics: () => "diagnostics",
+		formatDiagnostics: () => [{ key: "diagnostic", text: "diagnostics" }],
 		getBuiltInCommandConflictDiagnostics: () => [],
 		addResourceDisclosure: (disclosure: unknown) =>
 			(InteractiveMode as any).prototype.addResourceDisclosure.call(fakeThis, disclosure),

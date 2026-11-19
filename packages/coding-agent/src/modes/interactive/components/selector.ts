@@ -633,6 +633,24 @@ export class Selector<T> implements Component, Focusable {
 		this.notifySelectionChange();
 	}
 
+	/** Carry navigation, not the old rows or their callbacks, into a refreshed picker. */
+	restoreNavigation(previous: Selector<T>, keepHighlight: boolean): void {
+		if (this.input && previous.input) {
+			this.input = previous.input;
+			this.state.setQuery(this.input.getValue());
+		}
+		if (keepHighlight || this.state.getQuery()) {
+			const id = previous.getSelected()?.id;
+			this.state.select(this.state.getVisible().findIndex((item) => item.id === id));
+		}
+		this.showingHelp = previous.showingHelp;
+		this.mousePressed = previous.mousePressed;
+		this.focused = previous.focused;
+		// Reapply a user's preview even if that row is also the new configured default.
+		if (keepHighlight) this.selectedId = undefined;
+		this.notifySelectionChange();
+	}
+
 	/** Set the search text as if typed. */
 	setQuery(query: string): void {
 		this.cachedRender = undefined;

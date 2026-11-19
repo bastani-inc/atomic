@@ -189,6 +189,47 @@ test(
 	3 * STARTUP_TIMEOUT_MS,
 );
 
+test.each(["decision", "compaction"] as const)(
+	"an open %s model picker reads and writes the approved project setting (#5693)",
+	async (kind) => {
+		const key = `${kind}Model`;
+		let projectSettings = "";
+		let globalSettings = "";
+		await withPendingProject(
+			async (cli, approveProject) => {
+				cli.write("/settings\r");
+				await cli.waitForScreen((s) => s.includes("Search settings"), STARTUP_TIMEOUT_MS, "Settings");
+				cli.write(`${kind} model`);
+				await cli.waitForScreen((s) => s.includes(`⌕ ${kind} model`), STARTUP_TIMEOUT_MS, "the filtered setting");
+				cli.write("\r");
+				await cli.waitForScreen(
+					(s) => s.includes("Saves to global settings."),
+					STARTUP_TIMEOUT_MS,
+					"the model picker",
+				);
+				await approveProject();
+				assert.match(cli.screen(), /Saves to project settings\./);
+				assert.match(cli.screen(), /❯ ● fixture\/project/);
+				cli.write("Auto");
+				await cli.waitForScreen((s) => /❯ ○ Auto/.test(s), STARTUP_TIMEOUT_MS, "the automatic option");
+				cli.write("\r");
+				await cli.waitForScreen(
+					() => JSON.parse(readFileSync(projectSettings, "utf8"))[key] === "",
+					STARTUP_TIMEOUT_MS,
+					"the choice saved to project settings",
+				);
+				assert.equal(JSON.parse(readFileSync(globalSettings, "utf8"))[key], undefined);
+			},
+			(project, agentDir) => {
+				projectSettings = join(project, ".atomic/settings.json");
+				globalSettings = join(agentDir, "settings.json");
+				write(projectSettings, JSON.stringify({ [key]: "fixture/project" }));
+			},
+		);
+	},
+	3 * STARTUP_TIMEOUT_MS,
+);
+
 test(
 	"applies the project's editor padding and visible completion count at approval (#5693)",
 	() =>

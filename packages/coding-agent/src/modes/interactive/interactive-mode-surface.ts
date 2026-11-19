@@ -135,7 +135,10 @@ declare module "./interactive-mode-base.ts" {
 		): ResourceRow[];
 		findSourceInfoForPath(p: string, sourceInfos: Map<string, SourceInfo>): SourceInfo | undefined;
 		formatPathWithSource(p: string, sourceInfo?: SourceInfo): string;
-		formatDiagnostics(diagnostics: readonly ResourceDiagnostic[], sourceInfos: Map<string, SourceInfo>): string;
+		formatDiagnostics(
+			diagnostics: readonly ResourceDiagnostic[],
+			sourceInfos: Map<string, SourceInfo>,
+		): ResourceRow[];
 		addResourceDisclosure(options: {
 			contextFiles: ReadonlyArray<{ path: string }>;
 			skills: ReadonlyArray<{ filePath: string; name: string }>;

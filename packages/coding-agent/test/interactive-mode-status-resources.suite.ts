@@ -188,6 +188,40 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).not.toContain("/tmp/skill/SKILL.md");
 	});
 
+	test("the visible diagnostic stays anchored when approval adds earlier resources and warnings (#5693)", () => {
+		const warnings = Array.from({ length: 60 }, (_, i) => ({
+			type: "warning" as const,
+			path: `/skills/warn${i}/SKILL.md`,
+			message: "description is required",
+		}));
+		const prompts: Array<{ name: string; filePath: string }> = [];
+		const mode = createShowLoadedResourcesThis({ quietStartup: false, skillDiagnostics: warnings, prompts });
+		mode.formatDiagnostics = InteractiveMode.prototype.formatDiagnostics;
+		mode.formatPathWithSource = (path: string) => path;
+		mode.findSourceInfoForPath = () => undefined;
+		const disclosure = new WindowedContainer();
+		mode.resourceDisclosureContainer = disclosure;
+		const paint = (preserveExpansion: boolean) =>
+			InteractiveMode.prototype.showLoadedResources.call(mode, {
+				targetContainer: disclosure,
+				preserveExpansion,
+			});
+		const layout = (top: number, height: number) =>
+			disclosure.layoutWindow({ top, height, width: 80, followEnd: false, requestRender: () => {} });
+		paint(false);
+		const all = layout(0, 150);
+		const index = Array.from({ length: all.length }, (_, i) => all.at(i)).findIndex((line) =>
+			line?.includes("/warn30/"),
+		);
+		expect(index).toBeGreaterThan(0);
+		const held = layout(index, 5);
+		warnings.unshift({ type: "warning", path: "/project/SKILL.md", message: "description is required" });
+		prompts.push({ name: "approved", filePath: "/project/approved.md" });
+		paint(true);
+		const next = layout(held.top, 5);
+		expect(next.at(next.top)).toContain("/warn30/SKILL.md");
+	});
+
 	test("the first visible prompt stays anchored when project approval inserts earlier rows (#5693)", () => {
 		const prompts = Array.from({ length: 60 }, (_, i) => ({ filePath: `/user/marker${i}.md`, name: `marker${i}` }));
 		const mode = createShowLoadedResourcesThis({

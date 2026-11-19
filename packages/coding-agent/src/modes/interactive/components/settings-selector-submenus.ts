@@ -56,6 +56,10 @@ export class WarningSettingsSubmenu extends Container {
 		this.addChild(this.settingsList);
 	}
 
+	restoreNavigation(previous: Component): void {
+		if (previous instanceof WarningSettingsSubmenu) this.settingsList.restoreNavigation(previous.settingsList);
+	}
+
 	handleInput(data: string): boolean {
 		this.settingsList.handleInput(data);
 		return true;
@@ -65,6 +69,7 @@ export class WarningSettingsSubmenu extends Container {
 export class SelectSubmenu implements Component, Focusable {
 	readonly capturesViewportInput = true;
 	private readonly selector: Selector<string>;
+	private browsed = false;
 
 	constructor(
 		title: string,
@@ -88,7 +93,10 @@ export class SelectSubmenu implements Component, Focusable {
 			rightConfirms: false,
 			onSelect: (item) => onSelect(item.value),
 			onCancel,
-			...(onSelectionChange ? { onSelectionChange: (item) => item && onSelectionChange(item.value) } : {}),
+			onSelectionChange: (item) => {
+				this.browsed = true;
+				if (item) onSelectionChange?.(item.value);
+			},
 		});
 	}
 
@@ -106,12 +114,11 @@ export class SelectSubmenu implements Component, Focusable {
 		});
 	}
 
-	setOptions(options: SelectItem[]): void {
-		this.selector.setItems(this.selectorItems(options));
-	}
-
-	get selectedValue(): string | undefined {
-		return this.selector.getSelected()?.value;
+	restoreNavigation(previous: Component): void {
+		if (!(previous instanceof SelectSubmenu)) return;
+		this.browsed = previous.browsed;
+		// An untouched picker follows its new configured value; an explicit choice follows its row.
+		this.selector.restoreNavigation(previous.selector, previous.browsed);
 	}
 
 	get focused(): boolean {
@@ -186,11 +193,13 @@ function defaultAutomaticThemes(
 export class ThemeSubmenu extends Container {
 	private inputComponent: Component | undefined;
 	private readonly callbacks: SettingsCallbacks;
-	private availableThemes: string[];
-	private refreshThemeOptions?: () => void;
+	private readonly availableThemes: string[];
+	private editedMode = false;
+	private editedLight = false;
+	private editedDark = false;
 	private readonly terminalTheme: TerminalTheme;
 	private readonly onDone: (selectedValue?: string) => void;
-	private originalThemeSetting: string;
+	private readonly originalThemeSetting: string;
 	private mode: "single" | "automatic";
 	private singleTheme: string;
 	private lightTheme: string;
@@ -234,11 +243,26 @@ export class ThemeSubmenu extends Container {
 		return true;
 	}
 
-	refreshThemes(names: string[], setting: string): void {
-		if (this.singleTheme === this.originalThemeSetting && !parseAutoThemeSetting(setting)) this.singleTheme = setting;
-		this.originalThemeSetting = setting;
-		this.availableThemes = names;
-		this.refreshThemeOptions?.();
+	restoreNavigation(previous: Component): void {
+		if (!(previous instanceof ThemeSubmenu)) return;
+		this.editedMode = previous.editedMode;
+		this.editedLight = previous.editedLight;
+		this.editedDark = previous.editedDark;
+		if (this.editedLight) this.lightTheme = previous.lightTheme;
+		if (this.editedDark) this.darkTheme = previous.darkTheme;
+		if (this.editedMode && previous.mode === "single") {
+			this.singleTheme = this.getActiveAutomaticTheme();
+			this.showSingleMenu();
+		} else if ((this.editedMode && previous.mode === "automatic") || this.editedLight || this.editedDark) {
+			this.showAutomaticMenu();
+		}
+		if (this.editedMode || this.editedLight || this.editedDark)
+			this.callbacks.onThemePreview?.(this.getThemeSetting());
+		if (this.inputComponent instanceof SelectSubmenu && previous.inputComponent instanceof SelectSubmenu) {
+			this.inputComponent.restoreNavigation(previous.inputComponent);
+		} else if (this.inputComponent instanceof SettingsPicker && previous.inputComponent instanceof SettingsPicker) {
+			this.inputComponent.restoreNavigation(previous.inputComponent);
+		}
 	}
 
 	private setContent(renderComponent: Component, inputComponent: Component = renderComponent): void {
@@ -256,6 +280,7 @@ export class ThemeSubmenu extends Container {
 			this.singleTheme,
 			(value) => {
 				if (value === AUTOMATIC_THEME_VALUE) {
+					this.editedMode = true;
 					this.mode = "automatic";
 					this.callbacks.onThemePreview?.(this.getThemeSetting());
 					this.showAutomaticMenu();
@@ -270,19 +295,10 @@ export class ThemeSubmenu extends Container {
 				this.callbacks.onThemePreview?.(value === AUTOMATIC_THEME_VALUE ? this.getAutomaticThemeSetting() : value);
 			},
 		);
-		this.refreshThemeOptions = () => {
-			menu.setOptions(singleModeThemeItems(this.availableThemes, this.singleTheme));
-			const selected = menu.selectedValue;
-			if (selected)
-				this.callbacks.onThemePreview?.(
-					selected === AUTOMATIC_THEME_VALUE ? this.getAutomaticThemeSetting() : selected,
-				);
-		};
 		this.setContent(menu);
 	}
 
 	private showAutomaticMenu(): void {
-		this.refreshThemeOptions = undefined;
 		this.mode = "automatic";
 
 		const items: SettingItem[] = [
@@ -298,6 +314,7 @@ export class ThemeSubmenu extends Container {
 						currentValue,
 						done,
 						(value) => {
+							this.editedLight = true;
 							this.lightTheme = value;
 							this.callbacks.onThemePreview?.(this.getThemeSetting());
 							done(value);
@@ -316,6 +333,7 @@ export class ThemeSubmenu extends Container {
 						currentValue,
 						done,
 						(value) => {
+							this.editedDark = true;
 							this.darkTheme = value;
 							this.callbacks.onThemePreview?.(this.getThemeSetting());
 							done(value);
@@ -343,6 +361,7 @@ export class ThemeSubmenu extends Container {
 			(id) => {
 				switch (id) {
 					case "single-mode":
+						this.editedMode = true;
 						this.mode = "single";
 						this.singleTheme = this.getActiveAutomaticTheme();
 						this.callbacks.onThemePreview?.(this.singleTheme);
@@ -370,7 +389,7 @@ export class ThemeSubmenu extends Container {
 		done: (selectedValue?: string) => void,
 		onSelect: (value: string) => void,
 	): SelectSubmenu {
-		const menu = new SelectSubmenu(
+		return new SelectSubmenu(
 			title,
 			description,
 			themeItems(this.availableThemes, currentValue),
@@ -382,12 +401,6 @@ export class ThemeSubmenu extends Container {
 			},
 			(value) => this.callbacks.onThemePreview?.(value),
 		);
-		this.refreshThemeOptions = () => {
-			if (!(this.inputComponent instanceof SettingsPicker) || this.inputComponent.activeSubmenu !== menu) return;
-			menu.setOptions(themeItems(this.availableThemes, currentValue));
-			if (menu.selectedValue) this.callbacks.onThemePreview?.(menu.selectedValue);
-		};
-		return menu;
 	}
 
 	private getThemeSetting(): string {

@@ -15,7 +15,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 
-import type { ResourceDetails } from "./interactive-resource-disclosure.ts";
+import { DiagnosticSection, type ResourceDetails } from "./interactive-resource-disclosure.ts";
 
 function formatList(values: string[]): string {
 	if (values.length <= 1) return values[0] ?? "";
@@ -114,6 +114,7 @@ function getOverlapLabels(mode: InteractiveModeBase, overlaps: readonly Resource
 }
 interface DisplayedOverlapNotice {
 	component: Text;
+	spacer: Spacer;
 	container: Container;
 	fingerprint: string;
 }
@@ -264,49 +265,45 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 		if (overlapFingerprint && overlapLabels.length > 0) {
 			const sources = formatList(overlapLabels.map((label) => `\`${label}\``));
 			const verb = overlapLabels.length === 1 ? "provides" : "provide";
-			const notice = new ThemedText(
-				() =>
-					theme.fg(
-						"warning",
-						`Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
-					),
-				0,
-				0,
-			);
+			const displayed = displayedOverlapNotices.get(this);
+			const retained =
+				displayed?.fingerprint === overlapFingerprint && previousSections?.includes(displayed.component)
+					? displayed
+					: undefined;
+			const notice =
+				retained?.component ??
+				new ThemedText(
+					() =>
+						theme.fg(
+							"warning",
+							`Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
+						),
+					0,
+					0,
+				);
+			const spacer = retained?.spacer ?? new Spacer(1);
 			targetContainer.addChild(notice);
+			targetContainer.addChild(spacer);
 			displayedOverlapNotices.set(this, {
 				component: notice,
+				spacer,
 				container: targetContainer,
 				fingerprint: overlapFingerprint,
 			});
-			targetContainer.addChild(new Spacer(1));
 		}
 
-		const skillDiagnostics = skillsResult.diagnostics;
-		if (skillDiagnostics.length > 0) {
-			targetContainer.addChild(
-				new ThemedText(
-					() =>
-						`${theme.fg("warning", "[Skill warnings]")}\n${this.formatDiagnostics(skillDiagnostics, sourceInfos)}`,
-					0,
-					0,
-				),
-			);
-			targetContainer.addChild(new Spacer(1));
-		}
-
-		const promptDiagnostics = promptsResult.diagnostics;
-		if (promptDiagnostics.length > 0) {
-			targetContainer.addChild(
-				new ThemedText(
-					() =>
-						`${theme.fg("warning", "[Prompt conflicts]")}\n${this.formatDiagnostics(promptDiagnostics, sourceInfos)}`,
-					0,
-					0,
-				),
-			);
-			targetContainer.addChild(new Spacer(1));
-		}
+		const addDiagnostics = (name: string, diagnostics: readonly ResourceDiagnostic[]) => {
+			if (!diagnostics.length) return;
+			const section =
+				previousSections?.find(
+					(child): child is DiagnosticSection => child instanceof DiagnosticSection && child.name === name,
+				) ?? new DiagnosticSection(name);
+			section.update(() => this.formatDiagnostics(diagnostics, sourceInfos));
+			targetContainer.addChild(section);
+			targetContainer.addChild(section.spacer);
+		};
+		addDiagnostics("Skill warnings", skillsResult.diagnostics);
+		addDiagnostics("Prompt conflicts", promptsResult.diagnostics);
 
 		const extensionDiagnostics: ResourceDiagnostic[] = [];
 		const extensionsResult = this.session.resourceLoader.getExtensions();
@@ -325,29 +322,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 		const shortcutDiagnostics = this.session.extensionRunner.getShortcutDiagnostics();
 		extensionDiagnostics.push(...shortcutDiagnostics);
 
-		if (extensionDiagnostics.length > 0) {
-			targetContainer.addChild(
-				new ThemedText(
-					() =>
-						`${theme.fg("warning", "[Extension issues]")}\n${this.formatDiagnostics(extensionDiagnostics, sourceInfos)}`,
-					0,
-					0,
-				),
-			);
-			targetContainer.addChild(new Spacer(1));
-		}
-
-		const themeDiagnostics = themesResult.diagnostics;
-		if (themeDiagnostics.length > 0) {
-			targetContainer.addChild(
-				new ThemedText(
-					() =>
-						`${theme.fg("warning", "[Theme conflicts]")}\n${this.formatDiagnostics(themeDiagnostics, sourceInfos)}`,
-					0,
-					0,
-				),
-			);
-			targetContainer.addChild(new Spacer(1));
-		}
+		addDiagnostics("Extension issues", extensionDiagnostics);
+		addDiagnostics("Theme conflicts", themesResult.diagnostics);
 	}
 };
