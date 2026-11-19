@@ -106,6 +106,11 @@ export async function readSessionChildCatalog(
 ) {
 	return (await import("./session/child-reader.js")).readSessionChildCatalog(...args);
 }
+export async function findInSessionHistory(
+	...args: Parameters<typeof import("./session/history-pages.js").findInSessionHistory>
+) {
+	return (await import("./session/history-pages.js")).findInSessionHistory(...args);
+}
 // Ordinary storage setup does not open a transcript reader or import its encoders.
 export async function* readSessionHistory(
 	...args: Parameters<typeof import("./session/history-pages.js").readSessionHistory>

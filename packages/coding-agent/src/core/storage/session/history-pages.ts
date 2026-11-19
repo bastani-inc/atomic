@@ -190,6 +190,30 @@ export async function* historyPages(
 	}
 }
 
+/** Find the last exact stored position in pages visited newest first. An opaque oversized item cannot
+ * be skipped without checking its identity: an older row could reuse its ID. No body is assembled. */
+export async function findInSessionHistory(
+	pages: AsyncIterable<SessionHistoryPage>,
+	id: string,
+	chunks?: (item: OversizedSessionEntry) => AsyncIterable<Uint8Array>,
+	signal?: AbortSignal,
+): Promise<number | undefined> {
+	for await (const { items } of pages) {
+		signal?.throwIfAborted();
+		for (let i = items.length - 1; i >= 0; i--) {
+			const item = items[i]!;
+			if ("entry" in item) {
+				if (item.entry.id === id) return item.seq;
+			} else {
+				if (!chunks) return undefined;
+				if (await (await import("./chunked-resume-projection.js")).chunkedEntryHasId(chunks(item), id))
+					return item.seq;
+			}
+		}
+	}
+	return undefined;
+}
+
 /** Read an existing saved session without creating a live session manager, model context or recovery bindings. */
 export async function* readSessionHistory(
 	store: SessionStore,

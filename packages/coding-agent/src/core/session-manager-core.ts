@@ -102,6 +102,7 @@ import { createForkArchive } from "./storage/session/fork-archive.js";
 import { exactDirectoryRelation, resolveForkStoreRelation } from "./storage/session/fork-store-relation.js";
 import { forkScope } from "./storage/session/fork-store-scope.js";
 import {
+	findInSessionHistory,
 	firstHistoryCursor,
 	historyChunks,
 	historyPages,
@@ -753,21 +754,11 @@ export class SessionManager {
 			}
 			return seq !== undefined && seq <= lastSeq ? seq : undefined;
 		}
-		for await (const { items } of historyPages(store, sessionId, historyEpoch, lastSeq, { direction: "backward" })) {
-			for (let i = items.length - 1; i >= 0; i--) {
-				const item = items[i]!;
-				if (
-					"entry" in item
-						? item.entry.id === id
-						: await (await import("./storage/session/chunked-resume-projection.js")).chunkedEntryHasId(
-								historyChunks(store, sessionId, historyEpoch, item, {}),
-								id,
-							)
-				)
-					return item.seq;
-			}
-		}
-		return undefined;
+		return findInSessionHistory(
+			historyPages(store, sessionId, historyEpoch, lastSeq, { direction: "backward" }),
+			id,
+			(item) => historyChunks(store, sessionId, historyEpoch, item, {}),
+		);
 	}
 
 	getHeldTail(): { readonly fromSeq: number; readonly entries: readonly SessionEntry[] } {

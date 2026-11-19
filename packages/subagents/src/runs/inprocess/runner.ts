@@ -1344,9 +1344,40 @@ function hasPartialHistory(manager: SessionManager): boolean {
 	return false;
 }
 
-async function sessionLeafSeq(manager: SessionManager, leafId: string): Promise<number | undefined> {
+async function sessionLeafSeq(
+	manager: SessionManager,
+	leafId: string,
+	signal: AbortSignal,
+): Promise<number | undefined> {
 	if (typeof manager.findEntrySeq === "function") return await manager.findEntrySeq(leafId);
-	if (hasPartialHistory(manager)) return manager.getSessionStore?.().findEntrySeq?.(manager.getSessionId(), leafId);
+	if (hasPartialHistory(manager)) {
+		const store = manager.getSessionStore?.();
+		if (store?.findEntrySeq) return store.findEntrySeq(manager.getSessionId(), leafId);
+		const options = { direction: "backward" as const, signal };
+		if (typeof manager.readHistory === "function" && (!store || (store.readEntrySizes && store.readRange))) {
+			const { findInSessionHistory } = await import("@bastani/atomic/storage");
+			return findInSessionHistory(
+				manager.readHistory(options),
+				leafId,
+				typeof manager.readHistoryChunks === "function"
+					? (item) => manager.readHistoryChunks(item, { signal })
+					: undefined,
+				signal,
+			);
+		}
+		if (store?.readEntrySizes && store.readRange) {
+			const { findInSessionHistory, readSessionHistory, readSessionHistoryChunks } = await import(
+				"@bastani/atomic/storage"
+			);
+			return findInSessionHistory(
+				readSessionHistory(store, manager.getSessionId(), options),
+				leafId,
+				store.readEntryChunk ? (item) => readSessionHistoryChunks(store, item, { signal }) : undefined,
+				signal,
+			);
+		}
+		return undefined; // Only the ID is known. A sparse window offset is not a sequence in the archive.
+	}
 	if (typeof manager.getEntries !== "function") return undefined;
 	const entries = manager.getEntries();
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -2446,7 +2477,7 @@ export class SubagentControlRuntime {
 						? 0
 						: typeof sessionManager.getEntrySeq === "function"
 							? sessionManager.getEntrySeq(currentLeafId)
-							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId)),
+							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId, startBudget.signal)),
 			};
 			taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);
