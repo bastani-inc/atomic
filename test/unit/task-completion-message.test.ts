@@ -13,7 +13,10 @@ import {
 	taskCompletionEnvelope,
 	taskCompletionNotice,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
-import { taskCompletionMessage } from "../../packages/coding-agent/src/core/tasks/completion-message.js";
+import {
+	commandOutputExcerpt,
+	taskCompletionMessage,
+} from "../../packages/coding-agent/src/core/tasks/completion-message.js";
 import type {
 	CancelCause,
 	Generation,
@@ -78,6 +81,61 @@ test("writing a completed command does not copy an ordinary subject through a bu
 	} finally {
 		from.mockRestore();
 	}
+});
+
+async function shellCompletion(expression: string) {
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: crypto.randomUUID() }, authorizeLaunch() {} });
+	onTestFinished(async () => {
+		await host.close("session-close");
+	});
+	const { supervisor, owner } = host.ownerBinding;
+	const started = await supervisor.startCommandTask(
+		owner,
+		{ kind: "command", command: `node -e "process.stdout.write(${expression})"`, terminal: { kind: "pipe" } },
+		crypto.randomUUID() as OperationId,
+	);
+	assert.ok(started.ok);
+	const settled = await supervisor.waitForTask(started.value, 10_000);
+	assert.ok(settled.ok && settled.value.kind === "settled");
+	const [shell] = host.taskRecords(new Set([settled.value.taskId]));
+	assert.ok(shell);
+	return taskCompletionMessage(
+		{ ...envelope, taskId: shell.ref.taskId, ownerId: shell.ref.ownerId, result: settled.value.result },
+		shell,
+		await commandOutputExcerpt(host, started.value, shell),
+	);
+}
+
+test.each([
+	["emoji", "\\u{1f600}", 212],
+	["accented letter", "e\\u0301", 213],
+] as const)("the saved shell excerpt ends before a cut %s (#5654)", async (_name, cluster, padding) => {
+	const message = await shellCompletion(`'\\u65e5'+'x'.repeat(7974)+'${cluster}'+'y'.repeat(${padding})`);
+	assert.match(message.content, /\[Earlier output omitted\]\nx{7974}\n\[Result excerpt truncated\]/);
+});
+
+test("the expanded shell preview omits the whole earlier-output label when only its end fits (#5654)", async () => {
+	initTheme("dark");
+	const message = await shellCompletion("'\\u65e5'.repeat(97)+'x'.repeat(7902)");
+	const notice = completionNoticeFromDetails(message.details);
+	assert.ok(notice);
+	const rows = new TaskCompletionMessage(notice, true).render(80).map(stripVTControlCharacters);
+	assert.match(rows[1]!, /⎿ {2}日/);
+	assert.equal(notice.preview, "日".repeat(96) + "x".repeat(7902));
+});
+
+test("the shell preview preserves literal output that looks like an omission label (#5654)", async () => {
+	const message = await shellCompletion("'[Earlier output omitted]\\n'+'x'.repeat(7998)");
+	const notice = completionNoticeFromDetails(message.details);
+	assert.ok(notice);
+	assert.equal(notice.preview, "]\n" + "x".repeat(7998));
+});
+
+test("the shell preview starts after a whole accented letter at its tail limit (#5654)", async () => {
+	const message = await shellCompletion("'\\u65e5'+'x'.repeat(188)+'e\\u0301'+'y'.repeat(7999)");
+	const notice = completionNoticeFromDetails(message.details);
+	assert.ok(notice);
+	assert.equal(notice.preview, "y".repeat(7999));
 });
 
 test("restored and killed completions report only known context", () => {

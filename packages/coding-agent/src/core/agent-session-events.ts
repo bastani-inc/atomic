@@ -192,7 +192,13 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 			? markProtectedStreamingCustomMessageConsumed(this, event.message)
 			: false;
 
-	const process = () => this._processAgentEvent(event, retryGeneration);
+	const process = () => {
+		// The store can already hold the new row before its append promise returns. Pin the preceding leaf
+		// when this serialized save begins, not when it first joins the queue.
+		if (event.type === "message_end")
+			this._transcriptAppend = { message: event.message, previousLeaf: this.sessionManager.getLeafId() };
+		return this._processAgentEvent(event, retryGeneration);
+	};
 	const processing = this._agentEventQueue.then(process, process);
 	this._agentEventQueue = processing;
 	if (event.type === "message_end") this._messagesAwaitingPersistence.set(event.message, processing);
@@ -204,7 +210,16 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	// handlers may replace the message that gets persisted, and the request is built
 	// from the persisted canonical projection, so every queued handler gates the next
 	// request rather than only the persistence step.
-	processing.catch((error) => {
+	// This observer is registered before the next queued event. Release the pin on either outcome without
+	// putting another promise between this event and the next event or provider request.
+	const releasePin =
+		event.type === "message_end"
+			? () => {
+					this._transcriptAppend = undefined;
+				}
+			: undefined;
+	processing.then(releasePin, (error) => {
+		releasePin?.();
 		// #3105: callbacks interrupted by terminal disposal remain observable at shutdown.
 		if (this._disposed) {
 			const failures = shutdownEventFailures.get(this) ?? [];
@@ -738,8 +753,12 @@ export function _disconnectFromAgent(this: AgentSession): void {
  */
 
 const shutdownEventFailures = new WeakMap<AgentSession, Error[]>();
-const sessionClosures = new WeakMap<AgentSession, Promise<void>>();
+const sessionClosures = new WeakMap<object, { promise: Promise<void>; quitting: boolean }>();
 const sessionRetirements = new WeakMap<AgentSession, Promise<void>>();
+
+export function isSessionQuitting(session: object): boolean {
+	return sessionClosures.get(session)?.quitting === true;
+}
 
 /** Shared terminal boundary for direct SDK disposal and runtime replacement. */
 export function closeAgentSession(
@@ -749,14 +768,13 @@ export function closeAgentSession(
 ): Promise<void> {
 	const handoff = event.reason !== "quit" && hasCallingSessionWork(session);
 	const existing = sessionClosures.get(session);
-	if (existing) return (handoff && sessionRetirements.get(session)) || existing;
+	if (existing) return (handoff && sessionRetirements.get(session)) || existing.promise;
 	let resolveRetired!: () => void;
 	let rejectRetired!: (error: Error) => void;
 	const retirement = new Promise<void>((resolve, reject) => {
 		resolveRetired = resolve;
 		rejectRetired = reject;
 	});
-	const retired = { promise: retirement, resolve: resolveRetired, reject: rejectRetired };
 	session._disposed = true;
 	session._cacheWarmer?.cancel();
 	sessionClosing(session);
@@ -774,7 +792,11 @@ export function closeAgentSession(
 				else errors.push(new Error(component, { cause }));
 			}
 		};
-		await attempt("lifetime", () => abortSessionWork(session, event.reason === "quit"));
+		await attempt("lifetime", () => {
+			// Record this session's own terminal request before notifying its subscribers.
+			closure.quitting = event.reason === "quit";
+			abortSessionWork(session, closure.quitting);
+		});
 		await attempt("event subscriptions", () => cancelSessionSubscriptions(session));
 		await attempt("shell abort", () => abortBash.call(session));
 		await attempt("abort", () => abortCurrentGeneration.call(session));
@@ -789,10 +811,10 @@ export function closeAgentSession(
 			// session must be reset now; a later reset would clear the successor's UI.
 			await attempt("host subscriptions", () => beforeInvalidate?.());
 			if (errors.length)
-				retired.reject(
+				rejectRetired(
 					Object.assign(new AggregateError(errors, "Session retirement failed"), { code: "ShutdownFailed" }),
 				);
-			else retired.resolve();
+			else resolveRetired();
 		}
 		await attempt("terminal workflow summaries", () => drainTerminalWorkflowSummaries(session));
 		await attempt("active work", () => drainSessionWork(session));
@@ -845,13 +867,14 @@ export function closeAgentSession(
 		if (errors.length)
 			throw Object.assign(new AggregateError(errors, "Session shutdown failed"), { code: "ShutdownFailed" });
 	});
-	sessionClosures.set(session, closing);
+	const closure = { promise: closing, quitting: false };
+	sessionClosures.set(session, closure);
 	if (handoff) {
-		sessionRetirements.set(session, retired.promise);
+		sessionRetirements.set(session, retirement);
 		void closing.catch(() => {});
 	}
 	session._extensionRunner.sealHostInput();
-	return handoff ? retired.promise : closing;
+	return handoff ? retirement : closing;
 }
 
 export function dispose(this: AgentSession): Promise<void> {

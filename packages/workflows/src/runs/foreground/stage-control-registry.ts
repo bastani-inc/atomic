@@ -33,7 +33,7 @@ import type {
 	SessionStore,
 	TaskViewSource,
 } from "@bastani/atomic";
-import { retryStatusUpdate, sessionWaitsToRetry } from "@bastani/atomic";
+import { AgentTokenMeter, type AgentTokenMeterSnapshot, retryStatusUpdate, sessionWaitsToRetry } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import {
 	ownsStageRecord,
@@ -102,6 +102,8 @@ export interface StageControlHandle {
 	/** True after the executor has released the live SDK session behind this handle. */
 	readonly isDisposed?: boolean;
 	readonly messages: AgentSession["messages"];
+	/** The meter for a fresh view of these display rows, when they differ from the stage's request context. */
+	contextMeter?(displayed: readonly AgentSession["messages"][number][]): StageContextMeter | undefined;
 	/** Live coding-agent session when available, used by embedded chat/footer UI. */
 	readonly agentSession?: AgentSession;
 	/** Replayable in-flight tool starts/partial updates for stage-chat remounts. */
@@ -380,6 +382,32 @@ export interface StageControlRegistry {
 export interface StageChatTarget {
 	readonly runId: string;
 	readonly stageId: string;
+}
+
+export interface StageContextMeter extends AgentTokenMeterSnapshot {
+	/** Whether the last settled row in the request context is a user message or tool result. */
+	readonly requestSide: boolean;
+}
+
+/** Read the display history once. A reopened meter starts from the resident context, not restored display-only rows. */
+export function stageChatHistory(handle: StageControlHandle): {
+	messages: AgentSession["messages"];
+	contextMeter?: StageContextMeter;
+} {
+	const messages = handle.messages;
+	const contextMeter = handle.contextMeter?.(messages);
+	return contextMeter ? { messages, contextMeter } : { messages };
+}
+
+/** A local SDK stage can restore display-only rows without treating those rows as part of the current request. */
+export function stageContextMeter(
+	session: AgentSession | undefined,
+	displayed: readonly AgentSession["messages"][number][],
+): StageContextMeter | undefined {
+	const resident = session?.messages;
+	if (!resident || resident === displayed) return undefined;
+	const role = resident.at(-1)?.role;
+	return { ...new AgentTokenMeter(resident).snapshot(), requestSide: role === "user" || role === "toolResult" };
 }
 
 /** A running post-mortem turn owns its transcript until it finishes. Never wait for it in resume admission. */
