@@ -77,24 +77,6 @@ export class RecordingTerminal implements Terminal {
 	}
 }
 
-/** Count transcript child entries read while dispatching input, excluding layout and paint. */
-export function transcriptSiblingReads(chat: Container, dispatch: () => void): number {
-	const children = chat.children;
-	let reads = 0;
-	chat.children = new Proxy(children, {
-		get(target, key, receiver) {
-			if (typeof key === "string" && /^\d+$/.test(key)) reads++;
-			return Reflect.get(target, key, receiver);
-		},
-	});
-	try {
-		dispatch();
-		return reads;
-	} finally {
-		chat.children = children;
-	}
-}
-
 export interface LayoutBox {
 	component: Component;
 	rect: { x: number; y: number; width: number; height: number };

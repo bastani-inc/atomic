@@ -4,8 +4,7 @@ import type { EntryRenderer } from "../../../core/extensions/types.ts";
 import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
-import { RendererMouseControls } from "./renderer-mouse-controls.js";
-import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { type RowRange, rowsFrom, setRendererClickTarget } from "./transcript-block-clicks.ts";
 
 /** Renders an extension-owned persistent session entry. */
 export class CustomEntryComponent extends Container {
@@ -13,15 +12,14 @@ export class CustomEntryComponent extends Container {
 	private expanded = false;
 	private outputPad: number;
 
-	private readonly controls?: RendererMouseControls;
 	private readonly entry: CustomEntry<unknown>;
 	private readonly renderer: EntryRenderer;
 
-	constructor(entry: CustomEntry<unknown>, renderer: EntryRenderer, outputPad = 1, localMouseControls = false) {
+	constructor(entry: CustomEntry<unknown>, renderer: EntryRenderer, outputPad = 1) {
 		super();
 		this.entry = entry;
 		this.renderer = renderer;
-		if (localMouseControls) this.controls = new RendererMouseControls(this, 1);
+		setRendererClickTarget(this, { container: this, top: 0, firstRow: 1 });
 		this.outputPad = outputPad;
 		this.rebuild();
 	}
@@ -67,12 +65,7 @@ export class CustomEntryComponent extends Container {
 		this.customComponent = undefined;
 		let component: Component | undefined;
 		try {
-			const options = { expanded: this.expanded, keyText, keyHint };
-			component = this.controls
-				? this.controls.render((bindMouseControl) =>
-						this.renderer(this.entry, { ...options, bindMouseControl }, theme),
-					)
-				: this.renderer(this.entry, options, theme);
+			component = this.renderer(this.entry, { expanded: this.expanded, keyText, keyHint }, theme);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const box = new Box(this.outputPad, 1, (text) => theme.bg("customMessageBg", text));

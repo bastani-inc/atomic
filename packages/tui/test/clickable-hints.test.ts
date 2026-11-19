@@ -6,7 +6,6 @@ import {
 	clickableKeysHint,
 	clickableKeyTextHint,
 	commandHintAction,
-	createMouseControl,
 	keyHintAction,
 	readHintSpans,
 	slashCommandHint,
@@ -32,7 +31,6 @@ class KeyView implements Component {
 	lines: string[];
 	readonly keys: string[] = [];
 	readonly mouse: string[] = [];
-	readonly clickedControls: string[] = [];
 	private readonly takesPresses: boolean;
 
 	constructor(lines: string[], takesPresses = false) {
@@ -51,7 +49,6 @@ class KeyView implements Component {
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (event.type === "move") return undefined;
 		this.mouse.push(`${event.type}@${event.y}`);
-		if (event.type === "click" && event.paintedControl) this.clickedControls.push(event.paintedControl.token);
 		return this.takesPresses ? { handled: true } : undefined;
 	}
 
@@ -83,44 +80,6 @@ async function mount(lines: string[], takesPresses = false) {
 function keysOf(view: KeyView, ...ids: Parameters<typeof matchesKey>[1][]): string[] {
 	return view.keys.map((data) => ids.find((id) => matchesKey(data, id)) ?? JSON.stringify(data));
 }
-
-for (const takesPress of [false, true]) {
-	it(`an unchanged target keeps the click, not a replacement action, when its label is rebound (takes press: ${takesPress}) (#5696)`, async () => {
-		const first = createMouseControl();
-		const replacement = createMouseControl();
-		const { terminal, tui, view } = await mount([first.label("Review")], takesPress);
-		try {
-			terminal.sendInput(press(2, 0));
-			view.lines = [replacement.label("Review")];
-			tui.renderNow();
-			terminal.sendInput(release(2, 0));
-			assert.ok(view.mouse.includes("click@0"));
-			assert.deepEqual(view.clickedControls, []);
-		} finally {
-			tui.stop();
-		}
-	});
-}
-
-it("a control receipt from another host cannot cancel a click on its read-only output (#5696)", async () => {
-	const peer: typeof import("../src/clickable-hints.ts") = await import(
-		new URL("../src/clickable-hints.ts?peer", import.meta.url).href
-	);
-	const local = createMouseControl();
-	const { terminal, tui, view } = await mount([
-		peer.createMouseControl().label("Report"),
-		local.label("Local action"),
-	]);
-	try {
-		terminal.sendInput(press(2, 0));
-		view.lines = [peer.createMouseControl().label("Report"), local.label("Local action")];
-		tui.renderNow();
-		terminal.sendInput(release(2, 0));
-		assert.ok(view.mouse.includes("click@0"), "the same painted text still takes its ordinary click");
-	} finally {
-		tui.stop();
-	}
-});
 
 describe("a click on a key hint runs its key", () => {
 	it("feeds the hint's key to the focused view, and never writes the hint markers to the terminal", async () => {

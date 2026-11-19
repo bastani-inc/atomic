@@ -34,7 +34,7 @@ import {
 	RemoteCustomMessageComponent,
 	RemoteToolExecutionComponent,
 } from "../src/modes/interactive-engine/remote-renderer.js";
-import { RecordingTerminal, transcriptSiblingReads } from "./helpers/interactive-fullscreen-layout.js";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
 
 beforeAll(() => initTheme("dark", false));
 
@@ -225,9 +225,6 @@ async function mountIsolatedChat(renderers?: Readonly<Record<string, MessageRend
 		await settle();
 	};
 	return {
-		chat,
-		terminal,
-		rowOf,
 		transcript,
 		frames,
 		bash,
@@ -244,44 +241,20 @@ async function mountIsolatedChat(renderers?: Readonly<Record<string, MessageRend
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("the isolated host displays an extension's own row data as text and does not send a button click (#5696)", async () => {
-	let clicks = 0;
-	class Badge extends Text {
-		children = [];
-		mouseLayout = { current: { column: 2 }, width: 40, children: [{ component: this, height: 1 }] };
-		handleMouse() {
-			clicks++;
-			return { handled: true };
-		}
-	}
+test("an isolated renderer sends rows, not its click handler; its block still expands (#5696)", async () => {
+	const handleMouse = vi.fn(() => ({ handled: true }));
 	const chat = await mountIsolatedChat({
-		badge: (_message, { bindMouseControl }) => {
-			const badge = new Badge("Badge ready", 0, 0);
-			const mark = bindMouseControl?.(badge.handleMouse.bind(badge));
-			badge.setText(mark ? "Unexpected local control capability" : "Badge ready");
-			return badge;
-		},
-	});
-	chat.message({ ...intercomMessage("ready"), customType: "badge" });
-	await chat.waitFor(/Badge ready/);
-	await chat.click(/Badge ready/, "Badge");
-	assert.equal(clicks, 0);
-});
-
-test("Shift-clicking the last isolated message reads no transcript siblings (#5696)", async () => {
-	const { chat, terminal, message, waitFor, rowOf } = await mountIsolatedChat();
-	for (let i = 0; i < 32; i++) chat.addChild(new Text(`message ${i}`, 0, 0));
-	const target = message(intercomMessage("last remote message"));
-	await waitFor(/last remote message/);
-	const row = rowOf(/last remote message/) + 1;
-	assert.equal(
-		transcriptSiblingReads(chat, () => {
-			terminal.input(`\x1b[<4;2;${row}M`);
-			terminal.input(`\x1b[<4;2;${row}m`);
+		approval: (_message, { expanded }) => ({
+			invalidate() {},
+			render: () => ["[ Approve ]", ...(expanded ? ["Approval details"] : [])],
+			handleMouse,
 		}),
-		0,
-	);
-	assert.equal(target.isExpanded(), false);
+	});
+	chat.message({ ...intercomMessage("review"), customType: "approval" });
+	await chat.waitFor(/\[ Approve \]/);
+	await chat.click(/\[ Approve \]/, "Approve");
+	await chat.waitFor(/Approval details/);
+	assert.equal(handleMouse.mock.calls.length, 0);
 });
 
 test("an isolated row not redrawn since a resize compares at the transcript's settlement width (#5562)", async () => {

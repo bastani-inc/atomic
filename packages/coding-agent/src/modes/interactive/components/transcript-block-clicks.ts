@@ -5,6 +5,20 @@ import type { ToolGroupRole } from "./tool-block.ts";
 /** What a container's mouse handler returns: the component that handled the event, and where it is drawn. */
 export type ContainerMouseResult = ReturnType<Container["handleMouse"]>;
 
+/** Only local renderer blocks have a mounted TUI container to dispatch into. Engine blocks contain rendered rows. */
+interface RendererClickTarget {
+	container: Container;
+	top: number;
+	firstRow: number;
+}
+let rendererTargets: WeakMap<Component, RendererClickTarget> | undefined;
+export function setRendererClickTarget(block: Component, target?: RendererClickTarget): void {
+	if (target) {
+		rendererTargets ??= new WeakMap();
+		rendererTargets.set(block, target);
+	} else rendererTargets?.delete(block);
+}
+
 /** Rows `start` up to, not including, `end` of what a component rendered. */
 export interface RowRange {
 	readonly start: number;
@@ -33,23 +47,6 @@ export interface ClickExpandableBlock extends Component {
 	 * to the expansion it had. Blocks drawn in place omit it: they are drawn in both states at once instead.
 	 */
 	expandByClick?(expanded: boolean, changed: () => void, width: number, signal?: AbortSignal): void;
-}
-
-interface LocalControlSlot {
-	handle(event: TuiMouseEvent, row: number): boolean;
-	comparableLine(line: string): string;
-}
-
-// Only blocks whose local extension actually bound a control have slots. Do not probe arbitrary components.
-let controlSlots: WeakMap<Component, Set<LocalControlSlot>> | undefined;
-export function registerBlockControlSlot(block: Component, slot: LocalControlSlot): void {
-	controlSlots ??= new WeakMap();
-	let slots = controlSlots.get(block);
-	if (!slots) {
-		slots = new Set();
-		controlSlots.set(block, slots);
-	}
-	slots.add(slot);
 }
 
 export function isClickExpandableBlock(component: Component | undefined): component is ClickExpandableBlock {
@@ -150,17 +147,7 @@ export function expandIfItChangesRows(block: ClickExpandableBlock, width: number
 	return withBlockRenderTime(() => {
 		const before = block.render(width);
 		block.setExpanded(expanded);
-		const after = block.render(width);
-		if (!sameRows(before, after)) {
-			// Fresh bindings can have new receipts even when the renderer shows exactly the same rows.
-			const slot = controlSlots?.get(block)?.values().next().value;
-			if (
-				!slot ||
-				before.length !== after.length ||
-				before.some((line, i) => line !== after[i] && slot.comparableLine(line) !== slot.comparableLine(after[i]!))
-			)
-				return true;
-		}
+		if (!sameRows(before, block.render(width))) return true;
 		block.setExpanded(!expanded);
 		return false;
 	});
@@ -202,26 +189,34 @@ function clickUnitAt(
 	width: number,
 	row: number,
 	event: TuiMouseEvent,
-): (() => readonly ClickExpandableBlock[] | undefined) | undefined {
+	offer?: (container: Container, event: TuiMouseEvent) => ContainerMouseResult,
+): (() => readonly ClickExpandableBlock[] | undefined) | ContainerMouseResult {
 	const hit = container.childAtRow(width, row);
 	if (!hit || !container.children.includes(hit.component)) return undefined;
 	if (isClickExpandableBlock(hit.component)) {
-		const area = hit.component.clickArea(width);
-		if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
-		const block = hit.component;
-		if (!event.paintedControl) return () => clickUnit(container.children, container.children.indexOf(block));
-		return () => {
-			const slots = controlSlots?.get(block);
-			if (slots && container.children.includes(block)) {
-				for (const slot of slots) if (slot.handle(event, hit.row)) return undefined;
+		let area: RowRange | undefined;
+		const target = offer && rendererTargets?.get(hit.component);
+		if (offer && target && hit.row >= target.firstRow) {
+			// Tool headers were always measured before dispatch; message and entry controls saw the existing layout.
+			if (target.top > 0) {
+				area = hit.component.clickArea(width);
+				if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
 			}
-			return clickUnit(container.children, container.children.indexOf(block));
-		};
+			const result = offer(target.container, {
+				...event,
+				y: hit.row - target.top,
+				height: hit.height - target.top,
+			});
+			if (result) return result;
+		}
+		area ??= hit.component.clickArea(width);
+		if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
+		return () => clickUnit(container.children, container.children.indexOf(hit.component));
 	}
 	const nested = hit.component as Container;
 	if (!nested.children || !nested.childAtRow) return undefined;
-	const unit = clickUnitAt(nested, width, hit.row, event);
-	return unit && (() => (container.children.includes(nested) ? unit() : undefined));
+	const unit = clickUnitAt(nested, width, hit.row, event, offer);
+	return typeof unit === "function" ? () => (container.children.includes(nested) ? unit() : undefined) : unit;
 }
 
 // A global expansion supersedes only transcript toggles, not other controls' single-click actions.
@@ -240,6 +235,7 @@ export function handleTranscriptBlockClick(
 	event: TuiMouseEvent,
 	currentWidth: () => number | undefined,
 	onToggled?: (expanded: boolean) => void,
+	offerRendererClick?: (container: Container, event: TuiMouseEvent) => ContainerMouseResult,
 ): ContainerMouseResult {
 	if (event.type !== "press" && !isSingleLeftClick(event)) return undefined;
 	let scope = clickScopes.get(container);
@@ -255,16 +251,16 @@ export function handleTranscriptBlockClick(
 	pressedScopes.delete(container);
 	if (signal.aborted) return undefined;
 	// The click names its blocks where it lands; it toggles them once it settles, so each single click toggles once.
-	const unit = clickUnitAt(container, event.width, event.y, event);
-	if (!unit) return undefined;
+	const unit = clickUnitAt(container, event.width, event.y, event, offerRendererClick);
+	if (typeof unit !== "function") return unit;
 	return {
 		handled: true,
 		whenSingleClick: () => {
 			if (signal.aborted) return;
-			const width = currentWidth();
-			if (width === undefined) return;
 			const blocks = unit();
-			if (blocks && !signal.aborted) toggleClickedBlocks(blocks, width, (expanded) => onToggled?.(expanded), signal);
+			const width = currentWidth();
+			if (blocks && width !== undefined)
+				toggleClickedBlocks(blocks, width, (expanded) => onToggled?.(expanded), signal);
 		},
 		target: {
 			component: owner,

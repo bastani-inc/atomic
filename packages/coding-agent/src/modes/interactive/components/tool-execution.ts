@@ -26,7 +26,6 @@ import { keyHint, keyText } from "./keybinding-hints.js";
 import { clickableKeyTextHint } from "./nav-keys.ts";
 import { STATUS_MARKERS } from "./notice-line.ts";
 import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
-import { RendererMouseControls } from "./renderer-mouse-controls.js";
 import {
 	collapseToolBlockLines,
 	componentNeedsWorkingClock,
@@ -37,13 +36,12 @@ import {
 	type ToolGroupRole,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
-import { blockRenderTime, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { blockRenderTime, type RowRange, rowsFrom, setRendererClickTarget } from "./transcript-block-clicks.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
 
 export interface ToolExecutionOptions {
-	localMouseControls?: boolean;
 	showImages?: boolean;
 	imageWidthCells?: number;
 	outputPad?: number;
@@ -87,9 +85,6 @@ export class ToolExecutionComponent extends Container {
 	private disposed = false;
 	private executionStartedAt: number | undefined;
 	private elapsedMs: number | undefined;
-	private readonly localMouseControls: boolean;
-	private callControls?: RendererMouseControls;
-	private resultControls?: RendererMouseControls;
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: Record<string, unknown> = {};
@@ -130,7 +125,6 @@ export class ToolExecutionComponent extends Container {
 		this.toolCallId = toolCallId;
 		this.args = args;
 		this.toolDefinition = toolDefinition;
-		this.localMouseControls = options.localMouseControls === true && toolDefinition !== undefined;
 		this.builtInToolDefinition = allToolNames.has(toolName as ToolName)
 			? createLoadedToolDefinition(toolName as ToolName, cwd)
 			: undefined;
@@ -146,6 +140,8 @@ export class ToolExecutionComponent extends Container {
 
 		this.contentContainer = new Container();
 		this.addChild(this.contentContainer);
+		// The content starts after the spacer. Its title (row one) belongs to block disclosure, even for custom tools.
+		if (toolDefinition) setRendererClickTarget(this, { container: this.contentContainer, top: 1, firstRow: 2 });
 
 		this.updateDisplay();
 	}
@@ -359,9 +355,6 @@ export class ToolExecutionComponent extends Container {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.callControls?.clear();
-		this.resultControls?.clear();
-		this.callControls = this.resultControls = undefined;
 		this.stopWorkingClock?.();
 		this.stopWorkingClock = undefined;
 		this.disposeRendererComponent(this.callRendererComponent);
@@ -520,14 +513,7 @@ export class ToolExecutionComponent extends Container {
 			this.callRendererComponent = undefined;
 		} else if (callRenderer) {
 			try {
-				// Row zero is the spacer and row one is the tool title: a click there always toggles the block.
-				if (this.localMouseControls) this.callControls ??= new RendererMouseControls(this, 2);
-				const context = this.getRenderContext(this.callRendererComponent);
-				call = this.callControls
-					? this.callControls.render((bindMouseControl) =>
-							callRenderer(this.args, theme, { ...context, bindMouseControl }),
-						)
-					: callRenderer(this.args, theme, context);
+				call = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
 				this.callRendererComponent = call;
 			} catch {
 				this.callRendererComponent = undefined;
@@ -541,19 +527,12 @@ export class ToolExecutionComponent extends Container {
 		} else if (this.result) {
 			if (resultRenderer) {
 				try {
-					const result = {
-						content: this.result.content,
-						details: this.result.details,
-						terminate: this.result.terminate,
-					};
-					const options = { expanded: this.expanded, isPartial: this.isPartial };
-					if (this.localMouseControls) this.resultControls ??= new RendererMouseControls(this, 2);
-					const context = this.getRenderContext(this.resultRendererComponent);
-					details = this.resultControls
-						? this.resultControls.render((bindMouseControl) =>
-								resultRenderer(result, options, theme, { ...context, bindMouseControl }),
-							)
-						: resultRenderer(result, options, theme, context);
+					details = resultRenderer(
+						{ content: this.result.content, details: this.result.details, terminate: this.result.terminate },
+						{ expanded: this.expanded, isPartial: this.isPartial },
+						theme,
+						this.getRenderContext(this.resultRendererComponent),
+					);
 					this.resultRendererComponent = details;
 				} catch {
 					this.resultRendererComponent = undefined;

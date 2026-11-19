@@ -8,7 +8,6 @@ import type {
 	ProgramStatus,
 	ScrollViewScrollbar,
 	TUI,
-	TuiMouseEvent,
 	WheelScrollLines,
 } from "@bastani/atomic-tui";
 import type { ChatMessageRenderOptions } from "../../modes/interactive/components/chat-message-renderer.ts";
@@ -79,13 +78,6 @@ export interface KeybindingHints {
 
 	/** Configured keys followed by a description, styled as a hint, for example `"ctrl+o to expand"`. */
 	keyHint(keybinding: Keybinding, description: string): string;
-}
-
-/** Optional capabilities of a renderer mounted in the main chat of the in-process host. */
-export interface ChatControlOptions {
-	/** Bind during renderer construction, then mark the text of this control when drawing it. The handler gets a
-	 * settled single click local to its painted label. Return `{ handled: true }` to keep the block from toggling. */
-	bindMouseControl?(handler: (event: TuiMouseEvent) => { handled?: boolean } | undefined): (label: string) => string;
 }
 
 export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => EditorComponent;

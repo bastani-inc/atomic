@@ -634,8 +634,6 @@ pi.registerTool({
 });
 ```
 
-In the fullscreen main chat, `context.bindMouseControl` lets an in-process tool renderer [mark a clickable control](/extensions/ui#clickable-controls-in-chat-blocks). The title row remains a block toggle.
-
 Stop promptly when `signal` aborts: the user interrupted the turn, or its session is stopping. A call that has not returned 10 seconds after the abort (`ATOMIC_TOOL_ABORT_GRACE_MS`) gets an `Operation aborted` error result so the turn can end, and the next tool call no longer waits for it. Its promise may still settle, but its late return value or error is discarded, not added to the transcript or sent to the model. A call still waiting for an earlier call when the turn is interrupted never starts: it gets `Operation aborted` at once.
 
 ### pi.sendMessage(message, options?)
@@ -733,7 +731,7 @@ During a transactional reload's `session_start` handler, `pi.appendEntry`, `pi.s
 
 ### pi.registerEntryRenderer(customType, renderer)
 
-Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context. Ctrl+O, or a click on the entry in fullscreen mode, toggles `expanded`. In-process renderers can use `options.bindMouseControl` to [mark a clickable control](/extensions/ui#clickable-controls-in-chat-blocks) instead.
+Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context. Ctrl+O, or a click on the entry in fullscreen mode, toggles `expanded`.
 
 SDK hosts can inspect the original callback with `session.extensionRunner.getEntryRenderer(customType)`. To render through the owning session, call `session.extensionRunner.renderEntry(customType, entry, { expanded }, theme)`; retired runners reject rendering.
 
@@ -852,7 +850,7 @@ mode and would not execute if sent via `prompt`.
 
 ### pi.registerMessageRenderer(customType, renderer)
 
-Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. Both are available in normal and isolated-engine rendering. An in-process renderer can also use `options.bindMouseControl` to [mark a clickable control](/extensions/ui#clickable-controls-in-chat-blocks). Otherwise a click on the message in fullscreen mode toggles `expanded` when that changes what it draws.
+Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. A click on the message in fullscreen mode toggles `expanded` when that changes what the renderer draws, unless its in-process component handles the click itself. See [Custom UI](/extensions/ui#custom-ui).
 
 ### pi.registerMarkdownTransformer(transformer)
 

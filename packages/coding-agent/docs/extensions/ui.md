@@ -428,23 +428,7 @@ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
 });
 ```
 
-In fullscreen mode a click on a message toggles `expanded` for that message alone, as Ctrl+O does for every block. If the renderer draws the same rows either way, the message stays as it is.
-
-#### Clickable controls in chat blocks
-
-In the fullscreen main chat of an in-process session (for example, in an untrusted folder), a message or entry renderer can bind a click handler and mark just the text that belongs to it. A tool renderer gets the same `bindMouseControl` function on its `context`. Bind once when the renderer is called, not inside the returned component's `render(width)`:
-
-```typescript
-pi.registerMessageRenderer("approval", (_message, { bindMouseControl }) => {
-  const markApprove = bindMouseControl?.(() => {
-    approve();
-    return { handled: true };
-  });
-  return new Text(markApprove?.("[ Approve ]") ?? "[ Approve ]", 1, 0);
-});
-```
-
-To reuse a button's existing mouse handler, pass `button.handleMouse.bind(button)` and draw its label with the returned function. Only a settled single left click is delivered; `x` and `width` refer to the painted label segment, with `y: 0` and `height: 1`. Return `{ handled: true }` to consume it; otherwise the block takes the click. Bind distinct handlers for different items rather than looking up an item by its current row. A tool's title still toggles its block first. A drag or double-click still selects text. With a separate engine or on an older host, the optional function is absent: draw the ordinary label and leave another way to run its action.
+In fullscreen mode a click on the message toggles `expanded` for that message alone, as Ctrl+O does for every block, and Atomic calls your renderer again. When the main chat runs in the terminal UI process, a message, saved-entry or tool renderer’s component can take a click first by returning `{ handled: true }` from `handleMouse`. Leave clicks outside the control unhandled to keep click-to-expand there. A tool’s title row always toggles first. A separate engine sends rendered rows rather than mouse callbacks. If your renderer draws the same rows either way, the click leaves the message as it is.
 
 Messages are sent via `pi.sendMessage()`:
 

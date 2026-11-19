@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import type { Component } from "@bastani/atomic-tui";
@@ -38,20 +36,6 @@ const lines = (count: number, label: string) =>
 	Array.from({ length: count }, (_, index) => `${label} ${index + 1}`).join("\n");
 
 beforeAll(() => initTheme("dark", false));
-
-// These are cold-process checks of the built SDK, not of the source modules imported above.
-for (const [scenario, behavior] of [
-	["import", "importing rowsFrom without a TUI allocates no click segmenter"],
-	["pending", "a pending passive toggle releases the replaced painted rows"],
-] as const) {
-	test(`${behavior} (#5696)`, () => {
-		const fixture = fileURLToPath(
-			new URL("../../packages/coding-agent/test/fixtures/transcript-click-resources.mjs", import.meta.url),
-		);
-		const result = spawnSync(process.execPath, ["--expose-gc", fixture, scenario], { encoding: "utf8" });
-		assert.equal(result.status, 0, `${result.error ?? ""}${result.stdout}${result.stderr}`);
-	});
-}
 
 /** Message renderers first-party extensions register, keyed by the custom type they draw. */
 function messageRenderers(): ReadonlyMap<string, MessageRenderer> {

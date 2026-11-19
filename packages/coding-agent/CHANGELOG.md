@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Extension message, entry and tool renderers can use `bindMouseControl` to make a button clickable in the fullscreen main chat when the session runs in the terminal UI process. An unhandled click still opens or folds the block, as does a click on a tool’s title. Sessions with a separate engine keep their existing behavior ([#5696](https://github.com/bastani-inc/atomic/issues/5696)).
+- Buttons in extension messages, saved entries and custom tool output receive clicks again when the fullscreen chat runs in the terminal UI process. A click the renderer leaves unhandled still opens or folds the block, and tool titles still toggle first. Separate-engine sessions are unchanged ([#5696](https://github.com/bastani-inc/atomic/issues/5696)).
 
 ## [0.9.90] - 2026-11-19
 

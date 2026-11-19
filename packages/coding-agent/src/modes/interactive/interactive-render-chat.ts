@@ -488,7 +488,6 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 					const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
 					return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
 				},
-		localMouseControls: !isolated && this.usesFullscreenRenderer,
 		getCustomMessageRenderer: isolated
 			? undefined
 			: (customType) => this.session.extensionRunner.getMessageRenderer(customType),
@@ -571,7 +570,6 @@ InteractiveModeBase.prototype.addCustomEntryToChat = function (this: Interactive
 		entry,
 		(...args) => runner.renderEntry(entry.customType, ...args),
 		this.outputPad,
-		!(this.runtimeHost instanceof IsolatedInteractiveRuntime) && this.usesFullscreenRenderer,
 	);
 	component.setExpanded(this.toolOutputExpanded);
 	if (!component.hasContent()) return;
@@ -644,7 +642,6 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 									getToolDefinition: (toolName) => this.getRegisteredToolDefinition(toolName),
 									cwd: this.sessionManager.getCwd(),
 									requestRender: () => this.ui.requestRender(),
-									localMouseControls: this.usesFullscreenRenderer,
 								},
 							);
 				component.setExpanded(this.toolOutputExpanded);

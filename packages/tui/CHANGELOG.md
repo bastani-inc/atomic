@@ -4,10 +4,6 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
-### Added
-
-- `createMouseControl()` gives a local control an ID and a `label(text)` function that marks its text without adding visible columns. The fullscreen renderer includes the matching `paintedControl` span in single-click events on that label ([#5696](https://github.com/bastani-inc/atomic/issues/5696)).
-
 ## [0.9.90] - 2026-11-19
 
 ### Added

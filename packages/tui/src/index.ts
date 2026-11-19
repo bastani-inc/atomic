@@ -17,7 +17,6 @@ export {
 	clickableKeysHint,
 	clickableKeyTextHint,
 	commandHintAction,
-	createMouseControl,
 	type HintAction,
 	type HintKeyPart,
 	type HintSpan,
@@ -27,12 +26,10 @@ export {
 	hintKeyParts,
 	isHintActivation,
 	keyHintAction,
-	type MouseControlSpan,
 	readHintSpans,
 	runAsHintActivation,
 	slashCommandHint,
 	stripHintMarkers,
-	stripMouseControlMarkers,
 } from "./clickable-hints.ts";
 // Colors and styling
 export {
