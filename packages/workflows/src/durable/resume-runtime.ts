@@ -164,8 +164,11 @@ export async function resumeDurableWorkflow(
 	deps: ResumeDurableDeps,
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
-	return withResumeAdmissionMark(workflowId, deps.admissionMark, (resumed) =>
-		resumeAtMark(workflowId, deps, resumed, catalog),
+	return withResumeAdmissionMark(
+		workflowId,
+		deps.admissionMark,
+		(resumed) => resumeAtMark(workflowId, deps, resumed, catalog),
+		deps.signal,
 	);
 }
 

@@ -669,8 +669,11 @@ export async function workflowResumeAction(
 	deps.signal?.throwIfAborted();
 	const explicitTarget = args.runId?.trim();
 	const resumeExplicit = (id: string, liveRuns?: readonly RunSnapshot[]) =>
-		withResumeAdmissionMark(id, deps.admissionMark, (admissionMark) =>
-			resolveExplicitDurableTarget(id, args, { ...deps, admissionMark }, liveRuns),
+		withResumeAdmissionMark(
+			id,
+			deps.admissionMark,
+			(admissionMark) => resolveExplicitDurableTarget(id, args, { ...deps, admissionMark }, liveRuns),
+			deps.signal,
 		);
 	if (explicitTarget !== undefined && isRunIdPrefix(explicitTarget)) {
 		// #2603: resume prefixes must see both live and durable candidates before
@@ -689,8 +692,11 @@ export async function workflowResumeAction(
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
-	return withResumeAdmissionMark(target.runId, deps.admissionMark, (admissionMark) =>
-		resumeLiveTarget(target, args, { ...deps, admissionMark }, owner),
+	return withResumeAdmissionMark(
+		target.runId,
+		deps.admissionMark,
+		(admissionMark) => resumeLiveTarget(target, args, { ...deps, admissionMark }, owner),
+		deps.signal,
 	);
 }
 

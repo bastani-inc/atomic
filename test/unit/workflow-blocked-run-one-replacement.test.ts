@@ -447,11 +447,13 @@ describe("two resumes of the same block start one replacement (#5534)", () => {
 			let resumed: ReturnType<typeof resumeDurableWorkflow>;
 			try {
 				Map.prototype.set = function (key, value) {
-					if (key === id && typeof value === "number") entries.push({ id, retained: () => this.has(key) });
+					if (key === id && (typeof value === "number" || typeof value?.enter === "function"))
+						entries.push({ id, retained: () => this.has(key) });
 					return set.call(this, key, value);
 				};
 				Set.prototype.add = function (value) {
-					if (typeof value === "function") entries.push({ id, retained: () => this.has(value) });
+					if (typeof value === "function" || typeof value === "bigint")
+						entries.push({ id, retained: () => this.has(value) });
 					return add.call(this, value);
 				};
 				resumed = resumeDurableWorkflow(id, deps);
