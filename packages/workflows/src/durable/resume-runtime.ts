@@ -178,7 +178,9 @@ export async function resumeDurableWorkflow(
 	const backend = resumeBackend(deps, workflowId);
 	let id = workflowId;
 	if (!isFullRunId(id)) {
-		const stored = isRunIdPrefix(id) ? await raceAbort(backend.prepareWorkflowCatalog(), deps.signal) : undefined;
+		const stored = isRunIdPrefix(id)
+			? await raceAbort(backend.prepareWorkflowCatalog({ signal: deps.signal }), deps.signal)
+			: undefined;
 		const ids =
 			stored?.inspectableIds ??
 			[...(stored?.resumable ?? []), ...(stored?.completed ?? [])].map((entry) => entry.workflowId);
