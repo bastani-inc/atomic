@@ -556,11 +556,40 @@ interface IndexSource {
 	/** Clears the source's index rows when its triggers are installed again, so no stale row outlives its entry. */
 	readonly reset?: readonly string[];
 	/**
-	 * The progress row this build writes when it installs the source's triggers, and that no older build writes. Without
-	 * it, triggers of the source's names are an older build's, which index less, and this build installs its own and
-	 * indexes the table again (#5065).
+	 * The row that says the source's triggers index what this build's do, and that no build before 0.9.88 writes.
+	 * Without it, triggers of the source's names are an older build's, which index less, and this build installs its own
+	 * and indexes the table again (#5065). Builds 0.9.88 and 0.9.89 write it as `(0, 0)` when they install the triggers
+	 * and read only that it exists. This build writes it as {@link PUBLISHED_VERSION}, and on SQLite, which builds before
+	 * 0.9.88 also open, only once its own backfill of the source is done, so that builds 0.9.88 and 0.9.89 never trust
+	 * rows a build before 0.9.88 indexed during this build's backfill: they install their own triggers and index the
+	 * table again instead (#5558).
 	 */
 	readonly version?: string;
+	/**
+	 * The progress row of this build's own backfill of the source, which no older build writes (#5558). An older build
+	 * that takes this build's triggers for its own indexes the rows it backfills with statements that index less, and
+	 * advances only the source's row: the source is backfilled only once this row's progress reaches its watermark too,
+	 * and this build indexes those rows again. On SQLite, a source a build of 0.9.88 or 0.9.89 installed is trusted once
+	 * its backfill is done, as those builds index what this build does; one whose backfill is not done is indexed again
+	 * by this build from its first row, as a build before 0.9.88 may have indexed some of it.
+	 */
+	readonly own?: string;
+	/**
+	 * Text that the SQL of every trigger this build installs for the source holds, and no older build's does (#5558).
+	 * Builds 0.9.88 and 0.9.89 install triggers without it, and their pending trigger does not move {@link own} back. On
+	 * SQLite, which builds before 0.9.88 also open, an index this build installed is this build's only while every
+	 * trigger it has holds the text: such a build installs a lost trigger again, keeps the triggers it finds, some of
+	 * them the same SQL in every build, empties the index and indexes the table its way. Without the text everywhere,
+	 * this build indexes the table again. A takeover installs this build's triggers before its backfill relies on its
+	 * own progress.
+	 */
+	readonly marker?: string;
+	/**
+	 * Text that only this build's SQL of the trigger `trigger` holds. On SQLite, which older builds also open, a trigger
+	 * of that name without it is an older build's, installed after this build's went missing, so the source is indexed
+	 * again as an older build's (#5558).
+	 */
+	readonly signature?: { readonly trigger: string; readonly text: string };
 }
 
 interface SourceState {
@@ -568,7 +597,28 @@ interface SourceState {
 	readonly installed: boolean;
 	readonly backfilled: boolean;
 	readonly deferred: boolean;
+	/** Installed by another build whose index this build does not trust: an upgrade, or an older build's again. */
+	readonly foreign: boolean;
+	/**
+	 * On SQLite, installed with {@link IndexSource.version} but not backfilled, as by a build of 0.9.88 or 0.9.89 whose
+	 * backfill is not done. This build's backfill removes the row, installs its own triggers and indexes the source again
+	 * from its first row (#5558).
+	 */
+	readonly takeover: boolean;
 }
+
+/**
+ * The watermark and progress of a source's {@link IndexSource.version} row as this build writes it: on SQLite once its
+ * own backfill of the source is done, on Postgres when it installs the source's triggers (#5558). Builds 0.9.88 and
+ * 0.9.89 write the row as `(0, 0)`.
+ */
+const PUBLISHED_VERSION = 1;
+
+/**
+ * A row that a development build marked a source with while it removed the source's index in batches. An index an
+ * older build installed while it was there is never trusted as that build's finished index (#5558).
+ */
+const rebuildRow = (source: IndexSource) => `${source.name}@rebuild`;
 
 const CHECKPOINT_EVENT = "CheckpointRecorded";
 const STATUS_EVENTS = "'RunStarted', 'StatusChanged'";
@@ -709,6 +759,15 @@ function carriedSource(d: StorageDialect, t: SnapshotIndexTables, carried: Carri
 		backfill: index(storedRows(d, table, [rowOf(storedRow)], carries(storedRow) ?? d.literals.true)),
 		reset: [`DELETE FROM ${t.carriedRefs} WHERE owner LIKE '${carried.owner}:%'`],
 	};
+}
+
+/** The progress row of this build's own backfill of the session entries (#5558). */
+const ENTRIES_OWN_PROGRESS = "session-entries@own-progress";
+
+/** `trigger`, its SQL holding `marker` in a comment that changes nothing it does (#5558). */
+function withMarker(trigger: StorageTrigger, marker: string): StorageTrigger {
+	const [first, ...rest] = trigger.statements;
+	return { ...trigger, statements: [`/* ${marker} */ ${first}`, ...rest] };
 }
 
 function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect): readonly IndexSource[] {
@@ -861,6 +920,9 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 				[
 					`UPDATE ${t.sources} SET watermark = ${newRowOrder} WHERE source = 'session-entries' AND watermark < ${newRowOrder}`,
 					`UPDATE ${t.sources} SET backfilled_through = ${newRowOrder} - 1 WHERE source = 'session-entries' AND backfilled_through >= ${newRowOrder}`,
+					// This build's own progress follows, so an older build's backfill of these rows is never trusted (#5558).
+					`UPDATE ${t.sources} SET watermark = ${newRowOrder} WHERE source = '${ENTRIES_OWN_PROGRESS}' AND watermark < ${newRowOrder}`,
+					`UPDATE ${t.sources} SET backfilled_through = ${newRowOrder} - 1 WHERE source = '${ENTRIES_OWN_PROGRESS}' AND backfilled_through >= ${newRowOrder}`,
 				],
 				`NOT COALESCE(${indexComplete}, ${d.literals.true})`,
 			),
@@ -870,11 +932,14 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 				`DELETE FROM ${t.sessionRefs} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 				`DELETE FROM ${t.sessionRecords} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 			]),
-		],
+		].map((trigger) => withMarker(trigger, ENTRIES_OWN_PROGRESS)),
 		backfill: [],
 		rowwise: [...sessionLink(storedEntry), ...sessionRecord(storedEntry)],
 		// The triggers that index degraded pins (#4922). Older builds install theirs under the same names (#5065).
 		version: "session-entries@degraded-pins",
+		own: ENTRIES_OWN_PROGRESS,
+		marker: ENTRIES_OWN_PROGRESS,
+		signature: { trigger: `${entries}_snapshot_refs`, text: "degraded_from" },
 		reset: [`DELETE FROM ${t.sessionLinks}`, `DELETE FROM ${t.sessionRefs}`, `DELETE FROM ${t.sessionRecords}`],
 	};
 	// What a shared-placement root carries to its children (#4503): the snapshot each queued pool work row carries, and
@@ -1051,11 +1116,43 @@ async function installSource(
 		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(${dialect.rowOrder()}), 0), 0 FROM ${source.table} WHERE true ${REPLACE_PROGRESS}`,
 		source.name,
 	);
-	if (source.version !== undefined)
+	if (source.own !== undefined)
 		await transaction.run(
-			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, 0, 0) ${REPLACE_PROGRESS}`,
-			source.version,
+			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, watermark, 0 FROM ${t.sources} WHERE source = ? ${REPLACE_PROGRESS}`,
+			source.own,
+			source.name,
 		);
+	await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, rebuildRow(source));
+	if (source.version === undefined) return;
+	if (!withholdsVersion(dialect, source)) {
+		await publishVersion(transaction, t, source);
+		return;
+	}
+	// A table with no row yet is backfilled as it is installed; any other is published once its backfill is done.
+	const installed = await transaction.get<SqliteRow & { watermark: number }>(
+		`SELECT watermark FROM ${t.sources} WHERE source = ?`,
+		source.name,
+	);
+	if (Number(installed?.watermark) === 0) await publishVersion(transaction, t, source);
+	else await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, source.version);
+}
+
+/**
+ * Whether this build writes `source`'s {@link IndexSource.version} row only once its own backfill of the source is done:
+ * on SQLite and libSQL, which builds before 0.9.88 also open (#5558).
+ */
+function withholdsVersion(dialect: StorageDialect, source: IndexSource): boolean {
+	return dialect.name === "sqlite" && source.version !== undefined && source.own !== undefined;
+}
+
+/** Writes `source`'s version row as this build's, its own backfill of the source being done (#5558). */
+async function publishVersion(transaction: SqliteExecutor, t: SnapshotIndexTables, source: IndexSource): Promise<void> {
+	await transaction.run(
+		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, ?, ?) ${REPLACE_PROGRESS}`,
+		source.version!,
+		PUBLISHED_VERSION,
+		PUBLISHED_VERSION,
+	);
 }
 
 /**
@@ -1086,10 +1183,40 @@ async function readSourceStates(
 	sources: readonly IndexSource[],
 ): Promise<SourceState[]> {
 	const names = sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]);
-	const objects = dialect.schemaObjects(names);
-	const present = new Set(
-		(await executor.all<SqliteRow & { name: string }>(objects.sql, ...objects.params)).map((row) => row.name),
+	// Builds before 0.9.88 open SQLite and libSQL databases only, so only there can a trigger of this build's name be
+	// one that indexes less.
+	const sqlite = dialect.name === "sqlite";
+	const signatures = sqlite ? sources.flatMap((source) => source.signature ?? []) : [];
+	const markers = sqlite
+		? sources.flatMap((source) =>
+				source.marker === undefined
+					? []
+					: source.triggers.map((trigger) => ({ trigger: trigger.name, text: source.marker! })),
+			)
+		: [];
+	const holds = (checks: readonly { readonly trigger: string; readonly text: string }[]) =>
+		checks.length === 0 ? "NULL" : `CASE ${checks.map(() => "WHEN name = ? THEN instr(sql, ?) > 0").join(" ")} END`;
+	const objects =
+		signatures.length + markers.length === 0
+			? dialect.schemaObjects(names)
+			: {
+					sql: `SELECT name, ${holds(signatures)} AS signed, ${holds(markers)} AS marked FROM sqlite_schema WHERE name IN (${names.map(() => "?").join(", ")})`,
+					params: [...signatures, ...markers].flatMap((check) => [check.trigger, check.text]).concat(names),
+				};
+	const objectRows = await executor.all<SqliteRow & { name: string; signed?: number | null; marked?: number | null }>(
+		objects.sql,
+		...objects.params,
 	);
+	const present = new Set(objectRows.map((row) => row.name));
+	// Whether each checked trigger's SQL holds this build's text; every other object reads null.
+	const checked = (column: "signed" | "marked") =>
+		new Map(
+			objectRows
+				.filter((row) => row[column] !== null && row[column] !== undefined)
+				.map((row) => [row.name, Number(row[column]) === 1]),
+		);
+	const signed = checked("signed");
+	const marked = checked("marked");
 	const progress = new Map(
 		(
 			await executor.all<SqliteRow & { source: string; watermark: number; backfilled_through: number }>(
@@ -1101,21 +1228,56 @@ async function readSourceStates(
 		.filter((source) => present.has(source.table))
 		.map((source) => {
 			const row = progress.get(source.name);
-			// A source whose triggers an older build installed is indexed again by collection, as after an upgrade.
-			const foreign = source.version !== undefined && !progress.has(source.version);
+			const version = source.version === undefined ? undefined : progress.get(source.version);
+			const own = source.own === undefined ? undefined : progress.get(source.own);
+			const ownDone =
+				own !== undefined && row !== undefined && Number(own.backfilled_through) >= Number(row.watermark);
+			// An index an older build installed while a rebuild row was there, which 0.9.87 may have indexed since (#5558).
+			const reinstalled = row !== undefined && progress.has(rebuildRow(source));
+			// On SQLite, a reference trigger without this build's text is a build's before 0.9.88, installed after this
+			// build's went missing (#5558).
+			const unsigned = source.signature !== undefined && signed.get(source.signature.trigger) === false;
+			// Every trigger the source has is this build's. One a build before 0.9.88 installed again after it went
+			// missing is not, even when its SQL is the same in every build otherwise (#5558).
+			const mine =
+				source.marker !== undefined &&
+				source.triggers.every((trigger) => !present.has(trigger.name) || marked.get(trigger.name) === true);
+			let foreign: boolean;
+			// Whether the backfill is done for this build, besides the source's own progress row.
+			let trusted: boolean;
+			if (withholdsVersion(dialect, source)) {
+				// This build's install whose backfill is not done yet, which holds back the version row (#5558).
+				const pending = version === undefined && own !== undefined && mine;
+				// A row of 0 is a build of 0.9.88 or 0.9.89's, whose finished backfill indexed what this build's does, unless
+				// it installed the index while a rebuild row was there: this build takes it over then. This build publishes
+				// its own once its own progress reaches the watermark, which it must still hold.
+				const published = version !== undefined && Number(version.watermark) === PUBLISHED_VERSION;
+				foreign = unsigned || (version === undefined && !pending) || (published && !mine);
+				trusted = published ? ownDone : version !== undefined && !reinstalled;
+			} else {
+				// A source whose triggers an older build installed is indexed again by collection, as after an upgrade.
+				foreign = unsigned || (source.version !== undefined && version === undefined) || reinstalled;
+				// Rows an older build indexed with its statements past this build's own progress are not backfilled.
+				trusted = own === undefined || ownDone;
+			}
+			const installed =
+				row !== undefined &&
+				!foreign &&
+				Number(row.watermark) >= 0 &&
+				source.triggers.every((trigger) => present.has(trigger.name));
+			const backfilled =
+				row !== undefined &&
+				!foreign &&
+				trusted &&
+				Number(row.watermark) >= 0 &&
+				Number(row.backfilled_through) >= Number(row.watermark);
 			return {
 				source,
-				installed:
-					row !== undefined &&
-					!foreign &&
-					Number(row.watermark) >= 0 &&
-					source.triggers.every((trigger) => present.has(trigger.name)),
-				backfilled:
-					row !== undefined &&
-					!foreign &&
-					Number(row.watermark) >= 0 &&
-					Number(row.backfilled_through) >= Number(row.watermark),
+				installed,
+				backfilled,
 				deferred: row !== undefined && (foreign || Number(row.watermark) === -1),
+				foreign,
+				takeover: withholdsVersion(dialect, source) && installed && version !== undefined && !backfilled,
 			};
 		});
 }
@@ -1437,24 +1599,85 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	private backfillBatch(source: IndexSource, { holder, pace, signal }: SnapshotIndexOptions): Promise<boolean> {
 		const t = this.tables;
 		const row = this.dialect.rowOrder();
+		const withholds = withholdsVersion(this.dialect, source);
 		return this.write(pace, async (transaction) => {
+			const [state] = await readSourceStates(transaction, this.dialect, t, [source]);
+			if (state === undefined || state.backfilled) return true;
+			if (state.foreign) {
+				// A build before 0.9.88 installed its own triggers since the loop read the states: the source is installed again
+				// in this transaction, its old rows removed, as at the start of a collection. Left as it is, that build could
+				// index it its way, and builds 0.9.88 and 0.9.89 trust their version row (#5558).
+				await withShortSchemaLockWaits(transaction, this.dialect, () =>
+					installSource(transaction, this.dialect, t, source),
+				);
+				if (holder !== undefined) await this.renewClaim(transaction, holder);
+				return false;
+			}
+			// A source that lost triggers meanwhile is indexed on, as its rows still need this build's statements; the sweep
+			// installs its triggers again before it deletes anything.
 			const progress = await transaction.get<SqliteRow & { watermark: number; backfilled_through: number }>(
 				`SELECT watermark, backfilled_through FROM ${t.sources} WHERE source = ?`,
 				source.name,
 			);
-			if (progress === undefined || progress.backfilled_through >= progress.watermark) return true;
+			if (progress === undefined || progress.watermark < 0) return true;
+			if (state.takeover) {
+				// Installed by a build of 0.9.88 or 0.9.89 whose backfill is not done, which a build before 0.9.88 may have
+				// indexed some of its way: this build indexes it again from its first row, with its own triggers, whose
+				// pending trigger moves its own progress back, and holds the version row back until it is done, so that
+				// builds 0.9.88 and 0.9.89 do not trust it meanwhile (#5558).
+				await transaction.run(
+					`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, ?, 0) ${REPLACE_PROGRESS}`,
+					source.own!,
+					progress.watermark,
+				);
+				for (const name of [source.version!, rebuildRow(source)])
+					await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, name);
+				for (const trigger of source.triggers)
+					await transaction.exec(this.dialect.dropTrigger(trigger.name, trigger.table));
+				await transaction.exec(source.triggers.map((trigger) => this.dialect.renderTrigger(trigger)).join("\n"));
+			}
+			// This build's own progress (#5558): rows an older build indexed past it are indexed again. On Postgres, which
+			// no build before 0.9.88 opens, a source a build of 0.9.88 or 0.9.89 installed has none: its backfill, which
+			// indexes what this one does, is trusted as far as it got.
+			let own =
+				source.own === undefined
+					? undefined
+					: await transaction.get<SqliteRow & { backfilled_through: number }>(
+							`SELECT backfilled_through FROM ${t.sources} WHERE source = ?`,
+							source.own,
+						);
+			if (source.own !== undefined && own === undefined && progress.backfilled_through < progress.watermark) {
+				await transaction.run(
+					`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, ?, ?) ${REPLACE_PROGRESS}`,
+					source.own,
+					progress.watermark,
+					progress.backfilled_through,
+				);
+				own = { backfilled_through: progress.backfilled_through };
+			}
+			const from =
+				own !== undefined && own.backfilled_through < progress.backfilled_through
+					? own.backfilled_through
+					: progress.backfilled_through;
+			// The version row says the index is this build's and complete: never while a trigger is missing, which a build
+			// before 0.9.88 would install again its way under it (#5558).
+			const publish = withholds && state.installed;
+			if (from >= progress.watermark) {
+				if (publish) await publishVersion(transaction, t, source);
+				return true;
+			}
 			const { upper: lastRow } = (await transaction.get<SqliteRow & { upper: number | null }>(
 				`SELECT MAX(${row}) AS upper FROM (SELECT ${row} FROM ${source.table} WHERE ${row} > ? AND ${row} <= ? ORDER BY ${row} LIMIT ?)`,
-				progress.backfilled_through,
+				from,
 				progress.watermark,
 				SNAPSHOT_INDEX_BACKFILL_BATCH,
 			))!;
 			const upper = lastRow ?? progress.watermark;
-			for (const sql of source.backfill) await transaction.run(sql, progress.backfilled_through, upper);
+			for (const sql of source.backfill) await transaction.run(sql, from, upper);
 			if (source.rowwise !== undefined) {
 				const rows = await transaction.all<SqliteRow & { id: number }>(
 					`SELECT ${row} AS id FROM ${source.table} WHERE ${row} > ? AND ${row} <= ? ORDER BY ${row}`,
-					progress.backfilled_through,
+					from,
 					upper,
 				);
 				for (const { id } of rows) {
@@ -1463,9 +1686,25 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					for (const sql of source.rowwise) await transaction.run(sql, id);
 				}
 			}
-			await transaction.run(`UPDATE ${t.sources} SET backfilled_through = ? WHERE source = ?`, upper, source.name);
+			// Indexing rows again behind the source's progress, for this build's own, never moves the progress back.
+			await transaction.run(
+				`UPDATE ${t.sources} SET backfilled_through = ? WHERE source = ? AND backfilled_through < ?`,
+				upper,
+				source.name,
+				upper,
+			);
+			if (own !== undefined)
+				await transaction.run(
+					`UPDATE ${t.sources} SET watermark = ?, backfilled_through = ? WHERE source = ?`,
+					progress.watermark,
+					upper,
+					source.own!,
+				);
 			if (holder !== undefined) await this.renewClaim(transaction, holder);
-			return upper >= progress.watermark;
+			const done = upper >= progress.watermark;
+			// Both progress rows reach the watermark: builds 0.9.88 and 0.9.89 may trust the index now (#5558).
+			if (done && publish) await publishVersion(transaction, t, source);
+			return done;
 		});
 	}
 
