@@ -1,5 +1,5 @@
 import { dirname, join } from "node:path";
-import { CONFIG_DIR_NAME } from "../config.ts";
+import { CONFIG_DIR_NAME } from "../config.js";
 import { getPathComparisonKey, pathsEqual } from "../utils/paths.ts";
 import type { ResolvedResource } from "./package-manager-types.ts";
 

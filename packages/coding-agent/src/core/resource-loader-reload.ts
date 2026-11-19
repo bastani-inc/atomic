@@ -7,7 +7,7 @@ import { getAllBuiltinPackageLocations, getMandatoryBuiltinExtensionPaths } from
 import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.ts";
 import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
-import { findLegacyWorkflowFiles } from "./legacy-workflow-files.ts";
+import { findLegacyWorkflowFiles } from "./legacy-workflow-files.js";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "./mandatory-runtime-tools.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";

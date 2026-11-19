@@ -1,4 +1,4 @@
-import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { Spacer, Text, theme } from "./interactive-mode-deps.ts";
 
