@@ -15,12 +15,10 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
-	isWorkflowStageOrchestrationContext,
 	type ParentAskHandoffRequest,
 	type RunSyncOptions,
 	type SingleResult,
 	type SubagentToolResult,
-	workflowSessionMetadataFromContext,
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
@@ -45,7 +43,6 @@ import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
 	notifyDetachedForegroundChildExit,
-	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
 import {
 	type ExecutionContextData,
@@ -175,7 +172,6 @@ export async function runSinglePath(
 	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
 	const effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
 	const effectiveOutputMode = params.outputMode ?? "inline";
-	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
 	const progress = resolveSingleProgress(agentConfig, params.progress, task);
 
 	if (params.context === "fork") {
@@ -219,9 +215,6 @@ export async function runSinglePath(
 
 	const forwardSingleUpdate = createForwardSingleUpdate(onUpdate, foregroundControl, params.agent!, 0);
 
-	// #3981: a detached child can exit after model fallback retired the stage session that launched it, whose
-	// context then throws on every read. Its stage admission outlives that session, so read it now.
-	const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 	let r: SingleResult;
 	// Ended by the child's terminal result, or here when the launch fails before it starts.
 	let startHold: StartingChildHold | undefined;
@@ -269,8 +262,6 @@ export async function runSinglePath(
 			outputPath,
 			outputMode: effectiveOutputMode,
 			parentDepth: data.parentDepth,
-			workflowStageSubagentGuard,
-			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
 			onUpdate: forwardSingleUpdate,
 			controlConfig,
 			onControlEvent,
@@ -286,7 +277,7 @@ export async function runSinglePath(
 			},
 			onDetachedExit: (result) => {
 				void cleanupTransientProgress(progressDir, artifactConfig.enabled);
-				if (result && workflowStageAcceptsDetachedNotification(detachedNotificationScope)) {
+				if (result) {
 					notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "single", index: 0, result });
 				}
 			},

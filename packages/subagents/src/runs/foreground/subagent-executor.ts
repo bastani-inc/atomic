@@ -216,7 +216,7 @@ async function handleManagementRequest(input: {
 	if (action === "status" && isScriptSubagentCall(ctx))
 		return scriptResult({ action, children: await subagentScriptChildren(ctx, params.id) });
 	const targetTaskId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
-	// A paused or quit child awaits resume, as a quit workflow run does; its records outlive its task and a restart.
+	// A paused or quit child awaits resume; its records outlive its task and a restart.
 	const awaitingResume = action === "status" ? subagentChildrenAwaitingResume(ctx, targetTaskId) : [];
 	if (action === "status" && ctx.getAgentTaskHost && targetTaskId) {
 		const host = ctx.getAgentTaskHost();

@@ -40,7 +40,7 @@ Use contact_supervisor for the supervisor. It resolves the supervisor session "{
 - Meaningful progress or unexpected discoveries that change the plan: contact_supervisor({ reason: "progress_update", message: "UPDATE: <summary>" })
 - Toward the supervisor, generic intercom is the fallback only when contact_supervisor is unavailable: intercom({ action: "ask", to: "{orchestratorTarget}", message: "<question>" })
 
-Use ordinary intercom for peers. Sibling agents launched with you, and workflow stages in your invocation, share your Intercom group; intercom({ action: "list" }) shows who is live. Send or ask them directly to share findings and file locations, divide ownership of files or expensive steps, challenge a conclusion with evidence, or learn what a sibling already verified, instead of routing that through the supervisor. There are no limits on communication between agents; it is encouraged whenever you need to. An intercom ask never blocks you: a reply that misses the wait arrives later as a message starting "Reply to your ask <id> from <name>", so keep working meanwhile and do not re-ask. Decide on evidence rather than deference, and still return your own complete result. Scope, product, and architecture decisions remain supervisor decisions. Do not invent targets.
+Use ordinary intercom for peers. Sibling agents launched with you share your Intercom group; intercom({ action: "list" }) shows who is live. Send or ask them directly to share findings and file locations, divide ownership of files or expensive steps, challenge a conclusion with evidence, or learn what a sibling already verified, instead of routing that through the supervisor. There are no limits on communication between agents; it is encouraged whenever you need to. An intercom ask never blocks you: a reply that misses the wait arrives later as a message starting "Reply to your ask <id> from <name>", so keep working meanwhile and do not re-ask. Decide on evidence rather than deference, and still return your own complete result. Scope, product, and architecture decisions remain supervisor decisions. Do not invent targets.
 
 Do not use contact_supervisor or intercom for routine completion handoffs. If no coordination is needed, return a focused task result.`;
 
@@ -67,7 +67,7 @@ interface ResolveIntercomBridgeInput {
 /**
  * The Intercom target a session's children name as their supervisor: the Intercom id the session itself registered
  * under, or else its name. Never the process's `ATOMIC_INTERCOM_SESSION_ID`: every session in the process (its
- * workflow stages, its other subagents) writes that variable when it connects, so it names whichever connected last.
+ * its other subagents) writes that variable when it connects, so it names whichever connected last.
  */
 export function resolveIntercomSessionTarget(
 	sessionName: string | undefined,

@@ -280,8 +280,6 @@ export function extractToolArgsPreview(args: Record<string, unknown>): string {
 	const queriesPreview = previewArray(args.queries);
 	if (queriesPreview) return truncatePreview(queriesPreview, 60);
 	if (typeof args.query === "string" && args.query.trim().length > 0) return truncatePreview(args.query, 60);
-	if (typeof args.workflow === "string" && args.workflow.trim().length > 0)
-		return `workflow=${truncatePreview(args.workflow, 48)}`;
 
 	if (typeof args.url === "string" && args.url.trim().length > 0) return truncatePreview(args.url, 60);
 	const urlsPreview = previewArray(args.urls);

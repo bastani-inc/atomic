@@ -6,7 +6,7 @@
 
 `@bastani/subagents` lets Atomic delegate work to focused child agents. It is Atomic's bundled adaptation of upstream `pi-subagents`; use it for code review, scouting, implementation, parallel audits, and anything else that benefits from a second or third set of model eyes.
 
-Use subagents selectively for bounded specialist delegation while the parent remains in control: one focused agent or parallel independent tasks. Keep interactive, exploratory, conceptual, and conversation-led work inline. For autonomous jobs that need durable stages, checkpoints, resumability, HIL, gates, retries, or bounded loops, use an appropriate workflow. Every subagent runs in the background; `subagent({ action: "wait", id })` waits for one whose result is needed next.
+Use subagents selectively for bounded specialist delegation while the parent remains in control: one focused agent or parallel independent tasks. Keep interactive, exploratory, conceptual, and conversation-led work inline. For multi-step work, coordinate children from the parent session with codemode. Every subagent runs in the background; `subagent({ action: "wait", id })` waits for one whose result is needed next.
 
 https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
 
@@ -133,7 +133,6 @@ For one run, pass `model` on the `subagent` call:
 subagent({ agent: "codebase-analyzer", task: "Review this diff", model: "anthropic/claude-sonnet-4:high" })
 ```
 
-
 For a persistent override, edit settings. This example pins the codebase-analyzer everywhere, adds a backup model for provider failures, and keeps the other builtins on their configured defaults:
 
 ```json
@@ -154,15 +153,15 @@ Use `~/.atomic/agent/settings.json` for a user override or `.atomic/settings.jso
 
 ### Orchestrator defaults
 
-Any parent chat or workflow stage that orchestrates subagents should omit the explicit `model` argument when the named agent already declares a model or fallback policy. Override it only for the user's exact model request or a documented task-specific need, and record the reason before launch; diversity alone does not justify an ad hoc model.
+A parent chat orchestrating subagents should omit the explicit `model` argument when the named agent already declares a model or fallback policy. Override it only for the user's exact model request or a documented task-specific need, and record the reason before launch; diversity alone does not justify an ad hoc model.
 
-When a task needs a specific model, call `workflow({ action: "models" })` when available. Use only a catalog-returned `fullId` and only a thinking level listed for that entry. If the catalog tool is unavailable, returns no models, or no catalog model fits, leave the child unpinned and report the limitation instead of inventing a model or inspecting credentials.
+When a task needs a specific model, call `subagent({ action: "models" })` when available. Use only a catalog-returned `fullId` and only a thinking level listed for that entry. If the catalog tool is unavailable, returns no models, or no catalog model fits, leave the child unpinned and report the limitation instead of inventing a model or inspecting credentials.
 
-Workflow invocations receive a stable, non-`default` Intercom group automatically. Their stages and delegated children inherit it across single, parallel, and follow-up calls, so omit `group` unless you intend to create a different coordination subgroup. Outside a workflow, children inherit the launching session's group. `contact_supervisor` remains available across group boundaries.
+Children inherit the launching session’s Intercom group. Omit `group` to keep it, or set `group` to create a different coordination group. `contact_supervisor` remains available across group boundaries.
 
 ## Where running subagents show up
 
-Background agents appear in the compact count below the prompt in main and workflow-stage chat. Run `/tasks` to open the grouped inspector; updates never open it automatically. Parallel receipts identify individual siblings. Completion produces one unshaded notice line with an outcome glyph and task title, followed by the first result line. Ctrl+O expands the full retained result. The notice does not depend on a model reply. `/agents` browses definitions, while `subagent({ action: "list" })` shows the catalog with the configured expand-key hint.
+Background agents appear in the compact count below the prompt in the parent chat. Run `/tasks` to open the grouped inspector; updates never open it automatically. Parallel receipts identify individual siblings. Completion produces one unshaded notice line with an outcome glyph and task title, followed by the first result line. Ctrl+O expands the full retained result. The notice does not depend on a model reply. `/agents` browses definitions, while `subagent({ action: "list" })` shows the catalog with the configured expand-key hint.
 
 To stop a task, select it in `/tasks` and press `x` twice within 3 seconds. A stopped subagent stays resumable. Once termination is confirmed, the owning chat receives a `quit · awaiting resume` notice line and the parent model receives the quit context, even when the child has no final response. Repeated stop requests do not duplicate the notice or change an already-settled result. Closing the owner still suppresses late notifications.
 
@@ -189,7 +188,7 @@ subagent({ action: "quit", id: taskId })
 
 `action: "wait"` uses the owner's agent wait budget, normally 30 seconds, unless `budgetMs` overrides it, and Esc ends it at once. Either way the wait releases the caller, not the execution. Wait or inspect the returned task ID instead of launching a duplicate. A launch that still passes `wait`, as older prompts and workflows may, runs in the background too, and a foreground one says so in its result. SDK callers without a task owner retain their original execution path, which waits for the child.
 
-See [Background tasks](../coding-agent/docs/background-tasks.md) for shell examples, automatic backgrounding, output retention, keyboard controls, platform limits, and session/workflow lifetimes.
+See [Background tasks](../coding-agent/docs/background-tasks.md) for shell examples, automatic backgrounding, output retention, keyboard controls, platform limits, and session lifetimes.
 
 ## Recommended orchestration pattern (scaffolding)
 
@@ -200,11 +199,9 @@ clarify → gather context → worker → fresh reviewers → worker
 ```
 
 
-
 Packaged `worker` defaults to forked context when a launch omits `context`; every other builtin runs fresh. Pass `context: "fresh"` when you intentionally want a fresh `worker` run.
 
 Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `wait`; delegation and run control (`pause`, `resume`, `quit`) receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. No admitted child may delegate or control another child: launches and run control are refused for every child regardless of its fanout authorization. Children receive boundary instructions that they are not the parent orchestrator and must complete their assigned task directly. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
-
 
 
 ## Optional intercom companion
@@ -233,13 +230,13 @@ The child can use one dedicated coordination tool:
 
 Child-side routine completion handoffs are still not expected. In parallel runs, blocking `contact_supervisor` decisions/interviews and parent-targeted `intercom.ask` wait only in the requesting child. The supervisor replies through Intercom to the exact question; the same child continues with its original context and run identity. Sends and progress updates return without a reply.
 
-Children can also talk to each other. Children launched in one parallel set (or with the same explicit `group`) share an Intercom group, and children launched from a workflow stage inherit that stage's invocation group. `intercom({ action: "list" })` shows live siblings, and ordinary `send`/`ask` reaches them directly: a locator hands paths to an analyzer, writers agree on file ownership or who runs a shared suite, a debugger reuses a sibling's reproduction, or one reviewer challenges another's finding before each returns its own verdict. `contact_supervisor` stays reserved for the supervisor. Peer-to-peer (swarm) exchange is the default, and the supervisor is not a message relay. There are no limits on communication between agents; it is encouraged whenever you need to. Children coordinate spontaneously and each still returns its own result. For very complex work or requested heavy parallelism, swarms scale to hundreds or thousands of agents organized into teams; see [Scaling a swarm](../coding-agent/docs/subagents.md#scaling-a-swarm) for the limits. Peer asks and one blocking supervisor request may wait concurrently in the same child.
+Children can also talk to each other. Children launched in one parallel set (or with the same explicit `group`) share an Intercom group. `intercom({ action: "list" })` shows live siblings, and ordinary `send`/`ask` reaches them directly: a locator hands paths to an analyzer, writers agree on file ownership or who runs a shared suite, a debugger reuses a sibling's reproduction, or one reviewer challenges another's finding before each returns its own verdict. `contact_supervisor` stays reserved for the supervisor. Peer-to-peer (swarm) exchange is the default, and the supervisor is not a message relay. There are no limits on communication between agents; it is encouraged whenever you need to. Children coordinate spontaneously and each still returns its own result. For very complex work or requested heavy parallelism, swarms scale to hundreds or thousands of agents organized into teams; see [Scaling a swarm](../coding-agent/docs/subagents.md#scaling-a-swarm) for the limits. Peer asks and one blocking supervisor request may wait concurrently in the same child.
 
 An exact-child probe/commit handshake lets a child's message reach its busy parent at once, and an `action: "wait"` the parent is in ends so it can respond. Neither ends any execution or spends a running concurrency slot. Active siblings keep working, queued siblings start once capacity becomes available, and worktrees remain until their owners finish. Do not relaunch children to answer an ask. Targeted `pause`/`quit`, explicit batch cancellation, and owner closure remain separate controls.
 
 A single child that an SDK caller without a task owner runs directly retains the terminal parent-ask handoff: the exact live child ends before broker send or waiter admission and the parent receives the verbatim question, ordered attachments, identity, and `[TASK_CONTEXT]` for a fresh child. Every other child waits for the reply in the same execution. The bridge still obtains each child's capability during admission; the child connects only when it uses Intercom.
 
-Parent-side Atomic sends grouped completion results through Intercom: one grouped message per `subagent` run its caller waits for and one per detached child completion while its owning session remains live. When a workflow stage completes, Atomic cancels its still-running detached children and suppresses their late findings and completion notifications instead of forwarding them to the parent/main chat. Intercom-confirmed delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child Intercom targets and full child summaries.
+Parent-side Atomic sends grouped completion results through Intercom: one grouped message per `subagent` run its caller waits for and one per detached child completion while its owning session remains live. Intercom-confirmed delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child Intercom targets and full child summaries.
 
 If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, quitting the child, or nudging it.
 
@@ -252,7 +249,6 @@ At this point, you know enough to use the plugin. The rest of this README is ref
 ## Non-interactive execution
 
 Every supported subagent launch starts immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, forked, fanout, and prompt-template execution. Gather any needed context and ask the user questions in the parent conversation before launching.
-
 
 ## Agents
 
@@ -303,7 +299,7 @@ Set `disabled: true` to hide a builtin from runtime discovery and agent-facing `
 
 ### Prompt assembly
 
-Subagents are designed to be narrow by default. Custom agents start with a clean system prompt and only the context you intentionally give them. They do not automatically inherit Pi’s whole base prompt, project instruction files, or discovered skills catalog. An agent with the `read` tool keeps one part of the base prompt, the Session memory guidance, and recalls the project's earlier sessions and workflow runs through `history://` like the session that launched it.
+Subagents are designed to be narrow by default. Custom agents start with a clean system prompt and only the context you intentionally give them. They do not automatically inherit Pi’s whole base prompt, project instruction files, or discovered skills catalog. An agent with the `read` tool keeps one part of the base prompt, the Session memory guidance, and recalls the project's earlier sessions through `history://` like the session that launched it.
 
 Use these fields when an agent should see more:
 
@@ -392,7 +388,6 @@ extensions: /abs/path/to/ext-a.ts, /abs/path/to/ext-b.ts
 
 When `extensions` is present, it takes precedence over extension paths implied by `tools` entries.
 
-
 ## Skills
 
 Skills are `SKILL.md` files injected into an agent’s system prompt.
@@ -462,12 +457,10 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 // Maintain a run-scoped progress.md under isolated artifact storage
 { agent: "worker", task: "implement the approved fix", progress: true }
 
-
 // Parallel
 { tasks: [{ agent: "codebase-locator", task: "a" }, { agent: "codebase-analyzer", task: "b" }] }
 { tasks: [{ agent: "codebase-locator", task: "audit auth", count: 3 }] }
 { tasks: [{ agent: "codebase-locator", task: "audit frontend" }, { agent: "codebase-analyzer", task: "audit backend" }], context: "fork" }
-
 
 // Worktree isolation
 { tasks: [
@@ -516,7 +509,6 @@ Agent definitions are not loaded into context by default. Management actions let
   progress: true
 }}
 
-
 { action: "update", agent: "code-analysis.api-auditor", config: { model: "openai/gpt-4o" } }
 { action: "delete", agent: "codebase-locator" }
 ```
@@ -555,7 +547,6 @@ Agent definitions are not loaded into context by default. Management actions let
 
 Use `outputMode: "file-only"` when a saved output may be large and the parent only needs a pointer. The returned text is a compact reference like `Output saved to: /abs/report.md (48.2 KB, 2847 lines). Read this file if needed.` Failed runs and save errors still return normal inline output for debugging.
 
-
 Status and control actions:
 
 ```ts
@@ -568,9 +559,9 @@ subagent({ action: "quit", id: "<child-id>" })
 subagent({ action: "quit", all: true })
 ```
 
-`status` lists the children this session launched that are still in this process, each as `<run-id>/<agent>_<n> — <state> (loaded|cold) · id <child-id>`, with the cause of a failed or interrupted child after it; `pause`, `resume` and `quit` take the child id or that path, and `status` takes either to show one child. Children other sessions in the same process launched, such as a workflow stage's, are not listed, since this session cannot control them. A child that has not started within its start budget (5 minutes, or `sessionStartTimeoutMs` in `config.json`) fails with a `SessionStartTimeoutError` whose `phase` names what blocked it (`admission`, `setup`, `dispatch` or `event-loop`) instead of staying running; see [Subagent start timeouts](../coding-agent/docs/subagents.md#subagent-start-timeouts).
+`status` lists the children this session launched that are still in this process, each as `<run-id>/<agent>_<n> — <state> (loaded|cold) · id <child-id>`, with the cause of a failed or interrupted child after it; `pause`, `resume` and `quit` take the child id or that path, and `status` takes either to show one child. Children other sessions in the same process launched, are not listed, since this session cannot control them. A child that has not started within its start budget (5 minutes, or `sessionStartTimeoutMs` in `config.json`) fails with a `SessionStartTimeoutError` whose `phase` names what blocked it (`admission`, `setup`, `dispatch` or `event-loop`) instead of staying running; see [Subagent start timeouts](../coding-agent/docs/subagents.md#subagent-start-timeouts).
 
-`pause` stops a child and holds its queued messages until `resume`; `quit` stops it gracefully, including a child already paused by you or with its workflow stage. Both stay resumable while the session or workflow stage that launched the child can still resume it, as do children stopped because their workflow stage was paused or quit, including by Atomic exiting or a session switch. `resume` reopens the child's own session under the same id and Intercom name. A paused, quit, or interrupted child receives `message` once as its next prompt and then continues where it left off; a completed or failed child receives `message` as one fresh prompt. Without `message`, every resumable child, including a completed or failed one, is asked to continue where it left off. Children cancelled for good (owner or batch cancellation, or the removed `kill` action), children whose workflow stage ended (the stage finished, or its run ended or was cancelled; this covers all of that stage's children, including ones you paused or quit), and children reported gone after a restart cannot be resumed: `resume` returns an error that says why, and follow-up work requires a fresh launch with explicit context. A parallel child waiting for a reply is not terminal and continues in its original execution. Parent cancellation of a still-running child uses the interrupted/abort state: receipts and progress present it as cancelled rather than failed, persisted metadata keeps the abort cause, and bounded partial findings remain available. Migrate old subagent calls from `action: "kill"` or `action: "interrupt"` to `action: "quit"`; the old actions are rejected with `The subagent action "kill" was removed. Use { action: "quit", id } to stop a child gracefully; it stays resumable with { action: "resume", id, message? }.` (naming the action that was used). Host interrupt APIs are unchanged.
+`pause` stops a child and holds its queued messages until `resume`; `quit` stops it gracefully, including a child already paused. Both stay resumable from the session that launched the child. `resume` reopens the child's own session under the same id and Intercom name. A paused, quit, or interrupted child receives `message` once as its next prompt and then continues where it left off; a completed or failed child receives `message` as one fresh prompt. Without `message`, every resumable child, including a completed or failed one, is asked to continue where it left off. Children cancelled for good (owner or batch cancellation, or the removed `kill` action) and children reported gone after a restart cannot be resumed: `resume` returns an error that says why, and follow-up work requires a fresh launch with explicit context. A parallel child waiting for a reply is not terminal and continues in its original execution. Parent cancellation of a still-running child uses the interrupted/abort state: receipts and progress present it as cancelled rather than failed, persisted metadata keeps the abort cause, and bounded partial findings remain available. Migrate old subagent calls from `action: "kill"` or `action: "interrupt"` to `action: "quit"`; the old actions are rejected with `The subagent action "kill" was removed. Use { action: "quit", id } to stop a child gracefully; it stays resumable with { action: "resume", id, message? }.` (naming the action that was used). Host interrupt APIs are unchanged.
 
 ## Worktree isolation
 
@@ -581,7 +572,6 @@ Parallel agents can clobber each other if they edit the same checkout. `worktree
   { agent: "worker", task: "Implement auth", count: 2 },
   { agent: "worker", task: "Implement API" }
 ], worktree: true }
-
 
 Requirements:
 
@@ -630,13 +620,13 @@ Running capacity is selected when a parent's first child is created. Restart Ato
 { "resumeInFlight": "ask" }
 ```
 
-Recovery of paused and quit subagents that are awaiting resume when a session starts or is resumed, using the same values as the workflow setting of that name:
+Recovery of paused and quit subagents that are awaiting resume when a session starts or is resumed:
 
 - `never` (default): leave them listed under "Awaiting resume" for a manual `resume`.
 - `ask`: confirm once, listing each subagent by name and id. No leaves them awaiting resume; without a UI it behaves like `never`.
 - `auto`: resume each from its own session. Its result reaches the session that launched it.
 
-Starting Atomic and resuming a session recover children; a reload, new session, or fork does not. Only children launched by the session being started or resumed are affected; workflow-stage children are never resumed this way. Any other value is reported and treated as `never`.
+Starting Atomic and resuming a session recover children; a reload, new session, or fork does not. Only children launched by the session being started or resumed are affected. Any other value is reported and treated as `never`.
 
 ### `defaultSessionDir`
 
@@ -689,7 +679,6 @@ stdin is a JSON object with `repoRoot`, `worktreePath`, `agentCwd`, `branch`, `i
 
 ## Files, logs, and observability
 
-
 Debug artifacts live under `{sessionDir}/subagent-artifacts/` or a user-scoped temp artifact directory. Per task you may see:
 
 - `{runId}_{agent}_input.md`
@@ -701,7 +690,7 @@ Metadata records timing, usage, typed status, termination cause, final model, at
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
 
-Owner-bound completions notify the originating session while its admission boundary remains open. Closing a workflow stage cancels its running children and suppresses late completion delivery; unrelated stages remain live. Visible completions use an unshaded notice line with a status glyph and the agent's task title, followed by the first line of its retained result or error. Ctrl+O expands the full retained result, up to 8,000 characters, and `/tasks` opens retained inspection. Completion notices keep model and reasoning metadata in their saved details without displaying a model line. Receipt identities persist in session history for retry without duplicate delivery or execution. Integrations without a task owner retain their existing result and Intercom paths.
+Owner-bound completions notify the originating session while its admission boundary remains open. Visible completions use an unshaded notice line with a status glyph and the agent's task title, followed by the first line of its retained result or error. Ctrl+O expands the full retained result, up to 8,000 characters, and `/tasks` opens retained inspection. Completion notices keep model and reasoning metadata in their saved details without displaying a model line. Receipt identities persist in session history for retry without duplicate delivery or execution. Integrations without a task owner retain their existing result and Intercom paths.
 
 Subagent runs persist their session and user-facing artifacts beside the parent session:
 
@@ -736,7 +725,6 @@ File-based tracking and returned telemetry are separate. On a single-agent call,
 
 Press `CTRL+O` to expand the full streaming view with complete output per step.
 
-
 ## Session sharing
 
 Pass `share: true` to export a full session to HTML, upload it to a secret GitHub Gist through your `gh` credentials, and return a `https://shittycodingagent.ai/session/?<gistId>` URL.
@@ -749,7 +737,7 @@ This is disabled by default. Session data may contain source code, paths, enviro
 
 ## Delegation boundary
 
-Delegation is exactly one level deep, and nothing configures it. A top-level session, main chat or a workflow stage, may call `subagent`. A session that was itself admitted as a subagent child may not: every launch and run control (`pause`, `resume`, `quit`) it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, `status`, and `wait` stay available to a child. Child sessions retain bundled workflow definitions as resources but do not load the workflows extension or expose its `workflow` tool; orchestration stays owned by the parent session.
+Delegation is exactly one level deep, and nothing configures it. A top-level session may call `subagent`. A session that was itself admitted as a subagent child may not: every launch and run control (`pause`, `resume`, `quit`) it attempts is refused with guidance to complete its assigned task directly. The observing actions `list`, `get`, `status`, and `wait` stay available to a child. Orchestration stays with the parent session.
 
 There is no configuration option, agent frontmatter field, or tool parameter for the delegation level. The rule is enforced twice: the subagent executor refuses a child before any run starts, and the Rust `SubagentControl` admission door refuses a child deeper than the single permitted level. Admitted depth is typed admission state and is not inherited through an environment variable.
 
@@ -780,7 +768,6 @@ try {
 ```
 
 The hook rejects only when Atomic drops a bridge emit because the captured extension runtime is stale. Continue listening for `prompt-template:subagent:response` for normal completion. This opt-in is needed because the external emitter and the reloaded bridge do not share the same runtime lifetime; Atomic cannot register it on the caller's behalf.
-
 
 Example:
 

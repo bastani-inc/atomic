@@ -70,7 +70,6 @@ String bindings containing U+0000 are rejected before SQL executes with `Storage
 | --- | --- | --- |
 | One machine, one person | **Local SQLite** (the default) | Nothing to set up. Runs never wait for each other, because the [journal store](#the-workflow-journal-store) gives each root its own shard |
 | Sessions, workflow runs and Intercom shared across machines in a cloud deployment, or a team that already runs managed PostgreSQL | **[PostgreSQL](#postgresql)** | Many machines write at the same time. Managed services on Azure, AWS, Google Cloud, Neon or Supabase add high availability, backups and cloud identities |
-| [Worker fleets](/guides/worker-hosts): roots with shared placement and their worker hosts | **[libSQL / Turso](#turso-and-libsql)** or **[PostgreSQL](#postgresql)** | Both hold the pool's queue, leases and admission. libSQL is one URL and a token; self-hosted sqld needs `--checkpoint-interval-s 60`. PostgreSQL also lets hosts claim and record checkpoints in parallel instead of taking turns, so it suits larger fleets |
 | A few machines, a small team, CI caches | **libSQL / Turso** | Lightweight: one URL and a token. One writer at a time, so it suits a handful of machines writing at once |
 | Data that must stay on one machine | **Local SQLite** | Nothing leaves the machine |
 
@@ -88,7 +87,6 @@ In this release:
 - **Workflow runs**: starting, running and resuming them, and the resumable runs in `/resume`, from any machine that selects the database.
 - **Intercom's multi-node routing**: sessions on different machines that select the same database message each other.
 - **Moving data in and out**: `atomic storage export` and `atomic storage import` with a PostgreSQL database, for sessions and workflow runs.
-- **Worker pools**: roots with shared placement and their worker hosts, with `atomic worker start`, `status`, `metrics` and `controller --db postgres://â€¦`. The pool's queue, leases, resource admission, pooled-stage transcripts and fleet controller live in the database. See [Running workers on many machines](/guides/worker-hosts).
 - **Setup and checks**: `atomic storage join`, `atomic storage status`, password files, rotated token files, cloud identities, TLS and connection poolers, as described below.
 
 On PostgreSQL, worker hosts claim children, send heartbeats, record checkpoints and complete children in parallel: each of these writes locks only the rows it changes, so hosts do not take turns as they do on libSQL. A root's checkpoints still get their place in its history one at a time, so one root's commits do not speed up beyond that. The pool's other writes, such as queueing work and admission, take turns across every machine that shares the database, whatever its prefix, as on libSQL. Hosts waiting for a claim are woken as soon as work is queued; see [Wake-ups](#wake-ups).
@@ -190,7 +188,7 @@ You can write this block by hand as well. `secrets.password` takes `{ "file": â€
 | `schema` | `"atomic"` | The schema Atomic's tables live in: a lowercase name of letters, digits and `_`. Atomic creates it when the role may |
 | `proxy` | from the environment | An `http://` or `https://` proxy every connection tunnels through, or `"none"` to connect directly. See [Through an HTTP proxy](#through-an-http-proxy) |
 
-`atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. To run worker hosts and a fleet controller on a managed service, follow [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres). SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
+`atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
 
 ### TLS
 
@@ -218,7 +216,7 @@ When the proxy refuses the tunnel, the store fails to open with `StorageUnavaila
 
 ### Connection poolers
 
-Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets many machines share a small number of server connections. Use transaction or session mode, not statement mode. For a worker fleet's connection count and pooler settings, see [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres#connection-poolers).
+Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets many machines share a small number of server connections. Use transaction or session mode, not statement mode.
 
 Atomic sets nothing on a server connection outside a transaction: the schema (`SET LOCAL search_path`), the statement and lock timeouts and the advisory locks it takes all end with the transaction, so a transaction-mode pooler can hand the connection to anyone next. A transaction-mode pooler does not pass on [wake-ups](#wake-ups). To keep them, set `listenUrl` to the server's direct endpoint, such as port 5432 instead of 6432 on Azure, or Neon's host name without `-pooler`. Everything else still goes through the pooler.
 
@@ -297,7 +295,7 @@ A cloud identity is a role like any other: make it the runtime role with the gra
 
 ## Turso and libSQL
 
-`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store, one URL and a token, and holds [worker fleets](/guides/worker-hosts) as PostgreSQL does. See [Which store to choose](#which-store-to-choose). Install it once per machine, in user scope so Atomic can find it:
+`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store, one URL and a token. See [Which store to choose](#which-store-to-choose). Install it once per machine, in user scope so Atomic can find it:
 
 ```bash
 atomic install npm:@bastani/atomic-storage-libsql

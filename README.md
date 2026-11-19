@@ -854,10 +854,6 @@ Research commonly lives in `research/`, specs in `specs/`, and workflow run data
 
 ---
 
-## Workflow playbook
-
-Read the [Workflow Playbook](./docs/workflow-playbook.md) for practical guidance on writing objectives, constraining scope, steering long-running work, validating results, and producing engineering handoffs.
-
 ## Support & ideas
 
 Join the [Atomic Discord community](https://discord.gg/9CvdXUGXR4) for questions, help, feedback, feature ideas, and examples of what you have built.

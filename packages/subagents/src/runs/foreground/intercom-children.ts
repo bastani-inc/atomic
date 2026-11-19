@@ -1,7 +1,6 @@
 import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
 import {
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 	subagentChildRecordsAppended,
 } from "./subagent-child-records.js";
@@ -29,7 +28,6 @@ export interface SubagentListIntercomChildrenRequest {
 const ADDRESSABLE_STOPPED_STATUSES: ReadonlySet<string | undefined> = new Set([
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	"paused",
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 ]);
 
 function addressable(record: SubagentChildRecord): boolean {

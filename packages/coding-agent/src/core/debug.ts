@@ -6,15 +6,12 @@ import { DebugLogUnwritableError } from "./debug-errors.ts";
 import { isDebugSettingOn } from "./debug-setting.ts";
 import { DiagnosticWriter } from "./diagnostic-writer.ts";
 
-/** A diagnostic area. Each is on in debug mode, or while its own environment variable is set. */
-export type DebugArea = "workflow" | "decision" | "pooled-watch" | "pool" | "storage" | "engine";
+/** Diagnostic areas written to the debug log when debug mode is on. */
+export type DebugArea = "decision" | "storage" | "engine";
 
-/** Each area's own environment variable; `decision`, `pool`, `storage` and `engine` have none. */
+/** No remaining area has a separate environment switch. */
 export const DEBUG_AREA_VARIABLES: Readonly<Record<DebugArea, string | undefined>> = {
-	workflow: "ATOMIC_WORKFLOW_DEBUG",
 	decision: undefined,
-	"pooled-watch": "ATOMIC_DEBUG_POOLED_WATCH",
-	pool: undefined,
 	storage: undefined,
 	engine: undefined,
 };
@@ -26,28 +23,12 @@ const MAX_DEBUG_TEXT_LENGTH = 2_000;
 
 let debugLogFailure: DebugLogUnwritableError | undefined;
 
-/** The value of `area`'s own variable while it turns the area on, such as a trace file path. */
-function areaVariableValue(area: DebugArea, env: NodeJS.ProcessEnv): string | undefined {
-	const name = DEBUG_AREA_VARIABLES[area];
-	if (name === undefined) return undefined;
-	const value = env[name];
-	if (area === "pooled-watch") return value === "" || value === "0" ? undefined : value;
-	return value === "1" ? value : undefined;
-}
-
-function isDebugModeOn(env: NodeJS.ProcessEnv): boolean {
+/** Whether debug mode is on through settings, `--debug`, or `ATOMIC_DEBUG=1`. */
+export function isDebugEnabled(_area?: DebugArea, env: NodeJS.ProcessEnv = process.env): boolean {
 	const debug = getEnvNames(ENV_DEBUG)
 		.map((name) => env[name])
 		.find((value) => value !== undefined);
 	return isDebugSettingOn() || debug === "1";
-}
-
-/**
- * Whether debug output is on: everywhere when the `debug` setting, `--debug` or `ATOMIC_DEBUG=1` is on, and for
- * `area` also while its own environment variable is set. Without `area`, only the first three count.
- */
-export function isDebugEnabled(area?: DebugArea, env: NodeJS.ProcessEnv = process.env): boolean {
-	return isDebugModeOn(env) || (area !== undefined && areaVariableValue(area, env) !== undefined);
 }
 
 function safeText(text: string): string {
@@ -109,36 +90,27 @@ function debugLogLine(area: DebugArea, event: string, fields: DebugFields): stri
 	return JSON.stringify({ at: new Date().toISOString(), pid: process.pid, area, event, data: safeFields(fields) });
 }
 
-/**
- * Records one diagnostic event of `area`. In debug mode it is appended to the debug log that `/debug` shows, with
- * credentials redacted. While the area's own variable is set, `ownOutput` also writes it where that variable always
- * has, and receives the variable's value.
- */
+/** In debug mode, append a redacted diagnostic event to the log that `/debug` shows. */
 export function reportDebug(
 	area: DebugArea,
 	event: string,
 	fields: DebugFields,
-	ownOutput?: (variable: string) => void,
+	_ownOutput?: (variable: string) => void,
 	env: NodeJS.ProcessEnv = process.env,
 ): void {
-	if (isDebugModeOn(env)) appendLineSync(getDebugLogPath(), debugLogLine(area, event, fields));
-	const own = areaVariableValue(area, env);
-	if (ownOutput !== undefined && own !== undefined) ownOutput(own);
+	if (isDebugEnabled(area, env)) appendLineSync(getDebugLogPath(), debugLogLine(area, event, fields));
 }
 
 export function reportDebugAsync(
 	area: DebugArea,
 	event: string,
 	fields: DebugFields,
-	ownOutput?: (variable: string) => void,
+	_ownOutput?: (variable: string) => void,
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-	const written = isDebugModeOn(env)
+	return isDebugEnabled(area, env)
 		? appendLine(getDebugLogPath(), debugLogLine(area, event, fields))
 		: Promise.resolve();
-	const own = areaVariableValue(area, env);
-	if (ownOutput !== undefined && own !== undefined) ownOutput(own);
-	return written;
 }
 
 /** The first failure to write a debug log file in this process, if any. Later records are still attempted. */
