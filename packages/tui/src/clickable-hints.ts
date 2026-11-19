@@ -119,17 +119,13 @@ export function hintKeyParts(text: string): HintKeyPart[] {
 	return parseHintKeys(text).parts;
 }
 
-function hintSpace(char: string | undefined): boolean {
-	return char !== undefined && /\s/.test(char);
-}
-
 function hintTokenAt(text: string, start: number): string {
 	if (ARROW_GLYPHS.has(text[start]!)) return text[start]!;
 	let token = "";
 	for (let index = start; index < text.length; index++) {
 		const char = text[index]!;
 		const expectsKey = token.length > 1 && token.endsWith("+") && !token.endsWith("++");
-		if (hintSpace(char) || (ARROW_GLYPHS.has(char) && !expectsKey)) break;
+		if (char === " " || (ARROW_GLYPHS.has(char) && !expectsKey)) break;
 		if (char === "/" && token !== "" && !expectsKey) break;
 		token += char;
 	}
@@ -137,10 +133,6 @@ function hintTokenAt(text: string, start: number): string {
 }
 
 const DIGIT_RANGE = /^[1-9]-[1-9]$/;
-
-function isHintBinding(key: KeyId | undefined, bindings: readonly KeyId[] | undefined, followsKey: boolean): boolean {
-	return key !== undefined && (!bindings || key.length > 1 || bindings.includes(key) || (key === "/" && followsKey));
-}
 
 function parseHintKeys(text: string, bindings?: readonly KeyId[]): { parts: HintKeyPart[]; label: string } {
 	const parts: HintKeyPart[] = [];
@@ -151,25 +143,20 @@ function parseHintKeys(text: string, bindings?: readonly KeyId[]): { parts: Hint
 	let index = 0;
 	while (index < text.length) {
 		const start = index;
-		if (!afterSlash && hintSpace(text[start - 1])) {
+		if (!afterSlash && text[start - 1] === " ") {
 			groupStart = start;
 			groupPart = parts.length;
 		}
 		let token = hintTokenAt(text, index);
 		index += token.length;
 		const end = index;
-		while (hintSpace(text[index])) index++;
+		while (text[index] === " ") index++;
 		if (token !== "" && text[index] === "/") {
 			let next = index + 1;
-			while (hintSpace(text[next])) next++;
+			while (text[next] === " ") next++;
 			// In `esc / enter` this slash separates keys; in `esc /` the final slash is a key itself.
 			const following = index === end ? undefined : hintTokenAt(text, next);
-			if (
-				following === undefined ||
-				DIGIT_RANGE.test(following) ||
-				isHintBinding(hintKeyId(following), bindings, true)
-			)
-				index = next;
+			if (following === undefined || DIGIT_RANGE.test(following) || hintKeyId(following) !== undefined) index = next;
 		}
 		const separator = text.slice(end, index);
 		if (token === "") {
@@ -187,7 +174,7 @@ function parseHintKeys(text: string, bindings?: readonly KeyId[]): { parts: Hint
 			token = token[2]!;
 		}
 		const key = hintKeyId(token);
-		if (bindings && !isHintBinding(key, bindings, parts.length > 0)) {
+		if (bindings && !(key && (key.length > 1 || bindings.includes(key) || (key === "/" && parts.length > 0)))) {
 			return { parts: parts.slice(0, groupPart), label: text.slice(groupStart) };
 		}
 		afterSlash = separator.includes("/");
@@ -224,15 +211,7 @@ export function clickableHintText(text: string, bindings?: readonly KeyId[]): st
 			if (command && (CORE_COMMANDS.has(command) || bundledCommandLookups.get(getKeybindings())?.(command))) {
 				return lead + slashCommandHint(body);
 			}
-			const ratio = /^\d+(?:\s*\/\s*\d+)+(?=\s|$)/.exec(body);
-			if (ratio) {
-				const rest = body.slice(ratio[0].length).trimStart();
-				if (
-					!rest.startsWith("/") ||
-					!isHintBinding(hintKeyId(hintTokenAt(rest.slice(1).trimStart(), 0)), configured, true)
-				)
-					return segment;
-			}
+			if (/^\d+(?:\s*\/\s*\d+)+(?:\s|$)/.test(body)) return segment;
 			const { parts, label } = parseHintKeys(body, configured);
 			return lead + clickableKeysHint(parts, label);
 		})

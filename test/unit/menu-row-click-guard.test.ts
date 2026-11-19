@@ -205,9 +205,10 @@ interface ParsedFile {
 	/** Each imported name, by the local name the file gives it. */
 	readonly imports: ReadonlyMap<string, { readonly source: string; readonly imported: string }>;
 	/** Components that construct their own shared rows. */
-	readonly sharedRows: ReadonlyMap<Shape, readonly string[]>;
-	readonly registrations: ReadonlyMap<Shape, readonly string[]>;
+	readonly sharedRows: ReadonlyMap<Shape, ReadonlySet<string | Node>>;
+	readonly registrations: ReadonlyMap<Shape, ReadonlySet<string | Node>>;
 	readonly dispatchesMouse: ReadonlySet<Shape>;
+	readonly forwardsMouse: ReadonlySet<Shape>;
 	/** What handles a choosing key: a component, or `undefined` for the file's own functions. */
 	readonly choosers: ReadonlySet<Shape | undefined>;
 }
@@ -304,20 +305,46 @@ function calleeName(callee: Node): string | undefined {
 	return undefined;
 }
 
-/** Resolve a member accessed through a local alias, such as `const rows = this.clickableRows`. */
-function receiverMember(receiver: Node, ancestors: TraversalAncestors): string | undefined {
+/** Which field or local construction a call uses, including a named alias or a destructured instance field. */
+function receiverMember(receiver: Node, ancestors: TraversalAncestors, ownField: boolean): string | Node | undefined {
+	let source: Node | null | undefined = receiver;
 	if (receiver.type === "Identifier") {
-		for (let i = ancestors.length - 1; i >= 0; i--) {
+		findBinding: for (let i = ancestors.length - 1; i >= 0; i--) {
 			const scope = ancestors[i]!.node;
 			if (scope.type !== "BlockStatement") continue;
 			for (const statement of scope.body) {
 				if (statement.type !== "VariableDeclaration") continue;
-				const decl = statement.declarations.find((d) => d.id.type === "Identifier" && d.id.name === receiver.name);
-				if (decl) return decl.init?.type === "MemberExpression" ? calleeName(decl.init) : receiver.name;
+				for (const { id, init } of statement.declarations) {
+					if (id.type === "Identifier" && id.name === receiver.name) {
+						source = init;
+						break findBinding;
+					}
+					if (id.type !== "ObjectPattern") continue;
+					for (const prop of id.properties) {
+						if (
+							prop.type === "ObjectProperty" &&
+							prop.value.type === "Identifier" &&
+							prop.value.name === receiver.name
+						)
+							return (!ownField || init?.type === "ThisExpression") && !prop.computed
+								? keyName(prop.key)
+								: undefined;
+					}
+				}
 			}
 		}
 	}
-	return calleeName(receiver);
+	if (source?.type === "NewExpression") return source;
+	if (source?.type !== "MemberExpression" && source?.type !== "OptionalMemberExpression") return undefined;
+	if (ownField && source.object.type !== "ThisExpression") return undefined;
+	return source.computed && source.property.type !== "StringLiteral" ? undefined : keyName(source.property);
+}
+
+/** A local collection is identified by its construction; an instance member can also be filled by a subclass. */
+function recordRowMember(members: Map<Shape, Set<string | Node>>, owner: Shape, member: string | Node): void {
+	const known = members.get(owner);
+	if (known) known.add(member);
+	else members.set(owner, new Set([member]));
 }
 
 /** Whether `node` names a choosing key: its literal, a constant such as `Key.enter`, or a local alias of one. */
@@ -340,9 +367,10 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 	}
 	// Local names given to a choosing key, such as `const KEYBIND_CONFIRM = "tui.select.confirm"`.
 	const aliases = new Set<string>();
-	const sharedRows = new Map<Shape, string[]>();
-	const registrations = new Map<Shape, string[]>();
+	const sharedRows = new Map<Shape, Set<string | Node>>();
+	const registrations = new Map<Shape, Set<string | Node>>();
 	const dispatchesMouse = new Set<Shape>();
+	const forwardsMouse = new Set<Shape>();
 	traverse(program, (node) => {
 		if (node.type === "VariableDeclarator" && node.id.type === "Identifier" && node.init?.type === "StringLiteral") {
 			if (CHOOSE_KEYS.has(node.init.value)) aliases.add(node.id.name);
@@ -390,11 +418,16 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 		) {
 			const name = calleeName(node.callee);
 			const draws = node.type === "NewExpression" && name !== undefined && SHARED_ROWS.has(name);
-			const receiver = node.callee.type === "MemberExpression" ? node.callee.object : undefined;
-			const registers = receiver && (name === "add" || name === "addFrom" || name === "collect");
+			const member =
+				node.callee.type === "MemberExpression" || node.callee.type === "OptionalMemberExpression"
+					? node.callee
+					: undefined;
+			const receiver = member?.object;
+			const method = member?.computed && member.property.type === "StringLiteral" ? member.property.value : name;
+			const registers = receiver && (method === "add" || method === "addFrom" || method === "collect");
+			const directDispatch = name === "handleMouse" || name === "dispatchMouseEvent";
 			const forwardsClick =
-				name === "handleMouse" ||
-				name === "dispatchMouseEvent" ||
+				directDispatch ||
 				(name === "click" && receiver?.type === "Identifier" && receiver.name === "focus") ||
 				(name === "sendEngineCommand" &&
 					node.arguments.some(
@@ -408,7 +441,7 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 									prop.value.value === "engine_custom_click",
 							),
 					)) ||
-				(name === "call" && receiver && receiverMember(receiver, ancestors) === "handleMouse");
+				(name === "call" && receiver && receiverMember(receiver, ancestors, false) === "handleMouse");
 			const dispatches =
 				forwardsClick &&
 				ancestors.some(
@@ -434,17 +467,20 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 			let owner: Shape | undefined;
 			for (let index = ancestors.length - 1; index >= 0 && owner === undefined; index--)
 				owner = shapeOf.get(ancestors[index]!.node);
-			if (dispatches && owner) dispatchesMouse.add(owner);
-			else if (draws && owner) {
-				const member = name === "ClickableRow" ? "<row>" : nameFromAncestors(ancestors, node);
-				sharedRows.set(owner, [...(sharedRows.get(owner) ?? []), member]);
+			if (dispatches && owner) {
+				forwardsMouse.add(owner);
+				if (directDispatch) dispatchesMouse.add(owner);
+			} else if (draws && owner) {
+				const member =
+					ancestors.at(-1)?.node.type === "VariableDeclarator" ? node : nameFromAncestors(ancestors, node);
+				recordRowMember(sharedRows, owner, name === "ClickableRow" ? "<row>" : member);
 			} else if (registers && owner) {
-				const member = receiverMember(receiver, ancestors);
-				if (member) registrations.set(owner, [...(registrations.get(owner) ?? []), member]);
+				const target = receiverMember(receiver, ancestors, true);
+				if (target) recordRowMember(registrations, owner, target);
 			} else if (!draws && !dispatches && !registers) choosers.add(owner);
 		}
 	});
-	return { shapes, imports, sharedRows, registrations, dispatchesMouse, choosers };
+	return { shapes, imports, sharedRows, registrations, dispatchesMouse, forwardsMouse, choosers };
 }
 
 /** The file a relative import of `source` from `file` names, among `known` files. */
@@ -504,26 +540,26 @@ function clickInventory(files: readonly SourceFile[], routes: Readonly<Record<st
 	const handlesMouse = (shape: Shape) => lineage(shape).some((ancestor) => ancestor.members.has("handleMouse"));
 	const forwardsMouse = (shape: Shape) => {
 		const handler = lineage(shape).find((ancestor) => ancestor.members.has("handleMouse"));
-		return handler !== undefined && parsed.get(handler.file)?.dispatchesMouse.has(handler);
+		return handler !== undefined && parsed.get(handler.file)?.forwardsMouse.has(handler);
 	};
-	const drawsSharedRows = (shape: Shape) => {
+	const rowTargets = (shape: Shape) => {
 		const ancestors = lineage(shape);
 		const handler = ancestors.find((ancestor) => ancestor.members.has("handleMouse"));
-		return (
-			handler &&
-			parsed.get(handler.file)?.dispatchesMouse.has(handler) &&
-			ancestors.some((ancestor) =>
-				parsed
-					.get(ancestor.file)
-					?.sharedRows.get(ancestor)
-					?.some(
-						(member) =>
-							member === "<row>" ||
-							ancestors.some((base) => parsed.get(base.file)?.registrations.get(base)?.includes(member)),
-					),
-			)
-		);
+		if (!handler || !parsed.get(handler.file)?.dispatchesMouse.has(handler)) return "none";
+		let ownsRows = false;
+		for (const ancestor of ancestors) {
+			for (const member of parsed.get(ancestor.file)?.sharedRows.get(ancestor) ?? []) {
+				ownsRows = true;
+				if (
+					member === "<row>" ||
+					ancestors.some((base) => parsed.get(base.file)?.registrations.get(base)?.has(member))
+				)
+					return "registered";
+			}
+		}
+		return ownsRows ? "unregistered" : "none";
 	};
+	const drawsSharedRows = (shape: Shape) => rowTargets(shape) === "registered";
 	const shapeNamed = (name: string): Shape | undefined => {
 		const [file, component] = name.split("#");
 		return parsed.get(file ?? "")?.shapes.find((shape) => shape.name === component);
@@ -563,8 +599,10 @@ function clickInventory(files: readonly SourceFile[], routes: Readonly<Record<st
 		}
 		const shape = name.includes("#") ? shapeNamed(name) : undefined;
 		const shapes = name.includes("#") ? [] : (parsed.get(name)?.shapes ?? []);
-		if ((shape !== undefined && drawsSharedRows(shape)) || shapes.some(drawsSharedRows))
-			broken.push(`${name}: draws clickable rows; remove it`);
+		const targets = (shape === undefined ? shapes : [shape]).map(rowTargets);
+		if (targets.includes("registered")) broken.push(`${name}: draws clickable rows; remove it`);
+		else if (targets.includes("unregistered"))
+			broken.push(`${name}: constructs ClickableRows but registers no targets`);
 		if (route.route === "forwards" && !(shape === undefined ? shapes : [shape]).some(forwardsMouse))
 			broken.push(`${name}: forwards no click to ${route.to}`);
 		if (route.route === "drawn-by") {
@@ -714,14 +752,44 @@ test("a list needs to register the rows it paints for a click (#5642)", async ()
 		ui.dock(list);
 		await ui.click("blue");
 		assert.deepEqual(list.chosen, ["blue"]);
-		assert.deepEqual(clickInventory([{ path, text }], {}).missing, []);
-		const unregistered = text.replace("this.rows.add(index, color, color);", "");
-		assert.deepEqual(clickInventory([{ path, text: unregistered }], {}).missing, [
-			`${path}#ColorList: takes clicks, but draws no ClickableRows`,
-		]);
+		for (const registration of [
+			"this.rows.add",
+			"this.rows?.add",
+			'this.rows["add"]',
+			"const { rows: targets } = this; targets.add",
+		]) {
+			const registered = text.replace("this.rows.add", registration);
+			assert.deepEqual(clickInventory([{ path, text: registered }], {}).missing, [], registration);
+		}
+		for (const registration of ["", "const other = { rows: new Set<string>() }; other.rows.add(color);"]) {
+			const unregistered = text.replace("this.rows.add(index, color, color);", registration);
+			assert.deepEqual(clickInventory([{ path, text: unregistered }], {}).missing, [
+				`${path}#ColorList: takes clicks, but draws no ClickableRows`,
+			]);
+		}
 	} finally {
 		ui.tui.stop();
 	}
+});
+
+test("a route entry cannot excuse a list that registers none of its rows (#5642)", () => {
+	const path = "test/fixtures/clickable-color-list.ts";
+	const text = readFileSync(join(repositoryRoot, path), "utf8").replace("this.rows.add(index, color, color);", "");
+	const routes = { [`${path}#ColorList`]: noRows("no selectable rows") };
+	assert.deepEqual(clickInventory([{ path, text }], routes).broken, [
+		`${path}#ColorList: constructs ClickableRows but registers no targets`,
+	]);
+});
+
+test("a list with registered rows still needs to send mouse events to them (#5642)", () => {
+	const path = "test/fixtures/clickable-color-list.ts";
+	const text = readFileSync(join(repositoryRoot, path), "utf8").replace(
+		"return this.rows.handleMouse(event,",
+		"const focus = { click() {} }; return focus.click(event,",
+	);
+	assert.deepEqual(clickInventory([{ path, text }], {}).missing, [
+		`${path}#ColorList: takes clicks, but draws no ClickableRows`,
+	]);
 });
 
 test("a listed wrapper must actually forward clicks, not merely declare a mouse handler (#5642)", () => {

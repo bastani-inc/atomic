@@ -115,8 +115,6 @@ export type InteractiveEngineMessage =
 			type: "engine_custom_open";
 			componentId: string;
 			acceptsClickFocus?: boolean;
-			/** The engine acknowledges a click after its focus handoff. */
-			orderedClicks?: true;
 			overlay: boolean;
 			purpose?: "prompt" | "navigation";
 			deferInlineCustomUiFocus?: boolean;
@@ -143,7 +141,6 @@ export type InteractiveEngineMessage =
 			/** What the component reports it drew on each row, for components that name their rows. */
 			rowKeys?: string[];
 	  }
-	| { type: "engine_custom_click_ready"; componentId: string; clickId: number }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string }
 	| { type: "engine_custom_done"; componentId: string; result?: JsonValue }
@@ -676,7 +673,6 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						componentId: value.componentId,
 						overlay: value.overlay,
 						...(value.acceptsClickFocus === false ? { acceptsClickFocus: false } : {}),
-						...(value.orderedClicks === true ? { orderedClicks: true } : {}),
 						...(value.purpose === "navigation" || value.purpose === "prompt" ? { purpose: value.purpose } : {}),
 						deferInlineCustomUiFocus: value.deferInlineCustomUiFocus === true,
 						handlesCtrlC: value.handlesCtrlC === true,
@@ -737,10 +733,6 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 								}
 							: {}),
 					}
-				: undefined;
-		case "engine_custom_click_ready":
-			return typeof value.componentId === "string" && isCellCount(value.clickId)
-				? { type: value.type, componentId: value.componentId, clickId: value.clickId }
 				: undefined;
 		case "engine_custom_input_result":
 			return typeof value.componentId === "string" &&

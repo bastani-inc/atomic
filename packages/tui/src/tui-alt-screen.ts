@@ -1162,9 +1162,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			: before;
 	}
 
-	/** A host can wait for an immediate row action's focus handoff before routing the next physical key. */
-	protected afterComponentClick(_inputReady: Promise<void> | undefined, _target: Component): void {}
-
 	private applyMouseDispatchResult(
 		event: TuiMouseEvent,
 		result: TuiMouseDispatchResult,
@@ -1199,7 +1196,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	/** Run an action only if its press stays single. */
 	private waitForSingleClick(result: TuiMouseDispatchResult, start: ClickTarget, focus: PointerFocus): void {
-		this.afterComponentClick(result.inputReady, result.target.component);
 		const action = result.whenSingleClick;
 		if (action === undefined) return;
 		if (start.count !== 1 || !this.altScreenActive) {

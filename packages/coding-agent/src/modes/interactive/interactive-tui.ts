@@ -7,7 +7,6 @@ import {
 	TuiAltScreen,
 	type TuiInputListener,
 	TuiMainScreen,
-	type TuiStopOptions,
 	type WheelScrollLines,
 } from "@bastani/atomic-tui";
 import { stripOsc133Marks, stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.js";
@@ -17,8 +16,6 @@ import { openBrowser } from "../../utils/open-browser.ts";
 import { jumpToLatestPill, NewMessageCounter, PINNED_PROMPT } from "./components/jump-to-latest.ts";
 import { keyDisplayText } from "./components/keybinding-hints.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
-import { isPhysicalCtrlC } from "./interactive-key-identity.ts";
-import { isLeftMouseButton, isLeftMouseSequence, parseMouseSequences } from "./mouse-reports.ts";
 import { compositeOverlayLine } from "./overlay-line-composite.ts";
 
 interface TuiOverlayEntry {
@@ -224,6 +221,53 @@ interface ViewportInputSubscription {
 
 const viewportInputSubscriptions = new WeakMap<AtomicTuiAltScreen, ViewportInputSubscription>();
 
+interface ParsedMouseSequence {
+	readonly data: string;
+	readonly button: number;
+	readonly x: number;
+	readonly y: number;
+	readonly isRelease: boolean;
+}
+
+const SGR_MOUSE_SEQUENCE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/;
+const LEFT_MOUSE_MODIFIER_MASK = 4 | 8 | 16;
+
+function parseMouseSequences(data: string): ParsedMouseSequence[] | undefined {
+	if (data.length === 0) return undefined;
+	const sequences: ParsedMouseSequence[] = [];
+	let offset = 0;
+	while (offset < data.length) {
+		const remaining = data.slice(offset);
+		const sgr = SGR_MOUSE_SEQUENCE.exec(remaining);
+		if (sgr) {
+			const sequence = sgr[0]!;
+			sequences.push({
+				data: sequence,
+				button: Number.parseInt(sgr[1]!, 10),
+				x: Number.parseInt(sgr[2]!, 10) - 1,
+				y: Number.parseInt(sgr[3]!, 10) - 1,
+				isRelease: sgr[4] === "m",
+			});
+			offset += sequence.length;
+			continue;
+		}
+		if (remaining.startsWith("\x1b[M") && remaining.length >= 6) {
+			const sequence = remaining.slice(0, 6);
+			sequences.push({
+				data: sequence,
+				button: sequence.charCodeAt(3) - 32,
+				x: sequence.charCodeAt(4) - 33,
+				y: sequence.charCodeAt(5) - 33,
+				isRelease: false,
+			});
+			offset += 6;
+			continue;
+		}
+		return undefined;
+	}
+	return sequences;
+}
+
 /** Whether every report in a mouse chunk is a vertical wheel event. */
 export function isMouseWheelInput(data: string): boolean {
 	const sequences = parseMouseSequences(data);
@@ -235,6 +279,27 @@ export function isMouseWheelInput(data: string): boolean {
 			return (button & 64) !== 0 && (direction === 0 || direction === 1);
 		})
 	);
+}
+
+function isLeftMouseButton(sequence: ParsedMouseSequence): boolean {
+	const { button } = sequence;
+	if ((button & 64) !== 0) return false;
+	const held = button & 3;
+	// A release carries no button identity on the terminals upstream #7963
+	// describes: they report the generic SGR code 3 rather than 0. pi-tui 0.84.2
+	// ends a selection on `release && (button & 3) === 3`
+	// (`dist/tui-alt-screen.js:796`), so a release Atomic drops here leaves the
+	// press it already forwarded open — the selection never closes and the OSC 8
+	// link under the press never activates. Shift, Meta/Option, and Ctrl are
+	// application-bypass gestures on press and motion, but a release can retain
+	// those bits and still has to close a selection.
+	if (sequence.isRelease) return held === 0 || held === 3;
+	return held === 0 && (button & LEFT_MOUSE_MODIFIER_MASK) === 0;
+}
+
+/** Whether a mouse chunk contains a left-button selection gesture. */
+function isLeftMouseSequence(data: string): boolean {
+	return parseMouseSequences(data)?.some((sequence) => isLeftMouseButton(sequence)) ?? false;
 }
 
 /**
@@ -317,107 +382,6 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			this.isFocusedOverlay() ? false : handleScrollToEndIndicator(event);
 
 		(this as unknown as TuiOverlayCompositingInternals).compositeLineAt = compositeOverlayLine;
-	}
-
-	// A pending physical gesture holds its release. A completed click only holds keys: a second press
-	// must still reach the selection code at its actual time, even while the engine is answering the first.
-	private gesturePending?: Promise<void>;
-	private gestureHasRelease = false;
-	private clickPending?: Promise<void>;
-	private readonly heldInput: Array<{ data: string; valid?: () => boolean }> = [];
-	private gestureEpoch = 0;
-	private blockedGestureTimer?: ReturnType<typeof setTimeout>;
-
-	protected override afterComponentClick(ready: Promise<void> | undefined, target: Component): void {
-		// Closing a local pane resolves its custom() call; the replacement mounts in that turn's microtasks.
-		if (!ready && !this.isPointerTargetMounted(target)) ready = new Promise<void>((resolve) => setImmediate(resolve));
-		if (ready) this.waitForPointerInput("clickPending", ready);
-	}
-
-	private waitForPointerInput(kind: "gesturePending" | "clickPending", ready: Promise<void>): void {
-		this[kind] = ready;
-		const finish = () => {
-			if (this[kind] !== ready) return;
-			this[kind] = undefined;
-			if (kind === "gesturePending") {
-				clearTimeout(this.blockedGestureTimer);
-				this.blockedGestureTimer = undefined;
-			}
-			this.drainHeldInput();
-		};
-		void ready.then(finish, finish);
-	}
-
-	private drainHeldInput(): void {
-		while (this.heldInput.length && !this.gesturePending) {
-			const next = this.heldInput[0]!;
-			if (this.clickPending && !this.isPiTuiMouseSequence(next.data)) break;
-			this.heldInput.shift();
-			if (next.valid?.() !== false) super.receiveTerminalInput(next.data);
-		}
-		// A local extension can return a promise that never settles. Only start this bound when input
-		// is actually blocked. Abandon the stale gesture, not the following keys or the normal wheel route.
-		if (this.gesturePending && this.heldInput.length && !this.blockedGestureTimer) {
-			this.blockedGestureTimer = setTimeout(() => {
-				this.blockedGestureTimer = undefined;
-				this.gestureEpoch++;
-				this.gesturePending = undefined;
-				this.drainHeldInput();
-			}, 1000);
-			this.blockedGestureTimer.unref?.();
-		}
-	}
-
-	private resetPointerInput(): void {
-		this.gestureEpoch++;
-		clearTimeout(this.blockedGestureTimer);
-		this.blockedGestureTimer = undefined;
-		this.gesturePending = this.clickPending = undefined;
-		this.heldInput.length = 0;
-	}
-
-	protected override beforeTerminalStop(options: TuiStopOptions): void {
-		this.resetPointerInput();
-		super.beforeTerminalStop(options);
-	}
-
-	protected override receiveTerminalInput(data: string): void {
-		if (this.gesturePending || this.clickPending) {
-			if (data === "\x1b[O" || isPhysicalCtrlC(data)) {
-				const keys = this.heldInput.filter((entry) => !this.isPiTuiMouseSequence(entry.data));
-				this.resetPointerInput();
-				for (const key of keys) super.receiveTerminalInput(key.data);
-				super.receiveTerminalInput(data);
-				return;
-			}
-			const reports = parseMouseSequences(data);
-			// A key typed with the button still down precedes the click; nothing has handed off focus yet.
-			if (
-				!reports &&
-				this.gesturePending &&
-				!this.gestureHasRelease &&
-				!this.clickPending &&
-				!this.heldInput.length
-			) {
-				super.receiveTerminalInput(data);
-				return;
-			}
-			// Wheel reports and terminal notifications keep their normal, immediate route.
-			const bypass =
-				reports?.some(({ button }) => (button & 64) !== 0) || data === "\x1b[I" || data.startsWith("\x1b]");
-			if (!bypass && (this.gesturePending || !reports || this.heldInput.length)) {
-				const presses = reports?.filter((r) => !r.isRelease && (r.button & (32 | 3)) === 0);
-				const guards = presses?.map((r) => this.guardMousePress(r.x, r.y));
-				const focus = guards?.length ? this.getPointerFocus() : undefined;
-				this.heldInput.push({
-					data,
-					...(focus ? { valid: () => this.getPointerFocus() === focus && guards!.every((valid) => valid()) } : {}),
-				});
-				this.drainHeldInput();
-				return;
-			}
-		}
-		super.receiveTerminalInput(data);
 	}
 
 	readonly newMessages = new NewMessageCounter();
@@ -613,7 +577,6 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			}
 			if (gestures.size > 0) {
 				const focus = this.getPointerFocus();
-				const epoch = this.gestureEpoch;
 				const listener = viewportListener;
 				viewportListener = (report) => {
 					if (pendingEnd?.report === report) {
@@ -621,12 +584,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 						pendingEnd = undefined;
 						if (!pending) return undefined;
 					}
-					if (
-						gestures.has(report) &&
-						(this.gestureEpoch !== epoch ||
-							this.getPointerFocus() !== focus ||
-							gestures.get(report)?.() === false)
-					)
+					if (gestures.has(report) && (this.getPointerFocus() !== focus || gestures.get(report)?.() === false))
 						return undefined;
 					return listener(report);
 				};
@@ -640,7 +598,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			) => boolean | undefined | Promise<boolean | undefined>;
 			const result = handleInput.call(focused, data);
 			if (result instanceof Promise) {
-				const settled = result.then(
+				void result.then(
 					(handled) => {
 						if (handled === true) {
 							this.forwardSelectionMouseInput(viewportListener, data, focused);
@@ -653,11 +611,6 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 						finishDrag?.();
 					},
 				);
-				const reports = isMouseInput ? parseMouseSequences(data) : undefined;
-				if (reports?.length && reports.every(isLeftMouseButton)) {
-					this.gestureHasRelease = reports.some((r) => r.isRelease);
-					this.waitForPointerInput("gesturePending", settled);
-				}
 				return { consume: true };
 			}
 			if (result === true) {

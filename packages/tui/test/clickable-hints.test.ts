@@ -179,28 +179,6 @@ describe("a click on a key hint runs its key", () => {
 		}
 	});
 
-	it("uses the following binding to distinguish a slash key from a separator (#5656)", async () => {
-		const { view, click, tui } = await mount([
-			clickableHintText("esc / a destination"),
-			clickableHintText("esc / a destination", ["a"]),
-		]);
-		try {
-			for (const x of [0, 4, 6, 10]) for (const y of [0, 1]) await click(x, y);
-			assert.deepStrictEqual(keysOf(view, "escape", "/", "a"), [
-				"escape",
-				"escape",
-				"/",
-				"escape",
-				"/",
-				"a",
-				"/",
-				"a",
-			]);
-		} finally {
-			tui.stop();
-		}
-	});
-
 	it("a trailing slash in a space-separated key list remains a literal binding (#5528)", async () => {
 		const { view, click, tui } = await mount([
 			clickableKeyTextHint("esc /", " pick"),
@@ -247,34 +225,6 @@ describe("a click on a key hint runs its key", () => {
 		assert.deepStrictEqual(["a/file.txt", "b/file.txt"].map(clickableHintText), ["a/file.txt", "b/file.txt"]);
 		for (const ratio of ["1/10 tasks", "3/5 tasks", "3 / 5 complete"]) {
 			assert.strictEqual(clickableHintText(ratio, ["1", "3", "5", "/"]), ratio);
-		}
-	});
-
-	it("distinguishes a numeric ratio from the start of a mixed shortcut (#5656)", async () => {
-		const { view, click, tui } = await mount([
-			clickableHintText("1/2 / esc pick", ["1", "2"]),
-			clickableHintText("1 / 2", ["1", "2"]),
-		]);
-		try {
-			for (const x of [0, 2, 6, 10]) {
-				await click(x, 0);
-				await click(x % 4, 1); // Separate the clicks on the same word; the ratio has no actions.
-			}
-			assert.deepStrictEqual(keysOf(view, "1", "2", "escape"), ["1", "2", "escape", "escape"]);
-		} finally {
-			tui.stop();
-		}
-	});
-
-	it("recognizes hint labels separated by tab or Unicode whitespace (#5656)", async () => {
-		const { view, click, tui } = await mount(
-			["\t", "\u00a0", "\u2003", "\u202f"].map((space) => clickableHintText(`enter${space}choose`)),
-		);
-		try {
-			for (const x of [0, 10]) for (const y of [0, 1, 2, 3]) await click(x, y);
-			assert.deepStrictEqual(keysOf(view, "enter"), Array(8).fill("enter"));
-		} finally {
-			tui.stop();
 		}
 	});
 

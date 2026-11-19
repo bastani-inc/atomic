@@ -298,27 +298,6 @@ describe("pi-tui 0.84.2 overlay viewport deferral", () => {
 		}
 	});
 
-	test("a wheel report keeps its route while a button press awaits a navigation pane (#5644)", () => {
-		const fixture = createFixture({ mountOverlay: false });
-		const press = "\x1b[<0;2;40M";
-		const pending = Promise.withResolvers<boolean>();
-		try {
-			mountFocusedOverlay(fixture, {
-				render: () => ["pane"],
-				invalidate() {},
-				handleInput: (data: string) => (data === press ? pending.promise : false),
-			});
-			const { top } = anchorAtEnd(fixture);
-			fixture.terminal.input(press);
-			fixture.terminal.input(WHEEL_UP);
-			fixture.tui.renderNow();
-			expect(fixture.transcript.scrollTop).toBe(top - 1);
-		} finally {
-			fixture.stop();
-			pending.resolve(false);
-		}
-	});
-
 	test("a focused overlay that consumes PAGE_UP leaves the transcript alone", () => {
 		const fixture = createFixture({ consumes: true });
 		try {

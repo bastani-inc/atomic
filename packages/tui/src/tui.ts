@@ -76,8 +76,6 @@ export interface TuiMouseEventResult {
 	 * second press there makes the click part of a double- or triple-click, which selects text, and cancels it.
 	 */
 	whenSingleClick?: () => void;
-	/** Resolves once an immediate click's keyboard-focus changes have reached this host. */
-	inputReady?: Promise<void>;
 	/** Release anything reserved for `whenSingleClick` if the renderer cancels it instead. */
 	onSingleClickCancel?: () => void;
 }
@@ -849,7 +847,6 @@ export abstract class TuiBase extends Container implements TUI {
 					this.clearOverlayFocusRestoreFor(entry);
 					this.retargetOverlayPreFocus(entry);
 					this.overlayStack.splice(index, 1);
-					if (this.pointerFocus.owner === component) this.getPointerFocus();
 					// Restore focus if this overlay had focus
 					if (this.focusedComponent === component) {
 						const topVisible = this.getTopmostVisibleOverlay();
@@ -864,8 +861,6 @@ export abstract class TuiBase extends Container implements TUI {
 				entry.hidden = hidden;
 				// Update focus when hiding/showing
 				if (hidden) {
-					// A focused child can keep keyboard focus. Record the lost modal owner even without a paint.
-					if (this.pointerFocus.owner === component) this.getPointerFocus();
 					this.clearOverlayFocusRestoreFor(entry);
 					// If this overlay had focus, move focus to next visible or preFocus
 					if (this.focusedComponent === component) {
@@ -934,7 +929,6 @@ export abstract class TuiBase extends Container implements TUI {
 		this.clearOverlayFocusRestoreFor(overlay);
 		this.retargetOverlayPreFocus(overlay);
 		this.overlayStack.pop();
-		if (this.pointerFocus.owner === overlay.component) this.getPointerFocus();
 		if (this.focusedComponent === overlay.component) {
 			// Find topmost visible overlay, or fall back to preFocus
 			const topVisible = this.getTopmostVisibleOverlay();
@@ -1085,7 +1079,7 @@ export abstract class TuiBase extends Container implements TUI {
 		process.on("exit", this.exitRestoreHandler);
 		this.beforeTerminalStart();
 		this.terminal.start(
-			(data) => this.receiveTerminalInput(data),
+			(data) => this.handleTerminalInput(data),
 			() => this.requestRender(),
 		);
 		this.afterTerminalStart();
@@ -1247,11 +1241,6 @@ export abstract class TuiBase extends Container implements TUI {
 				this.scheduleRender();
 			}
 		}, delay);
-	}
-
-	/** Receives a physical terminal report, before input listeners or keyboard focus are consulted. */
-	protected receiveTerminalInput(data: string): void {
-		this.handleTerminalInput(data);
 	}
 
 	private handleTerminalInput(data: string): void {

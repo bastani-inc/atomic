@@ -356,31 +356,6 @@ describe("a single click's action waits until it cannot become a double-click", 
 		}
 	});
 
-	for (const released of [false, true]) {
-		it(`hiding and showing a dialog with a focused child cancels its ${released ? "offered click" : "press"} before repaint (#5643)`, async (t) => {
-			const { terminal, tui, acted, canceled, clicks, row } = settleFixture();
-			const dialog = new Container();
-			const child = row("choice");
-			dialog.addChild(child);
-			const handle = tui.showOverlay(dialog, { anchor: "top-left", width: 20 });
-			tui.setFocus(child);
-			tui.start();
-			t.after(() => tui.stop());
-			await terminal.waitForRender();
-			assert.strictEqual(tui.getFocusedComponent(), child);
-			mockClickClock(t);
-			terminal.sendInput(press(1, 0));
-			if (released) terminal.sendInput(release(1, 0));
-			handle.setHidden(true);
-			handle.setHidden(false);
-			if (!released) terminal.sendInput(release(1, 0));
-			t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
-			assert.deepStrictEqual(clicks, released ? ["choice"] : []);
-			assert.deepStrictEqual(acted, []);
-			assert.deepStrictEqual(canceled, released ? ["choice"] : []);
-		});
-	}
-
 	it("never runs when a dialog takes focus before the click settles", async () => {
 		const { terminal, tui, acted, clicks, click } = settleFixture();
 		tui.start();

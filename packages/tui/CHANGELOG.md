@@ -18,8 +18,6 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 - Holding the second press of a double-click no longer runs single-click actions on components that take their own presses. A system clock adjustment does not delay a pending single click. A wheel turn, drag or loss of terminal focus breaks the click sequence. A single click that clears a text selection still acts on the item, and clicking two different items painted at the same cell runs both single-click actions ([#5562](https://github.com/bastani-inc/atomic/issues/5562)).
 - If a picker refresh replaces the row just clicked, clicking the replacement starts a new click instead of selecting the word as a double-click.
-- Hiding and showing a dialog cancels its pending click even if a child has keyboard focus and the screen has not repainted ([#5643](https://github.com/bastani-inc/atomic/issues/5643)).
-- Whole-line key hints distinguish a literal slash from a separator using the configured bindings. Mixed shortcuts such as `1/2 / esc` work without turning numeric ratios into shortcuts; tabs and Unicode spaces can separate keys from labels ([#5656](https://github.com/bastani-inc/atomic/issues/5656)).
 
 ## [0.9.89] - 2026-11-18
 
