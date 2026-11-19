@@ -1,4 +1,5 @@
 import { pathExists } from "../../shared/path-exists.js";
+import { type IntercomEventBus, SUBAGENT_FINISHING_EVENT } from "../../shared/types.js";
 import { ensureNamedWorktree, type NamedWorktree, type NamedWorktreeOptions } from "../shared/named-worktree.js";
 import {
 	cleanupWorktrees,
@@ -10,6 +11,7 @@ import {
 	type WorktreeInfo,
 	type WorktreeSetup,
 	type WorktreeSetupHookConfig,
+	withFinishingWorktree,
 	worktreeHasUnsavedWork,
 } from "../shared/worktree.js";
 
@@ -30,6 +32,8 @@ export interface SubagentChildWorktree {
 export interface RunWorktreeDiffs {
 	readonly diffsDir: string;
 	readonly agents: readonly string[];
+	/** The SDK batch reply uses the sweep's diffs, not another git command after its children have settled. */
+	readonly onCaptured?: (diffs: Awaited<ReturnType<typeof diffWorktrees>>) => void;
 }
 
 interface RunWorktrees {
@@ -37,24 +41,60 @@ interface RunWorktrees {
 	readonly setup: WorktreeSetup;
 	/** One hold per execution (a dispatch, or a resume being prepared); a released hold never affects another. */
 	readonly holds: Set<symbol>;
+	/** Initial launches not yet handed to their execution. Protects slow and queued siblings. */
+	readonly launching: Set<number>;
+	readonly finishing: Map<number, Promise<void>>;
+	/** The execution is done with its session and output; only the batch's Git work can hold up publication. */
+	readonly beforeSweep: Map<
+		number,
+		{ taskId: () => string | undefined; ready: Promise<string | undefined>; signal: AbortSignal; status?: string }
+	>;
 	/** Children stopped resumably (paused, quit, owner closed, stage paused): their worktree is kept while it has unsaved work. */
 	readonly stopped: Set<number>;
 	readonly removed: Set<number>;
 	/** The run returned: nothing more is launched by it, so worktrees go once no execution holds them. */
 	returned: boolean;
-	sweeping: Promise<void>;
+	sweeping?: Promise<void>;
 	sweepNote?: string;
 	/** Edits are saved as a patch before a worktree is removed, also for a run tracked again after a restart. */
 	readonly diffs?: {
 		readonly diffsDir: string;
 		readonly agents: string[];
+		onCaptured?: RunWorktreeDiffs["onCaptured"];
 		/** Where a resumed child saves its edits, past the patches its earlier executions saved. */
 		readonly patchPaths: Map<number, string>;
 	};
 }
 
 /** Runs whose worktrees still exist in this process, by run id. */
-const runs = new Map<string, RunWorktrees>();
+const registryKey = Symbol.for("@bastani/subagents/managed-worktree-publication@1");
+const processRegistry = globalThis as { [registryKey]?: { runs: Map<string, RunWorktrees>; revision: number } };
+processRegistry[registryKey] ??= { runs: new Map(), revision: 0 };
+const registry = processRegistry[registryKey];
+const { runs } = registry;
+
+/** A cached child view expires when its original durable record becomes visible. */
+export const worktreePublicationRevision = () => registry.revision;
+
+interface WorktreeMember {
+	runId: string;
+	index: number;
+	taskId?: string;
+}
+
+export function finishingWorktreeStatus(record: WorktreeMember): string | undefined {
+	const execution = runs.get(record.runId)?.beforeSweep.get(record.index);
+	return execution && execution.taskId() === record.taskId ? execution.status : undefined;
+}
+
+/** Keep main's crash-recovery record unchanged, without displaying it as terminal during cleanup. */
+export function visibleWorktreeRecord<
+	T extends WorktreeMember & { state: "running" | "terminal"; terminalStatus?: string },
+>(record: T): T {
+	if (record.state !== "terminal" || !finishingWorktreeStatus(record)) return record;
+	const { terminalStatus: _terminal, ...rest } = record;
+	return { ...rest, state: "running" } as T;
+}
 
 /** The named worktree of each child of a run still in progress, by run id and child index (#5202). */
 const namedWorktrees = new Map<string, Map<number, SubagentChildWorktree>>();
@@ -92,7 +132,7 @@ export function registerNamedRunWorktrees(
  * the check of the child whose resume failed (`failedResume`): a stalled one is stopped and its worktree kept.
  */
 async function sweepIdle(run: RunWorktrees, failedResume?: number): Promise<void> {
-	if (!run.returned || run.holds.size > 0) return;
+	if (!run.returned || run.holds.size || run.launching.size) return;
 	run.sweepNote = undefined;
 	const onStall = () => {
 		run.sweepNote = "Worktree cleanup timed out. Check the worktree before removing it.";
@@ -107,14 +147,16 @@ async function sweepIdle(run: RunWorktrees, failedResume?: number): Promise<void
 			continue;
 		removing.push(worktree);
 	}
-	if (!run.returned || run.holds.size > 0) return;
-	if (removing.length > 0) {
+	if (run.holds.size || run.launching.size) return;
+	if (removing.length || run.diffs?.onCaptured) {
 		const subset: WorktreeSetup = { ...run.setup, worktrees: removing };
 		const uncaptured = new Set<number>();
 		try {
 			if (run.diffs) {
-				for (const diff of await diffWorktrees(subset, run.diffs.agents, run.diffs.diffsDir, run.diffs.patchPaths))
-					if (diff.captureError !== undefined) uncaptured.add(diff.index);
+				const captured = await diffWorktrees(subset, run.diffs.agents, run.diffs.diffsDir, run.diffs.patchPaths);
+				run.diffs.onCaptured?.(captured);
+				run.diffs.onCaptured = undefined;
+				for (const diff of captured) if (diff.captureError !== undefined) uncaptured.add(diff.index);
 			}
 		} finally {
 			// cleanupWorktrees keeps a worktree whose capture failed.
@@ -131,10 +173,15 @@ async function sweepIdle(run: RunWorktrees, failedResume?: number): Promise<void
 }
 
 function sweep(run: RunWorktrees, failedResume?: number): Promise<void> {
-	const next = run.sweeping.then(() => sweepIdle(run, failedResume));
-	run.sweeping = next.catch(() => {
-		run.sweepNote = "Worktree cleanup failed. Check the worktree before removing it.";
-	});
+	const next = (run.sweeping ?? Promise.resolve()).then(() => sweepIdle(run, failedResume));
+	const observed = next
+		.catch(() => {
+			run.sweepNote = "Worktree cleanup failed. Check the worktree before removing it.";
+		})
+		.finally(() => {
+			if (run.sweeping === observed) run.sweeping = undefined;
+		});
+	run.sweeping = observed;
 	return next;
 }
 
@@ -143,7 +190,7 @@ function hold(run: RunWorktrees): (failedResume?: number) => Promise<void> {
 	run.holds.add(token);
 	return (failedResume) => {
 		if (run.holds.delete(token)) return sweep(run, failedResume);
-		return run.sweeping;
+		return run.sweeping ?? Promise.resolve();
 	};
 }
 function track(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs): RunWorktrees {
@@ -151,11 +198,13 @@ function track(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs): R
 		runId,
 		setup: { ...setup, worktrees: [...setup.worktrees] },
 		holds: new Set(),
+		launching: new Set(),
+		finishing: new Map(),
+		beforeSweep: new Map(),
 		stopped: new Set(),
 		removed: new Set(),
 		returned: false,
-		sweeping: Promise.resolve(),
-		...(diffs ? { diffs: { diffsDir: diffs.diffsDir, agents: [...diffs.agents], patchPaths: new Map() } } : {}),
+		...(diffs ? { diffs: { ...diffs, agents: [...diffs.agents], patchPaths: new Map() } } : {}),
 	};
 	runs.set(runId, run);
 	return run;
@@ -165,14 +214,19 @@ function track(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs): R
  * Track a parallel run's worktrees. `release` marks the run returned; with `diffs`, each worktree's edits are saved as
  * a patch before it is removed.
  */
-export function registerRunWorktrees(
-	runId: string,
-	setup: WorktreeSetup,
-	diffs?: RunWorktreeDiffs,
-): { readonly release: () => Promise<void> } {
+export function registerRunWorktrees(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs) {
 	const run = track(runId, setup, diffs);
 	return {
+		/** Transfer batch ownership before observing any child, including a foreground wait on its result. */
+		beginLaunches() {
+			for (const tree of setup.worktrees) run.launching.add(tree.index);
+			run.returned = true;
+		},
+		abandonLaunch(index: number) {
+			return run.launching.delete(index) ? sweep(run) : undefined;
+		},
 		release() {
+			if (run.returned) return Promise.resolve();
 			run.returned = true;
 			return sweep(run);
 		},
@@ -180,47 +234,149 @@ export function registerRunWorktrees(
 }
 
 const noHold = (): Promise<void> => Promise.resolve();
-export const WORKTREE_REPLY_WAIT_MS = 10_000;
-
-/** Observe work caused by this action and any sweep already queued by a sibling. Never wait for a future release. */
-export async function boundedWorktreeReply(
-	runId: string,
-	work: Promise<void> = Promise.resolve(),
-	deadline = Date.now() + WORKTREE_REPLY_WAIT_MS,
-): Promise<string | undefined> {
-	const run = runs.get(runId);
-	if (!run) return undefined;
-	const finished = async () => {
-		await work.catch(() => {});
-		let observed: Promise<void>;
-		do {
-			observed = run.sweeping;
-			await observed;
-		} while (observed !== run.sweeping);
-		return run.holds.size ? "Worktree kept until the other children in this batch finish." : run.sweepNote;
-	};
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		return await Promise.race([
-			finished(),
-			new Promise<string>((resolve) => {
-				timer = setTimeout(
-					() => resolve("Worktree cleanup continues in the background; wait before removing the worktree."),
-					Math.max(0, deadline - Date.now()),
-				);
-				timer.unref?.();
-			}),
-		]);
-	} finally {
-		clearTimeout(timer);
-	}
-}
 
 /** Hold the run's worktrees for one execution of a child; the returned release ends only this hold. */
 export function holdRunWorktree(runId: string, index: number): () => Promise<void> {
 	const run = runs.get(runId);
 	if (!run?.setup.worktrees.some((worktree) => worktree.index === index)) return noHold;
 	return hold(run);
+}
+
+export const CLEANUP_IN_BACKGROUND = "Worktree cleanup continues in the background; wait before removing the worktree.";
+const BATCH_KEPT = "Worktree kept until the other children in this batch finish.";
+export const WORKTREE_REPLY_WAIT_MS = 10_000;
+
+function idleWorktreeNote(run: RunWorktrees): string | undefined {
+	return run.holds.size || run.launching.size ? BATCH_KEPT : run.sweepNote;
+}
+
+/** Sample a child's current sweep or hold for a reply or card without starting or waiting for work. */
+export function currentChildWorktreeNote(runId: string, index: number): string | undefined {
+	const run = runs.get(runId);
+	if (!run || run.removed.has(index) || !run.setup.worktrees.some((tree) => tree.index === index)) return undefined;
+	return run.finishing.has(index) || run.sweeping ? CLEANUP_IN_BACKGROUND : idleWorktreeNote(run);
+}
+
+/** Bound the observation, not the cleanup: it must still release its hold and save the child's changes. */
+export async function boundedWorktreeReply(
+	runId: string,
+	work: Promise<void> = Promise.resolve(),
+	deadline = Date.now() + WORKTREE_REPLY_WAIT_MS,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	const run = runs.get(runId);
+	if (!run) return undefined;
+	const finished = async () => {
+		await work.catch(() => {});
+		while (run.sweeping) await run.sweeping;
+		return idleWorktreeNote(run);
+	};
+	const interrupted = Promise.withResolvers<string>();
+	const endWait = () => interrupted.resolve(CLEANUP_IN_BACKGROUND);
+	const timer = setTimeout(endWait, Math.max(0, deadline - Date.now()));
+	timer.unref?.();
+	if (signal?.aborted) endWait();
+	else signal?.addEventListener("abort", endWait, { once: true });
+	try {
+		return await Promise.race([finished(), interrupted.promise]);
+	} finally {
+		clearTimeout(timer);
+		signal?.removeEventListener("abort", endWait);
+	}
+}
+
+export async function observeChildWorktreeAtReply(
+	runId: string,
+	index: number,
+	deadline?: number,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	const run = runs.get(runId);
+	if (!run || run.removed.has(index) || !run.setup.worktrees.some((tree) => tree.index === index)) return undefined;
+	await boundedWorktreeReply(runId, run.finishing.get(index), deadline, signal);
+	// The sweep may have removed this child's worktree while a sibling kept the run registered.
+	return currentChildWorktreeNote(runId, index);
+}
+
+/** Arm only an observer's deadline, and only from finishing, not from task admission. */
+export function worktreeWaitDeadline(record: WorktreeMember) {
+	const execution = runs.get(record.runId)?.beforeSweep.get(record.index);
+	if (!execution || execution.taskId() !== record.taskId) return undefined;
+	const deadline = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const arm = () => {
+		timer = setTimeout(() => deadline.abort(), WORKTREE_REPLY_WAIT_MS);
+		timer.unref?.();
+	};
+	if (execution.signal.aborted) arm();
+	else execution.signal.addEventListener("abort", arm, { once: true });
+	return {
+		signal: deadline.signal,
+		dispose() {
+			clearTimeout(timer);
+			execution.signal.removeEventListener("abort", arm);
+		},
+	};
+}
+
+/** Directory work alone, independent of observer deadlines. */
+export function pendingChildWorktreeRelease(record: WorktreeMember) {
+	return finishingWorktreeStatus(record) ? runs.get(record.runId)?.finishing.get(record.index) : undefined;
+}
+
+/** Stop-all may visit the next target during Git, but not during the preceding child's native stop. */
+export function childWorktreeFinishing(record: { runId: string; index: number; taskId?: string }) {
+	const execution = runs.get(record.runId)?.beforeSweep.get(record.index);
+	return execution && execution.taskId() === record.taskId ? execution.ready : undefined;
+}
+
+/** The execution's hold ends after session cleanup, even when the reply's deadline expires first. */
+export function beginWorktreeExecution(
+	runId: string,
+	index: number,
+	cwd: string,
+	taskId: () => string | undefined,
+	events: IntercomEventBus | undefined,
+) {
+	const run = runs.get(runId);
+	if (!run?.setup.worktrees.some((tree) => tree.index === index)) return undefined;
+	run.launching.delete(index);
+	const held = hold(run);
+	// An ordinary execution's release: nothing of its sweep is stopped, whatever `closed` settles with.
+	const start = Promise.withResolvers<string | undefined>();
+	const phase = new AbortController();
+	const execution = { taskId, ready: start.promise, signal: phase.signal, status: undefined as string | undefined };
+	run.beforeSweep.set(index, execution);
+	let swept: Promise<void> | undefined;
+	return (status?: string, closed?: Promise<unknown>) => {
+		if (swept) return swept;
+		execution.status = status;
+		registry.revision++;
+		const release = () => {
+			phase.abort();
+			start.resolve(status);
+			if (status !== undefined) {
+				try {
+					events?.emit(SUBAGENT_FINISHING_EVENT, { runId, index, taskId: taskId(), cwd, status });
+				} catch {
+					// An observer cannot veto cleanup or replace the child's result.
+				}
+			}
+			return withFinishingWorktree(held);
+		};
+		swept = (closed ?? Promise.resolve())
+			.then(release, release)
+			.catch(() => {})
+			.finally(() => {
+				if (run.finishing.get(index) === swept) run.finishing.delete(index);
+				if (run.beforeSweep.get(index) === execution) {
+					run.beforeSweep.delete(index);
+					registry.revision++;
+				}
+			});
+		run.finishing.set(index, swept);
+		return swept;
+	};
 }
 
 /** A child stopped resumably: its worktree is kept while it has unsaved work. */
