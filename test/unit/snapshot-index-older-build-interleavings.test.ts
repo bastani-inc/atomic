@@ -19,6 +19,7 @@ import { createSession, messageEntry, syntheticSnapshot } from "../helpers/snaps
 
 /** The snapshot blob store of Atomic 0.9.87, vendored unmodified (test/fixtures/snapshot-store-0.9.87/README.md). */
 interface Release0987BlobStore {
+	completeIndex(): Promise<void>;
 	collectGarbage(options: { readonly graceSeconds: number }): Promise<readonly string[]>;
 }
 const release0987 = (await import(
@@ -511,6 +512,57 @@ describe("0.9.87 and a released build that indexes degraded pins on one store (#
 
 		assert.equal(counted.transactions, 0, "this build trusts the index 0.9.89 built");
 		assert.equal((await store.collectGarbage({ graceSeconds: 0 })).includes(hash), false);
+	});
+
+	test("a reference trigger 0.9.87 installed again after 0.9.89's went missing is not trusted, and a degraded pin is kept (#5558)", async () => {
+		const database = await open();
+		const created = await SqlSessionStore.open(database);
+		const first = messageEntry("hi") as SessionEntry;
+		await createSession(created, "s1", [first]);
+		const { hash, bundle } = await appendDegradedRestore(created, "s1", first.id, 1);
+		// 0.9.89 indexes the store; then its reference trigger goes missing and 0.9.87 collects first: it installs that
+		// trigger again under 0.9.89's version row and indexes every entry its way.
+		await dropSessionIndex(database);
+		await (await release0989.SqlSnapshotBlobStore.open(database)).completeIndex();
+		await database.exec("DROP TRIGGER session_entries_snapshot_refs");
+		await (await release0987.SqlSnapshotBlobStore.open(database)).collectGarbage({ graceSeconds: 1_000_000 });
+		assert.equal(await indexedPin(database), null, "0.9.87 indexed the entry without its pin");
+
+		const sessions = await SqlSessionStore.open(database);
+		const deleted = await sessions.snapshotBlobs.collectGarbage({ graceSeconds: 0 });
+
+		assert.equal(deleted.includes(hash), false, "the bundle the pin keeps was collected");
+		assert.deepEqual(await sessions.snapshotBlobs.getBlob(hash), bundle);
+		assert.equal(await indexedPin(database), "S-lacked", "this build indexed the pin again");
+	});
+
+	test("an index 0.9.89 installed while a rebuild mark of a build with the batched teardown was there is not trusted, and a degraded pin is kept (#5558)", async () => {
+		const database = await open();
+		const created = await SqlSessionStore.open(database);
+		const first = messageEntry("hi") as SessionEntry;
+		await createSession(created, "s1", [first]);
+		const { hash, bundle } = await appendDegradedRestore(created, "s1", first.id, 1);
+		// A build that removes an old index in batches marked it, with no progress row left; 0.9.89 opened the store
+		// meanwhile and installed its own index, and 0.9.87 indexed it its way.
+		await dropSessionIndex(database);
+		await database.run(
+			"INSERT INTO snapshot_index_sources (source, watermark, backfilled_through) VALUES ('session-entries@rebuild', -1, -1)",
+		);
+		await release0989.SqlSnapshotBlobStore.open(database);
+		await (await release0987.SqlSnapshotBlobStore.open(database)).completeIndex();
+		assert.equal(await indexedPin(database), null, "0.9.87 indexed the entry without its pin");
+
+		const sessions = await SqlSessionStore.open(database);
+		const deleted = await sessions.snapshotBlobs.collectGarbage({ graceSeconds: 0 });
+
+		assert.equal(deleted.includes(hash), false, "the bundle the pin keeps was collected");
+		assert.deepEqual(await sessions.snapshotBlobs.getBlob(hash), bundle);
+		assert.equal(await indexedPin(database), "S-lacked", "this build indexed the pin again");
+		assert.equal(
+			await database.get("SELECT 1 AS found FROM snapshot_index_sources WHERE source = 'session-entries@rebuild'"),
+			undefined,
+			"the mark is gone",
+		);
 	});
 });
 
