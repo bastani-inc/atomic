@@ -1107,8 +1107,10 @@ function withArchivedPages(
 					return await project(entries, records.length, async () => {
 						const identity = await handle.stat({ bigint: true }).catch(() => undefined);
 						if (!identity?.isFile() || !identity.ino || !identity.birthtimeNs) return undefined;
+						// A rollback or in-place rewrite can reuse a row in the same file for a different reply.
+						const { dev, ino, birthtimeNs, ctimeNs, mtimeNs, size } = identity;
 						return createHash("sha256")
-							.update(`${identity.dev}:${identity.ino}:${identity.birthtimeNs}`)
+							.update(`${dev}:${ino}:${birthtimeNs}:${ctimeNs}:${mtimeNs}:${size}`)
 							.digest("base64url");
 					});
 				} catch (error) {

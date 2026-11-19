@@ -431,10 +431,10 @@ test("repainting a split reply restores the earlier failure when the later block
 	}
 });
 
-test.each(["file", "replaced file", "memory", "sqlite"] as const)(
+test.each(["file", "replaced file", "file rewritten in place", "memory", "sqlite"] as const)(
 	"paging a settled child's %s history keeps failures attributed to its record (#5651)",
 	async (backend) => {
-		const replace = backend === "replaced file";
+		const replace = backend === "replaced file" || backend === "file rewritten in place";
 		const root = makeTempDirectory("task-chat-archive-");
 		const gate = Promise.withResolvers<void>();
 		let host: Awaited<ReturnType<typeof openTranscript>> | undefined;
@@ -528,8 +528,12 @@ test.each(["file", "replaced file", "memory", "sqlite"] as const)(
 			if (replace)
 				execFileSync(process.execPath, [
 					"-e",
-					`const fs = require('node:fs'); const file = process.argv[1]; fs.writeFileSync(file + '.new', fs.readFileSync(file, 'utf8').replaceAll('original-', 'replacement-')); fs.renameSync(file + '.new', file);`,
+					`const fs = require('node:fs');
+					const [file, target] = process.argv.slice(1);
+					fs.writeFileSync(target, fs.readFileSync(file, 'utf8').replaceAll('original-', 'restored-'));
+					if (target !== file) fs.renameSync(target, file);`,
 					child.sessionFile!,
+					backend === "replaced file" ? `${child.sessionFile}.new` : child.sessionFile!,
 				]);
 			gate.resolve();
 			await earlier.promise;
@@ -538,7 +542,7 @@ test.each(["file", "replaced file", "memory", "sqlite"] as const)(
 			assert.match(
 				body,
 				replace
-					? /replacement-0\s+Error: provider outage[\s\S]*original-100\s+Error: provider outage/
+					? /restored-0\s+Error: provider outage[\s\S]*original-100\s+Error: provider outage/
 					: /original-0[\s\S]*original-100\s+Error: provider outage/,
 			);
 			assert.deepEqual(
