@@ -16,7 +16,6 @@ import {
 } from "@bastani/atomic";
 import type { PooledStageTasks, PooledTaskAction, PooledTaskReply } from "./stage-watch-types.js";
 
-const EMPTY: PooledStageTasks = { tasks: [], background: [], settlement: [], activity: [], stdin: [], statuses: [] };
 const NO_STATUSES: ReadonlyMap<string, string> = new Map();
 
 function failure<T>(error: Error | string): TaskViewResult<T> {
@@ -28,7 +27,6 @@ function failure<T>(error: Error | string): TaskViewResult<T> {
  * root (#3996). It shows the state the worker last sent, and runs every action on the worker.
  */
 export class PooledStageTaskSource implements TaskViewSource {
-	private state = EMPTY;
 	private records: TaskRecord[] = [];
 	private backgroundRecords: TaskRecord[] = [];
 	private settlements: ReadonlyMap<TaskId, bigint> = new Map();
@@ -46,7 +44,6 @@ export class PooledStageTaskSource implements TaskViewSource {
 
 	/** Adopts the state the worker sent. */
 	apply(state: PooledStageTasks): void {
-		this.state = state;
 		this.chatActivity = new Map(state.chatActivity);
 		this.records = [...state.tasks];
 		const background = new Set(state.background);
@@ -58,9 +55,16 @@ export class PooledStageTaskSource implements TaskViewSource {
 		for (const listener of [...this.listeners]) listener();
 	}
 
+	/** The attempt can no longer report live turns. Keep its task records and history for inspection. */
+	withdrawChatActivity(): void {
+		if (this.chatActivity.size === 0) return;
+		this.chatActivity.clear();
+		for (const listener of [...this.listeners]) listener();
+	}
+
 	/** Whether the worker has sent any task yet. */
 	get empty(): boolean {
-		return this.state.tasks.length === 0;
+		return this.records.length === 0;
 	}
 
 	/** The stage's own tasks; its workers' shells are listed in their own views. */

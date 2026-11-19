@@ -140,7 +140,13 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 		// stream, so a synchronously replayed `agent_start` on a retained terminal
 		// stage can see that a live delivery authorizes it.
 		ctx._unsubscribeDeliveryActivity = subscribeStageChatDeliveryActivity(ctx);
-		ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
+		ctx._unsubscribeHandle = ctx.handle.subscribe(
+			(event) => applyStageChatLiveHandleEvent(ctx, event),
+			() => {
+				ctx.chatHost.clearBusyForTerminalWorkflowStage();
+				ctx.requestRender?.();
+			},
+		);
 		if (!initialChatIsTerminal) rehydrateCompactionStatusAfterAttach(ctx);
 		rehydrateQueuedMessages(ctx);
 	}

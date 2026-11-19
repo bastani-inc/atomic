@@ -1,6 +1,29 @@
+import type { Store } from "../shared/store.js";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { isRunChanges, type PublishedRun } from "./run-changes.js";
+
+export function hasLiveStageSession(stage: StageSnapshot): boolean {
+	return (stage.sessionId !== undefined || stage.sessionFile !== undefined) && !isTerminalStageStatus(stage.status);
+}
+
+/** Withdraw a retired worker's live session and activity, preserving terminal sessions for the archive. */
+export function releaseWorkerStages(store: Store, runId: string): void {
+	const run = store.run(runId);
+	if (!run?.stages.some((stage) => stage.chatActivity !== undefined || hasLiveStageSession(stage))) return;
+	store.recordRunStart({
+		...run,
+		stages: run.stages.map((stage) => {
+			if (hasLiveStageSession(stage)) {
+				const { sessionId: _session, sessionFile: _file, chatActivity: _phase, ...released } = stage;
+				return { ...released, attachable: false, attached: false };
+			}
+			if (stage.chatActivity === undefined) return stage;
+			const { chatActivity: _phase, ...history } = stage;
+			return history;
+		}),
+	});
+}
 
 /** The stages of one pooled run that a publication gives the root's prompt routing and stage registrations. */
 export interface PublishedStages {
