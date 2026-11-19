@@ -10,6 +10,7 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.js";
 import { inspectInProcessChildStatus } from "../inprocess/control-status.js";
+import { takeLegacyForegroundWait, withLegacyForegroundWaitNote } from "./legacy-foreground-wait.js";
 import { registerNamedRunWorktrees } from "./run-worktrees.js";
 import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
 import { subagentChildOwner } from "./subagent-child-records.js";
@@ -17,6 +18,7 @@ import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.js";
+import { launchSetupError } from "./subagent-executor-launch-check.js";
 import { runParallelPath } from "./subagent-executor-parallel.js";
 import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.js";
 import { runSinglePath } from "./subagent-executor-single.js";
@@ -54,8 +56,9 @@ async function handleManagementRequest(input: {
 	requestCwd: string;
 	ctx: ExtensionContext;
 	deps: ResolvedExecutorDeps;
+	signal: AbortSignal;
 }): Promise<SubagentToolResult> {
-	const { params, paramsWithResolvedCwd, requestCwd, ctx, deps } = input;
+	const { params, paramsWithResolvedCwd, requestCwd, ctx, deps, signal } = input;
 	const action = params.action;
 	if (!action) {
 		return {
@@ -102,8 +105,21 @@ async function handleManagementRequest(input: {
 	if (action === "wait") {
 		const observed =
 			ctx.getAgentTaskHost && params.id !== undefined
-				? await ctx.getAgentTaskHost().waitForTask(params.id as import("@bastani/atomic").TaskId, params.budgetMs)
+				? await ctx
+						.getAgentTaskHost()
+						.waitForTask(params.id as import("@bastani/atomic").TaskId, params.budgetMs, undefined, signal)
 				: { ok: false as const, error: { code: "UnknownTask", message: "Task not found in this owner" } };
+		// Esc ends the wait, never the child: it keeps running and reports by its completion notice.
+		if (signal.aborted && !observed.ok && observed.error.code === "ObserverCancelled")
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Stopped waiting for ${params.id}. It keeps running in the background; its completion notice arrives when it finishes.`,
+					},
+				],
+				details: { mode: "management", results: [] },
+			};
 		const settledOutput =
 			observed.ok && observed.value.kind === "settled"
 				? await settledTaskOutputText(ctx.getAgentTaskHost?.(), [
@@ -134,14 +150,19 @@ async function handleManagementRequest(input: {
 		};
 	}
 	if ((SUBAGENT_RUN_CONTROL_ACTIONS as readonly string[]).includes(action)) {
-		return controlSubagentChildren(deps, ctx, {
-			action: action as SubagentRunControlAction,
-			...((paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId)
-				? { id: paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId }
-				: {}),
-			...(params.message !== undefined ? { message: params.message } : {}),
-			...(params.all !== undefined ? { all: params.all } : {}),
-		});
+		return controlSubagentChildren(
+			deps,
+			ctx,
+			{
+				action: action as SubagentRunControlAction,
+				...((paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId)
+					? { id: paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId }
+					: {}),
+				...(params.message !== undefined ? { message: params.message } : {}),
+				...(params.all !== undefined ? { all: params.all } : {}),
+			},
+			signal,
+		);
 	}
 	const targetTaskId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
 	// A paused or quit child awaits resume, as a quit workflow run does; its records outlive its task and a restart.
@@ -277,7 +298,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
-			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps });
+			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps, signal });
 		}
 		// Fanout authorization gates delegation and privileged control. Only `list`,
 		// `get`, `status`, and `wait` stay available to an unauthorized child; run control
@@ -343,18 +364,23 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 
 	const executeWithBurstCollection = createExecutionBurstDispatcher({
 		execute,
-		concurrencyLimit: deps.config.parallel?.concurrency,
 		isActive: () => deps.state.subagentInProgress === true,
 		setActive: (active) => {
 			deps.state.subagentInProgress = active;
 		},
 		duplicateResult: duplicateSubagentCallResult,
+		ownError: (params, ctx, preparedTasks) => launchSetupError(params, ctx, deps, preparedTasks),
 	});
 
 	return {
-		execute: async (id, params, signal, onUpdate, ctx) =>
-			params.action
-				? execute(id, params, signal, onUpdate, ctx)
-				: (invalidHeartbeatResult(params) ?? executeWithBurstCollection(id, params, signal, onUpdate, ctx)),
+		execute: async (id, params, signal, onUpdate, ctx) => {
+			if (params.action) return execute(id, params, signal, onUpdate, ctx);
+			// Under a task host every launch runs in the background; one that still asks to wait in the foreground is
+			// told so. Without one the call still runs its children directly and waits for them, so nothing changed.
+			const legacy = takeLegacyForegroundWait(id, params, ctx);
+			const result = await (invalidHeartbeatResult(legacy.params) ??
+				executeWithBurstCollection(id, legacy.params, signal, onUpdate, ctx));
+			return legacy.foreground && ctx.getAgentTaskHost ? withLegacyForegroundWaitNote(result) : result;
+		},
 	};
 }

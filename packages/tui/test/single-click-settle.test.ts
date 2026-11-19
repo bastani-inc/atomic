@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
 import { type Component, Container, type TuiMouseEventResult } from "../src/tui.ts";
 import { MULTI_CLICK_INTERVAL_MS, TuiAltScreen } from "../src/tui-alt-screen.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
@@ -7,6 +7,12 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 const press = (x: number, y: number) => `\x1b[<0;${x + 1};${y + 1}M`;
 const release = (x: number, y: number) => `\x1b[<0;${x + 1};${y + 1}m`;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function mockClickClock(t: TestContext): void {
+	t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100_000 });
+	// Node's mock timers advance Date and timeouts, but not performance.now().
+	t.mock.method(performance, "now", Date.now.bind(Date));
+}
 
 /**
  * A renderer that copies what a double-click selects, over rows whose single click acts only once it is known not to
@@ -23,8 +29,8 @@ function settleFixture(options: { readonly capture?: boolean } = {}) {
 	});
 	const acted: string[] = [];
 	const clicks: string[] = [];
-	const row = (name: string): Component => ({
-		render: () => [`${name} words here`],
+	const row = (name: string, label = name): Component => ({
+		render: () => [`${label} words here`],
 		invalidate: () => {},
 		handleMouse: (event): TuiMouseEventResult | undefined => {
 			if (options.capture && event.type === "press") return { handled: true, capture: true };
@@ -41,7 +47,7 @@ function settleFixture(options: { readonly capture?: boolean } = {}) {
 		terminal.sendInput(press(x, y));
 		terminal.sendInput(release(x, y));
 	};
-	return { terminal, tui, copied, acted, clicks, click };
+	return { terminal, tui, copied, acted, clicks, click, list, row };
 }
 
 describe("a single click's action waits until it cannot become a double-click", () => {
@@ -63,6 +69,23 @@ describe("a single click's action waits until it cannot become a double-click", 
 		assert.deepStrictEqual(acted, ["first"], "the action runs once");
 		tui.stop();
 	});
+
+	for (const rollback of [2_000, 60_000]) {
+		it(`a wall-clock step back by ${rollback} ms does not delay a pending single click`, async (t) => {
+			const { terminal, tui, acted, click } = settleFixture();
+			tui.start();
+			t.after(() => tui.stop());
+			await terminal.waitForRender();
+			mockClickClock(t);
+			click(1, 0);
+			t.mock.timers.tick(50);
+			t.mock.method(Date, "now", () => performance.now() - rollback);
+			t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS - 50);
+			assert.deepStrictEqual(acted, []);
+			t.mock.timers.tick(1);
+			assert.deepStrictEqual(acted, ["first"]);
+		});
+	}
 
 	it("never runs for a double- or triple-click, which still select a word and a line", async () => {
 		const { terminal, tui, copied, acted, click } = settleFixture();
@@ -100,6 +123,21 @@ describe("a single click's action waits until it cannot become a double-click", 
 		tui.stop();
 	});
 
+	it("clicking two items painted at the same cell runs both pending singles on their own items (#5562)", async (t) => {
+		const { terminal, tui, acted, click, list, row } = settleFixture();
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		mockClickClock(t);
+		click(1, 0);
+		list.children.unshift(row("inserted", "first"));
+		list.invalidate();
+		tui.renderNow();
+		click(1, 0);
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, ["first", "inserted"]);
+	});
+
 	it("waits the same way for a component that takes its press", async () => {
 		const { terminal, tui, acted, clicks, click } = settleFixture({ capture: true });
 		tui.start();
@@ -118,6 +156,136 @@ describe("a single click's action waits until it cannot become a double-click", 
 		await sleep(MULTI_CLICK_INTERVAL_MS + 100);
 		assert.deepStrictEqual(acted, ["first"], "the second click made it a double-click");
 		tui.stop();
+	});
+
+	it("holding the second press of a captured double-click never runs a single-click action (#5562)", async (t) => {
+		const { terminal, tui, acted } = settleFixture({ capture: true });
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		mockClickClock(t);
+
+		terminal.sendInput(press(1, 0));
+		t.mock.timers.tick(10);
+		terminal.sendInput(release(1, 0));
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS - 10);
+		terminal.sendInput(press(1, 0)); // The interval includes its last millisecond.
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS);
+		terminal.sendInput(release(1, 0));
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, []);
+	});
+
+	it("a captured single held beyond its deadline acts at release, and the next press starts over (#5562)", async (t) => {
+		const { terminal, tui, acted, click } = settleFixture({ capture: true });
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		mockClickClock(t);
+		terminal.sendInput(press(1, 0));
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, []);
+		terminal.sendInput(release(1, 0));
+		t.mock.timers.tick(1);
+		assert.deepStrictEqual(acted, ["first"]);
+		click(1, 0);
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, ["first", "first"]);
+	});
+
+	for (const captureFirst of [true, false]) {
+		it(`keeps a triple-click together when only the ${captureFirst ? "outer presses" : "middle press"} are captured (#5562)`, async (t) => {
+			const options = { capture: captureFirst };
+			const { terminal, tui, acted, copied, click } = settleFixture(options);
+			tui.start();
+			t.after(() => tui.stop());
+			await terminal.waitForRender();
+			mockClickClock(t);
+
+			click(8, 0);
+			options.capture = !captureFirst;
+			t.mock.timers.tick(100);
+			click(8, 0);
+			options.capture = captureFirst;
+			t.mock.timers.tick(100);
+			click(8, 0);
+			t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+			assert.deepStrictEqual(acted, []);
+			assert.deepStrictEqual(copied, [captureFirst ? "words" : "first words here"]);
+		});
+	}
+
+	for (const capture of [false, true]) {
+		it(`a wheel turn separates ${capture ? "captured" : "uncaptured"} clicks and interrupts a held press (#5562)`, async (t) => {
+			const { terminal, tui, acted, click } = settleFixture({ capture });
+			tui.start();
+			t.after(() => tui.stop());
+			await terminal.waitForRender();
+			mockClickClock(t);
+			const wheel = () => terminal.sendInput("\x1b[<65;2;1M");
+			click(1, 0);
+			wheel();
+			click(1, 0);
+			terminal.sendInput(press(1, 1));
+			wheel();
+			terminal.sendInput(release(1, 1));
+			t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+			assert.deepStrictEqual(acted, ["first", "first"]);
+		});
+	}
+
+	it("losing terminal focus cancels an outstanding single click and a held press (#5562)", async (t) => {
+		const { terminal, tui, acted, click } = settleFixture({ capture: true });
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		mockClickClock(t);
+		click(1, 0);
+		terminal.sendInput(press(1, 1));
+		terminal.sendInput("\x1b[O");
+		terminal.sendInput("\x1b[I");
+		terminal.sendInput(release(1, 1));
+		click(1, 1);
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, ["second"]);
+	});
+
+	it("a single click that clears a painted drag highlight still acts on the unchanged row (#5562)", async (t) => {
+		const { terminal, tui, acted } = settleFixture();
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		mockClickClock(t);
+		terminal.sendInput(press(6, 0));
+		terminal.sendInput("\x1b[<32;9;1M");
+		terminal.sendInput(release(8, 0));
+		tui.renderNow();
+		assert.ok(tui.hasActiveSelection());
+		terminal.sendInput(press(8, 0));
+		tui.renderNow();
+		terminal.sendInput(release(8, 0));
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, ["first"]);
+	});
+
+	it("a double-click still selects a word after its first press clears a painted drag selection (#5562)", async (t) => {
+		const { terminal, tui, copied, acted, click } = settleFixture();
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		mockClickClock(t);
+		terminal.sendInput(press(6, 0));
+		terminal.sendInput("\x1b[<32;9;1M");
+		terminal.sendInput(release(8, 0));
+		tui.renderNow();
+		assert.equal(copied.length, 1);
+		terminal.sendInput(press(8, 0));
+		tui.renderNow(); // The first press removed the drag highlight, not the word underneath it.
+		terminal.sendInput(release(8, 0));
+		click(8, 0);
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(copied.slice(1), ["words"]);
+		assert.deepStrictEqual(acted, []);
 	});
 
 	it("drops a waiting action when the renderer stops", async () => {

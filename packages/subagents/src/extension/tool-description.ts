@@ -1,6 +1,6 @@
 export const SUBAGENT_TOOL_DESCRIPTION = `Delegate bounded specialist work to subagents or manage agent definitions while the parent remains in control.
 EXECUTION (use exactly ONE mode):
-• Execution calls always start non-interactively.
+• Execution calls always start non-interactively, and every child runs in the background: the call returns once each child is admitted, with its task id, and the child reports by a completion notice when it ends.
 • Before executing, use { action: "list" } to inspect configured agents. Only execute agents listed as executable/non-disabled.
 • SINGLE: { agent, task?, progress? } - one focused task; progress:true maintains a run-scoped progress.md under isolated artifact storage without writing it into the child cwd (separate from includeProgress, which only returns runtime telemetry); omit task for self-contained agents
 • PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?,worktree?}, ...], concurrency?: number, worktree?: true } - independent concurrent tasks (worktree: true isolates each task in a temporary git worktree, removed afterwards)
@@ -14,6 +14,7 @@ MANAGEMENT (use action field, omit agent/task/tasks):
 • { action: "update", agent: "code-analysis.custom-agent", config: { package: "analysis", ... } } - merge
 • { action: "delete", agent: "code-analysis.custom-agent" }
 CONTROL:
+• { action: "wait", id: "<task id>", budgetMs?: number } - wait for a launched child to finish, up to budgetMs (the owner's budget when omitted); the wait also ends when the user presses Esc, and the child keeps running either way
 • { action: "status", id: "..." } - inspect an in-process run by id or prefix; a paused or quit child shows as paused · awaiting resume with its resume call, and { action: "status" } lists every such child
 • { action: "pause", id: "..." } / { action: "pause", all: true } - stop a running child and hold its queued messages until resume; it stays resumable
 • { action: "quit", id: "..." } / { action: "quit", all: true } - stop a child gracefully (including a paused one), as a workflow quit does: it is paused · awaiting resume, not ended, and stays resumable

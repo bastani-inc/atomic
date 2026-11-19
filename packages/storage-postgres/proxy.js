@@ -14,7 +14,7 @@ import { connect as connectTls } from "node:tls";
  * for a whole connection, so a silent proxy is named as the reason rather than a connection timeout.
  */
 export const PROXY_ANSWER_TIMEOUT_MS = 8_000;
-/** The most bytes a proxy's answer may take up to the blank line that ends its header. */
+/** The most bytes all proxy responses may take through the blank line ending the final headers. */
 const MAX_PROXY_ANSWER_BYTES = 16 * 1024;
 /** The most characters of a proxy's status text a failure repeats. */
 const MAX_REASON_LENGTH = 80;
@@ -313,9 +313,11 @@ export function openProxyTunnel(proxy, target, options = {}) {
 				: connectNet({ host: proxy.host, port: proxy.port });
 		let connected = false;
 		let settled = false;
-		/** @type {Buffer[]} */
-		const answer = [];
 		let answerBytes = 0;
+		let line = "";
+		let afterCR = false;
+		/** @type {RegExpExecArray | null} */
+		let status = null;
 		/**
 		 * @param {ConstructorParameters<typeof ProxyTunnelError>[0]} code
 		 * @param {string} message
@@ -378,40 +380,27 @@ export function openProxyTunnel(proxy, target, options = {}) {
 				{ cause },
 			);
 		});
-		socket.on("close", () =>
+		const invalidAnswer = () =>
+			fail(
+				"proxy-protocol",
+				`the proxy ${proxy.label} answered the tunnel request to ${authority} with something other than HTTP`,
+				true,
+			);
+		// A connection that ends after a CR was cut, as one that ends anywhere else in the answer is (#5670).
+		socket.on("close", () => {
 			fail(
 				"proxy-closed",
 				`the proxy ${proxy.label} closed the connection before answering the tunnel request to ${authority}`,
 				false,
-			),
-		);
-		/** @param {Buffer} chunk */
-		const onData = (chunk) => {
-			answer.push(chunk);
-			answerBytes += chunk.length;
-			const received = Buffer.concat(answer, answerBytes);
-			const end = received.indexOf("\r\n\r\n");
-			if (end === -1) {
-				// The answer so far can still become HTTP while it is a prefix of `HTTP/`, however few bytes came first.
-				const head = received.subarray(0, 5).toString("latin1");
-				if (answerBytes > MAX_PROXY_ANSWER_BYTES || !("HTTP/".startsWith(head) || head.startsWith("HTTP/")))
-					fail(
-						"proxy-protocol",
-						`the proxy ${proxy.label} answered the tunnel request to ${authority} with something other than HTTP`,
-						true,
-					);
-				return;
-			}
-			const statusLine = received.subarray(0, received.indexOf("\r\n")).toString("latin1");
-			const status = /^HTTP\/1\.[01] (\d{3})(?: (.*))?$/.exec(statusLine);
-			if (status === null)
-				return fail(
-					"proxy-protocol",
-					`the proxy ${proxy.label} answered the tunnel request to ${authority} with something other than HTTP`,
-					true,
-				);
-			const code = Number(status[1]);
-			const reason = reasonText(status[2] ?? "");
+			);
+		});
+		/**
+		 * @param {number} code
+		 * @param {string} text
+		 * @param {Buffer} rest Bytes after the final response in the same read.
+		 */
+		const finish = (code, text, rest) => {
+			const reason = reasonText(text);
 			const answered = reason === "" ? `${code}` : `${code} ${reason}`;
 			if (code >= 200 && code < 300) {
 				if (settled) return;
@@ -421,7 +410,6 @@ export function openProxyTunnel(proxy, target, options = {}) {
 				socket.removeAllListeners("error");
 				socket.removeAllListeners("close");
 				socket.pause();
-				const rest = received.subarray(end + 4);
 				if (rest.length > 0) socket.unshift(rest);
 				resolve(/** @type {import("node:net").Socket} */ (socket));
 				return;
@@ -443,6 +431,46 @@ export function openProxyTunnel(proxy, target, options = {}) {
 			fail("proxy-refused", `the proxy ${proxy.label} refused the tunnel to ${authority} (${answered})`, true, {
 				status: code,
 			});
+		};
+		/** @param {Buffer} chunk */
+		const onData = (chunk) => {
+			for (let i = 0; i < chunk.length && answerBytes < MAX_PROXY_ANSWER_BYTES; i++) {
+				answerBytes++;
+				const byte = /** @type {number} */ (chunk[i]);
+				if (afterCR && byte !== 0x0a) {
+					// A CR that no LF follows: a space inside a header field (RFC 9112 2.2), but no status line holds one (#5670).
+					if (status === null) return invalidAnswer();
+					line += " ";
+				}
+				afterCR = byte === 0x0d;
+				if (afterCR) {
+					// Nor does `HTTP/`.
+					if (status === null && line.length < 5) return invalidAnswer();
+					continue;
+				}
+				if (byte !== 0x0a) {
+					line += String.fromCharCode(byte);
+					if (status === null && line.length <= 5 && !"HTTP/".startsWith(line)) return invalidAnswer();
+					continue;
+				}
+				if (status === null) {
+					status = /^HTTP\/1\.[01] (\d{3})(?: (.*))?$/.exec(line);
+					if (status === null) return invalidAnswer();
+				} else if (line === "") {
+					const code = Number(status[1]);
+					// 101 switches protocols instead of continuing to a final CONNECT response.
+					if (code < 100 || code === 101 || code >= 200)
+						return finish(code, status[2] ?? "", chunk.subarray(i + 1));
+					status = null;
+				}
+				line = "";
+			}
+			if (answerBytes === MAX_PROXY_ANSWER_BYTES)
+				fail(
+					"proxy-protocol",
+					`the proxy ${proxy.label} exceeded ${MAX_PROXY_ANSWER_BYTES} bytes of response headers for the tunnel to ${authority}`,
+					true,
+				);
 		};
 		socket.on("data", onData);
 	});

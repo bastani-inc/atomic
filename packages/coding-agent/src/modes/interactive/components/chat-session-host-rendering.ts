@@ -1,13 +1,13 @@
 import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { getOwnerTaskSession, getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import {
 	type ChatBoxSession,
 	loadTaskOwnTranscriptHistory,
 	taskTranscriptSource,
 } from "../../../core/tasks/supervisor.js";
+import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import {
@@ -31,7 +31,7 @@ import { FooterComponent, UsageMeterComponent } from "./footer.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import { taskDisplayText } from "./task-row.js";
 import { toolGroupRoleKey } from "./tool-group-tracker.ts";
-import { isClickExpandableBlock, sameRows } from "./transcript-block-clicks.ts";
+import { isClickExpandableBlock, sameRows, withBlockRenderTime } from "./transcript-block-clicks.ts";
 import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
@@ -274,6 +274,7 @@ export function renderChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 
 export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
+	taskSource: () => TaskViewSource | undefined,
 	width: number,
 	navigationActive = false,
 ): string[] {
@@ -282,14 +283,6 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	const session = agentSession ?? state.getChatBoxSession?.();
 	state.footerNavigationActive = navigationActive || agentSession === undefined || hasChatSessionTransientModal(state);
 	if (session && state.footerData) {
-		const taskSource = () => {
-			const currentAgent = state.getAgentSession?.();
-			const currentSession = currentAgent ?? state.getChatBoxSession?.();
-			return (
-				(currentAgent === undefined ? state.getTaskSource?.() : undefined) ??
-				(currentSession ? getOwnerTaskStore(currentSession) : undefined)
-			);
-		};
 		state.footer ??= new FooterComponent(
 			session,
 			state.footerData,
@@ -299,12 +292,7 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 				warning: (text) => state.style.accent(text),
 			},
 			() => state.footerNavigationActive,
-			() => taskSource()?.backgroundTasks ?? [],
-			undefined,
-			() => {
-				const source = taskSource();
-				return source === undefined ? undefined : taskClocksFor(source);
-			},
+			taskSource,
 		);
 		state.footer.setSession(session);
 		return state.footer.render(width);
@@ -370,6 +358,7 @@ export function expandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
 export function dropExpandedOverrides<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): void {
+	state.expansionGeneration++;
 	state.expandedOverrides = new Map();
 	state.expandedEntryOverrides = new WeakMap();
 }
@@ -650,7 +639,7 @@ export function entryExpands<TExtraEntry extends ChatTranscriptEntryLike>(
 			disposeRenderer(component);
 		}
 	};
-	return !sameRows(rows(false), rows(true));
+	return withBlockRenderTime(() => !sameRows(rows(false), rows(true)));
 }
 
 /** Whether `entry` is drawn expanded now: as a click last set it, or else as the chat's setting draws it. */

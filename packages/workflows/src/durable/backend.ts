@@ -480,6 +480,8 @@ export interface DurableWorkflowBackend {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
+		runGeneration?: number,
+		finishSequence?: number,
 	): Promise<void>;
 	/**
 	 * Atomically update status only when the authoritative status is expected.
@@ -498,6 +500,7 @@ export interface DurableWorkflowBackend {
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
 		releasedModelOwner?: string | null,
+		runGeneration?: number,
 	): Promise<boolean>;
 	/** Atomically adjust unresolved UI prompt count, clamped at zero. */
 	commitPendingPromptAdjustment(workflowId: string, delta: number): Promise<void>;
@@ -785,6 +788,10 @@ class JournalProjection {
 			createdAt: handle.createdAt,
 			status: handle.status,
 			transitionClaimId: handle.transitionClaimId ?? existing?.handle.transitionClaimId,
+			...((handle.runGeneration ?? existing?.handle.runGeneration) !== undefined
+				? { runGeneration: Math.max(handle.runGeneration ?? 0, existing?.handle.runGeneration ?? 0) }
+				: {}),
+			...(handle.finishSequence === undefined ? {} : { finishSequence: handle.finishSequence }),
 			...((handle.definitionSource ?? existing?.handle.definitionSource) !== undefined
 				? { definitionSource: handle.definitionSource ?? existing?.handle.definitionSource }
 				: {}),
@@ -1305,6 +1312,8 @@ class JournalProjection {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
+		runGeneration?: number,
+		finishSequence?: number,
 	): void {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return;
@@ -1319,7 +1328,11 @@ class JournalProjection {
 			failureDisposition: undefined,
 			failedToolNodeId: undefined,
 			failedToolUnrecorded: undefined,
+			...(runGeneration === undefined
+				? {}
+				: { runGeneration: Math.max(runGeneration, rec.handle.runGeneration ?? 0) }),
 			status,
+			finishSequence: finishSequence ?? (status === rec.handle.status ? rec.handle.finishSequence : undefined),
 			transitionClaimId: status === rec.handle.status ? rec.handle.transitionClaimId : crypto.randomUUID(),
 			updatedAt: Math.max(Date.now(), rec.handle.updatedAt + 1),
 			...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
@@ -1358,6 +1371,8 @@ class JournalProjection {
 			inputs: h.inputs,
 			status: h.status,
 			...(h.transitionClaimId !== undefined ? { transitionClaimId: h.transitionClaimId } : {}),
+			...(h.runGeneration !== undefined ? { runGeneration: h.runGeneration } : {}),
+			...(h.finishSequence !== undefined ? { finishSequence: h.finishSequence } : {}),
 			createdAt: h.createdAt,
 			completedCheckpoints: h.completedCheckpoints,
 			pendingPrompts: h.pendingPrompts,

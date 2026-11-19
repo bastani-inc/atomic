@@ -20,7 +20,12 @@ import {
 	scheduleReleasedReplyTimeouts,
 	withReleasedReplyTimeouts,
 } from "./released-child-replies.js";
-import { type ReleasedChildResumeWake, setReleasedChildWakeActive, settleResumeWake } from "./released-child-resume.js";
+import {
+	type ReleasedChildResumeWake,
+	setReleasedChildWakeActive,
+	settleResumeWake,
+	takeReleasedChildResume,
+} from "./released-child-resume.js";
 import { isReleasedReplyHandoffResult } from "./released-reply-protocol.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import {
@@ -71,6 +76,10 @@ const REDISPATCH_WAKE_PREFIX = "redispatch:";
 
 function isRedispatchWake(wake: AgentWake): boolean {
 	return wake.id.startsWith(REDISPATCH_WAKE_PREFIX);
+}
+
+function isResumeWake(wake: AgentWake): wake is ReleasedChildResumeWake {
+	return wake.id.startsWith("resume:");
 }
 
 function waitsOnHeldResult(record: SubagentChildRecord): boolean {
@@ -471,19 +480,30 @@ export function handleReleasedChildWakes(
 		namespace,
 		async (wakeKey, wakes, slot) => {
 			const childId = wakeKey.slice(namespace.length + 1);
-			const record = await latest(childId);
+			// Active from the moment this handler holds the batch, before any await: a resume arriving meanwhile then waits for
+			// this wake's relaunch decision instead of queuing behind the run it starts (#5485).
 			setReleasedChildWakeActive(wakeKey, true);
+			let record: SubagentChildRecord;
+			try {
+				record = await latest(childId);
+			} catch (error) {
+				setReleasedChildWakeActive(wakeKey, false);
+				throw error;
+			}
 			try {
 				const redispatch =
 					actions.redispatch !== undefined && wakes.some(isRedispatchWake) && needsRedispatch(record);
 				if (redispatch) await actions.redispatch?.(record, slot);
 				const current = redispatch ? await latest(childId) : record;
+				// A resume its caller withdrew before this handler took it is left out, as if it never arrived (#5485).
 				const others = withReleasedReplyTimeouts(
 					current,
-					wakes.filter((wake) => !isRedispatchWake(wake)),
+					wakes.filter(
+						(wake) => !isRedispatchWake(wake) && (!isResumeWake(wake) || takeReleasedChildResume(wake.id)),
+					),
 				);
 				if (others.length === 0) return;
-				const resumes = others.filter((wake): wake is ReleasedChildResumeWake => wake.id.startsWith("resume:"));
+				const resumes = others.filter(isResumeWake);
 				if (resumes.length > 0 && actions.resume !== undefined) {
 					const first = resumes[0];
 					if (first === undefined) return;
@@ -540,8 +560,8 @@ function completionIdOf(details: object): string {
 
 /**
  * The route the completions of shell tasks a released child launched take to that child: each is held in its record
- * and wakes it, or waits for its resume when it is stopped. A child that runs again or has ended holds none, so the
- * session that launched it receives the notice instead.
+ * and wakes it, or waits for its resume when it is stopped. A child that runs again or has ended holds none: the route
+ * refuses it, and the parent's task owner keeps it for the child's next run. The session that launched it never gets it.
  */
 export function releasedChildShellRoute(
 	holdMessages: NonNullable<SubagentChildRecordSink["holdMessages"]>,

@@ -662,13 +662,18 @@ async function writeBatch(hrana, api, client, batched) {
 			: error;
 	const version = await client.getVersion();
 	const stream = client.openStream();
-	const { began, ran, committed, executed } = (() => {
+	const { began, refreshed, ran, committed, executed } = (() => {
 		try {
 			const batch = stream.batch(false);
 			const inTransaction = () => hrana.BatchCond.not(hrana.BatchCond.isAutocommit(batch));
 			const begin = batch.step();
 			const began = settle(begin.run("BEGIN IMMEDIATE"));
-			let last = begin;
+			// The connection may have loaded its schema before another connection's DDL committed. BEGIN takes the
+			// write lock but does not refresh that schema; read it after the lock, while no other DDL can change it.
+			const refresh = batch.step().condition(hrana.BatchCond.ok(begin));
+			if (version >= 3) refresh.condition(inTransaction());
+			const refreshed = settle(refresh.run(SCHEMA_CHECK));
+			let last = refresh;
 			const ran = batched.map(({ sql, params }) => {
 				const step = batch.step().condition(hrana.BatchCond.ok(last));
 				if (version >= 3) step.condition(inTransaction());
@@ -681,7 +686,7 @@ async function writeBatch(hrana, api, client, batched) {
 			if (version >= 3) commit.condition(inTransaction());
 			const committed = settle(commit.run("COMMIT"));
 			void settle(batch.step().condition(hrana.BatchCond.not(hrana.BatchCond.ok(commit))).run("ROLLBACK"));
-			return { began, ran, committed, executed: batch.execute() };
+			return { began, refreshed, ran, committed, executed: batch.execute() };
 		} finally {
 			stream.closeGracefully();
 		}
@@ -693,6 +698,10 @@ async function writeBatch(hrana, api, client, batched) {
 	}
 	const beginning = await began;
 	if (!beginning.ok) throw mapped(beginning.error);
+	const refresh = await refreshed;
+	if (!refresh.ok) throw mapped(refresh.error);
+	if (refresh.value === undefined)
+		throw new api.LibsqlError("The batch ended before its schema could be refreshed", "TRANSACTION_CLOSED");
 	/** @type {import("@bastani/atomic/storage").SqliteDriverResult[]} */
 	const results = [];
 	for (const [index, outcome] of (await Promise.all(ran)).entries()) {
@@ -793,13 +802,116 @@ function rerunsLocked(sql) {
 }
 
 /**
- * Whether `sql` is one statement: it has no `;` but at its end. A `;` in a literal or a comment also counts, so
- * several statements are never taken for one.
+ * Whether `sql` is one statement: it has no `;` but at its end, or it is one `CREATE TRIGGER`, whose body holds a `;`
+ * after each of its statements. Otherwise a `;` in a literal or a comment also counts, so several statements are never
+ * taken for one. After the last `;`, any white space counts as none, a no-break space or a byte-order mark too (#5676):
+ * SQLite skips a byte-order mark and fails on any other such character, and sqld runs such a text as one statement,
+ * so none of them can start another statement that runs.
  * @param {string} sql
  */
 function isOneStatement(sql) {
 	const first = sql.indexOf(";");
-	return first === -1 || /^[\s;]*$/.test(sql.slice(first));
+	return first === -1 || /^[\s;]*$/.test(sql.slice(first)) || isOneTrigger(sql);
+}
+
+/** The keyword that starts a `CREATE TRIGGER`. */
+const CREATE_KEYWORD = /CREATE\b/iy;
+/** The characters SQLite skips between tokens; it reads any other character, a no-break space too, as part of one. */
+const SQL_SPACE = " \t\n\f\r";
+/** The characters of operators and punctuation, other than `;`, that SQLite reads as tokens that are not names. */
+const SQL_PUNCTUATION = "(),.+-*/%=<>!|&~";
+/** The character that ends a quoted literal or name, by the character that opened it. */
+const QUOTE_END = /** @type {Record<string, string>} */ ({ "'": "'", '"': '"', "`": "`", "[": "]" });
+
+/**
+ * Whether the UTF-16 code unit `code` belongs to a keyword or a name that is not quoted, as SQLite reads them: an ASCII
+ * letter or digit, `_`, `$`, or any character outside ASCII, every byte of which is outside ASCII in the UTF-8 SQLite
+ * reads. So a combining accent, a joiner or a no-break space after the letters of a keyword makes a name.
+ * @param {number} code
+ */
+function isWordCode(code) {
+	return (
+		(code >= 0x30 && code <= 0x39) ||
+		(code >= 0x41 && code <= 0x5a) ||
+		(code >= 0x61 && code <= 0x7a) ||
+		code === 0x5f ||
+		code === 0x24 ||
+		code > 0x7f
+	);
+}
+
+/**
+ * The tokens of `sql`, as SQLite and sqld split it, that tell where its statements end: `;`, each keyword or name that
+ * is not quoted, as its ASCII letters upper-cased or as "" when it has another character, and "" for any other token.
+ * Whitespace and comments are left out. Undefined for text whose tokens this does not tell exactly, so that no
+ * statement boundary can hide in it: an open literal, quoted name or block comment, a parameter (`?`, `:`, `@`, `#`, or
+ * `$` where a token starts, which no trigger may hold), a NUL, at which SQLite stops reading, a byte-order mark where a
+ * token starts, which SQLite skips as whitespace and sqld reads as part of a name (inside a token both read it as part
+ * of it), and any other character that is in no token.
+ * @param {string} sql
+ * @returns {string[] | undefined}
+ */
+function statementTokens(sql) {
+	if (sql.includes("\0")) return undefined;
+	/** @type {string[]} */
+	const tokens = [];
+	let index = 0;
+	while (index < sql.length) {
+		const character = sql[index];
+		if (SQL_SPACE.includes(character)) index++;
+		else if (sql.startsWith("--", index)) {
+			const end = sql.indexOf("\n", index + 2);
+			index = end === -1 ? sql.length : end + 1;
+		} else if (sql.startsWith("/*", index)) {
+			const end = sql.indexOf("*/", index + 2);
+			if (end === -1) return undefined;
+			index = end + 2;
+		} else if (Object.hasOwn(QUOTE_END, character)) {
+			// A quote doubled inside a literal or name stays in it: the scan goes on from the quote after it, which starts a
+			// token here that is the same token's rest to SQLite. Neither is `;` or a word.
+			const end = sql.indexOf(QUOTE_END[character], index + 1);
+			if (end === -1) return undefined;
+			tokens.push("");
+			index = end + 1;
+		} else if (character === ";" || SQL_PUNCTUATION.includes(character)) {
+			tokens.push(character === ";" ? ";" : "");
+			index++;
+		} else if (character !== "$" && character !== "\uFEFF" && isWordCode(sql.charCodeAt(index))) {
+			// A number is read as a word: SQLite reads the letters and digits that follow a number's own as part of it.
+			let end = index + 1;
+			while (end < sql.length && isWordCode(sql.charCodeAt(end))) end++;
+			const word = sql.slice(index, end);
+			tokens.push(/^[A-Za-z]+$/.test(word) ? word.toUpperCase() : "");
+			index = end;
+		} else return undefined;
+	}
+	return tokens;
+}
+
+/**
+ * Whether `sql` is one `CREATE [TEMP] TRIGGER ... BEGIN ... END` statement, followed by nothing but `;`, whitespace and
+ * comments. Its tokens are SQLite's, or the answer is no. SQLite takes no `;` before a trigger's `BEGIN`, ends every
+ * statement of its body with `;`, and starts none with `END`, so the trigger ends at the first `END` right after a `;`,
+ * whatever `CASE ... END` the body holds. A text that starts so but whose first statement is no such trigger is a
+ * syntax error, which runs nothing.
+ * @param {string} sql
+ */
+function isOneTrigger(sql) {
+	// Most texts are no trigger, which their first word tells without reading them whole.
+	const start = firstTokenStart(sql);
+	if (start === -1) return false;
+	CREATE_KEYWORD.lastIndex = start;
+	if (!CREATE_KEYWORD.test(sql)) return false;
+	const tokens = statementTokens(sql);
+	if (tokens === undefined || tokens[0] !== "CREATE") return false;
+	let index = tokens[1] === "TEMP" || tokens[1] === "TEMPORARY" ? 2 : 1;
+	if (tokens[index++] !== "TRIGGER") return false;
+	const first = tokens.indexOf(";", index);
+	if (first === -1 || !tokens.slice(index, first).includes("BEGIN")) return false;
+	for (let at = first; at + 1 < tokens.length; at++) {
+		if (tokens[at] === ";" && tokens[at + 1] === "END") return tokens.slice(at + 2).every((token) => token === ";");
+	}
+	return false;
 }
 
 /**
