@@ -1596,8 +1596,11 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				own !== undefined && own.backfilled_through < progress.backfilled_through
 					? own.backfilled_through
 					: progress.backfilled_through;
+			// The version row says the index is this build's and complete: never while a trigger is missing, which a build
+			// before 0.9.88 would install again its way under it (#5558).
+			const publish = withholds && state.installed;
 			if (from >= progress.watermark) {
-				if (withholds) await publishVersion(transaction, t, source);
+				if (publish) await publishVersion(transaction, t, source);
 				return true;
 			}
 			const { upper: lastRow } = (await transaction.get<SqliteRow & { upper: number | null }>(
@@ -1637,7 +1640,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			if (holder !== undefined) await this.renewClaim(transaction, holder);
 			const done = upper >= progress.watermark;
 			// Both progress rows reach the watermark: builds 0.9.88 and 0.9.89 may trust the index now (#5558).
-			if (done && withholds) await publishVersion(transaction, t, source);
+			if (done && publish) await publishVersion(transaction, t, source);
 			return done;
 		});
 	}

@@ -511,5 +511,60 @@ describe("released builds sharing the store while this build installs or indexes
 			});
 			assert.equal(releasedDeleted.includes(bundle.hash), false, "0.9.89 collected the bundle the pin keeps");
 		});
+
+		test(`on ${driver}, a reference trigger lost before this build's first backfill transaction, 0.9.89 opening then and this build stopping after it, then 0.9.87 and 0.9.89 collecting, leave the bundle a pin keeps (#5558)`, async () => {
+			const mine = await connect(open);
+			const released = await connect(open);
+			const older = await connect(open);
+			const sessions = await SqlSessionStore.open(mine);
+			const bundle = textBlob("the bundle a partly restored worktree still needs");
+			await sessions.snapshotBlobs.putBlobs([bundle]);
+			const padding = chain("message", 100);
+			const lacked = snapshotEntry(
+				"/repo",
+				"S-lacked",
+				syntheticSnapshot("S-lacked", [], { bundle: bundle.hash }),
+				padding.at(-1)!.id,
+			);
+			const derived = { ...snapshotEntry("/repo", "S-derived", undefined, lacked.id), degradedFrom: "S-lacked" };
+			await createSession(sessions, "pinned", [...padding, lacked, derived as SessionEntry]);
+			// No index over the entries yet: this build's open installs it.
+			await dropSessionIndex(mine);
+			let backfills = 0;
+			const controller = new AbortController();
+			const watched: SqliteDatabase = {
+				exec: (sql) => mine.exec(sql),
+				run: (sql, ...params) => mine.run(sql, ...params),
+				get: (sql, ...params) => mine.get(sql, ...params),
+				all: (sql, ...params) => mine.all(sql, ...params),
+				descriptor: mine.descriptor,
+				close: () => mine.close(),
+				transaction: async (callback, options) => {
+					const installed =
+						(await mine.get("SELECT 1 AS found FROM snapshot_index_sources WHERE source = 'session-entries'")) !==
+						undefined;
+					if (installed && ++backfills === 1) {
+						// Before this build's first backfill transaction the reference trigger goes missing, and 0.9.89 opens.
+						await mine.exec("DROP TRIGGER session_entries_snapshot_refs");
+						await release0989.SqlSnapshotBlobStore.open(released);
+					}
+					const result = await mine.transaction(callback, options);
+					// Atomic exits after this build's first backfill transaction.
+					if (backfills >= 1) controller.abort(new Error("Atomic exits"));
+					return result;
+				},
+			};
+			const store = await SqlSnapshotBlobStore.open(watched);
+			await store.completeIndex({ signal: controller.signal }).catch(() => undefined);
+			assert.ok(backfills >= 1, "this build ran a backfill transaction");
+
+			await (await release0987.SqlSnapshotBlobStore.open(older)).completeIndex();
+			const deleted = await (await release0989.SqlSnapshotBlobStore.open(released)).collectGarbage({
+				graceSeconds: 0,
+			});
+
+			assert.equal(deleted.includes(bundle.hash), false, "0.9.89 collected the bundle the pin keeps");
+			assert.deepEqual(await store.getBlob(bundle.hash), bundle.data);
+		});
 	}
 });
