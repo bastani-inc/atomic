@@ -15,6 +15,7 @@ import { createProvider, type Provider, type RefreshModelsContext } from "../mod
 import type { AnyModel, Api, Model, ProviderClassifier } from "../types.ts";
 import { providerHeadersToRecord } from "../utils/headers.js";
 import { isModelType } from "../utils/model-operations.ts";
+import { fetchAccountModelList } from "./account-model-list.ts";
 import { GITHUB_COPILOT_CLASSIFIER_MODELS, GITHUB_COPILOT_MODELS } from "./github-copilot.models.js";
 import {
 	GITHUB_COPILOT_INDIVIDUAL_BASE_URL as GITHUB_COPILOT_BASE_URL,
@@ -270,18 +271,19 @@ async function readAccountModelList(
 ): Promise<{ raw: unknown; baseUrl: string } | undefined> {
 	const request = await accountModelListRequest(context);
 	if (!request) return undefined;
-	const response = await fetch(`${request.baseUrl.replace(/\/+$/, "")}/models`, {
-		headers: {
+	const response = await (context.fetchAccountModelList ?? fetchAccountModelList)(
+		`${request.baseUrl.replace(/\/+$/, "")}/models`,
+		{
 			Accept: "application/json",
 			Authorization: `Bearer ${request.token}`,
 			...copilotClientHeaders(request.token),
 			"X-GitHub-Api-Version": COPILOT_API_VERSION,
 		},
-		signal: AbortSignal.any([context.signal, AbortSignal.timeout(GITHUB_COPILOT_MODELS_TIMEOUT_MS)]),
-	});
+		AbortSignal.any([context.signal, AbortSignal.timeout(GITHUB_COPILOT_MODELS_TIMEOUT_MS)]),
+	);
 	if ([400, 401, 403, 404].includes(response.status)) return undefined;
 	if (!response.ok) throw new Error(`GitHub Copilot model list request failed: ${response.status}`);
-	return { raw: await response.json(), baseUrl: request.baseUrl };
+	return { raw: response.body, baseUrl: request.baseUrl };
 }
 
 /**
