@@ -1176,8 +1176,9 @@ test("with a busy timeout of 0, a wrapped statement during a threaded transactio
 		return exec(sql);
 	};
 	const { committed, settled } = await holdLock(threaded, 600);
-	// A statement SQLite refuses at once fails at once, as before.
+	// A statement SQLite refuses at once fails at once, as before; an exec of nothing runs nothing.
 	assertBusy((await outcome(wrapped.run("INSERT INTO items VALUES ('d')"))).error, "INSERT INTO items");
+	await wrapped.exec("-- nothing\n;");
 	assert.deepEqual(await wrapped.run("INSERT INTO scratch VALUES (1)"), { changes: 1 });
 	// A script fails having run nothing.
 	const { error } = await outcome(wrapped.exec("INSERT INTO scratch VALUES (2); INSERT INTO items VALUES ('c')"));

@@ -640,9 +640,10 @@ const TEMP_DATABASE = 1;
  *   further lock; it calls no code but SQLite's own (no function or collating sequence SQLite does not build in, no
  *   virtual table, no `UNSAFE_FUNCTIONS`); it is no VACUUM, which may create the file it writes into before it is
  *   refused. A PRAGMA, which is never prepared ahead since SQLite may carry one out while preparing it, is tried first
- *   only if it is one of `TRIED_PRAGMAS`. An `exec` of no statement is tried first.
- * - `as before`: every other single statement, and every call while the connection is inside a transaction of its
- *   own or the file is not in WAL mode. It runs exactly as it always has, with the connection's own busy timeout.
+ *   only if it is one of `TRIED_PRAGMAS`.
+ * - `as before`: every other single statement, an `exec` of no statement, and every call while the connection is
+ *   inside a transaction of its own or the file is not in WAL mode. It runs exactly as it always has, with the
+ *   connection's own busy timeout.
  * - `script`: an `exec` of more than one statement (see `splitStatements`). It waits until no transaction of this
  *   thread holds the lock (see `runWhenFree`), so no part of it runs while the lock is held. An `exec` of exactly one
  *   statement runs as that statement.
@@ -667,7 +668,8 @@ export function modeOf(
 	if (!single) {
 		const statements = splitStatements(sql);
 		if (statements.length > 1) return "script";
-		if (statements.length === 0) return "try first";
+		// Nothing to run, nor to wait for.
+		if (statements.length === 0) return "as before";
 		return modeOf(gate, owner, database, statements[0]!, params, true);
 	}
 	if (busyTimeoutOf(gate, owner, database) === 0) return "as before";
