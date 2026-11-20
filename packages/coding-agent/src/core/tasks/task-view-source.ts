@@ -24,7 +24,9 @@ import { isTaskTurnInterrupted, type OwnerTaskStore, type TaskActivity } from ".
 import { scopedBackgroundTasks } from "./session-scope.js";
 import {
 	loadTaskOwnTranscriptEntries,
+	type QueuedTaskMessages,
 	type TaskMessageDelivery,
+	type TaskMessageLane,
 	type TaskTranscriptSource,
 	taskExtensionStatuses,
 	taskOwnTranscriptEntries,
@@ -231,11 +233,19 @@ export interface TaskViewSource {
 	extensionStatuses(id: TaskId): ReadonlyMap<string, string>;
 	watchExtensionStatuses(id: TaskId, listener: () => void): () => void;
 	/**
-	 * Sends `text` to an agent task through its Intercom target, as a message typed into its transcript. Resolves
-	 * once the channel confirmed delivery; rejects with a {@link TaskMessageError}. Absent where tasks cannot be
-	 * messaged.
+	 * Gives `text`, as typed into an agent task's chat, to the task's own session, as the main chat gives typed text
+	 * to its session. While the task's turn runs the message waits in the session's queue on `lane` (default
+	 * `"steer"`), delivered at the same boundaries as in the main chat; a task whose turn was interrupted, or a
+	 * finished subagent that can be resumed, takes it as its next message. The model receives the raw text. Resolves
+	 * once the session accepted the message; rejects with a {@link TaskMessageError}, whose text the chat gives back to
+	 * its editor. Absent where tasks cannot be messaged.
 	 */
-	sendTaskMessage?(id: TaskId, text: string): Promise<void>;
+	sendTaskMessage?(id: TaskId, text: string, lane?: TaskMessageLane): Promise<void>;
+	/**
+	 * Takes back every message waiting in an agent task's queue, in order, so its chat can restore them to the editor
+	 * (Alt+Up, Esc). Nothing taken back is delivered. Absent where a view cannot reach a task's queue.
+	 */
+	clearTaskQueue?(id: TaskId): Promise<TaskViewResult<QueuedTaskMessages>>;
 	/**
 	 * Interrupts an agent task's current turn, as Esc does in its chat. The task keeps running and waits for its next
 	 * message. Absent where a view cannot interrupt a task's turn.
@@ -303,6 +313,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	if (existing !== undefined) return existing;
 	const launched = (tasks: readonly TaskRecord[]) => tasks.filter((task) => task.parentTaskId === launcher);
 	const sendTaskMessage = root.sendTaskMessage;
+	const clearTaskQueue = root.clearTaskQueue;
 	const taskCommands = root.taskCommands;
 	const interruptTask = root.interruptTask;
 	const taskReadOnlyReason = root.taskReadOnlyReason;
@@ -340,7 +351,13 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 		watchExtensionStatuses: (id, listener) => root.watchExtensionStatuses(id, listener),
 		...(sendTaskMessage === undefined
 			? {}
-			: { sendTaskMessage: (id: TaskId, text: string) => sendTaskMessage.call(root, id, text) }),
+			: {
+					sendTaskMessage: (id: TaskId, text: string, lane?: TaskMessageLane) =>
+						lane === undefined
+							? sendTaskMessage.call(root, id, text)
+							: sendTaskMessage.call(root, id, text, lane),
+				}),
+		...(clearTaskQueue === undefined ? {} : { clearTaskQueue: (id: TaskId) => clearTaskQueue.call(root, id) }),
 		...(taskCommands === undefined ? {} : { taskCommands: (id: TaskId) => taskCommands.call(root, id) }),
 		...(interruptTask === undefined ? {} : { interruptTask: (id: TaskId) => interruptTask.call(root, id) }),
 		...(taskStopped === undefined ? {} : { taskStopped: (id: TaskId) => taskStopped.call(root, id) }),
