@@ -5,13 +5,13 @@ description: Give Atomic durable, repository-specific instructions with AGENTS.m
 
 # Project instructions
 
-**Outcome:** Atomic loads your repository's conventions automatically in every session.
+**Outcome:** Atomic loads your repository's conventions automatically at startup.
 
 **Prerequisites:** [First session](/getting-started/first-session) is complete.
 
 ## Give Atomic project instructions
 
-Atomic loads context files at startup. Add an `AGENTS.md` file to tell it how to work in a project:
+Create an `AGENTS.md` file in your project root to tell Atomic your build commands, conventions, and guardrails:
 
 ```markdown
 # Project Instructions
@@ -21,26 +21,27 @@ Atomic loads context files at startup. Add an `AGENTS.md` file to tell it how to
 - Keep responses concise.
 ```
 
-Atomic loads:
+At startup, Atomic loads context files in this order:
 
-- `~/.atomic/agent/AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` for global instructions (legacy `~/.pi/agent/` also works)
-- `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` from parent directories and the current directory
+1. **Global:** `~/.atomic/agent/AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` (legacy `~/.pi/agent/` also works).
+2. **Project hierarchy:** `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` from parent directories down to the current directory.
 
-An `AGENTS.override.md` file replaces the other context files in its directory. Restart Atomic, or run `/reload`, after changing context files.
+Inside any single directory, `AGENTS.override.md` replaces `AGENTS.md` and `CLAUDE.md`. Files from different directories are concatenated. Run `/reload` (or restart Atomic) after editing context files.
 
 ## Verify Atomic loaded them
 
-With `AGENTS.md` saved, run `/reload` (or restart Atomic), then ask:
+Run `/reload`, then ask:
 
 ```text
 What project instructions are you following in this repository?
 ```
 
-The answer should restate your rules, such as the `bun run typecheck` line above, rather than give generic advice. If it does not, check that:
+Atomic should cite your rules (such as `bun run typecheck`). If it gives generic advice, check that:
 
 - The file is named `AGENTS.md`.
-- It is in the directory where you started Atomic or one of its parents.
-- No `AGENTS.override.md` in the same directory replaces it.
+- It sits in your current directory or a parent directory.
+- No `AGENTS.override.md` in the same directory overrides it.
+- The project is trusted (see [Security](/security)).
 
 ## Next step
 

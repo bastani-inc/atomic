@@ -5,53 +5,53 @@ description: Connect Atomic to a provider with a subscription login or an API ke
 
 # Authentication
 
-**Outcome:** Atomic can reach a model provider and `/model` lists models you can select.
+**Outcome:** Atomic is connected to a model provider and `/model` lists selectable models.
 
 **Prerequisites:** [Installation](/getting-started/installation) is complete.
 
 ## Authenticate
 
-Atomic can use subscription providers through `/login`, or API-key providers through environment variables or the auth file.
+Connect via a subscription login (`/login`) or an API key (environment variable or `~/.atomic/agent/auth.json`).
 
 ### Option 1: subscription login
 
-Start Atomic and run:
+Start Atomic and run `/login`:
+
+```bash
+atomic
+```
 
 ```text
 /login
 ```
 
-Choose **Use a subscription**, then select a provider. Built-in subscription logins include Claude Pro/Max, ChatGPT Plus/Pro (Codex), and GitHub Copilot.
+Choose **Use a subscription**, then select your provider (including Claude Pro/Max, ChatGPT Plus/Pro (Codex), GitHub Copilot, OpenRouter, Kimi Code, or xAI).
 
 ### Option 2: API key
 
-Set an API key before launching Atomic:
+Export an API key before launching Atomic:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 atomic
 ```
 
-You can also run `/login`, choose **Use an API key**, then select a provider to store the key in `~/.atomic/agent/auth.json`.
+Or store a key in `~/.atomic/agent/auth.json` by running `/login`, choosing **Use an API key**, and selecting a provider.
 
-See [Providers](/providers) for all supported providers, environment variables, and provider-specific setup.
+See [Providers](/providers) for all supported providers, environment variables, and cloud setup (Bedrock, Vertex, Azure).
 
 ## Verify authentication
 
-Start Atomic in any directory and run:
+1. Start Atomic and run `/model`. Confirm models appear for your provider with an active selection marked.
+   - If the list is empty, rerun `/login` or verify that your API key is exported in the same shell.
+2. Select a model and send a test prompt such as `Reply with hello.`
+   - A listed model or stored credential does not prove connectivity or quota; a live response confirms access.
 
-```text
-/model
-```
-
-The model picker should list selectable models for the provider you configured, with the active one marked. If it is empty or Atomic reports no configured provider:
-
-- Re-run `/login`.
-- If using an API key, confirm its environment variable is exported in the shell that launched Atomic.
-
-`/login` opens **Select authentication method:**. Choose **Use a subscription** or **Use an API key** to see the corresponding provider picker and credential-configuration status. That status can reflect stored, environment, runtime, or configuration credentials; it does not test connectivity or prove that a provider will accept a request. OAuth sign-ins that are not backed by a subscription are labeled **account** in the provider pickers and status. Cancelling a sign-in returns to the menu you started it from.
-
-Select a model with `/model`, then send a short prompt such as `Reply with hello.` A successful response confirms access for that request. If it fails, check the reported authentication, quota, model-access, or network error before retrying. A configured credential or a listed model alone does not prove access.
+**About `/login` menus:**
+- `/login` opens **Select authentication method:** with **Use a subscription** and **Use an API key**.
+- Provider status shows whether credentials exist (stored, environment, runtime, or config); it does not test connectivity.
+- OAuth sign-ins that are not backed by a subscription are labeled **account**.
+- Cancelling a sign-in returns to the menu you came from.
 
 ## Next step
 
