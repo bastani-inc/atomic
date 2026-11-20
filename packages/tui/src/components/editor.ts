@@ -540,6 +540,16 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
+	/**
+	 * Replace the history up/down walk, newest first as {@link getHistory} returns it, kept as {@link addToHistory}
+	 * keeps entries. The text and cursor stay as they are; browsing ends, so the shown entry becomes the draft.
+	 */
+	setHistory(newestFirst: readonly string[]): void {
+		this.history = [];
+		this.exitHistoryBrowsing();
+		for (let index = newestFirst.length - 1; index >= 0; index--) this.addToHistory(newestFirst[index]!);
+	}
+
 	private isEditorEmpty(): boolean {
 		return this.state.lines.length === 1 && this.state.lines[0] === "";
 	}
