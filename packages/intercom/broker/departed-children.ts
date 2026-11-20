@@ -117,7 +117,7 @@ export type EndedChildWakeAdmission =
 	/** A wake bound refused it: the child's ended refusal, and `reason` saying why it was not woken. */
 	| { readonly kind: "refused"; readonly error: IntercomRecipientGoneError; readonly reason: string }
 	/**
-	 * Durable wake queue: the store still counts what it kept before this broker opened it, and the message may not fit:
+	 * Durable wake queue: the store still counts what it kept before this broker opened it, so the message may not fit:
 	 * decide it again once the store has counted (`DurableEndedQueue.untilCounted`), as the last attempt.
 	 */
 	| { readonly kind: "uncounted" };
@@ -151,7 +151,7 @@ export interface DepartedChildrenWakeHooks {
 	 * Durable wake queue: what the store keeps for the departure's subagent (`child`) and in all (`total`), counted from
 	 * the store itself: rows of messages handed over and not confirmed yet, of failures kept for their senders, and of
 	 * deletes that failed count too, until their rows are gone. `counting` while the store still counts the rows it found
-	 * when it opened: then each is at least its cap. Undefined while only memory keeps the queue.
+	 * when it opened: then they are what is known so far. Undefined while only memory keeps the queue.
 	 */
 	readonly storedCounts?: (
 		departure: JournalDeparture,
@@ -770,12 +770,19 @@ export class DepartedChildren {
 						? `Intercom already keeps ${mebibytes(kept)} of messages for subagents that ended`
 						: undefined;
 		if (full !== undefined) {
-			// The store has not counted what it kept yet: only its count can say this message does not fit.
-			const byCount =
-				departure.queued.length < MAX_HELD_SENDS && bytes <= ENDED_CHILD_QUEUE_BYTES_MAX && stored?.counting === true;
-			if (byCount && !counted) return { kind: "uncounted" };
 			const error = this.errorFor(departure, ended, target);
 			return { kind: "refused", error, reason: `${error.message} The message was not queued for it: ${full}.` };
+		}
+		// The store has not counted what it kept yet, so what is known so far proves nothing: the message waits for the
+		// count, once; still not counted then, it is refused saying so.
+		if (stored?.counting === true) {
+			if (!counted) return { kind: "uncounted" };
+			const error = this.errorFor(departure, ended, target);
+			return {
+				kind: "refused",
+				error,
+				reason: `${error.message} The message was not queued for it: Intercom is still counting the messages it keeps for subagents that ended; send it again shortly.`,
+			};
 		}
 		let wake: EndedChildWakeRequest | undefined;
 		// A child stopped on purpose is not woken: the message waits for its owner to continue it. Nor is one whose owner is

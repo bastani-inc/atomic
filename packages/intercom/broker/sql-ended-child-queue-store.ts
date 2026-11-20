@@ -8,11 +8,7 @@ import {
 	type SqliteRow,
 	validateStoragePrefix,
 } from "@bastani/atomic/storage";
-import {
-	ENDED_CHILD_QUEUE_BYTES_MAX,
-	ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX,
-	EndedChildQueueFullError,
-} from "./ended-child-wakes.js";
+import { ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX, EndedChildQueueFullError } from "./ended-child-wakes.js";
 import type { IntercomBrokerStateOptions } from "./multinode-state-store.js";
 import { ensureBrokerSchema } from "./sql-schema.js";
 
@@ -99,7 +95,7 @@ export interface EndedQueueDepartureKey {
 
 /**
  * The bytes the caps count of what a store keeps: for one subagent's rows (`child`), and for all of them. While the store
- * still counts the rows it found when it opened (`counting`), each is at least its cap: nothing fits until it is done.
+ * still counts the rows it found when it opened (`counting`), they are what is known so far: the store may keep more.
  */
 export interface EndedQueueCounted {
 	readonly child: number;
@@ -122,7 +118,8 @@ export interface EndedChildQueueStore {
 	 * What the caps count of the rows kept for `departure`'s subagent, and of all of them: never less than the store
 	 * holds. A message counts from when it is added (before its row is written) until its row is deleted (once that
 	 * commits), also while a delete that failed waits to be tried again. The rows the store held when it opened are
-	 * counted after it opened, in the background; until then every subagent, and the store, count as full.
+	 * counted after it opened, in the background (a read that fails is tried again until one succeeds); until then the
+	 * counts are what is known so far, and `counting` says so.
 	 */
 	counted(departure: EndedQueueDepartureKey): EndedQueueCounted;
 	/** Resolves once the rows the store held when it opened are counted. */
@@ -836,9 +833,10 @@ export async function openSqlEndedChildQueueStore(
 	// What the caps count of the store: the sums of every row of this home, per subagent, an earlier keeper's too (they
 	// stay until this broker takes the rows over). Counted once the store is open, in the background, never while it
 	// opens (a broker that opens it waits for nothing more than the store's own setup): a page of rows per statement,
-	// the event loop running between pages, and no read waits for a lock. Until the count is done, every subagent and the
-	// store count as full (see `counted`), so nothing queued meanwhile can pass a cap. Rows this broker writes meanwhile
-	// are counted by id, and `load` counts this keeper's rows by id as it reads them, once the count is done.
+	// the event loop running between pages, and no read waits for a lock. Until the count is done, `counted` says so,
+	// and nothing is queued that what is known so far does not prove fits (see `DepartedChildren`). Rows this broker
+	// writes meanwhile are counted by id, and `load` counts this keeper's rows by id as it reads them, once the count is
+	// done.
 	const ledger = new CountedRows();
 	// The rows written before this one opened the store: any later one is this broker's, counted by id.
 	const newest = await database.get<SqliteRow & { seq: number | bigint | null }>(`SELECT MAX(seq) AS seq FROM ${queue}`);
@@ -938,10 +936,13 @@ export async function openSqlEndedChildQueueStore(
 				}),
 			)
 			.then(() => {
+				countRetryDelay = RETRY_DELETE_FIRST_MS;
 				if (!closing) finishCounting();
 			})
 			.catch(() => {
-				// Counted as before; the next failure or drain counts again.
+				// Counted as before; the next failure or drain counts again. One that has never been counted is tried
+				// again, until it is.
+				if (counting) recountLater();
 			})
 			.finally(() => {
 				recounting = undefined;
@@ -950,6 +951,18 @@ export async function openSqlEndedChildQueueStore(
 					recountSoon();
 				}
 			});
+	};
+	let countRetryTimer: ReturnType<typeof setTimeout> | undefined;
+	let countRetryDelay = RETRY_DELETE_FIRST_MS;
+	/** Count again later: a read that failed is tried again, at most {@link RETRY_DELETE_MAX_MS} apart. */
+	const recountLater = (): void => {
+		if (closing || countRetryTimer !== undefined) return;
+		countRetryTimer = setTimeout(() => {
+			countRetryTimer = undefined;
+			recountSoon();
+		}, countRetryDelay);
+		countRetryTimer.unref?.();
+		countRetryDelay = Math.min(countRetryDelay * 2, RETRY_DELETE_MAX_MS);
 	};
 	const drained = (): void => {
 		if (!counting && !ledger.holdsMessages()) recountSoon();
@@ -1128,14 +1141,7 @@ export async function openSqlEndedChildQueueStore(
 			return [...targets];
 		},
 		counted(departure) {
-			const exact = ledger.counted(countedKeyOf(departure));
-			if (!counting) return { ...exact, counting: false };
-			// Until the rows found at open are counted, every subagent and the store count as full.
-			return {
-				child: Math.max(exact.child, ENDED_CHILD_QUEUE_BYTES_MAX),
-				total: Math.max(exact.total, ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX),
-				counting: true,
-			};
+			return { ...ledger.counted(countedKeyOf(departure)), counting };
 		},
 		whenCounted() {
 			return countedAll;
@@ -1360,6 +1366,8 @@ export async function openSqlEndedChildQueueStore(
 				closing = true;
 				clearTimeout(retryTimer);
 				retryTimer = undefined;
+				clearTimeout(countRetryTimer);
+				countRetryTimer = undefined;
 				await summed;
 				await retrying;
 				await recounting;

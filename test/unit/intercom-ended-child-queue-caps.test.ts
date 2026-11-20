@@ -102,6 +102,8 @@ async function broker(
 		whileLoading?: true;
 		/** Counting what the store kept takes until this settles, as on a slow disk or a remote database. */
 		countTakes?: Promise<void>;
+		/** Reads whose statement matches one of these fail, each the first time, as in a database's read outage. */
+		failOnce?: RegExp[];
 	} = {},
 ) {
 	const lockWaitMs = options.lockWaitMs ?? 5_000;
@@ -111,6 +113,18 @@ async function broker(
 		const all = database.all.bind(database);
 		database.all = (async (sql: string, ...params: Parameters<typeof database.all>[1][]) => {
 			if (/SUM\(bytes\)/.test(sql)) await countTakes;
+			return all(sql, ...params);
+		}) as typeof database.all;
+	}
+	const failOnce = [...(options.failOnce ?? [])];
+	if (failOnce.length > 0) {
+		const all = database.all.bind(database);
+		database.all = (async (sql: string, ...params: Parameters<typeof database.all>[1][]) => {
+			const index = failOnce.findIndex((pattern) => pattern.test(sql));
+			if (index >= 0) {
+				failOnce.splice(index, 1);
+				throw new Error("the database could not be read");
+			}
 			return all(sql, ...params);
 		}) as typeof database.all;
 	}
@@ -152,7 +166,7 @@ async function broker(
 	// As the broker does: sends wait until what an earlier broker kept is taken up again; only a test of that window
 	// goes on at once.
 	if (options.whileLoading !== true) await queue.untilLoaded();
-	return { database, queue, departed, failed, live, logs };
+	return { database, queue, departed, failed, live, logs, store: store as EndedChildQueueStore };
 }
 
 /** The bytes the store keeps for messages, as written there (all of them, or those for one subagent). */
@@ -422,7 +436,35 @@ test("a restarted broker keeps its store however long counting what it kept take
 	assert.ok((await countedOnDisk(path)) > 32 * MiB, "every kept row is still there, and the one queued");
 }, 60_000);
 
-test("a message that may not fit is refused with the cap's reason when counting what the store kept outlasts the store's open wait", async () => {
+test("counting what the store kept is tried again until it succeeds, after its reads failed: then a message with room is queued", async () => {
+	const path = storePath();
+	const child = "subagent-worker-recounted-1";
+	await keptEarlier(path, child, 2);
+	// The first read of the sums fails, and so does the first read of the recount that follows, as in a read outage just
+	// after the store opened.
+	const { departed, store } = await broker(path, {
+		whileLoading: true,
+		failOnce: [/SUM\(bytes\)/, /SELECT seq, message_id, owner_host, owner_session_id, child_key, keeper, bytes FROM/],
+	});
+	const counted = await Promise.race([
+		store.whenCounted().then(() => "counted"),
+		new Promise<string>((resolve) => setTimeout(() => resolve("still counting"), 20_000)),
+	]);
+	assert.equal(counted, "counted");
+	assert.deepEqual(store.counted({ ownerSessionId: OWNER, ownerHost: HOST, childKey: child }), {
+		child: 2 * MiB,
+		total: 2 * MiB,
+		counting: false,
+	});
+	const sender = wakeSender("peer");
+	departed.mark(OWNER, [paused(child)]);
+	const held = send(child, sender, "after the outage");
+	const admission = departed.admitWake(child, sender, held);
+	assert.equal(admission.kind, "queued");
+	await (admission as { kept?: Promise<unknown> }).kept;
+}, 60_000);
+
+test("a message is refused saying Intercom is still counting when counting what the store kept outlasts the store's open wait", async () => {
 	const path = storePath();
 	const child = "subagent-worker-uncounted-1";
 	await keptEarlier(path, child, 1);
@@ -442,7 +484,7 @@ test("a message that may not fit is refused with the cap's reason when counting 
 	assert.equal(decided.kind, "refused");
 	assert.match(
 		(decided as { reason: string }).reason,
-		/The message was not queued for it: 32 MiB of messages already wait for it\./,
+		/The message was not queued for it: Intercom is still counting the messages it keeps for subagents that ended; send it again shortly\./,
 	);
 	finishCount();
 }, 60_000);
