@@ -69,7 +69,8 @@ export function renderSteeredPendingMessages<TExtraEntry extends ChatTranscriptE
 	width: number,
 ): string[] {
 	const dequeueKey = state.getActionKeyDisplay?.("app.message.dequeue") ?? keyDisplayText("app.message.dequeue");
-	return new QueuedMessagesView(queuedMessageRows(controller.allQueued()), dequeueKey, (text) =>
+	const delivering = { steering: state.deliveringTexts("steer"), followUp: state.deliveringTexts("followUp") };
+	return new QueuedMessagesView(queuedMessageRows(controller.allQueued(), delivering), dequeueKey, (text) =>
 		state.style.dim(text),
 	).render(width);
 }

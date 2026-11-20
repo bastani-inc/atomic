@@ -25,6 +25,7 @@
 ### Changed
 
 - The standalone `atomic` binaries are now built with Bun 1.4.5, which includes upstream security fixes for TLS, HTTP and DNS in the embedded runtime. They now check custom CA certificates, such as those in `NODE_EXTRA_CA_CERTS` or a PostgreSQL `sslrootcert`, the way Node.js and the npm-installed `atomic` already do: a root certificate that is not marked as a CA, or that is limited to client authentication, is refused with `INVALID_PURPOSE`
+- A queued message to a subagent no longer disappears for a frame when the subagent takes it. Its `Steering:` or `Follow-up:` row now stays until the message itself shows in the subagent's transcript, and goes in the same frame, also while extensions handle the message first.
 
 ## [0.10.0] - 2026-11-20
 

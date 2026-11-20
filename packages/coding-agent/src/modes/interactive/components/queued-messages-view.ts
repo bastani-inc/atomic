@@ -1,5 +1,5 @@
 import { type Component, Spacer, TruncatedText } from "@bastani/atomic-tui";
-import type { SteeringLane, SteeringQueuedTexts } from "../steering-queue-controller.ts";
+import type { SteeringLane, SteeringQueuedTexts, SteeringQueueLists } from "../steering-queue-controller.ts";
 
 /** One queued message as a chat lists it above its prompt. */
 export interface QueuedMessageRow {
@@ -12,11 +12,21 @@ export function queuedMessageLabel(lane: SteeringLane): "Steering" | "Follow-up"
 	return lane === "steer" ? "Steering" : "Follow-up";
 }
 
-/** The rows for `queued`: every steering message, then every follow-up, each lane in delivery order. */
-export function queuedMessageRows(queued: Readonly<SteeringQueuedTexts>): QueuedMessageRow[] {
+/**
+ * The rows for `queued`: every steering message, then every follow-up, each lane in delivery order. `delivering` are
+ * messages the agent already took whose own row its transcript does not show yet; each leads its lane until it does.
+ */
+export function queuedMessageRows(
+	queued: Readonly<SteeringQueuedTexts>,
+	delivering?: Readonly<SteeringQueueLists>,
+): QueuedMessageRow[] {
 	return [
-		...queued.steering.map((text): QueuedMessageRow => ({ lane: "steer", text })),
-		...queued.followUp.map((text): QueuedMessageRow => ({ lane: "followUp", text })),
+		...[...(delivering?.steering ?? []), ...queued.steering].map(
+			(text): QueuedMessageRow => ({ lane: "steer", text }),
+		),
+		...[...(delivering?.followUp ?? []), ...queued.followUp].map(
+			(text): QueuedMessageRow => ({ lane: "followUp", text }),
+		),
 	];
 }
 

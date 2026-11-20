@@ -9,12 +9,37 @@ import { dismissedAgentPanelItems, subscribeAgentPanel } from "../../core/tasks/
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
-import type { AgentViewPort } from "../interactive/agent-view/contracts.ts";
+import type { AgentViewPort, AgentViewStatus } from "../interactive/agent-view/contracts.ts";
 import { openLocalAgentViewPort } from "../interactive/agent-view/local-port.ts";
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
+import type { SteeringQueueLists } from "../interactive/steering-queue-controller.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
 import type { EngineAgentViewContext } from "./agent-view-rpc.ts";
+
+/** The queued rows the host draws for `status`, per lane: the messages being delivered, then the queue. */
+function queuedRowTexts(status: AgentViewStatus): SteeringQueueLists {
+	return {
+		steering: [...(status.delivering?.steering ?? []), ...status.queued.steering],
+		followUp: [...(status.delivering?.followUp ?? []), ...status.queued.followUp],
+	};
+}
+
+/** Whether `after` lists some row of `before` fewer times, in either lane. */
+function removesRow(before: SteeringQueueLists, after: SteeringQueueLists): boolean {
+	return removesFromLane(before.steering, after.steering) || removesFromLane(before.followUp, after.followUp);
+}
+
+function removesFromLane(before: readonly string[], after: readonly string[]): boolean {
+	const left = new Map<string, number>();
+	for (const text of after) left.set(text, (left.get(text) ?? 0) + 1);
+	for (const text of before) {
+		const count = left.get(text) ?? 0;
+		if (count === 0) return true;
+		left.set(text, count - 1);
+	}
+	return false;
+}
 
 /** The views the host opened on this engine, by view id. */
 export interface EngineAgentViews {
@@ -94,13 +119,24 @@ class EngineAgentViewRegistry implements EngineAgentViews {
 			return port.transcript;
 		});
 		let scheduled = false;
+		let sentRows = queuedRowTexts(port.status());
+		let sentShown = port.userMessagesShown();
 		const unsubscribe = port.subscribe(() => {
 			if (scheduled) return;
 			scheduled = true;
 			queueMicrotask(() => {
 				scheduled = false;
 				if (this.views.get(viewId)?.port !== port) return;
-				send({ type: "engine_agent_view_status", viewId, status: port.status() });
+				const status = port.status();
+				const rows = queuedRowTexts(status);
+				const shown = port.userMessagesShown();
+				// A queued row the host takes away because its message reached the transcript goes after that
+				// transcript: its frame, if one is due, is sent first, so no frame the host paints shows the message in
+				// neither place. A row taken back without a delivery (Alt+Up, Esc) goes at once.
+				if (shown !== sentShown && removesRow(sentRows, rows)) mount.paintPendingFrame();
+				sentRows = rows;
+				sentShown = shown;
+				send({ type: "engine_agent_view_status", viewId, status });
 			});
 		});
 		const view: EngineView = {

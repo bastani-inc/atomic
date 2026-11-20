@@ -45,6 +45,11 @@ export interface AgentViewStatus {
 	readonly retrying: boolean;
 	/** The subagent's own queue as it last listed it. */
 	readonly queued: SteeringQueueLists;
+	/**
+	 * Messages it took from its queue whose own row its transcript does not show yet: drawn as queued rows ahead of
+	 * `queued` until it does, so a message is never off screen. Drawing only; left out when there are none.
+	 */
+	readonly delivering?: SteeringQueueLists;
 	/** Why messages cannot reach it any more; undefined while they can. */
 	readonly readOnlyReason?: string;
 	/** It waits on a question form, drawn in the transcript area, which takes the keys meanwhile. */

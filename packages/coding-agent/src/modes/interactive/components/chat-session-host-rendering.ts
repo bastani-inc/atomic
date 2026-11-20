@@ -109,7 +109,11 @@ export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscr
 ): string[] {
 	if (state.steeringController !== undefined)
 		return renderSteeredPendingMessages(state, state.steeringController, width);
+	const deliveringSteering = state.deliveringTexts("steer");
+	const deliveringFollowUp = state.deliveringTexts("followUp");
 	if (
+		deliveringSteering.length === 0 &&
+		deliveringFollowUp.length === 0 &&
 		state.pendingSteeringMessages.length === 0 &&
 		state.pendingFollowUpMessages.length === 0 &&
 		state.unconfirmedQueuedMessages.length === 0 &&
@@ -120,10 +124,10 @@ export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscr
 	const lines = [state.style.blank(width)];
 	const unconfirmed = (mode: "steer" | "followUp") =>
 		state.unconfirmedQueuedMessages.filter((message) => message.mode === mode).map((message) => message.text);
-	for (const message of [...state.pendingSteeringMessages, ...unconfirmed("steer")]) {
+	for (const message of [...deliveringSteering, ...state.pendingSteeringMessages, ...unconfirmed("steer")]) {
 		lines.push(...pendingMessageLine(state, width, "Steering", message));
 	}
-	for (const message of [...state.pendingFollowUpMessages, ...unconfirmed("followUp")]) {
+	for (const message of [...deliveringFollowUp, ...state.pendingFollowUpMessages, ...unconfirmed("followUp")]) {
 		lines.push(...pendingMessageLine(state, width, "Follow-up", message));
 	}
 	for (const message of state.compactionQueuedMessages) {

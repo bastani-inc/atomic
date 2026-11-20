@@ -12,6 +12,7 @@ import {
 	createVerbatimCompactionMessage,
 	isVerbatimCompactionMessage,
 } from "../../../core/messages.ts";
+import { queueUpdateDeliveries } from "../../../core/queued-message-delivery.ts";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import { confirmQueuedChatSessionMessages, flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
 import {
@@ -246,6 +247,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	if (type === "message_start") {
 		const message = (event as { message?: unknown }).message;
 		if (isUserMessageLike(message)) {
+			state.userMessagesShown++;
 			if (!state.seenFirstRawUser) {
 				state.seenFirstRawUser = true;
 				state.firstUserEntryExactText = exactTextOnlyUserPrompt(message);
@@ -367,6 +369,8 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 				? queue.followUp.filter((item): item is string => typeof item === "string")
 				: [];
 			confirmQueuedChatSessionMessages(state, steering, followUp);
+			// Messages the turn took whose own row is not here yet stay listed until it is.
+			state.deliveringQueuedMessages = queueUpdateDeliveries(event);
 			state.pendingSteeringMessages = steering;
 			state.pendingFollowUpMessages = followUp;
 			changed = true;

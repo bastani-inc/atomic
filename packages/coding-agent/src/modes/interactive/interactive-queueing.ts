@@ -117,7 +117,11 @@ InteractiveModeBase.prototype.updatePendingMessagesDisplay = function (this: Int
 	// While a subagent is shown, the rows above the prompt are its queue, drawn as the main chat draws its own.
 	const viewed = viewedSteering(this);
 	if (viewed !== undefined) {
-		const rows = queuedMessageRows(viewed.allQueued());
+		const shown = this.agentView?.viewed;
+		const rows = queuedMessageRows(
+			viewed.allQueued(),
+			shown?.kind === "agent" ? shown.port.status().delivering : undefined,
+		);
 		if (rows.length === 0) return;
 		const dequeueKey = this.getAppKeyDisplay("app.message.dequeue");
 		this.pendingMessagesContainer.addChild(new QueuedMessagesView(rows, dequeueKey, (text) => theme.fg("dim", text)));
