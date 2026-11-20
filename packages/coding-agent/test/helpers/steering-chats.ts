@@ -4,6 +4,7 @@ import { KeybindingsManager, useWindowsKeybindings } from "../../src/core/keybin
 import type { TaskId, TaskRecord } from "../../src/core/tasks/contracts.js";
 import type { TaskTranscriptSource } from "../../src/core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../src/core/tasks/task-view-source.js";
+import type { ExtensionFactory, ResourceLoader } from "../../src/index.js";
 import { ChatSessionHost } from "../../src/modes/interactive/components/chat-session-host.js";
 import { keyDisplayText } from "../../src/modes/interactive/components/keybinding-hints.js";
 import { TaskInspector } from "../../src/modes/interactive/components/task-inspector.js";
@@ -37,6 +38,13 @@ function busyTurnResponses(): FauxResponseStep[] {
  * panel's chat and the `/tasks` transcript are the same component). The steered agent is a real session on the faux
  * provider, so what it queues and what its model receives are its own.
  */
+/** What the steered session is given besides its held tool. */
+export interface SteeringChatOptions {
+	readonly extensions?: ExtensionFactory[];
+	/** Its resources, such as prompt templates; it replaces `extensions`. */
+	readonly resourceLoader?: ResourceLoader;
+}
+
 export interface SteeringChat {
 	readonly kind: "main" | "subagent";
 	/** The session this chat steers. */
@@ -65,9 +73,13 @@ function queueRowLines(lines: readonly string[]): string[] {
 	return lines.map((line) => stripAnsi(line).trim()).filter((line) => /^(Steering|Follow-up|Queued): |^↳ /.test(line));
 }
 
-export async function mainChat(): Promise<SteeringChat> {
+export async function mainChat(options: SteeringChatOptions = {}): Promise<SteeringChat> {
 	const toolHold = createGate();
-	const rig = await createRig("local", "quiet", { tools: [holdTool(toolHold)] });
+	const rig = await createRig("local", "quiet", {
+		tools: [holdTool(toolHold)],
+		...(options.extensions ? { extensions: options.extensions } : {}),
+		...(options.resourceLoader ? { resourceLoader: options.resourceLoader } : {}),
+	});
 	rig.host.getAppKeyDisplay = (action) => keyDisplayText(action as Parameters<typeof keyDisplayText>[0]);
 	Object.assign(rig.host, { isInitialized: true, footer: { invalidate() {} }, programStatus: { handleEvent() {} } });
 	const handleEvent: (this: typeof rig.host, event: object) => Promise<void> = Reflect.get(
@@ -180,12 +192,26 @@ function childTaskSource(child: Harness, taskId: TaskId): TaskViewSource {
 	};
 }
 
-export async function subagentChat(): Promise<SteeringChat> {
+/** A subagent's chat, with what only it has: its keys as the terminal sends them, and its screen. */
+export interface SubagentSteeringChat extends SteeringChat {
+	/** Type `text` without sending it. */
+	type(text: string): Promise<void>;
+	/** Send raw key bytes to the chat. */
+	press(data: string): Promise<void>;
+	/** The chat as drawn, without colors. */
+	screen(): string;
+}
+
+export async function subagentChat(options: SteeringChatOptions = {}): Promise<SubagentSteeringChat> {
 	initTheme("dark");
 	const previousKeys = getKeybindings();
 	setKeybindings(new KeybindingsManager());
 	const toolHold = createGate();
-	const child = await createHarness({ tools: [holdTool(toolHold)] });
+	const child = await createHarness({
+		tools: [holdTool(toolHold)],
+		...(options.extensions ? { extensionFactories: options.extensions } : {}),
+		...(options.resourceLoader ? { resourceLoader: options.resourceLoader } : {}),
+	});
 	child.setResponses(busyTurnResponses());
 	const taskId = "task-steered-1" as TaskId;
 	let chat: ChatSessionHost | undefined;
@@ -211,6 +237,7 @@ export async function subagentChat(): Promise<SteeringChat> {
 		for (const ch of text) inspector.handleInput(ch);
 		await flush();
 	};
+	const screenLines = () => inspector.renderViewport(WIDTH, HEIGHT).map((line) => stripTerminalSequences(line));
 	let turn: Promise<void> | undefined;
 	return {
 		kind: "subagent",
@@ -237,9 +264,14 @@ export async function subagentChat(): Promise<SteeringChat> {
 			await sleep(20);
 			await flush();
 		},
-		queuedRows: () =>
-			queueRowLines(inspector.renderViewport(WIDTH, HEIGHT).map((line) => stripTerminalSequences(line))),
+		queuedRows: () => queueRowLines(screenLines()),
 		editorText: () => chat?.inputText() ?? "",
+		type,
+		async press(data) {
+			inspector.handleInput(data);
+			await flush();
+		},
+		screen: () => screenLines().join("\n"),
 		async stop() {
 			toolHold.release.resolve();
 			inspector.dispose();

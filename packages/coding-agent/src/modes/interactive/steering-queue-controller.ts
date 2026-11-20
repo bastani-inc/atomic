@@ -1,5 +1,5 @@
 import type { ClearedQueue, PromptDisposition } from "../../core/agent-session-types.js";
-import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
+import { isRpcRequestAcceptedFailure, type RpcAcceptedRequestFailure } from "../rpc/rpc-transport-error.ts";
 import { combineQueuedMessagesForEditor } from "./chat-input-actions.ts";
 
 /**
@@ -88,8 +88,10 @@ export interface SteeringSubmitOptions {
 	route?: SteeringRoute;
 	/** Show the message as queued from submit until the target answers. Off for input that runs at once. */
 	showAsQueued?: boolean;
-	/** Called when the target answers the submission, before `submit` settles. */
+	/** Called when the target answers the submission, after the copy shown as queued is settled. */
 	onAnswered?: (success: boolean, disposition?: PromptDisposition) => void;
+	/** Called as soon as the target's call for an accepted submission returns, before `submit` settles. */
+	onSent?: () => void;
 }
 
 /**
@@ -101,7 +103,8 @@ export interface SteeringSubmitOptions {
  */
 export type SteeringSubmitResult =
 	| { readonly kind: "started" | "queued" | "handled" }
-	| { readonly kind: "refused" | "lost" | "failed"; readonly error: unknown };
+	| { readonly kind: "refused" | "failed"; readonly error: unknown }
+	| { readonly kind: "lost"; readonly error: RpcAcceptedRequestFailure };
 
 /** Every queued message, per lane: the target's, then unconfirmed submissions, then the editor's held ones. */
 export interface SteeringQueuedTexts {
@@ -247,6 +250,7 @@ export class SteeringQueueController {
 					options.onAnswered?.(success, answered);
 				},
 			});
+			options.onSent?.();
 		} catch (error) {
 			settle();
 			if (accepted) return { kind: "failed", error };
@@ -294,11 +298,18 @@ export class SteeringQueueController {
 	 * when nothing was queued.
 	 */
 	async restoreAll(editorText: () => string, options?: SteeringClearOptions): Promise<SteeringRestore | undefined> {
-		const { steering, followUp } = await this.clearAll(options);
-		const messages = [...steering, ...followUp];
-		if (messages.length === 0) return undefined;
-		return { messages, text: combineQueuedMessagesForEditor(messages, editorText()) };
+		return restoredQueue(await this.clearAll(options), editorText);
 	}
+}
+
+/**
+ * The editor text a restore leaves: every message taken back, steering messages first, then follow-ups, each lane in
+ * order, in front of the editor's own text, read only when something came back. `undefined` when nothing did.
+ */
+export function restoredQueue(queued: SteeringQueuedTexts, editorText: () => string): SteeringRestore | undefined {
+	const messages = [...queued.steering, ...queued.followUp];
+	if (messages.length === 0) return undefined;
+	return { messages, text: combineQueuedMessagesForEditor(messages, editorText()) };
 }
 
 function addedMessages(before: readonly string[], after: readonly string[]): Map<string, number> {
