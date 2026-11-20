@@ -1,9 +1,11 @@
 import { type FauxResponseStep, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings, stripTerminalSequences, type TUI } from "@bastani/atomic-tui";
+import { taskFixture } from "../../../../test/helpers/task-projection.js";
 import { KeybindingsManager, useWindowsKeybindings } from "../../src/core/keybindings.js";
 import type { TaskId, TaskRecord } from "../../src/core/tasks/contracts.js";
+import { TaskMessageError } from "../../src/core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../src/core/tasks/supervisor.js";
-import type { TaskViewSource } from "../../src/core/tasks/task-view-source.js";
+import { ownerTaskViewSource, type TaskViewSource } from "../../src/core/tasks/task-view-source.js";
 import type { ExtensionFactory, ResourceLoader } from "../../src/index.js";
 import { ChatSessionHost } from "../../src/modes/interactive/components/chat-session-host.js";
 import { keyDisplayText } from "../../src/modes/interactive/components/keybinding-hints.js";
@@ -123,10 +125,48 @@ const flush = async () => {
 };
 
 /**
- * The child steering target as a task view source exposes it: a message typed into the subagent's chat goes to its own
- * session on `lane` and resolves once the session accepted it; its queue comes back from the session's own answer.
+ * The child's transcript as the in-process child binding gives it to the task view: its session's events and queue, and
+ * the steering lanes a chat of it uses. A typed message goes to the child's own session on `lane` and resolves once the
+ * session accepted it; its queue comes back from the session's own answer, as typed.
  */
-function childTaskSource(child: Harness, taskId: TaskId): TaskViewSource {
+function childTranscript(child: Harness): TaskTranscriptSource {
+	return {
+		getSessionId: () => child.sessionManager.getSessionId(),
+		getEntries: () => child.sessionManager.getEntries(),
+		subscribe: (listener) => child.session.subscribe(listener),
+		isRunning: () => child.session.isStreaming,
+		getQueuedMessages: () => ({
+			steering: child.session.getSteeringMessages(),
+			followUp: child.session.getFollowUpMessages(),
+		}),
+		queueMessage: (text, lane) =>
+			new Promise((resolve) => {
+				const accepted = () => resolve({ delivered: true });
+				child.session
+					.prompt(text, {
+						streamingBehavior: lane,
+						preflightResult: (success) => {
+							if (success) accepted();
+						},
+					})
+					.then(accepted, (error: unknown) =>
+						resolve({
+							delivered: false,
+							reason: "refused",
+							detail: error instanceof Error ? error.message : String(error),
+						}),
+					);
+			}),
+		clearQueue: async () => {
+			const cleared = child.session.clearQueue();
+			const typed = cleared.typed ?? cleared;
+			return { steering: [...typed.steering], followUp: [...typed.followUp] };
+		},
+	};
+}
+
+/** A task view of one running subagent whose transcript is `transcript`, made by hand: the steering contract alone. */
+function handMadeTaskSource(transcript: TaskTranscriptSource, taskId: TaskId): TaskViewSource {
 	const record = (): TaskRecord => ({
 		ref: { ownerId: "owner-1" as never, taskId, sessionId: "parent-1" },
 		kind: "agent",
@@ -141,18 +181,7 @@ function childTaskSource(child: Harness, taskId: TaskId): TaskViewSource {
 		output: { byteCount: "0", omittedRanges: [] },
 		capabilities: { canCancel: true, canForeground: false, hasStdin: false },
 	});
-	const transcript: TaskTranscriptSource = {
-		getSessionId: () => child.sessionManager.getSessionId(),
-		getEntries: () => child.sessionManager.getEntries(),
-		subscribe: (listener) => child.session.subscribe(listener),
-		isRunning: () => child.session.isStreaming,
-		getQueuedMessages: () => ({
-			steering: child.session.getSteeringMessages(),
-			followUp: child.session.getFollowUpMessages(),
-		}),
-	};
-	const messages = () =>
-		child.sessionManager.getEntries().flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+	const messages = () => transcript.getEntries().flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
 	return {
 		get tasks() {
 			return [record()];
@@ -173,23 +202,40 @@ function childTaskSource(child: Harness, taskId: TaskId): TaskViewSource {
 		followTaskTranscript: () => ({ session: transcript, historyOnly: false }),
 		extensionStatuses: () => new Map(),
 		watchExtensionStatuses: () => () => {},
-		sendTaskMessage: (_id, text, lane = "steer") =>
-			new Promise<void>((resolve, reject) => {
-				child.session
-					.prompt(text, {
-						streamingBehavior: lane,
-						preflightResult: (success) => {
-							if (success) resolve();
-						},
-					})
-					.then(resolve, reject);
-			}),
-		clearTaskQueue: async () => {
-			const cleared = child.session.clearQueue();
-			const typed = cleared.typed ?? cleared;
-			return { ok: true, value: { steering: [...typed.steering], followUp: [...typed.followUp] } };
+		sendTaskMessage: async (id, text, lane = "steer") => {
+			const delivery = await transcript.queueMessage!(text, lane);
+			if (!delivery.delivered)
+				throw new TaskMessageError("delivery-refused", {
+					taskId: id,
+					...(delivery.detail === undefined ? {} : { detail: delivery.detail }),
+				});
 		},
+		clearTaskQueue: async () => ({ ok: true, value: await transcript.clearQueue!() }),
 	};
+}
+
+/** Where a subagent chat's task view comes from. */
+interface SubagentTaskView {
+	readonly source: TaskViewSource;
+	readonly taskId: TaskId;
+	dispose(): Promise<void>;
+}
+
+/** The task view `/tasks` and the agent panel read: the owner's task store, with the child bound as a running task. */
+async function ownerTaskView(transcript: TaskTranscriptSource): Promise<SubagentTaskView> {
+	const fixture = taskFixture();
+	await fixture.start("Steered subagent");
+	fixture.runners[0]!.context.bindTranscript(transcript);
+	return {
+		source: ownerTaskViewSource(fixture.store),
+		taskId: fixture.store.tasks[0]!.ref.taskId,
+		dispose: () => fixture.dispose(),
+	};
+}
+
+async function handMadeTaskView(transcript: TaskTranscriptSource): Promise<SubagentTaskView> {
+	const taskId = "task-steered-1" as TaskId;
+	return { source: handMadeTaskSource(transcript, taskId), taskId, dispose: async () => {} };
 }
 
 /** A subagent's chat, with what only it has: its keys as the terminal sends them, and its screen. */
@@ -202,7 +248,20 @@ export interface SubagentSteeringChat extends SteeringChat {
 	screen(): string;
 }
 
+/** A subagent's chat over the task view of the main chat's own task store, as the agent panel and `/tasks` open it. */
 export async function subagentChat(options: SteeringChatOptions = {}): Promise<SubagentSteeringChat> {
+	return openSubagentChat(options, ownerTaskView);
+}
+
+/** A subagent's chat over a task view made by hand that implements only the steering contract. */
+export async function subagentChatOverHandMadeView(options: SteeringChatOptions = {}): Promise<SubagentSteeringChat> {
+	return openSubagentChat(options, handMadeTaskView);
+}
+
+async function openSubagentChat(
+	options: SteeringChatOptions,
+	view: (transcript: TaskTranscriptSource) => Promise<SubagentTaskView>,
+): Promise<SubagentSteeringChat> {
 	initTheme("dark");
 	const previousKeys = getKeybindings();
 	setKeybindings(new KeybindingsManager());
@@ -213,10 +272,10 @@ export async function subagentChat(options: SteeringChatOptions = {}): Promise<S
 		...(options.resourceLoader ? { resourceLoader: options.resourceLoader } : {}),
 	});
 	child.setResponses(busyTurnResponses());
-	const taskId = "task-steered-1" as TaskId;
+	const { source, taskId, dispose } = await view(childTranscript(child));
 	let chat: ChatSessionHost | undefined;
 	const inspector = new TaskInspector(
-		childTaskSource(child, taskId),
+		source,
 		() => {},
 		() => {},
 		undefined,
@@ -276,6 +335,7 @@ export async function subagentChat(options: SteeringChatOptions = {}): Promise<S
 			toolHold.release.resolve();
 			inspector.dispose();
 			await turn;
+			await dispose();
 			await child.cleanup();
 			setKeybindings(previousKeys);
 		},
@@ -285,4 +345,5 @@ export async function subagentChat(options: SteeringChatOptions = {}): Promise<S
 export const steeringChats = [
 	["main", mainChat],
 	["subagent", subagentChat],
+	["subagent (hand-made task view)", subagentChatOverHandMadeView],
 ] as const;

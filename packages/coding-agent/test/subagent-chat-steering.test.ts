@@ -42,6 +42,15 @@ describe("a subagent's chat", () => {
 		assert.deepEqual(userTexts(chat.engine), ["first"]);
 	});
 
+	test("/hotkeys shows the chat's keys and /copy works on the subagent's messages, at once and never sent to it", async () => {
+		const chat = await openChat();
+		await chat.enter("/copy");
+		assert.match(chat.screen(), /No agent messages to copy yet\./);
+		await chat.enter("/hotkeys");
+		assert.match(chat.screen(), /keys · task chat/);
+		assert.deepEqual(userTexts(chat.engine), []);
+	});
+
 	test("a ! shell command stays in the prompt with a notice; the subagent's shell is not the chat's to run", async () => {
 		const chat = await openChat();
 		await chat.type("!ls");
