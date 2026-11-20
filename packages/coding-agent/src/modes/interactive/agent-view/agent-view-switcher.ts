@@ -17,6 +17,8 @@ export class AgentViewSwitcher implements AgentViewBridge {
 	private disposed = false;
 	private readonly changeListeners = new Set<(change: AgentViewChange) => void>();
 	private readonly listeners = new Set<() => void>();
+	private readonly pendingListeners = new Set<(pending: TaskId | undefined) => void>();
+	private pending: TaskId | undefined;
 	private readonly openPort: OpenAgentViewPort;
 	private readonly notify: (message: string) => void;
 
@@ -27,6 +29,19 @@ export class AgentViewSwitcher implements AgentViewBridge {
 
 	get viewed(): ViewedTarget {
 		return this.current;
+	}
+
+	/**
+	 * The subagent a request is opening, from the request until it is shown or fails. What the reader types meanwhile
+	 * is meant for it, so the prompt holds it back until then.
+	 */
+	get pendingTaskId(): TaskId | undefined {
+		return this.pending;
+	}
+
+	onPending(listener: (pending: TaskId | undefined) => void): () => void {
+		this.pendingListeners.add(listener);
+		return () => this.pendingListeners.delete(listener);
 	}
 
 	viewedTaskId(): TaskId | undefined {
@@ -41,11 +56,24 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		if (this.disposed) return false;
 		const request = ++this.request;
 		if (taskId === undefined) {
+			this.setPending(undefined);
 			this.show(VIEWING_MAIN);
 			return true;
 		}
 		const shown = this.current;
-		if (shown.kind === "agent" && shown.port.status().taskId === taskId) return true;
+		if (shown.kind === "agent" && shown.port.status().taskId === taskId) {
+			this.setPending(undefined);
+			return true;
+		}
+		this.setPending(taskId);
+		try {
+			return await this.open(request, taskId);
+		} finally {
+			if (request === this.request) this.setPending(undefined);
+		}
+	}
+
+	private async open(request: number, taskId: TaskId): Promise<boolean> {
 		let port: AgentViewPort | undefined;
 		try {
 			port = await this.openPort(taskId);
@@ -93,7 +121,20 @@ export class AgentViewSwitcher implements AgentViewBridge {
 	/** The engine generation ended, the main session was replaced, or the host shuts down: show main, release ports. */
 	reset(_reason: "generation-lost" | "session-replaced" | "shutdown"): void {
 		this.request++;
+		this.setPending(undefined);
 		this.show(VIEWING_MAIN);
+	}
+
+	private setPending(taskId: TaskId | undefined): void {
+		if (this.pending === taskId) return;
+		this.pending = taskId;
+		for (const listener of [...this.pendingListeners]) {
+			try {
+				listener(taskId);
+			} catch {
+				// A listener's failure must not stop the others.
+			}
+		}
 	}
 
 	dispose(): void {
@@ -102,6 +143,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		this.disposed = true;
 		this.changeListeners.clear();
 		this.listeners.clear();
+		this.pendingListeners.clear();
 	}
 
 	private show(to: ViewedTarget): void {

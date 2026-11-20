@@ -75,6 +75,32 @@ describe("the single chat screen's switcher", () => {
 		assert.equal(port.disposed, true);
 	});
 
+	test("marks the subagent being opened as pending from the request until it is shown, whichever request ends first", async () => {
+		const slow = deferred<AgentViewPort | undefined>();
+		const fast = deferred<AgentViewPort | undefined>();
+		const first = new FakeAgentViewPort({ taskId: id("a") });
+		const second = new FakeAgentViewPort({ taskId: id("b") });
+		const switcher = new AgentViewSwitcher(
+			(taskId) => (taskId === id("a") ? slow.promise : fast.promise),
+			() => {},
+		);
+		const seen: (string | undefined)[] = [];
+		switcher.onPending((pending) => seen.push(pending));
+
+		const earlier = switcher.view(id("a"));
+		assert.equal(switcher.pendingTaskId, id("a"));
+		const later = switcher.view(id("b"));
+		assert.equal(switcher.pendingTaskId, id("b"));
+		slow.resolve(first);
+		await earlier;
+		assert.equal(switcher.pendingTaskId, id("b"));
+		fast.resolve(second);
+		await later;
+
+		assert.equal(switcher.pendingTaskId, undefined);
+		assert.deepEqual(seen, ["a", "b", undefined]);
+	});
+
 	test("keeps the shown port when another attempt of the same subagent is asked for", async () => {
 		const shown = new FakeAgentViewPort({ taskId: id("a1"), agentKey: "a" });
 		const again = new FakeAgentViewPort({ taskId: id("a2"), agentKey: "a" });
