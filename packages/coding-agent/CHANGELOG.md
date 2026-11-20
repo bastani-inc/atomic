@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A new subagent's row in `/tasks` and the agent panel no longer shifts its task twice as its model and then its reasoning level arrive. The row shows its model together with its level, or alone if no level arrives within a second, and a model without reasoning levels at once. While `/tasks` or the panel stays open, the model column no longer narrows while it still fits, so rows do not move when the subagent with the longest model falls back or leaves.
+
 ## [0.10.0] - 2026-11-20
 
 Codemode and subagents replace workflows, subagents share the main chat screen with its steering and can be resumed by a message, and long sessions keep only their current context in memory.
