@@ -16,6 +16,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { ExpandableText, isExpandable } from "./interactive-mode-helpers.ts";
+import { forgetChosenSavedExpansions } from "./interactive-saved-tool-calls.ts";
 
 InteractiveModeBase.prototype.refreshBuiltInHeader = function (this: InteractiveModeBase): void {
 	if (this.builtInHeader instanceof ExpandableText || this.builtInHeader instanceof StartupIdentityComponent) {
@@ -73,6 +74,7 @@ InteractiveModeBase.prototype.setToolsExpanded = function (this: InteractiveMode
 	supersedeBlockClicks(this.pendingMessagesContainer);
 	if (this.toolOutputExpanded === expanded) return;
 	this.toolOutputExpanded = expanded;
+	forgetChosenSavedExpansions(this);
 	const activeHeader = this.customHeader ?? this.builtInHeader;
 	if (isExpandable(activeHeader)) {
 		activeHeader.setExpanded(expanded);

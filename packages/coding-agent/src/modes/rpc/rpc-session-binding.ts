@@ -244,8 +244,12 @@ export class RpcSessionBinding {
 			);
 		}
 		this.unsubscribe = session.subscribe((event) => {
+			// A finished message carries its save receipt, so a host can tell which saved entry its rows show.
+			const saved = event.type === "message_end" ? session.entryReceipt?.(event.message) : undefined;
 			const receipt = this.writeEngineLine && chatReceipt(event);
-			this.output(receipt ? { ...toJsonEvent(event), atomicChatReceipt: receipt } : toJsonEvent(event));
+			const json = toJsonEvent(event);
+			const withSaved = saved === undefined ? json : { ...json, entryId: saved.entryId, seq: saved.seq };
+			this.output(receipt ? { ...withSaved, atomicChatReceipt: receipt } : withSaved);
 			if (event.type === "agent_settled") this.checkShutdownRequested?.();
 		});
 		this.unsubscribeBackpressure = session.agent.subscribe(async () => {

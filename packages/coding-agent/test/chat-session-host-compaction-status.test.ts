@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { EditorTheme } from "@bastani/atomic-tui";
 import { type Component, stripHintMarkers, Text } from "@bastani/atomic-tui";
 import { describe, expect, it, test, vi } from "vitest";
+import { collectGarbage } from "../../../test/helpers/collect-garbage.js";
 import type { CompactionReason } from "../src/core/agent-session.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { ChatSessionHost } from "../src/modes/interactive/components/chat-session-host.ts";
@@ -105,6 +106,38 @@ test("preserves displayed messages when retained history loading is skipped (#36
 	} finally {
 		host.dispose();
 	}
+});
+
+test("a hidden chat drops the previous rendered page when its messages are replaced, without needing another paint (#5593)", async () => {
+	initTheme("dark");
+	const host = makeHost({ isStreaming: () => false });
+	try {
+		const old = (() => {
+			host.appendMessages([{ role: "user", content: "old window", timestamp: 1 }]);
+			assert.match(host.renderBody(80, 10).join("\n"), /old window/);
+			return new WeakRef(host.entries()[0]!);
+		})();
+		host.replaceMessages([{ role: "user", content: "new window", timestamp: 2 }]);
+		await collectGarbage();
+		assert.equal(old.deref() === undefined, true, "the hidden chat still retains the old painted entry");
+		assert.match(host.renderBody(80, 10).join("\n"), /new window/);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("a disposed chat releases its last window even if the host object remains reachable (#5593)", async () => {
+	initTheme("dark");
+	const host = makeHost({ isStreaming: () => false });
+	const previous = (() => {
+		host.appendMessages([{ role: "user", content: "final prompt", timestamp: 1 }]);
+		assert.match(host.renderBody(80, 10).join("\n"), /final prompt/);
+		return new WeakRef(host.entries()[0]!);
+	})();
+	host.dispose();
+	await collectGarbage();
+	assert.equal(previous.deref() === undefined, true, "a disposed chat still holds its painted conversation");
+	assert.deepEqual(host.entries(), []);
 });
 
 test("rehydrates reason-specific labels for every compaction reason", () => {

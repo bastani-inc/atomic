@@ -127,6 +127,49 @@ test("atomic --session hydrates restored tool cards with extension renderers loa
 	}
 });
 
+test("only a replayable historical tool frame allows the host to discard its engine instance (#5593)", async () => {
+	const engine = createEngineSession();
+	const frames: InteractiveEngineMessage[] = [];
+	const service = new EngineRenderService((line) => {
+		const frame = parseInteractiveEngineMessage(line.trim());
+		if (frame) frames.push(frame);
+	});
+	service.bindSession(engine.session);
+	const paint = async (id: number, inspect: boolean) => {
+		const request: InteractiveEngineCommand = {
+			type: "engine_tool_render",
+			componentId: "saved",
+			requestId: id,
+			width: 80,
+			toolName: "late_tool",
+			toolCallId: "saved-tool",
+			args: {},
+			executionStarted: true,
+			argsComplete: true,
+			isPartial: false,
+			expanded: false,
+			showImages: false,
+			imageWidthCells: 40,
+			...(inspect ? { inspectHistoryReplay: true as const } : {}),
+		};
+		service.handleLine(serializeInteractiveEngineFrame(request).trim());
+		for (let i = 0; i < 100; i++) {
+			const frame = frames.find((f) => f.type === "engine_custom_frame" && f.requestId === id);
+			if (frame) return frame;
+			await new Promise((r) => setTimeout(r, 5));
+		}
+		throw new Error("frame missing");
+	};
+	try {
+		assert.equal("historyReplayable" in (await paint(1, false)), false);
+		assert.equal("historyReplayable" in (await paint(2, true)), true);
+		engine.loadExtensions();
+		assert.equal("historyReplayable" in (await paint(3, true)), false);
+	} finally {
+		service.dispose();
+	}
+});
+
 test("atomic --session redraws a restored tool card when its engine renderer invalidates it (#3760)", async () => {
 	let invalidateCard = () => {};
 	let state = "paused";

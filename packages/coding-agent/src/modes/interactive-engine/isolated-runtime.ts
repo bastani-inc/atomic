@@ -11,6 +11,7 @@ import type {
 	PromptOptions,
 	SessionRecoveryReport,
 } from "../../core/agent-session-types.js";
+import { reportDebugAsync } from "../../core/debug.ts";
 import { onDebugSettingChange } from "../../core/debug-setting.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ExtensionError } from "../../core/extensions/index.js";
@@ -144,8 +145,22 @@ export function engineAgentPanelCounts(
 	};
 }
 
+/** How long host listeners wait for the session view after a compaction before they get its events anyway. */
+const COMPACTION_VIEW_HOLD_MS = 3_000;
+type HeldHostEvent = { event: JsonAgentSessionEvent; audience: number };
+
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
+	/** The host session's listeners, which get the engine's events through one ordered subscription. */
+	private readonly hostListeners = new Map<number, (event: JsonAgentSessionEvent) => void>();
+	private lastHostListener = 0;
+	private releasingHostEvents?: HeldHostEvent[];
+	private hostEventsSubscribed = false;
+	/** Events held, in order, from a compaction's end until the session view shows its boundary. */
+	private compactionHold:
+		| { readonly events: HeldHostEvent[]; readonly timer: NodeJS.Timeout; readonly generation: number | undefined }
+		| undefined;
+	private compactionHoldReported = false;
 	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
 	protected override resumeBlueprints: "build" | "skip" = "skip";
 	private readonly patchedSessions = new WeakSet<AgentSession>();
@@ -308,6 +323,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		);
 		this.initialStart?.catch(() => {});
 		this.client.onGenerationEnded((event) => {
+			if (this.compactionHold?.generation === event.generation) this.discardHeldHostEvents();
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
 				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
@@ -888,6 +904,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	): Promise<{ cancelled: boolean }> {
 		const result = await this.client.switchSession(sessionId, options?.cwdOverride, options?.sessionDirectory);
 		if (!result.cancelled) {
+			this.discardHeldHostEvents();
 			this.queueResumeNotices(result.notices ?? []);
 			await super.switchSession(sessionId, {
 				cwdOverride: options?.cwdOverride,
@@ -903,6 +920,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override async newSession(options?: { parentSession?: string }): Promise<{ cancelled: boolean }> {
 		const result = await this.client.newSession(options?.parentSession);
 		if (result.cancelled) return result;
+		this.discardHeldHostEvents();
 		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
@@ -921,6 +939,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			cwdOverride,
 		});
 		if (result.cancelled) return { cancelled: true };
+		this.discardHeldHostEvents();
 		this.queueResumeNotices(result.notices ?? []);
 		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
@@ -947,6 +966,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			selectedText = result.text;
 		}
 		if (cancelled) return { cancelled: true };
+		this.discardHeldHostEvents();
 		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
@@ -969,6 +989,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.disposePromise) return this.disposePromise;
 		this.disposed = true;
+		this.discardHeldHostEvents();
+		this.hostListeners.clear();
 		this.privateMirror = undefined;
 		this.stopSharingDebugSetting();
 		this.disposePromise = (async () => {
@@ -1027,7 +1049,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			queuedMessagesPaused: { configurable: true, get: () => this.queuePause.isPaused },
 			subscribe: {
 				configurable: true,
-				value: (listener: (event: JsonAgentSessionEvent) => void) => this.client.onEvent(listener),
+				value: (listener: (event: JsonAgentSessionEvent) => void) => this.subscribeHost(listener),
 			},
 			prompt: {
 				configurable: true,
@@ -1342,6 +1364,93 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (epoch === this.thinkingEpoch) {
 			session.agent.state.thinkingLevel = result.level;
 		}
+	}
+
+	private subscribeHost(listener: (event: JsonAgentSessionEvent) => void): () => void {
+		if (!this.hostEventsSubscribed) {
+			this.hostEventsSubscribed = true;
+			this.client.onEvent((event) => {
+				if (this.releasingHostEvents) this.releasingHostEvents.push({ event, audience: this.lastHostListener });
+				else this.deliverHostEvent(event, this.lastHostListener);
+			});
+		}
+		const subscription = ++this.lastHostListener;
+		this.hostListeners.set(subscription, listener);
+		return () => {
+			this.hostListeners.delete(subscription);
+		};
+	}
+
+	/**
+	 * The host's chat redraws from its session view when a compaction ends, and that view reads the store only when
+	 * asked. Hold the compaction's end, and every event after it in order, until the view shows the new boundary, or
+	 * for at most a few seconds. Events before and outside a compaction pass straight through.
+	 */
+	private deliverHostEvent(event: JsonAgentSessionEvent, audience: number): void {
+		if (this.disposed) return;
+		const held = this.compactionHold;
+		if (held) {
+			held.events.push({ event, audience });
+			return;
+		}
+		if (event.type !== "compaction_end" || !event.result || event.aborted) {
+			this.notifyHostListeners(event, audience);
+			return;
+		}
+		const hold = {
+			events: [{ event, audience }],
+			generation: this.client.getGeneration?.(),
+			timer: setTimeout(() => {
+				this.reportCompactionHold("the session view took too long to refresh");
+				release();
+			}, COMPACTION_VIEW_HOLD_MS),
+		};
+		hold.timer.unref?.();
+		this.compactionHold = hold;
+		const release = (): void => {
+			if (this.compactionHold !== hold) return;
+			clearTimeout(hold.timer);
+			this.compactionHold = undefined;
+			this.releasingHostEvents = hold.events;
+			try {
+				this.notifyHostListeners(event, audience);
+				// A synchronous listener can emit another event during delivery. It goes behind the ones already held.
+				for (let i = 1; i < hold.events.length; i++) {
+					const next = hold.events[i]!;
+					this.deliverHostEvent(next.event, next.audience);
+				}
+			} finally {
+				this.releasingHostEvents = undefined;
+			}
+		};
+		const valid = () => this.compactionHold === hold;
+		void this.refreshSessionView(valid).then(release, (error: unknown) => {
+			if (!valid()) return;
+			this.reportCompactionHold(error instanceof Error ? error.message : String(error));
+			release();
+		});
+	}
+
+	private notifyHostListeners(event: JsonAgentSessionEvent, audience: number): void {
+		for (const [id, listener] of [...this.hostListeners]) if (id <= audience) listener(event);
+	}
+
+	private discardHeldHostEvents(): void {
+		const hold = this.compactionHold;
+		if (hold) {
+			clearTimeout(hold.timer);
+			hold.events.length = 0;
+			this.compactionHold = undefined;
+		}
+		if (this.releasingHostEvents) this.releasingHostEvents.length = 0;
+	}
+
+	/** Once per runtime, as an internal diagnostic: the chat still redraws, from the view it has. */
+	private reportCompactionHold(reason: string): void {
+		if (this.compactionHoldReported) return;
+		this.compactionHoldReported = true;
+		// The compaction itself succeeded. A slow mirror is useful in a debug log, not as a persistent chat row.
+		void reportDebugAsync("engine", "compaction-view-refresh", { reason });
 	}
 
 	private dispatchBestEffort(label: string, operation: Promise<unknown>): void {

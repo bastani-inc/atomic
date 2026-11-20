@@ -1,13 +1,91 @@
 import { type Component, Container } from "../tui.ts";
 
+export interface HistoryRowPosition {
+	readonly source: symbol;
+	readonly seq: number;
+	readonly block: number;
+	readonly part: number;
+	readonly line: number;
+	/** The row stands in for a card whose call and result are drawn on different pages: what it shows depends on which
+	 * pages are mounted, so a selection never captures it and a copy draws its entry as the whole transcript does. */
+	readonly provisional?: true;
+}
+const archivePositions = new WeakMap<Component, Omit<HistoryRowPosition, "line">>();
+
+/** A saved leaf: a rendered part of a saved entry, without the row within it. */
+export type HistoryLeaf = Omit<HistoryRowPosition, "line">;
+
+/** The rows of one saved leaf that is not mounted, drawn on request. */
+export interface HistoryRowsBlock {
+	readonly position: HistoryLeaf;
+	readonly lines: readonly string[];
+}
+
+/** Saved rows that are no longer, or never were, mounted below a history anchor. */
+export interface HistorySource {
+	/** The last sequence number of the saved rows. */
+	readonly last: number;
+	/** Draw, without mounting, the saved leaves of entries `from` through `to` at `width`, in document order. */
+	read(from: number, to: number, width: number): Promise<readonly HistoryRowsBlock[]>;
+}
+
+/** The row that stands for a source's saved history: its mounted saved rows follow it, and everything else of the
+ * source can be drawn on request. */
+export interface HistoryAnchorView {
+	readonly source: symbol;
+	readonly edges: HistoryRunEdges;
+	/** The first saved leaf mounted right below the anchor, if any. */
+	readonly first?: HistoryLeaf;
+	readonly last: number;
+	/** Draw saved rows at the width of this layout. */
+	read(from: number, to: number): Promise<readonly HistoryRowsBlock[]>;
+}
+
+const historyAnchors = new WeakMap<Component, { readonly source: symbol; readonly history: HistorySource }>();
+
+/** The rows just outside a run of saved rows from one source, which stay in place when the run is released. */
+export interface HistoryRunEdges {
+	readonly source: symbol;
+	/** The last row above the run, if any. */
+	readonly above?: () => number | undefined;
+	/** The first row below the run, if any. */
+	readonly below?: () => number | undefined;
+}
+
 export interface WindowRows {
 	readonly length: number;
 	at(index: number): string | undefined;
+	/** A weak position within a painted leaf; resolving it never draws or requests history. */
+	trackRow?(index: number): (() => number | undefined) | undefined;
+	historyRow?(index: number): HistoryRowPosition | undefined;
+	/** Weak positions of the rows around the saved run that holds `index`; no render, read or retained leaf. */
+	historyEdges?(index: number): HistoryRunEdges | undefined;
+	/** The mounted history anchor of this document, if any. */
+	historyAnchor?(): HistoryAnchorView | undefined;
+	/** Visit the rows of the mounted saved entries around `index` from `from` through `to`, in order, drawing an entry
+	 * not yet drawn at this width as the background sweep would. A provisional leaf that draws no row is visited once,
+	 * with an empty line. Never requests an unmounted page. */
+	visitHistoryRun?(
+		index: number,
+		from: HistoryLeaf | undefined,
+		to: HistoryLeaf | undefined,
+		visit: (line: string, position: HistoryRowPosition) => void,
+	): void;
+	/** Visit already rendered, non-replayable rows of an active selection, without requesting historical content. */
+	visitVolatileRows?(
+		first: number,
+		last: number,
+		visit: (row: number, line: string, renderer: symbol, history?: HistoryRowPosition) => void,
+	): void;
 }
 
 export interface WindowRequest {
 	readonly width: number;
 	readonly top: number;
+	/** Rows the reader scrolled by since the last layout, when `top` is the last top moved by them. */
+	readonly moved?: number;
+	/** Show the row at `top` itself, whatever changed above it since the last layout. */
+	readonly exact?: boolean;
 	readonly height: number;
 	readonly followEnd: boolean;
 	readonly requestRender: () => void;
@@ -24,6 +102,8 @@ const MAX_WINDOW_PASSES = 4;
 
 interface Entry {
 	readonly component: Component;
+	/** Opaque identity for selections. Holding it does not keep this entry or its component alive. */
+	selectionRenderer?: symbol;
 	/** The windowed container whose children include `component`. */
 	owner: WindowedContainer | undefined;
 	lines: readonly string[];
@@ -34,6 +114,23 @@ interface Entry {
 	renderedIn: number;
 }
 
+function weakRowPosition(
+	owner: WeakRef<WindowedContainer>,
+	leaf: WeakRef<Component>,
+	within: number,
+): () => number | undefined {
+	return () => {
+		const component = leaf.deref();
+		const span = component && owner.deref()?.windowRowSpan(component);
+		return span && span.bottom > span.top ? span.top + Math.min(within, span.bottom - span.top - 1) : undefined;
+	};
+}
+
+/** Order of two saved leaves, ignoring the row within them. */
+function compareLeaves(a: HistoryLeaf, b: HistoryLeaf): number {
+	return a.seq - b.seq || a.block - b.block || a.part - b.part;
+}
+
 const entries = new WeakMap<Component, Entry>();
 let staleChanges = 0;
 
@@ -42,6 +139,27 @@ function yieldThen(run: () => void): void {
 }
 
 export class WindowedContainer extends Container {
+	/** Identify the leaf of a mutable saved transcript. A selection can then keep just its selected characters
+	 * across eviction or an external rewrite, without keeping the component or its page. */
+	static markHistoryComponent(
+		component: Component,
+		source: symbol,
+		seq: number,
+		block: number,
+		part: number,
+		provisional = false,
+	): void {
+		archivePositions.set(component, { source, seq, block, part, ...(provisional ? { provisional: true } : {}) });
+	}
+	/** Mark the row that stands for a source's saved history. Its mounted saved rows follow it; a copy can draw the
+	 * rest of a selection from `history`. Holding the anchor's source does not keep the anchor alive. */
+	static markHistoryAnchor(component: Component, source: symbol, history: HistorySource): void {
+		historyAnchors.set(component, { source, history });
+		const owner = entries.get(component)?.owner;
+		(owner?.windowHost ?? owner)?.anchors.push(new WeakRef(component));
+	}
+	/** History anchors this window has laid out. */
+	private anchors: WeakRef<Component>[] = [];
 	/** The container that last laid this one out among its own rows, when this one is nested in it. */
 	private windowHost: WindowedContainer | undefined;
 	/** The windowed container this one is a child of, in that layout. */
@@ -77,6 +195,14 @@ export class WindowedContainer extends Container {
 		return this.children;
 	}
 
+	/** The last window layout's span for a leaf, measured in the root document's rows; no render or tree walk. */
+	windowRowSpan(component: Component): { readonly top: number; readonly bottom: number } | undefined {
+		const entry = entries.get(component);
+		const root = this.windowHost ?? this;
+		if (!entry || root.laidOut[entry.index] !== entry) return undefined;
+		return { top: root.offsets[entry.index]!, bottom: root.offsets[entry.index + 1]! };
+	}
+
 	override invalidate(): void {
 		for (const child of this.windowChildren()) {
 			const entry = entries.get(child);
@@ -92,7 +218,11 @@ export class WindowedContainer extends Container {
 		const width = Math.max(1, Math.floor(request.width));
 		const height = Math.max(0, Math.floor(request.height));
 		this.requestRender = request.requestRender;
-		const anchor = request.top === this.lastTop ? this.locateAnchor(request.top) : undefined;
+		// A scroll moves from the rows the reader saw, wherever rows added or removed above have put them since.
+		const anchor =
+			!request.exact && (request.top === this.lastTop || request.moved !== undefined)
+				? this.scrollAnchor(this.lastTop, height)
+				: undefined;
 		if (width !== this.width) {
 			this.width = width;
 			for (const entry of this.laidOut) entry.current = false;
@@ -110,7 +240,103 @@ export class WindowedContainer extends Container {
 		this.scheduleSweep();
 		this.lastTop = top;
 		const length = this.rowCount();
-		return { top, length, at: this.observed ? (index) => this.visibleRowAt(index) : (index) => this.rowAt(index) };
+		return {
+			top,
+			length,
+			at: this.observed ? (index) => this.visibleRowAt(index) : (index) => this.rowAt(index),
+			trackRow: (index) => {
+				if (index < 0 || index >= length) return undefined;
+				const anchor = this.locateAnchor(index);
+				if (!anchor) return undefined;
+				return weakRowPosition(new WeakRef(this), new WeakRef(anchor.entry.component), anchor.within);
+			},
+			historyRow: (index) => {
+				if (index < 0 || index >= length) return undefined;
+				const anchor = this.locateAnchor(index);
+				const position = anchor && archivePositions.get(anchor.entry.component);
+				return position && anchor ? { ...position, line: anchor.within } : undefined;
+			},
+			historyEdges: (index) => {
+				const run = index >= 0 && index < length ? this.historyRunAt(index) : undefined;
+				if (!run) return undefined;
+				const owner = new WeakRef(this);
+				const edge = (index: number, within: number) =>
+					weakRowPosition(owner, new WeakRef(this.laidOut[index]!.component), within);
+				return {
+					source: run.source,
+					...(run.first > 0 ? { above: edge(run.first - 1, Number.MAX_SAFE_INTEGER) } : {}),
+					...(run.last + 1 < this.laidOut.length ? { below: edge(run.last + 1, 0) } : {}),
+				};
+			},
+			historyAnchor: () => {
+				const at = this.anchorIndex();
+				if (at === undefined) return undefined;
+				const anchor = this.laidOut[at]!;
+				const { source, history } = historyAnchors.get(anchor.component)!;
+				let below = at + 1;
+				while (
+					below < this.laidOut.length &&
+					(this.laidOut[below]!.height === 0 ||
+						archivePositions.get(this.laidOut[below]!.component)?.source === source)
+				)
+					below++;
+				const owner = new WeakRef(this);
+				const edge = (index: number, within: number) =>
+					weakRowPosition(owner, new WeakRef(this.laidOut[index]!.component), within);
+				let next = at + 1;
+				while (next < below && this.laidOut[next]!.height === 0) next++;
+				const first = next < below ? archivePositions.get(this.laidOut[next]!.component) : undefined;
+				const width = this.width;
+				return {
+					source,
+					edges: {
+						source,
+						above: edge(at, Number.MAX_SAFE_INTEGER),
+						...(below < this.laidOut.length ? { below: edge(below, 0) } : {}),
+					},
+					...(first ? { first } : {}),
+					last: history.last,
+					read: (from, to) => history.read(from, to, width),
+				};
+			},
+			visitHistoryRun: (index, from, to, visit) => {
+				const run = index >= 0 && index < length ? this.historyRunAt(index) : undefined;
+				if (!run) return;
+				let moved = false;
+				for (let i = run.first; i <= run.last; i++) {
+					const entry = this.laidOut[i]!;
+					const position = archivePositions.get(entry.component);
+					if (position?.source !== run.source) continue;
+					if (from && compareLeaves(position, from) < 0) continue;
+					if (to && compareLeaves(position, to) > 0) continue;
+					if (!entry.current || entry.width !== this.width) moved = this.renderEntry(entry, this.width) || moved;
+					for (let line = 0; line < entry.lines.length; line++) visit(entry.lines[line]!, { ...position, line });
+					// A provisional leaf that draws nothing now (its card is drawn at the other end of the pair) is still
+					// provisional: a copy draws its entry as the whole transcript does.
+					if (position.provisional && entry.lines.length === 0) visit("", { ...position, line: 0 });
+				}
+				if (moved) this.requestRender?.();
+			},
+			visitVolatileRows: (first, last, visit) => {
+				if (!length || first >= length || last < 0) return;
+				for (let i = this.indexAt(Math.max(0, first)); i < this.laidOut.length; i++) {
+					const entry = this.laidOut[i]!,
+						start = this.offsets[i]!;
+					if (start > last) break;
+					if (!entry.current) continue;
+					const history = archivePositions.get(entry.component);
+					if (!history && entry.component.selectionTextMayChangeOnReplay !== true) continue;
+					entry.selectionRenderer ??= Symbol();
+					for (let row = Math.max(first, start); row <= last && row < start + entry.lines.length; row++)
+						visit(
+							row,
+							entry.lines[row - start]!,
+							entry.selectionRenderer,
+							history && { ...history, line: row - start },
+						);
+				}
+			},
+		};
 	}
 
 	settleRows(): void {
@@ -210,11 +436,53 @@ export class WindowedContainer extends Container {
 		return Math.max(0, low);
 	}
 
+	/** The laid-out index of the first history anchor still in this window. */
+	private anchorIndex(): number | undefined {
+		for (let i = 0; i < this.anchors.length; i++) {
+			const component = this.anchors[i]!.deref();
+			const entry = component && entries.get(component);
+			if (entry && this.laidOut[entry.index] === entry) return entry.index;
+			if (!component) this.anchors.splice(i--, 1);
+		}
+		return undefined;
+	}
+
+	/** The laid-out entries of the saved run around `row`: one source, possibly with empty rows between. */
+	private historyRunAt(row: number): { source: symbol; first: number; last: number } | undefined {
+		if (this.laidOut.length === 0) return undefined;
+		const at = this.indexAt(row);
+		const source = archivePositions.get(this.laidOut[at]!.component)?.source;
+		if (!source) return undefined;
+		const inRun = (entry: Entry) => entry.height === 0 || archivePositions.get(entry.component)?.source === source;
+		let first = at,
+			last = at;
+		while (first > 0 && inRun(this.laidOut[first - 1]!)) first--;
+		while (last + 1 < this.laidOut.length && inRun(this.laidOut[last + 1]!)) last++;
+		return { source, first, last };
+	}
+
 	private locateAnchor(top: number): { entry: Entry; within: number } | undefined {
 		if (this.laidOut.length === 0) return undefined;
 		const index = this.indexAt(Math.max(0, top));
 		const entry = this.laidOut[index];
 		return entry ? { entry, within: Math.max(0, top - (this.offsets[index] ?? 0)) } : undefined;
+	}
+
+	/**
+	 * The row that keeps the reader's place when rows change before the next frame: the row at `top`, or, while a
+	 * history anchor is on screen, the first row after it. Saved pages are mounted right after that anchor, so the rows
+	 * the reader saw below it keep their place, not the rows above it.
+	 */
+	private scrollAnchor(top: number, height: number): { entry: Entry; within: number } | undefined {
+		const at = this.locateAnchor(top);
+		if (!at) return undefined;
+		for (let index = this.indexAt(Math.max(0, top)); index < this.laidOut.length; index++) {
+			if ((this.offsets[index] ?? 0) >= top + height) break;
+			if (!historyAnchors.has(this.laidOut[index]!.component)) continue;
+			const next = this.laidOut[index + 1];
+			return next ? { entry: next, within: top - (this.offsets[index + 1] ?? 0) } : at;
+		}
+		return at;
 	}
 
 	private topFor(
@@ -226,7 +494,10 @@ export class WindowedContainer extends Container {
 		if (request.followEnd) return maxTop;
 		let top = Math.floor(request.top);
 		if (anchor && this.laidOut[anchor.entry.index] === anchor.entry) {
-			top = (this.offsets[anchor.entry.index] ?? 0) + Math.min(anchor.within, Math.max(0, anchor.entry.height - 1));
+			top =
+				(this.offsets[anchor.entry.index] ?? 0) +
+				Math.min(anchor.within, Math.max(0, anchor.entry.height - 1)) +
+				(request.moved ?? 0);
 		}
 		return Math.max(0, Math.min(maxTop, top));
 	}
@@ -293,6 +564,7 @@ export class WindowedContainer extends Container {
 			};
 			entries.set(component, entry);
 			staleChanges++;
+			if (historyAnchors.has(component)) this.anchors.push(new WeakRef(component));
 		} else if (entry.width !== this.width) {
 			entry.current = false;
 		}

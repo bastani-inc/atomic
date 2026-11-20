@@ -141,6 +141,9 @@ export type {
 	SessionStore,
 	SessionStoredEntry,
 	SessionTail,
+	SessionTaskReferenceCandidate,
+	SessionTaskReferenceDuplicatePage,
+	SessionTaskReferenceDuplicateQuery,
 	SessionUsageTotals,
 } from "./session/types.js";
 export * from "./sqlite-facade.js";

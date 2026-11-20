@@ -187,7 +187,12 @@ export function disposeChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
 	state.footer = undefined;
 	state.compacting = false;
 	stopChatSessionWorkingLifecycle(state);
-	state.transcriptComponent.invalidate();
+	state.extraEntries.length = 0;
+	state.replaceTranscriptWindow([]);
+	state.savedRenderers?.dispose();
+	state.firstUserEntry = undefined;
+	state.firstUserEntryExactText = undefined;
+	state.optimisticUserSignatureCounts.clear();
 	state.bodyViewport.dispose();
 	state.editor = undefined;
 }

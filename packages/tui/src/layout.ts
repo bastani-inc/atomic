@@ -266,9 +266,12 @@ function layoutWindowedScroll(
 	scrollView: ScrollView,
 	area: { x: number; y: number; width: number; height: number; contentWidth: number; clip: LayoutRect },
 ): LayoutBox {
+	const moved = scrollView.scrolledSinceLayout;
 	const rows = content.layoutWindow({
 		width: area.contentWidth,
 		top: scrollView.scrollTop,
+		...(moved === undefined ? {} : { moved }),
+		...(scrollView.jumpedSinceLayout ? { exact: true } : {}),
 		height: area.height,
 		followEnd: scrollView.isFollowingEnd,
 		requestRender: context.requestRender,

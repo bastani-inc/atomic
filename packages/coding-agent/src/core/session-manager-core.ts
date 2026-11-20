@@ -102,6 +102,7 @@ import { createForkArchive } from "./storage/session/fork-archive.js";
 import { exactDirectoryRelation, resolveForkStoreRelation } from "./storage/session/fork-store-relation.js";
 import { forkScope } from "./storage/session/fork-store-scope.js";
 import {
+	earlierTranscriptCursor,
 	findInSessionHistory,
 	firstHistoryCursor,
 	historyChunks,
@@ -678,6 +679,31 @@ export class SessionManager {
 	}
 	getLastSeq(): number {
 		return this.lastSeq;
+	}
+
+	/** A task transcript follows recorded events, including abandoned branches. The live suffix ends at the
+	 * manager's watermark and stops at the first missing record. Its preceding page is read from the archive. */
+	private taskTranscriptStart(): number {
+		let index = this.fileEntries.length,
+			seq = this.lastSeq;
+		if (index - 1 === seq) return 1;
+		while (index > 1) {
+			const entry = this.fileEntries[index - 1]!;
+			if (entry.type === "session" || this.entrySeqs.get(entry.id) !== seq--) break;
+			index--;
+		}
+		return index;
+	}
+
+	getTaskTranscriptEntries(): SessionEntry[] {
+		return this.fileEntries.slice(this.taskTranscriptStart()) as SessionEntry[];
+	}
+
+	getEarlierCursor(): string | undefined {
+		const through = this.lastSeq - (this.fileEntries.length - this.taskTranscriptStart());
+		return through > 0 && this.historyEpoch
+			? earlierTranscriptCursor(this.sessionId, this.historyEpoch, through)
+			: undefined;
 	}
 
 	/** @internal The host of an unsaved isolated session owns an independent private backend. These positions

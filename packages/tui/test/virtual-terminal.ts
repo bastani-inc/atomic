@@ -165,6 +165,22 @@ export class VirtualTerminal implements Terminal {
 		return lines;
 	}
 
+	/** The characters drawn in inverse video on each visible row, such as a text selection. */
+	getInverseViewport(): string[] {
+		const buffer = this.xterm.buffer.active;
+		const rows: string[] = [];
+		for (let i = 0; i < this.xterm.rows; i++) {
+			const line = buffer.getLine(buffer.viewportY + i);
+			let text = "";
+			for (let x = 0; line && x < this.xterm.cols; x++) {
+				const cell = line.getCell(x);
+				if (cell?.isInverse()) text += cell.getChars() || " ";
+			}
+			rows.push(text);
+		}
+		return rows;
+	}
+
 	/**
 	 * Get the entire scroll buffer
 	 */

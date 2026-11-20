@@ -3,7 +3,7 @@ import type { ParsedSkillBlock } from "../../../core/agent-session.js";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { parenthesizedKeyHint } from "./keybinding-hints.js";
-import { createMarkdownTransform } from "./markdown-transform.ts";
+import { createMarkdownTransform, hasExtensionMarkdownTransform } from "./markdown-transform.ts";
 import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /**
@@ -12,6 +12,10 @@ import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
  * Only renders the skill block itself - user message is rendered separately.
  */
 export class SkillInvocationMessageComponent extends Box {
+	get selectionTextMayChangeOnReplay(): boolean {
+		return this.expanded && hasExtensionMarkdownTransform(this.markdownTransformers);
+	}
+
 	private expanded = false;
 	private skillBlock: ParsedSkillBlock;
 	private markdownTheme: MarkdownTheme;

@@ -19,6 +19,7 @@ import {
 import { tryCleanupForkStaging } from "./fork-staging-maintenance.js";
 import { nativeForkReader, registerForkScope } from "./fork-store-scope.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
+import { registerHistorySnapshot } from "./history-snapshot.js";
 import {
 	branchRanges,
 	childCatalogCut,
@@ -63,24 +64,36 @@ import type {
 	SessionEntrySizes,
 	SessionForkSeed,
 	SessionForkStream,
+	SessionHistoryItem,
 	SessionListQuery,
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
 	SessionOpenMarkerStore,
 	SessionRecordHeader,
 	SessionResume,
+	SessionScanPage,
 	SessionSnapshot,
 	SessionSnapshotCut,
 	SessionStore,
 	SessionStoredEntry,
 	SessionSummary,
 	SessionTail,
+	SessionTaskReferenceDuplicatePage,
+	SessionTaskReferenceDuplicateQuery,
+	SessionToolUseSelection,
 	SessionTreeOutlineEntry,
 	SessionWriteOptions,
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { entrySizeLimit, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import {
+	entrySizeLimit,
+	SESSION_HISTORY_CHUNK_BYTES,
+	SESSION_HISTORY_PAGE_BYTES,
+	SESSION_HISTORY_PAGE_ENTRIES,
+	SESSION_TASK_REFERENCE_CANDIDATES,
+	SESSION_TASK_REFERENCE_DUPLICATES_PAGE,
+} from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 /**
@@ -354,6 +367,37 @@ const LISTING_SCOPES = 8;
  */
 const SESSION_TRANSACTION: SqliteTransactionOptions = { retryTransientFailures: true };
 
+/** The largest content index or suffix length a task-reference query binds, an SQL `INTEGER` on every backend. */
+const TASK_REFERENCE_INTEGER = 2 ** 31 - 1;
+
+/**
+ * A task-reference duplicate query's bounds, checked, and its candidates as `[seq, block or -1, suffix or 0]` rows:
+ * integers only, so no entry ID is ever bound.
+ */
+function taskReferenceDuplicateQuery(query: SessionTaskReferenceDuplicateQuery): {
+	readonly candidates: readonly (readonly [number, number, number])[];
+	readonly afterSeq: number;
+	readonly limit: number;
+} {
+	const within = (value: unknown, min: number, max: number) =>
+		Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
+	const { throughSeq, afterSeq = 0, limit = SESSION_TASK_REFERENCE_DUPLICATES_PAGE } = query;
+	const invalid = (what: string) => new RangeError(`Invalid task-reference duplicate query: ${what}`);
+	if (!within(throughSeq, 0, Number.MAX_SAFE_INTEGER)) throw invalid("throughSeq");
+	if (!within(afterSeq, 0, Number.MAX_SAFE_INTEGER)) throw invalid("afterSeq");
+	if (!within(limit, 1, SESSION_TASK_REFERENCE_DUPLICATES_PAGE)) throw invalid("limit");
+	if (query.candidates.length > SESSION_TASK_REFERENCE_CANDIDATES) throw invalid("too many candidates");
+	const candidates = query.candidates.map(({ seq, contentIndex, suffixChars }) => {
+		if (!within(seq, 1, throughSeq)) throw invalid("candidate seq");
+		if (contentIndex !== undefined && !within(contentIndex, 0, TASK_REFERENCE_INTEGER))
+			throw invalid("candidate contentIndex");
+		if (suffixChars !== undefined && !within(suffixChars, 0, TASK_REFERENCE_INTEGER))
+			throw invalid("candidate suffixChars");
+		return [seq, contentIndex ?? -1, contentIndex === undefined ? (suffixChars ?? 0) : 0] as const;
+	});
+	return { candidates, afterSeq, limit };
+}
+
 /** A write revision: 32 random hex digits, the form SQLite's `lower(hex(randomblob(16)))` gave earlier builds. */
 function newRevision(): string {
 	return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -445,6 +489,11 @@ export class SqlSessionStore implements SessionStore {
 		{ readonly revision: string; readonly index: SessionResumeIndex }
 	>();
 	private readonly forkStagingTable: string;
+	/** The generation each recently read session's row held at a revision: see `generation`. */
+	private readonly generations = new Map<
+		string,
+		{ readonly revision: string; readonly lastSeq: number; readonly epoch: string }
+	>();
 
 	private constructor(
 		database: SqliteDatabase,
@@ -467,6 +516,16 @@ export class SqlSessionStore implements SessionStore {
 		this.blobTable = snapshotBlobs;
 		this.legacyBlobData = legacyBlobData;
 		if (searchIndex !== undefined) this.searchIndex = searchIndex;
+		registerHistorySnapshot(this, (sessionId, project) => {
+			this.assertOpen();
+			validateSessionText("sessionId", sessionId);
+			return this.transaction(async (tx) => {
+				const head = await this.historyHead(tx, sessionId);
+				return project(head.epoch, head.lastSeq, (from, through, backward) =>
+					this.historyPacket(tx, sessionId, head.epoch, from, through, backward),
+				);
+			}, SESSION_TRANSACTION);
+		});
 		this.forkStagingTable = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, prefix).forkStaging;
 	}
 
@@ -2440,6 +2499,8 @@ export class SqlSessionStore implements SessionStore {
 					row.last_seq,
 				)
 				.catch(() => undefined);
+			// The summary state changed without a new revision: its generation is read from it again.
+			this.generations.delete(sessionId);
 			return { index, revision: row.revision };
 		}
 		throw new SessionConflictError(sessionId, 0, 0);
@@ -2492,14 +2553,66 @@ export class SqlSessionStore implements SessionStore {
 		sessionId: string,
 		readOnly = false,
 	): Promise<{ lastSeq: number; epoch: string }> {
-		const epoch = this.dialect.jsonText("summary_state", "epoch");
-		const oldEpoch = this.dialect.jsonText("summary_state", "resume", "epoch");
-		const row = await tx.get<SqliteRow & { last_seq: number; epoch: string }>(
-			`SELECT last_seq, COALESCE(${epoch}, ${oldEpoch}, revision) AS epoch FROM ${this.tables.sessions} WHERE id = ?${readOnly ? "" : this.dialect.lockClause("share")}`,
+		const generation = this.generation(sessionId);
+		const row = await tx.get<SqliteRow & { last_seq: number; revision: string; epoch: string }>(
+			`SELECT last_seq, revision, ${generation.sql} AS epoch FROM ${this.tables.sessions} WHERE id = ?${readOnly ? "" : this.dialect.lockClause("share")}`,
+			...generation.params,
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
+		this.noteGeneration(sessionId, row.revision, Number(row.last_seq), row.epoch);
 		return { lastSeq: Number(row.last_seq), epoch: row.epoch };
+	}
+
+	/** Size at most one page and return only fitting bodies, in the same snapshot as the header. The first
+	 * oversized row is a chunk reference; its full inline value never crosses the driver boundary. */
+	private async historyPacket(
+		tx: SqliteExecutor,
+		sessionId: string,
+		epoch: string,
+		from: number,
+		through: number,
+		backward: boolean,
+	): Promise<SessionHistoryItem[]> {
+		const edge = backward ? through : from;
+		const rows = await tx.all<SqliteRow & { seq: number; bytes: number | null; chunks: number; body: string | null }>(
+			`WITH sizes AS MATERIALIZED (
+				SELECT e.seq, e.chunks, CASE WHEN e.chunks = 0 THEN ${this.entryByteLength("e.entry_json")} ELSE (e.chunks - 1) * ? +
+					(SELECT length(c.data) FROM ${this.tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq AND c.idx = e.chunks - 1) END AS bytes
+				FROM ${this.tables.entries} e WHERE e.session_id = ? AND e.seq BETWEEN ? AND ?
+			), sized_page AS (
+				SELECT seq, chunks, bytes, sum(bytes) OVER (ORDER BY seq ${backward ? "DESC" : "ASC"}) AS cumulative FROM sizes
+			) SELECT p.seq, p.chunks, p.bytes, CASE WHEN p.chunks = 0 AND p.bytes <= ? THEN e.entry_json END AS body
+			FROM sized_page p JOIN ${this.tables.entries} e ON e.session_id = ? AND e.seq = p.seq
+			WHERE p.bytes IS NULL OR p.cumulative <= ? OR p.seq = ? ORDER BY p.seq`,
+			SESSION_ENTRY_CHUNK_BYTES,
+			sessionId,
+			from,
+			through,
+			SESSION_HISTORY_PAGE_BYTES,
+			sessionId,
+			SESSION_HISTORY_PAGE_BYTES,
+			edge,
+		);
+		const items: SessionHistoryItem[] = [];
+		for (const row of rows) {
+			const seq = Number(row.seq),
+				bytes = Number(row.bytes);
+			if (row.bytes === null)
+				throw new StorageUnavailableError(
+					this.descriptor,
+					new Error(`Missing final chunk of session entry ${seq}`),
+				);
+			if (bytes > SESSION_HISTORY_PAGE_BYTES) items.push({ kind: "oversized", sessionId, epoch, seq, bytes });
+			else
+				items.push({
+					seq,
+					entry: JSON.parse(
+						row.body ?? (await this.readEntryChunks(tx, sessionId, seq, Number(row.chunks))),
+					) as SessionEntry,
+				});
+		}
+		return items;
 	}
 
 	async readChildDisplayCut(sessionId: string, launch: ChildDisplayLaunch) {
@@ -2521,6 +2634,26 @@ export class SqlSessionStore implements SessionStore {
 			},
 			{ ...SESSION_TRANSACTION, readOnly: true },
 		);
+	}
+
+	/**
+	 * A column expression of a sessions row's generation, `COALESCE(epoch, resume.epoch, revision)` of its summary state,
+	 * that parses that state only when the row's revision or watermark is not the one this store last saw it at: every
+	 * write gives the row a new revision, so the generation it held then still stands. A long session's summary state is
+	 * hundreds of kilobytes, which a server would otherwise parse for every page and chunk an export reads (#5571).
+	 */
+	private generation(sessionId: string): { readonly sql: string; readonly params: readonly SqliteValue[] } {
+		const known = this.generations.get(sessionId);
+		return {
+			sql: `CASE WHEN revision = ? AND last_seq = ? THEN ? ELSE COALESCE(${this.dialect.jsonText("summary_state", "epoch")}, ${this.dialect.jsonText("summary_state", "resume", "epoch")}, revision) END`,
+			params: [known?.revision ?? null, known?.lastSeq ?? null, known?.epoch ?? null],
+		};
+	}
+
+	private noteGeneration(sessionId: string, revision: string, lastSeq: number, epoch: string): void {
+		this.generations.delete(sessionId);
+		this.generations.set(sessionId, { revision, lastSeq, epoch });
+		while (this.generations.size > 16) this.generations.delete(this.generations.keys().next().value!);
 	}
 
 	async readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
@@ -2695,37 +2828,238 @@ export class SqlSessionStore implements SessionStore {
 		}, SESSION_TRANSACTION);
 	}
 
-	async readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+	/**
+	 * One statement, so one snapshot without a transaction: the session row (its generation, watermark and schema version)
+	 * sorts first as sequence 0, then the page's entries with their sizes. The page ends at the last of up to `limit`
+	 * entries whose running size fits a page, or is the first entry alone, whose JSON is left out when it is larger. Each
+	 * page of a scan is then one round trip to a database server (#5571). With `select`, only the entries `selected` keeps
+	 * are sized and read; the session row then also says how many were sized and the last of them, so the page knows how
+	 * far it accounts for the range.
+	 */
+	async readScanPage(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		epoch: string,
+		limit: number,
+		select?: SessionToolUseSelection,
+	): Promise<SessionScanPage> {
 		this.assertOpen();
-		return this.transaction(async (tx) => {
-			const { sessionId, epoch, seq } = reference;
-			const head = await this.historyHead(tx, sessionId);
-			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
-			const info = await tx.get<{ chunks: number }>(
-				`SELECT chunks FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
-				sessionId,
-				seq,
-			);
-			if (!info) throw new StorageUnavailableError(this.descriptor, new Error(`Missing session entry ${seq}`));
-			const chunked = Number(info.chunks) > 0;
-			const start = chunked ? offset % SESSION_ENTRY_CHUNK_BYTES : offset;
-			const expression = chunked
-				? "data"
-				: this.dialect.name === "sqlite"
-					? "CAST(entry_json AS BLOB)"
-					: "convert_to(entry_json, 'UTF8')";
-			const row = await tx.get<{ data: Uint8Array }>(
-				`SELECT substr(${expression}, CAST(? AS INTEGER), CAST(? AS INTEGER)) AS data FROM ${chunked ? this.tables.entryChunks : this.tables.entries} WHERE session_id = ? AND seq = ?${chunked ? " AND idx = ?" : ""}`,
-				start + 1,
-				SESSION_HISTORY_CHUNK_BYTES,
-				sessionId,
-				seq,
-				...(chunked ? [Math.floor(offset / SESSION_ENTRY_CHUNK_BYTES)] : []),
-			);
-			if (!row)
-				throw new StorageUnavailableError(this.descriptor, new Error(`Missing chunk of session entry ${seq}`));
-			return row.data;
-		}, SESSION_TRANSACTION);
+		validateSessionText("sessionId", sessionId);
+		const generation = this.generation(sessionId);
+		const count = entrySizeLimit(limit);
+		const bytes = (row: string) =>
+			`CASE WHEN ${row}.chunks = 0 THEN ${this.entryByteLength(`${row}.entry_json`)} ELSE (${row}.chunks - 1) * ? + (SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id = ${row}.session_id AND c.seq = ${row}.seq AND c.idx = ${row}.chunks - 1) END`;
+		const head = `SELECT 0 AS seq, NULL AS bytes, NULL AS chunks, NULL AS entry_json, last_seq, revision, ${generation.sql} AS epoch,
+				(SELECT schema_version FROM ${this.tables.meta} LIMIT 1) AS schema_version`;
+		type Row = SqliteRow & {
+			seq: number;
+			bytes: number | null;
+			chunks: number | null;
+			entry_json: string | null;
+			last_seq: number | null;
+			revision: string | null;
+			epoch: string | null;
+			schema_version: number | null;
+			sized?: number | null;
+			sized_last?: number | null;
+		};
+		const filter = (row: string) => this.selected(row, select!);
+		const selectParams = select === undefined ? [] : this.selectedParams(select);
+		const rows = !select
+			? await this.database.all<Row>(
+					`${head} FROM ${this.tables.sessions} WHERE id = ?
+					UNION ALL
+					SELECT seq, bytes, chunks, CASE WHEN bytes <= ? AND chunks = 0 THEN entry_json END, NULL, NULL, NULL, NULL FROM (
+						SELECT e.seq, e.chunks, e.entry_json, ${bytes("e")} AS bytes FROM ${this.tables.entries} e
+						WHERE e.session_id = ? AND e.seq BETWEEN ? AND ? AND e.seq <= (
+							SELECT COALESCE(max(seq), ?) FROM (
+								SELECT seq, sum(bytes) OVER (ORDER BY seq) AS total FROM (
+									SELECT s.seq, ${bytes("s")} AS bytes FROM ${this.tables.entries} s
+									WHERE s.session_id = ? AND s.seq BETWEEN ? AND ? ORDER BY s.seq LIMIT ?
+								) AS sized
+							) AS run WHERE total <= ?
+						)
+					) AS page
+					ORDER BY seq`,
+					...generation.params,
+					sessionId,
+					SESSION_HISTORY_PAGE_BYTES,
+					SESSION_ENTRY_CHUNK_BYTES,
+					sessionId,
+					startSeq,
+					endSeq,
+					startSeq,
+					SESSION_ENTRY_CHUNK_BYTES,
+					sessionId,
+					startSeq,
+					endSeq,
+					count,
+					SESSION_HISTORY_PAGE_BYTES,
+				)
+			: // The matching entries are found once: their sizes are kept for the cut and the coverage.
+				await this.database.all<Row>(
+					`WITH sized AS MATERIALIZED (
+						SELECT s.seq, ${bytes("s")} AS bytes FROM ${this.tables.entries} s
+						WHERE s.session_id = ? AND s.seq BETWEEN ? AND ? AND ${filter("s")} ORDER BY s.seq LIMIT ?
+					), cut AS (
+						SELECT COALESCE(
+							(SELECT max(seq) FROM (SELECT seq, sum(bytes) OVER (ORDER BY seq) AS total FROM sized) AS run WHERE total <= ?),
+							(SELECT min(seq) FROM sized)
+						) AS seq
+					)
+					${head}, (SELECT count(*) FROM sized) AS sized, (SELECT max(seq) FROM sized) AS sized_last
+					FROM ${this.tables.sessions} WHERE id = ?
+					UNION ALL
+					SELECT seq, bytes, chunks, CASE WHEN bytes <= ? AND chunks = 0 THEN entry_json END, NULL, NULL, NULL, NULL, NULL, NULL FROM (
+						SELECT e.seq, e.chunks, e.entry_json, ${bytes("e")} AS bytes FROM ${this.tables.entries} e
+						WHERE e.session_id = ? AND e.seq BETWEEN ? AND (SELECT seq FROM cut) AND ${filter("e")}
+					) AS page
+					ORDER BY seq`,
+					SESSION_ENTRY_CHUNK_BYTES,
+					sessionId,
+					startSeq,
+					endSeq,
+					...selectParams,
+					count,
+					SESSION_HISTORY_PAGE_BYTES,
+					...generation.params,
+					sessionId,
+					SESSION_HISTORY_PAGE_BYTES,
+					SESSION_ENTRY_CHUNK_BYTES,
+					sessionId,
+					startSeq,
+					...selectParams,
+				);
+		const first = rows[0];
+		if (first === undefined || Number(first.seq) !== 0) throw new SessionNotFoundError(sessionId);
+		assertStorageSchemaVersion(
+			"sessions",
+			first.schema_version,
+			SESSION_SCHEMA_VERSION,
+			SESSION_SCHEMA_VERSION_UNCHUNKED,
+		);
+		const lastSeq = Number(first.last_seq);
+		this.noteGeneration(sessionId, first.revision!, lastSeq, first.epoch!);
+		if (first.epoch !== epoch) throw new SessionConflictError(sessionId, endSeq, lastSeq);
+		const page = rows.slice(1);
+		for (const row of page)
+			if (row.bytes === null)
+				throw new StorageUnavailableError(
+					this.descriptor,
+					new Error(`Missing final chunk of session entry ${row.seq}`),
+				);
+		const top = page.at(-1);
+		if (top === undefined) return { lastSeq, throughSeq: endSeq, items: [] };
+		// The page accounts for the range through its last entry, or through the end when every entry it sized fit.
+		const throughSeq =
+			select && Number(first.sized) < count && Number(first.sized_last) <= Number(top.seq)
+				? endSeq
+				: Number(top.seq);
+		if (Number(page[0]!.bytes) > SESSION_HISTORY_PAGE_BYTES)
+			return {
+				lastSeq,
+				throughSeq,
+				items: [{ kind: "oversized", sessionId, epoch, seq: Number(page[0]!.seq), bytes: Number(page[0]!.bytes) }],
+			};
+		// Only an entry larger than a stored chunk is chunked, and so larger than a page; one that is not is read with its
+		// chunks in a snapshot of its own all the same.
+		if (page.some((row) => Number(row.chunks) > 0)) {
+			const range = await this.readRange(sessionId, Number(page[0]!.seq), Number(top.seq), epoch);
+			return {
+				lastSeq: range.lastSeq,
+				throughSeq,
+				items: range.entries.map((entry, i) => ({ seq: range.seqs![i]!, entry })),
+			};
+		}
+		return {
+			lastSeq,
+			throughSeq,
+			items: page.map((row) => ({ seq: Number(row.seq), entry: JSON.parse(row.entry_json!) as SessionEntry })),
+		};
+	}
+
+	/**
+	 * A condition on an entries row that holds for every entry `select` selects (and more): an entry larger than a page;
+	 * on SQLite and libSQL, a message whose stored type and role say it is a tool result, or an assistant message with a
+	 * tool call named other than `exceptCalls`, and any row that is not valid JSON; on Postgres, which would parse each
+	 * row's JSON to read those, any row whose JSON holds a tool call block's `"toolCall"` or a result's `"toolResult"`,
+	 * which `JSON.stringify`, the only writer of a row, always writes as such (it never escapes a letter).
+	 */
+	private selected(row: string, select: SessionToolUseSelection): string {
+		const json = `${row}.entry_json`;
+		if (this.dialect.name !== "sqlite")
+			return `(${row}.chunks > 0 OR ${this.dialect.contains(json, `'"toolCall"'`)} OR ${this.dialect.contains(json, `'"toolResult"'`)})`;
+		const named = select.exceptCalls.length
+			? `json_type(b.value, '$.name') IS NOT 'text' OR json_extract(b.value, '$.name') NOT IN (${select.exceptCalls.map(() => "?").join(", ")})`
+			: "1";
+		return `(${row}.chunks > 0 OR NOT json_valid(${json}) OR json_extract(${json}, '$.type') = 'message' AND (
+			json_extract(${json}, '$.message.role') = 'toolResult'
+			OR json_extract(${json}, '$.message.role') = 'assistant' AND EXISTS (
+				SELECT 1 FROM json_each(${json}, '$.message.content') b
+				WHERE b.type = 'object' AND json_extract(b.value, '$.type') = 'toolCall' AND (${named})
+			)
+		))`;
+	}
+
+	private selectedParams(select: SessionToolUseSelection): readonly SqliteValue[] {
+		return this.dialect.name === "sqlite" ? select.exceptCalls : [];
+	}
+
+	/**
+	 * One statement, so one snapshot without a transaction: the session row's generation, watermark and schema version
+	 * with the bytes, from the entry's own JSON or from the one stored chunk that holds `offset`.
+	 */
+	async readEntryChunk(
+		reference: OversizedSessionEntry,
+		offset: number,
+		bytes = SESSION_HISTORY_CHUNK_BYTES,
+	): Promise<Uint8Array> {
+		this.assertOpen();
+		const { sessionId, epoch, seq } = reference;
+		const length = Math.min(Math.max(1, Math.trunc(bytes) || 1), SESSION_HISTORY_PAGE_BYTES);
+		const generation = this.generation(sessionId);
+		const json = this.dialect.name === "sqlite" ? "CAST(e.entry_json AS BLOB)" : "convert_to(e.entry_json, 'UTF8')";
+		const row = await this.database.get<
+			SqliteRow & {
+				last_seq: number;
+				revision: string;
+				epoch: string;
+				schema_version: number | null;
+				chunks: number | null;
+				data: Uint8Array | null;
+			}
+		>(
+			`SELECT s.last_seq, s.revision, ${generation.sql} AS epoch,
+				(SELECT schema_version FROM ${this.tables.meta} LIMIT 1) AS schema_version, e.chunks,
+				CASE WHEN e.chunks > 0
+					THEN (SELECT substr(c.data, CAST(? AS INTEGER), CAST(? AS INTEGER)) FROM ${this.tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq AND c.idx = ?)
+					ELSE substr(${json}, CAST(? AS INTEGER), CAST(? AS INTEGER)) END AS data
+			FROM ${this.tables.sessions} s LEFT JOIN ${this.tables.entries} e ON e.session_id = s.id AND e.seq = ?
+			WHERE s.id = ?`,
+			...generation.params,
+			(offset % SESSION_ENTRY_CHUNK_BYTES) + 1,
+			length,
+			Math.floor(offset / SESSION_ENTRY_CHUNK_BYTES),
+			offset + 1,
+			length,
+			seq,
+			sessionId,
+		);
+		if (!row) throw new SessionNotFoundError(sessionId);
+		assertStorageSchemaVersion(
+			"sessions",
+			row.schema_version,
+			SESSION_SCHEMA_VERSION,
+			SESSION_SCHEMA_VERSION_UNCHUNKED,
+		);
+		this.noteGeneration(sessionId, row.revision, Number(row.last_seq), row.epoch);
+		if (row.epoch !== epoch) throw new SessionConflictError(sessionId, seq, Number(row.last_seq));
+		if (row.chunks === null)
+			throw new StorageUnavailableError(this.descriptor, new Error(`Missing session entry ${seq}`));
+		if (row.data === null)
+			throw new StorageUnavailableError(this.descriptor, new Error(`Missing chunk of session entry ${seq}`));
+		return row.data;
 	}
 
 	async findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {
@@ -2734,6 +3068,77 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("entry.id", entryId);
 		if (!(await this.readHeader(sessionId))) throw new SessionNotFoundError(sessionId);
 		return this.seqOfEntry(this.database, sessionId, entryId);
+	}
+
+	/**
+	 * Earlier entries that may save the same task reference as each candidate (#5593), in one statement on the session
+	 * links' entry-ID index: the statement reads each candidate's ID at its sequence itself, so no entry ID is bound or
+	 * returned, and no entry body is read. `undefined` while that index is still being built.
+	 */
+	async findTaskReferenceDuplicateCandidates(
+		sessionId: string,
+		query: SessionTaskReferenceDuplicateQuery,
+	): Promise<SessionTaskReferenceDuplicatePage | undefined> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const { candidates, afterSeq, limit } = taskReferenceDuplicateQuery(query);
+		return this.transaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId);
+			if (head.epoch !== query.epoch || head.lastSeq < query.throughSeq)
+				throw new SessionConflictError(sessionId, query.throughSeq, head.lastSeq);
+			if (candidates.length === 0) return { seqs: [] };
+			const t = snapshotIndexTables(this.prefix);
+			const links = t.sessionLinks;
+			/**
+			 * For each candidate `c`, the links row `s` at its sequence and then, with `earlier`, the rows `e` before it
+			 * under an ID, each found through an index, never by walking the session. Postgres plans a lateral subquery
+			 * behind `OFFSET 0` once per row before it; SQLite keeps a `CROSS JOIN`'s order. `+e.seq` keeps either from
+			 * reading the session's rows by sequence instead of by ID.
+			 */
+			const rowsOf = (earlier?: string) => {
+				const keys: [alias: string, column: string, key: string][] = [
+					["s", "entry_id", "s.session_id = ? AND s.seq = c.seq"],
+				];
+				if (earlier !== undefined)
+					keys.push([
+						"e",
+						"seq",
+						`e.session_id = ? AND e.entry_id = ${earlier} AND +e.seq < c.seq AND +e.seq > ?`,
+					]);
+				if (this.dialect.name !== "postgres")
+					return `c ${keys.map(([alias]) => `CROSS JOIN ${links} ${alias}`).join(" ")} WHERE ${keys.map(([, , key]) => key).join(" AND ")}`;
+				return `c ${keys.map(([alias, column, key]) => `CROSS JOIN LATERAL (SELECT ${alias}.${column} FROM ${links} ${alias} WHERE ${key} OFFSET 0) ${alias}`).join(" ")}`;
+			};
+			// The other ID that names the same reference: `<id>:<block>` for a block, the rest of a `<root>:<digits>` ID.
+			const other = `CASE WHEN c.idx >= 0 THEN s.entry_id || ':' || CAST(c.idx AS TEXT)
+				WHEN c.suffix > 0 AND c.suffix <= length(s.entry_id) AND substr(s.entry_id, length(s.entry_id) - c.suffix + 1, 1) = ':'
+				THEN substr(s.entry_id, 1, length(s.entry_id) - c.suffix) END`;
+			const values = candidates.map(
+				() => `(CAST(? AS ${this.dialect.types.int}), CAST(? AS INTEGER), CAST(? AS INTEGER))`,
+			);
+			const rows = await tx.all<SqliteRow & { kind: number; seq: number | null }>(
+				`WITH c(seq, idx, suffix) AS (VALUES ${values.join(", ")}),
+				hits AS (SELECT e.seq AS seq FROM ${rowsOf("s.entry_id")} UNION SELECT e.seq FROM ${rowsOf(other)})
+				SELECT 0 AS kind, (SELECT CASE WHEN backfilled_through >= watermark THEN 1 ELSE 0 END FROM ${t.sources} WHERE source = 'session-entries') AS seq
+				UNION ALL SELECT 1, count(*) FROM ${rowsOf()}
+				UNION ALL SELECT 2, page.seq FROM (SELECT seq FROM hits ORDER BY seq LIMIT ?) page`,
+				...candidates.flat(),
+				...[sessionId, sessionId, afterSeq, sessionId, sessionId, afterSeq, sessionId, limit + 1],
+			);
+			let indexed = false;
+			let found = 0;
+			const seqs: number[] = [];
+			for (const row of rows) {
+				if (Number(row.kind) === 0) indexed = Number(row.seq) === 1;
+				else if (Number(row.kind) === 1) found = Number(row.seq);
+				else seqs.push(Number(row.seq));
+			}
+			if (!indexed) return undefined;
+			// Every candidate's row is in the epoch the caller read; one that is not is no longer the history it read.
+			if (found !== candidates.length) throw new SessionConflictError(sessionId, query.throughSeq, head.lastSeq);
+			seqs.sort((a, b) => a - b);
+			return seqs.length > limit ? { seqs: seqs.slice(0, limit), nextAfterSeq: seqs[limit - 1]! } : { seqs };
+		}, SESSION_TRANSACTION);
 	}
 	async readForkWindow(sessionId: string, entryId: string, options?: { readonly archivedReceipts: true }) {
 		this.assertOpen();
