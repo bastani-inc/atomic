@@ -851,8 +851,9 @@ function buildOutcomeToolBlock(input: {
 				answerKey ? clickableKeyTextHint(answerKey, " to answer") : "",
 			]);
 		} else if (turnInterrupted) {
-			status = "stopped";
-			statusLine = statJoin(theme, ["Stopped", elapsedText]);
+			// Esc in its chat paused it: it is still running, and a message continues it.
+			status = "paused";
+			statusLine = statJoin(theme, ["Paused", elapsedText]);
 		} else if (taskSettled !== undefined && (!record || record.state === "running")) {
 			if (taskSettled.kind === "completed") {
 				status = "success";
@@ -1044,8 +1045,8 @@ function buildForegroundChildToolBlock(input: {
 			answerKey ? clickableKeyTextHint(answerKey, " to answer") : "",
 		]);
 	} else if (turnInterrupted) {
-		status = "stopped";
-		statusLine = statJoin(theme, ["Stopped", elapsedText]);
+		status = "paused";
+		statusLine = statJoin(theme, ["Paused", elapsedText]);
 	} else if (isRunning) {
 		status = "running";
 		const manageKey = hasPanelRow(taskRecord)

@@ -6,6 +6,7 @@ import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
 import type { SessionStore } from "../../../core/storage/session/types.js";
+import { lastAssistantAnswer } from "../../../core/storage/session/window-answer.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
@@ -20,6 +21,7 @@ import {
 	abortChatSessionCompaction,
 	interruptChatSession,
 	restoreQueuedMessagesToEditor,
+	restoreTakenQueuedMessages,
 	submitChatSession,
 } from "./chat-session-host-actions.ts";
 import {
@@ -27,6 +29,7 @@ import {
 	createChatSessionEditor,
 	handleChatSessionInput,
 	hasChatSessionTransientModal,
+	recordChatSessionPrompt,
 	setChatSessionEditorText,
 } from "./chat-session-host-editor.ts";
 import {
@@ -56,6 +59,7 @@ import {
 	disposeChatSession,
 	isChatSessionBashRunning,
 	isChatSessionStreaming,
+	notifyChatSessionStatus,
 	reassertChatSessionExternalPromptLifecycle,
 	settleChatSessionPromptLifecycle,
 	startChatSessionExternalPromptLifecycle,
@@ -65,6 +69,7 @@ import {
 } from "./chat-session-host-runtime.ts";
 import { SavedPageCalls, type SavedPageNeighbours } from "./chat-session-host-saved-calls.ts";
 import { ChatSessionHostState, countableTranscriptLength } from "./chat-session-host-state.ts";
+import { type ChatSteeringTarget, createChatSessionSteering } from "./chat-session-host-steering.ts";
 import type {
 	AgentSnapshotMessage,
 	ChatSessionHostEntry,
@@ -72,7 +77,7 @@ import type {
 	ChatSessionInterruptedTurnSnapshot,
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
-import { firstRawUserExactText, syncFirstUserEntry } from "./chat-session-host-utils.ts";
+import { firstRawUserExactText, isChatMessageEntry, syncFirstUserEntry } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { type ParkedTaskRows, parkedRun } from "./parked-rows.ts";
 import { type RetryWaitEvent, retryWaitFromEvent } from "./retry-status-line.ts";
@@ -134,6 +139,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	focused = true;
 
 	private readonly state: ChatSessionHostState<TExtraEntry>;
+	/** The agent this chat steers as the main chat does, when it was given one. */
+	private readonly steering: ChatSteeringTarget | undefined;
 	private taskStore?: OwnerTaskStore;
 	/** What `/tasks` and the task footer show: the session's task store, or the host's own task source. */
 	private taskSource?: TaskViewSource;
@@ -189,6 +196,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			renderEntry: (state, entry) => renderChatSessionEntry(state, entry),
 			transcriptCacheKey: (state, entry) => transcriptCacheKey(state, entry),
 		});
+		this.steering = opts.steering;
+		if (opts.steering) this.state.steeringController = createChatSessionSteering(this.state, opts.steering);
 		this.savedCalls = new SavedPageCalls(this.state);
 		this.state.editor = createChatSessionEditor(
 			this.state,
@@ -450,6 +459,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.pendingSteeringMessages = [];
 		this.state.pendingFollowUpMessages = [];
 		this.state.unconfirmedQueuedMessages = [];
+		if (this.steering) {
+			// The shown copies and the last listed queue were the previous session's.
+			this.state.steeringController?.dispose();
+			this.state.steeringController = createChatSessionSteering(this.state, this.steering);
+		}
 		this.state.liveChat.clearPendingTools();
 		this.state.newMessages.reset();
 		stopChatSessionWorkingLifecycle(this.state);
@@ -917,6 +931,10 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.requestRender?.();
 	}
 
+	showStatus(message: string): void {
+		notifyChatSessionStatus(this.state, message);
+	}
+
 	scrollToBottom(): void {
 		this.state.bodyViewport.scrollToBottom();
 	}
@@ -1051,6 +1069,42 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	restoreQueuedMessagesToEditor(): boolean {
 		return restoreQueuedMessagesToEditor(this.state);
+	}
+
+	/**
+	 * Put messages already taken back from the agent's queue into the editor, with any the editor held, steering
+	 * messages first and then follow-ups, in front of what is typed. Answers how many came back.
+	 */
+	restoreTakenQueuedMessages(taken: {
+		readonly steering: readonly string[];
+		readonly followUp: readonly string[];
+	}): number {
+		return restoreTakenQueuedMessages(this.state, taken);
+	}
+
+	/** What Up recalls in this chat, oldest first, so a chat opened again later can recall it too. */
+	promptHistory(): readonly string[] {
+		return this.state.sentPrompts;
+	}
+
+	/** Let Up recall `prompts`, oldest first, as if they had been sent from this chat. */
+	seedPromptHistory(prompts: readonly string[]): void {
+		for (const prompt of prompts) recordChatSessionPrompt(this.state, prompt);
+	}
+
+	/** Every message the chat lists as queued, per lane, as its queued rows show them. */
+	queuedMessages(): { readonly steering: readonly string[]; readonly followUp: readonly string[] } {
+		const steering = this.state.steeringController;
+		if (steering !== undefined) return steering.allQueued();
+		return { steering: this.state.pendingSteeringMessages, followUp: this.state.pendingFollowUpMessages };
+	}
+
+	/** The text of the last answer the agent finished in this chat, as `/copy` copies it. */
+	lastAgentMessageText(): string | undefined {
+		const messages = this.state.transcript.flatMap((entry) =>
+			isChatMessageEntry(entry) && entry.kind === "assistant" ? [entry.message] : [],
+		);
+		return lastAssistantAnswer(messages)?.text;
 	}
 
 	private editorCallbacks(): {

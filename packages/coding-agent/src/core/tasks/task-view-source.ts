@@ -24,7 +24,9 @@ import { isTaskTurnInterrupted, type OwnerTaskStore, type TaskActivity } from ".
 import { scopedBackgroundTasks } from "./session-scope.js";
 import {
 	loadTaskOwnTranscriptEntries,
+	type QueuedTaskMessages,
 	type TaskMessageDelivery,
+	type TaskMessageLane,
 	type TaskTranscriptSource,
 	taskExtensionStatuses,
 	taskOwnTranscriptEntries,
@@ -231,16 +233,35 @@ export interface TaskViewSource {
 	extensionStatuses(id: TaskId): ReadonlyMap<string, string>;
 	watchExtensionStatuses(id: TaskId, listener: () => void): () => void;
 	/**
-	 * Sends `text` to an agent task through its Intercom target, as a message typed into its transcript. Resolves
-	 * once the channel confirmed delivery; rejects with a {@link TaskMessageError}. Absent where tasks cannot be
-	 * messaged.
+	 * Gives `text`, as typed into an agent task's chat, to the task's own session, as the main chat gives typed text
+	 * to its session. While the task's turn runs the message waits in the session's queue on `lane` (default
+	 * `"steer"`), delivered at the same boundaries as in the main chat; a task whose turn was interrupted, or a
+	 * finished subagent that can be resumed, takes it as its next message. The model receives the raw text. Resolves
+	 * once the session accepted the message; rejects with a {@link TaskMessageError}, whose text the chat gives back to
+	 * its editor. Absent where tasks cannot be messaged.
 	 */
-	sendTaskMessage?(id: TaskId, text: string): Promise<void>;
+	sendTaskMessage?(id: TaskId, text: string, lane?: TaskMessageLane): Promise<void>;
+	/**
+	 * Takes back every message waiting in an agent task's queue, in order, so its chat can restore them to the editor
+	 * (Alt+Up, Esc). Nothing taken back is delivered. Absent where a view cannot reach a task's queue.
+	 */
+	clearTaskQueue?(id: TaskId): Promise<TaskViewResult<QueuedTaskMessages>>;
 	/**
 	 * Interrupts an agent task's current turn, as Esc does in its chat. The task keeps running and waits for its next
 	 * message. Absent where a view cannot interrupt a task's turn.
 	 */
 	interruptTask?(id: TaskId): Promise<TaskViewResult<undefined>>;
+	/**
+	 * Pauses an agent task, as Esc does in its chat: the messages typed into the chat that are still queued come back,
+	 * in order, for its editor, then its turn ends as {@link interruptTask} ends it. The task stays running, paused,
+	 * and its next message continues it. Absent where a view cannot pause a task.
+	 */
+	pauseTask?(id: TaskId): Promise<TaskViewResult<QueuedTaskMessages>>;
+	/**
+	 * Continues an agent task {@link pauseTask} paused, as the user's send does in its chat: its queue is released, so
+	 * the message sent next starts its turn. A no-op on a task that is not paused.
+	 */
+	resumeTask?(id: TaskId): Promise<TaskViewResult<undefined>>;
 	/**
 	 * Why a finished agent task's chat is read-only (it was stopped for good or is no longer kept), or `undefined` when
 	 * a message resumes it. Absent where finished tasks cannot be resumed from a view.
@@ -303,8 +324,11 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	if (existing !== undefined) return existing;
 	const launched = (tasks: readonly TaskRecord[]) => tasks.filter((task) => task.parentTaskId === launcher);
 	const sendTaskMessage = root.sendTaskMessage;
+	const clearTaskQueue = root.clearTaskQueue;
 	const taskCommands = root.taskCommands;
 	const interruptTask = root.interruptTask;
+	const pauseTask = root.pauseTask;
+	const resumeTask = root.resumeTask;
 	const taskReadOnlyReason = root.taskReadOnlyReason;
 	const taskStopped = root.taskStopped;
 	const view: TaskViewSource = {
@@ -340,9 +364,17 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 		watchExtensionStatuses: (id, listener) => root.watchExtensionStatuses(id, listener),
 		...(sendTaskMessage === undefined
 			? {}
-			: { sendTaskMessage: (id: TaskId, text: string) => sendTaskMessage.call(root, id, text) }),
+			: {
+					sendTaskMessage: (id: TaskId, text: string, lane?: TaskMessageLane) =>
+						lane === undefined
+							? sendTaskMessage.call(root, id, text)
+							: sendTaskMessage.call(root, id, text, lane),
+				}),
+		...(clearTaskQueue === undefined ? {} : { clearTaskQueue: (id: TaskId) => clearTaskQueue.call(root, id) }),
 		...(taskCommands === undefined ? {} : { taskCommands: (id: TaskId) => taskCommands.call(root, id) }),
 		...(interruptTask === undefined ? {} : { interruptTask: (id: TaskId) => interruptTask.call(root, id) }),
+		...(pauseTask === undefined ? {} : { pauseTask: (id: TaskId) => pauseTask.call(root, id) }),
+		...(resumeTask === undefined ? {} : { resumeTask: (id: TaskId) => resumeTask.call(root, id) }),
 		...(taskStopped === undefined ? {} : { taskStopped: (id: TaskId) => taskStopped.call(root, id) }),
 		...(taskReadOnlyReason === undefined
 			? {}
@@ -555,6 +587,49 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
 			}
 		},
+		async pauseTask(id) {
+			const task = lease(id);
+			if (!task.ok) return { ok: false, error: { message: task.error.message } };
+			const bound = taskTranscriptSource(task.value);
+			if (!bound.ok) return { ok: false, error: { message: "This task cannot be paused from here." } };
+			const session = bound.value.session;
+			// A session that cannot take its queue back is paused as an interrupt ends its turn; its queue stays.
+			const pause =
+				session.pauseTurn?.bind(session) ??
+				(session.interruptTurn === undefined
+					? undefined
+					: async () => {
+							await session.interruptTurn?.();
+							return { steering: [], followUp: [] };
+						});
+			if (pause === undefined) return { ok: false, error: { message: "This task cannot be paused from here." } };
+			try {
+				const taken = await pause();
+				if (session.isRunning?.() !== true) {
+					store.setTurnInterrupted(id, true);
+					// It is paused until its next turn starts, whether or not its chat is open to see that turn.
+					const unsubscribe = session.subscribe?.((event) => {
+						if (event.type !== "agent_start") return;
+						unsubscribe?.();
+						store.setTurnInterrupted(id, false);
+					});
+				}
+				return { ok: true, value: taken };
+			} catch (error) {
+				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
+			}
+		},
+		async resumeTask(id) {
+			const task = lease(id);
+			if (!task.ok) return { ok: false, error: { message: task.error.message } };
+			const bound = taskTranscriptSource(task.value);
+			try {
+				if (bound.ok) await bound.value.session.resumeTurn?.();
+				return { ok: true, value: undefined };
+			} catch (error) {
+				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
+			}
+		},
 		taskStopped(id) {
 			const record = store.getTask(id);
 			return (
@@ -570,49 +645,80 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			if (resumer === undefined) return "This subagent has finished; its chat is read-only.";
 			return resumer.readOnlyReason(id);
 		},
-		async sendTaskMessage(id, text) {
-			const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
-			const resumer = taskResumer(store.supervisor);
-			// A finished subagent continues in its own session with the message, as `subagent resume` continues it.
-			if (record?.kind === "agent" && record.execution.kind === "settled" && resumer !== undefined) {
-				const reason = resumer.readOnlyReason(id);
-				if (reason !== undefined) throw new TaskMessageError("delivery-refused", { taskId: id, detail: reason });
-				const resumed = await resumer.resume(id, text);
-				if (!resumed.ok) throw new TaskMessageError("delivery-refused", { taskId: id, detail: resumed.reason });
-				return;
-			}
-			const task = lease(id);
-			if (!task.ok) throw new TaskMessageError("task-unavailable", { taskId: id });
-			const bound = taskTranscriptSource(task.value);
-			const session = bound.ok ? bound.value.session : undefined;
-			const target = session?.completionSource?.intercomTarget;
-			if (session?.sendMessage === undefined || target === undefined)
-				throw new TaskMessageError("messages-unsupported", { taskId: id });
-			// The message reaches the task as Intercom text, which its session does not expand, so a skill command is
-			// expanded here from the task's own skills, as its session would expand it. A selector naming none is sent as typed.
-			const skills = session.commands?.().skills;
-			let delivery: TaskMessageDelivery;
-			try {
-				delivery = await session.sendMessage(skills === undefined ? text : await expandSkillCommand(skills, text));
-			} catch (cause) {
-				throw new TaskMessageError("delivery-unconfirmed", { taskId: id, target }, { cause });
-			}
-			if (delivery.delivered) {
-				store.setTurnInterrupted(id, false);
-				return;
-			}
-			if (delivery.reason === "unconfirmed")
-				throw new TaskMessageTimeoutError({
-					taskId: id,
-					target,
-					timeoutMs: delivery.timeoutMs,
-					elapsedMs: delivery.elapsedMs,
+		async sendTaskMessage(id, text, lane = "steer") {
+			// The message goes to the subagent's own session: queued on its lane while the subagent runs, and the first
+			// message of its next turn once it has finished and resumes, as `subagent resume` continues it. A running
+			// subagent can end before it takes the message; it then resumes with it, once it has finished. (A resume that
+			// a wake won runs as a new task, which the chat sends the message to again.)
+			for (let attempt = 0; ; attempt++) {
+				const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
+				const resumer = taskResumer(store.supervisor);
+				if (record?.kind === "agent" && record.execution.kind === "settled" && resumer !== undefined) {
+					const reason = resumer.readOnlyReason(id);
+					if (reason !== undefined) throw new TaskMessageError("delivery-refused", { taskId: id, detail: reason });
+					const resumed = await resumer.resume(id, text);
+					if (!resumed.ok) throw new TaskMessageError("delivery-refused", { taskId: id, detail: resumed.reason });
+					return;
+				}
+				const task = lease(id);
+				if (!task.ok) throw new TaskMessageError("task-unavailable", { taskId: id });
+				const bound = taskTranscriptSource(task.value);
+				const session = bound.ok ? bound.value.session : undefined;
+				const target = session?.completionSource?.intercomTarget;
+				// A session that takes no typed messages, as an SDK host's may, still takes them through its Intercom
+				// channel, as before. Every built-in subagent takes them in its own queue.
+				if (
+					session === undefined ||
+					(session.queueMessage === undefined && (session.sendMessage === undefined || target === undefined))
+				)
+					throw new TaskMessageError("messages-unsupported", { taskId: id });
+				const named = { taskId: id, ...(target === undefined ? {} : { target }) };
+				let delivery: TaskMessageDelivery;
+				try {
+					delivery =
+						session.queueMessage !== undefined
+							? await session.queueMessage(text, lane)
+							: await sendIntercomMessage(session, text);
+				} catch (cause) {
+					throw new TaskMessageError("delivery-unconfirmed", named, { cause });
+				}
+				if (delivery.delivered) {
+					// Only a message that started its turn ends an interrupted or paused one; queued, it waits in its hold.
+					if (delivery.startedTurn !== false) store.setTurnInterrupted(id, false);
+					return;
+				}
+				if (
+					delivery.reason === "ended" &&
+					attempt === 0 &&
+					resumer !== undefined &&
+					(await agentTaskSettles(store, id))
+				)
+					continue;
+				if (delivery.reason === "unconfirmed")
+					throw new TaskMessageTimeoutError({
+						...named,
+						target: target ?? id,
+						timeoutMs: delivery.timeoutMs,
+						elapsedMs: delivery.elapsedMs,
+					});
+				throw new TaskMessageError(delivery.reason === "lost" ? "delivery-unconfirmed" : "delivery-refused", {
+					...named,
+					...(delivery.detail === undefined ? {} : { detail: delivery.detail }),
 				});
-			throw new TaskMessageError(delivery.reason === "lost" ? "delivery-unconfirmed" : "delivery-refused", {
-				taskId: id,
-				target,
-				...(delivery.detail === undefined ? {} : { detail: delivery.detail }),
-			});
+			}
+		},
+		async clearTaskQueue(id) {
+			const task = lease(id);
+			if (!task.ok) return { ok: false, error: { message: task.error.message } };
+			const bound = taskTranscriptSource(task.value);
+			const clear = bound.ok ? bound.value.session.clearQueue : undefined;
+			// A session that keeps no queue, as a finished task's, has nothing queued.
+			if (!bound.ok || clear === undefined) return { ok: true, value: { steering: [], followUp: [] } };
+			try {
+				return { ok: true, value: await clear.call(bound.value.session) };
+			} catch (error) {
+				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
+			}
 		},
 	};
 	cancellablePages.add(source.readTaskTranscript);
@@ -620,6 +726,43 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 	sources.set(store, source);
 	bindTaskClockSource(source, store);
 	return source;
+}
+
+/**
+ * Sends typed text through the Intercom channel of a session that takes no typed messages. Its session does not
+ * expand Intercom text, so a skill command is expanded here from its own skills, as its session would; a selector
+ * naming none is sent as typed.
+ */
+async function sendIntercomMessage(session: TaskTranscriptSource, text: string): Promise<TaskMessageDelivery> {
+	const send = session.sendMessage;
+	if (send === undefined) return { delivered: false, reason: "refused" };
+	const skills = session.commands?.().skills;
+	return send.call(session, skills === undefined ? text : await expandSkillCommand(skills, text));
+}
+
+/** How long a message that a subagent refused as its execution ended waits for its task to finish, to resume it. */
+const ENDED_TASK_SETTLE_WAIT_MS = 10_000;
+
+/** Whether the agent task finishes within {@link ENDED_TASK_SETTLE_WAIT_MS}, once its execution has ended. */
+function agentTaskSettles(store: OwnerTaskStore, id: TaskId): Promise<boolean> {
+	const settled = () => {
+		const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
+		return record?.kind === "agent" && record.execution.kind === "settled";
+	};
+	store.drain();
+	if (settled()) return Promise.resolve(true);
+	return new Promise((resolve) => {
+		const finish = (value: boolean) => {
+			clearTimeout(timer);
+			unsubscribe();
+			resolve(value);
+		};
+		const unsubscribe = store.subscribe(() => {
+			if (settled()) finish(true);
+		});
+		const timer = setTimeout(() => finish(false), ENDED_TASK_SETTLE_WAIT_MS);
+		timer.unref?.();
+	});
 }
 
 function taskTranscriptSourceLoads(task: Parameters<typeof taskTranscriptSource>[0]): boolean {

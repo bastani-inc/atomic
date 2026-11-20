@@ -42,6 +42,11 @@ export interface TaskExecutionHooks {
 		leafSeq?: number;
 	}): void;
 	toolResultsSaved?(toolCallIds: readonly string[]): void;
+	/**
+	 * The user paused the child from its chat (Esc), or its next turn started after that: recorded so a restart restores
+	 * it as it was.
+	 */
+	reportTurnPaused?(paused: boolean): void;
 	/** Where the child is in its start, until its first turn starts; `undefined` once it has, or the start ended. */
 	reportStart?(progress: import("../runs/shared/start-progress.js").SubagentStartProgress | undefined): void;
 	onExecution(execution: { result: Promise<AttemptOutcome>; cleanup: Promise<Cleanup> }): void;

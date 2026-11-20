@@ -4,9 +4,11 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { rowSource, savedRowKey, savedSeqOf, savedTaskRowKey } from "../../../core/tasks/transcript-origin.js";
+import type { SteeringQueueController } from "../steering-queue-controller.ts";
 import { theme } from "../theme/theme.js";
 import { atomicWorkingFrame } from "./atomic-working-status.ts";
 import { type ChatMessageEntry, LiveChatEntriesController } from "./chat-message-renderer.ts";
+import type { ChatSteeringTarget } from "./chat-session-host-steering.ts";
 import type {
 	ChatSessionHostCommands,
 	ChatSessionHostEntry,
@@ -53,6 +55,18 @@ export function isChatSessionBusyStatus(message: string): boolean {
 export function isChatSessionRetryStatus(message: string): boolean {
 	return message === CHAT_SESSION_RETRYING_STATUS || message === CHAT_SESSION_RETRYING_SUMMARY_STATUS;
 }
+/**
+ * The commands of a chat that steers `target`: a message starts the agent's next turn or waits in its queue on the
+ * lane asked for, and the agent itself decides which, so a chat and its agent never disagree about whether it works.
+ */
+function steeringCommands(target: ChatSteeringTarget): Pick<ChatSessionHostCommands, "prompt" | "steer" | "followUp"> {
+	return {
+		prompt: (text, mode) => target.prompt(text, mode === "followUp" ? { streamingBehavior: "followUp" } : {}),
+		steer: (text) => target.prompt(text, { streamingBehavior: "steer" }),
+		followUp: (text) => target.prompt(text, { streamingBehavior: "followUp" }),
+	};
+}
+
 export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscriptEntryLike> {
 	renderEntry: (state: ChatSessionHostState<TExtraEntry>, entry: ChatSessionHostEntry<TExtraEntry>) => Component;
 	transcriptCacheKey: (
@@ -142,6 +156,11 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	/** Resolves the pending compaction-queue prompt when its run starts. */
 	compactionPromptStarted: (() => void) | undefined;
 	compacting = false;
+	/**
+	 * Routes, shows and restores the messages typed into a chat that steers its agent as the main chat does (its
+	 * `steering` option); absent from other chats.
+	 */
+	steeringController: SteeringQueueController | undefined;
 	/** Keeps input queued while automatic compaction hands off to a manual request. */
 	manualCompactionTakeoverPending = false;
 	animationTimer: ReturnType<typeof setInterval> | undefined;
@@ -173,6 +192,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	onUnplacedWidget?: () => void;
 	editor: EditorComponent | undefined;
 	optimisticUserSignatureCounts = new Map<string, number>();
+	/** What Up recalls, oldest first: the submissions this chat added to its editor's history. */
+	sentPrompts: readonly string[] = [];
 	/**
 	 * Whether an assistant entry still streaming into a sticky-bottom body is
 	 * rendered as its tail alone.
@@ -244,7 +265,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>, callbacks: ChatSessionHostStateCallbacks<TExtraEntry>) {
 		this.style = opts.style;
-		this.commands = opts.commands ?? {};
+		this.commands = opts.steering ? { ...opts.commands, ...steeringCommands(opts.steering) } : (opts.commands ?? {});
 		this.bodyViewport = new ScrollableComponentViewport(opts.keybindings, {
 			wheelScrollLines: () => this.getChatRenderSettings?.()?.fullscreenWheelScrollLines,
 			scrollbar: () => this.getChatRenderSettings?.()?.fullscreenScrollbar,

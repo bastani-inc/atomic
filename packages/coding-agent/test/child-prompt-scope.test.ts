@@ -493,7 +493,7 @@ test("space or enter on a Needs input task opens the subagent transcript, and â†
 	inspector.handleInput(" ");
 	assert.match(plain(), /^Transcript/);
 	assert.match(plain(), /Enter branch name/);
-	assert.doesNotMatch(plain(), /esc interrupt/);
+	assert.doesNotMatch(plain(), /esc to pause/);
 	assert.doesNotMatch(plain(), /\? keys/);
 	assert.match(plain(), /â† task/);
 
@@ -516,7 +516,7 @@ test("space or enter on a Needs input task opens the subagent transcript, and â†
 	inspector.handleInput("X");
 	inspector.handleInput("\r");
 	assert.equal(await inputPromise, "Xab");
-	assert.match(plain(), /esc interrupt/);
+	assert.match(plain(), /esc to pause/);
 
 	const editorPromise = track(
 		heldPromptInput.editor("Edit commit message", "hi", {

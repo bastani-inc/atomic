@@ -84,6 +84,7 @@ export { ShowImagesSelectorComponent } from "./show-images-selector.ts";
 export { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 export {
 	TASK_CHAT_OVERLAY_KEYS,
+	type TaskChatEscAction,
 	taskChatKeys,
 } from "./task-inspector.js";
 export { ThemeSelectorComponent } from "./theme-selector.ts";

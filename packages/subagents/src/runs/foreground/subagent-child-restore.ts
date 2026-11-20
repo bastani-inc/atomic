@@ -708,9 +708,13 @@ async function relaunchChild(
 		: heldResults;
 	const heldMessages =
 		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
+	// Session recovery of a child the user had paused: it comes back paused, prompted with nothing, as it was.
+	const restoredPaused =
+		resume === undefined && !fresh && sessionManager !== undefined && latest.pausedByUser === true;
 	const promptless = resume?.promptless === true && heldMessages.length === 0;
 	const wakePlan =
 		!redispatch &&
+		!restoredPaused &&
 		!fresh &&
 		sessionManager &&
 		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
@@ -749,8 +753,9 @@ async function relaunchChild(
 		...(fresh?.outputMode ? { outputMode: fresh.outputMode } : {}),
 		...(fresh?.maxOutput ? { maxOutput: fresh.maxOutput } : {}),
 		...(fresh?.share === undefined ? {} : { share: fresh.share }),
-		...(prompts.followUps.length > 0 ? { resumeFollowUps: prompts.followUps } : {}),
+		...(prompts.followUps.length > 0 && !restoredPaused ? { resumeFollowUps: prompts.followUps } : {}),
 		...(prompts.taskLiteral ? { resumeTaskLiteral: true } : {}),
+		...(restoredPaused ? { resumePaused: true } : {}),
 		// Present, even empty, whenever the wake took the results its record held: they are cleared once delivered.
 		...(wakePlan
 			? {

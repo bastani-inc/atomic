@@ -17,7 +17,7 @@ export type TaskMessageErrorCode =
 export interface TaskMessageErrorFields {
 	/** The task the message was for. */
 	readonly taskId: string;
-	/** The task's Intercom target, once one was known. */
+	/** The task's Intercom name, which names the agent in the message, once one was known. */
 	readonly target?: string;
 	/** The short reason the delivery channel gave, without message text. */
 	readonly detail?: string;
@@ -63,16 +63,16 @@ const TASK_MESSAGE_COPY: Readonly<
 	},
 	"messages-unsupported": {
 		failure: "This task cannot receive messages",
-		hint: "Only agent tasks that have an Intercom target accept messages from their transcript",
+		hint: "Only agent tasks whose session takes typed messages accept them from their transcript",
 		retryable: false,
 	},
 	"delivery-refused": {
-		failure: "Intercom did not deliver the message",
+		failure: "The agent did not take the message",
 		hint: "Check that the agent is still available, then send the message again",
 		retryable: true,
 	},
 	"delivery-unconfirmed": {
-		failure: "Intercom did not confirm the message",
+		failure: "The agent did not confirm the message",
 		hint: "The agent may still receive it; check its transcript before sending it again",
 		retryable: false,
 	},

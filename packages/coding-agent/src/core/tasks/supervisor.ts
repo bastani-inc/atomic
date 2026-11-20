@@ -17,8 +17,20 @@ import { FINISHED_TASK_RETENTION, TaskEvictedError } from "./eviction-error.js";
 
 /** What a task's message channel reported for one message. */
 export type TaskMessageDelivery =
-	| { readonly delivered: true }
+	| {
+			readonly delivered: true;
+			/**
+			 * Whether the message started the session's next turn. One that waits in its queue, as in the hold of a turn
+			 * Esc paused, leaves an interrupted task interrupted. Absent where the channel does not say.
+			 */
+			readonly startedTurn?: boolean;
+	  }
 	| { readonly delivered: false; readonly reason: "refused"; readonly detail?: string }
+	/**
+	 * The task's execution ended before its session took the message: nothing was delivered, and a task that can be
+	 * resumed takes it once it has finished.
+	 */
+	| { readonly delivered: false; readonly reason: "ended"; readonly detail?: string }
 	/** The channel failed after the message may have left, so it may still arrive. */
 	| { readonly delivered: false; readonly reason: "lost"; readonly detail?: string }
 	| {
@@ -61,6 +73,13 @@ export interface QueuedTaskMessages {
 	readonly steering: readonly string[];
 	readonly followUp: readonly string[];
 }
+
+/**
+ * How a message typed into a chat waits while the session's turn runs, as in the main chat: a steer is delivered at
+ * the next turn boundary (after the current assistant message and its tool results), before any follow-up; a
+ * follow-up is delivered once the agent would otherwise stop. One message per boundary, in the order typed.
+ */
+export type TaskMessageLane = "steer" | "followUp";
 
 /** What a chat of a task completes and expands: its session's working directory and skills. */
 export interface TaskTranscriptCommands {
@@ -111,6 +130,20 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	 * message instead of ending. Absent where the task's turn cannot be interrupted from a view.
 	 */
 	interruptTurn?(): Promise<void>;
+	/**
+	 * Pauses the session's current turn, as Esc does in its chat: the messages typed into the chat that are still
+	 * queued come back, in order, for its editor; the turn ends as {@link interruptTurn} ends it; and the task stays
+	 * running, paused, until its next message (the user's or another agent's) continues it. Anything else queued waits
+	 * for that message. Absent where the task's turn cannot be paused from a view.
+	 */
+	pauseTurn?(): Promise<QueuedTaskMessages>;
+	/**
+	 * Continues a task {@link pauseTurn} paused, as the user's send does: once its paused run has settled its queue is
+	 * released, without starting a turn, so the message sent next starts it. A no-op on a task that is not paused.
+	 */
+	resumeTurn?(): Promise<void>;
+	/** Whether the task is paused ({@link pauseTurn}) and waits for the user to continue it. */
+	turnPaused?(): boolean;
 	/** The messages queued for the session now, for a viewer that missed their `queue_update`. */
 	getQueuedMessages?(): QueuedTaskMessages;
 	readonly completionSource?: TaskCompletionSource;
@@ -119,7 +152,24 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	getStreamingMessage?(): AgentMessage | undefined;
 	/** Why the task's session is compacting now, for a viewer that missed `compaction_start`. */
 	getCompactionReason?(): CompactionReason | undefined;
-	/** Delivers `text` to the task through its Intercom target, as a message typed into its transcript. */
+	/**
+	 * Gives `text` to the task's own session as the user typed it into its chat, exactly as the main chat gives typed
+	 * text to its session: while a turn runs it waits in the session's native queue on `lane` (a `queue_update` lists
+	 * it, {@link getQueuedMessages} reads it, {@link clearQueue} takes it back); an idle session, such as one whose turn
+	 * was interrupted, takes it as its next prompt. The model receives the raw text, never an Intercom envelope.
+	 * Resolves once the session accepted it (queued, started or handled), not when it is delivered. Absent where the
+	 * task's session cannot take typed messages.
+	 */
+	queueMessage?(text: string, lane: TaskMessageLane): Promise<TaskMessageDelivery>;
+	/**
+	 * Takes back every message waiting in the session's queue, in order, for its chat's editor (Alt+Up, Esc). Nothing
+	 * taken back is delivered.
+	 */
+	clearQueue?(): Promise<QueuedTaskMessages>;
+	/**
+	 * Delivers `text` to the task through its Intercom target, as a message from another agent. A chat of the task
+	 * uses {@link queueMessage}; this stays for agent-to-agent messages.
+	 */
 	sendMessage?(text: string): Promise<TaskMessageDelivery>;
 };
 

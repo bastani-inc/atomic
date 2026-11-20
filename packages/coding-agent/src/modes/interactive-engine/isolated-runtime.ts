@@ -149,6 +149,20 @@ export function engineAgentPanelCounts(
 const COMPACTION_VIEW_HOLD_MS = 3_000;
 type HeldHostEvent = { event: JsonAgentSessionEvent; audience: number };
 
+/** The messages one of the engine's subagent chats listed as queued when the engine was lost. */
+export interface LostSubagentChatQueue {
+	readonly agent: string;
+	readonly steering: readonly string[];
+	readonly followUp: readonly string[];
+}
+
+function userMessageText(content: string | readonly { readonly type: string; readonly text?: string }[]): string {
+	if (typeof content === "string") return content;
+	return content
+		.flatMap((part) => (part.type === "text" && typeof part.text === "string" ? [part.text] : []))
+		.join("");
+}
+
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
 	/** The host session's listeners, which get the engine's events through one ordered subscription. */
@@ -196,6 +210,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
+	/** What each subagent chat the engine draws lists as queued, by chat, as the engine last reported it. */
+	private readonly subagentChatQueues = new Map<string, LostSubagentChatQueue>();
+	/** What the last ended generation's subagent chats listed as queued, until taken. */
+	private lostSubagentChatQueues: LostSubagentChatQueue[] = [];
+	private readonly recoveryListeners = new Set<(replaced: boolean) => void>();
 	/** Bumped by every authoritative queue_update. */
 	private queueUpdateGeneration = 0;
 	/** Bumped by local thinking mutations and thinking_level_changed events. */
@@ -285,8 +304,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				} catch (error) {
 					const failure = markRpcTransportFailure(error);
 					this.engineRecoveryFailure = failure;
+					this.publishRecovery(false);
 					throw failure;
 				}
+				this.publishRecovery(true);
 			},
 			clearActivity: () => {
 				this.streaming = false;
@@ -323,6 +344,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		);
 		this.initialStart?.catch(() => {});
 		this.client.onGenerationEnded((event) => {
+			// The ended generation's subagent chats went with it: keep what they listed for whoever shows the loss.
+			this.lostSubagentChatQueues = [...this.subagentChatQueues.values()];
+			this.subagentChatQueues.clear();
 			if (this.compactionHold?.generation === event.generation) this.discardHeldHostEvents();
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
@@ -359,6 +383,17 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			}
 			if (message.type === "engine_agent_panel_state") {
 				this.panelCounts = engineAgentPanelCounts(message);
+				return;
+			}
+			if (message.type === "engine_subagent_chat_queue") {
+				if (message.steering.length === 0 && message.followUp.length === 0)
+					this.subagentChatQueues.delete(message.chatId);
+				else
+					this.subagentChatQueues.set(message.chatId, {
+						agent: message.agent,
+						steering: message.steering,
+						followUp: message.followUp,
+					});
 				return;
 			}
 			if (message.type === "engine_extension_ui_reset") {
@@ -783,6 +818,48 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** Subscribe to host-local engine generation death (see engine-generation.ts). */
 	onGenerationEnded(listener: InteractiveEngineGenerationEndedListener): () => void {
 		return this.client.onGenerationEnded(listener);
+	}
+
+	/**
+	 * Called once an automatic or requested replacement of a lost engine settles: `replaced` when the new engine is up and
+	 * the host has read its state again, false when the replacement failed.
+	 */
+	onEngineRecovered(listener: (replaced: boolean) => void): () => void {
+		this.recoveryListeners.add(listener);
+		return () => this.recoveryListeners.delete(listener);
+	}
+
+	private publishRecovery(replaced: boolean): void {
+		for (const listener of [...this.recoveryListeners]) {
+			try {
+				listener(replaced);
+			} catch {
+				// A listener's failure must not fail the recovery it observes.
+			}
+		}
+	}
+
+	/**
+	 * Forget the queue the lost engine listed: its messages went down with it, and its replacement lists its own. The
+	 * main chat's steering controller has already taken them for the user (see `loseTarget`).
+	 */
+	discardLostQueue(): void {
+		this.steeringMessages = [];
+		this.followUpMessages = [];
+		this.pendingQueueClear = undefined;
+	}
+
+	/** Take what the last ended engine's subagent chats listed as queued when it ended, and forget them. */
+	takeSubagentChatQueues(): LostSubagentChatQueue[] {
+		const queues = this.lostSubagentChatQueues;
+		this.lostSubagentChatQueues = [];
+		return queues;
+	}
+
+	/** The user messages in the engine's own context now, as the engine reports them. */
+	async engineUserMessages(): Promise<string[]> {
+		const messages = await this.client.getMessages();
+		return messages.flatMap((message) => (message.role === "user" ? [userMessageText(message.content)] : []));
 	}
 	/**
 	 * A heartbeat proves the child's event loop is turning again, so a stall the

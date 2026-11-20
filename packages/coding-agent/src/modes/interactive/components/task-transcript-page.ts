@@ -14,17 +14,27 @@ import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { sessionWaitsToRetry } from "../../../core/session-retry-status.js";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
-import { releasedWaitingOn, waitingReleasedShells, waitingReleasedTools } from "../../../core/tasks/completion.js";
-import type { TaskId } from "../../../core/tasks/contracts.js";
+import {
+	latestSubagentAttempt,
+	releasedWaitingOn,
+	waitingReleasedShells,
+	waitingReleasedTools,
+} from "../../../core/tasks/completion.js";
+import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import {
 	type TaskElapsedClocks,
 	taskClockRunning,
 	taskClocksFor,
 	taskElapsedMs,
 } from "../../../core/tasks/live-elapsed.js";
-import { TaskMessageError } from "../../../core/tasks/message-error.js";
+import { isTaskMessageError, TaskMessageError } from "../../../core/tasks/message-error.js";
 import { getOwnerTaskSession, isTaskTurnInterrupted, setTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
-import type { ChatBoxSession, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import type {
+	ChatBoxSession,
+	QueuedTaskMessages,
+	TaskMessageLane,
+	TaskTranscriptSource,
+} from "../../../core/tasks/supervisor.js";
 import { observedTaskChatWrite, withTaskChatRows } from "../../../core/tasks/task-chat-records.js";
 import {
 	launchedTaskViewSource,
@@ -39,11 +49,20 @@ import {
 	taskCursorsAround,
 } from "../../../core/tasks/task-view-source.js";
 import { noteSavedSeq } from "../../../core/tasks/transcript-origin.js";
-import { createSessionSkillAutocompleteProvider, getSkillCatalogCommands } from "../skill-command-autocomplete.ts";
+import { copyToClipboard } from "../../../utils/clipboard.js";
+import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
+import {
+	classifyChatCommand,
+	createSessionSkillAutocompleteProvider,
+	getSkillCatalogCommands,
+} from "../skill-command-autocomplete.ts";
+import { subagentChatCommand, subagentChatUnavailableNotice } from "../subagent-chat-commands.ts";
+import { reportSubagentChatQueue } from "../subagent-chat-queue-report.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import type { ChatSessionHost, SavedPageHandle } from "./chat-session-host.ts";
 import type { SavedPageNeighbours } from "./chat-session-host-saved-calls.ts";
+import type { ChatSteeringTarget } from "./chat-session-host-steering.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
 import { parseWheelReport, ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
@@ -107,8 +126,11 @@ function observeChatWrite(write: Promise<void>, view: WeakRef<ObservedChatWrites
 }
 
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
+let chatCount = 0;
 /** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
 const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
+/** What Up recalled in a task's chat when the reader left it, oldest first, for when they come back. */
+const keptPromptHistories = new WeakMap<TaskViewSource, Map<TaskId, readonly string[]>>();
 
 function failureText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -133,10 +155,20 @@ export interface TaskTranscriptPage {
 	handlesBack(): boolean;
 	takesEscape?(): boolean;
 	capturesPageScroll?(): boolean;
-	/** Whether Esc would interrupt the task's current turn now. */
+	/** Whether Esc would pause the task now: a turn runs or waits to retry, or messages are queued, as in the main chat. */
 	interruptible(): boolean;
-	/** Interrupts the task's current turn; the task keeps running and waits for its next message. */
+	/**
+	 * Pauses the task, as Esc does: its queued messages come back to the prompt, steering first, ahead of the draft, and
+	 * its turn ends. The task keeps running, paused, and its next message continues it.
+	 */
 	interrupt(): Promise<TaskViewResult<undefined>>;
+	/**
+	 * Put messages taken back from the task's queue into the prompt, steering messages first and then follow-ups, in
+	 * front of what is typed, as Alt+Up does. Answers how many came back.
+	 */
+	restoreQueuedToEditor?(taken: QueuedTaskMessages): number;
+	/** Ctrl+C: clear the typed prompt, as the main chat does. Answers whether there was one to clear. */
+	clearDraft?(): boolean;
 	render(width: number, rows: number): string[];
 	/** A single click at row `event.y` of the last frame `render` drew; a result when the page takes it. */
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
@@ -220,6 +252,8 @@ function friendlyOriginIntercomMessage(
 
 /** A subagent stopped resumably (`x x`, Ctrl+X Ctrl+K): a message resumes it, and never anything else. */
 export const STOPPED_NOTE = "Stopped · send to resume";
+/** A subagent paused from its chat (Esc): it is still running, and a message continues it. */
+export const PAUSED_NOTE = "Paused · send to continue";
 
 /** Printable text, Enter, Backspace or Delete: keys that type into or send the prompt. */
 function isTyping(data: string): boolean {
@@ -266,7 +300,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	 * run, with the key that opens the newest one's output. Its transcript is its saved session, read without waking it.
 	 */
 	private releasedNote(): string | undefined {
-		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		const task = this.liveTask();
 		const waitingOn =
 			task?.execution.kind === "settled" && waitingReleasedTools(task) !== undefined
 				? releasedWaitingOn(task.execution.result)
@@ -288,10 +322,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 	/** Why messages cannot reach this task any more, or `undefined` while they can. */
 	readOnlyReason(): string | undefined {
-		return this.source.taskReadOnlyReason?.(this.taskId);
+		return this.source.taskReadOnlyReason?.(this.liveTaskId());
 	}
 	private readonly source: TaskViewSource;
-	private readonly taskId: TaskId;
+	/**
+	 * The attempt whose transcript the page shows and follows. A resumed subagent runs as a new task in the same
+	 * conversation: the page moves to it on its next read, as the subagent's one row in the lists does.
+	 */
+	private taskId: TaskId;
 	private readonly env: TaskTranscriptEnvironment;
 	private readonly requestRender: () => void;
 	private followed?: TaskTranscriptSource;
@@ -327,23 +365,32 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	private readonly reportLate: (reason: string) => void;
 	private readonly echoedPrompt: string | undefined;
+	private readonly showKeys: (() => void) | undefined;
+	/** This chat among the chats open in this process, as its queue reports name it. */
+	private readonly chatId = `subagent-chat-${++chatCount}`;
+	/** The queue this chat last reported, so an unchanged one is not reported again. */
+	private reportedQueue = "";
 
-	/** `reportLate` shows the reason a message failed after the reader left this transcript. */
+	/**
+	 * `reportLate` shows the reason a message failed after the reader left this transcript; `showKeys` opens the chat's
+	 * keys, as `/hotkeys` does.
+	 */
 	constructor(
 		source: TaskViewSource,
 		taskId: TaskId,
 		env: TaskTranscriptEnvironment,
 		requestRender: () => void,
 		reportLate: (reason: string) => void = (reason) => env.notify?.(reason),
-		options: { readonly echoedPrompt?: string } = {},
+		options: { readonly echoedPrompt?: string; readonly showKeys?: () => void } = {},
 	) {
 		this.source = source;
 		this.elapsedClocks = taskClocksFor(source);
-		this.taskId = taskId;
+		this.taskId = latestSubagentAttempt(source.tasks, taskId)?.ref.taskId ?? taskId;
 		this.env = env;
 		this.requestRender = requestRender;
 		this.reportLate = reportLate;
 		this.echoedPrompt = options.echoedPrompt;
+		this.showKeys = options.showKeys;
 		this.chat = env.createChat({
 			style: env.style,
 			tui: env.tui,
@@ -355,7 +402,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				return {
 					...inherited,
 					createToolComponent: inherited?.createToolComponent
-						? (entry, context) => inherited.createToolComponent!({ ...entry, rendererTaskId: taskId }, context)
+						? (entry, context) =>
+								inherited.createToolComponent!({ ...entry, rendererTaskId: this.taskId }, context)
 						: undefined,
 					getToolDefinition: (toolName) => {
 						const session = this.followed?.chatSession;
@@ -398,13 +446,13 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			savedTaskPages: true,
 			liveRowOrigin: (seq) => {
 				const session = this.followed ?? this.source.followTaskTranscript(this.taskId)?.session;
-				return session === undefined ? undefined : liveTaskRowOrigin(session, taskId, seq);
+				return session === undefined ? undefined : liveTaskRowOrigin(session, this.taskId, seq);
 			},
 			echoedInitialPrompt: () => (this.cursor === undefined ? this.echoedPrompt : undefined),
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
 			// The inspector takes Esc for this chat: it cancels the retry the subagent waits on, unless a question holds it.
 			canCancelRetry: () => !this.takesEscape() && this.interruptible(),
-			workingTokenCount: () => source.tasks.find((task) => task.ref.taskId === taskId)?.metrics?.tokenCount,
+			workingTokenCount: () => this.liveTask()?.metrics?.tokenCount,
 			// A finished subagent's chat stays live, and a message resumes it; one stopped for good is read-only.
 			isDisabled: () => source.sendTaskMessage === undefined || this.readOnlyReason() !== undefined,
 			onNearTop: () => this.loadAdjacent("older"),
@@ -413,17 +461,20 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
 			// The completion the subagent's chat offers, from its own cwd and skills.
 			autocompleteProvider: createSessionSkillAutocompleteProvider(async () => {
-				const commands = await source.taskCommands?.(taskId);
+				const commands = await source.taskCommands?.(this.liveTaskId());
 				return commands === undefined
 					? undefined
 					: { cwd: commands.cwd, skillCommands: getSkillCatalogCommands(commands.skillCommands) };
 			}),
-			commands: {
-				send: (text) => this.send(text),
-				handleSlashCommand: (text) => this.chat.openTasks(text.split(/\s+/)[1]),
-			},
+			// What the reader types goes to the subagent's own session as the main chat's goes to its own: queued in its
+			// lane while it works, else its next turn, and the dequeue key takes the queue back.
+			steering: this.steeringTarget(),
+			// Esc paused it: the reader's next message continues it, as their send continues the main chat after Esc.
+			isPaused: () => this.paused(),
+			commands: { handleSlashCommand: (text) => this.runCommand(text) },
 		});
 		pagedNotices.set(this.chat, this.#notices);
+		this.chat.seedPromptHistory(keptPromptHistories.get(source)?.get(taskId) ?? []);
 		this.restoreDraft();
 		this.restoreUndelivered();
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
@@ -432,7 +483,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	private childSessionId(): string | undefined {
-		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		const task = this.liveTask();
 		const sessionId =
 			task?.attention.kind === "input-needed"
 				? task.attention.route.sessionId
@@ -442,7 +493,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	heldPrompt(): HeldPrompt | undefined {
-		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		const task = this.liveTask();
 		if (task?.execution.kind === "settled") return undefined;
 		const sessionId = this.childSessionId();
 		return sessionId === undefined ? undefined : heldPrompts().current(sessionId);
@@ -456,6 +507,31 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			...(this.env.keybindings instanceof KeybindingsManager ? { keybindings: this.env.keybindings } : {}),
 			requestRender: this.requestRender,
 		});
+	}
+
+	/**
+	 * The latest attempt of this chat's subagent, which its state, prompt, messages and interrupt are about: a resume
+	 * runs the subagent as a new task, and a message typed here goes to the attempt that runs now.
+	 */
+	private liveTask(): TaskRecord | undefined {
+		return latestSubagentAttempt(this.source.tasks, this.taskId);
+	}
+
+	private liveTaskId(): TaskId {
+		return this.liveTask()?.ref.taskId ?? this.taskId;
+	}
+
+	/**
+	 * The attempt the page reads: the live one, once there is a session to follow. A resumed attempt is listed before
+	 * its session is bound, and until then the page keeps the conversation it shows rather than read nothing.
+	 */
+	private readTarget(): TaskId {
+		const live = this.liveTaskId();
+		if (live === this.taskId) return live;
+		return this.source.followTaskTranscript(live) === undefined &&
+			this.source.followTaskTranscript(this.taskId) !== undefined
+			? this.taskId
+			: live;
 	}
 
 	/** Restores what was typed here before the reader left. */
@@ -472,21 +548,26 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.reloadPending = true;
 			return;
 		}
-		if (this.observedWrites?.pending && this.deferArchiveRead(this.source.followTaskTranscript(this.taskId))) return;
+		// The latest page is the live attempt's: a resumed subagent's chat follows the attempt that runs now.
+		const id = this.readTarget();
+		if (this.observedWrites?.pending && this.deferArchiveRead(this.source.followTaskTranscript(id))) return;
 		this.loading = true;
 		const controller = new AbortController();
 		this.latestRead = controller;
 		try {
 			// A synchronous read subscribes in the same turn. A pending read never binds old rows to a replacement owner.
-			const before = this.source.followTaskTranscript(this.taskId);
-			const read = readTaskPageForChat(this, this.source, this.taskId, undefined, controller.signal);
+			const before = this.source.followTaskTranscript(id);
+			const read = readTaskPageForChat(this, this.source, id, undefined, controller.signal);
 			const page = read instanceof Promise ? await read : read;
 			if (this.disposed) return;
-			if (read instanceof Promise && before?.session !== this.source.followTaskTranscript(this.taskId)?.session) {
+			if (
+				read instanceof Promise &&
+				(id !== this.readTarget() || before?.session !== this.source.followTaskTranscript(id)?.session)
+			) {
 				this.reloadPending = true;
 				return;
 			}
-			this.adoptLatestPage(page);
+			this.adoptLatestPage(page, id);
 		} catch (error) {
 			if (!this.disposed) this.status = error instanceof Error ? error.message : String(error);
 		} finally {
@@ -526,7 +607,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	refresh(): void {
 		if (this.disposed) return;
-		const follow = this.source.followTaskTranscript(this.taskId);
+		const follow = this.source.followTaskTranscript(this.readTarget());
 		if (this.deferArchiveRead(follow)) return;
 		if (follow?.session !== undefined && follow.session === this.followed) return;
 		// Reading a history-only transcript again replaces what is shown, so it waits while the reader is above the end.
@@ -664,6 +745,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	render(width: number, rows: number): string[] {
 		const viewport = Math.max(1, rows);
 		this.bodyRows = 0;
+		this.reportQueue();
 		if (this.chat.hasTaskInspector) {
 			const footer = this.chat.taskInspectorFullscreen ? [] : this.chat.renderFooter(width);
 			const shownFooter = footer.slice(0, viewport - 1);
@@ -686,7 +768,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const footer = reserve(this.chat.renderFooter(width));
 		const pending = reserve(this.chat.renderPendingMessages(width));
 		const working = reserve(
-			this.chat.renderWorkingStatus(width, this.source.followTaskTranscript(this.taskId)?.publishedActivity),
+			this.chat.renderWorkingStatus(width, this.source.followTaskTranscript(this.liveTaskId())?.publishedActivity),
 			true,
 		);
 		const usage = reserve(this.chat.renderUsageRow(width));
@@ -696,9 +778,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	private decorateComposer(lines: readonly string[]): string[] {
-		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		const task = this.liveTask();
 		const name = taskDisplayText(task?.agentName ?? this.sessionName() ?? "subagent");
 		const waiting = task?.attention.kind === "input-needed";
+		const paused = this.paused();
 		const state =
 			task === undefined
 				? undefined
@@ -708,8 +791,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 						? taskState(task) === "completed"
 							? "done"
 							: taskState(task)
-						: isTaskTurnInterrupted(task)
-							? "stopped"
+						: paused
+							? "paused"
 							: task.metrics?.elapsedMs === undefined
 								? "running"
 								: formatPanelElapsed(
@@ -717,7 +800,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 											task.metrics.elapsedMs,
 									);
 		const released = task === undefined ? undefined : waitingReleasedTools(task);
-		const stopped = released === undefined && this.source.taskStopped?.(this.taskId) === true;
+		const stopped = !paused && released === undefined && this.source.taskStopped?.(this.liveTaskId()) === true;
 		const label = [
 			name,
 			task?.title ? taskDisplayText(shortTaskTitle(task.title)) : "",
@@ -726,11 +809,13 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			.filter(Boolean)
 			.join(" · ");
 
-		const placeholder = stopped
-			? STOPPED_NOTE
-			: released !== undefined
-				? `Message ${name} to wake it…`
-				: `${waiting ? "Answer" : "Message"} ${name}…`;
+		const placeholder = paused
+			? PAUSED_NOTE
+			: stopped
+				? STOPPED_NOTE
+				: released !== undefined
+					? `Message ${name} to wake it…`
+					: `${waiting ? "Answer" : "Message"} ${name}…`;
 		return applyAttachedComposer(
 			{ accent: this.env.style.accent, text: this.env.style.text, dim: this.env.style.dim },
 			label,
@@ -745,7 +830,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private sessionName(): string | undefined {
 		return (
 			this.source.followTaskTranscript(this.taskId)?.session?.completionSource?.intercomTarget ??
-			this.source.tasks.find((task) => task.ref.taskId === this.taskId)?.agentName
+			this.liveTask()?.agentName
 		);
 	}
 
@@ -756,10 +841,17 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	dispose(): void {
 		if (!this.disposed && this.chat.hasInputText()) {
 			const kept = keptDrafts.get(this.source) ?? new Map<TaskId, string>();
-			kept.set(this.taskId, this.chat.inputText());
+			kept.set(this.liveTaskId(), this.chat.inputText());
 			keptDrafts.set(this.source, kept);
 		}
+		if (!this.disposed && this.chat.promptHistory().length > 0) {
+			// Up recalls what was sent from this chat when the reader opens it again, as the main chat, which stays, does.
+			const kept = keptPromptHistories.get(this.source) ?? new Map<TaskId, readonly string[]>();
+			kept.set(this.taskId, this.chat.promptHistory());
+			keptPromptHistories.set(this.source, kept);
+		}
 		this.disposed = true;
+		this.reportQueue();
 		this.cancelAdjacent();
 		this.latestRead?.abort();
 		this.boundaryReads.abort();
@@ -813,27 +905,53 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		);
 	}
 
+	/** Whether Esc paused the subagent: it waits, still running, for the reader's next message. */
+	private paused(): boolean {
+		const task = this.liveTask();
+		return task !== undefined && isTaskTurnInterrupted(task);
+	}
+
 	interruptible(): boolean {
-		// Between two attempts of a retry nothing streams, and Esc cancels the retry, as it does in the main chat.
+		if (this.source.pauseTask === undefined && this.source.interruptTask === undefined) return false;
+		const session = this.followed;
+		const queued = session?.getQueuedMessages?.();
+		// Between two attempts of a retry nothing streams, and Esc cancels the retry, as it does in the main chat. Queued
+		// messages alone are enough too: Esc hands them back, as the main chat's Esc does.
 		return (
-			this.source.interruptTask !== undefined &&
-			(this.followed?.isRunning?.() === true || this.followed?.chatSession?.isRetrying === true)
+			session?.isRunning?.() === true ||
+			session?.chatSession?.isRetrying === true ||
+			(queued !== undefined && queued.steering.length + queued.followUp.length > 0)
 		);
 	}
 
 	async interrupt(): Promise<TaskViewResult<undefined>> {
+		const pause = this.source.pauseTask;
+		if (pause !== undefined) {
+			const paused = await pause.call(this.source, this.liveTaskId());
+			if (!paused.ok) return paused;
+			if (!this.disposed) this.restoreQueuedToEditor(paused.value);
+			else {
+				// The reader left while the turn ended: what came back waits in the prompt for their return.
+				const taken = [...paused.value.steering, ...paused.value.followUp];
+				const kept = keptDrafts.get(this.source) ?? new Map<TaskId, string>();
+				const id = this.liveTaskId();
+				if (taken.length > 0) kept.set(id, combineQueuedMessagesForEditor(taken, kept.get(id) ?? ""));
+				keptDrafts.set(this.source, kept);
+			}
+			return { ok: true, value: undefined };
+		}
 		const interrupt = this.source.interruptTask;
 		if (interrupt === undefined)
 			return { ok: false, error: { message: "This task's turn cannot be interrupted from here." } };
-		return interrupt.call(this.source, this.taskId);
+		return interrupt.call(this.source, this.liveTaskId());
 	}
 
-	private adoptLatestPage(page: TaskViewResult<TaskTranscriptView>): void {
+	private adoptLatestPage(page: TaskViewResult<TaskTranscriptView>, id: TaskId = this.taskId): void {
 		if (!page.ok) {
 			this.status = page.error.message;
 			return;
 		}
-		const follow = this.source.followTaskTranscript(this.taskId);
+		const follow = this.source.followTaskTranscript(id);
 		if (this.deferArchiveRead(follow)) return;
 		// A reader who moved above the end while this read was on its way keeps their rows until they return.
 		if (follow?.historyOnly === true && this.chat.bodyScrollFromBottom() > 0) {
@@ -856,6 +974,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.behind = true;
 			return;
 		}
+		// From here the window is the one `id` read: its cursors and rows are that attempt's.
+		this.taskId = id;
 		if (sessionChanged) {
 			if (this.observedWrites) {
 				this.observedWrites.onIdle = undefined;
@@ -946,6 +1066,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				this.observedWrites.observe(write);
 			}
 			this.chat.applyTaskAgentEvent(event);
+			if (event.type === "queue_update") this.reportQueue();
 			if (event.type === "compaction_end" && event.result && !event.aborted && session.getEarlierCursor?.()) {
 				// Only a source that can replay the previous context authorizes releasing those rows. Never clear
 				// private SDK rows merely because they arrived before a new boundary.
@@ -1165,22 +1286,137 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		}
 	}
 
-	private async send(text: string): Promise<void> {
+	/** The subagent as its chat steers it: messages go to its own session, and its queue comes back from it. */
+	private steeringTarget(): ChatSteeringTarget {
+		return {
+			prompt: (text, options) => this.send(text, options?.streamingBehavior ?? "steer"),
+			resume: async (text, lane) => {
+				const resume = this.source.resumeTask;
+				if (resume !== undefined) {
+					const resumed = await resume.call(this.source, this.liveTaskId());
+					if (!resumed.ok) throw new Error(resumed.error.message);
+				}
+				await this.send(text, lane === "followUp" ? "followUp" : "steer");
+			},
+			clearQueue: async () => {
+				const taken = await this.takeQueue();
+				return { steering: [...taken.steering], followUp: [...taken.followUp] };
+			},
+		};
+	}
+
+	/** Resolves once the subagent's session accepted `text`, waiting on `lane` while it works. */
+	private async send(text: string, lane: TaskMessageLane): Promise<void> {
 		const send = this.source.sendTaskMessage;
-		if (send === undefined) throw new TaskMessageError("messages-unsupported", { taskId: this.taskId });
+		const sentTo = this.liveTask();
+		const taskId = sentTo?.ref.taskId ?? this.taskId;
+		if (send === undefined) throw new TaskMessageError("messages-unsupported", { taskId });
 		try {
-			await send.call(this.source, this.taskId, text);
+			try {
+				await send.call(this.source, taskId, text, lane);
+			} catch (error) {
+				// The subagent changed while the message was on its way: a wake or another resume started it again, so the
+				// resume this asked for was refused, or the attempt it went to ended before taking it. Nothing reached it,
+				// so it goes once more to the subagent as it is now, as if typed a moment later: a running attempt takes
+				// it, and a finished one is resumed with it. A delivery that may have happened is never sent twice.
+				const now = this.liveTask();
+				const changed =
+					now !== undefined &&
+					(now.ref.taskId !== taskId ||
+						(now.execution.kind === "settled") !== (sentTo?.execution.kind === "settled"));
+				if (
+					!changed ||
+					!isTaskMessageError(error) ||
+					error.code === "delivery-unconfirmed" ||
+					this.source.taskReadOnlyReason?.(now.ref.taskId) !== undefined
+				)
+					throw error;
+				await send.call(this.source, now.ref.taskId, text, lane);
+			}
 		} catch (error) {
 			if (!this.disposed) throw error;
 			this.keepUndelivered(text, failureText(error));
 		}
 	}
 
+	/** Every message waiting in the subagent's queue, taken back in its own answer. */
+	private async takeQueue(): Promise<QueuedTaskMessages> {
+		const clear = this.source.clearTaskQueue;
+		if (clear === undefined) return { steering: [], followUp: [] };
+		const taken = await clear.call(this.source, this.liveTaskId());
+		if (!taken.ok) throw new Error(taken.error.message);
+		return taken.value;
+	}
+
+	/**
+	 * Report what the chat lists as queued, as it shows it, for the process that keeps it beyond this one; a closed chat
+	 * lists nothing. Only a change is reported.
+	 */
+	private reportQueue(): void {
+		const queued = this.disposed ? { steering: [], followUp: [] } : this.chat.queuedMessages();
+		const signature = JSON.stringify([queued.steering, queued.followUp]);
+		if (signature === this.reportedQueue) return;
+		this.reportedQueue = signature;
+		const agent = taskDisplayText(this.liveAgentName());
+		reportSubagentChatQueue({ chatId: this.chatId, agent, steering: queued.steering, followUp: queued.followUp });
+	}
+
+	/** The subagent's name as its chat shows it. */
+	private liveAgentName(): string {
+		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		return task?.agentName ?? this.sessionName() ?? "subagent";
+	}
+
+	restoreQueuedToEditor(taken: QueuedTaskMessages): number {
+		return this.chat.restoreTakenQueuedMessages(taken);
+	}
+
+	clearDraft(): boolean {
+		if (this.chat.hasTaskInspector || this.heldPrompt() !== undefined || !this.chat.hasInputText()) return false;
+		this.chat.setInputText("");
+		this.requestRender();
+		return true;
+	}
+
+	/**
+	 * A slash command typed into the chat: `/tasks`, `/copy` and `/hotkeys` run here at once; a built-in that belongs to
+	 * the main chat is refused with a notice; anything else goes to the subagent, whose session runs its own commands
+	 * and expands its skills and prompt templates. Answers whether the chat handled it.
+	 */
+	private runCommand(text: string): boolean {
+		if (classifyChatCommand(text) === "tasks") return this.chat.openTasks(text.split(/\s+/)[1]);
+		const command = subagentChatCommand(text);
+		if (command.kind === "agent") return false;
+		if (command.kind === "unavailable") {
+			this.chat.showWarning(subagentChatUnavailableNotice(command.name));
+			return true;
+		}
+		if (command.name === "copy") void this.copyLastMessage();
+		else if (command.name === "hotkeys") this.showKeys?.();
+		else this.chat.openTasks();
+		return true;
+	}
+
+	private async copyLastMessage(): Promise<void> {
+		const text = this.chat.lastAgentMessageText();
+		if (!text) {
+			this.chat.showWarning("No agent messages to copy yet.");
+			return;
+		}
+		try {
+			await copyToClipboard(text);
+			if (!this.disposed) this.chat.showStatus("Copied last agent message to clipboard");
+		} catch (error) {
+			if (!this.disposed) this.chat.showWarning(failureText(error));
+		}
+	}
+
 	/** The reader left before the answer: report it once, and give the text back when they return. */
 	private keepUndelivered(text: string, reason: string): void {
 		const kept = undeliveredMessages.get(this.source) ?? new Map<TaskId, UndeliveredMessage>();
-		const earlier = kept.get(this.taskId);
-		kept.set(this.taskId, { text: earlier === undefined ? text : `${earlier.text}\n${text}`, reason });
+		const taskId = this.liveTaskId();
+		const earlier = kept.get(taskId);
+		kept.set(taskId, { text: earlier === undefined ? text : `${earlier.text}\n${text}`, reason });
 		undeliveredMessages.set(this.source, kept);
 		this.reportLate(reason);
 	}
