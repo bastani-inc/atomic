@@ -4,13 +4,13 @@
 
 ### Changed
 
+- New sessions put the system prompt's install-specific documentation paths after the `APPEND_SYSTEM.md` addendum, and the date after every other section, so less of a cached system prompt changes between days and installations ([#6092](https://github.com/bastani-inc/atomic/pull/6092)).
 - The prompt-cache miss notice names two more causes: tool definitions that changed between requests, as a newer version can change them, and a thinking budget lowered to fit the context window ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
 
 ### Fixed
 
-- Fixed resumed sessions losing the provider's prompt cache. The first request after a resume marks where the restored history ends, so the cached conversation is found however much the resume adds, such as blueprint context or prompt updates. A resumed session keeps the thinking budget it used, even when the `thinkingBudgets` setting changed meanwhile. On providers without mid-conversation system messages, prompt changes such as the date, `AGENTS.md`, `SYSTEM.md` or a newer version's prompt are sent after the history instead of rewriting the system prompt. The `codemode` tool description no longer names the directory Atomic is installed in, so reinstalling Atomic elsewhere keeps the tool definitions unchanged.
-- Fixed the order of tools that extensions or MCP servers register depending on which registered first: extension and MCP tools a session has not declared yet are added in name order, and declared tools keep theirs. The `codemode` tool lists its nested tools in name order too.
-- New sessions put the system prompt's install-specific documentation paths after the `APPEND_SYSTEM.md` addendum, and the date after every other section, so less of a cached system prompt changes between days and installations.
+- Fixed resumed sessions losing the provider's prompt cache. The first request after a resume marks where the restored history ends, so the cached conversation is found however much the resume adds, such as blueprint context or prompt updates. A resumed session keeps the thinking budget it used, even when the `thinkingBudgets` setting changed meanwhile. On providers without mid-conversation system messages, prompt changes such as the date, `AGENTS.md`, `SYSTEM.md` or a newer version's prompt are sent after the history instead of rewriting the system prompt. The `codemode` tool description no longer names the directory Atomic is installed in, so reinstalling Atomic elsewhere keeps the tool definitions unchanged ([#6092](https://github.com/bastani-inc/atomic/pull/6092)).
+- Fixed the order of tools that extensions or MCP servers register depending on which registered first: tools a session has not declared yet are added built-in tools first and then extension and MCP tools in name order, and declared tools keep their order. The `codemode` tool lists its nested tools in name order too ([#6092](https://github.com/bastani-inc/atomic/pull/6092)).
 
 ## [0.10.1] - 2026-11-20
 

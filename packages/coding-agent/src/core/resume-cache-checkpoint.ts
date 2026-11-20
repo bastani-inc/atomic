@@ -5,10 +5,13 @@ import { BLUEPRINT_CONTEXT_TYPE } from "./resume/blueprint/context.ts";
 /**
  * The message a resumed session's history ends with, as its last request before the exit sent it or as that request's
  * reply. A resume appends blueprint context before the session starts; that was never sent, so it is not part of it.
+ * A system message is skipped too: requests may rebuild system messages as new objects, so it could not be found in
+ * them, and the breakpoint goes on the input before it anyway.
  */
 export function restoredCacheCheckpoint(messages: readonly AgentMessage[]): AgentMessage | undefined {
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index]!;
+		if (message.role === "system") continue;
 		if (message.role === "custom" && message.customType === BLUEPRINT_CONTEXT_TYPE) continue;
 		return message;
 	}

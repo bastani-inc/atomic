@@ -110,11 +110,11 @@ export function clampThinkingBudgetToAnswerRoom(thinkingBudget: number, ceiling:
 export const MIN_THINKING_BUDGET = 1024;
 
 /**
- * Fits a budget-based thinking request into the context window. The budget is kept whenever it and the minimum answer
- * room fit the window: a changed budget makes the provider bill the cached conversation again, so the context safety
- * margin only lowers `max_tokens` when the budget fits within it. Otherwise the budget is lowered by exactly what the
- * window lacks. Returns undefined when even the smallest budget no longer fits; the request then goes without thinking
- * rather than with a budget the provider rejects.
+ * Fits a budget-based thinking request into the context window, keeping the context safety margin that guards against
+ * an input estimate below the provider's count. The budget is kept whenever it and the minimum answer room fit under
+ * that ceiling, and otherwise lowered by exactly what the ceiling lacks: a changed budget makes the provider bill the
+ * cached conversation again. Returns undefined when even the smallest budget no longer fits; the request then goes
+ * without thinking rather than with a budget the provider rejects, and the budget returns once it fits again.
  */
 export function fitThinkingBudget(
 	model: Model<Api>,
@@ -123,13 +123,9 @@ export function fitThinkingBudget(
 	thinkingBudget: number,
 ): { maxTokens: number; thinkingBudget: number } | undefined {
 	const clamped = clampMaxTokensToContext(model, context, maxTokens);
-	if (clamped - MIN_ANSWER_TOKENS >= thinkingBudget) return { maxTokens: clamped, thinkingBudget };
-	const room =
-		model.contextWindow > 0 ? model.contextWindow - estimateContextTokens(context).tokens : Number.POSITIVE_INFINITY;
-	const ceiling = Math.min(maxTokens, room);
-	const budget = Math.min(thinkingBudget, ceiling - MIN_ANSWER_TOKENS);
+	const budget = Math.min(thinkingBudget, clamped - MIN_ANSWER_TOKENS);
 	if (budget < MIN_THINKING_BUDGET) return undefined;
-	return { maxTokens: Math.max(clamped, budget + MIN_ANSWER_TOKENS), thinkingBudget: budget };
+	return { maxTokens: clamped, thinkingBudget: budget };
 }
 
 export function adjustMaxTokensForThinking(

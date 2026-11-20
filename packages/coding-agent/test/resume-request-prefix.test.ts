@@ -71,6 +71,8 @@ interface InstallOptions {
 	tools?: () => readonly string[];
 	/** Load the bundled packages (subagents, MCP, web access) too. */
 	builtins?: boolean;
+	/** More extensions to load. */
+	factories?: ExtensionFactory[];
 	settings?: Record<string, unknown>;
 }
 
@@ -105,7 +107,10 @@ async function install(model: string, name = "install", options: InstallOptions 
 				noSkills: true,
 				noPromptTemplates: true,
 				noThemes: true,
-				extensionFactories: options.tools ? [extensionTools(options.tools)] : [],
+				extensionFactories: [
+					...(options.tools ? [extensionTools(options.tools)] : []),
+					...(options.factories ?? []),
+				],
 			},
 		});
 		return {
@@ -338,6 +343,46 @@ describe("a resume after an upgrade changes only what follows the cached prefix"
 			for (const form of [path, path.replace(/\\/g, "/")])
 				assert.ok(!tools.includes(form), `a tool definition names ${form}`);
 		}
+	});
+
+	test("a tool that registers before or after a built-in tool is activated ends up in the same place", async () => {
+		let release: () => void = () => {};
+		// Registers its tool when the test releases it, after the session started, as an MCP server that connects late.
+		const lateTool: ExtensionFactory = (pi) => {
+			pi.on("session_start", () => {
+				void new Promise<void>((resolve) => {
+					release = resolve;
+				}).then(() =>
+					pi.registerTool({
+						name: "mcp_lookup",
+						label: "mcp_lookup",
+						description: "Look something up",
+						parameters: Type.Object({ value: Type.String() }),
+						execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+					}),
+				);
+			});
+		};
+		const installation = await install(FLAT_MODEL, "install", { factories: [lateTool] });
+		const declared = async (registerFirst: boolean) => {
+			const runtime = await start(installation);
+			const activateLs = () => runtime.session.setActiveToolsByName([...runtime.session.getActiveToolNames(), "ls"]);
+			if (!registerFirst) activateLs();
+			release();
+			await until(() => runtime.session.getToolDefinition("mcp_lookup") !== undefined);
+			if (registerFirst) activateLs();
+			else runtime.session.setActiveToolsByName([...runtime.session.getActiveToolNames()]);
+			return { active: runtime.session.getActiveToolNames(), request: await send(runtime, "one") };
+		};
+		const registeredFirst = await declared(true);
+		const activatedFirst = await declared(false);
+
+		assert.deepEqual(registeredFirst.active, activatedFirst.active);
+		assert.ok(registeredFirst.active.includes("mcp_lookup") && registeredFirst.active.includes("ls"));
+		assert.equal(
+			JSON.stringify(withoutCacheMarkers(registeredFirst.request).tools),
+			JSON.stringify(withoutCacheMarkers(activatedFirst.request).tools),
+		);
 	});
 
 	test("tools registered in another order on resume keep the order the session declared", async () => {

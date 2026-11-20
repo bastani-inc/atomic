@@ -296,18 +296,20 @@ describe("a budget-based thinking request near the context window", () => {
 		];
 	}
 
-	it("keeps the budget whenever it and the answer room fit the window", () => {
-		const context = { messages: contextWithInput(21_509) } as TranscriptContext;
-		assert.deepEqual(fitThinkingBudget(model, context, 32_768, 8_192), { maxTokens: 9_216, thinkingBudget: 8_192 });
+	it("keeps the budget whenever it and the answer room fit under the context safety margin", () => {
+		const context = { messages: contextWithInput(16_000) } as TranscriptContext;
+		assert.deepEqual(fitThinkingBudget(model, context, 32_768, 8_192), { maxTokens: 12_672, thinkingBudget: 8_192 });
 	});
 
-	it("lowers the budget by exactly what the window lacks", () => {
-		const context = { messages: contextWithInput(24_653) } as TranscriptContext;
-		assert.deepEqual(fitThinkingBudget(model, context, 32_768, 8_192), { maxTokens: 8_115, thinkingBudget: 7_091 });
+	it("lowers the budget by exactly what the ceiling under the safety margin lacks, never closer to the window", () => {
+		const context = { messages: contextWithInput(20_741) } as TranscriptContext;
+		const fitted = fitThinkingBudget(model, context, 32_768, 8_192);
+		assert.deepEqual(fitted, { maxTokens: 7_931, thinkingBudget: 6_907 });
+		assert.ok(fitted.maxTokens <= 32_768 - 20_741 - 4_096);
 	});
 
 	it("sends no thinking, not a budget Claude rejects, when not even the smallest budget fits", async () => {
-		const context = { messages: contextWithInput(30_800) } as TranscriptContext;
+		const context = { messages: contextWithInput(27_455) } as TranscriptContext;
 		assert.equal(fitThinkingBudget(model, context, 32_768, 8_192), undefined);
 		let payload: { thinking?: { type: string; budget_tokens?: number }; max_tokens: number } | undefined;
 		const result = streamSimpleAnthropic(model, context, {
