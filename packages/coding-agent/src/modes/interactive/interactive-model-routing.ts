@@ -105,25 +105,31 @@ InteractiveModeBase.prototype.handleModelCommand = async function (
 	this.showModelSelector(searchTerm);
 };
 
+/**
+ * The model `searchTerm` names exactly among the models known without a refresh: the scoped models when there are any,
+ * else the available models already loaded.
+ */
+export function cachedExactModelMatch(mode: InteractiveModeBase, searchTerm: string): Model<Api> | undefined {
+	if (mode.session.scopedModels.length > 0) {
+		return findExactModelReferenceMatch(
+			searchTerm,
+			mode.session.scopedModels.map((scoped) => scoped.model),
+		);
+	}
+	try {
+		return findExactModelReferenceMatch(searchTerm, [...mode.session.modelRuntime.getAvailableSnapshot()]);
+	} catch {
+		// A refresh retries the snapshot read and safely falls back to no match.
+		return undefined;
+	}
+}
+
 InteractiveModeBase.prototype.findExactModelMatch = async function (
 	this: InteractiveModeBase,
 	searchTerm: string,
 ): Promise<Model<Api> | undefined> {
-	if (this.session.scopedModels.length > 0) {
-		return findExactModelReferenceMatch(
-			searchTerm,
-			this.session.scopedModels.map((scoped) => scoped.model),
-		);
-	}
-
-	try {
-		const cachedMatch = findExactModelReferenceMatch(searchTerm, [
-			...this.session.modelRuntime.getAvailableSnapshot(),
-		]);
-		if (cachedMatch) return cachedMatch;
-	} catch {
-		// A refresh below retries the snapshot read and safely falls back to no match.
-	}
+	const cachedMatch = cachedExactModelMatch(this, searchTerm);
+	if (cachedMatch || this.session.scopedModels.length > 0) return cachedMatch;
 
 	const models = await this.getModelCandidates();
 	return findExactModelReferenceMatch(searchTerm, models);

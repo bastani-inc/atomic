@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { vi } from "vitest";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal.ts";
 import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.js";
+import type { ExtensionFactory } from "../../src/core/extensions/index.js";
 import { InteractiveMode } from "../../src/modes/interactive/interactive-mode.js";
 import { createHarness, getMessageText } from "../suite/harness.js";
 import { createEngineHostPair, type EngineHostPair } from "./in-process-engine-pair.js";
@@ -130,6 +131,8 @@ export async function startMainChat(
 		readonly beforeRun?: (mode: InteractiveMode) => Promise<void> | void;
 		/** On the isolated host, the engine draws its own UI, such as `/tasks`. */
 		readonly engineUi?: boolean;
+		/** Extensions the session loads (the engine's, on the isolated host, which shows their UI on the host). */
+		readonly extensions?: ExtensionFactory[];
 	} = {},
 ): Promise<MainChatTerminal> {
 	const stops: Array<() => Promise<void> | void> = [];
@@ -140,13 +143,17 @@ export async function startMainChat(
 	let pair: EngineHostPair | undefined;
 	let setResponses: (responses: FauxResponseStep[]) => void;
 	if (host === "isolated") {
-		const created = await createEngineHostPair({ tools, engineUi: options.engineUi });
+		const created = await createEngineHostPair({
+			tools,
+			engineUi: options.engineUi,
+			...(options.extensions === undefined ? {} : { engineExtensions: options.extensions, extensionUi: true }),
+		});
 		pair = created;
 		stops.push(() => created.cleanup());
 		runtime = created.runtime;
 		setResponses = (responses) => created.engine.setResponses(responses);
 	} else {
-		const harness = await createHarness({ tools });
+		const harness = await createHarness({ tools, extensionFactories: options.extensions });
 		stops.push(() => harness.cleanup());
 		runtime = new AgentSessionRuntime(
 			harness.session,

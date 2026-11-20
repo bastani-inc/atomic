@@ -33,12 +33,14 @@ import { bindMainComposerAgentRows, MainComposerKeyOverlay } from "./components/
 import { holdPromptSlot } from "./components/prompt-slot.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
+import { holdForExtensionCommand, holdSubmittedExtensionCommand } from "./extension-command-hold.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
 import { routeGlobalClearInput } from "./interactive-global-clear.ts";
 import { isPhysicalCtrlC, isPhysicalEscape, isSafetyKeyRelease } from "./interactive-key-identity.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { BUILTIN_SLASH_COMMAND_NAMES } from "./interactive-mode-helpers.ts";
+import { cachedExactModelMatch } from "./interactive-model-routing.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { handOffCompactionQueue, mainSteering } from "./interactive-queueing.ts";
@@ -488,8 +490,12 @@ async function submitToMainChat(
 			return;
 		}
 		if (command === "model") {
-			// Without a model to pick, it opens the selector.
-			const held = argument === undefined ? holdPromptSlot(this.editorContainer) : undefined;
+			// Without a model to pick, it opens the selector. A name that matches no model known yet is looked up after a
+			// refresh, and opens the selector unless the refresh finds it.
+			const held =
+				argument === undefined || cachedExactModelMatch(this, argument) === undefined
+					? holdPromptSlot(this.editorContainer)
+					: undefined;
 			prompt.setText("");
 			try {
 				await this.ensureDeferredStartupComplete();
@@ -522,8 +528,9 @@ async function submitToMainChat(
 			return;
 		}
 		if (bare("share")) {
-			await this.handleShareCommand();
+			// Its loader takes the prompt's place at once; the prompt is back as soon as a cancel shows it.
 			prompt.setText("");
+			await this.handleShareCommand();
 			return;
 		}
 		if (bare("copy")) {
@@ -695,7 +702,12 @@ async function submitToMainChat(
 				prompt.setText("");
 				// Messages the command sends must follow the ones already typed (#4251).
 				if (this.compactionActive) handOffCompactionQueue(this);
-				await this.session.prompt(text);
+				const held = holdForExtensionCommand(this);
+				try {
+					await this.session.prompt(text);
+				} finally {
+					held.settle();
+				}
 			} else {
 				this.queueCompactionMessage(text, "steer");
 			}
@@ -711,6 +723,7 @@ async function submitToMainChat(
 		// If streaming, use prompt() with steer behavior
 		// This handles extension commands (execute immediately), prompt template expansion, and queueing
 		if ((this.session.isStreaming || this.promptTurn !== undefined) && !this.session.queuedMessagesPaused) {
+			const extensionCommand = this.isExtensionCommand(text);
 			prompt.addToHistory(text);
 			prompt.setText("");
 			// The session can show the message before this prompt's answer arrives: an engine sends its answer as the run
@@ -719,12 +732,13 @@ async function submitToMainChat(
 			// (#4277), so any message it showed meanwhile counts.
 			const shownBefore = this.userMessagesShownBySession;
 			const startedEcho = followStartedRunEcho(this, text, { sendShowsWorkingRow: false });
+			const held = extensionCommand ? holdForExtensionCommand(this) : undefined;
 			let submitted: SteeringSubmitResult;
 			try {
 				submitted = await mainSteering(this).submit(text, "steer", {
 					route: "queue",
 					// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
-					showAsQueued: !this.isExtensionCommand(text),
+					showAsQueued: !extensionCommand,
 					onAnswered: (success, disposition) => {
 						const echoed =
 							success &&
@@ -741,6 +755,7 @@ async function submitToMainChat(
 				});
 			} finally {
 				startedEcho.close();
+				held?.settle();
 			}
 			if (submitted.kind === "failed") throw submitted.error;
 			if (submitted.kind === "lost") {
@@ -774,6 +789,8 @@ async function submitToMainChat(
 			this.pendingUserInputs.push(submission);
 		}
 		prompt.addToHistory(text);
+		// The turn that runs an extension command, which starts after this, ends its hold of the prompt's slot.
+		if (this.isExtensionCommand(text)) holdSubmittedExtensionCommand(this, submission);
 	} catch (error) {
 		// Direct dispatch branches above hand text straight to the engine and
 		// never reach runUserPromptTurn(), so this is the only place their send

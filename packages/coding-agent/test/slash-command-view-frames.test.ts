@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { Text } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
+import type { SubagentState } from "../../subagents/src/shared/types.ts";
+import { registerSlashCommands } from "../../subagents/src/slash/slash-commands.ts";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
+import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { FIRST_FRAME_TIMEOUT_MS } from "../src/modes/interactive/agent-view/remote-port.ts";
 import { holdTranscriptDock } from "../src/modes/interactive/agent-view/transcript-slot.ts";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
@@ -34,13 +37,13 @@ afterEach(async () => {
 	writes = [];
 });
 
-async function start(host: "in-process" | "isolated"): Promise<MainChatTerminal> {
+async function start(host: "in-process" | "isolated", extensions?: ExtensionFactory[]): Promise<MainChatTerminal> {
 	const write = VirtualTerminal.prototype.write;
 	vi.spyOn(VirtualTerminal.prototype, "write").mockImplementation(function (this: VirtualTerminal, data: string) {
 		writes.push({ terminal: this, at: performance.now(), data });
 		write.call(this, data);
 	});
-	const chat = await startMainChat(host, { engineUi: true });
+	const chat = await startMainChat(host, { engineUi: true, extensions });
 	chats.push(chat);
 	await chat.settled(/❯/);
 	return chat;
@@ -102,6 +105,27 @@ async function expectStraightToView(
 		if (frame.at - enter.at > PROMPT_SLOT_HOLD_MS) return;
 		assert.match(frame.text, typed, `a frame between ${command} and its view:\n${frame.text}`);
 	}
+}
+
+/** Type `command` with its suggestions closed, so Enter submits it as typed. */
+async function typeClosed(chat: MainChatTerminal, command: string): Promise<RegExp> {
+	const typed = new RegExp(`❯ ${command.replace("/", "\\/")}`);
+	chat.press(command);
+	await chat.settled(typed);
+	chat.press(ESCAPE);
+	await chat.settled(typed);
+	return typed;
+}
+
+/** An extension command that runs until `release`, after `effect`. */
+function slowCommand(name: string, release: Promise<void>, effect?: (ui: { notify(message: string): void }) => void) {
+	return ((pi) =>
+		pi.registerCommand(name, {
+			handler: async (_args, ctx) => {
+				effect?.(ctx.ui);
+				await release;
+			},
+		})) satisfies ExtensionFactory;
 }
 
 async function finishOneTurn(chat: MainChatTerminal): Promise<void> {
@@ -224,6 +248,107 @@ describe.each(["in-process", "isolated"] as const)("a slash command that opens a
 		async () => {
 			const chat = await start(host);
 			await expectStraightToView(chat, "/reload", /Reloading keybindings/, /Reload(ed keybindings| failed)/);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"/model with a name it has to look up goes from the typed command straight to the selector (#6077)",
+		async () => {
+			const chat = await start(host);
+			const typed = await typeClosed(chat, "/model no-such-model");
+			const enter = await pressEnter(chat);
+			await chat.settled(/Select model/);
+			for (const frame of await screens(chat, enter.from)) {
+				if (/Select model/.test(frame.text)) return;
+				if (frame.at - enter.at > PROMPT_SLOT_HOLD_MS) return;
+				assert.match(frame.text, typed, `a frame between the command and the selector:\n${frame.text}`);
+			}
+			assert.fail("the selector was never drawn");
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"/model with the exact name of a model clears the prompt at once: it opens no view (#6077)",
+		async () => {
+			const chat = await start(host);
+			const model = chat.mode.session.model;
+			assert.ok(model);
+			const typed = await typeClosed(chat, `/model ${model.provider}/${model.id}`);
+			const enter = await pressEnter(chat);
+			await chat.settled(/Model: /);
+			const [first] = await screens(chat, enter.from);
+			assert.ok(first, "nothing was drawn after Enter");
+			assert.doesNotMatch(first.text, typed, `the first frame after Enter:\n${first.text}`);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"/agents, an extension command, goes from the typed command straight to its view (#6077)",
+		async () => {
+			const chat = await start(host, [
+				(pi) => registerSlashCommands(pi, { baseCwd: process.cwd() } as SubagentState),
+			]);
+			await expectStraightToView(chat, "/agents", /Built-in agents/);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"an extension command that shows a notice shows it with the live prompt (#6077)",
+		async () => {
+			const release = Promise.withResolvers<void>();
+			const chat = await start(host, [slowCommand("note", release.promise, (ui) => ui.notify("noted"))]);
+			chat.press("/note");
+			await chat.settled(/❯ \/note/);
+			const enter = await pressEnter(chat);
+			await chat.settled(/noted/);
+			const frames = (await screens(chat, enter.from)).filter((frame) => /noted/.test(frame.text));
+			release.resolve();
+			assert.ok(frames.length > 0, "the notice was never drawn");
+			for (const frame of frames)
+				assert.doesNotMatch(frame.text, /❯ \/note/, `a frame with the notice:\n${frame.text}`);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"an extension command that shows nothing shows the live prompt once it returns (#6077)",
+		async () => {
+			let ran = false;
+			const chat = await start(host, [
+				(pi) =>
+					pi.registerCommand("quiet", {
+						handler: async () => {
+							ran = true;
+						},
+					}),
+			]);
+			chat.press("/quiet");
+			await chat.settled(/❯ \/quiet/);
+			await pressEnter(chat);
+			// The turn that ran the command has ended: the prompt's slot is no longer held, without waiting for its bound.
+			await vi.waitFor(() => assert.ok(ran && chat.mode.promptTurn === undefined && !chat.mode.session.isStreaming));
+			assert.notEqual(screenHoldOf(chat.mode).region, "prompt");
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"an extension command that shows nothing for a while shows the live prompt after the hold's bound (#6077)",
+		async () => {
+			const release = Promise.withResolvers<void>();
+			const chat = await start(host, [slowCommand("slow", release.promise)]);
+			chat.press("/slow");
+			await chat.settled(/❯ \/slow/);
+			await pressEnter(chat);
+			// The command still runs; its hold has ended at its bound and the prompt shows as it is.
+			const screen = (await chat.settled(/^❯\s*$/m)).join("\n");
+			assert.doesNotMatch(screen, /❯ \/slow/);
+			assert.equal(screenHoldOf(chat.mode).region, undefined);
+			release.resolve();
 		},
 		INTERACTIVE_CASE_TIMEOUT_MS,
 	);

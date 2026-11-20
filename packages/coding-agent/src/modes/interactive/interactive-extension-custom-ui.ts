@@ -5,6 +5,7 @@ import {
 	transcriptOverlayIntersection,
 	type WrappedOverlayComponent,
 } from "./components/reserved-bottom-overlay.ts";
+import { extensionChangedScreen } from "./extension-command-hold.ts";
 import { InteractiveModeBase, isFullscreenTranscriptScrollAction } from "./interactive-mode-base.ts";
 import {
 	type Component,
@@ -410,6 +411,8 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 					}
 					mounted = true;
 				}
+				// Mounted: a held prompt shows live with it, or, in the prompt's place, as soon as the view can draw.
+				extensionChangedScreen(this);
 			})
 			.catch((err) => {
 				rejectAndClose(err);

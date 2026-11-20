@@ -4,7 +4,10 @@
 
 ### Fixed
 
-- `/thinking` without a level, `/fork`, `/trust` and `/reload` no longer flash an empty prompt before their view opens: the prompt stays on screen until the view can draw, as with `/model` ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
+- `/thinking` without a level, `/fork`, `/trust`, `/reload` and `/model` with a name that has to be looked up no longer flash an empty prompt before their view opens: the prompt stays on screen until the view can draw, as with `/model` alone ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
+- Extension commands, such as `/agents`, no longer flash an empty prompt before their view opens: the typed command stays on screen until the command shows something or anything else appears on the screen, until it finishes or you press a key, and for at most 250 ms ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
+- `/share` shows its progress as soon as you press Enter, and Esc cancels it at any step, also while it checks `gh` and exports the session ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
+- `/share` no longer uploads another session when the session changes while it checks `gh`, for example after `/resume` or `/new`: it stops with "Share cancelled: the session changed" ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
 
 ## [0.10.1] - 2026-11-20
 

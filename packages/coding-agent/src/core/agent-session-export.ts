@@ -196,9 +196,20 @@ export async function exportToJsonl(
 		outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`,
 		process.cwd(),
 	);
+	// The session exported is the one shown when the export was asked for, also if another takes its place meanwhile.
+	const sessionManager = this.sessionManager;
+	const shareContext = options.includeShareContext
+		? {
+				systemPrompt: this.systemPrompt,
+				tools: this.agent.state.tools.map(({ name, description, parameters }) => ({
+					name,
+					description,
+					parameters,
+				})),
+			}
+		: undefined;
 	await mkdir(dirname(filePath), { recursive: true });
 
-	const sessionManager = this.sessionManager;
 	const sessionId = sessionManager.getSessionId();
 	const header: SessionHeader = {
 		type: "session",
@@ -222,14 +233,7 @@ export async function exportToJsonl(
 		parentId,
 		timestamp: new Date().toISOString(),
 		customType: "atomic.share",
-		data: {
-			systemPrompt: this.systemPrompt,
-			tools: this.agent.state.tools.map(({ name, description, parameters }) => ({
-				name,
-				description,
-				parameters,
-			})),
-		},
+		data: shareContext,
 	});
 
 	// One line at a time into a file beside the target, moved into place when complete: carried tool outputs can be

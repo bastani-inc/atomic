@@ -45,7 +45,13 @@ async function submit(text: string): Promise<Call[]> {
 		// Text that no built-in claims reaches the session as an ordinary prompt.
 		deferredStartupPending: true,
 		ensureDeferredStartupComplete: async () => {},
-		session: { prompt: record("prompt"), compactionReason: undefined },
+		session: {
+			prompt: record("prompt"),
+			compactionReason: undefined,
+			// `/model <name>` looks the name up among the models already known before it runs.
+			scopedModels: [],
+			modelRuntime: { getAvailableSnapshot: () => [] },
+		},
 		compactionActive: false,
 		manualCompactionTakeoverPending: false,
 		getPathCommandArgument: prototype.getPathCommandArgument,
