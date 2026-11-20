@@ -39,6 +39,7 @@ import {
 import { resourceInternals } from "./resource-loader-internals.ts";
 import {
 	collectMcpServerContributions,
+	collectPackageAgentFiles,
 	createInheritanceSnapshotProvider,
 	createPackageMcpServerSource,
 	resolvePackageResourcePaths,
@@ -268,6 +269,7 @@ export async function prepareDefaultResourceLoaderReload(
 			state.extensionPromptSourceInfos = new Map();
 			state.extensionThemeSourceInfos = new Map();
 			state.legacyWorkflowFiles = undefined;
+			state.packageAgents = [];
 			state.mcpServerContributions = [];
 			state.resourceMetadataByPath = new Map();
 			state.lastSkillPaths = [];
@@ -362,6 +364,7 @@ export async function prepareDefaultResourceLoaderReload(
 			resolvedPaths.legacyWorkflowFiles,
 			cliExtensionPaths.legacyWorkflowFiles,
 		);
+		state.packageAgents = await collectPackageAgentFiles(cliExtensionPaths.agents, resolvedPaths.agents);
 		state.mcpServerContributions = collectMcpServerContributions(
 			resolvedPaths,
 			cliExtensionPaths,
