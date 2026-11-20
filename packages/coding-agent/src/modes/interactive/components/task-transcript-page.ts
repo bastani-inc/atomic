@@ -51,6 +51,7 @@ import {
 	getSkillCatalogCommands,
 } from "../skill-command-autocomplete.ts";
 import { subagentChatCommand, subagentChatUnavailableNotice } from "../subagent-chat-commands.ts";
+import { reportSubagentChatQueue } from "../subagent-chat-queue-report.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import type { ChatSessionHost, SavedPageHandle } from "./chat-session-host.ts";
@@ -119,6 +120,7 @@ function observeChatWrite(write: Promise<void>, view: WeakRef<ObservedChatWrites
 }
 
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
+let chatCount = 0;
 /** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
 const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
 
@@ -347,6 +349,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly reportLate: (reason: string) => void;
 	private readonly echoedPrompt: string | undefined;
 	private readonly showKeys: (() => void) | undefined;
+	/** This chat among the chats open in this process, as its queue reports name it. */
+	private readonly chatId = `subagent-chat-${++chatCount}`;
+	/** The queue this chat last reported, so an unchanged one is not reported again. */
+	private reportedQueue = "";
 
 	/**
 	 * `reportLate` shows the reason a message failed after the reader left this transcript; `showKeys` opens the chat's
@@ -688,6 +694,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	render(width: number, rows: number): string[] {
 		const viewport = Math.max(1, rows);
 		this.bodyRows = 0;
+		this.reportQueue();
 		if (this.chat.hasTaskInspector) {
 			const footer = this.chat.taskInspectorFullscreen ? [] : this.chat.renderFooter(width);
 			const shownFooter = footer.slice(0, viewport - 1);
@@ -784,6 +791,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
+		this.reportQueue();
 		this.cancelAdjacent();
 		this.latestRead?.abort();
 		this.boundaryReads.abort();
@@ -970,6 +978,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				this.observedWrites.observe(write);
 			}
 			this.chat.applyTaskAgentEvent(event);
+			if (event.type === "queue_update") this.reportQueue();
 			if (event.type === "compaction_end" && event.result && !event.aborted && session.getEarlierCursor?.()) {
 				// Only a source that can replay the previous context authorizes releasing those rows. Never clear
 				// private SDK rows merely because they arrived before a new boundary.
@@ -1219,6 +1228,25 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const taken = await clear.call(this.source, this.taskId);
 		if (!taken.ok) throw new Error(taken.error.message);
 		return taken.value;
+	}
+
+	/**
+	 * Report what the chat lists as queued, as it shows it, for the process that keeps it beyond this one; a closed chat
+	 * lists nothing. Only a change is reported.
+	 */
+	private reportQueue(): void {
+		const queued = this.disposed ? { steering: [], followUp: [] } : this.chat.queuedMessages();
+		const signature = JSON.stringify([queued.steering, queued.followUp]);
+		if (signature === this.reportedQueue) return;
+		this.reportedQueue = signature;
+		const agent = taskDisplayText(this.liveAgentName());
+		reportSubagentChatQueue({ chatId: this.chatId, agent, steering: queued.steering, followUp: queued.followUp });
+	}
+
+	/** The subagent's name as its chat shows it. */
+	private liveAgentName(): string {
+		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		return task?.agentName ?? this.sessionName() ?? "subagent";
 	}
 
 	restoreQueuedToEditor(taken: QueuedTaskMessages): number {

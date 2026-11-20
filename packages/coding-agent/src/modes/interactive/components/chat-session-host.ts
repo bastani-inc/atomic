@@ -1081,6 +1081,13 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return restoreTakenQueuedMessages(this.state, taken);
 	}
 
+	/** Every message the chat lists as queued, per lane, as its queued rows show them. */
+	queuedMessages(): { readonly steering: readonly string[]; readonly followUp: readonly string[] } {
+		const steering = this.state.steeringController;
+		if (steering !== undefined) return steering.allQueued();
+		return { steering: this.state.pendingSteeringMessages, followUp: this.state.pendingFollowUpMessages };
+	}
+
 	/** The text of the last answer the agent finished in this chat, as `/copy` copies it. */
 	lastAgentMessageText(): string | undefined {
 		const messages = this.state.transcript.flatMap((entry) =>

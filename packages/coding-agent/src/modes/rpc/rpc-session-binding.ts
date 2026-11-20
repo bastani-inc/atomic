@@ -6,6 +6,7 @@ import { chatReceipt } from "../../core/chat-receipts.js";
 import type { ProjectTrustContext } from "../../core/extensions/index.js";
 import { FooterDataProvider } from "../../core/footer-data-provider.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
+import { setSubagentChatQueueSink } from "../interactive/subagent-chat-queue-report.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
@@ -46,6 +47,7 @@ export class RpcSessionBinding {
 	private unsubscribe?: () => void;
 	private unsubscribeBackpressure?: () => void;
 	private unsubscribeTasks?: () => void;
+	private stopSubagentChatQueues?: () => void;
 	private readonly runtimeHost: AgentSessionRuntime;
 	private readonly output: RpcOutput;
 	private readonly pendingExtensionRequests: RpcPendingExtensionRequests;
@@ -229,6 +231,19 @@ export class RpcSessionBinding {
 		if (this.customUi) {
 			const customUi = this.customUi;
 			const ui = session.extensionRunner.getUIContext();
+			// A subagent chat this engine draws dies with it: the host keeps what it lists as queued, to show if it does.
+			this.stopSubagentChatQueues?.();
+			this.stopSubagentChatQueues = setSubagentChatQueueSink((report) =>
+				this.writeEngineLine?.(
+					serializeInteractiveEngineMessage({
+						type: "engine_subagent_chat_queue",
+						chatId: report.chatId,
+						agent: report.agent,
+						steering: [...report.steering],
+						followUp: [...report.followUp],
+					}),
+				),
+			);
 			this.unsubscribeTasks = bindAgentPanel(
 				session,
 				ui,
@@ -280,6 +295,8 @@ export class RpcSessionBinding {
 		this.unsubscribeBackpressure?.();
 		this.unsubscribeTasks?.();
 		this.unsubscribeTasks = undefined;
+		this.stopSubagentChatQueues?.();
+		this.stopSubagentChatQueues = undefined;
 		this.writeEngineLine?.(
 			serializeInteractiveEngineMessage({
 				type: "engine_ui_prompt",
