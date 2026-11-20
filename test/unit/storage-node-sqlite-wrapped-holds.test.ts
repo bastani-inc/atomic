@@ -255,10 +255,10 @@ test("repeated wrapped reads during a threaded transaction prepare their plan on
 		prepared.filter((sql) => sql.startsWith("EXPLAIN")),
 		[`EXPLAIN ${read}`],
 	);
-	// Each call prepares its statement first, as the call itself does, then runs it.
+	// Each call prepares its own statement once, as it always has.
 	assert.deepEqual(
 		prepared.filter((sql) => sql === read),
-		[read, read, read, read],
+		[read, read],
 	);
 });
 
@@ -793,30 +793,32 @@ test("a wrapped call whose statement no longer prepares fails at once with its o
 	await committed;
 });
 
-test("a wrapped PRAGMA behind empty statements or under EXPLAIN is not carried out while a threaded transaction holds the lock, and a SELECT behind them reads at once (#6081)", async () => {
+test("a wrapped PRAGMA during a threaded transaction gives what it gave before: one of the busy timeout, also under EXPLAIN or behind empty statements, runs at once, and one that writes the file waits for the lock (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
 	const { raw, wrapped } = await openWrapped(path, 2);
 	const timeout = () => Number(raw.prepare("PRAGMA busy_timeout").get()?.timeout);
+	// What SQLite does with each on a connection of the test's own.
+	const reference = new DatabaseSync(":memory:");
+	cleanups.push(() => reference.close());
+	reference.exec("PRAGMA busy_timeout=2");
 	const { committed, settled } = await holdLock(threaded, 600);
-	for (const sql of [
-		"; PRAGMA busy_timeout=7",
-		"EXPLAIN PRAGMA busy_timeout=7",
-		" ;; /* x */ EXPLAIN QUERY PLAN PRAGMA busy_timeout=7",
-	]) {
-		const failure = await wrapped.get(sql).then(
-			() => undefined,
-			(error: unknown) => error,
-		);
-		assert.ok(failure instanceof StorageUnavailableError, `${sql}: expected SQLITE_BUSY, got ${String(failure)}`);
-		assert.equal((failure.cause as { errcode?: number }).errcode, 5);
-		assert.equal(timeout(), 2, `${sql} changed the busy timeout while it waited`);
-	}
+	assert.deepEqual(await wrapped.get("; PRAGMA busy_timeout"), { timeout: 2 });
+	assert.deepEqual(await wrapped.get("; PRAGMA busy_timeout=7"), { timeout: 7 });
+	assert.equal(timeout(), 7);
+	await wrapped.all(" ;; /* x */ EXPLAIN PRAGMA busy_timeout=9");
+	reference.prepare("EXPLAIN PRAGMA busy_timeout=9").all();
+	assert.equal(timeout(), Number(reference.prepare("PRAGMA busy_timeout").get()?.timeout));
 	assert.deepEqual(await wrapped.get("; -- before\n SELECT count(*) AS n FROM items"), { n: 0 });
-	assert.equal(settled(), false, "the SELECT waited for the transaction");
+	assert.equal(settled(), false, "a call waited for the transaction");
+	await wrapped.exec(`PRAGMA busy_timeout=${WRAPPED_BUSY_TIMEOUT_MS}`);
+	const { stallMs } = await longestStall(() => wrapped.exec("PRAGMA user_version=5"));
+	assert.equal(settled(), true, "the PRAGMA that writes the file ran before the transaction ended");
+	assert.ok(stallMs < MAX_EVENT_LOOP_STALL_MS, `the event loop stalled for ${Math.round(stallMs)} ms`);
 	await committed;
+	assert.deepEqual(await wrapped.get("PRAGMA user_version"), { user_version: 5 });
 });
 
-test("a wrapped write of a temporary table or of another attached file runs at once during a threaded transaction, as before, and one of the same file waits (#6081)", async () => {
+test("a wrapped write of a temporary table or of another attached file runs at once during a threaded transaction, and one of the same file under another name fails as before (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
 	// Created before the connection that attaches it, so it is removed only after that connection closed.
 	const otherPath = databasePath();
@@ -846,19 +848,22 @@ test("a wrapped write of a temporary table or of another attached file runs at o
 	assert.deepEqual(await values(threaded), ["a", "b"]);
 });
 
-test("a wrapped exec of no statement or of one statement is classified as that statement, and a trigger or a longer script waits (#6081)", async () => {
+test("a wrapped exec of no statement or of one statement runs as that statement, and a longer script waits (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
 	const { raw, wrapped } = await openWrapped(path, 150);
 	raw.exec("CREATE TEMP TABLE scratch (x)");
 	const { committed, settled } = await holdLock(threaded, 600);
-	for (const sql of ["", "SELECT 1", "SELECT 1;", "  -- c\n", "INSERT INTO scratch VALUES (1);"])
+	for (const sql of [
+		"",
+		"SELECT 1",
+		"SELECT 1;",
+		"  -- c\n",
+		"INSERT INTO scratch VALUES (1);",
+		"CREATE TEMP TRIGGER kept AFTER INSERT ON scratch BEGIN INSERT INTO scratch VALUES (2); END",
+	])
 		await wrapped.exec(sql);
 	assert.equal(settled(), false, "a single-statement exec waited for the transaction");
-	for (const sql of [
-		"CREATE TEMP TRIGGER kept AFTER INSERT ON scratch BEGIN INSERT INTO scratch VALUES (2); END",
-		"SELECT 1; SELECT 2",
-		"INSERT INTO items VALUES ('c')",
-	]) {
+	for (const sql of ["SELECT 1; SELECT 2", "INSERT INTO items VALUES ('c')"]) {
 		const failure = await wrapped.exec(sql).then(
 			() => undefined,
 			(error: unknown) => error,
@@ -887,4 +892,145 @@ test("a wrapped deferred transaction or savepoint runs at once during a threaded
 	assert.ok(failure instanceof StorageUnavailableError, `expected SQLITE_BUSY, got ${String(failure)}`);
 	assert.equal((failure.cause as { errcode?: number }).errcode, 5);
 	await committed;
+});
+
+/** What a call settled with: its value, or the error it failed with. */
+function outcome<T>(call: Promise<T>): Promise<{ readonly value?: T; readonly error?: unknown }> {
+	return call.then(
+		(value) => ({ value }),
+		(error: unknown) => ({ error }),
+	);
+}
+
+function assertBusy(failure: unknown, sql: string): void {
+	assert.ok(failure instanceof StorageUnavailableError, `${sql}: expected SQLITE_BUSY, got ${String(failure)}`);
+	assert.equal((failure.cause as { errcode?: number }).errcode, 5, sql);
+}
+
+test("a wrapped statement that calls a function of yours during a threaded transaction runs once, as before, also when the function writes the file (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path, 150);
+	raw.exec("CREATE TEMP TABLE marks (x)");
+	raw.function("write_marker", () => {
+		raw.prepare("INSERT INTO temp.marks VALUES (1)").run();
+		raw.prepare("INSERT INTO items VALUES ('m')").run();
+		return 1;
+	});
+	const { committed, settled } = await holdLock(threaded, 1_000);
+	const { error } = await outcome(wrapped.get("SELECT write_marker() AS m"));
+	assertBusy(error, "SELECT write_marker()");
+	assert.equal(settled(), false, "the call waited for the transaction");
+	await committed;
+	assert.deepEqual({ ...raw.prepare("SELECT count(*) AS n FROM temp.marks").get() }, { n: 1 });
+	assert.deepEqual(await values(threaded), ["a", "b"]);
+});
+
+test("a wrapped write that reads the change counters during a threaded transaction runs once, as before (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped, prepared } = await openWrapped(path, 150);
+	raw.exec("CREATE TEMP TABLE scratch (x)");
+	await wrapped.run("INSERT INTO scratch VALUES (1), (2), (3)");
+	const { committed, settled } = await holdLock(threaded, 2_000);
+	for (const sql of [
+		"INSERT INTO items VALUES (changes())",
+		"INSERT INTO items VALUES (total_changes())",
+		"INSERT INTO items VALUES (last_insert_rowid())",
+	]) {
+		const { error } = await outcome(wrapped.run(sql));
+		assertBusy(error, sql);
+		assert.equal(prepared.filter((prepared) => prepared === sql).length, 1, `${sql} ran more than once`);
+	}
+	assert.equal(settled(), false, "a call waited for the transaction");
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b"]);
+});
+
+test("a call on another wrapped handle of the same connection waits behind its write that waits for the lock, and sees what the write did (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path);
+	const second = wrapNodeSqliteDatabase(raw);
+	cleanups.push(() => second.close());
+	const { committed, settled } = await holdLock(threaded);
+	const written = wrapped.run("INSERT INTO items VALUES ('c')");
+	await sleep(0);
+	const { value: counted, stallMs } = await longestStall(() =>
+		second.get<{ n: number; total: number }>("SELECT changes() AS n, total_changes() AS total"),
+	);
+	assert.equal(settled(), true, "the count ran before the write it queued behind");
+	assert.ok(stallMs < MAX_EVENT_LOOP_STALL_MS, `the event loop stalled for ${Math.round(stallMs)} ms`);
+	assert.deepEqual(counted, { n: 1, total: 1 });
+	assert.deepEqual(await written, { changes: 1 });
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b", "c"]);
+});
+
+test("a wrapped journal_mode setter during a threaded transaction runs once, as before, after it changed the attached files (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const otherPath = databasePath();
+	const { raw, wrapped, prepared } = await openWrapped(path, 150);
+	raw.exec(`ATTACH '${otherPath}' AS other`);
+	raw.exec("PRAGMA other.journal_mode=WAL");
+	cleanups.push(() => raw.exec("DETACH other"));
+	const { committed, settled } = await holdLock(threaded, 1_000);
+	const sql = "PRAGMA journal_mode=DELETE";
+	const { error } = await outcome(wrapped.get(sql));
+	assertBusy(error, sql);
+	assert.equal(settled(), false, "the call waited for the transaction");
+	assert.equal(prepared.filter((prepared) => prepared === sql).length, 1, `${sql} ran more than once`);
+	assert.deepEqual({ ...raw.prepare("PRAGMA other.journal_mode").get() }, { journal_mode: "delete" });
+	await committed;
+});
+
+test("a wrapped write that also writes another attached file, here from a trigger, runs once, as before, during a threaded transaction (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const otherPath = databasePath();
+	const { raw, wrapped, prepared } = await openWrapped(path, 150);
+	raw.exec(`ATTACH '${otherPath}' AS other`);
+	raw.exec("CREATE TABLE other.copies (x)");
+	raw.exec("CREATE TEMP TABLE originals (x)");
+	raw.exec("CREATE TEMP TRIGGER copy AFTER INSERT ON originals BEGIN INSERT INTO other.copies VALUES (new.x); END");
+	cleanups.push(() => raw.exec("DETACH other"));
+	// A reader of the other file, in its rollback journal: a commit there waits for the reader's lock.
+	const reader = new DatabaseSync(otherPath);
+	cleanups.push(() => reader.close());
+	reader.exec("BEGIN");
+	reader.prepare("SELECT count(*) FROM copies").get();
+	const { committed, settled } = await holdLock(threaded, 1_000);
+	const sql = "INSERT INTO originals VALUES (1)";
+	const { error } = await outcome(wrapped.run(sql));
+	assertBusy(error, sql);
+	assert.equal(settled(), false, "the call waited for the transaction");
+	assert.equal(prepared.filter((prepared) => prepared === sql).length, 1, `${sql} ran more than once`);
+	reader.exec("COMMIT");
+	await committed;
+	assert.deepEqual(await wrapped.all("SELECT x FROM other.copies"), []);
+});
+
+test("a wrapped VACUUM during a threaded transaction runs once, as before (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped, prepared } = await openWrapped(path, 150);
+	const { committed, settled } = await holdLock(threaded, 1_000);
+	const { error } = await outcome(wrapped.run("VACUUM"));
+	assertBusy(error, "VACUUM");
+	assert.equal(settled(), false, "the call waited for the transaction");
+	assert.equal(prepared.filter((prepared) => prepared === "VACUUM").length, 1, "VACUUM ran more than once");
+	await committed;
+});
+
+test("a wrapped write inside a transaction of its connection's own during a threaded transaction runs once, as before (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped, prepared } = await openWrapped(path);
+	const { committed, settled } = await holdLock(threaded, 1_000);
+	await wrapped.exec("BEGIN");
+	assert.deepEqual(await values(wrapped), []);
+	// The connection reads the file as it was before the threaded transaction: its write would have to upgrade that
+	// read, which SQLite refuses at once.
+	const sql = "INSERT INTO items VALUES ('c')";
+	const { error } = await outcome(wrapped.run(sql));
+	assertBusy(error, sql);
+	assert.equal(settled(), false, "the write waited for the transaction");
+	assert.equal(prepared.filter((prepared) => prepared === sql).length, 1, `${sql} ran more than once`);
+	await wrapped.exec("ROLLBACK");
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b"]);
 });

@@ -274,9 +274,21 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 	},
 	{
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.besideHolds" },
-		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "classify" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "modeOf" },
 		reason:
-			"prepares and lists the plan of a call's first statement on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file: it does not run the statement or wait for the file's write lock (#6081)",
+			"prepares and lists the plan of a call's statement, and the connection's functions, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file: it does not run the statement or wait for the file's write lock (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "attemptOnce" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "setBusyTimeout" },
+		reason:
+			"sets the busy timeout, a setting of the connection that touches no file, of a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, around a statement it then runs with a busy timeout of 0, so the statement never waits for a lock on this thread (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "runTryingFirst" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "busyTimeoutOf" },
+		reason:
+			"reads PRAGMA busy_timeout, a setting of the connection that touches no file, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file (#6081)",
 	},
 	{
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "runWhenFree" },

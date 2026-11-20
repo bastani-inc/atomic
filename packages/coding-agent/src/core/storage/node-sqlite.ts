@@ -61,7 +61,6 @@ import {
 } from "./errors.js";
 import { fileIdentity, fileIdentityAsync } from "./file-identity.js";
 import {
-	classify,
 	currentHoldScope,
 	type FileHold,
 	type FileLock,
@@ -70,8 +69,11 @@ import {
 	heldElsewhere,
 	holdFile,
 	inBacklog,
+	modeOf,
 	releaseHold,
 	runInHold,
+	runInTurn,
+	runTryingFirst,
 	runWhenFree,
 	sqliteBusyError,
 	useFileLock,
@@ -1869,14 +1871,16 @@ class NodeSqliteDatabase implements SqliteDatabase {
 
 	exec(sql: string): Promise<void> {
 		const made = this.holdScope();
-		return this.enqueueStatement(() => this.besideHolds(made, sql, false, () => this.executor.exec(sql)));
+		return this.enqueueStatement(() =>
+			this.besideHolds(made, { kind: "exec", sql }, false, () => this.executor.exec(sql)),
+		);
 	}
 
 	run(sql: string, ...params: readonly SqliteValue[]) {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
 		return this.enqueueStatement(() =>
-			this.besideHolds(made, sql, true, () => this.executor.run(sql, ...bound), bound),
+			this.besideHolds(made, { kind: "run", sql, params: bound }, true, () => this.executor.run(sql, ...bound)),
 		);
 	}
 
@@ -1884,7 +1888,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
 		return this.enqueueStatement(() =>
-			this.besideHolds(made, sql, true, () => this.executor.get<T>(sql, ...bound), bound),
+			this.besideHolds(made, { kind: "get", sql, params: bound }, true, () => this.executor.get<T>(sql, ...bound)),
 		);
 	}
 
@@ -1892,7 +1896,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
 		return this.enqueueStatement(() =>
-			this.besideHolds(made, sql, true, () => this.executor.all<T>(sql, ...bound), bound),
+			this.besideHolds(made, { kind: "all", sql, params: bound }, true, () => this.executor.all<T>(sql, ...bound)),
 		);
 	}
 
@@ -1910,34 +1914,41 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * connection of this process, on a thread of its own, takes or holds the file's write lock: SQLite's busy handler
 	 * would wait for that lock on this thread, which that connection's transaction needs to go on. While no such
 	 * transaction is starting or open, and for every other connection, the call runs at once, as it always has; so does
-	 * a call made inside that transaction's callback (`scope`), which the transaction waits for, and a single statement
-	 * (`statement`) proven to only read, as a read in WAL mode never waits for the lock. Any other call, a script
-	 * (`exec`) included, runs at once while the file's word says the lock is free, and holds the word while it runs, so
-	 * the transaction cannot take the lock from under it; otherwise it waits off this thread, before anything of it
-	 * runs, until the word is free. Still waiting at the connection's busy timeout, it fails with SQLITE_BUSY as the busy
-	 * handler would, having run nothing. A call on a connection whose busy timeout cannot be read (an authorizer refuses
-	 * it) runs as it always has: how long it may wait is SQLite's alone to know. Parameters `call` refuses (text with a
-	 * NUL) are refused before anything else, as `call` would at once.
+	 * a call made inside that transaction's callback (`scope`), which the transaction waits for. Otherwise a single
+	 * statement (`request`, run synchronously) whose plan proves a refusal has done nothing is tried at once with a busy
+	 * timeout of 0 and, refused the lock, waits off this thread and is tried again (see `runTryingFirst`); any other runs
+	 * as it always has, behind calls of its connection already waiting (see `runInTurn`); a script of several
+	 * statements waits until no transaction of this thread holds the lock (see `modeOf`). Parameters `call` refuses
+	 * (text with a NUL) are refused before anything else, as `call` would at once.
 	 */
 	private besideHolds<T>(
 		made: { readonly scope: HoldScope | undefined; readonly backlog: boolean } | undefined,
-		sql: string,
+		request: Extract<ConnectionRequest, { readonly kind: "exec" | "run" | "get" | "all" }>,
 		single: boolean,
 		call: () => Promise<T>,
-		params: readonly SqliteValue[] = [],
 	): Promise<T> {
 		if (made === undefined || this.fileGate?.role !== "waits" || !(this.connection instanceof CallerThreadConnection))
 			return call();
 		const { file } = this.fileGate;
 		const gate = heldElsewhere(file, made.scope, made.backlog);
 		if (gate === undefined) return call();
+		const params = "params" in request ? request.params : [];
 		if (params.some((value) => typeof value === "string" && value.includes("\0"))) return call();
 		const owner = this.connection;
 		const database = owner.connection;
-		// A read never waits, nor does a text SQLite cannot prepare, which fails at once with its own error.
-		const kind = classify(gate, owner, database, file, sql, single);
-		if (kind === "read" || kind === "invalid") return call();
-		return runWhenFree(file, gate, owner, database, call, () => unavailable(this.descriptor, sqliteBusyError()));
+		const mode = modeOf(gate, owner, database, request.sql, single);
+		if (mode === "as before") return runInTurn(gate, database, call);
+		if (mode === "script")
+			return runWhenFree(file, gate, owner, database, call, () => unavailable(this.descriptor, sqliteBusyError()));
+		return runTryingFirst(
+			file,
+			gate,
+			owner,
+			database,
+			() => this.call(request) as T,
+			call,
+			() => unavailable(this.descriptor, sqliteBusyError()),
+		);
 	}
 
 	/** Idle-only housekeeping: do not join a batch, wait behind an operation on this handle or another handle's
