@@ -13,6 +13,7 @@ import {
 import { createUnstartedAgentSessionFromServices } from "../src/core/agent-session-services.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
+import { NO_QUEUED_MESSAGES } from "../src/core/queued-message-delivery.ts";
 import { SessionManager } from "../src/core/session-manager.js";
 import { InteractiveMode } from "../src/index.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -66,6 +67,8 @@ function engineStandIn(base: AgentSessionRuntime, cwd: string, agentDir: string)
 		onEngineMessage: subscribe(engineListeners),
 		onGenerationEnded: subscribe(endedListeners),
 		onEngineRecovered: none,
+		onQueuedDeliveriesForgotten: none,
+		queuedMessagesUnderWay: () => NO_QUEUED_MESSAGES,
 		onDiagnostic: none,
 		onSessionStatsChanged: none,
 		onRemoteCommandsChanged: none,

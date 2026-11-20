@@ -111,6 +111,21 @@ test("a bootstrap record without an API key omits the field", async () => {
 	}
 });
 
+test("a host's request for the queued messages its engine delivers survives the record, and no request reads as none (#6080)", async () => {
+	for (const writer of WRITERS) {
+		const asking = await writer.write({ hostPid: 8, guardFile: "/tmp/guard-8", queuedDeliveries: true });
+		const silent = await writer.write({ hostPid: 9, guardFile: "/tmp/guard-9" });
+		try {
+			assert.equal(readInteractiveEngineBootstrap(asking.path)?.queuedDeliveries, true);
+			const record = readInteractiveEngineBootstrap(silent.path);
+			assert.ok(record && !("queuedDeliveries" in record));
+		} finally {
+			await writer.remove(asking);
+			await writer.remove(silent);
+		}
+	}
+});
+
 test("a malformed or foreign-version record is rejected and still consumed", () => {
 	for (const content of [
 		"{ not json",
