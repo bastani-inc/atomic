@@ -17,6 +17,7 @@ import {
 } from "@bastani/atomic/storage";
 import { type DatabaseWakeUpBusOptions, openDatabaseWakeUpBus } from "./database-wake-up-bus.js";
 import type { IntercomBrokerStateStore } from "./multinode-state-store.js";
+import { openSqlEndedChildQueueStore } from "./sql-ended-child-queue-store.js";
 import { openSqlHeldSendStore } from "./sql-held-send-store.js";
 import { openSqlKnownSessionStore } from "./sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "./sql-lease-store.js";
@@ -171,6 +172,9 @@ export async function openIntercomBrokerState(
 					await sentMessages.reserveIn(tx, reservation);
 					return enqueued;
 				});
+			},
+			openEndedChildQueue(owner) {
+				return openSqlEndedChildQueueStore(options, owner);
 			},
 			close() {
 				closing ??= database.close();

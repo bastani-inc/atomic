@@ -309,6 +309,12 @@ export type ClientMessage =
    * only in answer to a broker's `ended_child_wake`.
    */
   | { type: "answer_ended_child_wake"; childName: string; wakeId: string; accepted: boolean; reason?: string }
+  /**
+   * Durable wake queue: this session was told these messages it queued for subagents that ended were lost (an older
+   * broker served in between); the broker that kept them after all drops them, untold. Sent only to a broker that
+   * advertised `dropsEndedQueued`.
+   */
+  | { type: "drop_ended_queued"; messageIds: string[] }
   | { type: "verify_released_child"; requestId: string; childName: string; broker: string; order: number }
   /** #4326: the owner answers one `released_child_reply` handoff; an ack that names another handoff is ignored. */
   /**
@@ -384,6 +390,11 @@ export type BrokerMessage =
 			 * registers with another one, knows they were lost with the broker that kept them.
 			 */
 			instanceId?: string;
+			/**
+			 * Durable wake queue: this broker keeps queued messages across restarts and takes `drop_ended_queued`: a client
+			 * told some were lost (an older broker served in between) has them dropped before they are delivered.
+			 */
+			dropsEndedQueued?: true;
 			/** This connection accepts stamped release requests and read-only checks of a stamped hold. */
 			stampsReleasedChildren?: true;
 			/** Broker routing mode at registration, for deciding whether a reply wait may release. */
