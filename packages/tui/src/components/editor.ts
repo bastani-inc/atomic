@@ -626,21 +626,24 @@ export class Editor implements Component, Focusable {
 
 	/**
 	 * Put back a prompt {@link snapshotDraft} took, from this editor or another: its text, cursor, paste registry, undo
-	 * history, kill ring and Up-history browsing. An open completion menu closes. Browsing past the end of the current
-	 * Up history stops browsing. Reports the text to `onChange`, as `setText` does.
+	 * history, kill ring and Up-history browsing. An open completion menu closes. A prompt that was browsing an entry the
+	 * current Up history no longer has comes back as the draft Up parked. Reports the text to `onChange`, as `setText`
+	 * does.
 	 */
 	restoreDraft(draft: EditorDraft): void {
 		const saved = editorDrafts.get(draft);
 		if (saved === undefined) return;
 		this.cancelAutocomplete();
 		this.jumpMode = null;
-		Object.assign(this.state, structuredClone(saved.state));
+		const browsing = saved.historyIndex >= 0 && saved.historyIndex < this.history.length;
+		// A prompt that browsed a history no longer there comes back as the draft Up parked, not the entry it showed.
+		const parked = !browsing && saved.historyIndex >= 0 ? saved.historyDraft : null;
+		Object.assign(this.state, structuredClone(parked ?? saved.state));
 		this.pastes = new Map(saved.pastes);
 		this.pasteCounter = saved.pasteCounter;
 		this.undoStack = saved.undoStack.clone();
 		this.killRing = saved.killRing.clone();
 		this.lastAction = saved.lastAction;
-		const browsing = saved.historyIndex >= 0 && saved.historyIndex < this.history.length;
 		this.historyIndex = browsing ? saved.historyIndex : -1;
 		this.historyDraft = browsing && saved.historyDraft !== null ? structuredClone(saved.historyDraft) : null;
 		this.scrollOffset = saved.scrollOffset;

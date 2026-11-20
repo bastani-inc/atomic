@@ -118,11 +118,19 @@ class PromptDrafts {
 	 * opened). A history entry shown while browsing is not part of it: the draft Up parked is.
 	 */
 	appendText(owner: PromptOwner, text: string): void {
+		this.rewriteOwnText(owner, (own) => `${own}${text}`);
+	}
+
+	/**
+	 * Replace `owner`'s prompt with `combine` of what the reader typed into it: while it browses Up history, the draft
+	 * Up parked, never the entry shown. Answers the prompt's text after.
+	 */
+	rewriteOwnText(owner: PromptOwner, combine: (own: string) => string): string {
 		const key = ownerKey(owner);
-		const merged = `${this.ownText(key)}${text}`;
+		const merged = combine(this.ownText(key));
 		if (key === this.live) {
 			this.editor.setText(merged);
-			return;
+			return this.editor.getExpandedText?.() ?? this.editor.getText();
 		}
 		const prompt = this.kept.get(key);
 		this.kept.set(key, {
@@ -132,6 +140,7 @@ class PromptDrafts {
 			own: prompt?.own ?? "",
 			writes: [...(prompt?.writes ?? []), merged],
 		});
+		return merged;
 	}
 
 	handle(owner: PromptOwner): PromptHandle {
@@ -210,7 +219,49 @@ export function takePromptText(mode: InteractiveModeBase, owner: PromptOwner): s
 	return promptDrafts(mode).takeText(owner);
 }
 
+/**
+ * Replace `owner`'s prompt with `combine` of what the reader typed into it, never a history entry it shows (text for a
+ * subagent that is gone joins main's own draft). Answers the prompt's text after.
+ */
+export function rewritePromptOwnText(
+	mode: InteractiveModeBase,
+	owner: PromptOwner,
+	combine: (own: string) => string,
+): string {
+	return promptDrafts(mode).rewriteOwnText(owner, combine);
+}
+
 /** Add `text` after what the reader typed into `owner`'s prompt, not after a history entry it shows. */
 export function appendPromptText(mode: InteractiveModeBase, owner: PromptOwner, text: string): void {
 	promptDrafts(mode).appendText(owner, text);
+}
+
+/**
+ * Text typed for a subagent that is gone, which D6 moved into main's prompt, while main's prompt still holds exactly
+ * what the move left: one Enter must not run a command that rewrites main from it without asking (supervisor ruling).
+ */
+export interface MovedDraftMark {
+	/** The subagent it was typed for. */
+	readonly agentName: string;
+	/** Main's whole prompt as the move left it, as one Enter would submit it. */
+	readonly text: string;
+}
+
+const movedMarks = new WeakMap<InteractiveModeBase, MovedDraftMark>();
+
+/** Mark main's prompt `text` as moved from `agentName`'s, until the next submission. */
+export function markMovedDraft(mode: InteractiveModeBase, agentName: string, text: string): void {
+	movedMarks.set(mode, { agentName, text });
+}
+
+/**
+ * The mark of main's prompt when `submitted` is exactly what the move left there; undefined otherwise. Every submission
+ * takes the mark, so the next unrelated submission clears it. An edit counts by what it leaves: text that differs from
+ * the moved text no longer matches, while browsing history and coming back to it, or typing it again exactly, still
+ * asks.
+ */
+export function takeMovedDraftMark(mode: InteractiveModeBase, submitted: string): MovedDraftMark | undefined {
+	const mark = movedMarks.get(mode);
+	movedMarks.delete(mode);
+	return mark !== undefined && mark.text.trim() === submitted.trim() ? mark : undefined;
 }

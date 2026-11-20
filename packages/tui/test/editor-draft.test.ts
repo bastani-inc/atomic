@@ -126,4 +126,19 @@ describe("Editor drafts", () => {
 		assert.strictEqual(editor.getText(), "sent earlier");
 		assert.strictEqual(editorDraftText(editor.snapshotDraft()), `my ${LONG_PASTE}`);
 	});
+
+	it("gives back the draft Up parked when the history it was browsing is no longer there", () => {
+		const editor = createEditor();
+		editor.addToHistory("an earlier prompt");
+		type(editor, "my draft");
+		editor.handleInput("\x01");
+		editor.handleInput(UP);
+		assert.strictEqual(editor.getText(), "an earlier prompt");
+		const draft = editor.snapshotDraft();
+		editor.setHistory([]);
+		editor.restoreDraft(draft);
+		assert.strictEqual(editor.getText(), "my draft");
+		editor.handleInput(DOWN);
+		assert.strictEqual(editor.getText(), "my draft");
+	});
 });

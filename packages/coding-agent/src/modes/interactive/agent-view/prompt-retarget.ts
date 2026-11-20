@@ -13,7 +13,13 @@ import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { mergeRestoredDraft } from "../interactive-prompt-restore.ts";
 import { engineLossSubagentNotice } from "../interactive-queueing.ts";
 import { theme } from "../theme/theme.js";
-import { appendPromptText, promptHandle, switchPrompt, takePromptText } from "./agent-drafts.ts";
+import {
+	appendPromptText,
+	markMovedDraft,
+	rewritePromptOwnText,
+	switchPrompt,
+	takePromptText,
+} from "./agent-drafts.ts";
 import type { AgentViewSwitcher, PendingOutcome } from "./agent-view-switcher.ts";
 import type { AgentViewChange, AgentViewPort, AgentWorkingLine, ViewedTarget } from "./contracts.ts";
 import { notifyViewed } from "./viewed-notices.ts";
@@ -106,8 +112,9 @@ function retargetOnSwitch(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 function moveGoneDraftToMain(mode: InteractiveModeBase, port: AgentViewPort): void {
 	const text = takePromptText(mode, { kind: "agent", agentKey: port.agentKey });
 	if (!text.trim()) return;
-	const main = promptHandle(mode, "main");
-	main.setText(mergeRestoredDraft(text, main.getExpandedText()));
+	// It joins what the reader typed into main's prompt, never a history entry main's prompt was showing.
+	const moved = rewritePromptOwnText(mode, { kind: "main" }, (own) => mergeRestoredDraft(text, own));
+	markMovedDraft(mode, port.status().name, moved);
 	mode.showWarning(goneAgentNotice(port.status().name));
 }
 
@@ -180,7 +187,9 @@ function drawViewedWorkingLine(mode: InteractiveModeBase): () => void {
 	};
 }
 
-/** `!` makes the main prompt a shell prompt; a subagent's refuses `!` commands, so its prompt never becomes one (D2). */
+/**
+ * `!` makes the main prompt a shell prompt; a subagent's refuses `!` commands, so its prompt never becomes one (D2).
+ */
 function keepBashModeMain(mode: InteractiveModeBase): () => void {
 	const editor = mode.defaultEditor;
 	const mainOnChange = editor.onChange;
