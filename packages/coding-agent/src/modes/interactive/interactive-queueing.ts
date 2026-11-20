@@ -1,48 +1,91 @@
-import type { ClearedQueue, PromptDisposition } from "../../core/agent-session-types.js";
+import type { PromptDisposition } from "../../core/agent-session-types.js";
 import { parseSlashCommand } from "../../core/slash-commands.js";
 import {
 	clearInteractiveEngineQueue,
 	getInteractiveEngineRemoteCommands,
 } from "../interactive-engine/extension-ui-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
+import { QueuedMessagesView, queuedMessageRows } from "./components/queued-messages-view.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { combineQueuedMessagesForEditor, Spacer, TruncatedText, theme } from "./interactive-mode-deps.ts";
+import { theme } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage } from "./interactive-mode-types.ts";
+import {
+	restoredQueue,
+	type SteeringEditorQueue,
+	SteeringQueueController,
+	type SteeringQueueLists,
+	type SteeringTarget,
+} from "./steering-queue-controller.ts";
 
 /** Typing order of messages handed to the session, so one it refuses returns to its own place. */
 const handOffOrder = new WeakMap<CompactionQueuedMessage, number>();
 let nextHandOff = 0;
+
 /**
- * Messages handed to the session that it has not confirmed yet. The editor keeps showing them until the session
- * reports it took them; from then on the session lists them itself. They are the session's from the moment they
- * are sent, so a restore takes them from the session's own answer and never from this copy.
+ * The main chat's steering controller. Messages handed to the session that it has not confirmed yet stay shown as
+ * queued until the session reports it took them; from then on the session lists them itself. They are the session's
+ * from the moment they are sent, so a restore takes them from the session's own answer and never from this copy.
  */
-const unconfirmedHandOffs = new WeakMap<InteractiveModeBase, CompactionQueuedMessage[]>();
+const mainControllers = new WeakMap<InteractiveModeBase, SteeringQueueController>();
 
-/** The session's queue as the last `queue_update` listed it, so the next one shows which messages it added. */
-const lastListedQueue = new WeakMap<InteractiveModeBase, QueueLists>();
+export function mainSteering(mode: InteractiveModeBase): SteeringQueueController {
+	let controller = mainControllers.get(mode);
+	if (controller === undefined) {
+		controller = new SteeringQueueController(mainSteeringTarget(mode), mainEditorQueue(mode));
+		mainControllers.set(mode, controller);
+	}
+	return controller;
+}
 
-type QueueLists = { steering: readonly string[]; followUp: readonly string[] };
+/** The main chat's session, read at each call, so a session the chat switched to is the one steered. */
+function mainSteeringTarget(mode: InteractiveModeBase): SteeringTarget {
+	return {
+		get busy() {
+			return mode.session.isStreaming || mode.promptTurn !== undefined;
+		},
+		get paused() {
+			return mode.session.queuedMessagesPaused;
+		},
+		queued: () => ({
+			steering: mode.session.getSteeringMessages(),
+			followUp: mode.session.getFollowUpMessages(),
+		}),
+		prompt: (text, options) => mode.session.prompt(text, options),
+		clearQueue: (options) =>
+			clearInteractiveEngineQueue(mode.runtimeHost) ?? Promise.resolve(mode.session.clearQueue(options)),
+	};
+}
 
-function heldByEditor(mode: InteractiveModeBase): CompactionQueuedMessage[] {
-	return [...(unconfirmedHandOffs.get(mode) ?? []), ...mode.compactionQueuedMessages];
+/** The messages the main editor holds while compaction runs, listed after the session's own. */
+function mainEditorQueue(mode: InteractiveModeBase): SteeringEditorQueue {
+	return {
+		held: () => mode.compactionQueuedMessages,
+		takeHeld: () => {
+			const held = mode.compactionQueuedMessages;
+			const heldSendFailed = mode.compactionSendFailed;
+			mode.compactionQueuedMessages = [];
+			mode.compactionSendFailed = false;
+			return {
+				messages: held,
+				putBack: () => {
+					mode.compactionQueuedMessages = [...held, ...mode.compactionQueuedMessages];
+					// If compaction ended meanwhile, its flush found the queue empty and nothing else will send these.
+					// Marked as unsent, they go out in order ahead of the next submission, as a batch whose first send
+					// failed does.
+					mode.compactionSendFailed ||= heldSendFailed || (held.length > 0 && !mode.compactionActive);
+				},
+			};
+		},
+		changed: () => mode.updatePendingMessagesDisplay(),
+		requestRender: () => mode.ui.requestRender(),
+	};
 }
 
 InteractiveModeBase.prototype.getAllQueuedMessages = function (this: InteractiveModeBase): {
 	steering: string[];
 	followUp: string[];
 } {
-	const held = heldByEditor(this);
-	return {
-		steering: [
-			...this.session.getSteeringMessages(),
-			...held.filter((msg) => msg.mode === "steer").map((msg) => msg.text),
-		],
-		followUp: [
-			...this.session.getFollowUpMessages(),
-			...held.filter((msg) => msg.mode === "followUp").map((msg) => msg.text),
-		],
-	};
+	return mainSteering(this).allQueued();
 };
 
 /**
@@ -60,33 +103,7 @@ InteractiveModeBase.prototype.clearAllQueues = async function (
 	steering: string[];
 	followUp: string[];
 }> {
-	// Leave the editor queue now, so nothing sends these messages while the session answers.
-	const held = this.compactionQueuedMessages;
-	const heldSendFailed = this.compactionSendFailed;
-	this.compactionQueuedMessages = [];
-	this.compactionSendFailed = false;
-	let removed: ClearedQueue;
-	try {
-		const clearing =
-			clearInteractiveEngineQueue(this.runtimeHost) ?? Promise.resolve(this.session.clearQueue(options));
-		this.updatePendingMessagesDisplay();
-		removed = await clearing;
-	} catch (error) {
-		this.compactionQueuedMessages = [...held, ...this.compactionQueuedMessages];
-		// If compaction ended meanwhile, its flush found the queue empty and nothing else will send these. Marked as
-		// unsent, they go out in order ahead of the next submission, as a batch whose first send failed does.
-		this.compactionSendFailed ||= heldSendFailed || (held.length > 0 && !this.compactionActive);
-		this.updatePendingMessagesDisplay();
-		throw error;
-	}
-	// Each message goes back as it was typed, so sending it again runs `input` hooks and expansions once (#4284).
-	// A session from before `typed` was added gives back only the text it queued.
-	const typed = removed.typed ?? removed;
-	// A hand-off the session has not confirmed yet is the session's: it either lists it or reports its refusal.
-	return {
-		steering: [...typed.steering, ...held.filter((msg) => msg.mode === "steer").map((msg) => msg.text)],
-		followUp: [...typed.followUp, ...held.filter((msg) => msg.mode === "followUp").map((msg) => msg.text)],
-	};
+	return mainSteering(this).clearAll(options);
 };
 
 InteractiveModeBase.prototype.updatePendingMessagesDisplay = function (this: InteractiveModeBase): void {
@@ -94,20 +111,10 @@ InteractiveModeBase.prototype.updatePendingMessagesDisplay = function (this: Int
 	for (const component of this.pendingBashComponents) {
 		this.pendingMessagesContainer.addChild(component);
 	}
-	const { steering: steeringMessages, followUp: followUpMessages } = this.getAllQueuedMessages();
-	if (steeringMessages.length > 0 || followUpMessages.length > 0) {
-		this.pendingMessagesContainer.addChild(new Spacer(1));
-		for (const message of steeringMessages) {
-			const text = theme.fg("dim", `Steering: ${message}`);
-			this.pendingMessagesContainer.addChild(new TruncatedText(text, 1, 0));
-		}
-		for (const message of followUpMessages) {
-			const text = theme.fg("dim", `Follow-up: ${message}`);
-			this.pendingMessagesContainer.addChild(new TruncatedText(text, 1, 0));
-		}
-		const dequeueHint = this.getAppKeyDisplay("app.message.dequeue");
-		const hintText = theme.fg("dim", `↳ ${dequeueHint} to edit all queued messages`);
-		this.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
+	const rows = queuedMessageRows(this.getAllQueuedMessages());
+	if (rows.length > 0) {
+		const dequeueKey = this.getAppKeyDisplay("app.message.dequeue");
+		this.pendingMessagesContainer.addChild(new QueuedMessagesView(rows, dequeueKey, (text) => theme.fg("dim", text)));
 	}
 };
 
@@ -119,23 +126,16 @@ InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = async function (
 		preserveUnprotectedCustomMessages?: boolean;
 	},
 ): Promise<number> {
-	const { steering, followUp } = await this.clearAllQueues(options);
-	const allQueued = [...steering, ...followUp];
-	if (allQueued.length === 0) {
-		this.updatePendingMessagesDisplay();
-		if (options?.abort) {
-			void this.session.abort();
-		}
-		return 0;
-	}
-	const currentText = options?.currentText ?? this.editor.getExpandedText?.() ?? this.editor.getText();
-	const combinedText = combineQueuedMessagesForEditor(allQueued, currentText);
-	this.editor.setText(combinedText);
+	const restored = restoredQueue(
+		await this.clearAllQueues(options),
+		() => options?.currentText ?? this.editor.getExpandedText?.() ?? this.editor.getText(),
+	);
+	if (restored !== undefined) this.editor.setText(restored.text);
 	this.updatePendingMessagesDisplay();
 	if (options?.abort) {
 		void this.session.abort();
 	}
-	return allQueued.length;
+	return restored?.messages.length ?? 0;
 };
 
 /** Report a restore the session could not answer; nothing was removed, so every message is still queued. */
@@ -240,13 +240,7 @@ function returnHandedOffMessage(mode: InteractiveModeBase, message: CompactionQu
 }
 
 function confirmHandOff(mode: InteractiveModeBase, message: CompactionQueuedMessage): boolean {
-	const pending = unconfirmedHandOffs.get(mode);
-	const index = pending?.indexOf(message) ?? -1;
-	if (!pending || index === -1) return false;
-	pending.splice(index, 1);
-	if (pending.length === 0) unconfirmedHandOffs.delete(mode);
-	mode.updatePendingMessagesDisplay();
-	return true;
+	return mainSteering(mode).settle(message);
 }
 
 /**
@@ -260,11 +254,7 @@ export function showSubmissionAsQueued(
 	text: string,
 	lane: CompactionQueuedMessage["mode"],
 ): CompactionQueuedMessage {
-	const message: CompactionQueuedMessage = { text, mode: lane };
-	unconfirmedHandOffs.set(mode, [...(unconfirmedHandOffs.get(mode) ?? []), message]);
-	mode.updatePendingMessagesDisplay();
-	mode.ui.requestRender();
-	return message;
+	return mainSteering(mode).showAsQueued({ text, mode: lane });
 }
 
 /**
@@ -280,35 +270,8 @@ export function settleSubmission(mode: InteractiveModeBase, message: CompactionQ
  * (#4696). Only a message this update added confirms a copy, oldest copy first, so an identical message queued
  * earlier does not.
  */
-export function reconcileQueuedSubmissions(mode: InteractiveModeBase, queue: QueueLists): void {
-	const previous = lastListedQueue.get(mode) ?? { steering: [], followUp: [] };
-	lastListedQueue.set(mode, { steering: [...queue.steering], followUp: [...queue.followUp] });
-	const pending = unconfirmedHandOffs.get(mode);
-	if (!pending) return;
-	const added = {
-		steer: addedMessages(previous.steering, queue.steering),
-		followUp: addedMessages(previous.followUp, queue.followUp),
-	};
-	const remaining = pending.filter((message) => !takeCopy(added[message.mode], message.text));
-	if (remaining.length === 0) unconfirmedHandOffs.delete(mode);
-	else unconfirmedHandOffs.set(mode, remaining);
-}
-
-function addedMessages(before: readonly string[], after: readonly string[]): Map<string, number> {
-	const unmatched = new Map<string, number>();
-	for (const text of before) unmatched.set(text, (unmatched.get(text) ?? 0) + 1);
-	const added = new Map<string, number>();
-	for (const text of after) {
-		if (!takeCopy(unmatched, text)) added.set(text, (added.get(text) ?? 0) + 1);
-	}
-	return added;
-}
-
-function takeCopy(copies: Map<string, number>, text: string): boolean {
-	const count = copies.get(text) ?? 0;
-	if (count === 0) return false;
-	copies.set(text, count - 1);
-	return true;
+export function reconcileQueuedSubmissions(mode: InteractiveModeBase, queue: SteeringQueueLists): void {
+	mainSteering(mode).reconcile(queue);
 }
 
 /**
@@ -322,7 +285,7 @@ export function handOffCompactionQueue(mode: InteractiveModeBase): void {
 	const messages = mode.compactionQueuedMessages;
 	if (messages.length === 0) return;
 	mode.compactionQueuedMessages = [];
-	unconfirmedHandOffs.set(mode, [...(unconfirmedHandOffs.get(mode) ?? []), ...messages]);
+	mainSteering(mode).track(messages);
 	for (const message of messages) {
 		handOffOrder.set(message, nextHandOff++);
 		let accepted = false;
