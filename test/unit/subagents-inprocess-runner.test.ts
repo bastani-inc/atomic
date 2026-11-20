@@ -882,7 +882,7 @@ test("in-process subagent launch and transcript binding tolerate a SessionManage
 			assert.deepEqual(boundLaunches, [{ leafId: branchFirstId, leafSeq: 1 }]);
 			const liveTranscript = boundSources.find((source) => "chatSession" in source);
 			assert.ok(liveTranscript);
-			assert.equal(liveTranscript.loadFullHistory, undefined);
+			assert.equal("loadFullHistory" in liveTranscript, false);
 		});
 
 		const sdkBacking = SessionManager.inMemory(root);

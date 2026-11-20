@@ -136,6 +136,38 @@ describe("WindowedContainer in a scroll view", () => {
 		}
 	});
 
+	it("scrolls from the rows it showed when children above them were added or removed before the next frame", async () => {
+		const line = (n: number) => new Entry(`line ${n}`, 1, false);
+		const content = new WindowedContainer();
+		const session = open(
+			content,
+			Array.from({ length: 100 }, (_, n) => line(n)),
+		);
+		const top = async () => (await screen(session))[0]!.trim();
+		try {
+			await screen(session);
+			session.tui.scrollToTop();
+			await screen(session);
+			session.tui.scrollBy(40);
+			assert.equal(await top(), "line 40 row 0");
+			// An older page is mounted above, then the wheel moves three rows before the next frame.
+			content.children.splice(0, 0, ...Array.from({ length: 10 }, (_, n) => line(-10 + n)));
+			session.tui.scrollBy(3);
+			assert.equal(await top(), "line 43 row 0");
+			// A page above is released, then the wheel moves on.
+			content.children.splice(0, 30);
+			session.tui.scrollBy(3);
+			session.tui.scrollBy(3);
+			assert.equal(await top(), "line 49 row 0");
+			// A jump to a row is not moved by the rows above it.
+			content.children.splice(0, 5);
+			session.transcript.scrollTo(0);
+			assert.equal(await top(), "line 25 row 0");
+		} finally {
+			session.tui.stop();
+		}
+	});
+
 	it("finds a child that changed height off screen without being invalidated", async () => {
 		const children = entries(100);
 		const session = open(new WindowedContainer(), children);

@@ -29,6 +29,8 @@ When embedding `ChatSessionHost`, forward the complete `ctx.ui.getChatRenderSett
 
 `host.replaceMessages(messages)` starts a fresh unread baseline. Use `host.replaceMessages(messages, { preserveUnread: true })` for a new snapshot of the same conversation; arrivals that have not painted yet remain unread.
 
+An extra row supplied through `host.appendExtraEntry()` may exist nowhere else. Atomic keeps those rows in memory until the host is disposed; it does not save private extension data to disk. An extension card in saved chat history can also have state that its saved message cannot reproduce. The chat keeps the original component for such a card when it leaves the screen. If a renderer can recreate its component without losing state, return the component with an own data field `historyReplayable: true`. The chat may then discard it and call the renderer again when it is viewed. Keep private rows and stateful cards small in long-lived chats.
+
 The `Markdown` component from `@bastani/atomic-tui` also accepts per-instance `hyperlinks: false` and `images: false` in its sixth constructor argument. These options do not change other components or terminal capabilities.
 
 ## Component Interface

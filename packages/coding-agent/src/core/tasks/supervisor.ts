@@ -88,8 +88,18 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	 * and its `getEntries()` is empty. Absent where `getEntries()` holds the history (#5186).
 	 */
 	loadHistory?(): Promise<TaskTranscriptHistory>;
+	/** Saved history, without hydrating the task's session. Its cursors fence the generation and original watermark. */
+	readHistory?: SessionManager["readHistory"];
+	readHistoryChunks?: SessionManager["readHistoryChunks"];
+	/** The task's own retained prompt/answer if its saved session disappears. */
+	getFallbackEntries?: TaskTranscriptSource["getEntries"];
 
-	loadFullHistory?(): Promise<void>;
+	/** Cursor leading from the live context to its preceding saved branch. */
+	getEarlierCursor?(): string | undefined;
+	/** Where the session stored a retained entry, while it is in memory. */
+	getEntrySeq?(id: string): number | undefined;
+	/** The save receipt of a message the session emitted: where it was stored. Absent while the message is unsaved. */
+	entryReceipt?(message: AgentMessage): { readonly seq: number } | undefined;
 	/** The session's commands now; a settled transcript keeps those it had when it settled. */
 	commands?(): TaskTranscriptCommands;
 	/** The live session's usage and footer data; absent from a transcript that has settled or been released. */
@@ -295,12 +305,22 @@ const environment = {
 /** Reads only history bound by the admitted runner, never a caller-selected session. */
 export function taskTranscriptSource(
 	task: TaskLease,
-): C.Result<{ session: TaskTranscriptSource; taskId: C.TaskId }, C.Failure<"UnknownTask" | "TranscriptUnavailable">> {
+): C.Result<
+	{ session: TaskTranscriptSource; taskId: C.TaskId; inheritedThroughId?: string },
+	C.Failure<"UnknownTask" | "TranscriptUnavailable">
+> {
 	const state = environment.tasks.get(task);
 	if (!state) return { ok: false, error: { code: "UnknownTask", message: "Unknown task" } };
 	if (!state.transcript)
 		return { ok: false, error: { code: "TranscriptUnavailable", message: "Transcript unavailable" } };
-	return { ok: true, value: { session: state.transcript, taskId: state.ref.taskId } };
+	return {
+		ok: true,
+		value: {
+			session: state.transcript,
+			taskId: state.ref.taskId,
+			...(typeof state.inherited?.throughId === "string" ? { inheritedThroughId: state.inherited.throughId } : {}),
+		},
+	};
 }
 
 const NO_STATUSES: ReadonlyMap<string, string> = new Map();

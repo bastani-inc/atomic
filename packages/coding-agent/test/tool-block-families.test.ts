@@ -3,12 +3,45 @@ import { getKeybindings, setKeybindings, stripTerminalSequences, visibleWidth } 
 import { afterEach, beforeEach, test } from "vitest";
 import { renderFetchContentResult, renderWebSearchResult } from "../../web-access/result-renderers.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { chunkedToolResult, chunkedToolResultEntry } from "../src/core/storage/session/chunked-tool-result.js";
 import { ToolBlock } from "../src/modes/interactive/components/tool-block.ts";
 import {
 	type BuiltinToolBlockInput,
 	builtinToolBlockPresentation,
 } from "../src/modes/interactive/components/tool-block-families.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+
+test("a saved image read keeps its dimensions and byte count without decoding the image payload (#5593)", async () => {
+	const data = Buffer.alloc(1_200_000);
+	data.writeUint32BE(0x89504e47, 0);
+	data.writeUInt32BE(321, 16);
+	data.writeUInt32BE(123, 20);
+	const input = {
+		role: "toolResult",
+		toolCallId: "picture",
+		toolName: "read",
+		isError: false,
+		timestamp: 1,
+		content: [{ type: "image", mimeType: "image/png", data: data.toString("base64") }],
+	};
+	const text = Buffer.from(JSON.stringify({ type: "message", message: input }));
+	const summary = await chunkedToolResult(
+		(async function* () {
+			for (let i = 0; i < text.length; i += 257) yield text.subarray(i, i + 257);
+		})(),
+	);
+	assert.ok(summary);
+	const entry = chunkedToolResultEntry(summary, "picture-entry", "Saved image body is available in history");
+	assert.ok(entry.type === "message" && entry.message.role === "toolResult");
+	const view = (result: BuiltinToolBlockInput["result"]) =>
+		plain(
+			renderFamily({ toolName: "read", args: { path: "picture.png" }, result, expanded: false, isPartial: false }),
+		);
+	const expected = view(input);
+	assert.match(expected.join("\n"), /Read image · 321×123/);
+	assert.deepEqual(view(entry.message), expected);
+	assert.ok(JSON.stringify(entry).length < 5000, "the saved projection holds no image payload");
+});
 
 const previousKeys = getKeybindings();
 const CWD = "/workspace/project";
