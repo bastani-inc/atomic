@@ -10,7 +10,7 @@ import {
 } from "../steering-queue-controller.ts";
 import { markMovedDraft, type PromptHandle, promptHandle, rewritePromptOwnText } from "./agent-drafts.ts";
 import type { AgentViewPort } from "./contracts.ts";
-import { routeViewedCommand, runViewedDoubleEscapeAction } from "./viewed-commands.ts";
+import { routeViewedCommand } from "./viewed-commands.ts";
 import { notifyViewed } from "./viewed-notices.ts";
 
 /**
@@ -247,9 +247,9 @@ function pausable(mode: InteractiveModeBase, port: AgentViewPort): boolean {
 }
 
 /**
- * Esc while a subagent is shown (D8): pause it when it works, waits to retry or has messages queued. Otherwise Esc does
- * what it does in the main chat, minus what acts on the main session: twice on an empty prompt it asks before the main
- * chat's double-Esc action. Answers false while main is shown, which keeps the main chat's Esc.
+ * Esc while a subagent is shown (D8): pause it when it works, waits to retry or has messages queued, and stay. On an
+ * empty prompt while it does not work, Esc shows main; that Esc is not the first press of main's double-Esc. With text
+ * typed it does nothing. Answers false while main is shown, which keeps the main chat's Esc.
  */
 export function escapeViewedAgent(mode: InteractiveModeBase): boolean {
 	const viewed = mode.agentView?.viewed;
@@ -259,19 +259,27 @@ export function escapeViewedAgent(mode: InteractiveModeBase): boolean {
 		return true;
 	}
 	if (mode.editor.getText().trim()) return true;
-	const action = mode.settingsManager.getDoubleEscapeAction();
-	if (action === "none") return true;
-	const now = Date.now();
-	if (now - mode.lastEscapeTime < 500) {
-		mode.lastEscapeTime = 0;
-		runViewedDoubleEscapeAction(mode, action);
-	} else mode.lastEscapeTime = now;
+	mode.lastEscapeTime = 0;
+	void mode.agentView?.view(undefined);
 	return true;
 }
 
 /**
- * Ctrl+C on an empty prompt while a subagent is shown: it stops the subagent's running work as Esc does, never main's.
- * Answers whether it paused it, or undefined while main is shown.
+ * Ctrl+C on an empty prompt while a subagent is shown: it pauses the subagent's running work, as Esc does, and shows
+ * main, in one press. It never counts toward exiting Atomic. Answers false while main is shown.
+ */
+export function leaveViewedAgent(mode: InteractiveModeBase): boolean {
+	const viewed = mode.agentView?.viewed;
+	if (viewed?.kind !== "agent") return false;
+	if (pausable(mode, viewed.port)) pauseViewedAgent(mode, viewed.port);
+	void mode.agentView?.view(undefined);
+	return true;
+}
+
+/**
+ * A stop request from outside the keyboard (a SIGINT signal) while a subagent is shown: it stops the subagent's running
+ * work as Esc does, never main's, and changes nothing else. Answers whether it paused it, or undefined while main is
+ * shown.
  */
 export function interruptViewedAgent(mode: InteractiveModeBase): boolean | undefined {
 	const viewed = mode.agentView?.viewed;

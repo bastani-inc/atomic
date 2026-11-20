@@ -3,7 +3,12 @@ import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
 import { terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
-import { dequeueViewedAgent, followUpViewedAgent, interruptViewedAgent } from "./agent-view/viewed-submit.ts";
+import {
+	dequeueViewedAgent,
+	followUpViewedAgent,
+	interruptViewedAgent,
+	leaveViewedAgent,
+} from "./agent-view/viewed-submit.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { APP_TITLE, chalk, killTrackedDetachedChildren } from "./interactive-mode-deps.ts";
 import { formatCrashExtensionHint, formatResumeCommand, isDeadTerminalError } from "./interactive-mode-helpers.ts";
@@ -27,6 +32,13 @@ InteractiveModeBase.prototype.handleCtrlC = function (this: InteractiveModeBase)
 	if (isWindowsSubshellActive(this)) return;
 	if (this.editor.getText() !== "") {
 		this.clearEditor();
+		this.lastSigintTime = 0;
+		return;
+	}
+	// While a subagent is shown, an empty prompt's Ctrl+C pauses its work and shows main; it never exits from there.
+	// An engine that owes an abort is still terminated first, as the watchdog advertises.
+	if (this.agentView?.viewed.kind === "agent" && !terminateInteractiveEngine(this.runtimeHost)) {
+		leaveViewedAgent(this);
 		this.lastSigintTime = 0;
 		return;
 	}

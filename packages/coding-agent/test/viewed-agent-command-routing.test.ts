@@ -26,6 +26,7 @@ vi.mock("../src/utils/clipboard.js", async (importOriginal) => ({
 const HOST_TIMEOUT_MS = 90_000;
 const ESC = "\x1b";
 const ENTER = "\r";
+const DOWN = "\x1b[B";
 
 const TASK = "task-worker-1" as TaskId;
 
@@ -186,8 +187,12 @@ describe("commands typed while a subagent is shown on the main screen", () => {
 			const { mode, port } = screen;
 			const sessionId = mode.session.sessionId;
 			await screen.submit("/new");
-			assert.match(screen.promptSlotText(), /Run \/new on the main conversation\?/);
-			assert.match(screen.promptSlotText(), /\/new acts on the main conversation, not on worker\./);
+			assert.match(screen.promptSlotText(), /\/new acts on the main conversation, not worker/);
+			assert.match(
+				screen.promptSlotText(),
+				/❯ 1\. Cancel\s+2\. Run \/new on the main conversation/,
+				"Cancel first, chosen",
+			);
 			const drawn = promptsDrawn(mode);
 			answer(ESC);
 			await until(() => screen?.promptSlot() === mode.editor);
@@ -207,10 +212,48 @@ describe("commands typed while a subagent is shown on the main screen", () => {
 			const { mode, port } = screen;
 			const sessionId = mode.session.sessionId;
 			await screen.submit("/new");
+			answer(DOWN);
 			answer(ENTER);
 			await until(() => mode.session.sessionId !== sessionId);
 			assert.equal(screen.viewed(), "main");
 			await until(() => /New session started/.test(screen?.transcript() ?? ""));
+			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"/compact asks first with Cancel chosen; once run, it runs on main and the subagent stays shown",
+		async () => {
+			screen = await viewSubagent();
+			const { mode, port } = screen;
+			await screen.submit("/compact");
+			assert.match(screen.promptSlotText(), /\/compact acts on the main conversation, not worker/);
+			answer(ENTER);
+			await until(() => screen?.promptSlot() === mode.editor);
+			await until(() => mode.editor.getText() === "/compact");
+			assert.deepEqual(screen.warnings, [], "Enter on the dialog cancels: nothing ran");
+			mode.editor.setText("");
+			await screen.submit("/compact");
+			answer(DOWN);
+			answer(ENTER);
+			// Main's /compact ran; with no messages yet it says so.
+			await until(() => screen?.warnings.includes("Nothing to compact (no messages yet)") === true);
+			assert.equal(screen.viewed(), "agent");
+			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"/resume opens its picker over the subagent's view without asking first",
+		async () => {
+			screen = await viewSubagent();
+			const { mode, port } = screen;
+			await screen.submit("/resume");
+			await until(() => screen?.promptSlot() !== mode.editor);
+			assert.doesNotMatch(screen.promptSlotText(), /on the main conversation/);
+			assert.equal(screen.viewed(), "agent");
 			assert.deepEqual(port.calls, []);
 		},
 		HOST_TIMEOUT_MS,
@@ -295,12 +338,31 @@ describe("main's prompt while a command typed for a subagent runs on main", () =
 	);
 
 	test(
+		"/clone asked for from the subagent's view clones main, shows it, and keeps main's prompt as the reader left it",
+		async () => {
+			screen = await viewSubagentOverMainDraft();
+			const { mode } = screen;
+			await mode.sessionManager.appendMessage({ role: "user", content: "an earlier main prompt", timestamp: 1 });
+			const sessionId = mode.session.sessionId;
+			await screen.submit("/clone");
+			assert.match(screen.promptSlotText(), /\/clone acts on the main conversation, not worker/);
+			answer(DOWN);
+			answer(ENTER);
+			await until(() => mode.session.sessionId !== sessionId);
+			await until(() => screen?.viewed() === "main");
+			assert.equal(mode.editor.getText(), "half-written for main");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
 		"a confirmed command shows main with main's prompt as the reader left it",
 		async () => {
 			screen = await viewSubagentOverMainDraft();
 			const { mode } = screen;
 			const sessionId = mode.session.sessionId;
 			await screen.submit("/new");
+			answer(DOWN);
 			answer(ENTER);
 			await until(() => /New session started/.test(screen?.transcript() ?? ""));
 			assert.notEqual(mode.session.sessionId, sessionId);
@@ -351,11 +413,11 @@ describe("a command typed for a subagent that went away, moved into main's promp
 			const sessionId = mode.session.sessionId;
 			enter();
 			await until(() => isDialog(screen?.promptSlot()));
-			assert.match(screen.promptSlotText(), /Run \/new on the main conversation\?/);
 			assert.match(
 				screen.promptSlotText(),
 				/\/new was typed for worker, which is gone\. It acts on the main conversation\./,
 			);
+			assert.match(screen.promptSlotText(), /❯ 1\. Cancel\s+2\. Run \/new on the main conversation/);
 			const drawn = promptsDrawn(mode);
 			answer(ESC);
 			await until(() => screen?.promptSlot() === mode.editor);
@@ -364,6 +426,7 @@ describe("a command typed for a subagent that went away, moved into main's promp
 			assert.equal(mode.session.sessionId, sessionId);
 			enter();
 			await until(() => isDialog(screen?.promptSlot()));
+			answer(DOWN);
 			answer(ENTER);
 			await until(() => /New session started/.test(screen?.transcript() ?? ""));
 			assert.notEqual(mode.session.sessionId, sessionId);
@@ -509,7 +572,7 @@ describe("keys that act on the main conversation while a subagent is shown", () 
 	);
 
 	test(
-		"the session keys ask first; Yes shows main and runs the key there",
+		"the session keys ask first, the resume key's picker opens at once; the new-session key ends on main",
 		async () => {
 			screen = await viewSubagent();
 			const { mode } = screen;
@@ -517,18 +580,24 @@ describe("keys that act on the main conversation while a subagent is shown", () 
 				["app.session.new", "/new"],
 				["app.session.tree", "/tree"],
 				["app.session.fork", "/fork"],
-				["app.session.resume", "/resume"],
 			] as const) {
 				screen.press(action);
 				await until(() => isDialog(screen?.promptSlot()));
-				assert.match(screen.promptSlotText(), new RegExp(`Run ${command} on the main conversation\\?`));
+				assert.match(screen.promptSlotText(), new RegExp(`Run ${command} on the main conversation`));
 				answer(ESC);
 				await until(() => screen?.promptSlot() === mode.editor);
 				assert.equal(screen.viewed(), "agent", action);
 			}
+			screen.press("app.session.resume");
+			await until(() => screen?.promptSlot() !== mode.editor);
+			assert.doesNotMatch(screen.promptSlotText(), /on the main conversation/, "the picker, not a confirm");
+			assert.equal(screen.viewed(), "agent");
+			answer(ESC);
+			await until(() => screen?.promptSlot() === mode.editor);
 			const sessionId = mode.session.sessionId;
 			screen.press("app.session.new");
 			await until(() => isDialog(screen?.promptSlot()));
+			answer(DOWN);
 			answer(ENTER);
 			await until(() => mode.session.sessionId !== sessionId);
 			assert.equal(screen.viewed(), "main");

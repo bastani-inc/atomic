@@ -485,7 +485,7 @@ describe("the main prompt while a subagent is shown", () => {
 	);
 
 	test(
-		"Ctrl+C on an empty prompt pauses the working subagent shown, never main",
+		"Ctrl+C on an empty prompt pauses the working subagent shown, never main, and shows main in the same press",
 		async () => {
 			screen = await mainScreen();
 			const port = worker({ busy: true });
@@ -494,6 +494,56 @@ describe("the main prompt while a subagent is shown", () => {
 			await until(() => port.calls.length === 1);
 			assert.deepEqual(port.calls, [{ kind: "pause" }]);
 			assert.equal(screen.mode.session.queuedMessagesPaused, false);
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"Ctrl+C on an empty prompt with the shown subagent idle shows main and never offers to exit Atomic",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			await view(WORKER);
+			const exitOffer = () => stripAnsi(screen?.mode.chatContainer.render(WIDTH).join("\n") ?? "");
+			await screen.press(CTRL_C);
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			assert.doesNotMatch(exitOffer(), /Press Ctrl\+C again to exit/);
+			// The press that showed main does not count toward exiting: main's own first press says how to exit.
+			await screen.press(CTRL_C);
+			assert.match(exitOffer(), /Press Ctrl\+C again to exit/);
+			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"Esc on an empty prompt with the shown subagent idle shows main, and is not the first press of main's double-Esc",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			screen.mode.settingsManager.setDoubleEscapeAction("tree");
+			await view(WORKER);
+			await screen.press(ESC);
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			// One more Esc on main is a first press: the tree does not open.
+			await screen.press(ESC);
+			assert.equal(screen.mode.editorContainer.children.at(-1), screen.mode.editor);
+			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"Esc with text typed for an idle subagent keeps it shown and keeps the text",
+		async () => {
+			screen = await mainScreen();
+			worker();
+			await view(WORKER);
+			await screen.type("for worker");
+			await screen.press(ESC);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+			assert.equal(screen.mode.editor.getText(), "for worker");
 		},
 		HOST_TIMEOUT_MS,
 	);

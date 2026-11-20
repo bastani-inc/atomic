@@ -72,7 +72,9 @@ export function subagentChatUnavailableNotice(name: string): string {
  *   `showMain`: its answer is a block printed into the main transcript, so the screen shows main first and then runs
  *   it. This is the one switch a read-only command makes: it is visible at once (the transcript, the prompt's rule and
  *   placeholder change), and the answer belongs to main. Menus, dialogs and status lines show over the subagent.
- * - `confirm`: it replaces, rewrites or switches the main conversation. It runs as `main` (main shown) after Yes.
+ * - `confirm`: it replaces, rewrites or switches the main conversation. It asks first; after the reader agrees it runs
+ *   on main while the subagent stays shown, unless it starts a new or imported main session (`replacesSession`), for
+ *   which main is shown first.
  * - `refuse`: it sets the main conversation's model or thinking level, which is not done from a subagent's view.
  * - `copy`: `/copy` copies the viewed subagent's last message, the one on screen.
  * - `agent`: anything else goes to the subagent's own session, which expands its skills and prompt templates and runs
@@ -80,7 +82,7 @@ export function subagentChatUnavailableNotice(name: string): string {
  */
 export type ViewedAgentCommand =
 	| { readonly kind: "main"; readonly name: string; readonly showMain: boolean }
-	| { readonly kind: "confirm"; readonly name: string }
+	| { readonly kind: "confirm"; readonly name: string; readonly replacesSession: boolean }
 	| { readonly kind: "refuse"; readonly name: string }
 	| { readonly kind: "copy" }
 	| { readonly kind: "agent" };
@@ -93,13 +95,14 @@ export type ViewedAgentCommand =
 export type MainCommandOrigin = "bundled" | "configured";
 
 type BuiltinName = (typeof CORE_COMMAND_NAMES)[number] | (typeof UNLISTED_COMMANDS)[number];
-type ViewedScope = "here" | "showMain" | "confirm" | "refuse" | "copy";
+type ViewedScope = "here" | "showMain" | "confirm" | "confirmReplace" | "refuse" | "copy";
 
 /**
  * Every built-in, as it behaves while a subagent is viewed. A built-in added to the registry must be placed here.
  * - `here`: a menu, a dialog, or a status line, which show over the subagent's view as they do over main's;
  * - `showMain`: prints into the main transcript;
- * - `confirm`: replaces, rewrites or switches the main conversation;
+ * - `confirm`: rewrites the main conversation in place;
+ * - `confirmReplace`: replaces the main session with a new or an imported one, so main is shown before it runs;
  * - `refuse`: sets the main conversation's model or thinking level.
  */
 const VIEWED_BUILTINS: Readonly<Record<BuiltinName, ViewedScope>> = {
@@ -109,7 +112,7 @@ const VIEWED_BUILTINS: Readonly<Record<BuiltinName, ViewedScope>> = {
 	thinking: "refuse",
 	"scoped-models": "here",
 	export: "here",
-	import: "confirm",
+	import: "confirmReplace",
 	share: "here",
 	copy: "copy",
 	name: "showMain",
@@ -118,14 +121,16 @@ const VIEWED_BUILTINS: Readonly<Record<BuiltinName, ViewedScope>> = {
 	tasks: "here",
 	changelog: "showMain",
 	hotkeys: "showMain",
+	// Each replaces the main session once it runs, which shows main; it runs over the subagent's view until then.
 	fork: "confirm",
 	clone: "confirm",
 	trust: "here",
 	login: "here",
 	logout: "here",
-	new: "confirm",
+	new: "confirmReplace",
 	compact: "confirm",
-	resume: "confirm",
+	// Its picker is the confirmation: it opens over the subagent's view, and only a pick switches the session.
+	resume: "here",
 	reload: "here",
 	exit: "here",
 	quit: "here",
@@ -158,12 +163,14 @@ export function viewedAgentCommand(
 	if (builtin !== undefined) {
 		const scope = VIEWED_BUILTINS[builtin as BuiltinName];
 		if (scope === "copy") return { kind: "copy" };
-		if (scope === "confirm" || scope === "refuse") return { kind: scope, name: builtin };
+		if (scope === "confirm" || scope === "confirmReplace")
+			return { kind: "confirm", name: builtin, replacesSession: scope === "confirmReplace" };
+		if (scope === "refuse") return { kind: scope, name: builtin };
 		return { kind: "main", name: builtin, showMain: scope === "showMain" };
 	}
 	const { name } = parseSlashCommand(text);
 	const origin = mainCommandOrigin(name);
-	if (origin !== undefined && MAIN_REWRITE_NAMES.has(name)) return { kind: "confirm", name };
+	if (origin !== undefined && MAIN_REWRITE_NAMES.has(name)) return { kind: "confirm", name, replacesSession: false };
 	if (origin === "bundled") return { kind: "main", name, showMain: false };
 	return { kind: "agent" };
 }

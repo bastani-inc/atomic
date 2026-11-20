@@ -15,8 +15,10 @@ function mainCommands(commands: Record<string, MainCommandOrigin> = {}) {
 const route = (text: string, commands?: Record<string, MainCommandOrigin>): ViewedAgentCommand =>
 	viewedAgentCommand(text, mainCommands(commands));
 
-/** Built-ins that replace, rewrite or switch the main conversation. */
-const CONFIRMED = new Set(["new", "compact", "resume", "fork", "clone", "tree", "import"]);
+/** Built-ins that rewrite the main conversation in place: they ask first and run while the subagent stays shown. */
+const CONFIRMED = new Set(["compact", "tree", "fork", "clone"]);
+/** Built-ins that start a new or imported main session: they ask first and show main before they run. */
+const REPLACING = new Set(["new", "import"]);
 /** Built-ins that set the main conversation's model or thinking level. */
 const REFUSED = new Set(["model", "thinking"]);
 /** Built-ins whose answer is printed into the main transcript. */
@@ -28,7 +30,10 @@ describe("slash commands typed while a subagent is viewed", () => {
 			const command = route(`/${name}`);
 			if (name === "copy") assert.deepEqual(command, { kind: "copy" }, `/${name}`);
 			else if (REFUSED.has(name)) assert.deepEqual(command, { kind: "refuse", name }, `/${name}`);
-			else if (CONFIRMED.has(name)) assert.deepEqual(command, { kind: "confirm", name }, `/${name}`);
+			else if (CONFIRMED.has(name))
+				assert.deepEqual(command, { kind: "confirm", name, replacesSession: false }, `/${name}`);
+			else if (REPLACING.has(name))
+				assert.deepEqual(command, { kind: "confirm", name, replacesSession: true }, `/${name}`);
 			else assert.deepEqual(command, { kind: "main", name, showMain: PRINTED.has(name) }, `/${name}`);
 		}
 	});
@@ -36,9 +41,10 @@ describe("slash commands typed while a subagent is viewed", () => {
 	test("built-ins keep the arguments main runs them with", () => {
 		assert.deepEqual(route("/model other-model"), { kind: "refuse", name: "model" });
 		assert.deepEqual(route("/thinking high"), { kind: "refuse", name: "thinking" });
-		assert.deepEqual(route("/compact keep the plan"), { kind: "confirm", name: "compact" });
-		assert.deepEqual(route("/resume abc123"), { kind: "confirm", name: "resume" });
-		assert.deepEqual(route("/import ./a.jsonl"), { kind: "confirm", name: "import" });
+		assert.deepEqual(route("/compact keep the plan"), { kind: "confirm", name: "compact", replacesSession: false });
+		// Its picker is the confirmation: it opens over the subagent's view.
+		assert.deepEqual(route("/resume abc123"), { kind: "main", name: "resume", showMain: false });
+		assert.deepEqual(route("/import ./a.jsonl"), { kind: "confirm", name: "import", replacesSession: true });
 		assert.deepEqual(route("/tasks task-1"), { kind: "main", name: "tasks", showMain: false });
 		assert.deepEqual(route("/export out.html"), { kind: "main", name: "export", showMain: false });
 		assert.deepEqual(route("/name release work"), { kind: "main", name: "name", showMain: true });
@@ -73,7 +79,15 @@ describe("slash commands typed while a subagent is viewed", () => {
 	});
 
 	test("a command registered as /clear or /rewind asks first and runs on main", () => {
-		assert.deepEqual(route("/clear", { clear: "configured" }), { kind: "confirm", name: "clear" });
-		assert.deepEqual(route("/rewind 3", { rewind: "bundled" }), { kind: "confirm", name: "rewind" });
+		assert.deepEqual(route("/clear", { clear: "configured" }), {
+			kind: "confirm",
+			name: "clear",
+			replacesSession: false,
+		});
+		assert.deepEqual(route("/rewind 3", { rewind: "bundled" }), {
+			kind: "confirm",
+			name: "rewind",
+			replacesSession: false,
+		});
 	});
 });

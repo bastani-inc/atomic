@@ -6,6 +6,7 @@ import { formatModelLabel } from "../../core/model-label.ts";
 import { thinkingLevelForModelSwitch } from "../../core/model-switch-thinking-level.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
+import { promptHandle } from "./agent-view/agent-drafts.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Api,
@@ -18,6 +19,7 @@ import {
 	UserMessageSelectorComponent,
 } from "./interactive-mode-deps.ts";
 import { ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, isAnthropicSubscriptionAuthKey } from "./interactive-mode-helpers.ts";
+import { mergeRestoredDraft } from "./interactive-prompt-restore.ts";
 import { onPreliminaryCatalogWithdrawn } from "./interactive-startup-trust.ts";
 import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
 
@@ -393,6 +395,8 @@ InteractiveModeBase.prototype.showModelsSelector = function showModelsSelector(
 };
 
 InteractiveModeBase.prototype.showUserMessageSelector = async function (this: InteractiveModeBase): Promise<void> {
+	// Opened from a subagent's view, the forked message joins main's own draft instead of replacing it.
+	const fromSubagentView = this.agentView?.viewed.kind === "agent";
 	await this.ensureDeferredStartupComplete();
 	// A session opened at its context window lists its older prompts from the store, keeping only their labels' starts.
 	const manager = this.session.sessionManager;
@@ -428,7 +432,10 @@ InteractiveModeBase.prototype.showUserMessageSelector = async function (this: In
 					}
 
 					this.renderCurrentSessionState();
-					this.editor.setText(result.selectedText ?? "");
+					if (fromSubagentView) {
+						const prompt = promptHandle(this, "main");
+						prompt.setText(mergeRestoredDraft(result.selectedText ?? "", prompt.getExpandedText()));
+					} else this.editor.setText(result.selectedText ?? "");
 					this.showStatus("Forked to new session");
 				} catch (error: unknown) {
 					this.showError(error instanceof Error ? error.message : String(error));
