@@ -2480,6 +2480,11 @@ export class SubagentControlRuntime {
 			let interruptGeneration = 0;
 			/** Whether the child's record says the user paused it; its next turn clears that. */
 			let turnPausedReported = false;
+			/**
+			 * Whether the current pause was acknowledged: its record saved (or, past the cap or failing, warned about), or
+			 * the child restored paused from its record. Views show the child paused only from then on.
+			 */
+			let pauseAcknowledged = admitted.spec.resumePaused === true;
 			/** Reports the pause, or its end; a pause's report settles once its record is saved (`false`: it was not). */
 			const reportTurnPaused = (paused: boolean): Promise<boolean> | undefined => {
 				if (turnPausedReported === paused) return undefined;
@@ -2536,6 +2541,7 @@ export class SubagentControlRuntime {
 			 */
 			const pauseTurn = async (): Promise<QueuedTaskMessages & { readonly warning?: string }> => {
 				if (termination !== undefined) return { steering: [], followUp: [] };
+				pauseAcknowledged = false;
 				// Recorded with the hold, before the turn ends: a restart from here on restores the child paused.
 				const saved = reportTurnPaused(true);
 				const open =
@@ -2548,7 +2554,9 @@ export class SubagentControlRuntime {
 				const queued = taken.typed ?? taken;
 				// The pause is shown once a restart would keep it: once its record is saved. One that cannot be saved is
 				// shown all the same, with a warning: a restart restores the child as one never paused.
-				if (saved !== undefined && !(await pauseRecordSaved(saved)))
+				const unsaved = saved !== undefined && !(await pauseRecordSaved(saved));
+				pauseAcknowledged = true;
+				if (unsaved)
 					return {
 						steering: queued.steering,
 						followUp: queued.followUp,
@@ -2595,7 +2603,9 @@ export class SubagentControlRuntime {
 				interruptTurn,
 				pauseTurn,
 				resumeTurn: () => transcriptSession.resumeTurn(),
-				turnPaused: () => transcriptSession.turnPaused === true,
+				// Paused once the pause was acknowledged, never from the session's hold alone: /tasks, the panel and the chat
+				// show a pause only once a restart would keep it, or once its warning says it would not.
+				turnPaused: () => pauseAcknowledged && transcriptSession.turnPaused === true,
 				getQueuedMessages: () => ({
 					steering: transcriptSession.getSteeringMessages(),
 					followUp: transcriptSession.getFollowUpMessages(),

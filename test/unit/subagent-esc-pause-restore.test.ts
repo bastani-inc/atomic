@@ -13,6 +13,7 @@ import {
 	type TaskTranscriptSource,
 	taskTranscriptSource,
 } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { SUBAGENT_CHILD_RECORD_TYPE } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
@@ -38,6 +39,8 @@ const RESTART_WINDOW_MS = 250;
 const CONDITION_WAIT_MS = 20_000;
 /** How long the owner's session takes to save a pause, in the test of a slow save. */
 const PAUSE_RECORD_DELAY_MS = 400;
+/** How long the owner's session takes to save a pause, in the test of what views show meanwhile. */
+const SLOW_PAUSE_RECORD_DELAY_MS = 3_000;
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -580,6 +583,168 @@ test(
 			assert.ok(inputs[0]?.includes(SUBAGENT_RESUME_CONTINUATION_PROMPT), "it is continued, as a running child is");
 		} finally {
 			await after.close("session-close");
+		}
+	},
+	LIVE_RESTORE_TIMEOUT_MS,
+);
+
+test(
+	"a pause recorded without its leaf entry that an older version continued and kept writing as paused is restored continued",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-merged-downgrade" })], {
+				stopReason: "toolUse",
+			}),
+		]);
+		const parent = parentSession(env.root);
+		const runId = "esc-pause-merged-downgrade";
+		const childId = `${runId}:0`;
+		const liveOptions = env.options(runId);
+		const launchOptions = (options: RunSyncOptions): RunSyncOptions => ({
+			...options,
+			testSession: false,
+			getChildSessionOptions: liveOptions.getChildSessionOptions,
+		});
+
+		// A build that recorded pauses without their leaf entry pauses the child, and Atomic closes.
+		const before = taskHost("before-merged-downgrade");
+		const sink = createSubagentChildRecordSink(parent.pi, parent.ctx(before));
+		const launched = await runAgentTask({
+			host: before,
+			cwd: env.root,
+			agents: [agent],
+			agent: "worker",
+			task: "run until paused",
+			options: { ...liveOptions, index: 0, sessionDir: join(env.root, "children", runId) },
+			recordChild: {
+				...sink,
+				record: (record) => {
+					const { pausedAtLeafId: _pausedAtLeafId, ...leafless } = record;
+					return sink.record(leafless);
+				},
+			},
+			runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+		});
+		assert.equal(launched.kind, "admitted");
+		const firstTask = launched.kind === "admitted" ? launched.observation.taskId : "";
+		await until(() => env.blockStarted() && transcriptOf(before, firstTask) !== undefined, LIVE_CHILD_START_WAIT_MS);
+		await transcriptOf(before, firstTask)!.pauseTurn!();
+		await until(() => parent.latest(childId)?.pausedByUser === true);
+		await before.close("session-close");
+		await until(() => parent.latest(childId)?.state === "running");
+		const paused = parent.latest(childId)!;
+		assert.equal(paused.pausedAtLeafId, undefined, "the record names no leaf entry");
+		assert.ok(paused.childSessionFile !== undefined);
+
+		// An older version continues it, then writes whole merged records, which still say paused.
+		await pause(5);
+		const child = await SessionManager.open(paused.childSessionFile, undefined, paused.cwd);
+		await child.appendMessage({ role: "user", content: SUBAGENT_RESUME_CONTINUATION_PROMPT, timestamp: Date.now() });
+		await child.appendMessage(fauxAssistantMessage("continued by the older version"));
+		await pause(5);
+		await parent.pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, { ...paused, taskId: "older-version-task" });
+		await parent.pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+			...paused,
+			taskId: "older-version-task",
+			elapsedMs: 5,
+		});
+
+		const inputs: string[] = [];
+		env.faux.setResponses([
+			(context) => {
+				inputs.push(newInput(context));
+				return fauxAssistantMessage("answered after the upgrade");
+			},
+		]);
+		const after = taskHost("after-merged-downgrade");
+		try {
+			const deps: SubagentChildRestoreDeps = {
+				pi: parent.pi,
+				config: {},
+				discoverAgents: () => ({ agents: [agent] }),
+				runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+			};
+			const [outcome] = await restoreSubagentChildren(deps, parent.ctx(after));
+			assert.equal(outcome?.kind, "restored");
+			await until(() => inputs.length > 0);
+			assert.ok(inputs[0]?.includes(SUBAGENT_RESUME_CONTINUATION_PROMPT), "it is continued, as a running child is");
+		} finally {
+			await after.close("session-close");
+		}
+	},
+	LIVE_RESTORE_TIMEOUT_MS,
+);
+
+test(
+	"nothing shows a subagent paused before its pause is saved: not its session's answer, not /tasks",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-slow-save" })], { stopReason: "toolUse" }),
+		]);
+		const parent = parentSession(env.root, {
+			beforeAppend: async (record) => {
+				if (record?.pausedByUser === true) await pause(SLOW_PAUSE_RECORD_DELAY_MS);
+				return true;
+			},
+		});
+		const runId = "esc-pause-slow-save";
+		const childId = `${runId}:0`;
+		const liveOptions = env.options(runId);
+		const host = taskHost("slow-save");
+		const store = new OwnerTaskStore(host.ownerBinding.supervisor, host.ownerBinding.owner);
+		try {
+			assert.ok(store.connect().ok);
+			const launched = await runAgentTask({
+				host,
+				cwd: env.root,
+				agents: [agent],
+				agent: "worker",
+				task: "run until paused",
+				options: { ...liveOptions, index: 0, sessionDir: join(env.root, "children", runId) },
+				recordChild: createSubagentChildRecordSink(parent.pi, parent.ctx(host)),
+				runtime: {
+					runSync: (...args) =>
+						runSync(args[0], args[1], args[2], args[3], {
+							...args[4],
+							testSession: false,
+							getChildSessionOptions: liveOptions.getChildSessionOptions,
+						}),
+				},
+			});
+			assert.equal(launched.kind, "admitted");
+			const task = launched.kind === "admitted" ? launched.observation.taskId : "";
+			await until(() => env.blockStarted() && transcriptOf(host, task) !== undefined, LIVE_CHILD_START_WAIT_MS);
+			const source = transcriptOf(host, task)!;
+			// Esc in its chat pauses it through the task view, which /tasks and the chat read.
+			const view = ownerTaskViewSource(store);
+			let answered = false;
+			const pausing = view.pauseTask!(task as TaskId).then((result) => {
+				assert.ok(result.ok);
+				answered = true;
+			});
+			// While the pause is being saved, nothing says paused.
+			const deadline = performance.now() + SLOW_PAUSE_RECORD_DELAY_MS / 2;
+			while (performance.now() < deadline) {
+				store.drain();
+				const shown = store.getTask(task as TaskId);
+				assert.equal(source.turnPaused?.(), false, "its session's answer waits for the saved pause");
+				assert.ok(shown === undefined || !isTaskTurnInterrupted(shown), "/tasks waits for the saved pause");
+				assert.equal(answered, false);
+				await pause(50);
+			}
+			await pausing;
+			assert.equal(parent.latest(childId)?.pausedByUser, true);
+			assert.equal(source.turnPaused?.(), true, "once saved, it is paused");
+			await until(() => {
+				store.drain();
+				const shown = store.getTask(task as TaskId);
+				return shown !== undefined && isTaskTurnInterrupted(shown);
+			});
+		} finally {
+			store.dispose();
+			await host.close("session-close");
 		}
 	},
 	LIVE_RESTORE_TIMEOUT_MS,

@@ -358,20 +358,32 @@ function isUserMessage(entry: ReturnType<SessionManager["getBranch"]>[number]): 
 }
 
 /**
- * When the owner's session saved the latest record that says the user paused child `childId`, or `undefined` when it
- * does not hold that record any more.
+ * When the owner's session saved the record where child `childId`'s current pause began: the first of the records that
+ * say it is paused since the last one that says otherwise. A version that writes whole merged records keeps saying
+ * paused after it continued the child, so a later record does not date the pause; a record that says nothing of pauses
+ * after them (an older writer's) does not end them either. `undefined` when the owner's session does not hold where
+ * that run of records begins.
  */
 function pauseRecordedAt(ctx: ExtensionContext, childId: string): number | undefined {
 	const entries = ctx.sessionManager.getEntries();
+	let began: (typeof entries)[number] | undefined;
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
 		const entry = entries[index];
 		if (entry?.type !== "custom" || entry.customType !== SUBAGENT_CHILD_RECORD_TYPE) continue;
 		const data = entry.data as Partial<SubagentChildRecord> | undefined;
-		if (data?.childId !== childId || data.pausedByUser !== true) continue;
-		const at = Date.parse(entry.timestamp);
-		return Number.isNaN(at) ? undefined : at;
+		if (data?.childId !== childId) continue;
+		if (data.pausedByUser === true) began = entry;
+		else if (began !== undefined) return recordTime(began);
+		else if (data.pausedByUser === false) return undefined;
 	}
-	return undefined;
+	// The run reaches the oldest record the session holds: it began there only if the session holds its whole history.
+	const wholeHistory = typeof ctx.sessionManager.hasFullHistory !== "function" || ctx.sessionManager.hasFullHistory();
+	return began !== undefined && wholeHistory ? recordTime(began) : undefined;
+}
+
+function recordTime(entry: { readonly timestamp: string }): number | undefined {
+	const at = Date.parse(entry.timestamp);
+	return Number.isNaN(at) ? undefined : at;
 }
 
 async function ownSessionModelCandidate(
