@@ -141,9 +141,14 @@ test(
 		const env = await liveChildEnvironment(cleanups as Array<() => void>);
 		const agentDir = join(env.root, "agent");
 		mkdirSync(join(agentDir, "prompts"), { recursive: true });
-		writeFileSync(join(agentDir, "prompts", "review-diff.md"), "---\ndescription: Review the diff\n---\nReview it.\n");
+		writeFileSync(
+			join(agentDir, "prompts", "review-diff.md"),
+			"---\ndescription: Review the diff\n---\nReview it.\n",
+		);
 		env.faux.setResponses([
-			fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "one" }, { id: "wait-1" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "one" }, { id: "wait-1" })], {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("done"),
 		]);
 		const bound: TaskTranscriptSource[] = [];
@@ -156,7 +161,12 @@ test(
 				cleanup = execution.cleanup;
 			},
 		};
-		const result = runSingleInProcess(env.root, worker(), "start the work", env.options("catalog", { taskExecution: hooks }));
+		const result = runSingleInProcess(
+			env.root,
+			worker(),
+			"start the work",
+			env.options("catalog", { taskExecution: hooks }),
+		);
 		const deadline = Date.now() + LIVE_CHILD_START_WAIT_MS;
 		while (env.answers.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.equal(env.answers.length, 1, "the child is running its tool");
@@ -170,7 +180,10 @@ test(
 		await result;
 		await cleanup;
 		const settled = bound.at(-1)?.commands?.();
-		assert.notEqual(bound.at(-1), bound.find((source) => source.subscribe !== undefined));
+		assert.notEqual(
+			bound.at(-1),
+			bound.find((source) => source.subscribe !== undefined),
+		);
 		// It keeps copies, as it keeps its skills (#5186): the same commands, from the same sources.
 		const listed = (commands: TaskTranscriptCommands | undefined) => ({
 			templates: commands?.promptTemplates?.map(({ name, description }) => [name, description]),

@@ -382,7 +382,10 @@ describe("keys that act on the main conversation while a subagent is shown", () 
 				screen.press(action);
 			assert.equal(screen.warnings.length, 4);
 			for (const warning of screen.warnings)
-				assert.match(warning, /changes the main conversation's (model|thinking level)\. Switch to main to use it\./);
+				assert.match(
+					warning,
+					/changes the main conversation's (model|thinking level)\. Switch to main to use it\./,
+				);
 			assert.equal(mode.session.thinkingLevel, level);
 			assert.equal(screen.promptSlot(), mode.editor, "no model selector opened");
 		},
@@ -445,8 +448,7 @@ describe("commands typed while a subagent is shown, on the isolated host", () =>
 			const ran: string[] = [];
 			const rig = await createRig("isolated", "quiet", {
 				extensions: [
-					(pi) =>
-						pi.registerCommand("appcmd", { handler: async () => void ran.push("/appcmd in the engine") }),
+					(pi) => pi.registerCommand("appcmd", { handler: async () => void ran.push("/appcmd in the engine") }),
 					(pi) => pi.registerCommand("plan", { handler: async () => void ran.push("/plan in the engine") }),
 				],
 			});
@@ -456,14 +458,19 @@ describe("commands typed while a subagent is shown, on the isolated host", () =>
 			await runtime.waitUntilResourcesReady();
 			await until(() => runtime.getRemoteCommands().some((command) => command.name === "appcmd"));
 			// The engine's catalog marks /appcmd as an extension Atomic ships, as it marks the bundled ones.
-			const catalog = runtime.getRemoteCommands().map((command) =>
-				command.name === "appcmd"
-					? { ...command, sourceInfo: { ...command.sourceInfo, configurationOrigin: "bundled" as const } }
-					: command,
-			);
+			const catalog = runtime
+				.getRemoteCommands()
+				.map((command) =>
+					command.name === "appcmd"
+						? { ...command, sourceInfo: { ...command.sourceInfo, configurationOrigin: "bundled" as const } }
+						: command,
+				);
 			Object.defineProperty(runtime, "getRemoteCommands", { configurable: true, value: () => catalog });
 			const port = new FakeAgentViewPort({ taskId: TASK, name: "worker" });
-			const switcher = new AgentViewSwitcher(async () => port, () => {});
+			const switcher = new AgentViewSwitcher(
+				async () => port,
+				() => {},
+			);
 			Object.assign(rig.host, { agentView: switcher });
 			assert.equal(await switcher.view(TASK), true);
 

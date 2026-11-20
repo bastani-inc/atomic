@@ -43,7 +43,11 @@ export async function routeViewedCommand(
 			await runWithMainShown(mode, text, promptHandle(mode, "viewed"));
 			return "handled";
 		case "refuse":
-			notifyViewed(mode, refusalNotice(`/${command.name}`, command.name === "thinking" ? "thinking" : "model"), "warning");
+			notifyViewed(
+				mode,
+				refusalNotice(`/${command.name}`, command.name === "thinking" ? "thinking" : "model"),
+				"warning",
+			);
 			return "handled";
 		case "copy":
 			await copyLastMessage(mode, port);

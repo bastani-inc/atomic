@@ -20,7 +20,10 @@ export async function remoteAgentCommands(
 	viewId: string,
 ): Promise<AgentViewCommands | undefined> {
 	try {
-		const commands = await runtime.requestAgentView<AgentViewCommands | null>({ type: "agent_view_commands", viewId });
+		const commands = await runtime.requestAgentView<AgentViewCommands | null>({
+			type: "agent_view_commands",
+			viewId,
+		});
 		return commands ?? undefined;
 	} catch {
 		// A closed view, or an engine that is restarting: the prompt still completes main's commands.

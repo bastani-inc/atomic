@@ -135,6 +135,5 @@ export async function createMainScreen(extensions: InlineExtension[] = []): Prom
 }
 
 function stripStyles(text: string): string {
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: terminal styling is stripped from rendered lines.
 	return text.replace(/\x1B\[[0-?]*[ -/]*[@-~]|\x1B_[^\x07\x1B]*(?:\x07|\x1B\\)|\x1B\][^\x07]*\x07/g, "");
 }
