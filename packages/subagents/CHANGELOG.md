@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-20
+
+### Breaking Changes
+
+- An agent's `inheritProjectContext` and `inheritSkills` no longer keep the parent's project context or skills out of a forked subagent: a fork continues the parent's conversation as the parent sent it, so these settings now shape fresh children only. To keep the project context and skills out, launch the agent with `context: "fresh"` ([#6093](https://github.com/bastani-inc/atomic/pull/6093)).
+
+### Changed
+
+- A forked subagent (`context: "fork"`) continues its parent's conversation exactly as the parent last sent it: the same system prompt, including the project context and skills the parent was sent, the same tools and the same messages, including the parent's earlier subagent calls. It adds a short note, its own role and its task after it, and keeps the parent's prompt-cache key, so on the parent's model and thinking level its first request is read from the parent's prompt cache. A fork can still call only its own tools: a call to another tool the parent declared fails with an error naming the tools it may call. When the parent has `codemode` and the agent does not, the fork can call that `codemode`, which reaches only the fork's own tools (no `models` API), so a tool only the fork has, such as `contact_supervisor`, is reached through it on providers that cannot add tools to the parent's tool list. The fork's task is sent as written, without the earlier fork preamble. The subagent tool, the `subagent` skill and the docs recommend `fork` when a child needs the parent's conversation and `fresh` for independent work ([#6093](https://github.com/bastani-inc/atomic/pull/6093), [#6099](https://github.com/bastani-inc/atomic/pull/6099)).
+- Subagent result rows, progress stats and usage lines write token counts with one decimal and the word `tokens`, as in `12.3k tokens` instead of `12k tok`, like the rest of Atomic. Progress stats no longer say `token` for many tokens ([#6096](https://github.com/bastani-inc/atomic/pull/6096)).
+
+### Fixed
+
+- A subagent reopened on another day or after Atomic was updated keeps the prompt its provider has cached. It is sent the system prompt it started with, and what changed since, such as the date, the model it falls back to or its skills, as updates after it, so the provider no longer processes its whole conversation again. A subagent last run by an earlier version is processed in full once more, on its first run after updating. A subagent whose agent now inherits differently, for example no longer the project context, starts over with its current prompt, and a session forked from a subagent's session uses a prompt of its own ([#6093](https://github.com/bastani-inc/atomic/pull/6093)).
+- A subagent whose context was cleared or compacted while it ran, and that then finished, is reported done with its answer. It was reported failed with "Child ended without completing an assistant turn of its own." and its answer was missing. When its last turn has no text, the answer it wrote before the clear is reported. Turns from its earlier runs, or from the parent conversation a forked subagent starts with, still never count as its own ([#6098](https://github.com/bastani-inc/atomic/pull/6098)).
+
 ## [0.10.2-alpha.1] - 2026-11-20
 
 ### Breaking Changes
