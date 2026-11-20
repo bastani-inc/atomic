@@ -45,6 +45,7 @@ import {
 	retainChatRecords,
 	sessionChatMount,
 } from "./chat-reader-records.js";
+import { addMainPromptHistory } from "./components/agent-prompt-history.ts";
 import {
 	applyToolEntryState,
 	callsAwaitingLaterResults,
@@ -777,7 +778,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 					this.chatContainer.addChild(userComponent);
 				}
 				if (options?.populateHistory) {
-					this.editor.addToHistory?.(textContent);
+					addMainPromptHistory(this.editor, textContent);
 				}
 			}
 			break;
@@ -828,7 +829,7 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 			this.pendingTools.set(entry.toolCallId, component);
 		}
 		if (options.populateHistory && entry.kind === "user") {
-			this.editor.addToHistory?.(entry.text);
+			addMainPromptHistory(this.editor, entry.text);
 		}
 	});
 
@@ -1020,7 +1021,7 @@ function planTranscript(
 				grouping.carriedBreak = assistantCallBreaks(entry.message.content, grouping.carriedBreak).trailing;
 			else if (entry.kind !== "tool") grouping.carriedBreak = false;
 			steps.push({ kind: "entry", entry, notices: groups?.get(entry) });
-			if (options.populateHistory && entry.kind === "user") mode.editor.addToHistory?.(entry.text);
+			if (options.populateHistory && entry.kind === "user") addMainPromptHistory(mode.editor, entry.text);
 		}
 		replyGroups.length = 0;
 		if (sources) sources.length = 0;
