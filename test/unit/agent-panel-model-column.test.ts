@@ -405,3 +405,81 @@ test("an extension row whose own model or thinking fields are not text keeps its
 		hub.dispose();
 	}
 });
+
+test("an extension row whose own model or thinking throws when read, or whose strict proxy throws on keys it does not define, stays listed", () => {
+	const base = () => ({ kind: "agent", state: "running", name: "reviewer", task: "review" });
+	class LazyItem {
+		id = "lazy-getter";
+		kind = "agent";
+		state = "running";
+		name = "lazy";
+		task = "review";
+		get model(): string {
+			throw new Error("model not loaded yet");
+		}
+		get thinking(): string {
+			throw new Error("thinking not loaded yet");
+		}
+	}
+	// Every field the panel read before the model column is defined, some as undefined; any other key throws.
+	const knownKeys = [
+		"id",
+		"kind",
+		"state",
+		"name",
+		"task",
+		"elapsedMs",
+		"elapsedSpan",
+		"tokens",
+		"progress",
+		"question",
+		"choices",
+		"promptId",
+		"reason",
+		"waitingOn",
+		"queued",
+		"runGeneration",
+		"then",
+		"endedAt",
+	];
+	const strictTarget: Record<string, unknown> = Object.fromEntries(knownKeys.map((key) => [key, undefined]));
+	Object.assign(strictTarget, { ...base(), id: "strict-proxy" });
+	const strict = new Proxy(strictTarget, {
+		get(target, key) {
+			if (typeof key === "string" && !(key in target)) throw new Error(`unknown key ${key}`);
+			return target[key as string];
+		},
+	});
+	const hub = new AgentPanelSourceHub();
+	hub.register({
+		items: () =>
+			[
+				{ ...base(), id: "plain" },
+				new LazyItem(),
+				strict,
+				{ ...base(), id: "named", model: "local/runner" },
+			] as never,
+		subscribe: () => () => {},
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const errors: string[] = [];
+	try {
+		const items = agentPanelExtensionItems(session, (error) => errors.push(error.message));
+		assert.deepEqual(errors, []);
+		assert.deepEqual(
+			items.map((item) => [item.id, item.model, item.thinking]),
+			[
+				["plain", undefined, undefined],
+				["lazy-getter", undefined, undefined],
+				["strict-proxy", undefined, undefined],
+				["named", "local/runner", undefined],
+			],
+		);
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => row.id),
+			["named", "strict-proxy", "lazy-getter", "plain"],
+		);
+	} finally {
+		hub.dispose();
+	}
+});

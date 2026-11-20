@@ -863,6 +863,22 @@ function readPanelChoices(value: unknown): string[] | false | undefined {
 	return valid ? choices : false;
 }
 
+/**
+ * An optional text field a row written before it existed may lack, or carry of its own as another kind of value, an
+ * accessor that throws or a strict proxy's missing key: any of those reads as absent, and the row stays as it was.
+ */
+function readOptionalPanelText(item: object, key: "model" | "thinking"): string | undefined {
+	let value: unknown;
+	try {
+		value = (item as Record<string, unknown>)[key];
+	} catch (error) {
+		drainCaught(error);
+		return undefined;
+	}
+	drainThenable(value);
+	return typeof value === "string" ? value : undefined;
+}
+
 function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined {
 	if (drainThenable(raw) || typeof raw !== "object" || raw === null) return undefined;
 	const row = raw as Partial<Record<keyof AgentPanelItem, unknown>>;
@@ -880,10 +896,6 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	drainThenable(elapsedMs);
 	const tokens = row.tokens;
 	drainThenable(tokens);
-	const model = row.model;
-	drainThenable(model);
-	const thinking = row.thinking;
-	drainThenable(thinking);
 	const rawProgress = row.progress;
 	drainThenable(rawProgress);
 	const progress = readPanelProgress(rawProgress);
@@ -904,6 +916,9 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	drainThenable(endedAt);
 	const runGeneration = row.runGeneration;
 	drainThenable(runGeneration);
+	// Read after every field the panel read before them, so a row written before they existed reads as it did.
+	const model = readOptionalPanelText(row, "model");
+	const thinking = readOptionalPanelText(row, "thinking");
 
 	if (
 		typeof id !== "string" ||
@@ -946,10 +961,8 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	};
 	if (elapsedMs !== undefined) item.elapsedMs = elapsedMs;
 	if (tokens !== undefined) item.tokens = tokens;
-	// Rows that extensions wrote before these fields existed may carry their own `model` or `thinking` of another
-	// kind: such a value is not shown, and the row stays.
-	if (typeof model === "string") item.model = model;
-	if (typeof thinking === "string") item.thinking = thinking;
+	if (model !== undefined) item.model = model;
+	if (thinking !== undefined) item.thinking = thinking;
 	if (progress !== undefined) item.progress = progress;
 	if (question !== undefined) item.question = question;
 	if (choices !== undefined) item.choices = choices;
