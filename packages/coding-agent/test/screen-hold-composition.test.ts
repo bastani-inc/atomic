@@ -166,3 +166,18 @@ test("a key typed while the dock is held reaches the prompt in one frame, with n
 	assert.equal(frames.length, 1, "one frame shows the key");
 	assert.equal(ui.screen().at(-2), "❯ x");
 });
+
+test("a key typed while the prompt's slot is held reaches the prompt in one frame", async () => {
+	const tasks = await tasksOpening();
+	const { ui, slot } = tasks;
+	ui.screen();
+	holdPromptSlot(slot);
+	assert.equal(screenHoldOf(ui.mode).region, "prompt");
+	tasks.typeIntoPrompt();
+	const from = ui.terminal.writes.length;
+	ui.terminal.input("x");
+	await flush();
+	const frames = ui.terminal.writes.slice(from).filter((write) => write.includes("\x1b[?2026h"));
+	assert.equal(frames.length, 1, "one frame shows the key");
+	assert.equal(ui.screen().at(-2), "❯ x");
+});
