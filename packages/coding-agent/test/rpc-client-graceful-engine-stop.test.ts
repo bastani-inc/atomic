@@ -12,7 +12,7 @@ import { ENGINE_SHUTDOWN_GRACE_MS } from "../src/modes/rpc/rpc-client-process.js
  * A signal therefore ends them at once, which is what every signal does to a process on Windows: on Linux and macOS
  * these tests reproduce the Windows behaviour under a Windows `process.platform`.
  */
-type EngineBehavior = "shuts-down" | "hangs-in-shutdown" | "never-ready";
+type EngineBehavior = "shuts-down" | "hangs-in-shutdown" | "never-ready" | "reports-then-lingers";
 
 const tempDirs: string[] = [];
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -46,6 +46,11 @@ process.stdin.on("end", () => {
 	appendFileSync(${JSON.stringify(record)}, "shutdown started\\n");
 	if (${JSON.stringify(behavior)} === "hangs-in-shutdown") return;
 	appendFileSync(${JSON.stringify(record)}, "shutdown finished\\n");
+	if (${JSON.stringify(behavior)} === "reports-then-lingers") {
+		// As an engine whose runtime still writes its compile cache after its last exit handler.
+		process.stdout.write(JSON.stringify({ type: "engine_shutdown_complete" }) + "\\n");
+		return;
+	}
 	process.exit(0);
 });
 process.stdin.resume();
@@ -88,6 +93,16 @@ afterEach(() => {
 describe("RpcClient graceful engine stop on Windows", () => {
 	test("a quit lets a ready engine run its shutdown before it exits (#6075)", async () => {
 		const { client, record } = startEngine("shuts-down");
+		await client.start();
+
+		const elapsedMs = await stopOnWindows(client, { graceful: true });
+
+		assert.equal(readRecord(record), "shutdown started\nshutdown finished\n");
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
+	});
+
+	test("a quit ends an engine that says its shutdown is complete without waiting for its exit (#6075)", async () => {
+		const { client, record } = startEngine("reports-then-lingers");
 		await client.start();
 
 		const elapsedMs = await stopOnWindows(client, { graceful: true });

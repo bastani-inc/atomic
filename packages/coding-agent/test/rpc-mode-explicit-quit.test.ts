@@ -37,6 +37,12 @@ vi.mock("../src/modes/interactive-engine/engine-child-liveness.ts", () => ({
 
 vi.mock("../src/modes/interactive/theme/theme.js", () => ({ theme: {} }));
 
+// Registers an exit handler that writes to the real stdout; record the call instead.
+vi.mock("../src/modes/interactive-engine/engine-quit-intent.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/modes/interactive-engine/engine-quit-intent.ts")>()),
+	reportShutdownCompleteAtExit: () => rpcIo.output.push(JSON.stringify({ type: "shutdown-complete-at-exit" })),
+}));
+
 vi.mock("../src/modes/rpc/jsonl.js", () => ({
 	attachJsonlLineReader: vi.fn((_stream: NodeJS.ReadableStream, onLine: (line: string) => void) => {
 		rpcIo.lineHandler = onLine;
@@ -285,5 +291,55 @@ describe("RPC mode extension UI reset", () => {
 		} finally {
 			child.cleanup();
 		}
+	});
+});
+
+describe("RPC mode shutdown report", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	/** Run a shutdown on `platform`; return what it did after its runtime was disposed, up to its exit. */
+	async function stepsAfterDisposal(
+		engineChild: boolean,
+		stop: "input" | "signal",
+		platform: NodeJS.Platform = "win32",
+	): Promise<string[]> {
+		const steps: string[] = [];
+		const child = await startChild(engineChild, async () => {
+			rpcIo.output = [];
+		});
+		const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+		Object.defineProperty(process, "platform", { ...realPlatform, value: platform });
+		try {
+			if (stop === "input") child.endInput();
+			else child.signal();
+			await child.disposeOptions();
+			for (const line of rpcIo.output) {
+				const { type } = JSON.parse(line) as { type: string };
+				if (type === "shutdown-complete-at-exit") steps.push(type);
+			}
+			steps.push(...child.exitCodes().map((code) => `exit ${code}`));
+			return steps;
+		} finally {
+			Object.defineProperty(process, "platform", realPlatform);
+			child.cleanup();
+		}
+	}
+
+	test("a Windows engine child whose input ended reports its shutdown from its last exit handler (#6075)", async () => {
+		assert.deepEqual(await stepsAfterDisposal(true, "input"), ["shutdown-complete-at-exit", "exit 0"]);
+	});
+
+	test("an engine child whose input ended on Linux or macOS reports nothing more (#6075)", async () => {
+		assert.deepEqual(await stepsAfterDisposal(true, "input", "linux"), ["exit 0"]);
+	});
+
+	test("an engine child stopped by SIGTERM reports nothing more (#6075)", async () => {
+		assert.deepEqual(await stepsAfterDisposal(true, "signal"), ["exit 143"]);
+	});
+
+	test("a standalone RPC process whose input ended reports nothing more (#6075)", async () => {
+		assert.deepEqual(await stepsAfterDisposal(false, "input"), ["exit 0"]);
 	});
 });

@@ -146,11 +146,16 @@ async function exitsWithin(exited: Promise<void>, ms: number): Promise<boolean> 
  * treats the end of its input as the end of its session and shuts down as it does on SIGTERM elsewhere. Pass
  * `graceful` only for an engine that has reported ready; before that it handles neither, and a SIGTERM ends it at
  * once on every platform.
+ *
+ * `shutdownComplete` settles when such an engine says its shutdown has run. It is then given
+ * {@link ENGINE_KILL_STEP_MS} to exit and otherwise ended alone, rather than waited for while the runtime does its
+ * own exit work, such as writing a compile cache, which can take seconds on Windows.
  */
 export async function terminateRpcClientProcess(
 	child: ChildProcess,
 	processTree: boolean,
 	graceful = false,
+	shutdownComplete?: Promise<void>,
 ): Promise<void> {
 	await removeOwnedInteractiveEngineBootstrapAsync(bootstrapHandles.get(child));
 	if (child.exitCode !== null || child.signalCode !== null) return;
@@ -173,7 +178,25 @@ export async function terminateRpcClientProcess(
 	};
 	if (inputClosed) child.stdin?.end();
 	else child.kill("SIGTERM");
-	if (await exitsWithin(exited, processTree ? ENGINE_SHUTDOWN_GRACE_MS : RPC_CHILD_SHUTDOWN_GRACE_MS)) {
+	let shutDown = false;
+	const ended =
+		inputClosed && shutdownComplete
+			? Promise.race([
+					exited,
+					shutdownComplete.then(() => {
+						shutDown = true;
+					}),
+				])
+			: exited;
+	if (await exitsWithin(ended, processTree ? ENGINE_SHUTDOWN_GRACE_MS : RPC_CHILD_SHUTDOWN_GRACE_MS)) {
+		if (shutDown && !(await exitsWithin(exited, ENGINE_KILL_STEP_MS))) {
+			// Only the runtime's own exit work is left. End the engine alone, through its handle: its own exit would
+			// have left any process it started running too.
+			child.kill("SIGKILL");
+			if (!(await exitsWithin(exited, KILLED_CHILD_EXIT_REPORT_MS))) {
+				throw new Error(`Agent process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
+			}
+		}
 		await removeGuardianFile();
 		return;
 	}

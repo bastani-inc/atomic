@@ -122,8 +122,11 @@ export class RpcClient extends RpcClientApi {
 	private retainedGenerationEnd: InteractiveEngineGenerationEnded | undefined;
 	private readonly activeActivityIds = new Set<string>();
 	private enginePid: number | undefined;
-	/** The engine generation an explicit stop retired; its child may still write while it shuts down. */
-	private stoppedEngineGeneration: number | undefined;
+	/**
+	 * The engine generation an explicit stop retired, whose child may still write while it shuts down, and
+	 * whether that child said its shutdown is complete.
+	 */
+	private stoppedEngine: { generation: number; shutdownComplete: PromiseWithResolvers<void> } | undefined;
 
 	private declare options: RpcClientOptions;
 
@@ -331,6 +334,7 @@ export class RpcClient extends RpcClientApi {
 		// When this stop ends an engine generation, updates read before it reach the host before the host hears
 		// the generation ended, and what the engine writes while it shuts down does not reach the host at all
 		// (handleStoppedEngineLine). A generation that already ended on its own keeps its terminal drain.
+		const shutdownComplete = Promise.withResolvers<void>();
 		if (terminateTree && endedGeneration > this.lastEndedGeneration) {
 			for (const event of this.eventBuffer?.drain() ?? []) {
 				try {
@@ -339,7 +343,7 @@ export class RpcClient extends RpcClientApi {
 					// As for a line read while the engine is stopped, a listener that throws does not end the stop.
 				}
 			}
-			this.stoppedEngineGeneration = endedGeneration;
+			this.stoppedEngine = { generation: endedGeneration, shutdownComplete };
 		}
 		// Publish before terminating so host controllers tear down this generation's
 		// UI while the writer is detached: disposal cannot write into a replacement.
@@ -347,7 +351,7 @@ export class RpcClient extends RpcClientApi {
 		// Claim before terminating so the exit this provokes does not relabel a
 		// deliberate stop; an exit that already claimed keeps its own error.
 		this.terminalDrain.claim(endedGeneration, stopError);
-		await terminateRpcClientProcess(child, terminateTree, graceful && engineReady);
+		await terminateRpcClientProcess(child, terminateTree, graceful && engineReady, shutdownComplete.promise);
 		await this.beginTerminalDrain(endedGeneration, stopError);
 		this.stopReadingStdout?.();
 		this.stopReadingStdout = null;
@@ -537,11 +541,13 @@ export class RpcClient extends RpcClientApi {
 		return eventsPromise;
 	}
 	private handleLine(line: string, generation: number): void {
-		if (this.terminalDrain.observe(generation, line, (id) => this.pendingRequests.markAccepted(id))) return;
-		if (generation === this.stoppedEngineGeneration) {
-			this.handleStoppedEngineLine(line);
+		// Ahead of the terminal drain, which a transport error during the stop can begin: it would swallow the
+		// engine's report that its shutdown is complete.
+		if (this.stoppedEngine?.generation === generation) {
+			this.handleStoppedEngineLine(line, this.stoppedEngine.shutdownComplete);
 			return;
 		}
+		if (this.terminalDrain.observe(generation, line, (id) => this.pendingRequests.markAccepted(id))) return;
 		if (this.engineMonitor?.handleLine(line)) return;
 		try {
 			const data = JSON.parse(line) as { type?: string; id?: string };
@@ -563,12 +569,14 @@ export class RpcClient extends RpcClientApi {
 	/**
 	 * A line an engine writes while an explicit stop ends it. The host has already torn down that generation's UI,
 	 * so its extension UI requests, engine frames and events are dropped. What settles its own requests still
-	 * counts, as in its terminal drain, and a failed shutdown is still reported.
+	 * counts, as in its terminal drain, a failed shutdown is still reported, and the stop learns when the engine
+	 * says its shutdown is complete.
 	 */
-	private handleStoppedEngineLine(line: string): void {
+	private handleStoppedEngineLine(line: string, shutdownComplete: PromiseWithResolvers<void>): void {
 		const message = parseInteractiveEngineMessage(line);
 		if (message) {
 			if (message.type === "engine_request_accepted") this.pendingRequests.markAccepted(message.requestId);
+			else if (message.type === "engine_shutdown_complete") shutdownComplete.resolve();
 			return;
 		}
 		try {

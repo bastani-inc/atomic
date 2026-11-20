@@ -26,7 +26,7 @@ import { startInteractiveEngineLiveness } from "../interactive-engine/engine-chi
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import { EngineProjectTrustService } from "../interactive-engine/engine-project-trust.js";
-import { EngineQuitIntent } from "../interactive-engine/engine-quit-intent.ts";
+import { EngineQuitIntent, reportShutdownCompleteAtExit } from "../interactive-engine/engine-quit-intent.ts";
 import { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
@@ -239,6 +239,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		if (signal !== "SIGTERM") {
 			await flushRawStdout();
 		}
+		// On Windows the interactive host closes an engine child's stdin to quit, then waits for it to exit; tell it
+		// once the shutdown has run, so it does not also wait for the runtime's own exit work.
+		if (interactiveEngineChild && cause === "input-end" && process.platform === "win32")
+			reportShutdownCompleteAtExit();
 		process.exit(exitCode);
 	}
 

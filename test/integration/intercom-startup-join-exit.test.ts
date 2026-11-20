@@ -77,6 +77,9 @@ async function hungBrokerProfile() {
 			// The PTY inherits this runner's environment, where the test setup turns the startup join off.
 			ATOMIC_INTERCOM_JOIN_AT_STARTUP: "",
 			ATOMIC_TELEMETRY: "0",
+			// A compile cache of its own starts cold, as on the first run after an install, when the engine's runtime
+			// would spend seconds writing it on exit (#6075).
+			NODE_COMPILE_CACHE: join(root, "compile-cache"),
 		},
 		brokerPid(): number | undefined {
 			return existsSync(marker) ? Number(readFileSync(marker, "utf8")) : undefined;
@@ -138,13 +141,9 @@ describe("quitting a session whose startup join is waiting for a broker that nev
 					assert.equal((await session.exited).exitCode, 0);
 					const exitMs = performance.now() - quitAt;
 					assert.ok(exitMs < EXIT_BOUND_MS, `quitting waited ${Math.round(exitMs)} ms for the broker start`);
-					// On Windows the isolated terminal stops its engine with TerminateProcess, so the engine cannot stop a
-					// broker start in flight; a broker that does start listening retires on its own once no session joins.
-					if (process.platform !== "win32" || host === "in-process") {
-						const goneBy = Date.now() + BROKER_GONE_BOUND_MS;
-						while (isProcessAlive(brokerPid) && Date.now() < goneBy) await sleep(50);
-						assert.equal(isProcessAlive(brokerPid), false, "the broker the session started outlived it");
-					}
+					const goneBy = Date.now() + BROKER_GONE_BOUND_MS;
+					while (isProcessAlive(brokerPid) && Date.now() < goneBy) await sleep(50);
+					assert.equal(isProcessAlive(brokerPid), false, "the broker the session started outlived it");
 				} finally {
 					session.kill();
 					if (brokerPid !== undefined && isProcessAlive(brokerPid)) {
