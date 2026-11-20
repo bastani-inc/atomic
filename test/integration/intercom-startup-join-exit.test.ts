@@ -20,7 +20,7 @@ const fs = require("node:fs");
 const path = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_PATH;
 const token = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_TOKEN;
 if (path && token) fs.writeFileSync(path, token + " " + process.pid + "\\n");
-fs.writeFileSync(process.argv[1], String(process.pid));
+fs.writeFileSync(process.argv[2], String(process.pid));
 setInterval(() => {}, 1000);
 `;
 
@@ -48,9 +48,12 @@ async function hungBrokerProfile() {
 		join(agentDir, "settings.json"),
 		JSON.stringify({ sessionSummary: { enabled: false }, onboardedVersion: "0.0.0" }),
 	);
+	// A script file rather than `-e`: on Windows the broker command runs through a launcher's command line.
+	const hungBroker = join(root, "hung-broker.cjs");
+	writeFileSync(hungBroker, HUNG_BROKER);
 	writeFileSync(
 		join(agentDir, "intercom", "config.json"),
-		JSON.stringify({ brokerCommand: process.execPath, brokerArgs: ["-e", HUNG_BROKER, marker] }),
+		JSON.stringify({ brokerCommand: process.execPath, brokerArgs: [hungBroker, marker] }),
 	);
 	const osEnv: Record<string, string> = {};
 	for (const key of ["PATH", "SystemRoot", "ComSpec", "PATHEXT", "TMPDIR", "TMP", "TEMP"]) {
