@@ -8,6 +8,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	utimesSync,
 	writeFileSync,
@@ -122,7 +123,9 @@ function writeRecord(host: Host, id: string, fields: unknown, name = `${id}.json
 function holdLock(record: string, ageSeconds: number): string {
 	const lock = `${record}.lock`;
 	mkdirSync(lock);
-	const refreshed = new Date(Date.now() - ageSeconds * 1000);
+	// Aged from the time the filesystem stamped it with, the clock the sweep judges it by (#5050): this process's
+	// clock can be seconds off that one.
+	const refreshed = new Date(statSync(lock).mtimeMs - ageSeconds * 1000);
 	utimesSync(lock, refreshed, refreshed);
 	return lock;
 }
@@ -315,6 +318,42 @@ describe("sweeping the records an interrupted restore left", () => {
 		assert.equal(existsSync(record), true);
 		assert.equal(existsSync(lock), true);
 	});
+
+	// A lock's age is judged by the clock of the filesystem holding it (#5050). Node's clock on Windows lags the
+	// system's, which stamps files, for up to a minute after the system clock steps forward.
+	test.each([
+		["lags the filesystem's by 15 seconds", -15_000],
+		["runs 15 seconds ahead of the filesystem's", 15_000],
+	])(
+		"a restore whose lock was refreshed 20 seconds ago is still running while this process's clock %s (#5050)",
+		async (_name, skewMs) => {
+			const host = await makeHost();
+			const id = randomUUID();
+			const staging = await stage(host.store, defaultStaging(host, id));
+			const record = writeRecord(host, id, {
+				staging,
+				target: join(host.storeDir, "worktrees", "running"),
+				store: host.store,
+				createdTarget: true,
+			});
+			const now = Date.now.bind(Date);
+			const skewed = vi.spyOn(Date, "now").mockImplementation(() => now() + skewMs);
+			let lock: string;
+			let warnings: WorktreeRestoreWarning[];
+			try {
+				lock = holdLock(record, 20);
+				warnings = await sweep(host);
+			} finally {
+				skewed.mockRestore();
+			}
+
+			assert.deepEqual(warnings, []);
+			assert.equal(existsSync(staging), true);
+			assert.ok((await registered(host.store)).includes(staging));
+			assert.equal(existsSync(record), true);
+			assert.equal(existsSync(lock), true);
+		},
+	);
 
 	test("a record held through a symlink is locked under its own name, so a live restore is not mistaken for a dead one", async () => {
 		const host = await makeHost();
