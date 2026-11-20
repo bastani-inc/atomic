@@ -1,4 +1,5 @@
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
+import { flushLifecycleTraceAtQuit } from "../../core/lifecycle-timings.ts";
 import { parseEngineExplicitQuitCommand, serializeInteractiveEngineMessage } from "./protocol.ts";
 
 /**
@@ -25,7 +26,9 @@ export class EngineQuitIntent {
 	handleLine(line: string): boolean {
 		if (!parseEngineExplicitQuitCommand(line)) return false;
 		this.explicit = true;
+		// The host may end this process as soon as it has the acknowledgement: write the diagnostics first.
 		markEventLoopShutdown();
+		flushLifecycleTraceAtQuit();
 		this.send(serializeInteractiveEngineMessage({ type: "engine_explicit_quit_ack" }));
 		return true;
 	}

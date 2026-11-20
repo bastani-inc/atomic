@@ -114,6 +114,15 @@ export function lifecycleTraceWritten(): Promise<void> {
 }
 
 /**
+ * Write the trace lines still waiting for the writer's thread, once a quit has begun. Windows ends an isolated engine
+ * as soon as its host has the quit acknowledgement, without running exit handlers, so a line still waiting then would
+ * be lost. Does nothing when no trace is installed.
+ */
+export function flushLifecycleTraceAtQuit(): void {
+	traceWriter?.flushSync();
+}
+
+/**
  * When `ATOMIC_STARTUP_TRACE` names a file, append this process's start and each lifecycle mark to it, one JSON line
  * each. A host and the engine child it starts inherit the variable, so one file holds both timelines. Lines are
  * appended off the event loop in mark order; whatever has not reached the file when the process exits is written then.
