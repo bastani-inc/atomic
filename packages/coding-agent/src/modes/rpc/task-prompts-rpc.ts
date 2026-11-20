@@ -1,6 +1,6 @@
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
-import { readTaskPrompts } from "../../core/tasks/task-prompts.ts";
+import { readTaskPrompts } from "../../core/tasks/task-prompts.js";
 import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
 import type { EngineAgentViewContext } from "./agent-view-rpc.ts";
 import type { AgentViewRpcCommand } from "./agent-view-rpc-types.ts";

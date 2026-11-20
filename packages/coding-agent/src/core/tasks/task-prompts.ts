@@ -1,7 +1,7 @@
-import { firstSubagentAttempt, latestSubagentAttempt } from "./completion.ts";
-import type { TaskId } from "./contracts.ts";
-import type { TaskTranscriptSource } from "./supervisor.ts";
-import type { TaskViewSource } from "./task-view-source.ts";
+import { firstSubagentAttempt, latestSubagentAttempt } from "./completion.js";
+import type { TaskId } from "./contracts.js";
+import type { TaskTranscriptSource } from "./supervisor.js";
+import type { TaskViewSource } from "./task-view-source.js";
 
 type PromptEntry = ReturnType<TaskTranscriptSource["getEntries"]>[number];
 

@@ -1,5 +1,5 @@
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { readTaskPrompts } from "../../../core/tasks/task-prompts.ts";
+import { readTaskPrompts } from "../../../core/tasks/task-prompts.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import type { AgentViewRuntime } from "./agent-steering.ts";
 
