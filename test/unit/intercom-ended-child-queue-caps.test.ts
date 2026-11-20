@@ -95,9 +95,26 @@ function paused(childName: string, group = "default"): EndedChildMark {
  * A broker's queue of messages for subagents that ended, kept in the store at `path`, and its departures, wired as the
  * broker wires them. `lockWaitMs`: how long a write waits for another process's write lock.
  */
-async function broker(path: string, options: { lockWaitMs?: number; whileLoading?: true } = {}) {
+async function broker(
+	path: string,
+	options: {
+		lockWaitMs?: number;
+		whileLoading?: true;
+		/** Counting what the store kept takes until this settles, as on a slow disk or a remote database. */
+		countTakes?: Promise<void>;
+	} = {},
+) {
 	const lockWaitMs = options.lockWaitMs ?? 5_000;
 	const database = await openNodeSqliteDatabase(path, { busyTimeoutMs: lockWaitMs, lockWaitMs });
+	const countTakes = options.countTakes;
+	if (countTakes !== undefined) {
+		const all = database.all.bind(database);
+		database.all = (async (sql: string, ...params: Parameters<typeof database.all>[1][]) => {
+			if (/SUM\(bytes\)/.test(sql)) await countTakes;
+			return all(sql, ...params);
+		}) as typeof database.all;
+	}
+	let retired = false;
 	let store: EndedChildQueueStore | undefined;
 	const failed: EndedChildWakeFailure[] = [];
 	const logs: string[] = [];
@@ -111,7 +128,9 @@ async function broker(path: string, options: { lockWaitMs?: number; whileLoading
 			return store;
 		},
 		routingStarted: () => undefined,
-		retireStore: () => {},
+		retireStore: () => {
+			retired = true;
+		},
 		budget,
 		delivered: () => "unknown",
 		log: (text) => logs.push(text),
@@ -129,6 +148,7 @@ async function broker(path: string, options: { lockWaitMs?: number; whileLoading
 	});
 	await queue.decide((restored) => departed.restore(restored.queues, () => OWNER));
 	assert.equal(queue.durable, true, "the store opened");
+	assert.equal(retired, false, "the store is kept");
 	// As the broker does: sends wait until what an earlier broker kept is taken up again; only a test of that window
 	// goes on at once.
 	if (options.whileLoading !== true) await queue.untilLoaded();
@@ -300,7 +320,8 @@ test("a restarted broker counts what an earlier one kept before it queues anythi
 	await earlier.close();
 	assert.equal(await countedOnDisk(path), 255 * MiB);
 	// The next broker: as soon as it decided on the store, another subagent of the owner departs, sends to it wait
-	// for the owner's verdict, and the owner reports it paused: they are queued while the kept ones are still read.
+	// for the owner's verdict, and the owner reports it paused, while the kept ones may not be counted yet: they wait
+	// for the count, as the broker has them wait, and are decided then.
 	const { departed, queue } = await broker(path, { whileLoading: true });
 	const child = "subagent-worker-burst-1";
 	departed.depart({ ownerSessionId: OWNER, childName: child, group: "default", aliases: [] });
@@ -309,15 +330,121 @@ test("a restarted broker counts what an earlier one kept before it queues anythi
 		assert.equal(departed.admit(child, sender, held, true, sender).kind, "held");
 	}
 	const marked = departed.mark(OWNER, [paused(child)]);
-	await Promise.allSettled(marked.queued.map((queued) => queued.kept));
+	const kept: Array<Promise<unknown>> = marked.queued.flatMap((queued) =>
+		queued.kept === undefined ? [] : [queued.kept],
+	);
+	const refusals = marked.refused.map((refusal) => refusal.reason ?? "");
+	if (marked.uncounted.length > 0) {
+		await queue.untilCounted();
+		for (const held of marked.uncounted) {
+			const admission = departed.admitWake(child, sender, held, false, true);
+			if (admission.kind === "queued" && admission.kept !== undefined) kept.push(admission.kept);
+			else if (admission.kind === "refused") refusals.push(admission.reason);
+		}
+	}
+	await Promise.allSettled(kept);
 	await queue.untilLoaded();
-	const kept = await countedOnDisk(path);
-	assert.ok(kept <= ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX + MiB, `${kept} bytes kept in all`);
-	assert.ok(marked.refused.length > 0);
+	const counted = await countedOnDisk(path);
+	assert.ok(counted <= ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX + MiB, `${counted} bytes kept in all`);
+	assert.ok(refusals.length > 0);
 	assert.match(
-		marked.refused[0]!.reason ?? "",
+		refusals[0]!,
 		/The message was not queued for it: Intercom already keeps \d+ MiB of messages for subagents that ended\./,
 	);
+}, 60_000);
+
+/** An earlier broker kept `count` messages for `child` that each took 1 MiB where it kept them (written small). */
+async function keptEarlier(path: string, child: string, count: number): Promise<void> {
+	const earlier = await openLocalEndedChildQueueStore(path, "broker-earlier");
+	const sender = wakeSender("peer");
+	for (let index = 0; index < count; index++) {
+		const held = send(child, sender, "kept");
+		const requestJson = JSON.stringify(held.clientMessage);
+		const senderJson = JSON.stringify({
+			info: sender.info,
+			registrationReturnAddress: sender.registrationReturnAddress,
+		});
+		await earlier.add({
+			messageId: held.messageId,
+			ownerSessionId: OWNER,
+			ownerHost: HOST,
+			childKey: child,
+			child: {
+				childName: child,
+				group: "default",
+				aliases: [],
+				childId: `${child}:0`,
+				outcome: "stopped",
+				messages: "hold",
+			},
+			sender: JSON.parse(senderJson) as Record<string, unknown>,
+			request: JSON.parse(requestJson) as Record<string, unknown>,
+			requestJson,
+			senderJson,
+			bytes: MiB,
+			queuedAt: Date.now(),
+		});
+	}
+	await earlier.close();
+}
+
+test("a restarted broker keeps its store however long counting what it kept takes; a message that may not fit waits for the count, then is decided", async () => {
+	const path = storePath();
+	const child = "subagent-worker-counted-1";
+	await keptEarlier(path, child, 32);
+	let finishCount: () => void = () => {};
+	const countTakes = new Promise<void>((resolve) => {
+		finishCount = resolve;
+	});
+	cleanups.unshift(async () => finishCount());
+	// The broker decides on the store and keeps it while the count has not even started reading.
+	const { departed, queue } = await broker(path, { whileLoading: true, countTakes });
+	const sender = wakeSender("peer");
+	departed.mark(OWNER, [paused(child), paused("subagent-worker-counted-2")]);
+	// Neither its subagent's nor the broker's count is known yet: the message waits for it, as the broker has it wait.
+	const held = send(child, sender, "after the restart");
+	assert.equal(departed.admitWake(child, sender, held).kind, "uncounted");
+	const elsewhere = send("subagent-worker-counted-2", sender, "after the restart");
+	assert.equal(departed.admitWake("subagent-worker-counted-2", sender, elsewhere).kind, "uncounted");
+	finishCount();
+	await queue.untilCounted();
+	// Counted: what was kept for the first fills its 32 MiB; the second has room.
+	const decided = departed.admitWake(child, sender, held, false, true);
+	assert.equal(decided.kind, "refused");
+	assert.match(
+		(decided as { reason: string }).reason,
+		/The message was not queued for it: 32 MiB of messages already wait for it\./,
+	);
+	const other = departed.admitWake("subagent-worker-counted-2", sender, elsewhere, false, true);
+	assert.equal(other.kind, "queued");
+	await (other as { kept?: Promise<unknown> }).kept;
+	await queue.untilLoaded();
+	assert.ok((await countedOnDisk(path)) > 32 * MiB, "every kept row is still there, and the one queued");
+}, 60_000);
+
+test("a message that may not fit is refused with the cap's reason when counting what the store kept outlasts the store's open wait", async () => {
+	const path = storePath();
+	const child = "subagent-worker-uncounted-1";
+	await keptEarlier(path, child, 1);
+	let finishCount: () => void = () => {};
+	const countTakes = new Promise<void>((resolve) => {
+		finishCount = resolve;
+	});
+	cleanups.unshift(async () => finishCount());
+	const { departed, queue } = await broker(path, { whileLoading: true, countTakes });
+	const sender = wakeSender("peer");
+	departed.mark(OWNER, [paused(child)]);
+	const held = send(child, sender, "after the restart");
+	assert.equal(departed.admitWake(child, sender, held).kind, "uncounted");
+	// The count never ends in time: the wait for it does.
+	await queue.untilCounted();
+	const decided = departed.admitWake(child, sender, held, false, true);
+	assert.equal(decided.kind, "refused");
+	assert.match(
+		(decided as { reason: string }).reason,
+		/The message was not queued for it: 32 MiB of messages already wait for it\./,
+	);
+	finishCount();
 }, 60_000);
 
 test("two departures of one subagent, merged when its launching session comes back, never keep more than its 32 MiB, and a merge keeps every message it took", async () => {

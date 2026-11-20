@@ -576,7 +576,7 @@ test("a message whose delete failed, queued again and refused, is still deleted 
 	await database.close();
 });
 
-test("opening a store asks its database for its sums a page of rows at a time, however far apart the rows' sequence numbers are", async () => {
+test("counting what a store kept asks its database a page of rows at a time, however far apart the rows' sequence numbers are", async () => {
 	const path = join(directory(), "ended-child-queue.sqlite");
 	const earlier = await open(path, "broker-1");
 	await earlier.add(entry("old"));
@@ -600,11 +600,44 @@ test("opening a store asks its database for its sums a page of rows at a time, h
 		{ database, prefix: "" },
 		{ home: "local", holder: "broker-2", ownsDatabase: true },
 	);
-	// Each round trip to a remote database counts against the broker's open wait.
-	assert.ok(statements < 20, `${statements} statements to open a store of 2 rows`);
-	assert.equal(
-		store.counted({ ownerSessionId: "owner-1", ownerHost: "owner-host", childKey: "subagent-worker-1" }).total,
-		10,
+	await store.whenCounted();
+	// Each round trip to a remote database counts against how long a message waits for the count.
+	assert.ok(statements < 20, `${statements} statements to open a store of 2 rows and count them`);
+	assert.deepEqual(
+		store.counted({ ownerSessionId: "owner-1", ownerHost: "owner-host", childKey: "subagent-worker-1" }),
+		{ child: 10, total: 10, counting: false },
 	);
 	await store.close();
 });
+
+/** How many statements opening a store at `path` sends its database, until the open resolves. */
+async function statementsToOpen(path: string): Promise<number> {
+	const database = await openNodeSqliteDatabase(path);
+	let statements = 0;
+	for (const method of ["all", "get", "run", "exec", "transaction"] as const) {
+		const call = database[method].bind(database) as (...args: unknown[]) => Promise<unknown>;
+		(database as unknown as Record<string, unknown>)[method] = (...args: unknown[]) => {
+			statements += 1;
+			return call(...args);
+		};
+	}
+	const store = await openSqlEndedChildQueueStore(
+		{ database, prefix: "" },
+		{ home: "local", holder: "broker-2", ownsDatabase: true, compact: true },
+	);
+	const opened = statements;
+	await store.close();
+	return opened;
+}
+
+test("opening a store reads none of the rows it kept: a broker decides on a full store as soon as on an empty one", async () => {
+	const empty = join(directory(), "ended-child-queue.sqlite");
+	await (await open(empty, "broker-1")).add(entry("one"));
+	const full = join(directory(), "ended-child-queue.sqlite");
+	const earlier = await open(full, "broker-1");
+	await Promise.all(Array.from({ length: 20_000 }, (_, index) => earlier.add(entry(`m${index}`))));
+	await earlier.close();
+	for (const store of opened.splice(0)) await store.close();
+	// On a cold disk, reading a full store's rows before deciding on it outlasted the broker's open wait.
+	assert.equal(await statementsToOpen(full), await statementsToOpen(empty));
+}, 60_000);

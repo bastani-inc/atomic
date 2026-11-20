@@ -330,6 +330,23 @@ export class DurableEndedQueue {
 	}
 
 	/**
+	 * Resolves once the store has counted what it kept before this broker opened it, at once while only memory keeps the
+	 * queue, or after {@link ENDED_QUEUE_OPEN_WAIT_MS} at most: a message that may not fit waits no longer than that.
+	 */
+	untilCounted(): Promise<void> {
+		const store = this.store;
+		if (store === undefined) return Promise.resolve();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		return Promise.race([
+			store.whenCounted(),
+			new Promise<void>((resolve) => {
+				timer = setTimeout(resolve, ENDED_QUEUE_OPEN_WAIT_MS);
+				timer.unref();
+			}),
+		]).finally(() => clearTimeout(timer));
+	}
+
+	/**
 	 * The bytes `held` takes in the store, as it is written there: its frame and its sender, as JSON. Undefined while only
 	 * memory keeps the queue. Serialized once, and written as serialized.
 	 */
