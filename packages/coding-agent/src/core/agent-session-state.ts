@@ -42,6 +42,7 @@ import {
 	nextTransformedPromptRecord,
 	type SystemMessageWithTransformedPrompt,
 	type TransformedPromptRecord,
+	transformedPromptOwner,
 } from "./transformed-system-prompt.ts";
 
 export function getActiveToolNames(this: AgentSession): string[] {
@@ -284,8 +285,8 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 			getSystemMessageText({ role: "system", content: "", sections, timestamp: 0 }),
 		);
 		this._baseSystemPromptOptions.forceSystemPrompt = content;
-		this._transformedPromptHead = this._systemPromptSectionsTransform
-			? { content, sections: this._systemPromptSectionsTransform(sections) }
+		this._transformedPromptHead = this._systemPromptSections
+			? { content, sections: this._systemPromptSections.transform(sections) }
 			: undefined;
 	}
 	// A model switch partway through a run, such as a fallback, must tell the next request which model it goes to
@@ -379,13 +380,14 @@ function nextTransformedPrompt(
 	session: AgentSession,
 	messages: readonly AgentMessage[],
 ): TransformedPromptRecord | undefined {
-	const transform = session._systemPromptSectionsTransform;
+	const sections = session._systemPromptSections;
 	const head = session._transformedPromptHead;
-	if (!transform || !head) return undefined;
+	if (!sections || !head) return undefined;
 	return nextTransformedPromptRecord(
 		messages,
+		transformedPromptOwner(session.sessionManager.getSessionId(), sections.key),
 		head,
-		transform(buildSystemPromptSections(session._baseSystemPromptOptions)),
+		sections.transform(buildSystemPromptSections(session._baseSystemPromptOptions)),
 	);
 }
 
@@ -395,7 +397,12 @@ function nextTransformedPrompt(
  */
 export function _recordTransformedPromptHead(this: AgentSession): Promise<void> | undefined {
 	const messages = this.agent.state.messages;
-	if (!this._systemPromptSectionsTransform || messages.length === 0 || hasTransformedPrompt(messages))
+	const sections = this._systemPromptSections;
+	if (
+		!sections ||
+		messages.length === 0 ||
+		hasTransformedPrompt(messages, transformedPromptOwner(this.sessionManager.getSessionId(), sections.key))
+	)
 		return undefined;
 	const transformedPrompt = nextTransformedPrompt(this, messages);
 	if (!transformedPrompt) return undefined;

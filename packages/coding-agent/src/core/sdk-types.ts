@@ -168,13 +168,23 @@ export interface CreateAgentSessionOptions {
 	/** Transform the fully constructed base system prompt at session construction. */
 	systemPromptTransform?: (prompt: string) => string;
 	/**
-	 * Internal: `systemPromptTransform` applied to each section of the structured prompt, keyed and ordered as the
-	 * prompt the transform produces. With it the session keeps sending the transformed prompt it first sent, also
-	 * after it is reopened, and tells the model later changes as section updates.
+	 * Internal: `systemPromptTransform` applied section by section. With it the session keeps sending the transformed
+	 * prompt it first sent, also after it is reopened, and tells the model later changes as section updates.
 	 */
-	systemPromptSectionsTransform?: (sections: Record<string, string>) => Record<string, string>;
+	systemPromptSections?: SystemPromptSectionsTransform;
 	/** Filter inherited session messages before they enter the new AgentSession. */
 	initialContextTransform?: (messages: AgentMessage[]) => AgentMessage[];
+}
+
+/** `systemPromptTransform` applied to each section of the structured prompt; see `CreateAgentSessionOptions`. */
+export interface SystemPromptSectionsTransform {
+	/**
+	 * What the transform lets the prompt hold, such as which inherited instructions it keeps. A prompt the session sent
+	 * under another key, or that another session sent, is not sent again: the session sends its current prompt instead.
+	 */
+	readonly key: string;
+	/** Each section as the transformed prompt holds it, keyed and ordered as in that prompt; one it drops is absent. */
+	readonly transform: (sections: Record<string, string>) => Record<string, string>;
 }
 
 export interface ResourceAdmissionRequest {

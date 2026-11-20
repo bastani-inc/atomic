@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent reopened on another day or after Atomic was updated keeps the prompt its provider has cached. It is sent the system prompt it started with, and what changed since, such as the date, the model or its skills, as updates after it, so the provider no longer processes its whole conversation again. A subagent whose agent now inherits less, such as no project context, starts over with its current prompt, and a session forked from a subagent's session uses a prompt of its own.
+
 ## [0.10.1] - 2026-11-20
 
 ### Fixed

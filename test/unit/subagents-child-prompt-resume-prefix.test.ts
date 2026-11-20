@@ -46,6 +46,7 @@ interface AnthropicPayload {
 }
 
 const policy = { inheritProjectContext: false, inheritSkills: false, fanoutAuthorized: false };
+const inheritingPolicy = { inheritProjectContext: true, inheritSkills: true, fanoutAuthorized: true };
 const skillText = (version: number) => `<skill name="checks">\nRun the checks (skill version ${version}).\n</skill>`;
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -153,10 +154,11 @@ async function openChild(
 	runtime: ModelRuntime,
 	model: Model<"anthropic-messages">,
 	skillVersion: number,
-	options: { recordsPrompt?: boolean; tools?: string[] } = {},
+	options: { recordsPrompt?: boolean; tools?: string[]; policy?: typeof policy } = {},
 ) {
 	const cwd = sessionManager.getCwd();
-	const behavior = createInProcessChildPromptBehavior(policy, skillText(skillVersion));
+	const childPolicy = options.policy ?? policy;
+	const behavior = createInProcessChildPromptBehavior(childPolicy, skillText(skillVersion));
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir: cwd,
@@ -165,15 +167,15 @@ async function openChild(
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager,
 		resourceLoader: resourceLoader(),
-		subagentPolicy: { ...policy, managementActions: "restricted" },
+		subagentPolicy: { ...childPolicy, managementActions: "restricted" },
 		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: options.tools ?? ["read"],
 		...behavior,
 		// A child last run by a version that did not record the prompt it sent.
 		...(options.recordsPrompt === false
 			? {
-					systemPromptSectionsTransform: undefined,
-					systemPromptTransform: createInProcessChildSystemPromptTransform(policy, skillText(skillVersion)),
+					systemPromptSections: undefined,
+					systemPromptTransform: createInProcessChildSystemPromptTransform(childPolicy, skillText(skillVersion)),
 				}
 			: {}),
 	});
@@ -410,6 +412,70 @@ describe("a reopened subagent child keeps the prompt it sent", () => {
 
 		assert.equal(requests.length, 3);
 		assert.equal(reused(requests[1], requests[2]), cachedPrefix(requests[1]).length);
+	});
+});
+
+describe("a recorded prompt is only sent by the child and policy that recorded it", () => {
+	test("a child reopened under a policy that keeps less sends its current prompt, then keeps that one", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const dir = makeTempDirectory("atomic-child-prompt-narrowed-");
+		cleanups.push(() => removeTempDirectory(dir));
+		const requests: AnthropicPayload[] = [];
+		const { runtime, model } = await recordingRuntime(requests);
+		vi.setSystemTime(DAY_ONE);
+		const first = await sqliteStore(dir);
+		const wide = await openChild(await SessionManager.create(first.store, dir, { id: "child" }), runtime, model, 1, {
+			policy: inheritingPolicy,
+		});
+		await wide.prompt("first task");
+		await wide.dispose();
+		await first.close();
+
+		const second = await sqliteStore(dir);
+		const narrowed = await openChild(await SessionManager.open(second.store, "child"), runtime, model, 1);
+		await narrowed.prompt("second task");
+		await narrowed.dispose();
+		await second.close();
+
+		vi.setSystemTime(DAY_TWO);
+		const third = await sqliteStore(dir);
+		cleanups.push(third.close);
+		const reopened = await openChild(await SessionManager.open(third.store, "child"), runtime, model, 1);
+		cleanups.push(() => reopened.dispose());
+		await reopened.prompt("third task");
+
+		assert.equal(requests.length, 3);
+		assert.match(systemText(requests[0]), /PROJECT_CONTEXT_SENTINEL/);
+		for (const request of requests.slice(1)) {
+			assert.doesNotMatch(systemText(request), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
+			assert.doesNotMatch(updates(request), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
+		}
+		assert.equal(reused(requests[1], requests[2]), cachedPrefix(requests[1]).length);
+	});
+
+	test("a session forked from another child's session sends its own prompt", async () => {
+		const dir = makeTempDirectory("atomic-child-prompt-fork-");
+		cleanups.push(() => removeTempDirectory(dir));
+		const requests: AnthropicPayload[] = [];
+		const { runtime, model } = await recordingRuntime(requests);
+		const store = await sqliteStore(dir);
+		cleanups.push(store.close);
+		const parentManager = await SessionManager.create(store.store, dir, { id: "parent-child" });
+		const parent = await openChild(parentManager, runtime, model, 1, { policy: inheritingPolicy });
+		await parent.prompt("first task");
+		const leaf = parentManager.getLeafId();
+		await parent.dispose();
+		const forked = await SessionManager.open(store.store, "parent-child");
+		await forked.createBranchedSession(leaf!, { history: "tail" });
+		assert.notEqual(forked.getSessionId(), "parent-child");
+		const child = await openChild(forked, runtime, model, 1);
+		cleanups.push(() => child.dispose());
+		await child.prompt("second task");
+
+		assert.equal(requests.length, 2);
+		assert.match(systemText(requests[0]), /PROJECT_CONTEXT_SENTINEL/);
+		assert.doesNotMatch(systemText(requests[1]), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
+		assert.doesNotMatch(updates(requests[1]), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
 	});
 });
 

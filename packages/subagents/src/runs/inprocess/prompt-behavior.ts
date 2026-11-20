@@ -171,7 +171,10 @@ const forkReplayFilter = Symbol.for("atomic.subagents/fork-replay-filter@1");
 
 export interface InProcessChildPromptBehavior {
 	readonly systemPromptTransform: (prompt: string) => string;
-	readonly systemPromptSectionsTransform: (sections: Record<string, string>) => Record<string, string>;
+	readonly systemPromptSections: {
+		readonly key: string;
+		readonly transform: (sections: Record<string, string>) => Record<string, string>;
+	};
 	readonly initialContextTransform: (messages: AgentMessage[]) => AgentMessage[];
 	readonly [forkReplayFilter]: {
 		project: (messages: AgentMessage[]) => AgentMessage[];
@@ -229,7 +232,10 @@ export function createInProcessChildPromptBehavior(
 	const project = (messages: AgentMessage[]) => stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized);
 	return {
 		systemPromptTransform: createInProcessChildSystemPromptTransform(policy, explicitSkillInjection),
-		systemPromptSectionsTransform: createInProcessChildSystemPromptSectionsTransform(policy, explicitSkillInjection),
+		systemPromptSections: {
+			key: JSON.stringify([policy.inheritProjectContext, policy.inheritSkills, policy.fanoutAuthorized]),
+			transform: createInProcessChildSystemPromptSectionsTransform(policy, explicitSkillInjection),
+		},
 		initialContextTransform: project,
 		[forkReplayFilter]: {
 			project,

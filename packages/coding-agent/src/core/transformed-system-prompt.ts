@@ -2,10 +2,12 @@
  * The prompt a session with a transformed system prompt (an in-process subagent child) actually sent.
  *
  * Such a session's own system messages record the structured prompt before the transform, which the model never
- * sees. The transformed prompt is recorded beside them: the row that first sends it records its exact text and a
- * digest of each section it renders, and a later row records the sections that changed. Requests lead with the
- * recorded text, so a session reopened on another day or after an upgrade keeps its cached prefix and is told what
- * changed as section updates, as a session with the structured prompt is.
+ * sees. The transformed prompt is recorded beside them: the row that first sends it records its exact text, a digest
+ * of each section it renders and its owner (the session and the transform's key), and a later row records the
+ * sections that changed. Requests lead with the recorded text, so a session reopened on another day or after an
+ * upgrade keeps its cached prefix and is told what changed as section updates, as a session with the structured
+ * prompt is. A prompt another owner recorded, in a session forked from another child or under a key that keeps more,
+ * is never sent: the session records and sends its current prompt instead.
  */
 import { createHash } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
@@ -13,8 +15,8 @@ import { getCurrentTools, type SystemMessage } from "@bastani/atomic-ai";
 import type { SystemPromptSections } from "./system-prompt.ts";
 
 export interface TransformedPromptRecord {
-	/** On the row that first sends the prompt: its exact text and a digest of each section it renders. */
-	readonly head?: { readonly content: string; readonly digests: Record<string, string> };
+	/** On the row that first sends the prompt: its exact text, a digest of each section it renders, and its owner. */
+	readonly head?: { readonly content: string; readonly digests: Record<string, string>; readonly owner: string };
 	/** The sections that changed at this row; `null` removes one. */
 	readonly sections?: Record<string, string | null>;
 }
@@ -31,8 +33,16 @@ function transformedPromptOf(message: AgentMessage): TransformedPromptRecord | u
 	return message.role === "system" ? (message as SystemMessageWithTransformedPrompt).transformedPrompt : undefined;
 }
 
-function headIndex(messages: readonly AgentMessage[]): number {
-	return messages.findLastIndex((message) => transformedPromptOf(message)?.head !== undefined);
+/** The owner a session records its transformed prompt under: the session and the transform's key. */
+export function transformedPromptOwner(sessionId: string, key: string): string {
+	return JSON.stringify([sessionId, key]);
+}
+
+function headIndex(messages: readonly AgentMessage[], owner?: string): number {
+	return messages.findLastIndex((message) => {
+		const head = transformedPromptOf(message)?.head;
+		return head !== undefined && (owner === undefined || head.owner === owner);
+	});
 }
 
 function digest(text: string): string {
@@ -47,9 +57,12 @@ interface TransformedPromptState {
 	readonly changed: Map<string, string | null>;
 }
 
-/** The transformed prompt as the model was last told it, or undefined when no row in `messages` sent it. */
-function transformedPromptState(messages: readonly AgentMessage[]): TransformedPromptState | undefined {
-	const index = headIndex(messages);
+/**
+ * The transformed prompt as the model was last told it, or undefined when no row in `messages` sent it. Without an
+ * owner, the prompt of the last row that recorded one.
+ */
+function transformedPromptState(messages: readonly AgentMessage[], owner?: string): TransformedPromptState | undefined {
+	const index = headIndex(messages, owner);
 	const head = index < 0 ? undefined : transformedPromptOf(messages[index])?.head;
 	if (head === undefined) return undefined;
 	const digests = new Map(Object.entries(head.digests));
@@ -74,9 +87,9 @@ function changedSections(
 	return Object.keys(changes).length > 0 ? changes : undefined;
 }
 
-/** Whether a row in `messages` sent the transformed prompt. */
-export function hasTransformedPrompt(messages: readonly AgentMessage[]): boolean {
-	return headIndex(messages) >= 0;
+/** Whether a row in `messages` sent the transformed prompt of `owner`. */
+export function hasTransformedPrompt(messages: readonly AgentMessage[], owner: string): boolean {
+	return headIndex(messages, owner) >= 0;
 }
 
 /**
@@ -85,17 +98,18 @@ export function hasTransformedPrompt(messages: readonly AgentMessage[]): boolean
  */
 export function nextTransformedPromptRecord(
 	messages: readonly AgentMessage[],
+	owner: string,
 	prompt: TransformedPrompt,
 	desired: SystemPromptSections,
 ): TransformedPromptRecord | undefined {
-	const state = transformedPromptState(messages);
+	const state = transformedPromptState(messages, owner);
 	if (state !== undefined) {
 		const sections = changedSections(state.digests, desired);
 		return sections ? { sections } : undefined;
 	}
 	const digests = Object.fromEntries(Object.entries(prompt.sections).map(([name, text]) => [name, digest(text)]));
 	const sections = changedSections(new Map(Object.entries(digests)), desired);
-	return { head: { content: prompt.content, digests }, ...(sections ? { sections } : {}) };
+	return { head: { content: prompt.content, digests, owner }, ...(sections ? { sections } : {}) };
 }
 
 /**
@@ -113,13 +127,13 @@ export function carriedTransformedPrompt(messages: readonly AgentMessage[]): Tra
 }
 
 /**
- * The request projection of a transcript whose transformed prompt was recorded: the recorded text leads with the
- * tools declared up to its row; earlier system messages fold into it; a later system message carries its tool
+ * The request projection of a transcript whose transformed prompt `owner` recorded: the recorded text leads with
+ * the tools declared up to its row; earlier system messages fold into it; a later system message carries its tool
  * changes and its transformed section changes in place. The untransformed sections are never sent. Undefined when no
- * row in `messages` recorded the prompt.
+ * row in `messages` recorded the prompt of `owner`.
  */
-export function projectTransformedPrompt(messages: readonly AgentMessage[]): AgentMessage[] | undefined {
-	const index = headIndex(messages);
+export function projectTransformedPrompt(messages: readonly AgentMessage[], owner: string): AgentMessage[] | undefined {
+	const index = headIndex(messages, owner);
 	const head = index < 0 ? undefined : transformedPromptOf(messages[index])?.head;
 	if (head === undefined) return undefined;
 	const tools = getCurrentTools(messages.slice(0, index + 1));

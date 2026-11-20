@@ -1071,7 +1071,7 @@ async function constructAgentSession(
 			inheritedHistory: options.inheritedHistory,
 			resourceAdmission: options.resourceAdmission ?? undefined,
 			systemPromptTransform: options.systemPromptTransform,
-			systemPromptSectionsTransform: options.systemPromptSectionsTransform,
+			systemPromptSections: options.systemPromptSections,
 			contextProjectionTransform: options.initialContextTransform,
 			workspace,
 		});
