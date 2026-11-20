@@ -310,6 +310,8 @@ Use these fields when an agent should see more:
 | `inheritSkills: true` | Let the child see Pi’s discovered skills catalog. |
 | `defaultContext: fork` | Use forked session context when a launch omits `context`; explicit `context: "fresh"` still wins. |
 
+`inheritProjectContext` and `inheritSkills` shape a fresh child's prompt. A forked child continues the parent's conversation as the parent sent it, project context and skills included, so its first request is read from the parent's prompt cache; it adds its own role and task after it and can still call only its own tools.
+
 Builtin agents opt into project instruction inheritance by default so they follow repo-specific rules out of the box.
 
 ### Agent frontmatter

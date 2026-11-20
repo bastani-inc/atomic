@@ -2439,7 +2439,12 @@ export class SubagentControlRuntime {
 					throw new Error("Skills not found: subagent");
 				}
 				const skillInjection = buildSkillInjection(selectedSkills.resolved);
-				const promptBehavior = createInProcessChildPromptBehavior(admitted.policy, skillInjection);
+				const parentSessionId = sessionManager.getHeader()?.parentSessionId;
+				const promptBehavior = createInProcessChildPromptBehavior(
+					admitted.policy,
+					skillInjection,
+					parentSessionId === undefined ? undefined : { parentSessionId },
+				);
 				startBudget.enter("creating-session");
 				created = await beforeStartDeadline(
 					createAgentSession({

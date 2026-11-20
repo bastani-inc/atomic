@@ -23,7 +23,7 @@ import {
 import { sessionBlobOutput } from "./session-tool-output.ts";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
-import { projectTransformedPrompt, transformedPromptOwner } from "./transformed-system-prompt.ts";
+import { projectTransformedPrompt, toolChangeSupport, transformedPromptOwner } from "./transformed-system-prompt.ts";
 import { workspaceSandboxDenial } from "./workspace/session.ts";
 
 export function _installAgentToolHooks(this: AgentSession): void {
@@ -316,6 +316,8 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 				? projectTransformedPrompt(
 						guarded,
 						transformedPromptOwner(this.sessionManager.getSessionId(), sections.key),
+						toolChangeSupport(this.model?.compat),
+						this.getActiveToolNames().includes("codemode"),
 					)
 				: undefined;
 		if (recorded) return projectToolLoadout(this, recorded);

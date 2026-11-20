@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A forked subagent (`context: "fork"`) continues its parent's conversation exactly as the parent last sent it: the same system prompt, including the project context and skills the parent was sent, the same tools and the same messages, including the parent's earlier subagent calls. It adds a short note, its own role and its task after it, and keeps the parent's prompt-cache key, so on the parent's model and thinking level its first request is read from the parent's prompt cache. A fork can still call only its own tools: a call to another tool the parent declared fails with an error naming the tools it may call. The agent's `inheritProjectContext` and `inheritSkills` now shape fresh children only. The subagent tool, the `subagent` skill and the docs recommend `fork` when a child needs the parent's conversation and `fresh` for independent work ([#6093](https://github.com/bastani-inc/atomic/pull/6093)).
+
 ### Fixed
 
 - A subagent reopened on another day or after Atomic was updated keeps the prompt its provider has cached. It is sent the system prompt it started with, and what changed since, such as the date, the model or its skills, as updates after it, so the provider no longer processes its whole conversation again. A subagent last run by an earlier version is processed in full once more, on its first run after updating. A subagent whose agent now inherits differently, for example no longer the project context, starts over with its current prompt, and a session forked from a subagent's session uses a prompt of its own ([#6093](https://github.com/bastani-inc/atomic/pull/6093)).

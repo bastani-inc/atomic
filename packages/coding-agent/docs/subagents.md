@@ -284,8 +284,12 @@ Use `/tasks` (or `/tasks <id>`) to inspect background subagents and shells (excl
 
 ### Fresh vs. forked context
 
-- `context: "fresh"` — starts an isolated in-process child session with only the task and agent prompt (preferred for adversarial reviews and independent research).
+- `context: "fresh"` — starts an isolated in-process child session with only the task and agent prompt (preferred for adversarial reviews and independent research). Its context is small: the agent's prompt and the task.
 - `context: "fork"` — branches from the parent's settled entry (fails fast if the parent cannot be forked; never downgrades to fresh). Inherits model, thinking, tool changes, `pi.appendEntry` data since the last clear, and referenced saved tool outputs, without taking ownership of the parent's subagents or replaying parent Intercom cards.
+
+Use `fork` when the child needs the parent's conversation. A forked child sends the parent's conversation exactly as the parent last sent it: the same system prompt, including the project context and skills the parent was sent, the same tools and the same messages, including the parent's earlier subagent calls. Its own role, a short note and its task come after it. When the child runs on the parent's model and thinking level, its first request is read from the parent's prompt cache, so it pays for the new part only; on another model, provider or thinking level it reads nothing from it, and the cache statistics name the cause. Every later request carries that conversation too, mostly read from the cache. Use `fresh` for independent work that needs none of it. The default stays `fresh` unless an agent sets `defaultContext: fork`.
+
+In a fork, the agent's `inheritProjectContext` and `inheritSkills` settings do not hide what the parent already sent; they apply to fresh children. The child's tool policy does apply: it can call only its own tools, and a call to another tool the parent declared fails with an error naming the tools it may call. Where the provider takes tool changes mid-conversation, the removed tools are also declared after the conversation. A tool only the child has is declared after the conversation where the provider can add one; otherwise it is reached through the parent's `codemode` when both have it, and is added to the tool list when not, which the cache statistics show as a tool change. A forked child that is reopened keeps sending the same start; one reopened under different inheritance or fan-out settings sends its own prompt instead.
 
 Fresh children inherit the parent's SDK config, discovery inputs, model/auth runtime, and host callbacks. Child tool lists can narrow permissions but cannot re-enable excluded tools or disabled packages. See [SDK child configuration](/sdk).
 

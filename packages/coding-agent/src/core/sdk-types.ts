@@ -185,6 +185,19 @@ export interface SystemPromptSectionsTransform {
 	readonly key: string;
 	/** Each section as the transformed prompt holds it, keyed and ordered as in that prompt; one it drops is absent. */
 	readonly transform: (sections: Record<string, string>) => Record<string, string>;
+	/**
+	 * The session continues another session's conversation (a forked subagent). Its first request sends that
+	 * conversation exactly as the other session last sent it, so it is read from that session's prompt cache, then a
+	 * note and the session's own sections after it. Its requests use `sessionId` as their prompt-cache key.
+	 */
+	readonly fork?: {
+		readonly sessionId: string;
+		/** The note that opens what the fork adds: the tools it may call, and those it reaches through codemode. */
+		readonly note: (tools: {
+			readonly tools: readonly string[];
+			readonly throughCodemode: readonly string[];
+		}) => string;
+	};
 }
 
 export interface ResourceAdmissionRequest {

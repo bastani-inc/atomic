@@ -174,9 +174,17 @@ export interface InProcessChildPromptBehavior {
 	readonly systemPromptSections: {
 		readonly key: string;
 		readonly transform: (sections: Record<string, string>) => Record<string, string>;
+		readonly fork?: {
+			readonly sessionId: string;
+			readonly note: (tools: {
+				readonly tools: readonly string[];
+				readonly throughCodemode: readonly string[];
+			}) => string;
+		};
 	};
-	readonly initialContextTransform: (messages: AgentMessage[]) => AgentMessage[];
-	readonly [forkReplayFilter]: {
+	/** Absent in a fork, which keeps its parent's conversation as it was sent. */
+	readonly initialContextTransform?: (messages: AgentMessage[]) => AgentMessage[];
+	readonly [forkReplayFilter]?: {
 		project: (messages: AgentMessage[]) => AgentMessage[];
 		boundary: (message: AgentMessage) => "visible" | "hidden" | undefined;
 	};
@@ -224,18 +232,49 @@ export function createInProcessChildSystemPromptSectionsTransform(
 	};
 }
 
-/** Build the construction-time transforms for one admitted in-process child. */
+/** The note that opens what a forked child adds after its parent's conversation. */
+export function forkedChildNote(tools: {
+	readonly tools: readonly string[];
+	readonly throughCodemode: readonly string[];
+}): string {
+	return [
+		"You are now a subagent started from the conversation above. That conversation is your parent's context: its tool calls are history, and their sessions and processes are not yours. Follow your own role and task below, and report your result to your parent.",
+		`The tools you may call: ${tools.tools.join(", ") || "none"}. A call to any other tool declared above fails.`,
+		...(tools.throughCodemode.length > 0
+			? [
+					`Call ${tools.throughCodemode.join(", ")} through codemode as \`tools.<name>(args)\`; codemode's tool search and descriptions show their arguments.`,
+				]
+			: []),
+	].join("\n");
+}
+
+/**
+ * Build the construction-time transforms for one admitted in-process child. A forked child (`fork`: its session
+ * continues its parent's) keeps the parent's conversation exactly as the parent sent it, so its first request is read
+ * from the parent's prompt cache, and adds its own role and task after it.
+ */
 export function createInProcessChildPromptBehavior(
 	policy: ChildPromptPolicy,
 	explicitSkillInjection = "",
+	fork?: { readonly parentSessionId: string },
 ): InProcessChildPromptBehavior {
+	const systemPromptSections = {
+		key: JSON.stringify([policy.inheritProjectContext, policy.inheritSkills, policy.fanoutAuthorized]),
+		transform: createInProcessChildSystemPromptSectionsTransform(policy, explicitSkillInjection),
+	};
+	const systemPromptTransform = createInProcessChildSystemPromptTransform(policy, explicitSkillInjection);
+	if (fork)
+		return {
+			systemPromptTransform,
+			systemPromptSections: {
+				...systemPromptSections,
+				fork: { sessionId: fork.parentSessionId, note: forkedChildNote },
+			},
+		};
 	const project = (messages: AgentMessage[]) => stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized);
 	return {
-		systemPromptTransform: createInProcessChildSystemPromptTransform(policy, explicitSkillInjection),
-		systemPromptSections: {
-			key: JSON.stringify([policy.inheritProjectContext, policy.inheritSkills, policy.fanoutAuthorized]),
-			transform: createInProcessChildSystemPromptSectionsTransform(policy, explicitSkillInjection),
-		},
+		systemPromptTransform,
+		systemPromptSections,
 		initialContextTransform: project,
 		[forkReplayFilter]: {
 			project,

@@ -768,6 +768,8 @@ async function constructAgentSession(
 	};
 	const onPayload: NonNullable<ModelRuntimeSimpleStreamOptions["onPayload"]> = (payload, model) =>
 		preparePayload(payload, model);
+	// A forked subagent keeps the prompt-cache key of the session whose conversation it continues.
+	const requestSessionId = () => options.systemPromptSections?.fork?.sessionId ?? sessionManager.getSessionId();
 
 	agent = new Agent({
 		initialState: {
@@ -893,7 +895,7 @@ async function constructAgentSession(
 				return { authResult, requestModel, fastRouteStreamOptions, requestOptions };
 			};
 			const { authResult, requestModel, fastRouteStreamOptions, requestOptions } = await prepare();
-			if (streamOptions?.sessionId === sessionManager.getSessionId()) {
+			if (streamOptions?.sessionId === requestSessionId()) {
 				const prefix = [...agent.state.messages];
 				const warmOptions: ModelRuntimeSimpleStreamOptions = {
 					...fastRouteStreamOptions,
@@ -959,7 +961,7 @@ async function constructAgentSession(
 				headers: response.headers,
 			});
 		},
-		sessionId: sessionManager.getSessionId(),
+		sessionId: requestSessionId(),
 		transformContext: async (messages) => {
 			const runner = extensionRunnerRef.current;
 			const transformed = runner ? await runner.emitContext(messages) : messages;

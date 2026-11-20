@@ -690,8 +690,8 @@ type ExecutedToolCallOutcome = {
 
 type FinalizedToolCallOutcome = AgentToolCallOutcome;
 
-/** The `beforeToolCall` and `afterToolCall` hooks of {@link AgentLoopConfig}. */
-export type ToolCallHooks = Pick<AgentLoopConfig, "beforeToolCall" | "afterToolCall">;
+/** The `beforeToolCall`, `afterToolCall` and `unknownToolMessage` hooks of {@link AgentLoopConfig}. */
+export type ToolCallHooks = Pick<AgentLoopConfig, "beforeToolCall" | "afterToolCall" | "unknownToolMessage">;
 
 type ToolUpdateSink = (partialResult: AgentToolResult<any>) => Promise<void> | void;
 
@@ -727,7 +727,7 @@ async function prepareToolCall(
 	if (!tool) {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(`Tool ${toolCall.name} not found`),
+			result: createErrorToolResult(config.unknownToolMessage?.(toolCall.name) ?? `Tool ${toolCall.name} not found`),
 			isError: true,
 		};
 	}

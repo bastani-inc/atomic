@@ -2201,6 +2201,15 @@ describe("runToolCall", () => {
 			result: { content: [{ type: "text", text: "Tool missing not found" }] },
 			isError: true,
 		});
+		expect(
+			await runToolCall(call("d2", "missing", {}), {
+				...options,
+				unknownToolMessage: (name: string) => `${name} is not available here`,
+			}),
+		).toMatchObject({
+			result: { content: [{ type: "text", text: "missing is not available here" }] },
+			isError: true,
+		});
 		// Error results keep their details.
 		expect(await runToolCall(call("e", "failing", {}), options)).toMatchObject({
 			result: { details: { partial: true } },

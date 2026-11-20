@@ -391,6 +391,7 @@ describe("child context refresh (#5481)", () => {
 			},
 		];
 		const { initialContextTransform } = createInProcessChildPromptBehavior(policy());
+		assert.ok(initialContextTransform);
 		assert.deepEqual([batch, batch].map(initialContextTransform), [[answer], [answer]]);
 	});
 

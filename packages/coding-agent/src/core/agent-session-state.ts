@@ -9,6 +9,7 @@ import { syncSessionHistoryTool } from "./agent-session-tool-registry.ts";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
 import { legacyWorkflowSection } from "./legacy-workflow-files.js";
+import type { SystemPromptSectionsTransform } from "./sdk-types.ts";
 import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import {
@@ -38,10 +39,13 @@ import {
 	type ToolStatusReport,
 } from "./tool-status.js";
 import {
+	forkToolDeclarations,
 	hasTransformedPrompt,
 	nextTransformedPromptRecord,
 	type SystemMessageWithTransformedPrompt,
+	type TransformedPromptFork,
 	type TransformedPromptRecord,
+	toolChangeSupport,
 	transformedPromptOwner,
 } from "./transformed-system-prompt.ts";
 
@@ -388,7 +392,34 @@ function nextTransformedPrompt(
 		transformedPromptOwner(session.sessionManager.getSessionId(), sections.key),
 		head,
 		sections.transform(buildSystemPromptSections(session._baseSystemPromptOptions)),
+		sections.fork && forkOf(session, messages, sections.fork),
 	);
+}
+
+/** The conversation a fork continues, as the model was told it, and the note that opens what the fork adds. */
+function forkOf(
+	session: AgentSession,
+	messages: readonly AgentMessage[],
+	fork: NonNullable<SystemPromptSectionsTransform["fork"]>,
+): TransformedPromptFork {
+	const inherited = getCurrentTools(messages);
+	const callable = session.getActiveToolNames();
+	const { throughCodemode } = forkToolDeclarations(
+		inherited,
+		toolChangeSupport(session.model?.compat),
+		callable.includes("codemode"),
+	);
+	const declared = new Set(inherited.map((tool) => tool.name));
+	const sections = Object.entries(getCurrentSystemMessage(messages)?.sections ?? {}).flatMap(([name, text]) =>
+		text === null ? [] : [[name, text] as const],
+	);
+	return {
+		sections: Object.fromEntries(sections),
+		note: fork.note({
+			tools: callable,
+			throughCodemode: throughCodemode ? callable.filter((name) => !declared.has(name)) : [],
+		}),
+	};
 }
 
 /**
