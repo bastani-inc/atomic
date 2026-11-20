@@ -197,6 +197,24 @@ test("only validated cancellation and host-control frames bypass the ordinary la
 	}
 });
 
+test("a command for a subagent shown on the host's screen never holds the host's panel or /tasks", async () => {
+	const delivery = deferred();
+	const handled: string[] = [];
+	const dispatch = createRpcInputScheduler(async (line) => {
+		const type = (JSON.parse(line) as { type: string }).type;
+		handled.push(type);
+		if (type === "agent_view_prompt") await delivery.promise;
+	});
+
+	dispatch('{"type":"agent_view_prompt","viewId":"v1","message":"steer"}');
+	dispatch('{"type":"open_agent_panel"}');
+	dispatch('{"type":"set_viewed_agent"}');
+	await sleep(0);
+
+	assert.deepEqual(handled, ["agent_view_prompt", "open_agent_panel", "set_viewed_agent"]);
+	delivery.resolve();
+});
+
 test("a rejected ordinary command drains the next ordinary frame", async () => {
 	const compact = deferred();
 	const calls: string[] = [];
