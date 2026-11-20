@@ -45,6 +45,11 @@ export interface NewSessionOptions {
 }
 
 export interface SessionOpenOptions {
+	/**
+	 * `"tail"`, the default, opens the session at its current context window; read older entries with `readHistory()`
+	 * or `readEntry(id)`. `"full"` loads every stored entry into the manager and keeps it there; use it only when
+	 * every entry must stay in memory.
+	 */
 	readonly history?: "tail" | "full";
 	/** The entry to resume from instead of the current leaf. */
 	readonly leafId?: string;
