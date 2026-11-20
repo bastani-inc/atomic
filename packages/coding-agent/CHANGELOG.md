@@ -56,7 +56,7 @@
 - Custom session stores can implement `readForkWindow(sessionId, entryId)` to supply a subagent's retained branch and labels without opening the whole parent. Stores without the method keep their existing fork behavior ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
 - Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged.
 - RPC `message_end` events carry `entryId` and `seq` when the session saved the message, so a client can tell which saved entry it shows ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
-- SDK task hosts can let a task's chat queue messages as the main chat does: a `TaskTranscriptSource` can implement `queueMessage(text, lane)` and `clearQueue()`, and `TaskViewSource` has `sendTaskMessage(id, text, lane?)` and `clearTaskQueue(id)`, with `TaskMessageLane` (`"steer"` or `"followUp"`) and `QueuedTaskMessages` exported. A source without `queueMessage` keeps sending typed messages through `sendMessage`.
+- SDK task hosts can let a task's chat queue, take back and pause messages as the main chat does: a `TaskTranscriptSource` can implement `queueMessage(text, lane)`, `clearQueue()`, `pauseTurn()` and `resumeTurn()`, and `TaskViewSource` has `sendTaskMessage(id, text, lane?)`, `clearTaskQueue(id)`, `pauseTask(id)` and `resumeTask(id)`, with `TaskMessageLane` (`"steer"` or `"followUp"`) and `QueuedTaskMessages` exported. A source without `queueMessage` keeps sending typed messages through `sendMessage`.
 
 ### Changed
 
