@@ -51,6 +51,7 @@ import type {
 	TUI,
 	VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
+import type { ParkedViewport } from "./interactive-saved-chat-history.js";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import type { BlockedStatus } from "./program-status-reporter.ts";
 
@@ -280,6 +281,7 @@ declare module "./interactive-mode-base.ts" {
 				populateHistory?: boolean;
 				preserveViewportInput?: boolean;
 				suppressCompactionBoundary?: VerbatimCompactionResult;
+				parked?: ParkedViewport;
 			},
 		): void;
 		renderInitialMessages(): void;

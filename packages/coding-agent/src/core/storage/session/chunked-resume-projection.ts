@@ -606,6 +606,16 @@ export async function chunkedPrefixFields(
 	return { entry: value as unknown as SessionEntry, toolCalls: typeof count === "number" ? count : 0 };
 }
 
+/** Only the fields a saved task detail uses to distinguish inherited history from its own prompt and answer. */
+export async function chunkedTaskDetailFields(
+	chunks: () => AsyncIterable<Uint8Array>,
+	throughId?: string,
+): Promise<{ inheritedEnd: boolean; role: string }> {
+	const inheritedEnd = throughId !== undefined && (await chunkedEntryHasId(chunks(), throughId));
+	const type = await read(chunks(), discriminator("type"));
+	return { inheritedEnd, role: type === "message" ? await read(chunks(), discriminator("role", "message")) : "" };
+}
+
 export async function chunkedTreeOutline(
 	seq: number,
 	chunks: AsyncIterable<Uint8Array>,

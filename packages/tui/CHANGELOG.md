@@ -8,10 +8,17 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 - The bundled command names no longer include `workflows` or `workflow-authoring`. If your extension uses either name, mark clickable hints explicitly with `slashCommandHint()` rather than relying on built-in command recognition ([#5926](https://github.com/bastani-inc/atomic/pull/5926)).
 
+### Added
+
+- A stateless component returned by a chat renderer can declare `historyReplayable: true` so that saved pages can recreate it without keeping the original instance ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+- Components in a `WindowedContainer` can set `selectionTextMayChangeOnReplay` to keep a fullscreen selection faithful to the text the user saw, even when the component is recreated before copying ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+- `ScrollView.scrollTo(row, { exact: true })` shows that row in the next frame even when rows above it change before then, for a jump such as going to the start of a transcript that is still being loaded ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+
 ### Fixed
 
 - Hiding and showing a fullscreen dialog before the next paint cancels a held single click and any pending single-click action on that dialog. A control that took the press still receives its release; double- and triple-click text selection keeps its clipboard behavior ([#5643](https://github.com/bastani-inc/atomic/issues/5643)).
 - Whole-line key hints recognize a tab or Unicode space between a named key and its label. In `esc / a destination`, an unbound `a` starts the slash key's label. In `1/2 / esc pick`, bound digits and Escape are clickable; numeric ratios stay plain ([#5656](https://github.com/bastani-inc/atomic/issues/5656)).
+- A wheel or page-key scroll in a `ScrollView` over a `WindowedContainer` now moves from the rows the last frame showed when rows above them are added or removed before the next frame, so content loaded or released above the reader while they scroll no longer skips or repeats rows. While a history anchor is on screen, the rows after it keep their place, so pages mounted right after the anchor appear above what the reader sees ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 
 ## [0.9.90] - 2026-11-19
 

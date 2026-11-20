@@ -459,6 +459,44 @@ test("a legacy renderer that delegates its clicks keeps the result of its own hi
 });
 
 describe("clicking transcript blocks in the main chat", () => {
+	test("copying an active selection keeps the Markdown an extension painted before the row was recreated (#5593)", async () => {
+		const terminal = new RecordingTerminal();
+		const copied: string[] = [];
+		const tui = createFullscreenTui({
+			terminal,
+			copyOnSelect: false,
+			copySelection: async (text) => {
+				copied.push(text);
+				return true;
+			},
+		});
+		const history = new WindowedContainer();
+		const paint = (value: string) => {
+			history.clear();
+			history.addChild(new UserMessageComponent("unchanged", undefined, 0, [() => `rendered value ${value}`]));
+		};
+		paint("1");
+		tui.setLayoutRoot(new ScrollView(history, { primary: true }));
+		tui.start();
+		try {
+			tui.renderNow();
+			const line = tui
+				.getScreenLines()
+				.map(stripTerminalSequences)
+				.findIndex((line) => line.includes("rendered value 1"));
+			assert.notEqual(line, -1);
+			terminal.input(`\x1b[<0;1;${line + 1}M`);
+			terminal.input(`\x1b[<32;16;${line + 1}M`);
+			terminal.input(`\x1b[<0;16;${line + 1}m`);
+			paint("2");
+			tui.renderNow();
+			assert.ok(await tui.copyActiveSelectionToClipboard());
+			assert.deepEqual(copied, ["rendered value 1"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	test("a click on a tool block's header expands it and a second click collapses it, leaving the other blocks alone", async () => {
 		const chat = await mountChat(100, 60);
 		try {

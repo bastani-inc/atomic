@@ -6,11 +6,12 @@ import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
+import { carryRowSource, noteRowSource, noteSavedSeq } from "../../core/tasks/transcript-origin.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { bindAgentPanel } from "../rpc/agent-panel-bridge.ts";
-import { chatLineDrawnLive } from "./chat-reader-layout.js";
+import { chatLineDrawnLive, noteLiveChatRows } from "./chat-reader-layout.js";
 import { chatRecordsChanged } from "./chat-reader-records.js";
 import { hasAssistantVisibleContent, interruptedNotice } from "./components/assistant-message.ts";
 import { AtomicWorkedStatusComponent, AtomicWorkingLoader } from "./components/atomic-working-status.ts";
@@ -20,7 +21,7 @@ import { toolResultGroupState } from "./components/tool-group-tracker.ts";
 import { compactionMeta, runInProgress, type WorkingRunSnapshot } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { type EventStartup, eventStartupScope } from "./interactive-initial-session-binding.ts";
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import {
 	type AgentSessionEvent,
 	AssistantMessageComponent,
@@ -56,6 +57,38 @@ interface MainTurnToolBatch {
 	aborted: string[];
 }
 const mainTurnToolBatches = new WeakMap<InteractiveModeBase, MainTurnToolBatch>();
+/** Tool rows whose call ended, until their result message's save receipt arrives with its `message_end`. */
+const toolRowsAwaitingResult = new WeakMap<InteractiveModeBase, Map<string, object>>();
+
+/**
+ * Remember where the session saved a message the chat drew as it streamed: its rows can then be placed among the saved
+ * entries, which keeps them on screen across a compaction while the reader is above the end. An in-process session
+ * reports the receipt itself; an engine's session sends it with `message_end`. A message without one stays unsaved.
+ */
+function noteMessageReceipt(
+	mode: InteractiveModeBase,
+	event: Extract<AgentSessionEvent, { type: "message_end" }>,
+): void {
+	const { message } = event;
+	const sent = event as { readonly seq?: unknown };
+	const seq = mode.session?.entryReceipt?.(message)?.seq ?? (typeof sent.seq === "number" ? sent.seq : undefined);
+	if (seq !== undefined) noteSavedSeq(message, seq);
+	if (message.role === "assistant" && mode.streamingComponent) {
+		noteRowSource(mode.streamingComponent, { message, part: 0 });
+		let part = 0;
+		for (const content of message.content) {
+			if (content.type !== "toolCall") continue;
+			part += 1;
+			const row = mode.pendingTools.get(content.id);
+			if (row) noteRowSource(row, { message, part });
+		}
+	} else if (message.role === "toolResult") {
+		const rows = toolRowsAwaitingResult.get(mode);
+		const row = rows?.get(message.toolCallId);
+		if (row) carryRowSource(row, row, message);
+		rows?.delete(message.toolCallId);
+	}
+}
 
 /**
  * The status row after the turn's retry or model switch ended while the chat waited on it: the turn's worked row when
@@ -254,6 +287,10 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 
 	this.footer.invalidate();
 	this.programStatus.handleEvent(event);
+	// Rows this event draws for a saved line stand for that line, wherever a compaction keeps them.
+	const liveChat = chatReceipt(event) ? this.chatContainer : undefined;
+	const drawnFrom = liveChat?.children.length ?? 0;
+	const drawnAfter = liveChat?.children.at(-1);
 
 	switch (event.type) {
 		case "agent_start":
@@ -354,16 +391,17 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			} else if (event.entry.type === "custom_message" && event.entry.display) {
 				// Boundary-appended context (turn_end / agent_before_settle drafts) never
 				// passes through agent-core message events, so it is rendered from the entry.
-				this.addMessageToChat(
-					createCustomMessage(
-						event.entry.customType,
-						event.entry.content,
-						event.entry.display,
-						event.entry.details,
-						event.entry.timestamp,
-						event.entry.excludeFromContext,
-					),
+				const message = createCustomMessage(
+					event.entry.customType,
+					event.entry.content,
+					event.entry.display,
+					event.entry.details,
+					event.entry.timestamp,
+					event.entry.excludeFromContext,
 				);
+				const seq = this.sessionManager.getEntrySeq?.(event.entry.id);
+				if (seq !== undefined) noteSavedSeq(message, seq);
+				this.addMessageToChat(message);
 			} else if (event.entry.type === "compaction") {
 				// A boundary-committed compaction has no compaction_end event. Re-render the
 				// transcript from the retained context once it becomes the active boundary.
@@ -447,6 +485,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 		}
 
 		case "message_end":
+			noteMessageReceipt(this, event);
 			if (event.message.role === "user") break;
 			this.workingRunMeter.settled(event.message);
 			if (this.streamingComponent && event.message.role === "assistant") {
@@ -545,6 +584,9 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			if (component) {
 				component.updateResult({ ...event.result, isError: event.isError, durationMs: event.durationMs });
 				this.pendingTools.delete(event.toolCallId);
+				const awaiting = toolRowsAwaitingResult.get(this) ?? new Map<string, object>();
+				toolRowsAwaitingResult.set(this, awaiting);
+				awaiting.set(event.toolCallId, component);
 				settleMainTool(this, event.toolCallId, toolResultGroupState(event.result, event.isError));
 				this.ui.requestRender();
 			}
@@ -580,6 +622,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 				this.streamingMessage = undefined;
 			}
 			this.pendingTools.clear();
+			toolRowsAwaitingResult.delete(this);
 			mainTurnToolBatches.delete(this);
 			endMainToolTurn(this);
 			if (this.compactionQueuedMessages.length > 0 && !compactionInProgress) {
@@ -815,6 +858,11 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 	if (receipt) {
 		chatRecordsChanged(this, receipt);
 		chatLineDrawnLive(this, receipt.id);
+		if (liveChat && this.chatContainer === liveChat && liveChat.children[drawnFrom - 1] === drawnAfter)
+			noteLiveChatRows(
+				liveChat.children.slice(drawnFrom).filter((row) => !isChatMessageComponent(row)),
+				receipt.id,
+			);
 	}
 }
 

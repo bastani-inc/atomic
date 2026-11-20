@@ -3,10 +3,12 @@ import type { AgentSession } from "../../core/agent-session.js";
 import { runSynchronousCallback } from "../../core/callback-activity.ts";
 import type { ToolRenderers } from "../../core/extensions/types.ts";
 import type { CustomMessage } from "../../core/messages.ts";
+import { bindSavedReadLines } from "../../core/storage/session/saved-read-summary.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import type { OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
-import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
+import { taskTranscriptSource } from "../../core/tasks/supervisor.js";
+import { readTaskCompletionHistory } from "../../core/tasks/task-completion-history.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
 import { disposeRenderer, runRendererCleanup } from "../interactive/components/renderer-disposal.js";
@@ -155,6 +157,9 @@ export class EngineRenderService {
 				type: "engine_custom_frame",
 				componentId: command.componentId,
 				requestId: command.requestId,
+				...(command.inspectHistoryReplay && this.records.get(command.componentId)?.component.historyReplayable
+					? { historyReplayable: true as const }
+					: {}),
 				...frame,
 			});
 		} catch {
@@ -314,6 +319,8 @@ export class EngineRenderService {
 		tool.setExpanded(command.expanded);
 		tool.setGroupRole(command.groupRole ?? { kind: "standalone" });
 		if (command.result) {
+			if (command.savedReadLines !== undefined && Array.isArray(command.result.content))
+				bindSavedReadLines(command.result.content, command.savedReadLines);
 			tool.updateResult(
 				command.result as unknown as Parameters<ToolExecutionComponent["updateResult"]>[0],
 				command.isPartial,
@@ -350,14 +357,16 @@ export class EngineRenderService {
 						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
 						return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
 					},
-					loadTranscript: async (taskId) => {
+					loadTranscript: async (taskId, options) => {
 						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
-						return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
+						return lease?.ok ? readTaskCompletionHistory(lease.value, options?.signal) : undefined;
 					},
 					getToolDefinition: (name) =>
 						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
 					cwd: session.sessionManager.getCwd(),
-					requestRender: () => tui.requestRender(),
+					// A card read its transcript for an expansion. The last check may have seen the same rows on an
+					// earlier expansion, before a fold the host drew without it: repaint without comparing to it.
+					requestRender: () => tui.requestRender(true),
 				},
 			);
 			tui.addChild(component);

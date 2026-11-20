@@ -24,6 +24,8 @@ export interface ScrollViewOptions {
 export interface ScrollViewScrollToOptions {
 	/** Keep follow-end disabled even when the target is the current content end. */
 	disableFollow?: boolean;
+	/** Show this row in the next frame even if rows above it change before then: a jump, not a held place. */
+	exact?: boolean;
 }
 
 export class ScrollView extends Container {
@@ -36,6 +38,10 @@ export class ScrollView extends Container {
 	private currentScrollbar: ScrollViewScrollbar;
 	private readonly scrollbarHideDelayMs: number;
 	private currentScrollTop = 0;
+	/** Rows `scrollBy` moved since the last layout; undefined once the view was moved to an absolute row. */
+	private movedSinceLayout: number | undefined = 0;
+	/** Whether an exact jump was asked for since the last layout. */
+	private exactSinceLayout = false;
 	private contentHeight = 0;
 	private currentViewportHeight = 0;
 	private followingEnd: boolean;
@@ -44,6 +50,12 @@ export class ScrollView extends Container {
 	private transientScrollbarVisible = false;
 	private scrollbarActive = false;
 	private scrollbarHideTimer: NodeJS.Timeout | undefined;
+	private historyNavigation?: (action: "older" | "newer" | "start" | "end") => void;
+
+	/** Observe explicit navigation, including a turn clamped at the edge of a partial transcript. Layout is silent. */
+	setHistoryNavigation(listener?: (action: "older" | "newer" | "start" | "end") => void): void {
+		this.historyNavigation = listener;
+	}
 
 	constructor(component: Component, options: ScrollViewOptions = {}) {
 		super();
@@ -64,8 +76,25 @@ export class ScrollView extends Container {
 		this.scrollbarHideDelayMs = Math.max(0, Math.floor(options.scrollbarHideDelayMs ?? 1000));
 	}
 
+	get hasHistoryNavigation(): boolean {
+		return this.historyNavigation !== undefined;
+	}
+
 	get scrollTop(): number {
 		return this.currentScrollTop;
+	}
+
+	/**
+	 * Rows the reader scrolled by since the last layout, relative to the rows it showed then; undefined after a move to
+	 * an absolute row. Content added or removed above those rows meanwhile does not move what the scroll lands on.
+	 */
+	get scrolledSinceLayout(): number | undefined {
+		return this.movedSinceLayout;
+	}
+
+	/** Whether the next frame must show the row last jumped to with `exact`, whatever changed above it. */
+	get jumpedSinceLayout(): boolean {
+		return this.exactSinceLayout;
 	}
 
 	get isFollowingEnd(): boolean {
@@ -137,6 +166,10 @@ export class ScrollView extends Container {
 		const requested = Number.isFinite(scrollTop) ? Math.trunc(scrollTop) : this.currentScrollTop;
 		const maxScrollTop = Math.max(0, this.contentHeight - this.currentViewportHeight);
 		const next = Math.max(0, Math.min(maxScrollTop, requested));
+		if (options.exact) {
+			this.exactSinceLayout = true;
+			this.movedSinceLayout = undefined;
+		}
 		const nextFollowSuppressedAtEnd = options.disableFollow === true && next === maxScrollTop;
 		const nextFollowingEnd = !nextFollowSuppressedAtEnd && this.followEnd && next === maxScrollTop;
 		if (
@@ -147,6 +180,7 @@ export class ScrollView extends Container {
 			return;
 		}
 		const moved = next !== this.currentScrollTop;
+		if (moved) this.movedSinceLayout = undefined;
 		this.currentScrollTop = next;
 		this.followingEnd = nextFollowingEnd;
 		this.followSuppressedAtEnd = nextFollowSuppressedAtEnd;
@@ -162,11 +196,13 @@ export class ScrollView extends Container {
 		const next = Math.max(0, Math.min(maxScrollTop, start + requested));
 		const moved = next - start;
 		const wasFollowingEnd = this.followingEnd;
+		if (this.movedSinceLayout !== undefined) this.movedSinceLayout += next - this.currentScrollTop;
 		this.currentScrollTop = next;
 		this.followingEnd = this.followEnd && next === maxScrollTop;
 		this.followSuppressedAtEnd = false;
 		if (moved !== 0) this.markScrollbarActivity();
 		if (moved !== 0 || this.followingEnd !== wasFollowingEnd) this.requestRenderCallback?.();
+		this.historyNavigation?.(requested < 0 ? "older" : "newer");
 		return requested - moved;
 	}
 
@@ -174,6 +210,7 @@ export class ScrollView extends Container {
 		const changed =
 			this.currentScrollTop !== 0 ||
 			this.followingEnd !== (this.followEnd && this.contentHeight <= this.currentViewportHeight);
+		if (this.currentScrollTop !== 0) this.movedSinceLayout = undefined;
 		this.currentScrollTop = 0;
 		this.followingEnd = this.followEnd && this.contentHeight <= this.currentViewportHeight;
 		this.followSuppressedAtEnd = false;
@@ -181,11 +218,13 @@ export class ScrollView extends Container {
 			this.markScrollbarActivity();
 			this.requestRenderCallback?.();
 		}
+		this.historyNavigation?.("start");
 	}
 
 	scrollToEnd(): void {
 		const next = Math.max(0, this.contentHeight - this.currentViewportHeight);
 		const changed = this.currentScrollTop !== next || this.followingEnd !== this.followEnd;
+		if (this.currentScrollTop !== next) this.movedSinceLayout = undefined;
 		this.currentScrollTop = next;
 		this.followingEnd = this.followEnd;
 		this.followSuppressedAtEnd = false;
@@ -193,6 +232,7 @@ export class ScrollView extends Container {
 			this.markScrollbarActivity();
 			this.requestRenderCallback?.();
 		}
+		this.historyNavigation?.("end");
 	}
 
 	updateLayout(
@@ -204,6 +244,8 @@ export class ScrollView extends Container {
 		this.contentHeight = Math.max(0, Math.floor(contentHeight));
 		this.currentViewportHeight = Math.max(0, Math.floor(viewportHeight));
 		this.requestRenderCallback = requestRender;
+		this.movedSinceLayout = 0;
+		this.exactSinceLayout = false;
 		const maxScrollTop = Math.max(0, this.contentHeight - this.currentViewportHeight);
 		if (this.followingEnd) this.currentScrollTop = maxScrollTop;
 		else this.currentScrollTop = Math.max(0, Math.min(anchoredScrollTop ?? this.currentScrollTop, maxScrollTop));

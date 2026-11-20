@@ -105,7 +105,7 @@ export interface SessionHistoryPage {
 	readonly items: readonly SessionHistoryItem[];
 	readonly nextCursor?: string;
 	/** Adjacent ranges in the original snapshot, when the read requested them. */
-	readonly adjacent?: { readonly older?: string; readonly newer?: string };
+	readonly adjacent?: { readonly older?: string; readonly newer?: string; readonly current?: string };
 }
 
 export interface SessionHistoryReadOptions {
@@ -118,6 +118,8 @@ export interface SessionHistoryReadOptions {
 	readonly fromSeq?: number;
 	readonly toSeq?: number;
 	readonly cursor?: string;
+	/** At most this many entries per page (and never more than SESSION_HISTORY_PAGE_ENTRIES). */
+	readonly limit?: number;
 	readonly signal?: AbortSignal;
 	/**
 	 * For a scan that consumes every page at once, such as an export: up to this many entries a page, at most
@@ -181,6 +183,23 @@ export interface SessionEntrySizes {
 	readonly epoch: string;
 	readonly lastSeq: number;
 	readonly sizes: readonly { readonly seq: number; readonly bytes: number }[];
+}
+
+/**
+ * The entries a scan reads for a reader that needs only tool calls and results, as an HTML export's renderer inputs
+ * pass does: every tool result message, every assistant message with a tool call whose name is not in `exceptCalls`,
+ * and every entry larger than a page. A store may return more entries than these, in order, never fewer.
+ */
+export interface SessionToolUseSelection {
+	readonly exceptCalls: readonly string[];
+}
+
+/** A page of a forward scan and the session's watermark, from one read of the generation the scan started on. */
+export interface SessionScanPage {
+	readonly lastSeq: number;
+	/** The last sequence the page accounts for: its last entry, or a later one when no entry after it up to there was asked for. */
+	readonly throughSeq: number;
+	readonly items: readonly SessionHistoryItem[];
 }
 
 export interface SessionStateEntry extends SessionStoredEntry {
@@ -452,6 +471,53 @@ export interface SessionSearchIndex {
 	): Promise<readonly number[] | undefined>;
 }
 
+/** The most candidates one task-reference duplicate query takes. */
+export const SESSION_TASK_REFERENCE_CANDIDATES = 100;
+/** The most earlier sequences one task-reference duplicate page returns. */
+export const SESSION_TASK_REFERENCE_DUPLICATES_PAGE = 64;
+
+/**
+ * A task reference saved at `seq`: the entry itself (`<entry id>`), or one content block of it
+ * (`<entry id>:<contentIndex>`). The store reads the entry ID at `seq` itself, so the caller never sends one.
+ */
+export interface SessionTaskReferenceCandidate {
+	/** The stored sequence of the entry the reference was read from. */
+	readonly seq: number;
+	/** The content block the reference names; absent for a reference to the entry itself. */
+	readonly contentIndex?: number;
+	/**
+	 * For a reference to the entry itself, the length of its ID's ASCII `:<digits>` suffix, when it has one: an earlier
+	 * entry whose ID is the rest names the same reference through that content block. Ignored with `contentIndex`.
+	 */
+	readonly suffixChars?: number;
+}
+
+export interface SessionTaskReferenceDuplicateQuery {
+	/** The epoch the candidates were read in; another epoch is a `SessionConflictError`. */
+	readonly epoch: string;
+	/**
+	 * The watermark the candidates were read at. Every candidate's `seq` is at most this. Entries appended after it are
+	 * allowed; a store whose history ends before it, or which has no entry at a candidate's `seq`, conflicts.
+	 */
+	readonly throughSeq: number;
+	/** Only earlier sequences after this one: the previous page's `nextAfterSeq`. Default 0. */
+	readonly afterSeq?: number;
+	/** At most {@link SESSION_TASK_REFERENCE_CANDIDATES}. */
+	readonly candidates: readonly SessionTaskReferenceCandidate[];
+	/** At most, and by default, {@link SESSION_TASK_REFERENCE_DUPLICATES_PAGE}. */
+	readonly limit?: number;
+}
+
+export interface SessionTaskReferenceDuplicatePage {
+	/**
+	 * Ascending and distinct: each sequence before some candidate's `seq` whose entry may name the same reference, by
+	 * its entry ID alone. The entry's kind and blocks are not checked: the caller verifies each one.
+	 */
+	readonly seqs: readonly number[];
+	/** Present when more sequences follow: the `afterSeq` of the next page. */
+	readonly nextAfterSeq?: number;
+}
+
 export interface SessionForkRow {
 	/** Metadata for the listing and the resume index; the exact bytes come from the reference when present. */
 	readonly entry: SessionEntry;
@@ -548,8 +614,29 @@ export interface SessionStore {
 	 * `SESSION_HISTORY_PAGE_ENTRIES` sizes, or up to `limit` (at most `SESSION_HISTORY_SCAN_ENTRIES`) for a scan.
 	 */
 	readEntrySizes?(sessionId: string, startSeq: number, endSeq: number, limit?: number): Promise<SessionEntrySizes>;
-	/** Read at most SESSION_HISTORY_CHUNK_BYTES, rejecting a reference to a replaced generation. */
-	readEntryChunk?(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array>;
+	/**
+	 * One page of a forward scan of generation `epoch` in a single read, which is its own snapshot: the longest run of
+	 * entries from `startSeq` through at most `endSeq` of at most `limit` entries (at most `SESSION_HISTORY_SCAN_ENTRIES`)
+	 * and `SESSION_HISTORY_PAGE_BYTES` bytes, or the entry at `startSeq` alone as an oversized reference when it is
+	 * larger, with the session's watermark. Rejects with `SessionConflictError` when the session is of another generation.
+	 * With `select`, only the entries it selects count: a reader that needs only those skips the others without
+	 * receiving them. A store whose reads are round
+	 * trips implements it so a scan costs one read a page, not a size read and a range read in transactions of their own
+	 * (#5571).
+	 */
+	readScanPage?(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		epoch: string,
+		limit: number,
+		select?: SessionToolUseSelection,
+	): Promise<SessionScanPage>;
+	/**
+	 * Read at most `bytes` (`SESSION_HISTORY_CHUNK_BYTES` when absent, at most `SESSION_HISTORY_PAGE_BYTES`; a store may
+	 * return fewer, never none before the end), rejecting a reference to a replaced generation.
+	 */
+	readEntryChunk?(reference: OversizedSessionEntry, offset: number, bytes?: number): Promise<Uint8Array>;
 
 	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
 	readResume?(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume>;
@@ -591,6 +678,15 @@ export interface SessionStore {
 		options?: { deferChildRecords: true },
 	): Promise<SessionResume>;
 	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
+	/**
+	 * Earlier entries that may save the same task reference as each candidate, found through the store's entry-ID index
+	 * without reading or sending entry bodies or IDs. Resolves with `undefined` when the store cannot answer from an
+	 * index now; the caller then verifies candidates from entry metadata itself. Absent when the store never can.
+	 */
+	findTaskReferenceDuplicateCandidates?(
+		sessionId: string,
+		query: SessionTaskReferenceDuplicateQuery,
+	): Promise<SessionTaskReferenceDuplicatePage | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;
 	list(query: SessionListQuery): AsyncIterable<SessionSummary>;

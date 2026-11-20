@@ -151,6 +151,10 @@ export interface Component {
 	 * another item with the same text is not clicked by mistake.
 	 */
 	paintedRowKey?(row: number): string | undefined;
+	/** Its rendered text depends on private renderer state, so selected fragments cannot be recreated from history. */
+	readonly selectionTextMayChangeOnReplay?: boolean;
+	/** Set to true on a component returned by a chat renderer if recreating it from the saved input loses no state. */
+	readonly historyReplayable?: boolean;
 
 	/**
 	 * If true, component receives key release events (Kitty protocol).

@@ -13,6 +13,7 @@ import type {
 	ChatRecordOwner,
 	SessionChatRecords,
 } from "../../packages/coding-agent/src/core/storage/session/chat-records.js";
+import { readSessionHistory } from "../../packages/coding-agent/src/core/storage/session/history-pages.js";
 import { LegacySessionStore } from "../../packages/coding-agent/src/core/storage/session/legacy-session-store.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { Cleanup, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
@@ -140,6 +141,27 @@ async function openPage(
 		},
 		async home() {
 			inspector.handleInput(CTRL_HOME);
+			for (let i = 0; i < 4; i++) {
+				frame();
+				await flush();
+			}
+		},
+		/** Every row the chat holds now, shown or not, by its text. */
+		held(): string[] {
+			const chat = (inspector as unknown as { transcript: { chat: { state: { transcript: object[] } } } }).transcript
+				.chat;
+			return chat.state.transcript.map((row) => {
+				const entry = row as { kind?: string; text?: string; message?: { content?: unknown } };
+				return entry.kind === "user"
+					? (entry.text ?? "")
+					: entry.kind === "custom"
+						? String(entry.message?.content)
+						: (entry.kind ?? "");
+			});
+		},
+		/** Sends a key, then lets the reads it started settle. */
+		async key(data: string) {
+			inspector.handleInput(data);
 			for (let i = 0; i < 4; i++) {
 				frame();
 				await flush();
@@ -500,4 +522,90 @@ test("a closed subagent page is not kept by a chat-record read its store never a
 	collectGarbage();
 	assert.equal(chat?.deref(), undefined, "the pending read holds no reference to the closed chat");
 	assert.equal(unanswered.length, 1);
+});
+
+test("a finished subagent's saved pages draw each saved line on the page that shows its entry, the start's once (#5593)", async () => {
+	const { manager, scope } = await sqlChat();
+	await scope.store.append(scope.owner, "", line("Error: AT-START"));
+	const ids: string[] = [];
+	for (let i = 0; i < 200; i++)
+		ids.push(await manager.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i }));
+	for (const at of [10, 150, 199])
+		await scope.store.append(scope.owner, ids[at]!, line(`Error: SAVED-AFTER-${String(at).padStart(3, "0")}`));
+	const store = manager.getSessionStore();
+	const sessionId = manager.getSessionId();
+	// As a finished child's transcript is bound: no live session, its history read from the store page by page.
+	const finished: TaskTranscriptSource = {
+		getSessionId: () => sessionId,
+		getEntries: () => [],
+		readHistory: (options) => readSessionHistory(store, sessionId, options),
+		loadHistory: async () => ({ entries: [...(await store.load(sessionId)).entries] }),
+	};
+	const page = await openPage(finished, { height: 600 });
+	const latest = await page.lines();
+	assert.deepEqual(order(latest, ["M-150", "SAVED-AFTER-150", "M-151", "M-199", "SAVED-AFTER-199"]), [
+		"M-150",
+		"SAVED-AFTER-150",
+		"M-151",
+		"M-199",
+		"SAVED-AFTER-199",
+	]);
+	assert.ok(!latest.some((row) => row.includes("AT-START")), "the latest page does not start the conversation");
+	await page.home();
+	const first = await page.lines();
+	assert.deepEqual(order(first, ["AT-START", "M-000", "M-010", "SAVED-AFTER-010", "M-011"]), [
+		"AT-START",
+		"M-000",
+		"M-010",
+		"SAVED-AFTER-010",
+		"M-011",
+	]);
+	assert.ok(!first.some((row) => row.includes("SAVED-AFTER-199")), "a page left behind takes its lines with it");
+});
+
+test("a saved task page the reader left takes its saved lines with it; the pages shown keep theirs, once (#5593)", async () => {
+	const { manager, scope } = await sqlChat();
+	const ids: string[] = [];
+	for (let i = 0; i < 300; i++)
+		ids.push(await manager.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i }));
+	for (let at = 0; at < 300; at += 10)
+		await scope.store.append(scope.owner, ids[at]!, line(`Error: SAVED-AFTER-${String(at).padStart(3, "0")}`));
+	const store = manager.getSessionStore();
+	const sessionId = manager.getSessionId();
+	const finished: TaskTranscriptSource = {
+		getSessionId: () => sessionId,
+		getEntries: () => [],
+		readHistory: (options) => readSessionHistory(store, sessionId, options),
+		loadHistory: async () => ({ entries: [...(await store.load(sessionId)).entries] }),
+	};
+	const page = await openPage(finished, { height: 40 });
+	await page.lines();
+	// Read older pages until the latest one is released.
+	const PAGE_UP = "\x1b[5~";
+	let shown: string[] = [];
+	for (let i = 0; i < 200; i++) {
+		await page.key(PAGE_UP);
+		shown = page.frame();
+		if (shown.some((row) => row.includes("M-100"))) break;
+	}
+	assert.ok(
+		shown.some((row) => row.includes("M-100")),
+		shown.join("\n"),
+	);
+	const held = page.held();
+	const messages = held.filter((row) => row.startsWith("M-")).map((row) => Number(row.slice(2)));
+	assert.ok(!messages.includes(299), `the latest page was released: ${messages.at(-1)}`);
+	const lines = held.filter((row) => row.includes("SAVED-AFTER-"));
+	const anchors = lines.map((row) => Number(/SAVED-AFTER-(\d+)/.exec(row)![1]));
+	// Only saved lines of entries held (a released page's leave with it), once each, each right after its entry.
+	assert.ok(anchors.includes(100), `the shown entry's line is drawn: ${anchors}`);
+	assert.deepEqual(
+		anchors,
+		[...new Set(anchors)].filter((n) => messages.includes(n)),
+		`${anchors} / ${messages}`,
+	);
+	for (const row of lines) {
+		const n = /SAVED-AFTER-(\d+)/.exec(row)![1]!;
+		assert.equal(held[held.indexOf(row) - 1], `M-${n}`);
+	}
 });

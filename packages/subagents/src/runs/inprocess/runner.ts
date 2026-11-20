@@ -38,6 +38,7 @@ import {
 	watchHeldPromptAttention,
 	withTaskTranscriptArchive,
 } from "@bastani/atomic";
+import { readSessionHistory, readSessionHistoryChunks } from "@bastani/atomic/storage";
 import {
 	type Api,
 	type AssistantMessage,
@@ -1046,64 +1047,77 @@ function withArchivedPages(
 	unsaved?: SessionEntry,
 ): TranscriptSource {
 	if (store)
-		return withTaskTranscriptArchive(source, async (project, loadSnapshot) => {
+		return withTaskTranscriptArchive(
+			source,
+			async (project, loadSnapshot) => {
+				let records: SessionEntry[];
+				let entries: SessionEntry[];
+				let version: string | undefined;
+				try {
+					const loaded = await loadSnapshot(store, sessionId);
+					records = [...loaded.snapshot.entries];
+					entries = withUnsavedAnswer(records, unsaved);
+					version = loaded.generation;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return {
+						ok: false,
+						error: {
+							message: message.startsWith("History unavailable:")
+								? message
+								: await historyUnavailable(undefined, error),
+						},
+					};
+				}
+				return project(
+					entries,
+					records.length,
+					async () => version && createHash("sha256").update(`store:${version}`).digest("base64url"),
+				);
+			},
+			undefined,
+			unsaved,
+		);
+	if (file === undefined) return source;
+	return withTaskTranscriptArchive(
+		source,
+		async (project, _load, capture) => {
 			let records: SessionEntry[];
 			let entries: SessionEntry[];
-			let version: string | undefined;
 			try {
-				const loaded = await loadSnapshot(store, sessionId);
-				records = [...loaded.snapshot.entries];
+				// Release the file before projecting the page: a writer may need to rename over it on Windows.
+				records = await readSessionFileEntries(
+					file,
+					sessionId,
+					capture ? await capture(file, sessionId) : undefined,
+				);
 				entries = withUnsavedAnswer(records, unsaved);
-				version = loaded.generation;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return {
 					ok: false,
 					error: {
-						message: message.startsWith("History unavailable:")
-							? message
-							: await historyUnavailable(undefined, error),
+						message: message.startsWith("History unavailable:") ? message : await historyUnavailable(file, error),
 					},
 				};
 			}
 			return project(
 				entries,
 				records.length,
-				async () => version && createHash("sha256").update(`store:${version}`).digest("base64url"),
-			);
-		});
-	if (file === undefined) return source;
-	return withTaskTranscriptArchive(source, async (project, _load, capture) => {
-		let records: SessionEntry[];
-		let entries: SessionEntry[];
-		try {
-			// Release the file before projecting the page: a writer may need to rename over it on Windows.
-			records = await readSessionFileEntries(file, sessionId, capture ? await capture(file, sessionId) : undefined);
-			entries = withUnsavedAnswer(records, unsaved);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return {
-				ok: false,
-				error: {
-					message: message.startsWith("History unavailable:") ? message : await historyUnavailable(file, error),
+				// A projector that only understands file generations must not equate two independent reads.
+				async () => randomUUID(),
+				(_generation, row) => {
+					// Identify only the selected, captured row. Reopening its path here can block a rename on Windows.
+					try {
+						return createHash("sha256").update(JSON.stringify(records[row])).digest("base64url");
+					} catch {
+						return undefined;
+					}
 				},
-			};
-		}
-		return project(
-			entries,
-			records.length,
-			// A projector that only understands file generations must not equate two independent reads.
-			async () => randomUUID(),
-			(_generation, row) => {
-				// Identify only the selected, captured row. Reopening its path here can block a rename on Windows.
-				try {
-					return createHash("sha256").update(JSON.stringify(records[row])).digest("base64url");
-				} catch {
-					return undefined;
-				}
-			},
-		);
-	});
+			);
+		},
+		{ path: file, sessionId, unsaved },
+	);
 }
 
 /** The entry a task view shows for a final answer its child's session could not save (#5210). */
@@ -1166,6 +1180,13 @@ function settledTranscript(
 	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
+		...(store !== undefined
+			? {
+					readHistory: (options) => readSessionHistory(store, sessionId, options),
+					readHistoryChunks: (ref, options) => readSessionHistoryChunks(store, ref, options),
+				}
+			: {}),
+		getFallbackEntries: () => kept,
 		...(last?.type === "message" && last.message.role === "assistant" ? { settledReply: last.message } : {}),
 		loadHistory: async () => {
 			try {
@@ -1241,6 +1262,12 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
+		...(store !== undefined
+			? {
+					readHistory: (options) => readSessionHistory(store, sessionId, options),
+					readHistoryChunks: (ref, options) => readSessionHistoryChunks(store, ref, options),
+				}
+			: {}),
 		...(store === undefined && sessionFile === undefined
 			? {}
 			: {
@@ -2414,9 +2441,23 @@ export class SubagentControlRuntime {
 			const tokenMeter = new AgentTokenMeter(session.messages);
 			taskHooks?.bindTranscript?.({
 				getSessionId: () => sessionManager.getSessionId(),
-				getEntries: () => withUnsavedAnswer(sessionManager.getEntries(), unsavedAnswer),
-				...(typeof sessionManager.loadFullHistory === "function"
-					? { loadFullHistory: () => sessionManager.loadFullHistory() }
+				getEntries: () =>
+					withUnsavedAnswer(
+						sessionManager.getTaskTranscriptEntries?.() ?? sessionManager.getEntries(),
+						unsavedAnswer,
+					),
+				...(typeof sessionManager.getEntrySeq === "function"
+					? { getEntrySeq: (id: string) => sessionManager.getEntrySeq(id) }
+					: {}),
+				...(typeof transcriptSession.entryReceipt === "function"
+					? { entryReceipt: (message) => transcriptSession.entryReceipt(message) }
+					: {}),
+				...(typeof sessionManager.readHistory === "function"
+					? {
+							getEarlierCursor: () => sessionManager.getEarlierCursor(),
+							readHistory: sessionManager.readHistory.bind(sessionManager),
+							readHistoryChunks: sessionManager.readHistoryChunks.bind(sessionManager),
+						}
 					: {}),
 				subscribe: (listener) => transcriptSession.subscribe(listener),
 				getStreamingMessage: () => observedStreamingMessage,

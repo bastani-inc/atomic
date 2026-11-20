@@ -1,8 +1,13 @@
 import type { SessionManager } from "../session-manager.ts";
 import { chunkedForkLink } from "../storage/session/chunked-resume-projection.js";
 import { SessionConflictError, SessionNotFoundError } from "../storage/session/errors.js";
-import { historyChunks, historyPages } from "../storage/session/history-pages.js";
-import { type OversizedSessionEntry, SESSION_HISTORY_SCAN_ENTRIES } from "../storage/session/types.js";
+import { historyChunks, historyPages, readAhead, selectedHistoryPages } from "../storage/session/history-pages.js";
+import {
+	type OversizedSessionEntry,
+	SESSION_HISTORY_PAGE_BYTES,
+	SESSION_HISTORY_SCAN_ENTRIES,
+	type SessionToolUseSelection,
+} from "../storage/session/types.js";
 import type { renderHtmlInputs } from "./render-inputs.js";
 
 /** A manager can move to another session while the file is being written. Capture the physical store,
@@ -20,7 +25,11 @@ export async function captureHtmlHistory(sm: SessionManager) {
 			? (cut.header as import("../storage/session/types.js").SessionRecordHeader)
 			: await store.readHeader(id);
 	if (!header) throw new SessionNotFoundError(id);
-	if (!("header" in cut) && store.readEntrySizes) {
+	if (!("header" in cut) && store.readScanPage) {
+		// One read that rejects another generation: the header is the cut's.
+		const confirmed = await store.readScanPage(id, 1, 0, cut.epoch, 1);
+		if (confirmed.lastSeq < cut.lastSeq) throw new SessionConflictError(id, cut.lastSeq, confirmed.lastSeq);
+	} else if (!("header" in cut) && store.readEntrySizes) {
 		const confirmed = await store.readEntrySizes(id, 1, 0);
 		if (cut.epoch !== confirmed.epoch || confirmed.lastSeq < cut.lastSeq)
 			throw new SessionConflictError(id, cut.lastSeq, confirmed.lastSeq);
@@ -28,8 +37,23 @@ export async function captureHtmlHistory(sm: SessionManager) {
 	return {
 		header: { type: "session" as const, ...header },
 		leafId,
-		// Every pass reads the whole cut, in larger scan pages with the same byte bound.
-		readHistory: () => historyPages(store, id, cut.epoch, cut.lastSeq, { pageEntries: SESSION_HISTORY_SCAN_ENTRIES }),
+		// Every pass reads the whole cut at once, so it reads as a scan: more entries a page, never more bytes. One
+		// store read every 64 entries made a long session's export several times slower than main's full load (#5571).
+		// Each page is read while the one before it is rendered or written, so a database server's round trips overlap
+		// that work; at most two pages are held. A pass that needs only tool calls and results reads only the entries
+		// that can hold them, from a store that can select them (#5571).
+		readHistory: (select?: SessionToolUseSelection) =>
+			readAhead(
+				select && store.readScanPage && cut.epoch !== undefined
+					? selectedHistoryPages(
+							store as Required<Pick<typeof store, "readScanPage">>,
+							id,
+							cut.epoch,
+							cut.lastSeq,
+							select,
+						)
+					: historyPages(store, id, cut.epoch, cut.lastSeq, { pageEntries: SESSION_HISTORY_SCAN_ENTRIES }),
+			),
 		/** Resolve an edge on another branch without an export-wide map of removed links. */
 		async visibleParent(parent: string | null, before: number) {
 			if (parent === null) return null;
@@ -55,8 +79,9 @@ export async function captureHtmlHistory(sm: SessionManager) {
 			}
 			return parent;
 		},
+		// An entry larger than a page is read a page's bytes at a time: its passes stream it whole, often more than once.
 		readHistoryChunks: (item: OversizedSessionEntry, offset = 0) =>
-			historyChunks(store, id, cut.epoch, item, { offset }),
+			historyChunks(store, id, cut.epoch, item, { offset, bytes: SESSION_HISTORY_PAGE_BYTES }),
 	};
 }
 
