@@ -1,4 +1,5 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { formatModelLabel } from "../../../core/model-label.ts";
 import { isActivePanelState, isRestingPanelRow, panelRowListed } from "../../../core/tasks/agent-panel-rules.ts";
 import {
 	type AgentPanelItem,
@@ -36,6 +37,12 @@ export const AGENT_PANEL_FADE_MS = 30_000;
 export const AGENT_PANEL_IDLE_ROWS = 4;
 export const AGENT_PANEL_FOCUSED_ROWS = 8;
 export const AGENT_PANEL_MAIN_ID = "main";
+/** Narrower rows drop the model column, as rows narrower than 70 columns drop the token count. */
+export const AGENT_PANEL_MODEL_MIN_WIDTH = 100;
+/** The widest the model column grows: a longer model is cut in its id, keeping its reasoning level. */
+export const AGENT_PANEL_MODEL_MAX_WIDTH = 40;
+/** The narrowest task a row shows; with less room it shows none. */
+const MIN_TASK_WIDTH = 8;
 
 export interface AgentPanelStyle extends NavKeyStyle {
 	accent(text: string): string;
@@ -98,6 +105,26 @@ function panelText(text: string): string {
 
 function cellWidth(text: string): number {
 	return NON_SINGLE_CELL.test(text) ? visibleWidth(text) : text.length;
+}
+
+/**
+ * A row's model column: the model its agent runs on now as `provider/id`, then its reasoning level, as the main footer
+ * names the chat's model, with a single space so the pair reads as one column. Empty for a shell, and for a row whose
+ * model is not known. A model wider than `maxWidth` is cut in its id; its level stays whole.
+ */
+export function panelModelText(
+	row: Pick<AgentPanelRow, "kind" | "model" | "thinking">,
+	maxWidth = AGENT_PANEL_MODEL_MAX_WIDTH,
+): string {
+	if (row.kind !== "agent" || !row.model) return "";
+	const model = panelText(row.model);
+	const level = row.thinking ? panelText(row.thinking) : "";
+	const label = formatModelLabel(model, { thinkingLevel: level || undefined, separator: " " });
+	if (cellWidth(label) <= maxWidth) return label;
+	const levelWidth = cellWidth(level);
+	if (levelWidth > 0 && levelWidth + 2 < maxWidth)
+		return `${fitToWidth(model, maxWidth - levelWidth - 1).text} ${level}`;
+	return fitToWidth(label, maxWidth).text;
 }
 
 function fitToWidth(text: string, maxWidth: number): { readonly text: string; readonly width: number } {
@@ -419,13 +446,35 @@ export function renderAgentPanelRows(
 	const count = shown.length;
 	const names = new Array<string>(count);
 	const nameWidths = new Array<number>(count);
+	const models = new Array<string>(count);
+	const tasks = new Array<string>(count);
+	const rights = new Array<string>(count);
+	const queues = new Array<string | undefined>(count);
 	let nameWidth = 4;
+	let modelWidth = 0;
 	for (let i = 0; i < count; i++) {
-		const cleanName = panelText(shown[i]!.name);
+		const raw = shown[i]!;
+		const cleanName = panelText(raw.name);
 		const w = cellWidth(cleanName);
 		names[i] = cleanName;
 		nameWidths[i] = w;
 		if (w > nameWidth) nameWidth = w < 14 ? w : 14;
+		const model = width >= AGENT_PANEL_MODEL_MIN_WIDTH ? panelModelText(raw) : "";
+		models[i] = model;
+		if (model.length > 0) modelWidth = Math.max(modelWidth, cellWidth(model));
+		tasks[i] = panelText(raw.task);
+		rights[i] = rightColumn(raw, width);
+		queues[i] = Number.isSafeInteger(raw.queued) && (raw.queued ?? 0) > 0 ? ` · ${raw.queued} queued` : undefined;
+	}
+	// The model column shows only while every row keeps its whole right column and some of its task beside it.
+	if (modelWidth > 0) {
+		const fixed = 6 + nameWidth + modelWidth + 2;
+		for (let i = 0; i < count && modelWidth > 0; i++) {
+			const queued = queues[i];
+			const rightWidth = cellWidth(queued === undefined ? rights[i]! : rights[i]! + queued);
+			const taskRoom = width - fixed - rightWidth - 2;
+			if (fixed + rightWidth + 1 > width || (tasks[i]!.length > 0 && taskRoom < MIN_TASK_WIDTH)) modelWidth = 0;
+		}
 	}
 	const lines: string[] = [];
 	const line = (
@@ -437,6 +486,7 @@ export function renderAgentPanelRows(
 		right: string,
 		dim: boolean,
 		queued?: string,
+		model?: string,
 	) => {
 		const selected = options.selectedId === id;
 		const cursor = selected ? style.accent(style.bold("❯ ")) : "  ";
@@ -453,7 +503,11 @@ export function renderAgentPanelRows(
 				? `${fittedName.text}${" ".repeat(nameWidth - fittedName.width)}`
 				: fittedName.text;
 		const headWidth = fittedName.width < nameWidth ? nameWidth : fittedName.width;
-		const fixed = 6 + headWidth;
+		const modelCell =
+			model === undefined || modelWidth === 0
+				? ""
+				: `${model.length > 0 ? style.dim(model) : ""}${" ".repeat(modelWidth - cellWidth(model) + 2)}`;
+		const fixed = 6 + headWidth + (modelCell.length > 0 ? modelWidth + 2 : 0);
 		let shownRight = right;
 		let shownQueued = queued;
 		if (fixed + cellWidth(queued === undefined ? right : right + queued) + 1 > width) {
@@ -467,7 +521,7 @@ export function renderAgentPanelRows(
 		const pad = Math.max(1, width - fixed - fittedTask.width - rightWidth);
 		const nameText = selected ? style.bold(style.text(head)) : paint(head);
 		const rightText = paint(shownRight) + (shownQueued === undefined ? "" : style.warning(shownQueued));
-		const full = `${cursor}${glyphText} ${nameText}  ${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
+		const full = `${cursor}${glyphText} ${nameText}  ${modelCell}${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
 		lines.push(clampLine(full, width));
 	};
 	if (showMain) {
@@ -477,19 +531,17 @@ export function renderAgentPanelRows(
 	if (hiddenAbove > 0) lines.push(style.dim(truncateToWidth(`  ↑ ${hiddenAbove} more`, width)));
 	for (let i = 0; i < count; i++) {
 		const raw = shown[i]!;
-		const cleanName = names[i]!;
-		const cleanTask = panelText(raw.task);
 		const dim = options.faded?.(raw) === true;
-		const queued = Number.isSafeInteger(raw.queued) && (raw.queued ?? 0) > 0 ? ` · ${raw.queued} queued` : undefined;
 		line(
 			raw.id,
 			dim ? style.dim(glyph(raw, style, undefined)) : glyph(raw, style, options.frame),
-			cleanName,
+			names[i]!,
 			nameWidths[i]!,
-			cleanTask,
-			rightColumn(raw, width),
+			tasks[i]!,
+			rights[i]!,
 			dim,
-			queued,
+			queues[i],
+			models[i],
 		);
 	}
 	if (hiddenBelow > 0) lines.push(style.dim(truncateToWidth(`  +${hiddenBelow} more`, width)));
