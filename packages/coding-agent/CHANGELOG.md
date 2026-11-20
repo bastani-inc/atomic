@@ -6,6 +6,8 @@
 
 - A click on the `(ctrl+o to expand)` hint of a tool block, a grouped-call summary or another block that Ctrl+O expands now opens or folds that block alone, like a click anywhere else on it. It used to press Ctrl+O, which expanded every block in the chat, so every tool block that streamed in afterwards also opened expanded. Ctrl+O and the `ctrl+o expand` hint under the prompt still expand every block.
 - Tool calls that join a group after a click opened one of its calls now appear as their own folded blocks, and a click opens each one on its own. They used to be hidden until the group was folded again. Ctrl+O draws the whole group as one summary again.
+- A subagent shown on the chat screen no longer jumps when the prompt, autocomplete list or panel below it changes height: the rows already on screen stay where they are while its transcript redraws for the new size, and its notes and question form stay at the bottom.
+- Enter on a subagent in `/tasks` no longer shows the main chat's prompt for a moment before the subagent appears: the prompt, footer and panel stay as painted until the subagent is shown (or cannot be), while the transcript above keeps updating. A key press shows the screen as it is at once.
 
 ## [0.10.0] - 2026-11-20
 
