@@ -112,7 +112,8 @@ import { resolveSessionTargetId, resolveSessionTargetIdIn } from "./session-targ
 import { InboundMessageAdmission } from "./inbound-message-admission.js";
 import { type AdmissionPlace, InboundAdmissionOrder } from "./inbound-admission-order.js";
 import { retryStableDelivery } from "./stable-delivery-retry.js";
-import type { IntercomExtensionTestOverrides } from "./intercom-test-seams.js";
+import type { IntercomConnectReason, IntercomExtensionTestOverrides } from "./intercom-test-seams.js";
+import { INTERCOM_STARTUP_JOIN_EVENT, type IntercomStartupJoinRequest, startupJoinFromEnv } from "./startup-join.js";
 import { admitActiveSessionInbound } from "./active-session-admission.js";
 import { createInboundDeliveryFailureHandler } from "./inbound-delivery-failure.js";
 import { DEFAULT_GROUP, explicitHomeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
@@ -215,6 +216,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let reconnectPromise: Promise<IntercomClient> | null = null;
   let reconnectPromiseGeneration: number | null = null;
   let reconnectAttempt = 0;
+  /**
+   * Whether anything other than the startup join has asked for a connection. Only then does a failed attempt keep
+   * reconnecting in the background: a session that only joined at startup and never used Intercom stays lazy.
+   */
+  let connectionWanted = false;
   /**
    * #4727: aborted when the runtime is cleaned up, so a broker start this session began stops before it writes into the
    * agent directory; renewed when the next session starts. Each connect reads the current one.
@@ -1291,7 +1297,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       // Best effort: without the record a later restart registers under a fresh id, as before.
     }
   }
-  async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay"): Promise<IntercomClient> {
+  async function ensureConnected(reason: IntercomConnectReason): Promise<IntercomClient> {
+    if (reason !== "join") connectionWanted = true;
     if (disposed || shuttingDown) {
       throw new Error("Intercom shutting down");
     }
@@ -1439,14 +1446,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         // Schedule only after ownership of `reconnectPromise` is released above. Scheduling from
         // `catch` short-circuited on this very promise (`scheduleReconnect()` returns early while
         // `reconnectPromise` is non-null), which left a live runtime with no client, no timer and
-        // no promise owning the next attempt. Every failing reason reschedules, not just
-        // "background": `clearReconnectTimer()` above drops any pending timer before the attempt,
-        // so a failed "tool" or "overlay" attempt would otherwise destroy the recovery a
-        // background timer already owned. The timer armed for a failed "startup" attempt does not
+        // no promise owning the next attempt. Every failing reason reschedules once a connection is
+        // wanted, not just "background": `clearReconnectTimer()` above drops any pending timer before
+        // the attempt, so a failed "tool" or "overlay" attempt would otherwise destroy the recovery a
+        // background timer already owned. A failed "join" alone arms nothing: the lazy wrapper retries
+        // it a bounded number of times. The timer armed for a failed "startup" attempt does not
         // survive: that reason is reachable only from the lazy wrapper's first heavy load, whose
         // rejection path disposes the whole candidate (`index.ts` `cleanupCandidate`), and
         // `cleanupRuntime` clears the timer with it. Do not advertise a startup retry.
-        if (connectFailed && getLiveContext(contextAtStart, generationAtStart)) {
+        if (connectFailed && connectionWanted && getLiveContext(contextAtStart, generationAtStart)) {
           scheduleReconnect();
         }
       }
@@ -1480,6 +1488,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const request = payload as IntercomInboxReplayRequest;
     if (request.completion || !Array.isArray(request.restored)) return;
     request.completion = replayDurableInbox(request);
+  });
+  pi.events.on(INTERCOM_STARTUP_JOIN_EVENT, (payload) => {
+    if (!payload || typeof payload !== "object") return;
+    const request = payload as IntercomStartupJoinRequest;
+    if (request.completion) return;
+    request.completion = configReady.then(async () => {
+      if (!(startupJoinFromEnv() ?? config.joinAtStartup)) return;
+      await ensureConnected("join");
+    });
   });
   pi.events.on(INTERCOM_RECOVERY_PEERS_EVENT, (payload) => {
     if (!payload || typeof payload !== "object") return;

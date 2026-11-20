@@ -13,6 +13,7 @@ import {
 	getIntercomDirPath,
 } from "../../packages/intercom/broker/paths.js";
 import { spawnBrokerIfNeeded, upgradeBroker } from "../../packages/intercom/broker/spawn.js";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { sleep } from "../helpers/runtime.ts";
 
 /** Far longer than an aborted wait may take, so a wait that ignores its signal fails the test instead of passing late. */
@@ -101,6 +102,17 @@ function neverReadyBrokerCommand(markerPath: string): string[] {
 		'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);',
 		markerPath,
 	];
+}
+
+function isBrokerAnswering(): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = net.connect(getBrokerSocketPath());
+		socket.once("connect", () => {
+			socket.destroy();
+			resolve(true);
+		});
+		socket.once("error", () => resolve(false));
+	});
 }
 
 async function waitUntilGone(pid: number): Promise<boolean> {
@@ -202,3 +214,74 @@ directSpawnTest("a disposed start stops the broker a wrapper command runs as its
 	await assert.rejects(start);
 	assert.equal(await waitUntilGone(brokerPid), true, "the wrapped broker is still running after the start settled");
 });
+
+directSpawnTest("a disposed start stops waiting for a broker that never listens, and stops that broker", async () => {
+	const markerPath = join(agentDir, "..", "hung-broker.pid");
+	const controller = new AbortController();
+	const start = spawnBrokerIfNeeded(
+		process.execPath,
+		neverReadyBrokerCommand(markerPath),
+		READY_TIMEOUT_MS,
+		undefined,
+		controller.signal,
+	);
+	while (!existsSync(markerPath)) await sleep(10);
+	const brokerPid = Number(readFileSync(markerPath, "utf8"));
+	cleanups.push(() => killIfAlive(brokerPid));
+	const aborted = performance.now();
+	controller.abort(new Error("session disposed"));
+
+	await assert.rejects(start);
+	assert.ok(
+		performance.now() - aborted < ABORTED_WAIT_BOUND_MS + BROKER_GONE_WAIT_MS,
+		"the disposed start kept waiting for its broker to listen",
+	);
+	assert.equal(await waitUntilGone(brokerPid), true, "the broker is still running after the start settled");
+});
+
+/**
+ * A broker command that records its pid, announces itself as a real broker does (so a Windows spawner can stop it), and
+ * never listens. A script file rather than `-e`: on Windows a custom command runs through a launcher's command line.
+ */
+function announcedNeverReadyBrokerCommand(markerPath: string): string[] {
+	const script = join(agentDir, "..", "never-ready-broker.cjs");
+	writeFileSync(
+		script,
+		`const fs = require("node:fs");
+const path = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_PATH;
+const token = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_TOKEN;
+if (path && token) fs.writeFileSync(path, token + " " + process.pid + "\\n");
+fs.writeFileSync(process.argv[2], String(process.pid));
+setInterval(() => {}, 1000);
+`,
+	);
+	return [script, markerPath];
+}
+
+test(
+	"a start waiting for another spawner's broker starts the broker itself when that spawner is cancelled",
+	async () => {
+		const markerPath = join(agentDir, "..", "cancelled-broker.pid");
+		const owner = new AbortController();
+		const first = spawnBrokerIfNeeded(
+			process.execPath,
+			announcedNeverReadyBrokerCommand(markerPath),
+			READY_TIMEOUT_MS,
+			undefined,
+			owner.signal,
+		);
+		while (!existsSync(markerPath)) await sleep(10);
+		const cancelledPid = Number(readFileSync(markerPath, "utf8"));
+		cleanups.push(() => killIfAlive(cancelledPid));
+		// Stops the broker this test starts and removes its files once Windows has let go of the broker log.
+		cleanups.push(() => removeTempRootReleasingBroker(join(agentDir, ".."), agentDir));
+		const waiting = spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], READY_TIMEOUT_MS);
+		await sleep(200);
+		owner.abort(new Error("session disposed"));
+		await assert.rejects(first);
+
+		await waiting;
+		assert.equal(await isBrokerAnswering(), true, "no broker answers");
+	},
+	2 * READY_TIMEOUT_MS,
+);

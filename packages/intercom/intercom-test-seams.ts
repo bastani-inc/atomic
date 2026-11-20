@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@bastani/atomic";
 import type { Message, SessionInfo } from "./types.js";
 
-export type IntercomConnectReason = "startup" | "background" | "tool" | "overlay";
+export type IntercomConnectReason = "startup" | "join" | "background" | "tool" | "overlay";
 
 export interface IntercomExtensionTestOverrides {
   captureInboundHandler?: (handler: (ctx: ExtensionContext, from: SessionInfo, message: Message) => void) => void;

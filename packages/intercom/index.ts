@@ -12,6 +12,14 @@ import { rejectLazyResultRelay } from "./lazy-subagent-ack.js";
 import { isIntercomBrokerTimeout, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import {
+	INTERCOM_STARTUP_JOIN_EVENT,
+	type IntercomStartupJoinRequest,
+	joinsIntercomAtStartup,
+	STARTUP_JOIN_DELAY_MS,
+	STARTUP_JOIN_RETRIES,
+	startupJoinFromEnv,
+} from "./startup-join.js";
+import {
 	type AwaitIntercomPeerRequest,
 	hasIntercomHistory,
 	INTERCOM_RECOVERY_PEERS_EVENT,
@@ -145,7 +153,11 @@ type ShutdownSnapshot = LifecycleSnapshot<"session_shutdown"> & { generation: nu
 type IntercomLease = LifecycleLease<ShutdownSnapshot>;
 type SessionSnapshot = LifecycleSnapshot<"session_start"> & { generation: number; lease: IntercomLease };
 type IntercomHeavyHandle = HeavyHandle<CapturedHeavy>;
-type HeavyAttempt = { lease: IntercomLease; promise: Promise<IntercomHeavyHandle> };
+/**
+ * `background` while only the startup join waits for the load: closing the session then does not wait for it, and a
+ * load that finishes after the session closed cleans itself up.
+ */
+type HeavyAttempt = { lease: IntercomLease; promise: Promise<IntercomHeavyHandle>; background: boolean };
 type ReplayAttempt = { lease: IntercomLease; heavy: CapturedHeavy; promise: Promise<void> };
 type ActiveLifecycleState = {
 	turnStart: LifecycleSnapshot<"turn_start"> | null;
@@ -365,14 +377,15 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		replayAttempt = { lease, heavy, promise };
 		await promise;
 	}
-	async function loadHeavy(ctx?: ExtensionContext): Promise<IntercomHeavyHandle> {
-		let diagnosticRoute = captureDiagnosticRoute(ctx);
+	async function loadHeavy(ctx?: ExtensionContext, { quiet = false }: { quiet?: boolean } = {}): Promise<IntercomHeavyHandle> {
+		let diagnosticRoute: DiagnosticRoute = quiet ? "silent" : captureDiagnosticRoute(ctx);
 		let diagnosticOwner = ctx && getExtensionContextOwner(ctx);
 		const lease = activeLease;
 		if (lease.retired) throw new Error("Intercom initialization unavailable: no active session");
 		await waitForPriorCleanup(lease);
 		const existing = heavyAttempt;
 		if (existing?.lease === lease) {
+			if (!quiet) existing.background = false;
 			const handle = await existing.promise;
 			assertLease(lease);
 			if (!sessionSnapshot && ctx) {
@@ -415,7 +428,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				await ensureSessionStartReplayed(captured, lease, (replayContext) => {
 					// Dispatch wrappers differ even for the same (possibly already stale) owner.
 					const owner = getExtensionContextOwner(replayContext);
-					if (owner !== diagnosticOwner) {
+					if (!quiet && owner !== diagnosticOwner) {
 						diagnosticRoute = captureDiagnosticRoute(replayContext);
 						diagnosticOwner = owner;
 					}
@@ -430,7 +443,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				throw error;
 			}
 		})();
-		heavyAttempt = { lease, promise };
+		heavyAttempt = { lease, promise, background: quiet };
 		void promise.then(
 			() => undefined,
 			(error: unknown) => {
@@ -516,6 +529,75 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
     }
     activateTypedContactSupervisor();
   };
+	type StartupJoin = {
+		lease: IntercomLease;
+		generation: number;
+		timer: ReturnType<typeof setTimeout> | null;
+		waitingForTrust: boolean;
+		/** The session's first turn has started, so its folder's trust is decided and no longer holds the join back. */
+		settled: boolean;
+	};
+	let startupJoin: StartupJoin | null = null;
+	function cancelStartupJoin(): void {
+		if (startupJoin?.timer) clearTimeout(startupJoin.timer);
+		startupJoin = null;
+	}
+	function projectTrusted(ctx: ExtensionContext): boolean {
+		try {
+			return typeof ctx.isProjectTrusted !== "function" || ctx.isProjectTrusted();
+		} catch {
+			return false;
+		}
+	}
+	async function joinAtStartup(ctx: ExtensionContext): Promise<void> {
+		const handle = await loadHeavy(ctx, { quiet: true });
+		handle.assertCurrent();
+		const request: IntercomStartupJoinRequest = {};
+		await dispatchEventHandlers(handle.heavy, INTERCOM_STARTUP_JOIN_EVENT, request);
+		if (!request.completion) throw new Error("Intercom cannot join at startup");
+		await request.completion;
+	}
+	/**
+	 * Joins Intercom in the background a few seconds after the session has started, so neither its first frame nor its
+	 * first prompt waits for the broker or competes with loading Intercom. A join that cannot reach the broker stays
+	 * silent and is retried on the reconnect backoff a few times; the session then joins on its next Intercom use. A
+	 * session whose folder is not trusted, whose trust may still be being decided, joins only once the folder is trusted,
+	 * which it checks on the same backoff, or when its first turn starts: before that no other session can start a turn
+	 * in it. The timers never keep the process alive, and a session that ends or is replaced drops its join.
+	 */
+	function scheduleStartupJoin(
+		ctx: ExtensionContext,
+		lease: IntercomLease,
+		generation: number,
+		attempt = 0,
+		startupSettled = false,
+	): void {
+		cancelStartupJoin();
+		const join: StartupJoin = { lease, generation, timer: null, waitingForTrust: false, settled: startupSettled };
+		const current = () =>
+			startupJoin === join && activeLease === lease && !lease.retired && sessionSnapshot?.generation === generation;
+		startupJoin = join;
+		join.timer = setTimeout(() => {
+			join.timer = null;
+			if (!current()) return;
+			if (!join.settled && !projectTrusted(ctx)) {
+				if (attempt < STARTUP_JOIN_RETRIES) scheduleStartupJoin(ctx, lease, generation, attempt + 1);
+				if (startupJoin) startupJoin.waitingForTrust = true;
+				return;
+			}
+			joinAtStartup(ctx).then(
+				() => {
+					if (startupJoin === join) startupJoin = null;
+				},
+				() => {
+					if (!current()) return;
+					if (attempt >= STARTUP_JOIN_RETRIES) startupJoin = null;
+					else scheduleStartupJoin(ctx, lease, generation, attempt + 1, join.settled);
+				},
+			);
+		}, attempt === 0 ? STARTUP_JOIN_DELAY_MS : reconnectDelayMs(attempt - 1));
+		join.timer.unref?.();
+	}
   pi.on("session_start", async (event, ctx) => {
     const typedIdentity = ctx.subagentPolicy?.intercom;
     if (typedIdentity) {
@@ -538,18 +620,27 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		shutdownDiagnosticRoute = undefined;
     if (typedIdentity) {
       await registerAdmittedChild(ctx, lease, generation);
-    } else if (loadedHeavy) {
-      await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
+      return;
+    }
+    if (loadedHeavy) await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
+    if (
+      startupJoinFromEnv() !== false &&
+      !hasSubagentIntercomEnv() &&
+      !inheritedDelegatedSessionName &&
+      joinsIntercomAtStartup(ctx, () => (typeof pi.getActiveTools === "function" ? pi.getActiveTools() : []))
+    ) {
+      scheduleStartupJoin(ctx, lease, generation);
     }
   });
 	pi.on("session_shutdown", async (event, ctx) => {
+		cancelStartupJoin();
 		const lease = activeLease;
 		const generation = ++lifecycleGeneration;
 		const diagnosticRoute = captureDiagnosticRoute(ctx);
 		retireLifecycleLease(lease, { event, ctx, generation, diagnosticRoute });
 		shutdownDiagnosticRoute = diagnosticRoute;
 		const retiredHeavy = loadedHeavy?.heavy ?? null;
-		const retiredAttempt = heavyAttempt?.lease === lease ? heavyAttempt.promise : null;
+		const retiredAttempt = heavyAttempt?.lease === lease && !heavyAttempt.background ? heavyAttempt.promise : null;
 		const retiredReplay = replayAttempt?.lease === lease ? replayAttempt.promise : null;
 		sessionSnapshot = null;
 		heavyAttempt = null;
@@ -586,6 +677,11 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	});
 	pi.on("agent_start", async (event, ctx) => {
 		if (activeLease.retired) return;
+		const pending = startupJoin;
+		if (pending && !pending.settled && pending.lease === activeLease && sessionSnapshot?.generation === pending.generation) {
+			if (pending.waitingForTrust) scheduleStartupJoin(sessionSnapshot.ctx, pending.lease, pending.generation, 0, true);
+			else pending.settled = true;
+		}
 		activeLifecycle.agentStart = { event, ctx };
 		activeLifecycle.activeTools.clear();
 		const heavy = loadedHeavy?.heavy;

@@ -9,7 +9,7 @@ description: "Direct messaging between Atomic sessions, on one machine or across
 
 Atomic bundles `@bastani/intercom` for direct 1:1 messaging between sessions on the same machine, or on several machines that share a storage database. Send context, findings, or requests yourself, or let agents coordinate. No separate install is needed.
 
-The extension registers commands and tools at startup. Connections are lazy: a session connects when you or the model invoke Intercom. Admitted subagent children connect at session start so they are listable and steerable immediately.
+The extension registers commands and tools at startup. An interactive session joins Intercom in the background a few seconds after it starts, so every other session in its group can list it and message it before it uses Intercom itself; starting the session does not wait for this. Print (`-p`), JSON, RPC and SDK sessions join when you or the model first use Intercom; so do interactive sessions when `joinAtStartup` is `false` in Intercom's [configuration](/intercom/reference#configuration) or `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` is set. Admitted subagent children join at session start so they are listable and steerable immediately.
 
 **Key capabilities:**
 - **Session messaging** - `send`, `ask` (never blocks; the reply arrives as a message), `reply`, `pending`, `cancel`, `list`, `groups`, and `status` via the `intercom` tool
@@ -163,7 +163,7 @@ A `send` or `ask` to a subagent that already completed or failed resumes it: the
 
 A busy non-interactive recipient that is not an admitted subagent can still refuse a message without interrupting its task. A successful `send` receipt means the recipient saved the message, not that its model accepted it. The refusal carries the original reply thread: an `ask` gets it as a failed-ask message (or as an error while its call is still waiting); otherwise the sender sees **Intercom delivery failed** feedback with a `Sent:` timestamp. That feedback bypasses the ordinary idle queue and does not trigger a standalone agent turn. During an active turn, protected delivery makes it visible and reconciles it at a protocol-safe boundary. Its wording describes the refused send, not the recipient's later activity.
 
-Atomic enables ordinary `intercom` by default, but it respects tool allowlists, exclusions and `noTools: "all"`. Include `"intercom"` in an explicit allowlist when needed. SDK hosts can disable the entire package with `builtins: { intercom: false }`; reload does not restore it. `contact_supervisor` remains subagent-only. Registration is lightweight; broker connection and heavy initialization remain lazy until an Intercom surface is used.
+Atomic enables ordinary `intercom` by default, but it respects tool allowlists, exclusions and `noTools: "all"`. Include `"intercom"` in an explicit allowlist when needed. SDK hosts can disable the entire package with `builtins: { intercom: false }`; reload does not restore it. `contact_supervisor` remains subagent-only. An interactive session whose tool selection leaves out `intercom` does not join at startup.
 
 ## How Connection Works
 

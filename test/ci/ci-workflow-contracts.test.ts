@@ -88,7 +88,7 @@ test("npm registry retries declare integer timeouts and ordered backoffs", async
 	assert.ok(retryMinTimeoutMs <= retryMaxTimeoutMs, "minimum retry backoff must not exceed its maximum");
 });
 
-test("global setups attribute lost workers, isolate Herdr, provider credentials and debug output, then prepare artifacts and natives", async () => {
+test("global setups attribute lost workers, isolate Herdr, provider credentials, debug output and the Intercom startup join, then prepare artifacts and natives", async () => {
 	const config = (await import("../../vitest.config.js")) as {
 		default: {
 			test?: {
@@ -101,6 +101,7 @@ test("global setups attribute lost workers, isolate Herdr, provider credentials 
 	const herdrSetup = "./test/global-setup-herdr-isolation.ts";
 	const providerCredentialSetup = "./test/global-setup-provider-credential-isolation.ts";
 	const debugSetup = "./test/global-setup-debug-isolation.ts";
+	const intercomStartupJoinSetup = "./test/global-setup-intercom-startup-join.ts";
 	const artifactSetup = "./test/global-setup-test-directory.ts";
 	const nativeSetup = "./test/global-setup-natives.ts";
 	for (const name of ["unit", "integration", "ci"]) {
@@ -108,8 +109,16 @@ test("global setups attribute lost workers, isolate Herdr, provider credentials 
 		assert.ok(project, `missing vitest project: ${name}`);
 		assert.deepEqual(
 			project.test?.globalSetup,
-			[lostWorkersSetup, herdrSetup, providerCredentialSetup, debugSetup, artifactSetup, nativeSetup],
-			`${name} must attribute lost workers and isolate inherited Herdr, provider credentials and debug output before preparing artifacts and natives`,
+			[
+				lostWorkersSetup,
+				herdrSetup,
+				providerCredentialSetup,
+				debugSetup,
+				intercomStartupJoinSetup,
+				artifactSetup,
+				nativeSetup,
+			],
+			`${name} must attribute lost workers and isolate inherited Herdr, provider credentials, debug output and the Intercom startup join before preparing artifacts and natives`,
 		);
 	}
 });

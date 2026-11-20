@@ -24,7 +24,7 @@ Intercom also integrates with delegated subagents: in-process children receive a
 
 ## In One Minute
 
-Intercom connections are normally tool-driven. A bridged child still keeps its own broker connection lazy until it invokes `contact_supervisor`, but Atomic connects the parent Intercom runtime while launching the child to issue a child-bound supervisor capability. The parent retains and restores that capability across broker reconnects, and the broker confirms the supervisor's current session ID when the child registers. Concurrent first-use callers share one import and connection attempt, and broker state is leased to the active session generation and cleaned up on shutdown or replacement.
+An interactive session connects to the broker in the background a few seconds after it starts, so other sessions can list and message it before it uses Intercom; print, JSON, RPC and SDK sessions connect on first use. A bridged child still keeps its own broker connection lazy until it invokes `contact_supervisor`, but Atomic connects the parent Intercom runtime while launching the child to issue a child-bound supervisor capability. The parent retains and restores that capability across broker reconnects, and the broker confirms the supervisor's current session ID when the child registers. Concurrent first-use callers share one import and connection attempt, and broker state is leased to the active session generation and cleaned up on shutdown or replacement.
 
 ## Install
 
@@ -424,6 +424,7 @@ The default `npx --no-install tsx` pair is a compatibility sentinel: intercom re
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
+| `joinAtStartup` | true | Interactive sessions join the broker when they start, so other sessions can list and message them before they use Intercom. `false` makes them join on first use. `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` or `1` overrides it |
 
 Existing pi-compatible configs that set a custom broker command still work. For example, if you intentionally want to use Bun from `PATH`, configure it explicitly:
 
@@ -556,4 +557,4 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox
 - **No attachments UI** — `file`, `snippet`, and `context` attachments are supported in the protocol, but not in the compose overlay
 - **Only connected sessions appear** — The list shows Pi sessions that have loaded `pi-intercom` and successfully registered with the broker, not every open Pi process on the machine
-- **Broker lifecycle** — The broker auto-spawns on first use and exits when idle; sessions reconnect automatically if the broker restarts
+- **Broker lifecycle** — The broker auto-spawns when the first session connects and exits when idle; sessions reconnect automatically if the broker restarts
