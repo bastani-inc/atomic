@@ -41,6 +41,8 @@ interface MountedRemoteComponent {
 	handle?: OverlayHandle;
 	widgetKey?: string;
 	unsubscribeWidgetRelease?: () => void;
+	/** A viewed subagent's transcript (`placement: "transcript"`), drawn by the host's transcript area. */
+	transcript?: RemoteTranscriptMount;
 }
 
 /**
@@ -281,6 +283,16 @@ class RemoteComponent implements Component {
 		this.dirty = true;
 	}
 
+	/** Called with each frame the engine sends, once it is the one `render` returns. */
+	onFrame: (() => void) | undefined;
+
+	/** Ask for a frame of `width` x `rows` now, before the host lays the component out. */
+	prime(width: number, rows: number): void {
+		if (this.disposed) return;
+		const renderSettings = this.getRenderSettings();
+		this.requestFrame(width, rows, this.getHostMode(), renderSettings, renderSettingsCacheKey(renderSettings));
+	}
+
 	applyFrame(
 		requestId: number,
 		lines: string[],
@@ -294,6 +306,7 @@ class RemoteComponent implements Component {
 		this.frame = frame;
 		this.rowKeys = rowKeys;
 		this.scrollRequest = scrollRequest;
+		this.onFrame?.();
 		let answeredKey = false;
 		for (const inputId of [...this.answeredInputs]) {
 			const frameRequestId = this.pendingInputs.get(inputId)?.frameRequestId;
@@ -329,6 +342,83 @@ class RemoteComponent implements Component {
 		if (notifyEngine)
 			this.runtime.sendEngineCommand({ type: "engine_custom_dispose", componentId: this.componentId });
 	}
+}
+
+/** The engine component behind a transcript mount, as the host's transcript area uses it. */
+export type RemoteTranscriptComponent = Pick<
+	RemoteComponent,
+	"render" | "handleInput" | "handleMouse" | "paintedRowKey" | "invalidate" | "prime" | "hostColorDepth"
+>;
+
+/**
+ * A viewed subagent's transcript the engine opened with `placement: "transcript"` for view `viewId`. The host's
+ * transcript area draws it in the rows it sets; it is closed by the engine (`engine_custom_close`) or with its engine.
+ */
+export class RemoteTranscriptMount {
+	readonly componentId: string;
+	readonly viewId: string;
+	readonly component: RemoteTranscriptComponent;
+	/** The rows the transcript area gives it; frames are requested at this height. */
+	rows = 24;
+	private framed = false;
+	private isClosed = false;
+	private readonly waiting = new Set<(framed: boolean) => void>();
+	private readonly closeListeners = new Set<() => void>();
+
+	constructor(componentId: string, viewId: string, component: RemoteComponent) {
+		this.componentId = componentId;
+		this.viewId = viewId;
+		this.component = component;
+		component.onFrame = () => {
+			if (this.framed) return;
+			this.framed = true;
+			for (const resolve of [...this.waiting]) resolve(true);
+			this.waiting.clear();
+		};
+	}
+
+	get closed(): boolean {
+		return this.isClosed;
+	}
+
+	/** Resolves true once the engine's first frame is here, false if the mount closed first. */
+	firstFrame(): Promise<boolean> {
+		if (this.framed) return Promise.resolve(true);
+		if (this.isClosed) return Promise.resolve(false);
+		return new Promise((resolve) => this.waiting.add(resolve));
+	}
+
+	onClose(listener: () => void): () => void {
+		if (this.isClosed) {
+			listener();
+			return () => {};
+		}
+		this.closeListeners.add(listener);
+		return () => this.closeListeners.delete(listener);
+	}
+
+	/** @internal The controller closed it. */
+	markClosed(): void {
+		if (this.isClosed) return;
+		this.isClosed = true;
+		for (const resolve of [...this.waiting]) resolve(false);
+		this.waiting.clear();
+		for (const listener of [...this.closeListeners]) {
+			try {
+				listener();
+			} catch {
+				// A listener's failure must not stop the others.
+			}
+		}
+		this.closeListeners.clear();
+	}
+}
+
+const transcriptMounts = new WeakMap<object, Map<string, RemoteTranscriptMount>>();
+
+/** The transcript the engine of `runtime` opened for view `viewId`, while it is open. */
+export function remoteTranscriptMount(runtime: object, viewId: string): RemoteTranscriptMount | undefined {
+	return transcriptMounts.get(runtime)?.get(viewId);
 }
 
 function renderSettingsCacheKey(renderSettings: EngineHostRenderSettings | undefined): string {
@@ -415,7 +505,8 @@ export class RemoteComponentController {
 	remoteProxyOwner(component: unknown): unknown {
 		if (!(component instanceof RemoteComponent)) return undefined;
 		for (const record of this.mounted.values()) {
-			if (record.component === component) return record.widgetKey === undefined ? component : undefined;
+			if (record.component === component)
+				return record.widgetKey === undefined && record.transcript === undefined ? component : undefined;
 		}
 		return undefined;
 	}
@@ -441,7 +532,8 @@ export class RemoteComponentController {
 	 */
 	dismissRemoteProxy(component: unknown): boolean {
 		for (const record of this.mounted.values()) {
-			if (record.component !== component || record.widgetKey !== undefined) continue;
+			if (record.component !== component || record.widgetKey !== undefined || record.transcript !== undefined)
+				continue;
 			record.done(undefined);
 			this.ui.requestRender();
 			return true;
@@ -483,7 +575,8 @@ export class RemoteComponentController {
 			this.terminalModes.onUnmount(componentId);
 			record.unsubscribeWidgetRelease?.();
 			record.component.dispose(reason === "host-shutdown" && !record.engineDone);
-			if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
+			if (record.transcript) this.closeTranscript(record.transcript);
+			else if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
 			else if (reason === "generation-lost") record.done(undefined);
 		}
 		this.terminalModes.resetAll();
@@ -513,6 +606,7 @@ export class RemoteComponentController {
 					message.purpose,
 					message.widgetScroll,
 					message.blocked,
+					message.placement === "transcript" ? message.viewId : undefined,
 				);
 				break;
 			case "engine_custom_close":
@@ -582,8 +676,13 @@ export class RemoteComponentController {
 		purpose?: "prompt" | "navigation",
 		widgetScroll?: { maxHeight: number; maxHeightFraction?: number },
 		blocked?: EngineBlockedStatus,
+		transcriptViewId?: string,
 	): void {
 		if (this.mounted.has(componentId)) return;
+		if (transcriptViewId !== undefined) {
+			this.openTranscript(componentId, transcriptViewId);
+			return;
+		}
 		if (widgetKey) {
 			let getRows = () => 24;
 			let paintNow = () => this.ui.requestRender();
@@ -671,8 +770,46 @@ export class RemoteComponentController {
 		this.terminalModes.onUnmount(componentId);
 		this.mounted.delete(componentId);
 		record.unsubscribeWidgetRelease?.();
-		if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
+		if (record.transcript) this.closeTranscript(record.transcript);
+		else if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
 		record.component.dispose();
+	}
+
+	/**
+	 * A viewed subagent's transcript: drawn by the host's transcript area at the rows it gives, never mounted as custom
+	 * UI, so it blocks nothing and takes focus only when the area gives it.
+	 */
+	private openTranscript(componentId: string, viewId: string): void {
+		let mount: RemoteTranscriptMount | undefined;
+		const component = new RemoteComponent(
+			componentId,
+			this.runtime,
+			() => this.ui.requestRender(),
+			() => mount?.rows ?? 24,
+			() => this.hostMode(),
+			false,
+			() => this.tuiRendererLifecycle.chatRenderSettings?.(),
+		);
+		mount = new RemoteTranscriptMount(componentId, viewId, component);
+		const views = transcriptMounts.get(this.runtime) ?? new Map<string, RemoteTranscriptMount>();
+		transcriptMounts.set(this.runtime, views);
+		views.get(viewId)?.markClosed();
+		views.set(viewId, mount);
+		this.mounted.set(componentId, {
+			component,
+			done: () => {},
+			engineDone: false,
+			handlesCtrlC: false,
+			handlesInternalUiAction: false,
+			transcript: mount,
+		});
+	}
+
+	private closeTranscript(mount: RemoteTranscriptMount): void {
+		const views = transcriptMounts.get(this.runtime);
+		if (views?.get(mount.viewId) === mount) views.delete(mount.viewId);
+		mount.markClosed();
+		this.ui.requestRender();
 	}
 
 	private control(componentId: string, action: "focus" | "hide" | "show" | "unfocus"): void {
