@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Local SQLite storage runs each connection to a file on a worker thread of its own, so opening a session store, waiting for another process's write lock and synced commits no longer freeze typing, rendering, streamed output or clicks in `/tasks`. Loading a long session no longer holds the interface for its whole read. In-memory databases and connections passed to `wrapNodeSqliteDatabase` still run on the calling thread ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+- SDK: in one process, a write through your own or a wrapped `DatabaseSync` to a file that an `openNodeSqliteDatabase` transaction holds open now waits for that transaction's lock on your thread and fails with `SQLITE_BUSY` after its busy timeout, where before it often ran after the transaction. Open every handle to a shared file with `openNodeSqliteDatabase` ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+
+### Fixed
+
+- A write outside a transaction no longer fails with `database is locked` while another connection of the same process holds the write lock across an await: it now waits on its own connection's thread until that transaction commits ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+
 ## [0.10.0] - 2026-11-20
 
 Codemode and subagents replace workflows, subagents share the main chat screen with its steering and can be resumed by a message, and long sessions keep only their current context in memory.

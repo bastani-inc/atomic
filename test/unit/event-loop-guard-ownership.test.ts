@@ -1,11 +1,28 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { OWNED_ELSEWHERE } from "../../scripts/event-loop/policy.js";
+import type { OwnedArea } from "../../scripts/event-loop/policy.js";
 import { type BlockRecord, blockOwner } from "../helpers/event-loop-guard-fixture.js";
 
 const areas = [
 	{ owner: "#5285", paths: ["packages/coding-agent/src/core/tools/windows-directory-security.ts"] },
 	{ owner: "#5345", paths: ["packages/coding-agent/src/core/worktree-snapshot/"] },
+];
+
+const SQLITE_OWNER = "#5376 (node:sqlite statements off the event loop)";
+
+/** An area owned by a change, by function, as `OWNED_ELSEWHERE` listed the node:sqlite driver's until #5376. */
+const sqliteArea: readonly OwnedArea[] = [
+	{
+		owner: SQLITE_OWNER,
+		functions: [
+			"databaseNow",
+			"NodeSqliteDatabase.createExecutor/statement",
+			"NodeSqliteDatabase.createExecutor/<returned>.all/execute()",
+		].map((name) => ({ file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name })),
+		sampledCallersOfOwnedCalls: ["NodeSqliteDatabase.commitAlone", "NodeSqliteDatabase.commitMembers"].map(
+			(name) => ({ file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name }),
+		),
+	},
 ];
 
 function block(...stacks: string[][]): BlockRecord {
@@ -41,10 +58,7 @@ test("a block whose every stack runs in another change's area belongs to that ch
 		"statement (file:///pkg/dist/core/storage/node-sqlite.js:1164:5)",
 		"databaseNow (file:///pkg/dist/core/storage/node-sqlite.js:45:5)",
 	]) {
-		assert.equal(
-			blockOwner(block(["prepare (node:sqlite:1:1)", frame]), OWNED_ELSEWHERE),
-			"#5376 (node:sqlite statements off the event loop)",
-		);
+		assert.equal(blockOwner(block(["prepare (node:sqlite:1:1)", frame]), sqliteArea), SQLITE_OWNER);
 	}
 	assert.equal(
 		blockOwner(
@@ -71,14 +85,14 @@ test("a block whose every stack runs in another change's area belongs to that ch
 	);
 });
 
-test("a synced COMMIT that holds the engine's loop on Windows belongs to #5376, in sources and in the build", () => {
+test("a sampled caller of an owned call belongs to the area that owns the call, in sources and in the build", () => {
 	for (const frame of [
 		"commitAlone (file:///C:/w/0/atomic/packages/coding-agent/dist/core/storage/node-sqlite.js:1334:33)",
 		"commitMembers (file:///repo/packages/coding-agent/src/core/storage/node-sqlite.ts:1539:20)",
 	]) {
 		assert.equal(
-			blockOwner(block(["promiseInitHook (node:internal/async_hooks:329:3)", frame]), OWNED_ELSEWHERE),
-			"#5376 (node:sqlite statements off the event loop)",
+			blockOwner(block(["promiseInitHook (node:internal/async_hooks:329:3)", frame]), sqliteArea),
+			SQLITE_OWNER,
 		);
 	}
 });
@@ -127,7 +141,7 @@ test("a block with any stack in this code's own modules, or in two areas, is not
 					},
 				],
 			},
-			OWNED_ELSEWHERE,
+			sqliteArea,
 		),
 		undefined,
 	);
@@ -139,6 +153,6 @@ test("a block with any stack in this code's own modules, or in two areas, is not
 		["closeSync (node:fs:1:1)", "close (file:///pkg/dist/core/storage/node-sqlite.js:465:5)"],
 		["prepare (node:sqlite:1:1)", "(anonymous) (file:///pkg/dist/core/storage/node-sqlite.js:1175:30)"],
 	]) {
-		assert.equal(blockOwner(block(frames), OWNED_ELSEWHERE), undefined);
+		assert.equal(blockOwner(block(frames), sqliteArea), undefined);
 	}
 });

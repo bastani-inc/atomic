@@ -351,8 +351,9 @@ test.each(["node-sqlite", "libsql"] as const)(
  * batch or their blob is large, and the turns of the event loop between them. Such a statement is a write transaction
  * (recorded when its callback ends, with the statements it ran), a statement that walks sessions outside a write
  * transaction, and a read of a blob's bytes. A turn counts while no transaction is open; not while a transaction waits
- * for the write lock or commits. A turn while the callback of a write transaction runs, which holds the write lock, is
- * recorded apart (#5530).
+ * for the write lock or commits. A turn the collection gives while the callback of a write transaction runs, which
+ * holds the write lock, is recorded apart (#5530); one while a statement the callback sent has not answered yet, as it
+ * runs on its connection's thread (#5376), is the statement's, not one the collection gave.
  */
 function heavyStatementTimeline(database: SqliteDatabase) {
 	const events: string[] = [];
@@ -360,10 +361,13 @@ function heavyStatementTimeline(database: SqliteDatabase) {
 	let transactions = 0;
 	let callbacks = 0;
 	let turnsHoldingTheWriteLock = 0;
+	/** Statements a write transaction's callback sent that have not answered yet. */
+	let running = 0;
 	const tick = () => {
 		if (!armed) return;
-		if (callbacks > 0) turnsHoldingTheWriteLock++;
-		else if (transactions === 0) events.push("turn");
+		if (callbacks > 0) {
+			if (running === 0) turnsHoldingTheWriteLock++;
+		} else if (transactions === 0) events.push("turn");
 		setImmediate(tick);
 	};
 	// The statement that walks sessions follows their open leaves, which no other statement names.
@@ -382,6 +386,22 @@ function heavyStatementTimeline(database: SqliteDatabase) {
 		all: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
 			note(sql, await executor.all<T>(sql, ...params)),
 	});
+	const answered = async <T>(statement: Promise<T>): Promise<T> => {
+		running++;
+		try {
+			return await statement;
+		} finally {
+			running--;
+		}
+	};
+	const counted = (executor: SqliteExecutor): SqliteExecutor => ({
+		exec: (sql) => answered(executor.exec(sql)),
+		run: (sql: string, ...params: readonly SqliteValue[]) => answered(executor.run(sql, ...params)),
+		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+			answered(executor.get<T>(sql, ...params)),
+		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+			answered(executor.all<T>(sql, ...params)),
+	});
 	const wrapped: SqliteDatabase = {
 		...wrap(database),
 		descriptor: database.descriptor,
@@ -392,7 +412,7 @@ function heavyStatementTimeline(database: SqliteDatabase) {
 				return await database.transaction(async (transaction) => {
 					callbacks++;
 					try {
-						return await callback(wrap(transaction));
+						return await callback(wrap(counted(transaction)));
 					} finally {
 						callbacks--;
 						if (armed) events.push("write transaction");

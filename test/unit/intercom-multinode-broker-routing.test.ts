@@ -11,7 +11,7 @@ import {
 	type SqliteRow,
 	type SqliteValue,
 } from "@bastani/atomic/storage";
-import { afterEach, test, vi } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import {
@@ -72,6 +72,7 @@ import {
 	type SharedStoreFixture,
 } from "../helpers/intercom-multinode-contract.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
+import { type ConnectionRequestTracker, trackConnectionRequests } from "../helpers/sqlite-connection-requests.js";
 
 /**
  * S5 (specs/2026-10-19-intercom-multi-node.md §12, §14): in-process brokers that share one SQLite file route sends
@@ -708,8 +709,21 @@ async function advanceUntil<T>(
  */
 async function settleFileIo(): Promise<void> {
 	do await new Promise((resolveTurn) => setImmediate(resolveTurn));
-	while (process.getActiveResourcesInfo().some((kind) => kind.startsWith("FSReq")));
+	while (
+		process.getActiveResourcesInfo().some((kind) => kind.startsWith("FSReq")) ||
+		// A connection answers on its own thread, on a real turn too (#5376).
+		(connectionRequests?.pending ?? 0) > 0
+	);
 }
+
+let connectionRequests: ConnectionRequestTracker | undefined;
+beforeEach(() => {
+	connectionRequests = trackConnectionRequests();
+});
+afterEach(() => {
+	connectionRequests?.restore();
+	connectionRequests = undefined;
+});
 
 test("a lost outcome hint for a held send is noticed by the outcome poll before the hold times out", async () => {
 	assert.ok(MULTI_NODE_OUTCOME_POLL_INTERVAL_MS < RESTORING_RECIPIENT_HOLD_MS);

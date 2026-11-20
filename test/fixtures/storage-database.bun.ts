@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { registerSqliteDatabaseConformance } from "../../packages/coding-agent/src/core/storage/testing.js";
+import { observeRowsAndFailures } from "../helpers/node-sqlite-observations.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
 
@@ -33,6 +34,19 @@ test.skipIf(!existsSync("/proc/self/fd"))("close releases the database files aft
 		await database.close();
 		assert.deepEqual(openFilesUnder(directory), []);
 	} finally {
+		removeTempDirectory(directory);
+	}
+});
+
+test("rows and driver errors cross from a connection's thread as they come from one on the calling thread (#5376)", async () => {
+	const directory = makeTempDirectory("atomic-storage-");
+	const threaded = await openNodeSqliteDatabase(join(directory, "database.sqlite"));
+	const inMemory = await openNodeSqliteDatabase(":memory:");
+	try {
+		assert.deepStrictEqual(await observeRowsAndFailures(threaded), await observeRowsAndFailures(inMemory));
+	} finally {
+		await threaded.close();
+		await inMemory.close();
 		removeTempDirectory(directory);
 	}
 });
