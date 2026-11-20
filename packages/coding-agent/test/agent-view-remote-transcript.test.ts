@@ -473,4 +473,47 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 			await view.dispose();
 		}
 	});
+
+	test("what the dock draws from the engine is asked for while it is held, so the subagent is shown with it", async () => {
+		const view = await tasksOpen();
+		try {
+			// Like the panel the engine draws: once /tasks is closed, its rows come one frame after it is first drawn.
+			const editor = view.ui.mode.editor as unknown as Text;
+			const render = editor.render.bind(editor);
+			let closed = false;
+			let asked = false;
+			let ready = false;
+			editor.render = (width: number) => {
+				if (closed && !asked) {
+					asked = true;
+					queueMicrotask(() => {
+						ready = true;
+						view.ui.tui.requestRender();
+					});
+				}
+				return [...render(width), ...(ready ? ["panel row"] : [])];
+			};
+			view.ui.screen();
+			view.engine.holdCommands();
+			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true });
+			view.closeTasks();
+			closed = true;
+			view.ui.screen();
+			await flush();
+			// The first frame painted once the subagent is shown.
+			let shown: string[] | undefined;
+			view.engine.switcher.onPending((_pending, settled) => {
+				if (settled?.outcome === "shown")
+					queueMicrotask(() => {
+						shown ??= view.ui.screen();
+					});
+			});
+			view.engine.releaseCommands();
+			await vi.waitFor(() => assert.ok(shown !== undefined), FRAME_WAIT);
+			assert.ok(has(shown ?? [], /sub line 30$/), shown?.join("\n"));
+			assert.deepEqual(shown?.slice(-3), ["❯ prompt", "panel row", "footer"]);
+		} finally {
+			await view.dispose();
+		}
+	});
 });

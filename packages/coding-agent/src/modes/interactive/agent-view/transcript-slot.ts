@@ -140,7 +140,7 @@ class HeldDockRows implements Component {
 	private readonly lines: string[];
 	/** Whether the screen is still the one the rows were painted on, at the same size. */
 	private readonly sameScreen: (width: number) => boolean;
-	/** The dock drawn live, for a frame of another size before the hold has ended. */
+	/** The dock drawn live: unseen while held, and shown for a frame of another size before the hold has ended. */
 	private readonly live: (width: number) => string[];
 	private readonly onEnd: () => void;
 
@@ -157,9 +157,12 @@ class HeldDockRows implements Component {
 	}
 
 	render(width: number): string[] {
+		// The live dock is drawn too, unseen: what it shows from the engine (the panel) asks for its frames now, and
+		// has them when the hold ends rather than one paint later.
+		const live = this.live(width);
 		if (this.sameScreen(width)) return this.lines;
 		this.onEnd();
-		return this.live(width);
+		return live;
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
