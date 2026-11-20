@@ -20,6 +20,8 @@
 - Extension commands, such as `/agents`, no longer flash an empty prompt before their view opens: the typed command stays on screen until the command shows something or anything else appears on the screen, until it finishes or you press a key, and for at most 250 ms ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
 - `/share` shows its progress as soon as you press Enter, and Esc cancels it at any step, also while it checks `gh` and exports the session ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
 - `/share` no longer uploads another session when the session changes while it checks `gh`, for example after `/resume` or `/new`: it stops with "Share cancelled: the session changed" ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
+- On Windows, quitting now gives the engine up to five seconds to shut down, as on Linux and macOS, so extensions' `session_shutdown` handlers run and the engine writes its `shutdown` record for `ATOMIC_EVENT_LOOP_BLOCK_MS`. Before, the engine was ended at once. A quit now waits for that shutdown work, up to the five seconds ([#6075](https://github.com/bastani-inc/atomic/issues/6075)).
+- When Atomic stops its engine, to quit or to restart an unresponsive one, notifications and events the engine sends while it shuts down no longer reach the interface, and a message the engine had already taken is no longer treated as never sent ([#6075](https://github.com/bastani-inc/atomic/issues/6075)).
 
 ## [0.10.1] - 2026-11-20
 

@@ -120,6 +120,8 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
  */
 export const ENGINE_SHUTDOWN_GRACE_MS = 5_000;
 const RPC_CHILD_SHUTDOWN_GRACE_MS = 250;
+/** How long the engine's guardian, and on Windows a tree kill, may take to end the engine. */
+const ENGINE_KILL_STEP_MS = 500;
 /**
  * How long a force-killed child may take to have its exit reported before stop
  * declares it unkillable. On Windows SIGTERM and SIGKILL both become
@@ -137,7 +139,25 @@ async function exitsWithin(exited: Promise<void>, ms: number): Promise<boolean> 
 	}
 }
 
-export async function terminateRpcClientProcess(child: ChildProcess, processTree: boolean): Promise<void> {
+/**
+ * Stop `child`: ask it to end, give it a bounded grace period, then escalate to the engine's guardian and a kill.
+ *
+ * The ask is SIGTERM, which a started engine handles by running its shutdown. On Windows Node ends a process at
+ * once for any signal, so there an engine stopped with `graceful` has its stdin closed instead: every engine version
+ * treats the end of its input as the end of its session and shuts down as it does on SIGTERM elsewhere. Pass
+ * `graceful` only for an engine that has reported ready; before that it handles neither, and a SIGTERM ends it at
+ * once on every platform.
+ *
+ * `shutdownComplete` settles when such an engine says its shutdown has run. It is then given
+ * {@link ENGINE_KILL_STEP_MS} to exit and otherwise ended alone, rather than waited for while the runtime does its
+ * own exit work, such as writing a compile cache, which can take seconds on Windows.
+ */
+export async function terminateRpcClientProcess(
+	child: ChildProcess,
+	processTree: boolean,
+	graceful = false,
+	shutdownComplete?: Promise<void>,
+): Promise<void> {
 	await removeOwnedInteractiveEngineBootstrapAsync(bootstrapHandles.get(child));
 	if (child.exitCode !== null || child.signalCode !== null) return;
 	let resolveExit!: () => void;
@@ -146,24 +166,68 @@ export async function terminateRpcClientProcess(child: ChildProcess, processTree
 	});
 	child.once("exit", resolveExit);
 	const guardianFile = guardianFiles.get(child);
-	child.kill("SIGTERM");
-	if (await exitsWithin(exited, processTree ? ENGINE_SHUTDOWN_GRACE_MS : RPC_CHILD_SHUTDOWN_GRACE_MS)) {
-		if (guardianFile) await rm(guardianFile, { force: true });
+	const inputClosed = graceful && processTree && process.platform === "win32" && child.stdin !== null;
+	// Closing stdin, unlike a signal on Windows, has not ended the engine through its handle: on that path the kill
+	// follows the guardian's window even when its stop file cannot be written, or not in time, and a write still
+	// pending then is cleaned up once it settles rather than holding up the stop.
+	let stopFileWrite: Promise<void> | undefined;
+	let stopFileWritePending = false;
+	const removeGuardianFile = async (): Promise<void> => {
+		if (!guardianFile) return;
+		if (stopFileWritePending) void stopFileWrite?.then(() => rm(guardianFile, { force: true })).catch(() => {});
+		else await rm(guardianFile, { force: true });
+	};
+	if (inputClosed) child.stdin?.end();
+	else child.kill("SIGTERM");
+	let shutDown = false;
+	const ended =
+		inputClosed && shutdownComplete
+			? Promise.race([
+					exited,
+					shutdownComplete.then(() => {
+						shutDown = true;
+					}),
+				])
+			: exited;
+	if (await exitsWithin(ended, processTree ? ENGINE_SHUTDOWN_GRACE_MS : RPC_CHILD_SHUTDOWN_GRACE_MS)) {
+		if (shutDown && !(await exitsWithin(exited, ENGINE_KILL_STEP_MS))) {
+			// Only the runtime's own exit work is left. End the engine alone, through its handle: its own exit would
+			// have left any process it started running too.
+			child.kill("SIGKILL");
+			if (!(await exitsWithin(exited, KILLED_CHILD_EXIT_REPORT_MS))) {
+				throw new Error(`Agent process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
+			}
+		}
+		await removeGuardianFile();
 		return;
 	}
 	if (processTree && guardianFile) {
-		await writeFile(guardianFile, "stop");
-		if (await exitsWithin(exited, 500)) {
-			await rm(guardianFile, { force: true });
+		const written = writeFile(guardianFile, "stop");
+		if (inputClosed) {
+			stopFileWritePending = true;
+			const settled = () => {
+				stopFileWritePending = false;
+			};
+			stopFileWrite = written.then(settled, settled);
+		} else await written;
+		if (await exitsWithin(exited, ENGINE_KILL_STEP_MS)) {
+			await removeGuardianFile();
 			return;
 		}
 	}
 	if (processTree && child.pid) killProcessTree(child.pid);
 	else child.kill("SIGKILL");
-	if (!(await exitsWithin(exited, KILLED_CHILD_EXIT_REPORT_MS))) {
+	let reportMs = KILLED_CHILD_EXIT_REPORT_MS;
+	// The tree kill runs taskkill on Windows, which can fail or take long; then the handle ends the engine, within
+	// the same overall bound.
+	if (inputClosed && !(await exitsWithin(exited, ENGINE_KILL_STEP_MS))) {
+		reportMs -= ENGINE_KILL_STEP_MS;
+		child.kill("SIGKILL");
+	}
+	if (!(await exitsWithin(exited, reportMs))) {
 		throw new Error(`Agent process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
 	}
-	if (guardianFile) await rm(guardianFile, { force: true });
+	await removeGuardianFile();
 }
 
 export function createInteractiveJsonlOptions(enabled: boolean): { maxBytesPerTurn?: number } {

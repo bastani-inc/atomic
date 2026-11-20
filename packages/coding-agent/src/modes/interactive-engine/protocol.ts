@@ -75,6 +75,11 @@ export type InteractiveEngineMessage =
 	| { type: "engine_trust_decision"; scope: keyof SessionTrustDecisions; path: string; trusted: boolean }
 	/** The child recorded `engine_explicit_quit`; it is safe for the host to stop it. */
 	| { type: "engine_explicit_quit_ack" }
+	/**
+	 * The child ran its shutdown after its input ended and is about to exit. What remains is the runtime's own exit
+	 * work, such as writing its compile cache, which the host need not wait for.
+	 */
+	| { type: "engine_shutdown_complete" }
 	| { type: "engine_resources_ready" }
 	/** `decisionError`: a refused decision-model setting, kept typed so the host can stop as startup does. */
 	| { type: "engine_resources_failed"; message: string; decisionError?: SerializedDecisionError }
@@ -520,6 +525,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				: undefined;
 		case "engine_project_trust_resolved":
 		case "engine_explicit_quit_ack":
+		case "engine_shutdown_complete":
 		case "engine_extension_ui_reset":
 			return { type: value.type };
 		case "engine_resources_ready":

@@ -293,7 +293,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.queuePause = new RemoteQueuePause(client);
 		this.sessionStats = new EngineSessionStats(client);
 		this.health = new EngineHealthController({
-			stop: () => this.client.stop(),
+			stop: (options) => this.client.stop(options),
 			restart: async (replacementReady) => {
 				this.engineRecoveryFailure = undefined;
 				try {
@@ -1098,14 +1098,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.stopSharingDebugSetting();
 		this.disposePromise = (async () => {
 			// A quit the user asked for must reach the engine before it is stopped: the stop
-			// is a SIGTERM, which the engine cannot tell from this process being signalled.
+			// is a SIGTERM or, on Windows, the end of its input, which the engine cannot tell
+			// from this process being signalled or ending.
 			// Optional like the other transport surfaces focused test doubles omit.
 			const unrecordedQuit = !options?.fromSignal && (await this.client.announceExplicitQuit?.()) === false;
+			// A quit lets the engine run its extensions' shutdown on every platform. After a
+			// signal, Windows still ends the engine at once.
+			const stop = { graceful: !options?.fromSignal };
 			// EngineHealthController owns the first client stop and joins recovery.
-			await this.health.shutdown();
+			await this.health.shutdown(stop);
 			// A replacement may have spawned while shutdown joined recovery; the
 			// idempotent trailing stop closes that child before disposal returns.
-			await this.client.stop();
+			await this.client.stop(stop);
 			if (unrecordedQuit) {
 				// No engine child recorded the quit, so none released Herdr's registration, and a replacement started
 				// during recovery may have registered again. Every child is stopped now; this host loads no Herdr reporter.
