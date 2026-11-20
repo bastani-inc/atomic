@@ -866,6 +866,77 @@ test(
 	RESTART_TEST_TIMEOUT_MS,
 );
 
+/** The bytes the broker's store keeps for messages for `childName`, as written there. */
+async function keptFor(host: Host, childName: string): Promise<{ readonly bytes: number; readonly rows: number }> {
+	const { DatabaseSync } = await import("node:sqlite");
+	const store = new DatabaseSync(getBrokerEndedChildQueuePath(host.agentDir), { readOnly: true });
+	try {
+		const row = store
+			.prepare(
+				`SELECT COALESCE(SUM(LENGTH(CAST(b.request_json AS BLOB)) + LENGTH(CAST(q.sender_json AS BLOB))), 0) AS bytes,
+					COUNT(*) AS rows
+				 FROM intercom_ended_child_queue q JOIN intercom_ended_child_bodies b ON b.message_id = q.message_id
+				 WHERE q.child_key = ?`,
+			)
+			.get(childName) as { bytes: number; rows: number };
+		return { bytes: Number(row.bytes), rows: Number(row.rows) };
+	} finally {
+		store.close();
+	}
+}
+
+test(
+	"messages delivered while another process held the store's lock still count against their subagent's 32 MiB until their rows go, which they do once it is free",
+	async () => {
+		const host = new Host();
+		await host.start();
+		const ownerSession = await owner(host, "held");
+		const childName = "subagent-worker-held-1";
+		await endedChild(host, ownerSession, childName, "stopped");
+		const sender = await connect(host, "held-sender");
+		const fill = async (label: string, count: number): Promise<number> => {
+			let queued = 0;
+			for (let index = 0; index < count; index++) {
+				const result = await sender.client.send(childName, {
+					text: `${label}${index} ${"x".repeat(1024 * 1024 - 64)}`,
+					wakeEndedRecipient: true,
+				});
+				if (result.queued === true) queued += 1;
+			}
+			return queued;
+		};
+		assert.equal(await fill("first-", 30), 30);
+		// Another process holds the store's write lock while the subagent is continued and confirms each message: the
+		// broker's deletes of their rows wait out the lock, and fail.
+		const { DatabaseSync } = await import("node:sqlite");
+		const other = new DatabaseSync(getBrokerEndedChildQueuePath(host.agentDir));
+		other.exec("BEGIN IMMEDIATE");
+		let child: Session;
+		try {
+			child = await resume(host, ownerSession, childName);
+			await vi.waitFor(() => assert.equal(child.received.length, 30), WAIT);
+			await sleep(6_000);
+		} finally {
+			other.exec("ROLLBACK");
+			other.close();
+		}
+		// It is paused again; once the broker's writes go through again (its lock wait over), as much is sent again.
+		await child.client.disconnect();
+		await untilGone(ownerSession.client, child.sessionId);
+		await markEnded(ownerSession, childName, "stopped");
+		await sleep(5_000);
+		await fill("second-", 30);
+		const kept = await keptFor(host, childName);
+		assert.ok(kept.bytes <= 33 * 1024 * 1024, `${kept.bytes} bytes kept for one subagent`);
+		// The delivered rows are gone; the subagent's queue takes as much as fits again.
+		await vi.waitFor(
+			async () => assert.ok((await keptFor(host, childName)).rows <= 30, "only the second messages are kept"),
+			WAIT,
+		);
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
 test(
 	"a store that cannot be opened keeps the queue in memory, and a restart tells each sender once that it was lost (#5999)",
 	async () => {

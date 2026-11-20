@@ -470,3 +470,28 @@ test("after a write waits out another process's lock and the next is refused at 
 	}
 	assert.ok(stalled < 50, `the event loop stalled for ${stalled.toFixed(1)} ms`);
 }, 30_000);
+
+test("the store still gives its disk space back after another process held its write lock", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const database = await openNodeSqliteDatabase(path, { lockWaitMs: 300 });
+	const store = await openSqlEndedChildQueueStore(
+		{ database, prefix: "" },
+		{ home: "local", holder: "broker-1", lockWaitMs: 300, compact: true },
+	);
+	// Another process holds the write lock: a message's write waits for it, and fails.
+	const { DatabaseSync } = await import("node:sqlite");
+	const other = new DatabaseSync(path);
+	other.exec("BEGIN IMMEDIATE");
+	await assert.rejects(store.add(entry("refused")));
+	other.exec("ROLLBACK");
+	other.close();
+	// Once the breaker's wait is over, a queue fills and drains: its space is given back as before.
+	await sleep(400);
+	await fillAndDrain(store, 8);
+	await vi.waitFor(() => assert.ok(onDisk(path) < 4 * 1024 * 1024, `still ${onDisk(path)} bytes`), {
+		timeout: 20_000,
+		interval: 50,
+	});
+	await store.close();
+	await database.close();
+});

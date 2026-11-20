@@ -16,6 +16,7 @@ import type { Message } from "../types.js";
 import type { SubagentEndedOutcome } from "./recipient-gone-errors.js";
 import type {
 	EndedChildQueueStore,
+	EndedQueueCounted,
 	EndedQueueEntry,
 	EndedQueueRow,
 	EndedWakeBudgetEvent,
@@ -295,6 +296,14 @@ export class DurableEndedQueue {
 	/** The sender as the send handler took `held`: a restarted broker delivers it as that sender. */
 	private senderOf(held: HeldSend): BrokerConnectedSession | undefined {
 		return senderAtReceipt(held.clientMessage as SendClientMessage);
+	}
+
+	/**
+	 * What the caps count of the store: the rows kept for `departure`'s subagent, and all of them, never less than it
+	 * holds (see `EndedChildQueueStore.counted`). Undefined while only memory keeps the queue.
+	 */
+	storedCounts(departure: JournalDeparture): EndedQueueCounted | undefined {
+		return this.store?.counted(departureKeyOf(departure));
 	}
 
 	/**

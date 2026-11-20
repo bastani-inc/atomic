@@ -107,6 +107,7 @@ import {
 	type WakeSender,
 } from "./departed-children.js";
 import {
+	EndedChildQueueFullError,
 	EndedChildWakeBudget,
 	type EndedChildWakeFailure,
 	type EndedChildWakeRequest,
@@ -429,8 +430,9 @@ class IntercomBroker {
       ownerHost: (ownerSessionId) => this.sessions.get(ownerSessionId)?.registrationReturnAddress,
       journal: this.endedQueue.journal,
       evicted: (sends) => this.dispatchHeldSends(sends),
-      // Durable wake queue: the caps count what a message takes in the store.
+      // Durable wake queue: the caps count what a message takes in the store, and what the store keeps.
       storedBytes: (held) => this.endedQueue.storedBytes(held),
+      storedCounts: (departure) => this.endedQueue.storedCounts(departure),
     },
   );
   /** Return paths: who may answer a sender outside its groups that wrote to it. */
@@ -2393,7 +2395,11 @@ class IntercomBroker {
             type: "delivery_failed",
             messageId: held.messageId,
             ...attempt,
-            reason: `Intercom could not keep this message for ${held.clientMessage.to.trim()} until it is continued (${why}); it was not queued. Send it again.`,
+            // The store had no room left for it: refused as for a full queue.
+            reason:
+              error instanceof EndedChildQueueFullError && error.reason !== undefined
+                ? error.reason
+                : `Intercom could not keep this message for ${held.clientMessage.to.trim()} until it is continued (${why}); it was not queued. Send it again.`,
           });
         } else if (early !== undefined) answerEarly(early);
         // Already on its way to the subagent: its outcome answers it.

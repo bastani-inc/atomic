@@ -9,6 +9,7 @@ import {
 	ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX,
 	ENDED_CHILD_WAKE_ANSWER_MS,
 	ENDED_CHILD_WAKE_START_MAX_MS,
+	EndedChildQueueFullError,
 	type EndedChildWakeBudget,
 	isMaybeDelivered,
 	type EndedChildWakeFailure,
@@ -141,6 +142,12 @@ export interface DepartedChildrenWakeHooks {
 	 * caps count; undefined while only memory keeps the queue, where they count its text.
 	 */
 	readonly storedBytes?: (held: HeldSend) => number | undefined;
+	/**
+	 * Durable wake queue: what the store keeps for the departure's subagent (`child`) and in all (`total`), counted from
+	 * the store itself: rows of messages handed over and not confirmed yet, of failures kept for their senders, and of
+	 * deletes that failed count too, until their rows are gone. Undefined while only memory keeps the queue.
+	 */
+	readonly storedCounts?: (departure: JournalDeparture) => { readonly child: number; readonly total: number } | undefined;
 }
 
 /** Durable wake queue: one departure, as its rows name it. */
@@ -716,20 +723,28 @@ export class DepartedChildren {
 		if (this.queuedIds.has(held.messageId)) return { kind: "queued", target: queue, duplicate: true };
 		const ownerHere = !this.orphans.has(departure) && hooks.ownerLive(departure.ownerSessionId);
 		const target = targetOf(held);
+		// Durable wake queue: its rows are keyed by its owner's host session, as known now.
+		if (departure.ownerHost === undefined) departure.ownerHost = hooks.ownerHost?.(departure.ownerSessionId);
 		// Nobody waits on a queued message any more, so the queue is bounded by count and bytes, per child and in all: the
-		// bytes it takes where it is kept.
+		// bytes it takes where it is kept. What the store keeps counts, never less: also what is still on its way out of it
+		// (a delete that failed, a message handed over and not confirmed), what an earlier broker kept and is not taken
+		// up yet, and what two departures of the child merged into one hold (over its cap, it takes nothing new until it
+		// drains below).
 		const stored = hooks.storedBytes?.(held);
 		if (stored !== undefined) queuedBytesOf.set(held, stored);
 		const bytes = queuedMessageBytes(held);
+		const counted = hooks.storedCounts?.(this.journalDeparture(departure));
+		const waiting = Math.max(departure.queuedBytes, counted?.child ?? 0);
+		const kept = Math.max(this.queuedBytesTotal, counted?.total ?? 0);
 		const full =
 			departure.queued.length >= MAX_HELD_SENDS
 				? `${MAX_HELD_SENDS} messages already wait for it`
 				: bytes > ENDED_CHILD_QUEUE_BYTES_MAX
 					? `it takes ${mebibytes(bytes)} where it is kept, more than the ${mebibytes(ENDED_CHILD_QUEUE_BYTES_MAX)} that can wait for one subagent`
-					: departure.queuedBytes + bytes > ENDED_CHILD_QUEUE_BYTES_MAX
-					? `${mebibytes(departure.queuedBytes)} of messages already wait for it`
-					: this.queuedBytesTotal + bytes > ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX
-						? `Intercom already keeps ${mebibytes(this.queuedBytesTotal)} of messages for subagents that ended`
+					: waiting + bytes > ENDED_CHILD_QUEUE_BYTES_MAX
+					? `${mebibytes(waiting)} of messages already wait for it`
+					: kept + bytes > ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX
+						? `Intercom already keeps ${mebibytes(kept)} of messages for subagents that ended`
 						: undefined;
 		if (full !== undefined) {
 			const error = this.errorFor(departure, ended, target);
@@ -751,9 +766,23 @@ export class DepartedChildren {
 		if (messages === "wake" && ownerHere && departure.queueTimer === undefined)
 			this.armQueueTimer(departure, ENDED_CHILD_WAKE_START_MAX_MS, "it did not start in time");
 		this.enqueue(departure, held, sender, messages);
-		if (departure.ownerHost === undefined) departure.ownerHost = hooks.ownerHost?.(departure.ownerSessionId);
-		const kept = hooks.journal?.queued(held, this.journalDeparture(departure));
-		return { kind: "queued", target: queue, ...(wake === undefined ? {} : { wake }), ...(kept === undefined ? {} : { kept }) };
+		// The store may have no room left for it after all (its file's backstop): its sender is told as for a full queue.
+		const written = hooks.journal?.queued(held, this.journalDeparture(departure));
+		const refusedFull = (error: unknown): never => {
+			if (!(error instanceof EndedChildQueueFullError)) throw error;
+			const gone = this.errorFor(departure, ended, target);
+			throw new EndedChildQueueFullError(
+				error,
+				`${gone.message} The message was not queued for it: Intercom already keeps ${mebibytes(ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX)} of messages for subagents that ended.`,
+			);
+		};
+		const keptAs = written?.catch(refusedFull);
+		return {
+			kind: "queued",
+			target: queue,
+			...(wake === undefined ? {} : { wake }),
+			...(keptAs === undefined ? {} : { kept: keptAs }),
+		};
 	}
 
 	/** Durable wake queue: put `held` at the end of the child's queue, counted and findable by its message id. */

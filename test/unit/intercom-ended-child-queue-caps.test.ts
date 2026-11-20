@@ -1,0 +1,406 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import type net from "node:net";
+import { join } from "node:path";
+import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
+import { afterEach, test, vi } from "vitest";
+import {
+	DepartedChildren,
+	type EndedChildMark,
+	type WakeSender,
+} from "../../packages/intercom/broker/departed-children.js";
+import { DurableEndedQueue } from "../../packages/intercom/broker/durable-ended-queue.js";
+import {
+	ENDED_CHILD_QUEUE_BYTES_MAX,
+	ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX,
+	EndedChildWakeBudget,
+	type EndedChildWakeFailure,
+} from "../../packages/intercom/broker/ended-child-wakes.js";
+import type { HeldSend } from "../../packages/intercom/broker/restoring-recipients.js";
+import {
+	type BrokerConnectedSession,
+	detachSend,
+	type SendClientMessage,
+} from "../../packages/intercom/broker/send-handler.js";
+import {
+	type EndedChildQueueStore,
+	openLocalEndedChildQueueStore,
+	openSqlEndedChildQueueStore,
+} from "../../packages/intercom/broker/sql-ended-child-queue-store.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+
+/**
+ * Durable wake queue: the 32 MiB per-subagent and 256 MiB per-broker caps hold for what the store keeps on disk, also
+ * when a delivered message's row cannot be deleted at once, while a restarted broker reads what an earlier one kept,
+ * and when two departures of one subagent merge. The broker's own wiring of the queue and its departures, on a real
+ * node:sqlite store.
+ */
+
+const OWNER = "owner-session";
+const HOST = "owner-host";
+const MiB = 1024 * 1024;
+/** About 1 MiB where it is kept: its text, and its frame and sender as JSON. */
+const TEXT = "x".repeat(MiB - 1024);
+
+const directories: string[] = [];
+const cleanups: Array<() => Promise<void>> = [];
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0)) await cleanup().catch(() => {});
+	for (const directory of directories.splice(0)) removeTempDirectory(directory);
+});
+
+function storePath(): string {
+	const made = makeTempDirectory("ended-child-queue-caps-");
+	directories.push(made);
+	return join(made, "ended-child-queue.sqlite");
+}
+
+function wakeSender(id: string, groups = ["default"]): WakeSender & BrokerConnectedSession {
+	return {
+		id,
+		info: { id, name: id, cwd: "/repo", model: "m", pid: 1, startedAt: 1, lastActivity: 1, groups },
+		waker: { id, name: id },
+		socket: {} as net.Socket,
+		registrationReturnAddress: `${id}-host`,
+	} as WakeSender & BrokerConnectedSession;
+}
+
+/** A send to `child` that asks to wake it, as the broker took it from `sender`. */
+function send(child: string, sender: BrokerConnectedSession, text = TEXT): HeldSend {
+	const messageId = randomUUID();
+	const clientMessage = {
+		type: "send",
+		to: child,
+		wakeEndedRecipient: true,
+		message: { id: messageId, timestamp: 1, content: { text } },
+	} as unknown as SendClientMessage;
+	detachSend(clientMessage, sender);
+	return {
+		socket: sender.socket,
+		senderId: sender.info.id,
+		messageId,
+		clientMessage: clientMessage as HeldSend["clientMessage"],
+		senderReturnAddress: sender.registrationReturnAddress,
+	};
+}
+
+function paused(childName: string, group = "default"): EndedChildMark {
+	return { childName, group, aliases: [], outcome: "stopped", childId: `${childName}:0`, messages: "hold" };
+}
+
+/**
+ * A broker's queue of messages for subagents that ended, kept in the store at `path`, and its departures, wired as the
+ * broker wires them. `lockWaitMs`: how long a write waits for another process's write lock.
+ */
+async function broker(path: string, options: { lockWaitMs?: number; whileLoading?: true } = {}) {
+	const lockWaitMs = options.lockWaitMs ?? 5_000;
+	const database = await openNodeSqliteDatabase(path, { busyTimeoutMs: lockWaitMs, lockWaitMs });
+	let store: EndedChildQueueStore | undefined;
+	const failed: EndedChildWakeFailure[] = [];
+	const budget = new EndedChildWakeBudget();
+	const queue = new DurableEndedQueue({
+		openStore: async () => {
+			store = await openSqlEndedChildQueueStore(
+				{ database, prefix: "" },
+				{ home: "local", holder: randomUUID(), ownsDatabase: true, lockWaitMs, compact: true },
+			);
+			return store;
+		},
+		retireStore: () => {},
+		budget,
+		delivered: () => "unknown",
+		log: () => {},
+	});
+	cleanups.push(() => queue.close());
+	const live = new Set<string>([OWNER]);
+	const departed: DepartedChildren = new DepartedChildren(() => {}, undefined, undefined, undefined, {
+		failed: (failures) => failed.push(...failures),
+		budget,
+		ownerLive: (id) => live.has(id),
+		ownerHost: (id) => (live.has(id) ? HOST : undefined),
+		journal: queue.journal,
+		storedBytes: (held) => queue.storedBytes(held),
+		storedCounts: (departure) => queue.storedCounts(departure),
+	});
+	await queue.decide((restored) => departed.restore(restored.queues, () => OWNER));
+	assert.equal(queue.durable, true, "the store opened");
+	// As the broker does: sends wait until what an earlier broker kept is taken up again; only a test of that window
+	// goes on at once.
+	if (options.whileLoading !== true) await queue.untilLoaded();
+	return { database, queue, departed, failed, live };
+}
+
+/** The bytes the store keeps for messages, as written there (all of them, or those for one subagent). */
+async function storedOnDisk(path: string, child?: string): Promise<number> {
+	const { DatabaseSync } = await import("node:sqlite");
+	const reader = new DatabaseSync(path, { readOnly: true });
+	try {
+		const row = reader
+			.prepare(
+				`SELECT COALESCE(SUM(LENGTH(CAST(b.request_json AS BLOB)) + LENGTH(CAST(q.sender_json AS BLOB))), 0) AS bytes
+				 FROM intercom_ended_child_queue q JOIN intercom_ended_child_bodies b ON b.message_id = q.message_id
+				 ${child === undefined ? "" : "WHERE q.child_key = ?"}`,
+			)
+			.get(...(child === undefined ? [] : [child])) as { bytes: number };
+		return row.bytes;
+	} finally {
+		reader.close();
+	}
+}
+
+async function rowsOnDisk(path: string, messageIds: readonly string[]): Promise<number> {
+	const { DatabaseSync } = await import("node:sqlite");
+	const reader = new DatabaseSync(path, { readOnly: true });
+	try {
+		let found = 0;
+		for (const id of messageIds)
+			if (reader.prepare("SELECT 1 FROM intercom_ended_child_queue WHERE message_id = ?").get(id) !== undefined)
+				found += 1;
+		return found;
+	} finally {
+		reader.close();
+	}
+}
+
+/** Send `count` messages of about 1 MiB to `child`; returns the kept promises of those queued and the refusals. */
+function sendMany(
+	departed: DepartedChildren,
+	child: string,
+	from: WakeSender & BrokerConnectedSession,
+	count: number,
+	text = TEXT,
+) {
+	const kept: Array<Promise<unknown>> = [];
+	const refusals: string[] = [];
+	const queued: string[] = [];
+	for (let index = 0; index < count; index++) {
+		const held = send(child, from, text);
+		const admission = departed.admitWake(child, from, held);
+		if (admission.kind === "queued") {
+			queued.push(held.messageId);
+			if (admission.kept !== undefined) kept.push(admission.kept);
+		} else if (admission.kind === "refused") refusals.push(admission.reason);
+		else assert.fail(`not decided as a queued send: ${admission.kind}`);
+	}
+	return { kept, refusals, queued };
+}
+
+test("a delivered message whose row another process's lock kept from being deleted counts against its subagent's 32 MiB until the delete, retried once the lock is free, goes through", async () => {
+	const path = storePath();
+	const { departed, queue } = await broker(path, { lockWaitMs: 300 });
+	const child = "subagent-worker-caps-1";
+	const sender = wakeSender("peer");
+	departed.mark(OWNER, [paused(child)]);
+	const first = sendMany(departed, child, sender, 30);
+	assert.deepEqual(first.refusals, []);
+	await Promise.all(first.kept);
+	// Another process holds the write lock while the subagent is continued and confirms each message: deleting
+	// their rows waits out the lock, and fails.
+	const { DatabaseSync } = await import("node:sqlite");
+	const other = new DatabaseSync(path);
+	other.exec("BEGIN IMMEDIATE");
+	const taken = departed.registered(child, new Set(["default"]), OWNER);
+	assert.equal(taken.length, 30);
+	queue.settled(taken.map((held) => held.messageId));
+	await sleep(900);
+	other.exec("ROLLBACK");
+	other.close();
+	// It is paused again at once, and senders send as much again: the rows still on disk count.
+	departed.mark(OWNER, [paused(child)]);
+	const second = sendMany(departed, child, sender, 30);
+	await Promise.allSettled(second.kept);
+	const kept = await storedOnDisk(path, child);
+	assert.ok(kept <= ENDED_CHILD_QUEUE_BYTES_MAX + MiB, `${kept} bytes kept for one subagent`);
+	assert.ok(second.refusals.length > 0, "the rows of delivered messages still hold the cap");
+	assert.match(second.refusals[0]!, /The message was not queued for it: \d+ MiB of messages already wait for it\./);
+	// The delete is retried once the lock is free: the delivered rows go, and the queue takes messages again.
+	await vi.waitFor(async () => assert.equal(await rowsOnDisk(path, first.queued), 0), {
+		timeout: 10_000,
+		interval: 50,
+	});
+	const third = sendMany(departed, child, sender, 1);
+	assert.deepEqual(third.refusals, [], "counted again from what is kept");
+	await Promise.all(third.kept);
+}, 60_000);
+
+test("a restarted broker counts what an earlier one kept before it queues anything: a burst while it reads them stays within 256 MiB", async () => {
+	const path = storePath();
+	// An earlier broker kept 255 messages of about 1 MiB, for 8 subagents.
+	const earlier = await openLocalEndedChildQueueStore(path, "broker-1");
+	const sender = wakeSender("peer");
+	const adds: Array<Promise<unknown>> = [];
+	for (let index = 0; index < 255; index++) {
+		const child = `subagent-worker-kept-${index % 8}`;
+		const held = send(child, sender);
+		const requestJson = JSON.stringify(held.clientMessage);
+		const senderJson = JSON.stringify({
+			info: sender.info,
+			registrationReturnAddress: sender.registrationReturnAddress,
+		});
+		adds.push(
+			earlier.add({
+				messageId: held.messageId,
+				ownerSessionId: OWNER,
+				ownerHost: HOST,
+				childKey: child,
+				child: {
+					childName: child,
+					group: "default",
+					aliases: [],
+					childId: `${child}:0`,
+					outcome: "stopped",
+					messages: "hold",
+				},
+				sender: JSON.parse(senderJson) as Record<string, unknown>,
+				request: JSON.parse(requestJson) as Record<string, unknown>,
+				requestJson,
+				senderJson,
+				bytes: Buffer.byteLength(requestJson) + Buffer.byteLength(senderJson),
+				queuedAt: Date.now(),
+			}),
+		);
+	}
+	await Promise.all(adds);
+	await earlier.close();
+	const before = await storedOnDisk(path);
+	assert.ok(before > ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX - 2 * MiB);
+	// The next broker: as soon as it decided on the store, another subagent of the owner departs, sends to it wait
+	// for the owner's verdict, and the owner reports it paused: they are queued while the kept ones are still read.
+	const { departed, queue } = await broker(path, { whileLoading: true });
+	const child = "subagent-worker-burst-1";
+	departed.depart({ ownerSessionId: OWNER, childName: child, group: "default", aliases: [] });
+	for (let index = 0; index < 10; index++) {
+		const held = send(child, sender);
+		assert.equal(departed.admit(child, sender, held, true, sender).kind, "held");
+	}
+	const marked = departed.mark(OWNER, [paused(child)]);
+	await Promise.allSettled(marked.queued.map((queued) => queued.kept));
+	await queue.untilLoaded();
+	const kept = await storedOnDisk(path);
+	assert.ok(kept <= ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX + MiB, `${kept} bytes kept in all`);
+	assert.ok(marked.refused.length > 0);
+	assert.match(
+		marked.refused[0]!.reason ?? "",
+		/The message was not queued for it: Intercom already keeps \d+ MiB of messages for subagents that ended\./,
+	);
+}, 120_000);
+
+test("two departures of one subagent, merged when its launching session comes back, never keep more than its 32 MiB, and a merge keeps every message it took", async () => {
+	const path = storePath();
+	const { departed, failed, live } = await broker(path);
+	const child = "subagent-worker-merge-1";
+	// The same host session, connected twice at once (its old connection not yet closed), reports the child from
+	// each, in another group each time: senders of each group reach their own departure of it.
+	const later = "owner-session-2";
+	live.add(later);
+	departed.mark(OWNER, [paused(child, "group-a")]);
+	departed.mark(later, [paused(child, "group-b")]);
+	const fromA = sendMany(departed, child, wakeSender("peer-a", ["group-a"]), 20);
+	const fromB = sendMany(departed, child, wakeSender("peer-b", ["group-b"]), 20);
+	await Promise.allSettled([...fromA.kept, ...fromB.kept]);
+	const kept = await storedOnDisk(path, child);
+	assert.ok(kept <= ENDED_CHILD_QUEUE_BYTES_MAX + MiB, `${kept} bytes kept for one subagent`);
+	// The old connection closes, and the session takes over what it kept for the child.
+	live.delete(OWNER);
+	departed.dropOwner(OWNER, HOST);
+	departed.adoptOrphans(later, HOST);
+	assert.deepEqual(failed, [], "every message it took is kept");
+	const taken = departed.registered(child, new Set(["group-b"]), later);
+	assert.deepEqual(
+		new Set(taken.map((held) => held.messageId)),
+		new Set([...fromA.queued, ...fromB.queued]),
+		"each message queued reaches the subagent",
+	);
+}, 60_000);
+
+test("a merge that takes a subagent past its 32 MiB keeps every message and refuses new ones until it drains below", async () => {
+	// Memory only: each departure counts its own queue.
+	const failed: EndedChildWakeFailure[] = [];
+	const live = new Set([OWNER, "owner-session-2"]);
+	const departed = new DepartedChildren(() => {}, undefined, undefined, undefined, {
+		failed: (failures) => failed.push(...failures),
+		ownerLive: (id) => live.has(id),
+		ownerHost: () => HOST,
+	});
+	const child = "subagent-worker-merge-2";
+	departed.mark(OWNER, [paused(child, "group-a")]);
+	departed.mark("owner-session-2", [paused(child, "group-b")]);
+	const a = sendMany(departed, child, wakeSender("peer-a", ["group-a"]), 20);
+	const b = sendMany(departed, child, wakeSender("peer-b", ["group-b"]), 20);
+	assert.deepEqual([...a.refusals, ...b.refusals], []);
+	live.delete(OWNER);
+	departed.dropOwner(OWNER, HOST);
+	departed.adoptOrphans("owner-session-2", HOST);
+	assert.deepEqual(failed, []);
+	const refused = sendMany(departed, child, wakeSender("peer-b", ["group-b"]), 1);
+	assert.match(
+		refused.refusals[0] ?? "",
+		/The message was not queued for it: \d+ MiB of messages already wait for it\./,
+	);
+	assert.equal(departed.registered(child, new Set(["group-b"]), "owner-session-2").length, 40);
+});
+
+test("a message the store's file has no room left for is refused saying the queue is full; the store keeps working", async () => {
+	const path = storePath();
+	const { database, departed } = await broker(path, { lockWaitMs: 1_000 });
+	const child = "subagent-worker-full-1";
+	const sender = wakeSender("peer");
+	departed.mark(OWNER, [paused(child)]);
+	const small = sendMany(departed, child, sender, 1);
+	await Promise.all(small.kept);
+	// The file may grow by a few pages only: a 1 MiB message does not fit.
+	const pages = await database.get<{ page_count: number }>("PRAGMA page_count");
+	await database.exec(`PRAGMA max_page_count = ${(pages?.page_count ?? 0) + 16}`);
+	const big = sendMany(departed, child, sender, 1);
+	assert.equal(big.kept.length, 1, "queued at first: the caps admit it");
+	await assert.rejects(
+		big.kept[0]!,
+		/The message was not queued for it: Intercom already keeps 256 MiB of messages for subagents that ended\./,
+	);
+	// A message that fits is kept at once: nothing waits out a broken write.
+	const started = performance.now();
+	const after = sendMany(departed, child, sender, 1, "small");
+	await Promise.all(after.kept);
+	assert.ok(performance.now() - started < 500);
+}, 60_000);
+
+test("a failure kept for a sender that is away keeps only what telling it needs, not the message", async () => {
+	const path = storePath();
+	const store = await openLocalEndedChildQueueStore(path, "broker-1");
+	cleanups.push(() => store.close());
+	const sender = wakeSender("peer");
+	const held = send("subagent-worker-failed-1", sender);
+	const requestJson = JSON.stringify({ ...held.clientMessage, logicalTarget: "worker" });
+	const senderJson = JSON.stringify({
+		info: sender.info,
+		registrationReturnAddress: sender.registrationReturnAddress,
+	});
+	await store.add({
+		messageId: held.messageId,
+		ownerSessionId: OWNER,
+		ownerHost: HOST,
+		childKey: "subagent-worker-failed-1",
+		child: {
+			childName: "subagent-worker-failed-1",
+			group: "default",
+			aliases: [],
+			outcome: "stopped",
+			messages: "hold",
+		},
+		sender: JSON.parse(senderJson) as Record<string, unknown>,
+		request: JSON.parse(requestJson) as Record<string, unknown>,
+		requestJson,
+		senderJson,
+		bytes: Buffer.byteLength(requestJson) + Buffer.byteLength(senderJson),
+		queuedAt: 1,
+	});
+	await store.fail(held.messageId, "its launching session ended", 7_000);
+	assert.ok((await storedOnDisk(path)) < 1024, `${await storedOnDisk(path)} bytes kept for a failure`);
+	const [row] = (await store.load()).rows;
+	assert.ok(row);
+	assert.deepEqual(row.failed, { reason: "its launching session ended", at: 7_000 });
+	assert.equal(row.request.logicalTarget, "worker");
+	assert.equal(row.request.to, "subagent-worker-failed-1");
+	assert.equal((row.sender as { info: { id: string } }).info.id, "peer");
+	assert.equal((row.sender as { registrationReturnAddress: string }).registrationReturnAddress, "peer-host");
+});
