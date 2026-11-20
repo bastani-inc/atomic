@@ -77,10 +77,8 @@ async function hungBrokerProfile() {
 			// The PTY inherits this runner's environment, where the test setup turns the startup join off.
 			ATOMIC_INTERCOM_JOIN_AT_STARTUP: "",
 			ATOMIC_TELEMETRY: "0",
-			// A compile cache of its own starts cold, as on the first run after an install, when the engine's runtime
-			// would spend seconds writing it on exit (#6075).
-			NODE_COMPILE_CACHE: join(root, "compile-cache"),
 		},
+		compileCache: join(root, "compile-cache"),
 		brokerPid(): number | undefined {
 			return existsSync(marker) ? Number(readFileSync(marker, "utf8")) : undefined;
 		},
@@ -112,7 +110,9 @@ describe("quitting a session whose startup join is waiting for a broker that nev
 						host === "isolated" ? "--approve" : "--no-approve",
 					],
 					cwd: profile.cwd,
-					env: profile.env,
+					// The isolated terminal's engine starts from a cold compile cache of its own, as on the first run
+					// after an install, when its runtime would spend seconds writing the cache on exit (#6075).
+					env: host === "isolated" ? { ...profile.env, NODE_COMPILE_CACHE: profile.compileCache } : profile.env,
 					timeoutMs: 3 * CLI_START_TIMEOUT_MS,
 					cols: 160,
 					rows: 40,
