@@ -6,7 +6,12 @@ import { savedReadLines } from "../../core/storage/session/saved-read-summary.js
 import { reopenedCompletionName } from "../../core/tasks/reopened-completion.js";
 import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
-import { sameToolGroupRole, toolGroupRoleKey } from "../interactive/components/tool-group-tracker.ts";
+import {
+	drawsApartFromGroup,
+	sameToolGroupRole,
+	type ToolGroupHead,
+	toolGroupRoleKey,
+} from "../interactive/components/tool-group-tracker.ts";
 import { type RowRange, rowsFrom, sameRows } from "../interactive/components/transcript-block-clicks.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { InteractiveEngineCommand, InteractiveEngineMessage, JsonObject, JsonValue } from "./protocol.ts";
@@ -311,6 +316,9 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	private executionStartedAt: number | undefined;
 	private argsComplete = false;
 	private groupRole: ToolGroupRole = { kind: "standalone" };
+	private groupHead: ToolGroupHead | undefined;
+	/** Whether the last frame asked of the engine draws this call on its own, apart from its group. */
+	private requestedApart = false;
 	private isPartial = true;
 	private showImages: boolean;
 	private imageWidthCells: number;
@@ -358,8 +366,25 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.groupRole = role;
 		this.changed();
 	}
+	/** The first call of the group this call is folded into, which stands for it while both have one expansion. */
+	setGroupHead(head: ToolGroupHead | undefined): void {
+		this.groupHead = head;
+	}
+	/** Whether this call, folded into a group, is drawn and clicked on its own: see `drawsApartFromGroup`. */
+	drawsApart(): boolean {
+		return drawsApartFromGroup(this.groupRole, this.expanded, this.groupHead);
+	}
+	/** The place in its group the engine draws this call at: on its own while it is drawn apart from its group. */
+	private drawnGroupRole(): ToolGroupRole {
+		return this.requestedApart ? { kind: "standalone" } : this.groupRole;
+	}
 	override render(width: number): string[] {
-		if (!this.expanded && this.groupRole.kind === "hidden") return [];
+		const apart = this.drawsApart();
+		if (apart !== this.requestedApart) {
+			this.requestedApart = apart;
+			this.invalidate();
+		}
+		if (!this.expanded && this.groupRole.kind === "hidden" && !apart) return [];
 		return super.render(width);
 	}
 	updateResult(result: RenderableToolResult, isPartial = false): void {
@@ -404,7 +429,7 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 			showImages: this.showImages,
 			imageWidthCells: this.imageWidthCells,
 			outputPad: this.outputPad,
-			...(this.groupRole.kind === "standalone" ? {} : { groupRole: this.groupRole }),
+			...(this.drawnGroupRole().kind === "standalone" ? {} : { groupRole: this.drawnGroupRole() }),
 		};
 	}
 
@@ -415,7 +440,7 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 			this.toolName,
 			this.toolCallId,
 			this.expanded,
-			toolGroupRoleKey(this.groupRole),
+			toolGroupRoleKey(this.drawnGroupRole()),
 		]);
 	}
 }

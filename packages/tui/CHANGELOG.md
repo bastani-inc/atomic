@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- `withoutKeyHints(line, drop)` turns the hints for the keys `drop` accepts back into plain text, keeping their text, their style and every other hint, so a click on that text reaches the component that draws it.
+
 ## [0.10.0] - 2026-11-20
 
 ### Breaking Changes

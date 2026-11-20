@@ -29,13 +29,14 @@ import { CustomMessageComponent } from "./custom-message.ts";
 import { fromChatComponentFactory } from "./renderer-disposal.js";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 import type { TaskCompletionMessageOptions } from "./task-completion-message.js";
-import { countTasksBy, TaskRow, taskNameAndTitle, taskSiblings } from "./task-row.js";
+import { countTasksBy, TranscriptTaskRow, taskNameAndTitle, taskSiblings } from "./task-row.js";
 import { pagedNotices } from "./task-transcript-notices.ts";
 import type { ToolGroupRole } from "./tool-block.ts";
 import { ToolExecutionComponent } from "./tool-execution.ts";
 import {
 	assistantCallBreaks,
 	type ToolGroupMemberState,
+	type ToolGroupRoleSink,
 	ToolGroupTracker,
 	toolResultGroupState,
 } from "./tool-group-tracker.ts";
@@ -178,7 +179,7 @@ export function groupChatEntries(
 	for (const entry of entries) {
 		if (isChatMessageEntry(entry) && entry.kind === "tool") {
 			if (breakBefore.has(entry.toolCallId)) tracker.break();
-			tracker.append(entry.toolCallId, entry.toolName, toolEntryState(entry), toolEntryRoleSink(entry));
+			tracker.append(entry.toolCallId, entry.toolName, toolEntryState(entry), toolEntryRoleSink(entry), entry);
 		} else if (isChatMessageEntry(entry) && entry.kind === "assistant") {
 			const calls = assistantCallBreaks(entry.message.content, carried);
 			breakBefore = calls.breakBefore;
@@ -194,9 +195,20 @@ function toolEntryState(entry: ToolChatEntry): ToolGroupMemberState {
 	if (entry.isPartial !== false || entry.result === undefined) return "pending";
 	return toolResultGroupState(entry.result, entry.result.isError);
 }
-function toolEntryRoleSink(entry: ToolChatEntry): (role: ToolGroupRole) => void {
-	return (role) => {
+/** For a call folded into a group, the entry of the group's first call, as the tracker last gave it. */
+const toolEntryGroupHeads = new WeakMap<ToolChatEntry, ToolChatEntry>();
+
+/** The entry of the first call of the group `entry` is folded into; undefined for a call that is not folded. */
+export function toolEntryGroupHead(entry: ToolChatEntry): ToolChatEntry | undefined {
+	return entry.groupRole?.kind === "hidden" ? toolEntryGroupHeads.get(entry) : undefined;
+}
+
+function toolEntryRoleSink(entry: ToolChatEntry): ToolGroupRoleSink {
+	return (role, head) => {
 		entry.groupRole = role;
+		const headEntry = head as ChatMessageEntry | undefined;
+		if (role.kind === "hidden" && headEntry?.kind === "tool") toolEntryGroupHeads.set(entry, headEntry);
+		else toolEntryGroupHeads.delete(entry);
 	};
 }
 function inferInterruptedToolActivity(
@@ -884,7 +896,7 @@ export class LiveChatEntriesController {
 		else {
 			if (update.breakBefore === true) this.tracker.break();
 			this.entries.push(next);
-			this.tracker.append(toolCallId, next.toolName, toolEntryState(next), toolEntryRoleSink(next));
+			this.tracker.append(toolCallId, next.toolName, toolEntryState(next), toolEntryRoleSink(next), next);
 		}
 		if (update.source) {
 			const result = rowSource(next)?.result;
@@ -896,7 +908,7 @@ export class LiveChatEntriesController {
 	private replaceToolEntry(index: number, next: ToolChatEntry): void {
 		carryRowSource(this.entries[index], next);
 		this.entries[index] = next;
-		this.tracker.bind(next.toolCallId, toolEntryRoleSink(next));
+		this.tracker.bind(next.toolCallId, toolEntryRoleSink(next), next);
 		this.tracker.settle(next.toolCallId, toolEntryState(next));
 	}
 	private startedToolEntries(): Map<string, { readonly startedAt?: number }> {
@@ -1053,7 +1065,7 @@ export function renderHostedChatEntry(
 	const markdownTheme = options.markdownTheme ?? getMarkdownTheme();
 	switch (messageEntry.kind) {
 		case "task":
-			return new TaskRow(messageEntry.task, {
+			return new TranscriptTaskRow(messageEntry.task, {
 				expanded: options.toolOutputExpanded,
 				duplicate: messageEntry.duplicate,
 				siblings: messageEntry.siblings,

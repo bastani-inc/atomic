@@ -4,7 +4,7 @@ import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { parenthesizedKeyHint } from "./keybinding-hints.js";
 import { createMarkdownTransform, hasExtensionMarkdownTransform } from "./markdown-transform.ts";
-import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { blockRows, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /**
  * Component that renders a skill invocation message with collapsed/expanded state.
@@ -48,6 +48,11 @@ export class SkillInvocationMessageComponent extends Box {
 
 	isExpanded(): boolean {
 		return this.expanded;
+	}
+
+	/** Its rows: an expand hint in them is part of the block, which a click on it expands or collapses. */
+	override render(width: number): string[] {
+		return blockRows(super.render(width));
 	}
 
 	/** Every row of the skill block, its padding included. */
