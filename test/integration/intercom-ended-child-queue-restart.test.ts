@@ -832,6 +832,41 @@ test(
 );
 
 test(
+	"a subagent's queue holds at most its 32 MiB on disk: the cap counts what each message takes there (#5999)",
+	async () => {
+		const host = new Host();
+		await host.start();
+		const ownerSession = await owner(host, "cap");
+		const childName = "subagent-worker-cap-1";
+		await endedChild(host, ownerSession, childName, "stopped");
+		const sender = await connect(host, "cap-sender");
+		let refused: string | undefined;
+		for (let index = 0; index < 40 && refused === undefined; index++) {
+			const result = await sender.client.send(childName, {
+				text: `m${index} ${"x".repeat(1024 * 1024 - 64)}`,
+				wakeEndedRecipient: true,
+			});
+			if (result.queued !== true) refused = result.reason;
+		}
+		assert.match(refused ?? "", /The message was not queued for it: \d+ MiB of messages already wait for it\./);
+		const { DatabaseSync } = await import("node:sqlite");
+		const store = new DatabaseSync(getBrokerEndedChildQueuePath(host.agentDir), { readOnly: true });
+		try {
+			const stored = store
+				.prepare(
+					`SELECT SUM(LENGTH(CAST(b.request_json AS BLOB)) + LENGTH(CAST(q.sender_json AS BLOB))) AS bytes
+					 FROM intercom_ended_child_queue q JOIN intercom_ended_child_bodies b ON b.message_id = q.message_id`,
+				)
+				.get() as { bytes: number };
+			assert.ok(stored.bytes <= 32 * 1024 * 1024, `${stored.bytes} bytes kept for one subagent`);
+		} finally {
+			store.close();
+		}
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
 	"a store that cannot be opened keeps the queue in memory, and a restart tells each sender once that it was lost (#5999)",
 	async () => {
 		const host = new Host();

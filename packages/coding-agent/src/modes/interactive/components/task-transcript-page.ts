@@ -929,6 +929,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (pause !== undefined) {
 			const paused = await pause.call(this.source, this.liveTaskId());
 			if (!paused.ok) return paused;
+			// A pause a restart would not keep is shown with why: in the chat, or in the main chat once the reader left.
+			const warning = paused.value.warning;
+			if (warning !== undefined) {
+				if (this.disposed) this.reportLate(warning);
+				else this.chat.showWarning(warning);
+			}
 			if (!this.disposed) this.restoreQueuedToEditor(paused.value);
 			else {
 				// The reader left while the turn ended: what came back waits in the prompt for their return.

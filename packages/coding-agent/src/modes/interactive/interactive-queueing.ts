@@ -1,4 +1,4 @@
-import type { PromptDisposition } from "../../core/agent-session-types.js";
+import type { PromptDisposition, UserMessageWithRawText } from "../../core/agent-session-types.js";
 import { parseSlashCommand } from "../../core/slash-commands.js";
 import {
 	clearInteractiveEngineQueue,
@@ -48,6 +48,8 @@ function mainSteeringTarget(mode: InteractiveModeBase): SteeringTarget {
 		get paused() {
 			return mode.session.queuedMessagesPaused;
 		},
+		// An isolated engine can crash with what it queued; the chat then gives those messages back.
+		canBeLost: true,
 		queued: () => ({
 			steering: mode.session.getSteeringMessages(),
 			followUp: mode.session.getFollowUpMessages(),
@@ -265,6 +267,15 @@ export function showSubmissionAsQueued(
  */
 export function settleSubmission(mode: InteractiveModeBase, message: CompactionQueuedMessage): void {
 	if (confirmHandOff(mode, message)) mode.ui.requestRender();
+}
+
+/**
+ * The session saved a user message: a message sent while the chat showed the turn running, which the session started
+ * its next turn with, is delivered from here on, so an engine crash no longer gives it back.
+ */
+export function noteSteeringSaved(mode: InteractiveModeBase, message: UserMessageWithRawText): void {
+	const text = mode.getUserMessageText(message);
+	mainSteering(mode).noteSaved(message.rawText === undefined ? [text] : [text, message.rawText]);
 }
 
 /**

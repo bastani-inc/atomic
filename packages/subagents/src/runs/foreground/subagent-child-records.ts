@@ -160,6 +160,13 @@ export interface SubagentChildRecord {
 	 */
 	readonly pausedByUser?: boolean;
 	/**
+	 * The leaf entry of the child's own session when the user paused it (`null` for an empty session). The pause holds
+	 * only while no user message reached that session since: records merge field by field, so a version that does not
+	 * record pauses leaves `pausedByUser` as it was when it continues the child. Absent in records without
+	 * `pausedByUser`, and in records written before Atomic recorded the entry, whose pause holds as it did then.
+	 */
+	readonly pausedAtLeafId?: string | null;
+	/**
 	 * Steering and follow-up messages the child had queued but not read when pause or quit stopped
 	 * task `taskId`, in order. Resume delivers them once, before its own message; a later task's record supersedes them.
 	 */
@@ -347,6 +354,8 @@ export interface SubagentChildRecordSink {
 	record(input: SubagentChildRecordInput): void;
 	/** Settles once every record this sink was given has been appended. */
 	flushed?(): Promise<void>;
+	/** Settles once the latest record this sink was given is appended: `false` when it could not be. */
+	saved?(): Promise<boolean>;
 	clearHeldToolResults?(childId: string, toolCallIds: readonly string[]): Promise<void>;
 	/** Keep messages for a released or stopped child, for its next wake or resume; see {@link holdSubagentChildMessages}. */
 	holdMessages?(childId: string, messages: readonly string[]): Promise<HeldMessagesOutcome>;
@@ -483,12 +492,17 @@ async function appendObserved(pi: Pick<ExtensionAPI, "appendEntry">, record: Sub
  * it records merged over its latest one, so the index points at one entry (#4395). A failed append is counted, not
  * lost.
  */
-function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
+/** Settles once `record` is appended: `true`, or `false` when appending it failed, which is reported as a failure. */
+function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<boolean> {
 	const full = observeSubagentChildRecord(record);
 	pendingSubagentChildWrites.add(full);
-	return inOrder(full.owner.sessionId, () => appendObserved(pi, full)).catch((error: Error) => {
-		observeChildRecordFailure(full.owner.sessionId, asRecordFailure(full, error));
-	});
+	return inOrder(full.owner.sessionId, () => appendObserved(pi, full)).then(
+		() => true,
+		(error: Error) => {
+			observeChildRecordFailure(full.owner.sessionId, asRecordFailure(full, error));
+			return false;
+		},
+	);
 }
 
 /**
@@ -528,7 +542,7 @@ export function createSubagentChildRecordSink(
 	pi = subagentChildOwnerWriter(pi, ctx.sessionManager);
 	registerSubagentChildRecordReader(ctx.sessionManager);
 	const worktreeRootMappings = currentWorktreeRootMappings();
-	let appended: Promise<void> = Promise.resolve();
+	let appended: Promise<boolean> = Promise.resolve(true);
 	return {
 		ownerSessionId: owner.sessionId,
 		record(input) {
@@ -541,7 +555,8 @@ export function createSubagentChildRecordSink(
 			};
 			appended = appendInOrder(pi, record);
 		},
-		flushed: () => appended,
+		flushed: () => appended.then(() => undefined),
+		saved: () => appended,
 		clearHeldToolResults: (childId, toolCallIds) =>
 			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds),
 		holdMessages: (childId, messages) => holdSubagentChildMessages(pi, owner.sessionId, childId, messages),

@@ -352,7 +352,7 @@ test("what was queued fails when the owner ends for good, when it reports the su
 	assert.equal(departed.heldSendCount, 1);
 	assert.deepEqual(departed.adoptOrphans(OWNER, "host-session"), []);
 	departed.dropOwner(OWNER, "host-session", true);
-	assert.match(failed.at(-1)!.reason, /the session that launched it ended before it was resumed/);
+	assert.match(failed.at(-1)!.reason, /the session that launched it disconnected before it was resumed/);
 	assert.equal(departed.heldSendCount, 0);
 });
 
@@ -422,4 +422,34 @@ test("a subagent its owner already holds takes a message without a wake, and a h
 	unstarted.departed.admitWake(CHILD, wakeSender(), send("m4"), true);
 	vi.advanceTimersByTime(ENDED_CHILD_WAKE_START_MAX_MS);
 	assert.match(unstarted.failed[0]!.reason, /it did not start in time/);
+});
+
+test("an owner with no host session to come back as that disconnects fails what was queued with main's text (#5999)", () => {
+	const { departed, failed } = children();
+	ended(departed, "completed", "wake");
+	departed.admitWake(CHILD, wakeSender(), send("m1"));
+	departed.dropOwner(OWNER);
+	assert.deepEqual(
+		failed.map((failure) => failure.reason),
+		[
+			`Subagent "${CHILD}" was not resumed for this message: the session that launched it disconnected before it was resumed. The message was not delivered.`,
+		],
+	);
+});
+
+test("a message that alone takes more than a subagent's 32 MiB where it is kept is refused saying so, not citing a backlog (#5999)", () => {
+	const failed: EndedChildWakeFailure[] = [];
+	const departed = new DepartedChildren(() => {}, undefined, undefined, undefined, {
+		failed: (failures) => failed.push(...failures),
+		budget: new EndedChildWakeBudget(),
+		ownerLive: () => true,
+		storedBytes: () => ENDED_CHILD_QUEUE_BYTES_MAX + 4 * 1024 * 1024,
+	});
+	ended(departed, "stopped", "hold");
+	const refused = departed.admitWake(CHILD, wakeSender(), send("m1"));
+	assert.ok(refused.kind === "refused");
+	assert.match(
+		refused.reason,
+		/The message was not queued for it: it takes 36 MiB where it is kept, more than the 32 MiB that can wait for one subagent\.$/,
+	);
 });

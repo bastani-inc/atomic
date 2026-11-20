@@ -10,6 +10,17 @@ function defaultWorkerUrl(): URL {
 }
 
 /**
+ * An error a stopping worker reports, or its termination's failure, reaches no run; it is only kept from being thrown.
+ * A module function, so a worker still exiting holds nothing of the run through it.
+ */
+function ignoreWorkerError(): void {}
+
+/** Settles when `worker` exits, holding nothing of the run that started it. */
+function workerExit(worker: Worker): Promise<void> {
+	return new Promise<void>((resolve) => worker.once("exit", () => resolve()));
+}
+
+/**
  * Each execution gets its own worker thread and QuickJS VM. A fresh worker per run keeps
  * termination simple: a runaway script, including one that only spins the microtask queue, is
  * killed with `terminate()` and cannot poison a later run. Before terminating, the host sets a
@@ -36,7 +47,7 @@ function workerLauncher(options: CodemodeSandboxOptions): VmLauncher {
 			throw new Error(`Failed to start worker: ${errorMessage(error)}`);
 		}
 		if (releaseWorker) worker.once("exit", releaseWorker);
-		worker.on("message", (message: unknown) => {
+		const onMessage = (message: unknown) => {
 			// Node 24/26 --watch leaks dependency reports onto the worker channel (nodejs/node#65044).
 			if (
 				typeof message === "object" &&
@@ -45,27 +56,36 @@ function workerLauncher(options: CodemodeSandboxOptions): VmLauncher {
 			)
 				return;
 			events.message(message);
-		});
-		worker.on("error", (error: unknown) => {
+		};
+		const onError = (error: unknown) => {
 			events.failure({
 				kind: "sandbox",
 				name: error instanceof Error ? error.name : undefined,
 				message: errorMessage(error),
 			});
-		});
-		worker.on("exit", (code) => {
+		};
+		const onExit = (code: number) => {
 			events.failure({ kind: "sandbox", message: `Worker exited with code ${code} before the script settled` });
-		});
+		};
+		worker.on("message", onMessage);
+		worker.on("error", onError);
+		worker.on("exit", onExit);
 		const stop = async (): Promise<void> => {
 			Atomics.store(new Int32Array(interrupt), 0, 1);
+			// A stopped run hears nothing more from its worker. The listeners reach the run's options and, through
+			// them, whatever the caller gave the run, so a worker still exiting must not keep them (or that) alive.
+			worker.off("message", onMessage);
+			worker.off("exit", onExit);
+			worker.off("error", onError);
+			worker.on("error", ignoreWorkerError);
 			// A non-interruptible built-in can delay Bun's terminate() until it returns (#10748).
 			// Do not hold up the result while that worker exits.
-			void worker.terminate().catch(() => undefined);
+			void worker.terminate().catch(ignoreWorkerError);
 			// terminate() refs the worker internally; unref it after requesting termination.
 			worker.unref();
 		};
 		try {
-			options.onWorkerStarted?.(new Promise<void>((resolve) => worker.once("exit", () => resolve())));
+			options.onWorkerStarted?.(workerExit(worker));
 		} catch (error) {
 			void stop();
 			throw error;
