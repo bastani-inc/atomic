@@ -53,6 +53,9 @@ export interface EndedQueueEntry {
 	readonly sender: Readonly<Record<string, unknown>>;
 	/** The send frame, verbatim (JSON). */
 	readonly request: Readonly<Record<string, unknown>>;
+	/** `request` and `sender` serialized already, as written: the bytes the caps counted. */
+	readonly requestJson?: string;
+	readonly senderJson?: string;
 	readonly bytes: number;
 	/** Wall-clock milliseconds. */
 	readonly queuedAt: number;
@@ -117,6 +120,17 @@ export interface EndedChildQueueStore {
 	recordBudget(event: EndedWakeBudgetEvent): Promise<void>;
 	close(): Promise<void>;
 }
+
+/**
+ * How many free pages (4 KiB each) one step of giving the local file's space back frees: about 1 MiB, a few
+ * milliseconds; the event loop runs between steps.
+ */
+export const ENDED_QUEUE_VACUUM_STEP_PAGES = 256;
+/** How often, and how long apart, giving space back tries again while the database is busy. */
+const VACUUM_BUSY_RETRIES = 50;
+const VACUUM_BUSY_RETRY_MS = 20;
+/** The write-ahead log of the local file is cut back to this many bytes after a checkpoint. */
+const LOCAL_WAL_SIZE_LIMIT = 64 * 1024;
 
 /** About how many bytes of messages one page of a load reads and parses before the event loop runs again. */
 export const ENDED_QUEUE_LOAD_PAGE_BYTES = 1024 * 1024;
@@ -197,12 +211,19 @@ class OrderedWrites {
 		});
 	}
 
-	/** Resolves once every write asked for so far settled. */
+	/** Resolves once every write asked for so far settled. Each drain is awaited once: this never spins. */
 	async idle(): Promise<void> {
-		while (this.running !== undefined) await this.running;
+		for (let seen: Promise<void> | undefined; this.running !== undefined && this.running !== seen; ) {
+			seen = this.running;
+			await seen;
+		}
 	}
 
 	private async drain(): Promise<void> {
+		// Never finish within the call that starts it: `run` stores this promise in `running` only once the call returns,
+		// so a drain that cleared `running` before its first await (every write refused at once, the lock wait not over)
+		// would leave a settled promise there for good, and no later write would ever start a drain.
+		await Promise.resolve();
 		while (this.pending.length > 0) {
 			const batch = this.pending.splice(0);
 			if (performance.now() < this.brokenUntil) {
@@ -255,6 +276,7 @@ export async function openSqlEndedChildQueueStore(
 		lockWaitMs = ENDED_QUEUE_LOCK_WAIT_MS,
 		servedSinceLastHolder,
 		pid,
+		compact = false,
 	}: {
 		readonly home: string;
 		readonly holder: string;
@@ -271,6 +293,11 @@ export async function openSqlEndedChildQueueStore(
 		readonly pid?: string;
 		/** A broker that kept the queue in memory told its sessions what this store kept was lost: drop it. */
 		readonly retire?: boolean;
+		/**
+		 * The database is this store's own file: once its queue drains, the file gives the space its messages took back,
+		 * a bounded step at a time (incremental auto-vacuum). A shared database keeps its own maintenance.
+		 */
+		readonly compact?: boolean;
 	},
 ): Promise<EndedChildQueueStore> {
 	let retire = retiring;
@@ -359,6 +386,96 @@ export async function openSqlEndedChildQueueStore(
 	}
 	const keeper = id;
 	const writes = new OrderedWrites(database, lockWaitMs);
+	let compacting: Promise<void> | undefined;
+	let closing = false;
+	const pragmaOf = async (executor: SqliteExecutor, name: string): Promise<number> => {
+		const row = await executor.get<SqliteRow>(`PRAGMA ${name}`);
+		return Number(row === undefined ? 0 : Object.values(row)[0]);
+	};
+	/**
+	 * The local file gives back the space of messages that are gone, once its queue is empty. With no free page (the
+	 * usual small drain) it does nothing, not even a transaction. Otherwise each step frees at most
+	 * {@link ENDED_QUEUE_VACUUM_STEP_PAGES} pages in a maintenance transaction of its own, which runs only while this
+	 * database is idle and checks in that same transaction that no message waits; the event loop runs between steps.
+	 * Once pages were freed, a checkpoint that never waits folds the log into the file, and one more maintenance
+	 * transaction starts the log afresh, cut back to its size limit. No part of it waits for another process's lock or
+	 * goes through the message writes, so it never delays, fails or holds off a message write: a busy database is left
+	 * alone until the next drain.
+	 */
+	const giveSpaceBack = async (): Promise<void> => {
+		const maintain = database.tryMaintenance?.bind(database);
+		if (maintain === undefined || (await pragmaOf(database, "auto_vacuum")) !== 2) return;
+		let freed = false;
+		let busy = 0;
+		while (!closing && (await pragmaOf(database, "freelist_count")) > 0) {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			const step = { messages: false };
+			const ran = await maintain(async (tx) => {
+				if ((await tx.get(`SELECT 1 AS found FROM ${queue} LIMIT 1`)) !== undefined) {
+					step.messages = true;
+					return;
+				}
+				await tx.exec(`PRAGMA incremental_vacuum(${ENDED_QUEUE_VACUUM_STEP_PAGES})`);
+			});
+			if (!ran) {
+				if (++busy > VACUUM_BUSY_RETRIES) break;
+				await new Promise<void>((resolve) => setTimeout(resolve, VACUUM_BUSY_RETRY_MS));
+				continue;
+			}
+			// Messages wait again: they reuse the free pages; the next drain gives back what is left.
+			if (step.messages) break;
+			freed = true;
+		}
+		if (closing || !freed) return;
+		await database.exec("PRAGMA wal_checkpoint(PASSIVE)");
+		// A write that changes nothing writes nothing: the header's user version, unused, flips between 0 and 1.
+		const restarted = await maintain(async (tx) =>
+			tx.exec(`PRAGMA user_version = ${(await pragmaOf(tx, "user_version")) === 0 ? 1 : 0}`),
+		);
+		if (restarted && !closing) await database.exec("PRAGMA wal_checkpoint(PASSIVE)");
+	};
+	let compactAgain = false;
+	const compactSoon = (): void => {
+		if (!compact || closing) return;
+		// A drain while space is being given back is looked at once that is over.
+		if (compacting !== undefined) {
+			compactAgain = true;
+			return;
+		}
+		compacting = giveSpaceBack()
+			.catch(() => {})
+			.finally(() => {
+				compacting = undefined;
+				if (compactAgain) {
+					compactAgain = false;
+					compactSoon();
+				}
+			});
+	};
+	if (compact) {
+		await database.exec(`PRAGMA journal_size_limit = ${LOCAL_WAL_SIZE_LIMIT}`);
+		// A file that cannot give space back (new, or written before this) is converted while its queue is empty, before
+		// anything else can use it: VACUUM rewrites the live data, none then. It never waits for another process's lock;
+		// a busy file is converted at a later open.
+		const empty =
+			(await database.transaction((tx) => tx.get(`SELECT 1 AS found FROM ${queue} LIMIT 1`), { readOnly: true })) ===
+			undefined;
+		if (empty && (await pragmaOf(database, "auto_vacuum")) !== 2) {
+			const configured = await pragmaOf(database, "busy_timeout");
+			await database.exec("PRAGMA busy_timeout = 0");
+			try {
+				await database.exec("PRAGMA auto_vacuum = INCREMENTAL");
+				await database.exec("VACUUM");
+				// The rewritten file is in the log: fold it in, which cuts the file back, and empty the log.
+				await database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+			} catch {
+				// Busy: converted at a later open.
+			} finally {
+				await database.exec(`PRAGMA busy_timeout = ${configured}`);
+			}
+		}
+		compactSoon();
+	}
 	/** Rows of one departure that this instance holds. */
 	const departureWhere = (departure: EndedQueueDepartureKey) =>
 		departure.ownerHost === undefined
@@ -483,7 +600,7 @@ export async function openSqlEndedChildQueueStore(
 					entry.ownerHost ?? "",
 					entry.childKey,
 					JSON.stringify(entry.child),
-					JSON.stringify(entry.sender),
+					entry.senderJson ?? JSON.stringify(entry.sender),
 					entry.bytes,
 					entry.queuedAt,
 					entry.wake === undefined ? null : JSON.stringify(entry.wake),
@@ -492,7 +609,7 @@ export async function openSqlEndedChildQueueStore(
 					await tx.run(
 						`INSERT INTO ${bodies}(message_id, request_json) VALUES (?, ?) ON CONFLICT(message_id) DO NOTHING`,
 						entry.messageId,
-						JSON.stringify(entry.request),
+						entry.requestJson ?? JSON.stringify(entry.request),
 					);
 				if (budget !== undefined)
 					await tx.run(
@@ -509,17 +626,19 @@ export async function openSqlEndedChildQueueStore(
 		},
 		remove(messageIds) {
 			if (messageIds.length === 0) return Promise.resolve();
-			return writes.run(async (tx) => {
-				for (const messageId of messageIds) {
-					const { changes } = await tx.run(
-						`DELETE FROM ${queue} WHERE message_id = ? AND home = ? AND holder = ?`,
-						messageId,
-						home,
-						holder,
-					);
-					if (changes !== 0) await tx.run(`DELETE FROM ${bodies} WHERE message_id = ?`, messageId);
-				}
-			});
+			return writes
+				.run(async (tx) => {
+					for (const messageId of messageIds) {
+						const { changes } = await tx.run(
+							`DELETE FROM ${queue} WHERE message_id = ? AND home = ? AND holder = ?`,
+							messageId,
+							home,
+							holder,
+						);
+						if (changes !== 0) await tx.run(`DELETE FROM ${bodies} WHERE message_id = ?`, messageId);
+					}
+				})
+				.then(compactSoon);
 		},
 		dispatched(messageIds) {
 			if (messageIds.length === 0) return Promise.resolve();
@@ -584,6 +703,8 @@ export async function openSqlEndedChildQueueStore(
 		},
 		close() {
 			closed ??= (async () => {
+				closing = true;
+				await compacting;
 				await writes.idle();
 				if (ownsDatabase) await database.close();
 			})();
@@ -617,7 +738,7 @@ export async function openLocalEndedChildQueueStore(
 			for (const file of [path, `${path}-wal`, `${path}-shm`]) if (existsSync(file)) chmodSync(file, 0o600);
 		return await openSqlEndedChildQueueStore(
 			{ database, prefix: "" },
-			{ home: "local", holder, ownsDatabase: true, retire, ...continuity },
+			{ home: "local", holder, ownsDatabase: true, retire, compact: true, ...continuity },
 		);
 	} catch (error) {
 		await database.close().catch(() => {});
