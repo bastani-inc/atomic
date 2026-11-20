@@ -5,15 +5,15 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
 
-const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+const { EndedQueueMemory, IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { PAUSED_RECIPIENT_TARGET, RESUMING_RECIPIENT_TARGET } = await import(
 	"../../packages/intercom/broker/ended-child-wakes.js"
 );
 
 type Frame = Record<string, unknown> & { attemptId: string; requestId: string };
 
-function connectedClient(wakesEndedChildren: boolean) {
-	const client = new IntercomClient();
+function connectedClient(wakesEndedChildren: boolean, endedQueue?: InstanceType<typeof EndedQueueMemory>) {
+	const client = new IntercomClient(undefined, endedQueue === undefined ? {} : { endedQueue });
 	const frames: Frame[] = [];
 	const socket = new Socket();
 	vi.spyOn(socket, "write").mockImplementation((data) => {
@@ -123,46 +123,72 @@ test("an owner hears each wake the broker asks for, and answers it on the connec
 });
 
 test("messages queued for subagents that ended fail here, once, when the broker that kept them is gone (#5999)", async () => {
-	const { client, frames, receive } = connectedClient(true);
-	const register = (instanceId: string | undefined) => {
-		client["_sessionId"] = null;
+	// A session connects with a new client after each disconnect; what it keeps outlives each one.
+	const memory = new EndedQueueMemory();
+	const register = (receive: (message: object) => void, instanceId: string | undefined) =>
 		receive({ type: "registered", sessionId: "owner", ...(instanceId === undefined ? {} : { instanceId }) });
-	};
-	register("broker-a");
-	const lost: unknown[] = [];
-	client.on("ended_queue_lost", (messages: unknown[]) => lost.push(...messages));
-	const sent = client.send("subagent-worker-1", { text: "hello", messageId: "m1", wakeEndedRecipient: true });
-	const asked = client.send("subagent-worker-2", {
+	const first = connectedClient(true, memory);
+	first.client["_sessionId"] = null;
+	register(first.receive, "broker-a");
+	const sent = first.client.send("subagent-worker-1", { text: "hello", messageId: "m1", wakeEndedRecipient: true });
+	const asked = first.client.send("subagent-worker-2", {
 		text: "why?",
 		messageId: "m2",
 		expectsReply: true,
 		logicalTarget: "worker two",
 		wakeEndedRecipient: true,
 	});
-	const reached = client.send("subagent-worker-3", { text: "hi", messageId: "m3", wakeEndedRecipient: true });
+	const reached = first.client.send("subagent-worker-3", { text: "hi", messageId: "m3", wakeEndedRecipient: true });
+	const answered = first.client.send("subagent-worker-4", { text: "and?", messageId: "m4", wakeEndedRecipient: true });
 	for (const [index, target] of [
 		RESUMING_RECIPIENT_TARGET,
 		PAUSED_RECIPIENT_TARGET,
 		RESUMING_RECIPIENT_TARGET,
+		RESUMING_RECIPIENT_TARGET,
 	].entries())
-		receive({ type: "queued", messageId: `m${index + 1}`, attemptId: frames[index]!.attemptId, target, position: 1 });
-	await Promise.all([sent, asked, reached]);
-	// m3 reached its subagent before the broker went away; the others had not.
-	receive({ type: "delivered", messageId: "m3" });
+		first.receive({
+			type: "queued",
+			messageId: `m${index + 1}`,
+			attemptId: first.frames[index]!.attemptId,
+			target,
+			position: 1,
+		});
+	await Promise.all([sent, asked, reached, answered]);
+	// m3 reached its subagent, and m4 was answered, before the broker went away; m1 and m2 had not.
+	first.receive({ type: "delivered", messageId: "m3" });
+	first.receive({
+		type: "message",
+		from: { id: "w4", name: "subagent-worker-4", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 },
+		message: { id: "r4", timestamp: 1, replyTo: "m4", content: { text: "done" } },
+	});
 
-	register("broker-a");
-	assert.deepEqual(lost, [], "the same broker still keeps them");
-	register("broker-b");
-	assert.deepEqual(lost, [
-		{
-			messageId: "m1",
-			to: "subagent-worker-1",
-			logicalTarget: "subagent-worker-1",
-			expectsReply: false,
-			queue: "resuming",
-		},
-		{ messageId: "m2", to: "subagent-worker-2", logicalTarget: "worker two", expectsReply: true, queue: "paused" },
-	]);
-	register("broker-c");
+	const same = connectedClient(true, memory);
+	const lost: unknown[] = [];
+	same.client.on("ended_queue_lost", (messages: unknown[]) => lost.push(...messages));
+	same.client["_sessionId"] = null;
+	register(same.receive, "broker-a");
+	assert.equal(lost.length, 0, "the same broker still keeps them");
+
+	const next = connectedClient(true, memory);
+	next.client.on("ended_queue_lost", (messages: unknown[]) => lost.push(...messages));
+	next.client["_sessionId"] = null;
+	register(next.receive, "broker-b");
+	assert.deepEqual(
+		[...lost],
+		[
+			{
+				messageId: "m1",
+				to: "subagent-worker-1",
+				logicalTarget: "subagent-worker-1",
+				expectsReply: false,
+				queue: "resuming",
+			},
+			{ messageId: "m2", to: "subagent-worker-2", logicalTarget: "worker two", expectsReply: true, queue: "paused" },
+		],
+	);
+	const later = connectedClient(true, memory);
+	later.client.on("ended_queue_lost", (messages: unknown[]) => lost.push(...messages));
+	later.client["_sessionId"] = null;
+	register(later.receive, "broker-c");
 	assert.equal(lost.length, 2, "each is given up once");
 });

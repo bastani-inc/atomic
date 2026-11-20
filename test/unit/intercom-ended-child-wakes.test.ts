@@ -320,3 +320,34 @@ test("a subagent is woken at most so often, and a chain of wakes stops at its bo
 	now += ENDED_CHILD_WAKE_WINDOW_MS + 1;
 	assert.deepEqual(budget.check("b", "a"), { ok: true, depth: 1 }, "a wake older than the window counts no more");
 });
+
+test("a subagent its owner already holds takes a message without a wake, and a hold given up fails what waits (#5999)", () => {
+	vi.useFakeTimers();
+	const { departed, failed } = children();
+	ended(departed, "completed", "wake");
+	assert.deepEqual(departed.admitWake(CHILD, wakeSender(), send("m1"), true), {
+		kind: "queued",
+		target: RESUMING_RECIPIENT_TARGET,
+	});
+	departed.holdEnded(OWNER, CHILD, {});
+	assert.equal(failed.length, 0, "a hold that ended for no reason given keeps the queue");
+	departed.holdEnded(OWNER, CHILD, { refusal: "Subagent `x` did not start: boom The message was not sent." });
+	assert.deepEqual(
+		failed.map((failure) => failure.reason),
+		["Subagent `x` did not start: boom The message was not sent."],
+	);
+	departed.admitWake(CHILD, wakeSender(), send("m2"), true);
+	departed.holdEnded(OWNER, CHILD, { gone: "gone for good" });
+	assert.equal(failed.at(-1)!.reason, "gone for good");
+	assert.deepEqual(
+		departed.admitWake(CHILD, wakeSender(), send("m3")),
+		{ kind: "none" },
+		"a gone subagent is forgotten",
+	);
+
+	const unstarted = children();
+	ended(unstarted.departed, "completed", "wake");
+	unstarted.departed.admitWake(CHILD, wakeSender(), send("m4"), true);
+	vi.advanceTimersByTime(ENDED_CHILD_WAKE_START_MAX_MS);
+	assert.match(unstarted.failed[0]!.reason, /it did not start in time/);
+});

@@ -396,11 +396,24 @@ export class DepartedChildren {
 	 * on its own the first message queued asks the owner to resume it, within the wake bounds. Anything else is `none`:
 	 * decided as it was before.
 	 */
-	admitWake(target: string, sender: WakeSender, held: HeldSend): EndedChildWakeAdmission {
+	admitWake(target: string, sender: WakeSender, held: HeldSend, ownerHolds = false): EndedChildWakeAdmission {
 		if (this.wakes === undefined || !sendWakesEndedRecipient(held.clientMessage)) return { kind: "none" };
 		const departure = this.visible(target, sender);
 		if (departure === undefined) return { kind: "none" };
-		return this.admitWakeFor(departure, sender, held);
+		return this.admitWakeFor(departure, sender, held, ownerHolds);
+	}
+
+	/**
+	 * #5999: the owner ended its hold of a subagent it was restoring or resuming: as gone (`gone`, the refusal), or
+	 * because its start failed (`refusal`). What was queued for it fails with that reason, and a gone one is forgotten,
+	 * so later senders get the gone refusal. A hold that ended otherwise (a quit of a paused child) changes nothing.
+	 */
+	holdEnded(ownerSessionId: string, childName: string, outcome: { readonly gone?: string; readonly refusal?: string }): void {
+		const departure = this.byKey.get(keyOf(ownerSessionId, childName));
+		const reason = outcome.gone ?? outcome.refusal;
+		if (departure === undefined || reason === undefined) return;
+		this.failQueued(departure, () => reason);
+		if (outcome.gone !== undefined) this.forget(departure);
 	}
 
 	/**
@@ -519,7 +532,16 @@ export class DepartedChildren {
 		}
 	}
 
-	private admitWakeFor(departure: Departure, sender: WakeSender, held: HeldSend): EndedChildWakeAdmission {
+	/**
+	 * `ownerHolds`: the owner already holds sends to the child, restoring, resuming or pausing it: the message is queued
+	 * for its registration without asking the owner for anything.
+	 */
+	private admitWakeFor(
+		departure: Departure,
+		sender: WakeSender,
+		held: HeldSend,
+		ownerHolds = false,
+	): EndedChildWakeAdmission {
 		const hooks = this.wakes;
 		const verdict = departure.verdict;
 		const messages = verdict?.kind === "ended" ? verdict.messages : undefined;
@@ -543,7 +565,7 @@ export class DepartedChildren {
 		}
 		let wake: EndedChildWakeRequest | undefined;
 		// A child stopped on purpose is not woken: the message waits for its owner to continue it.
-		if (messages === "wake" && departure.wake === undefined) {
+		if (messages === "wake" && departure.wake === undefined && !ownerHolds) {
 			const budget = hooks.budget?.check(departure.key, sender.wakeKey) ?? { ok: true as const, depth: 1 };
 			if (!budget.ok) {
 				const error = this.errorFor(departure, verdict, target);
@@ -562,9 +584,12 @@ export class DepartedChildren {
 				depth: budget.depth,
 			};
 		}
-		// A paused child's messages wait for its owner to continue it, for a bounded time.
+		// A paused child's messages wait for its owner to continue it, for a bounded time; so do those of a child its owner
+		// is already starting again.
 		if (messages === "hold" && departure.queueTimer === undefined)
 			this.armQueueTimer(departure, ENDED_CHILD_HOLD_MAX_MS, `it was still paused after ${minutesOf(ENDED_CHILD_HOLD_MAX_MS)}`);
+		else if (departure.queueTimer === undefined)
+			this.armQueueTimer(departure, ENDED_CHILD_WAKE_START_MAX_MS, "it did not start in time");
 		markQueuedForWake(held, messages);
 		departure.queued.push(held);
 		departure.queuedBytes += bytes;

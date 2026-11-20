@@ -257,7 +257,11 @@ export type ClientMessage =
 	/** `resumable`: the session can be resumed, so its asks stay pending while it is away (#4751). */
 	| { type: "unregister"; resumable?: true }
 	/** #3761: the recipient saved this message; it ignores a copy of it sent again. */
-	| { type: "received"; messageId: string }
+	/**
+	 * `paused` (#5999): the recipient is a subagent whose turn its user paused; it keeps the message until it is
+	 * continued, and its sender is told so instead of `delivered`.
+	 */
+	| { type: "received"; messageId: string; paused?: true }
 	/** #3983: the recipient is still saving this message; its sender keeps waiting. Sent only to a broker that advertised `extendsSaves`. */
 	| { type: "saving"; messageId: string }
   | { type: "list"; requestId: string; group?: string }

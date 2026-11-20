@@ -15,9 +15,8 @@ const { getBrokerSocketPath } = await import("../../packages/intercom/broker/pat
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { isSubagentRecipientEndedError } = await import("../../packages/intercom/broker/recipient-gone-errors.js");
-const { ENDED_CHILD_WAKE_CHAIN_MAX, PAUSED_RECIPIENT_TARGET, RESUMING_RECIPIENT_TARGET } = await import(
-	"../../packages/intercom/broker/ended-child-wakes.js"
-);
+const { ENDED_CHILD_WAKE_CHAIN_MAX, PAUSED_LIVE_RECIPIENT_TARGET, PAUSED_RECIPIENT_TARGET, RESUMING_RECIPIENT_TARGET } =
+	await import("../../packages/intercom/broker/ended-child-wakes.js");
 
 type Client = InstanceType<typeof IntercomClient>;
 type Notice = import("../../packages/intercom/broker/client.js").EndedChildWakeNotice;
@@ -294,6 +293,74 @@ test(
 		assert.equal(continued.received[0]!.message.content.text, "when you are back");
 		assert.equal(continued.received[0]!.message.heldWhilePaused, true);
 		assert.deepEqual(owner.wakes, []);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a subagent its owner is already resuming takes the message without another wake, and one it gives up as gone keeps that answer (#5999)",
+	async () => {
+		const { owner, childName } = await endedChild("restoring");
+		const sender = await connect("restoring-sender");
+		// The owner resumes it itself: it holds sends to it while it starts.
+		const authorization = await owner.client.authorizeSupervisorChild(childName);
+		await owner.client.reserveRestoringRecipient(authorization.capability, { holdMs: 60_000 });
+		const during = await sender.client.send(childName, { text: "while you start", wakeEndedRecipient: true });
+		assert.equal(during.queued, true, during.reason);
+		assert.equal(during.target, RESUMING_RECIPIENT_TARGET);
+		await sleep(SETTLE_MS);
+		assert.deepEqual(owner.wakes, [], "the owner is already resuming it: nothing asks it again");
+
+		// Its start fails and the owner reports it gone: what was queued fails, and later senders get the gone answer.
+		await owner.client.releaseRestoringRecipient(authorization.capability, { gone: "its session could not be read" });
+		await vi.waitFor(() => assert.equal(sender.received.length, 1), WAIT);
+		const goneReason = `Subagent \`${childName}\` did not survive the restart and is gone: its session could not be read. The message was not sent; launch a fresh subagent if its work is still needed.`;
+		assert.equal(sender.received[0]!.message.replyTo, during.id);
+		assert.equal(sender.received[0]!.message.replyError, goneReason);
+		const after = await sender.client.send(childName, { text: "are you there?", wakeEndedRecipient: true });
+		assert.equal(after.delivered, false);
+		assert.equal(after.queued, undefined);
+		assert.equal(after.reason, goneReason, "main's answer for a subagent its owner reported gone");
+		assert.deepEqual(owner.wakes, []);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a live subagent whose user paused its turn keeps the message, and its sender is told it is paused (#5999)",
+	async () => {
+		const sender = await connect("live-paused-sender");
+		const child = new IntercomClient(randomUUID(), { acknowledgesReceipt: true });
+		child.on("error", () => {});
+		brokerFixture.onCleanup(() => child.disconnect().catch(() => undefined));
+		let paused = true;
+		child.on("message", (_from: Received["from"], message: Received["message"]) =>
+			child.acknowledgeReceived(message.id, paused),
+		);
+		await child.connect(
+			{
+				name: "subagent-worker-live-paused-1",
+				model: "test-model",
+				cwd: repoRoot,
+				pid: process.pid,
+				status: "idle",
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+				group: "default",
+				groups: ["default"],
+			},
+			undefined,
+			undefined,
+			undefined,
+			"default",
+		);
+		const kept = await sender.client.send("subagent-worker-live-paused-1", { text: "when you are back" });
+		assert.equal(kept.delivered, false);
+		assert.equal(kept.queued, true, kept.reason);
+		assert.equal(kept.target, PAUSED_LIVE_RECIPIENT_TARGET);
+		paused = false;
+		const delivered = await sender.client.send("subagent-worker-live-paused-1", { text: "now" });
+		assert.equal(delivered.delivered, true, "once it is continued, messages are delivered as before");
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

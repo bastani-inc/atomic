@@ -17,6 +17,7 @@ import { isVerticalBypass } from "./group-isolation.js";
 import { reachesSession, sessionGroups } from "./group-membership.js";
 import { type IntercomReachPolicy, notFoundInReachReason, outsideReachReason } from "../reach-policy.js";
 import { HELD_FOR_AWAY_ASKER_TARGET } from "./held-reply-targets.js";
+import { PAUSED_LIVE_RECIPIENT_TARGET } from "./ended-child-wakes.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
 import { type ReturnPathParty, type ReturnPaths, returnPathClosedReason } from "./return-paths.js";
@@ -903,7 +904,7 @@ export function handleBrokerSend(
 		write(socket, { type: "question_target", messageId: message.id, attemptId, sessionId: target.info.id });
     // Taken as the message is handed over: its receipt opens nothing once every registration of the sender ended since.
     const handedOver = returnPaths?.mark();
-    const finishDelivery = (recipient: BrokerConnectedSession, sender: ReceiptSender | undefined): void => {
+    const finishDelivery = (recipient: BrokerConnectedSession, sender: ReceiptSender | undefined, paused?: true): void => {
 	  const notify = (frame: BrokerMessage): void => {
 		if (sender !== undefined) write(sender.socket, frame);
 	  };
@@ -955,7 +956,12 @@ export function handleBrokerSend(
         pendingQuestions.releaseHeldFailures(message.replyTo, fromSession.info.id, recipient.registrationReturnAddress);
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
       returnPaths?.delivered(recipient, returnPathParty(fromSession), fromSession.info, message.id, handedOver);
-      notify({ type: "delivered", messageId: message.id, attemptId: senderAttemptId });
+      // #5999: a subagent whose turn its user paused saved the message and keeps it until it is continued.
+      notify(
+        paused === true
+          ? { type: "queued", messageId: message.id, attemptId: senderAttemptId, target: PAUSED_LIVE_RECIPIENT_TARGET, position: 1 }
+          : { type: "delivered", messageId: message.id, attemptId: senderAttemptId },
+      );
     };
     const senderWaiting: ReceiptSender = { socket, ...(attemptId === undefined ? {} : { attemptId }) };
     // #5095: from here the reply is on its way: its ask is answered, so the replier ending before the asker saves the

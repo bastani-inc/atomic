@@ -13,7 +13,11 @@ import { type IntercomClient, sameReachPolicy, type SendOptions, type SendResult
 import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDirectory } from "./types.js";
 import { OutboundAsks } from "./outbound-asks.js";
 import { HELD_FOR_AWAY_ASKER_TARGET, OFFLINE_SESSION_TARGET } from "./broker/held-reply-targets.js";
-import { PAUSED_RECIPIENT_TARGET, RESUMING_RECIPIENT_TARGET } from "./broker/ended-child-wakes.js";
+import {
+  PAUSED_LIVE_RECIPIENT_TARGET,
+  PAUSED_RECIPIENT_TARGET,
+  RESUMING_RECIPIENT_TARGET,
+} from "./broker/ended-child-wakes.js";
 import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema, parseAskWait } from "./ask-wait.js";
 import { PeerDisconnectedError } from "./peer-disconnect-routing.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
@@ -63,7 +67,7 @@ const PATTERN_SEND_CONCURRENCY = 16;
  */
 function endedRecipientQueue(target: string | undefined): "resuming" | "paused" | undefined {
   if (target === RESUMING_RECIPIENT_TARGET) return "resuming";
-  if (target === PAUSED_RECIPIENT_TARGET) return "paused";
+  if (target === PAUSED_RECIPIENT_TARGET || target === PAUSED_LIVE_RECIPIENT_TARGET) return "paused";
   return undefined;
 }
 

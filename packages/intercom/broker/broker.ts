@@ -1534,7 +1534,12 @@ class IntercomBroker {
 				this.pendingQuestions.releaseHeld(clientMessage.messageId, recipient.registrationReturnAddress);
 			if (recipient?.acknowledgesReceipt === true) {
 				this.multiNode?.received(recipient, clientMessage.messageId);
-				this.receipts.settle(clientMessage.messageId, deliveryTargetIdentity(recipient), recipient);
+				this.receipts.settle(
+					clientMessage.messageId,
+					deliveryTargetIdentity(recipient),
+					recipient,
+					clientMessage.paused === true ? true : undefined,
+				);
 			}
 			break;
 		}
@@ -2032,7 +2037,11 @@ class IntercomBroker {
    * target: the send is decided as before.
    */
   private queueForEndedChildWake(held: HeldSend, target: string, sender: WakeSender): boolean {
-    const admission = this.departedChildren.admitWake(target, sender, held);
+    // A child its owner reported gone keeps that answer; one its owner already holds (restoring, resuming or pausing it)
+    // takes the message without another wake.
+    const reserved = this.restoringRecipients.peek(target, sender);
+    if (reserved === "gone") return false;
+    const admission = this.departedChildren.admitWake(target, sender, held, reserved === "active");
     if (admission.kind === "none") return false;
     if (admission.kind === "refused") {
       this.refuseHeldSends([{ held, error: admission.error, reason: admission.reason }]);
@@ -2275,6 +2284,8 @@ class IntercomBroker {
     const bounded = boundedReleaseReasons(gone, refusal);
     const released = this.restoringRecipients.release(key, ownerSessionId, bounded.gone, bounded.refusal);
     if (released === undefined) return;
+    // #5999: what was queued for the child fails with why its owner gave it up.
+    this.departedChildren.holdEnded(ownerSessionId, released.childName, released);
     this.multiNode?.restoringReleased(key, ownerSessionId, released.gone, released.refusal);
     for (const send of released.held) {
       if (released.gone !== undefined) this.failHeldSend(send, released.gone);

@@ -217,6 +217,8 @@ export interface IntercomClientOptions {
 	 */
 	readonly brokerSocketPath?: string;
 	readonly reach?: () => IntercomReachPolicy | undefined;
+	/** #5999: shared by the session's clients across reconnects; see {@link EndedQueueMemory}. */
+	readonly endedQueue?: EndedQueueMemory;
 }
 
 export interface ReleasedChildReply {
@@ -267,6 +269,17 @@ export interface LostEndedQueuedMessage {
 	readonly expectsReply: boolean;
 	/** Why it was queued: the subagent was being resumed for it, or was paused. */
 	readonly queue: "resuming" | "paused";
+}
+
+/**
+ * #5999: what a session keeps about messages its brokers queued for subagents that ended, across its connections: the
+ * broker process it last registered with, and the messages that neither reached their subagent nor failed yet. Pass one
+ * to every client a session connects with (`IntercomClientOptions.endedQueue`), so a client that registers with another
+ * broker knows what the lost one kept.
+ */
+export class EndedQueueMemory {
+	brokerInstanceId: string | undefined;
+	readonly kept = new Map<string, LostEndedQueuedMessage & { readonly at: number }>();
 }
 
 /** A released subagent to keep addressable through its owner, by name (#4326). */
@@ -429,12 +442,13 @@ export class IntercomClient extends EventEmitter {
 	 * again; one already saved is confirmed again. Bounded, oldest forgotten first.
 	 */
 	private readonly heardOutcomes = new Map<string, "heard" | "saved">();
-	/** #5999: the broker process of the last registration; another one on the next means queued messages were lost. */
-	private brokerInstanceId: string | undefined;
 	/** #5999: sends in flight that asked to wake an ended recipient, by message id. */
 	private readonly wakeSends = new Map<string, Omit<LostEndedQueuedMessage, "messageId" | "queue">>();
-	/** #5999: messages the broker queued for subagents that ended and that neither reached them nor failed yet. */
-	private readonly endedQueued = new Map<string, LostEndedQueuedMessage & { readonly at: number }>();
+	/**
+	 * #5999: the broker process of the last registration (another one on the next means queued messages were lost), and
+	 * the messages a broker queued for subagents that ended that neither reached them nor failed yet.
+	 */
+	private readonly endedQueue: EndedQueueMemory;
 	private brokerAnswersStatus = false;
 	private _multiNodeRouting: BrokerMultiNodeStatus["status"] | undefined;
 	/** #4538: the protocol versions the broker of the current registration accepts. */
@@ -529,6 +543,7 @@ export class IntercomClient extends EventEmitter {
 		this.acknowledgesReceipt = options.acknowledgesReceipt === true;
 		this.connectTimeoutMs = options.connectTimeoutMs ?? BROKER_CONNECT_TIMEOUT_MS;
 		this.explicitBrokerSocketPath = options.brokerSocketPath;
+		this.endedQueue = options.endedQueue ?? new EndedQueueMemory();
 		this.brokerAgentDir = getAgentDir();
 		this.reachSource = options.reach;
 	}
@@ -1045,7 +1060,7 @@ export class IntercomClient extends EventEmitter {
         }
         // #4642: a message for a session this connection hosts goes to its own listeners, never to this session's.
         // #5999: the failure, or the reply, of a message queued for a subagent that ended settles it.
-        if (message.replyTo !== undefined) this.endedQueued.delete(message.replyTo);
+        if (message.replyTo !== undefined) this.endedQueue.kept.delete(message.replyTo);
         if (hostedRecipient !== undefined) this.emit("hosted_message", hostedRecipient, from, message, channel);
         else if (this.heardOutcomeAgain(message)) break;
         else this.emit("message", from, message, channel);
@@ -1207,7 +1222,7 @@ export class IntercomClient extends EventEmitter {
         }
         const result = { id: messageId, delivered: true } as const;
         // #5999: a message queued for a subagent that ended reached it.
-        this.endedQueued.delete(messageId);
+        this.endedQueue.kept.delete(messageId);
         if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
         else this.pendingSends.resolve(messageId, attemptId, result);
         break;
@@ -1795,10 +1810,10 @@ export class IntercomClient extends EventEmitter {
     const sent = this.wakeSends.get(messageId);
     if (queue === undefined || sent === undefined) return;
     const now = Date.now();
-    for (const [id, kept] of this.endedQueued) if (now - kept.at > ENDED_QUEUED_KEPT_MS) this.endedQueued.delete(id);
-    this.endedQueued.delete(messageId);
-    this.endedQueued.set(messageId, { ...sent, messageId, queue, at: now });
-    while (this.endedQueued.size > ENDED_QUEUED_MAX) this.endedQueued.delete(this.endedQueued.keys().next().value as string);
+    for (const [id, kept] of this.endedQueue.kept) if (now - kept.at > ENDED_QUEUED_KEPT_MS) this.endedQueue.kept.delete(id);
+    this.endedQueue.kept.delete(messageId);
+    this.endedQueue.kept.set(messageId, { ...sent, messageId, queue, at: now });
+    while (this.endedQueue.kept.size > ENDED_QUEUED_MAX) this.endedQueue.kept.delete(this.endedQueue.kept.keys().next().value as string);
   }
 
   /**
@@ -1807,14 +1822,14 @@ export class IntercomClient extends EventEmitter {
    * (`ended_queue_lost`), so each still has one outcome.
    */
   private noteBrokerInstance(instanceId: string | undefined): void {
-    const previous = this.brokerInstanceId;
-    this.brokerInstanceId = instanceId;
-    if (previous === undefined || previous === instanceId || this.endedQueued.size === 0) return;
+    const previous = this.endedQueue.brokerInstanceId;
+    this.endedQueue.brokerInstanceId = instanceId;
+    if (previous === undefined || previous === instanceId || this.endedQueue.kept.size === 0) return;
     const now = Date.now();
-    const lost = [...this.endedQueued.values()]
+    const lost = [...this.endedQueue.kept.values()]
       .filter((kept) => now - kept.at <= ENDED_QUEUED_KEPT_MS)
       .map(({ at: _at, ...message }) => message);
-    this.endedQueued.clear();
+    this.endedQueue.kept.clear();
     if (lost.length > 0) this.emit("ended_queue_lost", lost);
   }
 
@@ -1989,10 +2004,11 @@ export class IntercomClient extends EventEmitter {
 	 * #3761: tell the broker this message is saved, so it reports `delivered` to its sender. A no-op unless the
 	 * current registration's broker echoed the capability: that broker already reported `delivered` on the socket write.
 	 */
-	acknowledgeReceived(messageId: string): void {
+	acknowledgeReceived(messageId: string, paused = false): void {
 		if (!this.brokerAcknowledgesReceipt) return;
 		if (this.heardOutcomes.has(messageId)) this.heardOutcomes.set(messageId, "saved");
-		writeMessage(this.requireActiveSocket(), { type: "received", messageId });
+		// #5999: a subagent whose turn its user paused keeps the message for when it is continued; its sender hears so.
+		writeMessage(this.requireActiveSocket(), { type: "received", messageId, ...(paused ? { paused: true as const } : {}) });
 	}
 
 	/**

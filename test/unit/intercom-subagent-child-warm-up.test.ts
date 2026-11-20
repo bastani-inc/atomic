@@ -361,25 +361,28 @@ describe("Intercom heavy runtime admitted child registration", () => {
 		pi.sendMessage = sendMessage;
 		mockBrokerClient(() => {});
 		vi.mocked(IntercomClient.prototype.connect).mockImplementation(async function (this: IntercomClient) {
-			this.emit(
-				"message",
-				{
-					id: "paused-message-sender",
-					name: "peer",
-					cwd: process.cwd(),
-					model: "test-model",
-					pid: process.pid,
-					startedAt: Date.now(),
-					lastActivity: Date.now(),
-					groups: ["workflow:run-1"],
-				},
-				{
-					id: "kept-while-paused",
-					timestamp: Date.now(),
-					heldWhilePaused: true,
-					content: { text: "kept for when you are continued" },
-				},
-			);
+			const peer = {
+				id: "paused-message-sender",
+				name: "peer",
+				cwd: process.cwd(),
+				model: "test-model",
+				pid: process.pid,
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+				groups: ["workflow:run-1"],
+			};
+			this.emit("message", peer, {
+				id: "kept-while-paused",
+				timestamp: Date.now(),
+				heldWhilePaused: true,
+				content: { text: "kept for when you are continued" },
+			});
+			// The same sender's next message, sent after it, follows it.
+			this.emit("message", peer, {
+				id: "sent-after",
+				timestamp: Date.now(),
+				content: { text: "and one more thing" },
+			});
 		});
 		vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
 		intercomHeavy(pi);
@@ -400,10 +403,11 @@ describe("Intercom heavy runtime admitted child registration", () => {
 			// What it is continued with starts its first turn; the kept message follows it.
 			firstTurnPending = false;
 			await emitThroughHost(handlers, ctx, { type: "agent_start" } as never);
-			await vi.waitFor(() => assert.equal(sendMessage.mock.calls.length, 1));
-			const written = JSON.stringify(sendMessage.mock.calls[0]?.[0]);
-			assert.match(written, /kept for when you are continued/);
-			assert.doesNotMatch(written, /Messages received before you started/);
+			await vi.waitFor(() => assert.equal(sendMessage.mock.calls.length, 2));
+			const written = sendMessage.mock.calls.map((call) => JSON.stringify(call[0]));
+			assert.match(written[0]!, /kept for when you are continued/);
+			assert.match(written[1]!, /and one more thing/, "one sender's messages keep their order");
+			for (const message of written) assert.doesNotMatch(message, /Messages received before you started/);
 		} finally {
 			await emitThroughHost(handlers, ctx, SESSION_SHUTDOWN);
 		}

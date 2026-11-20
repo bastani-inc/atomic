@@ -386,6 +386,18 @@ export class RestoringRecipients {
 	}
 
 	/**
+	 * #5999: whether a reservation `sender` may be held by answers to `target`, without holding anything: `gone` for one
+	 * its owner reported gone, `active` for one that holds sends.
+	 */
+	peek(target: string, sender: HoldSender): "none" | "active" | "gone" {
+		for (const candidate of this.byTarget.get(normalizeTarget(target)) ?? []) {
+			if (candidate.ownerSessionId !== sender.id && !holdAdmitsSender(sender, candidate.group)) continue;
+			return candidate.gone === undefined ? "active" : "gone";
+		}
+		return "none";
+	}
+
+	/**
 	 * Decide a send that found no live recipient. `canHold` is false for clients that cannot wait past their
 	 * ordinary acknowledgement timeout; they are told to try again instead of being held.
 	 */
@@ -500,16 +512,19 @@ export class RestoringRecipients {
 		ownerSessionId: string,
 		goneReason: string | undefined,
 		refusal?: string,
-	): { readonly held: HeldSend[]; readonly gone?: string; readonly refusal?: string } | undefined {
+	):
+		| { readonly held: HeldSend[]; readonly childName: string; readonly gone?: string; readonly refusal?: string }
+		| undefined {
 		const reservation = this.reservations.get(key);
 		if (reservation === undefined || reservation.ownerSessionId !== ownerSessionId) return undefined;
 		const held = this.take(reservation);
+		const childName = reservation.childName;
 		if (goneReason === undefined) {
 			this.forget(reservation);
-			return refusal === undefined ? { held } : { held, refusal };
+			return refusal === undefined ? { held, childName } : { held, childName, refusal };
 		}
 		reservation.gone = goneRecipientReason(reservation.childName, goneReason);
-		return { held, gone: reservation.gone };
+		return { held, childName, gone: reservation.gone };
 	}
 
 	/**

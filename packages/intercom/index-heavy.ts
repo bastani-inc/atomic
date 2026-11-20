@@ -52,6 +52,7 @@ import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
 	type EndedChildWakeNotice,
+	EndedQueueMemory,
 	type LostEndedQueuedMessage,
 	IntercomClient,
 	IntercomReachUnsupportedError,
@@ -242,6 +243,22 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let runtimeStarted = false;
   let runtimeGeneration = 0;
   let agentRunning = false;
+  /**
+   * #5999: whether this is a subagent whose turn its user paused (Esc in its chat): it keeps what arrives until it is
+   * continued, and tells each sender so.
+   */
+  function childTurnPaused(): boolean {
+    const policy = getLiveContext()?.subagentPolicy as { readonly turnPaused?: () => boolean } | undefined;
+    try {
+      return policy?.turnPaused?.() === true;
+    } catch {
+      return false;
+    }
+  }
+  /** #5999: messages this session's brokers queued for subagents that ended, across its connections. */
+  const endedQueueMemory = new EndedQueueMemory();
+  /** #5999: by sender, the last of its messages admitted after this subagent's first turn starts; later ones follow it. */
+  const deferredFromSender = new Map<string, Promise<void>>();
   /** #5999: messages kept for a paused subagent wait here for its first turn to start. */
   const agentStartWaiters: Array<() => void> = [];
   /**
@@ -766,7 +783,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     inArrivalOrder(message, (bounded) => {
       const saved = durableInbox.receive(from, bounded, channel, () => {
         clearInterval(saving);
-        receiver.acknowledgeReceived(message.id);
+        receiver.acknowledgeReceived(message.id, childTurnPaused());
       });
       void saved.finally(() => clearInterval(saving)).catch(() => {});
       void saved
@@ -884,18 +901,40 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     message: Message,
     channel: "supervisor" | undefined,
     messageGeneration: number,
+    /** #5999: admitted again after this subagent's first turn started, as the deferral below schedules it. */
+    deferred = false,
   ): Promise<Admitted> {
     const entry = buildInboundEntry(from, message, channel);
     // #5999: a message kept for this subagent while it was paused reaches it after what it is continued with: once its
     // first turn has started, as any message to a running subagent does, never as context before that turn. It leaves
-    // its place in line at once, so its start, which waits for what arrives before it, never waits for it.
-    if (message.heldWhilePaused === true && liveContext.subagentPolicy?.startup?.firstTurnPending() === true) {
-      const deferred = untilFirstTurnStarted(liveContext).then(() =>
+    // its place in line at once, so its start, which waits for what arrives before it, never waits for it. A later
+    // message from the same sender follows it, so one sender's messages keep their order.
+    const deferredBefore = deferred ? undefined : deferredFromSender.get(from.id);
+    if (
+      !deferred &&
+      (deferredBefore !== undefined ||
+        (message.heldWhilePaused === true && liveContext.subagentPolicy?.startup?.firstTurnPending() === true))
+    ) {
+      const admitted = (deferredBefore ?? untilFirstTurnStarted(liveContext)).then(() =>
         inboundOrder.run(() =>
-          admitIncomingMessage(liveContext, from, { ...message, heldWhilePaused: undefined }, channel, messageGeneration),
+          admitIncomingMessage(
+            liveContext,
+            from,
+            { ...message, heldWhilePaused: undefined },
+            channel,
+            messageGeneration,
+            true,
+          ),
         ),
       );
-      void deferred.catch(() => {});
+      const settled = admitted.then(
+        () => {},
+        () => {},
+      );
+      deferredFromSender.set(from.id, settled);
+      void settled.then(() => {
+        if (deferredFromSender.get(from.id) === settled) deferredFromSender.delete(from.id);
+      });
       return {};
     }
     // A subagent that has not started its first turn, as one whose held sends the broker hands over as it registers,
@@ -1290,6 +1329,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 			acknowledgesReceipt: true,
 			connectTimeoutMs: testOverrides.connectTimeoutMs?.(sessionIdAtStart),
 			reach: currentReachPolicy,
+			// #5999: what a lost broker kept for subagents that ended is known to the next connection.
+			endedQueue: endedQueueMemory,
 		});
           client = nextClient;
           attachClientHandlers(nextClient);

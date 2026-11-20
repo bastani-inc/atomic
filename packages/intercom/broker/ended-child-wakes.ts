@@ -14,6 +14,13 @@ export const RESUMING_RECIPIENT_TARGET = "resuming subagent";
  */
 export const PAUSED_RECIPIENT_TARGET = "paused subagent";
 
+/**
+ * #5999: the `queued` target for a message a live subagent saved while its user had paused its turn: it reaches the
+ * subagent's model when the subagent is continued. Unlike {@link PAUSED_RECIPIENT_TARGET}, the subagent keeps it, not the
+ * broker.
+ */
+export const PAUSED_LIVE_RECIPIENT_TARGET = "paused subagent (saved)";
+
 /** #5999: what a subagent's launching session does with a message sent to it once it ended (`EndedChildFrame.messages`). */
 export type EndedChildMessages = "wake" | "hold";
 
