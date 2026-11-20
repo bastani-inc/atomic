@@ -418,9 +418,28 @@ describe("the prompt's completion while a subagent is shown", () => {
 			assert.match(menu, /review-template\s+A template/);
 			assert.match(await completionsFor("/", /settings/), /settings\s+Open settings menu/);
 			assert.match(await completionsFor("/appc", /appcmd/), /appcmd\s+.*An app command Atomic ships/);
-			assert.doesNotMatch(await completionsFor("/mod"), /Select model/, "/model is not offered");
-			assert.doesNotMatch(await completionsFor("/thin"), /Set thinking level/, "/thinking is not offered");
 			assert.doesNotMatch(await completionsFor("/pla"), /A command the user installed/, "main's own /plan is not");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"/model or /thinking typed and sent with Enter is refused; completion never turns it into another command",
+		async () => {
+			screen = await viewSubagent();
+			const { mode } = screen;
+			for (const [typed, refusal] of [
+				["/model", "warning: /model changes the main conversation's model. Switch to main to use it."],
+				[
+					"/thinking",
+					"warning: /thinking changes the main conversation's thinking level. Switch to main to use it.",
+				],
+			] as const) {
+				await completionsFor(typed);
+				mode.defaultEditor.handleInput("\r");
+				await until(() => screen?.notices.includes(refusal) === true);
+				assert.equal(screen.promptSlot(), mode.editor, `${typed} opened no selector`);
+			}
 		},
 		HOST_TIMEOUT_MS,
 	);

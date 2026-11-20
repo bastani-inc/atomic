@@ -81,7 +81,7 @@ Atomic uses one chat screen for the main chat and every subagent. Selecting a su
 | `/copy` | Copies the viewed subagent's last assistant message to the clipboard. |
 | `/skill:<name>`, prompt templates, user or project extension commands, and ordinary text | Sent to the viewed subagent's own session, which expands its own skills and templates using its own working directory. |
 
-Typing `/` offers completion for every built-in that works there (omitting `/model` and `/thinking`), bundled extension commands, and the viewed subagent's own skills, prompt templates, and user or project extension commands. `@` and `Tab` complete paths in the viewed subagent's working directory. A built-in name followed by arguments it does not take (such as `/copy that` or `/new idea`) goes to the subagent as ordinary text. See [Task inspection](/subagents#task-inspection).
+Typing `/` offers completion for every built-in (`/model` and `/thinking` included; sending them shows the refusal), bundled extension commands, and the viewed subagent's own skills, prompt templates, and user or project extension commands. `@` and `Tab` complete paths in the viewed subagent's working directory. A built-in name followed by arguments it does not take (such as `/copy that` or `/new idea`) goes to the subagent as ordinary text. See [Task inspection](/subagents#task-inspection).
 
 ### Open the task inspector
 

@@ -330,11 +330,13 @@ function createViewedAgentAutocompleteProvider(mode: InteractiveModeBase, port: 
 	};
 }
 
-/** Main's commands that work while a subagent is shown: built-ins but the refused ones, and the bundled extensions'. */
+/**
+ * Main's commands while a subagent is shown: every built-in, and the bundled extensions'. The refused ones (`/model`,
+ * `/thinking`) stay listed, so that typing one and pressing Enter sends it, to be refused, rather than completing it
+ * into another command whose name contains it (`/scoped-models`).
+ */
 function viewedMainSlashCommands(mode: InteractiveModeBase): SlashCommand[] {
-	const builtins = builtinSlashCommands
-		.call(mode)
-		.filter((command) => command.name !== "model" && command.name !== "thinking");
+	const builtins = builtinSlashCommands.call(mode);
 	const registered = mode.session.extensionRunner
 		.getRegisteredCommands()
 		.filter((command) => !BUILTIN_SLASH_COMMAND_NAMES.has(command.name))
