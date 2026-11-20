@@ -1571,13 +1571,13 @@ test("dismissed native task ids are pruned when the task is seen in a non-finish
 		setTaskTurnInterrupted(fixture.store, id, true);
 		assert.deepEqual(
 			rowsOf().map((row) => [row.id, row.state]),
-			[[`task:${id}`, "stopped"]],
+			[[`task:${id}`, "paused"]],
 		);
 		dismissedAgentPanelItems(session).add(`task:${id}`);
 		dismissedTasks(ownerTaskViewSource(fixture.store)).add(id);
 		assert.deepEqual(
 			rowsOf().map((row) => [row.id, row.state]),
-			[[`task:${id}`, "stopped"]],
+			[[`task:${id}`, "paused"]],
 		);
 		assert.equal(dismissedAgentPanelItems(session).has(`task:${id}`), false);
 		assert.equal(dismissedTasks(ownerTaskViewSource(fixture.store)).has(id), false);

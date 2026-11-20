@@ -535,7 +535,7 @@ test("a task message that fails after the chat closed /tasks shows its reason in
 		host.closeTasks();
 		answer.reject(new TaskMessageError("delivery-refused", { taskId: "task" as TaskId, target: "worker-1" }));
 		await flush();
-		assert.match(host.statusText(), /Intercom did not deliver the message: worker-1 \(delivery-refused\)/);
+		assert.match(host.statusText(), /The agent did not take the message: worker-1 \(delivery-refused\)/);
 	} finally {
 		host.dispose();
 		await fixture.dispose();

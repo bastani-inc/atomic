@@ -260,6 +260,15 @@ export class OwnerTaskStore {
 					this.countResumedTurn(record.ref.taskId);
 					this.panelRevisionValue++;
 				}
+			} else if (record.kind === "agent" && record.execution.kind === "running") {
+				// A subagent restored paused after a restart was paused by no view here: its session says so.
+				const lease = this.resolveTask(record.ref.taskId);
+				const bound = lease.ok ? taskTranscriptSource(lease.value) : undefined;
+				if (bound?.ok && bound.value.session.turnPaused?.() === true) {
+					this.turnInterruptedIds.add(record.ref.taskId);
+					this.elapsedClocks.elapsedMs(record.ref.taskId, record.metrics?.elapsedMs, false);
+					this.panelRevisionValue++;
+				}
 			}
 			if (task.execution.kind === "settled" && !this.settlements.has(task.ref.taskId))
 				this.settlements.set(task.ref.taskId, BigInt(snapshot.cursor.sequence));

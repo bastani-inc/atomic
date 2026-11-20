@@ -1,4 +1,4 @@
-import type { EditorComponent, EditorTheme, Focusable, TUI } from "@bastani/atomic-tui";
+import { type EditorComponent, type EditorTheme, type Focusable, getKeybindings, type TUI } from "@bastani/atomic-tui";
 import { openExternalEditorForText, pasteClipboardImageToEditor } from "../chat-input-actions.ts";
 import {
 	isChatSessionBashRunning,
@@ -192,14 +192,6 @@ export function handleChatSessionInput<TExtraEntry extends ChatTranscriptEntryLi
 		return true;
 	}
 	if (state.bodyViewport.handleInput(data)) return true;
-	if (matchesKey(data, "alt+up")) {
-		callbacks.restoreQueuedMessagesToEditor();
-		return true;
-	}
-	if (matchesKey(data, "ctrl+f")) {
-		void callbacks.submit("followUp");
-		return true;
-	}
 	if (matchesKey(data, "escape")) {
 		if (state.compacting) {
 			void callbacks.abortCompaction();
@@ -219,8 +211,18 @@ export function handleChatSessionInput<TExtraEntry extends ChatTranscriptEntryLi
 			return true;
 		}
 	}
+	// The editor runs the follow-up and dequeue keys as its `app.message.*` actions, as the main chat's does.
 	if (state.editor) {
 		state.editor.handleInput(data);
+		return true;
+	}
+	const keys = getKeybindings();
+	if (keys.matches(data, "app.message.dequeue")) {
+		callbacks.restoreQueuedMessagesToEditor();
+		return true;
+	}
+	if (keys.matches(data, "app.message.followUp")) {
+		void callbacks.submit("followUp");
 		return true;
 	}
 	if (matchesKey(data, "enter")) {
@@ -237,6 +239,20 @@ export function handleChatSessionInput<TExtraEntry extends ChatTranscriptEntryLi
 	}
 	return false;
 }
+
+/** Up recalls a submission: the editor's history, and the chat's own record of it, which outlives the editor. */
+export function recordChatSessionPrompt<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	text: string,
+): void {
+	state.editor?.addToHistory?.(text);
+	const trimmed = text.trim();
+	if (!trimmed || state.sentPrompts.at(-1) === trimmed) return;
+	state.sentPrompts = [...state.sentPrompts, trimmed].slice(-PROMPT_HISTORY_LIMIT);
+}
+
+/** As many submissions as the editor's own history keeps. */
+const PROMPT_HISTORY_LIMIT = 100;
 
 export function setChatSessionEditorText<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,

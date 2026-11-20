@@ -1,8 +1,9 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import type { EditorTheme } from "@bastani/atomic-tui";
-import { beforeAll, test, vi } from "vitest";
+import { type EditorTheme, getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { afterAll, beforeAll, test, vi } from "vitest";
+import { KeybindingsManager, useWindowsKeybindings } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	type AgentSession,
 	ChatSessionHost,
@@ -11,8 +12,17 @@ import {
 } from "../../packages/coding-agent/src/index.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
+/** The follow-up key (`app.message.followUp`): Alt+Enter, or Ctrl+Q with the Windows bindings. */
+const FOLLOW_UP_KEY = useWindowsKeybindings() ? "\x11" : "\x1b\r";
+const previousKeybindings = getKeybindings();
+
 beforeAll(() => {
 	initTheme("dark", false);
+	setKeybindings(new KeybindingsManager());
+});
+
+afterAll(() => {
+	setKeybindings(previousKeybindings);
 });
 
 const plainStyle: ChatSessionHostStyle = {
@@ -106,7 +116,7 @@ test("ChatSessionHost treats idle follow-up like normal submit", async () => {
 	});
 
 	for (const ch of "idle") host.handleInput(ch);
-	host.handleInput("\x06");
+	host.handleInput(FOLLOW_UP_KEY);
 	await Promise.resolve();
 	await Promise.resolve();
 
@@ -130,7 +140,7 @@ test("ChatSessionHost routes streaming follow-up and interrupt through shared ch
 	});
 
 	for (const ch of "later") host.handleInput(ch);
-	host.handleInput("\x06");
+	host.handleInput(FOLLOW_UP_KEY);
 	host.handleInput("\x1b");
 	await Promise.resolve();
 	await Promise.resolve();

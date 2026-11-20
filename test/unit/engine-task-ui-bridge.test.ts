@@ -360,7 +360,7 @@ test("a task message that fails after /tasks closed is reported once through the
 			getSessionId: () => transcript.getSessionId(),
 			getEntries: () => transcript.getEntries(),
 			completionSource: { runId: "run-1", intercomTarget: "worker-1" },
-			sendMessage: () => delivery.promise,
+			queueMessage: () => delivery.promise,
 		});
 		const shown = showTaskInspector(
 			{ custom, notify: (message, type) => notices.push({ message, type }) },
@@ -380,7 +380,7 @@ test("a task message that fails after /tasks closed is reported once through the
 		assert.equal(notices[0]?.type, "warning");
 		assert.match(
 			notices[0]?.message ?? "",
-			/Intercom did not deliver the message: worker-1 \(delivery-refused\): gone/,
+			/The agent did not take the message: worker-1 \(delivery-refused\): gone/,
 		);
 	} finally {
 		await fixture.dispose();

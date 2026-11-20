@@ -18,6 +18,7 @@ import {
 	queueHeldCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import { retryIsCurrent } from "./agent-session-retry.ts";
+import { settleTurnPause } from "./agent-session-turn-pause.ts";
 import type {
 	PromptDisposition,
 	PromptOptions,
@@ -65,6 +66,11 @@ function holdSubagentMessageAdmission(session: AgentSession): () => void {
 
 function openRun(session: AgentSession): void {
 	openRuns.set(session, (openRuns.get(session) ?? 0) + 1);
+}
+
+/** Whether a run is open: its turn streams or waits to retry, or it has not settled after its turn. */
+export function hasOpenRun(session: AgentSession): boolean {
+	return openRuns.has(session);
 }
 
 function closeRun(session: AgentSession): void {
@@ -886,6 +892,7 @@ async function settleSubagentMessages(session: AgentSession, keepMessageAdmissio
 		session._turnInterruptedByUser = false;
 		session._awaitingStartAfterInterrupt = true;
 		session._awaitingMessageAfterInterrupt = true;
+		settleTurnPause(session);
 		return;
 	}
 	// A turn that settles before the child's execution gave it its task, such as one an extension's interrupt started
@@ -909,8 +916,11 @@ function subagentExecutionEnded(session: AgentSession): boolean {
 	);
 }
 
+/** `code` lets a caller tell this refusal, which a finished subagent's resume can answer, from any other. */
 function subagentExecutionEndedError(): Error {
-	return new Error("Subagent execution is terminal and cannot accept messages");
+	return Object.assign(new Error("Subagent execution is terminal and cannot accept messages"), {
+		code: "SubagentExecutionEnded",
+	});
 }
 
 function awaitsSubagentAnswer(

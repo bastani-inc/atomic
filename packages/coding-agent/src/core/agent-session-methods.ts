@@ -112,8 +112,16 @@ export interface RuntimeBuildOptions {
 	powerShellAvailable: boolean;
 }
 
+/** The settlement of the run a `pauseTurn` ended. Spelled out, as published declarations may predate `PromiseWithResolvers`. */
+export interface TurnPause {
+	readonly promise: Promise<void>;
+	resolve(): void;
+}
+
 export interface AgentSessionQueuePauseControl {
 	readonly queuedMessagesPaused: boolean;
+	/** Whether Esc in the session's chat paused it (`pauseTurn`): its queue is held until the user continues it. */
+	readonly turnPaused: boolean;
 	pauseQueuedMessages(): void;
 	/** Release the hold without starting a turn; true means raw queued work was released. */
 	resumeQueuedMessages(beforeRelease?: () => void): Promise<boolean>;
@@ -294,6 +302,13 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	abort(options?: SessionAbortOptions): Promise<void>;
 	/** Ends the current turn without closing the session to further messages, as Esc does in a subagent's chat. */
 	interruptTurn(): Promise<void>;
+	/**
+	 * Pauses the current turn as Esc does in a subagent's chat: returns the typed messages still queued, ends the turn,
+	 * and holds the rest of the queue until the next message continues the session.
+	 */
+	pauseTurn(): Promise<ClearedQueue>;
+	/** Continues a session `pauseTurn` paused: its hold is released, so the user's message sent next starts the turn. */
+	resumeTurn(): Promise<void>;
 	_sealMessageAdmissionIfDrained(): boolean;
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
@@ -518,6 +533,9 @@ export interface AgentSessionPublicSurface
 		| "getFollowUpMessages"
 		| "abort"
 		| "interruptTurn"
+		| "pauseTurn"
+		| "resumeTurn"
+		| "turnPaused"
 		| "setModel"
 		| "cycleModel"
 		| "setThinkingLevel"
@@ -604,6 +622,10 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_undeliveredAgentStarts: number;
 	/** A child whose turn the user interrupted waits here: the next message it receives starts its next turn. */
 	_awaitingMessageAfterInterrupt: boolean;
+	/** A `pauseTurn` holds the queue: settles once its run did, and the user's continue releases the hold. */
+	_turnPause: TurnPause | undefined;
+	/** The release of a `pauseTurn` hold under way, which every next message waits for. */
+	_turnPauseRelease: Promise<void> | undefined;
 	_pendingInterruptDeliveries: number;
 	_priorityInterruptPending: boolean;
 	_activePromptCount: number;

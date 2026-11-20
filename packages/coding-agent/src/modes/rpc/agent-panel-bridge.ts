@@ -21,7 +21,7 @@ import {
 	taskPanelState,
 	taskRunGeneration,
 } from "../../core/tasks/agent-panel-source.ts";
-import { supersededSettledAttempts } from "../../core/tasks/completion.js";
+import { latestSubagentAttempt, supersededSettledAttempts } from "../../core/tasks/completion.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
@@ -746,7 +746,11 @@ async function openPanelRow(
 ): Promise<void> {
 	const store = getOwnerTaskStore(session);
 	const taskId = panelTaskId(item);
-	const back = () => showAgentPanel(session, ui, item.id);
+	// A subagent resumed while its chat was open is the same row: its latest attempt is selected again.
+	const back = () => {
+		const latest = taskId === undefined ? undefined : store && latestSubagentAttempt(store.tasks, taskId);
+		return showAgentPanel(session, ui, latest === undefined ? item.id : `task:${latest.ref.taskId}`);
+	};
 	if (taskId !== undefined && store !== undefined) {
 		if ((await showTaskInspector(ui, store, taskId, { chat: true, backLabel: "main chat" })) === "back") await back();
 		return;

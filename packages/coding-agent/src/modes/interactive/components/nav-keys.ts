@@ -110,12 +110,14 @@ function boundKeyParts(keys: readonly string[]): HintKeyPart[] {
 }
 
 const WAY_OUT_KEY_RE = /(?:^|\/)(?:esc|escape|←|left)(?:$|\/)/i;
+/** Esc in a chat acts on the agent's turn and stays in the chat: it is no way out. */
+const TURN_KEY_LABELS: ReadonlySet<string> = new Set(["interrupt", "to interrupt", "to pause"]);
 
 function navEntryPriority(entry: NavKey, keys: string): number {
 	if (
 		entry.action === "app.nav.back" ||
 		entry.action === "tui.select.cancel" ||
-		(WAY_OUT_KEY_RE.test(keys) && entry.label !== "interrupt")
+		(WAY_OUT_KEY_RE.test(keys) && !TURN_KEY_LABELS.has(entry.label))
 	) {
 		return 2;
 	}
