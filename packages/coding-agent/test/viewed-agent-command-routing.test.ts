@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { TaskId } from "../src/core/tasks/contracts.js";
+import { AgentViewSwitcher } from "../src/modes/interactive/agent-view/agent-view-switcher.ts";
+import { createRig, type Rig } from "./helpers/busy-submission-rig.ts";
 import { FakeAgentViewPort } from "./helpers/fake-agent-view-port.ts";
 import { createMainScreen, type MainScreen } from "./helpers/viewed-agent-mode.ts";
 
@@ -238,6 +240,75 @@ describe("commands typed while a subagent is shown on the main screen", () => {
 	);
 });
 
+describe("the prompt's completion while a subagent is shown", () => {
+	/** The prompt with its completion menu, once the completion for `text` typed into the empty prompt settled. */
+	async function completionsFor(text: string): Promise<string> {
+		const editor = screen?.mode.defaultEditor;
+		assert.ok(editor);
+		editor.setText("");
+		for (const char of text) editor.handleInput(char);
+		let menu = "";
+		let last = "";
+		let stableSince = Date.now();
+		// The completion is asynchronous: the menu is read once it has not changed for a while.
+		await until(() => {
+			menu = (editor.render(160) as string[]).join("\n");
+			if (menu !== last) {
+				last = menu;
+				stableSince = Date.now();
+			}
+			return Date.now() - stableSince > 300;
+		});
+		return menu;
+	}
+
+	test(
+		"offers the built-ins that work there, Atomic's extension commands, and the subagent's own skills, templates and commands",
+		async () => {
+			screen = await viewSubagent();
+			screen.port.commandCatalog = {
+				cwd: process.cwd(),
+				skillCommands: [{ name: "skill:reviewer", description: "Review a diff" }],
+				promptTemplates: [{ name: "review-template", description: "A template" }],
+				extensionCommands: [{ name: "review-command", description: "The subagent's command" }],
+			};
+			const menu = await completionsFor("/revi");
+			assert.match(menu, /skill:reviewer/);
+			assert.match(menu, /review-template/);
+			assert.match(menu, /review-command/);
+			const commands = await completionsFor("/");
+			assert.match(commands, /settings/);
+			assert.doesNotMatch(commands, /\bmodel\b.*Select model/);
+			assert.equal(
+				(await completionsFor("/mod")).includes("Select model"),
+				false,
+				"/model is not offered",
+			);
+			assert.match(await completionsFor("/appc"), /appcmd/);
+			assert.equal((await completionsFor("/pla")).includes("A command the user installed"), false);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"back on main, the prompt completes main's commands again",
+		async () => {
+			screen = await viewSubagent();
+			screen.port.commandCatalog = {
+				cwd: process.cwd(),
+				skillCommands: [{ name: "skill:reviewer" }],
+				promptTemplates: [],
+				extensionCommands: [],
+			};
+			await screen.mode.agentView?.view(undefined);
+			assert.match(await completionsFor("/mod"), /Select model/);
+			assert.match(await completionsFor("/pla"), /plan/);
+			assert.doesNotMatch(await completionsFor("/skill:r"), /skill:reviewer/);
+		},
+		HOST_TIMEOUT_MS,
+	);
+});
+
 describe("keys that act on the main conversation while a subagent is shown", () => {
 	test(
 		"the model and thinking keys are refused with a notice and change nothing",
@@ -300,6 +371,60 @@ describe("keys that act on the main conversation while a subagent is shown", () 
 			screen.press("app.thinking.cycle");
 			await until(() => mode.session.thinkingLevel !== level);
 			assert.deepEqual(screen.warnings, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+});
+
+describe("commands typed while a subagent is shown, on the isolated host", () => {
+	const rigs: Rig[] = [];
+	afterEach(async () => {
+		while (rigs.length > 0) await rigs.pop()?.stop();
+	});
+
+	test(
+		"the engine's catalog decides: its bundled extension commands run on main, its configured ones go to the subagent, and /model is refused",
+		async () => {
+			const ran: string[] = [];
+			const rig = await createRig("isolated", "quiet", {
+				extensions: [
+					(pi) =>
+						pi.registerCommand("appcmd", { handler: async () => void ran.push("/appcmd in the engine") }),
+					(pi) => pi.registerCommand("plan", { handler: async () => void ran.push("/plan in the engine") }),
+				],
+			});
+			rigs.push(rig);
+			const runtime = rig.pair?.runtime;
+			assert.ok(runtime);
+			// The first extension stands for one Atomic ships.
+			const app = rig.engine.session.resourceLoader
+				.getExtensions()
+				.extensions.find((extension) => extension.commands.has("appcmd"));
+			assert.ok(app);
+			app.sourceInfo.configurationOrigin = "bundled";
+			await runtime.waitUntilResourcesReady();
+			await until(() =>
+				runtime
+					.getRemoteCommands()
+					.some((command) => command.name === "appcmd" && command.sourceInfo.configurationOrigin === "bundled"),
+			);
+			const port = new FakeAgentViewPort({ taskId: TASK, name: "worker" });
+			const switcher = new AgentViewSwitcher(async () => port, () => {});
+			Object.assign(rig.host, { agentView: switcher });
+			assert.equal(await switcher.view(TASK), true);
+
+			await rig.host.defaultEditor.onSubmit?.("/appcmd");
+			await until(() => ran.length === 1);
+			await rig.host.defaultEditor.onSubmit?.("/plan");
+			await rig.host.defaultEditor.onSubmit?.("/model other-model");
+			assert.deepEqual(ran, ["/appcmd in the engine"]);
+			assert.deepEqual(
+				port.calls.map((call) => call.text),
+				["/plan"],
+			);
+			assert.deepEqual(rig.host.notices, [
+				"warning: /model changes the main conversation's model. Switch to main to use it.",
+			]);
 		},
 		HOST_TIMEOUT_MS,
 	);
