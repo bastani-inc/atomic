@@ -133,14 +133,17 @@ function mainQueuedDeliveries(mode: InteractiveModeBase): QueuedMessageLanes {
 const drawnDeliveries = new WeakMap<InteractiveModeBase, QueuedMessageLanes>();
 
 /**
- * Build the main chat's rows again when the messages being delivered changed since they were drawn without an event
- * that builds them: a delivery that ended without its `message_start` (a hook failed, or the session already shows the
- * input). Its row goes with the next event the session sends.
+ * Build the main chat's rows again when a message they draw as being delivered is no longer delivered, without an
+ * event that builds them: a delivery that ended without its `message_start` (a hook failed, or the session already
+ * shows the input). Its row goes with the next event the session sends. A delivery that begins needs nothing here: the
+ * rows drawn before it still list it as queued, and the `queue_update` it brings builds them again.
  */
 export function redrawMainQueuedDeliveries(mode: InteractiveModeBase): void {
+	const drawn = drawnDeliveries.get(mode);
+	if (drawn === undefined || drawn === NO_QUEUED_MESSAGES) return;
 	// While a subagent is shown, the rows are its queue.
 	if (mode.agentView?.viewed?.kind === "agent") return;
-	if ((drawnDeliveries.get(mode) ?? NO_QUEUED_MESSAGES) === mainQueuedDeliveries(mode)) return;
+	if (drawn === mainQueuedDeliveries(mode)) return;
 	mode.updatePendingMessagesDisplay();
 	mode.ui.requestRender();
 }
@@ -167,7 +170,8 @@ InteractiveModeBase.prototype.updatePendingMessagesDisplay = function (this: Int
 	}
 	// Drawing only: Alt+Up, Esc and engine recovery use the session's own queue, which no longer lists these.
 	const delivering = mainQueuedDeliveries(this);
-	drawnDeliveries.set(this, delivering);
+	if (delivering === NO_QUEUED_MESSAGES) drawnDeliveries.delete(this);
+	else drawnDeliveries.set(this, delivering);
 	const rows = queuedMessageRows(this.getAllQueuedMessages(), delivering);
 	if (rows.length > 0) {
 		const dequeueKey = this.getAppKeyDisplay("app.message.dequeue");
