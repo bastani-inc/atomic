@@ -516,6 +516,8 @@ function sameUnfocusedRows(
 			a.name !== b.name ||
 			a.task !== b.task ||
 			a.tokens !== b.tokens ||
+			a.model !== b.model ||
+			a.thinking !== b.thinking ||
 			a.queued !== b.queued ||
 			elapsedSecond(a.elapsedMs) !== elapsedSecond(b.elapsedMs) ||
 			model.faded(a) !== model.faded(b)
