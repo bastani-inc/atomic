@@ -116,3 +116,21 @@ test("a message a subagent refused as its run ended goes back to the chat when t
 		await fixture.dispose();
 	}
 });
+
+test.each([
+	["started its next turn", true, "running", false],
+	["waited in its queue", false, "stopped", true],
+] as const)("a message that %s leaves an interrupted subagent %s", async (_what, startedTurn, _shown, stillStopped) => {
+	const { fixture, taskId, source } = await runningTask(
+		transcript({ queueMessage: async () => ({ delivered: true, startedTurn }) }),
+	);
+	try {
+		// Esc interrupted or paused its turn; a message that only joins its held queue does not end that.
+		fixture.store.setTurnInterrupted(taskId, true);
+		assert.equal(source.taskStopped!(taskId), true);
+		await source.sendTaskMessage!(taskId, "carry on");
+		assert.equal(source.taskStopped!(taskId), stillStopped);
+	} finally {
+		await fixture.dispose();
+	}
+});

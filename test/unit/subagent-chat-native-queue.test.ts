@@ -90,7 +90,7 @@ function launchChild(
 		settled = true;
 	});
 	cleanups.push(() => stop.abort("user"));
-	return { requests, result, settled: () => settled, source: () => source };
+	return { requests, result, stop, settled: () => settled, source: () => source };
 }
 
 function answer(env: Awaited<ReturnType<typeof liveChildEnvironment>>, index: number, output: string): void {
@@ -120,9 +120,10 @@ test(
 			}),
 		);
 
-		assert.deepEqual(await source.queueMessage!("steer alpha", "steer"), { delivered: true });
-		assert.deepEqual(await source.queueMessage!("steer beta", "steer"), { delivered: true });
-		assert.deepEqual(await source.queueMessage!("follow gamma", "followUp"), { delivered: true });
+		const queuedOnly = { delivered: true, startedTurn: false };
+		assert.deepEqual(await source.queueMessage!("steer alpha", "steer"), queuedOnly);
+		assert.deepEqual(await source.queueMessage!("steer beta", "steer"), queuedOnly);
+		assert.deepEqual(await source.queueMessage!("follow gamma", "followUp"), queuedOnly);
 
 		const queued = { steering: ["steer alpha", "steer beta"], followUp: ["follow gamma"] };
 		assert.deepEqual(source.getQueuedMessages!(), queued, "the chat reads them as the session's own queue");
@@ -175,6 +176,27 @@ test(
 		const result = await child.result;
 		assert.equal(result.status, "ok");
 		assert.deepEqual(child.requests.slice(1).map(tail), [["tool:round one", "user:a peer's note"]]);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a subagent stopped with messages typed into its chat still queued keeps them, steers first, for its resume",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const child = launchChild(env, "native-queue-stopped", [
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-1" })], { stopReason: "toolUse" }),
+		]);
+		await until(() => env.blockStarted(), LIVE_CHILD_START_WAIT_MS);
+		const source = child.source()!;
+		await source.queueMessage!("a later follow-up", "followUp");
+		await source.queueMessage!("a steer", "steer");
+		// A run-control pause or quit stops the child's run this way.
+		child.stop.abort("pause");
+		const result = await child.result;
+		assert.equal(result.status, "interrupted");
+		assert.deepEqual(result.pendingMessages, ["a steer", "a later follow-up"]);
+		assert.equal(child.requests.length, 1, "neither reached the model");
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );
@@ -233,7 +255,10 @@ test.each(["steer", "followUp"] as const)(
 		await new Promise<void>((resolve) => setTimeout(resolve, 20));
 		assert.equal(child.settled(), false, "the interrupted child waits for its next message");
 
-		assert.deepEqual(await source.queueMessage!("carry on with the plan", lane), { delivered: true });
+		assert.deepEqual(await source.queueMessage!("carry on with the plan", lane), {
+			delivered: true,
+			startedTurn: true,
+		});
 		const result = await child.result;
 		assert.equal(result.status, "ok");
 		assert.equal(result.finalOutput, "continued as asked");

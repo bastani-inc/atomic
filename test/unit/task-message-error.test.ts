@@ -112,14 +112,27 @@ test("an unknown task is task-unavailable (#4521)", async () => {
 	}
 });
 
-test("a task whose session takes no typed messages is messages-unsupported, even with an Intercom channel (#4521)", async () => {
+test("a task whose session has only an Intercom channel still takes typed messages through it, as before (#4521)", async () => {
+	const sent: string[] = [];
+	const result = await sendThroughOwner(
+		queueTranscript(undefined, async (text) => {
+			sent.push(text);
+			return { delivered: true };
+		}),
+		"  /steer exactly as typed  ",
+		"followUp",
+	);
+	assert.equal(result.error, undefined);
+	assert.deepEqual(sent, ["  /steer exactly as typed  "]);
+});
+
+test("a task that takes no typed messages and has no Intercom channel is messages-unsupported (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	const cases: Array<TaskTranscriptSource | undefined> = [
 		undefined,
 		session,
 		queueTranscript(),
-		// No fallback to an Intercom message: the model would receive it wrapped.
-		queueTranscript(undefined, async () => ({ delivered: true })),
+		{ ...queueTranscript(undefined, async () => ({ delivered: true })), completionSource: undefined },
 	];
 	for (const transcript of cases) {
 		const { error, taskId } = await sendThroughOwner(transcript);
