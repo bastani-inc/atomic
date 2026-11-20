@@ -212,6 +212,9 @@ export const ENDED_QUEUE_LOCK_WAIT_MS = 5_000;
  */
 export const ENDED_QUEUE_FILE_BYTES_MAX = 4 * ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX + 64 * 1024 * 1024;
 
+/** How many rows one page of counting what the store keeps reads before the event loop runs again. */
+const COUNT_PAGE_ROWS = 2_048;
+
 /** How long after a failed delete it is tried again, at first; each failure doubles it, up to the most. */
 const RETRY_DELETE_FIRST_MS = 100;
 const RETRY_DELETE_MAX_MS = 5_000;
@@ -532,19 +535,6 @@ function failureForm(senderJson: string, requestJson: string | null): { readonly
 }
 
 /**
- * Whether the database tells a text's size in bytes without reading it (`octet_length`: SQLite 3.43 and later, which
- * reads only the row's header, and Postgres). Otherwise a row counts the size it recorded when it was written.
- */
-async function countsBytes(database: SqliteDatabase): Promise<boolean> {
-	try {
-		const row = await database.get<SqliteRow & { size: number | bigint }>("SELECT octet_length('\u00e9') AS size");
-		return Number(row?.size) === 2;
-	} catch {
-		return false;
-	}
-}
-
-/**
  * #5999: the queue on `database`, tables `<prefix>intercom_ended_child_queue`, `<prefix>intercom_ended_child_wakes` and
  * `<prefix>intercom_ended_child_meta`. `home` partitions the rows by broker home; `holder` is this broker instance.
  */
@@ -762,40 +752,41 @@ export async function openSqlEndedChildQueueStore(
 		compactSoon();
 	}
 	// What the caps count of the store, read before anything is added: every row of this home, an earlier keeper's too
-	// (they stay until this broker takes the rows over), at the size it takes there.
-	const sizeOfRow = (await countsBytes(database))
-		? "octet_length(q.sender_json) + COALESCE(octet_length(b.request_json), 0)"
-		: "q.bytes";
-	const readCounted = async (): Promise<Map<string, FoundRow>> => {
-		const rows = await database.transaction(
-			(tx) =>
-				tx.all<
-					SqliteRow & {
-						message_id: string;
-						owner_host: string;
-						owner_session_id: string;
-						child_key: string;
-						keeper: string;
-						size: number | bigint | null;
-					}
-				>(
-					`SELECT q.message_id, q.owner_host, q.owner_session_id, q.child_key, q.keeper, ${sizeOfRow} AS size
-					 FROM ${queue} q LEFT JOIN ${bodies} b ON b.message_id = q.message_id WHERE q.home = ?`,
-					home,
-				),
-			{ readOnly: true },
-		);
-		const found = new Map<string, FoundRow>();
-		for (const row of rows)
-			found.set(row.message_id, {
-				key: countedKey(row.owner_host, row.owner_session_id, row.child_key),
-				bytes: Number(row.size ?? 0),
-				earlier: row.keeper !== keeper,
-			});
-		return found;
+	// (they stay until this broker takes the rows over), at the size it recorded when it was written (its sender and its
+	// message as written). Read a page at a time, the event loop running between pages: a large queue never holds it.
+	const readCounted = async (each: (messageId: string, row: FoundRow) => void): Promise<void> => {
+		for (let after = -1; ; ) {
+			// One statement a page, outside a transaction (a read never waits for a writer): a page is consistent in itself,
+			// and a recount's rules hold across pages (see `CountedRows.recount`).
+			const rows = await database.all<
+				SqliteRow & {
+					seq: number | bigint;
+					message_id: string;
+					owner_host: string;
+					owner_session_id: string;
+					child_key: string;
+					keeper: string;
+					bytes: number | bigint;
+				}
+			>(
+				`SELECT seq, message_id, owner_host, owner_session_id, child_key, keeper, bytes FROM ${queue}
+				 WHERE home = ? AND seq > ? ORDER BY seq LIMIT ${COUNT_PAGE_ROWS}`,
+				home,
+				after,
+			);
+			for (const row of rows)
+				each(row.message_id, {
+					key: countedKey(row.owner_host, row.owner_session_id, row.child_key),
+					bytes: Number(row.bytes),
+					earlier: row.keeper !== keeper,
+				});
+			if (rows.length < COUNT_PAGE_ROWS) return;
+			after = Number(rows[rows.length - 1]!.seq);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		}
 	};
 	const ledger = new CountedRows();
-	for (const [messageId, row] of await readCounted()) ledger.count(messageId, row.key, row.bytes, "stored", row.earlier);
+	await readCounted((messageId, row) => ledger.count(messageId, row.key, row.bytes, "stored", row.earlier));
 	/** Delete one row this instance holds, its message too; whether there was one. */
 	const deleteRow = async (tx: SqliteExecutor, messageId: string): Promise<boolean> => {
 		const { changes } = await tx.run(
@@ -838,7 +829,11 @@ export async function openSqlEndedChildQueueStore(
 			return;
 		}
 		recounting = ledger
-			.recount(readCounted)
+			.recount(async () => {
+				const found = new Map<string, FoundRow>();
+				await readCounted((messageId, row) => found.set(messageId, row));
+				return found;
+			})
 			.catch(() => {
 				// Counted as before; the next failure or drain counts again.
 			})
