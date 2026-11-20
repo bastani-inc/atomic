@@ -379,6 +379,22 @@ pub fn try_shared_advisory_lock(path: String, wait_ms: u32) -> napi::Result<Opti
 	Ok(file.map(|file| AdvisoryLock { file: Some(file) }))
 }
 
+/// Asynchronous form of {@link trySharedAdvisoryLock}: acquires the shared advisory lock on a worker thread without
+/// blocking the JavaScript event loop.
+#[napi(js_name = "trySharedAdvisoryLockAsync")]
+pub async fn try_shared_advisory_lock_async(
+	path: String,
+	wait_ms: u32,
+) -> napi::Result<Option<AdvisoryLock>> {
+	let file = napi::tokio::task::spawn_blocking(move || {
+		try_lock_file_shared(Path::new(&path), Duration::from_millis(u64::from(wait_ms)))
+	})
+	.await
+	.map_err(|error| napi::Error::new(napi::Status::GenericFailure, error.to_string()))?
+	.map_err(napi_error)?;
+	Ok(file.map(|file| AdvisoryLock { file: Some(file) }))
+}
+
 /// Renames `from` to `to` only while nothing is at `to` (#5193): `false`, with nothing moved, when something is there,
 /// so a moved item is put back without ever replacing another. Throws on any other failure.
 #[napi(js_name = "renameNoReplace")]

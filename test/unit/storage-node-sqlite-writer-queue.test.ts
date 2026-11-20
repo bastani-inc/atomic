@@ -30,6 +30,7 @@ import {
 import { isSqliteBusy } from "../../packages/coding-agent/src/core/storage/write-ahead-log.js";
 import { databaseNow, freezeDatabaseClock } from "../helpers/database-clock.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { interceptConnectionRequests, isExec } from "../helpers/sqlite-connection-requests.js";
 
 /** The adapter's recheck period for a writer that watches its release notice; a release nobody announces waits for it. */
 const WATCHED_RECHECK_MS = 250;
@@ -63,16 +64,16 @@ async function fixture(options?: Parameters<typeof openNodeSqliteDatabase>[1]) {
 	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
 	const holder = new DatabaseSync(path);
 	const counts: Counts = { attempts: [], begins: 0, commits: 0 };
-	const exec = DatabaseSync.prototype.exec;
-	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string): void {
-		const ours = this !== holder;
-		if (ours && sql === "BEGIN IMMEDIATE") counts.attempts.push(performance.now());
-		exec.call(this, sql);
-		if (ours && sql === "BEGIN IMMEDIATE") counts.begins += 1;
-		if (ours && sql === "COMMIT") counts.commits += 1;
-	};
+	// The adapter's connection runs on a thread of its own: its attempts and commits are counted as it sends them.
+	const counting = interceptConnectionRequests(async (request, send) => {
+		if (request.kind === "begin") counts.attempts.push(performance.now());
+		const answer = await send(request);
+		if (request.kind === "begin") counts.begins += 1;
+		if (isExec(request, "COMMIT")) counts.commits += 1;
+		return answer;
+	});
 	cleanups.push(async () => {
-		DatabaseSync.prototype.exec = exec;
+		counting.restore();
 		if (holder.isTransaction) holder.exec("ROLLBACK");
 		holder.close();
 		await releaseWaiters(`${path}-writers`);
@@ -856,18 +857,13 @@ test("a writer still takes the lock from a raw writer that lets go only between 
 		holder.exec("INSERT INTO other VALUES (1); COMMIT");
 		setTimeout(retake, 0);
 	};
-	const counted = DatabaseSync.prototype.exec;
-	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string): void {
-		try {
-			counted.call(this, sql);
-		} catch (error) {
-			if (cycling && this !== holder && sql === "BEGIN IMMEDIATE") setImmediate(release);
+	const refusals = interceptConnectionRequests((request, send) =>
+		send(request).catch((error: unknown) => {
+			if (cycling && request.kind === "begin") setImmediate(release);
 			throw error;
-		}
-	};
-	cleanups.push(() => {
-		DatabaseSync.prototype.exec = counted;
-	});
+		}),
+	);
+	cleanups.push(() => refusals.restore());
 	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('between ticks')"));
 	const write$ = settledFlag(write);
 	await untilWaiting();
@@ -917,17 +913,12 @@ test("a BEGIN IMMEDIATE that fails for a reason other than a busy lock fails the
 		errstr: "disk I/O error",
 	});
 	let attempts = 0;
-	const counted = DatabaseSync.prototype.exec;
-	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string): void {
-		if (sql === "BEGIN IMMEDIATE") {
-			attempts += 1;
-			throw ioError;
-		}
-		counted.call(this, sql);
-	};
-	cleanups.push(() => {
-		DatabaseSync.prototype.exec = counted;
+	const failing = interceptConnectionRequests((request, send) => {
+		if (request.kind !== "begin") return send(request);
+		attempts += 1;
+		return Promise.reject(ioError);
 	});
+	cleanups.push(() => failing.restore());
 	const error = await database
 		.transaction((tx) => tx.run("INSERT INTO items VALUES ('never')"), { lockWaitMs: 100 })
 		.then(
