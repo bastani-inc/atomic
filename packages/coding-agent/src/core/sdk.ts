@@ -72,6 +72,7 @@ import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
 import { prepareSessionResume, savedProjectTrustAsync, sessionResumeOptions } from "./resume/session-resume.ts";
+import { restoredCacheCheckpoint, restoredThinkingBudgets, withCacheCheckpoint } from "./resume-cache-checkpoint.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult, ResourceAdmission } from "./sdk-types.ts";
 import { sessionAccountCheckpoint } from "./session-account-model.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
@@ -625,8 +626,17 @@ async function constructAgentSession(
 
 	let lastConvertedLlmMessages: Message[] | undefined;
 	let requestForkBoundaries: ForkReplayPair | undefined;
+	let cacheCheckpoint = restoredCacheCheckpoint(existingMessages);
+	/** The provider message each input message of the latest conversion became, by input position. */
+	let convertedRows: readonly (Message | undefined)[] | undefined;
+	const convertRecordingRows = (messages: AgentMessage[]): Message[] =>
+		cacheCheckpoint
+			? convertToLlmWithForkBoundaries(messages, (normalized) => {
+					convertedRows = normalized;
+				})
+			: convertToLlm(messages);
 
-	let convertForRequest = convertToLlm;
+	let convertForRequest = convertRecordingRows;
 	if (openingPair) {
 		convertForRequest = (messages) => {
 			const pair = activeForkPair;
@@ -640,7 +650,14 @@ async function constructAgentSession(
 	}
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-		const converted = convertForRequest(messages);
+		let converted = convertForRequest(messages);
+		// A fork's opening request matches its replay pair by message identity, so it is left as it is.
+		if (cacheCheckpoint && !openingPair && convertedRows) {
+			const checkpoint = withCacheCheckpoint(messages, convertedRows, converted, cacheCheckpoint);
+			converted = checkpoint.converted;
+			if (!checkpoint.keep) cacheCheckpoint = undefined;
+		}
+		convertedRows = undefined;
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
 			lastConvertedLlmMessages = converted;
@@ -787,7 +804,7 @@ async function constructAgentSession(
 				// Consume even if authentication, a hook, or the transport fails.
 				openingPair = undefined;
 				activeForkPair = undefined;
-				convertForRequest = convertToLlm;
+				convertForRequest = convertRecordingRows;
 				requestForkBoundaries = undefined;
 				header = undefined;
 				(session as unknown as AgentSessionInternalSurface)._requestContextProjectionTransform = undefined;
@@ -968,7 +985,12 @@ async function constructAgentSession(
 		steeringMode: settingsManager.getSteeringMode(),
 		followUpMode: settingsManager.getFollowUpMode(),
 		transport: settingsManager.getTransport(),
-		thinkingBudgets: settingsManager.getThinkingBudgets(),
+		thinkingBudgets: restoredThinkingBudgets(
+			existingMessages,
+			model,
+			thinkingLevel,
+			settingsManager.getThinkingBudgets(),
+		),
 		maxRetryDelayMs: settingsManager.getProviderRetrySettings().maxRetryDelayMs,
 	});
 	// This stream resolves auth through modelRuntime, so summaries must not pre-resolve it (upstream #11520).

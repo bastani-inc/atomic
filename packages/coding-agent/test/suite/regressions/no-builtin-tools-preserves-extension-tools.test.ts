@@ -102,7 +102,7 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 				"write",
 			].sort(),
 		);
-		expect(session.getActiveToolNames()).toEqual(["intercom", "dynamic_tool"]);
+		expect(session.getActiveToolNames()).toEqual(["dynamic_tool", "intercom"]);
 		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
 		expect(session.systemPrompt).toContain("- intercom:");
 		expect(session.systemPrompt).not.toContain("- read:");

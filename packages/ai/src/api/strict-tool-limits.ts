@@ -1,4 +1,11 @@
 import { registerSessionResourceCleanup } from "../session-resources.ts";
+import type { Message } from "../types.ts";
+
+/** Diagnostics a reply records when Claude rejected its request's strict tools for exceeding its limits. */
+const STRICT_TOOL_LIMIT_FALLBACK_DIAGNOSTICS: ReadonlySet<string> = new Set([
+	"anthropic_strict_tools_fallback",
+	"bedrock_strict_tools_fallback",
+]);
 
 /**
  * Claude rejects (on the Anthropic API and on Bedrock) a request whose strict tools exceed its limits with one of these
@@ -43,6 +50,25 @@ export function markStrictToolLimitsExceeded(sessionId: string | undefined): voi
 /** Returns true when an earlier request of this session had its strict tools rejected for exceeding Claude's limits. */
 export function hasExceededStrictToolLimits(sessionId: string | undefined): boolean {
 	return sessionId !== undefined && sessionsOverStrictToolLimits.has(sessionId);
+}
+
+/**
+ * Returns true when an earlier request had its strict tools rejected for exceeding Claude's limits, as this process
+ * remembers it or as a reply in `messages` recorded it: the rejected reply's diagnostic, or a later reply sent without
+ * strict schemas for that reason, which a compaction keeps longer. A resumed session runs in a process that never saw the
+ * rejection; trying strict tools again would only repeat it, and the retry is what keeps the tool definitions, and so
+ * the prompt cache, unchanged. A transcript record is remembered for the session like a rejection.
+ */
+export function strictToolLimitsExceeded(sessionId: string | undefined, messages: readonly Message[]): boolean {
+	if (hasExceededStrictToolLimits(sessionId)) return true;
+	const recorded = messages.some(
+		(message) =>
+			message.role === "assistant" &&
+			(message.strictToolsDisabled === true ||
+				(message.diagnostics ?? []).some((diagnostic) => STRICT_TOOL_LIMIT_FALLBACK_DIAGNOSTICS.has(diagnostic.type))),
+	);
+	if (recorded) markStrictToolLimitsExceeded(sessionId);
+	return recorded;
 }
 
 registerSessionResourceCleanup((sessionId) => {

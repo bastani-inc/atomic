@@ -73,8 +73,8 @@ describe("system prompt updates", () => {
 				"rules",
 				"docs",
 				"model",
-				"date",
 				"cwd",
+				"date",
 			]);
 			expect(head.toolsAdded?.map((tool) => tool.name)).toEqual(harness.session.getActiveToolNames());
 			expect(getSystemMessageText(head)).toBe(harness.session.systemPrompt);

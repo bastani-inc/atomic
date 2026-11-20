@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
+import type { AssistantMessage, SystemMessage, Usage } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import {
 	collectCacheMisses,
@@ -143,5 +143,128 @@ describe("cache-miss cost display (#4688)", () => {
 			formatCacheWaste(computeCacheWaste(mixed, models({ input: 3, cacheRead: 0.3 }))),
 			"$0.1080 (2 misses, 1 without pricing)",
 		);
+	});
+});
+
+describe("cache-miss causes on resumed sessions", () => {
+	const rates = { input: 3, cacheRead: 0.3 };
+
+	test("names a tool definition change between the requests, as an upgrade that redefines a tool makes", () => {
+		const [cached, missed] = missAfterCachedRequest(ISSUE_TOKENS, rates);
+		const redefinition: SessionEntry = {
+			type: "message",
+			id: "update",
+			parentId: null,
+			timestamp: new Date(500).toISOString(),
+			message: {
+				role: "system",
+				content: "",
+				toolsRemoved: [{ name: "read" }],
+				toolsAdded: [{ name: "read", description: "Read a file at its new path", parameters: {} as never }],
+				timestamp: 500,
+			},
+		};
+		assert.match(
+			onlyMissNotice([cached!, redefinition, missed!], rates),
+			/^Prompt cache miss after tool definitions changed:/,
+		);
+	});
+
+	test("names TTL expiry before a tool change, which appended declarations do not turn into a miss", () => {
+		const [cached, missed] = missAfterCachedRequest(ISSUE_TOKENS, rates);
+		const addition: SessionEntry = {
+			type: "message",
+			id: "update",
+			parentId: null,
+			timestamp: new Date(500).toISOString(),
+			message: {
+				role: "system",
+				content: "",
+				toolsAdded: [{ name: "lookup", description: "Look something up", parameters: {} as never }],
+				timestamp: 500,
+			},
+		};
+		const expiring: ModelPriceSource = { ...models(rates), getPromptCacheTtlMs: () => 1_000 };
+		const misses = [...collectCacheMisses([cached!, addition, missed!], expiring).values()];
+		assert.equal(misses.length, 1);
+		assert.match(formatCacheMissNotice(misses[0]!), /^Prompt cache miss after cache TTL expiry:/);
+	});
+
+	test("names a thinking budget lowered to fit the context window", () => {
+		const [cached, missed] = missAfterCachedRequest(ISSUE_TOKENS, rates).map((entry) =>
+			entry.type === "message" && entry.message.role === "assistant"
+				? {
+						...entry,
+						message: {
+							...entry.message,
+							thinkingLevel: "medium",
+							thinkingBudgetTokens: entry.id === "cached" ? 8192 : 2048,
+						} as AssistantMessage,
+					}
+				: entry,
+		);
+		assert.match(
+			onlyMissNotice([cached!, missed!], rates),
+			/^Prompt cache miss with the context near the model's limit:/,
+		);
+	});
+
+	test("names the context limit when the request had to go without thinking", () => {
+		const [cached, missed] = missAfterCachedRequest(ISSUE_TOKENS, rates).map((entry) =>
+			entry.type === "message" && entry.message.role === "assistant"
+				? {
+						...entry,
+						message: {
+							...entry.message,
+							thinkingLevel: "medium",
+							...(entry.id === "cached" ? { thinkingBudgetTokens: 8192 } : {}),
+						} as AssistantMessage,
+					}
+				: entry,
+		);
+		assert.match(
+			onlyMissNotice([cached!, missed!], rates),
+			/^Prompt cache miss with the context near the model's limit:/,
+		);
+	});
+
+	test("names a subagent prompt sent again in full", () => {
+		const [cached, missed] = missAfterCachedRequest(ISSUE_TOKENS, rates);
+		const message: SystemMessage & { transformedPrompt: { head: string } } = {
+			role: "system",
+			content: "You are a subagent.",
+			transformedPrompt: { head: "child" },
+			timestamp: 500,
+		};
+		const head: SessionEntry = {
+			type: "message",
+			id: "head",
+			parentId: null,
+			timestamp: new Date(500).toISOString(),
+			message,
+		};
+		assert.match(
+			onlyMissNotice([cached!, head, missed!], rates),
+			/^Prompt cache miss after the subagent's prompt was sent again in full:/,
+		);
+	});
+
+	test("names a thinking level change on the same model, as a fork on another level makes", () => {
+		const [cached, missed] = missAfterCachedRequest(ISSUE_TOKENS, rates).map((entry) =>
+			entry.type === "message" && entry.message.role === "assistant"
+				? {
+						...entry,
+						message: {
+							...entry.message,
+							thinkingLevel: entry.id === "cached" ? "high" : "low",
+						} as AssistantMessage,
+					}
+				: entry,
+		);
+		assert.match(onlyMissNotice([cached!, missed!], rates), /^Prompt cache miss after thinking level change:/);
+	});
+
+	test("names no cause when nothing between the requests explains the miss", () => {
+		assert.match(onlyMissNotice(missAfterCachedRequest(ISSUE_TOKENS, rates), rates), /^Prompt cache miss: /);
 	});
 });

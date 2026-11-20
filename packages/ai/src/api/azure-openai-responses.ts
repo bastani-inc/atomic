@@ -16,7 +16,7 @@ import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admissi
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
-import { getDeclaredTools, resolveTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
+import { getDeclaredTools, resolveRequestTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
 import { type AzureEndpointOptions, resolveAzureConfig, resolveDeploymentName } from "./azure-openai-config.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
@@ -59,7 +59,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 	options?: AzureOpenAIResponsesOptions,
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
-	const normalizedContext = resolveTranscript(context, model.compat?.supportsMidConvoSystemMessages);
+	const normalizedContext = resolveRequestTranscript(context, model.compat?.supportsMidConvoSystemMessages);
 
 	// Start async processing
 	(async () => {

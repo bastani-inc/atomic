@@ -110,6 +110,10 @@ const context: Context = {
 		},
 	],
 };
+/** How `context`'s later system message reaches a transport without mid-conversation system messages. */
+const updateText = JSON.stringify(
+	'updated guidance\n\nUpdated system prompt section "rules":\n\n<rules>\nnew rules\n</rules>\n\nRemoved system prompt section "docs".',
+).slice(1, -1);
 const additionContext: Context = {
 	messages: [
 		{ role: "system", content: "base prompt", toolsAdded: [baseTool], timestamp: 0 },
@@ -281,7 +285,7 @@ describe("transcript system messages", () => {
 		assert.deepEqual(roles(beforeAssistant), ["user", "user", "system", "assistant", "user"]);
 	});
 
-	test("folds Anthropic updates into the system prompt without native support", async () => {
+	test("sends Anthropic updates after the cached prompt without native support", async () => {
 		const model: Model<"anthropic-messages"> = {
 			...modelBase,
 			id: "claude-sonnet-4-5",
@@ -298,10 +302,11 @@ describe("transcript system messages", () => {
 
 		assert.ok(!payload.betas?.includes("inline-tools-2026-09-15"));
 		expect(payload.system?.map((block) => block.text)).toEqual([
-			"base prompt\n\nupdated guidance\n\n<rules>\nnew rules\n</rules>",
+			"base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>",
 		]);
 		expect(payload.tools?.map((value) => value.name)).toEqual(["late_tool"]);
 		expect(payload.messages.map((message) => message.role)).toEqual(["user"]);
+		expect(JSON.stringify(payload.messages[0])).toContain(updateText);
 	});
 
 	test("requires both Anthropic capabilities for native tool changes", async () => {
@@ -364,7 +369,7 @@ describe("transcript system messages", () => {
 		).toEqual(["late_tool"]);
 	});
 
-	test("folds OpenAI updates into the leading developer message without native support", async () => {
+	test("sends OpenAI updates after the cached developer message without native support", async () => {
 		const model: Model<"openai-responses"> = {
 			...modelBase,
 			id: "gpt-4.1",
@@ -380,7 +385,8 @@ describe("transcript system messages", () => {
 
 		expect(payload.tools?.map((value) => value.name)).toEqual(["late_tool"]);
 		expect(payload.input.map((item) => item.type ?? item.role)).toEqual(["developer", "user"]);
-		expect(payload.input[0]?.content).toBe("base prompt\n\nupdated guidance\n\n<rules>\nnew rules\n</rules>");
+		expect(payload.input[0]?.content).toBe("base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>");
+		expect(JSON.stringify(payload.input[1])).toContain(updateText);
 	});
 
 	test("announces OpenAI removals as text", async () => {
@@ -621,7 +627,7 @@ describe("transcript system messages", () => {
 		);
 	});
 
-	test("folds OpenAI-compatible updates into the system prompt without native support", async () => {
+	test("sends OpenAI-compatible updates after the cached system prompt without native support", async () => {
 		const model: Model<"openai-completions"> = {
 			...modelBase,
 			id: "custom-model",
@@ -637,6 +643,7 @@ describe("transcript system messages", () => {
 
 		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["late_tool"]);
 		expect(payload.messages.map((message) => message.role)).toEqual(["system", "user"]);
-		expect(payload.messages[0]?.content).toBe("base prompt\n\nupdated guidance\n\n<rules>\nnew rules\n</rules>");
+		expect(payload.messages[0]?.content).toBe("base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>");
+		expect(JSON.stringify(payload.messages[1])).toContain(updateText);
 	});
 });
