@@ -13,7 +13,7 @@ import {
 	getIntercomDirPath,
 } from "../../packages/intercom/broker/paths.js";
 import { spawnBrokerIfNeeded, upgradeBroker } from "../../packages/intercom/broker/spawn.js";
-import { stopDetachedBroker } from "../helpers/detached-broker.js";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { sleep } from "../helpers/runtime.ts";
 
 /** Far longer than an aborted wait may take, so a wait that ignores its signal fails the test instead of passing late. */
@@ -271,8 +271,10 @@ test(
 			owner.signal,
 		);
 		while (!existsSync(markerPath)) await sleep(10);
-		cleanups.push(() => killIfAlive(Number(readFileSync(markerPath, "utf8"))));
-		cleanups.push(() => stopDetachedBroker(agentDir));
+		const cancelledPid = Number(readFileSync(markerPath, "utf8"));
+		cleanups.push(() => killIfAlive(cancelledPid));
+		// Stops the broker this test starts and removes its files once Windows has let go of the broker log.
+		cleanups.push(() => removeTempRootReleasingBroker(join(agentDir, ".."), agentDir));
 		const waiting = spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], READY_TIMEOUT_MS);
 		await sleep(200);
 		owner.abort(new Error("session disposed"));
