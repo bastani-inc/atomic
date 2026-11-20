@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import type { BrokerMessage, ClientMessage, ReachPolicyFrame, SessionInfo } from "../types.js";
+import type { EndedChildQueueStore } from "./sql-ended-child-queue-store.js";
 import { isReleasedReservationKey } from "./released-children.js";
 
 /**
@@ -910,6 +911,15 @@ export interface IntercomBrokerStateStore {
 	 * reserves, enqueues, and forgets the reservation of a send the full queue refused.
 	 */
 	reserveAndEnqueue?(reservation: SentMessageReservation, request: OutboxEnqueueRequest): Promise<OutboxEnqueueResult>;
+	/**
+	 * #5999 durable wake queue: the messages queued for subagents that ended, in this database, for one broker home;
+	 * `holder` is the broker instance taking them. Optional: without it they stay in broker memory.
+	 */
+	openEndedChildQueue?(owner: {
+		readonly home: string;
+		readonly holder: string;
+		readonly retire?: boolean;
+	}): Promise<EndedChildQueueStore>;
 	close(): Promise<void>;
 }
 
