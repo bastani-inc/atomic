@@ -4,7 +4,7 @@ import type { ReleasedChildRefusal } from "../types.js";
 import { intercomMessageBytes } from "../message-size.js";
 import type { Message } from "../types.js";
 import {
-	ENDED_CHILD_HOLD_MAX_MS,
+	ENDED_CHILD_OWNER_RETURN_MS,
 	ENDED_CHILD_QUEUE_BYTES_MAX,
 	ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX,
 	ENDED_CHILD_WAKE_ANSWER_MS,
@@ -469,14 +469,27 @@ export class DepartedChildren {
 	 * session of that host session takes them over ({@link adoptOrphans}), or they
 	 * are forgotten as the oldest beyond {@link DEPARTED_ORPHANS_MAX}. Without one nobody can say why they ended: they
 	 * are forgotten, and their held sends returned for ordinary routing.
+	 *
+	 * #5999: messages queued to resume a subagent fail now: nobody can resume it. Messages kept for a paused subagent
+	 * wait {@link ENDED_CHILD_OWNER_RETURN_MS} for a session of the host session to come back and take it over, which
+	 * keeps them waiting until it continues the subagent; they fail now when the owner `ended` for good or has no host
+	 * session.
 	 */
-	dropOwner(ownerSessionId: string, hostSession?: string): HeldSend[] {
+	dropOwner(ownerSessionId: string, hostSession?: string, ended = false): HeldSend[] {
 		const owned = [...(this.byOwner.get(ownerSessionId)?.values() ?? [])];
-		// #5999: nobody can resume its children now: what was queued for them fails.
-		for (const departure of owned)
+		for (const departure of owned) {
+			const verdict = departure.verdict;
+			const kept = verdict?.kind === "ended" && verdict.messages === "hold" && departure.queued.length > 0;
+			if (kept && hostSession !== undefined && !ended) {
+				this.armQueueTimer(departure, ENDED_CHILD_OWNER_RETURN_MS, pausedOwnerGoneReason(departure.childName, false), true);
+				continue;
+			}
 			this.failQueued(departure, () =>
-				notResumedReason(departure.childName, "the session that launched it disconnected before it was resumed"),
+				kept
+					? pausedOwnerGoneReason(departure.childName, true)
+					: notResumedReason(departure.childName, "the session that launched it disconnected before it was resumed"),
 			);
+		}
 		if (hostSession === undefined) return owned.flatMap((departure) => this.forget(departure));
 		for (const departure of owned) this.orphans.set(departure, hostSession);
 		return this.trimOrphans();
@@ -491,9 +504,28 @@ export class DepartedChildren {
 		for (const [departure, host] of [...this.orphans]) {
 			if (host !== hostSession) continue;
 			this.orphans.delete(departure);
+			// #5999: its launching session is back: what was kept for the paused subagent waits for it again, untimed.
+			this.disarmQueueTimer(departure);
 			if (departure.ownerSessionId === ownerSessionId) continue;
 			const key = keyOf(ownerSessionId, departure.childName);
-			if (this.byKey.has(key)) {
+			const known = this.byKey.get(key);
+			if (known !== undefined) {
+				// The session already reported it again: the messages kept for it stay queued, in order, ahead of later ones.
+				const kept = this.takeQueued(departure);
+				if (kept.length > 0 && known.verdict?.kind === "ended" && known.verdict.messages !== undefined) {
+					known.queued.unshift(...kept);
+					const bytes = kept.reduce((sum, held) => sum + queuedMessageBytes(held), 0);
+					known.queuedBytes += bytes;
+					this.queuedBytesTotal += bytes;
+					this.heldTotal += kept.length;
+				} else if (kept.length > 0)
+					this.wakes?.failed(
+						kept.map((held) => ({
+							held,
+							childName: departure.childName,
+							reason: notResumedReason(departure.childName, "Intercom stopped keeping it to resume before it was back"),
+						})),
+					);
 				released.push(...this.forget(departure));
 				continue;
 			}
@@ -584,16 +616,9 @@ export class DepartedChildren {
 				depth: budget.depth,
 			};
 		}
-		// A paused child's messages wait for its owner to continue it, for a bounded time; so do those of a child its owner
-		// is already starting again.
-		if (messages === "hold" && departure.queueTimer === undefined)
-			this.armQueueTimer(
-				departure,
-				ENDED_CHILD_HOLD_MAX_MS,
-				`Subagent ${JSON.stringify(departure.childName)} is paused and was not continued within ${minutesOf(ENDED_CHILD_HOLD_MAX_MS)}. The message was not delivered; send it again once it is continued if it is still needed.`,
-				true,
-			);
-		else if (departure.queueTimer === undefined)
+		// A paused child's messages wait, with no time limit, for its owner to continue it. Those of a child its owner is
+		// already starting again wait for that start, within its bound.
+		if (messages === "wake" && departure.queueTimer === undefined)
 			this.armQueueTimer(departure, ENDED_CHILD_WAKE_START_MAX_MS, "it did not start in time");
 		markQueuedForWake(held, messages);
 		departure.queued.push(held);
@@ -787,7 +812,10 @@ function mebibytes(bytes: number): string {
 	return `${Math.ceil(bytes / (1024 * 1024))} MiB`;
 }
 
-function minutesOf(ms: number): string {
-	const minutes = Math.round(ms / 60_000);
-	return minutes === 60 ? "an hour" : `${minutes} minutes`;
+/**
+ * #5999: why a message kept for a paused subagent did not reach it: the session that launched it, the only one that can
+ * continue it, ended (`ended`) or disconnected and did not come back in time.
+ */
+function pausedOwnerGoneReason(childName: string, ended: boolean): string {
+	return `Subagent ${JSON.stringify(childName)} is paused and the session that launched it ${ended ? "ended" : "disconnected and did not come back"}, so nothing can continue it now. The message was not delivered; send it again if it is still needed.`;
 }

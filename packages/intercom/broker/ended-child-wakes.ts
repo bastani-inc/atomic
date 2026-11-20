@@ -1,4 +1,4 @@
-import type { HeldSend } from "./restoring-recipients.js";
+import { type HeldSend, RESTORING_RECIPIENT_HOLD_MS } from "./restoring-recipients.js";
 
 /**
  * #5999: a send or ask to a subagent that finished on its own (it completed or failed) wakes it through the session
@@ -28,8 +28,12 @@ export type EndedChildMessages = "wake" | "hold";
 export const ENDED_CHILD_WAKE_ANSWER_MS = 20_000;
 /** How long, once its owner said it is resuming it, the child has to register before its queued messages fail. */
 export const ENDED_CHILD_WAKE_START_MAX_MS = 60 * 60_000;
-/** How long a message waits for a paused subagent to be continued before it fails. */
-export const ENDED_CHILD_HOLD_MAX_MS = 60 * 60_000;
+/**
+ * How long a message kept for a paused subagent outlives the connection of the session that launched it: as long as
+ * a send to a released subagent waits for that session to come back. A message for a paused subagent otherwise waits,
+ * with no time limit, until that session continues it.
+ */
+export const ENDED_CHILD_OWNER_RETURN_MS = RESTORING_RECIPIENT_HOLD_MS;
 /** The most bytes of messages queued for one subagent that ended; a message beyond it is refused. */
 export const ENDED_CHILD_QUEUE_BYTES_MAX = 32 * 1024 * 1024;
 /** The most bytes of messages queued for subagents that ended, across the broker. */

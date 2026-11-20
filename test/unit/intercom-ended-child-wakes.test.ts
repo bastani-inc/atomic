@@ -8,7 +8,7 @@ import {
 	type WakeSender,
 } from "../../packages/intercom/broker/departed-children.js";
 import {
-	ENDED_CHILD_HOLD_MAX_MS,
+	ENDED_CHILD_OWNER_RETURN_MS,
 	ENDED_CHILD_QUEUE_BYTES_MAX,
 	ENDED_CHILD_WAKE_ANSWER_MS,
 	ENDED_CHILD_WAKE_CHAIN_MAX,
@@ -194,19 +194,81 @@ test("an owner that declines the wake fails the queued messages with its reason 
 	assert.ok(again.kind === "queued" && again.wake !== undefined, "a later message may ask again");
 });
 
-test("a paused subagent is never woken: its message waits for it to be continued, for a bounded time (#5999)", () => {
+/** The time a pause lasted on main before #5999's first version gave up its messages; no limit applies now. */
+const LONGER_THAN_THE_OLD_HOUR_MS = 2 * 60 * 60_000;
+
+test("a paused subagent is never woken: its message waits, with no time limit, until it is continued (#5999)", () => {
 	vi.useFakeTimers();
 	const { departed, failed } = children();
 	ended(departed, "stopped", "hold");
 	const held = send("m1");
 	assert.deepEqual(departed.admitWake(CHILD, wakeSender(), held), { kind: "queued", target: PAUSED_RECIPIENT_TARGET });
 	assert.equal(isHeldWhilePaused(held), true);
-	vi.advanceTimersByTime(ENDED_CHILD_HOLD_MAX_MS);
+	assert.equal(departed.sizes().timers, 0, "nothing times a paused subagent's message out");
+	vi.advanceTimersByTime(LONGER_THAN_THE_OLD_HOUR_MS);
+	assert.equal(failed.length, 0);
+	// Its launching session continues it: it registers again and takes the message.
 	assert.deepEqual(
-		failed.map((failure) => failure.reason),
+		departed.registered(CHILD, new Set(["default"]), OWNER).map((delivered) => delivered.messageId),
+		["m1"],
+	);
+	assert.equal(failed.length, 0);
+});
+
+test("a paused subagent's message fails once, plainly, when the session that launched it is gone for good (#5999)", () => {
+	vi.useFakeTimers();
+	// Its connection drops and nothing of its host session comes back within the grace.
+	const dropped = children();
+	ended(dropped.departed, "stopped", "hold");
+	dropped.departed.admitWake(CHILD, wakeSender(), send("m1"));
+	dropped.departed.dropOwner(OWNER, "host-session");
+	vi.advanceTimersByTime(ENDED_CHILD_OWNER_RETURN_MS - 1);
+	assert.equal(dropped.failed.length, 0, "its launching session may still come back");
+	vi.advanceTimersByTime(1);
+	assert.deepEqual(
+		dropped.failed.map((failure) => [failure.held.messageId, failure.reason]),
 		[
-			`Subagent "${CHILD}" is paused and was not continued within an hour. The message was not delivered; send it again once it is continued if it is still needed.`,
+			[
+				"m1",
+				`Subagent "${CHILD}" is paused and the session that launched it disconnected and did not come back, so nothing can continue it now. The message was not delivered; send it again if it is still needed.`,
+			],
 		],
+	);
+	vi.advanceTimersByTime(LONGER_THAN_THE_OLD_HOUR_MS);
+	assert.equal(dropped.failed.length, 1, "once");
+
+	// It said goodbye for good: nothing waits.
+	const closed = children();
+	ended(closed.departed, "stopped", "hold");
+	closed.departed.admitWake(CHILD, wakeSender(), send("m2"));
+	closed.departed.dropOwner(OWNER, "host-session", true);
+	assert.deepEqual(
+		closed.failed.map((failure) => failure.reason),
+		[
+			`Subagent "${CHILD}" is paused and the session that launched it ended, so nothing can continue it now. The message was not delivered; send it again if it is still needed.`,
+		],
+	);
+	// Cancelled for good while paused: it fails with that refusal.
+	const killed = children();
+	ended(killed.departed, "stopped", "hold");
+	killed.departed.admitWake(CHILD, wakeSender(), send("m3"));
+	ended(killed.departed, "cancelled");
+	assert.match(killed.failed[0]!.reason, /recipient_cancelled/);
+});
+
+test("a paused subagent's message keeps waiting when the session that launched it comes back in time (#5999)", () => {
+	vi.useFakeTimers();
+	const { departed, failed } = children();
+	ended(departed, "stopped", "hold");
+	departed.admitWake(CHILD, wakeSender(), send("m1"));
+	departed.dropOwner(OWNER, "host-session");
+	vi.advanceTimersByTime(ENDED_CHILD_OWNER_RETURN_MS - 1);
+	assert.deepEqual(departed.adoptOrphans("owner-back", "host-session"), []);
+	vi.advanceTimersByTime(LONGER_THAN_THE_OLD_HOUR_MS);
+	assert.equal(failed.length, 0);
+	assert.deepEqual(
+		departed.registered(CHILD, new Set(["default"]), "owner-back").map((delivered) => delivered.messageId),
+		["m1"],
 	);
 });
 

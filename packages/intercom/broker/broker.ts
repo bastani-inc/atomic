@@ -2489,7 +2489,7 @@ class IntercomBroker {
     // until its host session connects again and reserves them.
     const unreserved = [
       ...this.restoringRecipients.dropOwner(sessionId, departed.registrationReturnAddress),
-      ...this.departedChildren.dropOwner(sessionId, departed.registrationReturnAddress),
+      ...this.departedChildren.dropOwner(sessionId, departed.registrationReturnAddress, ended),
     ];
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
     this.failParkedKept(sessionId);

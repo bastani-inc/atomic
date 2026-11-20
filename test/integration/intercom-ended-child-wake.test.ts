@@ -98,8 +98,9 @@ async function endedChild(
 	label: string,
 	outcome: "completed" | "failed" | "stopped" | "cancelled" = "completed",
 	wake = true,
+	ownerSession?: { readonly returnAddress: string; readonly ownerToken: string },
 ) {
-	const owner = await connect(`${label}-owner`, { ownerToken: randomUUID() });
+	const owner = await connect(`${label}-owner`, ownerSession ?? { ownerToken: randomUUID() });
 	const childName = `subagent-worker-${label}-1`;
 	const child = await connect(childName, { supervisor: await owner.client.authorizeSupervisorChild(childName) });
 	const childIntercomId = child.client.sessionId;
@@ -361,6 +362,49 @@ test(
 		paused = false;
 		const delivered = await sender.client.send("subagent-worker-live-paused-1", { text: "now" });
 		assert.equal(delivered.delivered, true, "once it is continued, messages are delivered as before");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a paused subagent's message fails once when the session that launched it ends, and waits when that session comes back (#5999)",
+	async () => {
+		const closing = await endedChild("paused-owner-ends", "stopped");
+		const sender = await connect("paused-owner-sender");
+		const queued = await sender.client.send(closing.childName, { text: "for later", wakeEndedRecipient: true });
+		assert.equal(queued.target, PAUSED_RECIPIENT_TARGET, queued.reason);
+		await closing.owner.client.disconnect();
+		await vi.waitFor(() => assert.equal(sender.received.length, 1), WAIT);
+		assert.equal(sender.received[0]!.message.replyTo, queued.id);
+		assert.equal(
+			sender.received[0]!.message.replyError,
+			`Subagent "${closing.childName}" is paused and the session that launched it ended, so nothing can continue it now. The message was not delivered; send it again if it is still needed.`,
+		);
+
+		// A session whose connection only dropped, and that is back as the same Atomic session, keeps it paused with the
+		// message still waiting, and delivers it when it continues the subagent.
+		const ownerSession = { returnAddress: randomUUID(), ownerToken: randomUUID() };
+		const away = await endedChild("paused-owner-back", "stopped", true, ownerSession);
+		const later = await sender.client.send(away.childName, { text: "still for later", wakeEndedRecipient: true });
+		assert.equal(later.target, PAUSED_RECIPIENT_TARGET, later.reason);
+		const awayId = away.owner.client.sessionId;
+		await away.owner.client.disconnect({ resumable: true });
+		await untilGone(sender.client, awayId);
+		const back = await connect("paused-owner-back-owner", ownerSession);
+		await back.client.markEndedChildren([
+			{
+				childName: away.childName,
+				childId: "paused-owner-back:0",
+				outcome: "stopped",
+				aliases: [],
+				messages: "hold",
+			},
+		]);
+		const continued = await resume(back.client, away.childName);
+		await vi.waitFor(() => assert.equal(continued.received.length, 1), WAIT);
+		assert.equal(continued.received[0]!.message.content.text, "still for later");
+		await sleep(SETTLE_MS);
+		assert.equal(sender.received.length, 1, "no failure for the message that waited");
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

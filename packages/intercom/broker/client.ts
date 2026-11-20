@@ -72,15 +72,22 @@ import {
 import { IntercomSupervisorAuthorizationRefusedError, SUPERVISOR_AUTHORIZATION_REFUSED_CODE } from "../supervisor-refusal.js";
 import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 import {
-	ENDED_CHILD_HOLD_MAX_MS,
 	ENDED_CHILD_WAKE_ANSWER_MS,
 	ENDED_CHILD_WAKE_START_MAX_MS,
 	PAUSED_RECIPIENT_TARGET,
 	RESUMING_RECIPIENT_TARGET,
 } from "./ended-child-wakes.js";
 
-/** #5999: how long a message queued for a subagent that ended is kept here as queued, at most: its broker's bound. */
-const ENDED_QUEUED_KEPT_MS = Math.max(ENDED_CHILD_WAKE_ANSWER_MS + ENDED_CHILD_WAKE_START_MAX_MS, ENDED_CHILD_HOLD_MAX_MS);
+/**
+ * #5999: how long a message queued to resume a subagent is kept here as queued, at most: its broker's bound. One kept for
+ * a paused subagent waits as long as the subagent is paused, so it is kept here until it reaches it or fails.
+ */
+const ENDED_QUEUED_KEPT_MS = ENDED_CHILD_WAKE_ANSWER_MS + ENDED_CHILD_WAKE_START_MAX_MS;
+/** #5999: whether the broker has given up a message queued to resume a subagent by now, so it is not kept here. */
+function expiredHere(kept: { readonly queue: "resuming" | "paused"; readonly at: number }, now: number): boolean {
+  return kept.queue === "resuming" && now - kept.at > ENDED_QUEUED_KEPT_MS;
+}
+
 /** #5999: the most messages kept here as queued for subagents that ended; the oldest is forgotten first. */
 const ENDED_QUEUED_MAX = 1_024;
 
@@ -1810,7 +1817,7 @@ export class IntercomClient extends EventEmitter {
     const sent = this.wakeSends.get(messageId);
     if (queue === undefined || sent === undefined) return;
     const now = Date.now();
-    for (const [id, kept] of this.endedQueue.kept) if (now - kept.at > ENDED_QUEUED_KEPT_MS) this.endedQueue.kept.delete(id);
+    for (const [id, kept] of this.endedQueue.kept) if (expiredHere(kept, now)) this.endedQueue.kept.delete(id);
     this.endedQueue.kept.delete(messageId);
     this.endedQueue.kept.set(messageId, { ...sent, messageId, queue, at: now });
     while (this.endedQueue.kept.size > ENDED_QUEUED_MAX) this.endedQueue.kept.delete(this.endedQueue.kept.keys().next().value as string);
@@ -1827,7 +1834,7 @@ export class IntercomClient extends EventEmitter {
     if (previous === undefined || previous === instanceId || this.endedQueue.kept.size === 0) return;
     const now = Date.now();
     const lost = [...this.endedQueue.kept.values()]
-      .filter((kept) => now - kept.at <= ENDED_QUEUED_KEPT_MS)
+      .filter((kept) => !expiredHere(kept, now))
       .map(({ at: _at, ...message }) => message);
     this.endedQueue.kept.clear();
     if (lost.length > 0) this.emit("ended_queue_lost", lost);
