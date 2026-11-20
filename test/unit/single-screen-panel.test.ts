@@ -544,3 +544,32 @@ test("a resumed subagent is one row: the mark and its pin follow its latest atte
 		assert.match(marked[0]!, /^● \S worker +job a1-r/, lines.join("\n"));
 	}
 });
+
+test("while no subagent shell runs, a panel pass reads the owner's tasks no more often than without the single screen", () => {
+	const finishedShell: TaskRecord = {
+		...shellOf("s1", "a1"),
+		execution: { kind: "settled", result: { kind: "cancelled", cause: "user" } },
+	};
+	const { session, store } = panelSession([agent("a1"), agent("a2", "explorer"), finishedShell]);
+	let ownerReads = 0;
+	const read = Object.getOwnPropertyDescriptor(
+		Object.getPrototypeOf(FakeOwnerTaskStore.prototype),
+		"ownerBackgroundTasks",
+	);
+	Object.defineProperty(store, "ownerBackgroundTasks", {
+		get() {
+			ownerReads++;
+			return read?.get?.call(store);
+		},
+	});
+	idlePanel(session).lines();
+	assert.equal(ownerReads, 0);
+
+	store.set([agent("a1"), agent("a2", "explorer"), shellOf("s1", "a1")]);
+	const lines = idlePanel(session).lines();
+	assert.ok(ownerReads > 0, "a running subagent shell is read to be listed");
+	assert.ok(
+		lines.some((line) => line.includes("npm test")),
+		lines.join("\n"),
+	);
+});

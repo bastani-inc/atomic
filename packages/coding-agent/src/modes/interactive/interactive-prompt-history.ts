@@ -16,6 +16,12 @@ InteractiveModeBase.prototype.showPromptHistorySearch = function (this: Interact
 	);
 	this.showSelector((done) => {
 		let settled = false;
+		const cancel = () => {
+			if (settled) return;
+			settled = true;
+			done();
+			this.ui.requestRender();
+		};
 		const selector = new PromptHistorySelectorComponent(entries, {
 			onSelect: (text) => {
 				if (settled) return;
@@ -24,13 +30,10 @@ InteractiveModeBase.prototype.showPromptHistorySearch = function (this: Interact
 				this.editor.setText(text);
 				this.ui.requestRender();
 			},
-			onCancel: () => {
-				if (settled) return;
-				settled = true;
-				done();
-				this.ui.requestRender();
-			},
+			onCancel: cancel,
 		});
-		return { component: selector, focus: selector };
+		// The search is over one agent's prompts: when the screen shows another agent, it closes.
+		const unwatch = this.agentView?.onChange(cancel);
+		return { component: selector, focus: selector, ...(unwatch === undefined ? {} : { dispose: unwatch }) };
 	});
 };

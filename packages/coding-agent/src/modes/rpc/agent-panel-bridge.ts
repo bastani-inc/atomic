@@ -298,8 +298,11 @@ function rankPanelSession(
 	// The subagent the screen shows stays listed while it is shown, finished or not; its own shells are listed under it.
 	const viewed = viewedRowId(requested, tasks);
 	let viewedRow: (() => AgentPanelRow) | undefined;
+	// Only a subagent's running shell is listed under it: with none running, the owner's tasks are not read again.
 	const shellsOf =
-		bridge === undefined || store === undefined ? undefined : nestedShells(tasks, store.ownerBackgroundTasks);
+		bridge === undefined || store === undefined || !store.hasRunningChildTasks
+			? undefined
+			: nestedShells(tasks, store.ownerBackgroundTasks);
 	// Resting rows, such as a stopped subagent, stay listed only while something is active: a
 	// row, or a running shell, which is not one.
 	let active = false;

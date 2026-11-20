@@ -567,6 +567,48 @@ describe("the main prompt while a subagent is shown", () => {
 	);
 
 	test(
+		"a subagent that is gone while a menu holds the prompt's place leaves main's prompt as the switch left it",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			await screen.type("main draft");
+			await view(WORKER);
+			await screen.type("unsent for worker");
+			let close: (() => void) | undefined;
+			const menu = screen.mode.showExtensionCustom<void>((_tui, _theme, _keys, done) => {
+				close = () => done();
+				return { render: () => ["a menu"], invalidate() {} };
+			});
+			await settle();
+			port.setStatus({ gone: true });
+			await settle();
+			close?.();
+			await menu;
+			await settle();
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			assert.equal(screen.mode.editor.getText(), "unsent for worker\n\nmain draft");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"the prompt search closes when the screen shows another agent, so its pick never lands in the other prompt",
+		async () => {
+			screen = await mainScreen();
+			worker();
+			await screen.type("main draft");
+			await view(WORKER);
+			screen.mode.showPromptHistorySearch();
+			await settle();
+			assert.notEqual(screen.mode.editorContainer.children.at(-1), screen.mode.editor);
+			await view(undefined);
+			assert.equal(screen.mode.editorContainer.children.at(-1), screen.mode.editor);
+			assert.equal(screen.mode.editor.getText(), "main draft");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
 		"a gone subagent's prompt that was browsing its history gives back what was typed, not the entry shown",
 		async () => {
 			screen = await mainScreen();
