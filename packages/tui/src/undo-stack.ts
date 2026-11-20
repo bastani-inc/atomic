@@ -25,4 +25,11 @@ export class UndoStack<S> {
 	get length(): number {
 		return this.stack.length;
 	}
+
+	/** A detached copy: later pushes and pops on either stack leave the other unchanged. */
+	clone(): UndoStack<S> {
+		const copy = new UndoStack<S>();
+		copy.stack = structuredClone(this.stack);
+		return copy;
+	}
 }

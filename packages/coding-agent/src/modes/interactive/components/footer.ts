@@ -282,6 +282,13 @@ function sanitizeFooterSegment(text: string): string {
 	return replaceControlCharacters(text).replace(/\s+/g, " ").trim();
 }
 
+/** The work of the agent the prompt writes to, when it is not the footer's session. */
+export interface FooterViewedWork {
+	readonly working: boolean;
+	/** What the interrupt key does to it, as `<key> to <stopVerb>`: `pause` for a subagent. */
+	readonly stopVerb: string;
+}
+
 export class FooterComponent implements Component {
 	private declare session: ChatBoxSession;
 	private declare footerData: ReadonlyFooterDataProvider;
@@ -293,6 +300,8 @@ export class FooterComponent implements Component {
 	private branchCwd: string | undefined;
 	private releaseBranch: (() => void) | undefined;
 	private disposed = false;
+	/** The agent the prompt writes to when it is not this footer's session: its work and the key that stops it. */
+	private viewedWork: (() => FooterViewedWork | undefined) | undefined;
 
 	/** `backgroundTasks` supplies this chat's task view, or a single snapshot to render. */
 	constructor(
@@ -320,6 +329,14 @@ export class FooterComponent implements Component {
 			this.branchCwd = undefined;
 		}
 		this.session = session;
+	}
+
+	/**
+	 * While the prompt writes to another agent than this footer's session (a subagent shown on the main screen), the
+	 * footer's working state and stop key are that agent's; undefined while they are the session's own.
+	 */
+	setViewedWork(work: (() => FooterViewedWork | undefined) | undefined): void {
+		this.viewedWork = work;
 	}
 
 	setAutoCompactEnabled(_enabled: boolean): void {
@@ -376,13 +393,14 @@ export class FooterComponent implements Component {
 				)
 			: "no-model";
 
-		const working = isChatSessionWorking(this.session);
+		const viewed = this.viewedWork?.();
+		const working = viewed?.working ?? isChatSessionWorking(this.session);
 		const lines: string[] = [];
 		if (!working || !this.navigationActive()) {
 			const interruptKey = working ? keyText("app.interrupt") : "";
 			let statusText = working
 				? interruptKey
-					? this.renderStyle.muted(clickableKeyTextHint(interruptKey, " to interrupt"))
+					? this.renderStyle.muted(clickableKeyTextHint(interruptKey, ` to ${viewed?.stopVerb ?? "interrupt"}`))
 					: ""
 				: `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
 			if (areExperimentalFeaturesEnabled()) {

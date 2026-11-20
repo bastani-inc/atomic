@@ -35,6 +35,7 @@ import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { AgentPanelCounts } from "../rpc/agent-panel-bridge.ts";
+import type { AgentViewRpcCommandBody } from "../rpc/agent-view-rpc-types.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import { isExtensionLoadError } from "../rpc/rpc-extension-load-errors.ts";
 import {
@@ -149,13 +150,6 @@ export function engineAgentPanelCounts(
 const COMPACTION_VIEW_HOLD_MS = 3_000;
 type HeldHostEvent = { event: JsonAgentSessionEvent; audience: number };
 
-/** The messages one of the engine's subagent chats listed as queued when the engine was lost. */
-export interface LostSubagentChatQueue {
-	readonly agent: string;
-	readonly steering: readonly string[];
-	readonly followUp: readonly string[];
-}
-
 function userMessageText(content: string | readonly { readonly type: string; readonly text?: string }[]): string {
 	if (typeof content === "string") return content;
 	return content
@@ -210,10 +204,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
-	/** What each subagent chat the engine draws lists as queued, by chat, as the engine last reported it. */
-	private readonly subagentChatQueues = new Map<string, LostSubagentChatQueue>();
-	/** What the last ended generation's subagent chats listed as queued, until taken. */
-	private lostSubagentChatQueues: LostSubagentChatQueue[] = [];
 	private readonly recoveryListeners = new Set<(replaced: boolean) => void>();
 	/** Bumped by every authoritative queue_update. */
 	private queueUpdateGeneration = 0;
@@ -344,9 +334,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		);
 		this.initialStart?.catch(() => {});
 		this.client.onGenerationEnded((event) => {
-			// The ended generation's subagent chats went with it: keep what they listed for whoever shows the loss.
-			this.lostSubagentChatQueues = [...this.subagentChatQueues.values()];
-			this.subagentChatQueues.clear();
 			if (this.compactionHold?.generation === event.generation) this.discardHeldHostEvents();
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
@@ -385,17 +372,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.panelCounts = engineAgentPanelCounts(message);
 				return;
 			}
-			if (message.type === "engine_subagent_chat_queue") {
-				if (message.steering.length === 0 && message.followUp.length === 0)
-					this.subagentChatQueues.delete(message.chatId);
-				else
-					this.subagentChatQueues.set(message.chatId, {
-						agent: message.agent,
-						steering: message.steering,
-						followUp: message.followUp,
-					});
-				return;
-			}
 			if (message.type === "engine_extension_ui_reset") {
 				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 				this.hostExtensionUIReset?.();
@@ -428,11 +404,23 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.patchSession(session);
 		return session;
 	}
-	async openTaskInspector(taskId?: string): Promise<void> {
-		await this.client.requestInternal({ type: "open_task_inspector", ...(taskId ? { taskId } : {}) });
+	async openTaskInspector(taskId?: string, options: { readonly waitedShellOf?: string } = {}): Promise<void> {
+		await this.client.requestInternal({
+			type: "open_task_inspector",
+			...(taskId ? { taskId } : {}),
+			...(options.waitedShellOf ? { waitedShellOf: options.waitedShellOf } : {}),
+		});
 	}
 	async openAgentPanel(): Promise<void> {
 		await this.client.requestInternal({ type: "open_agent_panel" });
+	}
+	/** A command of the single chat screen's agent view, answered by the engine's view of one of its subagents. */
+	async requestAgentView<T>(command: AgentViewRpcCommandBody): Promise<T> {
+		return this.client.requestInternal<T>(command);
+	}
+	/** The engine generation now: a view opened in an earlier one is gone. */
+	getGeneration(): number {
+		return this.client.getGeneration();
 	}
 	async setStopAllNotice(text: string | undefined): Promise<void> {
 		await this.client.requestInternal({ type: "set_stop_all_notice", ...(text === undefined ? {} : { text }) });
@@ -847,13 +835,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.steeringMessages = [];
 		this.followUpMessages = [];
 		this.pendingQueueClear = undefined;
-	}
-
-	/** Take what the last ended engine's subagent chats listed as queued when it ended, and forget them. */
-	takeSubagentChatQueues(): LostSubagentChatQueue[] {
-		const queues = this.lostSubagentChatQueues;
-		this.lostSubagentChatQueues = [];
-		return queues;
 	}
 
 	/** The user messages in the engine's own context now, as the engine reports them. */

@@ -13,6 +13,7 @@ import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } fr
 import { type TaskChatPage, taskChatPage } from "../../../core/tasks/task-chat-records.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { savedRowKey } from "../../../core/tasks/transcript-origin.js";
+import type { AgentWorkingLine } from "../agent-view/contracts.ts";
 import { chatRecordsChanged, discardChatMount } from "../chat-reader-records.js";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import { bindNextChatGroups, isTaskDisplayLine } from "./chat-message-renderer.ts";
@@ -39,6 +40,7 @@ import {
 	showChatSessionRetryWait,
 } from "./chat-session-host-events.ts";
 import {
+	chatSessionWorkingLine,
 	chatSessionWorkingMeta,
 	dropExpandedOverrides,
 	entryExpands,
@@ -730,6 +732,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	renderWorkingStatus(width: number, published?: PublishedChatActivity): string[] {
 		return renderChatSessionWorkingStatus(this.state, width, published);
+	}
+
+	/** The working line `renderWorkingStatus` draws, as data for a screen that draws it itself. */
+	workingLine(published?: PublishedChatActivity): AgentWorkingLine | undefined {
+		return chatSessionWorkingLine(this.state, published);
 	}
 
 	renderUsage(width: number): string[] {

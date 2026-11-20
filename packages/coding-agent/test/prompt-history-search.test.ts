@@ -12,6 +12,7 @@ import type { PromptTemplate } from "../src/core/prompt-templates.ts";
 import { buildSkillCatalog } from "../src/core/skill-catalog.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
+import { promptHistoryFor } from "../src/modes/interactive/components/agent-prompt-history.ts";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
 import {
 	PromptHistorySelectorComponent,
@@ -218,6 +219,61 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 		shown.handleInput?.("\x1b");
 		assert.equal(editor.text, "my draft");
 		assert.equal(closed, 2);
+	});
+
+	it("ctrl+r searches the history Up recalls for the agent the prompt writes to: a viewed subagent's prompts, never main's", () => {
+		let shown: Component | undefined;
+		const editor = new CustomEditor(
+			new TuiMainScreen(new RecordingTerminal()),
+			getEditorTheme(),
+			new KeybindingsManager(),
+		);
+		editor.addToHistory("a main prompt");
+		const mode = Object.assign(Object.create(InteractiveMode.prototype), {
+			editor,
+			defaultEditor: editor,
+			runtimeHost: {
+				session: {
+					sessionManager: {
+						getEntries: () => [
+							{
+								type: "message",
+								id: "u1",
+								parentId: null,
+								timestamp: new Date(Date.now() - 60_000).toISOString(),
+								message: { role: "user", content: [{ type: "text", text: "a main prompt" }] },
+							},
+						],
+					},
+				},
+			},
+			ui: { requestRender: () => {} },
+			showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
+				shown = create(() => {}).component;
+			},
+		}) as InteractiveMode;
+
+		promptHistoryFor(editor).viewAgent("task-1", ["trace the loader", "and the cache"]);
+		editor.addToHistory("typed to the subagent");
+		mode.showPromptHistorySearch();
+		assert.ok(shown);
+		const out = lines(shown, 100);
+		assert.ok(
+			out.some((line) => line.trim() === "❯ typed to the subagent"),
+			out.join("\n"),
+		);
+		assert.ok(out.some((line) => line.trim() === "and the cache"));
+		assert.ok(out.some((line) => line.trim() === "trace the loader"));
+		assert.ok(!out.some((line) => line.includes("a main prompt")));
+		shown.handleInput?.("\x1b[B");
+		shown.handleInput?.("\r");
+		assert.equal(editor.getText(), "and the cache");
+
+		promptHistoryFor(editor).viewMain();
+		mode.showPromptHistorySearch();
+		const main = lines(shown, 100);
+		assert.ok(main.some((line) => line.includes("❯ a main prompt")));
+		assert.ok(!main.some((line) => line.includes("trace the loader") || line.includes("typed to the subagent")));
 	});
 
 	it("binds ctrl+r to the search by default", () => {

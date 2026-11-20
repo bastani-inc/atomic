@@ -52,6 +52,12 @@ InteractiveModeBase.prototype.showExtensionNotify = function (
 	}
 };
 
+/** Whose prompt the screen shows: main's, or the shown subagent's port. */
+function shownPromptOwner(mode: InteractiveModeBase): object | "main" {
+	const viewed = mode.agentView?.viewed;
+	return viewed?.kind === "agent" ? viewed.port : "main";
+}
+
 InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 	this: InteractiveModeBase,
 	factory: (
@@ -74,12 +80,15 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 ): Promise<T> {
 	const savedText = this.editor.getExpandedText?.() ?? this.editor.getText();
 	const isOverlay = options?.overlay ?? false;
+	// The prompt the saved text is from: when the screen shows another agent meanwhile, the switch already gave the
+	// prompt that agent's text, which the saved text must not replace.
+	const shownAtOpen = shownPromptOwner(this);
 
 	const restoreEditor = (mount: ExtensionDialogComponent, focusEditor: boolean) => {
 		// Focus fence: a surviving overlay owns input, and taking it away to
 		// "restore" the editor would dismiss a newer native dialog.
 		this.removeExtensionDialog(mount, focusEditor && !this.ui.hasOverlay());
-		this.editor.setText(savedText);
+		if (shownPromptOwner(this) === shownAtOpen) this.editor.setText(savedText);
 		this.ui.requestRender();
 	};
 

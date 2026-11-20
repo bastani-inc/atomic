@@ -4,7 +4,6 @@ import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import type { AgentSession, AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
-import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { isTaskTurnInterrupted } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
@@ -12,13 +11,6 @@ import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
-import {
-	type InteractiveEngineMessage,
-	parseInteractiveEngineMessage,
-	serializeInteractiveEngineFrame,
-} from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
-import { engineTaskInspectorUi, showTaskInspector } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
@@ -184,9 +176,11 @@ test(
 			() => environment,
 		);
 		try {
-			inspector.openChat(child.taskId, "main chat");
+			// Enter on the subagent's row of /tasks opens its chat (a host without the single screen).
+			inspector.open(child.taskId);
+			inspector.handleInput("\r");
 			await flush();
-			assert.match(plain(inspector.renderViewport(100, 24)), /← main chat · esc to pause/);
+			assert.match(plain(inspector.renderViewport(100, 24)), /← tasks · esc to pause/);
 
 			assert.equal(inspector.handleInput(ESC), true);
 			await assertInterruptedAndResumable(child);
@@ -215,77 +209,19 @@ test(
 			() => environment,
 		);
 		try {
-			inspector.openChat(child.taskId, "main chat");
+			// Enter on the subagent's row of /tasks opens its chat (a host without the single screen).
+			inspector.open(child.taskId);
+			inspector.handleInput("\r");
 			await flush();
 			const opened = plain(inspector.renderViewport(100, 24));
 			// The chat reads the wait from the subagent's session: its reason, attempt and countdown, and Esc cancels it.
 			assert.match(opened, /∀ Retrying · overloaded · attempt 1\/3 in (?:\d+m )?\d+s {3}esc cancel/);
-			assert.match(opened, /← main chat · esc to pause/);
+			assert.match(opened, /← tasks · esc to pause/);
 
 			assert.equal(inspector.handleInput(ESC), true);
 			await assertInterruptedAndResumable(child);
 		} finally {
 			inspector.dispose();
-			await child.dispose();
-		}
-	},
-	LIVE_CHILD_TIMEOUT_MS,
-);
-
-test(
-	"Esc in a subagent's chat opened from the isolated engine's agent panel cancels its retry wait (#5507)",
-	async () => {
-		const child = await subagentWaitingToRetry();
-		const messages: InteractiveEngineMessage[] = [];
-		const service = new EngineCustomUiService((line) => {
-			const message = parseInteractiveEngineMessage(line);
-			if (message) messages.push(message);
-		}, keybindings);
-		const engineUi = {
-			getChatRenderSettings: () => ({}) as ReturnType<ExtensionUIContext["getChatRenderSettings"]>,
-			getToolsExpanded: () => false,
-			notify: () => {},
-			getFooterDataProvider: () => undefined as unknown as ReturnType<ExtensionUIContext["getFooterDataProvider"]>,
-		};
-		let requestId = 0;
-		const send = async (
-			frame:
-				| { type: "engine_custom_render"; width: number; rows: number }
-				| { type: "engine_custom_input"; data: string },
-		) => {
-			const open = messages.findLast((message) => message.type === "engine_custom_open");
-			assert.ok(open && open.type === "engine_custom_open", "the engine opened the subagent's chat");
-			service.handleLine(
-				serializeInteractiveEngineFrame({ ...frame, componentId: open.componentId, requestId: ++requestId }),
-			);
-			await flush();
-		};
-		const frame = async (): Promise<string> => {
-			await send({ type: "engine_custom_render", width: 100, rows: 24 });
-			const painted = messages.findLast((message) => message.type === "engine_custom_frame");
-			assert.ok(painted && painted.type === "engine_custom_frame");
-			return plain(painted.lines);
-		};
-		const shown = showTaskInspector(
-			engineTaskInspectorUi(engineUi as Parameters<typeof engineTaskInspectorUi>[0], {
-				custom: service.custom.bind(service),
-			}),
-			child.fixture.store,
-			child.taskId,
-			{ chat: true, backLabel: "main chat" },
-		);
-		try {
-			await flush();
-			assert.match(await frame(), /← main chat · esc to pause/);
-
-			await send({ type: "engine_custom_input", data: ESC });
-			const handled = messages.findLast((message) => message.type === "engine_custom_input_result");
-			assert.ok(handled && handled.type === "engine_custom_input_result" && handled.handled);
-			await assertInterruptedAndResumable(child);
-			assert.doesNotMatch(await frame(), /esc to pause/, "a finished turn has none");
-		} finally {
-			service.dispose();
-			await shown;
 			await child.dispose();
 		}
 	},

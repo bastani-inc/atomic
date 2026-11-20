@@ -5,13 +5,11 @@ import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/age
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { OperationId, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { bindTaskResumer } from "../../packages/coding-agent/src/core/tasks/task-resumer.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
-import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 import { stripVTControlCharacters } from "../helpers/visible-text.ts";
@@ -344,11 +342,11 @@ test("an earlier attempt's id opens its subagent's one row and its live chat, as
 			`/tasks <earlier attempt> selects the subagent's row:\n${h.text()}`,
 		);
 
-		h.inspector.openChat(first, "main chat");
+		h.inspector.handleInput(ENTER);
 		await until(() => WORKING_LINE.test(h.text()));
 		assert.match(chatLabel(h.text()), /^worker · continue please · /, `the chat opens:\n${h.text()}`);
 		assert.doesNotMatch(chatLabel(h.text()), /done$/);
-		assert.match(h.text(), /› from main\n ❯ Slow rounds/, "its header echoes the subagent's task from main");
+		assert.match(h.text(), /^ Slow rounds$/m, "its transcript starts with the task the subagent was launched with");
 		assert.ok(WORKING_LINE.test(h.text()), "and its working line");
 	} finally {
 		await h.dispose();
@@ -439,63 +437,6 @@ test("a finished subagent's detail page in /tasks follows it when it is resumed"
 			1,
 			`once finished again it names its resume id once (#5968):\n${h.text()}`,
 		);
-	} finally {
-		await h.dispose();
-	}
-});
-
-test("leaving a subagent's chat opened from the agent panel selects its row again after it was resumed there", async () => {
-	const h = await harness();
-	const owner = {};
-	bindOwnerTaskStore(owner, h.fixture.store);
-	const slow = await h.started("Slow rounds", "run-1:0");
-	await h.started("Other work", "run-1:1");
-	const screens: string[][] = [];
-	const render = (component: { render(width: number): string[] }) =>
-		component.render(110).map((line) => stripVTControlCharacters(line).trimEnd());
-	const selected = (screen: readonly string[]) => screen.find((line) => /❯ /.test(line)) ?? "";
-	try {
-		await showAgentPanel(owner, {
-			getToolsExpanded: () => false,
-			setToolsExpanded: () => {},
-			async custom<T>(factory: Parameters<Parameters<typeof showAgentPanel>[1]["custom"]>[0]): Promise<T> {
-				let finished = false;
-				const component = await factory(makeTestTui(30), theme, new KeybindingsManager(), (() => {
-					finished = true;
-				}) as never);
-				await flush();
-				const step = screens.length;
-				screens.push(render(component));
-				if (step === 0) {
-					// Select the subagent "Slow rounds" and open its chat.
-					for (let row = 0; row < 3 && !/Slow rounds/.test(selected(render(component))); row++)
-						component.handleInput?.("\x1b[B");
-					screens[0] = render(component);
-					component.handleInput?.(ENTER);
-				} else if (step === 1) {
-					// It finishes while its chat is open, and a message there resumes it.
-					await h.settle(0);
-					for (const ch of "continue please") component.handleInput?.(ch);
-					component.handleInput?.(ENTER);
-					await until(() => h.fixture.store.tasks.length === 3);
-					// Another subagent starts meanwhile: it is the panel's first row.
-					await h.started("Later work", "run-1:2");
-					screens[1] = render(component);
-					component.handleInput?.(LEFT);
-				} else component.handleInput?.("\x1b");
-				if (!finished) component.dispose?.();
-				return undefined as T;
-			},
-		});
-		const shown = screens.map((screen) => screen.join("\n")).join("\n=====\n");
-		assert.equal(screens.length, 3, shown);
-		assert.match(selected(screens[0]!), /Slow rounds/, shown);
-		assert.deepEqual(
-			h.resumes.map((resume) => resume.taskId),
-			[slow],
-			shown,
-		);
-		assert.match(selected(screens[2]!), /continue please/, `its row is selected again:\n${shown}`);
 	} finally {
 		await h.dispose();
 	}

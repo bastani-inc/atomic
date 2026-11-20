@@ -43,7 +43,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+s
 | `tui.editor.pageUp` | `pageUp`, `ctrl+pageUp` | Scroll up by page |
 | `tui.editor.pageDown` | `pageDown`, `ctrl+pageDown` | Scroll down by page |
 
-The dedicated history actions always change history entries, regardless of the cursor position in a multiline prompt. Explicit history bindings take precedence over ordinary application action handlers while the main editor is focused, so binding `tui.editor.historyPrevious` to `ctrl+p` or `tui.editor.historyNext` to `ctrl+n` overrides those app actions without changing the same keys in selectors.
+The dedicated history actions always change history entries, regardless of the cursor position in a multiline prompt. Explicit history bindings take precedence over ordinary application action handlers while the main editor is focused, so binding `tui.editor.historyPrevious` to `ctrl+p` or `tui.editor.historyNext` to `ctrl+n` overrides those app actions without changing the same keys in selectors. Prompt history (`↑`/`↓`, `tui.editor.historyPrevious`/`Next`, and `Ctrl+R`) follows the agent you are viewing: the main chat's history on `main`, or the viewed subagent's own delivered prompts and what you send while viewing it.
 
 ### TUI Editor Deletion
 
@@ -88,17 +88,17 @@ Local copy operations require a working native clipboard or platform command. On
 
 ### TUI Fullscreen Viewport
 
-Tool output uses compact state-marked blocks. `app.tools.expand` (Ctrl+O by default) expands or collapses every block in the current chat, including grouped calls. Consecutive finished reads, searches and directory listings share a summary row. Attached subagent chats also group finished shell calls; the main chat keeps their individual output previews.
+Tool output uses compact state-marked blocks. `app.tools.expand` (Ctrl+O by default) expands or collapses every block in the displayed transcript, including grouped calls. Consecutive finished reads, searches and directory listings share a summary row. A viewed subagent's transcript also groups finished shell calls; the main chat keeps their individual output previews.
 
-In fullscreen mode, a click anywhere on a block that Ctrl+O expands opens or folds just that block: its title, its output, and the `… +N lines` row alike. This works in the main chat, `/tasks` transcripts, and subagent chats, for tool calls, grouped-call summaries, finished-agent cards, your `!` shell commands, Intercom messages, task notices, skill blocks, branch summaries and compaction boundaries. A click on a summary such as `Read 2 files` shows the calls it groups, and a click on any of them folds them again. A block with nothing more to show stays as it is.
+In fullscreen mode, a click anywhere on a block that Ctrl+O expands opens or folds just that block: its title, its output, and the `… +N lines` row alike. This works whether you are viewing the main chat or a subagent, for tool calls, grouped-call summaries, finished-agent cards, your `!` shell commands, Intercom messages, task notices, skill blocks, branch summaries and compaction boundaries. A click on a summary such as `Read 2 files` shows the calls it groups, and a click on any of them folds them again. A block with nothing more to show stays as it is.
 
 A click takes effect after you release and at least half a second after the press, once it cannot be the start of a double-click. Holding the second press of a double-click does not turn it into a single click. The click uses the block’s current output and width, even if you resize while it waits. If there are no extra rows to show, the block stays as it was and the chat keeps following new output. Double- and triple-clicks select a word or a line without opening anything, a drag selects text, and a click on a link opens the link. Ctrl+O still sets every block at once and cancels earlier block clicks that haven’t taken effect. When a click expands a block while the chat follows the latest output, the view stays on that block; the jump-to-latest pill takes you back. A block keeps the state you clicked it to until Ctrl+O sets every block again. Thinking blocks are shown or hidden with their own key (`app.thinking.toggle`), not by a click.
 
-In fullscreen mode, a click on a key hint presses its key. This covers the hint rows under the prompt and at the bottom of `/tasks`, dialogs and pickers, the `?` keys overlay, and hints inside tool blocks and notices such as `(ctrl+o to expand)`. The key goes to the view that has the keyboard, so a click does what the key does and asks for confirmation where the key asks. In a hint that names two keys, such as `pgup/pgdn scroll` or `↑↓ select`, click the key you want; the label belongs to the last key. The same applies to a numbered hint: in `1-4 pick`, clicking `1` or `-` presses 1, and clicking `4` or `pick` presses 4. A `/` between key names, with or without surrounding spaces, belongs to the first key. If you bind an action to `/`, clicking that slash presses the key even when it is next to a `/` separator. In `esc / / pick`, the first slash belongs to `esc`, and the last slash and `pick` both press `/`. Counts such as `3/5` and paths such as `a/file.txt` in ordinary text are not shortcuts. A hint that wraps onto the next row works from every row it covers. A hint that names a slash command, such as `/tasks to manage`, runs the command and keeps what you typed in the prompt. Keys that act only on an empty prompt when typed, such as `?`, `↓` and `←` in a chat, act on a click whatever the prompt holds. A drag across a hint selects its text, and a double-click runs it once. Hints drawn behind an open dialog do nothing until the dialog closes. Clicks need the fullscreen renderer's mouse reporting; keyboard behavior is unchanged.
+In fullscreen mode, a click on a key hint presses its key. This covers the hint rows under the prompt and at the bottom of `/tasks`, dialogs and pickers, the `?` keys overlay, and hints inside tool blocks and notices such as `(ctrl+o to expand)`. The key goes to the view that has the keyboard, so a click does what the key does and asks for confirmation where the key asks. In a hint that names two keys, such as `pgup/pgdn scroll` or `↑↓ select`, click the key you want; the label belongs to the last key. The same applies to a numbered hint: in `1-4 pick`, clicking `1` or `-` presses 1, and clicking `4` or `pick` presses 4. A `/` between key names, with or without surrounding spaces, belongs to the first key. If you bind an action to `/`, clicking that slash presses the key even when it is next to a `/` separator. In `esc / / pick`, the first slash belongs to `esc`, and the last slash and `pick` both press `/`. Counts such as `3/5` and paths such as `a/file.txt` in ordinary text are not shortcuts. A hint that wraps onto the next row works from every row it covers. A hint that names a slash command, such as `/tasks to manage`, runs the command and keeps what you typed in the prompt. Keys that act only on an empty prompt when typed, such as `?` and `↓`, act on a click whatever the prompt holds. A drag across a hint selects its text, and a double-click runs it once. Hints drawn behind an open dialog do nothing until the dialog closes. Clicks need the fullscreen renderer's mouse reporting; keyboard behavior is unchanged.
 
-Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, one centered, highlighted pill above the composer reads `↓ jump to bottom · ctrl+end`, or counts new messages as they arrive. Click it or use `tui.altScreen.bottom` to return to live output. The key label follows your binding; a narrow terminal drops the padding before shortening the label. While scrolled up, the first line of the prompt that started the turn you are reading stays pinned at the top, marked `↑`. `/tasks` transcripts show the same jump row in their own view; other OSC 8 links open in the default handler.
+Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, one centered, highlighted pill above the composer reads `↓ jump to bottom · ctrl+end`, or counts new messages as they arrive. Click it or use `tui.altScreen.bottom` to return to live output. The key label follows your binding; a narrow terminal drops the padding before shortening the label. While scrolled up, the first line of the prompt that started the turn you are reading stays pinned at the top, marked `↑`. Viewed subagent transcripts and `/tasks` shell output views show the same jump row; other OSC 8 links open in the default handler.
 
-`/tasks` transcripts scroll the same way as the main transcript: the wheel follows `fullscreenWheelScrollLines`, Alt+wheel scrolls five times as far, `fullscreenScrollbar` controls their scrollbar, and `tui.altScreen.top`, `tui.altScreen.bottom`, `tui.altScreen.previousPrompt`, `tui.altScreen.nextPrompt`, `tui.altScreen.halfPageUp`, and `tui.altScreen.halfPageDown` act on them. In those views `pageUp` and `pageDown` always page the view, `tui.altScreen.lineUp` and `tui.altScreen.lineDown` do nothing, and the scrollbar shows the position but cannot be dragged.
+While viewing a subagent on the chat screen, every transcript scroll action (`pageUp`/`pageDown`, `halfPageUp`/`halfPageDown`, `lineUp`/`lineDown` when bound, `previousPrompt`/`nextPrompt`, `top`/`bottom`, and the mouse wheel with `fullscreenWheelScrollLines` and Alt+wheel) scrolls that subagent's transcript without moving main's position. Shell output views opened from `/tasks` or a nested shell row scroll with the wheel, `pageUp`/`pageDown`, `halfPageUp`/`halfPageDown`, `top`, and `bottom` (their scrollbar shows position and cannot be dragged).
 
 Dragging selects and copies text by default. Set `fullscreenCopyOnSelect: false` to highlight without copying. See [Terminal setup](/terminal-setup) for mouse and trackpad behavior.
 
@@ -147,12 +147,12 @@ On Windows, pressing the secondary mouse button in fullscreen pastes text from t
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.interrupt` | `escape` | Abort active or queued work and restore still-queued steering/follow-up messages to the editor; the session remains paused until an ordinary submission. A message the agent already picked up is answered instead of restored. In a subagent's chat it pauses the subagent the same way, and a message sent from that chat continues it |
-| `app.clear` | `ctrl+c` | Clear the editor when it has text; otherwise interrupt active or queued work, or terminate an unresponsive interactive engine; on an empty, idle editor, the first press shows "Press Ctrl+C again to exit" and a second press within 0.8 s exits |
+| `app.interrupt` | `escape` | Abort active or queued work and restore still-queued steering/follow-up messages to the editor; the session remains paused until an ordinary submission. A message the agent already picked up is answered instead of restored. While viewing a subagent, pauses that subagent (never main) and returns its queued messages to the prompt; sending a message continues it. On an empty prompt with the viewed subagent not working, shows `main` (without counting toward main's double-Esc) |
+| `app.clear` | `ctrl+c` | Clear the editor when it has text; otherwise interrupt active or queued work, or terminate an unresponsive interactive engine; on an empty, idle editor, the first press shows "Press Ctrl+C again to exit" and a second press within 0.8 s exits. While viewing a subagent, an empty prompt's Ctrl+C pauses its running work (never main's) and shows `main` in one press, and never offers to exit |
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (`alt+z` on Windows) | Suspend to background; on Windows, open a PowerShell subshell |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
-| `app.history.search` | `ctrl+r` | Search past prompts: newest first, type to filter, Enter puts the prompt in the composer without sending it |
+| `app.history.search` | `ctrl+r` | Search the viewed agent's past prompts (main chat or viewed subagent): newest first, type to filter, Enter puts the prompt in the composer without sending it |
 | `app.clipboard.pasteImage` | `ctrl+v` (`alt+v`, `ctrl+v` on Windows and WSL) | Paste files on macOS, images, or text from clipboard |
 
 On macOS, files copied in Finder paste as their paths, one per line, instead of the file icon. In bash mode (input starting with `!`), the paths are shell-quoted and separated by spaces. When `app.clipboard.pasteImage` finds text rather than files or an image, Atomic inserts that clipboard text into the editor instead of reporting an image-paste failure.
@@ -163,7 +163,7 @@ Inside tmux on macOS, `Ctrl+V` is the reliable image-paste shortcut; native `Cmd
 
 When the clipboard has both text and an image, behavior depends on the terminal: empty-paste terminals may insert the text on `Cmd+V`, while Kitty-protocol terminals that deliver `super+v` go through the image path (same preference as `Ctrl+V`). `Ctrl+V` always prefers the image. Apple Terminal may send nothing for image-only paste; use Ghostty/iTerm/Kitty or `Ctrl+V` in that case.
 
-Ctrl+X does not copy messages or selections, and it no longer moves between chats. Followed by Ctrl+K it is the stop-all chord (see [Navigation](#navigation)); the scoped-model selector clears its local selection with Ctrl+X. `/copy` always copies the last assistant message.
+Ctrl+X does not copy messages or selections, and it no longer moves between chats. Followed by Ctrl+K it is the stop-all chord (see [Navigation](#navigation)); the scoped-model selector clears its local selection with Ctrl+X. `/copy` copies the last assistant message of the viewed agent (main chat or viewed subagent).
 
 On OAuth sign-in screens, Ctrl+X copies the sign-in URL, including long URLs that wrap across lines. This also works in `/mcp login`. Customize this shortcut with `app.auth.copyUrl`; it does not change Ctrl+X behavior outside sign-in screens. Remote sessions use OSC 52 clipboard forwarding as described above.
 
@@ -196,6 +196,8 @@ Ctrl+C is the host's escape hatch whenever an engine-owned `ctx.ui.custom()` com
 | `app.session.delete` | `ctrl+d` | Delete session |
 | `app.session.deleteNoninvasive` | `ctrl+backspace` | Delete session when query is empty |
 
+While viewing a subagent, `app.session.new`, `app.session.tree` and `app.session.fork` ask first (**Cancel** is listed first and selected) and then act on the main conversation; the subagent stays shown unless the key starts or forks a new main session. `app.session.resume` opens its picker in place.
+
 ### Models and Thinking
 
 | Keybinding id | Default | Description |
@@ -206,49 +208,50 @@ Ctrl+C is the host's escape hatch whenever an engine-owned `ctx.ui.custom()` com
 | `app.thinking.cycle` | `shift+tab` | Cycle thinking level |
 | `app.thinking.toggle` | `ctrl+t` | Collapse or expand thinking blocks |
 
-Interactive model and thinking choices automatically become startup defaults. There is no save-default shortcut.
+Interactive model and thinking choices automatically become startup defaults. There is no save-default shortcut. While viewing a subagent, `app.model.select`, `app.model.cycleForward`, `app.model.cycleBackward`, and `app.thinking.cycle` are refused with a notice; switch to `main` to change the main conversation's model or thinking level. `app.thinking.toggle` applies to the viewed transcript.
 
 ### Display and Message Queue
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.tools.expand` | `ctrl+o` | Collapse or expand tool detail in main chat or a `/tasks` transcript |
+| `app.tools.expand` | `ctrl+o` | Collapse or expand tool detail in the viewed transcript (main chat or subagent) |
 | `app.auth.copyUrl` | `ctrl+x` | Copy the URL on an OAuth sign-in screen |
 | `app.message.followUp` | `alt+enter` | Queue follow-up message |
 | `app.message.dequeue` | `alt+up` | Restore queued messages to editor |
 
-The message queue keys work the same in the main chat and in a subagent's chat: while the agent works, Enter queues a steering message and `app.message.followUp` a follow-up, each shown as a `Steering:` or `Follow-up:` row above the prompt until the agent reads it, and `app.message.dequeue` brings every queued message back into the prompt.
+The message queue keys work the same whether you are viewing the main chat or a subagent: while the viewed agent works, Enter queues a steering message and `app.message.followUp` a follow-up, each shown as a `Steering:` or `Follow-up:` row above the prompt until the agent reads it, and `app.message.dequeue` brings every queued message back into the prompt.
 
 ### Navigation
 
-The same keys move between the main chat, subagent chats and lists everywhere:
+Atomic uses one chat screen for the main chat and its subagents, with the agent panel below the prompt:
 
-- **Esc** only interrupts the current turn, cancels, closes a dialog or deselects; in a subagent's chat it pauses the subagent until you send it a message. It never moves you to another chat.
-- **←** on an empty prompt goes back exactly one level, to the chat or list you came from, and the hint line names it (`← tasks`, `← main chat`). With text typed, ← moves the cursor; at the very start of the prompt it leaves too, and what you typed is kept for when you come back.
-- In a list, **↑↓** select, **Enter** or **→** opens the item's chat, **Space** peeks at its detail (in `/tasks`, a card under the row), or opens the asking chat for a subagent waiting on input, **x** stops the selected item (press it again within 3 seconds to confirm; on a finished item one press dismisses the row), **Esc** or **←** closes the list. If an item finishes between the two presses of `x`, the stop is called off and the list says `<name> finished · x to acknowledge`; that press acknowledges the change, and a later `x` dismisses the row after its finished state is painted.
-- **Ctrl+X Ctrl+K** stops every running background subagent and shell of the session, from any view except a dialog that uses Ctrl+X itself (OAuth sign-in, the scoped-model selector). Press it twice within 3 seconds; the first press says what it will do, and any other key calls it off. Stopped subagents stay resumable: their chats read `Stopped · send to resume`, and only a message you send resumes them.
-- **?** on an empty prompt, or in a list, shows the keys of the current screen; typed after text, `?` is just a character. Esc or ? closes it. Each screen also shows one dim hint line with exactly the keys that work there.
-- A finished subagent's chat stays open to messages: sending one continues it in its own session, in the same `/tasks` row. A subagent stopped for good, or one no longer kept, has a read-only chat with a one-line note; ← still goes back.
-- A shell's input prompt keeps Esc from clearing or leaving it; ← on its empty input returns to the list, and a draft is kept when you leave.
+- **Switching agents:** Press **↓** (`app.agents.focus`) on an empty prompt to focus the agent panel. Select a subagent row and press **Enter** or **→** (or click it) to swap the transcript to that subagent and point the same prompt at it; the panel marks the viewed agent with `●` and returns focus to the prompt. Select `main` and press **Enter** (or click `main`) to switch back to the main chat.
+- **Esc** interrupts the main chat's turn when viewing `main`, pauses the viewed subagent when it works (returning its queued messages to the prompt), cancels a pending switch, closes a dialog, or deselects the panel. On an empty prompt while the viewed subagent is not working, Esc shows `main`; that press never counts as the first of main's double-Esc. **Ctrl+C** on an empty prompt while viewing a subagent pauses it if it works and shows `main`.
+- **Lists (`/tasks` and the focused agent panel):** **↑↓** select, **Enter** or **→** switches the chat screen to a subagent (or opens a shell's output page), **Space** peeks at a task's detail card in `/tasks` (or switches to a subagent waiting on input), **x** stops the selected subagent or nested shell (press it again within 3 seconds to confirm; on a finished item one press dismisses the row), and **Esc** or **←** closes the list or returns focus to the prompt. If an item finishes between the two presses of `x`, the stop is called off and the list says `<name> finished · x to acknowledge`; that press acknowledges the change, and a later `x` dismisses the row after its finished state is painted.
+- **← (`app.nav.back`)** goes back one level inside `/tasks` (from a detail or shell output page to the list, or from a nested shell output back to the focused agent panel) and from a shell's empty input prompt back to the list.
+- **Ctrl+X Ctrl+K** stops every running background subagent and shell of the session, from any view except a dialog that uses Ctrl+X itself (OAuth sign-in, the scoped-model selector). Press it twice within 3 seconds; the first press says what it will do, and any other key calls it off. Stopped subagents stay resumable: viewing one shows `Stopped · send to resume`, and sending a message resumes it.
+- **?** on an empty prompt, or in a list, shows the keys of the current screen; typed after text, `?` is just a character. Esc or `?` closes it.
+- A finished subagent stays open to messages when viewed: sending one continues it in its own session, in the same `/tasks` row. A subagent stopped for good, or one no longer kept, is read-only when viewed (the prompt placeholder explains why and typing is ignored, while scrolling still works).
+- A shell's input prompt keeps Esc from clearing or leaving it; `←` on its empty input returns to the list, and a draft is kept when you leave.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.nav.back` | `left` | Go back one level from an empty prompt |
-| `app.list.open` | `enter`, `right` | Open the selected item |
+| `app.nav.back` | `left` | Go back one level in `/tasks`, shell output, or the focused panel |
+| `app.list.open` | `enter`, `right` | Switch to the selected subagent (or `main`), or open the selected shell output |
 | `app.list.stop` | `x` | Stop the selected item (press again to confirm); dismiss a finished one |
 | `app.list.peek` | `space` | Peek at the selected task |
 | `app.list.filter` | `/` | Filter the list by name |
 | `app.keys.help` | `?` | Show the keys of the current screen |
-| `app.agents.focus` | `down` | Focus the agent panel from an empty prompt; from a chat opened in the panel, go back to it |
+| `app.agents.focus` | `down` | Focus the agent panel from an empty prompt |
 | `app.agents.chord` | `ctrl+x` | Start a background-work chord in the main chat |
 | `app.agents.stopAll` | `ctrl+k` | After the chord key: stop all background subagents and shells (press twice to confirm) |
 | `app.tasks.open` | Unbound | Command-only `/tasks` route |
 | `app.tasks.input` | Unbound | Focus stdin only when the selected task has writable input |
-| `app.tasks.openWaited` | `alt+w` | Open the output of the shell a waiting subagent waits on, from its chat or its `/tasks` row |
+| `app.tasks.openWaited` | `alt+w` | Open the output of the shell a waiting subagent waits on, while viewing that subagent or from its `/tasks` row |
 
-On macOS, Alt+W reaches Atomic only when the terminal sends Option as Meta: turn on **Use Option as Meta key** (Terminal.app), set **Left/Right Option key** to **Esc+** (iTerm2), or set `macos-option-as-alt` (Ghostty) or `macos_option_as_alt both` (kitty, then restart it). Otherwise Option+W types `œ`; remap `app.tasks.openWaited` to another key instead. If you bound Alt+W to another action yourself, such as moving the cursor a word forward, the two collide: in a waiting subagent's chat and on its `/tasks` row, Alt+W opens the shell instead. Give one of them a different key.
+On macOS, Alt+W reaches Atomic only when the terminal sends Option as Meta: turn on **Use Option as Meta key** (Terminal.app), set **Left/Right Option key** to **Esc+** (iTerm2), or set `macos-option-as-alt` (Ghostty) or `macos_option_as_alt both` (kitty, then restart it). Otherwise Option+W types `œ`; remap `app.tasks.openWaited` to another key instead. If you bound Alt+W to another action yourself, such as moving the cursor a word forward, the two collide: while viewing a waiting subagent and on its `/tasks` row, Alt+W opens the shell instead. Give one of them a different key.
 
-**Migrating from earlier versions:** `app.tasks.inspect` is now `app.list.open` and `app.tasks.cancel` is now `app.list.stop`; existing `keybindings.json` entries are migrated on startup. Esc in a subagent transcript interrupts; use ← on an empty prompt to go back. Stopping a task asked for `y`; press `x` a second time instead.
+**Migrating from earlier versions:** `app.tasks.inspect` is now `app.list.open` and `app.tasks.cancel` is now `app.list.stop`; existing `keybindings.json` entries are migrated on startup. Focus the agent panel (`↓`) and press `Enter` on `main` to return from a viewed subagent to the main chat, or press `Esc` on an empty prompt while it is not working; `Esc` pauses a working subagent. Stopping a task asked for `y`; press `x` a second time instead.
 
 Mounted human-input prompts and the composer retain priority. Escape leaves stdin
 or task detail before leaving task focus. Unbound actions have no key hint.

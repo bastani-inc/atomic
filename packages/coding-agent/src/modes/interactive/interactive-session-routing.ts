@@ -5,6 +5,7 @@ import type { SessionInfo } from "../../core/session-manager.ts";
 import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
 import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
+import { promptHandle } from "./agent-view/agent-drafts.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -33,6 +34,8 @@ import { resolveResumeTarget } from "./resume-catalog.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function (this: InteractiveModeBase): Promise<void> {
+	// The prompt the command was typed in: a subagent's, when the clone was asked for from its view.
+	const prompt = promptHandle(this, "viewed");
 	await this.ensureDeferredStartupComplete();
 	const leafId = this.sessionManager.getLeafId();
 	if (!leafId) {
@@ -48,7 +51,7 @@ InteractiveModeBase.prototype.handleCloneCommand = async function (this: Interac
 		}
 
 		this.renderCurrentSessionState();
-		this.editor.setText("");
+		prompt.setText("");
 		this.showStatus("Cloned to new session");
 	} catch (error: unknown) {
 		this.showError(error instanceof Error ? error.message : String(error));
@@ -173,6 +176,8 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 	initialSelectedId?: string,
 ): Promise<void> {
 	await this.ensureDeferredStartupComplete();
+	// The navigation's text is for main's prompt, also when the tree was opened from a subagent's view.
+	const mainPrompt = promptHandle(this, "main");
 	const archived =
 		this.sessionManager.hasFullHistory?.() === false
 			? await (await import("./components/stored-tree-view.js")).StoredTreeView.open(this.sessionManager)
@@ -297,8 +302,8 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 					// Update UI
 					clearChatForRerender(this);
 					this.renderInitialMessages();
-					if (result.editorText && !this.editor.getText().trim()) {
-						this.editor.setText(result.editorText);
+					if (result.editorText && !mainPrompt.getText().trim()) {
+						mainPrompt.setText(result.editorText);
 					}
 					this.showStatus("Navigated to selected point");
 					void this.flushCompactionQueue({ willRetry: false });

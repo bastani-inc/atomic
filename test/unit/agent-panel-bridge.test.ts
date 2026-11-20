@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
-import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
@@ -1008,52 +1006,4 @@ test("warnings emitted during deferred startup survive rebuildChatFromMessages i
 
 	const rendered = chatContainer.render(120).join("\n");
 	assert.match(rendered, /Agent panel: a source failed: boom/);
-});
-
-test("opening a subagent row from showAgentPanel passes backLabel 'main chat' so the subagent hint names ← main chat (#5239)", async () => {
-	const previousKeys = getKeybindings();
-	setKeybindings(new KeybindingsManager());
-	const fixture = taskFixture();
-	try {
-		await fixture.start("panel-opened subagent");
-		const transcriptSession = SessionManager.inMemory();
-		await transcriptSession.appendMessage({ role: "user", content: "panel-opened subagent", timestamp: 1_000 });
-		fixture.runners[0]!.context.bindTranscript(Object.assign(transcriptSession, { subscribe: () => () => {} }));
-		const hub = new AgentPanelSourceHub();
-		const session = {
-			extensionRunner: {
-				getAgentPanelSourceHub: () => hub,
-			},
-		};
-		bindOwnerTaskStore(session, fixture.store);
-		const dispose = bindAgentPanel(session, {
-			setWidget() {},
-			requestRender() {},
-		} as never);
-		try {
-			let inspectorHint = "";
-			let mountIndex = 0;
-			const ui = createPanelUi({
-				async onMount(component, done) {
-					mountIndex++;
-					if (mountIndex === 1) {
-						component.handleInput("\r");
-						return;
-					}
-					await new Promise<void>((resolve) => setImmediate(resolve));
-					const lines = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
-					inspectorHint = lines.at(-1) ?? "";
-					done();
-				},
-			});
-			await showAgentPanel(session, ui);
-			assert.equal(mountIndex, 2);
-			assert.match(inspectorHint, /← main chat\b/);
-		} finally {
-			dispose();
-		}
-	} finally {
-		await fixture.dispose();
-		setKeybindings(previousKeys);
-	}
 });

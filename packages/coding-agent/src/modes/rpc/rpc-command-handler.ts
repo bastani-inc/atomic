@@ -20,6 +20,7 @@ import { sliceTail } from "../../core/tools/truncate.ts";
 import { isInteractiveEngineChild } from "../../utils/interactive-engine-env.ts";
 import { STOP_ALL_STATUS_KEY } from "../interactive/interactive-stop-all.ts";
 import { showAgentPanel } from "./agent-panel-bridge.ts";
+import { handleAgentViewCommand } from "./agent-view-rpc.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
 import { outputExtensionLoadErrors } from "./rpc-extension-load-errors.ts";
 import type { RpcExtensionUICapabilities, RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
@@ -186,9 +187,12 @@ export function createRpcCommandHandler({
 				if (!keybindings || !taskInspectorUi)
 					return createRpcErrorResponse(id, command.type, "Task inspection requires an interactive host");
 				const ui = session.extensionRunner.getUIContext();
-				void showEngineTaskInspector(session, engineTaskInspectorUi(ui, taskInspectorUi), command.taskId).catch(
-					(error: unknown) => ui.notify(sourceError(error).message, "error"),
-				);
+				void showEngineTaskInspector(
+					session,
+					engineTaskInspectorUi(ui, taskInspectorUi),
+					command.taskId,
+					command.waitedShellOf === undefined ? {} : { waitedShellOf: command.waitedShellOf },
+				).catch((error: unknown) => ui.notify(sourceError(error).message, "error"));
 				return createRpcSuccessResponse(id, command.type);
 			}
 			case "open_agent_panel": {
@@ -204,6 +208,17 @@ export function createRpcCommandHandler({
 					});
 				return createRpcSuccessResponse(id, command.type);
 			}
+			case "agent_view_open":
+			case "agent_view_close":
+			case "agent_view_prompt":
+			case "agent_view_resume":
+			case "agent_view_clear_queue":
+			case "agent_view_pause":
+			case "agent_view_commands":
+			case "agent_view_last_message":
+			case "get_task_prompts":
+			case "set_viewed_agent":
+				return handleAgentViewCommand(command, session);
 			case "set_stop_all_notice": {
 				session.extensionRunner.getUIContext().setStatus(STOP_ALL_STATUS_KEY, command.text);
 				return createRpcSuccessResponse(id, command.type);

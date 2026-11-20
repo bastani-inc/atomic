@@ -176,6 +176,7 @@ export {
 	automaticWaitBudgetMs,
 	type QueuedTaskMessages,
 	type TaskMessageLane,
+	type TaskSlashCommand,
 } from "./core/tasks/supervisor.js";
 export { bindTaskResumer, type TaskResumer } from "./core/tasks/task-resumer.ts";
 export {
