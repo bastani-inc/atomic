@@ -63,8 +63,13 @@ export function parsePackageConfig(value: unknown): { packageName?: string; erro
 	return parsePackageName(value, "config.package");
 }
 
-export function allAgents(d: { builtin: AgentConfig[]; user: AgentConfig[]; project: AgentConfig[] }): AgentConfig[] {
-	return [...d.builtin, ...d.user, ...d.project];
+export function allAgents(d: {
+	builtin: AgentConfig[];
+	user: AgentConfig[];
+	project: AgentConfig[];
+	package?: AgentConfig[];
+}): AgentConfig[] {
+	return [...d.builtin, ...d.user, ...d.project, ...(d.package ?? [])];
 }
 
 export async function availableNames(cwd: string, discovery: AgentDiscoveryOptions): Promise<string[]> {
@@ -81,9 +86,17 @@ export async function findAgents(
 	const d = await discoverAgentsAll(cwd, discovery);
 	const raw = name.trim();
 	const sanitized = sanitizeName(raw);
+	// A package agent always matches, so update and delete refuse it by name rather than report it missing.
+	// Package matches come last: the definitions that run under the name keep their place.
 	return allAgents(d)
-		.filter((a) => (scope === "both" || a.source === scope) && (a.name === raw || a.name === sanitized))
-		.sort((a, b) => a.source.localeCompare(b.source));
+		.filter(
+			(a) =>
+				(scope === "both" || a.source === scope || a.source === "package") &&
+				(a.name === raw || a.name === sanitized),
+		)
+		.sort(
+			(a, b) => Number(a.source === "package") - Number(b.source === "package") || a.source.localeCompare(b.source),
+		);
 }
 
 export async function nameExistsInScope(

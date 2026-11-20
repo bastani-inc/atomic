@@ -2,7 +2,15 @@ import type { FrontmatterValue } from "./frontmatter.js";
 
 export type AgentScope = "user" | "project" | "both";
 
-export type AgentSource = "builtin" | "user" | "project";
+export type AgentSource = "builtin" | "user" | "project" | "package";
+
+/** Where a package agent comes from: the installed package's source and where it is installed. */
+export interface PackageAgentOrigin {
+	/** The package source as configured, e.g. `npm:@acme/review-kit`. */
+	source: string;
+	/** Installed globally (`user`), in the project, or for this run with `-e` (`temporary`). */
+	scope: "user" | "project" | "temporary";
+}
 export type SystemPromptMode = "append" | "replace";
 export type AgentDefaultContext = "fresh" | "fork";
 
@@ -82,6 +90,8 @@ export interface AgentConfig {
 	disabled?: boolean;
 	extraFields?: Record<string, FrontmatterValue>;
 	override?: BuiltinAgentOverrideInfo;
+	/** Set for an agent an installed package ships; such an agent is never modified by agent management. */
+	packageOrigin?: PackageAgentOrigin;
 }
 
 export interface SubagentSettings {

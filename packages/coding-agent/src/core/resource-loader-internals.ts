@@ -7,7 +7,7 @@ import type { LegacyWorkflowFiles } from "./legacy-workflow-files.js";
 import type { McpServerContribution } from "./mcp-servers.ts";
 import type { DefaultPackageManager, PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
-import type { DefaultResourceLoaderInheritanceSnapshot } from "./resource-loader-types.ts";
+import type { DefaultResourceLoaderInheritanceSnapshot, PackageAgentFile } from "./resource-loader-types.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
 import type { SkillCatalog } from "./skill-catalog.ts";
 import type { Skill } from "./skills.ts";
@@ -65,6 +65,7 @@ export interface ResourceLoaderInternals {
 	appendSystemPrompt: string[];
 	appendSystemPromptSourcePaths: string[];
 	legacyWorkflowFiles?: LegacyWorkflowFiles;
+	packageAgents: readonly PackageAgentFile[];
 	mcpServerContributions: McpServerContribution[];
 	trustedBorrowedProjectLocalSources?: Set<string>;
 	lastSkillPaths: string[];

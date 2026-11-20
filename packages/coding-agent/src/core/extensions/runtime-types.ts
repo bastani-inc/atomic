@@ -204,6 +204,7 @@ export interface ExtensionContextActions {
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSkillCatalog?: () => SkillCatalog;
+	getPackageAgents?: () => readonly import("../resource-loader-types.ts").PackageAgentFile[];
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
 	getDecisionModel?: () => string;
 	getHttpIdleTimeoutMs?: () => number;

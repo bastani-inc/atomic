@@ -4,6 +4,7 @@ export { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resou
 export type {
 	DefaultResourceLoaderInheritanceSnapshot,
 	DefaultResourceLoaderOptions,
+	PackageAgentFile,
 	ResourceExtensionPaths,
 	ResourceLoader,
 	ResourceLoaderReloadOptions,

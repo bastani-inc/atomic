@@ -53,6 +53,7 @@
 - Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged ([#5924](https://github.com/bastani-inc/atomic/pull/5924)).
 - `atomic storage move-snapshot-chunks <sqlite-file> [--prefix <prefix>]` finishes moving an old snapshot chunk table in a closed local SQLite file with room for one copy and a batch of log records instead of two copies ([#5700](https://github.com/bastani-inc/atomic/issues/5700)).
 - Custom session stores can implement `readForkWindow(sessionId, entryId)` to supply a subagent's retained branch and labels without opening the whole parent. Stores without the method keep their existing fork behavior ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
+- Packages can ship subagent definitions: list agent `.md` files or directories under `agents` in the `atomic` manifest. They load from globally installed, project-installed and `-e` packages, follow a package's `agents` filter in settings, and change with `/reload`. Agents of a project-installed package are offered only in a trusted project. Extensions read the enabled files with `ctx.getPackageAgents()`; a custom SDK `ResourceLoader` can supply them with `getPackageAgents()` ([#5991](https://github.com/bastani-inc/atomic/issues/5991)).
 
 ### Changed
 

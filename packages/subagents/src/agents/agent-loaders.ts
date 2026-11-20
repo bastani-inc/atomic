@@ -1,6 +1,7 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
+import type { PackageAgentFile } from "@bastani/atomic";
 import { pathExists } from "../shared/path-exists.js";
 import { splitToolList } from "./agent-overrides.js";
 import { shouldPreserveAgentExtraField } from "./agent-serializer.js";
@@ -12,7 +13,7 @@ import {
 	defaultSystemPromptMode,
 } from "./agent-types.js";
 import { type FrontmatterValue, parseFrontmatter } from "./frontmatter.js";
-import { buildRuntimeName, parsePackageName } from "./identity.js";
+import { buildRuntimeName, packageAgentNamespace, parsePackageName } from "./identity.js";
 
 async function listFilesRecursive(dir: string, predicate: (fileName: string) => boolean): Promise<string[]> {
 	const files: string[] = [];
@@ -104,6 +105,115 @@ export interface AgentDirLoadResult {
 	diagnostics: AgentLoadDiagnostic[];
 }
 
+type AgentFileParse = { agent: AgentConfig } | { diagnostic: AgentLoadDiagnostic } | undefined;
+
+/**
+ * Parse one agent file. With `packageNamespace` (an agent an installed package ships), the namespace replaces the
+ * file's own `package:` frontmatter, so the agent is always named `<namespace>.<name>`.
+ */
+function parseAgentFile(
+	filePath: string,
+	content: string,
+	source: AgentSource,
+	packageNamespace?: string,
+): AgentFileParse {
+	const { frontmatter, body, parseError } = parseFrontmatter(content);
+	if (parseError !== undefined) {
+		return { diagnostic: { path: filePath, message: parseError } };
+	}
+
+	// Sequences are legal frontmatter but not valid `name`/`description`
+	// spellings; a file whose identity fields are not plain strings is
+	// skipped whole, exactly as upstream's loader does.
+	const localName = frontmatterString(frontmatter.name);
+	const description = frontmatterString(frontmatter.description);
+	if (!localName || !description) {
+		return undefined;
+	}
+
+	let packageName: string | undefined;
+	if (packageNamespace === undefined) {
+		const parsedPackage = parsePackageName(frontmatterString(frontmatter.package), `Agent '${localName}' package`);
+		if (parsedPackage.error) return undefined;
+		packageName = parsedPackage.packageName;
+	} else {
+		// The namespace and the name are joined with a dot, so a dotted name could read as another package's agent.
+		if (localName.includes(".")) {
+			return {
+				diagnostic: {
+					path: filePath,
+					message: `Package agent name '${localName}' must not contain '.'; the package namespace '${packageNamespace}' is joined to it with one.`,
+				},
+			};
+		}
+		packageName = packageNamespace;
+	}
+	const runtimeName = buildRuntimeName(localName, packageName);
+
+	const rawTools = parseToolList(frontmatter.tools);
+	const parsedTools = splitToolList(rawTools);
+	const inheritProjectContextRaw = frontmatterBoolean(frontmatter.inheritProjectContext);
+	const inheritSkillsRaw = frontmatterBoolean(frontmatter.inheritSkills);
+	const defaultContextRaw = frontmatterString(frontmatter.defaultContext);
+	const extensionsRaw = frontmatterString(frontmatter.extensions);
+	const systemPromptModeRaw = frontmatterString(frontmatter.systemPromptMode);
+	const defaultReads = parseCommaSeparatedList(frontmatterString(frontmatter.defaultReads));
+	const skillStr = frontmatterString(frontmatter.skill) || frontmatterString(frontmatter.skills) || undefined;
+	const skills = parseCommaSeparatedList(skillStr);
+	const fallbackModels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackModels));
+	const fallbackThinkingLevels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackThinkingLevels));
+	const inheritProjectContext = inheritProjectContextRaw ?? defaultInheritProjectContext(localName);
+	const inheritSkills = inheritSkillsRaw ?? defaultInheritSkills();
+	const systemPromptMode =
+		systemPromptModeRaw === "replace"
+			? "replace"
+			: systemPromptModeRaw === "append"
+				? "append"
+				: defaultSystemPromptMode(localName);
+	const defaultContext =
+		defaultContextRaw === "fork" ? ("fork" as const) : defaultContextRaw === "fresh" ? ("fresh" as const) : undefined;
+	let extensions: string[] | undefined;
+	if (extensionsRaw !== undefined) {
+		extensions = extensionsRaw
+			.split(",")
+			.map((extension) => extension.trim())
+			.filter(Boolean);
+	}
+
+	const extraFields: Record<string, FrontmatterValue> = {};
+	for (const [key, value] of Object.entries(frontmatter)) {
+		if (shouldPreserveAgentExtraField(key)) extraFields[key] = value;
+	}
+
+	const agent: AgentConfig = {
+		name: runtimeName,
+		localName,
+		packageName,
+		description,
+		tools: parsedTools.tools,
+		mcpDirectTools: parsedTools.mcpDirectTools,
+		model: frontmatterString(frontmatter.model),
+		fallbackModels,
+		fallbackThinkingLevels,
+		thinking: frontmatterString(frontmatter.thinking),
+		systemPromptMode,
+		inheritProjectContext,
+		inheritSkills,
+		defaultContext,
+		systemPrompt: body,
+		source,
+		filePath,
+		skills,
+		extensions,
+		output: frontmatterString(frontmatter.output),
+		defaultReads,
+		defaultProgress: frontmatterBoolean(frontmatter.defaultProgress) === true,
+		interactive: frontmatterBoolean(frontmatter.interactive) === true,
+		extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
+	};
+	return { agent };
+}
+
 /**
  * Load every agent file in a directory, collecting a diagnostic per file
  * skipped for invalid YAML frontmatter. The real YAML parser is stricter
@@ -122,94 +232,59 @@ export async function loadAgentsFromDirWithDiagnostics(dir: string, source: Agen
 		} catch {
 			continue;
 		}
-
-		const { frontmatter, body, parseError } = parseFrontmatter(content);
-		if (parseError !== undefined) {
-			diagnostics.push({ path: filePath, message: parseError });
-			continue;
-		}
-
-		// Sequences are legal frontmatter but not valid `name`/`description`
-		// spellings; a file whose identity fields are not plain strings is
-		// skipped whole, exactly as upstream's loader does.
-		const localName = frontmatterString(frontmatter.name);
-		const description = frontmatterString(frontmatter.description);
-		if (!localName || !description) {
-			continue;
-		}
-
-		const parsedPackage = parsePackageName(frontmatterString(frontmatter.package), `Agent '${localName}' package`);
-		if (parsedPackage.error) continue;
-		const packageName = parsedPackage.packageName;
-		const runtimeName = buildRuntimeName(localName, packageName);
-
-		const rawTools = parseToolList(frontmatter.tools);
-		const parsedTools = splitToolList(rawTools);
-		const inheritProjectContextRaw = frontmatterBoolean(frontmatter.inheritProjectContext);
-		const inheritSkillsRaw = frontmatterBoolean(frontmatter.inheritSkills);
-		const defaultContextRaw = frontmatterString(frontmatter.defaultContext);
-		const extensionsRaw = frontmatterString(frontmatter.extensions);
-		const systemPromptModeRaw = frontmatterString(frontmatter.systemPromptMode);
-		const defaultReads = parseCommaSeparatedList(frontmatterString(frontmatter.defaultReads));
-		const skillStr = frontmatterString(frontmatter.skill) || frontmatterString(frontmatter.skills) || undefined;
-		const skills = parseCommaSeparatedList(skillStr);
-		const fallbackModels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackModels));
-		const fallbackThinkingLevels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackThinkingLevels));
-		const inheritProjectContext = inheritProjectContextRaw ?? defaultInheritProjectContext(localName);
-		const inheritSkills = inheritSkillsRaw ?? defaultInheritSkills();
-		const systemPromptMode =
-			systemPromptModeRaw === "replace"
-				? "replace"
-				: systemPromptModeRaw === "append"
-					? "append"
-					: defaultSystemPromptMode(localName);
-		const defaultContext =
-			defaultContextRaw === "fork"
-				? ("fork" as const)
-				: defaultContextRaw === "fresh"
-					? ("fresh" as const)
-					: undefined;
-		let extensions: string[] | undefined;
-		if (extensionsRaw !== undefined) {
-			extensions = extensionsRaw
-				.split(",")
-				.map((extension) => extension.trim())
-				.filter(Boolean);
-		}
-
-		const extraFields: Record<string, FrontmatterValue> = {};
-		for (const [key, value] of Object.entries(frontmatter)) {
-			if (shouldPreserveAgentExtraField(key)) extraFields[key] = value;
-		}
-
-		agents.push({
-			name: runtimeName,
-			localName,
-			packageName,
-			description,
-			tools: parsedTools.tools,
-			mcpDirectTools: parsedTools.mcpDirectTools,
-			model: frontmatterString(frontmatter.model),
-			fallbackModels,
-			fallbackThinkingLevels,
-			thinking: frontmatterString(frontmatter.thinking),
-			systemPromptMode,
-			inheritProjectContext,
-			inheritSkills,
-			defaultContext,
-			systemPrompt: body,
-			source,
-			filePath,
-			skills,
-			extensions,
-			output: frontmatterString(frontmatter.output),
-			defaultReads,
-			defaultProgress: frontmatterBoolean(frontmatter.defaultProgress) === true,
-			interactive: frontmatterBoolean(frontmatter.interactive) === true,
-			extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
-		});
+		const parsed = parseAgentFile(filePath, content, source);
+		if (parsed === undefined) continue;
+		if ("diagnostic" in parsed) diagnostics.push(parsed.diagnostic);
+		else agents.push(parsed.agent);
 	}
 
+	return { agents, diagnostics };
+}
+
+/**
+ * Load the agent files installed packages ship, in the host's discovery order. Each is named
+ * `<package namespace>.<name>`; when two packages ship the same full name, the first one wins and the other is
+ * reported.
+ */
+export async function loadPackageAgentsWithDiagnostics(
+	files: readonly PackageAgentFile[],
+): Promise<AgentDirLoadResult> {
+	const agents: AgentConfig[] = [];
+	const diagnostics: AgentLoadDiagnostic[] = [];
+	const byName = new Map<string, AgentConfig>();
+	for (const file of files) {
+		const namespace = packageAgentNamespace(file.packageName, file.packageRoot);
+		if (namespace === undefined) {
+			diagnostics.push({
+				path: file.path,
+				message: `Package ${file.source} has no name that can namespace its agents.`,
+			});
+			continue;
+		}
+		let content: string;
+		try {
+			content = await readFile(file.path, "utf-8");
+		} catch {
+			continue;
+		}
+		const parsed = parseAgentFile(file.path, content, "package", namespace);
+		if (parsed === undefined) continue;
+		if ("diagnostic" in parsed) {
+			diagnostics.push(parsed.diagnostic);
+			continue;
+		}
+		const agent: AgentConfig = { ...parsed.agent, packageOrigin: { source: file.source, scope: file.scope } };
+		const first = byName.get(agent.name);
+		if (first) {
+			diagnostics.push({
+				path: file.path,
+				message: `Agent '${agent.name}' from package ${file.source} is shadowed by the same name from package ${first.packageOrigin?.source} (${first.filePath}).`,
+			});
+			continue;
+		}
+		byName.set(agent.name, agent);
+		agents.push(agent);
+	}
 	return { agents, diagnostics };
 }
 

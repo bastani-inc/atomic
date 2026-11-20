@@ -5,6 +5,7 @@ import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.t
 import type { LegacyWorkflowFiles } from "./legacy-workflow-files.js";
 import type { McpServerContribution } from "./mcp-servers.ts";
 import type { PathMetadata, ResolvedResource } from "./package-manager.ts";
+import type { SourceScope } from "./package-manager-types.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
 import type { SkillCatalog } from "./skill-catalog.ts";
@@ -57,12 +58,28 @@ export interface ResourceLoaderReloadTransaction {
 	commit(): void;
 }
 
+/** A subagent definition file that an installed package ships through its manifest's `agents` field. */
+export interface PackageAgentFile {
+	/** Absolute path of the agent's Markdown file. */
+	readonly path: string;
+	/** The package source as configured, e.g. `npm:@acme/review-kit`. */
+	readonly source: string;
+	/** Where the package is installed: globally (`user`), in the project, or for this run with `-e` (`temporary`). */
+	readonly scope: SourceScope;
+	/** The package's root directory. */
+	readonly packageRoot: string;
+	/** The `name` in the package's package.json, when it has one. */
+	readonly packageName?: string;
+}
+
 export interface ResourceLoader {
 	getExtensions(): LoadExtensionsResult;
 	getInheritanceSnapshot?(): DefaultResourceLoaderInheritanceSnapshot;
 	/** Paths to earlier workflow recipes, not executable resources. */
 	getLegacyWorkflowFiles?(): LegacyWorkflowFiles | undefined;
 	getMcpServerContributions?(): McpServerContribution[];
+	/** Enabled subagent definitions shipped by installed packages, as of the last reload. */
+	getPackageAgents?(): readonly PackageAgentFile[];
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getSkillCatalog?(): SkillCatalog;
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };

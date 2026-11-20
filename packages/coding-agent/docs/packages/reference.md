@@ -19,6 +19,7 @@ Filter what a package loads using the object form in settings:
       "skills": [],
       "prompts": ["prompts/review.md"],
       "themes": ["+themes/legacy.json"],
+      "agents": ["agents/reviewer.md"],
       "mcpServers": ["acme-*", "!acme-legacy"]
     }
   ]
@@ -36,11 +37,15 @@ Filter what a package loads using the object form in settings:
 
 In the top-level `extensions`, `skills`, `prompts`, and `themes` arrays, path patterns expand `~` to your home directory. For example, `!~/skills/legacy-*` excludes matching skills and `-~/skills/legacy` disables that exact skill directory.
 
+Package [subagents](/packages/authoring#subagents) have no top-level settings array. Filter them per package with `agents`, which matches agent file paths relative to the package root.
+
 ## Scope and Deduplication
 
 Packages can appear in both global and project settings. The project entry normally wins.
 
 A project entry with `autoload: false` instead adjusts the inherited global resources. It adds no newly auto-discovered resources; explicit include/exclude patterns control what loads.
+
+When two packages ship a subagent with the same full name, the first one found is used: packages passed with `-e`, then project-installed packages, then globally installed packages.
 
 Package identity is determined by:
 
