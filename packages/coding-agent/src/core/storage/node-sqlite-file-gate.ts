@@ -647,8 +647,9 @@ const TEMP_DATABASE = 1;
  *   thread holds the lock (see `runWhenFree`), so no part of it runs while the lock is held. An `exec` of exactly one
  *   statement runs as that statement.
  *
- * At a busy timeout of 0 every call runs as before: it never waits for the lock, and setting the timeout, as a try
- * does, would remove a busy handler an extension installed, which reads as a timeout of 0.
+ * At a busy timeout of 0 every single statement runs as before: it never waits for the lock, and setting the timeout,
+ * as a try does, would remove a busy handler an extension installed, which reads as a timeout of 0. A script still
+ * waits (for no time), which sets no timeout.
  *
  * The plan of a statement is made once while the file is held and listed again for later calls. Listing the plan of
  * an INSERT, UPDATE or DELETE resets the connection's `changes()`, which the statement's own run sets again; so a
@@ -663,13 +664,13 @@ export function modeOf(
 	params: readonly SQLInputValue[],
 	single: boolean,
 ): "try first" | "as before" | "script" {
-	if (busyTimeoutOf(gate, owner, database) === 0) return "as before";
 	if (!single) {
 		const statements = splitStatements(sql);
 		if (statements.length > 1) return "script";
 		if (statements.length === 0) return "try first";
 		return modeOf(gate, owner, database, statements[0]!, params, true);
 	}
+	if (busyTimeoutOf(gate, owner, database) === 0) return "as before";
 	// Inside a transaction of its own, a write's upgrade of the connection's read is refused at once, with no busy
 	// handler, and a try again could succeed or be refused otherwise.
 	if (
