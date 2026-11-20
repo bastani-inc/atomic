@@ -1986,7 +1986,7 @@ test("Enter sends the composer text to the task, and a refusal keeps the draft a
 		host.inspector.handleInput("\r");
 		await flush();
 		const text = host.text();
-		assert.match(text, /Intercom did not deliver the message: worker-1 \(delivery-refused\)/);
+		assert.match(text, /The agent did not take the message: worker-1 \(delivery-refused\)/);
 		assert.match(text, /second note/, "the refused draft comes back to the composer");
 	} finally {
 		await host.dispose();
@@ -2039,13 +2039,13 @@ test("a message that fails after the reader left its transcript is shown on the 
 		assert.match(host.text(), /Inspect transcript/, "the reader left for the task's detail page");
 		answer.reject(new TaskMessageError("delivery-refused", { taskId: "task" as TaskId, target: "worker-1" }));
 		await flush();
-		assert.match(host.text(), /Intercom did not deliver the message: worker-1 \(delivery-refused\)/);
+		assert.match(host.text(), /The agent did not take the message: worker-1 \(delivery-refused\)/);
 		assert.deepEqual(notices, [], "the open task pages show it, so the host is not told as well");
 		host.inspector.handleInput("\r");
 		await flush();
 		const reopened = host.text();
 		assert.match(reopened, /late note/, "the text is back in the transcript's prompt");
-		assert.match(reopened, /Intercom did not deliver the message/);
+		assert.match(reopened, /The agent did not take the message/);
 		host.inspector.handleInput("\x1b[F");
 		host.inspector.handleInput("\x15");
 		host.inspector.handleInput("\x1b[D");
@@ -2077,7 +2077,7 @@ test("a message that fails after the task pages closed is reported through the h
 		answer.reject(new TaskMessageError("delivery-refused", { taskId: "task" as TaskId, target: "worker-1" }));
 		await flush();
 		assert.equal(notices.length, 1);
-		assert.match(notices[0] ?? "", /Intercom did not deliver the message: worker-1 \(delivery-refused\)/);
+		assert.match(notices[0] ?? "", /The agent did not take the message: worker-1 \(delivery-refused\)/);
 	} finally {
 		await host.dispose();
 	}

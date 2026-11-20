@@ -955,7 +955,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 			running = false;
 			for (const listener of listeners) listener({ type: "agent_end", messages: [] } as never);
 		};
-		const sendMessage = async (_text: string) => {
+		const queueMessage = async (_text: string) => {
 			running = true;
 			for (const listener of listeners) listener({ type: "agent_start" } as never);
 			return { delivered: true as const };
@@ -969,7 +969,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 			isRunning: () => running,
 			completionSource: { runId: "run-1", intercomTarget: "subagent-debugger-1" },
 			interruptTurn,
-			sendMessage,
+			queueMessage,
 		});
 		fixture.runners[0]!.context.bindTranscript(transcript);
 
@@ -977,7 +977,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 		assert.equal(agentPanelItems(ownerSession)[0]?.state, "running");
 		assert.equal(listeners.size, 0, "pure panel state read adds no transcript listener");
 		assert.equal(transcript.interruptTurn, interruptTurn, "transcript interruptTurn method is not monkey-patched");
-		assert.equal(transcript.sendMessage, sendMessage, "transcript sendMessage method is not monkey-patched");
+		assert.equal(transcript.queueMessage, queueMessage, "transcript queueMessage method is not monkey-patched");
 		assert.equal(transcript.subscribe, subscribe, "transcript subscribe method is not monkey-patched");
 
 		const env = taskTranscriptEnvironment({
