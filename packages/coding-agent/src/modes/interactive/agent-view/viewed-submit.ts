@@ -104,8 +104,20 @@ function hold(mode: InteractiveModeBase, port: AgentViewPort): () => void {
 	};
 }
 
-/** Drop `port`'s controller once it is neither shown nor waiting on its subagent. */
+/**
+ * Drop `port`'s controller once it is neither shown nor waiting on its subagent. A subagent that is gone keeps it until
+ * the current task ends: when its engine was lost, its view closes and the screen shows main within the same report of
+ * the loss, and the loss's own notice still needs what its controller held.
+ */
 export function forgetIfIdle(mode: InteractiveModeBase, port: AgentViewPort): void {
+	if (port.status().gone) {
+		queueMicrotask(() => drop(mode, port));
+		return;
+	}
+	drop(mode, port);
+}
+
+function drop(mode: InteractiveModeBase, port: AgentViewPort): void {
 	const map = entriesOf(mode);
 	const entry = map.get(port);
 	if (entry === undefined || entry.busy > 0 || isViewed(mode, port)) return;
