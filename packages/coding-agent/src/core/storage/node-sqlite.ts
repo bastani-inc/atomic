@@ -1606,7 +1606,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			const key = this.transactionIdentity;
 			if (typeof key === "string" ? gates.files.has(key) : gates.connections.has(key)) return false;
 			return gateTransaction(key, async () => {
-				if (this.writeQueue && (await this.writeQueue.contendedOffLoop())) return false;
+				// The queue's directory outlives its writers: only a live ticket means a writer is waiting. One that cannot be
+				// read counts as a writer waiting.
+				const queue = this.writeQueue;
+				if (queue !== undefined && (await queue.contendedOffLoop())) {
+					const waiting = await queue.liveTicketsOffLoop().catch(() => undefined);
+					if (waiting === undefined || waiting.length > 0) return false;
+				}
 				const start = performance.now();
 				await this.holderRecord?.trying();
 				try {

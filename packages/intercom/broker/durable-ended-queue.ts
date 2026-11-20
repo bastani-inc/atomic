@@ -16,6 +16,7 @@ import type { Message } from "../types.js";
 import type { SubagentEndedOutcome } from "./recipient-gone-errors.js";
 import type {
 	EndedChildQueueStore,
+	EndedQueueCounted,
 	EndedQueueEntry,
 	EndedQueueRow,
 	EndedWakeBudgetEvent,
@@ -318,6 +319,31 @@ export class DurableEndedQueue {
 	/** The sender as the send handler took `held`: a restarted broker delivers it as that sender. */
 	private senderOf(held: HeldSend): BrokerConnectedSession | undefined {
 		return senderAtReceipt(held.clientMessage as SendClientMessage);
+	}
+
+	/**
+	 * What the caps count of the store: the rows kept for `departure`'s subagent, and all of them, never less than it
+	 * holds (see `EndedChildQueueStore.counted`). Undefined while only memory keeps the queue.
+	 */
+	storedCounts(departure: JournalDeparture): EndedQueueCounted | undefined {
+		return this.store?.counted(departureKeyOf(departure));
+	}
+
+	/**
+	 * Resolves once the store has counted what it kept before this broker opened it, at once while only memory keeps the
+	 * queue, or after {@link ENDED_QUEUE_OPEN_WAIT_MS} at most: a message that may not fit waits no longer than that.
+	 */
+	untilCounted(): Promise<void> {
+		const store = this.store;
+		if (store === undefined) return Promise.resolve();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		return Promise.race([
+			store.whenCounted(),
+			new Promise<void>((resolve) => {
+				timer = setTimeout(resolve, ENDED_QUEUE_OPEN_WAIT_MS);
+				timer.unref();
+			}),
+		]).finally(() => clearTimeout(timer));
 	}
 
 	/**

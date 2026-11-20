@@ -45,6 +45,20 @@ export const ENDED_CHILD_OWNER_AWAY_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 export const ENDED_CHILD_QUEUE_BYTES_MAX = 32 * 1024 * 1024;
 /** The most bytes of messages queued for subagents that ended, across the broker. */
 export const ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX = 256 * 1024 * 1024;
+
+/**
+ * Durable wake queue: the store has no room left for a message (its file reached its page limit, or the disk is full):
+ * that write alone is refused, nothing else. `reason`, once set, is what its sender is told.
+ */
+export class EndedChildQueueFullError extends Error {
+	constructor(
+		cause: unknown,
+		readonly reason?: string,
+	) {
+		super(reason ?? "the store of messages for subagents that ended is full", { cause });
+		this.name = "EndedChildQueueFullError";
+	}
+}
 /** The window the wake bounds count in. */
 export const ENDED_CHILD_WAKE_WINDOW_MS = 10 * 60_000;
 /** The most times one child is woken by messages within {@link ENDED_CHILD_WAKE_WINDOW_MS}. */
