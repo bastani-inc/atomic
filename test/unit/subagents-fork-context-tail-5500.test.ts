@@ -71,7 +71,13 @@ test("a store without a fork-window reader keeps its original child entries byte
 	const original = (await store.load(parent.getSessionId())).entries;
 	const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
 	assert.ok(child);
-	assert.equal(JSON.stringify((await store.load(child.getSessionId())).entries), JSON.stringify(original));
+	const entries = (await store.load(child.getSessionId())).entries;
+	assert.equal(JSON.stringify(entries.slice(0, original.length)), JSON.stringify(original));
+	// After the copy, only the entry that marks where the child's own entries start.
+	assert.deepEqual(
+		entries.slice(original.length).map((entry) => entry.type === "custom" && entry.customType),
+		["subagent-fork-start"],
+	);
 });
 
 test("an uncovered turn survives without copying the payload of the entry the clear covers (#5500)", async () => {

@@ -290,7 +290,18 @@ function added(before: AnthropicPayload, after: AnthropicPayload): string {
 	return cachedPrefix(after).slice(cachedPrefix(before).length).join("\n");
 }
 
-async function parentAndFork(compat: object, reply?: Reply, parentOptions?: Parameters<typeof openParent>[3]) {
+/**
+ * A parent with two settled turns and a fork of it, made as the subagent tool makes one. `madeByEarlierVersion` makes
+ * it as an earlier version did, with nothing recording where the copied history ends; `clockFromParentReply` makes it
+ * while the clock reads that many milliseconds after the parent's last reply was stamped (0: the same millisecond;
+ * negative: after the clock stepped back).
+ */
+async function parentAndFork(
+	compat: object,
+	reply?: Reply,
+	parentOptions?: Parameters<typeof openParent>[3],
+	fork: { readonly madeByEarlierVersion?: boolean; readonly clockFromParentReply?: number } = {},
+) {
 	const dir = makeTempDirectory("atomic-fork-cache-");
 	cleanups.push(() => removeTempDirectory(dir));
 	const recorded = await recordingRuntime(compat, reply);
@@ -298,8 +309,20 @@ async function parentAndFork(compat: object, reply?: Reply, parentOptions?: Para
 	const parent = await openParent(parentManager, recorded.runtime, recorded.parentModel, parentOptions);
 	await parent.prompt("first parent task");
 	await parent.prompt("second parent task");
-	const forkManager = await createForkContextResolver(parentManager, "fork").sessionManagerForIndex(0);
+	const lastReply = parentManager
+		.getBranch()
+		.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
+	assert.ok(lastReply?.type === "message");
+	const clock = fork.clockFromParentReply;
+	if (clock !== undefined) vi.useFakeTimers({ toFake: ["Date"], now: lastReply.message.timestamp + clock });
+	const forkManager = await (fork.madeByEarlierVersion
+		? parentManager.captureFork(parentManager.getLeafId()!)()
+		: createForkContextResolver(parentManager, "fork").sessionManagerForIndex(0)
+	).finally(() => vi.useRealTimers());
 	assert.ok(forkManager);
+	if (clock !== undefined) {
+		assert.equal(Date.parse(forkManager.getHeader()!.createdAt), lastReply.message.timestamp + clock);
+	}
 	// What the runner reads from the parent when it starts the child.
 	const childOptions = (parent as unknown as AgentSessionInternalSurface)._childSessionOptions?.({});
 	return {
@@ -553,62 +576,124 @@ describe("a forked subagent continues its parent's cached request", () => {
 		assert.deepEqual(secretRuns, []);
 	});
 
-	test("a fork child an earlier version ran is reopened as the child it was, under its own prompt, every time", async () => {
-		// The parent's history holds one of its own subagent calls, which the earlier version filtered out of the fork.
-		const reply: Reply = (model, count) =>
-			count === 1
-				? message(model, [{ type: "toolCall", id: "call_sub_1", name: "subagent", arguments: {} }])
-				: textReply(model, count);
-		const { runtime, parentModel, requests, parentManager, forkManager } = await parentAndFork(NATIVE, reply);
-		assert.equal(forkedParentSessionId(forkManager), parentManager.getSessionId(), "a new fork continues its parent");
-		// The earlier version: the child's own transformed prompt, the parent's orchestration history filtered out, and
-		// no recorded prompt.
-		const cwd = forkManager.getCwd();
-		const { session: legacy } = await createAgentSession({
-			cwd,
-			agentDir: cwd,
-			model: parentModel,
-			thinkingLevel: "off",
-			modelRuntime: runtime,
-			settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
-			sessionManager: forkManager,
-			resourceLoader: resourceLoader("You review changes."),
-			subagentPolicy: { ...narrow, managementActions: "restricted", depth: 1 },
-			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
-			tools: ["read"],
-			...createInProcessChildPromptBehavior(narrow),
-			systemPromptSections: undefined,
-			systemPromptTransform: createInProcessChildSystemPromptTransform(narrow),
-		});
-		await legacy.prompt("child task");
-		await legacy.dispose();
-
-		const reopen = async (task: string) => {
-			const manager = await SessionManager.open(forkManager.getSessionStore(), forkManager.getSessionId());
-			const parentSessionId = forkedParentSessionId(manager);
-			assert.equal(parentSessionId, undefined, "it is reopened as the child it was");
-			const child = await openFork(manager, runtime, parentModel, { forkedFrom: parentSessionId });
-			await child.prompt(task);
-			await child.dispose();
-			return requests.at(-1)!;
-		};
-		const first = await reopen("follow-up");
-		const second = await reopen("another follow-up");
-
-		for (const { payload } of [first, second]) {
-			assert.doesNotMatch(JSON.stringify(payload), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
-			assert.doesNotMatch(JSON.stringify(payload), /You are now a subagent started from the conversation above/);
-			assert.doesNotMatch(JSON.stringify(payload.messages), /call_sub_1/);
-			assert.match(JSON.stringify(payload.system), /You are a child subagent, not the parent orchestrator/);
-			assert.deepEqual(
-				(payload.tools as { name: string }[]).map((tool) => tool.name).filter((name) => !name.startsWith("__")),
-				["read"],
+	test("a fork made in the millisecond of its parent's last reply, or after the clock stepped back, continues its parent", async () => {
+		// A fork an earlier version made says nothing of where its copied history ends, so only the clock tells.
+		for (const fork of [
+			{ madeByEarlierVersion: false, clockFromParentReply: 0 },
+			{ madeByEarlierVersion: false, clockFromParentReply: -60_000 },
+			{ madeByEarlierVersion: true, clockFromParentReply: 0 },
+		]) {
+			const { runtime, parentModel, requests, parentManager, forkManager } = await parentAndFork(
+				NATIVE,
+				undefined,
+				undefined,
+				fork,
 			);
+			const forkedFrom = forkedParentSessionId(forkManager);
+			assert.equal(forkedFrom, parentManager.getSessionId(), "the parent's reply is not the child's own turn");
+			const child = await openFork(forkManager, runtime, parentModel, { forkedFrom });
+			await child.prompt("child task");
+			const [, parentLast, forkFirst] = requests;
+			assert.ok(extendsRequest(parentLast.payload, forkFirst.payload), "the fork reuses the parent's whole request");
+			assert.equal(forkFirst.sessionId, parentManager.getSessionId());
 		}
-		assert.equal(first.sessionId, forkManager.getSessionId());
-		assert.equal(second.sessionId, forkManager.getSessionId());
-		assert.ok(extendsRequest(first.payload, second.payload), "the second reopen reuses the first one's request");
 	});
+
+	test("the start a fork copied from its parent's history is not its own", async () => {
+		const dir = makeTempDirectory("atomic-fork-cache-");
+		cleanups.push(() => removeTempDirectory(dir));
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const turn = async (manager: SessionManager, text: string) => {
+			await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+			await manager.appendMessage(message(model, [{ type: "text", text: `${text} done` }]));
+		};
+		const grandparent = SessionManager.inMemory(dir);
+		await turn(grandparent, "grandparent task");
+		// The parent is a fork this version made, with a turn of its own after its start.
+		const fork = await createForkContextResolver(grandparent, "fork").sessionManagerForIndex(0);
+		assert.ok(fork);
+		await turn(fork, "parent task");
+		const parentSessionId = fork.getSessionId();
+		// A fork of it that records no start of its own but copies the parent's, as an earlier version that did not
+		// know the entry copied it as an extension's state: here a copy of the whole branch.
+		await fork.createBranchedSession(fork.getLeafId()!);
+		assert.notEqual(fork.getSessionId(), parentSessionId);
+		assert.ok(
+			fork.getBranch().some((entry) => entry.type === "custom" && entry.customType === "subagent-fork-start"),
+			"the copy holds the parent's start",
+		);
+		assert.equal(forkedParentSessionId(fork), parentSessionId, "the parent's turn is not the fork's own");
+	});
+
+	for (const madeByEarlierVersion of [true, false]) {
+		const made = madeByEarlierVersion ? "an earlier version made" : "this version made";
+		test(`a fork child ${made} and an earlier version ran is reopened as the child it was, every time`, async () => {
+			// The parent's history holds one of its own subagent calls, which the earlier version filtered out of the
+			// fork.
+			const reply: Reply = (model, count) =>
+				count === 1
+					? message(model, [{ type: "toolCall", id: "call_sub_1", name: "subagent", arguments: {} }])
+					: textReply(model, count);
+			const { runtime, parentModel, requests, parentManager, forkManager } = await parentAndFork(
+				NATIVE,
+				reply,
+				undefined,
+				{ madeByEarlierVersion },
+			);
+			assert.equal(
+				forkedParentSessionId(forkManager),
+				parentManager.getSessionId(),
+				"a new fork continues its parent",
+			);
+			// The earlier version: the child's own transformed prompt, the parent's orchestration history filtered
+			// out, and no recorded prompt.
+			const cwd = forkManager.getCwd();
+			const { session: legacy } = await createAgentSession({
+				cwd,
+				agentDir: cwd,
+				model: parentModel,
+				thinkingLevel: "off",
+				modelRuntime: runtime,
+				settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
+				sessionManager: forkManager,
+				resourceLoader: resourceLoader("You review changes."),
+				subagentPolicy: { ...narrow, managementActions: "restricted", depth: 1 },
+				builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
+				tools: ["read"],
+				...createInProcessChildPromptBehavior(narrow),
+				systemPromptSections: undefined,
+				systemPromptTransform: createInProcessChildSystemPromptTransform(narrow),
+			});
+			await legacy.prompt("child task");
+			await legacy.dispose();
+
+			const reopen = async (task: string) => {
+				const manager = await SessionManager.open(forkManager.getSessionStore(), forkManager.getSessionId());
+				const parentSessionId = forkedParentSessionId(manager);
+				assert.equal(parentSessionId, undefined, "it is reopened as the child it was");
+				const child = await openFork(manager, runtime, parentModel, { forkedFrom: parentSessionId });
+				await child.prompt(task);
+				await child.dispose();
+				return requests.at(-1)!;
+			};
+			const first = await reopen("follow-up");
+			const second = await reopen("another follow-up");
+
+			for (const { payload } of [first, second]) {
+				assert.doesNotMatch(JSON.stringify(payload), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
+				assert.doesNotMatch(JSON.stringify(payload), /You are now a subagent started from the conversation above/);
+				assert.doesNotMatch(JSON.stringify(payload.messages), /call_sub_1/);
+				assert.match(JSON.stringify(payload.system), /You are a child subagent, not the parent orchestrator/);
+				assert.deepEqual(
+					(payload.tools as { name: string }[]).map((tool) => tool.name).filter((name) => !name.startsWith("__")),
+					["read"],
+				);
+			}
+			assert.equal(first.sessionId, forkManager.getSessionId());
+			assert.equal(second.sessionId, forkManager.getSessionId());
+			assert.ok(extendsRequest(first.payload, second.payload), "the second reopen reuses the first one's request");
+		});
+	}
 
 	test("a fork stays a fork when reopened after a compaction or under another policy", async () => {
 		const { runtime, parentModel, requests, parentManager, forkManager } = await parentAndFork(NATIVE);
