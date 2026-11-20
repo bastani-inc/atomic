@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `/thinking` without a level, `/fork`, `/trust` and `/reload` no longer flash an empty prompt before their view opens: the prompt stays on screen until the view can draw, as with `/model` ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
+
 ## [0.10.1] - 2026-11-20
 
 Typing and rendering keep going while Atomic reads and writes its local SQLite files, and the chat screen no longer flashes blank or shifted frames.

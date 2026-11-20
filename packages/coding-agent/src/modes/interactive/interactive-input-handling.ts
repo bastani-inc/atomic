@@ -500,9 +500,15 @@ async function submitToMainChat(
 			return;
 		}
 		if (command === "thinking") {
+			// Without a level to set, it opens the selector.
+			const held = argument === undefined ? holdPromptSlot(this.editorContainer) : undefined;
 			prompt.setText("");
-			await this.ensureDeferredStartupComplete();
-			await this.handleThinkingCommand(argument);
+			try {
+				await this.ensureDeferredStartupComplete();
+				await this.handleThinkingCommand(argument);
+			} finally {
+				held?.settle();
+			}
 			return;
 		}
 		if (command === "export") {
@@ -556,8 +562,10 @@ async function submitToMainChat(
 			return;
 		}
 		if (bare("fork")) {
-			this.showUserMessageSelector();
+			const held = holdPromptSlot(this.editorContainer);
+			const shown = this.showUserMessageSelector();
 			prompt.setText("");
+			void shown.finally(() => held.settle());
 			return;
 		}
 		if (bare("clone")) {
@@ -606,9 +614,14 @@ async function submitToMainChat(
 			return;
 		}
 		if (bare("reload")) {
+			const held = holdPromptSlot(this.editorContainer);
 			prompt.setText("");
-			await this.ensureDeferredStartupComplete();
-			await this.handleReloadCommand();
+			try {
+				await this.ensureDeferredStartupComplete();
+				await this.handleReloadCommand();
+			} finally {
+				held.settle();
+			}
 			return;
 		}
 		if (bare("debug")) {

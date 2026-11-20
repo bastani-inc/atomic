@@ -8,7 +8,7 @@ import { CustomEditor } from "../src/modes/interactive/components/custom-editor.
 import { holdPromptSlot, PROMPT_SLOT_HOLD_MS } from "../src/modes/interactive/components/prompt-slot.ts";
 import { screenHoldOf } from "../src/modes/interactive/screen-hold.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
-import { type MainChatTerminal, startMainChat } from "./helpers/main-chat-terminal.js";
+import { ESCAPE, type MainChatTerminal, startMainChat } from "./helpers/main-chat-terminal.js";
 
 /**
  * A slash command that opens a view, drawn on a terminal by the real interactive mode on both hosts: every frame the
@@ -76,13 +76,21 @@ async function pressEnter(chat: MainChatTerminal): Promise<{ from: number; at: n
 	);
 }
 
-/** Run `command` and check every frame up to its view: each still shows the typed command, or shows the view. */
-async function expectStraightToView(chat: MainChatTerminal, command: string, view: RegExp): Promise<void> {
+/**
+ * Run `command` and check every frame up to its view: each still shows the typed command, or shows the view. `until` is
+ * what the screen settles on, when the view does not stay up.
+ */
+async function expectStraightToView(
+	chat: MainChatTerminal,
+	command: string,
+	view: RegExp,
+	until: RegExp = view,
+): Promise<void> {
 	const typed = new RegExp(`❯ ${command.replace("/", "\\/")}`);
 	chat.press(command);
 	await chat.settled(typed);
 	const enter = await pressEnter(chat);
-	await chat.settled(view);
+	await chat.settled(until);
 	const frames = await screens(chat, enter.from);
 	assert.ok(
 		frames.some((frame) => view.test(frame.text)),
@@ -110,6 +118,112 @@ describe.each(["in-process", "isolated"] as const)("a slash command that opens a
 		async () => {
 			const chat = await start(host);
 			await expectStraightToView(chat, "/model", /Select model/);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"/thinking goes from the typed command straight to the thinking level selector (#6077)",
+		async () => {
+			const chat = await start(host);
+			await expectStraightToView(chat, "/thinking", /Thinking level/);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"/thinking with a level clears the prompt at once: it opens no view (#6077)",
+		async () => {
+			const chat = await start(host);
+			const typed = /❯ \/thinking off/;
+			chat.press("/thinking off");
+			await chat.settled(typed);
+			// Escape closes the level suggestions, so Enter submits the command rather than picking one.
+			chat.press(ESCAPE);
+			await chat.settled(typed);
+			const enter = await pressEnter(chat);
+			await chat.settled(/Thinking level: off/);
+			const [first] = await screens(chat, enter.from);
+			assert.ok(first, "nothing was drawn after Enter");
+			assert.doesNotMatch(first.text, typed, `the first frame after Enter:\n${first.text}`);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"/login goes from the typed command straight to the authentication methods (#6077)",
+		async () => {
+			const chat = await start(host);
+			await expectStraightToView(chat, "/login", /Select authentication method/);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"/fork goes from the typed command straight to the messages to fork from (#6077)",
+		async () => {
+			const chat = await start(host);
+			await finishOneTurn(chat);
+			await expectStraightToView(chat, "/fork", /Fork from message/);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"/fork with nothing to fork from shows the live prompt with its notice (#6077)",
+		async () => {
+			const chat = await start(host);
+			chat.press("/fork");
+			await chat.settled(/❯ \/fork/);
+			const enter = await pressEnter(chat);
+			const notice = /No messages to fork from/;
+			await chat.settled(notice);
+			const frames = (await screens(chat, enter.from)).filter((frame) => notice.test(frame.text));
+			assert.ok(frames.length > 0, "the notice was never drawn");
+			for (const frame of frames)
+				assert.doesNotMatch(frame.text, /❯ \/fork/, `a frame with the notice:\n${frame.text}`);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"/trust goes from the typed command straight to the trust choices (#6077)",
+		async () => {
+			const chat = await start(host);
+			await expectStraightToView(chat, "/trust", /Project trust/);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"a key that reaches /trust's view before its choices load shows the view live (#6077)",
+		async () => {
+			const chat = await start(host);
+			const typed = /❯ \/trust/;
+			chat.press("/trust");
+			await chat.settled(typed);
+			// Enter and Down arrive in one read, before any frame: the view keeps Down for its choices.
+			const from = await new Promise<number>((resolve) =>
+				setImmediate(() => {
+					const written = writes.filter((write) => write.terminal === chat.terminal).length;
+					chat.press("\r");
+					chat.press("\x1b[B");
+					resolve(written);
+				}),
+			);
+			await chat.settled(/Project trust/);
+			const [first] = await screens(chat, from);
+			assert.ok(first, "nothing was drawn after Enter");
+			assert.doesNotMatch(first.text, typed, `the first frame after Enter and Down:\n${first.text}`);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"/reload goes from the typed command straight to its progress notice (#6077)",
+		async () => {
+			const chat = await start(host);
+			await expectStraightToView(chat, "/reload", /Reloading keybindings/, /Reload(ed keybindings| failed)/);
 		},
 		INTERACTIVE_CASE_TIMEOUT_MS,
 	);
