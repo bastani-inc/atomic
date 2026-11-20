@@ -13,6 +13,7 @@ import {
 	getIntercomDirPath,
 } from "../../packages/intercom/broker/paths.js";
 import { spawnBrokerIfNeeded, upgradeBroker } from "../../packages/intercom/broker/spawn.js";
+import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { sleep } from "../helpers/runtime.ts";
 
 /** Far longer than an aborted wait may take, so a wait that ignores its signal fails the test instead of passing late. */
@@ -226,3 +227,29 @@ directSpawnTest("a disposed start stops waiting for a broker that never listens,
 	);
 	assert.equal(await waitUntilGone(brokerPid), true, "the broker is still running after the start settled");
 });
+
+directSpawnTest(
+	"a start waiting for another spawner's broker starts the broker itself when that spawner is cancelled",
+	async () => {
+		const markerPath = join(agentDir, "..", "cancelled-broker.pid");
+		const owner = new AbortController();
+		const first = spawnBrokerIfNeeded(
+			process.execPath,
+			neverReadyBrokerCommand(markerPath),
+			READY_TIMEOUT_MS,
+			undefined,
+			owner.signal,
+		);
+		while (!existsSync(markerPath)) await sleep(10);
+		cleanups.push(() => killIfAlive(Number(readFileSync(markerPath, "utf8"))));
+		cleanups.push(() => stopDetachedBroker(agentDir));
+		const waiting = spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], READY_TIMEOUT_MS);
+		await sleep(200);
+		owner.abort(new Error("session disposed"));
+		await assert.rejects(first);
+
+		await waiting;
+		assert.ok(existsSync(getBrokerSocketPath()) || process.platform === "win32", "no broker answers");
+	},
+	2 * READY_TIMEOUT_MS,
+);

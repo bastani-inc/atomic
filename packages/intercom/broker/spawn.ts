@@ -500,10 +500,38 @@ export async function spawnBrokerIfNeeded(
   signal?.throwIfAborted();
   const lockOwner = await acquireSpawnLockAsync();
   if (lockOwner === undefined) {
-    await waitForBroker(readyTimeoutMs, undefined, signal);
+    await waitForBrokerOrTakeOver(brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, signal);
     return;
   }
   await spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, true, signal);
+}
+
+/**
+ * Wait for the broker another spawner is starting. When that spawner lets go of the spawn lock before a broker answers
+ * (it was cancelled and stopped its broker, or it gave up) or its lock goes stale, start the broker here instead of
+ * waiting out the startup timeout for a broker nobody is starting any more.
+ */
+async function waitForBrokerOrTakeOver(
+  brokerCommand: string,
+  brokerArgs: string[],
+  readyTimeoutMs: number,
+  extensionDir: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const start = Date.now();
+  let interval = BROKER_POLL_INITIAL_INTERVAL_MS;
+  while (Date.now() - start < readyTimeoutMs) {
+    signal?.throwIfAborted();
+    if (await checkSocketConnectable()) return;
+    const lockOwner = await acquireSpawnLockAsync();
+    if (lockOwner !== undefined) {
+      await spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, true, signal);
+      return;
+    }
+    await sleep(interval, signal);
+    interval = Math.min(interval * 2, BROKER_POLL_MAX_INTERVAL_MS);
+  }
+  throw await brokerStartTimeoutError(readyTimeoutMs);
 }
 
 /**
@@ -1161,7 +1189,11 @@ export async function waitForBroker(
     await sleep(interval, signal);
     interval = Math.min(interval * 2, BROKER_POLL_MAX_INTERVAL_MS);
   }
-  throw new Error(
+  throw await brokerStartTimeoutError(timeoutMs);
+}
+
+async function brokerStartTimeoutError(timeoutMs: number): Promise<Error> {
+  return new Error(
     `Broker failed to start within timeout (${timeoutMs} ms)\n`
       + "The broker did not answer on its socket in time; it may still be starting, which a busy machine or an empty jiti "
       + "cache slows. Try again, or raise `brokerStartupTimeoutMs` in the Intercom config.json (default "
