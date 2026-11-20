@@ -5,35 +5,43 @@ description: "Seven ways to split work, keep track of the children, and verify w
 
 # Orchestration patterns
 
-Give each child one question or deliverable, its inputs, its edit permissions, and a check for success. Assign conflicting edits to separate worktrees. Let the parent make decisions and run checks; a child saying “done” isn't proof. Each example below is a **short codemode call in the parent chat**, not a script that stays alive until every phase finishes. On returning to the session, use `status` and the [saved receipts](/orchestration#what-survives-interruption) before starting more children.
+Give each subagent one concrete deliverable, explicit inputs, clear edit rules, and a verification check. Put conflicting edits in separate worktrees, and run final verification in the parent—a child claiming "done" is not proof.
+
+Each snippet below is a **short codemode call from the parent chat**, not a long-lived script. After any restart, reconcile `status` with [saved receipts](/orchestration#what-survives-interruption) before launching more children.
 
 ## Prompt anatomy
 
-A child should be able to act on its assignment without knowing the parent's whole plan. Give it the objective, the reason it matters, the inputs it can actually read, what it may change, and what is out of scope. Specify the deliverable: a verdict with file and line references, a named result file, or a tested commit. For example:
+Make every child assignment self-contained so it does not rely on the parent's full history:
 
-> Check the Windows install instructions in `docs/install.md` against the CLI flags in this checkout. Report each discrepancy as a command, its documented behavior, and the behavior you observed. Return “no discrepancies” if all the commands agree. Don't edit files or install software.
+- **Objective & why it matters** — what decision or change depends on the output.
+- **Inputs & permissions** — exact files/paths to read, what may be edited, and what is out of scope.
+- **Deliverable** — verdict with `file:line` citations, output file path, or tested commit.
+
+Example prompt:
+
+> Check the Windows install instructions in `docs/install.md` against the CLI flags in this checkout. Report each discrepancy as a command, its documented behavior, and the behavior you observed. Return "no discrepancies" if all commands agree. Don't edit files or install software.
 
 ### Done criteria
 
-State what must be true of the result, not just what the worker should attempt. For a fix, name the changed behavior, a nearby behavior that must stay unchanged, and the checks that demonstrate both. For a review, decide how to tell “checked and found nothing” from “couldn't check.” Have the parent inspect the output or rerun a check against the same candidate before using it. See [Verification and evidence](/verification) for repeatable scenarios and reporting a gap.
+Specify observable outcomes rather than effort:
+- For fixes: name the changed behavior, adjacent behavior that must remain unchanged, and checks proving both.
+- For reviews: distinguish "checked and found nothing" from "could not verify." Re-run key checks in the parent before acting on results. See [Verification and evidence](/verification).
 
 ### Stop conditions
 
-Agree when **not** to take the next step: an attempt limit, a missing prerequisite, contradictory inputs, or an action outside the user's authorization. If a repair would change a public API, migrate data, or publish something the user didn't request, stop and ask. If a check fails within the agreed scope, give the next attempt the observed failure rather than a broader assignment.
+Define upfront when to halt: an attempt cap, missing prerequisite, contradictory inputs, or actions needing user approval (API breaks, data migrations, publishing). On a failed check within scope, pass the exact observed failure to the next attempt rather than broadening the prompt.
 
 ## Design checklist
 
-Before launching a batch, check the few decisions that would change how you run it:
-
-- **Fit:** Is the result clear? Would a single direct check answer the question more cheaply than delegation?
-- **Assignments:** Which tasks are independent? Give each writer a distinct worktree or set of files; launch a dependent task only after its prerequisite is verified.
-- **Handoffs:** What input or artifact does each child need? Name who produces it, where to find it, and how the parent will validate its format. Pass file paths instead of entire transcripts.
-- **Recovery:** Record child IDs, the candidate revision, and the next check. On restart, reconcile them with current task state before repeating an external action.
-- **Acceptance:** Which observable result means success? What bounds repairs or requires a human decision? Keep permission to publish separate from permission to implement.
+- **Fit:** Would one direct command answer this faster than delegation?
+- **Isolation:** Give each writer a distinct worktree or disjoint files; launch dependent tasks only after prerequisites pass.
+- **Handoffs:** Pass file paths and output schemas rather than raw transcripts.
+- **Recovery:** Store child IDs, target commits, and next checks so restarts reconcile before re-running side effects.
+- **Approval:** Keep permission to publish or merge separate from permission to implement.
 
 ## Classify-and-act
 
-Use this when the next action depends on the kind of input. For example, have a read-only child classify a report as `bug`, `docs`, or `unclear`. Save its receipt. After its notice, validate the label before dispatching. In this example the parent has saved the reviewed label and report:
+Triage input with a read-only child, validate the returned label in the parent, then dispatch the right specialist:
 
 ```js
 const { label, report } = load("triage");
@@ -43,92 +51,111 @@ store("triage:action", r.tasks);
 return r.tasks;
 ```
 
-On recovery, check for an existing action child before launching another. Verify the fix against the original report, not just the classification.
+On recovery, check `status` for an existing action child before launching another, and verify the fix against the original report.
 
 ## Fan-out-and-synthesize
 
-Split a broad review into independent questions. Use one batch so the parent can track which results belong together:
+Split a broad review into one parallel batch so related results stay grouped:
 
 ```js
-const r = await tools.subagent({ group: true, tasks: ["Linux", "Windows"].map(platform => ({
-  agent: "codebase-analyzer", task: `Check ${platform} installation commands. Return evidence; don't edit.`
-})) });
+const r = await tools.subagent({
+  group: true,
+  tasks: ["Linux", "Windows"].map((platform) => ({
+    agent: "codebase-analyzer",
+    task: `Check ${platform} installation commands. Return evidence; don't edit.`,
+  })),
+});
 store("platforms", r.tasks);
 return r.tasks;
 ```
 
-Join the results in a later turn, when each required child has finished or failed. Reconcile contradictions against the source. After a restart, recover missing results by task ID, not by repeating all the reviews.
+Synthesize only after every required child settles, reconciling contradictions against source code. On restart, recover results by task ID instead of repeating the whole batch.
 
 ## Adversarial verification
 
-Use a second perspective when a plausible answer could still be wrong. Give a fresh read-only reviewer the acceptance criteria and the candidate, not the author's verdict:
+Give a fresh read-only child the acceptance criteria and candidate—not the author's conclusion—and ask for a counterexample:
 
 ```js
-const r = await tools.subagent({ agent: "codebase-analyzer", context: "fresh",
-  task: "Find a counterexample to the proposed date formatter in src/date.ts. Give the input and expected output; don't edit." });
+const r = await tools.subagent({
+  agent: "codebase-analyzer",
+  context: "fresh",
+  task: "Find a counterexample to the proposed date formatter in src/date.ts. Give the input and expected output; don't edit.",
+});
 store("date:review", r.tasks);
 return r.tasks;
 ```
 
-Run the relevant test in the parent, check the tool's actual exit code, and send an observed failure back for repair. After interruption, check that the reviewed revision still matches. If using several reviewers, have each record an independent verdict before one bounded round of exchanging evidence via Intercom. A majority vote does not invalidate a reproducible counterexample. For an interface, [exercise the real UI](/computer-use) rather than accepting a screenshot of a different environment.
+Verify reported failures in the parent (checking real exit codes) before requesting repairs. With multiple reviewers, collect independent verdicts first, then allow one bounded Intercom debate—a reproducible counterexample beats a majority vote. For UIs, [exercise the real interface](/computer-use).
 
 ## Generate-and-filter
 
-When several answers may work, ask children for concrete candidates and apply the same filter to all. For example, collect candidate date strings with the batch below:
+Ask children for concrete candidates, then filter all of them with one deterministic check in codemode:
 
 ```js
-const r = await tools.subagent({ tasks: ["year boundary", "leap day"].map(topic => ({
-  agent: "worker", task: `Return three distinct dates around a ${topic} as a JSON string array. Don't edit files.`
-})) });
+const r = await tools.subagent({
+  tasks: ["year boundary", "leap day"].map((topic) => ({
+    agent: "worker",
+    task: `Return three distinct dates around a ${topic} as a JSON string array. Don't edit files.`,
+  })),
+});
 store("dates:generators", r.tasks);
 return r.tasks;
 ```
 
-Recover each generator's output from its notice or task. Parse it as data, reject invalid arrays, remove duplicates, and keep only dates that round-trip through the actual formatter. “None passed” is a valid outcome.
+Parse each result as data, drop malformed or duplicate entries, and keep only values passing the real check ("none passed" is valid).
 
 ## Tournament
 
-Use this to choose between working alternatives. Fix a scoring rule, fixtures, and tie-breaker first. Put competing edits in different worktrees:
+Compare competing approaches on identical fixtures with pre-agreed scoring and tie-breaking rules, isolating edits in named worktrees:
 
 ```js
-const r = await tools.subagent({ tasks: ["lookup-table", "parser"].map(strategy => ({
-  agent: "worker", task: `Implement the ${strategy} approach on your own branch; return the commit and test command.`,
-  worktree: { branch: `compare/${strategy}` }
-})) });
+const r = await tools.subagent({
+  tasks: ["lookup-table", "parser"].map((strategy) => ({
+    agent: "worker",
+    task: `Implement the ${strategy} approach on your own branch; return the commit and test command.`,
+    worktree: { branch: `compare/${strategy}` },
+  })),
+});
 store("candidates:round1", r.tasks);
 return r.tasks;
 ```
 
-Compare the exact commits on the same fixtures, advance winners, and repeat only as many rounds as agreed. Keep scores and commit IDs with the round number so resuming can't advance a candidate twice. Do not select or merge a winner that fails a required check.
+Record scores, commit SHAs, and round numbers so restarts never double-advance a candidate. Never pick a winner that fails a required check.
 
 ## Loop-until-done
 
-Use a bounded loop for “fix until green.” Have the parent run the project's agreed check between attempts. For a project whose check is `npm test`:
+Run the project's verification command in the parent between bounded repair rounds:
 
 ```js
 const check = await tools.bash({ command: "npm test" });
 if (check.exit_code === 0) return "Passed";
 const round = load("repair:round") ?? 0;
 if (round >= 3) return "Still failing after three repair attempts.";
-const r = await tools.subagent({ agent: "debugger", task: `Repair the test failure; don't suppress the test.\n${check.output.slice(-2000)}` });
+const r = await tools.subagent({
+  agent: "debugger",
+  task: `Repair the test failure; don't suppress the test.\n${check.output.slice(-2000)}`,
+});
 store("repair:round", round + 1);
 store("repair:last", r.tasks);
 return r.tasks;
 ```
 
-Run this only after the preceding child finishes. Stop on refusal, a missing prerequisite, or a request for approval. On recovery, inspect the last receipt and the current checkout, then rerun the check before spending another round.
+Run only after the previous child settles; stop on refusal, missing prerequisites, or approval gates. On restart, inspect the checkout and rerun the check before spending another round.
 
 ## Stacked slices
 
-When work really is ordered, start the next slice from the verified result of the previous one. For example, approve an API change on `feature/api` before launching a CLI worker. Give it a named branch based on that exact commit:
+Start each dependent slice from the exact verified commit of the previous slice:
 
 ```js
 const apiCommit = load("verified-api-commit");
 if (!apiCommit) return "Verify the API slice and record its commit first.";
-const r = await tools.subagent({ agent: "worker", worktree: { branch: "feature/cli", base: apiCommit },
-  task: `Wire the CLI to the API at ${apiCommit}. Add a CLI test, run it, and return the commit.` });
+const r = await tools.subagent({
+  agent: "worker",
+  worktree: { branch: "feature/cli", base: apiCommit },
+  task: `Wire the CLI to the API at ${apiCommit}. Add a CLI test, run it, and return the commit.`,
+});
 store("cli-slice", r.tasks);
 return r.tasks;
 ```
 
-Verify the dependent slice against its base and run the combined check on the final revision. On restart, inspect the named branch and the saved child's state before retrying. Independent slices can run together instead.
+Verify each slice against its base and run full integration checks at the tip. Run independent slices in parallel instead.

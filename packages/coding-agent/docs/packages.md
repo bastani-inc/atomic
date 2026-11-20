@@ -3,105 +3,68 @@ title: "Atomic packages"
 description: "Install, manage, and share Atomic packages that bundle extensions, skills, subagents, prompt templates, themes, MCP servers, and storage adapters."
 ---
 
-> Atomic can help you create packages. Ask it to bundle your extensions, skills, prompt templates, or themes.
-
 # Atomic Packages
 
-Atomic packages bundle extensions, skills, [subagents](/packages/authoring#subagents), prompt templates, themes, MCP servers, and [storage adapters](/storage#adapters-from-atomic-packages) so you can share them through npm or git. Declare resources in `package.json` under the `atomic` key, or use conventional directories.
+Atomic packages bundle extensions, skills, [subagents](/packages/authoring#subagents), prompt templates, themes, MCP servers, and [storage adapters](/storage#adapters-from-atomic-packages) for distribution over npm, git, or local paths. Declare resources under the `atomic` key in `package.json`, or use convention directories.
+
+> Tip: Ask Atomic directly to bundle your extensions, skills, prompts, or themes into a package.
 
 ## Where to go next
 
-Read this page to install and manage packages, then continue:
+- [Creating packages](/packages/authoring) — package manifest, subagents, MCP servers, storage adapters, structure, and dependencies.
+- [Package reference](/packages/reference) — per-package filtering, scope precedence, and deduplication.
 
-- [Creating packages](/packages/authoring) — create a package, lay out its structure, and declare dependencies.
-- [Package reference](/packages/reference) — filtering, scope, and deduplication contracts.
-
-## Table of Contents
-
-- [Atomic Packages](#atomic-packages)
-  - [Table of Contents](#table-of-contents)
-  - [Install and Manage](#install-and-manage)
-  - [Package Sources](#package-sources)
-    - [npm](#npm)
-    - [git](#git)
-    - [Local Paths](#local-paths)
-  - [Creating an Atomic Package](/packages/authoring#creating-an-atomic-package)
-    - [Gallery Metadata](/packages/authoring#gallery-metadata)
-    - [Subagents](/packages/authoring#subagents)
-    - [MCP Servers](/packages/authoring#mcp-servers)
-    - [Storage Adapters](/packages/authoring#storage-adapters)
-  - [Package Structure](/packages/authoring#package-structure)
-    - [Convention Directories](/packages/authoring#convention-directories)
-  - [Dependencies](/packages/authoring#dependencies)
-  - [Package Filtering](/packages/reference#package-filtering)
-  - [Enable and Disable Resources](#enable-and-disable-resources)
-  - [Scope and Deduplication](/packages/reference#scope-and-deduplication)
+<a id="table-of-contents" />
 
 ## Install and Manage
 
-> **Security:** Atomic packages run with full system access. Extensions execute arbitrary code, and skills can instruct the model to perform any action including running executables. Review source code before installing third-party packages.
+> **Security:** Atomic packages run with full system access—extensions execute arbitrary code and skills instruct the agent. Review source code before installing third-party packages.
 
 ```bash
 atomic install npm:@foo/bar@1.0.0
 atomic install git:github.com/user/repo@v1
-atomic install https://github.com/user/repo  # raw URLs work too
+atomic install https://github.com/user/repo        # Raw URLs work too
 atomic install /absolute/path/to/package
 atomic install ./relative/path/to/package
 
-atomic remove npm:@foo/bar
-atomic list                     # show installed packages from settings
-atomic update                   # update Atomic only
-atomic update --all             # update Atomic, update packages, and reconcile pinned git refs
-atomic update --extensions      # update packages and reconcile pinned git refs only
-atomic update --models          # force-refresh authenticated provider model catalogs
-atomic update --self            # update Atomic only
-atomic update --self --force    # reinstall Atomic even if current
-atomic update npm:@foo/bar      # update one package
-atomic update --extension npm:@foo/bar
+atomic remove npm:@foo/bar                         # Alias: atomic uninstall
+atomic list                                        # Show packages configured in settings
+atomic update                                      # Update Atomic CLI only
+atomic update --all                                # Update Atomic + packages + reconcile git refs
+atomic update --extensions                         # Update packages + reconcile git refs only
+atomic update --models                             # Force-refresh authenticated model catalogs
+atomic update --self                               # Update Atomic CLI only
+atomic update --self --force                       # Reinstall Atomic even if current
+atomic update npm:@foo/bar                         # Update one package (or --extension <src>)
 ```
 
-Package updates list each package that changed, with its npm version or git commit, for example `npm:@foo/bar 1.2.0 -> 1.3.0`. When nothing changed they print `Packages are already up to date`; when a warning was printed instead, for example because npm reinstalled an older version from stale registry metadata, they say that no packages were updated. In offline mode they print that package updates were skipped.
+**Install and update behavior:**
+- **Global vs. project scope:** `install` and `remove` edit `~/.atomic/agent/settings.json` by default. Pass `-l` to write to `.atomic/settings.json` (legacy `.pi/settings.json` is also read). Missing project packages install automatically on startup once the project is trusted.
+- **Update output:** Lists each updated npm version or git commit (`npm:@foo/bar 1.2.0 -> 1.3.0`), prints `Packages are already up to date` when nothing changed, notes warnings when no package upgraded, and reports skipped updates in offline mode.
+- **Self-update safety:** Installs the exact advertised version (showing any release note first) and only modifies installations managed and writable by the detected global package manager; otherwise prints the manual command. To uninstall Atomic itself, see [Uninstall](/getting-started/installation#uninstall).
+- **Resilience & concurrency:** Startup install failures (such as offline registries) warn with the `atomic remove` command, skip that package's resources, and retry next start or `/reload` (`atomic install` / `atomic update --extensions` still exit non-zero). Concurrent installs serialize per package, interrupted git clones re-clone on retry, and `atomic remove` also cleans orphaned directories.
 
-These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/getting-started/installation#uninstall).
-
-Self-update installs an exact advertised package/version, so it cannot drift to a newer registry release during installation. Atomic shows any release note supplied by the update service before installing.
-
-Atomic updates only installations it can verify are writable and managed by the detected global package manager. Otherwise, follow the manual command it prints.
-
-By default, `install` and `remove` write to user settings (`~/.atomic/agent/settings.json`). Use `-l` to write to project settings (`.atomic/settings.json`; legacy `.pi/settings.json` is also read) instead. Project settings can be shared with your team, and Atomic installs any missing packages automatically on startup after the project is trusted.
-
-If a configured package fails to install at startup, for example because npm cannot reach the registry, Atomic warns about it, skips that package's resources, and keeps running. The warning names the `atomic remove` command that drops the package from settings. Atomic tries to install it again on the next start or `/reload`. `atomic install` and `atomic update --extensions` still report the failure and exit non-zero.
-
-Installs can run at the same time, for example several sessions starting together: installs of one package wait for each other, and every installed package stays in settings. If an install was interrupted, run `atomic install` or `atomic update --extensions` again; a git package left incomplete is cloned again. `atomic remove` also deletes an install directory left behind for a package that is not in your settings.
-
-To try a package without installing it, use `--extension` or `-e`. This installs to a temporary directory for the current run only:
+**Try a package for one run (`-e` / `--extension`):**
 
 ```bash
 atomic -e npm:@foo/bar
 atomic -e git:github.com/user/repo
 ```
 
-Atomic caches `-e` packages in an `extensions` directory that only the current user owns and can access: under `$XDG_RUNTIME_DIR/atomic` when that is set, else under `cache/tmp` in the agent directory, else under `atomic-<uid>` in the system temporary directory. A candidate directory that is a symlink, owned by another account, or open to other accounts is not used and checks them on every start and `/reload`. An npm package is reinstalled when the registry has a newer version that matches the specification. A version pinned to an exact number, such as `@1.2.3`, is not checked. A git package is fetched and reset to the remote branch or ref. A ref that is a commit hash already checked out is not fetched. If the check fails or offline mode is on, Atomic loads the cached copy.
-
-For local directories, `-e <dir>` also borrows project-local Atomic resources under `<dir>/.atomic`, legacy `<dir>/.pi`, and `<dir>/.agents/skills` when present. Because borrowed extensions can execute code, Atomic resolves trust for that extension source before loading those borrowed project-local resources.
+`-e` installs into a private user-owned cache (`$XDG_RUNTIME_DIR/atomic/extensions`, else `<agentDir>/cache/tmp/extensions`, else `<tmpdir>/atomic-<uid>/extensions`; symlinks or shared/other-owned dirs are refused). Unpinned npm specs and non-commit git refs refresh on start and `/reload` (falling back to cache offline or on error); exact `@1.2.3` npm pins and checked-out git commit hashes are not re-fetched. Local `-e <dir>` paths can also load `<dir>/.atomic`, `<dir>/.pi`, and `<dir>/.agents/skills` after resolving trust for that directory.
 
 ## Package Sources
 
-Atomic accepts three source types in settings and `atomic install`.
-
 ### npm
 
-```
+```text
 npm:@scope/pkg@1.2.3
 npm:pkg
 ```
 
-- Versioned specs are pinned and skipped by package updates (`atomic update --extensions`, `atomic update --all`).
-- User installs use the configured npm-compatible package-manager command (npm by default) and resolve from the managed Atomic npm area.
-- Project installs go under `.atomic/npm/` (legacy `.pi/npm/` remains a compatibility fallback).
-- Set `npmCommand` in `settings.json` to pin npm package lookup and install operations to a specific wrapper command such as `mise` or `asdf`.
-
-Example:
+- Pinned versions (`@1.2.3`) are skipped by `atomic update --extensions` and `--all`.
+- Global installs use your npm command; project installs (`-l`) install under `.atomic/npm/` (legacy `.pi/npm/` fallback).
+- Override the npm executable with `npmCommand` in `settings.json` when using version managers such as `mise` or `asdf`:
 
 ```json
 {
@@ -111,78 +74,52 @@ Example:
 
 ### git
 
-```
+```text
 git:github.com/user/repo@v1
 git:git@github.com:user/repo@v1
 https://github.com/user/repo@v1
 ssh://git@github.com/user/repo@v1
 ```
 
-- Without `git:` prefix, only protocol URLs are accepted (`https://`, `http://`, `ssh://`, `git://`).
-- With `git:` prefix, shorthand formats are accepted, including `github.com/user/repo` and `git@github.com:user/repo`.
-- HTTPS and SSH URLs are both supported.
-- SSH URLs use your configured SSH keys automatically (respects `~/.ssh/config`).
-- For non-interactive runs (for example CI), you can set `GIT_TERMINAL_PROMPT=0` to disable credential prompts and set `GIT_SSH_COMMAND` (for example `ssh -o BatchMode=yes -o ConnectTimeout=5`) to fail fast.
-- Refs are pinned tags or commits. `atomic update --extensions` and `atomic update --all` do not move them to newer refs, but they do reconcile an existing clone to the configured ref.
-- Use `atomic install git:host/user/repo@new-ref` to update settings and move an existing package to a new pinned ref.
-- Cloned to `~/.atomic/agent/git/<host>/<path>` (global) or `.atomic/git/<host>/<path>` (project; legacy `.pi/git/` remains a compatibility fallback).
-- When reconciliation changes the checkout, Atomic resets and cleans the clone, then runs the configured npm-compatible install command if `package.json` exists.
+- Bare protocol URLs (`https://`, `http://`, `ssh://`, `git://`) work directly; shorthand (`github.com/user/repo`, `git@github.com:user/repo`) requires the `git:` prefix.
+- SSH uses your configured keys and `~/.ssh/config`. For CI/non-interactive use, set `GIT_TERMINAL_PROMPT=0` and `GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5"`.
+- Cloned to `~/.atomic/agent/git/<host>/<path>` (global) or `.atomic/git/<host>/<path>` (project; legacy `.pi/git/` fallback).
+- `@ref` pins a tag or commit: `atomic update --extensions` / `--all` reconciles the clone to that ref (resetting, cleaning, and re-running npm install if `package.json` exists) without advancing it. Move a pin with `atomic install git:host/user/repo@new-ref`.
 
-**SSH examples:**
 ```bash
-# git@host:path shorthand (requires git: prefix)
 atomic install git:git@github.com:user/repo
-
-# ssh:// protocol format
 atomic install ssh://git@github.com/user/repo
-
-# With version ref
 atomic install git:git@github.com:user/repo@v1.0.0
 ```
 
 ### Local Paths
 
-```
+```text
 /absolute/path/to/package
 ./relative/path/to/package
 ```
 
-Local paths point to files or directories on disk and are added to settings without copying. Relative paths are resolved against the settings file they appear in. If the path is a file, it loads as a single extension. If it is a directory, Atomic loads resources using package rules. Temporary local directories supplied with `-e` may also expose `.atomic`/`.pi` project-local resources and `.agents/skills` after the extension source is trusted.
-
-## Creating an Atomic Package
-
-Moved to [Creating packages](/packages/authoring#creating-an-atomic-package).
-
-### Gallery Metadata
-
-Moved to [Creating packages](/packages/authoring#gallery-metadata).
-
-## Package Structure
-
-Moved to [Creating packages](/packages/authoring#package-structure).
-
-### Convention Directories
-
-Moved to [Creating packages](/packages/authoring#convention-directories).
-
-## Dependencies
-
-Moved to [Creating packages](/packages/authoring#dependencies).
-
-## Package Filtering
-
-Moved to [Package reference](/packages/reference#package-filtering).
+Added to settings in place without copying (relative paths resolve from the settings file). A file loads as a single extension; a directory loads as a package.
 
 ## Enable and Disable Resources
 
-Use `atomic config` to enable or disable extensions, skills, prompt templates, and themes. It starts in global settings (`~/.atomic/agent/settings.json`); press Tab to switch global/project scope. Use `atomic config -l` to start in project overrides (`.atomic/settings.json`) with inherited global resources dimmed.
+Run `atomic config` to toggle extensions, skills, prompt templates, and themes interactively:
 
-`atomic config` does not list package subagents. To choose which of a package's subagents load, use its `agents` [filter](/packages/reference#package-filtering).
+- Opens global settings (`~/.atomic/agent/settings.json`); press `Tab` to switch between global and project scope.
+- Run `atomic config -l` to open project overrides (`.atomic/settings.json`) with inherited global entries dimmed.
+- Package subagents are not listed in `atomic config`—filter them per package with `agents` in settings ([Package filtering](/packages/reference#package-filtering)).
+- Toggle built-in inline extensions (`llama.cpp`, `codemode`, `tool_search`) using `builtin:<name>` entries rather than filesystem paths ([Built-in extension resources](/extensions#built-in-extension-resources)).
+- If an interactive session crashes with an uncaught error whose stack crosses a loaded extension, Atomic names the extension in the exit output and suggests `atomic config` or `atomic -ne` to isolate it.
 
-For Atomic's inline llama.cpp, codemode, and tool-search extensions, use the symbolic `builtin:<name>` resources in extension settings rather than an installation path. See [built-in extension resources](/extensions#built-in-extension-resources) for exclusions, explicit loading, and replacement diagnostics. These are not npm/git package sources.
+<a id="creating-an-atomic-package" />
+<a id="gallery-metadata" />
+<a id="package-structure" />
+<a id="convention-directories" />
+<a id="dependencies" />
+<a id="package-filtering" />
+<a id="scope-and-deduplication" />
 
-When an uncaught exception or a fatal runtime error ends an interactive session, Atomic checks the crash stack for frames that belong to loaded extensions and names the matching extension packages or files in the exit message, suggesting `atomic config` to disable them or `atomic -ne` to confirm the crash reproduces without optional extensions.
+## Authoring and reference
 
-## Scope and Deduplication
-
-Moved to [Package reference](/packages/reference#scope-and-deduplication).
+- [Creating an Atomic Package](/packages/authoring#creating-an-atomic-package) — manifest fields, [subagents](/packages/authoring#subagents), [MCP servers](/packages/authoring#mcp-servers), [storage adapters](/packages/authoring#storage-adapters), [gallery metadata](/packages/authoring#gallery-metadata), [convention directories](/packages/authoring#convention-directories), and [dependencies](/packages/authoring#dependencies).
+- [Package reference](/packages/reference) — [package filtering](/packages/reference#package-filtering) and [scope and deduplication](/packages/reference#scope-and-deduplication).
