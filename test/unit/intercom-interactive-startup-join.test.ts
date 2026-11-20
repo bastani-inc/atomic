@@ -308,6 +308,21 @@ describe("a session whose folder stays untrusted", () => {
 			await prompted.shutdown(promptedCtx);
 			vi.restoreAllMocks();
 		}
+		const early = intercomSession();
+		const earlyCtx = sessionContext({ mode: "tui", isProjectTrusted: () => false }, []);
+		try {
+			await early.start(earlyCtx);
+			await early.firstTurn(earlyCtx);
+			await elapse(5_000);
+			assert.equal(
+				early.registrations.length,
+				1,
+				"a first prompt sent before the first attempt still joins at once",
+			);
+		} finally {
+			await early.shutdown(earlyCtx);
+			vi.restoreAllMocks();
+		}
 		const idle = intercomSession();
 		const idleCtx = sessionContext({ mode: "tui", isProjectTrusted: () => false }, []);
 		try {

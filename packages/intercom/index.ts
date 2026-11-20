@@ -529,6 +529,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		generation: number;
 		timer: ReturnType<typeof setTimeout> | null;
 		waitingForTrust: boolean;
+		/** The session's first turn has started, so its folder's trust is decided and no longer holds the join back. */
+		settled: boolean;
 	};
 	let startupJoin: StartupJoin | null = null;
 	function cancelStartupJoin(): void {
@@ -566,14 +568,14 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		startupSettled = false,
 	): void {
 		cancelStartupJoin();
-		const join: StartupJoin = { lease, generation, timer: null, waitingForTrust: false };
+		const join: StartupJoin = { lease, generation, timer: null, waitingForTrust: false, settled: startupSettled };
 		const current = () =>
 			startupJoin === join && activeLease === lease && !lease.retired && sessionSnapshot?.generation === generation;
 		startupJoin = join;
 		join.timer = setTimeout(() => {
 			join.timer = null;
 			if (!current()) return;
-			if (!startupSettled && !projectTrusted(ctx)) {
+			if (!join.settled && !projectTrusted(ctx)) {
 				if (attempt < STARTUP_JOIN_RETRIES) {
 					scheduleStartupJoin(ctx, lease, generation, attempt + 1);
 					if (startupJoin) startupJoin.waitingForTrust = true;
@@ -587,7 +589,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				() => {
 					if (!current()) return;
 					if (attempt >= STARTUP_JOIN_RETRIES) startupJoin = null;
-					else scheduleStartupJoin(ctx, lease, generation, attempt + 1, startupSettled);
+					else scheduleStartupJoin(ctx, lease, generation, attempt + 1, join.settled);
 				},
 			);
 		}, attempt === 0 ? STARTUP_JOIN_DELAY_MS : reconnectDelayMs(attempt - 1));
@@ -672,9 +674,10 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	});
 	pi.on("agent_start", async (event, ctx) => {
 		if (activeLease.retired) return;
-		const waiting = startupJoin?.waitingForTrust === true ? startupJoin : null;
-		if (waiting?.lease === activeLease && sessionSnapshot?.generation === waiting.generation) {
-			scheduleStartupJoin(sessionSnapshot.ctx, waiting.lease, waiting.generation, 0, true);
+		const pending = startupJoin;
+		if (pending && !pending.settled && pending.lease === activeLease && sessionSnapshot?.generation === pending.generation) {
+			if (pending.waitingForTrust) scheduleStartupJoin(sessionSnapshot.ctx, pending.lease, pending.generation, 0, true);
+			else pending.settled = true;
 		}
 		activeLifecycle.agentStart = { event, ctx };
 		activeLifecycle.activeTools.clear();
