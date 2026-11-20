@@ -280,14 +280,25 @@ export function currentHoldScope(): HoldScope | undefined {
 }
 
 /**
+ * Whether a call made now on a wrapped connection to `file` comes in behind a transaction: a scoped hold is open or
+ * calls wait for their turn. Read when the call is made; one made once that is over runs as it always has, however
+ * busy the file was before.
+ */
+export function inBacklog(file: string): boolean {
+	const gate = registry.files.get(file);
+	return gate !== undefined && (scopedHoldOpen(gate) || gate.waiters.length > 0);
+}
+
+/**
  * The gate of `file` when another context holds it open: some hold is open, and none of the callbacks `scope` runs in
  * belongs to an open hold of it. A call made inside an open hold's own callback cannot wait for it, since the
- * transaction waits for the call: it runs at once, as it always has.
+ * transaction waits for the call: it runs at once, as it always has. A call made in the backlog of a transaction
+ * (`backlog`, see `inBacklog`) also takes its turn behind the calls queued before it, one per turn.
  */
-export function heldElsewhere(file: string, scope: HoldScope | undefined): FileGate | undefined {
+export function heldElsewhere(file: string, scope: HoldScope | undefined, backlog: boolean): FileGate | undefined {
 	const gate = registry.files.get(file);
-	// Calls still queued from the last transaction keep their place, and one runs per turn: a new one queues behind.
-	if (gate === undefined || (!scopedHoldOpen(gate) && gate.waiters.length === 0 && !gate.paced)) return undefined;
+	if (gate === undefined || (!scopedHoldOpen(gate) && gate.waiters.length === 0 && !(gate.paced && backlog)))
+		return undefined;
 	for (let inner = scope; inner !== undefined; inner = inner.outer) {
 		if (inner.hold.open && inner.hold.file === file) return undefined;
 	}

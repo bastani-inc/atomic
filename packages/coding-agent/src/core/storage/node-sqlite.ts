@@ -68,6 +68,7 @@ import {
 	type HoldScope,
 	heldElsewhere,
 	holdFile,
+	inBacklog,
 	readsOnly,
 	releaseHold,
 	runInHold,
@@ -1867,35 +1868,35 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	}
 
 	exec(sql: string): Promise<void> {
-		const scope = this.holdScope();
-		return this.enqueueStatement(() => this.besideHolds(scope, undefined, () => this.executor.exec(sql)));
+		const made = this.holdScope();
+		return this.enqueueStatement(() => this.besideHolds(made, undefined, () => this.executor.exec(sql)));
 	}
 
 	run(sql: string, ...params: readonly SqliteValue[]) {
 		const bound = snapshotParams(params);
-		const scope = this.holdScope();
-		return this.enqueueStatement(() => this.besideHolds(scope, sql, () => this.executor.run(sql, ...bound), bound));
+		const made = this.holdScope();
+		return this.enqueueStatement(() => this.besideHolds(made, sql, () => this.executor.run(sql, ...bound), bound));
 	}
 
 	get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T | undefined> {
 		const bound = snapshotParams(params);
-		const scope = this.holdScope();
-		return this.enqueueStatement(() =>
-			this.besideHolds(scope, sql, () => this.executor.get<T>(sql, ...bound), bound),
-		);
+		const made = this.holdScope();
+		return this.enqueueStatement(() => this.besideHolds(made, sql, () => this.executor.get<T>(sql, ...bound), bound));
 	}
 
 	all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> {
 		const bound = snapshotParams(params);
-		const scope = this.holdScope();
-		return this.enqueueStatement(() =>
-			this.besideHolds(scope, sql, () => this.executor.all<T>(sql, ...bound), bound),
-		);
+		const made = this.holdScope();
+		return this.enqueueStatement(() => this.besideHolds(made, sql, () => this.executor.all<T>(sql, ...bound), bound));
 	}
 
-	/** The transaction callbacks a call to a connection on the calling thread is made in; see `besideHolds`. */
-	private holdScope(): HoldScope | undefined {
-		return this.fileGate?.role === "waits" ? currentHoldScope() : undefined;
+	/**
+	 * Where a call to a connection on the calling thread is made, read when it is made: the transaction callbacks it is
+	 * made in, and whether it comes in behind a transaction (see `inBacklog`); see `besideHolds`.
+	 */
+	private holdScope(): { readonly scope: HoldScope | undefined; readonly backlog: boolean } | undefined {
+		if (this.fileGate?.role !== "waits") return undefined;
+		return { scope: currentHoldScope(), backlog: inBacklog(this.fileGate.file) };
 	}
 
 	/**
@@ -1913,14 +1914,15 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * NUL) are refused before anything else, as `call` would at once.
 	 */
 	private besideHolds<T>(
-		scope: HoldScope | undefined,
+		made: { readonly scope: HoldScope | undefined; readonly backlog: boolean } | undefined,
 		statement: string | undefined,
 		call: () => Promise<T>,
 		params: readonly SqliteValue[] = [],
 	): Promise<T> {
-		if (this.fileGate?.role !== "waits" || !(this.connection instanceof CallerThreadConnection)) return call();
+		if (made === undefined || this.fileGate?.role !== "waits" || !(this.connection instanceof CallerThreadConnection))
+			return call();
 		const { file } = this.fileGate;
-		const gate = heldElsewhere(file, scope);
+		const gate = heldElsewhere(file, made.scope, made.backlog);
 		if (gate === undefined) return call();
 		if (params.some((value) => typeof value === "string" && value.includes("\0"))) return call();
 		const owner = this.connection;

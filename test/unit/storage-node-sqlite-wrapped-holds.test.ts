@@ -668,3 +668,28 @@ test("a wrapped connection opened inside a running threaded transaction's callba
 	assert.ok(waitedMs >= busyTimeoutMs - 5, `it failed after ${Math.round(waitedMs)} ms`);
 	assert.deepEqual(await values(threaded), ["before", "a"]);
 });
+
+test("wrapped calls made once the queue behind a threaded transaction is empty run without waiting for turns (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped } = await openWrapped(path);
+	let turn = 0;
+	let counting = true;
+	const count = () => {
+		turn++;
+		if (counting) setImmediate(count);
+	};
+	setImmediate(count);
+	const { committed } = await holdLock(threaded);
+	// One call queued behind the transaction; then, as a client that awaits each write, twenty more.
+	const turns: number[] = [];
+	const writes = wrapped.run("INSERT INTO items VALUES ('queued')").then(async () => {
+		for (let index = 0; index < 20; index++) {
+			await wrapped.run("INSERT INTO items VALUES (?)", `next${index}`);
+			turns.push(turn);
+		}
+	});
+	await Promise.all([committed, writes]);
+	counting = false;
+	assert.ok(new Set(turns).size <= 2, `the writes made after the queue emptied took ${new Set(turns).size} turns`);
+	assert.equal((await values(threaded)).length, 2 + 1 + 20);
+});
