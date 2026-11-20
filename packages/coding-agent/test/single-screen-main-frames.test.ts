@@ -8,6 +8,7 @@ import {
 	ESCAPE,
 	type MainChatTerminal,
 	OriginRecording,
+	RECORDED_ON_OTHER_PLATFORM,
 	startMainChat,
 } from "./helpers/main-chat-terminal.js";
 
@@ -28,7 +29,7 @@ afterEach(async () => {
 	while (chats.length > 0) await chats.pop()?.stop();
 });
 
-describe.each(["in-process", "isolated"] as const)(
+describe.skipIf(RECORDED_ON_OTHER_PLATFORM).each(["in-process", "isolated"] as const)(
 	"the main chat's frames with the single screen installed (%s host)",
 	(host) => {
 		test("typing, sending, steering, Alt+Up, Escape with a queue and the next turn draw origin/main's frames", async () => {

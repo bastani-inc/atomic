@@ -23,10 +23,20 @@ export const ALT_ENTER = "\x1b\r";
 export const ALT_UP = "\x1b[1;3A";
 export const ESCAPE = "\x1b";
 export const CTRL_C = "\x03";
+/**
+ * The frames were recorded on Linux. Windows draws other ones by design (its tool list adds powershell, its default
+ * keys differ: alt+q takes the queue back), so the frame comparisons run where they were recorded; the rig-level
+ * differential (single-screen-main-differential) runs everywhere.
+ */
+export const RECORDED_ON_OTHER_PLATFORM = process.platform === "win32";
 
-/** This checkout's root: the system prompt names its docs by absolute path. */
+/** This checkout's root, which a request's messages can name by absolute path. */
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url)).replace(/\/$/, "");
-const COLUMNS = 100;
+/**
+ * Below 80 columns the startup banner always stacks its text under the mark; wider, it puts it beside the mark only when
+ * the session's folder (a temp dir, its length varying by machine) fits.
+ */
+const COLUMNS = 79;
 const ROWS = 30;
 
 export interface Gate {
@@ -72,11 +82,14 @@ export function normalizedFrame(lines: readonly string[]): string[] {
 
 type FauxContext = Parameters<Extract<FauxResponseStep, (...args: never[]) => unknown>>[0];
 
-/** A request as the model receives it, with this checkout's root, temp dirs and tool call ids masked. */
+/**
+ * A request as the model receives it: its tools and every message, with this checkout's root, temp dirs and tool call
+ * ids masked. The system prompt is left out: it is built before the screen exists and names the machine (folders,
+ * shell, date); the harness's diff.sh compares whole request bodies, system prompt included, against an origin/main build.
+ */
 function requestDigest(context: FauxContext): string {
 	const masked = (text: string) => text.split(ROOT).join("<root>").split(tmpdir()).join("<tmp>");
 	const body = JSON.stringify({
-		system: masked(context.systemPrompt ?? ""),
 		tools: (context.tools ?? []).map((tool) => tool.name),
 		messages: context.messages.map((message) => ({
 			role: message.role,
@@ -164,12 +177,18 @@ export async function startMainChat(
 	// The working line's verb is the one random part of a frame; the glyph's animation the one that moves by itself.
 	const random = vi.spyOn(Math, "random").mockReturnValue(0);
 	stops.push(() => random.mockRestore());
-	const reducedMotion = process.env.ATOMIC_REDUCED_MOTION;
-	process.env.ATOMIC_REDUCED_MOTION = "1";
-	stops.push(() => {
-		if (reducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
-		else process.env.ATOMIC_REDUCED_MOTION = reducedMotion;
-	});
+	// Offline: no tool download (fd) notices land in the chat while it starts.
+	for (const [name, value] of [
+		["ATOMIC_REDUCED_MOTION", "1"],
+		["ATOMIC_OFFLINE", "1"],
+	] as const) {
+		const previous = process.env[name];
+		process.env[name] = value;
+		stops.push(() => {
+			if (previous === undefined) delete process.env[name];
+			else process.env[name] = previous;
+		});
+	}
 	const terminal = new VirtualTerminal(COLUMNS, ROWS);
 	const mode = new InteractiveMode(runtime, { terminal });
 	stops.push(() => mode.stop());

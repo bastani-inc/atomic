@@ -11,6 +11,7 @@ import {
 	ESCAPE,
 	type MainChatTerminal,
 	OriginRecording,
+	RECORDED_ON_OTHER_PLATFORM,
 	startMainChat,
 } from "./helpers/main-chat-terminal.js";
 
@@ -92,7 +93,7 @@ async function busy(chat: MainChatTerminal): Promise<void> {
 	await chat.settled(/esc to interrupt/);
 }
 
-describe.each(["in-process", "isolated"] as const)(
+describe.skipIf(RECORDED_ON_OTHER_PLATFORM).each(["in-process", "isolated"] as const)(
 	"main's late answers while a subagent is shown (%s host)",
 	(host) => {
 		test("Escape's queue comes back to main's prompt, not the shown subagent's, and main draws origin/main's frames", async () => {
