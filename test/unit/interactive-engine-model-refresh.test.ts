@@ -45,6 +45,7 @@ test("isolated host treats an engine-published extension model as configured aft
 		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
 		onGenerationEnded: () => () => {},
 		onInteractiveEngineMessage: () => () => {},
+		onQueuedDeliveryChange: () => () => {},
 		getState: async () => ({
 			thinkingLevel: "off" as const,
 			isStreaming: false,
@@ -134,6 +135,7 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
 		onGenerationEnded: () => () => {},
 		onInteractiveEngineMessage: () => () => {},
+		onQueuedDeliveryChange: () => () => {},
 		getState: async () => ({
 			thinkingLevel: "off" as const,
 			isStreaming: false,
@@ -208,6 +210,7 @@ test("isolated host synchronizes authoritative engine fallback state and clears 
 		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
 		onGenerationEnded: () => () => {},
 		onInteractiveEngineMessage: () => () => {},
+		onQueuedDeliveryChange: () => () => {},
 		getState: async () => state,
 		requestInternal: async () => ({ models: [model], scopedModels: [], customAuthProviders: [] }),
 		setModel: async () => model,
@@ -281,6 +284,7 @@ test("isolated explicit cycle clears fallback only for a changed model despite a
 		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
 		onGenerationEnded: () => () => {},
 		onInteractiveEngineMessage: () => () => {},
+		onQueuedDeliveryChange: () => () => {},
 		cycleModel: async () => {
 			if (behavior === "throw") throw new Error("remote cycle failed");
 			if (behavior === "null") return null;
@@ -366,6 +370,7 @@ async function selectDuringEngineResync(
 		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
 		onGenerationEnded: () => () => {},
 		onInteractiveEngineMessage: () => () => {},
+		onQueuedDeliveryChange: () => () => {},
 		getState: async () => {
 			snapshotTaken();
 			return { ...engine };
@@ -482,6 +487,7 @@ test("isolated session synchronization replaces each engine-selected session exa
 		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
 		onGenerationEnded: () => () => {},
 		onInteractiveEngineMessage: () => () => {},
+		onQueuedDeliveryChange: () => () => {},
 		getState: async () => ({
 			thinkingLevel: "off" as const,
 			isStreaming: false,
@@ -544,6 +550,7 @@ test("isolated queue pause reaches the engine before abort and resumes remotely"
 		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
 		onGenerationEnded: () => () => {},
 		onInteractiveEngineMessage: () => () => {},
+		onQueuedDeliveryChange: () => () => {},
 		getState: async () => ({
 			thinkingLevel: "off" as const,
 			isStreaming: true,
@@ -628,6 +635,7 @@ test("isolated runtime applies the RPC compaction reason during resync", async (
 		onEvent: () => () => {},
 		onGenerationEnded: () => () => {},
 		onInteractiveEngineMessage: () => () => {},
+		onQueuedDeliveryChange: () => () => {},
 		getState: async () => state,
 		requestInternal: async () => ({ models: [model], scopedModels: [], customAuthProviders: [] }),
 		getCommands: async () => [],
