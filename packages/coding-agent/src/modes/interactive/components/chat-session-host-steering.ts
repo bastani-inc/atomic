@@ -8,7 +8,7 @@ import { isChatSessionStreaming } from "./chat-session-host-runtime.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import type { ChatSessionSubmitMode } from "./chat-session-host-types.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
-import { keyDisplayText } from "./keybinding-hints.ts";
+import { keyDisplayText } from "./keybinding-hints.js";
 import { QueuedMessagesView, queuedMessageRows } from "./queued-messages-view.ts";
 
 /**

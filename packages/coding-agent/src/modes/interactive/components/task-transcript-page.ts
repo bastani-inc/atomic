@@ -44,7 +44,7 @@ import {
 	taskCursorsAround,
 } from "../../../core/tasks/task-view-source.js";
 import { noteSavedSeq } from "../../../core/tasks/transcript-origin.js";
-import { copyToClipboard } from "../../../utils/clipboard.ts";
+import { copyToClipboard } from "../../../utils/clipboard.js";
 import {
 	classifyChatCommand,
 	createSessionSkillAutocompleteProvider,
