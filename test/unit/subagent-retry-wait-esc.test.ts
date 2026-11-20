@@ -184,9 +184,11 @@ test(
 			() => environment,
 		);
 		try {
-			inspector.openChat(child.taskId, "main chat");
+			// Enter on the subagent's row of /tasks opens its chat (a host without the single screen).
+			inspector.open(child.taskId);
+			inspector.handleInput("\r");
 			await flush();
-			assert.match(plain(inspector.renderViewport(100, 24)), /← main chat · esc to pause/);
+			assert.match(plain(inspector.renderViewport(100, 24)), /← tasks · esc to pause/);
 
 			assert.equal(inspector.handleInput(ESC), true);
 			await assertInterruptedAndResumable(child);
@@ -215,12 +217,14 @@ test(
 			() => environment,
 		);
 		try {
-			inspector.openChat(child.taskId, "main chat");
+			// Enter on the subagent's row of /tasks opens its chat (a host without the single screen).
+			inspector.open(child.taskId);
+			inspector.handleInput("\r");
 			await flush();
 			const opened = plain(inspector.renderViewport(100, 24));
 			// The chat reads the wait from the subagent's session: its reason, attempt and countdown, and Esc cancels it.
 			assert.match(opened, /∀ Retrying · overloaded · attempt 1\/3 in (?:\d+m )?\d+s {3}esc cancel/);
-			assert.match(opened, /← main chat · esc to pause/);
+			assert.match(opened, /← tasks · esc to pause/);
 
 			assert.equal(inspector.handleInput(ESC), true);
 			await assertInterruptedAndResumable(child);
