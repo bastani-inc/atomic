@@ -440,7 +440,7 @@ describe("a running shell counts as active work", () => {
 	test("in a chat's task footer: a stopped subagent stays listed while a background shell runs", () => {
 		const plain = (lines: string[]) => lines.map((line) => line.replace(/\x1b\[[\d;:]*m/g, "").trimEnd());
 		const withShell = plain(renderTaskFooter([stoppedAgent(), runningShell()], 100));
-		assert.match(withShell[0] ?? "", /^ {2}◼ worker {2}stopped work/u);
+		assert.match(withShell[0] ?? "", /^ {2}◯ worker {2}stopped work/u);
 		assert.deepEqual(withShell.slice(1), ["  1 shell"]);
 		assert.deepEqual(renderTaskFooter([stoppedAgent()], 100), []);
 	});
