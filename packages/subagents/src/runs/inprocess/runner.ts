@@ -2534,7 +2534,7 @@ export class SubagentControlRuntime {
 			 * Esc in the child's chat: the typed messages still queued come back for the chat's editor, and an open run ends
 			 * as an interrupt ends it; the child waits, paused, for its next message.
 			 */
-			const pauseTurn = async (): Promise<QueuedTaskMessages> => {
+			const pauseTurn = async (): Promise<QueuedTaskMessages & { readonly warning?: string }> => {
 				if (termination !== undefined) return { steering: [], followUp: [] };
 				// Recorded with the hold, before the turn ends: a restart from here on restores the child paused.
 				const saved = reportTurnPaused(true);
@@ -2545,13 +2545,16 @@ export class SubagentControlRuntime {
 				const taken = open
 					? await endTurn(() => transcriptSession.pauseTurn())
 					: await transcriptSession.pauseTurn();
+				const queued = taken.typed ?? taken;
 				// The pause is shown once a restart would keep it: once its record is saved. One that cannot be saved is
-				// shown all the same, and a restart restores the child as one never paused.
+				// shown all the same, with a warning: a restart restores the child as one never paused.
 				if (saved !== undefined && !(await pauseRecordSaved(saved)))
-					console.warn(
-						`atomic-subagents: the pause of ${admitted.spec.agent.name} was not saved; a restart continues it`,
-					);
-				return taken.typed ?? taken;
+					return {
+						steering: queued.steering,
+						followUp: queued.followUp,
+						warning: `${admitted.spec.agent.name}'s pause was not saved: if Atomic restarts, it continues instead of staying paused.`,
+					};
+				return queued;
 			};
 			const settleInterruptedTurns = async (): Promise<void> => {
 				while (interruptedTurnSettlement !== undefined && termination === undefined) {
