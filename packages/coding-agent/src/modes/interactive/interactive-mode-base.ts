@@ -811,7 +811,7 @@ export class InteractiveModeBase {
 			onChanged: () => this.updateEditorBorderColor(),
 			initialThemeSetting: options.initialThemeSetting,
 		});
-		this.disposeInteractiveEngineHost = attachInteractiveEngineHost(
+		const disposeEngineHost = attachInteractiveEngineHost(
 			runtimeHost,
 			this.createExtensionUIContext(),
 			this.handleEngineDiagnostic.bind(this),
@@ -837,6 +837,13 @@ export class InteractiveModeBase {
 			this.keybindings,
 			(event) => this.programStatus.handleUIPrompt(event),
 		);
+		// Declared by the queueing mixin, which a host that never queues may not load.
+		const disposeSteeringRecovery =
+			typeof this.attachSteeringEngineRecovery === "function" ? this.attachSteeringEngineRecovery() : () => {};
+		this.disposeInteractiveEngineHost = () => {
+			disposeSteeringRecovery();
+			disposeEngineHost();
+		};
 	}
 
 	// Maximum total widget lines to prevent viewport overflow

@@ -4,7 +4,9 @@ import {
 	clearInteractiveEngineQueue,
 	getInteractiveEngineRemoteCommands,
 } from "../interactive-engine/extension-ui-bridge.ts";
+import { IsolatedInteractiveRuntime, type LostSubagentChatQueue } from "../interactive-engine/isolated-runtime.js";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
+import { combineQueuedMessagesForEditor } from "./chat-input-actions.ts";
 import { QueuedMessagesView, queuedMessageRows } from "./components/queued-messages-view.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { theme } from "./interactive-mode-deps.ts";
@@ -426,4 +428,107 @@ InteractiveModeBase.prototype.flushPendingBashComponents = function (this: Inter
 		this.chatContainer.addChild(component);
 	}
 	this.pendingBashComponents = [];
+};
+
+/** `count` queued message(s), with the verb agreeing. */
+function queuedMessagesPhrase(count: number): string {
+	return count === 1 ? "1 queued message" : `${count} queued messages`;
+}
+
+/** The notice the main chat shows when a lost engine's queued messages come back to its editor. */
+export function engineLossRestoredNotice(count: number): string {
+	return `Engine restarted; ${queuedMessagesPhrase(count)} ${count === 1 ? "wasn't" : "weren't"} sent and ${count === 1 ? "is" : "are"} back in the editor`;
+}
+
+/** The notice listing, in full and in order, what a subagent chat had queued when the engine was lost. */
+export function engineLossSubagentNotice(queue: LostSubagentChatQueue): string | undefined {
+	const messages = [...queue.steering, ...queue.followUp];
+	if (messages.length === 0) return undefined;
+	const verb = messages.length === 1 ? "wasn't" : "weren't";
+	return [
+		`Engine restarted; ${queuedMessagesPhrase(messages.length)} to ${queue.agent} ${verb} sent:`,
+		...messages,
+	].join("\n");
+}
+
+function textOfUserMessage(content: unknown): string | undefined {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return undefined;
+	return content
+		.flatMap((part: { type?: unknown; text?: unknown }) =>
+			part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+		)
+		.join("");
+}
+
+/** The user messages `messages` holds, as text. */
+function userMessageTexts(messages: readonly { readonly role: string; readonly content?: unknown }[]): string[] {
+	return messages.flatMap((message) => {
+		const text = message.role === "user" ? textOfUserMessage(message.content) : undefined;
+		return text === undefined ? [] : [text];
+	});
+}
+
+/** `after` without one copy of each text of `before`: what was added. */
+function withoutEach(after: readonly string[], before: readonly string[]): string[] {
+	const remaining = new Map<string, number>();
+	for (const text of before) remaining.set(text, (remaining.get(text) ?? 0) + 1);
+	return after.filter((text) => {
+		const count = remaining.get(text) ?? 0;
+		if (count === 0) return true;
+		remaining.set(text, count - 1);
+		return false;
+	});
+}
+
+/**
+ * An isolated engine that is lost and replaced takes its queue with it. The messages the main chat showed as queued
+ * come back to its editor, as Alt+Up would restore them, with a notice, unless the replacement's history shows the
+ * lost engine delivered them; those of the engine's own subagent chats, which went down with it, are shown in full in
+ * a notice per chat. Nothing is sent again. A deliberate replacement or stop changes nothing.
+ */
+InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: InteractiveModeBase): () => void {
+	const runtime = this.runtimeHost;
+	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
+	/** The user messages the chat knew when the engine was lost, while its replacement is pending. */
+	let knownAtLoss: string[] | undefined;
+	const stopEnded = runtime.onGenerationEnded((event) => {
+		const subagentQueues = runtime.takeSubagentChatQueues();
+		if (event.expected) return;
+		mainSteering(this).loseTarget();
+		runtime.discardLostQueue();
+		knownAtLoss ??= userMessageTexts(this.session.messages);
+		this.updatePendingMessagesDisplay();
+		for (const queue of subagentQueues) {
+			const notice = engineLossSubagentNotice(queue);
+			if (notice !== undefined) this.showWarning(notice);
+		}
+		this.ui.requestRender();
+	});
+	const stopRecovered = runtime.onEngineRecovered((replaced) => {
+		const known = knownAtLoss;
+		knownAtLoss = undefined;
+		if (known === undefined) return;
+		void (async () => {
+			let delivered: string[] = [];
+			if (replaced) {
+				try {
+					delivered = withoutEach(await runtime.engineUserMessages(), known);
+				} catch {
+					// The replacement could not say what it holds: give everything back, nothing is resent.
+				}
+			}
+			const messages = mainSteering(this).recoverTarget(delivered);
+			if (messages === undefined) return;
+			const editorText = this.editor.getExpandedText?.() ?? this.editor.getText();
+			this.editor.setText(combineQueuedMessagesForEditor(messages, editorText));
+			this.updatePendingMessagesDisplay();
+			this.showWarning(engineLossRestoredNotice(messages.length));
+			this.ui.requestRender();
+		})();
+	});
+	return () => {
+		stopEnded();
+		stopRecovered();
+	};
 };

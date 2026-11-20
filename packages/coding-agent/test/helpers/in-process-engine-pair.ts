@@ -2,13 +2,23 @@ import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import type { SessionManager } from "../../src/core/session-manager.js";
 import { serializeSessionMutation } from "../../src/core/session-mutation-queue.ts";
+import type {
+	InteractiveEngineGenerationEnded,
+	InteractiveEngineGenerationEndedListener,
+} from "../../src/modes/interactive-engine/engine-generation.ts";
 import { IsolatedInteractiveRuntime } from "../../src/modes/interactive-engine/isolated-runtime.ts";
+import {
+	type InteractiveEngineMessage,
+	parseInteractiveEngineMessage,
+	serializeInteractiveEngineMessage,
+} from "../../src/modes/interactive-engine/protocol.ts";
 import type { JsonAgentSessionEvent } from "../../src/modes/json-event.ts";
 import { toJsonEvent } from "../../src/modes/json-event.ts";
 import { RpcClientApi, type RpcCommandBody } from "../../src/modes/rpc/rpc-client-api.ts";
 import { createRpcCommandHandler } from "../../src/modes/rpc/rpc-command-handler.ts";
 import { assertRpcSuccess } from "../../src/modes/rpc/rpc-error-decoding.ts";
 import { createRpcErrorResponse } from "../../src/modes/rpc/rpc-responses.ts";
+import { asAcceptedRequestFailure, rpcTransportError } from "../../src/modes/rpc/rpc-transport-error.ts";
 import type { RpcCommand, RpcResponse } from "../../src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness, type HarnessOptions } from "../suite/harness.ts";
 
@@ -16,6 +26,9 @@ type EventListener = (event: JsonAgentSessionEvent) => void;
 
 interface PendingRequest {
 	resolve: (response: RpcResponse) => void;
+	reject: (error: Error) => void;
+	/** The engine's handler took the request, as `engine_request_accepted` tells a real host. */
+	accepted?: boolean;
 }
 
 class LaggedPipe<T> {
@@ -57,6 +70,12 @@ class LaggedPipe<T> {
 		for (const item of items) this.deliver(item);
 	}
 
+	/** Drop the held items and stop holding: a lost process's unread output never arrives. */
+	discardHeld(): void {
+		this.held = undefined;
+		this.holdWhen = undefined;
+	}
+
 	write(item: T): void {
 		this.writes += 1;
 		if (this.held === undefined && this.holdWhen?.(item)) {
@@ -84,6 +103,11 @@ class InProcessEngineClient extends RpcClientApi {
 	private readonly toEngine: LaggedPipe<RpcCommand>;
 	private readonly toHost: LaggedPipe<RpcResponse | JsonAgentSessionEvent>;
 	private readonly failures = new Map<RpcCommand["type"], { message: string; cause?: unknown }>();
+	private generation = 1;
+	/** Set from a crash until the replacement starts: the lost engine's output never reaches the host. */
+	private lost = false;
+	private readonly generationEndedListeners = new Set<InteractiveEngineGenerationEndedListener>();
+	private readonly engineMessageListeners = new Set<(message: InteractiveEngineMessage) => void>();
 	readonly commandsReceived: RpcCommand[] = [];
 	private handle: (command: RpcCommand) => Promise<RpcResponse | undefined> = async () => undefined;
 
@@ -91,7 +115,10 @@ class InProcessEngineClient extends RpcClientApi {
 		super();
 		this.toHost = new LaggedPipe((record) => this.receive(record), delays.toHostMs);
 		this.toEngine = new LaggedPipe((command) => {
+			if (this.lost) return;
 			this.commandsReceived.push(command);
+			const request = command.id === undefined ? undefined : this.pending.get(command.id);
+			if (request) request.accepted = true;
 			const failure = this.failures.get(command.type);
 			if (failure !== undefined) {
 				this.toHost.write(createRpcErrorResponse(command.id, command.type, failure.message, failure.cause));
@@ -131,6 +158,7 @@ class InProcessEngineClient extends RpcClientApi {
 	}
 
 	private receive(record: RpcResponse | JsonAgentSessionEvent): void {
+		if (this.lost) return;
 		if (record.type === "response") {
 			const id = record.id;
 			const request = id === undefined ? undefined : this.pending.get(id);
@@ -145,10 +173,55 @@ class InProcessEngineClient extends RpcClientApi {
 
 	protected request(command: RpcCommandBody): Promise<RpcResponse> {
 		const id = `req-${++this.nextId}`;
-		return new Promise<RpcResponse>((resolve) => {
-			this.pending.set(id, { resolve });
+		if (this.lost) return Promise.reject(rpcTransportError("Agent process exited"));
+		return new Promise<RpcResponse>((resolve, reject) => {
+			this.pending.set(id, { resolve, reject });
 			this.toEngine.write({ ...command, id } as RpcCommand);
 		});
+	}
+
+	/**
+	 * The engine process dies: what it has not answered fails as a transport failure the engine never took, its later
+	 * output is lost, and the host hears the generation end unexpectedly. `restart()` brings up its replacement, which
+	 * here is the same session, as a replacement reloads the session the lost engine saved.
+	 */
+	crash(): void {
+		this.lost = true;
+		this.toHost.discardHeld();
+		const pending = [...this.pending.values()];
+		this.pending.clear();
+		const error = rpcTransportError("Agent process exited with code 1");
+		for (const request of pending) request.reject(request.accepted ? asAcceptedRequestFailure(error) : error);
+		const event: InteractiveEngineGenerationEnded = {
+			generation: this.generation,
+			error,
+			kind: "exit",
+			expected: false,
+		};
+		for (const listener of [...this.generationEndedListeners]) listener(event);
+	}
+
+	/** The engine's generation ends without a crash, as a deliberate stop or replacement ends it. */
+	endGeneration(expected: boolean): void {
+		const event: InteractiveEngineGenerationEnded = {
+			generation: this.generation,
+			error: rpcTransportError("Agent process stopped"),
+			kind: "explicit-stop",
+			expected,
+		};
+		for (const listener of [...this.generationEndedListeners]) listener(event);
+	}
+
+	async restart(): Promise<void> {
+		this.generation += 1;
+		this.lost = false;
+	}
+
+	/** A message the engine's own UI sends the host, such as a subagent chat's queue. */
+	engineMessage(message: InteractiveEngineMessage): void {
+		const parsed = parseInteractiveEngineMessage(serializeInteractiveEngineMessage(message).trim());
+		if (parsed === undefined || this.lost) return;
+		for (const listener of [...this.engineMessageListeners]) listener(parsed);
 	}
 
 	protected data<T>(response: RpcResponse): T {
@@ -165,13 +238,15 @@ class InProcessEngineClient extends RpcClientApi {
 		return () => this.listeners.delete(listener);
 	}
 
-	onGenerationEnded(): () => void {
-		return () => {};
+	onGenerationEnded(listener: InteractiveEngineGenerationEndedListener): () => void {
+		this.generationEndedListeners.add(listener);
+		return () => this.generationEndedListeners.delete(listener);
 	}
 
-	/** This engine draws no UI of its own: an interactive host over it receives no engine messages or UI requests. */
-	onInteractiveEngineMessage(): () => void {
-		return () => {};
+	/** This engine draws no UI of its own: the host receives only the engine messages a test sends with `engineMessage`. */
+	onInteractiveEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
+		this.engineMessageListeners.add(listener);
+		return () => this.engineMessageListeners.delete(listener);
 	}
 
 	onInteractiveEngineKeybindingState(): () => void {
@@ -185,7 +260,7 @@ class InProcessEngineClient extends RpcClientApi {
 	sendInteractiveEngineCommand(): void {}
 
 	getGeneration(): number {
-		return 1;
+		return this.generation;
 	}
 
 	/** Resolves once nothing is in flight in either direction and every handler has run. */
@@ -216,6 +291,15 @@ export interface EngineHostPair {
 	drain: () => Promise<void>;
 	/** Make the engine answer every command of this type with an error, or stop doing so when no message is given. */
 	failCommand: (type: RpcCommand["type"], message: string | undefined, cause?: unknown) => void;
+	/**
+	 * The engine process dies mid-work: its queue and the turn it was running go with it, nothing it had not sent reaches
+	 * the host, and the host replaces it. The replacement serves the same session.
+	 */
+	crash: () => void;
+	/** A message the engine's own UI sends the host. */
+	engineMessage: (message: InteractiveEngineMessage) => void;
+	/** The engine's generation ends as a deliberate stop or replacement ends it. */
+	endGeneration: (options: { expected: boolean }) => void;
 	/** The commands the engine received from the host, in order. */
 	commandsReceived: readonly RpcCommand[];
 	/**
@@ -289,6 +373,14 @@ export async function createEngineHostPair(
 		engineOutput: (record) => client.engineOutput(record as RpcResponse),
 		drain: () => client.drain(),
 		failCommand: (type, message, cause) => client.failCommand(type, message, cause),
+		crash: () => {
+			client.crash();
+			// What the lost process held in memory is gone: its queue, and the turn it was running.
+			engine.session.clearQueue();
+			void engine.session.abort();
+		},
+		engineMessage: (message) => client.engineMessage(message),
+		endGeneration: ({ expected }) => client.endGeneration(expected),
 		commandsReceived: client.commandsReceived,
 		holdHostTrafficFrom: (matches) => client.holdHostTrafficFrom(matches),
 		releaseHostTraffic: () => client.releaseHostTraffic(),

@@ -121,8 +121,19 @@ export interface SteeringRestore {
 export class SteeringQueueController {
 	/** Submissions the target has not confirmed yet, shown as queued meanwhile, in submit order. */
 	private unconfirmed: SteeringQueuedMessage[] = [];
+	/**
+	 * Submissions the target answered as queued before any listing showed them: only the target holds them until its
+	 * next listing does. A target whose process is lost meanwhile loses them with its queue.
+	 */
+	private acceptedUnlisted: SteeringQueuedMessage[] = [];
 	/** The target's queue as the last listing showed it, so the next one shows which messages it added. */
 	private lastListed: SteeringQueueLists = { steering: [], followUp: [] };
+	/** Messages a lost target took with it, per lane, from {@link loseTarget} until {@link recoverTarget}. */
+	private lostQueue: SteeringQueuedTexts | undefined;
+	/** Submissions still on their way when the target was lost: their answer, if any, comes from the lost process. */
+	private readonly inFlightAtLoss = new Set<SteeringQueuedMessage>();
+	/** In-flight submissions a recovery already gave back: their late answer must not give them back again. */
+	private readonly givenBackByRecovery = new WeakSet<SteeringQueuedMessage>();
 	private unsubscribeQueue: (() => void) | undefined;
 	readonly target: SteeringTarget;
 	private readonly editor: SteeringEditorQueue;
@@ -197,12 +208,54 @@ export class SteeringQueueController {
 	reconcile(queue: SteeringQueueLists): void {
 		const previous = this.lastListed;
 		this.lastListed = { steering: [...queue.steering], followUp: [...queue.followUp] };
-		if (this.unconfirmed.length === 0) return;
+		if (this.unconfirmed.length === 0 && this.acceptedUnlisted.length === 0) return;
 		const added = {
 			steer: addedMessages(previous.steering, queue.steering),
 			followUp: addedMessages(previous.followUp, queue.followUp),
 		};
 		this.unconfirmed = this.unconfirmed.filter((message) => !takeCopy(added[message.mode], message.text));
+		this.acceptedUnlisted = this.acceptedUnlisted.filter((message) => !takeCopy(added[message.mode], message.text));
+	}
+
+	/**
+	 * The target's process was lost, with every message it held (an isolated engine that crashed). Its listed queue,
+	 * the messages it accepted before listing them, and any submission still on its way are collected for
+	 * {@link recoverTarget}; the listing starts again empty, as a replacement process lists its own queue.
+	 */
+	loseTarget(): void {
+		const listed = this.target.queued();
+		const lost = this.lostQueue ?? { steering: [], followUp: [] };
+		lost.steering.push(...listed.steering);
+		lost.followUp.push(...listed.followUp);
+		for (const message of this.acceptedUnlisted)
+			(message.mode === "steer" ? lost.steering : lost.followUp).push(message.text);
+		this.lostQueue = lost;
+		this.acceptedUnlisted = [];
+		this.lastListed = { steering: [], followUp: [] };
+		for (const message of this.unconfirmed) this.inFlightAtLoss.add(message);
+	}
+
+	/**
+	 * The lost target was replaced (or could not be): every message it took with it that `delivered` does not account
+	 * for, steering messages first and then follow-ups, each lane in order, as Alt+Up would have restored them.
+	 * `delivered` is the user messages the replacement's history shows the lost process delivered. A submission still on
+	 * its way is given back here too, once, and its late answer gives back nothing more. `undefined` when nothing was lost.
+	 */
+	recoverTarget(delivered: readonly string[] = []): string[] | undefined {
+		const lost = this.lostQueue;
+		this.lostQueue = undefined;
+		if (lost === undefined) return undefined;
+		for (const message of this.inFlightAtLoss) {
+			(message.mode === "steer" ? lost.steering : lost.followUp).push(message.text);
+			this.givenBackByRecovery.add(message);
+			if (this.settle(message)) this.editor.requestRender();
+		}
+		this.inFlightAtLoss.clear();
+		const remaining = new Map<string, number>();
+		for (const text of delivered) remaining.set(text, (remaining.get(text) ?? 0) + 1);
+		const undelivered = (text: string) => !takeCopy(remaining, text);
+		const messages = [...lost.steering.filter(undelivered), ...lost.followUp.filter(undelivered)];
+		return messages.length > 0 ? messages : undefined;
 	}
 
 	/** How a submission is sent while the target is in its current state. */
@@ -235,8 +288,16 @@ export class SteeringQueueController {
 			queueLane !== undefined && options.showAsQueued !== false
 				? this.showAsQueued({ text, mode: queueLane })
 				: undefined;
-		const settle = () => {
-			if (shown && this.settle(shown)) this.editor.requestRender();
+		/** Stop showing the copy; one the target took into its queue unlisted is remembered until a listing shows it. */
+		const settle = (queuedByTarget = false) => {
+			if (!shown || !this.settle(shown)) return;
+			this.editor.requestRender();
+			if (!queuedByTarget) return;
+			if (this.inFlightAtLoss.delete(shown)) this.addLost(shown);
+			else this.acceptedUnlisted.push(shown);
+		};
+		const lostOnTheWay = () => {
+			if (shown && this.inFlightAtLoss.delete(shown)) this.addLost(shown);
 		};
 		let accepted = false;
 		let disposition: PromptDisposition | undefined;
@@ -246,19 +307,31 @@ export class SteeringQueueController {
 				preflightResult: (success, answered) => {
 					accepted = success;
 					disposition = answered;
-					settle();
+					settle(success && (answered === undefined || answered === "queued" || answered === "started"));
 					options.onAnswered?.(success, answered);
 				},
 			});
 			options.onSent?.();
 		} catch (error) {
+			if (shown && this.givenBackByRecovery.has(shown)) return { kind: "queued" };
 			settle();
 			if (accepted) return { kind: "failed", error };
-			if (isRpcRequestAcceptedFailure(error)) return { kind: "lost", error };
+			if (isRpcRequestAcceptedFailure(error)) {
+				lostOnTheWay();
+				return { kind: "lost", error };
+			}
+			if (shown) this.inFlightAtLoss.delete(shown);
 			return { kind: "refused", error };
 		}
-		settle();
+		if (shown && this.givenBackByRecovery.has(shown)) return { kind: "queued" };
+		settle(disposition === undefined || disposition === "queued" || disposition === "started");
 		return { kind: disposition ?? (queueLane !== undefined ? "queued" : "started") };
+	}
+
+	/** A submission a lost target answered from its last breath: it went down with the target. */
+	private addLost(message: SteeringQueuedMessage): void {
+		if (this.lostQueue === undefined) return;
+		(message.mode === "steer" ? this.lostQueue.steering : this.lostQueue.followUp).push(message.text);
 	}
 
 	/**
@@ -280,6 +353,8 @@ export class SteeringQueueController {
 			this.editor.changed();
 			throw error;
 		}
+		// The target's answer holds the messages it accepted before listing them.
+		this.acceptedUnlisted = [];
 		// Each message goes back as it was typed, so sending it again runs `input` hooks and expansions once (#4284).
 		// A session from before `typed` was added gives back only the text it queued.
 		const typed = removed.typed ?? removed;
