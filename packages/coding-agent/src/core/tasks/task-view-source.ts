@@ -27,6 +27,7 @@ import {
 	type QueuedTaskMessages,
 	type TaskMessageDelivery,
 	type TaskMessageLane,
+	type TaskSlashCommand,
 	type TaskTranscriptSource,
 	taskExtensionStatuses,
 	taskOwnTranscriptEntries,
@@ -177,6 +178,11 @@ export interface TaskTranscriptFollow {
 	readonly historyOnly: boolean;
 	/** Latest activity from a worker that publishes task state rather than live session events. */
 	readonly publishedActivity?: PublishedChatActivity;
+	/**
+	 * The last entry the session had when this task started on it: the conversation a forked task inherited, or what
+	 * earlier attempts of a resumed one said. Absent when the task started its session.
+	 */
+	readonly inheritedThroughId?: string;
 }
 
 /** What a chat of an agent task completes, as plain data: its session's cwd and the skill commands it offers. */
@@ -185,6 +191,10 @@ export interface TaskCommandCatalog {
 	readonly cwd: string;
 	/** The session's `/skill:` commands; empty when its settings do not offer skills as commands. */
 	readonly skillCommands: readonly Pick<SkillCatalogCommand, "name" | "description" | "sourceInfo">[];
+	/** The session's prompt templates; absent where the session does not list them. */
+	readonly promptTemplates?: readonly TaskSlashCommand[];
+	/** The session's extension commands; absent where the session does not list them. */
+	readonly extensionCommands?: readonly TaskSlashCommand[];
 }
 
 /** The prompt and latest reply of an agent task, for its detail page. */
@@ -545,7 +555,12 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const task = lease(id);
 			const bound = task.ok ? taskTranscriptSource(task.value) : undefined;
 			if (!bound?.ok) return undefined;
-			return { session: bound.value.session, historyOnly: bound.value.session.subscribe === undefined };
+			const { session, inheritedThroughId } = bound.value;
+			return {
+				session,
+				historyOnly: session.subscribe === undefined,
+				...(inheritedThroughId === undefined ? {} : { inheritedThroughId }),
+			};
 		},
 		extensionStatuses(id) {
 			const task = lease(id);
@@ -565,6 +580,8 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 							sourceInfo,
 						}))
 					: [],
+				...(commands.promptTemplates === undefined ? {} : { promptTemplates: commands.promptTemplates }),
+				...(commands.extensionCommands === undefined ? {} : { extensionCommands: commands.extensionCommands }),
 			};
 		},
 		watchExtensionStatuses(id, listener) {

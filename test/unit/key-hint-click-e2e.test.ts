@@ -193,7 +193,7 @@ function taskUi(ui: ReturnType<typeof makeScreen>, expanded: { value: boolean })
 	};
 }
 
-test("a subagent chat's hints run their keys: pgup and pgdn by the half clicked, then ← main chat", async () => {
+test("a subagent chat's hints in /tasks run their keys: pgup and pgdn by the half clicked, then ← tasks", async () => {
 	const ui = makeScreen();
 	const fixture = taskFixture();
 	const expanded = { value: false };
@@ -201,10 +201,10 @@ test("a subagent chat's hints run their keys: pgup and pgdn by the half clicked,
 		await fixture.start("Subagent task");
 		const session = await sessionWithBash("child-cmd", "child", 120);
 		fixture.runners[0]!.context.bindTranscript(Object.assign(session, { subscribe: () => () => {} }));
-		const closed = showTaskInspector(taskUi(ui, expanded), fixture.store, fixture.store.tasks[0]!.ref.taskId, {
-			chat: true,
-			backLabel: "main chat",
-		});
+		const closed = showTaskInspector(taskUi(ui, expanded), fixture.store, fixture.store.tasks[0]!.ref.taskId);
+		await flush();
+		// Enter on the subagent's row opens its chat (a host without the single screen, such as an SDK host's /tasks).
+		ui.terminal.input("\r");
 		await flush();
 		const lastLine = () => ui.screen().some((line) => /child line 120\s*$/.test(line));
 		assert.ok(ui.shows(/pgup\/pgdn scroll/), ui.screen().join("\n"));
@@ -221,8 +221,11 @@ test("a subagent chat's hints run their keys: pgup and pgdn by the half clicked,
 		assert.ok(lastLine(), `pgdn pages back down:\n${ui.screen().join("\n")}`);
 
 		await pastDoubleClick();
-		await ui.click(/← main chat/, "← main chat");
-		assert.equal(await closed, "back");
+		await ui.click(/← tasks/, "← tasks");
+		await flush();
+		assert.ok(!ui.shows(/pgup\/pgdn scroll/), `← goes back to the list:\n${ui.screen().join("\n")}`);
+		ui.terminal.input("\x1b");
+		assert.equal(await closed, "closed");
 	} finally {
 		ui.tui.stop();
 		await fixture.dispose();

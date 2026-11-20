@@ -64,8 +64,11 @@ export { CancellableLoader } from "./components/cancellable-loader.ts";
 export {
 	Editor,
 	type EditorAutocompleteHintEntry,
+	type EditorDraft,
 	type EditorOptions,
 	type EditorTheme,
+	editorDraftText,
+	emptyEditorDraft,
 } from "./components/editor.ts";
 export { HStack } from "./components/h-stack.ts";
 export {
