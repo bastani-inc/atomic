@@ -262,7 +262,7 @@ export function supersededReleasedAttempts(tasks: readonly TaskRecord[]): Readon
 
 /**
  * The settled attempts in `tasks` whose subagent has a later attempt there: a resumed or woken subagent is its latest
- * attempt. The agent panel and a chat's task footer list only that one; /tasks keeps every attempt.
+ * attempt. The agent panel, a chat's task footer and /tasks list only that one, so a resumed subagent stays one row.
  */
 export function supersededSettledAttempts(tasks: readonly TaskRecord[]): ReadonlySet<TaskId> {
 	return supersededAttempts(tasks, (task) => task.execution.kind === "settled");
@@ -290,6 +290,44 @@ function supersededAttempts(
 		if (latest.get(childOfAttempt(task))?.task !== task) superseded.add(task.ref.taskId);
 	}
 	return superseded.size === 0 ? NONE_SUPERSEDED : superseded;
+}
+
+/**
+ * The latest attempt in `tasks` of the subagent that `taskId` is an attempt of: a resumed or woken subagent runs as a
+ * new task, and its open chat follows that one, as its one row in the lists does. The task itself when it is not an
+ * agent or has no later attempt there; `undefined` when `tasks` does not hold it.
+ */
+export function latestSubagentAttempt(tasks: readonly TaskRecord[], taskId: TaskId): TaskRecord | undefined {
+	const index = tasks.findIndex((task) => task.ref.taskId === taskId);
+	if (index < 0) return undefined;
+	const task = tasks[index]!;
+	if (task.kind !== "agent") return task;
+	const child = childOfAttempt(task);
+	// The same walk as supersededAttempts, so the row a list keeps and the attempt a chat follows are one task.
+	let latest: { readonly task: TaskRecord; readonly index: number } | undefined;
+	for (const [candidateIndex, candidate] of tasks.entries()) {
+		if (candidate.kind !== "agent" || childOfAttempt(candidate) !== child) continue;
+		if (latest === undefined || laterAttempt(candidate, candidateIndex, latest.task, latest.index))
+			latest = { task: candidate, index: candidateIndex };
+	}
+	return latest?.task ?? task;
+}
+
+/**
+ * The first attempt in `tasks` of the subagent that `taskId` is an attempt of: the launch whose task its conversation
+ * starts with. The task itself when it is not an agent; `undefined` when `tasks` does not hold it.
+ */
+export function firstSubagentAttempt(tasks: readonly TaskRecord[], taskId: TaskId): TaskRecord | undefined {
+	const task = tasks.find((candidate) => candidate.ref.taskId === taskId);
+	if (task?.kind !== "agent") return task;
+	const child = childOfAttempt(task);
+	let first: { readonly task: TaskRecord; readonly index: number } | undefined;
+	for (const [index, candidate] of tasks.entries()) {
+		if (candidate.kind !== "agent" || childOfAttempt(candidate) !== child) continue;
+		if (first === undefined || laterAttempt(first.task, first.index, candidate, index))
+			first = { task: candidate, index };
+	}
+	return first?.task ?? task;
 }
 
 /** Whether `a` (at `aIndex`) was launched after `b`: by its owner's launch order, else by list order. */
