@@ -211,12 +211,19 @@ class OrderedWrites {
 		});
 	}
 
-	/** Resolves once every write asked for so far settled. */
+	/** Resolves once every write asked for so far settled. Each drain is awaited once: this never spins. */
 	async idle(): Promise<void> {
-		while (this.running !== undefined) await this.running;
+		for (let seen: Promise<void> | undefined; this.running !== undefined && this.running !== seen; ) {
+			seen = this.running;
+			await seen;
+		}
 	}
 
 	private async drain(): Promise<void> {
+		// Never finish within the call that starts it: `run` stores this promise in `running` only once the call returns,
+		// so a drain that cleared `running` before its first await (every write refused at once, the lock wait not over)
+		// would leave a settled promise there for good, and no later write would ever start a drain.
+		await Promise.resolve();
 		while (this.pending.length > 0) {
 			const batch = this.pending.splice(0);
 			if (performance.now() < this.brokenUntil) {
@@ -386,52 +393,63 @@ export async function openSqlEndedChildQueueStore(
 		return Number(row === undefined ? 0 : Object.values(row)[0]);
 	};
 	/**
-	 * The local file gives back the space of messages that are gone, once its queue is empty: each step frees at most
+	 * The local file gives back the space of messages that are gone, once its queue is empty. With no free page (the
+	 * usual small drain) it does nothing, not even a transaction. Otherwise each step frees at most
 	 * {@link ENDED_QUEUE_VACUUM_STEP_PAGES} pages in a maintenance transaction of its own, which runs only while this
-	 * database is idle (it never joins or delays a message write, nor waits for another process's lock) and checks in
-	 * the same transaction that no message waits. The event loop runs between steps; a checkpoint that never waits then
-	 * cuts the file back. A busy database is left alone until the next drain.
+	 * database is idle and checks in that same transaction that no message waits; the event loop runs between steps.
+	 * Once pages were freed, a checkpoint that never waits folds the log into the file, and one more maintenance
+	 * transaction starts the log afresh, cut back to its size limit. No part of it waits for another process's lock or
+	 * goes through the message writes, so it never delays, fails or holds off a message write: a busy database is left
+	 * alone until the next drain.
 	 */
 	const giveSpaceBack = async (): Promise<void> => {
 		const maintain = database.tryMaintenance?.bind(database);
-		if (maintain === undefined) return;
+		if (maintain === undefined || (await pragmaOf(database, "auto_vacuum")) !== 2) return;
+		let freed = false;
 		let busy = 0;
-		for (;;) {
-			if (closing) return;
+		while (!closing && (await pragmaOf(database, "freelist_count")) > 0) {
 			await new Promise<void>((resolve) => setImmediate(resolve));
-			const step: { state: "messages" | "freed" | "clean" } = { state: "clean" };
+			const step = { messages: false };
 			const ran = await maintain(async (tx) => {
 				if ((await tx.get(`SELECT 1 AS found FROM ${queue} LIMIT 1`)) !== undefined) {
-					step.state = "messages";
+					step.messages = true;
 					return;
 				}
-				// A file not converted yet gives nothing back this way: it is converted when it is next opened empty.
-				if ((await pragmaOf(tx, "auto_vacuum")) !== 2 || (await pragmaOf(tx, "freelist_count")) === 0) return;
 				await tx.exec(`PRAGMA incremental_vacuum(${ENDED_QUEUE_VACUUM_STEP_PAGES})`);
-				step.state = "freed";
 			});
 			if (!ran) {
-				if (++busy > VACUUM_BUSY_RETRIES) return;
+				if (++busy > VACUUM_BUSY_RETRIES) break;
 				await new Promise<void>((resolve) => setTimeout(resolve, VACUUM_BUSY_RETRY_MS));
 				continue;
 			}
-			if (step.state === "messages") return;
-			if (step.state === "clean") break;
+			// Messages wait again: they reuse the free pages; the next drain gives back what is left.
+			if (step.messages) break;
+			freed = true;
 		}
-		if (closing) return;
-		// Fold the log into the file (never waiting), then let one small write start the log afresh, which cuts it back
-		// to its size limit, and fold that in too.
+		if (closing || !freed) return;
 		await database.exec("PRAGMA wal_checkpoint(PASSIVE)");
 		// A write that changes nothing writes nothing: the header's user version, unused, flips between 0 and 1.
-		await writes.run(async (tx) => tx.exec(`PRAGMA user_version = ${(await pragmaOf(tx, "user_version")) === 0 ? 1 : 0}`));
-		await database.exec("PRAGMA wal_checkpoint(PASSIVE)");
+		const restarted = await maintain(async (tx) =>
+			tx.exec(`PRAGMA user_version = ${(await pragmaOf(tx, "user_version")) === 0 ? 1 : 0}`),
+		);
+		if (restarted && !closing) await database.exec("PRAGMA wal_checkpoint(PASSIVE)");
 	};
+	let compactAgain = false;
 	const compactSoon = (): void => {
-		if (!compact || compacting !== undefined || closing) return;
+		if (!compact || closing) return;
+		// A drain while space is being given back is looked at once that is over.
+		if (compacting !== undefined) {
+			compactAgain = true;
+			return;
+		}
 		compacting = giveSpaceBack()
 			.catch(() => {})
 			.finally(() => {
 				compacting = undefined;
+				if (compactAgain) {
+					compactAgain = false;
+					compactSoon();
+				}
 			});
 	};
 	if (compact) {
@@ -448,6 +466,8 @@ export async function openSqlEndedChildQueueStore(
 			try {
 				await database.exec("PRAGMA auto_vacuum = INCREMENTAL");
 				await database.exec("VACUUM");
+				// The rewritten file is in the log: fold it in, which cuts the file back, and empty the log.
+				await database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
 			} catch {
 				// Busy: converted at a later open.
 			} finally {
