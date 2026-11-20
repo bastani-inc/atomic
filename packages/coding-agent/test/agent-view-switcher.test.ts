@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { TaskId } from "../src/core/tasks/contracts.js";
-import { AgentViewSwitcher } from "../src/modes/interactive/agent-view/agent-view-switcher.ts";
+import { AgentViewSwitcher, NOT_SHOWN } from "../src/modes/interactive/agent-view/agent-view-switcher.ts";
 import type { AgentViewChange, AgentViewPort } from "../src/modes/interactive/agent-view/contracts.ts";
 import { FakeAgentViewPort } from "./helpers/fake-agent-view-port.ts";
 
@@ -99,6 +99,68 @@ describe("the single chat screen's switcher", () => {
 
 		assert.equal(switcher.pendingTaskId, undefined);
 		assert.deepEqual(seen, ["a", "b", undefined]);
+	});
+
+	test("still shows a subagent being opened when the one shown is gone meanwhile", async () => {
+		const opening = deferred<AgentViewPort | undefined>();
+		const shown = new FakeAgentViewPort({ taskId: id("a"), name: "first" });
+		const next = new FakeAgentViewPort({ taskId: id("b"), name: "second" });
+		const switcher = new AgentViewSwitcher(
+			(taskId) => (taskId === id("a") ? Promise.resolve(shown) : opening.promise),
+			() => {},
+		);
+		await switcher.view(id("a"));
+
+		const request = switcher.view(id("b"));
+		shown.setStatus({ gone: true });
+		assert.equal(switcher.viewed.kind, "main");
+		opening.resolve(next);
+
+		assert.equal(await request, true);
+		assert.equal(shownName(switcher), "second");
+		assert.equal(switcher.pendingTaskId, undefined);
+	});
+
+	test("tells the reader when the subagent asked for cannot be shown, and keeps what the screen shows", async () => {
+		const gone = new FakeAgentViewPort({ taskId: id("b"), gone: true });
+		const notices: string[] = [];
+		const switcher = new AgentViewSwitcher(
+			async (taskId) => (taskId === id("b") ? gone : undefined),
+			(message) => notices.push(message),
+		);
+
+		assert.equal(await switcher.view(id("a")), false);
+		assert.equal(await switcher.view(id("b")), false);
+
+		assert.equal(switcher.viewed.kind, "main");
+		assert.equal(switcher.pendingTaskId, undefined);
+		assert.deepEqual(notices, [NOT_SHOWN, NOT_SHOWN]);
+		assert.equal(gone.disposed, true);
+	});
+
+	test("tells how each pending request ended: shown, failed, or replaced by a later one", async () => {
+		const opening = deferred<AgentViewPort | undefined>();
+		const shown = new FakeAgentViewPort({ taskId: id("c") });
+		const switcher = new AgentViewSwitcher(
+			async (taskId) => (taskId === id("a") ? opening.promise : taskId === id("c") ? shown : undefined),
+			() => {},
+		);
+		const settled: string[] = [];
+		switcher.onPending((_pending, ended) => {
+			if (ended) settled.push(`${ended.taskId}:${ended.outcome}`);
+		});
+
+		const replaced = switcher.view(id("a"));
+		await switcher.view(id("b"));
+		opening.resolve(undefined);
+		await replaced;
+		await switcher.view(id("c"));
+		const cancelled = switcher.view(id("d"));
+		switcher.cancelPending();
+		await cancelled;
+
+		assert.deepEqual(settled, ["a:superseded", "b:failed", "c:shown", "d:superseded"]);
+		assert.equal(shownName(switcher), "worker");
 	});
 
 	test("keeps the shown port when another attempt of the same subagent is asked for", async () => {

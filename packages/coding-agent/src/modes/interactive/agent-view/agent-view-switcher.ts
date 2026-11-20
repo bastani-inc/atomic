@@ -2,6 +2,17 @@ import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { AgentViewBridge } from "./agent-view-bridge.ts";
 import { type AgentViewChange, type AgentViewPort, VIEWING_MAIN, type ViewedTarget } from "./contracts.ts";
 
+/** How a pending request ended: its subagent was shown, could not be, or another request replaced it. */
+export type PendingOutcome = "shown" | "failed" | "superseded";
+
+export type PendingListener = (
+	pending: TaskId | undefined,
+	settled?: { readonly taskId: TaskId; readonly outcome: PendingOutcome },
+) => void;
+
+/** Why the screen still shows what it showed after a request for a subagent. */
+export const NOT_SHOWN = "That subagent can no longer be shown.";
+
 /** Opens the port of the subagent `taskId` is an attempt of; undefined when there is no such subagent to show. */
 export type OpenAgentViewPort = (taskId: TaskId) => Promise<AgentViewPort | undefined>;
 
@@ -17,7 +28,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 	private disposed = false;
 	private readonly changeListeners = new Set<(change: AgentViewChange) => void>();
 	private readonly listeners = new Set<() => void>();
-	private readonly pendingListeners = new Set<(pending: TaskId | undefined) => void>();
+	private readonly pendingListeners = new Set<PendingListener>();
 	private pending: TaskId | undefined;
 	private readonly openPort: OpenAgentViewPort;
 	private readonly notify: (message: string) => void;
@@ -39,7 +50,11 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		return this.pending;
 	}
 
-	onPending(listener: (pending: TaskId | undefined) => void): () => void {
+	/**
+	 * Called whenever the pending request changes: `pending` is the one opening now, and `settled` the one that just
+	 * stopped pending, with how it ended.
+	 */
+	onPending(listener: PendingListener): () => void {
 		this.pendingListeners.add(listener);
 		return () => this.pendingListeners.delete(listener);
 	}
@@ -56,21 +71,30 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		if (this.disposed) return false;
 		const request = ++this.request;
 		if (taskId === undefined) {
-			this.setPending(undefined);
+			this.setPending(undefined, "superseded");
 			this.show(VIEWING_MAIN);
 			return true;
 		}
 		const shown = this.current;
 		if (shown.kind === "agent" && shown.port.status().taskId === taskId) {
-			this.setPending(undefined);
+			this.setPending(undefined, "superseded");
 			return true;
 		}
-		this.setPending(taskId);
+		this.setPending(taskId, "superseded");
+		let landed = false;
 		try {
-			return await this.open(request, taskId);
+			landed = await this.open(request, taskId);
+			return landed;
 		} finally {
-			if (request === this.request) this.setPending(undefined);
+			if (request === this.request) this.setPending(undefined, landed ? "shown" : "failed");
 		}
+	}
+
+	/** Esc while a subagent is opening: it is not shown, and the screen keeps what it shows. */
+	cancelPending(): void {
+		if (this.pending === undefined) return;
+		this.request++;
+		this.setPending(undefined, "superseded");
 	}
 
 	private async open(request: number, taskId: TaskId): Promise<boolean> {
@@ -82,7 +106,10 @@ export class AgentViewSwitcher implements AgentViewBridge {
 				this.notify(error instanceof Error ? error.message : String(error));
 			return false;
 		}
-		if (port === undefined) return false;
+		if (port === undefined) {
+			if (request === this.request && !this.disposed) this.notify(NOT_SHOWN);
+			return false;
+		}
 		if (request !== this.request || this.disposed) {
 			// Superseded: the port was never shown. Retaining and releasing it once disposes it.
 			port.retain()();
@@ -95,6 +122,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		}
 		if (port.status().gone) {
 			port.retain()();
+			this.notify(NOT_SHOWN);
 			return false;
 		}
 		this.show({ kind: "agent", port });
@@ -121,16 +149,19 @@ export class AgentViewSwitcher implements AgentViewBridge {
 	/** The engine generation ended, the main session was replaced, or the host shuts down: show main, release ports. */
 	reset(_reason: "generation-lost" | "session-replaced" | "shutdown"): void {
 		this.request++;
-		this.setPending(undefined);
+		this.setPending(undefined, "superseded");
 		this.show(VIEWING_MAIN);
 	}
 
-	private setPending(taskId: TaskId | undefined): void {
-		if (this.pending === taskId) return;
+	/** `outcome` is how the request pending until now ended, when one was. */
+	private setPending(taskId: TaskId | undefined, outcome: PendingOutcome): void {
+		const previous = this.pending;
+		if (previous === taskId) return;
 		this.pending = taskId;
+		const settled = previous === undefined ? undefined : { taskId: previous, outcome };
 		for (const listener of [...this.pendingListeners]) {
 			try {
-				listener(taskId);
+				listener(taskId, settled);
 			} catch {
 				// A listener's failure must not stop the others.
 			}
@@ -157,11 +188,9 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		if (to.kind === "agent") {
 			this.releaseCurrent = to.port.retain();
 			this.unwatchCurrent = to.port.subscribe(() => {
-				// A shown subagent that is gone gives the screen back to main in the same tick.
-				if (this.current === to && to.port.status().gone) {
-					this.request++;
-					this.show(VIEWING_MAIN);
-				}
+				// A shown subagent that is gone gives the screen back to main in the same tick. A newer request, still
+				// opening, is the reader's and still lands.
+				if (this.current === to && to.port.status().gone) this.show(VIEWING_MAIN);
 			});
 		}
 		const change: AgentViewChange = { from, to };
