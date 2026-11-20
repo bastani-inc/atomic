@@ -958,6 +958,45 @@ type TranscriptSource = Parameters<NonNullable<TaskExecutionHooks["bindTranscrip
 
 type TranscriptCommands = ReturnType<NonNullable<TranscriptSource["commands"]>>;
 
+type TranscriptQueueMethods = Required<Pick<TranscriptSource, "queueMessage" | "clearQueue">>;
+
+/**
+ * A chat of the child gives typed text to the child's own session, as the main chat gives typed text to its session:
+ * a prompt on the lane, which the session queues while it works (listed by a `queue_update`, delivered raw at the
+ * lane's boundary) and otherwise answers as its next turn, as an interrupted child does. Resolves once the session
+ * accepted the text. A child whose execution ended refuses it, so the chat gives it back to its editor.
+ */
+function chatMessageQueue(session: AgentSession): TranscriptQueueMethods {
+	return {
+		queueMessage: (text, lane) =>
+			new Promise((resolve) => {
+				const accepted = () => resolve({ delivered: true });
+				session
+					.prompt(text, {
+						streamingBehavior: lane,
+						preflightResult: (success) => {
+							// A refusal rejects the prompt with its reason.
+							if (success) accepted();
+						},
+					})
+					// A prompt deferred past a settling run reports nothing before it ends; its end accepted it.
+					.then(accepted, (error: unknown) =>
+						resolve({
+							delivered: false,
+							reason: "refused",
+							detail: error instanceof Error ? error.message : String(error),
+						}),
+					);
+			}),
+		clearQueue: async () => {
+			const cleared = session.clearQueue();
+			// Each message goes back as it was typed, as the main chat restores its queue.
+			const typed = cleared.typed ?? cleared;
+			return { steering: [...typed.steering], followUp: [...typed.followUp] };
+		},
+	};
+}
+
 /** What a chat of the child completes and expands: its cwd and its own skills. A test session has no resources. */
 function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands {
 	const loader = session.resourceLoader as AgentSession["resourceLoader"] | undefined;
@@ -2470,6 +2509,7 @@ export class SubagentControlRuntime {
 					steering: transcriptSession.getSteeringMessages(),
 					followUp: transcriptSession.getFollowUpMessages(),
 				}),
+				...chatMessageQueue(transcriptSession),
 			});
 			const initialModelId = modelIdForSession(session) ?? candidateModelId;
 			effectiveModelId = initialModelId;
