@@ -264,7 +264,7 @@ async function panelWith(tasks: readonly string[]) {
 	};
 	const row = (task: string, width = 160) =>
 		stripVTControlCharacters(widget?.render(width).find((line) => line.includes(task)) ?? "");
-	return { report, row, unbind, renders: () => renders };
+	return { report, row, unbind, renders: () => renders, start: (task: string) => fixture.start(task) };
 }
 
 test("the agent panel keeps a new subagent's task in place until its model and reasoning level arrive together", async () => {
@@ -494,6 +494,30 @@ test("/tasks waits again for the level of a model reported anew after the row re
 		board.report(0, "faux/second", "high");
 		assert.match(board.row(TASK), /faux\/second high/);
 	} finally {
+		board.inspector.dispose();
+	}
+});
+
+test("a subagent row that first appears in an open /tasks or panel with its model but not its level waits for the level", async () => {
+	const board = await boardWith(["first work"]);
+	const panel = await panelWith(["first work"]);
+	try {
+		board.report(0, "faux/first", "low");
+		await panel.report(0, "faux/first", "low");
+		board.row("first work");
+		panel.row("first work");
+		await board.fixture.start("second work");
+		board.report(1, "faux/thinker");
+		assert.doesNotMatch(board.row("second work"), /faux\/thinker/);
+		board.report(1, "faux/thinker", "medium");
+		assert.match(board.row("second work"), /worker {8}faux\/thinker medium {2}second work/);
+		await panel.start("second work");
+		await panel.report(1, "faux/thinker");
+		assert.doesNotMatch(panel.row("second work"), /faux\/thinker/);
+		await panel.report(1, "faux/thinker", "medium");
+		assert.match(panel.row("second work"), /worker {2}faux\/thinker medium {2}second work/);
+	} finally {
+		panel.unbind();
 		board.inspector.dispose();
 	}
 });

@@ -38,10 +38,22 @@ export interface ModelCellReport {
 const UNKNOWN: ModelCell = { kind: "unknown" };
 const SHOWN: ModelCell = { kind: "shown" };
 
-/** The cell after a paint sees `report` at `now`; `cell` is undefined for a row the view has not painted yet. */
-export function nextModelCell(cell: ModelCell | undefined, report: ModelCellReport, now: number): ModelCell {
+/**
+ * The cell after a paint sees `report` at `now`. `cell` is undefined for a row the view has not painted yet: on the
+ * view's first paint (`opened` false) a known model shows at once, as it always did; a row that appears in a view
+ * already `opened` is new, and its model waits for its level like one that becomes known.
+ */
+export function nextModelCell(
+	cell: ModelCell | undefined,
+	report: ModelCellReport,
+	now: number,
+	opened: boolean,
+): ModelCell {
 	const model = report.model;
-	if (cell === undefined) return model === undefined ? UNKNOWN : SHOWN;
+	if (cell === undefined) {
+		if (!opened) return model === undefined ? UNKNOWN : SHOWN;
+		cell = UNKNOWN;
+	}
 	switch (cell.kind) {
 		case "shown":
 			return model === undefined ? UNKNOWN : cell;
@@ -60,6 +72,8 @@ export function nextModelCell(cell: ModelCell | undefined, report: ModelCellRepo
 /** One open view's model cells and column width. */
 export class ModelColumn {
 	private cells = new Map<string, ModelCell>();
+	/** The view painted its rows since it opened, or since it was too narrow for the column. */
+	private opened = false;
 	private heldWidth = -1;
 	/** The widest column this view painted at `heldWidth`, and the one it painted last. */
 	private held = 0;
@@ -74,23 +88,39 @@ export class ModelColumn {
 	}
 
 	/**
-	 * Moves the cell of each row painted now on by what it reports, forgets the rows no longer painted, and returns the
-	 * ids of the rows that show their model.
+	 * Moves the cell of each row painted now on by what it reports and returns the ids of the rows that show their
+	 * model. Rows `listed` but not painted, such as rows scrolled out of view, keep their cells; other rows are forgotten.
 	 */
-	paint(reports: Iterable<readonly [id: string, report: ModelCellReport]>): ReadonlySet<string> {
+	paint(
+		reports: Iterable<readonly [id: string, report: ModelCellReport]>,
+		listed: Iterable<string> = [],
+	): ReadonlySet<string> {
 		const now = performance.now();
 		const next = new Map<string, ModelCell>();
 		const shown = new Set<string>();
-		let earliest = Number.POSITIVE_INFINITY;
 		for (const [id, report] of reports) {
-			const cell = nextModelCell(this.cells.get(id), report, now);
+			const cell = nextModelCell(this.cells.get(id), report, now, this.opened);
 			next.set(id, cell);
 			if (cell.kind === "shown") shown.add(id);
-			else if (cell.kind === "waiting") earliest = Math.min(earliest, cell.since + MODEL_LEVEL_WAIT_MS);
 		}
+		for (const id of listed) {
+			const kept = next.has(id) ? undefined : this.cells.get(id);
+			if (kept !== undefined) next.set(id, kept);
+		}
+		let earliest = Number.POSITIVE_INFINITY;
+		for (const cell of next.values())
+			if (cell.kind === "waiting") earliest = Math.min(earliest, cell.since + MODEL_LEVEL_WAIT_MS);
 		this.cells = next;
+		this.opened = true;
 		this.arm(earliest);
 		return shown;
+	}
+
+	/** Forgets every cell, as when the view is too narrow for the column: its next paint is like a first one. */
+	forget(): void {
+		this.cells = new Map();
+		this.opened = false;
+		this.disarm();
 	}
 
 	/**
@@ -118,11 +148,10 @@ export class ModelColumn {
 
 	/** Forgets every cell and the column width, as a view opened again does. */
 	reset(): void {
-		this.cells = new Map();
+		this.forget();
 		this.heldWidth = -1;
 		this.held = 0;
 		this.last = 0;
-		this.disarm();
 	}
 
 	dispose(): void {

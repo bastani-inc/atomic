@@ -2023,11 +2023,12 @@ export class TaskInspector implements Component {
 				paintedRows.map(
 					(row) => [row.id, rowModelReport(row, reported.get(row.id) ?? NO_MODEL, this.store)] as const,
 				),
+				all.map((row) => row.id),
 			);
 			models = new Map(
 				paintedRows.map((row) => [row.id, shown.has(row.id) ? (reported.get(row.id) ?? NO_MODEL) : NO_MODEL]),
 			);
-		} else this.modelColumn.paint([]);
+		} else this.modelColumn.forget();
 		let measured = 0;
 		for (const model of models?.values() ?? []) measured = Math.max(measured, model.width);
 		const modelColumn = this.modelColumn.column(width - 1, measured, boardModelFits(paintedRows, width - 1));

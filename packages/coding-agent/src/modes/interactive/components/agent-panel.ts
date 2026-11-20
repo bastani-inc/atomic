@@ -495,9 +495,12 @@ export function renderAgentPanelRows(
 	}
 	const modelColumn = options.modelColumn;
 	// Too narrow for the column: the rows are seen afresh once it is wide enough again, as on a first paint.
-	if (modelColumn !== undefined && !(width >= AGENT_PANEL_MODEL_MIN_WIDTH)) modelColumn.paint([]);
+	if (modelColumn !== undefined && !(width >= AGENT_PANEL_MODEL_MIN_WIDTH)) modelColumn.forget();
 	else if (modelColumn !== undefined) {
-		const showing = modelColumn.paint(shown.map((row, i) => [row.id, panelModelReport(row, models[i]!)] as const));
+		const showing = modelColumn.paint(
+			shown.map((row, i) => [row.id, panelModelReport(row, models[i]!)] as const),
+			rows.map((row) => row.id),
+		);
 		for (let i = 0; i < count; i++) if (!showing.has(shown[i]!.id)) models[i] = "";
 	}
 	for (const model of models) if (model.length > 0) modelWidth = Math.max(modelWidth, cellWidth(model));
