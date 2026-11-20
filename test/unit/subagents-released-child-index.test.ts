@@ -144,6 +144,23 @@ function owner(): Owner {
 }
 
 /**
+ * The serialized size of an index entry with every number counted at one fixed size. v8 writes a small integer in more
+ * bytes as it grows, so a child that ran 64 ms or more (elapsedMs) would otherwise look like a larger entry, while what
+ * the size has to show is that an entry holds no task, message or result text.
+ */
+function entryBytes(entry: object | undefined): number {
+	const fixedNumbers = (value: unknown): unknown =>
+		typeof value === "number"
+			? 0
+			: Array.isArray(value)
+				? value.map(fixedNumbers)
+				: value !== null && typeof value === "object"
+					? Object.fromEntries(Object.entries(value).map(([key, field]) => [key, fixedNumbers(field)]))
+					: value;
+	return v8.serialize(fixedNumbers(entry)).byteLength;
+}
+
+/**
  * Launch one child as a parallel launch does (queued for a slot first, so its record keeps its launch and task), let it
  * run until it is released waiting on CI, then give it history: messages and tool results held for its next wake.
  */
@@ -238,7 +255,7 @@ test(
 			assert.ok(entry.entryId, "the entry points at the session entry that holds the child's latest record");
 			for (const key of PAYLOAD_KEYS) assert.equal(Object.hasOwn(entry, key), false, `${key} is not indexed`);
 			const sizes = entryBytesByTaskIdLength.get(entry.taskId.length) ?? new Set<number>();
-			sizes.add(v8.serialize(entry).byteLength);
+			sizes.add(entryBytes(entry));
 			entryBytesByTaskIdLength.set(entry.taskId.length, sizes);
 			assert.deepEqual(
 				subagentChildRecordOf(ownerSessionId, childId),
@@ -252,8 +269,8 @@ test(
 		const small = `released-${padded(10 * LARGE_HISTORY_EVERY + 1)}:0`;
 		const bytes = (value: object | undefined) => v8.serialize(value).byteLength;
 		assert.equal(
-			bytes(subagentChildIndexEntry(large)),
-			bytes(subagentChildIndexEntry(small)),
+			entryBytes(subagentChildIndexEntry(large)),
+			entryBytes(subagentChildIndexEntry(small)),
 			"a child with a large task, held messages, held results and more saves has an entry the size of one without",
 		);
 		assert.ok(
