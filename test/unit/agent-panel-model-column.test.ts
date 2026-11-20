@@ -6,6 +6,11 @@ import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.j
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
+import {
+	type AgentPanelItem,
+	AgentPanelSourceHub,
+	agentPanelExtensionItems,
+} from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
 	type AgentPanelRow,
@@ -360,5 +365,43 @@ test("a subagent on a model without reasoning levels shows no level, as the foot
 		assert.match(row("unknown work"), /worker {8}elsewhere\/unlisted off {2}unknown work/);
 	} finally {
 		inspector.dispose();
+	}
+});
+
+test("an extension row whose own model or thinking fields are not text keeps its row, with no model column and no error", () => {
+	const hub = new AgentPanelSourceHub();
+	const row = (id: string, extra: Record<string, unknown>) =>
+		({ id, kind: "agent", state: "running", name: id, task: "deploy", ...extra }) as unknown as AgentPanelItem;
+	hub.register({
+		items: () => [
+			row("plain", {}),
+			row("thinking-flag", { thinking: true }),
+			row("model-object", { model: { provider: "anthropic", id: "claude-sonnet-4-5" } }),
+			row("model-null", { model: null }),
+			row("named", { model: "local/runner", thinking: "low" }),
+		],
+		subscribe: () => () => {},
+	});
+	const errors: string[] = [];
+	try {
+		const items = agentPanelExtensionItems({ extensionRunner: { getAgentPanelSourceHub: () => hub } }, (error) =>
+			errors.push(error.message),
+		);
+		assert.deepEqual(errors, []);
+		assert.deepEqual(
+			items.map((item) => [item.id, item.model, item.thinking]),
+			[
+				["plain", undefined, undefined],
+				["thinking-flag", undefined, undefined],
+				["model-object", undefined, undefined],
+				["model-null", undefined, undefined],
+				["named", "local/runner", "low"],
+			],
+		);
+		const shown = lines(items.slice(1), 120);
+		assert.match(shown[0]!, /^ {2}∀ thinking-flag {20}deploy/);
+		assert.match(shown[3]!, /^ {2}∀ named {10}local\/runner low {2}deploy/);
+	} finally {
+		hub.dispose();
 	}
 });

@@ -924,8 +924,6 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 		typeof task !== "string" ||
 		(elapsedMs !== undefined && !isFiniteNonNegative(elapsedMs)) ||
 		(tokens !== undefined && !isNonNegativeInteger(tokens)) ||
-		(model !== undefined && typeof model !== "string") ||
-		(thinking !== undefined && typeof thinking !== "string") ||
 		(queued !== undefined && !isNonNegativeInteger(queued)) ||
 		(endedAt !== undefined && !isFiniteNonNegative(endedAt)) ||
 		(question !== undefined && typeof question !== "string") ||
@@ -948,8 +946,10 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	};
 	if (elapsedMs !== undefined) item.elapsedMs = elapsedMs;
 	if (tokens !== undefined) item.tokens = tokens;
-	if (model !== undefined) item.model = model;
-	if (thinking !== undefined) item.thinking = thinking;
+	// Rows that extensions wrote before these fields existed may carry their own `model` or `thinking` of another
+	// kind: such a value is not shown, and the row stays.
+	if (typeof model === "string") item.model = model;
+	if (typeof thinking === "string") item.thinking = thinking;
 	if (progress !== undefined) item.progress = progress;
 	if (question !== undefined) item.question = question;
 	if (choices !== undefined) item.choices = choices;

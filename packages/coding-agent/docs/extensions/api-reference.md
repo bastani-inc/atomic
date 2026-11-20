@@ -968,7 +968,7 @@ Return at most 10,000 rows per source. Atomic ignores additional rows and warns 
 | `kind` | `"agent"` or `"shell"`. It decides the row's layout. A `"shell"` item is listed in `/tasks` only; the main chat's footer counts it while it is not finished. |
 | `state` | `running`, `queued`, `input` (waits for an answer), `paused`, `stopping`, `waiting` (not working, and wakes by itself when what it waits on finishes), `done`, `failed` or `stopped`. It decides the glyph, the state word, the `/tasks` group and whether `x` stops or dismisses. |
 | `name`, `task` | The name and what it works on, for example `stage build`. |
-| `model`, `thinking` | Optional: the model the item runs on now, as `provider/model-id`, and its reasoning level, shown after its name as for a subagent. Leave `thinking` out for a model without reasoning levels. Update them when the item switches model. |
+| `model`, `thinking` | Optional: the model the item runs on now, as `provider/model-id`, and its reasoning level, shown after its name as for a subagent. Leave `thinking` out for a model without reasoning levels. Update them when the item switches model. A value that is not a string is ignored. |
 | `elapsedMs`, `tokens` | Shown on the right. `elapsedMs` is finite, non-negative milliseconds. `tokens` is a non-negative safe integer, at most `Number.MAX_SAFE_INTEGER`. Between your updates, the panel and `/tasks` share the advancing time of running, waiting and stopping items. Paused and finished items keep their last elapsed time. |
 | `progress` | Finite, non-negative `{ done, total }` stages, drawn as a bar. |
 | `question`, `choices` | What an `input` item asks, and its numbered choices. |
