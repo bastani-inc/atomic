@@ -268,7 +268,7 @@ The guards and `findGitHubCopilotError()` reject malformed serialized errors too
 
 #### Responses that end without a finish reason
 
-GitHub Copilot sometimes ends a Gemini response stream normally without reporting a finish reason. On Chat Completions, a stream that is cut off never sends its final `data: [DONE]` event, so Atomic uses that event to tell such a response from a cut-off stream:
+GitHub Copilot sometimes ends a response stream normally without reporting a finish reason; this has been seen with Gemini models. On Chat Completions, a stream that is cut off never sends its final `data: [DONE]` event, so for every Copilot model on Chat Completions Atomic uses that event to tell such a response from a cut-off stream:
 
 - A response whose tool calls are all complete, each with arguments that parse as a JSON object, ends with `toolUse`. A response with text and no tool call ends with `stop`.
 - A response with no text and no tool call is an `empty-response` error, retried like any other.

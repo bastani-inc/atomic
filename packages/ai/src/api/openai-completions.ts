@@ -406,8 +406,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 		const streamAttempt = new GitHubCopilotStreamAttempt();
-		// GitHub Copilot sometimes ends a Gemini response stream normally without a finish reason; whether the stream
-		// delivered its final `[DONE]` tells such a response from a stream that was cut off.
+		// GitHub Copilot sometimes ends a response stream normally without a finish reason (seen with Gemini models);
+		// whether the stream delivered its final `[DONE]` tells such a response from a stream that was cut off.
 		const doneEvent = model.provider === "github-copilot" ? new DoneEventWatch() : undefined;
 
 		try {

@@ -6,10 +6,10 @@ export const GITHUB_COPILOT_INFERRED_STOP_REASON_DIAGNOSTIC = "github_copilot_in
 
 /**
  * The stop reason of a GitHub Copilot Chat Completions response whose stream ended normally, with its terminal
- * `[DONE]` event, but reported no finish reason, as GitHub Copilot sometimes does for Gemini models: `toolUse` when
- * the response has tool calls and every one of them is complete, `stop` when it has none. A response with no text
- * and no tool call gets `stop`, which the empty-response check then reports. Undefined when a tool call may be
- * incomplete: the stream then counts as one that ended early.
+ * `[DONE]` event, but reported no finish reason, as GitHub Copilot sometimes does (seen with Gemini models):
+ * `toolUse` when the response has tool calls and every one of them is complete, `stop` when it has none. A response
+ * with no text and no tool call gets `stop`, which the empty-response check then reports. Undefined when a tool call
+ * may be incomplete: the stream then counts as one that ended early.
  */
 export function inferGitHubCopilotStopReason(
 	output: AssistantMessage,
