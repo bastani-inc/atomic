@@ -773,13 +773,9 @@ test("a wrapped call whose statement no longer prepares fails at once with its o
 	const { raw, wrapped } = await openWrapped(path, 150);
 	raw.exec("CREATE TEMP TABLE scratch (x)");
 	const { committed, settled } = await holdLock(threaded, 1_200);
-	// Planned while the file is held: a read runs at once, a write waits and fails with SQLITE_BUSY.
+	// Planned while the file is held: both leave the held file alone, so both run at once.
 	assert.deepEqual(await wrapped.all("SELECT x FROM scratch"), []);
-	const busy = await wrapped.run("INSERT INTO scratch VALUES (1)").then(
-		() => undefined,
-		(error: unknown) => error,
-	);
-	assert.equal(((busy as StorageUnavailableError).cause as { errcode?: number }).errcode, 5);
+	assert.deepEqual(await wrapped.run("INSERT INTO scratch VALUES (1)"), { changes: 1 });
 	raw.exec("DROP TABLE temp.scratch");
 	for (const call of [
 		() => wrapped.all("SELECT x FROM scratch"),
@@ -818,4 +814,55 @@ test("a wrapped PRAGMA behind empty statements or under EXPLAIN is not carried o
 	assert.deepEqual(await wrapped.get("; -- before\n SELECT count(*) AS n FROM items"), { n: 0 });
 	assert.equal(settled(), false, "the SELECT waited for the transaction");
 	await committed;
+});
+
+test("a wrapped write of a temporary table or of another attached file runs at once during a threaded transaction, as before, and one of the same file waits (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path, 150);
+	raw.exec("CREATE TEMP TABLE scratch (x)");
+	raw.exec(`ATTACH '${databasePath()}' AS other`);
+	raw.exec("CREATE TABLE other.t (x)");
+	raw.exec(`ATTACH '${path}' AS alias`);
+	const { committed, settled } = await holdLock(threaded, 600);
+	for (const sql of [
+		"CREATE TEMP TABLE scratch2 (x)",
+		"INSERT INTO scratch VALUES (1)",
+		"INSERT INTO scratch SELECT 2",
+		"INSERT INTO other.t VALUES (1)",
+	])
+		await wrapped.run(sql);
+	assert.equal(settled(), false, "a write of another file waited for the transaction");
+	const failure = await wrapped.run("INSERT INTO alias.items VALUES ('x')").then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.ok(failure instanceof StorageUnavailableError, `expected SQLITE_BUSY, got ${String(failure)}`);
+	assert.equal((failure.cause as { errcode?: number }).errcode, 5);
+	await committed;
+	assert.deepEqual(await wrapped.all("SELECT x FROM scratch ORDER BY x"), [{ x: 1 }, { x: 2 }]);
+	assert.deepEqual(await values(threaded), ["a", "b"]);
+});
+
+test("a wrapped exec of no statement or of one statement is classified as that statement, and a trigger or a longer script waits (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path, 150);
+	raw.exec("CREATE TEMP TABLE scratch (x)");
+	const { committed, settled } = await holdLock(threaded, 600);
+	for (const sql of ["", "SELECT 1", "SELECT 1;", "  -- c\n", "INSERT INTO scratch VALUES (1);"])
+		await wrapped.exec(sql);
+	assert.equal(settled(), false, "a single-statement exec waited for the transaction");
+	for (const sql of [
+		"CREATE TEMP TRIGGER kept AFTER INSERT ON scratch BEGIN INSERT INTO scratch VALUES (2); END",
+		"SELECT 1; SELECT 2",
+		"INSERT INTO items VALUES ('c')",
+	]) {
+		const failure = await wrapped.exec(sql).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		assert.ok(failure instanceof StorageUnavailableError, `${sql}: expected SQLITE_BUSY, got ${String(failure)}`);
+		assert.equal((failure.cause as { errcode?: number }).errcode, 5);
+	}
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b"]);
 });

@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
+import { fileIdentity } from "./file-identity.js";
 
 /**
  * A connection on a thread of its own taking or holding a file's write lock: open from the moment it sends
@@ -441,8 +442,6 @@ function busyTimeoutOf(gate: FileGate, owner: object, database: DatabaseSync): n
 const GAP = String.raw`(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)`;
 /** What SQLite skips before a statement's first word: blanks, comments and empty statements. */
 const LEADING = new RegExp(`^(?:${GAP}|;)*`);
-/** A statement whose first keyword reads (on text without what `LEADING` matches). */
-const READ_STATEMENT = /^(?:SELECT|VALUES|WITH)\b/i;
 /**
  * A PRAGMA, alone or under EXPLAIN or EXPLAIN QUERY PLAN (on text without what `LEADING` matches): SQLite may carry it
  * out while it prepares it, so it is never prepared ahead.
@@ -450,64 +449,65 @@ const READ_STATEMENT = /^(?:SELECT|VALUES|WITH)\b/i;
 const PRAGMA_STATEMENT = new RegExp(`^(?:EXPLAIN${GAP}+(?:QUERY${GAP}+PLAN${GAP}+)?)?PRAGMA\\b`, "i");
 /** A statement that only lists a plan: it runs nothing, whatever it explains. */
 const EXPLAIN_STATEMENT = /^EXPLAIN\b/i;
+/** A statement that creates a trigger, whose body holds statements of its own. */
+const TRIGGER_STATEMENT = new RegExp(`^CREATE${GAP}+(?:(?:TEMP|TEMPORARY)${GAP}+)?TRIGGER\\b`, "i");
 /**
- * Steps of SQLite's virtual machine that write a database file or change a connection's transaction or schema, as
- * opposed to the temporary tables and indexes a read sorts and deduplicates in. A write to a table opens it with
- * `OpenWrite` and starts a write `Transaction`; the rest are the steps of statements that are not reads.
+ * Steps that change a connection's transactions, write through a virtual table, or work on whole databases: counted
+ * as writes of the held file whatever database they name. Every other write of a database file starts a write
+ * `Transaction` on that database, which says which one it is (see `writesHeldFile`).
  */
-const WRITE_STEPS = new Set([
-	"OpenWrite",
+const FILE_STEPS = new Set([
+	"AutoCommit",
+	"Savepoint",
+	"SqlExec",
 	"VUpdate",
 	"VBegin",
 	"VCreate",
 	"VDestroy",
 	"VRename",
-	"Clear",
-	"Destroy",
-	"CreateBtree",
-	"ParseSchema",
-	"DropTable",
-	"DropIndex",
-	"DropTrigger",
-	"SetCookie",
-	"IncrVacuum",
 	"Vacuum",
 	"Checkpoint",
 	"JournalMode",
-	"AutoCommit",
-	"Savepoint",
-	"SqlExec",
-	"Program",
+	"IncrVacuum",
 ]);
 
 /**
- * What a wrapped call is, decided from the plan SQLite makes for its text on `database`, never by running it:
+ * What a wrapped call is, decided from the plan SQLite makes for its text on `database`, never by running it. Only a
+ * write of the held `file` needs its lock: the main database, or an attached one that is the same file.
  *
  * - `invalid`: a single statement (`single`) SQLite cannot prepare now (a missing table, a syntax error), prepared as
  *   the call itself prepares it. It runs at once and fails with its own error, as it always has: a statement that
  *   cannot be prepared runs nothing and takes no lock.
- * - `read`: a single statement whose plan has no step that writes (see `WRITE_STEPS`) and starts no write
- *   transaction, whatever functions or virtual tables it calls, or one that only lists a plan (`EXPLAIN`). It runs at
- *   once: in WAL mode, which both kinds of connection put the file in, a read never waits for the write lock, and code
- *   of yours that writes from inside it meets the lock as it always did.
- * - `write`: any other single statement, a PRAGMA included, which SQLite may carry out while it prepares it and so
- *   is never prepared for its plan. It waits for the lock (see `runWhenFree`).
- * - `script`: a call that may be several statements (`exec`), never prepared: it waits like a write.
+ * - `read`: a single statement whose plan writes nothing of the held file (see `writesHeldFile`): a read, whatever
+ *   functions or virtual tables it calls, a write of a temporary table or of another attached file, or a statement
+ *   that only lists a plan (`EXPLAIN`). It runs at once: in WAL mode, which both kinds of connection put the file in,
+ *   a read never waits for the write lock, and code of yours that writes from inside it meets the lock as it always
+ *   did.
+ * - `write`: a single statement that writes the held file, a PRAGMA (which SQLite may carry out while it prepares it,
+ *   so it is never prepared ahead), or one that creates a trigger. It waits for the lock (see `runWhenFree`).
+ * - `script`: an `exec` call of more than one statement, or one whose statements cannot be told apart for sure (see
+ *   `splitStatements`): it waits like a write and never runs part of itself while the lock is held. An `exec` call of
+ *   no statement runs at once, as a `read`; one of exactly one statement is classified as that statement.
  *
- * The plan of a statement that prepares is made once while the file is held and listed again for later calls; whether a
- * statement writes does not change with the schema.
+ * The plan of a statement that prepares is made once while the file is held and listed again for later calls.
  */
 export function classify(
 	gate: FileGate,
 	owner: object,
 	database: DatabaseSync,
+	file: string,
 	sql: string,
 	single: boolean,
 ): "read" | "write" | "script" | "invalid" {
-	if (!single) return "script";
+	if (!single) {
+		const statements = splitStatements(sql);
+		if (statements === undefined || statements.length > 1) return "script";
+		if (statements.length === 0) return "read";
+		return classify(gate, owner, database, file, statements[0]!, true);
+	}
 	// Decided on the text SQLite reads, past the blanks, comments and empty statements it skips.
 	const statement = sql.replace(LEADING, "");
-	if (PRAGMA_STATEMENT.test(statement)) return "write";
+	if (PRAGMA_STATEMENT.test(statement) || TRIGGER_STATEMENT.test(statement)) return "write";
 	// Prepared first, as the call itself prepares it: if that fails now, the call fails at once with its own error.
 	try {
 		database.prepare(sql);
@@ -516,13 +516,108 @@ export function classify(
 	}
 	if (EXPLAIN_STATEMENT.test(statement)) return "read";
 	const steps = planSteps(gate, owner, database, statement);
-	if (steps === undefined || !READ_STATEMENT.test(statement)) return "write";
+	if (steps === undefined) return "write";
+	return writesHeldFile(steps, database, file) ? "write" : "read";
+}
+
+/**
+ * Whether a plan writes the held `file`: it starts a write transaction on the main database, or on an attached one
+ * that is the same file (see `heldFileSchemas`), or has a step of `FILE_STEPS`. A write of a temporary table (the
+ * temp database) or of another attached file leaves the held file alone.
+ */
+function writesHeldFile(steps: ReturnType<StatementSync["all"]>, database: DatabaseSync, file: string): boolean {
+	let sameFile: Set<number> | undefined;
 	for (const step of steps) {
 		const opcode = String(step.opcode);
-		// Transaction p2: whether it is a write transaction.
-		if (WRITE_STEPS.has(opcode) || (opcode === "Transaction" && Number(step.p2) !== 0)) return "write";
+		if (FILE_STEPS.has(opcode)) return true;
+		// Transaction p1: the database (0 main, 1 temp, then attached ones), p2: whether it is a write transaction.
+		if (opcode !== "Transaction" || Number(step.p2) === 0) continue;
+		const schema = Number(step.p1);
+		if (schema === 1) continue;
+		if (schema === 0) return true;
+		sameFile ??= heldFileSchemas(database, file);
+		if (sameFile === undefined || sameFile.has(schema)) return true;
 	}
-	return "read";
+	return false;
+}
+
+/** The attached databases of `database` that are the held `file`, by number; undefined when they cannot be listed. */
+function heldFileSchemas(database: DatabaseSync, file: string): Set<number> | undefined {
+	try {
+		const schemas = new Set<number>();
+		for (const row of database.prepare("PRAGMA database_list").all()) {
+			const path = typeof row.file === "string" ? row.file : "";
+			if (Number(row.seq) > 1 && path !== "" && fileIdentity(path) === file) schemas.add(Number(row.seq));
+		}
+		return schemas;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The statements of an `exec` text, split as SQLite reads them: past quoted strings and names (`'…'`, `"…"`, `` `…` ``,
+ * `[…]`) and comments, with a trigger's body (`CREATE TRIGGER … BEGIN … END`) kept in its statement. Empty statements
+ * are dropped. Undefined when the text ends inside a quote, a comment or a trigger's body, so its statements cannot be
+ * told apart for sure.
+ */
+export function splitStatements(sql: string): string[] | undefined {
+	const statements: string[] = [];
+	let start = 0;
+	let words: string[] = [];
+	let lastWord = "";
+	let tokens = false;
+	const trigger = () =>
+		words[0] === "CREATE" &&
+		(words[1] === "TRIGGER" || ((words[1] === "TEMP" || words[1] === "TEMPORARY") && words[2] === "TRIGGER"));
+	for (let index = 0; index < sql.length; ) {
+		const char = sql[index]!;
+		if (char === "'" || char === '"' || char === "`" || char === "[") {
+			const close = char === "[" ? "]" : char;
+			let end = sql.indexOf(close, index + 1);
+			// A doubled quote stands for the quote itself, except in a bracketed name.
+			while (end !== -1 && close !== "]" && sql[end + 1] === close) end = sql.indexOf(close, end + 2);
+			if (end === -1) return undefined;
+			index = end + 1;
+			tokens = true;
+			lastWord = "";
+		} else if (char === "-" && sql[index + 1] === "-") {
+			const end = sql.indexOf("\n", index + 2);
+			index = end === -1 ? sql.length : end + 1;
+		} else if (char === "/" && sql[index + 1] === "*") {
+			const end = sql.indexOf("*/", index + 2);
+			if (end === -1) return undefined;
+			index = end + 2;
+		} else if (char === ";") {
+			index += 1;
+			// Inside a trigger's body, only the semicolon after its END ends the statement.
+			if (trigger() && lastWord !== "END") continue;
+			if (tokens) statements.push(sql.slice(start, index - 1));
+			start = index;
+			words = [];
+			lastWord = "";
+			tokens = false;
+		} else if (/[A-Za-z_]/.test(char)) {
+			let end = index + 1;
+			while (end < sql.length && /[\w$]/.test(sql[end]!)) end += 1;
+			const word = sql.slice(index, end).toUpperCase();
+			if (words.length < 3) words.push(word);
+			lastWord = word;
+			tokens = true;
+			index = end;
+		} else {
+			if (!/\s/.test(char)) {
+				tokens = true;
+				lastWord = "";
+			}
+			index += 1;
+		}
+	}
+	if (tokens) {
+		if (trigger() && lastWord !== "END") return undefined;
+		statements.push(sql.slice(start));
+	}
+	return statements;
 }
 
 /**
