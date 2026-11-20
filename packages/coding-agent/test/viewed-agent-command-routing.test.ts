@@ -311,6 +311,77 @@ describe("main's prompt while a command typed for a subagent runs on main", () =
 	);
 });
 
+describe("a command typed for a subagent that went away, moved into main's prompt", () => {
+	/** The subagent's prompt holds `text`, typed and not sent, when the subagent goes: main shows with `text` moved in. */
+	async function movedIntoMain(text: string): Promise<ViewedScreen> {
+		const viewed = await viewSubagent();
+		viewed.mode.editor.setText(text);
+		viewed.port.setStatus({ gone: true });
+		await until(() => viewed.viewed() === "main");
+		await until(() => viewed.mode.editor.getText() === text);
+		return viewed;
+	}
+
+	/** Enter, as the terminal sends it: the prompt clears itself, then submits. */
+	function enter(): void {
+		screen?.mode.defaultEditor.handleInput(ENTER);
+	}
+
+	test(
+		"one Enter does not run it: it asks first; Esc puts it back and the next Enter asks again; Yes runs it on main",
+		async () => {
+			screen = await movedIntoMain("/new");
+			const { mode } = screen;
+			const sessionId = mode.session.sessionId;
+			enter();
+			await until(() => isDialog(screen?.promptSlot()));
+			assert.match(screen.promptSlotText(), /Run \/new on the main conversation\?/);
+			assert.match(
+				screen.promptSlotText(),
+				/\/new was typed for worker, which is gone\. It acts on the main conversation\./,
+			);
+			answer(ESC);
+			await until(() => screen?.promptSlot() === mode.editor);
+			await until(() => mode.editor.getText() === "/new");
+			assert.equal(mode.session.sessionId, sessionId);
+			enter();
+			await until(() => isDialog(screen?.promptSlot()));
+			answer(ENTER);
+			await until(() => /New session started/.test(screen?.transcript() ?? ""));
+			assert.notEqual(mode.session.sessionId, sessionId);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"edited after the move, it runs as main runs what is typed there",
+		async () => {
+			screen = await movedIntoMain("/new");
+			const { mode } = screen;
+			const sessionId = mode.session.sessionId;
+			mode.defaultEditor.handleInput(" ");
+			mode.defaultEditor.handleInput("\x7f");
+			assert.equal(mode.editor.getText(), "/new");
+			enter();
+			await until(() => mode.session.sessionId !== sessionId);
+			assert.equal(screen.promptSlot(), mode.editor, "no dialog");
+			await until(() => /New session started/.test(screen?.transcript() ?? ""));
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a moved command that does not act on the main conversation's history runs at once",
+		async () => {
+			screen = await movedIntoMain("/session");
+			enter();
+			await until(() => /Session Info/.test(screen?.transcript() ?? ""));
+			assert.equal(screen.promptSlot(), screen.mode.editor, "no dialog");
+		},
+		HOST_TIMEOUT_MS,
+	);
+});
+
 describe("the prompt's completion while a subagent is shown", () => {
 	/**
 	 * The prompt with its completion menu after `text` is typed into the empty prompt: once the menu shows `expected`,

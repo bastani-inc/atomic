@@ -25,6 +25,7 @@ import {
 	type TaskInspectorUi,
 } from "../rpc/task-ui-bridge.js";
 import { type PromptHandle, promptHandle } from "./agent-view/agent-drafts.ts";
+import { gateMovedDraft } from "./agent-view/viewed-commands.ts";
 import { escapeViewedAgent, submitToViewedAgent } from "./agent-view/viewed-submit.ts";
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
@@ -384,6 +385,13 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 		const viewed = this.agentView?.viewed;
 		if (viewed?.kind === "agent") {
 			await submitToViewedAgent(this, viewed.port, text, submittedDraft);
+			return;
+		}
+		// Text a gone subagent's prompt moved here, submitted unedited, asks first when it would rewrite main. Decided
+		// synchronously: with nothing moved, main's path runs exactly as before.
+		const moved = gateMovedDraft(this, text, submittedDraft);
+		if (moved !== undefined) {
+			await moved;
 			return;
 		}
 		await mainSubmit(this, text, submittedDraft);

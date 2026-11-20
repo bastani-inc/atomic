@@ -8,7 +8,7 @@ import { mainSubmit } from "../interactive-input-handling.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { mergeRestoredDraft } from "../interactive-prompt-restore.ts";
 import { type MainCommandOrigin, viewedAgentCommand } from "../subagent-chat-commands.ts";
-import { type PromptHandle, promptHandle } from "./agent-drafts.ts";
+import { markMovedDraft, type PromptHandle, promptHandle, takeMovedDraftMark } from "./agent-drafts.ts";
 import type { AgentViewSwitcher } from "./agent-view-switcher.ts";
 import type { AgentViewPort } from "./contracts.ts";
 import { notifyViewed } from "./viewed-notices.ts";
@@ -68,6 +68,34 @@ export async function routeViewedCommand(
 			return "handled";
 		}
 	}
+}
+
+/**
+ * Main's prompt submitted holding, unedited, the text a gone subagent's prompt moved there (D6): one Enter never runs a
+ * command typed for a subagent that would replace, rewrite or switch the main conversation, or set its model or
+ * thinking level. It asks first, as from the subagent's view; No or Esc puts main's prompt back as it was, still
+ * marked. Answers undefined, synchronously, for any other submission, which main's path runs as before.
+ */
+export function gateMovedDraft(mode: InteractiveModeBase, text: string, draft: string): Promise<void> | undefined {
+	const mark = takeMovedDraftMark(mode, text);
+	if (mark === undefined) return undefined;
+	const command = viewedAgentCommand(text, (name) => mainCommandOrigin(mode, name));
+	if (command.kind !== "confirm" && command.kind !== "refuse") return undefined;
+	const name = `/${command.name}`;
+	return (async () => {
+		const yes = await mode.showExtensionConfirm(
+			`Run ${name} on the main conversation?`,
+			`${name} was typed for ${mark.agentName}, which is gone. It acts on the main conversation.`,
+		);
+		if (yes) {
+			await mainSubmit(mode, text, draft);
+			return;
+		}
+		const prompt = promptHandle(mode, "main");
+		const restored = mergeRestoredDraft(draft, prompt.getExpandedText());
+		prompt.setText(restored);
+		markMovedDraft(mode, mark.agentName, restored);
+	})();
 }
 
 /**
