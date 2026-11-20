@@ -55,6 +55,7 @@ import {
 	indexSubagentChildOwner,
 	loadSubagentChildRecord,
 	readableSubagentChildRecordOf,
+	SUBAGENT_CHILD_RECORD_TYPE,
 } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
@@ -331,18 +332,46 @@ async function entriesAfterLaunch(
  * Whether the pause a record names still holds in the child's saved session: the session still holds the entry the
  * pause was taken at, and no user message reached the child after it. What its interrupted turn left (its answer, the
  * results of its stopped calls) and what a restore notes are not messages to it. A version that does not record pauses
- * leaves the record's pause behind when it continues the child; the message it continues it with ends the pause. A
- * pause recorded without its entry, as builds before `pausedAtLeafId` recorded it, holds as those builds held it.
+ * leaves the record's pause behind when it continues the child; the message it continues it with ends the pause.
+ *
+ * A pause recorded without its entry, as builds before `pausedAtLeafId` recorded it, holds as those builds held it,
+ * unless a user message reached the child after the record of that pause was saved (`recordedAt`, when it is known).
  */
 function pauseStillHolds(
 	branch: ReturnType<SessionManager["getBranch"]> | undefined,
 	pausedAtLeafId: string | null | undefined,
+	recordedAt?: number,
 ): boolean {
 	if (branch === undefined) return false;
-	if (pausedAtLeafId === undefined) return true;
+	if (pausedAtLeafId === undefined)
+		return (
+			recordedAt === undefined ||
+			branch.every((entry) => !(isUserMessage(entry) && Date.parse(entry.timestamp) > recordedAt))
+		);
 	const pausedAt = pausedAtLeafId === null ? -1 : branch.findIndex((entry) => entry.id === pausedAtLeafId);
 	if (pausedAtLeafId !== null && pausedAt === -1) return false;
-	return branch.slice(pausedAt + 1).every((entry) => !(entry.type === "message" && entry.message.role === "user"));
+	return branch.slice(pausedAt + 1).every((entry) => !isUserMessage(entry));
+}
+
+function isUserMessage(entry: ReturnType<SessionManager["getBranch"]>[number]): boolean {
+	return entry.type === "message" && entry.message.role === "user";
+}
+
+/**
+ * When the owner's session saved the latest record that says the user paused child `childId`, or `undefined` when it
+ * does not hold that record any more.
+ */
+function pauseRecordedAt(ctx: ExtensionContext, childId: string): number | undefined {
+	const entries = ctx.sessionManager.getEntries();
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (entry?.type !== "custom" || entry.customType !== SUBAGENT_CHILD_RECORD_TYPE) continue;
+		const data = entry.data as Partial<SubagentChildRecord> | undefined;
+		if (data?.childId !== childId || data.pausedByUser !== true) continue;
+		const at = Date.parse(entry.timestamp);
+		return Number.isNaN(at) ? undefined : at;
+	}
+	return undefined;
 }
 
 async function ownSessionModelCandidate(
@@ -735,7 +764,11 @@ async function relaunchChild(
 		!fresh &&
 		sessionManager !== undefined &&
 		latest.pausedByUser === true &&
-		pauseStillHolds(savedBranch, latest.pausedAtLeafId);
+		pauseStillHolds(
+			savedBranch,
+			latest.pausedAtLeafId,
+			latest.pausedAtLeafId === undefined ? pauseRecordedAt(ctx, record.childId) : undefined,
+		);
 	const promptless = resume?.promptless === true && heldMessages.length === 0;
 	const wakePlan =
 		!redispatch &&

@@ -447,3 +447,140 @@ test(
 	},
 	LIVE_RESTORE_TIMEOUT_MS,
 );
+
+test(
+	"a pause whose record cannot be saved is still shown, with the warning that a restart continues the subagent",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-unsaved-pause" })], {
+				stopReason: "toolUse",
+			}),
+		]);
+		// The owner's session cannot save the pause.
+		const parent = parentSession(env.root, {
+			beforeAppend: async (record) => {
+				if (record?.pausedByUser === true) throw new Error("the session store is read-only");
+				return true;
+			},
+		});
+		const runId = "esc-pause-unsaved";
+		const liveOptions = env.options(runId);
+		const before = taskHost("unsaved-pause");
+		try {
+			const launched = await runAgentTask({
+				host: before,
+				cwd: env.root,
+				agents: [agent],
+				agent: "worker",
+				task: "run until paused",
+				options: { ...liveOptions, index: 0, sessionDir: join(env.root, "children", runId) },
+				recordChild: createSubagentChildRecordSink(parent.pi, parent.ctx(before)),
+				runtime: {
+					runSync: (...args) =>
+						runSync(args[0], args[1], args[2], args[3], {
+							...args[4],
+							testSession: false,
+							getChildSessionOptions: liveOptions.getChildSessionOptions,
+						}),
+				},
+			});
+			assert.equal(launched.kind, "admitted");
+			const firstTask = launched.kind === "admitted" ? launched.observation.taskId : "";
+			await until(
+				() => env.blockStarted() && transcriptOf(before, firstTask) !== undefined,
+				LIVE_CHILD_START_WAIT_MS,
+			);
+			const paused = await transcriptOf(before, firstTask)!.pauseTurn!();
+			assert.match(paused.warning ?? "", /pause was not saved: if Atomic restarts, it continues/);
+			assert.equal(transcriptOf(before, firstTask)!.turnPaused?.(), true, "it is paused all the same");
+		} finally {
+			await before.close("session-close");
+		}
+	},
+	LIVE_RESTORE_TIMEOUT_MS,
+);
+
+test(
+	"a pause recorded without its leaf entry that an older version continued is restored continued, as one never paused",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-leafless-downgrade" })], {
+				stopReason: "toolUse",
+			}),
+		]);
+		const parent = parentSession(env.root);
+		const runId = "esc-pause-leafless-downgrade";
+		const childId = `${runId}:0`;
+		const liveOptions = env.options(runId);
+		const launchOptions = (options: RunSyncOptions): RunSyncOptions => ({
+			...options,
+			testSession: false,
+			getChildSessionOptions: liveOptions.getChildSessionOptions,
+		});
+
+		// A build that recorded pauses without their leaf entry pauses the child, and Atomic closes.
+		const before = taskHost("before-leafless-downgrade");
+		const sink = createSubagentChildRecordSink(parent.pi, parent.ctx(before));
+		const launched = await runAgentTask({
+			host: before,
+			cwd: env.root,
+			agents: [agent],
+			agent: "worker",
+			task: "run until paused",
+			options: { ...liveOptions, index: 0, sessionDir: join(env.root, "children", runId) },
+			recordChild: {
+				...sink,
+				record: (record) => {
+					const { pausedAtLeafId: _pausedAtLeafId, ...leafless } = record;
+					return sink.record(leafless);
+				},
+			},
+			runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+		});
+		assert.equal(launched.kind, "admitted");
+		const firstTask = launched.kind === "admitted" ? launched.observation.taskId : "";
+		await until(() => env.blockStarted() && transcriptOf(before, firstTask) !== undefined, LIVE_CHILD_START_WAIT_MS);
+		await transcriptOf(before, firstTask)!.pauseTurn!();
+		await until(() => parent.latest(childId)?.pausedByUser === true);
+		await before.close("session-close");
+		await until(() => parent.latest(childId)?.state === "running");
+		const paused = parent.latest(childId)!;
+		assert.equal(paused.pausedAtLeafId, undefined, "the record names no leaf entry");
+		assert.ok(paused.childSessionFile !== undefined);
+
+		// An older version restores and continues it; its record says nothing of pauses.
+		await pause(5);
+		const child = await SessionManager.open(paused.childSessionFile, undefined, paused.cwd);
+		await child.appendMessage({ role: "user", content: SUBAGENT_RESUME_CONTINUATION_PROMPT, timestamp: Date.now() });
+		await child.appendMessage(fauxAssistantMessage("continued by the older version"));
+		const { pausedByUser: _pausedByUser, ...older } = paused;
+		await parent.pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, { ...older, taskId: "older-version-task" });
+		assert.equal(parent.latest(childId)?.pausedByUser, true, "the older version's record keeps the pause behind");
+
+		const inputs: string[] = [];
+		env.faux.setResponses([
+			(context) => {
+				inputs.push(newInput(context));
+				return fauxAssistantMessage("answered after the upgrade");
+			},
+		]);
+		const after = taskHost("after-leafless-downgrade");
+		try {
+			const deps: SubagentChildRestoreDeps = {
+				pi: parent.pi,
+				config: {},
+				discoverAgents: () => ({ agents: [agent] }),
+				runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+			};
+			const [outcome] = await restoreSubagentChildren(deps, parent.ctx(after));
+			assert.equal(outcome?.kind, "restored");
+			await until(() => inputs.length > 0);
+			assert.ok(inputs[0]?.includes(SUBAGENT_RESUME_CONTINUATION_PROMPT), "it is continued, as a running child is");
+		} finally {
+			await after.close("session-close");
+		}
+	},
+	LIVE_RESTORE_TIMEOUT_MS,
+);
