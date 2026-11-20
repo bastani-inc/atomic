@@ -386,4 +386,9 @@ export class ThreadConnection {
 		this.end(new ConnectionThreadEndedError("SQLite connection closed"));
 		await this.worker.terminate();
 	}
+
+	/** Calls `listener` once the connection's thread has exited, whether closed or lost. */
+	onExit(listener: () => void): void {
+		this.worker.once("exit", listener);
+	}
 }

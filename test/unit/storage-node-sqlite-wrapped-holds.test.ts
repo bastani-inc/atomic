@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { Worker } from "node:worker_threads";
 import { afterEach, test, vi } from "vitest";
 import type { SqliteDatabase, SqliteExecutor } from "../../packages/coding-agent/src/core/storage/database.js";
 import {
@@ -12,6 +13,7 @@ import {
 	openNodeSqliteDatabase,
 	wrapNodeSqliteDatabase,
 } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import type { ThreadConnection } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { interceptConnectionRequests, isExec } from "../helpers/sqlite-connection-requests.js";
 
@@ -456,4 +458,95 @@ test("with a busy timeout of 0, a wrapped read that calls a function of yours ne
 	assert.ok(failure instanceof StorageUnavailableError, `expected SQLITE_BUSY, got ${String(failure)}`);
 	assert.equal((failure.cause as { errcode?: number }).errcode, 5);
 	assert.equal(calls, 0);
+});
+
+test("with a busy timeout of 0, a wrapped write runs at once once the threaded transaction's thread is gone (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped } = await openWrapped(path, 0);
+	let thread: ThreadConnection | undefined;
+	const interception = interceptConnectionRequests((request, send, connection) => {
+		thread ??= connection;
+		return send(request);
+	});
+	cleanups.push(() => interception.restore());
+	let held!: () => void;
+	const lockHeld = new Promise<void>((resolve) => {
+		held = resolve;
+	});
+	let finish!: () => void;
+	const finished = new Promise<void>((resolve) => {
+		finish = resolve;
+	});
+	const committed = threaded
+		.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES ('a')");
+			held();
+			await finished;
+		})
+		.then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+	await lockHeld;
+	// The thread goes away while the callback still runs; SQLite let go of the lock with it.
+	const worker = Reflect.get(thread!, "worker") as Worker;
+	const exited = new Promise<void>((resolve) => worker.once("exit", () => resolve()));
+	await worker.terminate();
+	await exited;
+	assert.deepEqual(await wrapped.run("INSERT INTO items VALUES ('c')"), { changes: 1 });
+	finish();
+	assert.ok((await committed) instanceof Error, "the transaction failed with its thread");
+	assert.deepEqual(await values(wrapped), ["c"]);
+});
+
+test("a transaction requested inside a threaded transaction's callback keeps that callback's calls running at once when another's commit carries it (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path, 300);
+	let calls = 0;
+	raw.function("seen", () => {
+		calls++;
+		return 1;
+	});
+	const other = await openThreaded(databasePath());
+	await other.exec("CREATE TABLE b (v)");
+	const signal = () => {
+		let fire!: () => void;
+		const fired = new Promise<void>((resolve) => {
+			fire = resolve;
+		});
+		return { fire, fired };
+	};
+	const [held, otherWaits, joined, letGo] = [signal(), signal(), signal(), signal()];
+	let read: unknown;
+	const outer = threaded.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('a')");
+		held.fire();
+		await otherWaits.fired;
+		// Joins the other file's waiting transaction, whose commit then runs this callback.
+		const inner = other.transaction(async (otherTx) => {
+			await otherTx.run("INSERT INTO b VALUES (2)");
+			read = await wrapped.get("SELECT seen() AS n");
+		});
+		joined.fire();
+		await inner;
+	});
+	await held.fired;
+	let paused = false;
+	const interception = interceptConnectionRequests(async (request, send) => {
+		if (request.kind === "begin" && !paused) {
+			paused = true;
+			otherWaits.fire();
+			await letGo.fired;
+		}
+		return send(request);
+	});
+	cleanups.push(() => interception.restore());
+	const first = other.transaction(async (otherTx) => {
+		await otherTx.run("INSERT INTO b VALUES (1)");
+	});
+	await joined.fired;
+	letGo.fire();
+	await Promise.all([first, outer]);
+	assert.deepEqual(read, { n: 1 });
+	assert.equal(calls, 1);
 });

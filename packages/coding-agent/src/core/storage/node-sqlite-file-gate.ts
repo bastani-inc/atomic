@@ -52,7 +52,7 @@ export interface FileGate {
 
 interface Registry {
 	readonly files: Map<string, FileGate>;
-	readonly scopes: AsyncLocalStorage<HoldScope>;
+	readonly scopes: AsyncLocalStorage<HoldScope | undefined>;
 }
 
 // Shared across module copies, as the transaction gates are: a copy that runs a transaction's callback and a copy whose
@@ -126,10 +126,13 @@ function forgetIfIdle(file: string, gate: FileGate): void {
 		registry.files.delete(file);
 }
 
-/** Runs a transaction's callback inside its hold's asynchronous context, so calls it makes can be told apart. */
-export function runInHold<T>(hold: FileHold | undefined, callback: () => T): T {
-	if (hold === undefined) return callback();
-	return registry.scopes.run({ hold, outer: registry.scopes.getStore() }, callback);
+/**
+ * Runs a transaction's callback inside the transaction callbacks it was requested in (`scope`, captured when it was
+ * requested, since a group commit runs it from another's request) and inside its own hold, so calls it makes can be
+ * told apart.
+ */
+export function runInHold<T>(hold: FileHold | undefined, scope: HoldScope | undefined, callback: () => T): T {
+	return registry.scopes.run(hold === undefined ? scope : { hold, outer: scope }, callback);
 }
 
 /** The holds whose callbacks the caller runs in; captured when a call is made, not when it runs. */

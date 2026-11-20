@@ -1093,6 +1093,8 @@ interface QueuedTransaction {
 	readonly resolve: (value: unknown) => void;
 	readonly reject: (error: unknown) => void;
 	readonly lockWaitMs?: number;
+	/** The transaction callbacks it was requested in; its own callback runs inside them (see `runInHold`). */
+	readonly scope: HoldScope | undefined;
 }
 
 /**
@@ -1379,6 +1381,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		fileGate?: { readonly file: string; readonly role: "holds" | "waits" },
 	) {
 		this.fileGate = fileGate;
+		// A thread that is gone holds no lock, whatever the transaction's callback still does.
+		if (fileGate?.role === "holds" && connection instanceof ThreadConnection)
+			connection.onExit(() => {
+				const hold = this.hold;
+				this.hold = undefined;
+				releaseHold(hold);
+			});
 		this.lockWaitMs = lockWaitMs;
 		this.groupCommitHoldMs = groupCommitHoldMs;
 		this.transactionIdentity = transactionIdentity;
@@ -1814,6 +1823,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	/** Idle-only housekeeping: do not join a batch, wait behind an operation on this handle or another handle's
 	 * transaction, or get in front of writers already waiting on another process. */
 	async tryMaintenance(callback: (tx: SqliteExecutor) => Promise<void>): Promise<boolean> {
+		const scope = currentHoldScope();
 		const position = this.enqueued;
 		let idle = false;
 		void this.tail.then(() => {
@@ -1846,7 +1856,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				}
 				this.acquired(start);
 				return new Promise<boolean>((resolve, reject) => {
-					void this.commitAlone({ callback, resolve: () => resolve(true), reject }).catch(reject);
+					void this.commitAlone({ callback, resolve: () => resolve(true), reject, scope }).catch(reject);
 				});
 			});
 		});
@@ -1891,6 +1901,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				resolve: resolve as (value: unknown) => void,
 				reject,
 				lockWaitMs: options?.lockWaitMs,
+				scope: currentHoldScope(),
 			};
 			const last = this.waitingBatches.at(-1);
 			if (last?.open === true && last.members.length < MAX_GROUP_COMMIT_TRANSACTIONS) {
@@ -1953,7 +1964,9 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private async commitAlone(queued: QueuedTransaction): Promise<void> {
 		let active = true;
 		try {
-			const value = await runInHold(this.hold, () => queued.callback(this.createExecutor(() => active)));
+			const value = await runInHold(this.hold, queued.scope, () =>
+				queued.callback(this.createExecutor(() => active)),
+			);
 			active = false;
 			holdLettingGo(this.hold);
 			await this.executor.exec("COMMIT");
@@ -1987,7 +2000,9 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			let active = true;
 			try {
 				await this.executor.exec(`SAVEPOINT ${savepoint}`);
-				const value = await runInHold(this.hold, () => queued.callback(this.createExecutor(() => active)));
+				const value = await runInHold(this.hold, queued.scope, () =>
+					queued.callback(this.createExecutor(() => active)),
+				);
 				active = false;
 				await this.executor.exec(`RELEASE ${savepoint}`);
 				outcomes.push({ ok: true, value });
