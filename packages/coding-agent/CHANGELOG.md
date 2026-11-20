@@ -50,6 +50,7 @@
 
 ### Added
 
+- Intercom messages queued for a subagent that finished or was paused now survive an Intercom restart, including a crash or a machine restart: they still reach the subagent once each, in order, when the session that launched it resumes or continues it. A message fails only if the subagent is cancelled or gone, the session that launched it ends or stays away for 7 days in a row, or a size limit is reached ([#5999](https://github.com/bastani-inc/atomic/issues/5999)).
 - Packages can ship subagent definitions: list agent `.md` files or directories under `agents` in the `atomic` manifest. They load from globally installed, project-installed and `-e` packages, follow a package's `agents` filter in settings, and change with `/reload`. Agents of a project-installed package are offered only in a trusted project. Extensions read the enabled files with `ctx.getPackageAgents()`; a custom SDK `ResourceLoader` can supply them with `getPackageAgents()` ([#5991](https://github.com/bastani-inc/atomic/issues/5991)).
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Extension tools can distinguish nested calls from model-issued calls with `ctx.parentToolCallId`.

@@ -106,7 +106,7 @@ class Host {
 		const extensionDir = join(repoRoot, "packages/intercom");
 		const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
 			env: { ...process.env, ...env, ATOMIC_CODING_AGENT_DIR: this.agentDir },
-			stdio: process.env.ECQ_BROKER_STDERR === "1" ? ["ignore", "ignore", "inherit"] : "ignore",
+			stdio: "ignore",
 		});
 		this.broker = broker;
 		this.fixture.trackBroker(broker);
