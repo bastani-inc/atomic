@@ -200,12 +200,14 @@ function sameChildAttempt(
 	selected: string | undefined,
 ): string | undefined {
 	const left = selected === undefined ? undefined : before.find((task) => task.ref.taskId === selected);
-	if (left?.kind !== "agent") return undefined;
+	// A record that names no launch operation is its own subagent, with no other attempts.
+	if (left?.kind !== "agent" || typeof left.launchOperationId !== "string") return undefined;
 	const child = childOfAttempt(left);
 	const listed = new Set(order);
 	let latest: TaskRecord | undefined;
 	for (const task of tasks) {
-		if (task.kind !== "agent" || !listed.has(task.ref.taskId) || childOfAttempt(task) !== child) continue;
+		if (task.kind !== "agent" || !listed.has(task.ref.taskId) || typeof task.launchOperationId !== "string") continue;
+		if (childOfAttempt(task) !== child) continue;
 		if (latest === undefined || task.launchOrdinal >= latest.launchOrdinal) latest = task;
 	}
 	return latest?.ref.taskId;

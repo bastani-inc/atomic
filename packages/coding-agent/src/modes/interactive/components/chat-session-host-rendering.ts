@@ -33,6 +33,7 @@ import {
 	isChatSessionBusyStatus,
 	isChatSessionRetryStatus,
 } from "./chat-session-host-state.ts";
+import { renderSteeredPendingMessages } from "./chat-session-host-steering.ts";
 import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
@@ -102,6 +103,8 @@ export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscr
 	state: ChatSessionHostState<TExtraEntry>,
 	width: number,
 ): string[] {
+	if (state.steeringController !== undefined)
+		return renderSteeredPendingMessages(state, state.steeringController, width);
 	if (
 		state.pendingSteeringMessages.length === 0 &&
 		state.pendingFollowUpMessages.length === 0 &&

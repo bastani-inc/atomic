@@ -490,7 +490,12 @@ function taskTranscriptSource(
 		...(session.commands ? { commands: session.commands.bind(session) } : {}),
 		...(session.isRunning ? { isRunning: session.isRunning.bind(session) } : {}),
 		...(session.interruptTurn ? { interruptTurn: session.interruptTurn.bind(session) } : {}),
+		...(session.pauseTurn ? { pauseTurn: session.pauseTurn.bind(session) } : {}),
+		...(session.resumeTurn ? { resumeTurn: session.resumeTurn.bind(session) } : {}),
+		...(session.turnPaused ? { turnPaused: session.turnPaused.bind(session) } : {}),
 		...(session.getQueuedMessages ? { getQueuedMessages: session.getQueuedMessages.bind(session) } : {}),
+		...(session.queueMessage ? { queueMessage: session.queueMessage.bind(session) } : {}),
+		...(session.clearQueue ? { clearQueue: session.clearQueue.bind(session) } : {}),
 		...(intercomTarget === undefined ? {} : { completionSource: { runId, intercomTarget } }),
 		...(intercomTarget === undefined || intercomEvents === undefined
 			? {}
@@ -621,6 +626,12 @@ export async function runAgentTask(input: {
 	const requestedModel = launchRequestedModel(agentConfig, input.options);
 	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
 	let recordSpan: TaskElapsedSpan | undefined;
+	/**
+	 * Whether the user paused this child from its chat and its next turn has not started. Recorded once it was ever
+	 * paused here, or the launch restores a paused child, so a later record clears it; never otherwise.
+	 */
+	let turnPaused = input.options.resumePaused === true;
+	let recordsPause = turnPaused;
 	const recordChildTask = (
 		taskId: TaskId,
 		state: SubagentChildRecordInput["state"],
@@ -671,6 +682,7 @@ export async function runAgentTask(input: {
 			...subagentChildModelChoice(input.options, agentConfig),
 			...(input.schedule?.limit === undefined ? {} : { runConcurrency: input.schedule.limit }),
 			...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
+			...(recordsPause ? { pausedByUser: state === "running" && turnPaused } : {}),
 		};
 		input.recordChild?.record(record);
 		// #4639: once its session is gone, a send to the child is told why it ended and how to resume it.
@@ -949,6 +961,11 @@ export async function runAgentTask(input: {
 								},
 								// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
 								toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
+								reportTurnPaused: (paused) => {
+									turnPaused = paused;
+									recordsPause = true;
+									recordChild("running");
+								},
 								reportStart,
 								onExecution: (execution) => {
 									executionCleanup = execution.cleanup;

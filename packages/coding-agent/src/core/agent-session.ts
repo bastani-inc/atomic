@@ -21,7 +21,7 @@ import { agentSessionEventsMethods } from "./agent-session-events.ts";
 import { agentSessionExportMethods } from "./agent-session-export.ts";
 import { agentSessionExtensionBindingsMethods } from "./agent-session-extension-bindings.ts";
 import { agentSessionMessageQueueMethods } from "./agent-session-message-queue.ts";
-import type { AgentSessionInternalSurface, AgentSessionPublicSurface } from "./agent-session-methods.ts";
+import type { AgentSessionInternalSurface, AgentSessionPublicSurface, TurnPause } from "./agent-session-methods.ts";
 import { agentSessionModelsMethods } from "./agent-session-models.ts";
 import { agentSessionPersistenceFailureMethods } from "./agent-session-persistence-failures.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
@@ -194,6 +194,8 @@ class AgentSessionBase {
 	protected _awaitingStartAfterInterrupt = false;
 	readonly _undeliveredAgentStarts: number = 0;
 	protected _awaitingMessageAfterInterrupt = false;
+	protected _turnPause: TurnPause | undefined = undefined;
+	protected _turnPauseRelease: Promise<void> | undefined = undefined;
 	protected _disposed = false;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
 	/** Settles after the currently active branch-summary navigation finishes cleanup. */

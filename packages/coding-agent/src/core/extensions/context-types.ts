@@ -86,6 +86,11 @@ export interface SubagentChildPolicy {
 	 * open while it has, so the task is answered; the execution ending seals admission.
 	 */
 	readonly taskPending?: () => boolean;
+	/**
+	 * Host-owned: whether Esc in the child's chat paused it. Its queue, other agents' messages included, is held until
+	 * the user continues it from that chat.
+	 */
+	readonly turnPaused?: () => boolean;
 	/** SDK-owned inbound lifetime; closing drains admitted messages without reopening the task. */
 	readonly messageAdmission?: {
 		isOpen(): boolean;

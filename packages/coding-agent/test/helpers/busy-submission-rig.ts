@@ -5,6 +5,7 @@ import { type FauxModelDefinition, fauxAssistantMessage } from "@bastani/atomic-
 import { Type } from "typebox";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import type { Settings } from "../../src/core/settings-manager.ts";
+import type { ResourceLoader } from "../../src/index.ts";
 import { createHarness, getMessageText, type Harness } from "../suite/harness.ts";
 import { createEngineHostPair, type EngineHostPair } from "./in-process-engine-pair.ts";
 import {
@@ -140,6 +141,8 @@ export interface Rig {
 
 export interface RigOptions {
 	extensions?: ExtensionFactory[];
+	/** The local session's resources, such as prompt templates; it replaces `extensions` there. */
+	resourceLoader?: ResourceLoader;
 	tools?: AgentTool[];
 	settings?: Partial<Settings>;
 	models?: FauxModelDefinition[];
@@ -172,6 +175,7 @@ export async function createRig(wiring: Wiring, load: Load, options: RigOptions)
 	} else {
 		engine = await createHarness({
 			extensionFactories: options.extensions,
+			resourceLoader: options.resourceLoader,
 			tools: options.tools,
 			settings: options.settings,
 			models: options.models,

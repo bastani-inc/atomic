@@ -24,6 +24,7 @@ import {
 	getSkillCatalog,
 	isPathInside,
 	isSessionStartTimeoutError,
+	type QueuedTaskMessages,
 	type SessionEntry,
 	type SessionHeader,
 	SessionManager,
@@ -256,6 +257,11 @@ export interface ChildSpec {
 	readonly resumeToolResults?: readonly DetachedToolResult[];
 	/** The wake only hands back tool results: the continued turn is the whole run, and `task` is not prompted. */
 	readonly skipTaskPrompt?: boolean;
+	/**
+	 * The user had paused the child (Esc in its chat) when Atomic restarted: its reopened session comes back paused, as
+	 * it was, with nothing prompted and no turn started, and waits for the user to continue it.
+	 */
+	readonly resumePaused?: boolean;
 	readonly redispatchDetachedCalls?: boolean;
 }
 
@@ -861,6 +867,17 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			settlePromptAbort?.();
 			await activeTurn;
 		},
+		// As a real session's: the queued messages come back, then the turn ends as an interrupt ends it.
+		resumeTurn: async () => {},
+		pauseTurn: async () => {
+			const taken = { steering: steering.splice(0), followUp: followUps.splice(0) };
+			if (streaming) {
+				aborted = true;
+				settlePromptAbort?.();
+				await activeTurn;
+			}
+			return taken;
+		},
 		subscribe(listener: AgentSessionEventListener) {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -957,6 +974,52 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 type TranscriptSource = Parameters<NonNullable<TaskExecutionHooks["bindTranscript"]>>[0];
 
 type TranscriptCommands = ReturnType<NonNullable<TranscriptSource["commands"]>>;
+
+type TranscriptQueueMethods = Required<Pick<TranscriptSource, "queueMessage" | "clearQueue">>;
+
+/** Whether a session refused a prompt because the child's execution had ended or its session closed. */
+function executionEnded(error: unknown): boolean {
+	const code = typeof error === "object" && error !== null ? (error as { readonly code?: unknown }).code : undefined;
+	return code === "SubagentExecutionEnded" || code === "SessionClosed";
+}
+
+/**
+ * A chat of the child gives typed text to the child's own session, as the main chat gives typed text to its session:
+ * a prompt on the lane, which the session queues while it works (listed by a `queue_update`, delivered raw at the
+ * lane's boundary) and otherwise answers as its next turn, as an interrupted child does. Resolves once the session
+ * accepted the text. A child whose execution ended refuses it, so the chat gives it back to its editor.
+ */
+function chatMessageQueue(session: AgentSession): TranscriptQueueMethods {
+	return {
+		queueMessage: (text, lane) =>
+			new Promise((resolve) => {
+				session
+					.prompt(text, {
+						streamingBehavior: lane,
+						preflightResult: (success, disposition) => {
+							// A refusal rejects the prompt with its reason.
+							if (success) resolve({ delivered: true, startedTurn: disposition === "started" });
+						},
+					})
+					// A prompt deferred past a settling run reports nothing before it ends; its end accepted it.
+					.then(
+						() => resolve({ delivered: true }),
+						(error: unknown) =>
+							resolve({
+								delivered: false,
+								reason: executionEnded(error) ? "ended" : "refused",
+								detail: error instanceof Error ? error.message : String(error),
+							}),
+					);
+			}),
+		clearQueue: async () => {
+			const cleared = session.clearQueue();
+			// Each message goes back as it was typed, as the main chat restores its queue.
+			const typed = cleared.typed ?? cleared;
+			return { steering: [...typed.steering], followUp: [...typed.followUp] };
+		},
+	};
+}
 
 /** What a chat of the child completes and expands: its cwd and its own skills. A test session has no resources. */
 function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands {
@@ -1961,6 +2024,7 @@ export class SubagentControlRuntime {
 			| "bindChildSession"
 			| "bindChildLaunch"
 			| "toolResultsSaved"
+			| "reportTurnPaused"
 			| "setExtensionStatus"
 			| "clearExtensionStatuses"
 		>,
@@ -1996,6 +2060,7 @@ export class SubagentControlRuntime {
 					| "bindChildSession"
 					| "bindChildLaunch"
 					| "toolResultsSaved"
+					| "reportTurnPaused"
 					| "setExtensionStatus"
 					| "clearExtensionStatuses"
 			  >
@@ -2101,6 +2166,8 @@ export class SubagentControlRuntime {
 		const token = guard.token;
 		this.attemptTokens.set(admitted.identity.path, token);
 		let session: AgentSession | undefined;
+		/** A child restored paused counts as paused from its start, before its session holds its queue. */
+		let restoringPaused = admitted.spec.resumePaused === true;
 		let parentCommandTaskOwner: ChildCommandTaskOwner | undefined;
 		// Messages this attempt produced; a forked child's inherited history is never among them.
 		let ownMessages: () => TranscriptMessage[] = () => [];
@@ -2354,6 +2421,8 @@ export class SubagentControlRuntime {
 								for (const listener of turnDrainedListeners) listener();
 							},
 							taskPending: () => taskPending,
+							// Intercom acknowledges a message to a paused child as held; a restored one is from its start.
+							turnPaused: () => restoringPaused || session?.turnPaused === true,
 							// Intercom registers the child before its first turn, inside this start's budget.
 							startup: {
 								signal: startBudget.signal,
@@ -2392,9 +2461,15 @@ export class SubagentControlRuntime {
 			const transcriptSession = session;
 			let refreshElapsed: (() => void) | undefined;
 			let interruptGeneration = 0;
-			const interruptTurn = async (): Promise<void> => {
-				// A turn is interrupted while it streams, and between two attempts of a retry, where nothing streams.
-				if ((!transcriptSession.isStreaming && !transcriptSession.isRetrying) || termination !== undefined) return;
+			/** Whether the child's record says the user paused it; its next turn clears that. */
+			let turnPausedReported = false;
+			const reportTurnPaused = (paused: boolean): void => {
+				if (turnPausedReported === paused) return;
+				turnPausedReported = paused;
+				taskHooks?.reportTurnPaused?.(paused);
+			};
+			/** Ends the current turn with `end` and waits for the next one, keeping the child's elapsed span in step. */
+			const endTurn = async <T>(end: () => Promise<T>): Promise<T> => {
 				const generation = ++interruptGeneration;
 				let resumed = false;
 				interruptedTurnSettlement = nextTurnSettled(
@@ -2422,12 +2497,35 @@ export class SubagentControlRuntime {
 								}),
 					},
 				);
-				await transcriptSession.interruptTurn();
+				const ended = await end();
 				if (!resumed && generation === interruptGeneration) {
 					elapsedSpan.endedAt ??= Date.now();
 					admitted.spec.onElapsedSpanChanged?.();
 					refreshElapsed?.();
 				}
+				return ended;
+			};
+			const interruptTurn = async (): Promise<void> => {
+				// A turn is interrupted while it streams, and between two attempts of a retry, where nothing streams.
+				if ((!transcriptSession.isStreaming && !transcriptSession.isRetrying) || termination !== undefined) return;
+				await endTurn(() => transcriptSession.interruptTurn());
+			};
+			/**
+			 * Esc in the child's chat: the typed messages still queued come back for the chat's editor, and an open run ends
+			 * as an interrupt ends it; the child waits, paused, for its next message.
+			 */
+			const pauseTurn = async (): Promise<QueuedTaskMessages> => {
+				if (termination !== undefined) return { steering: [], followUp: [] };
+				// Recorded with the hold, before the turn ends: a restart from here on restores the child paused.
+				reportTurnPaused(true);
+				const open =
+					transcriptSession.isStreaming ||
+					transcriptSession.isRetrying ||
+					(transcriptSession._activePromptCount ?? 0) > 0;
+				const taken = open
+					? await endTurn(() => transcriptSession.pauseTurn())
+					: await transcriptSession.pauseTurn();
+				return taken.typed ?? taken;
 			};
 			const settleInterruptedTurns = async (): Promise<void> => {
 				while (interruptedTurnSettlement !== undefined && termination === undefined) {
@@ -2466,10 +2564,14 @@ export class SubagentControlRuntime {
 				commands: () => sessionCommands(transcriptSession, sessionManager.getCwd()),
 				isRunning: () => transcriptSession.isStreaming,
 				interruptTurn,
+				pauseTurn,
+				resumeTurn: () => transcriptSession.resumeTurn(),
+				turnPaused: () => transcriptSession.turnPaused === true,
 				getQueuedMessages: () => ({
 					steering: transcriptSession.getSteeringMessages(),
 					followUp: transcriptSession.getFollowUpMessages(),
 				}),
+				...chatMessageQueue(transcriptSession),
 			});
 			const initialModelId = modelIdForSession(session) ?? candidateModelId;
 			effectiveModelId = initialModelId;
@@ -2566,6 +2668,8 @@ export class SubagentControlRuntime {
 					});
 				}
 				if (event.type === "agent_start") {
+					// The user continued it: no longer paused, also for a restart.
+					reportTurnPaused(false);
 					markTaskDispatched();
 					this.native.publishChildStatus(admitted.identity.path, nativeStatus("running"));
 				} else if (event.type === "tool_execution_start") {
@@ -2615,9 +2719,23 @@ export class SubagentControlRuntime {
 				await recoverChildSession(session, admitted.spec);
 				await settleInterruptedTurns();
 			}
+			// The user had paused it: it comes back paused, prompted with nothing, and waits for them to continue it.
+			const resumedPaused = !termination && admitted.spec.resumePaused === true;
+			if (resumedPaused) {
+				taskPending = false;
+				unsent.task = undefined;
+				startBudget.end();
+				reportTurnPaused(true);
+				await endTurn(() => transcriptSession.pauseTurn());
+			}
+			restoringPaused = false;
 			const redispatched =
-				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
-			if (redispatched !== undefined) {
+				!termination && !resumedPaused && admitted.spec.redispatchDetachedCalls
+					? session.redispatchDetachedToolCalls()
+					: undefined;
+			if (resumedPaused) {
+				// Nothing is prompted: what it was held for waits in its paused session.
+			} else if (redispatched !== undefined) {
 				taskPending = false;
 				unsent.task = unsent.followUps.shift();
 			} else if (!termination && admitted.spec.resumeToolResults?.length) {
