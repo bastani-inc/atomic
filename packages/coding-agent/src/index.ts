@@ -1294,6 +1294,7 @@ export {
 	SkillInvocationMessageComponent,
 	selectorHintEntries,
 	TASK_CHAT_OVERLAY_KEYS,
+	type TaskChatEscAction,
 	ThemeSelectorComponent,
 	ThinkingSelectorComponent,
 	type TokenSegmentMode,

@@ -166,12 +166,23 @@ function detailKeys(): NavKey[] {
 		{ action: "app.keys.help", label: "keys" },
 	];
 }
-/** A task's chat: ← goes back one level, Esc only interrupts. */
-export function taskChatKeys(back: string, interruptible: boolean, hasTasks = false, expandable = true): NavKey[] {
+/** What Esc does to the running turn of a task, from the task's chat. */
+export type TaskChatEscAction = "interrupt" | "pause";
+/** What Esc does to a running task's turn from its chat; the hint and the `?` overlay name it. */
+const TASK_CHAT_ESC_ACTION: TaskChatEscAction = "interrupt";
+
+/** A task's chat: ← goes back one level, Esc only acts on the turn, named in the main chat's words (`esc to …`). */
+export function taskChatKeys(
+	back: string,
+	interruptible: boolean,
+	hasTasks = false,
+	expandable = true,
+	escAction: TaskChatEscAction = TASK_CHAT_ESC_ACTION,
+): NavKey[] {
 	return [
 		{ action: "app.nav.back", label: back },
 		...(hasTasks ? [{ action: "app.agents.focus", label: "agents" }] : []),
-		...(interruptible ? [{ keys: "esc", label: "interrupt" }] : []),
+		...(interruptible ? [{ keys: "esc", label: `to ${escAction}` }] : []),
 		{ keys: "pgup/pgdn", label: "scroll" },
 		...(expandable ? [{ action: "app.tools.expand", label: "expand" }] : []),
 		{ action: "app.keys.help", label: "keys" },
@@ -180,7 +191,7 @@ export function taskChatKeys(back: string, interruptible: boolean, hasTasks = fa
 export const TASK_CHAT_OVERLAY_KEYS: readonly NavKey[] = [
 	{ keys: "enter", label: "send the prompt to the agent" },
 	{ action: "app.nav.back", label: "back, on an empty prompt" },
-	{ keys: "esc", label: "interrupt the agent's turn" },
+	{ keys: "esc", label: `${TASK_CHAT_ESC_ACTION} the agent's turn` },
 	{ keys: "pgup/pgdn", label: "scroll" },
 	{ action: "tui.altScreen.top", label: "jump to the top" },
 	{ action: "tui.altScreen.bottom", label: "jump to the latest message" },

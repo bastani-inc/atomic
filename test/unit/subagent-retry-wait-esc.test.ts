@@ -174,7 +174,7 @@ async function assertInterruptedAndResumable(child: RetryingSubagent): Promise<v
 }
 
 test(
-	"Esc in a subagent's chat cancels its retry wait, and the hint offers esc interrupt during the wait (#5507)",
+	"Esc in a subagent's chat cancels its retry wait, and the hint offers esc to interrupt during the wait (#5507)",
 	async () => {
 		const child = await subagentWaitingToRetry();
 		const environment = taskTranscriptEnvironment({ tui: makeTestTui(24), keybindings: getKeybindings() });
@@ -188,11 +188,11 @@ test(
 		try {
 			inspector.openChat(child.taskId, "main chat");
 			await flush();
-			assert.match(plain(inspector.renderViewport(100, 24)), /← main chat · esc interrupt/);
+			assert.match(plain(inspector.renderViewport(100, 24)), /← main chat · esc to interrupt/);
 
 			assert.equal(inspector.handleInput(ESC), true);
 			await assertInterruptedAndResumable(child);
-			assert.doesNotMatch(plain(inspector.renderViewport(100, 24)), /esc interrupt/, "a finished turn has none");
+			assert.doesNotMatch(plain(inspector.renderViewport(100, 24)), /esc to interrupt/, "a finished turn has none");
 		} finally {
 			inspector.dispose();
 			await child.dispose();
@@ -222,7 +222,7 @@ test(
 			const opened = plain(inspector.renderViewport(100, 24));
 			// The chat reads the wait from the subagent's session: its reason, attempt and countdown, and Esc cancels it.
 			assert.match(opened, /∀ Retrying · overloaded · attempt 1\/3 in (?:\d+m )?\d+s {3}esc cancel/);
-			assert.match(opened, /← main chat · esc interrupt/);
+			assert.match(opened, /← main chat · esc to interrupt/);
 
 			assert.equal(inspector.handleInput(ESC), true);
 			await assertInterruptedAndResumable(child);
@@ -278,13 +278,13 @@ test(
 		);
 		try {
 			await flush();
-			assert.match(await frame(), /← main chat · esc interrupt/);
+			assert.match(await frame(), /← main chat · esc to interrupt/);
 
 			await send({ type: "engine_custom_input", data: ESC });
 			const handled = messages.findLast((message) => message.type === "engine_custom_input_result");
 			assert.ok(handled && handled.type === "engine_custom_input_result" && handled.handled);
 			await assertInterruptedAndResumable(child);
-			assert.doesNotMatch(await frame(), /esc interrupt/, "a finished turn has none");
+			assert.doesNotMatch(await frame(), /esc to interrupt/, "a finished turn has none");
 		} finally {
 			service.dispose();
 			await shown;

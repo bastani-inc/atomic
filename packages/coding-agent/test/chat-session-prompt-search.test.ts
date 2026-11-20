@@ -287,7 +287,7 @@ describe("ctrl+r in a subagent or stage chat behaves as in the main chat (#5224)
 			subagent.inspector.handleInput("\x12");
 			await flush();
 			assert.match(subagent.screen(), /Search prompts/);
-			assert.doesNotMatch(subagent.screen(), /esc interrupt|← main chat/);
+			assert.doesNotMatch(subagent.screen(), /esc to interrupt|← main chat/);
 			subagent.inspector.handleInput("\x1b[B");
 			await flush();
 			assert.match(subagent.screen(), /❯ inspect the older prompt/);
@@ -308,7 +308,7 @@ describe("ctrl+r in a subagent or stage chat behaves as in the main chat (#5224)
 			subagent.inspector.handleInput("/");
 			await flush();
 			assert.match(subagent.screen(), /esc close/);
-			assert.doesNotMatch(subagent.screen(), /esc interrupt|← main chat/);
+			assert.doesNotMatch(subagent.screen(), /esc to interrupt|← main chat/);
 			subagent.inspector.handleInput("\x1b");
 			await flush();
 			assert.equal(interrupts, 0, "Esc on an open / menu must not interrupt the running subagent");

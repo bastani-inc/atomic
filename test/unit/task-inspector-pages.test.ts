@@ -183,7 +183,7 @@ test("shell transcript uses selected task's current output tail and refreshes it
 		assert.match(h.text(), /OUTPUT FROM 1808/);
 		assert.match(h.text(), /Earlier output omitted · showing retained 8 KiB tail/);
 		assert.match(h.text(), /← task · pgup\/pgdn scroll/);
-		assert.doesNotMatch(h.text(), /esc interrupt/, "a shell's output has no turn to interrupt");
+		assert.doesNotMatch(h.text(), /esc to interrupt/, "a shell's output has no turn to interrupt");
 		const frame = h.frame(110, 24);
 		assert.equal(frame.length, 24);
 		assert.equal(plain(frame).split("\n").at(-1)?.includes("← task"), true);
