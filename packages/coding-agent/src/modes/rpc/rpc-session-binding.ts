@@ -14,6 +14,7 @@ import type { EngineSessionPickerService } from "../interactive-engine/engine-se
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { toJsonEvent } from "../json-event.ts";
 import { bindAgentPanel } from "./agent-panel-bridge.ts";
+import { bindEngineAgentView } from "./agent-view-rpc.ts";
 import { outputExtensionLoadErrors } from "./rpc-extension-load-errors.ts";
 import {
 	createRpcExtensionUIContext,
@@ -48,6 +49,7 @@ export class RpcSessionBinding {
 	private unsubscribeBackpressure?: () => void;
 	private unsubscribeTasks?: () => void;
 	private stopSubagentChatQueues?: () => void;
+	private stopAgentView?: () => void;
 	private readonly runtimeHost: AgentSessionRuntime;
 	private readonly output: RpcOutput;
 	private readonly pendingExtensionRequests: RpcPendingExtensionRequests;
@@ -244,6 +246,14 @@ export class RpcSessionBinding {
 					}),
 				),
 			);
+			// The host shows this engine's subagents on its own screen through these views.
+			this.stopAgentView?.();
+			this.stopAgentView = bindEngineAgentView({
+				session,
+				send: (message) => this.writeEngineLine?.(serializeInteractiveEngineMessage(message)),
+				customUi,
+				ui,
+			});
 			this.unsubscribeTasks = bindAgentPanel(
 				session,
 				ui,
@@ -297,6 +307,8 @@ export class RpcSessionBinding {
 		this.unsubscribeTasks = undefined;
 		this.stopSubagentChatQueues?.();
 		this.stopSubagentChatQueues = undefined;
+		this.stopAgentView?.();
+		this.stopAgentView = undefined;
 		this.writeEngineLine?.(
 			serializeInteractiveEngineMessage({
 				type: "engine_ui_prompt",

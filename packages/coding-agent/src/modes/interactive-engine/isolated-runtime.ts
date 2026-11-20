@@ -35,6 +35,7 @@ import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { AgentPanelCounts } from "../rpc/agent-panel-bridge.ts";
+import type { AgentViewRpcCommandBody } from "../rpc/agent-view-rpc-types.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import { isExtensionLoadError } from "../rpc/rpc-extension-load-errors.ts";
 import {
@@ -433,6 +434,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 	async openAgentPanel(): Promise<void> {
 		await this.client.requestInternal({ type: "open_agent_panel" });
+	}
+	/** A command of the single chat screen's agent view, answered by the engine's view of one of its subagents. */
+	async requestAgentView<T>(command: AgentViewRpcCommandBody): Promise<T> {
+		return this.client.requestInternal<T>(command);
+	}
+	/** The engine generation now: a view opened in an earlier one is gone. */
+	getGeneration(): number {
+		return this.client.getGeneration();
 	}
 	async setStopAllNotice(text: string | undefined): Promise<void> {
 		await this.client.requestInternal({ type: "set_stop_all_notice", ...(text === undefined ? {} : { text }) });
