@@ -513,3 +513,55 @@ describe("PostgreSQL retry warnings through a proxy (#5473)", () => {
 			assert.equal(warning.includes("the database server"), false, warning);
 	});
 });
+
+describe("PostgreSQL connection resets (#6074)", () => {
+	test("a connection reset is retried, directly and through a proxy, not refused like a certificate (#6074)", async () => {
+		// A server and a proxy that reset each connection once its first request arrives, as a network path that drops
+		// connections does.
+		let serverConnections = 0;
+		const server = createServer((socket) => {
+			serverConnections++;
+			socket.on("error", () => {});
+			socket.once("data", () => socket.resetAndDestroy());
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		assert.ok(address !== null && typeof address === "object");
+		const proxy = await fakeProxy((socket) => socket.resetAndDestroy());
+		const opening = (url: string, proxyUrl?: string) =>
+			openPostgresDatabase({
+				url,
+				password: "fixture-password",
+				...(proxyUrl === undefined ? {} : { proxy: proxyUrl }),
+			}).then(
+				async (database) => {
+					await database.close();
+					assert.fail(`${url} opened`);
+				},
+				(error: Error) => error,
+			);
+		try {
+			const [direct, proxied] = await Promise.all([
+				opening(`postgresql://atomic@127.0.0.1:${address.port}/atomic`),
+				opening("postgresql://atomic@reset.example.test:5432/atomic", `http://127.0.0.1:${proxy.port}`),
+			]);
+			for (const [route, error, attempts] of [
+				["directly", direct, serverConnections],
+				["through a proxy", proxied, proxy.requests.length],
+			] as const) {
+				// The failure the retries ended in: a transient one, with the reset along its causes.
+				const chain: string[] = [];
+				for (let current: unknown = error; current instanceof Error; current = current.cause) {
+					const code = (current as Error & { readonly code?: unknown }).code;
+					chain.push(typeof code === "string" ? `${current.name}[${code}]` : current.name);
+				}
+				assert.ok(chain.includes("StorageTransientError[connection-refused]"), `${route}: ${chain.join(", ")}`);
+				assert.ok(chain.at(-1)?.endsWith("[ECONNRESET]"), `${route}: ${chain.join(", ")}`);
+				assert.ok(attempts > 1, `${route}: a reset connection was not tried again`);
+			}
+		} finally {
+			proxy.server.close();
+			server.close();
+		}
+	});
+});
