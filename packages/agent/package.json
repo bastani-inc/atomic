@@ -1,63 +1,63 @@
 {
-	"name": "@bastani/atomic-agent-core",
-	"version": "0.0.0",
-	"description": "Atomic's stateful agent loop with tool execution, event streaming, steering and follow-up messages",
-	"type": "module",
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"exports": {
-		".": {
-			"types": "./dist/index.d.ts",
-			"import": "./dist/index.js"
-		},
-		"./package.json": "./package.json"
-	},
-	"files": [
-		"dist",
-		"README.md",
-		"LICENSE",
-		"NOTICE.md"
-	],
-	"scripts": {
-		"clean": "node ../../scripts/package-files.mjs clean dist",
-		"build": "tsc -p tsconfig.build.json",
-		"test": "vitest --run",
-		"prepublishOnly": "npm run build"
-	},
-	"dependencies": {
-		"@bastani/atomic-ai": "0.0.0",
-		"@bastani/atomic-schema": "0.0.0"
-	},
-	"keywords": [
-		"ai",
-		"agent",
-		"llm",
-		"transport",
-		"state-management",
-		"atomic"
-	],
-	"author": "Mario Zechner",
-	"license": "MIT",
-	"contributors": [
-		"Bastani, Inc."
-	],
-	"publishConfig": {
-		"access": "public"
-	},
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/bastani-inc/atomic.git",
-		"directory": "packages/agent"
-	},
-	"homepage": "https://docs.bastani.ai/libraries/agent-core",
-	"bugs": {
-		"url": "https://github.com/bastani-inc/atomic/issues"
-	},
-	"engines": {
-		"node": ">=22.19.0"
-	},
-	"devDependencies": {
-		"@types/node": "24.12.4",
-		"vitest": "4.1.12"
-	}
+  "name": "@bastani/atomic-agent-core",
+  "version": "0.10.1",
+  "description": "Atomic's stateful agent loop with tool execution, event streaming, steering and follow-up messages",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
+  ],
+  "scripts": {
+    "clean": "node ../../scripts/package-files.mjs clean dist",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest --run",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@bastani/atomic-ai": "0.10.1",
+    "@bastani/atomic-schema": "0.10.1"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "llm",
+    "transport",
+    "state-management",
+    "atomic"
+  ],
+  "author": "Mario Zechner",
+  "license": "MIT",
+  "contributors": [
+    "Bastani, Inc."
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bastani-inc/atomic.git",
+    "directory": "packages/agent"
+  },
+  "homepage": "https://docs.bastani.ai/libraries/agent-core",
+  "bugs": {
+    "url": "https://github.com/bastani-inc/atomic/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.4",
+    "vitest": "4.1.12"
+  }
 }
