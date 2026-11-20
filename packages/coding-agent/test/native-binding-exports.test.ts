@@ -55,6 +55,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"tryAdvisoryLock",
 	"tryAdvisoryLockAsync",
 	"trySharedAdvisoryLock",
+	"trySharedAdvisoryLockAsync",
 	"windowsDirectorySecurity",
 	"windowsDirectorySecurityAsync",
 ] as const;

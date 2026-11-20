@@ -11,7 +11,10 @@ beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "atomic-sqlite-event-loop-"));
 	const db = new TestSqliteDatabase(join(dir, "data.sqlite"));
 	db.run("create table n (v integer)");
+	// One commit for the rows: 300 commits each wait for the disk, which took 52 s on a loaded Windows runner.
+	db.run("begin");
 	for (let index = 0; index < 300; index++) db.run("insert into n (v) values (?)", index);
+	db.run("commit");
 	db.close();
 });
 afterEach(() => {

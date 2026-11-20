@@ -22,6 +22,13 @@ import {
 const REAL_RPC_CHILDREN_TIMEOUT_MS = 240_000;
 /** Per-step deadline once a child answers. */
 const STEP_TIMEOUT_MS = 60_000;
+/**
+ * The first request goes out as soon as a child is spawned, so it also waits for the child's cold start: the source CLI
+ * under Bun loading every builtin extension, two children at once. A loaded Windows runner stretched that past the
+ * client's default 30 s (the whole test takes 9 s there otherwise). Well inside REAL_RPC_CHILDREN_TIMEOUT_MS, which also
+ * covers the children's later steps.
+ */
+const COLD_CLI_START_REQUEST_TIMEOUT_MS = 60_000;
 
 const repositoryRoot = join(moduleDir(import.meta.url), "../..");
 const cliPath = join(repositoryRoot, "packages/coding-agent/src/cli.ts");
@@ -104,6 +111,7 @@ test(
 				cliPath,
 				cwd: project,
 				runtimeExecutable: bunExecutable(),
+				requestTimeoutMs: COLD_CLI_START_REQUEST_TIMEOUT_MS,
 				args: ["--approve", "--offline", "--provider", "issue-3783-fixture", "--model", "fixture"],
 				env: {
 					...CLEARED_STORAGE_ENV,

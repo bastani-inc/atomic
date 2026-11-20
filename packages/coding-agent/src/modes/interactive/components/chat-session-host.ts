@@ -461,6 +461,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (this.state.noticeMessage !== this.state.lastWarningMessage) this.state.noticeMessage = "";
 		this.state.pendingSteeringMessages = [];
 		this.state.pendingFollowUpMessages = [];
+		this.state.deliveringQueuedMessages = undefined;
 		this.state.unconfirmedQueuedMessages = [];
 		if (this.steering) {
 			// The shown copies and the last listed queue were the previous session's.
@@ -1112,6 +1113,19 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const steering = this.state.steeringController;
 		if (steering !== undefined) return steering.allQueued();
 		return { steering: this.state.pendingSteeringMessages, followUp: this.state.pendingFollowUpMessages };
+	}
+
+	/**
+	 * The messages the agent took from its queue whose own row the transcript does not show yet, per lane: the chat
+	 * draws them as queued rows ahead of {@link queuedMessages} until it does.
+	 */
+	deliveringMessages(): { readonly steering: readonly string[]; readonly followUp: readonly string[] } {
+		return { steering: this.state.deliveringTexts("steer"), followUp: this.state.deliveringTexts("followUp") };
+	}
+
+	/** How many user messages reached the transcript so far: it grows when a delivered message shows. */
+	userMessagesShown(): number {
+		return this.state.userMessagesShown;
 	}
 
 	/** The text of the last answer the agent finished in this chat, as `/copy` copies it. */

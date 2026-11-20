@@ -210,6 +210,11 @@ export class LocalAgentViewPort implements AgentViewPort {
 		return this.page.chat.lastAgentMessageText();
 	}
 
+	/** How many user messages its transcript received so far: it grows when a delivered message shows. */
+	userMessagesShown(): number {
+		return this.page.chat.userMessagesShown();
+	}
+
 	retain(): () => void {
 		this.retained++;
 		let released = false;

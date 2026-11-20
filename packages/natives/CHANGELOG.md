@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `trySharedAdvisoryLockAsync(path, waitMs)`: the shared advisory lock on a worker thread, without blocking the JavaScript event loop ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+
 ## [0.9.90] - 2026-11-19
 
 ### Fixed

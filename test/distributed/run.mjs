@@ -86,7 +86,7 @@ const STATE_ROOT = join(
 	"runs",
 );
 const CACHE_ROOT = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "atomic-distributed-test");
-const BUN_VERSION = "1.4.4";
+const BUN_VERSION = "1.4.5";
 
 const USAGE = `Usage: node test/distributed/run.mjs --ref <sha|branch> [--suite <name|all>] [--nodes 3] [--regions eastus2,westus3]
        [--chaos <profile|smoke|none>] [--keep] [--seed <n>] [--ttl-hours <h>] [--db-storage premium-ssd|local-nvme]
