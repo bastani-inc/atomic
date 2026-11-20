@@ -554,11 +554,11 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	}
 	/**
 	 * Joins Intercom in the background a few seconds after the session has started, so neither its first frame nor its
-	 * first prompt waits for the broker or competes with loading Intercom. A join that cannot reach the broker stays silent and is retried on the reconnect backoff a
-	 * few times; the session then joins on its next Intercom use. A session whose folder is not trusted, whose trust
-	 * may still be being decided, waits on the same backoff for the folder to be trusted, and joins when its first turn
-	 * starts or that wait ends. The timers never keep the process alive, and a session that ends or is replaced drops
-	 * its join.
+	 * first prompt waits for the broker or competes with loading Intercom. A join that cannot reach the broker stays
+	 * silent and is retried on the reconnect backoff a few times; the session then joins on its next Intercom use. A
+	 * session whose folder is not trusted, whose trust may still be being decided, joins only once the folder is trusted,
+	 * which it checks on the same backoff, or when its first turn starts: before that no other session can start a turn
+	 * in it. The timers never keep the process alive, and a session that ends or is replaced drops its join.
 	 */
 	function scheduleStartupJoin(
 		ctx: ExtensionContext,
@@ -576,10 +576,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			join.timer = null;
 			if (!current()) return;
 			if (!join.settled && !projectTrusted(ctx)) {
-				if (attempt < STARTUP_JOIN_RETRIES) {
-					scheduleStartupJoin(ctx, lease, generation, attempt + 1);
-					if (startupJoin) startupJoin.waitingForTrust = true;
-				} else scheduleStartupJoin(ctx, lease, generation, 0, true);
+				if (attempt < STARTUP_JOIN_RETRIES) scheduleStartupJoin(ctx, lease, generation, attempt + 1);
+				if (startupJoin) startupJoin.waitingForTrust = true;
 				return;
 			}
 			joinAtStartup(ctx).then(

@@ -255,16 +255,15 @@ async function elapse(ms: number): Promise<void> {
 }
 
 describe("what the startup join leaves to the session", () => {
-	test("it writes nothing to the session; the session's first Intercom use records the id it joined under", async () => {
+	test("it saves the Intercom id it joined under, so a resumed session asks for the same id", async () => {
 		const session = intercomSession();
 		const ctx = sessionContext({ mode: "tui" }, []);
 		try {
 			await session.start(ctx);
 			await vi.waitFor(() => assert.equal(session.registrations.length, 1), { timeout: 15_000 });
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			assert.deepEqual(session.appended, []);
+			await vi.waitFor(() => assert.deepEqual(session.appended, ["intercom_session_identity"]), { timeout: 5_000 });
 			await session.useIntercom(ctx);
-			assert.deepEqual(session.appended, ["intercom_session_identity"]);
+			assert.deepEqual(session.appended, ["intercom_session_identity"], "the first use does not save it again");
 			assert.equal(session.registrations.length, 1, "the use reuses the startup connection");
 		} finally {
 			await session.shutdown(ctx);
@@ -293,19 +292,19 @@ describe("what the startup join leaves to the session", () => {
 describe("a session whose folder stays untrusted", () => {
 	afterEach(() => vi.useRealTimers());
 
-	test("joins when its first turn starts, or once the wait for a trust decision ends", async () => {
+	test("does not join while its folder's trust is undecided, however long, and joins when its first turn starts", async () => {
 		useBackoffClock();
-		const prompted = intercomSession();
-		const promptedCtx = sessionContext({ mode: "tui", isProjectTrusted: () => false }, []);
+		const idle = intercomSession();
+		const idleCtx = sessionContext({ mode: "tui", isProjectTrusted: () => false }, []);
 		try {
-			await prompted.start(promptedCtx);
-			await elapse(10_000);
-			assert.equal(prompted.registrations.length, 0, "it waits while the folder's trust may still be decided");
-			await prompted.firstTurn(promptedCtx);
+			await idle.start(idleCtx);
+			await elapse(10 * 60_000);
+			assert.equal(idle.registrations.length, 0, "no other session can reach it before its folder is trusted");
+			await idle.firstTurn(idleCtx);
 			await elapse(5_000);
-			assert.equal(prompted.registrations.length, 1);
+			assert.equal(idle.registrations.length, 1);
 		} finally {
-			await prompted.shutdown(promptedCtx);
+			await idle.shutdown(idleCtx);
 			vi.restoreAllMocks();
 		}
 		const early = intercomSession();
@@ -321,18 +320,6 @@ describe("a session whose folder stays untrusted", () => {
 			);
 		} finally {
 			await early.shutdown(earlyCtx);
-			vi.restoreAllMocks();
-		}
-		const idle = intercomSession();
-		const idleCtx = sessionContext({ mode: "tui", isProjectTrusted: () => false }, []);
-		try {
-			await idle.start(idleCtx);
-			await elapse(30_000);
-			assert.equal(idle.registrations.length, 0);
-			await elapse(30_000);
-			assert.equal(idle.registrations.length, 1, "an untrusted folder does not keep it from joining");
-		} finally {
-			await idle.shutdown(idleCtx);
 		}
 	});
 });
