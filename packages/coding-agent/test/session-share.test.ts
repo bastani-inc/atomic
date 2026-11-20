@@ -294,6 +294,16 @@ describe("InteractiveMode /share", () => {
 			assert.equal(run.returns(), 1);
 		});
 
+		it("a session replaced while gh is checked says so, whatever gh then answers", async () => {
+			const run = share(async (path) => path);
+			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			run.context.session = { exportToJsonl: async (path) => path, sessionManager: { getSessionId: () => "B" } };
+			run.spawned[0]?.child.emit("close", 1);
+			await run.done;
+			assert.deepEqual(run.statuses, ["Share cancelled: the session changed"]);
+			assert.deepEqual(run.errors, []);
+		});
+
 		it("a session that another takes the place of in the same view is not shared", async () => {
 			let current = "A";
 			const exported: string[] = [];

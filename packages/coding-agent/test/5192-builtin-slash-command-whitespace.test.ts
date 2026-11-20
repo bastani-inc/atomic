@@ -45,6 +45,8 @@ async function submit(text: string): Promise<Call[]> {
 		// Text that no built-in claims reaches the session as an ordinary prompt.
 		deferredStartupPending: true,
 		ensureDeferredStartupComplete: async () => {},
+		// No extension has registered a command.
+		isExtensionCommand: () => false,
 		session: {
 			prompt: record("prompt"),
 			compactionReason: undefined,

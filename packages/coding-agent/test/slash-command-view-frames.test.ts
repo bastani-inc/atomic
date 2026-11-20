@@ -128,6 +128,18 @@ function slowCommand(name: string, release: Promise<void>, effect?: (ui: { notif
 		})) satisfies ExtensionFactory;
 }
 
+/** Startup is still finishing, with the extensions already registered, until the answered function is called. */
+function holdStartupOpen(chat: MainChatTerminal): () => void {
+	const finish = Promise.withResolvers<void>();
+	const mode = chat.mode;
+	mode.deferredStartupPending = true;
+	mode.ensureDeferredStartupComplete = async () => {
+		await finish.promise;
+		mode.deferredStartupPending = false;
+	};
+	return () => finish.resolve();
+}
+
 async function finishOneTurn(chat: MainChatTerminal): Promise<void> {
 	chat.press("hello");
 	chat.press("\r");
@@ -349,6 +361,61 @@ describe.each(["in-process", "isolated"] as const)("a slash command that opens a
 			assert.doesNotMatch(screen, /❯ \/slow/);
 			assert.equal(screenHoldOf(chat.mode).region, undefined);
 			release.resolve();
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"an extension command registered while startup is still finishing goes straight to its view (#6077)",
+		async () => {
+			const chat = await start(host, [
+				(pi) =>
+					pi.registerCommand("fx", {
+						handler: async (_args, ctx) => {
+							await ctx.ui.custom<void>((_tui, _theme, _keys, done) => ({
+								render: () => ["fx view"],
+								invalidate: () => {},
+								handleInput: () => done(),
+							}));
+						},
+					}),
+			]);
+			const finished = holdStartupOpen(chat);
+			chat.press("/fx");
+			await chat.settled(/❯ \/fx/);
+			const enter = await pressEnter(chat);
+			finished();
+			await chat.settled(/fx view/);
+			const frames = await screens(chat, enter.from);
+			chat.press(ESCAPE);
+			await chat.settled(/^❯\s*$/m);
+			for (const frame of frames) {
+				if (/fx view/.test(frame.text)) return;
+				if (frame.at - enter.at > PROMPT_SLOT_HOLD_MS) return;
+				assert.match(frame.text, /❯ \/fx/, `a frame between the command and its view:\n${frame.text}`);
+			}
+			assert.fail("the view was never drawn");
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"a slash command not known yet while startup is still finishing clears the prompt at once (#6077)",
+		async () => {
+			const chat = await start(host);
+			const finished = holdStartupOpen(chat);
+			chat.press("/not-known-yet");
+			await chat.settled(/❯ \/not-known-yet/);
+			const enter = await pressEnter(chat);
+			await chat.settled();
+			const [first] = await screens(chat, enter.from);
+			// It reaches the model as a message once startup has finished.
+			finished();
+			await chat.gate.entered.promise;
+			chat.gate.release.resolve();
+			await chat.settled(/answer 2/);
+			assert.ok(first, "nothing was drawn after Enter");
+			assert.doesNotMatch(first.text, /❯ \/not-known-yet/, `the first frame after Enter:\n${first.text}`);
 		},
 		INTERACTIVE_CASE_TIMEOUT_MS,
 	);

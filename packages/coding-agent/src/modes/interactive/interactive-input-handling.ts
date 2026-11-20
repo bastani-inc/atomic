@@ -668,9 +668,16 @@ async function submitToMainChat(
 			prompt.addToHistory(text);
 			prompt.setText("");
 			this.ui.requestRender();
-			await yieldToEventLoop();
-			await this.ensureDeferredStartupComplete();
-			await this.session.prompt(text);
+			// A command an extension has registered already is held like any extension command; a name not known yet
+			// is not.
+			const held = this.isExtensionCommand(text) ? holdForExtensionCommand(this) : undefined;
+			try {
+				await yieldToEventLoop();
+				await this.ensureDeferredStartupComplete();
+				await this.session.prompt(text);
+			} finally {
+				held?.settle();
+			}
 			return;
 		}
 		// Handle bash command (! for normal, !! for excluded from context)
