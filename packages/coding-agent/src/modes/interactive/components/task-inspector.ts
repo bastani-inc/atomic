@@ -14,7 +14,9 @@ import {
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { type AgentPanelAnswerOptions, promptAnswerOptionsOf } from "../../../core/tasks/agent-panel-source.ts";
 import {
-	supersededReleasedAttempts,
+	firstSubagentAttempt,
+	latestSubagentAttempt,
+	supersededSettledAttempts,
 	waitingReleasedShells,
 	waitingReleasedTools,
 } from "../../../core/tasks/completion.js";
@@ -166,12 +168,23 @@ function detailKeys(): NavKey[] {
 		{ action: "app.keys.help", label: "keys" },
 	];
 }
-/** A task's chat: ← goes back one level, Esc only interrupts. */
-export function taskChatKeys(back: string, interruptible: boolean, hasTasks = false, expandable = true): NavKey[] {
+/** What Esc does to the running turn of a task, from the task's chat. */
+export type TaskChatEscAction = "interrupt" | "pause";
+/** What Esc does to a running task from its chat: it pauses it (the main chat's Esc interrupts); the hint and the `?` overlay name it. */
+const TASK_CHAT_ESC_ACTION: TaskChatEscAction = "pause";
+
+/** A task's chat: ← goes back one level, Esc only acts on the turn, named in the main chat's words (`esc to …`). */
+export function taskChatKeys(
+	back: string,
+	interruptible: boolean,
+	hasTasks = false,
+	expandable = true,
+	escAction: TaskChatEscAction = TASK_CHAT_ESC_ACTION,
+): NavKey[] {
 	return [
 		{ action: "app.nav.back", label: back },
 		...(hasTasks ? [{ action: "app.agents.focus", label: "agents" }] : []),
-		...(interruptible ? [{ keys: "esc", label: "interrupt" }] : []),
+		...(interruptible ? [{ keys: "esc", label: `to ${escAction}` }] : []),
 		{ keys: "pgup/pgdn", label: "scroll" },
 		...(expandable ? [{ action: "app.tools.expand", label: "expand" }] : []),
 		{ action: "app.keys.help", label: "keys" },
@@ -180,7 +193,7 @@ export function taskChatKeys(back: string, interruptible: boolean, hasTasks = fa
 export const TASK_CHAT_OVERLAY_KEYS: readonly NavKey[] = [
 	{ keys: "enter", label: "send the prompt to the agent" },
 	{ action: "app.nav.back", label: "back, on an empty prompt" },
-	{ keys: "esc", label: "interrupt the agent's turn" },
+	{ keys: "esc", label: `${TASK_CHAT_ESC_ACTION} the agent's turn` },
 	{ keys: "pgup/pgdn", label: "scroll" },
 	{ action: "tui.altScreen.top", label: "jump to the top" },
 	{ action: "tui.altScreen.bottom", label: "jump to the latest message" },
@@ -391,10 +404,13 @@ export class TaskInspector implements Component {
 				}
 			} else {
 				const dismissed = dismissedTasks(this.store);
-				this.navigation.update(
-					this.store.backgroundTasks.filter((task) => !dismissed.has(task.ref.taskId)),
-					this.navigationOrder,
-				);
+				const tasks = this.store.backgroundTasks.filter((task) => !dismissed.has(task.ref.taskId));
+				this.navigation.update(tasks, this.navigationOrder);
+				// An open subagent page follows its subagent: once resumed, it is about the attempt that runs now.
+				const selected = this.navigation.selectedTaskId;
+				const latest = selected === undefined ? undefined : latestSubagentAttempt(tasks, selected);
+				if (this.navigation.focus.kind === "detail" && latest !== undefined && latest.ref.taskId !== selected)
+					this.navigation.selectedTaskId = latest.ref.taskId;
 			}
 			if (this.transcript) this.transcript.refresh();
 			else if (this.navigation.focus.kind === "detail") void this.loadDetail();
@@ -413,15 +429,23 @@ export class TaskInspector implements Component {
 	open(id?: TaskId): void {
 		if (this.boardStale) this.refreshOrder();
 		if (id !== undefined) this.selectionChosen = true;
-		this.navigation.open(id);
+		this.navigation.open(id === undefined ? undefined : this.listedAttempt(id));
+	}
+	/**
+	 * The listed row of task `id`: a subagent is one row, its latest attempt, so an attempt a resume continued (as a
+	 * completion notice names it) opens that row.
+	 */
+	private listedAttempt(id: TaskId): TaskId {
+		return latestSubagentAttempt(this.store.backgroundTasks, id)?.ref.taskId ?? id;
 	}
 	/**
 	 * Opens a task's chat directly, as Enter on its agent-panel row does: ← on its empty prompt closes the inspector,
 	 * one level back to `backLabel`, instead of showing the task's list or detail page.
 	 */
-	openChat(id: TaskId, backLabel = "main chat"): void {
+	openChat(requested: TaskId, backLabel = "main chat"): void {
 		if (this.boardStale) this.refreshOrder();
 		this.selectionChosen = true;
+		const id = this.listedAttempt(requested);
 		this.navigation.open(id);
 		if (this.navigation.selectedTaskId !== id) return;
 		this.chatFrom = "caller";
@@ -469,9 +493,12 @@ export class TaskInspector implements Component {
 		const sections = this.orderedSections();
 		if (this.cachedNativeRows?.sections !== sections) {
 			const rows: Extract<TaskBoardRow, { kind: "task" }>[] = [];
+			// A subagent is one row, its latest attempt: one that a resume or wake continued is not listed next to it.
+			// Read over the sections before dismissal, so dismissing that row does not bring back the attempt it continued.
+			const superseded = supersededSettledAttempts(
+				(this.taskSections ?? sections).flatMap((section) => section.tasks),
+			);
 			for (const section of sections) {
-				// A released attempt whose subagent woke is listed as its later attempt, not as waiting.
-				const superseded = supersededReleasedAttempts(section.tasks);
 				for (const task of section.tasks) {
 					if (superseded.size > 0 && superseded.has(task.ref.taskId)) continue;
 					const id = task.ref.taskId;
@@ -752,7 +779,17 @@ export class TaskInspector implements Component {
 				environment,
 				this.requestRender,
 				(reason) => this.reportLate(reason, environment),
-				this.chatFrom === "caller" ? { echoedPrompt: task.title } : {},
+				{
+					// The header echoes the task the subagent was launched with, the first prompt of its conversation.
+					...(this.chatFrom === "caller"
+						? { echoedPrompt: (firstSubagentAttempt(this.store.tasks, task.ref.taskId) ?? task).title }
+						: {}),
+					// `/hotkeys` in the chat opens the keys `?` opens on its empty prompt.
+					showKeys: () => {
+						this.helpOpen = true;
+						this.requestRender();
+					},
+				},
 			);
 		this.requestRender();
 		void this.transcript.load();
@@ -1483,6 +1520,12 @@ export class TaskInspector implements Component {
 		if (!result.ok) this.failureNotice = taskDisplayText(result.error.message);
 		this.requestRender();
 	}
+	/** Ctrl+C on an open chat's typed prompt clears it, as in the main chat. Answers whether there was one to clear. */
+	clearTypedPrompt(): boolean {
+		if (this.helpOpen || this.transcript?.clearDraft?.() !== true) return false;
+		this.requestRender();
+		return true;
+	}
 	private configuredTaskKey(data: string): boolean {
 		return (["app.list.open", "app.list.stop", "app.tasks.input"] as const).some((key) =>
 			getKeybindings().matches(data, key),
@@ -1543,11 +1586,17 @@ export class TaskInspector implements Component {
 			return transcript.render(width, budget);
 		}
 		const waitedShell = this.waitedShell;
-		const task = waitedShell === undefined ? this.selected() : this.waitedShellRecord(waitedShell.taskId);
+		const selected = waitedShell === undefined ? this.selected() : this.waitedShellRecord(waitedShell.taskId);
+		// A resumed subagent's chat shows the attempt that runs now, and echoes the task it was launched with.
+		const task =
+			selected?.kind === "agent"
+				? (latestSubagentAttempt(this.store.tasks, selected.ref.taskId) ?? selected)
+				: selected;
 		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
 
 		const attachedAgentChat = this.chatFrom === "caller" && task?.kind === "agent";
-		const promptEcho = attachedAgentChat ? taskDisplayText(task.title || taskLabel(task)) : "";
+		const launch = attachedAgentChat ? (firstSubagentAttempt(this.store.tasks, task.ref.taskId) ?? task) : undefined;
+		const promptEcho = launch === undefined ? "" : taskDisplayText(launch.title || taskLabel(launch));
 		const header = attachedAgentChat
 			? [
 					` ${theme.fg("dim", "› from main")}`,

@@ -337,6 +337,11 @@ declare module "./interactive-mode-base.ts" {
 			followUp: string[];
 		}>;
 		updatePendingMessagesDisplay(): void;
+		/**
+		 * Give back what a lost isolated engine held queued: the main chat's rows to its editor, the subagent chats' rows
+		 * in a notice. Answers the function that stops it.
+		 */
+		attachSteeringEngineRecovery(): () => void;
 		restoreQueuedMessagesToEditor(options?: {
 			abort?: boolean;
 			currentText?: string;

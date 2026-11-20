@@ -472,7 +472,7 @@ test("a launch card outside the task host freezes on turn interrupt and follows 
 		now += 2300;
 		await source()!.interruptTurn!();
 		now += 60_000;
-		assert.match(paintLaunchCard(env.root, receipt), /Stopped[^\n]*2s/);
+		assert.match(paintLaunchCard(env.root, receipt), /Paused[^\n]*2s/);
 		assert.ok(prompt);
 		const resumed = prompt("continue");
 		await until(() => source()?.isRunning?.() === true);

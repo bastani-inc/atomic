@@ -14,6 +14,7 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/message-error.js";
 import type {
 	TaskMessageDelivery,
+	TaskMessageLane,
 	TaskTranscriptSource,
 } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
@@ -32,7 +33,11 @@ afterEach(() => {
 });
 
 /** Sends through the public task view of a task whose transcript is `transcript`. */
-async function sendThroughOwner(transcript: TaskTranscriptSource | undefined, text = "keep going") {
+async function sendThroughOwner(
+	transcript: TaskTranscriptSource | undefined,
+	text = "keep going",
+	lane?: TaskMessageLane,
+) {
 	const fixture = taskFixture();
 	try {
 		await fixture.start("Message target");
@@ -40,7 +45,9 @@ async function sendThroughOwner(transcript: TaskTranscriptSource | undefined, te
 		const taskId = fixture.store.tasks[0]!.ref.taskId;
 		const source = ownerTaskViewSource(fixture.store);
 		try {
-			await source.sendTaskMessage!(taskId, text);
+			await (lane === undefined
+				? source.sendTaskMessage!(taskId, text)
+				: source.sendTaskMessage!(taskId, text, lane));
 			return { taskId, error: undefined };
 		} catch (error) {
 			return { taskId, error };
@@ -50,27 +57,41 @@ async function sendThroughOwner(transcript: TaskTranscriptSource | undefined, te
 	}
 }
 
-function intercomTranscript(send?: (text: string) => Promise<TaskMessageDelivery>): TaskTranscriptSource {
+/** A subagent's transcript whose session takes typed messages through `queue`, and which has an Intercom name. */
+function queueTranscript(
+	queue?: (text: string, lane: TaskMessageLane) => Promise<TaskMessageDelivery>,
+	sendMessage?: (text: string) => Promise<TaskMessageDelivery>,
+): TaskTranscriptSource {
 	const session = SessionManager.inMemory();
 	return {
 		getSessionId: () => session.getSessionId(),
 		getEntries: () => session.getEntries(),
 		completionSource: { runId: "run-1", intercomTarget: "worker-1" },
-		...(send === undefined ? {} : { sendMessage: send }),
+		...(queue === undefined ? {} : { queueMessage: queue }),
+		...(sendMessage === undefined ? {} : { sendMessage }),
 	};
 }
 
-test("a delivered message resolves and reaches the task's channel verbatim (#4521)", async () => {
-	const sent: string[] = [];
-	const result = await sendThroughOwner(
-		intercomTranscript(async (text) => {
-			sent.push(text);
+test("a message typed into a subagent's chat goes to the subagent's own queue, verbatim and on its lane, never through Intercom", async () => {
+	const queued: Array<[string, TaskMessageLane]> = [];
+	const intercom: string[] = [];
+	const transcript = queueTranscript(
+		async (text, lane) => {
+			queued.push([text, lane]);
 			return { delivered: true };
-		}),
-		"  /steer exactly as typed  ",
+		},
+		async (text) => {
+			intercom.push(text);
+			return { delivered: true };
+		},
 	);
-	assert.equal(result.error, undefined);
-	assert.deepEqual(sent, ["  /steer exactly as typed  "]);
+	assert.equal((await sendThroughOwner(transcript, "  /skill:review exactly as typed  ")).error, undefined);
+	assert.equal((await sendThroughOwner(transcript, "after this turn", "followUp")).error, undefined);
+	assert.deepEqual(queued, [
+		["  /skill:review exactly as typed  ", "steer"],
+		["after this turn", "followUp"],
+	]);
+	assert.deepEqual(intercom, [], "a chat message is never an Intercom message");
 });
 
 test("an unknown task is task-unavailable (#4521)", async () => {
@@ -91,32 +112,40 @@ test("an unknown task is task-unavailable (#4521)", async () => {
 	}
 });
 
-test("a task without an Intercom channel is messages-unsupported (#4521)", async () => {
+test("a task whose session has only an Intercom channel still takes typed messages through it, as before (#4521)", async () => {
+	const sent: string[] = [];
+	const result = await sendThroughOwner(
+		queueTranscript(undefined, async (text) => {
+			sent.push(text);
+			return { delivered: true };
+		}),
+		"  /steer exactly as typed  ",
+		"followUp",
+	);
+	assert.equal(result.error, undefined);
+	assert.deepEqual(sent, ["  /steer exactly as typed  "]);
+});
+
+test("a task that takes no typed messages and has no Intercom channel is messages-unsupported (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	const cases: Array<TaskTranscriptSource | undefined> = [
 		undefined,
 		session,
-		{ ...intercomTranscript(), completionSource: undefined },
-		intercomTranscript(),
-		{
-			getSessionId: () => session.getSessionId(),
-			getEntries: () => session.getEntries(),
-			sendMessage: async () => ({ delivered: true }),
-		},
+		queueTranscript(),
+		{ ...queueTranscript(undefined, async () => ({ delivered: true })), completionSource: undefined },
 	];
 	for (const transcript of cases) {
 		const { error, taskId } = await sendThroughOwner(transcript);
 		assert.ok(isTaskMessageError(error));
 		assert.equal(error.code, "messages-unsupported");
 		assert.equal(error.taskId, taskId);
-		assert.equal(error.target, undefined);
 		assert.equal(error.retryable, false);
 	}
 });
 
-test("a refusal is delivery-refused, retryable, and names the target and the channel's reason (#4521)", async () => {
+test("a refusal is delivery-refused, retryable, and names the subagent and its session's reason (#4521)", async () => {
 	const { error, taskId } = await sendThroughOwner(
-		intercomTranscript(async () => ({ delivered: false, reason: "refused", detail: "Session may not exist" })),
+		queueTranscript(async () => ({ delivered: false, reason: "refused", detail: "Session may not exist" })),
 	);
 	assert.ok(error instanceof TaskMessageError);
 	assert.equal(error.code, "delivery-refused");
@@ -126,17 +155,17 @@ test("a refusal is delivery-refused, retryable, and names the target and the cha
 	assert.equal(error.taskId, taskId);
 	assert.equal(
 		error.message,
-		"Intercom did not deliver the message: worker-1 (delivery-refused): Session may not exist. Check that the agent is still available, then send the message again.",
+		"The agent did not take the message: worker-1 (delivery-refused): Session may not exist. Check that the agent is still available, then send the message again.",
 	);
-	const bare = await sendThroughOwner(intercomTranscript(async () => ({ delivered: false, reason: "refused" })));
+	const bare = await sendThroughOwner(queueTranscript(async () => ({ delivered: false, reason: "refused" })));
 	assert.ok(bare.error instanceof TaskMessageError);
 	assert.equal(bare.error.detail, undefined);
 });
 
-test("a channel that throws is delivery-unconfirmed, not retryable, with the failure as its cause (#4521)", async () => {
+test("a session that throws is delivery-unconfirmed, not retryable, with the failure as its cause (#4521)", async () => {
 	const failure = new Error("relay unavailable");
 	const { error } = await sendThroughOwner(
-		intercomTranscript(async () => {
+		queueTranscript(async () => {
 			throw failure;
 		}),
 	);
@@ -149,7 +178,7 @@ test("a channel that throws is delivery-unconfirmed, not retryable, with the fai
 	assert.equal(error.cause, failure);
 	assert.equal(
 		error.message,
-		"Intercom did not confirm the message: worker-1 (delivery-unconfirmed). The agent may still receive it; check its transcript before sending it again.",
+		"The agent did not confirm the message: worker-1 (delivery-unconfirmed). The agent may still receive it; check its transcript before sending it again.",
 	);
 	assert.equal(findTaskMessageError(new Error("wrapper", { cause: error })), error);
 	assert.equal(findTaskMessageError(new Error("unrelated")), undefined);
@@ -157,7 +186,7 @@ test("a channel that throws is delivery-unconfirmed, not retryable, with the fai
 
 test("an unacknowledged message is a typed timeout that is not retryable (#4521)", async () => {
 	const { error, taskId } = await sendThroughOwner(
-		intercomTranscript(async () => ({
+		queueTranscript(async () => ({
 			delivered: false,
 			reason: "unconfirmed",
 			timeoutMs: 10_000,
@@ -285,7 +314,7 @@ test("a relay failure after the message may have left is lost, and the task view
 		detail: "connection closed",
 	});
 	const { error } = await sendThroughOwner(
-		intercomTranscript(async () => ({ delivered: false, reason: "lost", detail: "connection closed" })),
+		queueTranscript(async () => ({ delivered: false, reason: "lost", detail: "connection closed" })),
 	);
 	assert.ok(error instanceof TaskMessageError);
 	assert.ok(!(error instanceof TaskMessageTimeoutError));

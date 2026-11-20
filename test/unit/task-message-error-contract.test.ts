@@ -27,15 +27,15 @@ test("every task message error code words its message and hint exactly (#4521)",
 	);
 	assert.equal(
 		new TaskMessageError("messages-unsupported", { taskId: "t" }).message,
-		"This task cannot receive messages: t (messages-unsupported). Only agent tasks that have an Intercom target accept messages from their transcript.",
+		"This task cannot receive messages: t (messages-unsupported). Only agent tasks whose session takes typed messages accept them from their transcript.",
 	);
 	assert.equal(
 		new TaskMessageError("delivery-refused", { taskId: "t", target: "w", detail: "offline" }).message,
-		"Intercom did not deliver the message: w (delivery-refused): offline. Check that the agent is still available, then send the message again.",
+		"The agent did not take the message: w (delivery-refused): offline. Check that the agent is still available, then send the message again.",
 	);
 	assert.equal(
 		new TaskMessageError("delivery-unconfirmed", { taskId: "t" }).message,
-		"Intercom did not confirm the message: t (delivery-unconfirmed). The agent may still receive it; check its transcript before sending it again.",
+		"The agent did not confirm the message: t (delivery-unconfirmed). The agent may still receive it; check its transcript before sending it again.",
 	);
 });
 

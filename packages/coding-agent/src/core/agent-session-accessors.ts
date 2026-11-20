@@ -211,6 +211,11 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				return this._queuedMessagesPaused;
 			},
 		},
+		turnPaused: {
+			get() {
+				return this._turnPause !== undefined;
+			},
+		},
 		resourceLoader: {
 			get() {
 				return this._resourceLoader;

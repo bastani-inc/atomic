@@ -13,6 +13,7 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import type { ChatMessageEntry, ChatMessageRenderOptions } from "./chat-message-renderer.ts";
+import type { ChatSteeringTarget } from "./chat-session-host-steering.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import type { sessionPromptsFromEntries } from "./prompt-history-selector.ts";
 import type { AgentTokenMeterSnapshot, WorkingRunSnapshot } from "./working-run-meter.ts";
@@ -99,6 +100,13 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	readonly liveRowOrigin?: (seq: number) => string | undefined;
 	style: ChatSessionHostStyle;
 	commands?: ChatSessionHostCommands;
+	/**
+	 * @internal The agent this chat steers as the main chat steers its own session (a subagent's chat): Enter steers and
+	 * the follow-up key queues a follow-up while the agent works, each shown as a queued row until the agent takes it, and
+	 * the dequeue key takes every queued message back to the editor. Set, it takes the place of `commands.prompt`,
+	 * `steer`, `followUp` and `send`; `commands.handleSlashCommand` still runs the chat's own commands first.
+	 */
+	steering?: ChatSteeringTarget;
 	requestRender?: () => void;
 	getAgentSession?: () => AgentSession | undefined;
 	/**

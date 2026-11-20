@@ -174,7 +174,7 @@ Toggle skill commands via `/settings` in interactive mode or in `settings.json`:
 
 Open a subagent's chat from `/tasks`. Its `/skill:` suggestions and path completions use the subagent's own skills and working directory. A finished subagent keeps the skills and directory it had when it finished. A `/skill:<selector>` command typed there reaches the subagent expanded from its own skills, as the subagent itself would expand it; a selector that names none of its skills is sent as typed.
 
-Enter starts a turn when idle or steers a streaming turn. Ctrl+F keeps follow-up intent. Skill-relative references use the skill directory, while ordinary tools keep the subagent's working directory. Turning off `enableSkillCommands` hides suggestions but does not disable manually typed skill commands. Unknown bare selectors pass through as text; unknown or ambiguous qualified selectors and file-read failures show diagnostics in the attached chat without selecting another skill.
+Enter starts a turn when idle or steers a streaming turn. Alt+Enter (`app.message.followUp`) queues it as a follow-up, as in the main chat. Skill-relative references use the skill directory, while ordinary tools keep the subagent's working directory. Turning off `enableSkillCommands` hides suggestions but does not disable manually typed skill commands. Unknown bare selectors pass through as text; unknown or ambiguous qualified selectors and file-read failures show diagnostics in the attached chat without selecting another skill.
 
 If a skill command is queued while the session is paused, it may remain literal text after resume. Restore it to the editor and submit again after resuming to invoke the skill.
 

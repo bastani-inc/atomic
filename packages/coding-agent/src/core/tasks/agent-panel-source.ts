@@ -263,7 +263,7 @@ export function taskPanelState(task: TaskRecord): AgentPanelState {
 			return "stopping";
 		case "running":
 			if (task.attention.kind !== "none") return "input";
-			return isTaskTurnInterrupted(task) ? "stopped" : "running";
+			return isTaskTurnInterrupted(task) ? "paused" : "running";
 		case "settled": {
 			const result = task.execution.result;
 			if (waitingReleasedTools(task) !== undefined) return "waiting";
@@ -360,7 +360,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 	const clocks = sourceClocks ?? taskClockOf(task);
 	const cached = cachedTaskItems.get(task);
 	const state = taskPanelState(task);
-	const interrupted = task.execution.kind !== "settled" && state === "stopped";
+	const interrupted = task.execution.kind !== "settled" && state === "paused";
 	const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
 	const kind = taskPanelRole(task);
 	const name = kind === "agent" ? (task.agentName ?? "agent") : "shell";
@@ -410,7 +410,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 
 export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
 	const state = taskPanelState(task);
-	const interrupted = task.execution.kind !== "settled" && state === "stopped";
+	const interrupted = task.execution.kind !== "settled" && state === "paused";
 	const runGeneration = taskRunGeneration(task);
 	const cached = lazyTaskItems.get(task);
 	if (

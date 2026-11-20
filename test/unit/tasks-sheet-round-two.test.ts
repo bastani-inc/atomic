@@ -481,7 +481,7 @@ test("the /tasks hint keeps its way out and help key, with one separator style, 
 	}
 });
 
-test("an interrupted subagent shows as stopped in /tasks and its elapsed time stops (#5224)", async () => {
+test("a subagent paused by Esc shows as paused in /tasks, listed with the work in progress, and its elapsed time stops (#5224)", async () => {
 	let now = 1_800_000_000_000;
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const fixture = taskFixture();
@@ -500,10 +500,14 @@ test("an interrupted subagent shows as stopped in /tasks and its elapsed time st
 				.find((line) => line.includes("Spawn lock fix")) ?? "";
 		assert.match(row(), /∀ worker +Spawn lock fix +1m$/);
 		fixture.store.setTurnInterrupted(fixture.store.tasks[0]!.ref.taskId, true);
-		assert.match(row(), /◼ worker +Spawn lock fix +stopped · 1m$/);
-		assert.match(plain(inspector.renderPicker(100, 24)), /Done\n.*Spawn lock fix/);
+		assert.match(row(), /‖ worker +Spawn lock fix +paused · 1m$/);
+		assert.match(
+			plain(inspector.renderPicker(100, 24)),
+			/Working\n.*Spawn lock fix/,
+			"a paused subagent is not done",
+		);
 		now += 180_000;
-		assert.match(row(), /stopped · 1m$/, "the interrupted turn's time does not keep counting");
+		assert.match(row(), /paused · 1m$/, "the paused turn's time does not keep counting");
 	} finally {
 		clock.mockRestore();
 		inspector.dispose();
@@ -511,7 +515,7 @@ test("an interrupted subagent shows as stopped in /tasks and its elapsed time st
 	}
 });
 
-test("an interrupted subagent's /tasks detail page reads stopped, not running (#5224)", async () => {
+test("a paused subagent's /tasks detail page reads paused, not running or stopped (#5224)", async () => {
 	const fixture = taskFixture();
 	const inspector = new TaskInspector(
 		ownerTaskViewSource(fixture.store),
@@ -527,7 +531,7 @@ test("an interrupted subagent's /tasks detail page reads stopped, not running (#
 		inspector.handleInput(ENTER);
 		await flush();
 		const detail = plain(inspector.renderViewport(100, 24));
-		assert.match(detail, /◼ Stopped · send to resume/);
+		assert.match(detail, /‖ Paused · send to continue/);
 		assert.doesNotMatch(detail, /Running/);
 	} finally {
 		inspector.dispose();

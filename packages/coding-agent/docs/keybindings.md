@@ -147,7 +147,7 @@ On Windows, pressing the secondary mouse button in fullscreen pastes text from t
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.interrupt` | `escape` | Abort active or queued work and restore still-queued steering/follow-up messages to the editor; the session remains paused until an ordinary submission. A message the agent already picked up is answered instead of restored |
+| `app.interrupt` | `escape` | Abort active or queued work and restore still-queued steering/follow-up messages to the editor; the session remains paused until an ordinary submission. A message the agent already picked up is answered instead of restored. In a subagent's chat it pauses the subagent the same way, and a message sent from that chat continues it |
 | `app.clear` | `ctrl+c` | Clear the editor when it has text; otherwise interrupt active or queued work, or terminate an unresponsive interactive engine; on an empty, idle editor, the first press shows "Press Ctrl+C again to exit" and a second press within 0.8 s exits |
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (`alt+z` on Windows) | Suspend to background; on Windows, open a PowerShell subshell |
@@ -217,16 +217,18 @@ Interactive model and thinking choices automatically become startup defaults. Th
 | `app.message.followUp` | `alt+enter` | Queue follow-up message |
 | `app.message.dequeue` | `alt+up` | Restore queued messages to editor |
 
+The message queue keys work the same in the main chat and in a subagent's chat: while the agent works, Enter queues a steering message and `app.message.followUp` a follow-up, each shown as a `Steering:` or `Follow-up:` row above the prompt until the agent reads it, and `app.message.dequeue` brings every queued message back into the prompt.
+
 ### Navigation
 
 The same keys move between the main chat, subagent chats and lists everywhere:
 
-- **Esc** only interrupts the current turn, cancels, closes a dialog or deselects. It never moves you to another chat.
+- **Esc** only interrupts the current turn, cancels, closes a dialog or deselects; in a subagent's chat it pauses the subagent until you send it a message. It never moves you to another chat.
 - **←** on an empty prompt goes back exactly one level, to the chat or list you came from, and the hint line names it (`← tasks`, `← main chat`). With text typed, ← moves the cursor; at the very start of the prompt it leaves too, and what you typed is kept for when you come back.
 - In a list, **↑↓** select, **Enter** or **→** opens the item's chat, **Space** peeks at its detail (in `/tasks`, a card under the row), or opens the asking chat for a subagent waiting on input, **x** stops the selected item (press it again within 3 seconds to confirm; on a finished item one press dismisses the row), **Esc** or **←** closes the list. If an item finishes between the two presses of `x`, the stop is called off and the list says `<name> finished · x to acknowledge`; that press acknowledges the change, and a later `x` dismisses the row after its finished state is painted.
 - **Ctrl+X Ctrl+K** stops every running background subagent and shell of the session, from any view except a dialog that uses Ctrl+X itself (OAuth sign-in, the scoped-model selector). Press it twice within 3 seconds; the first press says what it will do, and any other key calls it off. Stopped subagents stay resumable: their chats read `Stopped · send to resume`, and only a message you send resumes them.
 - **?** on an empty prompt, or in a list, shows the keys of the current screen; typed after text, `?` is just a character. Esc or ? closes it. Each screen also shows one dim hint line with exactly the keys that work there.
-- A finished subagent's chat stays open to messages: sending one resumes it in its own session. A subagent stopped for good, or one no longer kept, has a read-only chat with a one-line note; ← still goes back.
+- A finished subagent's chat stays open to messages: sending one continues it in its own session, in the same `/tasks` row. A subagent stopped for good, or one no longer kept, has a read-only chat with a one-line note; ← still goes back.
 - A shell's input prompt keeps Esc from clearing or leaving it; ← on its empty input returns to the list, and a draft is kept when you leave.
 
 | Keybinding id | Default | Description |

@@ -155,6 +155,8 @@ export interface RunSyncOptions {
 	resumeToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
 	/** A wake that only hands back tool results: the continued turn is the whole run and the task is not prompted. */
 	skipTaskPrompt?: boolean;
+	/** The user had paused the child when Atomic restarted: it is restored paused, with nothing prompted. */
+	resumePaused?: boolean;
 	wakeToolResultIds?: readonly string[];
 	/** The calls the child is told are still running, recorded with every record its run writes (#5014). */
 	stillRunning?: readonly import("../runs/foreground/subagent-child-records.js").SubagentChildStillRunningCall[];

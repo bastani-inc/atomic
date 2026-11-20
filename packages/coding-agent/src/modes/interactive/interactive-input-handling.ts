@@ -18,7 +18,6 @@ import {
 	remoteProxyHandlesCtrlC,
 } from "../interactive-engine/remote-input-ownership.ts";
 import { agentPanelCounts, agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
-import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { agentPanelBoardSource, showTaskInspector } from "../rpc/task-ui-bridge.js";
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
@@ -33,8 +32,9 @@ import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive
 import { BUILTIN_SLASH_COMMAND_NAMES } from "./interactive-mode-helpers.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
-import { handOffCompactionQueue, settleSubmission, showSubmissionAsQueued } from "./interactive-queueing.ts";
+import { handOffCompactionQueue, mainSteering } from "./interactive-queueing.ts";
 import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
+import type { SteeringSubmitResult } from "./steering-queue-controller.ts";
 import { theme } from "./theme/theme.js";
 
 function mainComposerPanelCounts(mode: InteractiveModeBase) {
@@ -581,11 +581,6 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			if ((this.session.isStreaming || this.promptTurn !== undefined) && !this.session.queuedMessagesPaused) {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				let accepted = false;
-				// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
-				const shownAsQueued = this.isExtensionCommand(text)
-					? undefined
-					: showSubmissionAsQueued(this, text, "steer");
 				// An engine sends its answer to this prompt together with the first events of the turn it started, and
 				// the host handles those events before the answer's callback runs. If the session already showed the
 				// message, echoing it again here would show it twice (#4272). It shows the message as sent, which an
@@ -596,12 +591,13 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				const unsubscribeUserMessages = this.session.subscribe((event) => {
 					if (event.type === "message_start" && event.message.role === "user") showedUserMessage = true;
 				});
+				let submitted: SteeringSubmitResult;
 				try {
-					await this.session.prompt(text, {
-						streamingBehavior: "steer",
-						preflightResult: (success, disposition) => {
-							accepted = success;
-							if (shownAsQueued) settleSubmission(this, shownAsQueued);
+					submitted = await mainSteering(this).submit(text, "steer", {
+						route: "queue",
+						// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
+						showAsQueued: !this.isExtensionCommand(text),
+						onAnswered: (success, disposition) => {
 							if (
 								success &&
 								disposition === "started" &&
@@ -613,23 +609,28 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 								this.expectStartedUserInput(text, shownBefore);
 							}
 						},
+						onSent: () => {
+							// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
+							if (
+								echoedStartedRun &&
+								!showedUserMessage &&
+								this.deferredRenderedUserInputs?.includes(text) === true
+							)
+								this.discardDeferredRenderedUserInput(text);
+						},
 					});
-					// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
-					if (echoedStartedRun && !showedUserMessage && this.deferredRenderedUserInputs?.includes(text) === true)
-						this.discardDeferredRenderedUserInput(text);
-				} catch (error) {
-					if (shownAsQueued) settleSubmission(this, shownAsQueued);
-					if (accepted) throw error;
-					if (isRpcRequestAcceptedFailure(error)) {
-						this.showError(error.message);
-						return;
-					}
-					restoreRefusedSubmission(this, error, submittedDraft);
-					return;
 				} finally {
 					unsubscribeUserMessages();
 				}
-				if (shownAsQueued) settleSubmission(this, shownAsQueued);
+				if (submitted.kind === "failed") throw submitted.error;
+				if (submitted.kind === "lost") {
+					this.showError(submitted.error.message);
+					return;
+				}
+				if (submitted.kind === "refused") {
+					restoreRefusedSubmission(this, submitted.error, submittedDraft);
+					return;
+				}
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				return;
