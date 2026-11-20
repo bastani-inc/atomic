@@ -1033,7 +1033,11 @@ function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands
 		cwd,
 		skills: loader === undefined ? emptySkillCatalog() : getSkillCatalog(loader),
 		skillCommandsEnabled: session.settingsManager?.getEnableSkillCommands() ?? false,
-		promptTemplates: (templates ?? []).map(({ name, description, sourceInfo }) => ({ name, description, sourceInfo })),
+		promptTemplates: (templates ?? []).map(({ name, description, sourceInfo }) => ({
+			name,
+			description,
+			sourceInfo,
+		})),
 		extensionCommands: (runner?.getRegisteredCommands() ?? []).map(({ invocationName, description, sourceInfo }) => ({
 			name: invocationName,
 			description,

@@ -3,6 +3,7 @@ import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../../core/slash-commands.j
 import { copyToClipboard } from "../../../utils/clipboard.js";
 import { getInteractiveEngineRemoteCommands } from "../../interactive-engine/extension-ui-bridge.ts";
 import { keyDisplayText } from "../components/keybinding-hints.ts";
+import { applyViewedAutocomplete } from "../interactive-autocomplete.ts";
 import { mainSubmit } from "../interactive-input-handling.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { mergeRestoredDraft } from "../interactive-prompt-restore.ts";
@@ -49,7 +50,10 @@ export async function routeViewedCommand(
 			const typedIn = shownPrompt(mode);
 			if (!(await confirmMainConversation(mode, port, `/${command.name}`))) {
 				// The command comes back in front of what the prompt holds now, as it was typed.
-				const prompt = mode.agentView?.viewed.kind === "agent" && mode.agentView.viewed.port === port ? typedIn : shownPrompt(mode);
+				const prompt =
+					mode.agentView?.viewed.kind === "agent" && mode.agentView.viewed.port === port
+						? typedIn
+						: shownPrompt(mode);
 				prompt.setText(mergeRestoredDraft(text, prompt.getExpandedText()));
 				return "handled";
 			}
@@ -135,9 +139,10 @@ const GATED_ACTIONS: ReadonlyMap<AppKeybinding, { readonly command: string; read
 /**
  * Gate the prompt's keys that act on the main conversation while a subagent is shown: the session keys ask first and
  * then run on main with main shown; the model and thinking keys are refused with a notice. While main is shown each key
- * runs its own handler, untouched. Answers the uninstall.
+ * runs its own handler, untouched. The prompt's completion follows what the screen shows. Answers the uninstall.
  */
 export function installViewedCommandGates(mode: InteractiveModeBase, switcher: AgentViewSwitcher): () => void {
+	const unwatch = switcher.onChange(() => applyViewedAutocomplete(mode));
 	const editors = [mode.defaultEditor, mode.editor].filter(
 		(editor, index, all): editor is typeof mode.defaultEditor =>
 			all.indexOf(editor) === index && (editor as { actionHandlers?: unknown }).actionHandlers instanceof Map,
@@ -171,6 +176,7 @@ export function installViewedCommandGates(mode: InteractiveModeBase, switcher: A
 		}
 	}
 	return () => {
+		unwatch();
 		for (const restore of undo.splice(0)) restore();
 	};
 }

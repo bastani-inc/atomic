@@ -6,7 +6,10 @@ import type { AgentViewRuntime } from "./agent-steering.ts";
 import type { AgentViewCommands } from "./contracts.ts";
 
 /** The slash commands the subagent's own session runs, read where it lives. */
-export async function localAgentCommands(source: TaskViewSource, taskId: TaskId): Promise<AgentViewCommands | undefined> {
+export async function localAgentCommands(
+	source: TaskViewSource,
+	taskId: TaskId,
+): Promise<AgentViewCommands | undefined> {
 	const catalog = await source.taskCommands?.(taskId);
 	return catalog === undefined ? undefined : agentViewCommands(catalog);
 }
