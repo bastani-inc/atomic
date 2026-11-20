@@ -10,7 +10,8 @@ import { afterEach, beforeAll, describe, test } from "vitest";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { waitFor } from "./helpers/busy-submission-rig.js";
-import { ALT_ENTER, ALT_UP, type MainChatTerminal, startMainChat } from "./helpers/main-chat-terminal.js";
+import { type MainChatTerminal, startMainChat } from "./helpers/main-chat-terminal.js";
+import { DEQUEUE_KEY, FOLLOW_UP_KEY } from "./helpers/steering-chats.js";
 import { getMessageText } from "./suite/harness.js";
 
 /** A real interactive mode on a terminal, and a turn or two of the faux model: never the default budget. */
@@ -80,7 +81,7 @@ describe.each(["in-process", "isolated"] as const)(
 	(host) => {
 		for (const [lane, key, row] of [
 			["steering", "\r", "Steering: later one"],
-			["follow-up", ALT_ENTER, "Follow-up: later one"],
+			["follow-up", FOLLOW_UP_KEY, "Follow-up: later one"],
 		] as const) {
 			test(
 				`stays listed as a ${lane} row while its message_start hooks run, and leaves when its row shows (#6080)`,
@@ -176,7 +177,7 @@ describe.each(["in-process", "isolated"] as const)(
 
 				chat.gate.release.resolve();
 				await hook.entered.promise;
-				chat.press(ALT_UP);
+				chat.press(DEQUEUE_KEY);
 				const afterDequeue = await chat.settled();
 				// The session already took the message: the dequeue key has nothing to give back.
 				assert.equal(chat.mode.editor.getText(), "");
