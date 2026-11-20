@@ -1,4 +1,4 @@
-import { type ExtensionAPI, formatTokenCount, isStaleExtensionContextError } from "@bastani/atomic";
+import { type ExtensionAPI, isStaleExtensionContextError } from "@bastani/atomic";
 import { type IntercomBridgeState, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
 import {
 	buildSubagentResultIntercomPayload,
@@ -49,7 +49,7 @@ function formatForegroundActivity(control: ForegroundControl): string | undefine
 	else if (control.currentTool) facts.push(`tool ${control.currentTool}`);
 	if (control.currentPath) facts.push(`path ${control.currentPath}`);
 	if (control.turnCount !== undefined) facts.push(`${control.turnCount} turns`);
-	if (control.tokens !== undefined) facts.push(`${formatTokenCount(control.tokens)} tokens`);
+	if (control.tokens !== undefined) facts.push(`${control.tokens} tokens`);
 	if (control.toolCount !== undefined) facts.push(`${control.toolCount} tools`);
 	if (!control.lastActivityAt) {
 		if (control.currentActivityState === "needs_attention") return ["needs attention", ...facts].join(" | ");

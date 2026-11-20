@@ -34,6 +34,14 @@ describe("token segment (#5224)", () => {
 		for (const value of [Number.NaN, Number.POSITIVE_INFINITY, -1]) assert.equal(formatTokenCount(value), "0");
 	});
 
+	test("a JavaScript caller's numeric string counts as its number", () => {
+		const fromJavaScript: (number | string)[] = ["1500", "999.6"];
+		assert.deepEqual(
+			fromJavaScript.map((count) => formatTokenCount(count as number)),
+			["1.5k", "1.0k"],
+		);
+	});
+
 	test("a request still waiting for its first block points up, anything after it points down (#5224)", () => {
 		assert.equal(formatTokenSegment({ mode: "requesting", count: 1_234 }), "↑ 1.2k tokens");
 		assert.equal(formatTokenSegment({ mode: "receiving", count: 1_234 }), "↓ 1.2k tokens");

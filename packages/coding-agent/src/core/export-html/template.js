@@ -890,7 +890,8 @@
       // Token counts read as in the terminal: the whole count below 1,000, then one decimal and a unit (1.0k, 1.2M).
       function formatTokens(count) {
         const units = ['k', 'M', 'B', 'T', 'Q'];
-        const tokens = Number.isFinite(count) ? Math.max(0, Math.round(count)) : 0;
+        const value = typeof count === 'number' || typeof count === 'string' ? Number(count) : NaN;
+        const tokens = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
         if (tokens < 1000) return String(tokens);
         let unit = 0;
         let tenthStep = 100;

@@ -7,7 +7,10 @@ const TOKEN_COUNT_UNITS = ["k", "M", "B", "T", "Q"] as const;
  * 1.0 of the next one: 999,950 is "1.0M". Fractional counts round to whole tokens; a negative or non-finite count is "0".
  */
 export function formatTokenCount(count: number): string {
-	const tokens = Number.isFinite(count) ? Math.max(0, Math.round(count)) : 0;
+	// A JavaScript caller can pass a numeric string such as "1500"; any other non-number is malformed.
+	const input = count as number | string;
+	const value = typeof input === "number" || typeof input === "string" ? Number(input) : Number.NaN;
+	const tokens = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
 	if (tokens < 1000) return String(tokens);
 	let unit = 0;
 	let tenthStep = 100;

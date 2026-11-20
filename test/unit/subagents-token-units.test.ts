@@ -73,7 +73,7 @@ test("a subagent's usage line writes each token count with one decimal", () => {
 	);
 });
 
-test("a long-running subagent notice writes its token count with one decimal", () => {
+test("a long-running subagent notice gives the model the exact token count", () => {
 	const message = formatControlNoticeMessage({
 		type: "active_long_running",
 		to: "active_long_running",
@@ -85,5 +85,5 @@ test("a long-running subagent notice writes its token count with one decimal", (
 		tokens: 123_456,
 		toolCount: 41,
 	});
-	assert.match(message, /Facts: 12 turns \| 123\.5k tokens \| 41 tools/);
+	assert.match(message, /Facts: 12 turns \| 123456 tokens \| 41 tools/);
 });
