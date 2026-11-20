@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Worker } from "node:worker_threads";
+import { evalWorkerExecArgv } from "../utils/worker-threads.js";
 
 const QUEUED = 0;
 const WRITING = 1;
@@ -49,7 +50,7 @@ const counts = new Map<Worker, number>();
 
 function getWorker(): Worker {
 	if (worker !== undefined) return worker;
-	const created = new Worker(SOURCE, { eval: true });
+	const created = new Worker(SOURCE, { eval: true, execArgv: evalWorkerExecArgv() });
 	created.on("message", ({ id, error }: { id: number; error?: string }) => {
 		outstanding.get(id)?.settle(error === undefined ? undefined : new Error(error));
 	});
