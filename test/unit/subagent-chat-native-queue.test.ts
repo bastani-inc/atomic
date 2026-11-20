@@ -120,9 +120,10 @@ test(
 			}),
 		);
 
-		assert.deepEqual(await source.queueMessage!("steer alpha", "steer"), { delivered: true });
-		assert.deepEqual(await source.queueMessage!("steer beta", "steer"), { delivered: true });
-		assert.deepEqual(await source.queueMessage!("follow gamma", "followUp"), { delivered: true });
+		const queuedOnly = { delivered: true, startedTurn: false };
+		assert.deepEqual(await source.queueMessage!("steer alpha", "steer"), queuedOnly);
+		assert.deepEqual(await source.queueMessage!("steer beta", "steer"), queuedOnly);
+		assert.deepEqual(await source.queueMessage!("follow gamma", "followUp"), queuedOnly);
 
 		const queued = { steering: ["steer alpha", "steer beta"], followUp: ["follow gamma"] };
 		assert.deepEqual(source.getQueuedMessages!(), queued, "the chat reads them as the session's own queue");
@@ -254,7 +255,10 @@ test.each(["steer", "followUp"] as const)(
 		await new Promise<void>((resolve) => setTimeout(resolve, 20));
 		assert.equal(child.settled(), false, "the interrupted child waits for its next message");
 
-		assert.deepEqual(await source.queueMessage!("carry on with the plan", lane), { delivered: true });
+		assert.deepEqual(await source.queueMessage!("carry on with the plan", lane), {
+			delivered: true,
+			startedTurn: true,
+		});
 		const result = await child.result;
 		assert.equal(result.status, "ok");
 		assert.equal(result.finalOutput, "continued as asked");

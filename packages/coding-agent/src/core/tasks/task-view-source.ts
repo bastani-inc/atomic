@@ -6,7 +6,7 @@ import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { SessionHeader } from "../session-manager-types.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
-import type { SkillCatalogCommand } from "../skill-catalog.ts";
+import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import {
 	type ChatPosition,
 	type ChatRecordOwner,
@@ -606,18 +606,27 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				if (!task.ok) throw new TaskMessageError("task-unavailable", { taskId: id });
 				const bound = taskTranscriptSource(task.value);
 				const session = bound.ok ? bound.value.session : undefined;
-				// Never an Intercom message: its model would receive the text wrapped as another agent's.
-				if (session?.queueMessage === undefined) throw new TaskMessageError("messages-unsupported", { taskId: id });
-				const target = session.completionSource?.intercomTarget;
+				const target = session?.completionSource?.intercomTarget;
+				// A session that takes no typed messages, as an SDK host's may, still takes them through its Intercom
+				// channel, as before. Every built-in subagent takes them in its own queue.
+				if (
+					session === undefined ||
+					(session.queueMessage === undefined && (session.sendMessage === undefined || target === undefined))
+				)
+					throw new TaskMessageError("messages-unsupported", { taskId: id });
 				const named = { taskId: id, ...(target === undefined ? {} : { target }) };
 				let delivery: TaskMessageDelivery;
 				try {
-					delivery = await session.queueMessage(text, lane);
+					delivery =
+						session.queueMessage !== undefined
+							? await session.queueMessage(text, lane)
+							: await sendIntercomMessage(session, text);
 				} catch (cause) {
 					throw new TaskMessageError("delivery-unconfirmed", named, { cause });
 				}
 				if (delivery.delivered) {
-					store.setTurnInterrupted(id, false);
+					// Only a message that started its turn ends an interrupted or paused one; queued, it waits in its hold.
+					if (delivery.startedTurn !== false) store.setTurnInterrupted(id, false);
 					return;
 				}
 				if (
@@ -659,6 +668,18 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 	sources.set(store, source);
 	bindTaskClockSource(source, store);
 	return source;
+}
+
+/**
+ * Sends typed text through the Intercom channel of a session that takes no typed messages. Its session does not
+ * expand Intercom text, so a skill command is expanded here from its own skills, as its session would; a selector
+ * naming none is sent as typed.
+ */
+async function sendIntercomMessage(session: TaskTranscriptSource, text: string): Promise<TaskMessageDelivery> {
+	const send = session.sendMessage;
+	if (send === undefined) return { delivered: false, reason: "refused" };
+	const skills = session.commands?.().skills;
+	return send.call(session, skills === undefined ? text : await expandSkillCommand(skills, text));
 }
 
 /** How long a message that a subagent refused as its execution ended waits for its task to finish, to resume it. */
