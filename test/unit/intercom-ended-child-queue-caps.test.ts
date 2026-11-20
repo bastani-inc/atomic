@@ -152,6 +152,20 @@ async function storedOnDisk(path: string, child?: string): Promise<number> {
 	}
 }
 
+/** The sizes the store's rows recorded when they were written, summed: what a store counts when it opens. */
+async function countedOnDisk(path: string): Promise<number> {
+	const { DatabaseSync } = await import("node:sqlite");
+	const reader = new DatabaseSync(path, { readOnly: true });
+	try {
+		const row = reader.prepare("SELECT COALESCE(SUM(bytes), 0) AS bytes FROM intercom_ended_child_queue").get() as {
+			bytes: number;
+		};
+		return Number(row.bytes);
+	} finally {
+		reader.close();
+	}
+}
+
 async function rowsOnDisk(path: string, messageIds: readonly string[]): Promise<number> {
 	const { DatabaseSync } = await import("node:sqlite");
 	const reader = new DatabaseSync(path, { readOnly: true });
@@ -243,13 +257,15 @@ test("a delivered message whose row another process's lock kept from being delet
 
 test("a restarted broker counts what an earlier one kept before it queues anything: a burst while it reads them stays within 256 MiB", async () => {
 	const path = storePath();
-	// An earlier broker kept 255 messages of about 1 MiB, for 8 subagents.
+	// An earlier broker kept 255 messages that each took 1 MiB where it kept them, for 8 subagents. (Each row records
+	// the size its message took when written, which is what a store counts when it opens; these are written small, to
+	// spare the disk.)
 	const earlier = await openLocalEndedChildQueueStore(path, "broker-1");
 	const sender = wakeSender("peer");
 	const adds: Array<Promise<unknown>> = [];
 	for (let index = 0; index < 255; index++) {
 		const child = `subagent-worker-kept-${index % 8}`;
-		const held = send(child, sender);
+		const held = send(child, sender, "kept");
 		const requestJson = JSON.stringify(held.clientMessage);
 		const senderJson = JSON.stringify({
 			info: sender.info,
@@ -273,15 +289,14 @@ test("a restarted broker counts what an earlier one kept before it queues anythi
 				request: JSON.parse(requestJson) as Record<string, unknown>,
 				requestJson,
 				senderJson,
-				bytes: Buffer.byteLength(requestJson) + Buffer.byteLength(senderJson),
+				bytes: MiB,
 				queuedAt: Date.now(),
 			}),
 		);
 	}
 	await Promise.all(adds);
 	await earlier.close();
-	const before = await storedOnDisk(path);
-	assert.ok(before > ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX - 2 * MiB);
+	assert.equal(await countedOnDisk(path), 255 * MiB);
 	// The next broker: as soon as it decided on the store, another subagent of the owner departs, sends to it wait
 	// for the owner's verdict, and the owner reports it paused: they are queued while the kept ones are still read.
 	const { departed, queue } = await broker(path, { whileLoading: true });
@@ -294,14 +309,14 @@ test("a restarted broker counts what an earlier one kept before it queues anythi
 	const marked = departed.mark(OWNER, [paused(child)]);
 	await Promise.allSettled(marked.queued.map((queued) => queued.kept));
 	await queue.untilLoaded();
-	const kept = await storedOnDisk(path);
+	const kept = await countedOnDisk(path);
 	assert.ok(kept <= ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX + MiB, `${kept} bytes kept in all`);
 	assert.ok(marked.refused.length > 0);
 	assert.match(
 		marked.refused[0]!.reason ?? "",
 		/The message was not queued for it: Intercom already keeps \d+ MiB of messages for subagents that ended\./,
 	);
-}, 120_000);
+}, 60_000);
 
 test("two departures of one subagent, merged when its launching session comes back, never keep more than its 32 MiB, and a merge keeps every message it took", async () => {
 	const path = storePath();

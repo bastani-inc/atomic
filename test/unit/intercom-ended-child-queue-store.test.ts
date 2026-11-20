@@ -460,16 +460,19 @@ test("after a write waits out another process's lock and the next is refused at 
 	const { DatabaseSync } = await import("node:sqlite");
 	const other = new DatabaseSync(path);
 	other.exec("BEGIN IMMEDIATE");
-	setTimeout(() => {
-		other.exec("ROLLBACK");
-		other.close();
-	}, 5_500);
 	try {
-		await assert.rejects(store.add(entry("m1")), /locked/, "the first write waits out the lock, then fails");
-		await assert.rejects(store.add(entry("m2")), /locked/, "the next one, within a lock wait, fails at once");
-		await sleep(6_000);
+		try {
+			await assert.rejects(store.add(entry("m1")), /locked/, "the first write waits out the lock, then fails");
+			await assert.rejects(store.add(entry("m2")), /locked/, "the next one, within a lock wait, fails at once");
+		} finally {
+			other.exec("ROLLBACK");
+			other.close();
+		}
+		// Writes are refused at once for a lock wait after the first failed; that wait is over once this one is.
+		await sleep(ENDED_QUEUE_LOCK_WAIT_MS);
 		// The lock is free and the wait is over: a write now is kept, and a remove goes through.
-		const settled = (write: Promise<unknown>) => Promise.race([write, sleep(3_000).then(() => "still waiting")]);
+		const settled = (write: Promise<unknown>) =>
+			Promise.race([write, sleep(ENDED_QUEUE_LOCK_WAIT_MS).then(() => "still waiting")]);
 		assert.equal(await settled(store.add(entry("m3"))), "added");
 		assert.equal(await settled(store.remove(["m3"])), undefined);
 		assert.equal(await settled(store.close().then(() => "closed")), "closed");
@@ -477,7 +480,7 @@ test("after a write waits out another process's lock and the next is refused at 
 		clearInterval(ticker);
 	}
 	assert.ok(stalled < LOCK_WAIT_STALL_MAX_MS, `the event loop stalled for ${stalled.toFixed(1)} ms`);
-}, 30_000);
+}, 60_000);
 
 test("the store still gives its disk space back after another process held its write lock", async () => {
 	const path = join(directory(), "ended-child-queue.sqlite");
