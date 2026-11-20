@@ -20,6 +20,7 @@ function isOptionalCount(value: JsonWireValue | undefined): boolean {
 export function isBrokerStatusReport(value: JsonWireValue | undefined): value is WireObject & BrokerStatusReport {
 	if (!isObject(value) || typeof value.pid !== "number" || typeof value.sessions !== "number") return false;
 	if (!isOptionalCount(value.reservations) || !isOptionalCount(value.heldSends) || !isOptionalCount(value.droppedReleasedReplyRoutes)) return false;
+	if (!isOptionalCount(value.queuedBytes)) return false;
 	if (value.protocol !== undefined && !isBrokerProtocolRange(value.protocol)) return false;
 	const { storage, multiNode } = value;
 	if (
