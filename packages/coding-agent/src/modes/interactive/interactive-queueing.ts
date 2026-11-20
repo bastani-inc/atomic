@@ -6,6 +6,8 @@ import {
 } from "../interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime, type LostSubagentChatQueue } from "../interactive-engine/isolated-runtime.js";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
+import { promptHandle } from "./agent-view/agent-drafts.ts";
+import { viewedSteering } from "./agent-view/viewed-submit.ts";
 import { combineQueuedMessagesForEditor } from "./chat-input-actions.ts";
 import { QueuedMessagesView, queuedMessageRows } from "./components/queued-messages-view.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -110,6 +112,15 @@ InteractiveModeBase.prototype.clearAllQueues = async function (
 
 InteractiveModeBase.prototype.updatePendingMessagesDisplay = function (this: InteractiveModeBase): void {
 	this.pendingMessagesContainer.clear();
+	// While a subagent is shown, the rows above the prompt are its queue, drawn as the main chat draws its own.
+	const viewed = viewedSteering(this);
+	if (viewed !== undefined) {
+		const rows = queuedMessageRows(viewed.allQueued());
+		if (rows.length === 0) return;
+		const dequeueKey = this.getAppKeyDisplay("app.message.dequeue");
+		this.pendingMessagesContainer.addChild(new QueuedMessagesView(rows, dequeueKey, (text) => theme.fg("dim", text)));
+		return;
+	}
 	for (const component of this.pendingBashComponents) {
 		this.pendingMessagesContainer.addChild(component);
 	}
@@ -128,11 +139,13 @@ InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = async function (
 		preserveUnprotectedCustomMessages?: boolean;
 	},
 ): Promise<number> {
+	// Main's prompt, also once the screen shows a subagent before the session answers.
+	const prompt = promptHandle(this, "main");
 	const restored = restoredQueue(
 		await this.clearAllQueues(options),
-		() => options?.currentText ?? this.editor.getExpandedText?.() ?? this.editor.getText(),
+		() => options?.currentText ?? prompt.getExpandedText(),
 	);
-	if (restored !== undefined) this.editor.setText(restored.text);
+	if (restored !== undefined) prompt.setText(restored.text);
 	this.updatePendingMessagesDisplay();
 	if (options?.abort) {
 		void this.session.abort();
@@ -520,8 +533,9 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 			}
 			const messages = mainSteering(this).recoverTarget(delivered);
 			if (messages === undefined) return;
-			const editorText = this.editor.getExpandedText?.() ?? this.editor.getText();
-			this.editor.setText(combineQueuedMessagesForEditor(messages, editorText));
+			// Main's prompt, whatever the screen shows by the time the replacement answers.
+			const prompt = promptHandle(this, "main");
+			prompt.setText(combineQueuedMessagesForEditor(messages, prompt.getExpandedText()));
 			this.updatePendingMessagesDisplay();
 			this.showWarning(engineLossRestoredNotice(messages.length));
 			this.ui.requestRender();

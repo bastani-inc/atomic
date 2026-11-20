@@ -1,4 +1,5 @@
 import type { AutocompleteProvider } from "./autocomplete.ts";
+import type { EditorDraft } from "./components/editor.ts";
 import type { Component } from "./tui.ts";
 
 /**
@@ -59,6 +60,12 @@ export interface EditorComponent extends Component {
 	 * Falls back to getText() if not implemented.
 	 */
 	getExpandedText?(): string;
+
+	/** The prompt's whole state (text, cursor, pastes, undo, Up-history browsing), detached from later editing. */
+	snapshotDraft?(): EditorDraft;
+
+	/** Put back a prompt state {@link snapshotDraft} took. */
+	restoreDraft?(draft: EditorDraft): void;
 
 	// =========================================================================
 	// Autocomplete support (optional)

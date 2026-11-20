@@ -1,5 +1,6 @@
 import { replaceControlCharacters } from "@bastani/atomic-tui";
 import { taskPromptHost } from "../../core/extensions/held-prompts.ts";
+import { promptHandle } from "./agent-view/agent-drafts.ts";
 import { openLocalHostInputForm } from "./components/host-input-form-mount.ts";
 import { openLocalHostSessionPicker } from "./components/host-session-picker.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -237,9 +238,14 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 				},
 				request,
 			),
-		pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
-		setEditorText: (text) => this.editor.setText(text),
-		getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
+		// The main chat's extensions write the main chat's prompt, also while the screen shows a subagent's.
+		pasteToEditor: (text) => {
+			const prompt = promptHandle(this, "main");
+			if (prompt.isShown()) this.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
+			else prompt.setText(prompt.getExpandedText() + text);
+		},
+		setEditorText: (text) => promptHandle(this, "main").setText(text),
+		getEditorText: () => promptHandle(this, "main").getExpandedText(),
 		editor: (title, prefill, opts) => this.showExtensionEditor(title, prefill, opts),
 		addAutocompleteProvider: (factory) => {
 			this.autocompleteProviderWrappers.push(factory);

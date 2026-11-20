@@ -19,7 +19,8 @@ import {
 } from "../interactive-engine/remote-input-ownership.ts";
 import { agentPanelCounts, agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
 import { agentPanelBoardSource, showTaskInspector } from "../rpc/task-ui-bridge.js";
-import { submitToViewedAgent } from "./agent-view/viewed-submit.ts";
+import { type PromptHandle, promptHandle } from "./agent-view/agent-drafts.ts";
+import { escapeViewedAgent, submitToViewedAgent } from "./agent-view/viewed-submit.ts";
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { bindMainComposerAgentRows, MainComposerKeyOverlay } from "./components/main-composer-keys.ts";
@@ -155,6 +156,8 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 	// so they work correctly regardless of which editor is active
 	this.defaultEditor.onEscape = () => {
 		if (!this.session.isStreaming && interruptBlockedInteractiveEngine(this.runtimeHost)) return;
+		// While a subagent is shown, Esc is about it: it pauses it, and never interrupts the main chat.
+		if (escapeViewedAgent(this)) return;
 		if (this.session.isStreaming || this.session.agent.hasQueuedMessages() || this.session.queuedMessagesPaused) {
 			pauseAndAbortInteractiveSession(this, { restoreQueuedMessages: true });
 		} else if (this.session.isRetrying) {
@@ -349,11 +352,25 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
  * What the main chat does with a submission: `text` trimmed and non-empty, `submittedDraft` the buffer as typed.
  * While a subagent is shown, the commands that run as in the main chat come here too.
  */
-export function mainSubmit(mode: InteractiveModeBase, text: string, submittedDraft: string): Promise<void> {
-	return submitToMainChat.call(mode, text, submittedDraft);
+export function mainSubmit(
+	mode: InteractiveModeBase,
+	text: string,
+	submittedDraft: string,
+	prompt: PromptHandle = promptHandle(mode, "viewed"),
+): Promise<void> {
+	return submitToMainChat.call(mode, text, submittedDraft, prompt);
 }
 
-async function submitToMainChat(this: InteractiveModeBase, text: string, submittedDraft: string): Promise<void> {
+/**
+ * `prompt` is the prompt the submission came from, captured before anything here awaits: its clears and history reach
+ * that prompt even when the screen shows another agent by then. While main is shown it is the editor itself.
+ */
+async function submitToMainChat(
+	this: InteractiveModeBase,
+	text: string,
+	submittedDraft: string,
+	prompt: PromptHandle,
+): Promise<void> {
 	try {
 		// Built-in commands split their name from their arguments at the first
 		// whitespace, the same way prompt templates, skills and extension commands do.
@@ -367,7 +384,7 @@ async function submitToMainChat(this: InteractiveModeBase, text: string, submitt
 			}
 			if (!getOwnerTaskStore(this.session)) this.session.getAgentTaskHost();
 			const store = getOwnerTaskStore(this.session);
-			this.editor.setText("");
+			prompt.setText("");
 			if (!store) {
 				this.showStatus("Launched agents and shells will appear here.");
 				return;
@@ -390,115 +407,115 @@ async function submitToMainChat(this: InteractiveModeBase, text: string, submitt
 		}
 		if (bare("settings")) {
 			const shown = this.showSettingsSelector();
-			this.editor.setText("");
+			prompt.setText("");
 			await shown;
 			return;
 		}
 		if (bare("scoped-models")) {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.ensureDeferredStartupComplete();
 			this.showModelsSelector();
 			return;
 		}
 		if (command === "model") {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.ensureDeferredStartupComplete();
 			await this.handleModelCommand(argument);
 			return;
 		}
 		if (command === "thinking") {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.ensureDeferredStartupComplete();
 			await this.handleThinkingCommand(argument);
 			return;
 		}
 		if (command === "export") {
 			await this.handleExportCommand(text);
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (command === "import") {
 			await this.handleImportCommand(text);
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (bare("share")) {
 			await this.handleShareCommand();
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (bare("copy")) {
 			await this.handleCopyCommand();
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (command === "name") {
 			await this.handleNameCommand(text);
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (bare("session")) {
 			await this.handleSessionCommand();
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (command === "session" && args === "snapshot") {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.handleSessionSnapshotCommand();
 			return;
 		}
 		if (bare("tools")) {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.handleToolsCommand();
 			return;
 		}
 		if (bare("changelog")) {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.handleChangelogCommand();
 			return;
 		}
 		if (bare("hotkeys")) {
 			this.handleHotkeysCommand();
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (bare("fork")) {
 			this.showUserMessageSelector();
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (bare("clone")) {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.handleCloneCommand();
 			return;
 		}
 		if (bare("tree")) {
 			this.showTreeSelector();
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (bare("trust")) {
 			void this.showTrustSelector();
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (command === "login") {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.handleLoginCommand(argument);
 			return;
 		}
 		if (command === "logout") {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.showOAuthSelector("logout", argument);
 			return;
 		}
 		if (bare("new")) {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.handleClearCommand();
 			return;
 		}
 		if (command === "compact") {
-			this.editor.setText("");
+			prompt.setText("");
 			// A manual request can take over automatic compaction, but a second manual
 			// compaction or branch summary still has no safe independent owner.
 			const automaticCompaction =
@@ -511,43 +528,43 @@ async function submitToMainChat(this: InteractiveModeBase, text: string, submitt
 			return;
 		}
 		if (bare("reload")) {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.ensureDeferredStartupComplete();
 			await this.handleReloadCommand();
 			return;
 		}
 		if (bare("debug")) {
 			const written = this.handleDebugCommand();
-			this.editor.setText("");
+			prompt.setText("");
 			await written;
 			return;
 		}
 		if (bare("arminsayshi")) {
 			this.handleArminSaysHi();
-			this.editor.setText("");
+			prompt.setText("");
 			return;
 		}
 		if (bare("dementedelves")) {
 			const shown = this.handleDementedDelves();
-			this.editor.setText("");
+			prompt.setText("");
 			await shown;
 			return;
 		}
 		if (command === "resume") {
-			this.editor.setText("");
+			prompt.setText("");
 			if (argument) await this.handleResumeTarget(argument);
 			else this.showSessionSelector();
 			return;
 		}
 		if (bare("quit") || bare("exit")) {
-			this.editor.setText("");
+			prompt.setText("");
 			await this.shutdown();
 			return;
 		}
 
 		if (text.startsWith("/") && this.deferredStartupPending) {
-			this.editor.addToHistory?.(text);
-			this.editor.setText("");
+			prompt.addToHistory(text);
+			prompt.setText("");
 			this.ui.requestRender();
 			await yieldToEventLoop();
 			await this.ensureDeferredStartupComplete();
@@ -561,10 +578,10 @@ async function submitToMainChat(this: InteractiveModeBase, text: string, submitt
 			if (command) {
 				if (this.session.isBashRunning) {
 					this.showWarning("A bash command is already running. esc cancel first.");
-					this.editor.setText(text);
+					prompt.setText(text);
 					return;
 				}
-				this.editor.addToHistory?.(text);
+				prompt.addToHistory(text);
 				await this.handleBashCommand(command, isExcluded);
 				this.isBashMode = false;
 				this.updateEditorBorderColor();
@@ -579,8 +596,8 @@ async function submitToMainChat(this: InteractiveModeBase, text: string, submitt
 				(this.compactionFlushPending || this.compactionSendFailed || this.promptTurn?.dispatched === false))
 		) {
 			if (this.isExtensionCommand(text)) {
-				this.editor.addToHistory?.(text);
-				this.editor.setText("");
+				prompt.addToHistory(text);
+				prompt.setText("");
 				// Messages the command sends must follow the ones already typed (#4251).
 				if (this.compactionActive) handOffCompactionQueue(this);
 				await this.session.prompt(text);
@@ -599,8 +616,8 @@ async function submitToMainChat(this: InteractiveModeBase, text: string, submitt
 		// If streaming, use prompt() with steer behavior
 		// This handles extension commands (execute immediately), prompt template expansion, and queueing
 		if ((this.session.isStreaming || this.promptTurn !== undefined) && !this.session.queuedMessagesPaused) {
-			this.editor.addToHistory?.(text);
-			this.editor.setText("");
+			prompt.addToHistory(text);
+			prompt.setText("");
 			// An engine sends its answer to this prompt together with the first events of the turn it started, and
 			// the host handles those events before the answer's callback runs. If the session already showed the
 			// message, echoing it again here would show it twice (#4272). It shows the message as sent, which an
@@ -648,7 +665,7 @@ async function submitToMainChat(this: InteractiveModeBase, text: string, submitt
 				return;
 			}
 			if (submitted.kind === "refused") {
-				restoreRefusedSubmission(this, submitted.error, submittedDraft);
+				restoreRefusedSubmission(this, submitted.error, submittedDraft, prompt);
 				return;
 			}
 			this.updatePendingMessagesDisplay();
@@ -673,12 +690,12 @@ async function submitToMainChat(this: InteractiveModeBase, text: string, submitt
 		} else {
 			this.pendingUserInputs.push(submission);
 		}
-		this.editor.addToHistory?.(text);
+		prompt.addToHistory(text);
 	} catch (error) {
 		// Direct dispatch branches above hand text straight to the engine and
 		// never reach runUserPromptTurn(), so this is the only place their send
 		// failures can put the draft back. Anything else is not ours to absorb.
-		if (!restoreFailedSubmissionDraft(this, error, submittedDraft)) throw error;
+		if (!restoreFailedSubmissionDraft(this, error, submittedDraft, { prompt })) throw error;
 	} finally {
 		this.advanceStartupInputReplay?.(text);
 	}
