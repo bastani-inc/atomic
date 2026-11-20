@@ -28,11 +28,18 @@ import { forgetIfIdle, goneAgentNotice, liveAgentSteering } from "./viewed-submi
  */
 export function installPromptRetarget(mode: InteractiveModeBase, switcher: AgentViewSwitcher): () => void {
 	const undo: (() => void)[] = [];
-	undo.push(retargetOnSwitch(mode, switcher));
-	undo.push(drawViewedWorkingLine(mode));
-	undo.push(keepBashModeMain(mode));
+	// What only a shown subagent needs is set up the first time one is shown or opened: a session that only ever shows
+	// main runs exactly as before, with nothing added to its keys or its status row.
+	let active = false;
+	const activate = () => {
+		if (active) return;
+		active = true;
+		undo.push(drawViewedWorkingLine(mode));
+		undo.push(keepBashModeMain(mode));
+		undo.push(swallowReadOnlyTyping(mode));
+	};
+	undo.push(retargetOnSwitch(mode, switcher, activate));
 	undo.push(holdWhileOpening(mode, switcher));
-	undo.push(swallowReadOnlyTyping(mode));
 	undo.push(reportLostAgentQueues(mode));
 	return () => {
 		for (const step of undo.splice(0).reverse()) step();
@@ -51,11 +58,12 @@ function ownerOf(target: ViewedTarget) {
 }
 
 /** Swap the prompt, its history, placeholder, rule, rows and footer when the screen switches. */
-function retargetOnSwitch(mode: InteractiveModeBase, switcher: AgentViewSwitcher): () => void {
+function retargetOnSwitch(mode: InteractiveModeBase, switcher: AgentViewSwitcher, activate: () => void): () => void {
 	const editor = mode.defaultEditor;
 	const history = promptHistoryFor(editor);
 	let unwatch: (() => void) | undefined;
 	const onChange = ({ from, to }: AgentViewChange) => {
+		if (to.kind === "agent") activate();
 		unwatch?.();
 		unwatch = undefined;
 		// The leaving prompt is kept before the history changes: replacing the history ends Up browsing.
@@ -285,7 +293,7 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 		kept.set(key, `${kept.get(key) ?? ""}${text}`);
 		notifyViewed(mode, "What you typed for the subagent is kept for it.", "info");
 	};
-	const stopListening = mode.addTuiInputListener((data) => {
+	const hold = (data: string) => {
 		const pending = switcher.pendingTaskId;
 		if (pending === undefined || isKeyRelease(data) || !promptTakesKeys(mode)) return undefined;
 		// Ctrl+C and Ctrl+D act as they always do; Esc cancels the request and the screen stays as it is.
@@ -298,8 +306,11 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 		if (held === undefined || held.taskId !== pending) held = { taskId: pending, keys: [] };
 		held.keys.push(data);
 		return { consume: true };
-	});
-	const stopPending = switcher.onPending((_pending, settled) => {
+	};
+	// The keys are listened to from the first time a subagent is being opened.
+	let stopListening: (() => void) | undefined;
+	const stopPending = switcher.onPending((pending, settled) => {
+		if (pending !== undefined) stopListening ??= mode.addTuiInputListener(hold);
 		if (settled !== undefined) settle(settled.taskId, settled.outcome);
 	});
 	const stopChange = switcher.onChange(({ to }) => {
@@ -316,7 +327,7 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 		}
 	});
 	return () => {
-		stopListening();
+		stopListening?.();
 		stopPending();
 		stopChange();
 	};

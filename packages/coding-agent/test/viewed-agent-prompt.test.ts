@@ -22,6 +22,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.ts";
 import { stripAnsi } from "../src/utils/ansi.js";
 import { FakeAgentViewPort } from "./helpers/fake-agent-view-port.ts";
+import { DEQUEUE_KEY, FOLLOW_UP_KEY } from "./helpers/steering-chats.ts";
 
 /** The subagents the screen can open, by task id: fake ports the test drives. */
 const openable = vi.hoisted(() => ({
@@ -41,8 +42,6 @@ const WIDTH = 120;
 const ESC = "\x1b";
 const ENTER = "\r";
 const CTRL_C = "\x03";
-const ALT_UP = "\x1b[1;3A";
-const ALT_ENTER = "\x1b\r";
 const LONG_PASTE = Array.from({ length: 20 }, (_, index) => `pasted line ${index + 1}`).join("\n");
 const WORKER = "task-worker-1" as TaskId;
 
@@ -297,7 +296,7 @@ describe("the main prompt while a subagent is shown", () => {
 	);
 
 	test(
-		"while the subagent works, Enter steers and Alt+Enter queues a follow-up, shown as rows until it lists them; Alt+Up brings them back",
+		"while the subagent works, Enter steers and the follow-up key queues a follow-up, shown as rows until it lists them; the dequeue key brings them back",
 		async () => {
 			screen = await mainScreen();
 			const port = worker({ busy: true });
@@ -318,7 +317,7 @@ describe("the main prompt while a subagent is shown", () => {
 			port.setStatus({ queued: { steering: ["steer one"], followUp: [] } });
 			port.promptAnswer = async (_text, options) => options?.preflightResult?.(true, "queued");
 			await screen.type("after you are done");
-			await screen.press(ALT_ENTER);
+			await screen.press(FOLLOW_UP_KEY);
 			await until(() => port.calls.length === 2);
 			assert.deepEqual(port.calls, [
 				{ kind: "prompt", text: "steer one", lane: "steer" },
@@ -328,7 +327,7 @@ describe("the main prompt while a subagent is shown", () => {
 			await settle();
 			assert.deepEqual(screen.rows().slice(0, 2), ["Steering: steer one", "Follow-up: after you are done"]);
 			await screen.type("draft");
-			await screen.press(ALT_UP);
+			await screen.press(DEQUEUE_KEY);
 			await until(() => screen?.mode.editor.getText() !== "draft");
 			assert.equal(screen.mode.editor.getText(), "steer one\n\nafter you are done\n\ndraft");
 			assert.deepEqual(screen.rows(), []);
