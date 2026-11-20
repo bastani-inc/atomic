@@ -123,11 +123,11 @@ type AltScreenPhase =
 
 /**
  * How long the update opened on entering fullscreen may have been open when the first frame is written. Terminals end
- * an update that stays open too long, and some do not restart that clock when an update begins again while one is
- * open. A first frame written later ends the old update and begins a new one, so it still lands in one step; the
- * cleared screen shows in between, as it did before the entry was held at all.
+ * an update that stays open too long (some after 100 ms), and some do not restart that clock when an update begins
+ * again while one is open. A first frame written later ends the old update and begins a new one, so it still lands in
+ * one step; the cleared screen shows in between, as it did before the entry was held at all.
  */
-const FIRST_FRAME_HOLD_LIMIT_MS = 100;
+const FIRST_FRAME_HOLD_LIMIT_MS = 50;
 
 // Regular mode delegates double-click selection to the terminal emulator. Fullscreen owns mouse selection,
 // so it uses iTerm2's default "characters considered part of a word" set:

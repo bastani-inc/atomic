@@ -3040,7 +3040,7 @@ describe("TuiAltScreen fullscreen entry", () => {
 	}
 
 	it("keeps the shell on screen until the first frame replaces it", async (t) => {
-		const { terminal, tui } = await startFullscreen(t, 50);
+		const { terminal, tui } = await startFullscreen(t, 30);
 		const presented = await presentedScreens(writesOf(terminal), 20, 4, SHELL);
 		tui.stop({ preserveScreen: true });
 
@@ -3050,7 +3050,7 @@ describe("TuiAltScreen fullscreen entry", () => {
 
 	it("draws a late first frame in an update of its own after the cleared screen", async (t) => {
 		// A terminal ends an update held open too long, and may not restart its clock when one begins again.
-		const { terminal, tui } = await startFullscreen(t, 150);
+		const { terminal, tui } = await startFullscreen(t, 60);
 		const writes = writesOf(terminal);
 		const presented = await presentedScreens(writes, 20, 4, SHELL);
 		tui.stop({ preserveScreen: true });
@@ -3087,7 +3087,7 @@ describe("TuiAltScreen fullscreen entry", () => {
 	});
 
 	it("shows the cleared screen and then the first frame on a terminal without synchronized output", async (t) => {
-		for (const firstFrameAfterMs of [50, 150]) {
+		for (const firstFrameAfterMs of [30, 150]) {
 			const { terminal, tui } = await startFullscreen(t, firstFrameAfterMs);
 			const presented = await presentedScreens(writesOf(terminal), 20, 4, SHELL, { synchronizedOutput: false });
 			tui.stop({ preserveScreen: true });
@@ -3101,12 +3101,12 @@ describe("TuiAltScreen fullscreen entry", () => {
 	});
 
 	it("keeps the shell on screen each time fullscreen is entered again", async (t) => {
-		const { clock, terminal, tui } = await startFullscreen(t, 50);
+		const { clock, terminal, tui } = await startFullscreen(t, 30);
 		tui.stop({ preserveScreen: true });
 		// Time spent in an external editor or a subshell does not count against the next entry.
 		clock.advance(60_000);
 		tui.start();
-		clock.advance(50);
+		clock.advance(30);
 		await terminal.waitForRender();
 		const presented = await presentedScreens(writesOf(terminal), 20, 4, SHELL);
 		tui.stop({ preserveScreen: true });
@@ -3156,7 +3156,7 @@ describe("TuiAltScreen fullscreen entry", () => {
 	});
 
 	it("draws every frame, the first one too, as one synchronized update", async (t) => {
-		const { terminal, tui } = await startFullscreen(t, 50);
+		const { terminal, tui } = await startFullscreen(t, 30);
 		const text = tui.children[0];
 		assert.ok(text instanceof Text);
 		text.setText("second frame");
@@ -3173,7 +3173,7 @@ describe("TuiAltScreen fullscreen entry", () => {
 	});
 
 	it("resets terminal modes as one synchronized update when stopped after a frame", async (t) => {
-		const { terminal, tui } = await startFullscreen(t, 50);
+		const { terminal, tui } = await startFullscreen(t, 30);
 		const writesBeforeStop = writesOf(terminal).length;
 		tui.stop({ preserveScreen: true });
 		const reset = writesOf(terminal)
