@@ -310,6 +310,38 @@ describe("prompt updates keep user and assistant turns alternating, outside tool
 	}
 });
 
+describe("an update after tool results an earlier request sent, as on a resume after its reply was lost, leaves them unchanged", () => {
+	for (const transport of transports) {
+		test(transport.name, async () => {
+			const call: AssistantMessage = {
+				...reply(transport.model, "", 3),
+				content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
+				stopReason: "toolUse",
+			};
+			const sent: Message[] = [
+				prompt,
+				{ role: "user", content: "first", timestamp: 2 },
+				call,
+				{
+					role: "toolResult",
+					toolCallId: "call_1",
+					toolName: "read",
+					content: [{ type: "text", text: "file contents" }],
+					isError: false,
+					timestamp: 4,
+				},
+			];
+			const before = (await capture(transport, sent))[transport.conversation];
+			const after = (await capture(transport, [...sent, resumeUpdate]))[transport.conversation];
+			// Only the cache marker, which moves to the newest block on every request, may differ.
+			expect(JSON.stringify(withoutCacheMarkers(toolResults(after)))).toBe(
+				JSON.stringify(withoutCacheMarkers(toolResults(before))),
+			);
+			expect(JSON.stringify(after)).toContain("Current date: 2026-11-20");
+		});
+	}
+});
+
 /** The tool results of a conversation in any transport's format. */
 function toolResults(value: unknown): unknown[] {
 	if (Array.isArray(value)) return value.flatMap(toolResults);
