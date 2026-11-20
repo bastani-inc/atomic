@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- A subagent whose context was cleared or compacted while it ran is reported by its own turns again. One that then finished was reported failed with "Child ended without completing an assistant turn of its own." and no answer; it is now reported done with its answer, including an answer it wrote before the clear when its last turn had no text. Turns from a subagent's earlier runs, or from the parent conversation a forked subagent started with, still never count as its own.
+- A subagent whose context was cleared or compacted while it ran, and that then finished, is reported done with its answer. It was reported failed with "Child ended without completing an assistant turn of its own." and its answer was missing. When its last turn has no text, the answer it wrote before the clear is reported. Turns from its earlier runs, or from the parent conversation a forked subagent starts with, still never count as its own ([#6098](https://github.com/bastani-inc/atomic/pull/6098)).
 
 ## [0.10.1] - 2026-11-20
 
