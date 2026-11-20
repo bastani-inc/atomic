@@ -50,6 +50,10 @@ const READ_TOOL_LIMIT_CHARS = 50_000;
 const EVENT_LOOP_CPU_LIMIT_MS = 120;
 const LARGE_SESSION_TIMEOUT_MS = 120_000;
 const INDEX_BUILD_ENTRIES = 6_000;
+/** Entries of the session whose index writes are slow: a few pages, so a few slow writes. */
+const SLOW_WRITE_ENTRIES = 400;
+/** How long each slow index write keeps SQLite busy: well past the longest turn the watcher allows. */
+const SLOW_WRITE_MS = 200;
 const TURN_LIMIT_MS = 10;
 const PACED_SESSIONS = 40;
 const SLOW_INDEX_QUERY_MS = 4;
@@ -273,6 +277,23 @@ function numbered(count: number, text: (index: number) => string): SessionEntry[
 	return Array.from({ length: count }, (_, index) =>
 		message(`e${index + 1}`, index % 2 === 0 ? "user" : "assistant", text(index + 1), BASE + index * 1000),
 	);
+}
+
+/** A statement that makes SQLite count up to `rows`, keeping it busy without touching the disk. */
+function countingRows(rows: number): string {
+	return `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < ${rows}) SELECT x FROM n`;
+}
+
+/** How many rows `countingRows` needs to keep this machine's SQLite busy for at least `ms`. */
+async function countingRowsFor(database: SqliteDatabase, ms: number): Promise<number> {
+	const sample = 100_000;
+	let fastest = Number.POSITIVE_INFINITY;
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const started = performance.now();
+		await database.get(`SELECT count(*) AS n FROM (${countingRows(sample)})`);
+		fastest = Math.min(fastest, performance.now() - started);
+	}
+	return Math.ceil((sample * ms) / Math.max(fastest, 0.1));
 }
 
 function continuation(text: string): string | undefined {
@@ -2184,6 +2205,44 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				const coverage = await store.searchIndex?.coverage("long", HISTORY_TEXT_FORMAT);
 				assert.equal(coverage?.indexedSeq, INDEX_BUILD_ENTRIES, "the search indexed the whole session");
 				assertFewStalls(turns, TURN_LIMIT_MS, "indexing");
+			} finally {
+				await store.close();
+				await database.close();
+			}
+		},
+		LARGE_SESSION_TIMEOUT_MS,
+	);
+
+	it(
+		"builds the search index without holding the event loop while the index store's writes are slow (#5666)",
+		async () => {
+			const database = await openNodeSqliteDatabase(join(dir, "sessions.sqlite"));
+			await database.exec("PRAGMA synchronous=OFF");
+			const store = await SqlSessionStore.open(database);
+			try {
+				await store.create(
+					header("slow"),
+					numbered(SLOW_WRITE_ENTRIES, (index) => `entry ${index} ${"lorem ipsum ".repeat(80)}`),
+				);
+				// Every time the index records how far it got, SQLite stays busy for longer than any turn may hold the event
+				// loop, as a synced COMMIT on a loaded disk does.
+				const rows = await countingRowsFor(database, SLOW_WRITE_MS);
+				await database.exec(
+					`CREATE TRIGGER slow_index_progress AFTER UPDATE OF indexed_seq ON session_search_state WHEN NEW.indexed_seq <> OLD.indexed_seq BEGIN SELECT count(*) FROM (${countingRows(rows)}); END`,
+				);
+				const { router, request } = historyOver(store, { timeMs: 120_000, rows: 10_000_000 });
+				const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
+				let found: string;
+				let turns: WatchedTurns;
+				try {
+					found = (await router.search?.("history://sessions/slow", request("no such needle"))) ?? "";
+				} finally {
+					turns = await stopWatching();
+				}
+				assert.doesNotMatch(found, /budget ran out/);
+				const coverage = await store.searchIndex?.coverage("slow", HISTORY_TEXT_FORMAT);
+				assert.equal(coverage?.indexedSeq, SLOW_WRITE_ENTRIES, "the search indexed the whole session");
+				assertFewStalls(turns, TURN_LIMIT_MS, "indexing with slow writes");
 			} finally {
 				await store.close();
 				await database.close();
