@@ -230,6 +230,8 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 			this.workingRunMeter.awaitRetry(session.turnStartedAt, runInProgress(session.messages).settledTokens);
 		void deliverAgentEvent(frame, wait);
 	}
+	// The panel and `/tasks` of this session show its subagents on the single chat screen: bound before the panel.
+	const unbindAgentView = bindAgentViewSession(this, session);
 	const panelUi = this.runtimeHost instanceof IsolatedInteractiveRuntime ? undefined : this.createExtensionUIContext();
 	const disposeAgentPanel =
 		panelUi === undefined
@@ -242,8 +244,6 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 					setToolsExpanded: panelUi.setToolsExpanded,
 					notify: panelUi.notify,
 				});
-	// The panel and `/tasks` of this session show its subagents on the single chat screen.
-	const unbindAgentView = bindAgentViewSession(this, session);
 	this.unsubscribe = () => {
 		unsubscribe();
 		unbindAgentView();

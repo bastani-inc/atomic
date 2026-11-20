@@ -49,10 +49,22 @@ export interface AgentViewStatus {
 	readonly readOnlyReason?: string;
 	/** It waits on a question form, drawn in the transcript area, which takes the keys meanwhile. */
 	readonly heldPrompt: boolean;
-	/** The working line's figures while it works. */
-	readonly working?: { readonly elapsedMs?: number; readonly tokens?: number; readonly activity?: string };
+	/** The working line under its transcript, as its chat would draw it; undefined when it shows none. */
+	readonly working?: AgentWorkingLine;
 	/** The subagent is gone (dismissed, removed, or its engine was lost): the screen shows main again. */
 	readonly gone: boolean;
+}
+
+/**
+ * A subagent's working line as plain data: what it is doing (`working` streams, `busy` waits or retries,
+ * `compacting`), or the `worked` row its last turn left. The host draws and animates it as the main chat's.
+ */
+export interface AgentWorkingLine {
+	readonly kind: "working" | "busy" | "compacting" | "worked";
+	readonly message: string;
+	readonly elapsedMs?: number;
+	readonly tokens?: number;
+	readonly worked?: { readonly elapsedMs: number; readonly tokens?: number };
 }
 
 /** The viewed subagent's transcript, drawn where the main transcript is. */
