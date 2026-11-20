@@ -118,8 +118,17 @@ type BrokerLaunchSpec =
     launcherCommandLine: string;
   };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 function getCurrentBrokerRuntime(): BrokerRuntime {
@@ -645,6 +654,8 @@ async function spawnBrokerHoldingLock(
 
 /** Bound on waiting for a killed, still-starting broker to be gone; a kill that has not taken by then never will. */
 const STARTING_BROKER_KILL_WAIT_MS = 5_000;
+/** A killed process is gone within milliseconds, and a session that is closing waits for it. */
+const STARTING_BROKER_KILL_POLL_MS = 10;
 
 /**
  * Kill a broker that has not started listening, with every process it started, and wait until they are gone. A custom
@@ -660,7 +671,7 @@ async function stopStartingBroker(pid: number): Promise<void> {
       taskkill.once("error", () => resolve());
       taskkill.once("exit", () => resolve());
     });
-    while (isProcessAlive(pid) && Date.now() < deadline) await sleep(BROKER_POLL_MAX_INTERVAL_MS);
+    while (isProcessAlive(pid) && Date.now() < deadline) await sleep(STARTING_BROKER_KILL_POLL_MS);
     return;
   }
   try {
@@ -668,7 +679,7 @@ async function stopStartingBroker(pid: number): Promise<void> {
   } catch {
     return;
   }
-  while (isProcessAlive(-pid) && Date.now() < deadline) await sleep(BROKER_POLL_MAX_INTERVAL_MS);
+  while (isProcessAlive(-pid) && Date.now() < deadline) await sleep(STARTING_BROKER_KILL_POLL_MS);
 }
 
 /** How often a session waiting to upgrade the broker checks whether the spawn lock is free. */
@@ -1147,7 +1158,7 @@ export async function waitForBroker(
       if (await checkSocketConnectable()) return;
       throw new Error(`Intercom broker exited before startup (pid ${pid})\n${await describeBrokerLogAsync()}`);
     }
-    await sleep(interval);
+    await sleep(interval, signal);
     interval = Math.min(interval * 2, BROKER_POLL_MAX_INTERVAL_MS);
   }
   throw new Error(

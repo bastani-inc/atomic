@@ -122,9 +122,11 @@ describe("quitting a session whose startup join is waiting for a broker that nev
 						await session.waitForScreen((s) => s.includes("B-ACK"), CLI_START_TIMEOUT_MS, "the first reply");
 					}
 					const deadline = Date.now() + CLI_START_TIMEOUT_MS;
-					while ((brokerPid = profile.brokerPid()) === undefined) {
+					brokerPid = profile.brokerPid();
+					while (brokerPid === undefined) {
 						assert.ok(Date.now() < deadline, "the session never started a broker");
 						await sleep(50);
+						brokerPid = profile.brokerPid();
 					}
 					session.write("/quit");
 					await session.waitForScreen((s) => s.includes("❯ /quit"), CLI_START_TIMEOUT_MS, "the quit command");
