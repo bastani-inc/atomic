@@ -54,6 +54,8 @@ const INDEX_BUILD_ENTRIES = 6_000;
 const SLOW_WRITE_ENTRIES = 400;
 /** How long each slow index write keeps SQLite busy: well past the longest turn the watcher allows. */
 const SLOW_WRITE_MS = 200;
+/** Entries whose index takes enough writes for the search index to merge several steps at a time. */
+const MERGED_INDEX_ENTRIES = 600;
 const TURN_LIMIT_MS = 10;
 const PACED_SESSIONS = 40;
 const SLOW_INDEX_QUERY_MS = 4;
@@ -2250,6 +2252,62 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		},
 		LARGE_SESSION_TIMEOUT_MS,
 	);
+
+	it("reads the index store's change count once per merge step while building the search index (#5666)", async () => {
+		const raw = await openNodeSqliteDatabase(join(dir, "sessions.sqlite"));
+		await raw.exec("PRAGMA synchronous=OFF");
+		const counts = { transactions: 0, merges: 0, changeReads: 0 };
+		const wrap = (executor: SqliteExecutor): SqliteExecutor => ({
+			exec: (sql) => executor.exec(sql),
+			run: (sql, ...params) => {
+				if (sql.includes("VALUES ('merge'")) counts.merges++;
+				return executor.run(sql, ...params);
+			},
+			get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+				if (sql.includes("total_changes()")) counts.changeReads++;
+				return executor.get<T>(sql, ...params);
+			},
+			all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => executor.all<T>(sql, ...params),
+		});
+		const database = new Proxy(raw, {
+			get(target, key) {
+				if (key === "transaction")
+					return <T>(body: (tx: SqliteExecutor) => Promise<T>, options?: object) =>
+						target.transaction((tx) => {
+							counts.transactions++;
+							return body(wrap(tx));
+						}, options as never);
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const store = await SqlSessionStore.open(database);
+		try {
+			let state = 5666;
+			const word = () => {
+				state = (state * 1_103_515_245 + 12_345) % 2_147_483_648;
+				return state.toString(36);
+			};
+			await store.create(
+				header("merged"),
+				numbered(MERGED_INDEX_ENTRIES, () => Array.from({ length: 240 }, word).join(" ")),
+			);
+			counts.transactions = 0;
+			const { router, request } = historyOver(store, { timeMs: 120_000, rows: 10_000_000 });
+			await router.search?.("history://sessions/merged", request("no such needle"));
+			const coverage = await store.searchIndex?.coverage("merged", HISTORY_TEXT_FORMAT);
+			assert.equal(coverage?.indexedSeq, MERGED_INDEX_ENTRIES, "the search indexed the whole session");
+			assert.ok(counts.merges > counts.transactions, `merges ran several steps: ${JSON.stringify(counts)}`);
+			// Each transaction that merges reads the count once before its first step, then once after every step.
+			assert.ok(
+				counts.changeReads <= counts.merges + counts.transactions,
+				`the change count was read more than once per merge step: ${JSON.stringify(counts)}`,
+			);
+		} finally {
+			await store.close();
+			await raw.close();
+		}
+	});
 
 	it("still counts work that holds the event loop past the limit while it watches at raised priority (#5250)", async () => {
 		const blocked = new Set([100, 200, 300, 400]);
