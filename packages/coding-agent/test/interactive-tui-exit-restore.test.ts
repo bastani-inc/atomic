@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
 
@@ -10,6 +10,17 @@ class ExitRestoreTerminal extends RecordingTerminal {
 		this.restores.push({ before, after });
 	}
 }
+
+// On these terminals entering fullscreen holds a synchronized update until the first frame.
+beforeEach(() => {
+	vi.stubEnv("TERM", "xterm-256color");
+	vi.stubEnv("TERM_PROGRAM", "");
+	vi.stubEnv("ALACRITTY_WINDOW_ID", "");
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 test("restores the fullscreen terminal modes when the process exits without stop() (#11170)", () => {
 	const terminal = new ExitRestoreTerminal();

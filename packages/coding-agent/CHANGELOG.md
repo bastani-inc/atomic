@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Starting Atomic in fullscreen, or returning to it from an external editor, a subshell or a suspended session, no longer blanks the terminal before the first frame: the previous screen stays until the full interface replaces it ([#6056](https://github.com/bastani-inc/atomic/pull/6056)).
+- Starting Atomic in fullscreen, or returning to it from an external editor, a subshell or a suspended session, no longer blanks the terminal before the first frame: the previous screen stays until the full interface replaces it in one screen update. WezTerm and Alacritty keep the previous behavior, because they hold back their answers to Atomic's startup terminal queries until that update ends ([#6056](https://github.com/bastani-inc/atomic/pull/6056)).
 
 ## [0.10.0] - 2026-11-20
 

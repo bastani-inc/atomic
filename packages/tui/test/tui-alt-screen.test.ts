@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { describe, it, type TestContext } from "node:test";
+import { afterEach, beforeEach, describe, it, type TestContext } from "node:test";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import {
@@ -3017,6 +3017,28 @@ describe("TuiAltScreen fullscreen entry", () => {
 		return terminal.events.flatMap((event) => (event.type === "write" ? [event.data] : []));
 	}
 
+	// Which terminal the renderer runs in decides whether entering fullscreen holds an update.
+	const TERMINAL_ENV = ["TERM", "TERM_PROGRAM", "ALACRITTY_WINDOW_ID"] as const;
+	type TerminalEnv = Partial<Record<(typeof TERMINAL_ENV)[number], string>>;
+	let savedTerminalEnv: TerminalEnv = {};
+
+	function setTerminalEnv(env: TerminalEnv): void {
+		for (const key of TERMINAL_ENV) {
+			const value = env[key];
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+
+	beforeEach(() => {
+		savedTerminalEnv = Object.fromEntries(TERMINAL_ENV.map((key) => [key, process.env[key]]));
+		setTerminalEnv({ TERM: "xterm-256color" });
+	});
+
+	afterEach(() => {
+		setTerminalEnv(savedTerminalEnv);
+	});
+
 	/** Stop `performance.now()` at a time the test moves forward itself. */
 	function controlClock(t: TestContext): { advance(ms: number): void } {
 		let now = 1_000;
@@ -3114,6 +3136,45 @@ describe("TuiAltScreen fullscreen entry", () => {
 		assert.deepStrictEqual(presented.screens, [SHELL_SCREEN, FRAME_SCREEN, SHELL_SCREEN, FRAME_SCREEN]);
 		assert.strictEqual(presented.held, false);
 	});
+
+	it("holds the entry update on a terminal that answers queries while an update is open", async (t) => {
+		setTerminalEnv({ TERM: "xterm-256color", TERM_PROGRAM: "other-terminal" });
+		const { terminal, tui } = await startFullscreen(t, 30);
+		const writes = writesOf(terminal);
+		tui.stop({ preserveScreen: true });
+
+		assert.ok(writes[0]?.startsWith("\x1b[?2026h\x1b[?1049h"), JSON.stringify(writes[0]));
+	});
+
+	for (const [terminalName, env] of [
+		["WezTerm", { TERM: "xterm-256color", TERM_PROGRAM: "WezTerm" }],
+		["Alacritty", { TERM: "xterm-256color", ALACRITTY_WINDOW_ID: "94371" }],
+		["TERM=alacritty", { TERM: "alacritty" }],
+		["TERM=alacritty-direct", { TERM: "alacritty-direct" }],
+	] as const) {
+		it(`enters fullscreen as before on ${terminalName}, which answers queries only once an update ends`, async (t) => {
+			setTerminalEnv(env);
+			const { terminal, tui } = await startFullscreen(t, 30);
+			const writes = writesOf(terminal);
+			const presented = await presentedScreens(writes, 20, 4, SHELL);
+			tui.stop({ preserveScreen: true });
+
+			assert.ok(writes[0]?.startsWith("\x1b[?1049h"), JSON.stringify(writes[0]));
+			assert.deepStrictEqual(presented.screens, [SHELL_SCREEN, BLANK_SCREEN, FRAME_SCREEN]);
+			const frame = writes.find((write) => write.includes("first frame"));
+			assert.ok(frame?.startsWith("\x1b[?2026h"), JSON.stringify(frame));
+
+			// Stopping before the first frame leaves through the cleared screen, as before.
+			const stoppedEarly = new RecordingTerminal(20, 4);
+			const early = new TuiAltScreen(stoppedEarly);
+			early.addChild(new Text("first frame", 0, 0));
+			early.start();
+			early.stop({ preserveScreen: true });
+			const presentedEarly = await presentedScreens(writesOf(stoppedEarly), 20, 4, SHELL);
+			assert.deepStrictEqual(presentedEarly.screens, [SHELL_SCREEN, BLANK_SCREEN, SHELL_SCREEN]);
+			assert.strictEqual(presentedEarly.held, false);
+		});
+	}
 
 	it("returns to the shell without a blank screen when stopped before the first frame", async () => {
 		const terminal = new RecordingTerminal(20, 4);

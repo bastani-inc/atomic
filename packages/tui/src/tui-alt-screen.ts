@@ -114,12 +114,28 @@ const COPY_ERROR_FLASH_DURATION_MS = 5000;
  * - `main-screen`: not started, or stopped.
  * - `awaiting-first-frame`: on the alternate screen, inside the update opened on entry at `enteredAt`
  *   (`performance.now()`), with no frame drawn yet.
- * - `showing-frames`: a frame ended that update; every later write that changes the screen is its own update.
+ * - `alternate-screen`: on the alternate screen with no update left open: a frame ended the entry's update, or the
+ *   terminal is one the entry opens none for (see `entryHoldDelaysAnswers`). Every write that changes the screen is
+ *   its own update.
  */
 type AltScreenPhase =
 	| { kind: "main-screen" }
 	| { kind: "awaiting-first-frame"; enteredAt: number }
-	| { kind: "showing-frames" };
+	| { kind: "alternate-screen" };
+
+/**
+ * Whether the terminal holds back its answers to queries while a synchronized update is open. Holding one from entry
+ * to the first frame would then delay the answers to the keyboard protocol and color queries sent at startup until
+ * after that frame, which is drawn before the terminal's colors are known. Such terminals enter fullscreen without it.
+ * - WezTerm (`TERM_PROGRAM=WezTerm`) answers only once the update ends.
+ * - Alacritty (`ALACRITTY_WINDOW_ID`, or `TERM` `alacritty` or `alacritty-direct`) answers once the update ends or
+ *   150 ms have passed.
+ */
+function entryHoldDelaysAnswers(env: NodeJS.ProcessEnv): boolean {
+	if (env.TERM_PROGRAM === "WezTerm") return true;
+	const term = env.TERM?.toLowerCase();
+	return Boolean(env.ALACRITTY_WINDOW_ID) || term === "alacritty" || term === "alacritty-direct";
+}
 
 /**
  * How long the update opened on entering fullscreen may have been open when the first frame is written. Terminals end
@@ -669,12 +685,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			term.startsWith("screen")
 				? ENABLE_BUTTON_MOTION_MOUSE
 				: ENABLE_ALL_MOTION_MOUSE;
+		const enter = `${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? mouseSequence : ""}\x1b[2J\x1b[H\x1b[?25l`;
+		if (entryHoldDelaysAnswers(process.env)) {
+			this.screenPhase = { kind: "alternate-screen" };
+			this.terminal.write(enter);
+			return;
+		}
 		// The update stays open while the terminal is set up (keyboard protocol flags belong to the screen they are pushed
 		// on, so the switch comes first) and the first frame is prepared; that frame ends it.
 		this.screenPhase = { kind: "awaiting-first-frame", enteredAt: performance.now() };
-		this.terminal.write(
-			`${BEGIN_SYNCHRONIZED_OUTPUT}${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? mouseSequence : ""}\x1b[2J\x1b[H\x1b[?25l`,
-		);
+		this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${enter}`);
 	}
 
 	protected override beforeTerminalStop(_options: TuiStopOptions): void {
@@ -803,7 +823,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const prefix = super.getExitRestorePrefix();
 		if (this.screenPhase.kind === "main-screen") return prefix;
 		// Before the first frame, the update opened on entry ends after the main screen is back (see the suffix).
-		const release = this.screenPhase.kind === "showing-frames" ? END_SYNCHRONIZED_OUTPUT : "";
+		const release = this.screenPhase.kind === "alternate-screen" ? END_SYNCHRONIZED_OUTPUT : "";
 		return `${release}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${prefix}`;
 	}
 
@@ -2874,7 +2894,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			buffer = `${END_SYNCHRONIZED_OUTPUT}${buffer}`;
 		}
 		this.terminal.write(buffer);
-		this.screenPhase = { kind: "showing-frames" };
+		this.screenPhase = { kind: "alternate-screen" };
 
 		this.previousScreen = screen;
 		this.previousScreenWidth = width;

@@ -9,7 +9,15 @@ const fixture = fileURLToPath(new URL("./fixtures/exit-without-stop.ts", import.
 function runFixture(mode: "exit" | "stop"): string {
 	const result = spawnSync(process.execPath, [fixture, mode], {
 		encoding: "utf8",
-		env: { ...process.env, TMUX: undefined, STY: undefined, ZELLIJ: undefined, TERM: "xterm-256color" },
+		env: {
+			...process.env,
+			TMUX: undefined,
+			STY: undefined,
+			ZELLIJ: undefined,
+			TERM: "xterm-256color",
+			TERM_PROGRAM: undefined,
+			ALACRITTY_WINDOW_ID: undefined,
+		},
 		stdio: ["pipe", "pipe", "pipe"],
 		timeout: 10_000,
 	});
