@@ -6,7 +6,7 @@ This package is Atomic's fork of `@earendil-works/pi-codemode`. Its history up t
 
 ### Fixed
 
-- A worker still exiting after its run settled no longer keeps the run's options alive, nor what the caller gave the run through them, such as the session that ran the script. Before, a released session stayed in memory until the worker thread exited.
+- A worker still exiting after its run settled no longer keeps the run's options alive, nor what the caller gave the run through them, such as the session that ran the script. Before, a released session stayed in memory until the worker thread exited ([#6015](https://github.com/bastani-inc/atomic/pull/6015)).
 
 ## [0.9.88] - 2026-11-16
 

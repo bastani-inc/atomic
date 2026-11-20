@@ -48,7 +48,7 @@ return files.map((text) => text.slice(0, 1000));
 - **Output & deadlines:** Return output via `return`, `text(value)`, `image(dataUrlOrImageContent)`, or `console.log(...)`; call `exit()` to end early. No default timeout. Default output limit is 10,000 estimated tokens (overflow keeps start/end and saves full text to a temp file). Failed scripts retain partial output; unawaited calls are cancelled when the script exits.
 - **Images:** `image()` accepts base64 PNG, JPEG, GIF, or WebP data URLs and MCP image blocks. MIME types are detected from content; invalid base64, unsupported formats, and remote HTTP URLs are rejected.
 - **Return shapes:** Tools with `outputSchema` return `structuredContent` (including structured errors); other tools return text and throw on error. Completed `bash` calls return structured output (see [SDK reference](/sdk/reference#bash-tool-behavior)).
-- **Settings & MCP:** Configure `codemode.inlineBudget` (default `3000` estimated tokens) and `codemode.mode` in [tool settings](/settings#tools). Atomic's [MCP host](/mcp-servers) remains the sole MCP connection owner.
+- **Settings & MCP:** Configure `codemode.inlineBudget` (default `3000` estimated tokens) and `codemode.mode` in [tool settings](/settings#tools). The budget bounds the inline declarations in codemode's description only; the one-line `tools.<name>(args)` note on each direct tool that scripts can call, and codemode's tool line and guideline in the system prompt, are not counted against it. Atomic's [MCP host](/mcp-servers) remains the sole MCP connection owner.
 
 See the [Codemode reference](/codemode) for `ALL_TOOLS`, `searchTools()`, `describeTool()`, `describeNamespace()`, `store()`/`load()`, `models.classify()`, and `models.generateImages()`.
 
