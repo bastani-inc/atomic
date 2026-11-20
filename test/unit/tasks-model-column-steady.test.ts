@@ -480,3 +480,20 @@ test("/tasks shows at once the model a waiting row falls back to when that model
 		board.inspector.dispose();
 	}
 });
+
+test("/tasks waits again for the level of a model reported anew after the row reported none", async () => {
+	const board = await boardWith([TASK]);
+	try {
+		board.report(0, "faux/first", "low");
+		assert.match(board.row(TASK), /worker {8}faux\/first low {2}Read the template/);
+		board.fixture.runners[0]!.context.reportActivity({ reportId: "model-none", change: { kind: "model" } });
+		board.fixture.store.drain();
+		assert.doesNotMatch(board.row(TASK), /faux\//);
+		board.report(0, "faux/second");
+		assert.doesNotMatch(board.row(TASK), /faux\//);
+		board.report(0, "faux/second", "high");
+		assert.match(board.row(TASK), /faux\/second high/);
+	} finally {
+		board.inspector.dispose();
+	}
+});
