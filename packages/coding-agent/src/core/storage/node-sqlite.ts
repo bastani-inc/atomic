@@ -35,6 +35,7 @@ import type {
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,
+	SqliteStatement,
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
@@ -58,7 +59,14 @@ import {
 	StorageWriterQueueUnusableError,
 	StoreClosedError,
 } from "./errors.js";
-import { type ConnectionAnswer, type ConnectionRequest, ThreadConnection } from "./node-sqlite-thread.js";
+import {
+	type ConnectionAnswer,
+	type ConnectionRequest,
+	type SequenceAnswer,
+	type SequenceRequest,
+	ThreadConnection,
+} from "./node-sqlite-thread.js";
+import { offerSequences, type SqliteSequence } from "./statement-sequence.js";
 import { isSqliteBusy, switchToWriteAheadLog, switchToWriteAheadLogSync } from "./write-ahead-log.js";
 
 /** Loaded at the first degradation only, so opening a database does not load debug output. */
@@ -1061,6 +1069,8 @@ const LOCK_RELEASE_RETRY_MS = 16;
 const LOCK_RELEASE_RETRY_ATTEMPTS = 1_000;
 /** Most transactions one group commit carries, so a batch cannot keep the write lock from other processes for long. */
 const MAX_GROUP_COMMIT_TRANSACTIONS = 128;
+/** Most statements one sequence request carries, so a message to the connection's thread stays small. */
+const MAX_SEQUENCE_REQUEST_STATEMENTS = 256;
 /**
  * Default for how long a group commit runs its members before it commits them and takes the lock again for the
  * rest: a batch of cheap transactions in a process starved of CPU still lets other processes' writers in between.
@@ -1225,7 +1235,7 @@ class CallerThreadConnection {
 		this.ownsConnection = ownsConnection;
 	}
 
-	request(request: ConnectionRequest): ConnectionAnswer {
+	request(request: SingleRequest): ConnectionAnswer {
 		switch (request.kind) {
 			case "open":
 				return this.connection.location();
@@ -1294,11 +1304,14 @@ class CallerThreadConnection {
 /** Where a connection's statements run: a thread of its own, or the calling thread. */
 type SqliteConnection = ThreadConnection | CallerThreadConnection;
 
+/** A request either connection answers. Only a connection on a thread of its own runs sequences. */
+type SingleRequest = Exclude<ConnectionRequest, SequenceRequest>;
+
 /**
  * Sends one request to `connection`: a promise of its answer from a connection on a thread of its own, and the answer
  * itself from one on the calling thread, which runs it before returning, as node:sqlite does.
  */
-function send(connection: SqliteConnection, request: ConnectionRequest): ConnectionAnswer | Promise<ConnectionAnswer> {
+function send(connection: SqliteConnection, request: SingleRequest): ConnectionAnswer | Promise<ConnectionAnswer> {
 	if (!(connection instanceof ThreadConnection) || !("params" in request)) return connection.request(request);
 	return connection.request({ ...request, params: request.params.map(sendable) });
 }
@@ -1314,6 +1327,15 @@ function sendable(value: SqliteValue): SqliteValue {
 	if (!isSharedArrayBuffer(value.buffer) && value.byteOffset === 0 && value.byteLength === value.buffer.byteLength)
 		return value;
 	return new Uint8Array(value);
+}
+
+function sendableStatement({ sql, params }: SqliteStatement): SqliteStatement {
+	return { sql, params: params.map(sendable) };
+}
+
+/** The index of the first text parameter holding NUL, which no statement may bind, or -1. */
+function invalidTextParam(params: readonly SqliteValue[]): number {
+	return params.findIndex((value) => typeof value === "string" && value.includes("\0"));
 }
 
 class NodeSqliteDatabase implements SqliteDatabase {
@@ -1409,7 +1431,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * Sends one request to the connection. A driver failure is a `StorageUnavailableError`, thrown at once by a
 	 * connection on the calling thread and rejected by one on a thread of its own.
 	 */
-	private call(request: ConnectionRequest): ConnectionAnswer | Promise<ConnectionAnswer> {
+	private call(request: SingleRequest): ConnectionAnswer | Promise<ConnectionAnswer> {
 		let answer: ConnectionAnswer | Promise<ConnectionAnswer>;
 		try {
 			answer = send(this.connection, request);
@@ -1654,21 +1676,97 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * the ones before run in the order it made them, as on a connection that runs each one as it is called.
 	 */
 	private createExecutor(active: () => boolean): SqliteExecutor & { checkJsonbExtract(): Promise<boolean> } {
-		const execute = async <T>(request: ConnectionRequest, params: readonly SqliteValue[] = []): Promise<T> => {
+		const execute = async <T>(request: SingleRequest, params: readonly SqliteValue[] = []): Promise<T> => {
 			if (!active()) throw new StorageTransactionClosedError();
-			const invalidIndex = params.findIndex((value) => typeof value === "string" && value.includes("\0"));
+			const invalidIndex = invalidTextParam(params);
 			if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
 			return this.call(request) as T | Promise<T>;
 		};
-		return {
+		const executor = {
 			checkJsonbExtract: () => execute<boolean>({ kind: "jsonbExtract" }),
-			exec: (sql) => execute<void>({ kind: "exec", sql }),
-			run: (sql, ...params) => execute<{ changes: number }>({ kind: "run", sql, params }, params),
+			exec: (sql: string) => execute<void>({ kind: "exec", sql }),
+			run: (sql: string, ...params: readonly SqliteValue[]) =>
+				execute<{ changes: number }>({ kind: "run", sql, params }, params),
 			get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
 				execute<T | undefined>({ kind: "get", sql, params }, params),
 			all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
 				execute<T[]>({ kind: "all", sql, params }, params),
 		};
+		// On the calling thread a sequence would hold the event loop for all of its statements.
+		const connection = this.connection;
+		if (connection instanceof ThreadConnection)
+			offerSequences(executor, (sequence) => this.sendSequence(connection, sequence, active));
+		return executor;
+	}
+
+	/**
+	 * Sends `sequence` to the connection's thread: `repeat` with the first statements as one request, and the rest in
+	 * requests of at most `MAX_SEQUENCE_REQUEST_STATEMENTS`, each taken from `statements` and sent once the one before it
+	 * has run. The thread reads the signal, through a flag shared with it, where a caller running the statements one at a
+	 * time would check it. A statement whose text holds NUL fails as `run` fails it, after the statements before it ran.
+	 */
+	private async sendSequence(
+		connection: ThreadConnection,
+		{ repeat, statements, signal }: SqliteSequence,
+		active: () => boolean,
+	): Promise<number> {
+		const repeats = repeat !== undefined && repeat.times > 0 ? repeat : undefined;
+		const repeatInvalid = repeats === undefined ? -1 : invalidTextParam(repeats.statement.params);
+		if (repeatInvalid !== -1) {
+			signal?.throwIfAborted();
+			throw new StorageInvalidTextError(repeatInvalid);
+		}
+		const shared = signal === undefined ? undefined : new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+		// Only an actual abort of `signal` reaches a signal made from it: no other listener can keep the event from this
+		// one, and an abort event dispatched on `signal` without aborting it does not reach it.
+		const watched = signal === undefined ? undefined : AbortSignal.any([signal]);
+		const raise = () => Atomics.store(new Int32Array(shared!), 0, 1);
+		watched?.addEventListener("abort", raise);
+		try {
+			const pending = statements[Symbol.iterator]();
+			let invalid = -1;
+			let taken = false;
+			let repeated = 0;
+			for (let first = true; !taken || first; first = false) {
+				const batch: SqliteStatement[] = [];
+				while (!taken && batch.length < MAX_SEQUENCE_REQUEST_STATEMENTS) {
+					const next = pending.next();
+					if (next.done === true) {
+						taken = true;
+						break;
+					}
+					invalid = invalidTextParam(next.value.params);
+					if (invalid !== -1) {
+						taken = true;
+						break;
+					}
+					batch.push(sendableStatement(next.value));
+				}
+				if (batch.length === 0 && !(first && repeats !== undefined)) continue;
+				if (!active()) throw new StorageTransactionClosedError();
+				signal?.throwIfAborted();
+				const request: SequenceRequest = {
+					kind: "sequence",
+					...(first && repeats !== undefined
+						? { repeat: { ...repeats, statement: sendableStatement(repeats.statement) } }
+						: {}),
+					statements: batch,
+					...(shared === undefined ? {} : { abort: shared }),
+				};
+				const answer = (await connection.request(request).catch((cause: unknown) => {
+					throw unavailable(this.descriptor, cause);
+				})) as SequenceAnswer;
+				if ("aborted" in answer) throw signal?.reason;
+				if (first) repeated = answer.repeated;
+			}
+			if (invalid !== -1) {
+				signal?.throwIfAborted();
+				throw new StorageInvalidTextError(invalid);
+			}
+			return repeated;
+		} finally {
+			watched?.removeEventListener("abort", raise);
+		}
 	}
 
 	private enqueue<T>(operation: () => Promise<T>): Promise<T> {
