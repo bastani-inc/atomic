@@ -474,15 +474,21 @@ export function registerSessionStoreConformance(
 					if (store.readEntrySizes && store.readRange) assert.ok(scanned.length < pages.length);
 					if (!store.readScanPage || !store.readEntrySizes) return;
 					const { epoch } = await store.readEntrySizes("session", 1, 0);
-					// No entry for an empty range, only the watermark.
+					// No entry for an empty range, only the session's head; without a generation, the current one.
+					const head = { header: header(), epoch, lastSeq: 301 };
 					assert.deepEqual(await store.readScanPage("session", 1, 0, epoch, 1), {
-						lastSeq: 301,
+						...head,
+						throughSeq: 0,
+						items: [],
+					});
+					assert.deepEqual(await store.readScanPage("session", 1, 0, undefined, 1), {
+						...head,
 						throughSeq: 0,
 						items: [],
 					});
 					const limited = await store.readScanPage("session", 3, 301, epoch, 2);
 					assert.deepEqual(limited, {
-						lastSeq: 301,
+						...head,
 						throughSeq: 4,
 						items: [
 							{ seq: 3, entry: entries[2] },
@@ -504,7 +510,7 @@ export function registerSessionStoreConformance(
 						bytes: bytes(scanned.flat()[150]!),
 					};
 					assert.deepEqual(await store.readScanPage("session", 151, 301, epoch, 10), {
-						lastSeq: 301,
+						...head,
 						throughSeq: 151,
 						items: [big],
 					});
@@ -514,7 +520,7 @@ export function registerSessionStoreConformance(
 					const selected: SessionScanPage[] = [];
 					for (let from = 1; from <= 301; from = selected.at(-1)!.throughSeq + 1)
 						selected.push(
-							await store.readScanPage("session", from, 301, epoch, SESSION_HISTORY_SCAN_ENTRIES, select),
+							await store.readScanPage("session", from, 301, epoch, SESSION_HISTORY_SCAN_ENTRIES, { select }),
 						);
 					const seqs = selected.flatMap((page) => page.items.map((item) => item.seq));
 					for (const seq of [10, 20, 151, 200]) assert.ok(seqs.includes(seq), `selects ${seq}: ${seqs}`);
@@ -529,8 +535,31 @@ export function registerSessionStoreConformance(
 					assert.equal(selected.at(-1)!.throughSeq, 301);
 					assert.ok(selected.length <= 4, `${selected.length} selected`);
 					assert.deepEqual(
-						(await store.readScanPage("session", 1, 301, epoch, 1, select)).items.map((item) => item.seq),
+						(await store.readScanPage("session", 1, 301, epoch, 1, { select })).items.map((item) => item.seq),
 						[10],
+					);
+					// A run can end with the reference that follows it, which brings the first bytes of its JSON.
+					const trailing = await store.readScanPage("session", 148, 301, epoch, 10, {
+						trailingReference: true,
+						referencePrefix: 16,
+					});
+					assert.deepEqual(
+						trailing.items.map((item) => item.seq),
+						[148, 149, 150, 151],
+					);
+					assert.deepEqual(trailing.items.at(-1), big);
+					assert.equal(trailing.throughSeq, 151);
+					assert.deepEqual(
+						Buffer.from(trailing.prefixes?.get(151) ?? []).toString(),
+						JSON.stringify(entries[150]).slice(0, 16),
+					);
+					const after = await store.readScanPage("session", 1, 301, epoch, SESSION_HISTORY_SCAN_ENTRIES, {
+						select,
+						trailingReference: true,
+					});
+					assert.deepEqual(
+						after.items.map((item) => item.seq).filter((seq) => seq !== 30),
+						[10, 20, 151],
 					);
 					assert.equal(bytes(scanned.flat()[150]!), Buffer.byteLength(JSON.stringify(entries[150])));
 					await assert.rejects(store.readScanPage("missing", 1, 1, epoch, 1), notFound("missing"));
