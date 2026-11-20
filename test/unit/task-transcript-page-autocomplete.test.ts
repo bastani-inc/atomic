@@ -67,7 +67,7 @@ afterEach(async () => {
 
 /**
  * A subagent task in a real owner task store, whose transcript offers the child's commands, live or as kept after
- * it finished, and records what reaches its Intercom channel.
+ * it finished, and records what reaches the child's own session.
  */
 async function childTaskSource(live: boolean, sent: string[], commands: () => TaskTranscriptCommands) {
 	const fixture = taskFixture();
@@ -79,7 +79,7 @@ async function childTaskSource(live: boolean, sent: string[], commands: () => Ta
 		...(live ? { subscribe: () => () => {} } : {}),
 		completionSource: { runId: "run", intercomTarget: "subagent-worker-1" },
 		commands,
-		sendMessage: async (text) => {
+		queueMessage: async (text) => {
 			sent.push(text);
 			return { delivered: true };
 		},
@@ -155,7 +155,7 @@ for (const live of [true, false]) {
 	});
 }
 
-test("a skill command typed into a subagent's chat reaches it as the subagent's own session expands it (#4755)", async () => {
+test("a skill command typed into a subagent's chat reaches it as typed, and the subagent's own session expands it (#4755)", async () => {
 	const child = await createHarness({
 		resourceLoader: { ...createTestResourceLoader(), getSkills: () => ({ skills: [skill], diagnostics: [] }) },
 	});
@@ -167,13 +167,13 @@ test("a skill command typed into a subagent's chat reaches it as the subagent's 
 	}));
 	try {
 		const typed = "/skill:demo-skill check the notes";
-		child.setResponses([fauxAssistantMessage("done")]);
-		await child.session.prompt(typed);
 		type(page, typed);
 		page.handleInput(ENTER);
 		await vi.waitFor(() => assert.equal(sent.length, 1));
-		assert.match(sent[0]!, /DEMO SKILL BODY\./);
-		assert.deepEqual(sent, getUserTexts(child), "the chat sends what the subagent makes of the command itself");
+		assert.deepEqual(sent, [typed], "the chat gives the subagent's session the command as typed");
+		child.setResponses([fauxAssistantMessage("done")]);
+		await child.session.prompt(sent[0]!);
+		assert.match(getUserTexts(child)[0] ?? "", /DEMO SKILL BODY\./, "the subagent's own session expands it");
 	} finally {
 		page.dispose();
 		await child.cleanup();

@@ -161,7 +161,7 @@ test("a refused or lost delivery keeps the channel's detail and leaves it out wh
 				getSessionId: () => session.getSessionId(),
 				getEntries: () => session.getEntries(),
 				completionSource: { runId: "run-1", intercomTarget: "worker-1" },
-				sendMessage: async () => delivery,
+				queueMessage: async () => delivery,
 			},
 			async (view, taskId) => {
 				const error = await failureOf(view.sendTaskMessage!(taskId, "hi"));
