@@ -1,8 +1,8 @@
-import type { AppKeybinding } from "../../../core/keybindings.js";
+import type { AppKeybinding } from "../../../core/keybindings.ts";
 import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../../core/slash-commands.js";
 import { copyToClipboard } from "../../../utils/clipboard.js";
 import { getInteractiveEngineRemoteCommands } from "../../interactive-engine/extension-ui-bridge.ts";
-import { keyDisplayText } from "../components/keybinding-hints.ts";
+import { keyDisplayText } from "../components/keybinding-hints.js";
 import { applyViewedAutocomplete } from "../interactive-autocomplete.ts";
 import { mainSubmit } from "../interactive-input-handling.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
