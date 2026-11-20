@@ -102,11 +102,11 @@ export class LegacySessionStore implements SessionStore {
 				return inner.readSelectedPage!(id, seqs, epoch, options);
 			};
 		if (inner.readScanPage)
-			this.readScanPage = async (id, startSeq, endSeq, epoch, limit, select) => {
+			this.readScanPage = async (id, startSeq, endSeq, epoch, limit, options) => {
 				await this.convert(id);
-				return select === undefined
+				return options === undefined
 					? inner.readScanPage!(id, startSeq, endSeq, epoch, limit)
-					: inner.readScanPage!(id, startSeq, endSeq, epoch, limit, select);
+					: inner.readScanPage!(id, startSeq, endSeq, epoch, limit, options);
 			};
 		if (inner.readSnapshotCut)
 			this.readSnapshotCut = async (id, options) => {

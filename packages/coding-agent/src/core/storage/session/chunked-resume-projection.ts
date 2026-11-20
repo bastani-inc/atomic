@@ -388,6 +388,64 @@ export function messageRoleIn(prefix: Uint8Array): string | undefined {
 	}
 }
 
+/** The fields of a stored entry's head that `messageHeadIn` reads, each a string or `null` when it is not one. */
+export interface MessageHead {
+	type?: string | null;
+	role?: string | null;
+	toolCallId?: string | null;
+	toolName?: string | null;
+}
+
+const MESSAGE_HEAD_TEXT = 1024;
+
+/** A string value of at most `limit` characters, or `null` when it is longer. */
+function* boundedString(limit: number): Reader<string | null> {
+	let value = "";
+	let longer = false;
+	for (let token = yield; token.name === "stringChunk"; token = yield) {
+		if (value.length + token.value.length > limit) longer = true;
+		else value += token.value;
+	}
+	return longer ? null : value;
+}
+
+/**
+ * The top-level `type` and the message's `role`, `toolCallId` and `toolName` that the stored JSON beginning with `prefix`
+ * states before the prefix ends; a field it does not reach is absent. A stored entry is `JSON.stringify`'s output, so no
+ * key repeats and a key read in the prefix keeps that value in the whole entry (#5571).
+ */
+export function messageHeadIn(prefix: Uint8Array): MessageHead {
+	const head: MessageHead = {};
+	const text = function* (value: Token): Reader<string | null> {
+		if (value.name === "startString") return yield* boundedString(MESSAGE_HEAD_TEXT);
+		yield* skip(value);
+		return null;
+	};
+	try {
+		feed(
+			(function* (): Reader<void> {
+				if ((yield).name !== "startObject") return;
+				while ((yield).name !== "endObject") {
+					const name = yield* stringValue(8);
+					const value = yield;
+					if (name === "type") head.type = yield* text(value);
+					else if (name === "message" && value.name === "startObject")
+						while ((yield).name !== "endObject") {
+							const key = yield* stringValue(11);
+							const child = yield;
+							if (key === "role" || key === "toolCallId" || key === "toolName") head[key] = yield* text(child);
+							else yield* skip(child);
+						}
+					else yield* skip(value);
+				}
+			})(),
+		)(new TextDecoder("utf-8", { fatal: true }).decode(prefix, { stream: true }));
+	} catch {
+		// A prefix that cannot be read tells nothing more. Reading the whole entry reports what is wrong with it.
+	}
+	return head;
+}
+
 export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uint8Array>): Promise<ForkMetadata> {
 	const e = object(
 		await read(
