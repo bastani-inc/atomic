@@ -17,6 +17,14 @@ export interface CacheMiss {
 	idleMs: number;
 	modelChanged: boolean;
 	cacheExpired: boolean;
+	/** Tool definitions changed after the previous request, as an update that redefines a tool does. */
+	toolsChanged: boolean;
+	/** A subagent's leading prompt was sent again in full after the previous request. */
+	promptRestarted: boolean;
+	/** The request used another thinking level than the previous one on the same model. */
+	thinkingLevelChanged: boolean;
+	/** The request had to send a smaller thinking budget than the previous one, or none, to fit the model's context window. */
+	contextNearLimit: boolean;
 }
 export interface CacheWasteTotals {
 	missedTokens: number;
@@ -46,11 +54,26 @@ export interface PreviousRequest {
 	model: string;
 	timestamp: number;
 	reportedCache: boolean;
+	thinkingLevel?: string;
+	/** Thinking budget the request sent, for a model that thinks within a fixed budget. */
+	thinkingBudgetTokens?: number;
+	/** A later system message changed the tool definitions. */
+	toolsChanged?: boolean;
+	/** A later system message sent a subagent's leading prompt again in full. */
+	promptRestarted?: boolean;
 }
 
 export function describeCacheMissCause(miss: CacheMiss): string {
 	if (miss.modelChanged) return " after model switch";
-	return miss.cacheExpired ? " after cache TTL expiry" : "";
+	if (miss.cacheExpired) return " after cache TTL expiry";
+	if (miss.promptRestarted) return " after the subagent's prompt was sent again in full";
+	if (miss.thinkingLevelChanged) return " after thinking level change";
+	if (miss.toolsChanged) return " after tool definitions changed";
+	return miss.contextNearLimit ? " with the context near the model's limit" : "";
+}
+
+function requestThinkingLevel(message: AssistantMessage): string | undefined {
+	return (message as AssistantMessage & { thinkingLevel?: string }).thinkingLevel;
 }
 
 export function cacheMissAfter(
@@ -75,14 +98,28 @@ export function cacheMissAfter(
 	const reportedRequestCost = usage.cost.totalFromProvider && usage.cost.total > 0 ? usage.cost.total : undefined;
 	const idleMs = Math.max(0, message.timestamp - prev.timestamp);
 	const ttlMs = models.getPromptCacheTtlMs?.(prev.provider, prev.model);
+	const modelChanged = message.provider !== prev.provider || message.model !== prev.model;
 	return {
 		missedTokens,
 		missedCost,
 		...(paidRate > 0 ? { rebilledCost: missedTokens * paidRate } : {}),
 		...(reportedRequestCost !== undefined ? { reportedRequestCost } : {}),
 		idleMs,
-		modelChanged: message.provider !== prev.provider || message.model !== prev.model,
+		modelChanged,
 		cacheExpired: ttlMs !== undefined && idleMs >= ttlMs,
+		toolsChanged: prev.toolsChanged === true,
+		promptRestarted: prev.promptRestarted === true,
+		thinkingLevelChanged:
+			!modelChanged &&
+			prev.thinkingLevel !== undefined &&
+			requestThinkingLevel(message) !== undefined &&
+			requestThinkingLevel(message) !== prev.thinkingLevel,
+		// A lower budget, or none at all when not even the smallest one fit, on the same thinking level.
+		contextNearLimit:
+			!modelChanged &&
+			prev.thinkingBudgetTokens !== undefined &&
+			(message.thinkingBudgetTokens ?? 0) < prev.thinkingBudgetTokens &&
+			requestThinkingLevel(message) === prev.thinkingLevel,
 	};
 }
 
@@ -96,6 +133,10 @@ function previous(message: AssistantMessage, reportedCache: boolean): PreviousRe
 				model: message.model,
 				timestamp: message.timestamp,
 				reportedCache: reportedCache || usage.cacheRead + usage.cacheWrite > 0,
+				...(requestThinkingLevel(message) === undefined ? {} : { thinkingLevel: requestThinkingLevel(message) }),
+				...(message.thinkingBudgetTokens === undefined
+					? {}
+					: { thinkingBudgetTokens: message.thinkingBudgetTokens }),
 			}
 		: undefined;
 }
@@ -118,6 +159,17 @@ export function advanceCacheHistory(
 			};
 	} else if (entry.type === "message" && entry.message.role === "assistant") {
 		return previous(entry.message, prev?.reportedCache ?? false) ?? prev;
+	} else if (prev && entry.type === "message" && entry.message.role === "system") {
+		const message = entry.message;
+		const toolsChanged = (message.toolsAdded?.length ?? 0) > 0 || (message.toolsRemoved?.length ?? 0) > 0;
+		const promptRestarted =
+			(message as { transformedPrompt?: { head?: unknown } }).transformedPrompt?.head !== undefined;
+		if ((toolsChanged && !prev.toolsChanged) || (promptRestarted && !prev.promptRestarted))
+			return {
+				...prev,
+				...(toolsChanged ? { toolsChanged: true } : {}),
+				...(promptRestarted ? { promptRestarted: true } : {}),
+			};
 	}
 	return prev;
 }

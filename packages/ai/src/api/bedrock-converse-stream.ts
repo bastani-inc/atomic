@@ -67,7 +67,7 @@ import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
 import {
-	collapseSystemMessages,
+	appendSystemMessageUpdates,
 	getCurrentTools,
 	getInitialSystemMessage,
 	type TranscriptContext,
@@ -82,13 +82,13 @@ import {
 import {
 	adjustMaxTokensForThinking,
 	buildBaseOptions,
-	clampMaxTokensToContext,
 	clampReasoning,
+	fitThinkingBudget,
 } from "./simple-options.ts";
 import {
-	hasExceededStrictToolLimits,
 	isStrictToolLimitErrorMessage,
 	markStrictToolLimitsExceeded,
+	strictToolLimitsExceeded,
 } from "./strict-tool-limits.ts";
 import { splitErrorToolResultImages, transformMessages } from "./transform-messages.ts";
 
@@ -154,8 +154,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 	options: BedrockOptions = {},
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
-	// Bedrock has no mid-conversation system messages; fold them into the leading prompt.
-	const normalizedContext = collapseSystemMessages(context);
+	// Bedrock has no mid-conversation system messages; later ones are sent as user input.
+	const normalizedContext = appendSystemMessageUpdates(context);
 
 	(async () => {
 		const output: AssistantMessage = {
@@ -291,7 +291,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
 			const initialSystemMessage = getInitialSystemMessage(normalizedContext.messages);
 			const initialSystemPrompt = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : undefined;
-			let disablePreferredStrictTools = hasExceededStrictToolLimits(options.sessionId);
+			let disablePreferredStrictTools = strictToolLimitsExceeded(options.sessionId, normalizedContext.messages);
 			const reasoningOptions = resolveThinkingOffOptions(model, options, output);
 			let response: ConverseStreamCommandOutput;
 			for (;;) {
@@ -350,6 +350,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					});
 				}
 			}
+			if (disablePreferredStrictTools) output.strictToolsDisabled = true;
 			responseRequestId = normalizeDiagnosticValue(response.$metadata.requestId);
 			if (!observedRawResponse && response.$metadata.httpStatusCode !== undefined) {
 				const responseHeaders: Record<string, string> = {};
@@ -639,15 +640,17 @@ export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStrea
 			options.thinkingBudgets,
 		);
 
-		const maxTokens = clampMaxTokensToContext(model, context, adjusted.maxTokens);
+		const fitted = fitThinkingBudget(model, context, adjusted.maxTokens, adjusted.thinkingBudget);
+		// Too close to the context window for the smallest budget: Claude rejects a budget at or above maxTokens.
+		if (!fitted) return stream(model, context, { ...base, reasoning: undefined } satisfies BedrockOptions);
 
 		return stream(model, context, {
 			...base,
-			maxTokens,
+			maxTokens: fitted.maxTokens,
 			reasoning: options.reasoning,
 			thinkingBudgets: {
 				...(options.thinkingBudgets || {}),
-				[clampReasoning(options.reasoning)!]: Math.min(adjusted.thinkingBudget, Math.max(0, maxTokens - 1024)),
+				[clampReasoning(options.reasoning)!]: fitted.thinkingBudget,
 			},
 		} satisfies BedrockOptions);
 	}
@@ -1059,8 +1062,24 @@ function convertMessages(
 		normalizeToolCallId,
 	);
 
+	// The input sent up to a message with a `cacheBreakpoint` hint ends with the last user message converted so far
+	// once that message is converted.
+	let checkpoint: { message: Message; blocks: number } | undefined;
+	const markCheckpoint = (): void => {
+		const last = result.at(-1);
+		if (last?.role === ConversationRole.USER && last.content) checkpoint = { message: last, blocks: last.content.length };
+	};
+	// Converse rejects two user messages in a row, as after input steered in after tool results, so their content
+	// is joined into one message.
+	const pushUser = (content: ContentBlock[]): void => {
+		const last = result.at(-1);
+		if (last?.role === ConversationRole.USER && last.content) last.content.push(...content);
+		else result.push({ role: ConversationRole.USER, content });
+	};
+
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const m = transformedMessages[i];
+		if (m.role === "assistant" && m.cacheBreakpoint) markCheckpoint();
 
 		switch (m.role) {
 			case "user": {
@@ -1087,7 +1106,8 @@ function convertMessages(
 					}
 					if (content.length === 0) content.push({ text: EMPTY_TEXT_PLACEHOLDER });
 				}
-				result.push({ role: ConversationRole.USER, content });
+				pushUser(content);
+				if (m.cacheBreakpoint) markCheckpoint();
 				break;
 			}
 			case "assistant": {
@@ -1174,8 +1194,10 @@ function convertMessages(
 				// images follow all tool results of the turn (#10794). Other models keep them in place.
 				const errorImages: ContentBlock[] = [];
 				let j = i;
+				let breakpoint = false;
 				while (j < transformedMessages.length && transformedMessages[j].role === "toolResult") {
 					const toolMsg = transformedMessages[j] as ToolResultMessage;
+					if (toolMsg.cacheBreakpoint) breakpoint = true;
 					const split = isAnthropicClaudeModel(model) ? splitErrorToolResultImages(toolMsg) : undefined;
 					toolResults.push({
 						toolResult: {
@@ -1196,7 +1218,8 @@ function convertMessages(
 				// Skip the messages we've already processed
 				i = j - 1;
 
-				result.push({ role: ConversationRole.USER, content: [...toolResults, ...errorImages] });
+				pushUser([...toolResults, ...errorImages]);
+				if (breakpoint) markCheckpoint();
 				break;
 			}
 			default:
@@ -1207,14 +1230,16 @@ function convertMessages(
 	// Add cache point to the last user message for supported Claude models when caching is enabled
 	if (cacheRetention !== "none" && supportsPromptCaching(model, env) && result.length > 0) {
 		const lastMessage = result[result.length - 1];
-		if (lastMessage.role === ConversationRole.USER && lastMessage.content) {
-			(lastMessage.content as ContentBlock[]).push({
-				cachePoint: {
-					type: CachePointType.DEFAULT,
-					...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}),
-				},
-			});
-		}
+		const cachePoint = (): ContentBlock => ({
+			cachePoint: { type: CachePointType.DEFAULT, ...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}) },
+		});
+		// The system prompt, this checkpoint and the last message take three of Claude's four cache points.
+		if (
+			checkpoint?.message.content &&
+			!(checkpoint.message === lastMessage && checkpoint.blocks === checkpoint.message.content.length)
+		)
+			checkpoint.message.content.splice(checkpoint.blocks, 0, cachePoint());
+		if (lastMessage.role === ConversationRole.USER && lastMessage.content) lastMessage.content.push(cachePoint());
 	}
 
 	return result;

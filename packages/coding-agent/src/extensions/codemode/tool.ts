@@ -100,7 +100,11 @@ export function createCodemodeDescription(
 		string,
 		{ namespace?: ToolNamespace; entries: { name: string; section: string; cost: number }[] }
 	>();
-	for (const tool of getCodemodeCallableTools(tools)) {
+	// Name order, so the description does not depend on the order in which tools were registered.
+	const callable = [...getCodemodeCallableTools(tools)].sort((a, b) =>
+		a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+	);
+	for (const tool of callable) {
 		if (options.deferred?.has(tool.name)) continue;
 		const namespace = options.namespaces?.get(tool.name);
 		const key = namespace?.name ?? "";
@@ -117,8 +121,17 @@ export function createCodemodeDescription(
 			cost: Math.ceil(section.length / 4),
 		});
 	}
+	// Code point order: the description must not depend on the host's locale.
 	const ordered = [...groups.values()].sort((a, b) =>
-		a.namespace === undefined ? -1 : b.namespace === undefined ? 1 : a.namespace.name.localeCompare(b.namespace.name),
+		a.namespace === undefined
+			? -1
+			: b.namespace === undefined
+				? 1
+				: a.namespace.name < b.namespace.name
+					? -1
+					: a.namespace.name > b.namespace.name
+						? 1
+						: 0,
 	);
 	const shown = new Set<string>();
 	let remaining = options.inlineBudget ?? Number.POSITIVE_INFINITY;
@@ -140,7 +153,7 @@ export function createCodemodeDescription(
 	];
 	if (options.models)
 		sections.push(
-			`Model API: \`models\` lists and runs classifier and image models with the session's credentials. Read ${CODEMODE_DOCS_PATH} before using it.`,
+			"Model API: `models` lists and runs classifier and image models with the session's credentials. Read its guide, docs/codemode.md in the Atomic documentation, before using it.",
 		);
 	if (ordered.length === 0) return sections.join("\n\n");
 	sections.push("Nested tools:");
@@ -295,6 +308,8 @@ export function createCodemodeToolDefinition(
 		promptSnippet: "Run JavaScript that calls script-callable tools, filters results, or batches independent calls",
 		promptGuidelines: [
 			"Use `tools.subagent` for background launches and owned child control. For model-only actions (such as defining agents or asking users questions), call the separate top-level tool directly, not from a `codemode` script.",
+			// The installation's path changes with where Atomic is installed, so it stays out of the tool definition.
+			...(options.models ? [`The codemode \`models\` API guide is ${CODEMODE_DOCS_PATH}.`] : []),
 		],
 		prepareLoadout: (loadout) => prepareLoadout(loadout, options),
 		constrainedSampling: { type: "grammar", variants: { openai_lark: CODEMODE_SOURCE_GRAMMAR } },
