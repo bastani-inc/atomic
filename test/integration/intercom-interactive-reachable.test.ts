@@ -55,6 +55,19 @@ function scriptedModels() {
 		if (last?.role !== "tool") return call("a-list", { action: "list" });
 		const toolResults = messages.filter((message) => message.role === "tool").map((message) => messageText(message));
 		const peer = toolResults.flatMap(otherSessions)[0];
+		const sends = toolResults.filter((text) => text.startsWith("Message sent to")).length;
+		if (sends === 3 && (lastText.startsWith("Message sent to") || lastText.includes("Current session"))) {
+			// Ask once B's model has taken the three messages, so the question does not race B's own turns.
+			if (!seenByB.some((text) => text.includes("PING-BY-PREFIX"))) {
+				return call("a-wait-for-b", { action: "list" }, LIST_RETRY_MS);
+			}
+			return call("a-ask", {
+				action: "ask",
+				to: peer!.name,
+				message: "PLEASE-REPLY",
+				wait: { kind: "foreground", budgetMs: 60_000 },
+			});
+		}
 		if (lastText.includes("Current session")) {
 			const others = otherSessions(lastText);
 			if (others.length === 0) {
@@ -66,20 +79,11 @@ function scriptedModels() {
 			if (others.length !== 1) return say("a-duplicate", `EXPECTED-ONE-PEER: ${lastText}`);
 			return call("a-send-name", { action: "send", to: peer!.name, message: "PING-BY-NAME" });
 		}
-		const sends = toolResults.filter((text) => text.startsWith("Message sent to")).length;
 		if (lastText.startsWith("Message sent to") && sends === 1) {
 			return call("a-send-id", { action: "send", to: peer!.id, message: "PING-BY-ID" });
 		}
 		if (lastText.startsWith("Message sent to") && sends === 2) {
 			return call("a-send-prefix", { action: "send", to: peer!.id.slice(0, 8), message: "PING-BY-PREFIX" });
-		}
-		if (lastText.startsWith("Message sent to") && sends === 3) {
-			return call("a-ask", {
-				action: "ask",
-				to: peer!.name,
-				message: "PLEASE-REPLY",
-				wait: { kind: "foreground", budgetMs: 60_000 },
-			});
 		}
 		return say("a-done", `SESSION-A-DONE ${JSON.stringify(toolResults)}`);
 	};
@@ -189,7 +193,11 @@ describe("an interactive session that never used Intercom is reachable from anot
 					assert.doesNotMatch(stdout, /SESSION-B-NOT-LISTED|EXPECTED-ONE-PEER/, stdout);
 					assert.match(stdout, /SESSION-A-DONE/, stdout);
 					assert.equal((stdout.match(/Message sent to/g) ?? []).length, 3, stdout);
-					assert.match(stdout, /Reply from subagent-chat-[0-9a-f-]+:[^"]{0,8}PONG-FROM-B/, stdout);
+					assert.match(
+						stdout,
+						/Reply from subagent-chat-[0-9a-f-]+:[^"]{0,8}PONG-FROM-B/,
+						`${stdout}\nB's model saw:\n${profile.seenByB.join("\n---\n")}\nB's screen:\n${sessionB.screen()}`,
+					);
 					for (const ping of ["PING-BY-NAME", "PING-BY-ID", "PING-BY-PREFIX", "PLEASE-REPLY"]) {
 						assert.ok(
 							profile.seenByB.some((text) => text.includes(ping)),
