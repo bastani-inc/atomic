@@ -85,7 +85,7 @@ for (const width of [80, 160]) {
 			const lines = panel.lines(width);
 			assert.equal(lines.length, 2, lines.join("\n"));
 			assert.equal(lines[0], "  ● main");
-			assert.match(lines[1]!, /^ {2}\S worker {2}fix shipping batches/);
+			assert.match(lines[1]!, /^ {2}◯ worker {2}fix shipping batches/);
 			assert.ok(!lines.some((line) => line.includes("sleep 300")), "a shell is not a panel row");
 			assert.deepEqual(agentPanelCounts(session as never), {
 				total: 1,

@@ -262,7 +262,7 @@ Use `/tasks` (or `/tasks <id>`) to inspect background subagents and shells (excl
 | --- | --- |
 | `Space` | Toggle inline peek card (model, reasoning, activity, usage, plus quick reply box for working subagents) |
 | `Enter` / `→` | View the selected subagent on the chat screen, or open a shell's output tail |
-| `x` twice (within 3 s) | Stop a running task (quits subagents resumably → **Stopped** `◼`) |
+| `x` twice (within 3 s) | Stop a running task (quits subagents resumably → **Stopped**, a red `◯`) |
 | `x` once | Dismiss a finished row |
 | `Esc` / `←` | Go back one view without stopping work |
 

@@ -83,8 +83,8 @@ function renderViews(): Record<string, string[]> {
 		"tool block": toolBlockLines(false),
 		"failed tool block": toolBlockLines(true),
 		"agent panel": [
-			...renderAgentPanelRows(PANEL_ROWS, 80, style, { frame: 0 }),
-			...renderAgentPanelRows(PANEL_ROWS, 80, style, { frame: 0, selectedId: "task:b" }),
+			...renderAgentPanelRows(PANEL_ROWS, 80, style),
+			...renderAgentPanelRows(PANEL_ROWS, 80, style, { selectedId: "task:b" }),
 		],
 		"/tasks": [
 			...BOARD_ROWS.map((row, index) => renderBoardRow(row, index === 1, 80)),

@@ -17,8 +17,6 @@ import {
 	taskClockOf,
 	taskClockRunning,
 } from "../../../core/tasks/live-elapsed.js";
-import { getGlobalTheme } from "../theme/global-theme.ts";
-import { ATOMIC_WORKING_FRAMES, atomicWorkingGlyph } from "./atomic-working-status.ts";
 import type { ModelCellReport, ModelColumn } from "./model-column.ts";
 import {
 	clickableKeyTextHint,
@@ -29,7 +27,7 @@ import {
 	renderNavHintLine,
 	TwoPressConfirm,
 } from "./nav-keys.ts";
-import { WAITING_MARKER } from "./notice-line.ts";
+import { DONE_TASK_MARKER, RUNNING_TASK_MARKER, STOPPED_TASK_MARKER, WAITING_MARKER } from "./notice-line.ts";
 import { taskDisplayText } from "./task-row.js";
 
 export type AgentPanelRow = AgentPanelItem;
@@ -56,35 +54,10 @@ export interface AgentPanelStyle extends NavKeyStyle {
 const FINISHED: ReadonlySet<AgentPanelState> = new Set(["done", "failed", "stopped"]);
 const NON_PRINTABLE_ASCII = /[^\x20-\x7e]/;
 const NON_SINGLE_CELL = /[^\x20-\x7e\u00b7\u25b0\u25b1\u2193]/;
-const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀⧗◆‖○◌◼✓✗●❯]/;
+const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀⧗◆‖○◯◌◼✓✗●❯]/;
 const SGR_SEQUENCE = /\x1b\[[\d;:]*m/g;
 const MAX_CACHED_LINE_WIDTHS = 512;
 const singleCellLineWidths = new Map<string, number>();
-let glyphThemeRef: ReturnType<typeof getGlobalTheme>;
-let glyphNoColor: string | undefined;
-let glyphReducedMotion: string | undefined;
-const glyphCache: Array<string | undefined> = new Array(ATOMIC_WORKING_FRAMES.length);
-
-function cachedWorkingGlyph(frame: number): string {
-	const themeRef = getGlobalTheme();
-	const noColor = process.env.NO_COLOR;
-	const reduced = process.env.ATOMIC_REDUCED_MOTION;
-	if (themeRef !== glyphThemeRef || noColor !== glyphNoColor || reduced !== glyphReducedMotion) {
-		glyphThemeRef = themeRef;
-		glyphNoColor = noColor;
-		glyphReducedMotion = reduced;
-		glyphCache.fill(undefined);
-	}
-	const count = ATOMIC_WORKING_FRAMES.length;
-	const index = reduced === "1" ? 3 : ((frame % count) + count) % count;
-	let cached = glyphCache[index];
-	if (cached === undefined) {
-		cached = atomicWorkingGlyph(index);
-		glyphCache[index] = cached;
-	}
-	return cached;
-}
-
 export function isFinishedPanelRow(row: Pick<AgentPanelRow, "state">): boolean {
 	return FINISHED.has(row.state) && !isInterruptedPanelTask(row);
 }
@@ -363,28 +336,72 @@ export class AgentPanelModel {
 	}
 }
 
-function glyph(row: AgentPanelRow, style: AgentPanelStyle, frame: number | undefined): string {
-	switch (row.state) {
-		case "running":
-			if (row.kind === "shell") return style.accent("⧗");
-			return frame === undefined ? style.accent("∀") : cachedWorkingGlyph(frame);
-		case "input":
-			return style.warning("◆");
-		case "paused":
-			return style.warning("‖");
-		case "queued":
-			return style.dim("○");
-		case "stopping":
-			return style.warning("◼");
-		case "waiting":
-			return style[WAITING_MARKER.color](WAITING_MARKER.glyph);
-		case "done":
-			return style.success("✓");
-		case "failed":
-			return style.error("✗");
-		case "stopped":
-			return style.muted("◼");
+interface PanelMark {
+	readonly glyph: string;
+	readonly color: "muted" | "dim" | "accent" | "success" | "error" | "warning";
+}
+
+const OPEN_CIRCLE = "◯";
+const FILLED_CIRCLE = "●";
+
+/**
+ * A row's mark for each state. Each state has its own mark and colour, and every mark is one cell, so a row keeps its
+ * columns when its state changes. A subagent shows an open circle while it runs and when it was stopped (in the error
+ * colour), and a filled one once done.
+ */
+const PANEL_MARKS: Readonly<Record<AgentPanelState, PanelMark>> = {
+	running: RUNNING_TASK_MARKER,
+	input: { glyph: "◆", color: "warning" },
+	paused: { glyph: "‖", color: "warning" },
+	queued: { glyph: "○", color: "dim" },
+	stopping: { glyph: "◼", color: "warning" },
+	waiting: WAITING_MARKER,
+	done: DONE_TASK_MARKER,
+	failed: { glyph: "✗", color: "error" },
+	stopped: STOPPED_TASK_MARKER,
+};
+const RUNNING_SHELL_MARK: PanelMark = { glyph: "⧗", color: "accent" };
+
+/**
+ * How a row reads, first match wins: the chat on screen is bold in the default colour, a faded finished row is dim, the
+ * selected row is in the default colour, and the rest are muted.
+ */
+type RowTone = "onScreen" | "faded" | "selected" | "rest";
+
+function rowTone(onScreen: boolean, faded: boolean, selected: boolean): RowTone {
+	if (onScreen) return "onScreen";
+	if (faded) return "faded";
+	return selected ? "selected" : "rest";
+}
+
+function paintRow(style: AgentPanelStyle, tone: RowTone, text: string): string {
+	switch (tone) {
+		case "onScreen":
+			return style.bold(style.text(text));
+		case "faded":
+			return style.dim(text);
+		case "selected":
+			return style.text(text);
+		case "rest":
+			return style.muted(text);
 	}
+}
+
+/** A subagent row's mark: the chat on screen fills its open circle; a running circle reads in its row's colour. */
+function glyph(row: AgentPanelRow, style: AgentPanelStyle, tone: RowTone): string {
+	const mark = row.state === "running" && row.kind === "shell" ? RUNNING_SHELL_MARK : PANEL_MARKS[row.state];
+	const shape = tone === "onScreen" && mark.glyph === OPEN_CIRCLE ? FILLED_CIRCLE : mark.glyph;
+	const colored =
+		mark === PANEL_MARKS.running && (tone === "onScreen" || tone === "selected")
+			? style.text(shape)
+			: style[mark.color](shape);
+	return tone === "onScreen" ? style.bold(colored) : tone === "faded" ? style.dim(colored) : colored;
+}
+
+/** The main row's mark: filled while the screen shows main, a muted open circle while it shows a subagent. */
+function mainGlyph(style: AgentPanelStyle, tone: RowTone): string {
+	if (tone === "onScreen") return style.bold(style.text(FILLED_CIRCLE));
+	return tone === "selected" ? style.text(OPEN_CIRCLE) : style.muted(OPEN_CIRCLE);
 }
 
 function stateWord(row: AgentPanelRow): string {
@@ -423,7 +440,6 @@ function rightColumn(row: AgentPanelRow, width: number): string {
 
 export interface AgentPanelRenderOptions {
 	readonly selectedId?: string;
-	readonly frame?: number;
 	readonly faded?: (row: AgentPanelRow) => boolean;
 	readonly scroll?: number;
 	readonly hiddenAbove?: number;
@@ -431,8 +447,8 @@ export interface AgentPanelRenderOptions {
 	/** The main-chat row above the list. Defaults to shown only while focused. */
 	readonly showMain?: boolean;
 	/**
-	 * The row of the subagent the screen shows, marked by an accent `●` before it; the main row's `●` is muted then.
-	 * Undefined while the screen shows main: the main row carries the mark, as it always did.
+	 * The row of the subagent the screen shows: its open circle is filled and it reads in bold, and the main row's mark
+	 * is a muted open circle. Undefined while the screen shows main: the main row is filled and bold.
 	 */
 	readonly viewedId?: string;
 	/** Shell rows are a subagent's own shells, listed right under it: they are indented one step. */
@@ -532,20 +548,18 @@ export function renderAgentPanelRows(
 		knownNameWidth: number,
 		task: string,
 		right: string,
-		dim: boolean,
+		tone: RowTone,
 		queued?: string,
 		model?: string,
 		indent = 0,
 	) => {
-		const selected = options.selectedId === id;
-		const viewed = viewing && options.viewedId === id;
-		const cursor = selected ? style.accent(style.bold("❯ ")) : viewed ? `${style.accent("●")} ` : "  ";
+		// Columns 0-1 hold only the selection cursor.
+		const cursor = options.selectedId === id ? style.accent(style.bold("∀ ")) : "  ";
 		const lead = indent > 0 ? `${cursor}${" ".repeat(indent)}` : cursor;
-		const paint = (text: string) => (dim ? style.dim(text) : selected ? style.text(text) : style.muted(text));
+		const paint = (text: string) => paintRow(style, tone, text);
 		if (width < 40) {
 			const shortName = fitToWidth(name, Math.max(1, width - 5 - indent)).text;
-			const short = `${lead}${glyphText} ${viewed ? style.accent(shortName) : paint(shortName)}`;
-			return lines.push(clampLine(short, width));
+			return lines.push(clampLine(`${lead}${glyphText} ${paint(shortName)}`, width));
 		}
 		const room = nameWidth - indent;
 		const fittedName = knownNameWidth <= room ? { text: name, width: knownNameWidth } : fitToWidth(name, room);
@@ -568,29 +582,30 @@ export function renderAgentPanelRows(
 		const taskRoom = Math.max(0, width - fixed - rightWidth - 2);
 		const fittedTask = taskRoom >= 8 && task.length > 0 ? fitToWidth(task, taskRoom) : { text: "", width: 0 };
 		const pad = Math.max(1, width - fixed - fittedTask.width - rightWidth);
-		const nameText = viewed ? style.bold(style.accent(head)) : selected ? style.bold(style.text(head)) : paint(head);
 		const rightText = paint(shownRight) + (shownQueued === undefined ? "" : style.warning(shownQueued));
-		const full = `${lead}${glyphText} ${nameText}  ${modelCell}${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
+		const full = `${lead}${glyphText} ${paint(head)}  ${modelCell}${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
 		lines.push(clampLine(full, width));
 	};
 	if (showMain) {
-		const selected = options.selectedId === AGENT_PANEL_MAIN_ID;
-		// While a subagent is shown, main is not where the reader is: its mark is muted, as its name is.
-		const mark = selected ? style.accent("●") : viewing ? style.muted("●") : style.text("●");
-		line(AGENT_PANEL_MAIN_ID, mark, "main", 4, "", "", false);
+		const tone = rowTone(!viewing, false, options.selectedId === AGENT_PANEL_MAIN_ID);
+		line(AGENT_PANEL_MAIN_ID, mainGlyph(style, tone), "main", 4, "", "", tone);
 	}
 	if (hiddenAbove > 0) lines.push(style.dim(truncateToWidth(`  ↑ ${hiddenAbove} more`, width)));
 	for (let i = 0; i < count; i++) {
 		const raw = shown[i]!;
-		const dim = options.faded?.(raw) === true;
+		const tone = rowTone(
+			viewing && options.viewedId === raw.id,
+			options.faded?.(raw) === true,
+			options.selectedId === raw.id,
+		);
 		line(
 			raw.id,
-			dim ? style.dim(glyph(raw, style, undefined)) : glyph(raw, style, options.frame),
+			glyph(raw, style, tone),
 			names[i]!,
 			nameWidths[i]!,
 			tasks[i]!,
 			rights[i]!,
-			dim,
+			tone,
 			queues[i],
 			models[i],
 			nested(raw) ? NESTED_INDENT : 0,
