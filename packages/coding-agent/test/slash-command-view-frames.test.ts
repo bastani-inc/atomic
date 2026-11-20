@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { Text } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
+import { FIRST_FRAME_TIMEOUT_MS } from "../src/modes/interactive/agent-view/remote-port.ts";
+import { holdTranscriptDock } from "../src/modes/interactive/agent-view/transcript-slot.ts";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
-import { PROMPT_SLOT_HOLD_MS } from "../src/modes/interactive/components/prompt-slot.ts";
+import { holdPromptSlot, PROMPT_SLOT_HOLD_MS } from "../src/modes/interactive/components/prompt-slot.ts";
+import { screenHoldOf } from "../src/modes/interactive/screen-hold.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { type MainChatTerminal, startMainChat } from "./helpers/main-chat-terminal.js";
 
@@ -154,6 +158,47 @@ describe.each(["in-process", "isolated"] as const)("a slash command that opens a
 			await chat.settled(/Select model/);
 			for (const frame of await screens(chat, from))
 				assert.doesNotMatch(frame.text, status, `a frame shows the ended run's status:\n${frame.text}`);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"a key that ends a held prompt or dock still reaches the prompt, and a scroll key still scrolls",
+		async () => {
+			const chat = await start(host);
+			for (let line = 1; line <= 60; line++) chat.mode.chatContainer.addChild(new Text(`filler ${line}`, 0, 0));
+			chat.mode.ui.requestRender();
+			await chat.settled(/filler 60/);
+			const screenHold = screenHoldOf(chat.mode);
+			const scroll = chat.mode.transcriptScrollView;
+			assert.ok(scroll);
+			const hold = {
+				prompt: () => holdPromptSlot(chat.mode.editorContainer),
+				dock: () => holdTranscriptDock(chat.mode, FIRST_FRAME_TIMEOUT_MS),
+			};
+			for (const region of ["prompt", "dock"] as const) {
+				hold[region]();
+				assert.equal(screenHold.region, region);
+				chat.press("x");
+				assert.equal(screenHold.region, undefined, `the key ends the held ${region}`);
+				assert.equal(chat.mode.editor.getText(), "x", `the key that ended the held ${region} reached the prompt`);
+				chat.mode.editor.setText("");
+				await chat.settled(/filler 60/);
+
+				hold[region]();
+				assert.equal(screenHold.region, region);
+				const top = scroll.scrollTop;
+				chat.press("\x1b[5~");
+				assert.equal(screenHold.region, undefined, `PageUp ends the held ${region}`);
+				await chat.settled();
+				assert.ok(
+					scroll.scrollTop < top,
+					`PageUp that ended the held ${region} scrolled: ${top} -> ${scroll.scrollTop}`,
+				);
+				scroll.scrollToEnd();
+				chat.mode.ui.requestRender();
+				await chat.settled(/filler 60/);
+			}
 		},
 		INTERACTIVE_CASE_TIMEOUT_MS,
 	);
