@@ -195,6 +195,7 @@ export function disposeChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
 	state.optimisticUserSignatureCounts.clear();
 	state.bodyViewport.dispose();
 	state.editor = undefined;
+	state.steeringController?.dispose();
 }
 
 export function notifyChatSessionWarning<TExtraEntry extends ChatTranscriptEntryLike>(
