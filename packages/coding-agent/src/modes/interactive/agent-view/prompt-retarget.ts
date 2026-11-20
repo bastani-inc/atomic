@@ -16,7 +16,6 @@ import { theme } from "../theme/theme.js";
 import {
 	appendPromptText,
 	markMovedDraft,
-	noteMainPromptEdit,
 	rewritePromptOwnText,
 	switchPrompt,
 	takePromptText,
@@ -190,7 +189,6 @@ function drawViewedWorkingLine(mode: InteractiveModeBase): () => void {
 
 /**
  * `!` makes the main prompt a shell prompt; a subagent's refuses `!` commands, so its prompt never becomes one (D2).
- * An edit of main's prompt also ends the mark of text moved there from a subagent that is gone.
  */
 function keepBashModeMain(mode: InteractiveModeBase): () => void {
 	const editor = mode.defaultEditor;
@@ -203,7 +201,6 @@ function keepBashModeMain(mode: InteractiveModeBase): () => void {
 			}
 			return;
 		}
-		noteMainPromptEdit(mode, editor.getExpandedText?.() ?? text);
 		mainOnChange?.(text);
 	};
 	editor.onChange = onChange;

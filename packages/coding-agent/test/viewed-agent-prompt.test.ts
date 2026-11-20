@@ -771,4 +771,35 @@ describe("the main prompt while a subagent is shown", () => {
 		},
 		HOST_TIMEOUT_MS,
 	);
+
+	test(
+		"browsing main's history and coming back leaves the moved text marked",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			screen.mode.editor.addToHistory?.("older main prompt");
+			await view(WORKER);
+			await screen.type("/compact now");
+			port.setStatus({ gone: true });
+			await settle();
+			await screen.press("\x01", "\x1b[A");
+			assert.equal(screen.mode.editor.getText(), "older main prompt");
+			await screen.press("\x1b[B");
+			assert.equal(screen.mode.editor.getText(), "/compact now");
+			const seen: unknown[] = [];
+			const editor = screen.mode.defaultEditor;
+			const submit = editor.onSubmit;
+			editor.onSubmit = (text: string) => {
+				seen.push(takeMovedDraftMark(screen!.mode, text));
+				return undefined;
+			};
+			try {
+				await screen.press(ENTER);
+			} finally {
+				editor.onSubmit = submit;
+			}
+			assert.deepEqual(seen, [{ agentName: "worker", text: "/compact now" }]);
+		},
+		HOST_TIMEOUT_MS,
+	);
 });

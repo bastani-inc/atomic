@@ -44,8 +44,6 @@ class PromptDrafts {
 	private readonly mode: InteractiveModeBase;
 	/** The prompt in the editor now. */
 	private live = MAIN_KEY;
-	/** A prompt is being put in the editor: its text passes through states nobody typed. */
-	switching = false;
 	private readonly kept = new Map<string, KeptPrompt>();
 
 	constructor(mode: InteractiveModeBase) {
@@ -77,14 +75,9 @@ class PromptDrafts {
 		this.kept.delete(arriving);
 		this.live = arriving;
 		const editor = this.editor;
-		this.switching = true;
-		try {
-			if (editor.restoreDraft !== undefined) editor.restoreDraft(prompt?.draft ?? emptyEditorDraft());
-			else editor.setText(prompt?.expanded ?? "");
-			for (const text of prompt?.writes ?? []) editor.setText(text);
-		} finally {
-			this.switching = false;
-		}
+		if (editor.restoreDraft !== undefined) editor.restoreDraft(prompt?.draft ?? emptyEditorDraft());
+		else editor.setText(prompt?.expanded ?? "");
+		for (const text of prompt?.writes ?? []) editor.setText(text);
 	}
 
 	/** The prompt in the editor, as kept aside. */
@@ -256,28 +249,19 @@ export interface MovedDraftMark {
 
 const movedMarks = new WeakMap<InteractiveModeBase, MovedDraftMark>();
 
-/** Mark main's prompt `text` as moved from `agentName`'s, until it is edited or submitted. */
+/** Mark main's prompt `text` as moved from `agentName`'s, until the next submission. */
 export function markMovedDraft(mode: InteractiveModeBase, agentName: string, text: string): void {
 	movedMarks.set(mode, { agentName, text });
 }
 
 /**
  * The mark of main's prompt when `submitted` is exactly what the move left there; undefined otherwise. Every submission
- * takes the mark, so the next unrelated submission clears it.
+ * takes the mark, so the next unrelated submission clears it. An edit counts by what it leaves: text that differs from
+ * the moved text no longer matches, while browsing history and coming back to it, or typing it again exactly, still
+ * asks.
  */
 export function takeMovedDraftMark(mode: InteractiveModeBase, submitted: string): MovedDraftMark | undefined {
 	const mark = movedMarks.get(mode);
 	movedMarks.delete(mode);
 	return mark !== undefined && mark.text.trim() === submitted.trim() ? mark : undefined;
-}
-
-/**
- * Main's prompt now reads `text`: an edit that leaves it other than the move left it clears the mark. An empty prompt
- * keeps it: Enter empties the editor just before it submits, and an empty prompt cannot be submitted, so the mark
- * stays only for exactly the moved text typed again, which still asks.
- */
-export function noteMainPromptEdit(mode: InteractiveModeBase, text: string): void {
-	if (promptDrafts(mode).switching || text === "") return;
-	const mark = movedMarks.get(mode);
-	if (mark !== undefined && mark.text !== text) movedMarks.delete(mode);
 }
