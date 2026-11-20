@@ -51,6 +51,7 @@ import {
 } from "../../../core/tasks/task-view-source.js";
 import { noteSavedSeq } from "../../../core/tasks/transcript-origin.js";
 import { copyToClipboard } from "../../../utils/clipboard.js";
+import type { TranscriptFrameLayout } from "../../interactive-engine/transcript-frame-layout.ts";
 import { pauseAgent, resumeAgent, sendAgentMessage, takeAgentQueue } from "../agent-view/agent-steering.ts";
 import type { AgentViewState, AgentViewStatus } from "../agent-view/contracts.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
@@ -310,6 +311,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly elapsedClocks: TaskElapsedClocks;
 	/** How many rows the transcript took at the top of the last frame. */
 	private bodyRows = 0;
+	/** How the last `renderView` laid out its frame. */
+	private viewLayout: TranscriptFrameLayout | undefined;
 	readonly chat: ChatSessionHost;
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
@@ -808,11 +811,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	renderView(width: number, rows: number): string[] {
 		let remaining = Math.max(0, rows);
 		this.bodyRows = 0;
+		this.viewLayout = undefined;
 		if (remaining === 0) return [];
+		let cut = false;
 		const reserve = (lines: readonly string[], fromEnd = false): string[] => {
 			// The transcript keeps a row whatever the form and notes take.
 			const room = Math.max(0, remaining - 1);
 			const shown = fromEnd ? lines.slice(Math.max(0, lines.length - room)) : lines.slice(0, room);
+			if (shown.length < lines.length) cut = true;
 			remaining -= shown.length;
 			return shown;
 		};
@@ -828,7 +834,23 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const body = this.chat.renderBody(width, remaining);
 		this.bodyRows = body.length;
 		const gap = Array.from({ length: Math.max(0, remaining - body.length) }, () => "");
+		const painted = this.chat.bodyWindow();
+		// Notes or a form cut to fit leave rows the frame does not have: such a frame says nothing of its layout.
+		if (!cut && painted !== undefined && painted.rows === body.length && gap.length === 0)
+			this.viewLayout = {
+				width,
+				bodyRows: body.length,
+				firstRow: painted.firstRow,
+				totalRows: painted.totalRows,
+				headRows: painted.headRows,
+				footRows: painted.footRows,
+			};
 		return [...body, ...gap, ...notes, ...formLines];
+	}
+
+	/** How the last `renderView` laid out its frame, when the frame shows the scrolled transcript over notes and form. */
+	viewFrameLayout(): TranscriptFrameLayout | undefined {
+		return this.viewLayout;
 	}
 
 	/** Whether the question form of a held prompt is open in the view and takes the keys. */
