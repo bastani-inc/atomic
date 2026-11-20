@@ -2878,13 +2878,14 @@ export class SqlSessionStore implements SessionStore {
 					UNION ALL
 					SELECT seq, bytes, chunks, CASE WHEN bytes <= ? AND chunks = 0 THEN entry_json END, NULL, NULL, NULL, NULL FROM (
 						SELECT e.seq, e.chunks, e.entry_json, ${bytes("e")} AS bytes FROM ${this.tables.entries} e
-						WHERE e.session_id = ? AND e.seq BETWEEN ? AND ? AND e.seq <= (
-							SELECT COALESCE(max(seq), ?) FROM (
+						-- The cut bounds the range itself, so the read stops there, however far the range goes.
+						WHERE e.session_id = ? AND e.seq BETWEEN ? AND (
+							SELECT COALESCE(max(CASE WHEN total <= ? THEN seq END), min(seq)) FROM (
 								SELECT seq, sum(bytes) OVER (ORDER BY seq) AS total FROM (
 									SELECT s.seq, ${bytes("s")} AS bytes FROM ${this.tables.entries} s
 									WHERE s.session_id = ? AND s.seq BETWEEN ? AND ? ORDER BY s.seq LIMIT ?
 								) AS sized
-							) AS run WHERE total <= ?
+							) AS run
 						)
 					) AS page
 					ORDER BY seq`,
@@ -2894,14 +2895,12 @@ export class SqlSessionStore implements SessionStore {
 						SESSION_ENTRY_CHUNK_BYTES,
 						sessionId,
 						startSeq,
-						endSeq,
-						startSeq,
+						SESSION_HISTORY_PAGE_BYTES,
 						SESSION_ENTRY_CHUNK_BYTES,
 						sessionId,
 						startSeq,
 						endSeq,
 						count,
-						SESSION_HISTORY_PAGE_BYTES,
 					)
 				: // The entries the page may hold are sized once: the cut, the coverage and the reference after the run use them.
 					await this.database.all<Row>(
@@ -2931,7 +2930,10 @@ export class SqlSessionStore implements SessionStore {
 						}
 					FROM (
 						SELECT e.seq, e.chunks, e.entry_json, ${bytes("e")} AS bytes FROM ${this.tables.entries} e
-						WHERE e.session_id = ? AND (e.seq BETWEEN ? AND (SELECT seq FROM cut)${filter("e")} OR e.seq = (SELECT seq FROM tail))
+						WHERE e.session_id = ? AND e.seq BETWEEN ? AND (SELECT seq FROM cut)${filter("e")}
+						UNION ALL
+						SELECT e.seq, e.chunks, e.entry_json, ${bytes("e")} AS bytes FROM ${this.tables.entries} e
+						WHERE e.session_id = ? AND e.seq = (SELECT seq FROM tail)
 					) AS page
 					ORDER BY seq`,
 						SESSION_ENTRY_CHUNK_BYTES,
@@ -2953,6 +2955,8 @@ export class SqlSessionStore implements SessionStore {
 						sessionId,
 						startSeq,
 						...selectParams,
+						SESSION_ENTRY_CHUNK_BYTES,
+						sessionId,
 					);
 		const first = rows[0];
 		if (first === undefined || Number(first.seq) !== 0) throw new SessionNotFoundError(sessionId);
