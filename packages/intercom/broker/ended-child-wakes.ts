@@ -34,6 +34,13 @@ export const ENDED_CHILD_WAKE_START_MAX_MS = 60 * 60_000;
  * with no time limit, until that session continues it.
  */
 export const ENDED_CHILD_OWNER_RETURN_MS = RESTORING_RECIPIENT_HOLD_MS;
+/**
+ * How long messages queued for subagents wait for the session that launched them to come back once it is away (it
+ * disconnected without ending for good, or the broker restarted), counted while it is away without a break: 7 days, the
+ * retention of asks kept for an away session (`AWAY_ASK_RETENTION_MS`) and of messages queued for a session on another
+ * machine (`KNOWN_SESSION_RETENTION_MS`). Back, its count starts again; while it is connected they wait with no limit.
+ */
+export const ENDED_CHILD_OWNER_AWAY_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 /** The most bytes of messages queued for one subagent that ended; a message beyond it is refused. */
 export const ENDED_CHILD_QUEUE_BYTES_MAX = 32 * 1024 * 1024;
 /** The most bytes of messages queued for subagents that ended, across the broker. */
@@ -78,6 +85,21 @@ export interface EndedChildWakeFailure {
 const queuedForWake = new WeakSet<HeldSend>();
 const heldWhilePaused = new WeakSet<HeldSend>();
 
+const maybeDelivered = new WeakSet<HeldSend>();
+
+/**
+ * Durable wake queue: a queued message an earlier broker had already handed to its subagent, which did not confirm it
+ * before that broker was gone: the subagent may have it. It is handed over again when the subagent registers (a copy it
+ * saved is ignored), never wakes it on its own, and a failure of it says it may already have reached the subagent.
+ */
+export function markMaybeDelivered(held: HeldSend): void {
+	maybeDelivered.add(held);
+}
+
+export function isMaybeDelivered(held: HeldSend): boolean {
+	return maybeDelivered.has(held);
+}
+
 /** Whether this held send was answered `queued` and waits for its child to be resumed, rather than holding its sender. */
 export function isQueuedForWake(held: HeldSend): boolean {
 	return queuedForWake.has(held);
@@ -91,6 +113,7 @@ export function isHeldWhilePaused(held: HeldSend): boolean {
 export function markQueuedForWake(held: HeldSend, messages: EndedChildMessages): void {
 	queuedForWake.add(held);
 	if (messages === "hold") heldWhilePaused.add(held);
+	else heldWhilePaused.delete(held);
 }
 
 /** Whether a send asks to wake an ended recipient: the sender opted in, and it is not one copy of a pattern send. */
@@ -105,6 +128,23 @@ export type WakeBudgetVerdict =
 	| { readonly ok: false; readonly why: string };
 
 /**
+ * Durable wake queue: where the wake bounds write what they count, so a restart does not reset them. Times are wall
+ * clock (`Date.now()`); the bounds count in `performance.now()`, which is per process.
+ */
+export interface EndedChildWakeBudgetJournal {
+	wake(childKey: string, at: number, depth: number): void;
+	awake(childKey: string, depth: number, at: number): void;
+}
+
+/** A wake the bounds counted, or a child back from one, as the journal recorded it. */
+export interface EndedChildWakeBudgetEvent {
+	readonly childKey: string;
+	readonly kind: "wake" | "awake";
+	readonly at: number;
+	readonly depth: number;
+}
+
+/**
  * #5999: the bounds on message wakes, so agents cannot wake each other without end. Each child is woken at most
  * {@link ENDED_CHILD_WAKES_PER_WINDOW} times per {@link ENDED_CHILD_WAKE_WINDOW_MS}, and a chain of wakes, each started
  * by a message from a session the previous wake resumed, is at most {@link ENDED_CHILD_WAKE_CHAIN_MAX} long. A wake
@@ -114,13 +154,43 @@ export type WakeBudgetVerdict =
 export class EndedChildWakeBudget {
 	private readonly wakes = new Map<string, number[]>();
 	private readonly awake = new Map<string, { readonly depth: number; readonly at: number }>();
+	/** Durable wake queue: where wakes and chain depths are written, so they outlive the broker. */
+	journal: EndedChildWakeBudgetJournal | undefined;
 
 	constructor(
 		private readonly now: () => number = () => performance.now(),
 		private readonly windowMs = ENDED_CHILD_WAKE_WINDOW_MS,
 		private readonly perWindow = ENDED_CHILD_WAKES_PER_WINDOW,
 		private readonly chainMax = ENDED_CHILD_WAKE_CHAIN_MAX,
+		private readonly wallNow: () => number = Date.now,
 	) {}
+
+	/**
+	 * Durable wake queue: count again what an earlier broker counted. A wall-clock time is placed as far back on this
+	 * process's clock as it is in the past, and never in the future: after the wall clock stepped back, a wake counts as
+	 * just now and is forgotten one window later, so the bounds are never stricter for longer than a window.
+	 */
+	restore(events: readonly EndedChildWakeBudgetEvent[]): void {
+		const now = this.now();
+		const wallNow = this.wallNow();
+		for (const event of events) {
+			const at = now - Math.max(0, wallNow - event.at);
+			if (now - at >= this.windowMs) continue;
+			if (event.kind === "wake") {
+				const recent = this.wakes.get(event.childKey) ?? [];
+				recent.push(at);
+				recent.sort((left, right) => left - right);
+				this.wakes.set(event.childKey, recent);
+				this.trim(this.wakes);
+			} else {
+				const known = this.awake.get(event.childKey);
+				if (known !== undefined && known.at > at) continue;
+				this.awake.delete(event.childKey);
+				this.awake.set(event.childKey, { depth: event.depth, at });
+				this.trim(this.awake);
+			}
+		}
+	}
 
 	/** Whether `childKey` may be woken by a message from the session `senderKey` names (a subagent), and how deep. */
 	check(childKey: string, senderKey: string | undefined): WakeBudgetVerdict {
@@ -140,14 +210,15 @@ export class EndedChildWakeBudget {
 		return { ok: true, depth };
 	}
 
-	/** Count a wake of `childKey`. */
-	commit(childKey: string): void {
+	/** Count a wake of `childKey`, `depth` down its chain. */
+	commit(childKey: string, depth = 1): void {
 		const now = this.now();
 		const recent = this.recentWakes(childKey, now);
 		recent.push(now);
 		this.wakes.delete(childKey);
 		this.wakes.set(childKey, recent);
 		this.trim(this.wakes);
+		this.journal?.wake(childKey, this.wallNow(), depth);
 	}
 
 	/** The child registered again from a wake `depth` down its chain: messages it sends wake one further down. */
@@ -155,11 +226,13 @@ export class EndedChildWakeBudget {
 		this.awake.delete(childKey);
 		this.awake.set(childKey, { depth, at: this.now() });
 		this.trim(this.awake);
+		this.journal?.awake(childKey, depth, this.wallNow());
 	}
 
 	/** The child registered again without a wake (its owner resumed it): it starts no chain. */
 	resumedByOwner(childKey: string): void {
-		this.awake.delete(childKey);
+		if (!this.awake.delete(childKey)) return;
+		this.journal?.awake(childKey, 0, this.wallNow());
 	}
 
 	sizes(): { readonly wakes: number; readonly awake: number } {

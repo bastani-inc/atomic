@@ -242,9 +242,18 @@ const sendersAtReceipt = new WeakMap<SendClientMessage, BrokerConnectedSession>(
  */
 const detachedSends = new WeakSet<SendClientMessage>();
 
-/** #5999: deliver `clientMessage` as its sender was when it was first received, whether or not it is still connected. */
-export function detachSend(clientMessage: SendClientMessage): void {
+/**
+ * #5999: deliver `clientMessage` as its sender was when it was first received, whether or not it is still connected.
+ * Durable wake queue: `sender`, for a send a restarted broker took up again, is its sender as an earlier broker took it.
+ */
+export function detachSend(clientMessage: SendClientMessage, sender?: BrokerConnectedSession): void {
   detachedSends.add(clientMessage);
+  if (sender !== undefined) sendersAtReceipt.set(clientMessage, sender);
+}
+
+/** Durable wake queue: the sender of `clientMessage` as the broker took it, once it has. */
+export function senderAtReceipt(clientMessage: SendClientMessage): BrokerConnectedSession | undefined {
+  return sendersAtReceipt.get(clientMessage);
 }
 
 export type RemoteSendRouter = (request: RemoteSendRequest) => void;
