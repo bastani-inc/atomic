@@ -214,6 +214,7 @@ export function createProductionFullscreenContext(
 		extensionWidgetsAbove: new Map(),
 		extensionWidgetsBelow: new Map(),
 		extensionDialogs: [],
+		tuiInputSubscriptions: new Set(),
 		pendingUserInputs: [],
 		startupReplayInputs: [],
 		registerSignalHandlers: () => {},
