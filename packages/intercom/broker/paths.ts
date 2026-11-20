@@ -70,6 +70,11 @@ export function getBrokerAwayAsksPath(agentDir: string = getAgentDir()): string 
   return join(getIntercomDirPath(agentDir), "away-asks.sqlite");
 }
 
+/** #5999: messages queued for subagents that ended, kept across broker restarts; owner-only. */
+export function getBrokerEndedChildQueuePath(agentDir: string = getAgentDir()): string {
+  return join(getIntercomDirPath(agentDir), "ended-child-queue.sqlite");
+}
+
 /** Owner-only HMAC key paired with durable accepted-operation authority. */
 export function getBrokerDeliveredMessagesKeyPath(agentDir: string = getAgentDir()): string {
   return join(getIntercomDirPath(agentDir), "delivered-messages.key");

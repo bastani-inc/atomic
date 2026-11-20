@@ -1198,7 +1198,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     nextClient.on("ended_queue_lost", (lost: readonly LostEndedQueuedMessage[]) => {
       if (client !== nextClient || !getLiveContext()) return;
       for (const kept of lost) {
-        const reason = `Intercom restarted before ${kept.logicalTarget} ${kept.queue === "resuming" ? "was resumed for this message" : "was continued"}, and the message queued for it was lost. The message was not delivered; send it again if it is still needed.`;
+        // Durable wake queue: only a broker that kept the queue in memory, or an older one, loses it; the message may have
+        // reached its subagent just before, which this session cannot know.
+        const reason = `Intercom restarted before ${kept.logicalTarget} ${kept.queue === "resuming" ? "was resumed for this message" : "was continued"}, and the message queued for it was lost, unless it had just reached it. Send it again if it is still needed.`;
         const now = Date.now();
         receiveIncomingMessage(
           nextClient,
