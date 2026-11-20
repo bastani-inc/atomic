@@ -209,7 +209,7 @@ test.each(["as its run settles", "just after its run settled"] as const)(
 			assert.equal(result.finalOutput, "answered the late message");
 		} else {
 			assert.equal(answered, false, "a refused message never reaches the model");
-			assert.equal(delivery.reason, "refused", "the chat gives a refused message back to its editor");
+			assert.equal(delivery.reason, "ended", "the subagent had ended: its task view resumes it with the message");
 		}
 	},
 	LIVE_CHILD_TIMEOUT_MS,

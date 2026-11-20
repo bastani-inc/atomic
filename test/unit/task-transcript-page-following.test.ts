@@ -172,7 +172,7 @@ test("a page built without a reporter tells the host about a message that failed
 	answer.reject(new TaskMessageError("delivery-refused", { taskId: TASK, target: "worker-1" }));
 	await flush();
 	assert.equal(notices.length, 1);
-	assert.match(notices[0] ?? "", /Intercom did not deliver the message: worker-1 \(delivery-refused\)/);
+	assert.match(notices[0] ?? "", /The agent did not take the message: worker-1 \(delivery-refused\)/);
 });
 
 test("two messages that failed after their pages closed both come back, in order, on reopening (#4521)", async () => {

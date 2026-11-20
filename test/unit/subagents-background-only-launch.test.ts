@@ -13,6 +13,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { ModelSingleResponse, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { bindOwnerTaskStore, OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import type { TaskMessageLane } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
 import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
@@ -100,9 +101,18 @@ function parentWithBlockedChildren(options: { sessionManager?: SessionManager; t
 		},
 	};
 	const started: string[] = [];
+	const queued: Array<{ task: string; text: string; lane: TaskMessageLane }> = [];
 	const runSync: SubagentExecutorRuntimeDeps["runSync"] = async (_cwd, _agents, _agent, task, options) => {
 		started.push(task);
-		options.taskExecution?.bindTranscript?.({ getSessionId: () => `child-${task}`, getEntries: () => [] });
+		options.taskExecution?.bindTranscript?.({
+			getSessionId: () => `child-${task}`,
+			getEntries: () => [],
+			// The child's own session, which takes a message typed into its chat.
+			queueMessage: async (text, lane) => {
+				queued.push({ task, text, lane });
+				return { delivered: true };
+			},
+		});
 		await release.promise;
 		return { agent: "echo", task, status: "ok", messages: [], usage, finalOutput: `output:${task}` } as SingleResult;
 	};
@@ -153,6 +163,7 @@ function parentWithBlockedChildren(options: { sessionManager?: SessionManager; t
 		store,
 		started,
 		delivered,
+		queued,
 		release: () => release.resolve(),
 		/**
 		 * A model's call, as a session runs it: the assistant message that issued it is saved first, then its arguments
@@ -384,9 +395,8 @@ test("a just-launched subagent is listed below the prompt and in /tasks, and tak
 	assert.equal(mainComposerHintSegments(keybindings, parent.session)[0], "↓ 1 agent");
 	assert.ok(source.sendTaskMessage, "its chat takes messages");
 	await source.sendTaskMessage(taskId, "also check the tests");
-	assert.equal(parent.delivered.length, 1);
-	assert.equal(parent.delivered[0]?.message, "also check the tests");
-	assert.match(parent.delivered[0]?.to ?? "", /^subagent-echo-/, "the message goes to the child's own Intercom name");
+	assert.deepEqual(parent.queued, [{ task: "listed", text: "also check the tests", lane: "steer" }]);
+	assert.deepEqual(parent.delivered, [], "the message goes to the child's own session, not through Intercom");
 });
 
 test.each(["while it waits", "before it waits"] as const)(
