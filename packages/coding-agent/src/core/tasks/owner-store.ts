@@ -63,6 +63,8 @@ export class OwnerTaskStore {
 	private backgroundIds = new Set<TaskId>();
 	private settlements = new Map<TaskId, bigint>();
 	private turnInterruptedIds = new Set<TaskId>();
+	/** The tasks a subagent launched (its shells) that have not settled, kept as records change. */
+	private runningChildIds = new Set<TaskId>();
 	/** How many times each subagent's interrupted turn was resumed: the run it rests from after it stops again. */
 	private resumedTurns = new Map<TaskId, number>();
 	private readonly elapsedClocks = createManagedTaskClocks(this);
@@ -107,6 +109,10 @@ export class OwnerTaskStore {
 	}
 	isRunnerFinishing(id: TaskId): boolean {
 		return this.supervisor.isRunnerFinishing(this.owner, id);
+	}
+	/** Whether a task a subagent launched, such as its shell, still runs: the agent panel lists those under it. */
+	get hasRunningChildTasks(): boolean {
+		return this.runningChildIds.size > 0;
 	}
 	get ownerBackgroundTasks(): TaskRecord[] {
 		return this.ownerTasks.filter((task) => this.inBackground(task));
@@ -248,6 +254,9 @@ export class OwnerTaskStore {
 				}
 			}
 			this.records.set(task.ref.taskId, record);
+			if (record.parentTaskId !== undefined && record.execution.kind !== "settled")
+				this.runningChildIds.add(record.ref.taskId);
+			else this.runningChildIds.delete(record.ref.taskId);
 			if (
 				record.kind === "agent" &&
 				record.execution.kind === "running" &&
@@ -294,6 +303,7 @@ export class OwnerTaskStore {
 			this.turnInterruptedIds.delete(id);
 			this.resumedTurns.delete(id);
 			this.records.delete(id);
+			this.runningChildIds.delete(id);
 			this.panelRevisionValue++;
 			this.elapsedClocks.delete(id);
 			this.settlements.delete(id);

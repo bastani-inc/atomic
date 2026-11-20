@@ -53,6 +53,8 @@ interface CustomUiOptions {
 
 interface ActiveComponent {
 	component: Component & { dispose?(): void };
+	/** A viewed subagent's transcript, which the host draws in its transcript area rather than as custom UI. */
+	transcript?: true;
 	resolve: (value: JsonValue | undefined) => void;
 	overlay: boolean;
 	purpose?: "prompt" | "navigation";
@@ -376,8 +378,39 @@ export class EngineCustomUiService {
 			this.disposeComponent(componentId, false);
 		}
 	}
+	/**
+	 * Open `component` as view `viewId`'s transcript, which the host draws where its main transcript is: frames, keys,
+	 * clicks and copies travel as for any custom component, but it blocks nothing and resolves nothing. Answers its
+	 * component id, its engine TUI and its close, which tells the host.
+	 */
+	mountTranscript(
+		viewId: string,
+		factory: (tui: TUI) => Component & { dispose?(): void },
+	): { readonly componentId: string; readonly tui: TUI; close(): void } {
+		const componentId = `remote_component_${++this.nextId}`;
+		const terminal = new RemoteTerminal(
+			() => this.send({ type: "engine_custom_invalidate", componentId }),
+			(control) => this.send({ type: "engine_custom_terminal", componentId, control }),
+			(requestId, text) => this.send({ type: "engine_custom_copy", componentId, requestId, text }),
+		);
+		const tui = new RemoteComponentTui(terminal, () => this.paintComponent(componentId));
+		this.followHostMode(tui, componentId);
+		ensurePngTranscoder(() => {
+			tui.invalidate();
+			tui.requestRender();
+		});
+		const component = factory(tui);
+		tui.addChild(component);
+		tui.setFocus(component);
+		this.active.set(componentId, { component, resolve: () => {}, terminal, tui, overlay: false, transcript: true });
+		this.send({ type: "engine_custom_open", componentId, overlay: false, placement: "transcript", viewId });
+		return { componentId, tui, close: () => this.disposeComponent(componentId, false) };
+	}
+
 	getHostCustomUiState(): HostCustomUiState {
-		const inline = [...this.active.values()].filter((record) => !record.overlay && !record.widgetKey);
+		const inline = [...this.active.values()].filter(
+			(record) => !record.overlay && !record.widgetKey && record.transcript !== true,
+		);
 		const navigation = inline.filter((record) => record.purpose === "navigation").length;
 		return {
 			blockingInlineCustomUiDepth: inline.length,
@@ -609,7 +642,7 @@ export class EngineCustomUiService {
 			if (this.widgetIds.get(record.widgetKey) === componentId) this.widgetIds.delete(record.widgetKey);
 			this.send({ type: "engine_custom_close", componentId });
 			if (notifyWidgetRelease) this.notifyWidgetRelease(record.widgetKey);
-		}
+		} else if (record.transcript) this.send({ type: "engine_custom_close", componentId });
 		this.notifyState();
 	}
 

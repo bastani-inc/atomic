@@ -6,6 +6,8 @@ import {
 	type KeybindingsManager as TuiKeybindingsManager,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
+	truncateToWidth,
+	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import { chatReceiptWrite } from "../../../core/chat-receipts.js";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
@@ -27,7 +29,6 @@ import {
 	taskClocksFor,
 	taskElapsedMs,
 } from "../../../core/tasks/live-elapsed.js";
-import { isTaskMessageError, TaskMessageError } from "../../../core/tasks/message-error.js";
 import { getOwnerTaskSession, isTaskTurnInterrupted, setTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import type {
 	ChatBoxSession,
@@ -50,6 +51,8 @@ import {
 } from "../../../core/tasks/task-view-source.js";
 import { noteSavedSeq } from "../../../core/tasks/transcript-origin.js";
 import { copyToClipboard } from "../../../utils/clipboard.js";
+import { pauseAgent, resumeAgent, sendAgentMessage, takeAgentQueue } from "../agent-view/agent-steering.ts";
+import type { AgentViewState, AgentViewStatus } from "../agent-view/contracts.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
 import {
 	classifyChatCommand,
@@ -57,7 +60,6 @@ import {
 	getSkillCatalogCommands,
 } from "../skill-command-autocomplete.ts";
 import { subagentChatCommand, subagentChatUnavailableNotice } from "../subagent-chat-commands.ts";
-import { reportSubagentChatQueue } from "../subagent-chat-queue-report.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import type { ChatSessionHost, SavedPageHandle } from "./chat-session-host.ts";
@@ -69,6 +71,7 @@ import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
 import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import type { ParkedTaskRows } from "./parked-rows.ts";
+import { dismissedTasks } from "./task-dismissal.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
 import { pagedNotices, TaskTranscriptNotices } from "./task-transcript-notices.ts";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
@@ -126,7 +129,6 @@ function observeChatWrite(write: Promise<void>, view: WeakRef<ObservedChatWrites
 }
 
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
-let chatCount = 0;
 /** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
 const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
 /** What Up recalled in a task's chat when the reader left it, oldest first, for when they come back. */
@@ -167,8 +169,6 @@ export interface TaskTranscriptPage {
 	 * front of what is typed, as Alt+Up does. Answers how many came back.
 	 */
 	restoreQueuedToEditor?(taken: QueuedTaskMessages): number;
-	/** Ctrl+C: clear the typed prompt, as the main chat does. Answers whether there was one to clear. */
-	clearDraft?(): boolean;
 	render(width: number, rows: number): string[];
 	/** A single click at row `event.y` of the last frame `render` drew; a result when the page takes it. */
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
@@ -254,6 +254,27 @@ function friendlyOriginIntercomMessage(
 export const STOPPED_NOTE = "Stopped · send to resume";
 /** A subagent paused from its chat (Esc): it is still running, and a message continues it. */
 export const PAUSED_NOTE = "Paused · send to continue";
+
+/** A note under the transcript on the single chat screen: at most two rows, cut to the width. */
+function wrapViewNote(note: string, width: number): string[] {
+	const room = Math.max(1, width);
+	const rows = wrapTextWithAnsi(note, room);
+	const shown = rows.slice(0, 2).map((row) => truncateToWidth(row, room));
+	if (rows.length > 2) shown[1] = truncateToWidth(`${rows[1]}…`, room);
+	return shown;
+}
+
+const PAGE_UP = "\x1b[5~";
+const PAGE_DOWN = "\x1b[6~";
+/** The screen's scroll keys the transcript's own viewport answers, besides the page keys, lines and the wheel. */
+const VIEW_KEY_ACTIONS = [
+	"tui.altScreen.halfPageUp",
+	"tui.altScreen.halfPageDown",
+	"tui.altScreen.previousPrompt",
+	"tui.altScreen.nextPrompt",
+	"tui.altScreen.top",
+	"tui.altScreen.bottom",
+] as const;
 
 /** Printable text, Enter, Backspace or Delete: keys that type into or send the prompt. */
 function isTyping(data: string): boolean {
@@ -364,12 +385,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly unsubscribePrompts: () => void;
 
 	private readonly reportLate: (reason: string) => void;
-	private readonly echoedPrompt: string | undefined;
 	private readonly showKeys: (() => void) | undefined;
-	/** This chat among the chats open in this process, as its queue reports name it. */
-	private readonly chatId = `subagent-chat-${++chatCount}`;
-	/** The queue this chat last reported, so an unchanged one is not reported again. */
-	private reportedQueue = "";
 
 	/**
 	 * `reportLate` shows the reason a message failed after the reader left this transcript; `showKeys` opens the chat's
@@ -381,7 +397,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		env: TaskTranscriptEnvironment,
 		requestRender: () => void,
 		reportLate: (reason: string) => void = (reason) => env.notify?.(reason),
-		options: { readonly echoedPrompt?: string; readonly showKeys?: () => void } = {},
+		options: { readonly showKeys?: () => void } = {},
 	) {
 		this.source = source;
 		this.elapsedClocks = taskClocksFor(source);
@@ -389,7 +405,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.env = env;
 		this.requestRender = requestRender;
 		this.reportLate = reportLate;
-		this.echoedPrompt = options.echoedPrompt;
 		this.showKeys = options.showKeys;
 		this.chat = env.createChat({
 			style: env.style,
@@ -448,7 +463,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				const session = this.followed ?? this.source.followTaskTranscript(this.taskId)?.session;
 				return session === undefined ? undefined : liveTaskRowOrigin(session, this.taskId, seq);
 			},
-			echoedInitialPrompt: () => (this.cursor === undefined ? this.echoedPrompt : undefined),
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
 			// The inspector takes Esc for this chat: it cancels the retry the subagent waits on, unless a question holds it.
 			canCancelRetry: () => !this.takesEscape() && this.interruptible(),
@@ -620,11 +634,56 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	handleInput(data: string): boolean {
 		const handled = this.route(data);
+		this.catchUp();
+		return handled;
+	}
+
+	/** A history-only transcript that changed while the reader was above its end is read again once they are back. */
+	private catchUp(): void {
 		if (this.behind && this.newerCursor === undefined && this.chat.bodyScrollFromBottom() === 0) {
 			this.behind = false;
 			void this.load();
 		}
-		return handled;
+	}
+
+	/**
+	 * A scroll or paging key for the transcript where it is shown on the single chat screen: the page keys, the wheel,
+	 * a line, half a page, the previous or next prompt, the top and the bottom, and the jump to the latest row. Earlier
+	 * and later pages are read the way the reader scrolls, as in the chat page. Answers whether it was such a key.
+	 */
+	handleViewKey(data: string): boolean {
+		if (this.disposed || this.chat.hasTaskInspector) return false;
+		const keybindings = keybindingsOf(this.env.keybindings);
+		const line = keybindings.matches(data, "tui.altScreen.lineUp")
+			? -1
+			: keybindings.matches(data, "tui.altScreen.lineDown")
+				? 1
+				: 0;
+		// The screen's page keys may be remapped; the transcript's viewport pages on the keys themselves.
+		if (keybindings.matches(data, "tui.altScreen.pageUp")) data = PAGE_UP;
+		else if (keybindings.matches(data, "tui.altScreen.pageDown")) data = PAGE_DOWN;
+		if (
+			data !== TRANSCRIPT_JUMP_TO_END_URL &&
+			line === 0 &&
+			!parseWheelReport(data) &&
+			!matchesKey(data, "pageUp") &&
+			!matchesKey(data, "pageDown") &&
+			!VIEW_KEY_ACTIONS.some((action) => keybindings.matches(data, action))
+		)
+			return false;
+		if (line !== 0) {
+			this.failedCursor = undefined;
+			if (line < 0) {
+				this.goToFirst = false;
+				this.olderIntent = true;
+				this.travel = "older";
+			} else this.travel = "newer";
+			const top = Math.max(0, this.chat.bodyMaxScroll() - this.chat.bodyScrollFromBottom());
+			this.chat.scrollBodyTo(Math.max(0, top + line));
+			this.requestRender();
+		} else this.route(data);
+		this.catchUp();
+		return true;
 	}
 
 	private route(data: string): boolean {
@@ -741,11 +800,82 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.chat.toolOutputToggled();
 	}
 
+	/**
+	 * The transcript alone, `rows` rows tall, as the single chat screen draws it where the main transcript is: the body,
+	 * then the page's notes (loading, read failures, what a released subagent waits on, why it is read-only) in dim
+	 * rows, then the question form a held prompt opens, which keeps its rows first.
+	 */
+	renderView(width: number, rows: number): string[] {
+		let remaining = Math.max(0, rows);
+		this.bodyRows = 0;
+		if (remaining === 0) return [];
+		const reserve = (lines: readonly string[], fromEnd = false): string[] => {
+			// The transcript keeps a row whatever the form and notes take.
+			const room = Math.max(0, remaining - 1);
+			const shown = fromEnd ? lines.slice(Math.max(0, lines.length - room)) : lines.slice(0, room);
+			remaining -= shown.length;
+			return shown;
+		};
+		const form = this.chat.hasTaskInspector ? undefined : this.heldForm();
+		const formLines = form === undefined ? [] : reserve(form.render(width));
+		const note = this.status;
+		const notes = note
+			? reserve(
+					wrapViewNote(note, width).map((line) => this.env.style.dim(line)),
+					true,
+				)
+			: [];
+		const body = this.chat.renderBody(width, remaining);
+		this.bodyRows = body.length;
+		const gap = Array.from({ length: Math.max(0, remaining - body.length) }, () => "");
+		return [...body, ...gap, ...notes, ...formLines];
+	}
+
+	/** Whether the question form of a held prompt is open in the view and takes the keys. */
+	capturesInput(): boolean {
+		return !this.chat.hasTaskInspector && this.heldPrompt() !== undefined;
+	}
+
+	/** The subagent is no longer listed (dismissed or removed): the screen showing it shows main again. */
+	get gone(): boolean {
+		if (this.disposed) return true;
+		const task = this.liveTask();
+		return task === undefined || dismissedTasks(this.source).has(task.ref.taskId);
+	}
+
+	/** The subagent as the single chat screen's prompt, rule, working line and panel show it. */
+	viewStatus(agentKey: string): AgentViewStatus {
+		const { name, label, placeholder, state } = this.composerText("view");
+		const session = this.followed;
+		const retrying = session?.chatSession?.isRetrying === true;
+		const busy = session?.isRunning?.() === true || retrying;
+		const queued = this.chat.queuedMessages();
+		const readOnlyReason =
+			this.readOnlyReason() ??
+			(this.source.sendTaskMessage === undefined ? "Messages cannot reach this subagent from here." : undefined);
+		const working = this.chat.workingLine(this.source.followTaskTranscript(this.liveTaskId())?.publishedActivity);
+		return {
+			taskId: this.liveTaskId(),
+			agentKey,
+			name,
+			ruleLabel: label,
+			placeholder,
+			state,
+			busy,
+			paused: this.paused(),
+			retrying,
+			queued: { steering: [...queued.steering], followUp: [...queued.followUp] },
+			...(readOnlyReason === undefined ? {} : { readOnlyReason }),
+			heldPrompt: this.heldPrompt() !== undefined,
+			...(working === undefined ? {} : { working }),
+			gone: this.gone,
+		};
+	}
+
 	/** The chat box of a subagent's chat: the transcript, then pending, working, usage, the named editor and the footer. */
 	render(width: number, rows: number): string[] {
 		const viewport = Math.max(1, rows);
 		this.bodyRows = 0;
-		this.reportQueue();
 		if (this.chat.hasTaskInspector) {
 			const footer = this.chat.taskInspectorFullscreen ? [] : this.chat.renderFooter(width);
 			const shownFooter = footer.slice(0, viewport - 1);
@@ -777,20 +907,30 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return [...body, ...pending, ...working, ...usage, ...editor, ...footer];
 	}
 
-	private decorateComposer(lines: readonly string[]): string[] {
+	/**
+	 * The composer's top-rule label (`name · title · state`), its empty-prompt placeholder and the state they show:
+	 * needs input, done, failed, paused, stopped, waiting on what it released, or its elapsed time while it runs.
+	 */
+	private composerText(at: "page" | "view" = "page"): {
+		readonly name: string;
+		readonly label: string;
+		readonly placeholder: string;
+		readonly state: AgentViewState;
+	} {
 		const task = this.liveTask();
 		const name = taskDisplayText(task?.agentName ?? this.sessionName() ?? "subagent");
 		const waiting = task?.attention.kind === "input-needed";
 		const paused = this.paused();
+		const outcome = task?.execution.kind === "settled" ? taskState(task) : undefined;
 		const state =
 			task === undefined
 				? undefined
 				: waiting
 					? "needs input"
-					: task.execution.kind === "settled"
-						? taskState(task) === "completed"
+					: outcome !== undefined
+						? outcome === "completed"
 							? "done"
-							: taskState(task)
+							: outcome
 						: paused
 							? "paused"
 							: task.metrics?.elapsedMs === undefined
@@ -808,14 +948,38 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		]
 			.filter(Boolean)
 			.join(" · ");
-
+		const addressed = at === "view" ? `@${name}` : name;
 		const placeholder = paused
 			? PAUSED_NOTE
 			: stopped
 				? STOPPED_NOTE
 				: released !== undefined
-					? `Message ${name} to wake it…`
-					: `${waiting ? "Answer" : "Message"} ${name}…`;
+					? `Message ${addressed} to wake it…`
+					: `${waiting ? "Answer" : "Message"} ${addressed}…`;
+		const viewState: AgentViewState = waiting
+			? "input"
+			: stopped
+				? "stopped"
+				: released !== undefined
+					? "waiting"
+					: paused
+						? "paused"
+						: outcome === undefined
+							? task?.execution.kind === "cancelling"
+								? "stopping"
+								: task?.execution.kind === "queued"
+									? "queued"
+									: "running"
+							: outcome === "completed"
+								? "done"
+								: outcome === "killed" || outcome === "cancelled" || outcome === "paused"
+									? "stopped"
+									: "failed";
+		return { name, label, placeholder, state: viewState };
+	}
+
+	private decorateComposer(lines: readonly string[]): string[] {
+		const { label, placeholder } = this.composerText();
 		return applyAttachedComposer(
 			{ accent: this.env.style.accent, text: this.env.style.text, dim: this.env.style.dim },
 			label,
@@ -851,7 +1015,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptPromptHistories.set(this.source, kept);
 		}
 		this.disposed = true;
-		this.reportQueue();
 		this.cancelAdjacent();
 		this.latestRead?.abort();
 		this.boundaryReads.abort();
@@ -925,9 +1088,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	async interrupt(): Promise<TaskViewResult<undefined>> {
-		const pause = this.source.pauseTask;
-		if (pause !== undefined) {
-			const paused = await pause.call(this.source, this.liveTaskId());
+		if (this.source.pauseTask !== undefined) {
+			const paused = await pauseAgent(this.source, this.liveTaskId());
 			if (!paused.ok) return paused;
 			// A pause a restart would not keep is shown with why: in the chat, or in the main chat once the reader left.
 			const warning = paused.value.warning;
@@ -1072,7 +1234,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				this.observedWrites.observe(write);
 			}
 			this.chat.applyTaskAgentEvent(event);
-			if (event.type === "queue_update") this.reportQueue();
 			if (event.type === "compaction_end" && event.result && !event.aborted && session.getEarlierCursor?.()) {
 				// Only a source that can replay the previous context authorizes releasing those rows. Never clear
 				// private SDK rows merely because they arrived before a new boundary.
@@ -1297,11 +1458,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return {
 			prompt: (text, options) => this.send(text, options?.streamingBehavior ?? "steer"),
 			resume: async (text, lane) => {
-				const resume = this.source.resumeTask;
-				if (resume !== undefined) {
-					const resumed = await resume.call(this.source, this.liveTaskId());
-					if (!resumed.ok) throw new Error(resumed.error.message);
-				}
+				await resumeAgent(this.source, this.liveTaskId());
 				await this.send(text, lane === "followUp" ? "followUp" : "steer");
 			},
 			clearQueue: async () => {
@@ -1313,32 +1470,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	/** Resolves once the subagent's session accepted `text`, waiting on `lane` while it works. */
 	private async send(text: string, lane: TaskMessageLane): Promise<void> {
-		const send = this.source.sendTaskMessage;
-		const sentTo = this.liveTask();
-		const taskId = sentTo?.ref.taskId ?? this.taskId;
-		if (send === undefined) throw new TaskMessageError("messages-unsupported", { taskId });
 		try {
-			try {
-				await send.call(this.source, taskId, text, lane);
-			} catch (error) {
-				// The subagent changed while the message was on its way: a wake or another resume started it again, so the
-				// resume this asked for was refused, or the attempt it went to ended before taking it. Nothing reached it,
-				// so it goes once more to the subagent as it is now, as if typed a moment later: a running attempt takes
-				// it, and a finished one is resumed with it. A delivery that may have happened is never sent twice.
-				const now = this.liveTask();
-				const changed =
-					now !== undefined &&
-					(now.ref.taskId !== taskId ||
-						(now.execution.kind === "settled") !== (sentTo?.execution.kind === "settled"));
-				if (
-					!changed ||
-					!isTaskMessageError(error) ||
-					error.code === "delivery-unconfirmed" ||
-					this.source.taskReadOnlyReason?.(now.ref.taskId) !== undefined
-				)
-					throw error;
-				await send.call(this.source, now.ref.taskId, text, lane);
-			}
+			await sendAgentMessage(this.source, () => this.liveTask(), this.taskId, text, lane);
 		} catch (error) {
 			if (!this.disposed) throw error;
 			this.keepUndelivered(text, failureText(error));
@@ -1346,42 +1479,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	/** Every message waiting in the subagent's queue, taken back in its own answer. */
-	private async takeQueue(): Promise<QueuedTaskMessages> {
-		const clear = this.source.clearTaskQueue;
-		if (clear === undefined) return { steering: [], followUp: [] };
-		const taken = await clear.call(this.source, this.liveTaskId());
-		if (!taken.ok) throw new Error(taken.error.message);
-		return taken.value;
-	}
-
-	/**
-	 * Report what the chat lists as queued, as it shows it, for the process that keeps it beyond this one; a closed chat
-	 * lists nothing. Only a change is reported.
-	 */
-	private reportQueue(): void {
-		const queued = this.disposed ? { steering: [], followUp: [] } : this.chat.queuedMessages();
-		const signature = JSON.stringify([queued.steering, queued.followUp]);
-		if (signature === this.reportedQueue) return;
-		this.reportedQueue = signature;
-		const agent = taskDisplayText(this.liveAgentName());
-		reportSubagentChatQueue({ chatId: this.chatId, agent, steering: queued.steering, followUp: queued.followUp });
-	}
-
-	/** The subagent's name as its chat shows it. */
-	private liveAgentName(): string {
-		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
-		return task?.agentName ?? this.sessionName() ?? "subagent";
+	private takeQueue(): Promise<QueuedTaskMessages> {
+		return takeAgentQueue(this.source, this.liveTaskId());
 	}
 
 	restoreQueuedToEditor(taken: QueuedTaskMessages): number {
 		return this.chat.restoreTakenQueuedMessages(taken);
-	}
-
-	clearDraft(): boolean {
-		if (this.chat.hasTaskInspector || this.heldPrompt() !== undefined || !this.chat.hasInputText()) return false;
-		this.chat.setInputText("");
-		this.requestRender();
-		return true;
 	}
 
 	/**

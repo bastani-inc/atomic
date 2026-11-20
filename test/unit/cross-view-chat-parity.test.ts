@@ -10,6 +10,7 @@ import { agentPanelItems, taskPanelItem } from "../../packages/coding-agent/src/
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import { setAgentViewBridge } from "../../packages/coding-agent/src/modes/interactive/agent-view/agent-view-bridge.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import {
 	MainComposerKeyOverlay,
@@ -33,7 +34,6 @@ import {
 	theme,
 } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
-import { showTaskInspector } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.js";
 import { renderSubagentToolResult } from "../../packages/subagents/src/extension/tool-rendering.js";
 import { fakeFooterAgentSession } from "../helpers/footer-session.js";
@@ -104,8 +104,8 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("attached subagent transcript header and live-key hint (#5224)", () => {
-	test("renders › from main header, styled ❯ prompt echo once, and ← main chat hint when attached from the agent panel (#5224)", async () => {
+describe("a subagent's chat page from /tasks (#5224)", () => {
+	test("opened from the /tasks list it shows the launch prompt once in its transcript and its live keys, and ← returns to the list (#5224)", async () => {
 		const fixture = taskFixture();
 		const owner = ownerTaskViewSource(fixture.store);
 		const keys = getKeybindings();
@@ -150,39 +150,23 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 			fixture.runners[0]!.context.bindTranscript(transcript);
 			const taskId = fixture.store.tasks[0]!.ref.taskId;
 
-			inspector.openChat(taskId);
+			inspector.open(taskId);
+			assert.equal(inspector.handleInput("\r"), true, "Enter on the subagent's row opens its chat");
 			await flush();
 
 			for (const width of [80, 160]) {
-				const rawRows = inspector.renderViewport(width, 24);
-				const rows = plain(rawRows);
-				assert.equal(rows[0], " › from main", `width ${width}: › from main header at column 1`);
-				assert.match(
-					rows[1] ?? "",
-					/^ ❯ Fix #5220: make lock creation atomic/,
-					`width ${width}: styled ❯ prompt echo at column 1`,
-				);
-				assert.ok(
-					(rawRows[0] ?? "").includes(theme.fg("dim", "› from main")),
-					`width ${width}: › from main header uses dim theme token`,
-				);
-				assert.ok(
-					(rawRows[1] ?? "").includes(theme.fg("accent", theme.bold("❯"))) &&
-						(rawRows[1] ?? "").includes(
-							theme.fg("userMessageText", "Fix #5220: make lock creation atomic across concurrent spawns"),
-						),
-					`width ${width}: ❯ prompt echo uses accent bold chevron and userMessageText token`,
-				);
+				const rows = plain(inspector.renderViewport(width, 24));
+				assert.match(rows[0] ?? "", /^Transcript · /, `width ${width}: the page's title row`);
 				const beforeComposer = rows.slice(0, rows.findIndex(isComposerTopRule));
 				assert.equal(
 					beforeComposer.filter((row) => row.includes("Fix #5220: make lock creation atomic")).length,
 					1,
-					`width ${width}: initial prompt is shown once in the header without duplicating in the body`,
+					`width ${width}: the launch prompt is shown once, as the transcript's first message`,
 				);
 				assert.equal(
 					rows.at(-1),
-					"  ← main chat · esc to pause · pgup/pgdn scroll · ctrl+o expand · ? keys",
-					`width ${width}: running hint lists ← main chat and live keys`,
+					"  ← tasks · esc to pause · pgup/pgdn scroll · ctrl+o expand · ? keys",
+					`width ${width}: running hint lists ← tasks and live keys`,
 				);
 			}
 
@@ -193,7 +177,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 			// ? on empty prompt opens key overlay, Esc closes overlay without interrupting
 			assert.equal(inspector.handleInput("?"), true);
 			const overlayRows = plain(inspector.renderViewport(100, 24));
-			assert.match(overlayRows[0] ?? "", /^╭─ keys · task chat /);
+			assert.ok(overlayRows.some((row) => /^╭─ keys · task chat /.test(row)));
 			assert.equal(interrupted, 0);
 			assert.equal(inspector.handleInput(ESC), true);
 			assert.equal(interrupted, 0, "closing ? overlay with Esc does not interrupt the subagent");
@@ -204,239 +188,118 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 			assert.equal(interrupted, 1);
 			assert.equal(closed, 0, "Esc never leaves the subagent chat");
 			const idleRows = plain(inspector.renderViewport(100, 24));
-			assert.equal(idleRows.at(-1), "  ← main chat · pgup/pgdn scroll · ctrl+o expand · ? keys");
+			assert.equal(idleRows.at(-1), "  ← tasks · pgup/pgdn scroll · ctrl+o expand · ? keys");
 
-			// ← on empty prompt closes the attached chat (closedByBack === true)
+			// ← on empty prompt goes back to the list, which stays open
 			assert.equal(inspector.handleInput(LEFT), true);
-			assert.equal(closed, 1);
-			assert.equal(inspector.closedByBack, true);
+			assert.equal(closed, 0);
+			assert.doesNotMatch(plain(inspector.renderViewport(100, 24))[0] ?? "", /^Transcript · /);
 		} finally {
 			inspector.dispose();
 			await fixture.dispose();
 		}
 	});
 
-	test("showTaskInspector with chat:true and backLabel:'main chat' renders › from main header, ❯ prompt echo once, and ← main chat hint (#5224)", async () => {
-		const fixture = taskFixture();
-		try {
-			await fixture.start("Subagent task");
-			const session = SessionManager.inMemory();
-			await session.appendMessage({ role: "user", content: "Subagent task", timestamp: 1_000 });
-			fixture.runners[0]!.context.bindTranscript(Object.assign(session, { subscribe: () => () => {} }));
-			const taskId = fixture.store.tasks[0]!.ref.taskId;
-
-			let renderedLines: string[] = [];
-			const leftResult = await showTaskInspector(
-				{
-					getToolsExpanded: () => false,
-					setToolsExpanded: () => {},
-					async custom<T>(factory: Parameters<Parameters<typeof showTaskInspector>[0]["custom"]>[0]): Promise<T> {
-						const finish = () => {};
-						const component = await factory(makeTestTui(24), theme, new KeybindingsManager(), (() =>
-							finish()) as never);
-						await flush();
-						renderedLines = plain(component.render(100));
-						component.handleInput?.(LEFT);
-						component.dispose?.();
-						return undefined as T;
-					},
-				},
-				fixture.store,
-				taskId,
-				{ chat: true, backLabel: "main chat" },
-			);
-			assert.equal(renderedLines[0], " › from main");
-			assert.equal(renderedLines[1], " ❯ Subagent task");
-			const beforeComposer = renderedLines.slice(0, renderedLines.findIndex(isComposerTopRule));
-			assert.equal(
-				beforeComposer.filter((row) => row.includes("Subagent task")).length,
-				1,
-				"initial prompt is shown once in the header without duplicating in the body",
-			);
-			assert.equal(renderedLines.at(-1), "  ← main chat · pgup/pgdn scroll · ctrl+o expand · ? keys");
-			assert.equal(leftResult, "back");
-		} finally {
-			await fixture.dispose();
-		}
-	});
-
-	test("retains the full initial prompt in the transcript body when it overflows the one-line header, across resizes, multiline prompts, images, and parent history (#5224)", async () => {
-		const openAttachedInspector = async (
-			taskTitle: string,
+	test("an SDK host's echoed launch prompt: the body leaves it out only while it fits the host's one-line echo, across resizes, multiline prompts, images, parent history and a notice before it (#5224)", () => {
+		const bodyOf = (
+			echoed: string,
 			messages: ReadonlyArray<{ role: string; content: unknown; timestamp: number }>,
-		) => {
-			const fixture = taskFixture();
-			await fixture.start(taskTitle);
-			const session = SessionManager.inMemory();
-			for (const message of messages) {
-				if (message.role === "custom") {
-					await session.appendCustomMessageEntry(
-						(message as { customType?: string }).customType ?? "intercom_message",
-						String(message.content),
-						true,
-					);
-				} else {
-					await session.appendMessage(message as never);
-				}
-			}
-			await session.appendMessage(createAssistantMessage("Working on it."));
-			fixture.runners[0]!.context.bindTranscript(
-				Object.assign(session, {
-					subscribe: () => () => {},
-					isRunning: () => false,
-				}),
-			);
-			const env = taskTranscriptEnvironment({
-				tui: makeTestTui(28),
-				keybindings: getKeybindings(),
-				getToolsExpanded: () => false,
-				setToolsExpanded: () => {},
+			width: number,
+		): string[] => {
+			const host = new ChatSessionHost({
+				style: themedChatHostStyle(),
+				editorTheme: getEditorTheme(),
+				taskRowsInChat: false,
+				echoedInitialPrompt: echoed,
 			});
-			const inspector = new TaskInspector(
-				ownerTaskViewSource(fixture.store),
-				() => {},
-				() => {},
-				undefined,
-				() => env,
-			);
-			inspector.openChat(fixture.store.tasks[0]!.ref.taskId);
-			await flush();
-			return {
-				inspector,
-				dispose: async () => {
-					inspector.dispose();
-					await fixture.dispose();
-				},
-			};
+			try {
+				host.replaceMessages([...messages, createAssistantMessage("Working on it.")] as never);
+				return plain(host.renderBody(width, 40));
+			} finally {
+				host.dispose();
+			}
 		};
 
-		// 1. Long prompt beyond 80 and 160 columns keeps its tail sentinel in the body
+		// 1. A long prompt never fits one line: the body keeps all of it, tail included
 		const longPrompt = `${"Investigate concurrency race condition in task store ".repeat(3)}TAIL-SENTINEL-BEYOND-160`;
-		const longCase = await openAttachedInspector(longPrompt, [
-			{ role: "user", content: longPrompt, timestamp: 1_000 },
-		]);
-		try {
-			for (const width of [80, 160]) {
-				const rows = plain(longCase.inspector.renderViewport(width, 28));
-				assert.equal(rows[0], " › from main");
-				assert.match(rows[1] ?? "", /^ ❯ Investigate concurrency race condition/);
-				assert.equal(
-					(rows[1] ?? "").includes("TAIL-SENTINEL-BEYOND-160"),
-					false,
-					`width ${width}: clipped header alone cannot fit the tail sentinel`,
-				);
-				const bodyText = rows.slice(2, rows.findIndex(isComposerTopRule)).join("\n");
-				assert.match(
-					bodyText,
-					/TAIL-SENTINEL-BEYOND-160/,
-					`width ${width}: transcript body retains the full long prompt including its tail`,
-				);
-			}
-		} finally {
-			await longCase.dispose();
+		for (const width of [80, 160]) {
+			const body = bodyOf(longPrompt, [{ role: "user", content: longPrompt, timestamp: 1_000 }], width).join("\n");
+			assert.match(body, /TAIL-SENTINEL-BEYOND-160/, `width ${width}: the body keeps the full long prompt`);
 		}
 
-		// 2. Medium single-line prompt (96 chars) hides body duplicate at 160 cols, shows full body on resize to 80 cols, and hides again at 160 cols
+		// 2. A 96-character prompt fits at 160 columns (left out of the body) but not at 80 (shown), and again at 160
 		const mediumPrompt = `${"Trace lock owner handoff across worker restarts and verify cleanup ".padEnd(76, "x")} RESIZE-TAIL-SENTINEL`;
-		const resizeCase = await openAttachedInspector(mediumPrompt, [
-			{ role: "user", content: mediumPrompt, timestamp: 1_000 },
-		]);
-		try {
-			const wideRows = plain(resizeCase.inspector.renderViewport(160, 28));
-			assert.ok((wideRows[1] ?? "").includes("RESIZE-TAIL-SENTINEL"), "160 cols: header fits full medium prompt");
-			const wideBody = wideRows.slice(2, wideRows.findIndex(isComposerTopRule)).join("\n");
-			assert.doesNotMatch(wideBody, /RESIZE-TAIL-SENTINEL/, "160 cols: body does not duplicate fitting prompt");
+		const medium = [{ role: "user", content: mediumPrompt, timestamp: 1_000 }];
+		assert.doesNotMatch(bodyOf(mediumPrompt, medium, 160).join("\n"), /RESIZE-TAIL-SENTINEL/, "160 cols: echoed");
+		assert.match(bodyOf(mediumPrompt, medium, 80).join("\n"), /RESIZE-TAIL-SENTINEL/, "80 cols: in the body");
+		assert.doesNotMatch(bodyOf(mediumPrompt, medium, 160).join("\n"), /RESIZE-TAIL-SENTINEL/, "160 cols again");
 
-			const narrowRows = plain(resizeCase.inspector.renderViewport(80, 28));
-			assert.equal((narrowRows[1] ?? "").includes("RESIZE-TAIL-SENTINEL"), false, "80 cols: header clips");
-			const narrowBody = narrowRows.slice(2, narrowRows.findIndex(isComposerTopRule)).join("\n");
-			assert.match(narrowBody, /RESIZE-TAIL-SENTINEL/, "80 cols: body renders full prompt on resize");
-
-			const wideAgainRows = plain(resizeCase.inspector.renderViewport(160, 28));
-			const wideAgainBody = wideAgainRows.slice(2, wideAgainRows.findIndex(isComposerTopRule)).join("\n");
-			assert.doesNotMatch(wideAgainBody, /RESIZE-TAIL-SENTINEL/, "160 cols again: body hides duplicate on widen");
-		} finally {
-			await resizeCase.dispose();
-		}
-
-		// 3. Multiline prompt retains all lines in the transcript body even when short
+		// 3. A multiline prompt is never echoed on one line: the body keeps every line
 		const multilinePrompt = "First line summary\nSecond line detail MULTILINE-TAIL-SENTINEL";
-		const multilineCase = await openAttachedInspector(multilinePrompt, [
-			{ role: "user", content: multilinePrompt, timestamp: 1_000 },
-		]);
-		try {
-			const rows = plain(multilineCase.inspector.renderViewport(120, 28));
-			const bodyText = rows.slice(2, rows.findIndex(isComposerTopRule)).join("\n");
-			assert.match(bodyText, /First line summary/);
-			assert.match(bodyText, /Second line detail MULTILINE-TAIL-SENTINEL/);
-		} finally {
-			await multilineCase.dispose();
-		}
+		const multiline = bodyOf(
+			multilinePrompt,
+			[{ role: "user", content: multilinePrompt, timestamp: 1_000 }],
+			120,
+		).join("\n");
+		assert.match(multiline, /First line summary/);
+		assert.match(multiline, /Second line detail MULTILINE-TAIL-SENTINEL/);
 
-		// 4. User prompt with image content or preceded by parent history is kept in the body
+		// 4. A prompt with an image, and the parent's history before the launch prompt, stay in the body
 		const imagePrompt = "Short prompt with image";
-		const imageCase = await openAttachedInspector(imagePrompt, [
-			{
-				role: "user",
-				content: [
-					{ type: "text", text: imagePrompt },
-					{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
-				],
-				timestamp: 1_000,
-			},
-		]);
-		try {
-			const rows = plain(imageCase.inspector.renderViewport(120, 28));
-			const bodyText = rows.slice(2, rows.findIndex(isComposerTopRule)).join("\n");
-			assert.match(bodyText, /Short prompt with image/);
-		} finally {
-			await imageCase.dispose();
-		}
+		const image = bodyOf(
+			imagePrompt,
+			[
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: imagePrompt },
+						{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+					],
+					timestamp: 1_000,
+				},
+			],
+			120,
+		).join("\n");
+		assert.match(image, /Short prompt with image/);
+		const parentHistory = bodyOf(
+			"Child task prompt",
+			[
+				{ role: "user", content: "Parent context prompt", timestamp: 500 },
+				createAssistantMessage("Parent answer.", { timestamp: 800 }),
+				{ role: "user", content: "Child task prompt", timestamp: 1_000 },
+			],
+			120,
+		).join("\n");
+		assert.match(parentHistory, /Parent context prompt/);
+		assert.match(parentHistory, /Child task prompt/);
 
-		const parentHistoryCase = await openAttachedInspector("Child task prompt", [
-			{ role: "user", content: "Parent context prompt", timestamp: 500 },
-			createAssistantMessage("Parent answer.", { timestamp: 800 }),
-			{ role: "user", content: "Child task prompt", timestamp: 1_000 },
-		]);
-		try {
-			const rows = plain(parentHistoryCase.inspector.renderViewport(120, 28));
-			const bodyText = rows.slice(2, rows.findIndex(isComposerTopRule)).join("\n");
-			assert.match(bodyText, /Parent context prompt/);
-			assert.match(bodyText, /Child task prompt/);
-		} finally {
-			await parentHistoryCase.dispose();
-		}
-
-		// 5. A pre-start custom message before the first user launch prompt still collapses the first user launch prompt when it fits the header, while keeping a later identical user follow-up visible
+		// 5. A notice before the launch prompt does not stop the echo; a later identical prompt stays in the body
 		const prefacedPrompt = "Launch prompt after pre-start custom";
-		const prefacedCustomCase = await openAttachedInspector(prefacedPrompt, [
-			{
-				role: "custom",
-				customType: "intercom_message",
-				content: "Pre-start custom context",
-				display: true,
-				timestamp: 500,
-			} as never,
-			{ role: "user", content: prefacedPrompt, timestamp: 1_000 },
-			createAssistantMessage("Initial reply.", { timestamp: 1_500 }),
-			{ role: "user", content: prefacedPrompt, timestamp: 2_000 },
-		]);
-		try {
-			const wideRows = plain(prefacedCustomCase.inspector.renderViewport(120, 28));
-			assert.equal(wideRows[1], ` ❯ ${prefacedPrompt}`);
-			const wideBodyRows = wideRows.slice(2, wideRows.findIndex(isComposerTopRule));
-			assert.ok(
-				wideBodyRows.some((row) => row.includes("Pre-start custom context")),
-				"pre-start custom message stays visible",
-			);
-			assert.equal(
-				wideBodyRows.filter((row) => row.includes(prefacedPrompt)).length,
-				1,
-				"first user launch prompt collapses into the header while the later identical user follow-up stays visible in the body",
-			);
-		} finally {
-			await prefacedCustomCase.dispose();
-		}
+		const prefaced = bodyOf(
+			prefacedPrompt,
+			[
+				{
+					role: "custom",
+					customType: "intercom_message",
+					content: "Pre-start custom context",
+					display: true,
+					timestamp: 500,
+				} as never,
+				{ role: "user", content: prefacedPrompt, timestamp: 1_000 },
+				createAssistantMessage("Initial reply.", { timestamp: 1_500 }),
+				{ role: "user", content: prefacedPrompt, timestamp: 2_000 },
+			],
+			120,
+		);
+		assert.ok(
+			prefaced.some((row) => row.includes("Pre-start custom context")),
+			"the notice stays visible",
+		);
+		assert.equal(
+			prefaced.filter((row) => row.includes(prefacedPrompt)).length,
+			1,
+			"the launch prompt is echoed while the later identical prompt stays in the body",
+		);
 	});
 });
 
@@ -571,7 +434,8 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 
 			const subLines = plain(subInspector.renderViewport(100, 28));
 
-			const subWorkingLine = subLines.find((line) => line.includes("∀ "));
+			// The working line, not the page header's task summary, which carries the task's own glyph.
+			const subWorkingLine = subLines.find((line) => /^ ∀ \S+… \(/.test(line));
 			assert.equal(mainWorkingLines.length, 1);
 			assert.match(mainWorkingLines[0]!, /^ ∀ Schlepping… \(4s · ↓ 7 tokens\)$/);
 
@@ -709,7 +573,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 				(settledAssistant.usage.output ?? 0);
 			assert.equal(expectedTokens, 509);
 
-			const subWorking = plain(subInspector.renderViewport(100, 24)).find((line) => line.includes("∀ "));
+			const subWorking = plain(subInspector.renderViewport(100, 24)).find((line) => /^ ∀ \S+… \(/.test(line));
 
 			assert.equal(subWorking, ` ∀ Schlepping… (27s · ↓ ${expectedTokens} tokens)`);
 		} finally {
@@ -1146,67 +1010,47 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 		}
 	});
 
-	test("opening a subagent from showAgentPanel passes backLabel 'main chat' and ← returns to the focused panel (#5239)", async () => {
-		const fixture = taskFixture();
-		const ownerSession = {};
-		bindOwnerTaskStore(ownerSession, fixture.store);
-		await fixture.start("Fix #5220: make lock creation atomic");
-		const session = SessionManager.inMemory();
-		await session.appendMessage({
-			role: "user",
-			content: "Fix #5220: make lock creation atomic",
-			timestamp: 1_000,
-		});
-		fixture.runners[0]!.context.bindTranscript(
-			Object.assign(session, {
-				subscribe: () => () => {},
-				isRunning: () => false,
-			}),
-		);
-
-		const phases: string[] = [];
-		let attachedLines: string[] = [];
-		let step = 0;
-		try {
-			await showAgentPanel(ownerSession, {
-				getToolsExpanded: () => false,
-				setToolsExpanded: () => {},
-				async custom<T>(factory: Parameters<Parameters<typeof showAgentPanel>[1]["custom"]>[0]): Promise<T> {
-					let finished = false;
-					const component = await factory(makeTestTui(24), theme, new KeybindingsManager(), (() => {
-						finished = true;
-					}) as never);
-					await flush();
-					const rendered = plain(component.render(100));
-					if (step === 0) {
-						step += 1;
-						phases.push("panel-initial");
+	test("Enter on a subagent's row of the focused panel shows it on the screen and opens no page; with no screen to show it on it says so (#5239)", async () => {
+		for (const withScreen of [true, false]) {
+			const fixture = taskFixture();
+			const ownerSession = {};
+			bindOwnerTaskStore(ownerSession, fixture.store);
+			const requested: (string | undefined)[] = [];
+			if (withScreen)
+				setAgentViewBridge(ownerSession, {
+					viewedTaskId: () => undefined,
+					requestView: (taskId) => requested.push(taskId),
+					subscribe: () => () => {},
+				});
+			await fixture.start("Fix #5220: make lock creation atomic");
+			const notices: string[] = [];
+			let views = 0;
+			try {
+				await showAgentPanel(ownerSession, {
+					getToolsExpanded: () => false,
+					setToolsExpanded: () => {},
+					notify: (message) => notices.push(message),
+					async custom<T>(factory: Parameters<Parameters<typeof showAgentPanel>[1]["custom"]>[0]): Promise<T> {
+						views += 1;
+						let finished = false;
+						const component = await factory(makeTestTui(24), theme, new KeybindingsManager(), (() => {
+							finished = true;
+						}) as never);
+						await flush();
+						const rendered = plain(component.render(100));
 						assert.ok(rendered.some((line) => line.includes("● main")));
 						component.handleInput?.("\r");
-					} else if (step === 1) {
-						step += 1;
-						phases.push("attached-chat");
-						attachedLines = rendered;
-						component.handleInput?.(LEFT);
-					} else {
-						step += 1;
-						phases.push("panel-returned");
-						assert.ok(rendered.some((line) => line.includes("● main")));
-						component.handleInput?.(ESC);
-					}
-					if (!finished) component.dispose?.();
-					return undefined as T;
-				},
-			});
-			assert.deepEqual(phases, ["panel-initial", "attached-chat", "panel-returned"]);
-			assert.equal(attachedLines[0], " › from main");
-			assert.equal(
-				attachedLines.at(-1),
-				"  ← main chat · pgup/pgdn scroll · ctrl+o expand · ? keys",
-				"panel route opens subagent chat with ← main chat back label",
-			);
-		} finally {
-			await fixture.dispose();
+						if (!finished) component.dispose?.();
+						return undefined as T;
+					},
+				});
+				await flush();
+				assert.equal(views, 1, `${withScreen ? "with" : "without"} a screen: only the panel was drawn, no page`);
+				assert.deepEqual(requested, withScreen ? [fixture.store.tasks[0]!.ref.taskId] : []);
+				assert.deepEqual(notices, withScreen ? [] : ["Could not open worker."]);
+			} finally {
+				await fixture.dispose();
+			}
 		}
 	});
 

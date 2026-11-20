@@ -9,6 +9,7 @@ import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { SkillCatalog } from "../skill-catalog.ts";
+import type { SourceInfo } from "../source-info.ts";
 import { TaskCleanupAdmissionTimeoutError, type TaskCleanupFailure } from "./cleanup-error.js";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
@@ -89,6 +90,17 @@ export interface TaskTranscriptCommands {
 	readonly skills: SkillCatalog;
 	/** Whether the session's settings offer its skills as commands. */
 	readonly skillCommandsEnabled: boolean;
+	/** The session's prompt templates, which `/<name>` expands. */
+	readonly promptTemplates?: readonly TaskSlashCommand[];
+	/** The session's extension commands, as `/<name>` runs them. */
+	readonly extensionCommands?: readonly TaskSlashCommand[];
+}
+
+/** A slash command a task's session runs: its name as typed after `/`, and where it comes from. */
+export interface TaskSlashCommand {
+	readonly name: string;
+	readonly description?: string;
+	readonly sourceInfo?: SourceInfo;
 }
 
 /** A finished task's history as {@link TaskTranscriptSource.loadHistory} reads it. */

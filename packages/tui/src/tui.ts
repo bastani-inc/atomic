@@ -139,6 +139,12 @@ export interface Component {
 	 */
 	render(width: number): string[];
 
+	/**
+	 * Render for a stack slot of `height` rows. A layout that allocates the component a height calls this instead of
+	 * `render`, so the component can fill exactly what it was given; elsewhere `render` is used.
+	 */
+	renderSized?(width: number, height: number): string[];
+
 	/** Optional handler for keyboard input when component has focus. */
 	handleInput?(data: string): void;
 

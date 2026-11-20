@@ -1,5 +1,6 @@
 import { isInteractiveEngineResourceReadinessError } from "../interactive-engine/resource-readiness-error.ts";
 import { isRpcRequestAcceptedFailure, isRpcTransportFailure } from "../rpc/rpc-transport-error.ts";
+import { type PromptHandle, promptHandle } from "./agent-view/agent-drafts.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 
 /**
@@ -74,13 +75,19 @@ export function restoreUnsentPromptDraft(error: unknown, target: PromptDraftRest
  *
  * Returns true when the failure was a send the engine never accepted and the
  * draft is back in the editor; false means the caller owns the error.
+ *
+ * `options.prompt` is the prompt the submission came from, captured when it was
+ * made; left out, it is the main chat's. While that prompt is on screen it is the
+ * editor itself; once the screen shows another agent's, the draft goes back to
+ * the prompt it came from, not to the one on screen.
  */
 export function restoreFailedSubmissionDraft(
 	mode: InteractiveModeBase,
 	error: unknown,
 	draft: string,
-	options?: { turnStarted?: boolean; refused?: boolean },
+	options?: { turnStarted?: boolean; refused?: boolean; prompt?: PromptHandle },
 ): boolean {
+	const prompt = options?.prompt ?? promptHandle(mode, "main");
 	// Submissions still waiting in the queue were never sent either. They come
 	// back with this one, in FIFO order, because leaving them queued would let
 	// each later failure prepend a newer draft above older restored text.
@@ -93,8 +100,8 @@ export function restoreFailedSubmissionDraft(
 		// and shows only a `[paste #1 … chars]` marker in the visible buffer, and
 		// setText() clears that registry. Reading the marker would round-trip dead
 		// text and destroy the payload.
-		getEditorText: () => mode.editor.getExpandedText?.() ?? mode.editor.getText(),
-		setEditorText: (text) => mode.editor.setText(text),
+		getEditorText: () => prompt.getExpandedText(),
+		setEditorText: (text) => prompt.setText(text),
 		editorOwnsInput: () => mode.editorContainer.children.includes(mode.editor),
 		focusEditor: () => mode.ui.setFocus(mode.editor),
 		requestRender: () => mode.ui.requestRender(),
@@ -105,8 +112,16 @@ export function restoreFailedSubmissionDraft(
 	return restored;
 }
 
-export function restoreRefusedSubmission(mode: InteractiveModeBase, error: unknown, draft: string): void {
-	const restored = restoreFailedSubmissionDraft(mode, error, draft, { refused: true });
+export function restoreRefusedSubmission(
+	mode: InteractiveModeBase,
+	error: unknown,
+	draft: string,
+	prompt?: PromptHandle,
+): void {
+	const restored = restoreFailedSubmissionDraft(mode, error, draft, {
+		refused: true,
+		...(prompt === undefined ? {} : { prompt }),
+	});
 	if (restored && (isEngineSendFailure(error) || isInteractiveEngineResourceReadinessError(error))) return;
 	mode.showError(error instanceof Error ? error.message : "Unknown error occurred");
 }

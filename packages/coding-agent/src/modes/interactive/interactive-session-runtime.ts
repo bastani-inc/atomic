@@ -6,6 +6,7 @@ import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
+import { promptHandle } from "./agent-view/agent-drafts.ts";
 import { AtomicWorkedStatusComponent } from "./components/atomic-working-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
@@ -56,6 +57,8 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 				}
 			},
 			navigateTree: async (targetId, options) => {
+				// The navigation's text is for main's prompt, whichever agent the screen shows.
+				const mainPrompt = promptHandle(this, "main");
 				const result = await this.session.navigateTree(targetId, {
 					summarize: options?.summarize,
 					customInstructions: options?.customInstructions,
@@ -68,8 +71,8 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 
 				clearChatForRerender(this);
 				this.renderInitialMessages();
-				if (result.editorText && !this.editor.getText().trim()) {
-					this.editor.setText(result.editorText);
+				if (result.editorText && !mainPrompt.getText().trim()) {
+					mainPrompt.setText(result.editorText);
 				}
 				this.showStatus("Navigated to selected point");
 				void this.flushCompactionQueue({ willRetry: false });

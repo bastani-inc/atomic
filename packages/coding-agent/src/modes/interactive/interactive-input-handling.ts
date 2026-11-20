@@ -18,7 +18,15 @@ import {
 	remoteProxyHandlesCtrlC,
 } from "../interactive-engine/remote-input-ownership.ts";
 import { agentPanelCounts, agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
-import { agentPanelBoardSource, showTaskInspector } from "../rpc/task-ui-bridge.js";
+import {
+	agentPanelBoardSource,
+	openWaitedShellOf,
+	showTaskInspector,
+	type TaskInspectorUi,
+} from "../rpc/task-ui-bridge.js";
+import { type PromptHandle, promptHandle } from "./agent-view/agent-drafts.ts";
+import { gateMovedDraft } from "./agent-view/viewed-commands.ts";
+import { escapeViewedAgent, submitToViewedAgent } from "./agent-view/viewed-submit.ts";
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { bindMainComposerAgentRows, MainComposerKeyOverlay } from "./components/main-composer-keys.ts";
@@ -36,6 +44,25 @@ import { handOffCompactionQueue, mainSteering } from "./interactive-queueing.ts"
 import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
 import type { SteeringSubmitResult } from "./steering-queue-controller.ts";
 import { theme } from "./theme/theme.js";
+
+/** Whether the prompt has the keyboard; a host without focus tracking always gives it the prompt. */
+function promptHasFocus(mode: InteractiveModeBase): boolean {
+	const focused = (mode.ui as { getFocusedComponent?(): object | null }).getFocusedComponent?.();
+	return focused === undefined || focused === mode.editor;
+}
+
+/** Where `/tasks` mounts in this process, with the chat's render settings. */
+function taskInspectorUi(mode: InteractiveModeBase): TaskInspectorUi {
+	const ui = mode.createExtensionUIContext();
+	return {
+		custom: (factory, options) => mode.showExtensionCustom(factory, options),
+		getChatRenderSettings: ui.getChatRenderSettings,
+		getFooterDataProvider: ui.getFooterDataProvider,
+		getToolsExpanded: ui.getToolsExpanded,
+		setToolsExpanded: ui.setToolsExpanded,
+		notify: ui.notify,
+	};
+}
 
 function mainComposerPanelCounts(mode: InteractiveModeBase) {
 	return mode.runtimeHost instanceof IsolatedInteractiveRuntime
@@ -124,6 +151,8 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			return undefined;
 		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor)) return undefined;
 		if (this.editor.capturesViewportInput) return undefined;
+		// A shown subagent's question form takes the keys while it has the focus: ↓ moves its choice there.
+		if (this.agentView?.viewed.kind === "agent" && !promptHasFocus(this)) return undefined;
 		// A click on the `↓ agents` hint focuses the panel whatever the prompt holds; a typed ↓ does only on an empty one.
 		if (this.editor !== this.defaultEditor || this.isBashMode) return undefined;
 		if (this.editor.getText() !== "" && !isHintActivation()) return undefined;
@@ -150,10 +179,28 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 		}).catch((error: unknown) => this.showWarning(sourceError(error).message));
 		return { consume: true };
 	});
+	// While the screen shows a subagent that waits on its shells, the waited-shell key opens the newest one's output.
+	this.addTuiInputListener((data) => {
+		const viewed = this.agentView?.viewed;
+		if (viewed?.kind !== "agent" || isKeyRelease(data) || !this.keybindings.matches(data, "app.tasks.openWaited"))
+			return undefined;
+		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor) || !promptHasFocus(this))
+			return undefined;
+		const status = viewed.port.status();
+		if (status.state !== "waiting") return undefined;
+		const opened =
+			this.runtimeHost instanceof IsolatedInteractiveRuntime
+				? this.runtimeHost.openTaskInspector(undefined, { waitedShellOf: status.taskId })
+				: openWaitedShellOf(this.session, taskInspectorUi(this), status.taskId);
+		void opened.catch((error: unknown) => this.showWarning(sourceError(error).message));
+		return { consume: true };
+	});
 	// Set up handlers on defaultEditor - they use this.editor for text access
 	// so they work correctly regardless of which editor is active
 	this.defaultEditor.onEscape = () => {
 		if (!this.session.isStreaming && interruptBlockedInteractiveEngine(this.runtimeHost)) return;
+		// While a subagent is shown, Esc is about it: it pauses it, and never interrupts the main chat.
+		if (escapeViewedAgent(this)) return;
 		if (this.session.isStreaming || this.session.agent.hasQueuedMessages() || this.session.queuedMessagesPaused) {
 			pauseAndAbortInteractiveSession(this, { restoreQueuedMessages: true });
 		} else if (this.session.isRetrying) {
@@ -334,336 +381,375 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			this.editor.setText("");
 			return;
 		}
-		try {
-			// Built-in commands split their name from their arguments at the first
-			// whitespace, the same way prompt templates, skills and extension commands do.
-			const { name: command, args } = text.startsWith("/") ? parseSlashCommand(text) : { name: "", args: "" };
-			const argument = args.trim() || undefined;
-			const bare = (name: string) => command === name && args === "";
-			if (command === "tasks") {
-				if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
-					await this.runtimeHost.openTaskInspector(argument);
-					return;
-				}
-				if (!getOwnerTaskStore(this.session)) this.session.getAgentTaskHost();
-				const store = getOwnerTaskStore(this.session);
-				this.editor.setText("");
-				if (!store) {
-					this.showStatus("Launched agents and shells will appear here.");
-					return;
-				}
-				const ui = this.createExtensionUIContext();
-				await showTaskInspector(
-					{
-						custom: (factory, options) => this.showExtensionCustom(factory, options),
-						getChatRenderSettings: ui.getChatRenderSettings,
-						getFooterDataProvider: ui.getFooterDataProvider,
-						getToolsExpanded: ui.getToolsExpanded,
-						setToolsExpanded: ui.setToolsExpanded,
-						notify: ui.notify,
-					},
-					store,
-					argument,
-					{ board: agentPanelBoardSource(this.session) },
-				);
-				return;
-			}
-			if (bare("settings")) {
-				const shown = this.showSettingsSelector();
-				this.editor.setText("");
-				await shown;
-				return;
-			}
-			if (bare("scoped-models")) {
-				this.editor.setText("");
-				await this.ensureDeferredStartupComplete();
-				this.showModelsSelector();
-				return;
-			}
-			if (command === "model") {
-				this.editor.setText("");
-				await this.ensureDeferredStartupComplete();
-				await this.handleModelCommand(argument);
-				return;
-			}
-			if (command === "thinking") {
-				this.editor.setText("");
-				await this.ensureDeferredStartupComplete();
-				await this.handleThinkingCommand(argument);
-				return;
-			}
-			if (command === "export") {
-				await this.handleExportCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (command === "import") {
-				await this.handleImportCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (bare("share")) {
-				await this.handleShareCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (bare("copy")) {
-				await this.handleCopyCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (command === "name") {
-				await this.handleNameCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (bare("session")) {
-				await this.handleSessionCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (command === "session" && args === "snapshot") {
-				this.editor.setText("");
-				await this.handleSessionSnapshotCommand();
-				return;
-			}
-			if (bare("tools")) {
-				this.editor.setText("");
-				await this.handleToolsCommand();
-				return;
-			}
-			if (bare("changelog")) {
-				this.editor.setText("");
-				await this.handleChangelogCommand();
-				return;
-			}
-			if (bare("hotkeys")) {
-				this.handleHotkeysCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (bare("fork")) {
-				this.showUserMessageSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (bare("clone")) {
-				this.editor.setText("");
-				await this.handleCloneCommand();
-				return;
-			}
-			if (bare("tree")) {
-				this.showTreeSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (bare("trust")) {
-				void this.showTrustSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (command === "login") {
-				this.editor.setText("");
-				await this.handleLoginCommand(argument);
-				return;
-			}
-			if (command === "logout") {
-				this.editor.setText("");
-				await this.showOAuthSelector("logout", argument);
-				return;
-			}
-			if (bare("new")) {
-				this.editor.setText("");
-				await this.handleClearCommand();
-				return;
-			}
-			if (command === "compact") {
-				this.editor.setText("");
-				// A manual request can take over automatic compaction, but a second manual
-				// compaction or branch summary still has no safe independent owner.
-				const automaticCompaction =
-					this.session.compactionReason === "threshold" || this.session.compactionReason === "overflow";
-				if (this.manualCompactionTakeoverPending || (this.compactionActive && !automaticCompaction)) {
-					this.showWarning(COMPACTION_ALREADY_IN_PROGRESS_WARNING);
-					return;
-				}
-				await this.handleCompactCommand(args);
-				return;
-			}
-			if (bare("reload")) {
-				this.editor.setText("");
-				await this.ensureDeferredStartupComplete();
-				await this.handleReloadCommand();
-				return;
-			}
-			if (bare("debug")) {
-				const written = this.handleDebugCommand();
-				this.editor.setText("");
-				await written;
-				return;
-			}
-			if (bare("arminsayshi")) {
-				this.handleArminSaysHi();
-				this.editor.setText("");
-				return;
-			}
-			if (bare("dementedelves")) {
-				const shown = this.handleDementedDelves();
-				this.editor.setText("");
-				await shown;
-				return;
-			}
-			if (command === "resume") {
-				this.editor.setText("");
-				if (argument) await this.handleResumeTarget(argument);
-				else this.showSessionSelector();
-				return;
-			}
-			if (bare("quit") || bare("exit")) {
-				this.editor.setText("");
-				await this.shutdown();
-				return;
-			}
-
-			if (text.startsWith("/") && this.deferredStartupPending) {
-				this.editor.addToHistory?.(text);
-				this.editor.setText("");
-				this.ui.requestRender();
-				await yieldToEventLoop();
-				await this.ensureDeferredStartupComplete();
-				await this.session.prompt(text);
-				return;
-			}
-			// Handle bash command (! for normal, !! for excluded from context)
-			if (text.startsWith("!")) {
-				const isExcluded = text.startsWith("!!");
-				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
-				if (command) {
-					if (this.session.isBashRunning) {
-						this.showWarning("A bash command is already running. esc cancel first.");
-						this.editor.setText(text);
-						return;
-					}
-					this.editor.addToHistory?.(text);
-					await this.handleBashCommand(command, isExcluded);
-					this.isBashMode = false;
-					this.updateEditorBorderColor();
-					return;
-				}
-			}
-
-			// Queue input behind compaction-queued messages (extension commands execute immediately)
-			if (
-				this.compactionActive ||
-				(!this.session.queuedMessagesPaused &&
-					(this.compactionFlushPending || this.compactionSendFailed || this.promptTurn?.dispatched === false))
-			) {
-				if (this.isExtensionCommand(text)) {
-					this.editor.addToHistory?.(text);
-					this.editor.setText("");
-					// Messages the command sends must follow the ones already typed (#4251).
-					if (this.compactionActive) handOffCompactionQueue(this);
-					await this.session.prompt(text);
-				} else {
-					this.queueCompactionMessage(text, "steer");
-				}
-				return;
-			}
-
-			// A paused submission releases the session queue before its own turn, so move held
-			// messages there first to keep them ahead of this one.
-			if (this.session.queuedMessagesPaused && this.compactionSendFailed && !this.compactionFlushPending) {
-				await this.flushCompactionQueue({ willRetry: false });
-			}
-
-			// If streaming, use prompt() with steer behavior
-			// This handles extension commands (execute immediately), prompt template expansion, and queueing
-			if ((this.session.isStreaming || this.promptTurn !== undefined) && !this.session.queuedMessagesPaused) {
-				this.editor.addToHistory?.(text);
-				this.editor.setText("");
-				// An engine sends its answer to this prompt together with the first events of the turn it started, and
-				// the host handles those events before the answer's callback runs. If the session already showed the
-				// message, echoing it again here would show it twice (#4272). It shows the message as sent, which an
-				// `input` hook may have rewritten (#4277), so any message it showed meanwhile counts.
-				const shownBefore = this.userMessagesShownBySession;
-				let echoedStartedRun = false;
-				let showedUserMessage = false;
-				const unsubscribeUserMessages = this.session.subscribe((event) => {
-					if (event.type === "message_start" && event.message.role === "user") showedUserMessage = true;
-				});
-				let submitted: SteeringSubmitResult;
-				try {
-					submitted = await mainSteering(this).submit(text, "steer", {
-						route: "queue",
-						// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
-						showAsQueued: !this.isExtensionCommand(text),
-						onAnswered: (success, disposition) => {
-							if (
-								success &&
-								disposition === "started" &&
-								!text.startsWith("/") &&
-								this.userMessagesShownBySession === shownBefore
-							) {
-								echoedStartedRun = true;
-								this.renderDeferredUserInput(text);
-								this.expectStartedUserInput(text, shownBefore);
-							}
-						},
-						onSent: () => {
-							// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
-							if (
-								echoedStartedRun &&
-								!showedUserMessage &&
-								this.deferredRenderedUserInputs?.includes(text) === true
-							)
-								this.discardDeferredRenderedUserInput(text);
-						},
-					});
-				} finally {
-					unsubscribeUserMessages();
-				}
-				if (submitted.kind === "failed") throw submitted.error;
-				if (submitted.kind === "lost") {
-					this.showError(submitted.error.message);
-					return;
-				}
-				if (submitted.kind === "refused") {
-					restoreRefusedSubmission(this, submitted.error, submittedDraft);
-					return;
-				}
-				this.updatePendingMessagesDisplay();
-				this.ui.requestRender();
-				return;
-			}
-
-			// Normal message submission
-			// First, move any pending bash components to chat
-			this.flushPendingBashComponents();
-			// The draft travels with this submission, never through shared state: a
-			// later submission whose trimmed text is identical must not be able to
-			// claim, or clear, this one's exact buffer.
-			const submission = { text, draft: submittedDraft };
-
-			if (this.onInputCallback) {
-				if (!text.startsWith("/")) {
-					this.renderDeferredUserInput(text);
-				}
-				this.promptTurn ??= { dispatched: false };
-				this.onInputCallback(submission);
-			} else {
-				this.pendingUserInputs.push(submission);
-			}
-			this.editor.addToHistory?.(text);
-		} catch (error) {
-			// Direct dispatch branches above hand text straight to the engine and
-			// never reach runUserPromptTurn(), so this is the only place their send
-			// failures can put the draft back. Anything else is not ours to absorb.
-			if (!restoreFailedSubmissionDraft(this, error, submittedDraft)) throw error;
-		} finally {
-			this.advanceStartupInputReplay?.(text);
+		// While a subagent is shown, the prompt is its; the main chat's path is untouched otherwise.
+		const viewed = this.agentView?.viewed;
+		if (viewed?.kind === "agent") {
+			await submitToViewedAgent(this, viewed.port, text, submittedDraft);
+			return;
 		}
+		// Text a gone subagent's prompt moved here, submitted unedited, asks first when it would rewrite main. Decided
+		// synchronously: with nothing moved, main's path runs exactly as before.
+		const moved = gateMovedDraft(this, text, submittedDraft);
+		if (moved !== undefined) {
+			await moved;
+			return;
+		}
+		await mainSubmit(this, text, submittedDraft);
 	};
 };
+
+/**
+ * What the main chat does with a submission: `text` trimmed and non-empty, `submittedDraft` the buffer as typed.
+ * While a subagent is shown, the commands that run as in the main chat come here too.
+ */
+export function mainSubmit(
+	mode: InteractiveModeBase,
+	text: string,
+	submittedDraft: string,
+	prompt: PromptHandle = promptHandle(mode, "viewed"),
+): Promise<void> {
+	return submitToMainChat.call(mode, text, submittedDraft, prompt);
+}
+
+/**
+ * `prompt` is the prompt the submission came from, captured before anything here awaits: its clears and history reach
+ * that prompt even when the screen shows another agent by then. While main is shown it is the editor itself.
+ */
+async function submitToMainChat(
+	this: InteractiveModeBase,
+	text: string,
+	submittedDraft: string,
+	prompt: PromptHandle,
+): Promise<void> {
+	try {
+		// Built-in commands split their name from their arguments at the first
+		// whitespace, the same way prompt templates, skills and extension commands do.
+		const { name: command, args } = text.startsWith("/") ? parseSlashCommand(text) : { name: "", args: "" };
+		const argument = args.trim() || undefined;
+		const bare = (name: string) => command === name && args === "";
+		if (command === "tasks") {
+			if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
+				await this.runtimeHost.openTaskInspector(argument);
+				return;
+			}
+			if (!getOwnerTaskStore(this.session)) this.session.getAgentTaskHost();
+			const store = getOwnerTaskStore(this.session);
+			prompt.setText("");
+			if (!store) {
+				this.showStatus("Launched agents and shells will appear here.");
+				return;
+			}
+			const ui = this.createExtensionUIContext();
+			await showTaskInspector(
+				{
+					custom: (factory, options) => this.showExtensionCustom(factory, options),
+					getChatRenderSettings: ui.getChatRenderSettings,
+					getFooterDataProvider: ui.getFooterDataProvider,
+					getToolsExpanded: ui.getToolsExpanded,
+					setToolsExpanded: ui.setToolsExpanded,
+					notify: ui.notify,
+				},
+				store,
+				argument,
+				{ board: agentPanelBoardSource(this.session) },
+			);
+			return;
+		}
+		if (bare("settings")) {
+			const shown = this.showSettingsSelector();
+			prompt.setText("");
+			await shown;
+			return;
+		}
+		if (bare("scoped-models")) {
+			prompt.setText("");
+			await this.ensureDeferredStartupComplete();
+			this.showModelsSelector();
+			return;
+		}
+		if (command === "model") {
+			prompt.setText("");
+			await this.ensureDeferredStartupComplete();
+			await this.handleModelCommand(argument);
+			return;
+		}
+		if (command === "thinking") {
+			prompt.setText("");
+			await this.ensureDeferredStartupComplete();
+			await this.handleThinkingCommand(argument);
+			return;
+		}
+		if (command === "export") {
+			await this.handleExportCommand(text);
+			prompt.setText("");
+			return;
+		}
+		if (command === "import") {
+			await this.handleImportCommand(text);
+			prompt.setText("");
+			return;
+		}
+		if (bare("share")) {
+			await this.handleShareCommand();
+			prompt.setText("");
+			return;
+		}
+		if (bare("copy")) {
+			await this.handleCopyCommand();
+			prompt.setText("");
+			return;
+		}
+		if (command === "name") {
+			await this.handleNameCommand(text);
+			prompt.setText("");
+			return;
+		}
+		if (bare("session")) {
+			await this.handleSessionCommand();
+			prompt.setText("");
+			return;
+		}
+		if (command === "session" && args === "snapshot") {
+			prompt.setText("");
+			await this.handleSessionSnapshotCommand();
+			return;
+		}
+		if (bare("tools")) {
+			prompt.setText("");
+			await this.handleToolsCommand();
+			return;
+		}
+		if (bare("changelog")) {
+			prompt.setText("");
+			await this.handleChangelogCommand();
+			return;
+		}
+		if (bare("hotkeys")) {
+			this.handleHotkeysCommand();
+			prompt.setText("");
+			return;
+		}
+		if (bare("fork")) {
+			this.showUserMessageSelector();
+			prompt.setText("");
+			return;
+		}
+		if (bare("clone")) {
+			prompt.setText("");
+			await this.handleCloneCommand();
+			return;
+		}
+		if (bare("tree")) {
+			this.showTreeSelector();
+			prompt.setText("");
+			return;
+		}
+		if (bare("trust")) {
+			void this.showTrustSelector();
+			prompt.setText("");
+			return;
+		}
+		if (command === "login") {
+			prompt.setText("");
+			await this.handleLoginCommand(argument);
+			return;
+		}
+		if (command === "logout") {
+			prompt.setText("");
+			await this.showOAuthSelector("logout", argument);
+			return;
+		}
+		if (bare("new")) {
+			prompt.setText("");
+			await this.handleClearCommand();
+			return;
+		}
+		if (command === "compact") {
+			prompt.setText("");
+			// A manual request can take over automatic compaction, but a second manual
+			// compaction or branch summary still has no safe independent owner.
+			const automaticCompaction =
+				this.session.compactionReason === "threshold" || this.session.compactionReason === "overflow";
+			if (this.manualCompactionTakeoverPending || (this.compactionActive && !automaticCompaction)) {
+				this.showWarning(COMPACTION_ALREADY_IN_PROGRESS_WARNING);
+				return;
+			}
+			await this.handleCompactCommand(args);
+			return;
+		}
+		if (bare("reload")) {
+			prompt.setText("");
+			await this.ensureDeferredStartupComplete();
+			await this.handleReloadCommand();
+			return;
+		}
+		if (bare("debug")) {
+			const written = this.handleDebugCommand();
+			prompt.setText("");
+			await written;
+			return;
+		}
+		if (bare("arminsayshi")) {
+			this.handleArminSaysHi();
+			prompt.setText("");
+			return;
+		}
+		if (bare("dementedelves")) {
+			const shown = this.handleDementedDelves();
+			prompt.setText("");
+			await shown;
+			return;
+		}
+		if (command === "resume") {
+			prompt.setText("");
+			if (argument) await this.handleResumeTarget(argument);
+			else this.showSessionSelector();
+			return;
+		}
+		if (bare("quit") || bare("exit")) {
+			prompt.setText("");
+			await this.shutdown();
+			return;
+		}
+
+		if (text.startsWith("/") && this.deferredStartupPending) {
+			prompt.addToHistory(text);
+			prompt.setText("");
+			this.ui.requestRender();
+			await yieldToEventLoop();
+			await this.ensureDeferredStartupComplete();
+			await this.session.prompt(text);
+			return;
+		}
+		// Handle bash command (! for normal, !! for excluded from context)
+		if (text.startsWith("!")) {
+			const isExcluded = text.startsWith("!!");
+			const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
+			if (command) {
+				if (this.session.isBashRunning) {
+					this.showWarning("A bash command is already running. esc cancel first.");
+					prompt.setText(text);
+					return;
+				}
+				prompt.addToHistory(text);
+				await this.handleBashCommand(command, isExcluded);
+				this.isBashMode = false;
+				this.updateEditorBorderColor();
+				return;
+			}
+		}
+
+		// Queue input behind compaction-queued messages (extension commands execute immediately)
+		if (
+			this.compactionActive ||
+			(!this.session.queuedMessagesPaused &&
+				(this.compactionFlushPending || this.compactionSendFailed || this.promptTurn?.dispatched === false))
+		) {
+			if (this.isExtensionCommand(text)) {
+				prompt.addToHistory(text);
+				prompt.setText("");
+				// Messages the command sends must follow the ones already typed (#4251).
+				if (this.compactionActive) handOffCompactionQueue(this);
+				await this.session.prompt(text);
+			} else {
+				this.queueCompactionMessage(text, "steer");
+			}
+			return;
+		}
+
+		// A paused submission releases the session queue before its own turn, so move held
+		// messages there first to keep them ahead of this one.
+		if (this.session.queuedMessagesPaused && this.compactionSendFailed && !this.compactionFlushPending) {
+			await this.flushCompactionQueue({ willRetry: false });
+		}
+
+		// If streaming, use prompt() with steer behavior
+		// This handles extension commands (execute immediately), prompt template expansion, and queueing
+		if ((this.session.isStreaming || this.promptTurn !== undefined) && !this.session.queuedMessagesPaused) {
+			prompt.addToHistory(text);
+			prompt.setText("");
+			// An engine sends its answer to this prompt together with the first events of the turn it started, and
+			// the host handles those events before the answer's callback runs. If the session already showed the
+			// message, echoing it again here would show it twice (#4272). It shows the message as sent, which an
+			// `input` hook may have rewritten (#4277), so any message it showed meanwhile counts.
+			const shownBefore = this.userMessagesShownBySession;
+			let echoedStartedRun = false;
+			let showedUserMessage = false;
+			const unsubscribeUserMessages = this.session.subscribe((event) => {
+				if (event.type === "message_start" && event.message.role === "user") showedUserMessage = true;
+			});
+			let submitted: SteeringSubmitResult;
+			try {
+				submitted = await mainSteering(this).submit(text, "steer", {
+					route: "queue",
+					// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
+					showAsQueued: !this.isExtensionCommand(text),
+					onAnswered: (success, disposition) => {
+						if (
+							success &&
+							disposition === "started" &&
+							!text.startsWith("/") &&
+							this.userMessagesShownBySession === shownBefore
+						) {
+							echoedStartedRun = true;
+							this.renderDeferredUserInput(text);
+							this.expectStartedUserInput(text, shownBefore);
+						}
+					},
+					onSent: () => {
+						// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
+						if (
+							echoedStartedRun &&
+							!showedUserMessage &&
+							this.deferredRenderedUserInputs?.includes(text) === true
+						)
+							this.discardDeferredRenderedUserInput(text);
+					},
+				});
+			} finally {
+				unsubscribeUserMessages();
+			}
+			if (submitted.kind === "failed") throw submitted.error;
+			if (submitted.kind === "lost") {
+				this.showError(submitted.error.message);
+				return;
+			}
+			if (submitted.kind === "refused") {
+				restoreRefusedSubmission(this, submitted.error, submittedDraft, prompt);
+				return;
+			}
+			this.updatePendingMessagesDisplay();
+			this.ui.requestRender();
+			return;
+		}
+
+		// Normal message submission
+		// First, move any pending bash components to chat
+		this.flushPendingBashComponents();
+		// The draft travels with this submission, never through shared state: a
+		// later submission whose trimmed text is identical must not be able to
+		// claim, or clear, this one's exact buffer.
+		const submission = { text, draft: submittedDraft };
+
+		if (this.onInputCallback) {
+			if (!text.startsWith("/")) {
+				this.renderDeferredUserInput(text);
+			}
+			this.promptTurn ??= { dispatched: false };
+			this.onInputCallback(submission);
+		} else {
+			this.pendingUserInputs.push(submission);
+		}
+		prompt.addToHistory(text);
+	} catch (error) {
+		// Direct dispatch branches above hand text straight to the engine and
+		// never reach runUserPromptTurn(), so this is the only place their send
+		// failures can put the draft back. Anything else is not ours to absorb.
+		if (!restoreFailedSubmissionDraft(this, error, submittedDraft, { prompt })) throw error;
+	} finally {
+		this.advanceStartupInputReplay?.(text);
+	}
+}
 
 /**
  * A click on a hint that names a slash command, such as `/tasks to manage`, runs it as if it were typed into an empty

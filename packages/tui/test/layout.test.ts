@@ -31,6 +31,35 @@ describe("viewport layout", () => {
 		assert.deepStrictEqual(visibleLines(frame.lines), ["top", "body", "", ""]);
 	});
 
+	it("gives a leaf that renders by height the rows its stack slot allocated", () => {
+		const heights: number[] = [];
+		const sized = {
+			render: () => ["by width"],
+			renderSized: (_width: number, height: number) => {
+				heights.push(height);
+				return Array.from({ length: height }, (_, row) => `row ${row}`);
+			},
+			invalidate: () => {},
+		};
+		const frame = renderLayoutFrame(
+			new VStack([
+				{ component: sized, basis: 0, grow: 1 },
+				{ component: new Text("dock\ndock 2", 0, 0), basis: "auto" },
+			]),
+			10,
+			6,
+			() => {},
+		);
+		assert.deepStrictEqual(heights, [4]);
+		assert.deepStrictEqual(visibleLines(frame.lines), ["row 0", "row 1", "row 2", "row 3", "dock", "dock 2"]);
+		// Laid out at its natural height, as scroll content is, it renders by width as before.
+		assert.deepStrictEqual(visibleLines(renderLayoutFrame(new ScrollView(sized), 10, 3, () => {}).lines), [
+			"by width",
+			"",
+			"",
+		]);
+	});
+
 	it("does not render fixed-basis scroll content during stack measurement", () => {
 		let renderCount = 0;
 		const transcript = new ScrollView({

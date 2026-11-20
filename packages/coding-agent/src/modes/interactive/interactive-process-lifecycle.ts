@@ -2,6 +2,13 @@ import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
 import { terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
+import { promptHandle } from "./agent-view/agent-drafts.ts";
+import {
+	dequeueViewedAgent,
+	followUpViewedAgent,
+	interruptViewedAgent,
+	leaveViewedAgent,
+} from "./agent-view/viewed-submit.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { APP_TITLE, chalk, killTrackedDetachedChildren } from "./interactive-mode-deps.ts";
 import { formatCrashExtensionHint, formatResumeCommand, isDeadTerminalError } from "./interactive-mode-helpers.ts";
@@ -25,6 +32,13 @@ InteractiveModeBase.prototype.handleCtrlC = function (this: InteractiveModeBase)
 	if (isWindowsSubshellActive(this)) return;
 	if (this.editor.getText() !== "") {
 		this.clearEditor();
+		this.lastSigintTime = 0;
+		return;
+	}
+	// While a subagent is shown, an empty prompt's Ctrl+C pauses its work and shows main; it never exits from there.
+	// An engine that owes an abort is still terminated first, as the watchdog advertises.
+	if (this.agentView?.viewed.kind === "agent" && !terminateInteractiveEngine(this.runtimeHost)) {
+		leaveViewedAgent(this);
 		this.lastSigintTime = 0;
 		return;
 	}
@@ -68,6 +82,9 @@ InteractiveModeBase.prototype.interruptActiveOperation = function (this: Interac
 	if (terminateInteractiveEngine(this.runtimeHost)) {
 		return true;
 	}
+	// While a subagent is shown, its running work is the one stopped, as Esc stops it; main's goes on.
+	const viewed = interruptViewedAgent(this);
+	if (viewed !== undefined) return viewed;
 	if (this.session.isStreaming || this.session.agent.hasQueuedMessages()) {
 		pauseAndAbortInteractiveSession(this);
 		return true;
@@ -275,6 +292,9 @@ InteractiveModeBase.prototype.handleCtrlZ = function (this: InteractiveModeBase)
 };
 
 InteractiveModeBase.prototype.handleFollowUp = async function (this: InteractiveModeBase): Promise<void> {
+	if (followUpViewedAgent(this)) return;
+	// Main's prompt, also once the screen shows a subagent while this is on its way.
+	const prompt = promptHandle(this, "main");
 	const rawText = this.editor.getExpandedText?.() ?? this.editor.getText();
 	const text = rawText.trim();
 	if (!text) return;
@@ -286,7 +306,7 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 		try {
 			await send();
 		} catch (error) {
-			if (!restoreFailedSubmissionDraft(this, error, rawText)) throw error;
+			if (!restoreFailedSubmissionDraft(this, error, rawText, { prompt })) throw error;
 		}
 	};
 
@@ -296,8 +316,8 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 		(!this.session.queuedMessagesPaused && (this.compactionFlushPending || this.compactionSendFailed))
 	) {
 		if (this.isExtensionCommand(text)) {
-			this.editor.addToHistory?.(text);
-			this.editor.setText("");
+			prompt.addToHistory(text);
+			prompt.setText("");
 			// Messages the command sends must follow the ones already typed (#4251).
 			if (this.compactionActive) handOffCompactionQueue(this);
 			await dispatch(() => this.session.prompt(text));
@@ -316,8 +336,8 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 	// Alt+Enter queues a follow-up message (waits until agent finishes)
 	// This handles extension commands (execute immediately), prompt template expansion, and queueing
 	if (this.session.isStreaming) {
-		this.editor.addToHistory?.(text);
-		this.editor.setText("");
+		prompt.addToHistory(text);
+		prompt.setText("");
 		const submitted = await mainSteering(this).submit(text, "followUp", {
 			route: "queue",
 			// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
@@ -330,7 +350,7 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 		}
 		if (submitted.kind === "refused") {
 			// A refused follow-up goes back to the editor with the reason, as a refused steering message does (#4696).
-			restoreRefusedSubmission(this, submitted.error, rawText);
+			restoreRefusedSubmission(this, submitted.error, rawText, prompt);
 			return;
 		}
 		this.updatePendingMessagesDisplay();
@@ -348,6 +368,7 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 };
 
 InteractiveModeBase.prototype.handleDequeue = async function (this: InteractiveModeBase): Promise<void> {
+	if (dequeueViewedAgent(this)) return;
 	try {
 		const restored = await this.restoreQueuedMessagesToEditor();
 		if (restored === 0) {

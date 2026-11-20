@@ -146,7 +146,9 @@ function openSubagentInspector(options: {
 			style: themedChatHostStyle(),
 		}),
 	);
-	inspector.openChat(taskId);
+	// Enter on the subagent's row of /tasks opens its chat (a host without the single screen).
+	inspector.open(taskId);
+	inspector.handleInput("\r");
 	const screen = () =>
 		inspector
 			.renderViewport(100, 30)
@@ -287,7 +289,7 @@ describe("ctrl+r in a subagent or stage chat behaves as in the main chat (#5224)
 			subagent.inspector.handleInput("\x12");
 			await flush();
 			assert.match(subagent.screen(), /Search prompts/);
-			assert.doesNotMatch(subagent.screen(), /esc to interrupt|← main chat/);
+			assert.doesNotMatch(subagent.screen(), /esc to interrupt|← tasks/);
 			subagent.inspector.handleInput("\x1b[B");
 			await flush();
 			assert.match(subagent.screen(), /❯ inspect the older prompt/);
@@ -308,7 +310,7 @@ describe("ctrl+r in a subagent or stage chat behaves as in the main chat (#5224)
 			subagent.inspector.handleInput("/");
 			await flush();
 			assert.match(subagent.screen(), /esc close/);
-			assert.doesNotMatch(subagent.screen(), /esc to interrupt|← main chat/);
+			assert.doesNotMatch(subagent.screen(), /esc to interrupt|← tasks/);
 			subagent.inspector.handleInput("\x1b");
 			await flush();
 			assert.equal(interrupts, 0, "Esc on an open / menu must not interrupt the running subagent");
@@ -317,7 +319,8 @@ describe("ctrl+r in a subagent or stage chat behaves as in the main chat (#5224)
 			await flush();
 			subagent.inspector.handleInput("\x1b[D");
 			await flush();
-			assert.equal(subagent.closed(), 1, "Left after closing the menu returns to the main chat");
+			assert.equal(subagent.closed(), 0, "the subagent's chat goes back to /tasks, which stays open");
+			assert.doesNotMatch(subagent.screen(), /pgup\/pgdn scroll/, "Left after closing the menu leaves the chat");
 		} finally {
 			subagent.inspector.dispose();
 		}
