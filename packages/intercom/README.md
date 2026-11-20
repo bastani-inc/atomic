@@ -424,6 +424,7 @@ The default `npx --no-install tsx` pair is a compatibility sentinel: intercom re
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
+| `joinAtStartup` | true | Interactive sessions join the broker when they start, so other sessions can list and message them before they use Intercom. `false` makes them join on first use. `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` or `1` overrides it |
 
 Existing pi-compatible configs that set a custom broker command still work. For example, if you intentionally want to use Bun from `PATH`, configure it explicitly:
 

@@ -16,6 +16,7 @@ import {
 	type IntercomStartupJoinRequest,
 	joinsIntercomAtStartup,
 	STARTUP_JOIN_RETRIES,
+	startupJoinFromEnv,
 } from "./startup-join.js";
 import {
 	type AwaitIntercomPeerRequest,
@@ -589,7 +590,12 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
       return;
     }
     if (loadedHeavy) await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
-    if (!hasSubagentIntercomEnv() && !inheritedDelegatedSessionName && joinsIntercomAtStartup(ctx, () => pi.getActiveTools())) {
+    if (
+      startupJoinFromEnv() !== false &&
+      !hasSubagentIntercomEnv() &&
+      !inheritedDelegatedSessionName &&
+      joinsIntercomAtStartup(ctx, () => (typeof pi.getActiveTools === "function" ? pi.getActiveTools() : []))
+    ) {
       scheduleStartupJoin(ctx, lease, generation);
     }
   });

@@ -49,7 +49,6 @@ function fixture(importResults: ImportResult[], hasUI = false, mode: ExtensionCo
 			commands.set(name, command);
 		},
 		registerShortcut() {},
-		getActiveTools: () => [],
 		events: {
 			on(name: string, handler: (payload: object) => void) {
 				eventHandlers.set(name, handler);

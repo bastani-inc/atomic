@@ -76,6 +76,7 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 			"../../test/global-setup-herdr-isolation.ts",
 			"../../test/global-setup-provider-credential-isolation.ts",
 			"../../test/global-setup-debug-isolation.ts",
+			"../../test/global-setup-intercom-startup-join.ts",
 			"../../test/global-setup-test-directory.ts",
 			"./test/global-setup-warm-transpile-cache.ts",
 		],

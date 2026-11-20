@@ -301,6 +301,7 @@ Create `~/.atomic/agent/intercom/config.json`. The legacy `~/.pi/agent/intercom/
 | `replyHint` | `true` | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 | `group` | `"default"`, or the project group while multi-node routing is on | Home intercom group for this session (see [Groups](/intercom/reference#groups)). Overridden by env `ATOMIC_INTERCOM_GROUP` / `PI_INTERCOM_GROUP`, by an SDK host's `intercom` option, and by subagent per-session injection. |
+| `joinAtStartup` | `true` | An interactive session joins Intercom as soon as it starts, so other sessions can list and message it before it uses Intercom. Set `false` to have interactive sessions join on first use, like print, JSON, RPC and SDK sessions. Overridden by env `ATOMIC_INTERCOM_JOIN_AT_STARTUP`: `0` turns it off and `1` turns it on. |
 
 The default `npx --no-install tsx` pair uses Atomic's own runtime and does not require `npx`, `tsx`, or `bun` on `PATH`. Explicit custom commands still work. For example, to use Bun from `PATH`:
 

@@ -113,7 +113,7 @@ import { InboundMessageAdmission } from "./inbound-message-admission.js";
 import { type AdmissionPlace, InboundAdmissionOrder } from "./inbound-admission-order.js";
 import { retryStableDelivery } from "./stable-delivery-retry.js";
 import type { IntercomConnectReason, IntercomExtensionTestOverrides } from "./intercom-test-seams.js";
-import { INTERCOM_STARTUP_JOIN_EVENT, type IntercomStartupJoinRequest } from "./startup-join.js";
+import { INTERCOM_STARTUP_JOIN_EVENT, type IntercomStartupJoinRequest, startupJoinFromEnv } from "./startup-join.js";
 import { admitActiveSessionInbound } from "./active-session-admission.js";
 import { createInboundDeliveryFailureHandler } from "./inbound-delivery-failure.js";
 import { DEFAULT_GROUP, explicitHomeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
@@ -1493,7 +1493,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (!payload || typeof payload !== "object") return;
     const request = payload as IntercomStartupJoinRequest;
     if (request.completion) return;
-    request.completion = ensureConnected("join").then(() => undefined);
+    request.completion = configReady.then(async () => {
+      if (!(startupJoinFromEnv() ?? config.joinAtStartup)) return;
+      await ensureConnected("join");
+    });
   });
   pi.events.on(INTERCOM_RECOVERY_PEERS_EVENT, (payload) => {
     if (!payload || typeof payload !== "object") return;

@@ -19,6 +19,14 @@ vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded:
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
 	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 4 } }),
 }));
+const intercomConfig = vi.hoisted(() => ({ joinAtStartup: true }));
+vi.mock("../../packages/intercom/config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../packages/intercom/config.js")>();
+	return {
+		...actual,
+		loadConfigAsync: async () => ({ ...actual.defaultConfig(), joinAtStartup: intercomConfig.joinAtStartup }),
+	};
+});
 
 type LifecycleEvent = SessionStartEvent | SessionShutdownEvent;
 type LifecycleHandler = (event: LifecycleEvent, ctx: ExtensionContext) => Promise<void> | void;
@@ -27,10 +35,14 @@ type Registration = { readonly registration: ConnectRegistration; readonly group
 
 const SESSION_START: SessionStartEvent = { type: "session_start", reason: "startup" };
 const SESSION_SHUTDOWN: SessionShutdownEvent = { type: "session_shutdown", reason: "quit" };
+const JOIN_ENV = "ATOMIC_INTERCOM_JOIN_AT_STARTUP";
 const originalConsoleError = console.error;
+const originalJoinEnv = process.env[JOIN_ENV];
 let consoleErrors: unknown[][] = [];
 
 beforeEach(() => {
+	delete process.env[JOIN_ENV];
+	intercomConfig.joinAtStartup = true;
 	consoleErrors = [];
 	console.error = (...args: unknown[]) => {
 		consoleErrors.push(args);
@@ -39,6 +51,8 @@ beforeEach(() => {
 
 afterEach(() => {
 	console.error = originalConsoleError;
+	if (originalJoinEnv === undefined) delete process.env[JOIN_ENV];
+	else process.env[JOIN_ENV] = originalJoinEnv;
 	vi.restoreAllMocks();
 });
 
@@ -223,6 +237,45 @@ async function elapse(ms: number): Promise<void> {
 		while (performance.now() < until) await new Promise((resolve) => setImmediate(resolve));
 	}
 }
+
+describe("turning the startup join off", () => {
+	async function joinsWithin(ms: number): Promise<boolean> {
+		const session = intercomSession();
+		const ctx = sessionContext({ mode: "tui" }, []);
+		try {
+			await session.start(ctx);
+			const deadline = Date.now() + ms;
+			while (session.registrations.length === 0 && Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			return session.registrations.length > 0;
+		} finally {
+			await session.shutdown(ctx);
+			vi.restoreAllMocks();
+		}
+	}
+
+	test("ATOMIC_INTERCOM_JOIN_AT_STARTUP=0 keeps an interactive session joining on first use", async () => {
+		process.env[JOIN_ENV] = "0";
+		assert.equal(await joinsWithin(500), false);
+		const session = intercomSession();
+		const ctx = sessionContext({ mode: "tui" }, []);
+		try {
+			await session.start(ctx);
+			await session.useIntercom(ctx);
+			assert.equal(session.registrations.length, 1, "it still joins when it uses Intercom");
+		} finally {
+			await session.shutdown(ctx);
+		}
+	});
+
+	test("joinAtStartup false in Intercom's config keeps it from joining, and the variable set to 1 overrides the config", async () => {
+		intercomConfig.joinAtStartup = false;
+		assert.equal(await joinsWithin(500), false);
+		process.env[JOIN_ENV] = "1";
+		assert.equal(await joinsWithin(5_000), true);
+	});
+});
 
 describe("a startup join that cannot reach the broker", () => {
 	afterEach(() => vi.useRealTimers());

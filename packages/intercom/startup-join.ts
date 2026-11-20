@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@bastani/atomic";
+import { type ExtensionContext, getEnvValue } from "@bastani/atomic";
 
 /** Asks the loaded Intercom runtime to join the broker for a session that has not used Intercom yet. */
 export const INTERCOM_STARTUP_JOIN_EVENT = "intercom:startup-join";
@@ -12,6 +12,17 @@ export interface IntercomStartupJoinRequest {
  * session joins on its next Intercom use, as a session that has never joined does.
  */
 export const STARTUP_JOIN_RETRIES = 5;
+
+/** `0` keeps interactive sessions from joining at startup and `1` makes them join, whatever Intercom's config says. */
+export const INTERCOM_JOIN_AT_STARTUP_ENV = "ATOMIC_INTERCOM_JOIN_AT_STARTUP";
+
+/** What the environment decides about joining at startup, or `undefined` when it leaves it to the config. */
+export function startupJoinFromEnv(): boolean | undefined {
+	const value = getEnvValue(INTERCOM_JOIN_AT_STARTUP_ENV)?.trim().toLowerCase();
+	if (value === "0" || value === "false") return false;
+	if (value === "1" || value === "true") return true;
+	return undefined;
+}
 
 /**
  * An interactive top-level session joins Intercom at startup, so other sessions can list and message it before it
