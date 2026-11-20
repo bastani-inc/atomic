@@ -259,17 +259,12 @@ const sqliteFts: TrigramEngine = {
 		await tx.run(`INSERT INTO ${tables.fts} (${tables.fts}, rank) VALUES ('automerge', 0)`);
 	},
 	async merge(tx, tables, steps, signal) {
-		const totalChanges = async () =>
-			Number((await tx.get<SqliteRow & { changes: number | bigint }>("SELECT total_changes() AS changes"))?.changes);
-		// Nothing else runs on the transaction's connection between steps, so one step's count is the next one's start.
-		let before: number | undefined;
 		for (let step = 0; step < steps; step++) {
 			signal?.throwIfAborted();
-			before ??= await totalChanges();
+			const before = await tx.get<SqliteRow & { changes: number | bigint }>("SELECT total_changes() AS changes");
 			await tx.run(`INSERT INTO ${tables.fts} (${tables.fts}, rank) VALUES ('merge', ?)`, MERGE_PAGES);
-			const after = await totalChanges();
-			if (after - before < 2) return false;
-			before = after;
+			const after = await tx.get<SqliteRow & { changes: number | bigint }>("SELECT total_changes() AS changes");
+			if (Number(after?.changes) - Number(before?.changes) < 2) return false;
 			await yieldTurn();
 		}
 		return true;
