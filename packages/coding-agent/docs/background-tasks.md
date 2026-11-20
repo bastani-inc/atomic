@@ -13,12 +13,13 @@ Below the main chat's prompt, the **agent panel** lists the session's active bac
 
 ```text
   ● main
-  ∀ worker    fix shipping batches                         41m · ↓ 96.1k tokens
-  ∀ debugger  #5220 spawn lock                             18m · ↓ 87.4k tokens
-  ◼ worker    picker clamp                               stopped · 6m
+  ∀ worker    openai/gpt-5.5 high                    fix shipping batches           41m · ↓ 96.1k tokens
+  ∀ debugger  github-copilot/claude-opus-5.5 medium  #5220 spawn lock               18m · ↓ 87.4k tokens
+  ◼ worker    anthropic/claude-sonnet-4-5 high       picker clamp                           stopped · 6m
 ```
 
-- **Each row shows** the status, the agent's name, what it works on, how long it has run and the tokens it has used. A waiting row shows its question.
+- **Each row shows** the status, the agent's name, the model it runs on and its reasoning level, what it works on, how long it has run and the tokens it has used. A waiting row shows its question.
+- **The model column** names the model the subagent runs on now, as `provider/model-id`, then its reasoning level, as the footer shows the main chat's. A model without reasoning levels shows no level. The column follows the subagent: it changes as soon as the subagent falls back to another model, is resumed on a different one, or changes its reasoning level. A stopped or paused row shows the model its last turn ran on. A row whose model is not known yet leaves the column blank.
 - The task title in the panel and in an attached chat header stops at a whole character. A shortened title ends in `…`.
 - **Status glyphs:**
   - `∀` running
@@ -28,7 +29,7 @@ Below the main chat's prompt, the **agent panel** lists the session's active bac
   - `✓` done
   - `✗` failed, showing the reason
   - `◼` stopped
-- **Finished subagents** leave the panel as soon as they finish; `/tasks` still lists them. A stopped, paused or interrupted subagent stays while another subagent or background shell is still running, and leaves once nothing is running. Switching chats or starting unrelated work does not bring it back. If it resumes and stops again while other work is running, it reappears as one row, even if the panel was closed during the resume. A stopped row reads dim after 30 seconds. Narrow terminals drop the token count.
+- **Finished subagents** leave the panel as soon as they finish; `/tasks` still lists them. A stopped, paused or interrupted subagent stays while another subagent or background shell is still running, and leaves once nothing is running. Switching chats or starting unrelated work does not bring it back. If it resumes and stops again while other work is running, it reappears as one row, even if the panel was closed during the resume. A stopped row reads dim after 30 seconds. As the terminal narrows, each task is shortened first; below 100 columns, or when a row would be left no room for its task or its time, the model column is dropped, and below 70 columns the token count.
 - **Up to four rows** show while the prompt has focus, then `+N more`; the focused panel shows eight at a time. The main row does not count toward either.
 
 The main footer shows `↓ N agents` for the subagent rows the panel lists. `N needs input` counts every row that waits for an answer. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but `/tasks` lists subagents of this chat, the footer shows `/tasks to see subagents`; while background shells run, `N shells · /tasks to manage` takes its place.
@@ -57,7 +58,7 @@ Extension authors can add rows with [`pi.registerAgentPanelSource()`](/extension
 Run `/tasks` to inspect work without stopping it:
 
 - The list opens in the editor slot, with the conversation visible above it. It lists the subagents and shells that chat owns, running and finished.
-- Its header counts them, for example `Tasks  1 needs input · 3 working · 2 done`, and the rows are grouped **Needs input**, **Working** and **Done**. Each row is one line: its status mark (`⧗` for a running shell), its name and task (or the question, while it waits for an answer), and on the right how long it has waited, run or took, in the agent panel's format (`3m`, `1h 6m`), with its tokens.
+- Its header counts them, for example `Tasks  1 needs input · 3 working · 2 done`, and the rows are grouped **Needs input**, **Working** and **Done**. Each row is one line: its status mark (`⧗` for a running shell), its name, a subagent's model and reasoning level in the agent panel's model column, its task (or the question, while it waits for an answer), and on the right how long it has waited, run or took, in the agent panel's format (`3m`, `1h 6m`), with its tokens. A finished subagent's row shows the model its last turn ran on; the model column follows the panel's width rules.
 - The hint line lists the keys that work on the selected row: `↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← close · ? keys`. On a finished row `x` reads `dismiss`.
 - Space opens a peek card under the selected row, and the rest of the list stays in place:
   - A subagent or shell shows its model, current tool call and usage.
