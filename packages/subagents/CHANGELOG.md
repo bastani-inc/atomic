@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0-alpha.1] - 2026-11-20
+
 ### Breaking Changes
 
 - Workflow stages no longer launch, hold, or resume subagents. Instead of nesting delegation through stages, launch children side by side from the parent session, directly or with codemode. Wait for a child by its task id and resume it by its child id. Reopening the parent session still restores its unfinished children; records left by former workflow stages are not resumed ([#5932](https://github.com/bastani-inc/atomic/pull/5932)).

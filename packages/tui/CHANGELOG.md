@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+## [0.10.0-alpha.1] - 2026-11-20
+
 ### Breaking Changes
 
 - The bundled command names no longer include `workflows` or `workflow-authoring`. If your extension uses either name, mark clickable hints explicitly with `slashCommandHint()` rather than relying on built-in command recognition ([#5926](https://github.com/bastani-inc/atomic/pull/5926)).

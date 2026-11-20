@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.10.0-alpha.1] - 2026-11-20
+
 ### Breaking Changes
 
 - Workflows were removed in Atomic 0.10.0, and with them Intercom's workflow stage targets. `send`, `ask` and `reply` answer a `workflow:<rootRunId>/...` target as any unknown name, with `Session not found`, and never send it on; `intercom list` shows no workflow stage or future-stage rows, and the codemode `list` result no longer has a `workflowStages` field. Send to a session by its name or ID instead ([#5947](https://github.com/bastani-inc/atomic/pull/5947)).
