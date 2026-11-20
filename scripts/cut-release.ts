@@ -327,7 +327,7 @@ async function main(): Promise<void> {
 		// is hermetic: internal Atomic packages use deterministic registry tarball
 		// URLs derived from local package metadata rather than npm registry metadata.
 		await $`bun run ${join(ROOT, "scripts/bump-version.ts")} ${version} --root ${worktreeDir}`;
-		await $`bun run ${join(worktreeDir, "scripts/generate-coding-agent-shrinkwrap.mjs")}`;
+		await $`bun run ${join(ROOT, "scripts/generate-coding-agent-shrinkwrap.mjs")} --root ${worktreeDir}`;
 
 		// bump-version.ts also stamps package-lock.json's workspace entries, so the
 		// tagged commit installs cleanly with `npm ci`. No relock is needed: only

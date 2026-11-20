@@ -9,8 +9,10 @@
  * verifies rather than beside a second, unverified one.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { generateShrinkwrap } from "./generate-coding-agent-shrinkwrap.mjs";
@@ -88,5 +90,36 @@ test("no packaged dependency resolves outside the public npm registry", async ()
 	for (const [path, entry] of Object.entries(generated.packages)) {
 		if (entry.resolved === undefined) continue;
 		assert.match(entry.resolved, /^https:\/\/registry\.npmjs\.org\//u, path);
+	}
+});
+
+test("--root writes another checkout's shrinkwrap with this checkout's script", () => {
+	const checkout = mkdtempSync(join(tmpdir(), "atomic-shrinkwrap-root-"));
+	try {
+		const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
+		cpSync(join(root, "package-lock.json"), join(checkout, "package-lock.json"));
+		for (const path of Object.keys(lock.packages)) {
+			if (!path.startsWith("packages/") || path.includes("/node_modules/")) continue;
+			cpSync(join(root, path, "package.json"), join(checkout, path, "package.json"), { force: true });
+		}
+		const manifestPath = join(checkout, "packages/coding-agent/package.json");
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+		writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, version: "9.9.9-root" }, null, "\t")}\n`);
+		const committedPath = join(root, "packages/coding-agent/npm-shrinkwrap.json");
+		const committed = readFileSync(committedPath, "utf8");
+
+		const script = join(root, "scripts/generate-coding-agent-shrinkwrap.mjs");
+		const run = spawnSync(process.execPath, [script, "--root", checkout], {
+			cwd: dirname(checkout),
+			encoding: "utf8",
+		});
+
+		assert.equal(run.status, 0, run.stderr);
+		const written = JSON.parse(readFileSync(join(checkout, "packages/coding-agent/npm-shrinkwrap.json"), "utf8"));
+		assert.equal(written.version, "9.9.9-root");
+		assert.equal(written.packages[""].version, "9.9.9-root");
+		assert.equal(readFileSync(committedPath, "utf8"), committed);
+	} finally {
+		rmSync(checkout, { recursive: true, force: true });
 	}
 });
