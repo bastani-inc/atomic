@@ -110,6 +110,7 @@ async function broker(path: string, options: { lockWaitMs?: number; whileLoading
 			);
 			return store;
 		},
+		routingStarted: () => undefined,
 		retireStore: () => {},
 		budget,
 		delivered: () => "unknown",
