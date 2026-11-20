@@ -25,7 +25,7 @@ A block does not add a leading blank line; its container controls spacing betwee
 
 In ordinary tool renderers, return only the call title from `renderCall` and unframed result content from `renderResult`; Atomic supplies the state glyph and connectors. Return `ToolBlockRecords` when several results need separate connectors.
 
-When embedding `ChatSessionHost`, forward the complete `ctx.ui.getChatRenderSettings()` result. Its optional component factories preserve remote tool renderers and the attached chat's repaint and expansion settings. Do not copy only `getToolDefinition`. Custom message renderers can use `options.cwd` for the receiving chat's working directory instead of assuming `process.cwd()` matches it.
+When embedding `ChatSessionHost`, forward the complete `ctx.ui.getChatRenderSettings()` result. Its optional component factories preserve remote tool renderers and the embedded chat's repaint and expansion settings. Do not copy only `getToolDefinition`. Custom message renderers can use `options.cwd` for the receiving chat's working directory instead of assuming `process.cwd()` matches it.
 
 `host.replaceMessages(messages)` starts a fresh unread baseline. Use `host.replaceMessages(messages, { preserveUnread: true })` for a new snapshot of the same conversation; arrivals that have not painted yet remain unread.
 

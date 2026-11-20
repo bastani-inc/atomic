@@ -923,7 +923,7 @@ if (pi.getFlag("plan")) {
 
 ### pi.registerAgentPanelSource(source)
 
-Add rows to the [agent panel](/background-tasks#the-agent-panel) below the main chat's prompt and to `/tasks`. The registration is released with the extension generation, and `/reload` re-registers it.
+Add rows to the [agent panel](/background-tasks#the-agent-panel) below the prompt and to `/tasks`. The registration is released with the extension generation, and `/reload` re-registers it.
 
 ```typescript
 import type { AgentPanelItem, ExtensionAPI } from "@bastani/atomic";
