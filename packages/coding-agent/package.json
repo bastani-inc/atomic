@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic",
-  "version": "0.0.0",
+  "version": "0.10.1-alpha.1",
   "description": "Atomic coding agent CLI with read, bash, edit, write tools and session management",
   "type": "module",
   "atomicConfig": {
@@ -71,11 +71,11 @@
     "prepublishOnly": "bun run clean && bun run build && bun run shrinkwrap"
   },
   "dependencies": {
-    "@bastani/atomic-natives": "0.0.0",
-    "@bastani/atomic-ai": "0.0.0",
-    "@bastani/atomic-agent-core": "0.0.0",
-    "@bastani/atomic-codemode": "0.0.0",
-    "@bastani/atomic-tui": "0.0.0",
+    "@bastani/atomic-natives": "0.10.1-alpha.1",
+    "@bastani/atomic-ai": "0.10.1-alpha.1",
+    "@bastani/atomic-agent-core": "0.10.1-alpha.1",
+    "@bastani/atomic-codemode": "0.10.1-alpha.1",
+    "@bastani/atomic-tui": "0.10.1-alpha.1",
     "@modelcontextprotocol/ext-apps": "^2.0.4",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@mozilla/readability": "^0.6.0",
