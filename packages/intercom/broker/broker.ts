@@ -404,6 +404,7 @@ class IntercomBroker {
   /** #5999 durable wake queue: where messages for subagents that ended are kept, so a broker restart loses none. */
   private readonly endedQueue = new DurableEndedQueue({
     openStore: () => this.openEndedQueueStore(),
+    routingStarted: () => (this.sharedStorageSetting === undefined ? undefined : this.multiNodeFirstAttempt),
     retireStore: () => this.retireEndedQueueStore(),
     budget: this.wakeBudget,
     delivered: (held) => this.queuedMessageState(held),
@@ -983,7 +984,7 @@ class IntercomBroker {
                     },
               );
         // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
-        // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS).
+        // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS, and by ENDED_QUEUE_ROUTING_WAIT_MS with a shared `storage`).
         const keeper = this.endedQueue.decided
           ? undefined
           : this.endedQueue.decide((snapshot) => this.restoreEndedQueue(snapshot));
