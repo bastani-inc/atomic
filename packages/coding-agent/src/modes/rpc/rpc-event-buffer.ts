@@ -36,7 +36,7 @@ export class RpcEventBuffer {
 	}
 
 	/** Remove the updates still held and return them, without emitting them. */
-	take(): RpcEvent[] {
+	drain(): RpcEvent[] {
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
 		const events = [...this.updates.values()];

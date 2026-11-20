@@ -332,7 +332,7 @@ export class RpcClient extends RpcClientApi {
 		// the generation ended, and what the engine writes while it shuts down does not reach the host at all
 		// (handleStoppedEngineLine). A generation that already ended on its own keeps its terminal drain.
 		if (terminateTree && endedGeneration > this.lastEndedGeneration) {
-			for (const event of this.eventBuffer?.take() ?? []) {
+			for (const event of this.eventBuffer?.drain() ?? []) {
 				try {
 					this.emitEvent(event);
 				} catch {
