@@ -16,6 +16,8 @@
 ### Changed
 
 - The `wait` and `status` output of a subagent that completed or failed names the call that continues it, after its `Output of <task-id> (…):` header. A codemode script's settled `wait` also returns the child's `childId`, and a `resumeCall` when the child completed, failed, or was paused or quit, like the one `status` returns.
+- A subagent receives the messages you type in its chat through its own steering and follow-up queue, exactly as you typed them, instead of as Intercom messages with your chat's name and folder in front of the text. Messages from other agents still arrive through Intercom.
+- A subagent you pause with Esc in its chat keeps its session and task and continues with the next message you send from that chat. Messages from other agents and its background work's notices wait until then and are delivered after your message. `x` in `/tasks` and `subagent({ action: "pause" })` or `quit` still stop it.
 
 ### Fixed
 
