@@ -541,6 +541,27 @@ const FUNCTION_STEPS = new Set([
 	"AggValue",
 	"AggInverse",
 ]);
+/** The collating sequences SQLite builds in; `B` is how a plan's key lists `BINARY`. */
+const BUILT_IN_COLLATIONS = new Set(["", "B", "BINARY", "NOCASE", "RTRIM"]);
+/** Steps of a plan that compare with a collating sequence named in their P4 as `name-encoding`. */
+const COLLATING_STEPS = new Set(["CollSeq", "Eq", "Ne", "Lt", "Le", "Gt", "Ge"]);
+const COLLATION = /^(.*)-(?:8|16le|16be|16)$/;
+/** A plan's key, `k(fields,collation,…)`, each collation after its `-` (descending) and `N.` (nulls last) marks. */
+const KEY = /^k\(\d+((?:,[^,)]*)*)\)$/;
+
+/** Whether a step of a plan compares with a collating sequence SQLite does not build in, an extension's code. */
+function usesOtherCollation(opcode: string, p4: string): boolean {
+	const key = KEY.exec(p4);
+	if (key !== null)
+		return key[1]!
+			.split(",")
+			.slice(1)
+			.some((field) => !BUILT_IN_COLLATIONS.has(field.replace(/^-?(?:N\.)?/, "")));
+	if (!COLLATING_STEPS.has(opcode)) return false;
+	const name = COLLATION.exec(p4)?.[1];
+	return name !== undefined && !BUILT_IN_COLLATIONS.has(name);
+}
+
 /** The database numbers of a connection's main database, the file itself, and of its temporary database. */
 const MAIN_DATABASE = 0;
 const TEMP_DATABASE = 1;
@@ -551,8 +572,8 @@ const TEMP_DATABASE = 1;
  * - `try first`: once at once with a busy timeout of 0 (see `runTryingFirst`), refused the lock, tried again. Only a
  *   statement whose plan proves that a refusal comes from its opening steps, before it did anything: the only
  *   databases it writes are the file and the temporary one, and the file is in WAL mode, where a commit needs no
- *   further lock; it calls no code but SQLite's own (no function SQLite does not build in, no virtual table, no
- *   `UNSAFE_FUNCTIONS`); it is no VACUUM, which may create the file it writes into before it is refused. A PRAGMA,
+ *   further lock; it calls no code but SQLite's own (no function or collating sequence SQLite does not build in, no
+ *   virtual table, no `UNSAFE_FUNCTIONS`); it is no VACUUM, which may create the file it writes into before it is refused. A PRAGMA,
  *   which is never prepared ahead since SQLite may carry one out while preparing it, is tried first only if it is one
  *   of `TRIED_PRAGMAS`. An `exec` of no statement is tried first.
  * - `as before`: every other single statement, and every call while the connection is inside a transaction of its
@@ -618,6 +639,7 @@ function triesSafely(steps: ReturnType<StatementSync["all"]>, database: Database
 			continue;
 		}
 		if (opcode === "Vacuum" || /^V[A-Z]/.test(opcode)) return false;
+		if (typeof step.p4 === "string" && usesOtherCollation(opcode, step.p4)) return false;
 		if (!FUNCTION_STEPS.has(opcode)) continue;
 		const name = /^([^(]+)\(/.exec(String(step.p4 ?? ""))?.[1]?.toLowerCase();
 		if (name === undefined || UNSAFE_FUNCTIONS.has(name)) return false;
