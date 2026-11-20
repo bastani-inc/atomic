@@ -118,6 +118,7 @@ test(
 			assert.equal(child.settled(), false, "it is paused, not ended");
 			assert.deepEqual(child.source().getQueuedMessages?.(), { steering: [], followUp: [] });
 
+			await child.source().resumeTurn!();
 			await session.prompt("continue with this", { streamingBehavior: "steer" });
 			const result = await child.run;
 			assert.equal(result.status, "ok");
@@ -154,12 +155,16 @@ test(
 			assert.equal(child.inputs.length, 0);
 			assert.equal(child.settled(), false);
 
+			await child.source().resumeTurn!();
 			await session.prompt("now carry on", { streamingBehavior: "steer" });
 			const result = await child.run;
 			assert.equal(result.status, "ok");
 			const delivered = child.inputs.flat().join("\n");
-			assert.match(delivered, /now carry on/);
-			assert.match(delivered, /note from the parent/, "the held message is delivered, not lost");
+			assert.ok(delivered.indexOf("now carry on") >= 0, "the reader's message continues it");
+			assert.ok(
+				delivered.indexOf("note from the parent") > delivered.indexOf("now carry on"),
+				"the held message is delivered, not lost, after the reader's",
+			);
 		} finally {
 			child.stop.abort("user");
 			await child.run;
@@ -169,21 +174,60 @@ test(
 );
 
 test(
-	"a message from another agent continues a subagent Esc paused, as it continues an interrupted one (#5224)",
+	"a message from another agent waits in a subagent Esc paused, as the main chat holds it after Esc, and the reader's next message takes it along",
 	async () => {
-		const child = await blockedChild("esc-pause-agent-wakes");
+		const child = await blockedChild("esc-pause-agent-waits");
 		try {
 			await child.source().pauseTurn!();
-			await pause(RESTART_WINDOW_MS);
-			assert.equal(child.source().isRunning?.(), false);
-
 			await child
 				.session()
-				.sendCustomMessage({ customType: "intercom", content: "carry on", display: true }, { triggerTurn: true });
+				.sendCustomMessage(
+					{ customType: "intercom", content: "parent asks", display: true },
+					{ triggerTurn: true },
+				);
+			await pause(RESTART_WINDOW_MS);
+			assert.equal(child.source().isRunning?.(), false, "another agent's message does not continue it");
+			assert.equal(child.inputs.length, 0);
+			assert.equal(child.settled(), false);
+
+			await child.source().resumeTurn!();
+			await child.session().prompt("over to you", { streamingBehavior: "steer" });
 			const result = await child.run;
 			assert.equal(result.status, "ok");
-			assert.equal(result.finalOutput, "answered the next message");
-			assert.match(child.inputs.flat().join("\n"), /carry on/);
+			const delivered = child.inputs.flat().join("\n");
+			assert.ok(delivered.indexOf("over to you") >= 0, "the reader's message continues it");
+			assert.ok(
+				delivered.indexOf("parent asks") > delivered.indexOf("over to you"),
+				"the held message follows the reader's",
+			);
+		} finally {
+			child.stop.abort("user");
+			await child.run;
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a message that reaches a paused subagent without the reader continuing it waits, as a message sent before Esc but accepted after it waits in the main chat",
+	async () => {
+		const child = await blockedChild("esc-pause-plain-prompt");
+		try {
+			await child.source().pauseTurn!();
+			// What its own extension or a message accepted after Esc sends: a plain prompt, not the reader's continue.
+			await child.session().prompt("sent without the reader", { streamingBehavior: "steer" });
+			await pause(RESTART_WINDOW_MS);
+			assert.equal(child.source().isRunning?.(), false, "a plain prompt does not continue a paused subagent");
+			assert.equal(child.inputs.length, 0);
+			assert.deepEqual(child.source().getQueuedMessages?.()?.steering, ["sent without the reader"], "it is listed");
+
+			await child.source().resumeTurn!();
+			await child.session().prompt("the reader continues", { streamingBehavior: "steer" });
+			const result = await child.run;
+			assert.equal(result.status, "ok");
+			const delivered = child.inputs.flat().join("\n");
+			assert.ok(delivered.indexOf("the reader continues") >= 0);
+			assert.ok(delivered.indexOf("sent without the reader") > delivered.indexOf("the reader continues"));
 		} finally {
 			child.stop.abort("user");
 			await child.run;

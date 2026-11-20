@@ -863,6 +863,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			await activeTurn;
 		},
 		// As a real session's: the queued messages come back, then the turn ends as an interrupt ends it.
+		resumeTurn: async () => {},
 		pauseTurn: async () => {
 			const taken = { steering: steering.splice(0), followUp: followUps.splice(0) };
 			if (streaming) {
@@ -2410,6 +2411,7 @@ export class SubagentControlRuntime {
 								for (const listener of turnDrainedListeners) listener();
 							},
 							taskPending: () => taskPending,
+							turnPaused: () => session?.turnPaused === true,
 							// Intercom registers the child before its first turn, inside this start's budget.
 							startup: {
 								signal: startBudget.signal,
@@ -2543,6 +2545,7 @@ export class SubagentControlRuntime {
 				isRunning: () => transcriptSession.isStreaming,
 				interruptTurn,
 				pauseTurn,
+				resumeTurn: () => transcriptSession.resumeTurn(),
 				getQueuedMessages: () => ({
 					steering: transcriptSession.getSteeringMessages(),
 					followUp: transcriptSession.getFollowUpMessages(),

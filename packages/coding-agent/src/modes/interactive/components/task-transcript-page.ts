@@ -50,6 +50,7 @@ import {
 } from "../../../core/tasks/task-view-source.js";
 import { noteSavedSeq } from "../../../core/tasks/transcript-origin.js";
 import { copyToClipboard } from "../../../utils/clipboard.ts";
+import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
 import {
 	classifyChatCommand,
 	createSessionSkillAutocompleteProvider,
@@ -150,9 +151,12 @@ export interface TaskTranscriptPage {
 	handlesBack(): boolean;
 	takesEscape?(): boolean;
 	capturesPageScroll?(): boolean;
-	/** Whether Esc would interrupt the task's current turn now. */
+	/** Whether Esc would pause the task now: a turn runs or waits to retry, or messages are queued, as in the main chat. */
 	interruptible(): boolean;
-	/** Interrupts the task's current turn; the task keeps running and waits for its next message. */
+	/**
+	 * Pauses the task, as Esc does: its queued messages come back to the prompt, steering first, ahead of the draft, and
+	 * its turn ends. The task keeps running, paused, and its next message continues it.
+	 */
 	interrupt(): Promise<TaskViewResult<undefined>>;
 	/**
 	 * Put messages taken back from the task's queue into the prompt, steering messages first and then follow-ups, in
@@ -244,6 +248,8 @@ function friendlyOriginIntercomMessage(
 
 /** A subagent stopped resumably (`x x`, Ctrl+X Ctrl+K): a message resumes it, and never anything else. */
 export const STOPPED_NOTE = "Stopped · send to resume";
+/** A subagent paused from its chat (Esc): it is still running, and a message continues it. */
+export const PAUSED_NOTE = "Paused · send to continue";
 
 /** Printable text, Enter, Backspace or Delete: keys that type into or send the prompt. */
 function isTyping(data: string): boolean {
@@ -455,6 +461,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			// What the reader types goes to the subagent's own session as the main chat's goes to its own: queued in its
 			// lane while it works, else its next turn, and the dequeue key takes the queue back.
 			steering: this.steeringTarget(),
+			// Esc paused it: the reader's next message continues it, as their send continues the main chat after Esc.
+			isPaused: () => this.paused(),
 			commands: { handleSlashCommand: (text) => this.runCommand(text) },
 		});
 		pagedNotices.set(this.chat, this.#notices);
@@ -750,6 +758,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const task = this.liveTask();
 		const name = taskDisplayText(task?.agentName ?? this.sessionName() ?? "subagent");
 		const waiting = task?.attention.kind === "input-needed";
+		const paused = this.paused();
 		const state =
 			task === undefined
 				? undefined
@@ -759,8 +768,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 						? taskState(task) === "completed"
 							? "done"
 							: taskState(task)
-						: isTaskTurnInterrupted(task)
-							? "stopped"
+						: paused
+							? "paused"
 							: task.metrics?.elapsedMs === undefined
 								? "running"
 								: formatPanelElapsed(
@@ -768,7 +777,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 											task.metrics.elapsedMs,
 									);
 		const released = task === undefined ? undefined : waitingReleasedTools(task);
-		const stopped = released === undefined && this.source.taskStopped?.(this.liveTaskId()) === true;
+		const stopped = !paused && released === undefined && this.source.taskStopped?.(this.liveTaskId()) === true;
 		const label = [
 			name,
 			task?.title ? taskDisplayText(shortTaskTitle(task.title)) : "",
@@ -777,11 +786,13 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			.filter(Boolean)
 			.join(" · ");
 
-		const placeholder = stopped
-			? STOPPED_NOTE
-			: released !== undefined
-				? `Message ${name} to wake it…`
-				: `${waiting ? "Answer" : "Message"} ${name}…`;
+		const placeholder = paused
+			? PAUSED_NOTE
+			: stopped
+				? STOPPED_NOTE
+				: released !== undefined
+					? `Message ${name} to wake it…`
+					: `${waiting ? "Answer" : "Message"} ${name}…`;
 		return applyAttachedComposer(
 			{ accent: this.env.style.accent, text: this.env.style.text, dim: this.env.style.dim },
 			label,
@@ -864,15 +875,41 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		);
 	}
 
+	/** Whether Esc paused the subagent: it waits, still running, for the reader's next message. */
+	private paused(): boolean {
+		const task = this.liveTask();
+		return task !== undefined && isTaskTurnInterrupted(task);
+	}
+
 	interruptible(): boolean {
-		// Between two attempts of a retry nothing streams, and Esc cancels the retry, as it does in the main chat.
+		if (this.source.pauseTask === undefined && this.source.interruptTask === undefined) return false;
+		const session = this.followed;
+		const queued = session?.getQueuedMessages?.();
+		// Between two attempts of a retry nothing streams, and Esc cancels the retry, as it does in the main chat. Queued
+		// messages alone are enough too: Esc hands them back, as the main chat's Esc does.
 		return (
-			this.source.interruptTask !== undefined &&
-			(this.followed?.isRunning?.() === true || this.followed?.chatSession?.isRetrying === true)
+			session?.isRunning?.() === true ||
+			session?.chatSession?.isRetrying === true ||
+			(queued !== undefined && queued.steering.length + queued.followUp.length > 0)
 		);
 	}
 
 	async interrupt(): Promise<TaskViewResult<undefined>> {
+		const pause = this.source.pauseTask;
+		if (pause !== undefined) {
+			const paused = await pause.call(this.source, this.liveTaskId());
+			if (!paused.ok) return paused;
+			if (!this.disposed) this.restoreQueuedToEditor(paused.value);
+			else {
+				// The reader left while the turn ended: what came back waits in the prompt for their return.
+				const taken = [...paused.value.steering, ...paused.value.followUp];
+				const kept = keptDrafts.get(this.source) ?? new Map<TaskId, string>();
+				const id = this.liveTaskId();
+				if (taken.length > 0) kept.set(id, combineQueuedMessagesForEditor(taken, kept.get(id) ?? ""));
+				keptDrafts.set(this.source, kept);
+			}
+			return { ok: true, value: undefined };
+		}
 		const interrupt = this.source.interruptTask;
 		if (interrupt === undefined)
 			return { ok: false, error: { message: "This task's turn cannot be interrupted from here." } };
@@ -1222,6 +1259,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private steeringTarget(): ChatSteeringTarget {
 		return {
 			prompt: (text, options) => this.send(text, options?.streamingBehavior ?? "steer"),
+			resume: async (text, lane) => {
+				const resume = this.source.resumeTask;
+				if (resume !== undefined) {
+					const resumed = await resume.call(this.source, this.liveTaskId());
+					if (!resumed.ok) throw new Error(resumed.error.message);
+				}
+				await this.send(text, lane === "followUp" ? "followUp" : "steer");
+			},
 			clearQueue: async () => {
 				const taken = await this.takeQueue();
 				return { steering: [...taken.steering], followUp: [...taken.followUp] };

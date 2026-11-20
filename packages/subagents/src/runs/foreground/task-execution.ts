@@ -491,6 +491,7 @@ function taskTranscriptSource(
 		...(session.isRunning ? { isRunning: session.isRunning.bind(session) } : {}),
 		...(session.interruptTurn ? { interruptTurn: session.interruptTurn.bind(session) } : {}),
 		...(session.pauseTurn ? { pauseTurn: session.pauseTurn.bind(session) } : {}),
+		...(session.resumeTurn ? { resumeTurn: session.resumeTurn.bind(session) } : {}),
 		...(session.getQueuedMessages ? { getQueuedMessages: session.getQueuedMessages.bind(session) } : {}),
 		...(session.queueMessage ? { queueMessage: session.queueMessage.bind(session) } : {}),
 		...(session.clearQueue ? { clearQueue: session.clearQueue.bind(session) } : {}),

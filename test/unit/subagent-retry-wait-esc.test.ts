@@ -153,20 +153,18 @@ async function subagentWaitingToRetry(liveOptions: LiveChildOptions = {}) {
 
 type RetryingSubagent = Awaited<ReturnType<typeof subagentWaitingToRetry>>;
 
-/** After Esc: the retry is cancelled, the turn ended as interrupted, and the child waits; the next message answers. */
+/** After Esc: the retry is cancelled, the turn ended paused, and the child waits; the reader's next message answers. */
 async function assertInterruptedAndResumable(child: RetryingSubagent): Promise<void> {
 	await until(child.retryCancelled, "the retry's cancellation");
-	await until(() => isTaskTurnInterrupted(child.fixture.store.tasks[0]!), "the task's stopped state");
+	await until(() => isTaskTurnInterrupted(child.fixture.store.tasks[0]!), "the task's paused state");
 	assert.equal(child.session.isRetrying, false, "the retry wait ended");
 	assert.equal(child.env.faux.state.callCount, 1, "the failed request was not sent again");
 	assert.equal(child.settled(), false, "the subagent did not end: it waits for the next message");
 	assert.equal(child.fixture.store.tasks[0]!.execution.kind, "running", "its task keeps running");
 
 	const sessionId = child.source.getSessionId();
-	await child.session.sendCustomMessage(
-		{ customType: "intercom", content: "carry on", display: true },
-		{ triggerTurn: true },
-	);
+	await child.source.resumeTurn?.();
+	await child.session.prompt("carry on", { streamingBehavior: "steer" });
 	const result = await child.run;
 	assert.equal(result.status, "ok");
 	assert.equal(result.finalOutput, "answered after the interrupt");
@@ -174,7 +172,7 @@ async function assertInterruptedAndResumable(child: RetryingSubagent): Promise<v
 }
 
 test(
-	"Esc in a subagent's chat cancels its retry wait, and the hint offers esc to interrupt during the wait (#5507)",
+	"Esc in a subagent's chat cancels its retry wait, and the hint offers esc to pause during the wait (#5507)",
 	async () => {
 		const child = await subagentWaitingToRetry();
 		const environment = taskTranscriptEnvironment({ tui: makeTestTui(24), keybindings: getKeybindings() });
@@ -188,11 +186,11 @@ test(
 		try {
 			inspector.openChat(child.taskId, "main chat");
 			await flush();
-			assert.match(plain(inspector.renderViewport(100, 24)), /← main chat · esc to interrupt/);
+			assert.match(plain(inspector.renderViewport(100, 24)), /← main chat · esc to pause/);
 
 			assert.equal(inspector.handleInput(ESC), true);
 			await assertInterruptedAndResumable(child);
-			assert.doesNotMatch(plain(inspector.renderViewport(100, 24)), /esc to interrupt/, "a finished turn has none");
+			assert.doesNotMatch(plain(inspector.renderViewport(100, 24)), /esc to pause/, "a finished turn has none");
 		} finally {
 			inspector.dispose();
 			await child.dispose();
@@ -222,7 +220,7 @@ test(
 			const opened = plain(inspector.renderViewport(100, 24));
 			// The chat reads the wait from the subagent's session: its reason, attempt and countdown, and Esc cancels it.
 			assert.match(opened, /∀ Retrying · overloaded · attempt 1\/3 in (?:\d+m )?\d+s {3}esc cancel/);
-			assert.match(opened, /← main chat · esc to interrupt/);
+			assert.match(opened, /← main chat · esc to pause/);
 
 			assert.equal(inspector.handleInput(ESC), true);
 			await assertInterruptedAndResumable(child);
@@ -278,13 +276,13 @@ test(
 		);
 		try {
 			await flush();
-			assert.match(await frame(), /← main chat · esc to interrupt/);
+			assert.match(await frame(), /← main chat · esc to pause/);
 
 			await send({ type: "engine_custom_input", data: ESC });
 			const handled = messages.findLast((message) => message.type === "engine_custom_input_result");
 			assert.ok(handled && handled.type === "engine_custom_input_result" && handled.handled);
 			await assertInterruptedAndResumable(child);
-			assert.doesNotMatch(await frame(), /esc to interrupt/, "a finished turn has none");
+			assert.doesNotMatch(await frame(), /esc to pause/, "a finished turn has none");
 		} finally {
 			service.dispose();
 			await shown;

@@ -73,7 +73,8 @@ export function taskStatusAppearance(task: TaskRecord): {
 	icon: string;
 	color: "accent" | "success" | "error" | "warning" | "muted" | "dim";
 } {
-	if (isTaskTurnInterrupted(task)) return { label: "Stopped · send to resume", icon: "◼", color: "muted" };
+	// Esc in its chat paused its turn: it is still running, and a message continues it.
+	if (isTaskTurnInterrupted(task)) return { label: "Paused · send to continue", icon: "‖", color: "muted" };
 	switch (taskState(task)) {
 		case "completed":
 			return { label: "Completed", icon: "✓", color: "success" };

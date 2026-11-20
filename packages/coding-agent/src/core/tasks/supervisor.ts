@@ -130,6 +130,11 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	 * for that message. Absent where the task's turn cannot be paused from a view.
 	 */
 	pauseTurn?(): Promise<QueuedTaskMessages>;
+	/**
+	 * Continues a task {@link pauseTurn} paused, as the user's send does: once its paused run has settled its queue is
+	 * released, without starting a turn, so the message sent next starts it. A no-op on a task that is not paused.
+	 */
+	resumeTurn?(): Promise<void>;
 	/** The messages queued for the session now, for a viewer that missed their `queue_update`. */
 	getQueuedMessages?(): QueuedTaskMessages;
 	readonly completionSource?: TaskCompletionSource;

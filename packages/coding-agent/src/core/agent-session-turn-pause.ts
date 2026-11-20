@@ -6,8 +6,8 @@ export function settleTurnPause(session: AgentSession): void {
 }
 
 /**
- * The next message reached a session paused by `pauseTurn`: release its hold once the paused run has settled,
- * so that message starts the next turn and what was held follows it. Undefined when no such pause holds the queue.
+ * The user continues a session paused by `pauseTurn`: release its hold once the paused run has settled, so their
+ * message starts the next turn and what was held follows it. Undefined when no such pause holds the queue.
  */
 export function releaseTurnPause(session: AgentSession): Promise<void> | undefined {
 	if (session._turnPauseRelease !== undefined) return session._turnPauseRelease;

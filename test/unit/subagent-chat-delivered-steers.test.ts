@@ -314,7 +314,7 @@ function mainChatEscHint(): string {
 	}
 }
 
-test("a running subagent's chat words its Esc hint as the main chat's footer does", async () => {
+test("a running subagent's chat words its Esc hint as the main chat's footer does, naming the pause its Esc makes", async () => {
 	const subagent = await runningSubagent("run the checks");
 	const chat = await openSubagentChat(subagent.source, "run the checks");
 	try {
@@ -326,7 +326,8 @@ test("a running subagent's chat words its Esc hint as the main chat's footer doe
 				.trim()
 				.split(" · ")
 				.filter((segment) => segment.startsWith("esc")),
-			[esc],
+			// The same words; Esc in a subagent's chat pauses it, where the main chat's interrupts its turn.
+			[esc.replace("interrupt", "pause")],
 			`the chat's hint line: ${hint}`,
 		);
 	} finally {

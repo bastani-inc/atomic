@@ -26,7 +26,7 @@ export const TASK_BOARD_GROUP_TITLES: Readonly<Record<TaskBoardGroup, string>> =
 };
 
 export function taskBoardState(task: TaskRecord): TaskBoardState {
-	if (isTaskTurnInterrupted(task)) return "stopped";
+	if (isTaskTurnInterrupted(task)) return "paused";
 	switch (taskState(task)) {
 		case "input-needed":
 			return "input";

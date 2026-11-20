@@ -22,6 +22,7 @@ import {
 	pauseQueuedMessages,
 	pauseTurn,
 	resumeQueuedMessages,
+	resumeTurn,
 } from "./agent-session-queue-pause.ts";
 import { abortTurnRetries } from "./agent-session-retry.ts";
 import {
@@ -650,6 +651,7 @@ export const agentSessionMessageQueueMethods = {
 	abort,
 	interruptTurn,
 	pauseTurn,
+	resumeTurn,
 	setSteeringMode,
 	setFollowUpMode,
 };

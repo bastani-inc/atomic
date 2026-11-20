@@ -170,8 +170,8 @@ function detailKeys(): NavKey[] {
 }
 /** What Esc does to the running turn of a task, from the task's chat. */
 export type TaskChatEscAction = "interrupt" | "pause";
-/** What Esc does to a running task's turn from its chat; the hint and the `?` overlay name it. */
-const TASK_CHAT_ESC_ACTION: TaskChatEscAction = "interrupt";
+/** What Esc does to a running task from its chat: it pauses it (the main chat's Esc interrupts); the hint and the `?` overlay name it. */
+const TASK_CHAT_ESC_ACTION: TaskChatEscAction = "pause";
 
 /** A task's chat: ← goes back one level, Esc only acts on the turn, named in the main chat's words (`esc to …`). */
 export function taskChatKeys(

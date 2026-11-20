@@ -1,7 +1,7 @@
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasOpenRun } from "./agent-session-prompt.ts";
 import { abortTurnRetries } from "./agent-session-retry.ts";
-import { settleTurnPause } from "./agent-session-turn-pause.ts";
+import { releaseTurnPause, settleTurnPause } from "./agent-session-turn-pause.ts";
 import type { ClearedQueue, SessionAbortOptions } from "./agent-session-types.js";
 import { cancelFirstPromptModel } from "./first-prompt-model.ts";
 
@@ -98,8 +98,9 @@ export async function interruptTurn(this: AgentSession): Promise<void> {
 /**
  * Pause the current turn the way Esc does in a chat of a subagent, as Esc pauses the main chat: the messages the user
  * typed that are still queued come back (for the chat's editor), the turn ends as {@link interruptTurn} ends it, and the
- * session waits. What else is queued, such as another agent's message, is held, so nothing restarts the paused turn;
- * the next message, the user's or another agent's, releases it and starts the next turn (#5224).
+ * session waits. What else is queued or arrives, such as another agent's message, is held, as the main chat holds it
+ * after Esc, so nothing restarts the paused turn. The user's next message releases the hold and starts the next turn,
+ * with that message first.
  */
 export async function pauseTurn(this: AgentSession): Promise<ClearedQueue> {
 	// A run is open while its turn streams, waits to retry, or settles after it: each would deliver what is queued.
@@ -113,21 +114,29 @@ export async function pauseTurn(this: AgentSession): Promise<ClearedQueue> {
 		if (this.isStreaming || this.isRetrying) await this.interruptTurn();
 		return taken;
 	}
-	if (!open) {
-		// No run to end: the rest stays queued for the next message, as it was.
-		this._queuedMessagesPaused = false;
-		this._restoreAndClearActiveInterruptQueueHold();
-		return taken;
-	}
 	const settled = Promise.withResolvers<void>();
 	this._turnPause = settled;
 	// A release waits until the ended run has stopped reading the queue, as a resume waits for an abort to settle.
 	this._queuedMessagesPauseAbortBoundary = settled.promise;
+	if (!open) {
+		// No run to end: the session is paused as it stands, and the hold waits for the user's next message.
+		settled.resolve();
+		return taken;
+	}
 	this._turnInterruptedByUser = true;
 	await this.interruptTurn();
 	// A child's run settles in `settleSubagentMessages`; any other session's has once its turn ended.
 	if (this._subagentMessageAdmission === undefined) settled.resolve();
 	return taken;
+}
+
+/**
+ * Continue a session {@link pauseTurn} paused, as the user's send does after Esc in the main chat: once the paused run has
+ * settled, the hold is released without starting a turn, so the user's message sent next starts it and what was held
+ * follows. Anything else, a plain `prompt()` included, waits in the hold while the session is paused.
+ */
+export async function resumeTurn(this: AgentSession): Promise<void> {
+	await releaseTurnPause(this);
 }
 
 /** Internal teardown never redirects cancellation into a replacement generation. */

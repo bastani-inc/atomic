@@ -267,7 +267,7 @@ test("finished rows the panel keeps read dim after thirty seconds (#5239)", () =
 	assert.equal(AGENT_PANEL_FADE_MS, 30_000);
 });
 
-test("an interrupted-but-running subagent is treated as live for x in the panel and stays in /tasks until stopped (#5239)", async () => {
+test("a paused-but-running subagent is treated as live for x in the panel and stays in /tasks until stopped (#5239)", async () => {
 	initTheme("dark");
 	const previousKeys = getKeybindings();
 	setKeybindings(new KeybindingsManager());
@@ -284,7 +284,7 @@ test("an interrupted-but-running subagent is treated as live for x in the panel 
 		const initialRows = agentPanelRows(session);
 		assert.equal(initialRows.length, 2);
 		const interruptedRow = initialRows.find((candidate) => candidate.id === `task:${taskId}`);
-		assert.equal(interruptedRow?.state, "stopped");
+		assert.equal(interruptedRow?.state, "paused");
 		assert.equal(isFinishedPanelRow(interruptedRow!), false);
 
 		await showAgentPanel(session, {
@@ -309,7 +309,7 @@ test("an interrupted-but-running subagent is treated as live for x in the panel 
 						initialLines = component.render(100).map(stripVTControlCharacters);
 					}
 					assert.match(initialLines.find((line) => line.startsWith("❯")) ?? "", /Inspect concurrent/);
-					assert.match(initialLines.join("\n"), /stopped/);
+					assert.match(initialLines.join("\n"), /‖ worker {2}Inspect concurrent spawn locks\. +paused/);
 					assert.match(initialLines.at(-1) ?? "", /\bx stop\b/);
 					assert.doesNotMatch(initialLines.at(-1) ?? "", /\bx dismiss\b/);
 

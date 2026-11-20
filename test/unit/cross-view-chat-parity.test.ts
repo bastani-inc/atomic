@@ -181,7 +181,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 				);
 				assert.equal(
 					rows.at(-1),
-					"  ← main chat · esc to interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys",
+					"  ← main chat · esc to pause · pgup/pgdn scroll · ctrl+o expand · ? keys",
 					`width ${width}: running hint lists ← main chat and live keys`,
 				);
 			}
@@ -198,7 +198,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 			assert.equal(inspector.handleInput(ESC), true);
 			assert.equal(interrupted, 0, "closing ? overlay with Esc does not interrupt the subagent");
 
-			// Esc on the chat interrupts the turn and updates the hint line (no esc to interrupt once idle)
+			// Esc on the chat pauses the subagent and updates the hint line (no esc to pause once idle)
 			assert.equal(inspector.handleInput(ESC), true);
 			await flush();
 			assert.equal(interrupted, 1);
@@ -581,7 +581,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 
 			const subRunningHint = subLines.at(-1) ?? "";
 
-			assert.equal(subRunningHint, "  ← main chat · esc to interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys");
+			assert.equal(subRunningHint, "  ← main chat · esc to pause · pgup/pgdn scroll · ctrl+o expand · ? keys");
 
 			// 3. ? on an empty prompt opens the shared key overlay in all three views
 			const mainOverlay = new MainComposerKeyOverlay(
@@ -631,17 +631,17 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 
 			assert.equal(subNotice, mainNotice, "subagent view renders the same shared interruption notice");
 
-			// Hint line after interrupt drops esc to interrupt in both stage and subagent views
+			// Hint line after Esc drops the esc hint in both stage and subagent views
 
 			assert.equal(subAfterAbort.at(-1), "  ← main chat · pgup/pgdn scroll · ctrl+o expand · ? keys");
 
-			// ? overlay when idle omits esc to interrupt in both stage chat and subagent view
+			// ? overlay when idle omits the esc row in both stage chat and subagent view
 
 			assert.equal(subInspector.handleInput("?"), true);
 
 			const idleSubOverlay = plain(subInspector.renderViewport(100, 28)).join("\n");
 
-			assert.doesNotMatch(idleSubOverlay, /interrupt the agent's turn/);
+			assert.doesNotMatch(idleSubOverlay, /pause the agent's turn/);
 
 			assert.equal(subInspector.handleInput(ESC), true);
 			assert.equal(
@@ -773,7 +773,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 
 			assert.equal(
 				subRunningHint,
-				"  ← main chat · esc to interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys",
+				"  ← main chat · esc to pause · pgup/pgdn scroll · ctrl+o expand · ? keys",
 				"subagent hint strips dead esc from remapped non-interrupt actions",
 			);
 
@@ -925,7 +925,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 		}
 	});
 
-	test("interrupting an attached subagent stops its elapsed clock, shows stopped in composer label and panel, and resumes on follow-up (#5239)", async () => {
+	test("pausing an attached subagent stops its elapsed clock, shows paused in composer label and panel, and resumes on follow-up (#5239)", async () => {
 		let now = 10_000;
 		vi.spyOn(Date, "now").mockImplementation(() => now);
 		const fixture = taskFixture();
@@ -1012,19 +1012,19 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 				"authoritative supervisor execution state remains running",
 			);
 
-			// Advance time by 10 seconds: elapsed clock must stay frozen and composer label must say stopped.
+			// Advance time by 10 seconds: elapsed clock must stay frozen and composer label must say paused.
 			now += 10_000;
 			const interruptedRows = plain(inspector.renderViewport(80, 24));
 			const interruptedRule =
 				interruptedRows.find((row) => isComposerTopRule(row) && row.includes("Inspect concurrent")) ?? "";
-			assert.match(interruptedRule, / · stopped ─$/, "interrupted composer label shows stopped instead of ticking");
+			assert.match(interruptedRule, / · paused ─$/, "paused composer label shows paused instead of ticking");
 			assert.ok(
-				interruptedRows.some((row) => row.includes("Stopped · send to resume")),
-				"interrupted composer placeholder shows Stopped · send to resume",
+				interruptedRows.some((row) => row.includes("Paused · send to continue")),
+				"paused composer placeholder shows Paused · send to continue",
 			);
 
 			const panelItems = agentPanelItems(ownerSession);
-			assert.equal(panelItems[0]?.state, "stopped", "panel item state reflects stopped after Esc interrupt");
+			assert.equal(panelItems[0]?.state, "paused", "panel item state reflects paused after Esc");
 			assert.equal(panelItems[0]?.elapsedMs, 14_000, "panel item elapsed clock stays frozen at 14s");
 
 			const agentBlockState = {};
@@ -1063,11 +1063,11 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 					).render(80),
 				);
 			assert.deepEqual(renderMainAgentBlock(), [
-				" ◼ Agent(worker · Inspect concurrent spawn locks.)",
-				"   ⎿  Stopped · 14s",
+				" ⏸ Agent(worker · Inspect concurrent spawn locks.)",
+				"   ⎿  Paused · 14s",
 			]);
 
-			// Sending a follow-up message resumes the subagent turn and clears the stopped override.
+			// Sending a follow-up message resumes the subagent turn and clears the paused override.
 			for (const ch of "hello again") inspector.handleInput(ch);
 			inspector.handleInput("\r");
 			await flush();
@@ -1138,7 +1138,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 			const secondTaskId = fixture.store.tasks[1]!.ref.taskId;
 			fixture.runners[1]!.context.bindTranscript(transcript);
 			await ownerTaskViewSource(fixture.store).interruptTask?.(secondTaskId);
-			assert.equal(taskPanelItem(fixture.store.tasks[1]!).state, "stopped");
+			assert.equal(taskPanelItem(fixture.store.tasks[1]!).state, "paused");
 			assert.equal(taskPanelItem(fixture.store.tasks[0]!).state, "running");
 		} finally {
 			inspector.dispose();
