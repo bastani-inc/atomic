@@ -139,10 +139,11 @@ export function resolveTranscript(
  *
  * Each later system message's {@link renderSystemMessageUpdate} text is sent as text blocks at its
  * place in the transcript, after any tool results that follow it, so that user and assistant turns
- * still alternate: added after the blocks of the user message or tool result before it, or else put
- * before the blocks of the user message after it, or else, between two assistant messages or after
- * the last one, as a user message of its own. Blocks are only ever added after what an earlier request
- * sent, so its cached prefix stays the same.
+ * still alternate: added after the blocks of the user message before it; after tool results, as a
+ * user message of its own marked by {@link followsToolResults}, which user input that follows joins;
+ * or else put before the blocks of the user message after it, or else, between two assistant messages
+ * or after the last one, as a user message of its own. An update never goes inside a tool result.
+ * Blocks are only ever added after what an earlier request sent, so its cached prefix stays the same.
  */
 export function appendSystemMessageUpdates(context: TranscriptContext): TranscriptContext {
 	const messages = context.messages;
@@ -158,6 +159,11 @@ export function appendSystemMessageUpdates(context: TranscriptContext): Transcri
 		result.push({ ...prompt, ...(tools.length > 0 ? { toolsAdded: tools } : {}) });
 	}
 	let updates: { texts: TextContent[]; timestamp: number } | undefined;
+	/** Replaces the last message with `message`, which keeps its place after tool results. */
+	const replaceLast = (message: UserMessage): void => {
+		if (afterToolResults.has(result[result.length - 1]!)) afterToolResults.add(message);
+		result[result.length - 1] = message;
+	};
 	/** Places the pending updates before `next`, the message about to be added, or at the end; returns `next` to add. */
 	const placeUpdates = (next: Message | undefined): Message | undefined => {
 		if (!updates) return next;
@@ -167,11 +173,14 @@ export function appendSystemMessageUpdates(context: TranscriptContext): Transcri
 		// intact; a leading block goes into a message no request has sent yet.
 		const last = result.at(-1);
 		if (last?.role === "user") {
-			result[result.length - 1] = { ...last, content: [...asBlocks(last.content), ...texts] };
+			replaceLast({ ...last, content: [...asBlocks(last.content), ...texts] });
 			return next;
 		}
+		// Never inside a tool result, where the model would read it as tool output.
 		if (last?.role === "toolResult") {
-			result[result.length - 1] = { ...last, content: [...last.content, ...texts] };
+			const update: UserMessage = { role: "user", content: texts, timestamp };
+			afterToolResults.add(update);
+			result.push(update);
 			return next;
 		}
 		if (next?.role === "user") return { ...next, content: [...texts, ...asBlocks(next.content)] };
@@ -189,10 +198,38 @@ export function appendSystemMessageUpdates(context: TranscriptContext): Transcri
 			continue;
 		}
 		// A tool call's results must directly follow it, so an update waits until after them.
-		result.push(message.role === "toolResult" ? message : placeUpdates(message)!);
+		if (message.role === "toolResult") {
+			result.push(message);
+			continue;
+		}
+		const placed = placeUpdates(message)!;
+		const last = result.at(-1);
+		// User input after an update that follows tool results joins it, so user messages never sit side by side.
+		if (placed.role === "user" && last?.role === "user" && afterToolResults.has(last)) {
+			replaceLast({
+				...last,
+				content: [...asBlocks(last.content), ...asBlocks(placed.content)],
+				...(placed.cacheBreakpoint ? { cacheBreakpoint: true } : {}),
+			});
+			continue;
+		}
+		result.push(placed);
 	}
 	placeUpdates(undefined);
 	return { messages: result } as TranscriptContext;
+}
+
+/** User messages of prompt updates that {@link appendSystemMessageUpdates} placed directly after tool results. */
+const afterToolResults = new WeakSet<Message>();
+
+/**
+ * Whether `message` is a user message of prompt updates, possibly followed by user input, that
+ * {@link appendSystemMessageUpdates} placed directly after tool results. Providers whose tool results are user content
+ * send its blocks after the tool results in the same user message, so user turns never sit side by side; others send
+ * it as the user message after the tool messages.
+ */
+export function followsToolResults(message: Message): boolean {
+	return afterToolResults.has(message);
 }
 
 function asBlocks(content: UserMessage["content"]): Exclude<UserMessage["content"], string> {

@@ -25,7 +25,7 @@ import { type ProviderRetryTransport, retryProviderRequest } from "../utils/prov
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
-import { appendSystemMessageUpdates, withoutInitialSystemMessage } from "../utils/transcript.ts";
+import { appendSystemMessageUpdates, followsToolResults, withoutInitialSystemMessage } from "../utils/transcript.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -270,10 +270,14 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					}
 				});
 				if (parts.length === 0) continue;
-				contents.push({
-					role: "user",
-					parts,
-				});
+				const last = contents[contents.length - 1];
+				// A prompt update after tool results: its own parts after the function responses, in the same user turn.
+				if (followsToolResults(msg) && last?.role === "user" && last.parts) last.parts.push(...parts);
+				else
+					contents.push({
+						role: "user",
+						parts,
+					});
 			}
 		} else if (msg.role === "assistant") {
 			const parts: Part[] = [];

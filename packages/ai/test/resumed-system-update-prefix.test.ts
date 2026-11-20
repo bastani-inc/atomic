@@ -19,7 +19,12 @@ import type {
 	SystemMessage,
 	TranscriptContext,
 } from "../src/types.ts";
-import { appendSystemMessageUpdates, declarationsEqual, getToolStateChanges } from "../src/utils/transcript.ts";
+import {
+	appendSystemMessageUpdates,
+	declarationsEqual,
+	followsToolResults,
+	getToolStateChanges,
+} from "../src/utils/transcript.ts";
 
 /**
  * A session on a transport without mid-conversation system messages exits, and the version it resumes in changes
@@ -264,7 +269,7 @@ describe("a resume that changes prompt sections keeps the cached request prefix 
 	}
 });
 
-describe("prompt updates keep user and assistant turns alternating on transports without mid-conversation system messages", () => {
+describe("prompt updates keep user and assistant turns alternating, outside tool results, on transports without mid-conversation system messages", () => {
 	for (const transport of transports) {
 		test(transport.name, async () => {
 			const call: AssistantMessage = {
@@ -286,16 +291,40 @@ describe("prompt updates keep user and assistant turns alternating on transports
 				{ role: "toolResult", toolCallId: "call_1", toolName: "read", content: [], isError: false, timestamp: 4 },
 				resumeUpdate,
 			];
-			for (const messages of [liveUpdate, toolUpdate]) {
+			const secondUpdate: SystemMessage = { ...resumeUpdate, sections: { model: "<model>\nB\n</model>" }, timestamp: 6 };
+			const twoUpdatesThenInput: Message[] = [
+				...toolUpdate,
+				secondUpdate,
+				{ role: "user", content: "steered", timestamp: 8 },
+			];
+			for (const messages of [liveUpdate, toolUpdate, [...toolUpdate, secondUpdate], twoUpdatesThenInput]) {
 				const conversation = (await capture(transport, messages))[transport.conversation] as Array<{ role?: string }>;
 				const roles = conversation.map((item) => item.role);
 				const adjacent = roles.findIndex((role, index) => role === "user" && roles[index - 1] === "user");
 				expect(adjacent, JSON.stringify(roles)).toBe(-1);
 				expect(JSON.stringify(conversation)).toContain("Current date: 2026-11-20");
+				// The model reads text inside a tool result as tool output, with less authority than a prompt update.
+				for (const result of toolResults(conversation)) expect(JSON.stringify(result)).not.toContain("Current date");
 			}
 		});
 	}
 });
+
+/** The tool results of a conversation in any transport's format. */
+function toolResults(value: unknown): unknown[] {
+	if (Array.isArray(value)) return value.flatMap(toolResults);
+	if (typeof value !== "object" || value === null) return [];
+	const item = value as Record<string, unknown>;
+	if (
+		item.type === "tool_result" ||
+		item.type === "function_call_output" ||
+		item.role === "tool" ||
+		"toolResult" in item ||
+		"functionResponse" in item
+	)
+		return [item];
+	return Object.values(item).flatMap(toolResults);
+}
 
 test("Bedrock joins input steered in after tool results into the tool results' user message", async () => {
 	const bedrock = transports.find((transport) => transport.name === "Bedrock Converse")!;
@@ -339,7 +368,7 @@ describe("appendSystemMessageUpdates", () => {
 		expect((projected[0] as SystemMessage).sections).toEqual({ ...prompt.sections, extra: "<extra>\nx\n</extra>" });
 	});
 
-	test("sends a later update with the tool results that follow it, so user and assistant turns still alternate", () => {
+	test("sends a later update after the tool results that follow it, never inside them, joined by the next input", () => {
 		const model = transports[0]!.model;
 		const call: AssistantMessage = {
 			...reply(model, "", 3),
@@ -356,8 +385,10 @@ describe("appendSystemMessageUpdates", () => {
 		];
 		const projected = appendSystemMessageUpdates({ messages } as TranscriptContext).messages;
 		expect(projected.map((message) => message.role)).toEqual(["system", "user", "assistant", "toolResult", "user"]);
-		expect(JSON.stringify(projected[3])).toContain("Current date: 2026-11-20");
-		expect(JSON.stringify(projected[4])).not.toContain("Current date");
+		expect(JSON.stringify(projected[3])).not.toContain("Current date");
+		expect(JSON.stringify(projected[4])).toContain("Current date: 2026-11-20");
+		expect(JSON.stringify(projected[4])).toContain("next");
+		expect(followsToolResults(projected[4]!)).toBe(true);
 	});
 
 	test("an update keeps its place when input follows it later, as after an interrupted request", () => {

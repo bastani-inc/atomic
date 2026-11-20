@@ -66,6 +66,7 @@ import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.t
 import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
 import {
 	getCurrentTools,
+	followsToolResults,
 	getInitialSystemMessage,
 	resolveRequestTranscript,
 	type TranscriptContext,
@@ -2083,7 +2084,17 @@ function convertMessages(
 					}
 					return true;
 				});
-				if (filteredBlocks.length > 0) {
+				const last = params.at(-1);
+				if (
+					filteredBlocks.length > 0 &&
+					followsToolResults(msg) &&
+					last?.role === "user" &&
+					Array.isArray(last.content) &&
+					last.content.some((block) => block.type === "tool_result")
+				) {
+					// A prompt update after tool results: its own text blocks after the tool results, in the same message.
+					last.content.push(...filteredBlocks);
+				} else if (filteredBlocks.length > 0) {
 					params.push({
 						role: "user",
 						content: filteredBlocks,
