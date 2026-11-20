@@ -2,6 +2,7 @@ import type { AgentSessionQueuePauseControl } from "../../../core/agent-session-
 import type { BashExecutionMessage } from "../../../core/messages.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
 import { classifyChatCommand } from "../skill-command-autocomplete.ts";
+import type { SteeringQueueController } from "../steering-queue-controller.ts";
 import type { ChatMessageEntry } from "./chat-message-renderer.ts";
 import { setChatSessionEditorText } from "./chat-session-host-editor.ts";
 import {
@@ -120,6 +121,11 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 		} finally {
 			state.requestRender?.();
 		}
+		return;
+	}
+	const steering = state.steeringController;
+	if (steering !== undefined) {
+		await submitSteeredChatSession(state, steering, text, mode);
 		return;
 	}
 	const send = state.commands.send;
@@ -401,6 +407,8 @@ export function restoreQueuedMessagesToEditor<TExtraEntry extends ChatTranscript
 	state: ChatSessionHostState<TExtraEntry>,
 	options?: { suppressEmptyNotice?: boolean; preserveUnprotectedCustomMessages?: boolean },
 ): boolean {
+	const steering = state.steeringController;
+	if (steering !== undefined) return restoreSteeredQueue(state, steering, options);
 	const queuedMessages = [
 		...state.pendingSteeringMessages,
 		...state.pendingFollowUpMessages,
@@ -538,6 +546,10 @@ export function confirmQueuedChatSessionMessages<TExtraEntry extends ChatTranscr
 	steering: readonly string[],
 	followUp: readonly string[],
 ): void {
+	if (state.steeringController !== undefined) {
+		state.steeringController.reconcile({ steering, followUp });
+		return;
+	}
 	if (state.unconfirmedQueuedMessages.length === 0) return;
 	const added = {
 		steer: addedQueueEntries(state.pendingSteeringMessages, steering),
@@ -622,4 +634,131 @@ async function sendChatSessionText<TExtraEntry extends ChatTranscriptEntryLike>(
 		setChatSessionEditorText(state, typedSince.length === 0 ? text : `${text}\n${typedSince}`);
 		notifyChatSessionWarning(state, errorMessage(err));
 	}
+}
+
+/**
+ * A submission to a chat that steers its agent as the main chat does. The chat's own commands run at once and never
+ * reach the agent; input typed while it compacts waits in the editor; anything else goes to the agent through the
+ * steering controller: queued in its lane while the agent works and shown as a queued row from submit, or its next
+ * turn while it is idle. A message the agent refuses comes back to the editor above what was typed since.
+ */
+async function submitSteeredChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	steering: SteeringQueueController,
+	text: string,
+	mode: ChatSessionSubmitMode,
+): Promise<void> {
+	if (text.startsWith("/") && state.commands.handleSlashCommand) {
+		try {
+			if (await state.commands.handleSlashCommand(text)) {
+				setChatSessionEditorText(state, "");
+				return;
+			}
+		} catch (err) {
+			notifyChatSessionWarning(state, errorMessage(err));
+			return;
+		} finally {
+			state.requestRender?.();
+		}
+	}
+	const bash = parseBashInput(text);
+	if (bash?.command && !state.commands.runBash) {
+		// The agent's shell is not this chat's to run: the command stays in the editor, and nothing reaches the agent.
+		notifyChatSessionWarning(state, "! shell commands are not available in this chat");
+		return;
+	}
+	state.editor?.addToHistory?.(text);
+	if (state.compacting) {
+		setChatSessionEditorText(state, "");
+		state.compactionQueuedMessages = [...state.compactionQueuedMessages, { text, mode }];
+		notifyChatSessionStatus(state, "Queued message until compaction completes");
+		return;
+	}
+	if (bash?.command) {
+		if (isChatSessionBashRunning(state)) {
+			notifyChatSessionWarning(state, "A bash command is already running. esc cancel first.");
+			setChatSessionEditorText(state, text);
+			return;
+		}
+		setChatSessionEditorText(state, "");
+		await runChatSessionBashCommand(state, bash.command, bash.excludeFromContext);
+		return;
+	}
+	setChatSessionEditorText(state, "");
+	if (state.compactionFlushPending || state.compactionQueuedMessages.length > 0) {
+		// Messages held through a compaction go out first, in the order they were typed.
+		state.compactionQueuedMessages = [...state.compactionQueuedMessages, { text, mode }];
+		state.requestRender?.();
+		if (!state.compactionFlushPending) await flushChatSessionCompactionQueue(state);
+		return;
+	}
+	state.requestRender?.();
+	const result = await steering.submit(text, mode === "followUp" ? "followUp" : "auto");
+	if (state.disposed) return;
+	if (result.kind === "refused") {
+		const typedSince = state.inputBuffer;
+		setChatSessionEditorText(state, typedSince.length === 0 ? text : `${text}\n${typedSince}`);
+		notifyChatSessionWarning(state, errorMessage(result.error));
+	} else if (result.kind === "lost" || result.kind === "failed") {
+		notifyChatSessionWarning(state, errorMessage(result.error));
+	}
+	state.requestRender?.();
+}
+
+/**
+ * Alt+Up in a steered chat: every queued message comes back to the editor, from the agent's own answer, steering
+ * messages first and then follow-ups, in front of what is typed. Answers whether any message was listed as queued.
+ */
+function restoreSteeredQueue<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	steering: SteeringQueueController,
+	options?: { suppressEmptyNotice?: boolean; preserveUnprotectedCustomMessages?: boolean },
+): boolean {
+	const listed = steering.hasQueued();
+	const clear = options?.preserveUnprotectedCustomMessages ? { preserveUnprotectedCustomMessages: true } : undefined;
+	void steering
+		.restoreAll(() => state.inputBuffer, clear)
+		.then(
+			(restored) => {
+				if (state.disposed) return;
+				if (restored === undefined) {
+					if (!options?.suppressEmptyNotice) notifyChatSessionStatus(state, "No queued messages to restore");
+				} else {
+					state.pendingSteeringMessages = [];
+					state.pendingFollowUpMessages = [];
+					setChatSessionEditorText(state, restored.text);
+				}
+				state.requestRender?.();
+			},
+			(err: unknown) => {
+				if (!state.disposed)
+					notifyChatSessionWarning(state, `Failed to restore queued messages: ${errorMessage(err)}`);
+			},
+		);
+	state.requestRender?.();
+	return listed;
+}
+
+/**
+ * Put messages already taken back from the agent's queue into the editor, with any the editor held, steering messages
+ * first and then follow-ups, in front of what is typed. Answers how many came back.
+ */
+export function restoreTakenQueuedMessages<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	taken: { readonly steering: readonly string[]; readonly followUp: readonly string[] },
+): number {
+	const held = state.compactionQueuedMessages;
+	state.compactionQueuedMessages = [];
+	const messages = [
+		...taken.steering,
+		...held.filter((message) => message.mode !== "followUp").map((message) => message.text),
+		...taken.followUp,
+		...held.filter((message) => message.mode === "followUp").map((message) => message.text),
+	];
+	if (messages.length === 0) return 0;
+	state.pendingSteeringMessages = [];
+	state.pendingFollowUpMessages = [];
+	setChatSessionEditorText(state, combineQueuedMessagesForEditor(messages, state.inputBuffer));
+	state.requestRender?.();
+	return messages.length;
 }

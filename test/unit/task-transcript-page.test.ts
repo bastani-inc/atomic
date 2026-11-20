@@ -107,7 +107,7 @@ test("agent loads the latest transcript and exposes loading and composer capabil
 	assert.equal(host.opts.isStreaming?.(), false);
 	assert.equal(host.opts.isDisabled?.(), true);
 	await assert.rejects(
-		host.opts.commands?.send?.("hello", "auto") ?? Promise.resolve(),
+		host.opts.steering?.prompt("hello") ?? Promise.resolve(),
 		(error: Error) =>
 			error instanceof TaskMessageError && error.code === "messages-unsupported" && error.taskId === id,
 	);
@@ -157,9 +157,9 @@ test("agent follows live streaming, sends messages, and unsubscribes on disposal
 	};
 	const s = source({
 		followTaskTranscript: () => ({ historyOnly: false, session }),
-		sendTaskMessage: async (task, text) => {
+		sendTaskMessage: async (task, text, lane) => {
 			assert.equal(task, id);
-			sent.push(text);
+			sent.push(`${lane}: ${text}`);
 		},
 	});
 	const host = agent(s);
@@ -175,8 +175,9 @@ test("agent follows live streaming, sends messages, and unsubscribes on disposal
 	await host.page.load();
 	assert.equal(subscribed, 1);
 	assert.equal(unsubscribed, 0);
-	await host.opts.commands?.send?.("hello", "auto");
-	assert.deepEqual(sent, ["hello"]);
+	await host.opts.steering?.prompt("hello");
+	await host.opts.steering?.prompt("later", { streamingBehavior: "followUp" });
+	assert.deepEqual(sent, ["steer: hello", "followUp: later"]);
 	host.page.dispose();
 	assert.equal(unsubscribed, 1);
 });
