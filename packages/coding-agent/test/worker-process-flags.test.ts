@@ -154,3 +154,28 @@ test("the parent-process guardian starts without the process's flags (#6079)", (
 	if (process.platform !== "win32") assert.equal(result.signal, "SIGKILL");
 	assert.equal(preloadRuns(), 1, "the preload ran again for the guardian");
 });
+
+// A 2x2 PNG, within every resize limit.
+const TINY_PNG =
+	"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACAQMAAABIeJ9nAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAAB3RJTUUH6gEOADM5Ddoh/wAAAAxJREFUCNdjYGBgAAAABAABJzQnCgAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wMS0xNFQwMDo1MTo1NyswMDowMOnKzHgAAAAldEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDEtMTRUMDA6NTE6NTcrMDA6MDCYl3TEAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTAxLTE0VDAwOjUxOjU3KzAwOjAwz4JVGwAAAABJRU5ErkJggg==";
+// Records each module a worker thread loads, so a test sees whether the image-resize worker ran.
+const RECORD_WORKER_LOADS = `import { appendFileSync } from "node:fs";
+import { registerHooks } from "node:module";
+import { isMainThread } from "node:worker_threads";
+if (!isMainThread) registerHooks({ load(url, context, nextLoad) {
+	appendFileSync(process.env.ATOMIC_TEST_PRELOAD_LOG, url + "\\n");
+	return nextLoad(url, context);
+} });`;
+
+test("image resizing runs on its worker thread in a process started with --input-type=module (#6079)", () => {
+	const result = runNode(
+		["--import", dataUrl(RECORD_WORKER_LOADS), "--input-type=module"],
+		`
+		import { resizeImage } from ${sourceUrl("utils/image-resize.ts")};
+		const resized = await resizeImage(Buffer.from(${JSON.stringify(TINY_PNG)}, "base64"), "image/png");
+		process.stdout.write(JSON.stringify({ wasResized: resized.wasResized, width: resized.width, height: resized.height }));
+	`,
+	);
+	assert.deepEqual(output(result), { wasResized: false, width: 2, height: 2 });
+	assert.match(readFileSync(preloadLog, "utf-8"), /image-resize-worker\.ts\n/, "the resize ran on the calling thread");
+});

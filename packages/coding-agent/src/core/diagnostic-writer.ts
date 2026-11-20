@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Worker } from "node:worker_threads";
-import { evalWorkerExecArgv } from "../utils/eval-worker.js";
+import { evalWorkerExecArgv } from "../utils/worker-threads.js";
 
 const QUEUED = 0;
 const WRITING = 1;

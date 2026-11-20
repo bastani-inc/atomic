@@ -1,6 +1,6 @@
 import { isBuiltin } from "node:module";
 import { Worker } from "node:worker_threads";
-import { evalWorkerExecArgv } from "../../utils/eval-worker.js";
+import { evalWorkerExecArgv } from "../../utils/worker-threads.js";
 import type { SqliteRow, SqliteValue } from "../storage/database.js";
 
 export type SqliteSelectorValue = string | number | boolean | null;

@@ -5,9 +5,9 @@ import { Worker } from "node:worker_threads";
 import { type ChildProcess, execFile, spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
-import { evalWorkerExecArgv } from "./eval-worker.ts";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
+import { evalWorkerExecArgv } from "./worker-threads.ts";
 
 export interface ShellConfig {
 	shell: string;
