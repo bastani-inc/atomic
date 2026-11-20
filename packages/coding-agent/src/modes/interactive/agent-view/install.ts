@@ -2,7 +2,7 @@ import type { TaskId } from "../../../core/tasks/contracts.js";
 import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { setAgentViewBridge } from "./agent-view-bridge.ts";
-import { AgentViewSwitcher } from "./agent-view-switcher.ts";
+import { AgentViewSwitcher, type OpenAgentViewPort } from "./agent-view-switcher.ts";
 import { openAgentViewPort } from "./open-port.ts";
 import { installPromptRetarget } from "./prompt-retarget.ts";
 import { installTranscriptSlot } from "./transcript-slot.ts";
@@ -10,14 +10,17 @@ import { installViewedCommandGates } from "./viewed-commands.ts";
 
 const switchers = new WeakMap<InteractiveModeBase, AgentViewSwitcher>();
 
-/** The mode's switcher, made on first use: a session can be bound before the screen is set up. */
-export function agentViewSwitcher(mode: InteractiveModeBase): AgentViewSwitcher {
+/**
+ * The mode's switcher, made on first use: a session can be bound before the screen is set up. `openPort` opens the
+ * subagents it shows; the first call decides it.
+ */
+export function agentViewSwitcher(
+	mode: InteractiveModeBase,
+	openPort: OpenAgentViewPort = (taskId) => openAgentViewPort(mode, taskId),
+): AgentViewSwitcher {
 	let switcher = switchers.get(mode);
 	if (switcher === undefined) {
-		switcher = new AgentViewSwitcher(
-			(taskId) => openAgentViewPort(mode, taskId),
-			(message) => mode.showWarning(message),
-		);
+		switcher = new AgentViewSwitcher(openPort, (message) => mode.showWarning(message));
 		switchers.set(mode, switcher);
 		mode.agentView = switcher;
 	}
