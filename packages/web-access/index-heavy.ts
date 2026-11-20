@@ -54,7 +54,7 @@ export default async function (pi: ExtensionAPI) {
 			pi.sendMessage({
 				customType: "curator-config",
 				content: [{ type: "text", text: label }],
-				display: "tool",
+				display: true,
 				details: { workflow: newWorkflow },
 			}, { triggerTurn: false, deliverAs: "followUp" });
 		},
@@ -67,7 +67,7 @@ export default async function (pi: ExtensionAPI) {
 				pi.sendMessage({
 					customType: "google-account",
 					content: [{ type: "text", text: `Gemini Web browser cookie access is disabled. Set allowBrowserCookies: true in ~/${CONFIG_DIR_NAME}/web-search.json to enable it.` }],
-					display: "tool",
+					display: true,
 					details: { available: false, cookieAccessAllowed: false },
 				}, { triggerTurn: true, deliverAs: "followUp" });
 				return;
@@ -78,7 +78,7 @@ export default async function (pi: ExtensionAPI) {
 				pi.sendMessage({
 					customType: "google-account",
 					content: [{ type: "text", text: "Gemini Web is unavailable. Sign into gemini.google.com in a supported Chromium-based browser." }],
-					display: "tool",
+					display: true,
 					details: { available: false, cookieAccessAllowed: true },
 				}, { triggerTurn: true, deliverAs: "followUp" });
 				return;
@@ -92,7 +92,7 @@ export default async function (pi: ExtensionAPI) {
 			pi.sendMessage({
 				customType: "google-account",
 				content: [{ type: "text", text }],
-				display: "tool",
+				display: true,
 				details: { available: true, email: email ?? null },
 			}, { triggerTurn: true, deliverAs: "followUp" });
 		},

@@ -7,6 +7,7 @@
 - The agent panel marks a running subagent with an open circle `◯` instead of the animated `∀`, a finished one with a green `●` and a stopped one with a red `◯`. The agent you are viewing has a filled `●` and a bold row, and `main` shows a muted `◯` while you view a subagent. The selection cursor is `∀` instead of `❯`, and it is the only mark drawn before a row's status mark. The `/tasks` list and a chat's task rows use the same running, done and stopped marks. Other status marks are unchanged ([#6090](https://github.com/bastani-inc/atomic/pull/6090))
 - New sessions put the system prompt's install-specific documentation paths after the `APPEND_SYSTEM.md` addendum, and the date after every other section, so less of a cached system prompt changes between days and installations ([#6092](https://github.com/bastani-inc/atomic/pull/6092)).
 - The prompt-cache miss notice names more causes: tool definitions that changed between requests, as a newer version can change them, a thinking budget lowered or dropped to fit the context window, a thinking level change on the same model, and a subagent prompt sent again in full ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
+- `pi.sendMessage()`, `pi.sendMessages()`, `pi.appendEntry()` and `pi.setLabel()` throw a `TypeError` instead of saving what the session could not read back: a `customType` that is not a string, message content that is neither a string nor an array of content blocks, or a label that is neither a string nor `undefined`. A message's `display` is saved as `true` or `false`, and a missing `display` as `false`, the way the chat shows it ([#6097](https://github.com/bastani-inc/atomic/issues/6097))
 
 ### Fixed
 
@@ -20,6 +21,7 @@
 - Extension commands, such as `/agents`, no longer flash an empty prompt before their view opens: the typed command stays on screen until the command shows something or anything else appears on the screen, until it finishes or you press a key, and for at most 250 ms ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
 - `/share` shows its progress as soon as you press Enter, and Esc cancels it at any step, also while it checks `gh` and exports the session ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
 - `/share` no longer uploads another session when the session changes while it checks `gh`, for example after `/resume` or `/new`: it stops with "Share cancelled: the session changed" ([#6077](https://github.com/bastani-inc/atomic/issues/6077)).
+- Sessions that used `/curator`, `/google-account` or `/websearch` open again, with `--session`, `/resume` or in the interactive view, on the default SQLite store and in JSONL files. A saved extension message whose `display` is neither `true` nor `false` shows when it is set and stays hidden when it is missing, as before 0.9.38. An extension message or entry whose type is not text, an extension message whose content is neither text nor content blocks, and a label that is not text no longer make a session unreadable: such content stays hidden, and such a label reads as no label ([#6097](https://github.com/bastani-inc/atomic/issues/6097))
 
 ## [0.10.1] - 2026-11-20
 

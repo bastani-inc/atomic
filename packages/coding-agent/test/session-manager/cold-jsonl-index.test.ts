@@ -105,7 +105,7 @@ describe("cold JSONL index (#5554)", () => {
 		{
 			first: "an entry of invalid structure",
 			later: "a malformed line",
-			lines: [{ ...custom("a", null), customType: 5 }, custom("b", "a"), "{oops"],
+			lines: [{ ...custom("a", null), parentId: 5 }, custom("b", "a"), "{oops"],
 			reported: "SyntaxError",
 		},
 		{
@@ -114,7 +114,7 @@ describe("cold JSONL index (#5554)", () => {
 			lines: [
 				{ ...custom("a", null), timestamp: "yesterday" },
 				custom("b", "a"),
-				{ ...custom("c", "b"), customType: 5 },
+				{ ...custom("c", "b"), parentId: 5 },
 			],
 			reported: "SessionFormatVersionError",
 		},

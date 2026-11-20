@@ -38,6 +38,47 @@ function entryBase(
 	};
 }
 
+const kindOf = (value: unknown): string => (value === null ? "null" : Array.isArray(value) ? "array" : typeof value);
+
+/**
+ * Check an extension-supplied `customType` before it is stored, so the session can be read back (#6097).
+ */
+export function checkedCustomType(customType: unknown, owner: "custom entry" | "custom message"): string {
+	if (typeof customType !== "string")
+		throw new TypeError(`A ${owner} customType must be a string, not ${kindOf(customType)}`);
+	return customType;
+}
+
+/** Custom message content as the session stores it: text or content blocks, and empty when left out (#6097). */
+export function checkedCustomMessageContent(content: unknown): string | (TextContent | ImageContent)[] {
+	if (content === undefined || content === null) return [];
+	if (typeof content === "string" || Array.isArray(content)) return content;
+	throw new TypeError(
+		`A custom message content must be a string or an array of content blocks, not ${kindOf(content)}`,
+	);
+}
+
+/**
+ * A custom message as the session stores it (#6097): `customType` and content are checked, and `display` is read the
+ * way the chat has always read it, by truthiness, so a missing `display` is false.
+ */
+export function checkedCustomMessage<T>(
+	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+): Pick<CustomMessage<T>, "customType" | "content" | "display" | "details"> {
+	return {
+		customType: checkedCustomType(message.customType, "custom message"),
+		content: checkedCustomMessageContent(message.content),
+		display: Boolean(message.display),
+		details: message.details,
+	};
+}
+
+/** Check a label before it is stored, so the session can be read back (#6097). */
+export function checkedLabel(label: unknown): string | undefined {
+	if (label === undefined || typeof label === "string") return label;
+	throw new TypeError(`A label must be a string or undefined, not ${kindOf(label)}`);
+}
+
 export function createSessionHeader(
 	id: string,
 	cwd: string,
@@ -144,7 +185,7 @@ export function createCustomEntry(
 ): CustomEntry {
 	return {
 		type: "custom",
-		customType,
+		customType: checkedCustomType(customType, "custom entry"),
 		data,
 		...entryBase(byId, parentId),
 	};
@@ -268,10 +309,7 @@ export function createCustomMessageEntry<T = unknown>(
 ): CustomMessageEntry<T> {
 	return {
 		type: "custom_message",
-		customType,
-		content,
-		display,
-		details,
+		...checkedCustomMessage({ customType, content, display, details }),
 		...(excludeFromContext === true ? { excludeFromContext: true } : {}),
 		...(stageAdmissionKey === undefined ? {} : { stageAdmissionKey }),
 		...(protectedReconciliation === undefined ? {} : { protectedReconciliation }),
@@ -291,7 +329,7 @@ export function createLabelEntry(
 		...entryBase(byId, parentId),
 		...(timestamp !== undefined ? { timestamp } : {}),
 		targetId,
-		label,
+		label: checkedLabel(label),
 	};
 }
 

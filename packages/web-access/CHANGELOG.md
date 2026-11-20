@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - Fixed reading Chromium cookies failing in a Node process started with `--input-type=module`, and the process's `--import` and `--require` preloads running again for each read ([#6079](https://github.com/bastani-inc/atomic/issues/6079))
+- `/curator`, `/google-account` and `/websearch` save their messages in a form that every Atomic release since 0.9.38 can open, so a session that used them no longer fails with "Unsupported session format" ([#6097](https://github.com/bastani-inc/atomic/issues/6097))
 
 ## [0.9.90] - 2026-11-19
 
