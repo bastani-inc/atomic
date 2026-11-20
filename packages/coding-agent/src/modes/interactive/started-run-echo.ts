@@ -6,8 +6,10 @@ import type { AgentSessionEvent } from "../../core/agent-session.js";
  * repeats input the chat already shows as unsaved shows no message of its own, and its echo goes (#5135).
  *
  * The answer and the run's first events arrive in either order: an engine answers as the run starts, and can send the
- * run's events after it. So only the run's own events decide: its user message keeps the echo, and the run getting past
- * where that message would be (its first assistant message, its turn's end or its end) without one drops it.
+ * run's events after it, or the host can handle the answer after events that followed it. So only the run's own events
+ * decide: its user message keeps the echo, and the run getting past where that message would be (its first assistant
+ * message, its turn's end or its end) without one drops it. Events of a run that was still going when the message was
+ * sent all come before its answer, and are not this run's.
  *
  * - `awaiting-answer`: sent, not answered yet. Events seen meanwhile are remembered.
  * - `awaiting-run-message`: answered "started" before the run showed or skipped its message.
@@ -24,6 +26,8 @@ export type StartedRunEcho =
 			readonly userMessageShown: boolean;
 			/** A run that started after the message was sent got past its prompt messages. */
 			readonly runPastPrompt: boolean;
+			/** This message's run settled without starting: its answer reached the host after the run's end. */
+			readonly runSettled: boolean;
 	  }
 	| { readonly kind: "awaiting-run-message"; readonly runStarted: boolean }
 	| { readonly kind: "settled"; readonly echo: "left" | "dropped" | "never-ran" };
@@ -47,6 +51,7 @@ export const STARTED_RUN_ECHO_SENT: StartedRunEcho = {
 	runStarted: false,
 	userMessageShown: false,
 	runPastPrompt: false,
+	runSettled: false,
 };
 
 const LEFT: StartedRunEcho = { kind: "settled", echo: "left" };
@@ -66,14 +71,16 @@ export function nextStartedRunEcho(state: StartedRunEcho, event: StartedRunEchoE
 				case "past-prompt":
 					return state.runStarted ? { ...state, runPastPrompt: true } : state;
 				case "run-settled":
-					// An earlier prompt's run: this one's is answered before it settles.
-					return state;
+					// The follower passes on only this message's run's events: one that settles unstarted before its
+					// answer is handled was answered in the same read as its end.
+					return state.runStarted ? state : { ...state, runSettled: true };
 				case "lost":
 					// The prompt fails with the engine, and its failure handles the echo.
 					return LEFT;
 				case "answer":
 					if (!event.started || state.userMessageShown) return LEFT;
 					if (state.runPastPrompt) return DROPPED;
+					if (state.runSettled) return NEVER_RAN;
 					return { kind: "awaiting-run-message", runStarted: state.runStarted };
 			}
 			break;

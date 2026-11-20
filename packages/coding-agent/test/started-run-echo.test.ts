@@ -54,22 +54,9 @@ describe("a started run's echo, whatever the order of the answer and the run's e
 		assert.deepEqual(run([RUN_START, STARTED]), { kind: "awaiting-run-message", runStarted: true });
 	});
 
-	test("the last events of an earlier run, which all precede this run's answer, decide nothing", () => {
-		const earlierRunEnds = [ASSISTANT, { type: "past-prompt" }, SETTLED] as const;
-		for (let seen = 0; seen <= earlierRunEnds.length; seen++) {
-			const before = [...earlierRunEnds.slice(0, seen), STARTED];
-			assert.equal(run(before).kind, "awaiting-run-message", `after ${seen} of them`);
-			assert.deepEqual(run([...before, ...showsItsMessage]), { kind: "settled", echo: "left" }, `shown (${seen})`);
-			assert.deepEqual(
-				run([...before, ...skipsItsMessage]),
-				{ kind: "settled", echo: "dropped" },
-				`skipped (${seen})`,
-			);
-		}
-	});
-
-	test("a run that settles or loses its engine before it starts never ran", () => {
+	test("a run that settles or loses its engine before it starts never ran, in either order with its answer", () => {
 		assert.deepEqual(run([STARTED, SETTLED]), { kind: "settled", echo: "never-ran" });
+		assert.deepEqual(run([SETTLED, STARTED]), { kind: "settled", echo: "never-ran" });
 		assert.deepEqual(run([STARTED, { type: "lost" }]), { kind: "settled", echo: "never-ran" });
 		assert.deepEqual(run([STARTED, RUN_START, { type: "lost" }]), { kind: "settled", echo: "dropped" });
 	});

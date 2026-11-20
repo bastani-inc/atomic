@@ -502,14 +502,25 @@ export function followStartedRunEcho(
 			mode.stopWorkingLoader();
 		}
 	};
+	// A run the host saw start and not settle before the send ends before this message's run can start: until it
+	// settles, its events are not this run's. A user message shown meanwhile still counts, as it always did.
+	let earlierRun = mode.session.turnStartedAt !== undefined;
 	stops.push(
 		mode.session.subscribe((event) => {
+			if (earlierRun && (event.type === "agent_settled" || event.type === "session_released")) {
+				earlierRun = false;
+				return;
+			}
 			const echoEvent = startedRunEchoEvent(event);
-			if (echoEvent) apply(echoEvent);
+			if (echoEvent && (!earlierRun || echoEvent.type === "user-message")) apply(echoEvent);
 		}),
 	);
 	return {
-		answer: (started) => apply({ type: "answer", started }),
+		answer: (started) => {
+			// Everything of an earlier run came before this answer.
+			earlierRun = false;
+			apply({ type: "answer", started });
+		},
 		close: () => {
 			if (state.kind === "awaiting-answer") stop();
 		},

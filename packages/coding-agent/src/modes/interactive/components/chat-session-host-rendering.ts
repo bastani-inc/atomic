@@ -204,6 +204,8 @@ export function chatSessionTokenCount<TExtraEntry extends ChatTranscriptEntryLik
 	const { settledTokens, streamingTokens } = readTranscriptTokens(state);
 	const counted = state.workingTokenCount?.();
 	if (counted !== undefined && counted > 0) return countedTokensShown(state, counted, counted + streamingTokens);
+	// A total that went away and comes back is a new total.
+	state.countedTokensShown = undefined;
 	return settledTokens + streamingTokens;
 }
 

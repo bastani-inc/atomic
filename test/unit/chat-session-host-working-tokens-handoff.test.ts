@@ -64,3 +64,38 @@ test("a subagent's working line never shows fewer tokens while an answer settles
 		Math.random = previousRandom;
 	}
 });
+
+test("a counted total that goes away and comes back starts a new count", () => {
+	const previousRandom = Math.random;
+	const timers = installLifecycleFakeClock();
+	Math.random = () => 0;
+	let counted: number | undefined = 2_400;
+	const host = makeLifecycleHost({ isStreaming: () => true, workingTokenCount: () => counted });
+	try {
+		host.applyAgentEvent({ type: "agent_start" } as never);
+		host.applyAgentEvent({ type: "turn_start" } as never);
+		host.applyAgentEvent({ type: "message_start", message: { role: "assistant", content: [] } } as never);
+		host.applyAgentEvent({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a".repeat(1_600) },
+		} as never);
+		assert.equal(tokens(host), "2.8k");
+		host.applyAgentEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "a".repeat(1_600) }],
+				usage: { input: 2_400, output: 400, cacheRead: 0, cacheWrite: 0 },
+				stopReason: "toolUse",
+			},
+		} as never);
+		counted = undefined;
+		assert.ok(workingLine(host), "the line still draws from the transcript");
+		counted = 2_400;
+		assert.equal(tokens(host), "2.4k", "the returned total is shown as it is");
+	} finally {
+		host.dispose();
+		timers.restore();
+		Math.random = previousRandom;
+	}
+});

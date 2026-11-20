@@ -469,6 +469,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		}
 		this.state.liveChat.clearPendingTools();
 		this.state.newMessages.reset();
+		this.state.countedTokensShown = undefined;
 		stopChatSessionWorkingLifecycle(this.state);
 		syncChatSessionAnimationTick(this.state);
 	}
