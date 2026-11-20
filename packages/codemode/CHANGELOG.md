@@ -4,7 +4,6 @@ This package is Atomic's fork of `@earendil-works/pi-codemode`. Its history up t
 
 ## [Unreleased]
 
-
 ## [0.9.88] - 2026-11-16
 
 ### Changed
