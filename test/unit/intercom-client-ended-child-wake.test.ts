@@ -192,3 +192,39 @@ test("messages queued for subagents that ended fail here, once, when the broker 
 	register(later.receive, "broker-c");
 	assert.equal(lost.length, 2, "each is given up once");
 });
+
+test("a message told lost while an older broker served is dropped by the store that kept it after all, never delivered (#5999)", async () => {
+	const memory = new EndedQueueMemory();
+	const first = connectedClient(true, memory);
+	first.client["_sessionId"] = null;
+	first.receive({ type: "registered", sessionId: "owner", instanceId: "store-s", dropsEndedQueued: true });
+	const sent = first.client.send("subagent-worker-1", { text: "hello", messageId: "m1", wakeEndedRecipient: true });
+	first.receive({
+		type: "queued",
+		messageId: "m1",
+		attemptId: first.frames[0]!.attemptId,
+		target: RESUMING_RECIPIENT_TARGET,
+		position: 1,
+	});
+	await sent;
+
+	// An older broker, which keeps no such queue and names no keeper, serves for a while: m1 is told lost there.
+	const older = connectedClient(true, memory);
+	const lost: unknown[] = [];
+	older.client.on("ended_queue_lost", (messages: unknown[]) => lost.push(...messages));
+	older.client["_sessionId"] = null;
+	older.receive({ type: "registered", sessionId: "owner" });
+	assert.equal(lost.length, 1);
+	assert.deepEqual(older.frames, [], "an older broker is never sent the drop");
+
+	// The store that kept m1 is back: it is told to drop it, once, before it can deliver it.
+	const back = connectedClient(true, memory);
+	back.client["_sessionId"] = null;
+	back.receive({ type: "registered", sessionId: "owner", instanceId: "store-s", dropsEndedQueued: true });
+	assert.deepEqual(back.frames, [{ type: "drop_ended_queued", messageIds: ["m1"] }]);
+	const again = connectedClient(true, memory);
+	again.client["_sessionId"] = null;
+	again.receive({ type: "registered", sessionId: "owner", instanceId: "store-s", dropsEndedQueued: true });
+	assert.deepEqual(again.frames, [], "once");
+	assert.equal(lost.length, 1);
+});

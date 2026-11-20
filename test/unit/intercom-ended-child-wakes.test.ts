@@ -8,6 +8,7 @@ import {
 	type WakeSender,
 } from "../../packages/intercom/broker/departed-children.js";
 import {
+	ENDED_CHILD_OWNER_AWAY_MAX_MS,
 	ENDED_CHILD_OWNER_RETURN_MS,
 	ENDED_CHILD_QUEUE_BYTES_MAX,
 	ENDED_CHILD_WAKE_ANSWER_MS,
@@ -217,24 +218,24 @@ test("a paused subagent is never woken: its message waits, with no time limit, u
 
 test("a paused subagent's message fails once, plainly, when the session that launched it is gone for good (#5999)", () => {
 	vi.useFakeTimers();
-	// Its connection drops and nothing of its host session comes back within the grace.
+	// Its connection drops and nothing of its host session comes back: it may still (`atomic -c`), for 7 days.
 	const dropped = children();
 	ended(dropped.departed, "stopped", "hold");
 	dropped.departed.admitWake(CHILD, wakeSender(), send("m1"));
 	dropped.departed.dropOwner(OWNER, "host-session");
-	vi.advanceTimersByTime(ENDED_CHILD_OWNER_RETURN_MS - 1);
+	vi.advanceTimersByTime(ENDED_CHILD_OWNER_RETURN_MS + LONGER_THAN_THE_OLD_HOUR_MS);
 	assert.equal(dropped.failed.length, 0, "its launching session may still come back");
-	vi.advanceTimersByTime(1);
+	vi.advanceTimersByTime(ENDED_CHILD_OWNER_AWAY_MAX_MS);
 	assert.deepEqual(
 		dropped.failed.map((failure) => [failure.held.messageId, failure.reason]),
 		[
 			[
 				"m1",
-				`Subagent "${CHILD}" is paused and the session that launched it disconnected and did not come back, so nothing can continue it now. The message was not delivered; send it again if it is still needed.`,
+				`Subagent "${CHILD}" was not continued for this message: the session that launched it has not been back for 7 days. The message was not delivered; send it again if it is still needed.`,
 			],
 		],
 	);
-	vi.advanceTimersByTime(LONGER_THAN_THE_OLD_HOUR_MS);
+	vi.advanceTimersByTime(ENDED_CHILD_OWNER_AWAY_MAX_MS);
 	assert.equal(dropped.failed.length, 1, "once");
 
 	// It said goodbye for good: nothing waits.
@@ -262,7 +263,7 @@ test("a paused subagent's message keeps waiting when the session that launched i
 	ended(departed, "stopped", "hold");
 	departed.admitWake(CHILD, wakeSender(), send("m1"));
 	departed.dropOwner(OWNER, "host-session");
-	vi.advanceTimersByTime(ENDED_CHILD_OWNER_RETURN_MS - 1);
+	vi.advanceTimersByTime(ENDED_CHILD_OWNER_AWAY_MAX_MS - 1);
 	assert.deepEqual(departed.adoptOrphans("owner-back", "host-session"), []);
 	vi.advanceTimersByTime(LONGER_THAN_THE_OLD_HOUR_MS);
 	assert.equal(failed.length, 0);
@@ -272,7 +273,7 @@ test("a paused subagent's message keeps waiting when the session that launched i
 	);
 });
 
-test("only a send that asks to wake, to a subagent whose owner offers it and is here, is queued (#5999)", () => {
+test("only a send that asks to wake, to a subagent whose owner offers it, is queued; one for an away owner wakes nothing (#5999)", () => {
 	const { departed } = children();
 	ended(departed, "completed", "wake");
 	assert.deepEqual(departed.admitWake(CHILD, wakeSender(), send("m1", { wake: false })), { kind: "none" });
@@ -283,9 +284,13 @@ test("only a send that asks to wake, to a subagent whose owner offers it and is 
 	const killed = children();
 	ended(killed.departed, "cancelled", "wake");
 	assert.deepEqual(killed.departed.admitWake(CHILD, wakeSender(), send("m4")), { kind: "none" });
+	// Its owner is away: the message waits for it with the others, and nobody is asked to resume the child yet.
 	const away = children(false);
 	ended(away.departed, "completed", "wake");
-	assert.deepEqual(away.departed.admitWake(CHILD, wakeSender(), send("m5")), { kind: "none" });
+	assert.deepEqual(away.departed.admitWake(CHILD, wakeSender(), send("m5")), {
+		kind: "queued",
+		target: RESUMING_RECIPIENT_TARGET,
+	});
 	const older = children();
 	ended(older.departed, "completed");
 	assert.deepEqual(older.departed.admitWake(CHILD, wakeSender(), send("m6")), { kind: "none" });
@@ -328,7 +333,7 @@ test("a send that waited for the owner's verdict is queued once the verdict lets
 	);
 });
 
-test("what was queued fails when the owner leaves, when it reports the subagent cancelled, or is forgotten (#5999)", () => {
+test("what was queued fails when the owner ends for good, when it reports the subagent cancelled, or is forgotten (#5999)", () => {
 	const { departed, failed } = children();
 	ended(departed, "completed", "wake");
 	departed.admitWake(CHILD, wakeSender(), send("m1"));
@@ -341,8 +346,13 @@ test("what was queued fails when the owner leaves, when it reports the subagent 
 	);
 	ended(departed, "completed", "wake");
 	departed.admitWake(CHILD, wakeSender(), send("m2"));
+	// Only away, it may come back: the message waits for it.
 	departed.dropOwner(OWNER, "host-session");
-	assert.match(failed.at(-1)!.reason, /disconnected before it was resumed/);
+	assert.equal(failed.length, 1);
+	assert.equal(departed.heldSendCount, 1);
+	assert.deepEqual(departed.adoptOrphans(OWNER, "host-session"), []);
+	departed.dropOwner(OWNER, "host-session", true);
+	assert.match(failed.at(-1)!.reason, /the session that launched it ended before it was resumed/);
 	assert.equal(departed.heldSendCount, 0);
 });
 
