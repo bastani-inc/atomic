@@ -47,6 +47,12 @@ export interface SteeringTarget {
 	readonly busy: boolean;
 	/** Whether the target holds its queue until the user sends again: an interrupted main chat, a paused subagent. */
 	readonly paused: boolean;
+	/**
+	 * Whether the target can be lost with what it queued, as an isolated engine that crashes is, and the chat then gives
+	 * those messages back ({@link SteeringQueueController.loseTarget}). Only then does the controller remember a message
+	 * the target accepted until a listing shows it.
+	 */
+	readonly canBeLost?: boolean;
 	/** The target's queue as it last listed it. */
 	queued(): SteeringQueueLists;
 	/** Send `text`: queued in `streamingBehavior`'s lane, or starting a turn without one. */
@@ -294,7 +300,7 @@ export class SteeringQueueController {
 			this.editor.requestRender();
 			if (!inTargetQueue) return;
 			if (this.inFlightAtLoss.delete(shown)) this.addLost(shown);
-			else this.acceptedUnlisted.push(shown);
+			else if (this.target.canBeLost === true) this.acceptedUnlisted.push(shown);
 		};
 		const lostOnTheWay = () => {
 			if (shown && this.inFlightAtLoss.delete(shown)) this.addLost(shown);

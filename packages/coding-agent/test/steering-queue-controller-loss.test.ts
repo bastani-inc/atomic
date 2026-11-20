@@ -15,14 +15,18 @@ interface Pending {
 	refuse(error: Error): void;
 }
 
-/** An agent in another process: its queue as it last listed it, and prompts the test answers. */
-function agentInAnotherProcess() {
+/**
+ * An agent in another process: its queue as it last listed it, and prompts the test answers. With `canBeLost: false`
+ * the chat never gives back what it queued, as a subagent chat's agent.
+ */
+function agentInAnotherProcess(options: { canBeLost?: boolean } = {}) {
 	let listed: SteeringQueueLists = { steering: [], followUp: [] };
 	const pending: Pending[] = [];
 	const controller = new SteeringQueueController(
 		{
 			busy: true,
 			paused: false,
+			canBeLost: options.canBeLost ?? true,
 			queued: () => listed,
 			prompt: (text: string, options?: SteeringPromptOptions) =>
 				new Promise<void>((resolve, reject) => {
@@ -99,6 +103,24 @@ test("a lost agent's queue comes back in Alt+Up order: listed, accepted but unli
 	]);
 	assert.deepEqual(agent.controller.allQueued(), { steering: [], followUp: [] });
 	assert.equal(agent.controller.recoverTarget([]), undefined, "a recovery gives back once");
+});
+
+test("a message the agent started its next turn with is not given back by a later loss: it was delivered", async () => {
+	const agent = agentInAnotherProcess();
+	const started = agent.controller.submit("started a turn", "steer", { route: "queue" });
+	agent.pending[0]!.accept("started");
+	assert.deepEqual(await started, { kind: "started" });
+	agent.controller.loseTarget();
+	assert.equal(agent.controller.recoverTarget([]), undefined);
+});
+
+test("a chat whose agent cannot be lost keeps no copy of a message the agent accepted unlisted", async () => {
+	const agent = agentInAnotherProcess({ canBeLost: false });
+	const sent = agent.controller.submit("accepted unlisted", "steer", { route: "queue" });
+	agent.pending[0]!.accept();
+	assert.deepEqual(await sent, { kind: "queued" });
+	agent.controller.loseTarget();
+	assert.equal(agent.controller.recoverTarget([]), undefined);
 });
 
 test("a message the replacement's history shows delivered is not given back; one copy per delivery, steering first", () => {

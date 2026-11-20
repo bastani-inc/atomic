@@ -48,6 +48,8 @@ function mainSteeringTarget(mode: InteractiveModeBase): SteeringTarget {
 		get paused() {
 			return mode.session.queuedMessagesPaused;
 		},
+		// An isolated engine can crash with what it queued; the chat then gives those messages back.
+		canBeLost: true,
 		queued: () => ({
 			steering: mode.session.getSteeringMessages(),
 			followUp: mode.session.getFollowUpMessages(),
