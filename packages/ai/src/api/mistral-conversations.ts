@@ -25,6 +25,7 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
+import { TOOL_RESULTS_BRIDGE_TEXT } from "../utils/tool-results-bridge.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import { getCurrentTools, resolveRequestTranscript } from "../utils/transcript.ts";
@@ -134,10 +135,7 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 	options?: MistralOptions,
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
-	// Mistral rejects a user message directly after a tool message.
-	const normalizedContext = resolveRequestTranscript(context, model.compat?.supportsMidConvoSystemMessages, {
-		userAfterToolResults: false,
-	});
+	const normalizedContext = resolveRequestTranscript(context, model.compat?.supportsMidConvoSystemMessages);
 
 	(async () => {
 		const output = createOutput(model);
@@ -841,8 +839,14 @@ function toChatMessages(messages: Message[], supportsImages: boolean): MistralCh
 		}
 
 		if (msg.role === "user") {
+			const pushUser = (content: string | MistralContentChunk[]): void => {
+				// Mistral rejects a user message directly after a tool message, so a fixed assistant message goes between.
+				if (result.at(-1)?.role === "tool")
+					result.push({ role: "assistant", prefix: false, content: TOOL_RESULTS_BRIDGE_TEXT });
+				result.push({ role: "user", content });
+			};
 			if (typeof msg.content === "string") {
-				result.push({ role: "user", content: sanitizeSurrogates(msg.content) });
+				pushUser(sanitizeSurrogates(msg.content));
 				continue;
 			}
 			const hadImages = msg.content.some((item) => item.type === "image");
@@ -853,12 +857,10 @@ function toChatMessages(messages: Message[], supportsImages: boolean): MistralCh
 					return { type: "image_url", imageUrl: `data:${item.mimeType};base64,${item.data}` };
 				});
 			if (content.length > 0) {
-				result.push({ role: "user", content });
+				pushUser(content);
 				continue;
 			}
-			if (hadImages && !supportsImages) {
-				result.push({ role: "user", content: "(image omitted: model does not support images)" });
-			}
+			if (hadImages && !supportsImages) pushUser("(image omitted: model does not support images)");
 			continue;
 		}
 

@@ -19,6 +19,7 @@ import type {
 	SystemMessage,
 	TranscriptContext,
 } from "../src/types.ts";
+import { TOOL_RESULTS_BRIDGE_TEXT } from "../src/utils/tool-results-bridge.ts";
 import {
 	appendSystemMessageUpdates,
 	declarationsEqual,
@@ -52,8 +53,8 @@ interface Transport {
 	apiKey?: string;
 	/** The payload field holding the conversation; every other field must not change. */
 	conversation: "messages" | "contents" | "input";
-	/** No user message may follow a tool message, so an update after tool results waits for the next user message. */
-	holdsAfterToolResults?: boolean;
+	/** No user message may follow a tool message, so a fixed assistant message goes between them. */
+	bridgesToolResults?: boolean;
 }
 
 const transports: Transport[] = [
@@ -159,7 +160,7 @@ const transports: Transport[] = [
 		stream: streamMistral as StreamFunction,
 		apiKey: "test-key",
 		conversation: "messages",
-		holdsAfterToolResults: true,
+		bridgesToolResults: true,
 	},
 	{
 		name: "OpenAI Chat Completions on a host whose template rejects a user message after a tool message",
@@ -178,7 +179,7 @@ const transports: Transport[] = [
 		stream: streamCompletions as StreamFunction,
 		apiKey: "test-key",
 		conversation: "messages",
-		holdsAfterToolResults: true,
+		bridgesToolResults: true,
 	},
 ];
 
@@ -339,15 +340,15 @@ describe("prompt updates keep user and assistant turns alternating, outside tool
 						if (JSON.stringify(item).includes("functionResponse"))
 							expect(JSON.stringify(item)).not.toContain("Current date: 2026-11-20");
 				}
-				const held = transport.holdsAfterToolResults && messages.at(-1)?.role === "system";
-				if (held) {
-					expect(JSON.stringify(conversation)).not.toContain("Current date: 2026-11-20");
-					expect(roles.at(-1)).toBe("tool");
-				} else expect(JSON.stringify(conversation)).toContain("Current date: 2026-11-20");
-				if (transport.holdsAfterToolResults && messages === twoUpdatesThenInput) {
-					const next = JSON.stringify(conversation.at(-1));
-					expect(next.indexOf("Current date: 2026-11-20")).toBeGreaterThanOrEqual(0);
-					expect(next.indexOf("Current date: 2026-11-20")).toBeLessThan(next.indexOf("steered"));
+				// Delivered with the very next request.
+				expect(JSON.stringify(conversation)).toContain("Current date: 2026-11-20");
+				if (transport.bridgesToolResults) {
+					const tool = roles.lastIndexOf("tool");
+					if (tool >= 0 && tool < roles.length - 1) {
+						expect(roles.slice(tool + 1, tool + 3)).toEqual(["assistant", "user"]);
+						expect(JSON.stringify(conversation[tool + 1])).toContain(TOOL_RESULTS_BRIDGE_TEXT);
+					}
+					expect(roles.findIndex((role, index) => role === "user" && roles[index - 1] === "tool")).toBe(-1);
 				}
 			}
 		});
@@ -377,16 +378,41 @@ describe("an update after tool results an earlier request sent, as on a resume a
 			];
 			const before = (await capture(transport, sent))[transport.conversation];
 			const after = (await capture(transport, [...sent, resumeUpdate]))[transport.conversation];
-			if (transport.holdsAfterToolResults) {
-				// It waits for the next user message to lead.
-				expect(JSON.stringify(after)).toBe(JSON.stringify(before));
-				return;
-			}
 			// Only the cache marker, which moves to the newest block on every request, may differ.
 			expect(JSON.stringify(withoutCacheMarkers(toolResults(after)))).toBe(
 				JSON.stringify(withoutCacheMarkers(toolResults(before))),
 			);
 			expect(JSON.stringify(after)).toContain("Current date: 2026-11-20");
+		});
+	}
+});
+
+describe("the request after an update that followed tool results extends the request that sent it", () => {
+	for (const transport of transports) {
+		test(transport.name, async () => {
+			const call: AssistantMessage = {
+				...reply(transport.model, "", 3),
+				content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
+				stopReason: "toolUse",
+			};
+			const withUpdate: Message[] = [
+				prompt,
+				{ role: "user", content: "first", timestamp: 2 },
+				call,
+				{ role: "toolResult", toolCallId: "call_1", toolName: "read", content: [], isError: false, timestamp: 4 },
+				resumeUpdate,
+			];
+			const sent = withoutCacheMarkers((await capture(transport, withUpdate))[transport.conversation]) as unknown[];
+			const next = withoutCacheMarkers(
+				(
+					await capture(transport, [
+						...withUpdate,
+						reply(transport.model, "answer", 7),
+						{ role: "user", content: "next", timestamp: 8 },
+					])
+				)[transport.conversation],
+			) as unknown[];
+			expect(JSON.stringify(next.slice(0, sent.length))).toBe(JSON.stringify(sent));
 		});
 	}
 });

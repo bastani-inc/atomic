@@ -65,6 +65,7 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { DoneEventWatch } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
+import { TOOL_RESULTS_BRIDGE_TEXT } from "../utils/tool-results-bridge.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { recordLowestThinkingOffFallback, recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import {
@@ -373,10 +374,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 	options?: OpenAICompletionsOptions,
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
-	const streamCompat = getCompat(model);
-	const normalizedContext = resolveRequestTranscript(context, streamCompat.supportsMidConvoSystemMessages, {
-		userAfterToolResults: !streamCompat.requiresAssistantAfterToolResult,
-	});
+	const normalizedContext = resolveRequestTranscript(context, getCompat(model).supportsMidConvoSystemMessages);
 
 	(async () => {
 		const output: AssistantMessage = {
@@ -1428,9 +1426,7 @@ export function convertMessages(
 	compat: ResolvedOpenAICompletionsCompat,
 	options?: ConvertCompletionsMessagesOptions,
 ): ChatCompletionMessageParam[] {
-	const normalizedContext = resolveRequestTranscript(context, compat.supportsMidConvoSystemMessages, {
-		userAfterToolResults: !compat.requiresAssistantAfterToolResult,
-	});
+	const normalizedContext = resolveRequestTranscript(context, compat.supportsMidConvoSystemMessages);
 	const params: ChatCompletionMessageParam[] = [];
 
 	const normalizeToolCallId = (id: string): string => {
@@ -1485,7 +1481,7 @@ export function convertMessages(
 		if (compat.requiresAssistantAfterToolResult && lastRole === "toolResult" && msg.role === "user") {
 			params.push({
 				role: "assistant",
-				content: "I have processed the tool results.",
+				content: TOOL_RESULTS_BRIDGE_TEXT,
 			});
 		}
 
@@ -1705,7 +1701,7 @@ export function convertMessages(
 				if (compat.requiresAssistantAfterToolResult) {
 					params.push({
 						role: "assistant",
-						content: "I have processed the tool results.",
+						content: TOOL_RESULTS_BRIDGE_TEXT,
 					});
 				}
 
