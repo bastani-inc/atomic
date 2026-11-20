@@ -562,6 +562,16 @@ function usesOtherCollation(opcode: string, p4: string): boolean {
 	return name !== undefined && !BUILT_IN_COLLATIONS.has(name);
 }
 
+/** A VACUUM, which may create the file it writes into before it is refused. */
+const VACUUM_STATEMENT = /^VACUUM\b/i;
+/** A word naming one of `UNSAFE_FUNCTIONS` but `sqlite_attach`, whose statement, ATTACH, names it otherwise. */
+const UNSAFE_WORD = /\b(?:changes|total_changes|last_insert_rowid|load_extension)\b/i;
+
+/** `sql` without its string literals and comments, which name nothing it calls. */
+function withoutStringsAndComments(sql: string): string {
+	return sql.replace(/'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)/g, " ");
+}
+
 /** The database numbers of a connection's main database, the file itself, and of its temporary database. */
 const MAIN_DATABASE = 0;
 const TEMP_DATABASE = 1;
@@ -583,7 +593,9 @@ const TEMP_DATABASE = 1;
  *   `splitStatements`). It waits until no transaction of this thread holds the lock (see `runWhenFree`), so no part of
  *   it runs while the lock is held. An `exec` of exactly one statement runs as that statement.
  *
- * The plan of a statement is made once while the file is held and listed again for later calls.
+ * The plan of a statement is made once while the file is held and listed again for later calls. Listing the plan of
+ * an INSERT, UPDATE or DELETE resets the connection's `changes()`, which the statement's own run sets again; so a
+ * statement that names a function reading the change counters runs as before without its plan being listed.
  */
 export function modeOf(
 	gate: FileGate,
@@ -604,6 +616,8 @@ export function modeOf(
 	// Decided on the text SQLite reads, past the blanks, comments and empty statements it skips.
 	const statement = sql.replace(LEADING, "");
 	if (PRAGMA_STATEMENT.test(statement)) return pragmaTriedFirst(statement) ? "try first" : "as before";
+	// Decided without its plan: listing the plan of an INSERT, UPDATE or DELETE resets the connection's changes().
+	if (VACUUM_STATEMENT.test(statement) || UNSAFE_WORD.test(withoutStringsAndComments(statement))) return "as before";
 	const steps = planSteps(gate, owner, database, statement);
 	return steps !== undefined && triesSafely(steps, database) ? "try first" : "as before";
 }

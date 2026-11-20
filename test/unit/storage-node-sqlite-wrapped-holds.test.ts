@@ -1034,3 +1034,15 @@ test("a wrapped write inside a transaction of its connection's own during a thre
 	await committed;
 	assert.deepEqual(await values(threaded), ["a", "b"]);
 });
+
+test("a wrapped statement that reads the change counters during a threaded transaction reads what it read before (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path);
+	raw.exec("CREATE TEMP TABLE scratch (x)");
+	await wrapped.run("INSERT INTO scratch VALUES (1), (2), (3)");
+	const { committed, settled } = await holdLock(threaded);
+	assert.deepEqual(await wrapped.get("INSERT INTO scratch VALUES (changes()) RETURNING x"), { x: 3 });
+	assert.deepEqual(await wrapped.get("SELECT changes() AS n, total_changes() AS total"), { n: 1, total: 4 });
+	assert.equal(settled(), false, "a call waited for the transaction");
+	await committed;
+});
