@@ -866,3 +866,22 @@ test("a wrapped exec of no statement or of one statement is classified as that s
 	await committed;
 	assert.deepEqual(await values(threaded), ["a", "b"]);
 });
+
+test("a wrapped deferred transaction or savepoint runs at once during a threaded transaction, as before, and BEGIN IMMEDIATE waits (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped } = await openWrapped(path, 150);
+	const { committed, settled } = await holdLock(threaded, 600);
+	await wrapped.exec("BEGIN");
+	assert.deepEqual(await values(wrapped), []);
+	await wrapped.exec("COMMIT");
+	await wrapped.exec("SAVEPOINT s");
+	await wrapped.exec("RELEASE s");
+	assert.equal(settled(), false, "a transaction statement waited for the threaded transaction");
+	const failure = await wrapped.exec("BEGIN IMMEDIATE").then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.ok(failure instanceof StorageUnavailableError, `expected SQLITE_BUSY, got ${String(failure)}`);
+	assert.equal((failure.cause as { errcode?: number }).errcode, 5);
+	await committed;
+});

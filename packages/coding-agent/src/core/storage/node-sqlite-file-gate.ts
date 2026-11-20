@@ -452,13 +452,13 @@ const EXPLAIN_STATEMENT = /^EXPLAIN\b/i;
 /** A statement that creates a trigger, whose body holds statements of its own. */
 const TRIGGER_STATEMENT = new RegExp(`^CREATE${GAP}+(?:(?:TEMP|TEMPORARY)${GAP}+)?TRIGGER\\b`, "i");
 /**
- * Steps that change a connection's transactions, write through a virtual table, or work on whole databases: counted
- * as writes of the held file whatever database they name. Every other write of a database file starts a write
- * `Transaction` on that database, which says which one it is (see `writesHeldFile`).
+ * Steps that write through a virtual table or work on whole databases: counted as writes of the held file whatever
+ * database they name. Every other write of a database file starts a write `Transaction` on that database, which says
+ * which one it is (see `writesHeldFile`). Starting a deferred transaction or a savepoint takes no lock, and ending one
+ * only ends a read while a threaded transaction holds the file (this connection cannot hold its write lock then), so
+ * neither counts; `BEGIN IMMEDIATE` and `BEGIN EXCLUSIVE` start a write `Transaction` on the main database.
  */
 const FILE_STEPS = new Set([
-	"AutoCommit",
-	"Savepoint",
 	"SqlExec",
 	"VUpdate",
 	"VBegin",
