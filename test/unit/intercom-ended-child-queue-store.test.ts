@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
 	type EndedChildQueueStore,
 	type EndedQueueEntry,
@@ -279,4 +280,59 @@ test("a full queue is read a page at a time, and the event loop runs between pag
 	);
 	assert.ok(new Set(turns).size > 1, "timers ran between pages");
 	assert.deepEqual(await next.targets(), ["subagent-worker-1"]);
+});
+
+/** The bytes the store's file and its write-ahead log take on disk now. */
+function onDisk(path: string): number {
+	return [path, `${path}-wal`].reduce((total, file) => total + (existsSync(file) ? statSync(file).size : 0), 0);
+}
+
+async function fillAndDrain(store: EndedChildQueueStore, count: number): Promise<void> {
+	const big = "x".repeat(1024 * 1024 - 64);
+	const ids = Array.from({ length: count }, (_, index) => `m${index}`);
+	for (const id of ids) await store.add({ ...entry(id, "subagent-worker-1", big), bytes: big.length });
+	await store.remove(ids);
+}
+
+test("the store gives its disk space back once its queue drains", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const store = await open(path, "broker-1");
+	await fillAndDrain(store, 24);
+	await vi.waitFor(() => assert.ok(onDisk(path) < 4 * 1024 * 1024, `still ${onDisk(path)} bytes`), {
+		timeout: 20_000,
+		interval: 50,
+	});
+	// It is still the same store, and keeps working.
+	assert.equal(await store.add(entry("after")), "added");
+	assert.deepEqual(
+		(await store.load()).rows.map((row) => row.messageId),
+		["after"],
+	);
+});
+
+test("a store from before that cannot give space back is converted once its queue is empty, and then does", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const first = await open(path, "broker-1");
+	await first.close();
+	// As a broker of the earlier release left it: no auto-vacuum.
+	const { DatabaseSync } = await import("node:sqlite");
+	const earlier = new DatabaseSync(path);
+	earlier.exec("PRAGMA auto_vacuum = NONE; VACUUM;");
+	earlier.close();
+	const store = await open(path, "broker-2");
+	await fillAndDrain(store, 24);
+	await vi.waitFor(() => assert.ok(onDisk(path) < 4 * 1024 * 1024, `still ${onDisk(path)} bytes`), {
+		timeout: 20_000,
+		interval: 50,
+	});
+	const check = new DatabaseSync(path, { readOnly: true });
+	try {
+		assert.equal(
+			(check.prepare("PRAGMA auto_vacuum").get() as { auto_vacuum: number }).auto_vacuum,
+			2,
+			"incremental",
+		);
+	} finally {
+		check.close();
+	}
 });

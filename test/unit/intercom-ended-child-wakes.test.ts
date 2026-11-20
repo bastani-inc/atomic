@@ -352,7 +352,7 @@ test("what was queued fails when the owner ends for good, when it reports the su
 	assert.equal(departed.heldSendCount, 1);
 	assert.deepEqual(departed.adoptOrphans(OWNER, "host-session"), []);
 	departed.dropOwner(OWNER, "host-session", true);
-	assert.match(failed.at(-1)!.reason, /the session that launched it ended before it was resumed/);
+	assert.match(failed.at(-1)!.reason, /the session that launched it disconnected before it was resumed/);
 	assert.equal(departed.heldSendCount, 0);
 });
 
@@ -422,4 +422,17 @@ test("a subagent its owner already holds takes a message without a wake, and a h
 	unstarted.departed.admitWake(CHILD, wakeSender(), send("m4"), true);
 	vi.advanceTimersByTime(ENDED_CHILD_WAKE_START_MAX_MS);
 	assert.match(unstarted.failed[0]!.reason, /it did not start in time/);
+});
+
+test("an owner with no host session to come back as that disconnects fails what was queued with main's text (#5999)", () => {
+	const { departed, failed } = children();
+	ended(departed, "completed", "wake");
+	departed.admitWake(CHILD, wakeSender(), send("m1"));
+	departed.dropOwner(OWNER);
+	assert.deepEqual(
+		failed.map((failure) => failure.reason),
+		[
+			`Subagent "${CHILD}" was not resumed for this message: the session that launched it disconnected before it was resumed. The message was not delivered.`,
+		],
+	);
 });
