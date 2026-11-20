@@ -17,6 +17,11 @@ import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ExtensionError } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
+import {
+	type QueuedDeliveryEnd,
+	QueuedDeliveryView,
+	type QueuedMessageLanes,
+} from "../../core/queued-message-delivery.ts";
 import { type SessionEntry, SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
 import { retryStatusUpdate, type SessionRetryStatus } from "../../core/session-retry-status.js";
@@ -204,6 +209,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
+	/**
+	 * The queued messages the engine's session took and has not shown yet, as the changes on its event lines tell them
+	 * (an engine that sends none leaves it empty). Read with the cached queue, which no longer lists them: the main chat
+	 * draws them as queued until their own row arrives.
+	 */
+	private readonly queuedDeliveries = new QueuedDeliveryView();
+	/** Ends waiting for their event to reach the host's listeners, which a compaction can hold back. */
+	private readonly queuedDeliveryEnds = new WeakMap<object, QueuedDeliveryEnd>();
+	private readonly queuedDeliveryResetListeners = new Set<() => void>();
 	private readonly recoveryListeners = new Set<(replaced: boolean) => void>();
 	/** Bumped by every authoritative queue_update. */
 	private queueUpdateGeneration = 0;
@@ -315,6 +329,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 		});
 		this.client.onEvent((event) => this.observeEvent(event));
+		// Read with the queue it changes: a queue_update that no longer lists a message names it as being delivered.
+		this.client.onQueuedDeliveryChange?.((change, event) => {
+			const end = this.queuedDeliveries.receive(change);
+			// The messages it ended leave when the event reaches the chat, with the row it draws.
+			if (end === undefined) return;
+			if (this.hostEventsSubscribed) this.queuedDeliveryEnds.set(event, end);
+			else this.queuedDeliveries.end(end);
+		});
 		this.stopSharingDebugSetting = onDebugSettingChange((enabled) =>
 			this.dispatchBestEffort("set debug", this.client.setDebug(enabled)),
 		);
@@ -339,6 +361,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (event.generation === this.client.getGeneration()) {
 				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 				this.updateResources({});
+				// What the lost engine was delivering is gone with it; its replacement starts telling afresh.
+				this.forgetQueuedDeliveries();
 			}
 			// A first child that never became ready failed startup; initialStart reports it instead of a restart.
 			if (!this.initialStartSettled) {
@@ -374,6 +398,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			}
 			if (message.type === "engine_extension_ui_reset") {
 				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
+				// The engine retires its session, with what it was delivering; it tells this one nothing more about them.
+				this.forgetQueuedDeliveries();
 				this.hostExtensionUIReset?.();
 				return;
 			}
@@ -825,6 +851,25 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				// A listener's failure must not fail the recovery it observes.
 			}
 		}
+	}
+
+	/**
+	 * The queued messages the engine's session took and has not shown yet, per lane, oldest first. The cached queue
+	 * lists none of them. The same object until a change arrives; empty for an engine that sends none.
+	 */
+	queuedMessagesUnderWay(): QueuedMessageLanes {
+		return this.queuedDeliveries.texts;
+	}
+
+	/** Called when the messages being delivered are forgotten at once: the engine was lost or retired its session. */
+	onQueuedDeliveriesForgotten(listener: () => void): () => void {
+		this.queuedDeliveryResetListeners.add(listener);
+		return () => this.queuedDeliveryResetListeners.delete(listener);
+	}
+
+	private forgetQueuedDeliveries(): void {
+		if (!this.queuedDeliveries.reset()) return;
+		for (const listener of [...this.queuedDeliveryResetListeners]) listener();
 	}
 
 	/**
@@ -1490,6 +1535,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	private notifyHostListeners(event: JsonAgentSessionEvent, audience: number): void {
+		const end = this.queuedDeliveryEnds.get(event);
+		if (end !== undefined) {
+			this.queuedDeliveryEnds.delete(event);
+			this.queuedDeliveries.end(end);
+		}
 		for (const [id, listener] of [...this.hostListeners]) if (id <= audience) listener(event);
 	}
 

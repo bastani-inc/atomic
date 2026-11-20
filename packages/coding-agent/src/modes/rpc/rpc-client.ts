@@ -3,6 +3,7 @@ import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
 import { receiveChatReceipt } from "../../core/chat-receipts.js";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
+import { type QueuedDeliveryChange, takeQueuedDeliveryChange } from "../../core/queued-message-delivery.ts";
 import type { BashOutputChannel } from "../../core/tools/bash.js";
 import { removeOwnedInteractiveEngineBootstrapAsync } from "../../utils/interactive-engine-bootstrap.ts";
 import { sleep } from "../../utils/sleep.ts";
@@ -89,6 +90,7 @@ export class RpcClient extends RpcClientApi {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
+	private readonly queuedDeliveryListeners = new Set<(change: QueuedDeliveryChange, event: RpcEvent) => void>();
 	private extensionUIListeners: Array<(request: RpcExtensionUIRequest) => void> = [];
 	private readonly pendingExtensionUIRequests = new GenerationBuffer<RpcExtensionUIRequest>();
 	private engineMessageListeners: Array<(message: InteractiveEngineMessage) => void> = [];
@@ -347,6 +349,15 @@ export class RpcClient extends RpcClientApi {
 		};
 	}
 
+	/**
+	 * Subscribe to what an interactive engine says about the queued messages its session is delivering. Each change
+	 * arrives with the event whose line carried it, before that event's listeners run.
+	 */
+	onQueuedDeliveryChange(listener: (change: QueuedDeliveryChange, event: RpcEvent) => void): () => void {
+		this.queuedDeliveryListeners.add(listener);
+		return () => this.queuedDeliveryListeners.delete(listener);
+	}
+
 	onExtensionUIRequest(listener: (request: RpcExtensionUIRequest) => void): () => void {
 		this.extensionUIListeners.push(listener);
 		for (const request of this.pendingExtensionUIRequests.drain(this.generation)) listener(request);
@@ -526,6 +537,12 @@ export class RpcClient extends RpcClientApi {
 			}
 			if (data.type === "response" && data.id && this.pendingRequests.resolve(data.id, data as RpcResponse)) return;
 			if (this.engineMonitor && "atomicChatReceipt" in data) receiveChatReceipt(data);
+			const queuedDeliveries = this.engineMonitor ? takeQueuedDeliveryChange(data) : undefined;
+			if (queuedDeliveries !== undefined) {
+				// Older tool updates the buffer still holds reach their listeners first, with the queue they were sent with.
+				this.eventBuffer?.flush();
+				for (const listener of [...this.queuedDeliveryListeners]) listener(queuedDeliveries, data as RpcEvent);
+			}
 			const event = data as RpcEvent;
 			if (this.eventBuffer) this.eventBuffer.enqueue(event);
 			else this.emitEvent(event);

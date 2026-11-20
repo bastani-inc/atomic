@@ -251,7 +251,7 @@ test("newly scrolled panel rows show their elapsed time on the first frame (#523
 					component.render(100);
 					component.handleInput("\x1b[F");
 					const lines = component.render(100).map(stripVTControlCharacters);
-					const selected = lines.find((line) => line.startsWith("❯"));
+					const selected = lines.find((line) => line.startsWith("∀"));
 					assert.match(selected ?? "", /12s$/, lines.join("\n"));
 				} finally {
 					component.dispose();
@@ -304,11 +304,11 @@ test("a paused-but-running subagent is treated as live for x in the panel and st
 				try {
 					let initialLines = component.render(100).map(stripVTControlCharacters);
 					for (let moves = 0; moves < 3; moves++) {
-						if (initialLines.find((line) => line.startsWith("❯"))?.includes("Inspect concurrent")) break;
+						if (initialLines.find((line) => line.startsWith("∀"))?.includes("Inspect concurrent")) break;
 						component.handleInput("\x1b[B");
 						initialLines = component.render(100).map(stripVTControlCharacters);
 					}
-					assert.match(initialLines.find((line) => line.startsWith("❯")) ?? "", /Inspect concurrent/);
+					assert.match(initialLines.find((line) => line.startsWith("∀")) ?? "", /Inspect concurrent/);
 					assert.match(initialLines.join("\n"), /‖ worker {2}Inspect concurrent spawn locks\. +paused/);
 					assert.match(initialLines.at(-1) ?? "", /\bx stop\b/);
 					assert.doesNotMatch(initialLines.at(-1) ?? "", /\bx dismiss\b/);
