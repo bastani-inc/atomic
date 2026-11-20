@@ -723,6 +723,7 @@ export {
 } from "./core/provider-rate-limits.js";
 export type {
 	DefaultResourceLoaderInheritanceSnapshot,
+	PackageAgentFile,
 	ResourceCollision,
 	ResourceDiagnostic,
 	ResourceLoader,
