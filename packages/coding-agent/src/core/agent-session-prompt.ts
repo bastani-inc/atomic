@@ -1091,6 +1091,10 @@ async function answerAdmittedQueuedMessage(session: AgentSession): Promise<void>
 	// recovery turn ends the sequence instead of restarting it.
 	session._admittedQueuedMessageAwaitingReply = undefined;
 	if (admitted === undefined || session._disposed) return;
+	// Esc in a subagent's chat paused it (`pauseTurn`): nothing answers until the reader's next message, which continues
+	// the turn with this message already in its context. Asking the model again now would send it twice. The main chat's
+	// Esc takes no turn pause, so it still answers the message.
+	if (session._turnPause !== undefined) return;
 	// An interrupt delivery already in flight aborts this reply and then starts its
 	// own turn, so continuing concurrently would reject the caller's prompt() with
 	// "Agent is already processing." Wait for it on the same boundary the resume
