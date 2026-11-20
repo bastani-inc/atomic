@@ -454,6 +454,8 @@ test("a small drain with no space to give back costs no transaction beyond its w
 const STALL_BEYOND_HOST_MAX_MS = 200;
 /** Room for a timer that fires early by the event loop's own lag, on a wait as long as the store's lock wait. */
 const TIMER_LAG_MARGIN_MS = 1_000;
+/** How often the test's timer looks at the event loop. */
+const STALL_TICK_MS = 5;
 
 /**
  * The longest the whole host stood still since it started: a heartbeat on another thread, which keeps running while
@@ -494,7 +496,7 @@ test("after a write waits out another process's lock and the next is refused at 
 		const now = performance.now();
 		stalled = Math.max(stalled, now - last);
 		last = now;
-	}, 5);
+	}, STALL_TICK_MS);
 	const { DatabaseSync } = await import("node:sqlite");
 	const other = new DatabaseSync(path);
 	other.exec("BEGIN IMMEDIATE");
@@ -506,7 +508,9 @@ test("after a write waits out another process's lock and the next is refused at 
 			other.exec("ROLLBACK");
 			other.close();
 		}
-		// While the store waited out the lock, the event loop ran (checked once the store is closed).
+		// While the store waited out the lock, the event loop ran (checked once the store is closed): read once the timer
+		// has run again, so a stall just as the writes failed counts too.
+		await sleep(4 * STALL_TICK_MS);
 		stalledWaiting = stalled;
 		hostStalledWaiting = host.longestMs();
 		// Writes are refused at once for a lock wait after the first failed; that wait is over once this one is (with room
@@ -591,7 +595,7 @@ test("a message whose delete failed, queued again and refused, is still deleted 
 	await database.close();
 });
 
-test("counting what a store kept asks its database a page of rows at a time, however far apart the rows' sequence numbers are", async () => {
+test("counting what a store kept takes a few statements, however far apart the rows' sequence numbers are", async () => {
 	const path = join(directory(), "ended-child-queue.sqlite");
 	const earlier = await open(path, "broker-1");
 	await earlier.add(entry("old"));
@@ -615,6 +619,8 @@ test("counting what a store kept asks its database a page of rows at a time, how
 		{ database, prefix: "" },
 		{ home: "local", holder: "broker-2", ownsDatabase: true },
 	);
+	// Counted as the broker takes them up again.
+	await store.load();
 	await store.whenCounted();
 	// Each round trip to a remote database counts against how long a message waits for the count.
 	assert.ok(statements < 20, `${statements} statements to open a store of 2 rows and count them`);

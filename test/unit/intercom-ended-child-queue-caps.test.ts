@@ -104,29 +104,63 @@ async function broker(
 		countTakes?: Promise<void>;
 		/** Reads whose statement matches one of these fail, each the first time, as in a database's read outage. */
 		failOnce?: RegExp[];
+		/** Counts every statement the database is asked for, and those that read a page of kept messages. */
+		statements?: { all: number; pages: number };
 	} = {},
 ) {
 	const lockWaitMs = options.lockWaitMs ?? 5_000;
 	const database = await openNodeSqliteDatabase(path, { busyTimeoutMs: lockWaitMs, lockWaitMs });
+	// Each statement the store asks its database for, in a transaction or not, goes through `before` first.
 	const countTakes = options.countTakes;
-	if (countTakes !== undefined) {
-		const all = database.all.bind(database);
-		database.all = (async (sql: string, ...params: Parameters<typeof database.all>[1][]) => {
-			if (/SUM\(bytes\)/.test(sql)) await countTakes;
-			return all(sql, ...params);
-		}) as typeof database.all;
-	}
+	const statements = options.statements;
 	const failOnce = [...(options.failOnce ?? [])];
-	if (failOnce.length > 0) {
-		const all = database.all.bind(database);
-		database.all = (async (sql: string, ...params: Parameters<typeof database.all>[1][]) => {
-			const index = failOnce.findIndex((pattern) => pattern.test(sql));
-			if (index >= 0) {
-				failOnce.splice(index, 1);
-				throw new Error("the database could not be read");
-			}
-			return all(sql, ...params);
-		}) as typeof database.all;
+	const before = async (sql: string): Promise<void> => {
+		if (statements !== undefined) {
+			statements.all += 1;
+			if (/JOIN/.test(sql)) statements.pages += 1;
+		}
+		const index = failOnce.findIndex((pattern) => pattern.test(sql));
+		if (index >= 0) {
+			failOnce.splice(index, 1);
+			throw new Error("the database could not be read");
+		}
+		// The reads of the kept messages, as `load` takes them up.
+		if (countTakes !== undefined && /JOIN/.test(sql)) await countTakes;
+	};
+	type Executor = Pick<typeof database, "all" | "get" | "run" | "exec">;
+	const hooked = <T extends Executor>(executor: T): T => {
+		const all = executor.all.bind(executor);
+		const get = executor.get.bind(executor);
+		const run = executor.run.bind(executor);
+		const exec = executor.exec.bind(executor);
+		return Object.assign(Object.create(executor) as T, {
+			all: (async (sql: string, ...params: unknown[]) => {
+				await before(sql);
+				return all(sql, ...(params as []));
+			}) as T["all"],
+			get: (async (sql: string, ...params: unknown[]) => {
+				await before(sql);
+				return get(sql, ...(params as []));
+			}) as T["get"],
+			run: (async (sql: string, ...params: unknown[]) => {
+				await before(sql);
+				return run(sql, ...(params as []));
+			}) as T["run"],
+			exec: (async (sql: string) => {
+				await before(sql);
+				return exec(sql);
+			}) as T["exec"],
+		});
+	};
+	if (countTakes !== undefined || statements !== undefined || failOnce.length > 0) {
+		const plain = hooked(database);
+		database.all = plain.all;
+		database.get = plain.get;
+		database.run = plain.run;
+		database.exec = plain.exec;
+		const transaction = database.transaction.bind(database);
+		database.transaction = ((callback, transactionOptions) =>
+			transaction((tx) => callback(hooked(tx)), transactionOptions)) as typeof database.transaction;
 	}
 	let retired = false;
 	let store: EndedChildQueueStore | undefined;
@@ -165,7 +199,11 @@ async function broker(
 	assert.equal(retired, false, "the store is kept");
 	// As the broker does: sends wait until what an earlier broker kept is taken up again; only a test of that window
 	// goes on at once.
-	if (options.whileLoading !== true) await queue.untilLoaded();
+	if (options.whileLoading !== true) {
+		await queue.untilLoaded();
+		// And until it has counted them: a message that waits for the count is decided then.
+		await queue.untilCounted();
+	}
 	return { database, queue, departed, failed, live, logs, store: store as EndedChildQueueStore };
 }
 
@@ -436,15 +474,79 @@ test("a restarted broker keeps its store however long counting what it kept take
 	assert.ok((await countedOnDisk(path)) > 32 * MiB, "every kept row is still there, and the one queued");
 }, 60_000);
 
+/** An earlier broker kept `count` messages of about 500 bytes, for 8 subagents. */
+async function keptSmall(path: string, count: number): Promise<void> {
+	const earlier = await openLocalEndedChildQueueStore(path, "broker-earlier");
+	const sender = wakeSender("peer");
+	const adds: Array<Promise<unknown>> = [];
+	for (let index = 0; index < count; index++) {
+		const child = `subagent-worker-small-${index % 8}`;
+		const held = send(child, sender, "kept");
+		const requestJson = JSON.stringify(held.clientMessage);
+		const senderJson = JSON.stringify({
+			info: sender.info,
+			registrationReturnAddress: sender.registrationReturnAddress,
+		});
+		adds.push(
+			earlier.add({
+				messageId: held.messageId,
+				ownerSessionId: OWNER,
+				ownerHost: HOST,
+				childKey: child,
+				child: {
+					childName: child,
+					group: "default",
+					aliases: [],
+					childId: `${child}:0`,
+					outcome: "stopped",
+					messages: "hold",
+				},
+				sender: JSON.parse(senderJson) as Record<string, unknown>,
+				request: JSON.parse(requestJson) as Record<string, unknown>,
+				requestJson,
+				senderJson,
+				bytes: Buffer.byteLength(requestJson) + Buffer.byteLength(senderJson),
+				queuedAt: Date.now(),
+			}),
+		);
+	}
+	await Promise.all(adds);
+	await earlier.close();
+}
+
+test("taking up what an earlier broker kept reads nothing but the messages it takes up, however many it kept", async () => {
+	// On a slow or remote database every statement takes its time: restoring, and the first message queued after it,
+	// must not wait for statements that grow with the store.
+	const restore = async (count: number) => {
+		const path = storePath();
+		await keptSmall(path, count);
+		const statements = { all: 0, pages: 0 };
+		const { departed, store } = await broker(path, { statements });
+		const besidesPages = statements.all - statements.pages;
+		await store.whenCounted();
+		const sender = wakeSender("peer");
+		departed.mark(OWNER, [paused("subagent-worker-fresh-1")]);
+		const admission = departed.admitWake(
+			"subagent-worker-fresh-1",
+			sender,
+			send("subagent-worker-fresh-1", sender, "after"),
+		);
+		assert.equal(admission.kind, "queued", "counted once restored");
+		await (admission as { kept?: Promise<unknown> }).kept;
+		return besidesPages;
+	};
+	assert.equal(await restore(20_000), await restore(10));
+}, 60_000);
+
 test("counting what the store kept is tried again until it succeeds, after its reads failed: then a message with room is queued", async () => {
 	const path = storePath();
 	const child = "subagent-worker-recounted-1";
 	await keptEarlier(path, child, 2);
-	// The first read of the sums fails, and so does the first read of the recount that follows, as in a read outage just
-	// after the store opened.
+	// The first read of the kept messages fails, and so does the first read of the recount that follows, as in a read
+	// outage just after the store opened.
 	const { departed, store } = await broker(path, {
 		whileLoading: true,
-		failOnce: [/SUM\(bytes\)/, /SELECT seq, message_id, owner_host, owner_session_id, child_key, keeper, bytes FROM/],
+		failOnce: [/JOIN/, /SELECT seq, message_id, owner_host, owner_session_id, child_key, keeper, bytes FROM/],
 	});
 	const counted = await Promise.race([
 		store.whenCounted().then(() => "counted"),
