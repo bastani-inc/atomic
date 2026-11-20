@@ -354,6 +354,61 @@ describe("Intercom heavy runtime admitted child registration", () => {
 		}
 	});
 
+	test("a message kept while it was paused never holds its start, and reaches it after its first turn started (#5999)", async () => {
+		const handlers: LifecycleHandlers = new Map();
+		const pi = harnessPi(handlers, new Map());
+		const sendMessage = vi.fn(async (_message: unknown, _options?: unknown) => {});
+		pi.sendMessage = sendMessage;
+		mockBrokerClient(() => {});
+		vi.mocked(IntercomClient.prototype.connect).mockImplementation(async function (this: IntercomClient) {
+			this.emit(
+				"message",
+				{
+					id: "paused-message-sender",
+					name: "peer",
+					cwd: process.cwd(),
+					model: "test-model",
+					pid: process.pid,
+					startedAt: Date.now(),
+					lastActivity: Date.now(),
+					groups: ["workflow:run-1"],
+				},
+				{
+					id: "kept-while-paused",
+					timestamp: Date.now(),
+					heldWhilePaused: true,
+					content: { text: "kept for when you are continued" },
+				},
+			);
+		});
+		vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
+		intercomHeavy(pi);
+		let firstTurnPending = true;
+		const ctx = connectedChildContext({
+			...admittedChildPolicy,
+			startup: {
+				signal: new AbortController().signal,
+				enterStep() {},
+				firstTurnPending: () => firstTurnPending,
+			},
+		});
+		try {
+			const startedAt = performance.now();
+			assert.deepEqual(await emitThroughHost(handlers, ctx, SESSION_START), []);
+			assert.ok(performance.now() - startedAt < 2_000, "its start does not wait for the kept message");
+			assert.equal(sendMessage.mock.calls.length, 0, "nothing of it is written as context before its first turn");
+			// What it is continued with starts its first turn; the kept message follows it.
+			firstTurnPending = false;
+			await emitThroughHost(handlers, ctx, { type: "agent_start" } as never);
+			await vi.waitFor(() => assert.equal(sendMessage.mock.calls.length, 1));
+			const written = JSON.stringify(sendMessage.mock.calls[0]?.[0]);
+			assert.match(written, /kept for when you are continued/);
+			assert.doesNotMatch(written, /Messages received before you started/);
+		} finally {
+			await emitThroughHost(handlers, ctx, SESSION_SHUTDOWN);
+		}
+	});
+
 	test("leaves a session without a typed child identity lazy", async () => {
 		const current = heavyFixture();
 		try {

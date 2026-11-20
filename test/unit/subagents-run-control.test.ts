@@ -45,6 +45,7 @@ import {
 	RELEASED_CHILD_REPLY_EVENT,
 	type ReleasedChildReplyRequest,
 } from "../../packages/intercom/released-reply-wait.js";
+import type { PeerResumeOutcome, PeerResumeRequest } from "../../packages/intercom/session-recovery.js";
 import type { AgentConfig, AgentScope } from "../../packages/subagents/src/agents/agents.js";
 import { renderSubagentToolResult } from "../../packages/subagents/src/extension/tool-rendering.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../packages/subagents/src/intercom/intercom-bridge.js";
@@ -129,9 +130,12 @@ import { createSubagentExecutor } from "../../packages/subagents/src/runs/foregr
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import {
 	resumeAwaitingSubagentChildren,
+	SUBAGENT_PEER_RESUME_EVENT,
 	SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
 	subagentChildOfTask,
 	subagentChildrenAwaitingResume,
+	subagentMessageWakePrompt,
+	wakeSubagentChildForMessage,
 } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import {
 	runAgentTask,
@@ -1216,6 +1220,127 @@ test("resume reports an unknown child id as an error", async () => {
 	assert.equal(result.isError, true);
 	assert.match(text(result), /Unknown subagent 'no-such-child'/);
 	assert.equal(h.runs.length, 0);
+});
+
+/** A child of `h` that ran and completed on its own: quit, then resumed with a message it finishes. */
+async function completedChild(h: Harness, runId: string): Promise<SubagentChildRecord> {
+	const { record, taskId } = await h.launch(runId);
+	await h.call({ action: "quit", id: record.childId });
+	await settled(h, taskId);
+	await settled(h, resumedTaskId(await h.call({ action: "resume", id: record.childId, message: "wrap up" })));
+	return h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
+}
+
+/** Answer each peer resume `h` asks Intercom for with `outcome`, recording the requests. */
+function answerPeerResumes(h: Harness, outcome: PeerResumeOutcome): PeerResumeRequest[] {
+	const requests: PeerResumeRequest[] = [];
+	const events = h.deps.pi.events as { emit: (channel: string, data: object) => void };
+	const emit = events.emit.bind(events);
+	events.emit = (channel, data) => {
+		if (channel === SUBAGENT_PEER_RESUME_EVENT) {
+			const request = data as PeerResumeRequest;
+			requests.push(request);
+			request.completion = Promise.resolve(outcome);
+			return;
+		}
+		emit(channel, data);
+	};
+	return requests;
+}
+
+test(
+	"a message from another agent resumes a completed child as its owner's resume does, naming the sender (#5999)",
+	async () => {
+		const h = harness();
+		const completed = await completedChild(h, "wake1");
+		const runsBefore = h.runs.length;
+		const answers: unknown[][] = [];
+		const result = await wakeSubagentChildForMessage(
+			h.deps,
+			h.ctx,
+			completed.childId,
+			"subagent-sibling",
+			(...args) => answers.push(args.filter((arg) => arg !== undefined)),
+		);
+		assert.deepEqual(answers, [[true]]);
+		assert.ok(result !== undefined && result.isError !== true, result && text(result));
+		await settled(h, resumedTaskId(result));
+		assert.equal(h.runs.length, runsBefore + 1, "one resumed run");
+		const run = h.runs.at(-1)!;
+		assert.equal(run.task, subagentMessageWakePrompt("subagent-sibling"));
+		assert.match(run.task, /^You were resumed because subagent-sibling sent you an Intercom message/);
+		assert.equal(run.options.runId, "wake1", "it resumes as the same child, under the session that launched it");
+		assert.equal(run.options.sessionManager?.getSessionId(), completed.childSessionId);
+	},
+	LAUNCH_QUIT_TWO_RESUMES_TIMEOUT_MS,
+);
+
+test("a message does not resume a child cancelled for good, nor run a running one again (#5999)", async () => {
+	const h = harness();
+	const { record, taskId } = await h.launch("wakekilled1");
+	const live: unknown[][] = [];
+	await wakeSubagentChildForMessage(h.deps, h.ctx, record.childId, "peer", (...args) =>
+		live.push(args.filter((arg) => arg !== undefined)),
+	);
+	assert.deepEqual(live, [[true]], "a running child takes the message when it registers; nothing else runs");
+	assert.equal(h.runs.length, 1);
+
+	assert.ok((await h.host.cancelTask(taskId, "user")).ok);
+	await settled(h, taskId);
+	await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "killed");
+	const killed: unknown[][] = [];
+	await wakeSubagentChildForMessage(h.deps, h.ctx, record.childId, "peer", (...args) =>
+		killed.push(args.filter((arg) => arg !== undefined)),
+	);
+	assert.deepEqual(killed, [
+		[
+			false,
+			"it cannot be resumed: it was cancelled for good (an owner or batch cancellation, or the removed kill action)",
+		],
+	]);
+	assert.equal(h.runs.length, 1, "nothing was resumed");
+});
+
+test("resume of a subagent another session launched is a message to it that asks to wake it (#5999)", async () => {
+	const h = harness();
+	const requests = answerPeerResumes(h, { kind: "resuming" });
+	const resumed = await h.call({ action: "resume", id: "subagent-worker-sibling-1", message: "check the edge case" });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	assert.match(
+		text(resumed),
+		/^subagent-worker-sibling-1 had finished, so it is being resumed by the session that launched it/,
+	);
+	assert.deepEqual(
+		requests.map(({ to, message }) => ({ to, message })),
+		[{ to: "subagent-worker-sibling-1", message: "check the edge case" }],
+	);
+	assert.equal(h.runs.length, 0, "this session runs nothing: the session that launched it does");
+});
+
+test("resume of another session's subagent keeps resume's refusals for an unknown or a running one (#5999)", async () => {
+	const unknown = harness();
+	answerPeerResumes(unknown, { kind: "unknown" });
+	const notFound = await unknown.call({ action: "resume", id: "no-such-child" });
+	assert.equal(notFound.isError, true);
+	assert.equal(text(notFound), "Unknown subagent 'no-such-child': this session launched no such child.");
+
+	const running = harness();
+	answerPeerResumes(running, { kind: "running", name: "subagent-worker-busy-1" });
+	const refused = await running.call({ action: "resume", id: "subagent-worker-busy-1" });
+	assert.equal(refused.isError, true);
+	assert.equal(
+		text(refused),
+		"subagent-worker-busy-1 is running, so there is nothing to resume; send it a message with the intercom tool instead.",
+	);
+
+	const paused = harness();
+	answerPeerResumes(paused, { kind: "paused" });
+	const kept = await paused.call({ action: "resume", id: "subagent-worker-paused-1", message: "when you are back" });
+	assert.notEqual(kept.isError, true);
+	assert.match(
+		text(kept),
+		/was paused or quit by the session that launched it, so it is not resumed for your message/,
+	);
 });
 
 test("status lists only the children this session launched, by ids quit takes, and quit stops each one it lists", async () => {
@@ -7226,6 +7351,7 @@ test(
 					aliases: [finished.childSessionId],
 					outcome: "completed",
 					childId: record.childId,
+					messages: "wake",
 				},
 			],
 		]);

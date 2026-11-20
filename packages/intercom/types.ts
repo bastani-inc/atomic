@@ -375,6 +375,11 @@ export type BrokerMessage =
 			marksEndedChildren?: true;
 			/** #5999: this broker wakes ended subagents for a send that asks it, and accepts `answer_ended_child_wake`. */
 			wakesEndedChildren?: true;
+			/**
+			 * #5999: this broker process's id. A client whose messages were queued for subagents that ended, and that
+			 * registers with another one, knows they were lost with the broker that kept them.
+			 */
+			instanceId?: string;
 			/** This connection accepts stamped release requests and read-only checks of a stamped hold. */
 			stampsReleasedChildren?: true;
 			/** Broker routing mode at registration, for deciding whether a reply wait may release. */

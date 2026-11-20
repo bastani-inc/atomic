@@ -31,6 +31,8 @@ export interface HeldSend {
 	readonly senderId: string;
 	readonly messageId: string;
 	readonly attemptId?: string;
+	/** #5999: the sender's host-owned return address, by which a sender that reconnected is still told about it. */
+	readonly senderReturnAddress?: string;
 	/** The original send frame, dispatched again once the hold ends. */
 	readonly clientMessage: { readonly type: string; readonly to: string } & Record<string, unknown>;
 }

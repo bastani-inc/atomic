@@ -144,7 +144,7 @@ The send result's `error` is an `IntercomRecipientGoneError` and `reasonCode` is
 
 | Class | `code` | When | `retryable` | What to do |
 | --- | --- | --- | --- | --- |
-| `SubagentRecipientEndedError` | `recipient_completed` | The subagent's last run completed. | `false` | Its launching session continues it with `subagent({ action: "resume", id: "<childId>", message })`. |
+| `SubagentRecipientEndedError` | `recipient_completed` | The subagent's last run completed, and the send did not [ask to resume it](#messages-that-resume-a-finished-subagent) or could not. | `false` | Its launching session continues it with `subagent({ action: "resume", id: "<childId>", message })`. |
 | `SubagentRecipientEndedError` | `recipient_failed` | The subagent's last run failed. | `false` | Same as above. |
 | `SubagentRecipientEndedError` | `recipient_stopped` | The subagent was paused, quit or interrupted. | `false` | Same as above. |
 | `SubagentRecipientEndedError` | `recipient_cancelled` | The subagent was cancelled for good. | `false` | Launch a fresh subagent if its work is still needed. |
@@ -152,6 +152,20 @@ The send result's `error` is an `IntercomRecipientGoneError` and `reasonCode` is
 | `SubagentRecipientOwnerSuspendedError` | `recipient_owner_suspended` | The subagent is released and the session that launched it, which wakes it, is suspended or disconnected; the send waited 20 seconds, or could not wait. | `true` | Try again once that session is back. |
 
 A launching session reports at most 500 subagents per request; a malformed report is refused with the `ReleasedChildReservationError` codes above, and a report naming a subagent another session owns with `not_owner`.
+
+### Messages that resume a finished subagent
+
+A `send` or `ask` from the `intercom` tool to one subagent by name or ID asks to resume it if it has ended (`SendOptions.wakeEndedRecipient`; SDK integrations set it themselves). What happens depends on how the subagent's last run ended:
+
+| Last run | Result | What the subagent gets |
+| --- | --- | --- |
+| Completed or failed | Returns at once with `queued: true` and `target: "resuming subagent"`. | The session that launched it resumes it in its own session, with its own model, tools and agent, and a prompt naming who sent the message. The message reaches it as an ordinary Intercom message before that prompt. |
+| Paused or quit (or interrupted with its parent) | Returns at once with `queued: true` and `target: "paused subagent"`. The subagent is not resumed. | The message waits until the session that launched it continues it, and reaches it after what it is continued with. |
+| Cancelled for good, or gone | The refusal in the table above (`recipient_cancelled`), as before. | Nothing. |
+
+The session that launched the subagent keeps it: its result, completion notice, `/tasks` row, budget, and `pause` or `quit` stay there, and its transcript shows which session's message resumed it. An `ask` stays open: its reply arrives later as a message (`Reply to your ask <id> from <name>`). If the message cannot reach the subagent after all, its sender gets one delivery failure for it (a failed ask, or `Intercom delivery failed`), for example when the launching session declines (the subagent was cancelled meanwhile), disconnects, does not answer within 20 seconds, the resumed subagent does not start within an hour, a paused subagent is not continued within an hour, or the broker restarts. Senders outside the subagent's group still get `Session not found`.
+
+Resuming is bounded so agents cannot wake each other without end. A subagent is resumed by messages at most 6 times in 10 minutes, and a chain of resumes, each caused by a message from a subagent the previous one resumed, stops after 4. A message beyond either bound is refused with the subagent's ended refusal and the reason. At most 256 messages and 32 MiB wait for one subagent, and 256 MiB for all of them on one broker; broker status reports the waiting bytes as `queuedBytes`. A copy of a pattern send (`subagents:*`, `name-*`), a reply, a message from an Intercom client older than this release, or a send through an older broker never resumes a subagent and gets the answers in the table above. With [multi-node routing](/intercom/operations#running-intercom-across-machines), only senders on the launching session's broker resume a subagent this way; a sender on another node gets the [offline-session queue](/intercom/operations#offline-sessions), as before.
 
 ### Groups
 
