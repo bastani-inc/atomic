@@ -4,7 +4,7 @@ import { afterEach, beforeEach, test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import type { OperationId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type { OperationId, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { bindTaskResumer } from "../../packages/coding-agent/src/core/tasks/task-resumer.js";
@@ -94,7 +94,15 @@ async function harness() {
 	const sessions: ReturnType<typeof childSession>[] = [];
 	const resumes: { taskId: string; message: string }[] = [];
 	let attempts = 0;
-	const launch = async (task: string, operation: string, conversation: SessionManager, running = true) => {
+	const launch = async (
+		task: string,
+		operation: string,
+		conversation: SessionManager,
+		running = true,
+		bound = true,
+	) => {
+		const runner = fixture.runners.length;
+		const known = new Set(fixture.store.ownerTasks.map((record) => record.ref.taskId));
 		const lease = taskValue(
 			await fixture.supervisor.startAgentTask(
 				fixture.owner,
@@ -103,13 +111,19 @@ async function harness() {
 			),
 		);
 		taskValue(await fixture.supervisor.initialObservation(lease, { kind: "background" }));
-		fixture.store.drain();
+		// The attempt's runner starts on the supervisor's own turn; its session binds to that runner, as a child's does.
+		await until(() => fixture.runners.length > runner);
 		const session = childSession(conversation, running);
 		sessions.push(session);
-		fixture.runners.at(-1)!.context.bindTranscript(session);
+		if (bound) fixture.runners[runner]!.context.bindTranscript(session);
 		conversations.set(operation.split(":resume:")[0]!, conversation);
-		fixture.store.drain();
-		return fixture.store.tasks.at(-1)!.ref.taskId;
+		let launched: TaskId | undefined;
+		await until(() => {
+			fixture.store.drain();
+			launched = fixture.store.tasks.find((record) => !known.has(record.ref.taskId))?.ref.taskId;
+			return launched !== undefined;
+		});
+		return launched!;
 	};
 	/** When set, the next resume loses to a wake that started the subagent again just before it. */
 	const race = { wakeFirst: false };
@@ -173,6 +187,26 @@ async function harness() {
 		sessions,
 		resumes,
 		race,
+		/** A resume of the subagent `taskId` whose attempt's session is not bound yet; `bind` binds it. */
+		async resumeUnbound(taskId: string, message: string) {
+			const task = fixture.store.tasks.find((candidate) => candidate.ref.taskId === taskId)!;
+			const child = task.launchOperationId.split(":resume:")[0]!;
+			const runner = fixture.runners.length;
+			await launch(message, `${child}:resume:${++attempts}`, conversations.get(child)!, true, false);
+			return {
+				bind() {
+					fixture.runners[runner]!.context.bindTranscript(sessions[runner]!);
+					// The running attempt reports what it does, as a child does once its session runs.
+					taskValue(
+						fixture.runners[runner]!.context.reportActivity({
+							reportId: `bound-${runner}`,
+							change: { kind: "action", tool: "read", text: "README.md" },
+						}),
+					);
+					fixture.store.drain();
+				},
+			};
+		},
 		text,
 		type,
 		settle,
@@ -299,6 +333,27 @@ test("an earlier attempt's id opens its subagent's one row and its live chat, as
 		assert.doesNotMatch(chatLabel(h.text()), /done$/);
 		assert.match(h.text(), /› from main\n ❯ Slow rounds/, "its header echoes the subagent's task from main");
 		assert.ok(WORKING_LINE.test(h.text()), "and its working line");
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("a resumed attempt whose session is not there yet leaves the chat on what it shows until it is", async () => {
+	const h = await harness();
+	try {
+		const first = await h.started("Slow rounds", "run-1:0");
+		await h.settle(0);
+		h.inspector.handleInput(ENTER);
+		await flush();
+		const resumed = await h.resumeUnbound(first, "continue please");
+		await flush();
+		assert.match(chatLabel(h.text()), /^worker · continue please · running$/, h.text());
+		assert.doesNotMatch(h.text(), /Transcript unavailable/, `no read of a session that is not there:\n${h.text()}`);
+		assert.match(h.text(), /Slow rounds/, "the conversation stays shown");
+
+		resumed.bind();
+		await until(() => WORKING_LINE.test(h.text()));
+		assert.ok(WORKING_LINE.test(h.text()), `once its session is there, the chat follows it:\n${h.text()}`);
 	} finally {
 		await h.dispose();
 	}

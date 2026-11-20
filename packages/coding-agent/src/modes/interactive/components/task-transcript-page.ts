@@ -480,6 +480,19 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return this.liveTask()?.ref.taskId ?? this.taskId;
 	}
 
+	/**
+	 * The attempt the page reads: the live one, once there is a session to follow. A resumed attempt is listed before
+	 * its session is bound, and until then the page keeps the conversation it shows rather than read nothing.
+	 */
+	private readTarget(): TaskId {
+		const live = this.liveTaskId();
+		if (live === this.taskId) return live;
+		return this.source.followTaskTranscript(live) === undefined &&
+			this.source.followTaskTranscript(this.taskId) !== undefined
+			? this.taskId
+			: live;
+	}
+
 	/** Restores what was typed here before the reader left. */
 	private restoreDraft(): void {
 		const kept = keptDrafts.get(this.source);
@@ -495,7 +508,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			return;
 		}
 		// The latest page is the live attempt's: a resumed subagent's chat follows the attempt that runs now.
-		const id = this.liveTaskId();
+		const id = this.readTarget();
 		if (this.observedWrites?.pending && this.deferArchiveRead(this.source.followTaskTranscript(id))) return;
 		this.loading = true;
 		const controller = new AbortController();
@@ -508,7 +521,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			if (this.disposed) return;
 			if (
 				read instanceof Promise &&
-				(id !== this.liveTaskId() || before?.session !== this.source.followTaskTranscript(id)?.session)
+				(id !== this.readTarget() || before?.session !== this.source.followTaskTranscript(id)?.session)
 			) {
 				this.reloadPending = true;
 				return;
@@ -553,7 +566,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	refresh(): void {
 		if (this.disposed) return;
-		const follow = this.source.followTaskTranscript(this.liveTaskId());
+		const follow = this.source.followTaskTranscript(this.readTarget());
 		if (this.deferArchiveRead(follow)) return;
 		if (follow?.session !== undefined && follow.session === this.followed) return;
 		// Reading a history-only transcript again replaces what is shown, so it waits while the reader is above the end.
