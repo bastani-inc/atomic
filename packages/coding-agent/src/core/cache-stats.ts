@@ -21,6 +21,8 @@ export interface CacheMiss {
 	toolsChanged: boolean;
 	/** A subagent's leading prompt was sent again in full after the previous request. */
 	promptRestarted: boolean;
+	/** The request used another thinking level than the previous one on the same model. */
+	thinkingLevelChanged: boolean;
 	/** The request had to send a smaller thinking budget than the previous one, or none, to fit the model's context window. */
 	contextNearLimit: boolean;
 }
@@ -63,10 +65,11 @@ export interface PreviousRequest {
 
 export function describeCacheMissCause(miss: CacheMiss): string {
 	if (miss.modelChanged) return " after model switch";
+	if (miss.cacheExpired) return " after cache TTL expiry";
 	if (miss.promptRestarted) return " after the subagent's prompt was sent again in full";
+	if (miss.thinkingLevelChanged) return " after thinking level change";
 	if (miss.toolsChanged) return " after tool definitions changed";
-	if (miss.contextNearLimit) return " with the context near the model's limit";
-	return miss.cacheExpired ? " after cache TTL expiry" : "";
+	return miss.contextNearLimit ? " with the context near the model's limit" : "";
 }
 
 function requestThinkingLevel(message: AssistantMessage): string | undefined {
@@ -106,6 +109,11 @@ export function cacheMissAfter(
 		cacheExpired: ttlMs !== undefined && idleMs >= ttlMs,
 		toolsChanged: prev.toolsChanged === true,
 		promptRestarted: prev.promptRestarted === true,
+		thinkingLevelChanged:
+			!modelChanged &&
+			prev.thinkingLevel !== undefined &&
+			requestThinkingLevel(message) !== undefined &&
+			requestThinkingLevel(message) !== prev.thinkingLevel,
 		// A lower budget, or none at all when not even the smallest one fit, on the same thinking level.
 		contextNearLimit:
 			!modelChanged &&

@@ -5,7 +5,7 @@
 ### Changed
 
 - New sessions put the system prompt's install-specific documentation paths after the `APPEND_SYSTEM.md` addendum, and the date after every other section, so less of a cached system prompt changes between days and installations ([#6092](https://github.com/bastani-inc/atomic/pull/6092)).
-- The prompt-cache miss notice names two more causes: tool definitions that changed between requests, as a newer version can change them, and a thinking budget lowered to fit the context window ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
+- The prompt-cache miss notice names more causes: tool definitions that changed between requests, as a newer version can change them, a thinking budget lowered or dropped to fit the context window, a thinking level change on the same model, and a subagent prompt sent again in full ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
 
 ### Fixed
 

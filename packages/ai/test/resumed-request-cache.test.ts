@@ -308,6 +308,11 @@ describe("a budget-based thinking request near the context window", () => {
 		assert.ok(fitted.maxTokens <= 32_768 - 20_741 - 4_096);
 	});
 
+	it("sends a configured budget below the minimum unchanged while it fits, as some compatible endpoints accept it", () => {
+		const context = { messages: contextWithInput(16_000) } as TranscriptContext;
+		assert.deepEqual(fitThinkingBudget(model, context, 32_768, 512), { maxTokens: 12_672, thinkingBudget: 512 });
+	});
+
 	it("sends no thinking, not a budget Claude rejects, when not even the smallest budget fits", async () => {
 		const context = { messages: contextWithInput(27_455) } as TranscriptContext;
 		assert.equal(fitThinkingBudget(model, context, 32_768, 8_192), undefined);

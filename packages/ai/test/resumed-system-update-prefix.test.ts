@@ -264,6 +264,72 @@ describe("a resume that changes prompt sections keeps the cached request prefix 
 	}
 });
 
+describe("prompt updates keep user and assistant turns alternating on transports without mid-conversation system messages", () => {
+	for (const transport of transports) {
+		test(transport.name, async () => {
+			const call: AssistantMessage = {
+				...reply(transport.model, "", 3),
+				content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
+				stopReason: "toolUse",
+			};
+			const liveUpdate: Message[] = [
+				prompt,
+				{ role: "user", content: "first", timestamp: 2 },
+				reply(transport.model, "first answer", 3),
+				resumeUpdate,
+				{ role: "user", content: "second", timestamp: 7 },
+			];
+			const toolUpdate: Message[] = [
+				prompt,
+				{ role: "user", content: "first", timestamp: 2 },
+				call,
+				{ role: "toolResult", toolCallId: "call_1", toolName: "read", content: [], isError: false, timestamp: 4 },
+				resumeUpdate,
+			];
+			for (const messages of [liveUpdate, toolUpdate]) {
+				const conversation = (await capture(transport, messages))[transport.conversation] as Array<{ role?: string }>;
+				const roles = conversation.map((item) => item.role);
+				const adjacent = roles.findIndex((role, index) => role === "user" && roles[index - 1] === "user");
+				expect(adjacent, JSON.stringify(roles)).toBe(-1);
+				expect(JSON.stringify(conversation)).toContain("Current date: 2026-11-20");
+			}
+		});
+	}
+});
+
+test("Bedrock joins input steered in after tool results into the tool results' user message", async () => {
+	const bedrock = transports.find((transport) => transport.name === "Bedrock Converse")!;
+	const call: AssistantMessage = {
+		...reply(bedrock.model, "", 3),
+		content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
+		stopReason: "toolUse",
+	};
+	const payload = await capture(bedrock, [
+		prompt,
+		{ role: "user", content: "first", timestamp: 2 },
+		call,
+		{ role: "toolResult", toolCallId: "call_1", toolName: "read", content: [], isError: false, timestamp: 4 },
+		{ role: "user", content: "steered", timestamp: 5 },
+	]);
+	const messages = payload.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+	expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+	expect(messages[2]?.content.map((block) => Object.keys(block)[0])).toEqual(["toolResult", "text", "cachePoint"]);
+});
+
+/** Every message of `before` is in `after` unchanged, except that its last one may have gained blocks at its end. */
+function expectExtends(before: readonly Message[], after: readonly Message[]): void {
+	expect(after.slice(0, before.length - 1)).toEqual(before.slice(0, -1));
+	const blocks = (message: Message | undefined) =>
+		message === undefined || message.role === "assistant" || message.role === "system"
+			? message
+			: typeof message.content === "string"
+				? [{ type: "text", text: message.content }]
+				: message.content;
+	const last = blocks(before.at(-1));
+	const extended = blocks(after[before.length - 1]);
+	expect(Array.isArray(last) && Array.isArray(extended) ? extended.slice(0, last.length) : extended).toEqual(last);
+}
+
 describe("appendSystemMessageUpdates", () => {
 	test("folds the system messages that open the conversation into the prompt, as the first request sent them", () => {
 		const update: SystemMessage = { role: "system", content: "", sections: { extra: "<extra>\nx\n</extra>" }, timestamp: 2 };
@@ -273,7 +339,7 @@ describe("appendSystemMessageUpdates", () => {
 		expect((projected[0] as SystemMessage).sections).toEqual({ ...prompt.sections, extra: "<extra>\nx\n</extra>" });
 	});
 
-	test("sends a later update after the tool results that follow it and before the next user input", () => {
+	test("sends a later update with the tool results that follow it, so user and assistant turns still alternate", () => {
 		const model = transports[0]!.model;
 		const call: AssistantMessage = {
 			...reply(model, "", 3),
@@ -289,8 +355,9 @@ describe("appendSystemMessageUpdates", () => {
 			{ role: "user", content: "next", timestamp: 7 },
 		];
 		const projected = appendSystemMessageUpdates({ messages } as TranscriptContext).messages;
-		expect(projected.map((message) => message.role)).toEqual(["system", "user", "assistant", "toolResult", "user", "user"]);
-		expect(JSON.stringify(projected[4])).toContain("Current date: 2026-11-20");
+		expect(projected.map((message) => message.role)).toEqual(["system", "user", "assistant", "toolResult", "user"]);
+		expect(JSON.stringify(projected[3])).toContain("Current date: 2026-11-20");
+		expect(JSON.stringify(projected[4])).not.toContain("Current date");
 	});
 
 	test("an update keeps its place when input follows it later, as after an interrupted request", () => {
@@ -306,7 +373,7 @@ describe("appendSystemMessageUpdates", () => {
 		const after = appendSystemMessageUpdates({
 			messages: [...sent, { role: "user", content: "after the resume", timestamp: 9 }],
 		} as TranscriptContext).messages;
-		expect(after.slice(0, before.length)).toEqual(before);
+		expectExtends(before, after);
 	});
 
 	test("an update after the first input keeps its place when the first request got no reply", () => {
@@ -316,7 +383,7 @@ describe("appendSystemMessageUpdates", () => {
 		const after = appendSystemMessageUpdates({
 			messages: [...sent, update, { role: "user", content: "after the resume", timestamp: 4 }],
 		} as TranscriptContext).messages;
-		expect(after.slice(0, before.length)).toEqual(before);
+		expectExtends(before, after);
 	});
 
 	test("a legacy transcript whose first system message follows a reply still gets it as its prompt", () => {

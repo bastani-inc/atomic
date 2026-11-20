@@ -1,4 +1,13 @@
-import type { Context, Message, SystemMessage, TextContent, Tool, ToolReference, TranscriptContext } from "../types.ts";
+import type {
+	Context,
+	Message,
+	SystemMessage,
+	TextContent,
+	Tool,
+	ToolReference,
+	TranscriptContext,
+	UserMessage,
+} from "../types.ts";
 import { contentText, getSystemMessageText, renderSystemMessageUpdate } from "./text.ts";
 
 export type { TranscriptContext } from "../types.ts";
@@ -126,9 +135,14 @@ export function resolveTranscript(
  *
  * The system messages that open the conversation, from the first one up to the next message, fold
  * into the leading message, exactly as {@link collapseSystemMessages} folds them, and the leading
- * message holds the current tools. The first request sends them all, so nothing is rewritten. Each later system message's {@link renderSystemMessageUpdate} text is
- * sent as a user message of its own at its place in the transcript, after any tool results that
- * follow it, so where it goes never depends on messages added after it.
+ * message holds the current tools. The first request sends them all, so nothing is rewritten.
+ *
+ * Each later system message's {@link renderSystemMessageUpdate} text is sent as text blocks at its
+ * place in the transcript, after any tool results that follow it, so that user and assistant turns
+ * still alternate: added after the blocks of the user message or tool result before it, or else put
+ * before the blocks of the user message after it, or else, between two assistant messages or after
+ * the last one, as a user message of its own. Blocks are only ever added after what an earlier request
+ * sent, so its cached prefix stays the same.
  */
 export function appendSystemMessageUpdates(context: TranscriptContext): TranscriptContext {
 	const messages = context.messages;
@@ -143,21 +157,46 @@ export function appendSystemMessageUpdates(context: TranscriptContext): Transcri
 		const { toolsAdded: _toolsAdded, ...prompt } = folded ?? { role: "system" as const, content: "", timestamp: 0 };
 		result.push({ ...prompt, ...(tools.length > 0 ? { toolsAdded: tools } : {}) });
 	}
-	const updates: Message[] = [];
+	let updates: { texts: TextContent[]; timestamp: number } | undefined;
+	/** Places the pending updates before `next`, the message about to be added, or at the end; returns `next` to add. */
+	const placeUpdates = (next: Message | undefined): Message | undefined => {
+		if (!updates) return next;
+		const { texts, timestamp } = updates;
+		updates = undefined;
+		// Appended blocks only ever follow blocks an earlier request already sent, so the cached block prefix stays
+		// intact; a leading block goes into a message no request has sent yet.
+		const last = result.at(-1);
+		if (last?.role === "user") {
+			result[result.length - 1] = { ...last, content: [...asBlocks(last.content), ...texts] };
+			return next;
+		}
+		if (last?.role === "toolResult") {
+			result[result.length - 1] = { ...last, content: [...last.content, ...texts] };
+			return next;
+		}
+		if (next?.role === "user") return { ...next, content: [...texts, ...asBlocks(next.content)] };
+		result.push({ role: "user", content: texts, timestamp });
+		return next;
+	};
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index]!;
 		if (message.role === "system") {
 			if (index < cut) continue;
 			const text = renderSystemMessageUpdate(message);
-			if (text.length > 0) updates.push({ role: "user", content: [{ type: "text", text }], timestamp: message.timestamp });
+			if (text.length === 0) continue;
+			updates ??= { texts: [], timestamp: message.timestamp };
+			updates.texts.push({ type: "text", text });
 			continue;
 		}
 		// A tool call's results must directly follow it, so an update waits until after them.
-		if (message.role !== "toolResult") result.push(...updates.splice(0));
-		result.push(message);
+		result.push(message.role === "toolResult" ? message : placeUpdates(message)!);
 	}
-	result.push(...updates);
+	placeUpdates(undefined);
 	return { messages: result } as TranscriptContext;
+}
+
+function asBlocks(content: UserMessage["content"]): Exclude<UserMessage["content"], string> {
+	return typeof content === "string" ? [{ type: "text", text: content }] : content;
 }
 
 /**

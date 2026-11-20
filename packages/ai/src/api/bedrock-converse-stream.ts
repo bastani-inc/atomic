@@ -1064,10 +1064,17 @@ function convertMessages(
 
 	// The input sent up to a message with a `cacheBreakpoint` hint ends with the last user message converted so far
 	// once that message is converted.
-	let checkpoint: Message | undefined;
+	let checkpoint: { message: Message; blocks: number } | undefined;
 	const markCheckpoint = (): void => {
 		const last = result.at(-1);
-		if (last?.role === ConversationRole.USER) checkpoint = last;
+		if (last?.role === ConversationRole.USER && last.content) checkpoint = { message: last, blocks: last.content.length };
+	};
+	// Converse rejects two user messages in a row, as after input steered in after tool results, so their content
+	// is joined into one message.
+	const pushUser = (content: ContentBlock[]): void => {
+		const last = result.at(-1);
+		if (last?.role === ConversationRole.USER && last.content) last.content.push(...content);
+		else result.push({ role: ConversationRole.USER, content });
 	};
 
 	for (let i = 0; i < transformedMessages.length; i++) {
@@ -1099,7 +1106,7 @@ function convertMessages(
 					}
 					if (content.length === 0) content.push({ text: EMPTY_TEXT_PLACEHOLDER });
 				}
-				result.push({ role: ConversationRole.USER, content });
+				pushUser(content);
 				if (m.cacheBreakpoint) markCheckpoint();
 				break;
 			}
@@ -1211,7 +1218,7 @@ function convertMessages(
 				// Skip the messages we've already processed
 				i = j - 1;
 
-				result.push({ role: ConversationRole.USER, content: [...toolResults, ...errorImages] });
+				pushUser([...toolResults, ...errorImages]);
 				if (breakpoint) markCheckpoint();
 				break;
 			}
@@ -1223,17 +1230,16 @@ function convertMessages(
 	// Add cache point to the last user message for supported Claude models when caching is enabled
 	if (cacheRetention !== "none" && supportsPromptCaching(model, env) && result.length > 0) {
 		const lastMessage = result[result.length - 1];
+		const cachePoint = (): ContentBlock => ({
+			cachePoint: { type: CachePointType.DEFAULT, ...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}) },
+		});
 		// The system prompt, this checkpoint and the last message take three of Claude's four cache points.
-		for (const message of checkpoint === lastMessage ? [lastMessage] : [checkpoint, lastMessage]) {
-			if (message?.role === ConversationRole.USER && message.content) {
-				(message.content as ContentBlock[]).push({
-					cachePoint: {
-						type: CachePointType.DEFAULT,
-						...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}),
-					},
-				});
-			}
-		}
+		if (
+			checkpoint?.message.content &&
+			!(checkpoint.message === lastMessage && checkpoint.blocks === checkpoint.message.content.length)
+		)
+			checkpoint.message.content.splice(checkpoint.blocks, 0, cachePoint());
+		if (lastMessage.role === ConversationRole.USER && lastMessage.content) lastMessage.content.push(cachePoint());
 	}
 
 	return result;

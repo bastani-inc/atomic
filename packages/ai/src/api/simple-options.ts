@@ -123,7 +123,9 @@ export function fitThinkingBudget(
 	thinkingBudget: number,
 ): { maxTokens: number; thinkingBudget: number } | undefined {
 	const clamped = clampMaxTokensToContext(model, context, maxTokens);
-	const budget = Math.min(thinkingBudget, clamped - MIN_ANSWER_TOKENS);
+	// A budget that fits is sent as configured, even one below the minimum, which some compatible endpoints accept.
+	if (thinkingBudget <= clamped - MIN_ANSWER_TOKENS) return { maxTokens: clamped, thinkingBudget };
+	const budget = clamped - MIN_ANSWER_TOKENS;
 	if (budget < MIN_THINKING_BUDGET) return undefined;
 	return { maxTokens: clamped, thinkingBudget: budget };
 }

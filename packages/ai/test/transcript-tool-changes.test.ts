@@ -305,8 +305,8 @@ describe("transcript system messages", () => {
 			"base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>",
 		]);
 		expect(payload.tools?.map((value) => value.name)).toEqual(["late_tool"]);
-		expect(payload.messages.map((message) => message.role)).toEqual(["user", "user"]);
-		expect(JSON.stringify(payload.messages[1])).toContain(updateText);
+		expect(payload.messages.map((message) => message.role)).toEqual(["user"]);
+		expect(JSON.stringify(payload.messages[0])).toContain(updateText);
 	});
 
 	test("requires both Anthropic capabilities for native tool changes", async () => {
@@ -326,7 +326,7 @@ describe("transcript system messages", () => {
 
 		assert.ok(!payload.betas?.includes("inline-tools-2026-09-15"));
 		expect(payload.tools?.map((value) => value.name)).toEqual(["late_tool"]);
-		expect(payload.messages.map((message) => message.role)).toEqual(["user", "user"]);
+		expect(payload.messages.map((message) => message.role)).toEqual(["user"]);
 	});
 
 	test("declares every OpenAI tool in additional_tools at its developer message", async () => {
@@ -384,9 +384,9 @@ describe("transcript system messages", () => {
 		}>(model, context);
 
 		expect(payload.tools?.map((value) => value.name)).toEqual(["late_tool"]);
-		expect(payload.input.map((item) => item.type ?? item.role)).toEqual(["developer", "user", "user"]);
+		expect(payload.input.map((item) => item.type ?? item.role)).toEqual(["developer", "user"]);
 		expect(payload.input[0]?.content).toBe("base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>");
-		expect(JSON.stringify(payload.input[2])).toContain(updateText);
+		expect(JSON.stringify(payload.input[1])).toContain(updateText);
 	});
 
 	test("announces OpenAI removals as text", async () => {
@@ -642,8 +642,8 @@ describe("transcript system messages", () => {
 		}>(model, context);
 
 		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["late_tool"]);
-		expect(payload.messages.map((message) => message.role)).toEqual(["system", "user", "user"]);
+		expect(payload.messages.map((message) => message.role)).toEqual(["system", "user"]);
 		expect(payload.messages[0]?.content).toBe("base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>");
-		expect(JSON.stringify(payload.messages[2])).toContain(updateText);
+		expect(JSON.stringify(payload.messages[1])).toContain(updateText);
 	});
 });
