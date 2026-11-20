@@ -1099,14 +1099,17 @@ test("a wrapped call made while earlier calls of its connection wait is decided 
 });
 
 /**
- * Makes `raw` refuse to set its busy timeout, as an authorizer set with `setAuthorizer` can, once it allowed `allowed`
- * such settings.
+ * Makes `raw` refuse (`SQLITE_DENY`) or skip (`SQLITE_IGNORE`) the settings of its busy timeout the wrapped handle
+ * makes, as an authorizer set with `setAuthorizer` can, once it allowed `allowed` of them.
  */
-function refuseBusyTimeoutSettings(raw: DatabaseSync, allowed = 0): void {
+function refuseBusyTimeoutSettings(raw: DatabaseSync, allowed = 0, how: "deny" | "ignore" = "deny"): void {
 	const exec = raw.exec.bind(raw);
 	let left = allowed;
 	raw.exec = (sql: string) => {
-		if (/^PRAGMA busy_timeout\s*=/i.test(sql) && left-- <= 0) throw new Error("not authorized");
+		if (/^PRAGMA busy_timeout\s*=/i.test(sql) && left-- <= 0) {
+			if (how === "deny") throw new Error("not authorized");
+			return;
+		}
 		return exec(sql);
 	};
 }
@@ -1180,6 +1183,32 @@ test("with a busy timeout of 0, a wrapped call during a threaded transaction run
 	assertBusy((await outcome(wrapped.run("INSERT INTO items VALUES ('d')"))).error, "INSERT INTO items");
 	assert.equal(settled(), false, "a call waited for the transaction");
 	assert.deepEqual(settings, []);
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b"]);
+});
+
+test("a wrapped connection that skips the settings of its busy timeout runs its calls as before during a threaded transaction, also when it skips only setting it back (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const timeout = (raw: DatabaseSync) => Number(raw.prepare("PRAGMA busy_timeout").get()?.timeout);
+	const skipsAll = await openWrapped(path, 37);
+	refuseBusyTimeoutSettings(skipsAll.raw, 0, "ignore");
+	const skipsBack = await openWrapped(path, 150);
+	skipsBack.raw.exec("CREATE TEMP TABLE scratch (x)");
+	// The handle sets the busy timeout it has, then 0 for the try; setting it back is skipped.
+	refuseBusyTimeoutSettings(skipsBack.raw, 2, "ignore");
+	const { committed, settled } = await holdLock(threaded, 1_000);
+	// Its busy timeout stays 37, so a try would wait for the lock on this thread: the call runs once, as before.
+	const { error } = await outcome(skipsAll.wrapped.run("INSERT INTO items VALUES ('c')"));
+	assertBusy(error, "INSERT INTO items");
+	assert.equal(skipsAll.prepared.filter((sql) => sql === "INSERT INTO items VALUES ('c')").length, 1);
+	assert.equal(timeout(skipsAll.raw), 37);
+	// Left at 0 after its try, the write fails with the refusal it met, and the connection is not tried again.
+	assertBusy((await outcome(skipsBack.wrapped.run("INSERT INTO items VALUES ('d')"))).error, "INSERT INTO items");
+	assert.equal(timeout(skipsBack.raw), 0);
+	skipsBack.raw.prepare("PRAGMA busy_timeout=150").run();
+	assert.deepEqual(await skipsBack.wrapped.run("INSERT INTO scratch VALUES (1)"), { changes: 1 });
+	assert.equal(timeout(skipsBack.raw), 150);
+	assert.equal(settled(), false, "a call waited for the transaction");
 	await committed;
 	assert.deepEqual(await values(threaded), ["a", "b"]);
 });

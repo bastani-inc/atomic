@@ -781,17 +781,24 @@ type Attempt<T> =
 
 /**
  * Runs `attempt`, a call that runs synchronously on `database`, once with a busy timeout of 0, then gives the
- * connection back `timeoutMs`. Undefined, having run nothing, when the connection no longer tries calls first or
- * refuses the busy timeout of 0 (an authorizer you set can, though it allowed the value it had; see `triesAllowed`):
- * the call is to run as before. When the connection refuses the value back after the try, twice, the try's outcome is
- * final, a refusal of the lock included, and the connection is never tried first again: its busy timeout stays 0.
+ * connection back `timeoutMs`. Undefined, having run nothing, when the connection no longer tries calls first or does
+ * not take the busy timeout of 0, as read back (an authorizer you set can refuse or ignore it, though it allowed the
+ * value it had; see `triesAllowed`): the call is to run as before, and the connection is not tried first again. When
+ * the connection does not take the value back after the try, twice, the try's outcome is final, a refusal of the lock
+ * included, and the connection is never tried first again: its busy timeout can stay 0.
  */
 function attemptOnce<T>(database: DatabaseSync, timeoutMs: number, attempt: () => T): Attempt<T> | undefined {
 	if (registry.untried.has(database)) return undefined;
+	let zero = false;
 	try {
 		setBusyTimeout(database, 0);
+		zero = readBusyTimeout(database) === 0;
 	} catch {
+		// Refused: the timeout is unchanged.
+	}
+	if (!zero) {
 		registry.untried.add(database);
+		timeoutRestored(database, timeoutMs);
 		return undefined;
 	}
 	let outcome: Attempt<T>;
@@ -807,17 +814,27 @@ function attemptOnce<T>(database: DatabaseSync, timeoutMs: number, attempt: () =
 	return outcome;
 }
 
-/** Gives `database` back its busy timeout after a try, trying twice; whether it took it. */
+/** Gives `database` back its busy timeout after a try, trying twice; whether it took it, as read back. */
 function timeoutRestored(database: DatabaseSync, timeoutMs: number): boolean {
 	for (let tries = 0; tries < 2; tries++) {
 		try {
 			setBusyTimeout(database, timeoutMs);
-			return true;
+			if (readBusyTimeout(database) === timeoutMs) return true;
 		} catch {
 			// Tried again once, then given up.
 		}
 	}
 	return false;
+}
+
+/** The busy timeout of `database` as it reads it now; undefined when it cannot be read. */
+function readBusyTimeout(database: DatabaseSync): number | undefined {
+	try {
+		const timeout = Number(database.prepare("PRAGMA busy_timeout").get()?.timeout);
+		return Number.isFinite(timeout) ? timeout : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Sets the connection's busy timeout: a setting of the connection, which touches no file. */

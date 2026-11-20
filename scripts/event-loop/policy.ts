@@ -297,6 +297,18 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 			"reads PRAGMA busy_timeout, a setting of the connection that touches no file, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file (#6081)",
 	},
 	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "attemptOnce" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "readBusyTimeout" },
+		reason:
+			"reads back PRAGMA busy_timeout, a setting of the connection that touches no file, of a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, to check that it took a busy timeout of 0 before a statement runs with it (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "timeoutRestored" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "readBusyTimeout" },
+		reason:
+			"reads back PRAGMA busy_timeout, a setting of the connection that touches no file, of a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, to check that it took its busy timeout back after a try (#6081)",
+	},
+	{
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "timeoutRestored" },
 		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "setBusyTimeout" },
 		reason:
