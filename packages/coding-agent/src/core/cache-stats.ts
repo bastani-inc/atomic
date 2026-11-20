@@ -122,27 +122,45 @@ export function advanceCacheHistory(
 	return prev;
 }
 
-function scan(entries: SessionEntry[], models: ModelPriceSource, beforeId?: string) {
+/**
+ * The prompt-cache misses of entries added in the order they were stored, one at a time, so a reader can add entries
+ * from pages it does not keep. `add` returns the miss an assistant reply had, if any.
+ */
+export function cacheWasteScan(models: ModelPriceSource) {
 	let prev: PreviousRequest | undefined;
 	const totals: CacheWasteTotals = { missedTokens: 0, missedCost: 0, missCount: 0, unpricedCount: 0 };
+	return {
+		totals,
+		get prev() {
+			return prev;
+		},
+		add(entry: SessionEntry): CacheMiss | undefined {
+			if (entry.type !== "message" || entry.message.role !== "assistant") {
+				prev = advanceCacheHistory(prev, entry);
+				return undefined;
+			}
+			const miss = cacheMissAfter(prev, entry.message, models);
+			if (miss) {
+				totals.missedTokens += miss.missedTokens;
+				totals.missedCost += miss.missedCost;
+				totals.missCount++;
+				if (miss.rebilledCost === undefined) totals.unpricedCount++;
+			}
+			prev = previous(entry.message, prev?.reportedCache ?? false) ?? prev;
+			return miss;
+		},
+	};
+}
+
+function scan(entries: SessionEntry[], models: ModelPriceSource, beforeId?: string) {
+	const scanner = cacheWasteScan(models);
 	const misses = new Map<AssistantMessage, CacheMiss>();
 	for (const entry of entries) {
 		if (beforeId !== undefined && entry.id === beforeId) break;
-		if (entry.type !== "message" || entry.message.role !== "assistant") {
-			prev = advanceCacheHistory(prev, entry);
-			continue;
-		}
-		const miss = cacheMissAfter(prev, entry.message, models);
-		if (miss) {
-			totals.missedTokens += miss.missedTokens;
-			totals.missedCost += miss.missedCost;
-			totals.missCount++;
-			if (miss.rebilledCost === undefined) totals.unpricedCount++;
-			misses.set(entry.message, miss);
-		}
-		prev = previous(entry.message, prev?.reportedCache ?? false) ?? prev;
+		const miss = scanner.add(entry);
+		if (miss && entry.type === "message") misses.set(entry.message as AssistantMessage, miss);
 	}
-	return { prev, totals, misses };
+	return { prev: scanner.prev, totals: scanner.totals, misses };
 }
 
 export function computeCacheWaste(entries: SessionEntry[], models: ModelPriceSource): CacheWasteTotals {
