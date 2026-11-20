@@ -31,6 +31,8 @@ export interface HeldSend {
 	readonly senderId: string;
 	readonly messageId: string;
 	readonly attemptId?: string;
+	/** #5999: the sender's host-owned return address, by which a sender that reconnected is still told about it. */
+	readonly senderReturnAddress?: string;
 	/** The original send frame, dispatched again once the hold ends. */
 	readonly clientMessage: { readonly type: string; readonly to: string } & Record<string, unknown>;
 }
@@ -384,6 +386,18 @@ export class RestoringRecipients {
 	}
 
 	/**
+	 * #5999: whether a reservation `sender` may be held by answers to `target`, without holding anything: `gone` for one
+	 * its owner reported gone, `active` for one that holds sends.
+	 */
+	peek(target: string, sender: HoldSender): "none" | "active" | "gone" {
+		for (const candidate of this.byTarget.get(normalizeTarget(target)) ?? []) {
+			if (candidate.ownerSessionId !== sender.id && !holdAdmitsSender(sender, candidate.group)) continue;
+			return candidate.gone === undefined ? "active" : "gone";
+		}
+		return "none";
+	}
+
+	/**
 	 * Decide a send that found no live recipient. `canHold` is false for clients that cannot wait past their
 	 * ordinary acknowledgement timeout; they are told to try again instead of being held.
 	 */
@@ -508,6 +522,12 @@ export class RestoringRecipients {
 		}
 		reservation.gone = goneRecipientReason(reservation.childName, goneReason);
 		return { held, gone: reservation.gone };
+	}
+
+	/** #5999: the child `ownerSessionId`'s reservation `key` holds sends for, if it holds one. */
+	childOf(key: string, ownerSessionId: string): string | undefined {
+		const reservation = this.reservations.get(key);
+		return reservation?.ownerSessionId === ownerSessionId ? reservation.childName : undefined;
 	}
 
 	/**

@@ -1020,6 +1020,7 @@ describe("docs references and assets (#2847)", () => {
 				"Half-closed peer or undeliverable send",
 				"Subagent that is starting",
 				"Subagent being restored after a restart",
+				"Subagent that finished or was paused",
 				"Subagent that ended or dropped off",
 				"Subagent released while it waits",
 				"Queued for an offline session",

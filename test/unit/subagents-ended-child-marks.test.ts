@@ -76,6 +76,7 @@ test("a child whose last run ended is reported with why, its ids and the id resu
 		aliases: [CHILD_SESSION_ID, "icom-1"],
 		outcome: "completed",
 		childId: "aabcf28b:0",
+		messages: "wake",
 	});
 	const outcomes = Object.fromEntries(
 		["ok", "error", "interrupted", "paused", "quit", "killed"].map((status) => [
@@ -93,6 +94,29 @@ test("a child whose last run ended is reported with why, its ids and the id resu
 	});
 	assert.deepEqual(endedChildMark(record({ childSessionId: undefined }))?.aliases, []);
 	assert.equal("group" in (endedChildMark(record()) ?? {}), false, "no group key unless the record has one");
+});
+
+test("a child that finished on its own is woken by a message, one stopped on purpose keeps it, one cancelled neither (#5999)", () => {
+	const messages = Object.fromEntries(
+		["ok", "error", "interrupted", "paused", "quit", "killed"].map((status) => [
+			status,
+			endedChildMark(record({ terminalStatus: status }))?.messages,
+		]),
+	);
+	assert.deepEqual(messages, {
+		ok: "wake",
+		error: "wake",
+		interrupted: "hold",
+		paused: "hold",
+		quit: "hold",
+		killed: undefined,
+	});
+	assert.equal("messages" in (endedChildMark(record({ terminalStatus: "killed" })) ?? {}), false);
+	assert.ok(isMarkEndedChildrenRequest({ children: [{ childName: "a", outcome: "completed", messages: "wake" }] }));
+	assert.equal(
+		isMarkEndedChildrenRequest({ children: [{ childName: "a", outcome: "completed", messages: "always" }] }),
+		false,
+	);
 });
 
 test("the subagents and intercom packages agree on the report's event and outcomes (#4639)", () => {

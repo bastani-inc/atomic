@@ -17,6 +17,7 @@ import { isVerticalBypass } from "./group-isolation.js";
 import { reachesSession, sessionGroups } from "./group-membership.js";
 import { type IntercomReachPolicy, notFoundInReachReason, outsideReachReason } from "../reach-policy.js";
 import { HELD_FOR_AWAY_ASKER_TARGET } from "./held-reply-targets.js";
+import { PAUSED_LIVE_RECIPIENT_TARGET } from "./ended-child-wakes.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
 import { type ReturnPathParty, type ReturnPaths, returnPathClosedReason } from "./return-paths.js";
@@ -235,6 +236,16 @@ export interface RemoteSendRequest {
 /** Local sends the multi-node router has already checked against the shared outbox. */
 const checkedAgainstSharedOutbox = new WeakSet<SendClientMessage>();
 const sendersAtReceipt = new WeakMap<SendClientMessage, BrokerConnectedSession>();
+/**
+ * #5999: sends already answered `queued` for a subagent being resumed. They are delivered as their sender was when the
+ * broker took them, even once that sender's connection is gone: nobody waits on them any more.
+ */
+const detachedSends = new WeakSet<SendClientMessage>();
+
+/** #5999: deliver `clientMessage` as its sender was when it was first received, whether or not it is still connected. */
+export function detachSend(clientMessage: SendClientMessage): void {
+  detachedSends.add(clientMessage);
+}
 
 export type RemoteSendRouter = (request: RemoteSendRequest) => void;
 function wireMessageId(value: unknown): string {
@@ -329,18 +340,23 @@ export function handleBrokerSend(
 
 
   const liveSender = currentId ? sessions.get(currentId) : undefined;
-  if (!liveSender) {
+  const detachedSender = detachedSends.has(clientMessage) ? sendersAtReceipt.get(clientMessage) : undefined;
+  if (!liveSender && !detachedSender) {
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
     return;
   }
   let fromSession = sendersAtReceipt.get(clientMessage);
-  if (fromSession === undefined) {
+  if (fromSession === undefined && liveSender !== undefined) {
     fromSession = liveSender.reach === undefined ? liveSender : {
       ...liveSender,
       info: { ...liveSender.info, groups: liveSender.info.groups?.slice() },
       reach: { home: liveSender.reach.home, reachable: [...liveSender.reach.reachable] },
     };
     sendersAtReceipt.set(clientMessage, fromSession);
+  }
+  if (fromSession === undefined) {
+    write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
+    return;
   }
 	const senderIdentity = fromSession.registrationReturnAddress ?? fromSession.info.id;
 	const logicalTarget = typeof clientMessage.logicalTarget === "string" ? clientMessage.logicalTarget : clientMessage.to;
@@ -888,7 +904,7 @@ export function handleBrokerSend(
 		write(socket, { type: "question_target", messageId: message.id, attemptId, sessionId: target.info.id });
     // Taken as the message is handed over: its receipt opens nothing once every registration of the sender ended since.
     const handedOver = returnPaths?.mark();
-    const finishDelivery = (recipient: BrokerConnectedSession, sender: ReceiptSender | undefined): void => {
+    const finishDelivery = (recipient: BrokerConnectedSession, sender: ReceiptSender | undefined, paused?: true): void => {
 	  const notify = (frame: BrokerMessage): void => {
 		if (sender !== undefined) write(sender.socket, frame);
 	  };
@@ -940,7 +956,14 @@ export function handleBrokerSend(
         pendingQuestions.releaseHeldFailures(message.replyTo, fromSession.info.id, recipient.registrationReturnAddress);
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
       returnPaths?.delivered(recipient, returnPathParty(fromSession), fromSession.info, message.id, handedOver);
-      notify({ type: "delivered", messageId: message.id, attemptId: senderAttemptId });
+      // #5999: a subagent whose turn its user paused saved the message and keeps it until it is continued. Only a sender
+      // that understands that answer (it asked to wake an ended recipient) is told so; any other gets `delivered`, as
+      // before: an older client takes `queued` for an ask as a send it may forget.
+      notify(
+        paused === true && clientMessage.wakeEndedRecipient === true
+          ? { type: "queued", messageId: message.id, attemptId: senderAttemptId, target: PAUSED_LIVE_RECIPIENT_TARGET, position: 1 }
+          : { type: "delivered", messageId: message.id, attemptId: senderAttemptId },
+      );
     };
     const senderWaiting: ReceiptSender = { socket, ...(attemptId === undefined ? {} : { attemptId }) };
     // #5095: from here the reply is on its way: its ask is answered, so the replier ending before the asker saves the
