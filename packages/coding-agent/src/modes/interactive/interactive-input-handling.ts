@@ -30,6 +30,7 @@ import { escapeViewedAgent, submitToViewedAgent } from "./agent-view/viewed-subm
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { bindMainComposerAgentRows, MainComposerKeyOverlay } from "./components/main-composer-keys.ts";
+import { holdPromptSlot } from "./components/prompt-slot.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
@@ -43,6 +44,7 @@ import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./intera
 import { handOffCompactionQueue, mainSteering } from "./interactive-queueing.ts";
 import { followStartedRunEcho } from "./interactive-render-chat.ts";
 import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
+import { screenHoldOf } from "./screen-hold.ts";
 import type { SteeringSubmitResult } from "./steering-queue-controller.ts";
 import { theme } from "./theme/theme.js";
 
@@ -75,6 +77,12 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	if (mode.keybindings) {
 		bindMainComposerAgentRows(mode.keybindings, () => mainComposerPanelCounts(mode));
 	}
+	// A part of the screen held while a view is on its way is shown live before any key handler acts on the key, a key
+	// another handler then takes (Ctrl+C, the stop-all chord) included.
+	mode.addTuiInputListener((data) => {
+		screenHoldOf(mode).noteInput(data);
+		return undefined;
+	});
 	mode.addTuiInputListener(() =>
 		mode.builtInHeader instanceof StartupIdentityComponent ? void mode.builtInHeader.settle() : undefined,
 	);
@@ -429,32 +437,38 @@ async function submitToMainChat(
 		const argument = args.trim() || undefined;
 		const bare = (name: string) => command === name && args === "";
 		if (command === "tasks") {
-			if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
-				await this.runtimeHost.openTaskInspector(argument);
+			// The panel takes the prompt's place: until it is up, the prompt's slot keeps showing what it showed.
+			const held = holdPromptSlot(this.editorContainer);
+			try {
+				if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
+					await this.runtimeHost.openTaskInspector(argument);
+					return;
+				}
+				if (!getOwnerTaskStore(this.session)) this.session.getAgentTaskHost();
+				const store = getOwnerTaskStore(this.session);
+				prompt.setText("");
+				if (!store) {
+					this.showStatus("Launched agents and shells will appear here.");
+					return;
+				}
+				const ui = this.createExtensionUIContext();
+				await showTaskInspector(
+					{
+						custom: (factory, options) => this.showExtensionCustom(factory, options),
+						getChatRenderSettings: ui.getChatRenderSettings,
+						getFooterDataProvider: ui.getFooterDataProvider,
+						getToolsExpanded: ui.getToolsExpanded,
+						setToolsExpanded: ui.setToolsExpanded,
+						notify: ui.notify,
+					},
+					store,
+					argument,
+					{ board: agentPanelBoardSource(this.session) },
+				);
 				return;
+			} finally {
+				held.settle();
 			}
-			if (!getOwnerTaskStore(this.session)) this.session.getAgentTaskHost();
-			const store = getOwnerTaskStore(this.session);
-			prompt.setText("");
-			if (!store) {
-				this.showStatus("Launched agents and shells will appear here.");
-				return;
-			}
-			const ui = this.createExtensionUIContext();
-			await showTaskInspector(
-				{
-					custom: (factory, options) => this.showExtensionCustom(factory, options),
-					getChatRenderSettings: ui.getChatRenderSettings,
-					getFooterDataProvider: ui.getFooterDataProvider,
-					getToolsExpanded: ui.getToolsExpanded,
-					setToolsExpanded: ui.setToolsExpanded,
-					notify: ui.notify,
-				},
-				store,
-				argument,
-				{ board: agentPanelBoardSource(this.session) },
-			);
-			return;
 		}
 		if (bare("settings")) {
 			const shown = this.showSettingsSelector();
@@ -463,15 +477,26 @@ async function submitToMainChat(
 			return;
 		}
 		if (bare("scoped-models")) {
+			const held = holdPromptSlot(this.editorContainer);
 			prompt.setText("");
-			await this.ensureDeferredStartupComplete();
-			this.showModelsSelector();
+			try {
+				await this.ensureDeferredStartupComplete();
+				this.showModelsSelector();
+			} finally {
+				held.settle();
+			}
 			return;
 		}
 		if (command === "model") {
+			// Without a model to pick, it opens the selector.
+			const held = argument === undefined ? holdPromptSlot(this.editorContainer) : undefined;
 			prompt.setText("");
-			await this.ensureDeferredStartupComplete();
-			await this.handleModelCommand(argument);
+			try {
+				await this.ensureDeferredStartupComplete();
+				await this.handleModelCommand(argument);
+			} finally {
+				held?.settle();
+			}
 			return;
 		}
 		if (command === "thinking") {
@@ -541,8 +566,10 @@ async function submitToMainChat(
 			return;
 		}
 		if (bare("tree")) {
-			this.showTreeSelector();
+			const held = holdPromptSlot(this.editorContainer);
+			const shown = this.showTreeSelector();
 			prompt.setText("");
+			void shown.finally(() => held.settle());
 			return;
 		}
 		if (bare("trust")) {
@@ -604,7 +631,11 @@ async function submitToMainChat(
 		if (command === "resume") {
 			prompt.setText("");
 			if (argument) await this.handleResumeTarget(argument);
-			else this.showSessionSelector();
+			else {
+				const held = holdPromptSlot(this.editorContainer);
+				this.showSessionSelector();
+				held.settle();
+			}
 			return;
 		}
 		if (bare("quit") || bare("exit")) {

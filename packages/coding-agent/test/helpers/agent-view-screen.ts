@@ -21,6 +21,7 @@ import {
 	shouldHandleFullscreenViewportInput,
 } from "../../src/modes/interactive/interactive-mode-base.ts";
 import { createFullscreenTui } from "../../src/modes/interactive/interactive-tui.ts";
+import { screenHoldOf } from "../../src/modes/interactive/screen-hold.ts";
 import { RecordingTerminal } from "./interactive-fullscreen-layout.ts";
 
 export const WIDTH = 80;
@@ -64,17 +65,22 @@ export function mainScreen() {
 		logDirectory: tmpdir(),
 		terminal,
 		// InteractiveModeBase's gate: while a subagent is shown its transcript takes the scroll keys.
-		shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay, focusedIsViewportSearch) =>
-			!(switcher?.viewed.kind === "agent" && !isMouseInput && isFullscreenViewportAction(data, keybindings)) &&
-			shouldHandleFullscreenViewportInput(
-				tui.getFocusedComponent(),
-				editor,
-				data,
-				isMouseInput,
-				focusedIsOverlay,
-				keybindings,
-				focusedIsViewportSearch,
-			),
+		shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay, focusedIsViewportSearch) => {
+			// As InteractiveModeBase's gate does, the screen's hold sees the key first.
+			screenHoldOf(mode).noteInput(data);
+			return (
+				!(switcher?.viewed.kind === "agent" && !isMouseInput && isFullscreenViewportAction(data, keybindings)) &&
+				shouldHandleFullscreenViewportInput(
+					tui.getFocusedComponent(),
+					editor,
+					data,
+					isMouseInput,
+					focusedIsOverlay,
+					keybindings,
+					focusedIsViewportSearch,
+				)
+			);
+		},
 	}) as TuiAltScreen;
 	const document = new WindowedContainer();
 	for (let line = 1; line <= 40; line++) document.addChild(new Text(`main line ${line}`, 0, 0));
@@ -90,6 +96,11 @@ export function mainScreen() {
 	tui.setLayoutRoot(root);
 	tui.setFocus(editor);
 	tui.start();
+	// As the startup listeners do, ahead of every key handler.
+	tui.addInputListener((data) => {
+		screenHoldOf(mode).noteInput(data);
+		return undefined;
+	});
 	const notices: string[] = [];
 	const mode = {
 		ui: tui,

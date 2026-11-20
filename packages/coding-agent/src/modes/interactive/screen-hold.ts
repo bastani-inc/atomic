@@ -1,0 +1,101 @@
+import { isKeyRelease } from "@bastani/atomic-tui";
+
+/**
+ * The part of the screen a hold keeps as painted: the prompt's slot while a slash command's view opens, or everything
+ * below the transcript while a subagent opened from `/tasks` is on its way.
+ */
+export type ScreenHoldRegion = "prompt" | "dock";
+
+/** Ends a hold, or nothing for a request that held nothing. */
+export type ScreenHoldRelease = () => void;
+
+const NOTHING_HELD: ScreenHoldRelease = () => {};
+
+/** A key the user pressed: not the release of one, nor a mouse or focus report. */
+export function isKeyPress(data: string): boolean {
+	return (
+		!isKeyRelease(data) &&
+		data !== "\x1b[I" &&
+		data !== "\x1b[O" &&
+		!data.startsWith("\x1b[<") &&
+		!data.startsWith("\x1b[M")
+	);
+}
+
+/** Shows a held part live again; `key` is the user's key that ends it, which the screen handles right after. */
+export type EndScreenHold = (key?: string) => void;
+
+type ScreenHoldState =
+	| { readonly kind: "live" }
+	| { readonly kind: "held"; readonly region: ScreenHoldRegion; readonly end: EndScreenHold };
+
+/**
+ * Which part of the screen, if any, is kept as painted while what replaces it is on its way. At most one part is held:
+ * a request made while another hold is held joins it, keeps nothing more and does not move its bound. A hold keeps
+ * only rows painted from live content, never rows another hold kept. The user's next key press shows the screen live.
+ */
+export class ScreenHold {
+	private state: ScreenHoldState = { kind: "live" };
+	private statusChanges = 0;
+
+	/** Counts the changes of a run's working status: a dock painted before the latest change shows one that is gone. */
+	get statusEpoch(): number {
+		return this.statusChanges;
+	}
+
+	/** The part held now, if any. */
+	get region(): ScreenHoldRegion | undefined {
+		return this.state.kind === "held" ? this.state.region : undefined;
+	}
+
+	/**
+	 * Hold `region`. `start` keeps it as painted and answers how to show it live again, or undefined when it cannot (what
+	 * it painted is not live content); it calls `ended` once its hold ends on its own. Answers what ends this hold.
+	 */
+	begin(region: ScreenHoldRegion, start: (ended: () => void) => EndScreenHold | undefined): ScreenHoldRelease {
+		if (this.state.kind === "held") return NOTHING_HELD;
+		let held: ScreenHoldState | undefined;
+		const ended = () => {
+			if (held !== undefined && this.state === held) this.state = { kind: "live" };
+		};
+		const end = start(ended);
+		if (end === undefined) return NOTHING_HELD;
+		held = { kind: "held", region, end };
+		this.state = held;
+		const self = held;
+		return () => {
+			if (this.state === self) end();
+		};
+	}
+
+	/** Show the screen live again, whatever part is held. */
+	end(): void {
+		if (this.state.kind === "held") this.state.end();
+	}
+
+	/**
+	 * A run's working status started or ended: a held dock, which has the status area in it, shows it live again. A held
+	 * prompt never has a working status in it (`PromptSlot` does not hold one that draws it), so it stays held.
+	 */
+	statusChanged(): void {
+		this.statusChanges++;
+		if (this.state.kind === "held" && this.state.region === "dock") this.state.end();
+	}
+
+	/** Input on its way to the screen, before any handler sees it: a key press shows the screen live. */
+	noteInput(data: string): void {
+		if (this.state.kind === "held" && isKeyPress(data)) this.state.end(data);
+	}
+}
+
+const holds = new WeakMap<object, ScreenHold>();
+
+/** The screen hold of the interactive mode `mode`. */
+export function screenHoldOf(mode: object): ScreenHold {
+	let hold = holds.get(mode);
+	if (hold === undefined) {
+		hold = new ScreenHold();
+		holds.set(mode, hold);
+	}
+	return hold;
+}

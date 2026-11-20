@@ -126,7 +126,11 @@ export interface MainChatTerminal {
  */
 export async function startMainChat(
 	host: "in-process" | "isolated",
-	options: { readonly beforeRun?: (mode: InteractiveMode) => Promise<void> | void } = {},
+	options: {
+		readonly beforeRun?: (mode: InteractiveMode) => Promise<void> | void;
+		/** On the isolated host, the engine draws its own UI, such as `/tasks`. */
+		readonly engineUi?: boolean;
+	} = {},
 ): Promise<MainChatTerminal> {
 	const stops: Array<() => Promise<void> | void> = [];
 	const gate: Gate = { entered: Promise.withResolvers(), release: Promise.withResolvers() };
@@ -136,7 +140,7 @@ export async function startMainChat(
 	let pair: EngineHostPair | undefined;
 	let setResponses: (responses: FauxResponseStep[]) => void;
 	if (host === "isolated") {
-		const created = await createEngineHostPair({ tools });
+		const created = await createEngineHostPair({ tools, engineUi: options.engineUi });
 		pair = created;
 		stops.push(() => created.cleanup());
 		runtime = created.runtime;

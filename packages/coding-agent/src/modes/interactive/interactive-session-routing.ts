@@ -7,6 +7,7 @@ import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { awaitFirstContent } from "./components/prompt-slot.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	APP_NAME,
@@ -402,6 +403,7 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 
 			{ id: this.sessionManager.getSessionId(), directory: this.sessionManager.getSessionDir() },
 		);
+		awaitFirstContent(selector, () => selector.awaitingFirstContent());
 		return {
 			component: selector,
 			focus: selector,

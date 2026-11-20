@@ -24,6 +24,7 @@ import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import { type AtomicWorkingLoader, DEFAULT_WORKING_MESSAGE } from "./components/atomic-working-status.ts";
 import { mainComposerFooterHints } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
+import { PromptSlot } from "./components/prompt-slot.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
 import { WidgetContainer } from "./components/scroll-widget.js";
 import { WorkingRunMeter } from "./components/working-run-meter.ts";
@@ -75,6 +76,7 @@ import {
 	type InternalUiActionResult,
 } from "./interactive-tui.ts";
 import { type BlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
+import { screenHoldOf } from "./screen-hold.ts";
 
 /** Move the transcript and nothing else: what a reserving overlay may release. */
 const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
@@ -247,6 +249,9 @@ export class InteractiveModeBase {
 		focusedIsOverlay: boolean,
 		focusedIsViewportSearch: boolean,
 	): boolean => {
+		// The fullscreen viewport sees input before any other handler: a key it scrolls with shows a held part of the
+		// screen live too (`ScreenHold`; every other key does so in the startup input listeners).
+		screenHoldOf(this).noteInput(data);
 		// A shown subagent's transcript takes the scroll keys (agent-view/transcript-slot.ts); main has no scroll view then.
 		if (
 			this.agentView?.viewed.kind === "agent" &&
@@ -728,6 +733,7 @@ export class InteractiveModeBase {
 	declare options: InteractiveModeOptions;
 
 	setEditorWorkingStatusIndicator(indicator: AtomicWorkingLoader | undefined): boolean {
+		screenHoldOf(this).statusChanged();
 		this.defaultEditor.setWorkingStatusIndicator(undefined);
 		if (!isWorkingStatusEditor(this.editor)) return false;
 		this.editor.setWorkingStatusIndicator(indicator);
@@ -797,7 +803,7 @@ export class InteractiveModeBase {
 		});
 
 		this.editor = this.defaultEditor;
-		this.editorContainer = new Container();
+		this.editorContainer = new PromptSlot(this.ui, () => this.workingIndicatorEmbedded, screenHoldOf(this));
 		this.editorContainer.addChild(this.editor as Component);
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(

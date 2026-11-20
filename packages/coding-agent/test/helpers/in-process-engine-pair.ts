@@ -1,15 +1,19 @@
 import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
+import { KeybindingsManager } from "../../src/core/keybindings.ts";
 import type { SessionManager } from "../../src/core/session-manager.js";
 import { serializeSessionMutation } from "../../src/core/session-mutation-queue.ts";
+import { EngineCustomUiService } from "../../src/modes/interactive-engine/engine-custom-ui.ts";
 import type {
 	InteractiveEngineGenerationEnded,
 	InteractiveEngineGenerationEndedListener,
 } from "../../src/modes/interactive-engine/engine-generation.ts";
 import { IsolatedInteractiveRuntime } from "../../src/modes/interactive-engine/isolated-runtime.ts";
 import {
+	type InteractiveEngineCommand,
 	type InteractiveEngineMessage,
 	parseInteractiveEngineMessage,
+	serializeInteractiveEngineFrame,
 	serializeInteractiveEngineMessage,
 } from "../../src/modes/interactive-engine/protocol.ts";
 import type { JsonAgentSessionEvent } from "../../src/modes/json-event.ts";
@@ -23,6 +27,13 @@ import type { RpcCommand, RpcResponse } from "../../src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness, type HarnessOptions } from "../suite/harness.ts";
 
 type EventListener = (event: JsonAgentSessionEvent) => void;
+
+/** A line the engine's own UI writes to its output, between the responses and events written there. */
+class EngineUiLine {
+	constructor(readonly line: string) {}
+}
+
+type HostRecord = RpcResponse | JsonAgentSessionEvent | EngineUiLine;
 
 interface PendingRequest {
 	resolve: (response: RpcResponse) => void;
@@ -101,7 +112,9 @@ class InProcessEngineClient extends RpcClientApi {
 	private readonly listeners = new Set<EventListener>();
 	private nextId = 0;
 	private readonly toEngine: LaggedPipe<RpcCommand>;
-	private readonly toHost: LaggedPipe<RpcResponse | JsonAgentSessionEvent>;
+	private readonly toHost: LaggedPipe<HostRecord>;
+	private readonly toEngineUi: LaggedPipe<string>;
+	private engineUi: ((line: string) => void) | undefined;
 	private readonly failures = new Map<RpcCommand["type"], { message: string; cause?: unknown }>();
 	private generation = 1;
 	/** Set from a crash until the replacement starts: the lost engine's output never reaches the host. */
@@ -114,6 +127,9 @@ class InProcessEngineClient extends RpcClientApi {
 	constructor(delays: { toEngineMs: () => number; toHostMs: () => number }) {
 		super();
 		this.toHost = new LaggedPipe((record) => this.receive(record), delays.toHostMs);
+		this.toEngineUi = new LaggedPipe((line) => {
+			if (!this.lost) this.engineUi?.(line);
+		}, delays.toEngineMs);
 		this.toEngine = new LaggedPipe((command) => {
 			if (this.lost) return;
 			this.commandsReceived.push(command);
@@ -141,7 +157,7 @@ class InProcessEngineClient extends RpcClientApi {
 
 	/** Hold the first record bound for the host that `matches` accepts, and every later one, until released. */
 	holdHostTrafficFrom(matches: (record: RpcResponse | JsonAgentSessionEvent) => boolean): void {
-		this.toHost.holdFrom(matches);
+		this.toHost.holdFrom((record) => !(record instanceof EngineUiLine) && matches(record));
 	}
 
 	/** Let the host read every held record in one pass, as it reads one chunk of the engine's output. */
@@ -157,8 +173,19 @@ class InProcessEngineClient extends RpcClientApi {
 		this.toHost.write(JSON.parse(JSON.stringify(record)));
 	}
 
-	private receive(record: RpcResponse | JsonAgentSessionEvent): void {
+	/** The engine draws UI: its lines reach the host in order with its responses, and the host's commands reach it. */
+	attachEngineUi(handleLine: (line: string) => void): (line: string) => void {
+		this.engineUi = handleLine;
+		return (line) => this.toHost.write(new EngineUiLine(line));
+	}
+
+	private receive(record: HostRecord): void {
 		if (this.lost) return;
+		if (record instanceof EngineUiLine) {
+			const parsed = parseInteractiveEngineMessage(record.line.trim());
+			if (parsed !== undefined) for (const listener of [...this.engineMessageListeners]) listener(parsed);
+			return;
+		}
 		if (record.type === "response") {
 			const id = record.id;
 			const request = id === undefined ? undefined : this.pending.get(id);
@@ -243,7 +270,10 @@ class InProcessEngineClient extends RpcClientApi {
 		return () => this.generationEndedListeners.delete(listener);
 	}
 
-	/** This engine draws no UI of its own: the host receives only the engine messages a test sends with `engineMessage`. */
+	/**
+	 * Unless the pair was made with `engineUi`, this engine draws no UI of its own: the host receives only the engine
+	 * messages a test sends with `engineMessage`.
+	 */
 	onInteractiveEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
 		this.engineMessageListeners.add(listener);
 		return () => this.engineMessageListeners.delete(listener);
@@ -257,7 +287,9 @@ class InProcessEngineClient extends RpcClientApi {
 		return () => {};
 	}
 
-	sendInteractiveEngineCommand(): void {}
+	sendInteractiveEngineCommand(command: InteractiveEngineCommand): void {
+		if (this.engineUi) this.toEngineUi.write(serializeInteractiveEngineFrame(command).trim());
+	}
 
 	getGeneration(): number {
 		return this.generation;
@@ -320,6 +352,8 @@ export async function createEngineHostPair(
 		hostSessionManager?: SessionManager;
 		hostSettingsManager?: HarnessOptions["settingsManager"];
 		serializeEngineCommands?: boolean;
+		/** The engine draws its own UI, such as `/tasks`, which the host shows as an interactive engine's. */
+		engineUi?: boolean;
 	},
 ): Promise<EngineHostPair> {
 	const lag = { toEngineMs: 0, toHostMs: 0 };
@@ -339,12 +373,30 @@ export async function createEngineHostPair(
 	if (options.engineRuntimeHost) {
 		Object.assign(engineRuntimeHost, options.engineRuntimeHost);
 	}
+	let customUi: EngineCustomUiService | undefined;
+	let keybindings: KeybindingsManager | undefined;
+	if (options.engineUi) {
+		keybindings = KeybindingsManager.create(engine.tempDir);
+		let write: (line: string) => void = () => {};
+		const ui = new EngineCustomUiService((line) => write(line), keybindings);
+		write = client.attachEngineUi((line) => ui.handleLine(line));
+		customUi = ui;
+	}
 	const handle = createRpcCommandHandler({
 		runtimeHost: engineRuntimeHost,
 		getSession: () => engine.session,
 		rebindSession: async () => {},
 		output: (record) => client.engineOutput(record as RpcResponse),
 		detachCompaction: true,
+		...(customUi === undefined
+			? {}
+			: {
+					keybindings,
+					taskInspectorUi: {
+						custom: customUi.custom.bind(customUi),
+						getHostRenderSettings: () => customUi.getHostRenderSettings(),
+					},
+				}),
 	});
 	client.attachEngine(
 		options.serializeEngineCommands
@@ -390,6 +442,7 @@ export async function createEngineHostPair(
 		},
 		cleanup: async () => {
 			unsubscribe();
+			customUi?.dispose();
 			// The host runtime listens to process-wide settings until it is disposed; left undisposed, it keeps both
 			// harnesses alive for the rest of the file.
 			await runtime.dispose().catch(() => {});

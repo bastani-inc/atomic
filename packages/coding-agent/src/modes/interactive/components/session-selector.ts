@@ -490,6 +490,11 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		return this.sessionList;
 	}
 
+	/** Nothing to list yet: the first load of this folder's sessions has not answered. */
+	awaitingFirstContent(): boolean {
+		return !this.disposed && this.currentLoading && this.currentSessions === null;
+	}
+
 	/**
 	 * Mark the selector closed so any in-flight or late-resolving loads are
 	 * ignored (stale-result guard) and status timeouts are cleared. Idempotent;
