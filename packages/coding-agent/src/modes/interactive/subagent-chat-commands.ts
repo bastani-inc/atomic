@@ -69,7 +69,9 @@ export function subagentChatUnavailableNotice(name: string): string {
 /**
  * What a slash command typed while the main screen shows a subagent does.
  * - `main`: main's own handler runs it, exactly as when main is shown. It acts on the main session or on Atomic itself.
- *   `showMain`: its answer is printed into the main transcript, so the screen shows main first.
+ *   `showMain`: its answer is a block printed into the main transcript, so the screen shows main first and then runs
+ *   it. This is the one switch a read-only command makes: it is visible at once (the transcript, the prompt's rule and
+ *   placeholder change), and the answer belongs to main. Menus, dialogs and status lines show over the subagent.
  * - `confirm`: it replaces, rewrites or switches the main conversation. It runs as `main` (main shown) after Yes.
  * - `refuse`: it sets the main conversation's model or thinking level, which is not done from a subagent's view.
  * - `copy`: `/copy` copies the viewed subagent's last message, the one on screen.

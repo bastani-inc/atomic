@@ -245,6 +245,62 @@ describe("commands typed while a subagent is shown on the main screen", () => {
 	);
 });
 
+describe("main's prompt while a command typed for a subagent runs on main", () => {
+	/** Main's prompt holds a half-written message; then the screen shows the subagent, whose prompt is empty. */
+	async function viewSubagentOverMainDraft(): Promise<ViewedScreen> {
+		const viewed = await viewSubagent();
+		await viewed.mode.agentView?.view(undefined);
+		viewed.mode.editor.setText("half-written for main");
+		await viewed.mode.agentView?.view(TASK);
+		assert.equal(viewed.mode.editor.getText(), "");
+		return viewed;
+	}
+
+	test(
+		"a command printed into main's transcript shows main with main's prompt as the reader left it",
+		async () => {
+			screen = await viewSubagentOverMainDraft();
+			await screen.submit("/session");
+			assert.equal(screen.viewed(), "main");
+			assert.match(screen.transcript(), /Session Info/);
+			assert.equal(screen.mode.editor.getText(), "half-written for main");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a confirmed command shows main with main's prompt as the reader left it",
+		async () => {
+			screen = await viewSubagentOverMainDraft();
+			const { mode } = screen;
+			const sessionId = mode.session.sessionId;
+			await screen.submit("/new");
+			answer(ENTER);
+			await until(() => /New session started/.test(screen?.transcript() ?? ""));
+			assert.notEqual(mode.session.sessionId, sessionId);
+			assert.equal(screen.viewed(), "main");
+			assert.equal(mode.editor.getText(), "half-written for main");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a command declined after the subagent was gone is not put in main's prompt, where one Enter would run it unasked",
+		async () => {
+			screen = await viewSubagentOverMainDraft();
+			const { mode, port } = screen;
+			await screen.submit("/compact");
+			port.setStatus({ gone: true });
+			assert.equal(screen.viewed(), "main");
+			answer(ESC);
+			await until(() => screen?.promptSlot() === mode.editor);
+			await until(() => screen?.warnings.includes("/compact was not run.") === true);
+			assert.equal(mode.editor.getText(), "half-written for main");
+		},
+		HOST_TIMEOUT_MS,
+	);
+});
+
 describe("the prompt's completion while a subagent is shown", () => {
 	/**
 	 * The prompt with its completion menu after `text` is typed into the empty prompt: once the menu shows `expected`,

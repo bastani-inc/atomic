@@ -8,6 +8,7 @@ import { mainSubmit } from "../interactive-input-handling.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { mergeRestoredDraft } from "../interactive-prompt-restore.ts";
 import { type MainCommandOrigin, viewedAgentCommand } from "../subagent-chat-commands.ts";
+import { type PromptHandle, promptHandle } from "./agent-drafts.ts";
 import type { AgentViewSwitcher } from "./agent-view-switcher.ts";
 import type { AgentViewPort } from "./contracts.ts";
 import { notifyViewed } from "./viewed-notices.ts";
@@ -39,7 +40,7 @@ export async function routeViewedCommand(
 			return "agent";
 		case "main":
 			if (!command.showMain) return "main";
-			await runWithMainShown(mode, text);
+			await runWithMainShown(mode, text, promptHandle(mode, "viewed"));
 			return "handled";
 		case "refuse":
 			notifyViewed(mode, refusalNotice(`/${command.name}`, command.name === "thinking" ? "thinking" : "model"), "warning");
@@ -48,19 +49,18 @@ export async function routeViewedCommand(
 			await copyLastMessage(mode, port);
 			return "handled";
 		case "confirm": {
+			const typedIn = promptHandle(mode, "viewed");
 			if (!(await confirmMainConversation(mode, port, `/${command.name}`))) {
-				const viewed = mode.agentView?.viewed;
-				if (viewed?.kind === "agent" && viewed.port === port) {
-					// The command comes back in front of what the subagent's prompt holds now, as it was typed.
-					const prompt = shownPrompt(mode);
-					prompt.setText(mergeRestoredDraft(text, prompt.getExpandedText()));
-				} else {
-					// The screen left the subagent meanwhile. In another prompt one Enter would run the command unasked.
+				if (port.status().gone) {
+					// Its prompt went with it. Main's prompt does not take it: one Enter there would run it unasked.
 					mode.showWarning(`${text} was not run.`);
+				} else {
+					// The command comes back in front of what the subagent's prompt holds now, as it was typed.
+					typedIn.setText(mergeRestoredDraft(text, typedIn.getExpandedText()));
 				}
 				return "handled";
 			}
-			await runWithMainShown(mode, text);
+			await runWithMainShown(mode, text, typedIn);
 			return "handled";
 		}
 	}
@@ -83,10 +83,13 @@ function mainCommandOrigin(mode: InteractiveModeBase, name: string): MainCommand
 	return undefined;
 }
 
-/** Show main, then run `text` exactly as the main chat runs it. */
-async function runWithMainShown(mode: InteractiveModeBase, text: string): Promise<void> {
+/**
+ * Show main, then run `text` exactly as the main chat runs it. Its handler clears and records the prompt the command
+ * was typed into, `typedIn`, so main's own prompt keeps what the reader left in it.
+ */
+async function runWithMainShown(mode: InteractiveModeBase, text: string, typedIn: PromptHandle): Promise<void> {
 	await mode.agentView?.view(undefined);
-	await mainSubmit(mode, text, text);
+	await mainSubmit(mode, text, text, typedIn);
 }
 
 /** Yes/No before acting on the main conversation from a subagent's view; Esc answers No. */
@@ -116,15 +119,6 @@ async function copyLastMessage(mode: InteractiveModeBase, port: AgentViewPort): 
 	} catch (error) {
 		notifyViewed(mode, error instanceof Error ? error.message : String(error), "error");
 	}
-}
-
-/** The prompt on screen. */
-function shownPrompt(mode: InteractiveModeBase): { getExpandedText(): string; setText(text: string): void } {
-	const editor = mode.editor;
-	return {
-		getExpandedText: () => editor.getExpandedText?.() ?? editor.getText(),
-		setText: (value) => editor.setText(value),
-	};
 }
 
 /** Keys that act on the main conversation: the command each stands for, and whether it asks first or is refused. */
