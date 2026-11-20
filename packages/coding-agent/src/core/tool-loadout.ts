@@ -16,8 +16,8 @@ function compareNames(left: string, right: string): number {
 
 /**
  * The active tools are a set, ordered so that the same set always gives the same order (#11495). Tools the
- * transcript already declares keep their declared order and come first. The others follow in a canonical order,
- * built-in tools in their requested order and then the rest by name, so the order in which extensions or MCP
+ * transcript already declares keep their declared order and come first. The others follow in the requested order,
+ * except that extension and MCP tools fill their places in name order, so the order in which extensions or MCP
  * servers registered or connected never changes the tool declarations a request sends.
  */
 export function applyToolLoadout(session: AgentSession, names: readonly string[]): AgentTool[] {
@@ -28,9 +28,13 @@ export function applyToolLoadout(session: AgentSession, names: readonly string[]
 	const inTranscript = new Set(transcriptOrder);
 	const kept = session.getActiveToolNames().filter((name) => requested.has(name) && !inTranscript.has(name));
 	const undeclared = [...new Set([...kept, ...requested])].filter((name) => !inTranscript.has(name));
-	const builtIn = undeclared.filter((name) => session._baseToolDefinitions.has(name));
-	const others = undeclared.filter((name) => !session._baseToolDefinitions.has(name)).sort(compareNames);
-	const tools = [...transcriptOrder, ...builtIn, ...others].flatMap((name) => {
+	// Extension and MCP tools take their places in name order; built-in tools keep the order they were asked for.
+	const extensionTools = undeclared.filter((name) => !session._baseToolDefinitions.has(name)).sort(compareNames);
+	let nextExtensionTool = 0;
+	const ordered = undeclared.map((name) =>
+		session._baseToolDefinitions.has(name) ? name : extensionTools[nextExtensionTool++]!,
+	);
+	const tools = [...transcriptOrder, ...ordered].flatMap((name) => {
 		const tool = session._toolRegistry.get(name);
 		const exposure = session.getToolDefinition(name)?.exposure ?? "direct";
 		return tool &&

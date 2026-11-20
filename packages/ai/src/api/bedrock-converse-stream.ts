@@ -82,8 +82,8 @@ import {
 import {
 	adjustMaxTokensForThinking,
 	buildBaseOptions,
-	clampMaxTokensToContext,
 	clampReasoning,
+	fitThinkingBudget,
 } from "./simple-options.ts";
 import {
 	isStrictToolLimitErrorMessage,
@@ -640,15 +640,17 @@ export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStrea
 			options.thinkingBudgets,
 		);
 
-		const maxTokens = clampMaxTokensToContext(model, context, adjusted.maxTokens);
+		const fitted = fitThinkingBudget(model, context, adjusted.maxTokens, adjusted.thinkingBudget);
+		// Too close to the context window for the smallest budget: Claude rejects a budget at or above maxTokens.
+		if (!fitted) return stream(model, context, { ...base, reasoning: undefined } satisfies BedrockOptions);
 
 		return stream(model, context, {
 			...base,
-			maxTokens,
+			maxTokens: fitted.maxTokens,
 			reasoning: options.reasoning,
 			thinkingBudgets: {
 				...(options.thinkingBudgets || {}),
-				[clampReasoning(options.reasoning)!]: Math.min(adjusted.thinkingBudget, Math.max(0, maxTokens - 1024)),
+				[clampReasoning(options.reasoning)!]: fitted.thinkingBudget,
 			},
 		} satisfies BedrockOptions);
 	}

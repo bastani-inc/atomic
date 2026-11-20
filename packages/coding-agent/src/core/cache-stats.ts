@@ -19,7 +19,9 @@ export interface CacheMiss {
 	cacheExpired: boolean;
 	/** Tool definitions changed after the previous request, as an update that redefines a tool does. */
 	toolsChanged: boolean;
-	/** The request had to send a smaller thinking budget than the previous one to fit the model's context window. */
+	/** A subagent's leading prompt was sent again in full after the previous request. */
+	promptRestarted: boolean;
+	/** The request had to send a smaller thinking budget than the previous one, or none, to fit the model's context window. */
 	contextNearLimit: boolean;
 }
 export interface CacheWasteTotals {
@@ -55,10 +57,13 @@ export interface PreviousRequest {
 	thinkingBudgetTokens?: number;
 	/** A later system message changed the tool definitions. */
 	toolsChanged?: boolean;
+	/** A later system message sent a subagent's leading prompt again in full. */
+	promptRestarted?: boolean;
 }
 
 export function describeCacheMissCause(miss: CacheMiss): string {
 	if (miss.modelChanged) return " after model switch";
+	if (miss.promptRestarted) return " after the subagent's prompt was sent again in full";
 	if (miss.toolsChanged) return " after tool definitions changed";
 	if (miss.contextNearLimit) return " with the context near the model's limit";
 	return miss.cacheExpired ? " after cache TTL expiry" : "";
@@ -100,11 +105,12 @@ export function cacheMissAfter(
 		modelChanged,
 		cacheExpired: ttlMs !== undefined && idleMs >= ttlMs,
 		toolsChanged: prev.toolsChanged === true,
+		promptRestarted: prev.promptRestarted === true,
+		// A lower budget, or none at all when not even the smallest one fit, on the same thinking level.
 		contextNearLimit:
 			!modelChanged &&
 			prev.thinkingBudgetTokens !== undefined &&
-			message.thinkingBudgetTokens !== undefined &&
-			message.thinkingBudgetTokens < prev.thinkingBudgetTokens &&
+			(message.thinkingBudgetTokens ?? 0) < prev.thinkingBudgetTokens &&
 			requestThinkingLevel(message) === prev.thinkingLevel,
 	};
 }
@@ -145,14 +151,17 @@ export function advanceCacheHistory(
 			};
 	} else if (entry.type === "message" && entry.message.role === "assistant") {
 		return previous(entry.message, prev?.reportedCache ?? false) ?? prev;
-	} else if (
-		prev &&
-		!prev.toolsChanged &&
-		entry.type === "message" &&
-		entry.message.role === "system" &&
-		((entry.message.toolsAdded?.length ?? 0) > 0 || (entry.message.toolsRemoved?.length ?? 0) > 0)
-	) {
-		return { ...prev, toolsChanged: true };
+	} else if (prev && entry.type === "message" && entry.message.role === "system") {
+		const message = entry.message;
+		const toolsChanged = (message.toolsAdded?.length ?? 0) > 0 || (message.toolsRemoved?.length ?? 0) > 0;
+		const promptRestarted =
+			(message as { transformedPrompt?: { head?: unknown } }).transformedPrompt?.head !== undefined;
+		if ((toolsChanged && !prev.toolsChanged) || (promptRestarted && !prev.promptRestarted))
+			return {
+				...prev,
+				...(toolsChanged ? { toolsChanged: true } : {}),
+				...(promptRestarted ? { promptRestarted: true } : {}),
+			};
 	}
 	return prev;
 }

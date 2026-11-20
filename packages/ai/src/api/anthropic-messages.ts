@@ -83,7 +83,7 @@ import {
 	hasCopilotVisionInput,
 	preserveCopilotIntegrationHeader,
 } from "./github-copilot-headers.ts";
-import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
+import { adjustMaxTokensForThinking, buildBaseOptions, fitThinkingBudget } from "./simple-options.ts";
 import {
 	isStrictToolLimitErrorMessage,
 	markStrictToolLimitsExceeded,
@@ -1548,13 +1548,15 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 		options.thinkingBudgets,
 	);
 
-	const maxTokens = clampMaxTokensToContext(model, context, adjusted.maxTokens);
+	const fitted = fitThinkingBudget(model, context, adjusted.maxTokens, adjusted.thinkingBudget);
+	// Too close to the context window for the smallest budget: Anthropic rejects a budget at or above max_tokens.
+	if (!fitted) return stream(model, context, { ...base, thinkingEnabled: false } satisfies AnthropicOptions);
 
 	return stream(model, context, {
 		...base,
-		maxTokens,
+		maxTokens: fitted.maxTokens,
 		thinkingEnabled: true,
-		thinkingBudgetTokens: Math.min(adjusted.thinkingBudget, Math.max(0, maxTokens - 1024)),
+		thinkingBudgetTokens: fitted.thinkingBudget,
 	} satisfies AnthropicOptions);
 };
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
+import type { AssistantMessage, SystemMessage, Usage } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import {
 	collectCacheMisses,
@@ -186,6 +186,46 @@ describe("cache-miss causes on resumed sessions", () => {
 		assert.match(
 			onlyMissNotice([cached!, missed!], rates),
 			/^Prompt cache miss with the context near the model's limit:/,
+		);
+	});
+
+	test("names the context limit when the request had to go without thinking", () => {
+		const [cached, missed] = missAfterCachedRequest(ISSUE_TOKENS, rates).map((entry) =>
+			entry.type === "message" && entry.message.role === "assistant"
+				? {
+						...entry,
+						message: {
+							...entry.message,
+							thinkingLevel: "medium",
+							...(entry.id === "cached" ? { thinkingBudgetTokens: 8192 } : {}),
+						} as AssistantMessage,
+					}
+				: entry,
+		);
+		assert.match(
+			onlyMissNotice([cached!, missed!], rates),
+			/^Prompt cache miss with the context near the model's limit:/,
+		);
+	});
+
+	test("names a subagent prompt sent again in full", () => {
+		const [cached, missed] = missAfterCachedRequest(ISSUE_TOKENS, rates);
+		const message: SystemMessage & { transformedPrompt: { head: string } } = {
+			role: "system",
+			content: "You are a subagent.",
+			transformedPrompt: { head: "child" },
+			timestamp: 500,
+		};
+		const head: SessionEntry = {
+			type: "message",
+			id: "head",
+			parentId: null,
+			timestamp: new Date(500).toISOString(),
+			message,
+		};
+		assert.match(
+			onlyMissNotice([cached!, head, missed!], rates),
+			/^Prompt cache miss after the subagent's prompt was sent again in full:/,
 		);
 	});
 

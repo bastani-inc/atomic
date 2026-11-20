@@ -100,7 +100,11 @@ export function createCodemodeDescription(
 		string,
 		{ namespace?: ToolNamespace; entries: { name: string; section: string; cost: number }[] }
 	>();
-	for (const tool of getCodemodeCallableTools(tools)) {
+	// Name order, so the description does not depend on the order in which tools were registered.
+	const callable = [...getCodemodeCallableTools(tools)].sort((a, b) =>
+		a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+	);
+	for (const tool of callable) {
 		if (options.deferred?.has(tool.name)) continue;
 		const namespace = options.namespaces?.get(tool.name);
 		const key = namespace?.name ?? "";

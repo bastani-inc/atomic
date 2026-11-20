@@ -106,6 +106,32 @@ export function clampThinkingBudgetToAnswerRoom(thinkingBudget: number, ceiling:
 	return Math.min(thinkingBudget, Math.max(0, ceiling - MIN_ANSWER_TOKENS));
 }
 
+/** The smallest thinking budget Claude accepts, on the Anthropic API and on Bedrock. */
+export const MIN_THINKING_BUDGET = 1024;
+
+/**
+ * Fits a budget-based thinking request into the context window. The budget is kept whenever it and the minimum answer
+ * room fit the window: a changed budget makes the provider bill the cached conversation again, so the context safety
+ * margin only lowers `max_tokens` when the budget fits within it. Otherwise the budget is lowered by exactly what the
+ * window lacks. Returns undefined when even the smallest budget no longer fits; the request then goes without thinking
+ * rather than with a budget the provider rejects.
+ */
+export function fitThinkingBudget(
+	model: Model<Api>,
+	context: TranscriptContext,
+	maxTokens: number,
+	thinkingBudget: number,
+): { maxTokens: number; thinkingBudget: number } | undefined {
+	const clamped = clampMaxTokensToContext(model, context, maxTokens);
+	if (clamped - MIN_ANSWER_TOKENS >= thinkingBudget) return { maxTokens: clamped, thinkingBudget };
+	const room =
+		model.contextWindow > 0 ? model.contextWindow - estimateContextTokens(context).tokens : Number.POSITIVE_INFINITY;
+	const ceiling = Math.min(maxTokens, room);
+	const budget = Math.min(thinkingBudget, ceiling - MIN_ANSWER_TOKENS);
+	if (budget < MIN_THINKING_BUDGET) return undefined;
+	return { maxTokens: Math.max(clamped, budget + MIN_ANSWER_TOKENS), thinkingBudget: budget };
+}
+
 export function adjustMaxTokensForThinking(
 	// Undefined means no explicit caller cap. Use the model cap and fit thinking inside it.
 	baseMaxTokens: number | undefined,

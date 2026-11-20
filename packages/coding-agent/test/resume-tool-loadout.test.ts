@@ -145,7 +145,7 @@ test("startup names tools the history records as active when nothing registered 
 	const missing = after.session.getToolStatus().missing;
 	assert.deepEqual(
 		missing.map((tool) => tool.name),
-		["subagent", "deploy"],
+		["deploy", "subagent"],
 	);
 	assert.match(missing[0]?.reason ?? "", /active in this session's history/);
 
@@ -156,7 +156,7 @@ test("startup names tools the history records as active when nothing registered 
 		showWarning: (message) => warnings.push(message),
 	});
 	assert.deepEqual(warnings, [
-		"Tools this session was using aren't available right now: subagent, deploy. /tools shows why; /reload retries once that is fixed.",
+		"Tools this session was using aren't available right now: deploy, subagent. /tools shows why; /reload retries once that is fixed.",
 	]);
 
 	const healthy = await resume(before.sessionManager, { tools: [...EXTENSION_TOOLS, "mcp__docs__search"] });
@@ -300,7 +300,7 @@ test("a resume with --no-extensions does not report the tools the extensions wou
 	const withExtensionsLost = await resume(before.sessionManager, { tools: [] });
 	assert.deepEqual(
 		withExtensionsLost.session.getToolStatus().missing.map((tool) => tool.name),
-		["subagent", "deploy"],
+		["deploy", "subagent"],
 	);
 });
 

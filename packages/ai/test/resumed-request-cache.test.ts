@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, describe, it } from "vitest";
-import { type AnthropicOptions, stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
+import {
+	type AnthropicOptions,
+	stream as streamAnthropic,
+	streamSimple as streamSimpleAnthropic,
+} from "../src/api/anthropic-messages.ts";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamCompletions } from "../src/api/openai-completions.ts";
+import { fitThinkingBudget } from "../src/api/simple-options.ts";
 import { getModel } from "../src/compat.ts";
 import { cleanupSessionResources } from "../src/session-resources.ts";
 import type {
@@ -267,5 +272,54 @@ describe("a session whose earlier version folded prompt updates into its leading
 
 		assert.notDeepEqual(firstAfterUpgrade[0], beforeUpgrade[0]);
 		assert.deepEqual(later.slice(0, firstAfterUpgrade.length), firstAfterUpgrade);
+	});
+});
+
+describe("a budget-based thinking request near the context window", () => {
+	const model: Model<"anthropic-messages"> = { ...getModel("anthropic", "claude-sonnet-4-5"), ...offline, contextWindow: 32_768, maxTokens: 32_768 };
+
+	/** A context ending with a reply that reports `inputTokens` input, which the estimate takes as its size. */
+	function contextWithInput(inputTokens: number): Message[] {
+		return [
+			{ role: "user", content: "first", timestamp: 1 },
+			{
+				...reply(model, "first answer", 2),
+				usage: {
+					input: inputTokens,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: inputTokens,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			},
+		];
+	}
+
+	it("keeps the budget whenever it and the answer room fit the window", () => {
+		const context = { messages: contextWithInput(21_509) } as TranscriptContext;
+		assert.deepEqual(fitThinkingBudget(model, context, 32_768, 8_192), { maxTokens: 9_216, thinkingBudget: 8_192 });
+	});
+
+	it("lowers the budget by exactly what the window lacks", () => {
+		const context = { messages: contextWithInput(24_653) } as TranscriptContext;
+		assert.deepEqual(fitThinkingBudget(model, context, 32_768, 8_192), { maxTokens: 8_115, thinkingBudget: 7_091 });
+	});
+
+	it("sends no thinking, not a budget Claude rejects, when not even the smallest budget fits", async () => {
+		const context = { messages: contextWithInput(30_800) } as TranscriptContext;
+		assert.equal(fitThinkingBudget(model, context, 32_768, 8_192), undefined);
+		let payload: { thinking?: { type: string; budget_tokens?: number }; max_tokens: number } | undefined;
+		const result = streamSimpleAnthropic(model, context, {
+			apiKey: "sk-ant-test",
+			reasoning: "medium",
+			onPayload: (request) => {
+				payload = structuredClone(request) as typeof payload;
+				throw new PayloadCaptured();
+			},
+		});
+		for await (const event of result) if (event.type === "error" || event.type === "done") break;
+		assert.notEqual(payload?.thinking?.type, "enabled");
+		assert.ok((payload?.max_tokens ?? 0) >= 1);
 	});
 });
