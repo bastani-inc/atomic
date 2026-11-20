@@ -356,15 +356,9 @@ export async function* selectedHistoryPages(
 		if (read.throughSeq < (items.at(-1)?.seq ?? start) || (items[0]?.seq ?? start) < start)
 			throw new Error(`Missing session history at entry ${start}`);
 		if (items.length) yield { items, ...(read.prefixes ? { prefixes: read.prefixes } : {}) };
-		// Bytes cut a page that ends with an entry before the end; one that ends with a reference ended at that entry, and
-		// keeps its limit, unless entries are selected: each one sized beyond the page is one more the store tested.
+		// Bytes cut a page that ends with an entry before the end; one that ends with a reference ended at that entry.
 		if (items.length === limit) limit = Math.min(SESSION_HISTORY_SCAN_ENTRIES, limit * 2);
-		else if (
-			read.throughSeq < watermark &&
-			items.length &&
-			"entry" in items[0]! &&
-			(options.select !== undefined || "entry" in items.at(-1)!)
-		)
+		else if (read.throughSeq < watermark && items.length && "entry" in items[0]! && "entry" in items.at(-1)!)
 			limit = Math.min(SESSION_HISTORY_SCAN_ENTRIES, Math.ceil(items.length * 1.25) + 16);
 		start = read.throughSeq + 1;
 		if (start <= watermark) await yieldToEventLoop();
