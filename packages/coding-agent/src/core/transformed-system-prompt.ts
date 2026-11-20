@@ -33,6 +33,8 @@ export interface TransformedPromptHead {
 	/** A digest of each section the model is told at this row, before its `sections` changes. */
 	readonly digests: Record<string, string>;
 	readonly owner: string;
+	/** The session started as a fork: kept on every later head, also across compactions. */
+	readonly forked?: true;
 }
 
 export interface TransformedPromptRecord {
@@ -161,6 +163,14 @@ export function hasRecordedTransformedPrompt(messages: readonly AgentMessage[]):
 	return messages.some((message) => transformedPromptOf(message) !== undefined);
 }
 
+/** Whether `messages` record that their session started as a fork that continues another session's conversation. */
+export function startedAsFork(messages: readonly AgentMessage[]): boolean {
+	return messages.some((message) => {
+		const head = transformedPromptOf(message)?.head;
+		return head?.fork !== undefined || head?.forked === true;
+	});
+}
+
 /** Whether `owner` recorded the transformed prompt the next request leads with. */
 export function hasTransformedPrompt(messages: readonly AgentMessage[], owner: string): boolean {
 	return headIndex(messages, owner) >= 0;
@@ -194,7 +204,8 @@ export function nextTransformedPromptRecord(
 	}
 	const digests = digestsOf(prompt.sections);
 	const sections = changedSections(new Map(Object.entries(digests)), desired, () => true);
-	return { head: { content: prompt.content, digests, owner }, ...(sections ? { sections } : {}) };
+	const forked = startedAsFork(messages) ? ({ forked: true } as const) : {};
+	return { head: { content: prompt.content, digests, owner, ...forked }, ...(sections ? { sections } : {}) };
 }
 
 /**
@@ -206,7 +217,7 @@ export function carriedTransformedPrompt(messages: readonly AgentMessage[]): Tra
 	const index = latestHeadIndex(messages);
 	const state = index < 0 ? undefined : stateFrom(messages, index);
 	if (state === undefined) return undefined;
-	if (state.head.content === undefined) return { head: { digests: {}, owner: state.head.owner } };
+	if (state.head.content === undefined) return { head: { digests: {}, owner: state.head.owner, forked: true } };
 	const sections: Record<string, string | null> = {};
 	for (const [name, text] of state.changed) {
 		if (text === null ? name in state.head.digests : state.head.digests[name] !== digest(text)) sections[name] = text;

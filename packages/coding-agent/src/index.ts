@@ -205,7 +205,7 @@ export {
 	type TranscriptToolResult,
 	type TranscriptToolResultFormat,
 } from "./core/transcript.js";
-export { hasRecordedTransformedPrompt } from "./core/transformed-system-prompt.ts";
+export { hasRecordedTransformedPrompt, startedAsFork } from "./core/transformed-system-prompt.ts";
 export * from "./core/worktree-snapshot/index.ts";
 export { type CodemodeExtensionOptions, createCodemodeExtension } from "./extensions/codemode/index.js";
 export {

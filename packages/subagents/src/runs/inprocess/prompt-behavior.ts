@@ -1,4 +1,4 @@
-import { hasRecordedTransformedPrompt } from "@bastani/atomic";
+import { hasRecordedTransformedPrompt, startedAsFork } from "@bastani/atomic";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
@@ -252,8 +252,9 @@ export function forkedChildTools(
 
 /**
  * The parent whose conversation a child's session continues as a fork, or undefined. A fork continues that
- * conversation from its first request: a fork session that already holds the child's own turns without a recorded
- * prompt (an earlier version ran it) is reopened as the child it was, under its own prompt.
+ * conversation from its first request, and its recorded prompt says so for every reopen after. A fork session that
+ * already holds the child's own turns without a recorded prompt (an earlier version ran it) is reopened as the child
+ * it was, under its own prompt, and stays that child.
  */
 export function forkedParentSessionId(session: {
 	getHeader(): { readonly parentSessionId?: string; readonly createdAt: string } | null;
@@ -262,7 +263,8 @@ export function forkedParentSessionId(session: {
 	const header = session.getHeader();
 	if (header?.parentSessionId === undefined) return undefined;
 	const { messages } = session.buildSessionContext();
-	if (hasRecordedTransformedPrompt(messages)) return header.parentSessionId;
+	if (startedAsFork(messages)) return header.parentSessionId;
+	if (hasRecordedTransformedPrompt(messages)) return undefined;
 	const forkedAt = Date.parse(header.createdAt);
 	const ownTurns = messages.some((message) => message.role === "assistant" && message.timestamp >= forkedAt);
 	return ownTurns ? undefined : header.parentSessionId;

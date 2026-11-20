@@ -553,8 +553,13 @@ describe("a forked subagent continues its parent's cached request", () => {
 		assert.deepEqual(secretRuns, []);
 	});
 
-	test("a fork child an earlier version ran is reopened as the child it was, under its own prompt", async () => {
-		const { runtime, parentModel, requests, parentManager, forkManager } = await parentAndFork(NATIVE);
+	test("a fork child an earlier version ran is reopened as the child it was, under its own prompt, every time", async () => {
+		// The parent's history holds one of its own subagent calls, which the earlier version filtered out of the fork.
+		const reply: Reply = (model, count) =>
+			count === 1
+				? message(model, [{ type: "toolCall", id: "call_sub_1", name: "subagent", arguments: {} }])
+				: textReply(model, count);
+		const { runtime, parentModel, requests, parentManager, forkManager } = await parentAndFork(NATIVE, reply);
 		assert.equal(forkedParentSessionId(forkManager), parentManager.getSessionId(), "a new fork continues its parent");
 		// The earlier version: the child's own transformed prompt, the parent's orchestration history filtered out, and
 		// no recorded prompt.
@@ -578,20 +583,55 @@ describe("a forked subagent continues its parent's cached request", () => {
 		await legacy.prompt("child task");
 		await legacy.dispose();
 
-		const reopenedManager = await SessionManager.open(forkManager.getSessionStore(), forkManager.getSessionId());
-		const parentSessionId = forkedParentSessionId(reopenedManager);
-		assert.equal(parentSessionId, undefined, "its own turns are already there: it is reopened as the child it was");
-		const reopened = await openFork(reopenedManager, runtime, parentModel, { forkedFrom: parentSessionId });
-		await reopened.prompt("follow-up");
+		const reopen = async (task: string) => {
+			const manager = await SessionManager.open(forkManager.getSessionStore(), forkManager.getSessionId());
+			const parentSessionId = forkedParentSessionId(manager);
+			assert.equal(parentSessionId, undefined, "it is reopened as the child it was");
+			const child = await openFork(manager, runtime, parentModel, { forkedFrom: parentSessionId });
+			await child.prompt(task);
+			await child.dispose();
+			return requests.at(-1)!;
+		};
+		const first = await reopen("follow-up");
+		const second = await reopen("another follow-up");
 
-		const last = requests.at(-1)!.payload;
-		assert.doesNotMatch(JSON.stringify(last), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
-		assert.doesNotMatch(JSON.stringify(last), /You are now a subagent started from the conversation above/);
-		assert.match(JSON.stringify(last.system), /You are a child subagent, not the parent orchestrator/);
-		assert.deepEqual(
-			(last.tools as { name: string }[]).map((tool) => tool.name).filter((name) => !name.startsWith("__")),
-			["read"],
-		);
+		for (const { payload } of [first, second]) {
+			assert.doesNotMatch(JSON.stringify(payload), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
+			assert.doesNotMatch(JSON.stringify(payload), /You are now a subagent started from the conversation above/);
+			assert.doesNotMatch(JSON.stringify(payload.messages), /call_sub_1/);
+			assert.match(JSON.stringify(payload.system), /You are a child subagent, not the parent orchestrator/);
+			assert.deepEqual(
+				(payload.tools as { name: string }[]).map((tool) => tool.name).filter((name) => !name.startsWith("__")),
+				["read"],
+			);
+		}
+		assert.equal(first.sessionId, forkManager.getSessionId());
+		assert.equal(second.sessionId, forkManager.getSessionId());
+		assert.ok(extendsRequest(first.payload, second.payload), "the second reopen reuses the first one's request");
+	});
+
+	test("a fork stays a fork when reopened after a compaction or under another policy", async () => {
+		const { runtime, parentModel, requests, parentManager, forkManager } = await parentAndFork(NATIVE);
+		const child = await openFork(forkManager, runtime, parentModel);
+		await child.prompt("child task");
+		await child.compact();
+		await child.dispose();
+		const reopen = async (task: string, policy?: typeof narrow) => {
+			const manager = await SessionManager.open(forkManager.getSessionStore(), forkManager.getSessionId());
+			const forkedFrom = forkedParentSessionId(manager);
+			assert.equal(forkedFrom, parentManager.getSessionId(), "it started as a fork");
+			const reopened = await openFork(manager, runtime, parentModel, { forkedFrom, ...(policy ? { policy } : {}) });
+			await reopened.prompt(task);
+			await reopened.dispose();
+			return requests.at(-1)!;
+		};
+		const afterCompaction = await reopen("follow-up");
+		assert.equal(afterCompaction.sessionId, parentManager.getSessionId());
+		const fanout = { ...narrow, fanoutAuthorized: true };
+		const underOtherPolicy = await reopen("another follow-up", fanout);
+		const again = await reopen("a third follow-up", fanout);
+		assert.equal(again.sessionId, parentManager.getSessionId());
+		assert.ok(extendsRequest(underOtherPolicy.payload, again.payload));
 	});
 
 	test("refuses a call to a parent tool outside its policy", async () => {
