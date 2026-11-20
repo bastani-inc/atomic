@@ -8,6 +8,7 @@ import { readTaskCompletionHistory } from "../../../core/tasks/task-completion-h
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { savedTaskRowKey } from "../../../core/tasks/transcript-origin.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
+import type { AgentWorkingLine } from "../agent-view/contracts.ts";
 import {
 	AtomicWorkedStatusComponent,
 	DEFAULT_WORKING_MESSAGE,
@@ -237,6 +238,53 @@ function chatSessionBusyMessage<TExtraEntry extends ChatTranscriptEntryLike>(
 		? clickableKeyTextHint(state.getActionKeyDisplay?.("app.interrupt") ?? "esc", " cancel")
 		: undefined;
 	return retryWaitMessage(wait, retrySecondsLeft(wait), cancel, workingMessageColumns(width));
+}
+
+/** Whole seconds: a working line's clock shows seconds, so a status carrying it changes once a second at most. */
+function wholeSeconds(ms: number): number {
+	return Math.max(0, Math.floor(ms / 1000) * 1000);
+}
+
+/**
+ * The working line `renderChatSessionWorkingStatus` draws, as plain data for a screen that draws it itself: the same
+ * branches, in the same order, without the animation frame. Undefined when it draws none.
+ */
+export function chatSessionWorkingLine<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	published?: PublishedChatActivity,
+	width = 120,
+): AgentWorkingLine | undefined {
+	if (published === "idle") return undefined;
+	if (!state.compacting && (published !== undefined || isChatSessionBusyStatus(state.statusMessage)))
+		return { kind: "busy", message: chatSessionBusyMessage(state, published, width) };
+	if (!isChatSessionStreaming(state)) {
+		const worked = state.workedRun;
+		if (worked === undefined || state.workingLifecycleActive || state.compacting) return undefined;
+		return {
+			kind: "worked",
+			message: worked.message ?? "",
+			worked: { elapsedMs: wholeSeconds(worked.snapshot.elapsedMs), tokens: worked.snapshot.tokens },
+		};
+	}
+	if (state.statusMessage && !state.compacting) return undefined;
+	if (state.compacting) {
+		const startedAt =
+			state.compactionStartedAt ??
+			state.getAgentSession?.()?.compactionStartedAt ??
+			state.getChatBoxSession?.()?.compactionStartedAt;
+		return {
+			kind: "compacting",
+			message: state.statusMessage || "Compacting context...",
+			...(startedAt === undefined ? {} : { elapsedMs: wholeSeconds(Date.now() - startedAt) }),
+		};
+	}
+	if (!state.workingLifecycleActive) return undefined;
+	const meta = chatSessionWorkingMeta(state);
+	return {
+		kind: "working",
+		message: state.workingMessage ?? DEFAULT_WORKING_MESSAGE,
+		...(meta === undefined ? {} : { elapsedMs: wholeSeconds(meta.elapsedMs), tokens: meta.tokens }),
+	};
 }
 
 export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscriptEntryLike>(
