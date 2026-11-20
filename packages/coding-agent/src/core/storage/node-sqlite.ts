@@ -29,6 +29,7 @@ import { basename, dirname, join, resolve, win32 } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { isSharedArrayBuffer, isUint8Array } from "node:util/types";
 import type * as native from "@bastani/atomic-natives";
 import type {
 	SqliteDatabase,
@@ -1298,7 +1299,21 @@ type SqliteConnection = ThreadConnection | CallerThreadConnection;
  * itself from one on the calling thread, which runs it before returning, as node:sqlite does.
  */
 function send(connection: SqliteConnection, request: ConnectionRequest): ConnectionAnswer | Promise<ConnectionAnswer> {
-	return connection.request(request);
+	if (!(connection instanceof ThreadConnection) || !("params" in request)) return connection.request(request);
+	return connection.request({ ...request, params: request.params.map(sendable) });
+}
+
+/**
+ * A binary value as a connection's thread is sent it: the bytes it holds now, as a statement on the calling thread
+ * binds them when it runs. A message shares a `SharedArrayBuffer` with the thread, so a change the caller makes before
+ * the thread runs the statement would reach it, and it copies the whole buffer behind a view, so a view of part of a
+ * buffer, or of a shared one, is sent as a copy of its own bytes. Any other value is sent as it is.
+ */
+function sendable(value: SqliteValue): SqliteValue {
+	if (!isUint8Array(value)) return value;
+	if (!isSharedArrayBuffer(value.buffer) && value.byteOffset === 0 && value.byteLength === value.buffer.byteLength)
+		return value;
+	return new Uint8Array(value);
 }
 
 class NodeSqliteDatabase implements SqliteDatabase {

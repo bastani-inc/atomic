@@ -1223,7 +1223,12 @@ test("a batch waits for the lock as long as the most patient of the transactions
 	await vi.advanceTimersByTimeAsync(2 * WATCHED_RECHECK_MS);
 	assert.equal(impatient$.settled, false, "still waiting with its patient batch mate past its own 100 ms");
 	holder.exec("COMMIT");
-	await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+	// Each recheck asks the connection's thread, which answers on a real turn: step until a recheck took the lock.
+	const both$ = settledFlag(Promise.all([impatient, patient]));
+	while (!both$.settled) {
+		if (vi.getTimerCount() > 0) await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+		else await turn();
+	}
 	await Promise.all([impatient, patient]);
 	assert.deepEqual(await values(database), ["impatient", "patient"]);
 });

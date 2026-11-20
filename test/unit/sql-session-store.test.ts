@@ -31,7 +31,7 @@ import {
 	type SessionSummary,
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
-import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
+import { withCallerThreadSqliteDatabase, withNodeSqliteDatabase } from "../helpers/storage-database.js";
 
 const header = {
 	id: "session",
@@ -381,7 +381,8 @@ test("SQL replace and delete remove search text before reusing a session ID (#36
 });
 
 test("SQL light listing bounds its key scan by size and fetches wide columns per page (#5250)", async () => {
-	await withNodeSqliteDatabase(async ({ database }) => {
+	// On this thread, where the test's `length` reaches SQLite.
+	await withCallerThreadSqliteDatabase(async ({ database }) => {
 		const store = await SqlSessionStore.open(database);
 		const sessions = 200;
 		for (let index = 0; index < sessions; index++) {
@@ -436,7 +437,8 @@ test("SQL light listing bounds its key scan by size and fetches wide columns per
 });
 
 test("SQL light listing advances past oversized rows with bounded statements and key work (#5250)", async () => {
-	await withNodeSqliteDatabase(async ({ database }) => {
+	// On this thread, where the test's `length` reaches SQLite.
+	await withCallerThreadSqliteDatabase(async ({ database }) => {
 		const store = await SqlSessionStore.open(database);
 		const expected = ["first", ...Array.from({ length: 24 }, (_, index) => `wide-${index}`), "last"];
 		for (const id of expected) {

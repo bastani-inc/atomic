@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { afterEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 import { observeRowsAndFailures } from "../helpers/node-sqlite-observations.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { interceptConnectionRequests } from "../helpers/sqlite-connection-requests.js";
 import { holdSqliteWriteLock } from "../helpers/sqlite-lock-holder.js";
 
 /** How long the waiting connection's busy handler waits for the lock: long enough to show it never ran out. */
@@ -62,6 +64,10 @@ async function longestStall<T>(operation: () => Promise<T>): Promise<{ value: T;
 		clearInterval(timer);
 	}
 }
+
+/** A read that keeps a connection busy for a while: long enough for this thread to run on while it runs. */
+const SLOW_READ =
+	"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 300000) SELECT sum(i) AS s FROM n";
 
 async function rows(database: SqliteDatabase): Promise<string[]> {
 	return (await database.all<{ value: string }>("SELECT value FROM items ORDER BY rowid")).map((row) => row.value);
@@ -137,4 +143,43 @@ test("rows and driver errors cross from a connection's thread as they come from 
 	const inMemory = await openNodeSqliteDatabase(":memory:");
 	cleanups.push(() => inMemory.close());
 	assert.deepStrictEqual(await observeRowsAndFailures(threaded), await observeRowsAndFailures(inMemory));
+});
+
+test.each([
+	["this realm", () => new Uint8Array(new SharedArrayBuffer(1))],
+	["another realm", () => runInNewContext("new Uint8Array(new SharedArrayBuffer(1))") as Uint8Array],
+])(
+	"a transaction binds the bytes it passed when it called, even when the caller changes them before the statement runs, a view from %s (#5376)",
+	async (_realm, shared) => {
+		const database = await open(databasePath());
+		await database.exec("CREATE TABLE items (value BLOB NOT NULL)");
+		await database.transaction(async (tx) => {
+			// Work ahead of the write on the connection's thread, so the write runs after the change below.
+			const ahead = tx.get(SLOW_READ);
+			const bytes = shared();
+			bytes[0] = 65;
+			const write = tx.run("INSERT INTO items VALUES (?)", bytes);
+			bytes[0] = 66;
+			await Promise.all([ahead, write]);
+		});
+		assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: new Uint8Array([65]) }]);
+	},
+);
+
+test("a transaction sends a statement only the bytes of a view it passes, not the buffer behind it (#5376)", async () => {
+	const database = await open(databasePath());
+	await database.exec("CREATE TABLE items (value BLOB NOT NULL)");
+	const sent: Uint8Array[] = [];
+	const watching = interceptConnectionRequests((request, send) => {
+		if (request.kind === "run") for (const param of request.params) if (param instanceof Uint8Array) sent.push(param);
+		return send(request);
+	});
+	cleanups.push(() => watching.restore());
+	const backing = new Uint8Array(1024 * 1024).fill(7);
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", backing.subarray(10, 14)));
+	assert.deepEqual(
+		sent.map((param) => [param.byteLength, param.buffer.byteLength]),
+		[[4, 4]],
+	);
+	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: new Uint8Array([7, 7, 7, 7]) }]);
 });

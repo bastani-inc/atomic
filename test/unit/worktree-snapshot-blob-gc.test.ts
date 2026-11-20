@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, onTestFinished, test, vi } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import {
 	MemorySnapshotBlobStore,
@@ -32,6 +32,7 @@ import {
 	syntheticSnapshot,
 	textBlob,
 } from "../helpers/snapshot-reference-index.js";
+import { interceptConnectionRequests } from "../helpers/sqlite-connection-requests.js";
 
 let directory: string;
 let shared: SharedSnapshotDatabase;
@@ -118,6 +119,11 @@ describe("the grace window protects blobs whose reference is not published yet (
 		vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
 			return prepare.call(this, sql.replaceAll("unixepoch()", String(now)));
 		} as typeof prepare);
+		// The store's connection runs its statements on a thread of its own (#5376): fix the clock there too.
+		const fixed = interceptConnectionRequests((request, send) =>
+			send("sql" in request ? { ...request, sql: request.sql.replaceAll("unixepoch()", String(now)) } : request),
+		);
+		onTestFinished(() => fixed.restore());
 		const [sameSecond, secondBefore] = await put("stored in the boundary second", "stored a second earlier");
 		const age = (hash: string, createdAt: number) =>
 			shared.database.run(`UPDATE ${blobs().table} SET created_at = ? WHERE hash = ?`, createdAt, hash);
