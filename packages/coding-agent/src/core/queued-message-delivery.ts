@@ -15,10 +15,10 @@ export interface QueuedMessageDelivery {
 	readonly order: number;
 }
 
-/** One session's deliveries under way, in the order its turns took them. */
+/** One session's deliveries under way, in the order its turns took them; dropped once none is left. */
 interface SessionDeliveries {
 	taken: number;
-	readonly underWay: QueuedMessageDelivery[];
+	readonly underWay: Set<QueuedMessageDelivery>;
 }
 
 /** The deliveries a `queue_update` lists: those of `session` the turns had taken when it was sent, while under way. */
@@ -38,11 +38,11 @@ export function beginQueuedMessageDelivery(
 ): QueuedMessageDelivery {
 	let deliveries = sessions.get(session);
 	if (deliveries === undefined) {
-		deliveries = { taken: 0, underWay: [] };
+		deliveries = { taken: 0, underWay: new Set() };
 		sessions.set(session, deliveries);
 	}
 	const delivery: QueuedMessageDelivery = { lane, text, order: ++deliveries.taken };
-	deliveries.underWay.push(delivery);
+	deliveries.underWay.add(delivery);
 	return delivery;
 }
 
@@ -52,16 +52,16 @@ export function beginQueuedMessageDelivery(
  */
 export function endQueuedMessageDelivery(session: object, delivery: QueuedMessageDelivery | undefined): void {
 	if (delivery === undefined) return;
-	const underWay = sessions.get(session)?.underWay;
-	const index = underWay?.indexOf(delivery) ?? -1;
-	if (index !== -1) underWay?.splice(index, 1);
+	const deliveries = sessions.get(session);
+	if (deliveries === undefined || !deliveries.underWay.delete(delivery)) return;
+	// A later delivery starts a new record, which an event sent before it never reaches.
+	if (deliveries.underWay.size === 0) sessions.delete(session);
 }
 
 /** Record with `event`, a `queue_update` `session` is about to send, which deliveries are under way now. */
 export function noteQueueUpdateDeliveries(session: object, event: object): void {
 	const deliveries = sessions.get(session);
-	if (deliveries !== undefined && deliveries.underWay.length > 0)
-		listedWith.set(event, { session: deliveries, through: deliveries.taken });
+	if (deliveries !== undefined) listedWith.set(event, { session: deliveries, through: deliveries.taken });
 }
 
 /** The deliveries `event`, a `queue_update`, lists; undefined when none was under way as it was sent. */

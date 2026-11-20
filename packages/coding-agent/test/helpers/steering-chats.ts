@@ -2,6 +2,7 @@ import { type FauxResponseStep, fauxAssistantMessage, fauxToolCall } from "@bast
 import { getKeybindings, setKeybindings, stripTerminalSequences, type TUI } from "@bastani/atomic-tui";
 import { taskFixture } from "../../../../test/helpers/task-projection.js";
 import { KeybindingsManager, useWindowsKeybindings } from "../../src/core/keybindings.js";
+import type { Settings } from "../../src/core/settings-manager.js";
 import type { TaskId, TaskRecord } from "../../src/core/tasks/contracts.js";
 import { TaskMessageError } from "../../src/core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../src/core/tasks/supervisor.js";
@@ -45,6 +46,8 @@ export interface SteeringChatOptions {
 	readonly extensions?: ExtensionFactory[];
 	/** Its resources, such as prompt templates; it replaces `extensions`. */
 	readonly resourceLoader?: ResourceLoader;
+	/** Settings of the subagent's session, such as how many queued messages a turn takes. */
+	readonly settings?: Partial<Settings>;
 }
 
 export interface SteeringChat {
@@ -270,6 +273,7 @@ async function openSubagentChat(
 	const toolHold = createGate();
 	const child = await createHarness({
 		tools: [holdTool(toolHold)],
+		...(options.settings ? { settings: options.settings } : {}),
 		...(options.extensions ? { extensionFactories: options.extensions } : {}),
 		...(options.resourceLoader ? { resourceLoader: options.resourceLoader } : {}),
 	});

@@ -5,10 +5,20 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
+import type { Settings } from "../src/core/settings-manager.js";
 import type { ExtensionFactory } from "../src/index.js";
-import { createGate, type Gate, releaseOpenGates, waitFor } from "./helpers/busy-submission-rig.js";
-import { type SubagentSteeringChat, subagentChat, userTexts } from "./helpers/steering-chats.js";
-import { getMessageText } from "./suite/harness.js";
+import { ChatSessionHost } from "../src/modes/interactive/components/chat-session-host.js";
+import { themedChatHostStyle } from "../src/modes/interactive/components/task-transcript-page.js";
+import { getEditorTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
+import { createGate, type Gate, holdTool, releaseOpenGates, waitFor } from "./helpers/busy-submission-rig.js";
+import {
+	busyTurnResponses,
+	DEQUEUE_KEY,
+	type SubagentSteeringChat,
+	subagentChat,
+	userTexts,
+} from "./helpers/steering-chats.js";
+import { createHarness, getMessageText } from "./suite/harness.js";
 
 /** An extension whose `message_start` hook waits on `gate` for the user message `text`. */
 function holdMessageStart(text: string, gate: Gate): ExtensionFactory {
@@ -40,8 +50,8 @@ describe("a queued message the subagent takes", () => {
 		while (chats.length > 0) await chats.pop()?.stop();
 	});
 
-	async function openChat(extension: ExtensionFactory): Promise<SubagentSteeringChat> {
-		const chat = await subagentChat({ extensions: [extension] });
+	async function openChat(extension: ExtensionFactory, settings?: Partial<Settings>): Promise<SubagentSteeringChat> {
+		const chat = await subagentChat({ extensions: [extension], ...(settings ? { settings } : {}) });
 		chats.push(chat);
 		return chat;
 	}
@@ -71,4 +81,90 @@ describe("a queued message the subagent takes", () => {
 			assert.deepEqual(userTexts(chat.engine), ["first", "later one"]);
 		});
 	}
+
+	test("taken together with the next one, each stays listed until its own row shows (S9)", async () => {
+		const hook = createGate();
+		const chat = await openChat(holdMessageStart("first steer", hook), { steeringMode: "all" });
+		await chat.startBusyTurn();
+		await chat.enter("first steer");
+		await chat.enter("second steer");
+		await waitFor("both rows", () => queuedRow(chat, "Steering: second steer"));
+
+		chat.finishTurn();
+		await hook.entered.promise;
+		// The turn took both; the first one's hooks hold both back from the transcript.
+		for (const text of ["first steer", "second steer"])
+			assert.ok(
+				queuedRow(chat, `Steering: ${text}`) || echoRows(chat, text) === 1,
+				`"${text}" is on screen neither queued nor sent:\n${chat.screen()}`,
+			);
+
+		hook.release.resolve();
+		await waitFor("both messages in the transcript", () => echoRows(chat, "second steer") === 1);
+		assert.equal(echoRows(chat, "first steer"), 1, chat.screen());
+		assert.deepEqual(chat.queuedRows(), [], chat.screen());
+		assert.deepEqual(userTexts(chat.engine), ["first", "first steer", "second steer"]);
+	});
+
+	test("Alt+Up while it is taken gives nothing back and sends it once, as before the row stayed (S9)", async () => {
+		const hook = createGate();
+		const chat = await openChat(holdMessageStart("later one", hook));
+		await chat.startBusyTurn();
+		await chat.enter("later one");
+		await waitFor("the steering row", () => queuedRow(chat, "Steering: later one"));
+
+		chat.finishTurn();
+		await hook.entered.promise;
+		await chat.press(DEQUEUE_KEY);
+		// The session already took the message: the dequeue key has nothing to give back.
+		assert.equal(chat.editorText(), "");
+
+		hook.release.resolve();
+		await waitFor("the message in the transcript", () => echoRows(chat, "later one") === 1);
+		assert.equal(chat.editorText(), "");
+		assert.deepEqual(chat.queuedRows(), [], chat.screen());
+		assert.deepEqual(userTexts(chat.engine), ["first", "later one"]);
+	});
+});
+
+describe("a chat over an agent session it does not steer", () => {
+	afterEach(() => releaseOpenGates());
+
+	test("gives nothing back on restore while the session delivers its taken message, as before (S9)", async () => {
+		initTheme("dark");
+		const hook = createGate();
+		const toolHold = createGate();
+		const child = await createHarness({
+			tools: [holdTool(toolHold)],
+			extensionFactories: [holdMessageStart("later one", hook)],
+		});
+		child.setResponses(busyTurnResponses());
+		const chat = new ChatSessionHost({
+			style: themedChatHostStyle(),
+			editorTheme: getEditorTheme(),
+			getAgentSession: () => child.session,
+		});
+		const unsubscribe = child.session.subscribe((event) => chat.applyAgentEvent(event));
+		try {
+			const turn = child.session.prompt("first").catch(() => {});
+			await toolHold.entered.promise;
+			await child.session.prompt("later one", { streamingBehavior: "steer" });
+			toolHold.release.resolve();
+			await hook.entered.promise;
+
+			assert.equal(chat.restoreQueuedMessagesToEditor(), false);
+			assert.equal(chat.inputText(), "");
+
+			hook.release.resolve();
+			await turn;
+			assert.equal(chat.inputText(), "");
+			assert.deepEqual(userTexts(child), ["first", "later one"]);
+		} finally {
+			hook.release.resolve();
+			toolHold.release.resolve();
+			unsubscribe();
+			chat.dispose();
+			await child.cleanup();
+		}
+	});
 });
