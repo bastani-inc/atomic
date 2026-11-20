@@ -550,6 +550,48 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(toolChanges(resumed, before)).toEqual([]);
 	});
 
+	it("keeps a server's recorded name when the tool that took the plain name was turned off", async () => {
+		const fixture = await createFixture();
+		const lookUp = (name: string): ListedTool => ({
+			name,
+			description: "Look up a term.",
+			inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+		});
+		const later = held();
+		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
+		const live = await startSession(fixture, manager, {
+			servers: {
+				a: { tools: [lookUp("b__c")], calls: [] },
+				a__b: { tools: [lookUp("c")], ready: later.ready, calls: [] },
+			},
+		});
+		const aBName = createMcpToolName("a__b", "c", (name) => name === "mcp__a__b__c");
+		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain("mcp__a__b__c"));
+		later.release();
+		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain(aBName));
+		fixture.faux.setResponses([fixture.reply("one")]);
+		await live.prompt("first");
+		// The user turns `a`'s tool off; `a__b`'s keeps the hashed name it got when `a`'s had the plain one.
+		live.setActiveToolsByName(live.getActiveToolNames().filter((name) => name !== "mcp__a__b__c"));
+		fixture.faux.setResponses([fixture.reply("two")]);
+		await live.prompt("second");
+		const control = fixture.requests.at(-1)!;
+		expect(toolNames(control)).toContain(aBName);
+		expect(toolNames(control)).not.toContain("mcp__a__b__c");
+		await live.dispose();
+
+		// `a__b` connects first; `a` is still connecting.
+		const a: ServerScript = { tools: [lookUp("b__c")], ready: held().ready, calls: [] };
+		const aB: ServerScript = { tools: [lookUp("c")], calls: [] };
+		const resumed = await resume(fixture, manager.getSessionFile()!, { servers: { a, a__b: aB } });
+		const before = resumed.messages.length;
+		await promptCalling(fixture, resumed, aBName);
+
+		expect(aB.calls).toEqual(["c"]);
+		expect(fixture.requests.slice(-2)).toEqual([control, control]);
+		expect(toolChanges(resumed, before)).toEqual([]);
+	});
+
 	it("declares a server's tools in the same order however the server lists them", async () => {
 		const fixture = await createFixture();
 		const firstRequest = async (tools: ListedTool[], dir: string) => {

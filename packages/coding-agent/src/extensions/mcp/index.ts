@@ -658,20 +658,32 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		/**
 		 * On session start, register the tools the transcript declares from their records, for servers that are still
 		 * configured with the same URL or command, so the first requests keep declaring them while the servers
-		 * connect. Every recorded name keeps its owner, so a server that connects first cannot take another
-		 * server's name. A server that connects lists its tools again and they replace these definitions; the ones of
-		 * a server that does not connect are withdrawn once its attempt settles.
+		 * connect. A server that connects lists its tools again and they replace these definitions; the ones of a
+		 * server that does not connect are withdrawn once its attempt settles.
 		 */
 		const restoreRecordedTools = (ctx: ExtensionContext) => {
 			const branch = ctx.sessionManager.getBranch();
 			toolRecords = readToolRecords(branch);
 			declaredNames = declaredMcpToolNames(branch);
+			// Recorded names stay their servers', as in the session that recorded them: a server that connects first
+			// cannot take another server's name, and a call to a declared tool waits for its server. A name a tool had
+			// before it was declared under another one is left free.
+			const owner = (record: McpToolRecord) => `${record.server}\0${record.tool.name}`;
+			const declaredOwners = new Set<string>();
 			for (const name of declaredNames) {
 				const record = toolRecords.tools.get(name);
 				if (!record) continue;
-				// The name stays its server's: another server that connects first cannot take it, and a call to it
-				// waits for this server.
-				toolOwners.set(name, `${record.server}\0${record.tool.name}`);
+				toolOwners.set(name, owner(record));
+				declaredOwners.add(owner(record));
+			}
+			for (const record of toolRecords.tools.values()) {
+				if (!toolOwners.has(record.name) && !declaredOwners.has(owner(record))) {
+					toolOwners.set(record.name, owner(record));
+				}
+			}
+			for (const name of declaredNames) {
+				const record = toolRecords.tools.get(name);
+				if (!record) continue;
 				const server = findServer(record.server);
 				if (!server || !isEnabled(server) || transportFingerprint(server.entry) !== record.transport) continue;
 				if (exposureFor(server.entry, record.tool.name, name) === "hidden") continue;
