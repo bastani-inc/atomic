@@ -273,6 +273,72 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 			"statements run on the calling thread only for an in-memory database, which has no file to wait for and no lock another connection holds, and for a connection its caller opened and passed to wrapNodeSqliteDatabase, a DatabaseSync that cannot move to another thread; openNodeSqliteDatabase runs every connection to a file on a thread of its own (#5376)",
 	},
 	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.besideHolds" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "modeOf" },
+		reason:
+			"prepares and lists the plan of a call's statement, and the connection's functions, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file: it does not run the statement or wait for the file's write lock (#6081)",
+	},
+	{
+		from: {
+			file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts",
+			name: "runDeferred/Promise()/waiter.tryRun",
+		},
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "modeOf" },
+		reason:
+			"decides, at its turn, how a call made while an earlier call of its connection waits runs: lists the plan of its statement and reads settings of a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file: it does not run the statement or wait for the file's write lock (#6081)",
+	},
+	{
+		from: {
+			file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts",
+			name: "runDeferred/Promise()/waiter.tryRun",
+		},
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "busyTimeoutOf" },
+		reason:
+			"reads PRAGMA busy_timeout, a setting of the connection that touches no file, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "attemptOnce" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "readBusyTimeout" },
+		reason:
+			"reads back PRAGMA busy_timeout, a setting of the connection that touches no file, of a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, to check that it took a busy timeout of 0 before a statement runs with it (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "timeoutRestored" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "readBusyTimeout" },
+		reason:
+			"reads back PRAGMA busy_timeout, a setting of the connection that touches no file, of a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, to check that it took its busy timeout back after a try (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "timeoutRestored" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "setBusyTimeout" },
+		reason:
+			"gives a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, its busy timeout back after a statement ran with a busy timeout of 0: a setting of the connection that touches no file (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "attemptOnce" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "setBusyTimeout" },
+		reason:
+			"sets the busy timeout, a setting of the connection that touches no file, of a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, around a statement it then runs with a busy timeout of 0, so the statement never waits for a lock on this thread (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "runTryingFirst" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "busyTimeoutOf" },
+		reason:
+			"reads PRAGMA busy_timeout, a setting of the connection that touches no file, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "runWhenFree" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "busyTimeoutOf" },
+		reason:
+			"reads PRAGMA busy_timeout, a setting of the connection that touches no file, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only when a call has to wait for a threaded transaction of this thread on its file (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "sqliteBusyError" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "errorShape" },
+		reason:
+			"opens an in-memory database once per process and fails one statement on it, to read how node:sqlite builds its errors: it has no file, so it never waits for the disk or a lock (#6081)",
+	},
+	{
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openNodeSqliteDatabase" },
 		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openOnCallerThread" },
 		reason:

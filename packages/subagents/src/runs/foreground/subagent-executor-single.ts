@@ -12,14 +12,13 @@ import {
 	resolveSingleProgress,
 	writeInitialProgressFile,
 } from "../../shared/settings.js";
-import {
-	type AgentProgress,
-	type ArtifactPaths,
-	type ParentAskHandoffRequest,
-	type RunSyncOptions,
-	type SingleResult,
-	type SubagentToolResult,
-	wrapForkTask,
+import type {
+	AgentProgress,
+	ArtifactPaths,
+	ParentAskHandoffRequest,
+	RunSyncOptions,
+	SingleResult,
+	SubagentToolResult,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
 import { resolveSubagentAutoModel } from "../shared/auto-model.js";
@@ -174,9 +173,6 @@ export async function runSinglePath(
 	const effectiveOutputMode = params.outputMode ?? "inline";
 	const progress = resolveSingleProgress(agentConfig, params.progress, task);
 
-	if (params.context === "fork") {
-		task = wrapForkTask(task);
-	}
 	const cleanTask = task;
 	const outputPath = resolveSingleOutputPath(effectiveOutput, ctx.cwd, effectiveCwd);
 	const outputError = singleOutputSetupError(params, agentConfig, ctx.cwd, effectiveCwd);

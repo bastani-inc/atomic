@@ -291,8 +291,8 @@ test("forked SINGLE handoff keeps the original unusual task verbatim instead of 
 			context(root, parent),
 		);
 
-		assert.match(runtimeTask, /delegated subagent running from a fork of the parent session/);
-		assert.notEqual(runtimeTask, originalTask);
+		assert.ok(runtimeTask.includes(originalTask));
+		assert.doesNotMatch(runtimeTask, /delegated subagent running from a fork of the parent session/);
 		assert.equal(capturedRequest?.taskContext, originalTask);
 		assert.equal(result.details.parentAskYielded, true);
 		assert.match(text(result), /Start a fresh subagent with a new run identity/);

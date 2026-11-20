@@ -78,6 +78,12 @@ export interface SubagentChildPolicy {
 	readonly fanoutAuthorized: boolean;
 	readonly inheritProjectContext: boolean;
 	readonly inheritSkills: boolean;
+	/**
+	 * The child runs codemode only because the conversation its fork continues declares it. Its scripts reach exactly
+	 * the child's own active tools: no models (`models.*`) and no tool its policy does not activate, such as a deferred
+	 * or codemode-only tool, so the codemode grants nothing a fresh child of the same agent could not do.
+	 */
+	readonly codemodeRoutingOnly?: boolean;
 	/** Host-owned signal fired when this noninteractive execution ends, before disposal. */
 	readonly executionEnded?: AbortSignal;
 	readonly onTurnDrained?: () => void;

@@ -154,6 +154,13 @@ export interface CreateAgentSessionOptions {
 	 */
 	parentUsageSink?: (usage: import("@bastani/atomic-ai/compat").Usage) => void;
 	/**
+	 * Internal: in options from `getChildSessionOptions()`, the tools the parent's requests declare but hide (codemode
+	 * reaches them), so a fork of its conversation sends that conversation as the parent did.
+	 */
+	parentHiddenTools?: readonly string[];
+	/** Internal: in options from `getChildSessionOptions()`, the tools the parent's requests declare. */
+	parentToolNames?: readonly string[];
+	/**
 	 * Internal: called with `true` when this session starts waiting for its resource-admission permit and `false` when
 	 * the wait ends, so an in-process subagent's start budget can tell that wait from the rest of its setup.
 	 */
@@ -167,8 +174,39 @@ export interface CreateAgentSessionOptions {
 	releaseWhenIdle?: ReleaseWhenIdleOptions;
 	/** Transform the fully constructed base system prompt at session construction. */
 	systemPromptTransform?: (prompt: string) => string;
+	/**
+	 * Internal: `systemPromptTransform` applied section by section. With it the session keeps sending the transformed
+	 * prompt it first sent, also after it is reopened, and tells the model later changes as section updates.
+	 */
+	systemPromptSections?: SystemPromptSectionsTransform;
 	/** Filter inherited session messages before they enter the new AgentSession. */
 	initialContextTransform?: (messages: AgentMessage[]) => AgentMessage[];
+}
+
+/** `systemPromptTransform` applied to each section of the structured prompt; see `CreateAgentSessionOptions`. */
+export interface SystemPromptSectionsTransform {
+	/**
+	 * What the transform lets the prompt hold, such as which inherited instructions it keeps. A prompt the session sent
+	 * under another key, or that another session sent, is not sent again: the session sends its current prompt instead.
+	 */
+	readonly key: string;
+	/** Each section as the transformed prompt holds it, keyed and ordered as in that prompt; one it drops is absent. */
+	readonly transform: (sections: Record<string, string>) => Record<string, string>;
+	/**
+	 * The session continues another session's conversation (a forked subagent). Its first request sends that
+	 * conversation exactly as the other session last sent it, so it is read from that session's prompt cache, then a
+	 * note and the session's own sections after it. Its requests use `sessionId` as their prompt-cache key.
+	 */
+	readonly fork?: {
+		readonly sessionId: string;
+		/** The tools the other session's requests declared but hid; see `parentHiddenTools`. */
+		readonly hiddenTools?: readonly string[];
+		/** The note that opens what the fork adds: the tools it may call, and those it reaches through codemode. */
+		readonly note: (tools: {
+			readonly tools: readonly string[];
+			readonly throughCodemode: readonly string[];
+		}) => string;
+	};
 }
 
 export interface ResourceAdmissionRequest {

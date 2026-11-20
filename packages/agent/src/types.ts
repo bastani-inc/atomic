@@ -316,6 +316,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 */
 	toolExecution?: ToolExecutionMode;
 
+	/** The error a call to a tool the agent does not have returns; `Tool <name> not found` when absent or undefined. */
+	unknownToolMessage?: (toolName: string) => string | undefined;
+
 	/**
 	 * Called before a tool is executed, after arguments have been validated.
 	 *

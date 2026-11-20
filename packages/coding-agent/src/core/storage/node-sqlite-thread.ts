@@ -98,7 +98,22 @@ const handlers = {
 	},
 	all: (request) => table(statement(request.sql).all(...bind(request.params))),
 	// One non-blocking BEGIN IMMEDIATE, the connection's busy timeout restored before answering.
-	begin: () => {
+	begin: (request) => {
+		// The file's lock word (see FREE in node-sqlite-file-gate.ts): taken before BEGIN, after waiting here for a
+		// statement the calling thread runs meanwhile; settleLock gives it back once the transaction ended.
+		if (request.lockState !== undefined) {
+			const state = new Int32Array(request.lockState);
+			for (;;) {
+				const found = Atomics.compareExchange(state, 0, 0, request.lockTag * 4 + 2);
+				if (found === 0) break;
+				// Anything but a statement of the calling thread (1) is another holder: a lock taken, as BEGIN would find.
+				if (found !== 1)
+					throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5, errstr: "database is locked" });
+				Atomics.wait(state, 0, 1, 50);
+			}
+			Atomics.notify(state, 0);
+			lockState = { state, held: request.lockTag * 4 + 3 };
+		}
 		const configured = Number(database.prepare("PRAGMA busy_timeout").get()?.timeout ?? 0);
 		database.exec("PRAGMA busy_timeout=0");
 		let began = false;
@@ -154,9 +169,37 @@ const handlers = {
 	},
 };
 
+// The file's lock word while this connection takes or holds the lock: held while a transaction is open on it, given
+// back (and the waiting threads woken) once none is, before the request that ended it is answered.
+let lockState;
+
+function settleLock() {
+	if (lockState === undefined) return;
+	const { state, held } = lockState;
+	let open = false;
+	try {
+		open = database?.isTransaction === true;
+	} catch {}
+	if (open) {
+		if (Atomics.compareExchange(state, 0, held - 1, held) === held - 1) Atomics.notify(state, 0);
+		return;
+	}
+	lockState = undefined;
+	if (Atomics.compareExchange(state, 0, held, 0) === held || Atomics.compareExchange(state, 0, held - 1, 0) === held - 1)
+		Atomics.notify(state, 0);
+}
+
+function handle(request) {
+	try {
+		return handlers[request.kind](request);
+	} finally {
+		settleLock();
+	}
+}
+
 parentPort.on("message", (request) => {
 	try {
-		parentPort.postMessage({ id: request.id, value: handlers[request.kind](request) });
+		parentPort.postMessage({ id: request.id, value: handle(request) });
 	} catch (error) {
 		parentPort.postMessage({ id: request.id, failure: failure(error) });
 	}
@@ -185,7 +228,8 @@ export type ConnectionRequest =
 	| { readonly kind: "open"; readonly path: string; readonly readOnly: boolean }
 	| { readonly kind: "exec"; readonly sql: string }
 	| { readonly kind: "run" | "get" | "all"; readonly sql: string; readonly params: readonly SqliteValue[] }
-	| { readonly kind: "begin" | "dataVersion" | "now" | "jsonbExtract" | "close" }
+	| { readonly kind: "begin"; readonly lockState?: SharedArrayBuffer; readonly lockTag?: number }
+	| { readonly kind: "dataVersion" | "now" | "jsonbExtract" | "close" }
 	| SequenceRequest;
 
 /** Rows as they cross from a connection's thread: the column names, then each row's values in their order. */
@@ -437,5 +481,10 @@ export class ThreadConnection {
 	private async stop(): Promise<void> {
 		this.end(new ConnectionThreadEndedError("SQLite connection closed"));
 		await this.worker.terminate();
+	}
+
+	/** Calls `listener` once the connection's thread has exited, whether closed or lost. */
+	onExit(listener: () => void): void {
+		this.worker.once("exit", listener);
 	}
 }

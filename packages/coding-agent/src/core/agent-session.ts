@@ -297,6 +297,9 @@ class AgentSessionBase {
 	protected _toolPromptGuidelines: Map<string, string[]> = new Map();
 	protected _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
 	protected _systemPromptTransform?: (prompt: string) => string;
+	protected _systemPromptSections?: import("./sdk-types.ts").SystemPromptSectionsTransform;
+	/** The transformed prompt `_rebuildSystemPrompt` built and the sections it renders. */
+	protected _transformedPromptHead?: import("./transformed-system-prompt.ts").TransformedPrompt;
 	protected _contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	protected _runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
@@ -438,6 +441,11 @@ class AgentSessionBase {
 				}
 			}
 			this._systemPromptTransform = config.systemPromptTransform;
+			this._systemPromptSections = config.systemPromptSections;
+			// A fork declares the tools of the conversation it continues, so it refuses a call to one it does not have.
+			if (config.systemPromptSections?.fork)
+				this.agent.unknownToolMessage = (name) =>
+					`The ${name} tool is not available to this session. It may call: ${this.agent.state.tools.map((tool) => tool.name).join(", ")}.`;
 			this._contextProjectionTransform = config.contextProjectionTransform;
 			try {
 				// #4971: another process refuses to delete a session this one runs; released in dispose().

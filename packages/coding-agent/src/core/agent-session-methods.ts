@@ -244,6 +244,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_refreshBaseSystemPromptFromActiveTools(): void;
 	_currentRunSystemPromptOptions(): NormalizedBuildSystemPromptOptions;
 	_recordSystemPromptForModelSwitch(): Promise<void>;
+	_recordTransformedPromptHead(): Promise<void> | undefined;
 
 	prompt(text: string, options?: PromptOptions): Promise<void>;
 	_runAgentPrompt(
@@ -738,6 +739,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_toolPromptGuidelines: Map<string, string[]>;
 	_baseSystemPromptOptions: NormalizedBuildSystemPromptOptions;
 	_systemPromptTransform?: (prompt: string) => string;
+	_systemPromptSections?: import("./sdk-types.ts").SystemPromptSectionsTransform;
+	_transformedPromptHead?: import("./transformed-system-prompt.ts").TransformedPrompt;
 	_contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	_requestContextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	_runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
