@@ -25,7 +25,7 @@ export class SessionHistoryNotLoadedError extends Error {
 
 	constructor(sessionId: string) {
 		super(
-			`Session ${sessionId} holds only its current context window; read older entries with sessionManager.readHistory(), or await sessionManager.loadFullHistory() first to keep the whole history in memory`,
+			`Session ${sessionId} holds only its current context window; read older entries with sessionManager.readHistory(), or call loadFullHistory() on the session manager first to keep the whole history in memory`,
 		);
 		this.name = "SessionHistoryNotLoadedError";
 		this.sessionId = sessionId;
