@@ -12,6 +12,12 @@ import { rejectLazyResultRelay } from "./lazy-subagent-ack.js";
 import { isIntercomBrokerTimeout, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import {
+	INTERCOM_STARTUP_JOIN_EVENT,
+	type IntercomStartupJoinRequest,
+	joinsIntercomAtStartup,
+	STARTUP_JOIN_RETRIES,
+} from "./startup-join.js";
+import {
 	type AwaitIntercomPeerRequest,
 	hasIntercomHistory,
 	INTERCOM_RECOVERY_PEERS_EVENT,
@@ -365,8 +371,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		replayAttempt = { lease, heavy, promise };
 		await promise;
 	}
-	async function loadHeavy(ctx?: ExtensionContext): Promise<IntercomHeavyHandle> {
-		let diagnosticRoute = captureDiagnosticRoute(ctx);
+	async function loadHeavy(ctx?: ExtensionContext, { quiet = false }: { quiet?: boolean } = {}): Promise<IntercomHeavyHandle> {
+		let diagnosticRoute: DiagnosticRoute = quiet ? "silent" : captureDiagnosticRoute(ctx);
 		let diagnosticOwner = ctx && getExtensionContextOwner(ctx);
 		const lease = activeLease;
 		if (lease.retired) throw new Error("Intercom initialization unavailable: no active session");
@@ -415,7 +421,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				await ensureSessionStartReplayed(captured, lease, (replayContext) => {
 					// Dispatch wrappers differ even for the same (possibly already stale) owner.
 					const owner = getExtensionContextOwner(replayContext);
-					if (owner !== diagnosticOwner) {
+					if (!quiet && owner !== diagnosticOwner) {
 						diagnosticRoute = captureDiagnosticRoute(replayContext);
 						diagnosticOwner = owner;
 					}
@@ -516,6 +522,48 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
     }
     activateTypedContactSupervisor();
   };
+	type StartupJoin = { lease: IntercomLease; generation: number; timer: ReturnType<typeof setTimeout> | null };
+	let startupJoin: StartupJoin | null = null;
+	function cancelStartupJoin(): void {
+		if (startupJoin?.timer) clearTimeout(startupJoin.timer);
+		startupJoin = null;
+	}
+	async function joinAtStartup(ctx: ExtensionContext): Promise<void> {
+		const handle = await loadHeavy(ctx, { quiet: true });
+		handle.assertCurrent();
+		const request: IntercomStartupJoinRequest = {};
+		await dispatchEventHandlers(handle.heavy, INTERCOM_STARTUP_JOIN_EVENT, request);
+		if (!request.completion) throw new Error("Intercom cannot join at startup");
+		await request.completion;
+	}
+	/**
+	 * Joins Intercom in the background once the session has started, so neither its first frame nor its first prompt
+	 * waits for the broker. A join that cannot reach the broker stays silent and is retried on the reconnect backoff a
+	 * few times; the session then joins on its next Intercom use. The timers never keep the process alive, and a
+	 * session that ends or is replaced drops its join.
+	 */
+	function scheduleStartupJoin(ctx: ExtensionContext, lease: IntercomLease, generation: number, attempt = 0): void {
+		cancelStartupJoin();
+		const join: StartupJoin = { lease, generation, timer: null };
+		const current = () =>
+			startupJoin === join && activeLease === lease && !lease.retired && sessionSnapshot?.generation === generation;
+		startupJoin = join;
+		join.timer = setTimeout(() => {
+			join.timer = null;
+			if (!current()) return;
+			joinAtStartup(ctx).then(
+				() => {
+					if (startupJoin === join) startupJoin = null;
+				},
+				() => {
+					if (!current()) return;
+					if (attempt >= STARTUP_JOIN_RETRIES) startupJoin = null;
+					else scheduleStartupJoin(ctx, lease, generation, attempt + 1);
+				},
+			);
+		}, attempt === 0 ? 0 : reconnectDelayMs(attempt - 1));
+		join.timer.unref?.();
+	}
   pi.on("session_start", async (event, ctx) => {
     const typedIdentity = ctx.subagentPolicy?.intercom;
     if (typedIdentity) {
@@ -538,11 +586,15 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		shutdownDiagnosticRoute = undefined;
     if (typedIdentity) {
       await registerAdmittedChild(ctx, lease, generation);
-    } else if (loadedHeavy) {
-      await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
+      return;
+    }
+    if (loadedHeavy) await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
+    if (!hasSubagentIntercomEnv() && !inheritedDelegatedSessionName && joinsIntercomAtStartup(ctx, () => pi.getActiveTools())) {
+      scheduleStartupJoin(ctx, lease, generation);
     }
   });
 	pi.on("session_shutdown", async (event, ctx) => {
+		cancelStartupJoin();
 		const lease = activeLease;
 		const generation = ++lifecycleGeneration;
 		const diagnosticRoute = captureDiagnosticRoute(ctx);

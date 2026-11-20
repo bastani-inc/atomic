@@ -11,7 +11,7 @@ Start with the state you can observe. The existing sections below explain the co
 
 | State | What you see | What to do |
 | --- | --- | --- |
-| Not connected or waiting for lazy admission | The session does not appear in `intercom list` before it has used an Intercom surface. | Invoke an Intercom tool, `/intercom`, or ALT+M. The broker starts on demand. See [How connection works](#how-connection-works). |
+| Not connected yet | An interactive session appears in `intercom list` a moment after it starts. A print (`-p`), JSON, RPC or SDK session, or an interactive session whose tool selection leaves out `intercom`, appears only after it has used an Intercom surface. An interactive session that could not reach the broker when it started tries again for about a minute, then waits for its first use. | Invoke an Intercom tool, `/intercom`, or ALT+M in that session. The broker starts on demand. See [How connection works](#how-connection-works). |
 | Recoverable disconnect | An explicit Intercom call or overlay action fails visibly, while background recovery remains active. | Wait for reconnect. Before repeating a send, ask, or reply, check its reported outcome; never automatically repeat an unknown outcome. See [How it works](#how-it-works). |
 | Reconnect backoff | The session remains disconnected between attempts. | No extra call is required to keep recovery moving. Retries use 1, 2, 5, 10, then 30 seconds until the session connects or shuts down. See [How it works](#how-it-works). |
 | Destination-side admission failure | A non-parent asker receives a correlated failed-ask message (or an error while its call still waits) instead of a reply. | Act on the returned destination error, then send again when the destination can admit the message. See [Subagent notifications](#subagent-notifications). |
@@ -29,12 +29,14 @@ Start with the state you can observe. The existing sections below explain the co
 
 ## How Connection Works
 
-Intercom connects when you use its tool, `/intercom`, or ALT+M. Launching an Intercom-enabled subagent may also connect the parent to authorize supervisor communication. An admitted subagent child connects as soon as its session starts, so it appears in its supervisor's and peers' `intercom list` and can receive `send`/`ask` before it ever uses Intercom itself; if the broker is unavailable at that moment, the child falls back to connecting on its next Intercom use. Connections are cleaned up when the session closes or is replaced.
+An interactive session connects as soon as it starts, in the background, so any other session in its group can list it and `send` or `ask` it before it uses Intercom itself. This includes a new, resumed or forked session in an open terminal. Neither the first screen nor your first prompt waits for it. If the broker cannot be reached or started, the session says nothing and tries again after 1, 2, 5, 10 and 30 seconds; after that it connects on its next Intercom use. It registers under the same name and group it would get on first use, so nothing changes for the sessions that already reach it.
+
+Other sessions connect when you use Intercom's tool, `/intercom`, or ALT+M: print (`-p`), JSON and RPC sessions, sessions created with the SDK, and interactive sessions whose tool selection leaves out `intercom`. Launching an Intercom-enabled subagent may also connect the parent to authorize supervisor communication. An admitted subagent child connects as soon as its session starts, so it appears in its supervisor's and peers' `intercom list` and can receive `send`/`ask` before it ever uses Intercom itself; if the broker is unavailable at that moment, the child falls back to connecting on its next Intercom use. Connections are cleaned up when the session closes or is replaced.
 
 A session becomes intercom-connected when all of these are true:
 
 - the mandatory bundled Intercom extension is loaded in that Atomic model session
-- the model or user has invoked an Intercom surface in that session, **or** the parent runtime is authorizing an Intercom-enabled child supervisor relationship
+- the session is interactive and its tool selection includes `intercom`, **or** the model or user has invoked an Intercom surface in that session, **or** the parent runtime is authorizing an Intercom-enabled child supervisor relationship
 - the local broker is running or can be auto-started
 
 The session list and ALT+M picker show connected agent sessions, not every open Atomic process. Internal control connections are not recipients and do not contribute to session counts or presence events. Genuine agents remain visible and messageable while executing tools or awaiting human input.
@@ -85,7 +87,7 @@ When a 0.10.0 broker takes over from an earlier one, a message that broker queue
 
 ## How It Works
 
-The local broker starts on first use and exits after five seconds without registered sessions. Clients reconnect automatically using delays of 1, 2, 5, 10, then 30 seconds. Explicit connection failures remain visible while background recovery continues.
+The local broker starts when the first session connects and exits after five seconds without registered sessions. Clients reconnect automatically using delays of 1, 2, 5, 10, then 30 seconds. Explicit connection failures remain visible while background recovery continues.
 
 If the broker stops answering health requests for about a minute, it terminates itself so clients can start a replacement. A single slow request does not restart a responsive broker. This protection starts with a newly launched broker; a broker still running from an older Atomic version must restart before it gains it. A process suspended by the operating system cannot run its own recovery. If it remains stuck, verify which process owns the broker before stopping it manually. Do not delete the Intercom database or key files.
 
@@ -250,7 +252,7 @@ When a whole machine or its broker stops, its sessions still look connected for 
 
 - Run `atomic storage status` on both machines. Both must use the same storage selection and the same `prefix`, from settings or from the process that started each broker, and the broker must report `storage: matches the selection above`. A broker started before you changed the selection keeps the old one until `atomic intercom restart` replaces it.
 - Check that each broker reports multi-node routing `on` with the other broker live, in `atomic intercom status` or in `broker.log`. `Intercom multi-node routing is off: <reason>` or `Intercom multi-node routing is unavailable: <reason>` there gives the cause. A `path` selection reaches only brokers on the same machine, and a machine whose broker is not running is not live.
-- A session appears only after it connects to Intercom, which happens lazily. Ask it to use Intercom once, for example `intercom({ action: "status" })`.
+- A session appears only after it connects to Intercom. An interactive session connects when it starts; any other session connects on its first Intercom use. Ask it to use Intercom once, for example `intercom({ action: "status" })`.
 - Both sessions must share a group.
 - When the database is slow to answer, `intercom list` shows only local sessions. Try again.
 
@@ -275,7 +277,7 @@ When a whole machine or its broker stops, its sessions still look connected for 
 - **No dedicated intercom log** — Messages are kept in session history; there is no separate intercom transcript or inbox
 - **No attachments UI** — `file`, `snippet`, and `context` attachments are supported in the protocol, but not in the compose overlay
 - **Only connected sessions appear** — The list shows sessions that have connected to the broker, not every open Atomic process
-- **Broker lifecycle** — The broker auto-spawns on first use and exits when idle; sessions reconnect automatically if it restarts
+- **Broker lifecycle** — The broker auto-spawns when the first session connects and exits when idle; sessions reconnect automatically if it restarts
 - **Unsaved sessions** — A session started with `--no-session` keeps received messages only in memory; if it exits before showing them, they are lost
 - **Paused or quit subagent** — A message from the `intercom` tool to a subagent you paused or quit does not resume it: it is queued, with no time limit, and reaches the subagent after what you resume it with. It survives a broker restart. It fails once, with a delivery failure to its sender, if your session ends, or stays away for 7 days in a row, or if the subagent is cancelled. A pattern send, or a send from an older Intercom client, is not queued: it waits up to 20 seconds for the subagent and is then refused, or is refused at once with `recipient_stopped`, which names the `subagent({ action: "resume", id, message? })` call, while the session that launched it has reported the subagent, and returns `Session not found` otherwise. See [Run control](/subagents#run-control)
 - **Subagent whose owning process is not running** — Sends to a subagent are held only while the Atomic process that owns it, its reopened session, is running. Atomic keeps no durable mailbox for a subagent. While no such process runs, for example before the owning session is reopened, a send to the subagent is not queued and returns `Session not found`, the same as for a top-level session that is not running. The same applies for the few milliseconds after the owning session connects to Intercom and before it has placed its hold. Sends are also not held for a subagent that cannot use Intercom. A hold that nothing restores ends on its own: after 60 seconds for a session whose host does not run recovery, such as `atomic -p`, and when its owning session disconnects
