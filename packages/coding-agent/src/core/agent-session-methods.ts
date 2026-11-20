@@ -59,7 +59,7 @@ import type { PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, SessionEntry, SessionManager, SessionSummaryEntry } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
-import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
+import type { NormalizedBuildSystemPromptOptions, SystemPromptSections } from "./system-prompt.ts";
 import type { ToolStatusReport } from "./tool-status.js";
 import type { BashOperations } from "./tools/bash.js";
 import type { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
@@ -244,6 +244,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_refreshBaseSystemPromptFromActiveTools(): void;
 	_currentRunSystemPromptOptions(): NormalizedBuildSystemPromptOptions;
 	_recordSystemPromptForModelSwitch(): Promise<void>;
+	_recordTransformedPromptHead(): Promise<void> | undefined;
 
 	prompt(text: string, options?: PromptOptions): Promise<void>;
 	_runAgentPrompt(
@@ -738,6 +739,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_toolPromptGuidelines: Map<string, string[]>;
 	_baseSystemPromptOptions: NormalizedBuildSystemPromptOptions;
 	_systemPromptTransform?: (prompt: string) => string;
+	_systemPromptSectionsTransform?: (sections: SystemPromptSections) => SystemPromptSections;
+	_transformedPromptHead?: import("./transformed-system-prompt.ts").TransformedPrompt;
 	_contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	_requestContextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	_runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;

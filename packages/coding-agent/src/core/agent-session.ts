@@ -65,7 +65,7 @@ import type { SessionManager } from "./session-manager.ts";
 import { SessionWorktreeSnapshotRecorder } from "./session-worktree-snapshots.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers } from "./settings-merge.js";
-import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
+import type { NormalizedBuildSystemPromptOptions, SystemPromptSections } from "./system-prompt.ts";
 import { ChildTaskWaits } from "./tasks/child-command-owner.js";
 import { createToolNameMatcher } from "./tool-selection.ts";
 import { defaultToolSelectionFor } from "./tools/index.js";
@@ -297,6 +297,9 @@ class AgentSessionBase {
 	protected _toolPromptGuidelines: Map<string, string[]> = new Map();
 	protected _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
 	protected _systemPromptTransform?: (prompt: string) => string;
+	protected _systemPromptSectionsTransform?: (sections: SystemPromptSections) => SystemPromptSections;
+	/** The transformed prompt `_rebuildSystemPrompt` built and the sections it renders. */
+	protected _transformedPromptHead?: import("./transformed-system-prompt.ts").TransformedPrompt;
 	protected _contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	protected _runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
@@ -438,6 +441,7 @@ class AgentSessionBase {
 				}
 			}
 			this._systemPromptTransform = config.systemPromptTransform;
+			this._systemPromptSectionsTransform = config.systemPromptSectionsTransform;
 			this._contextProjectionTransform = config.contextProjectionTransform;
 			try {
 				// #4971: another process refuses to delete a session this one runs; released in dispose().

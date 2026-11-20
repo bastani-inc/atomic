@@ -167,6 +167,12 @@ export interface CreateAgentSessionOptions {
 	releaseWhenIdle?: ReleaseWhenIdleOptions;
 	/** Transform the fully constructed base system prompt at session construction. */
 	systemPromptTransform?: (prompt: string) => string;
+	/**
+	 * Internal: `systemPromptTransform` applied to each section of the structured prompt, keyed and ordered as the
+	 * prompt the transform produces. With it the session keeps sending the transformed prompt it first sent, also
+	 * after it is reopened, and tells the model later changes as section updates.
+	 */
+	systemPromptSectionsTransform?: (sections: Record<string, string>) => Record<string, string>;
 	/** Filter inherited session messages before they enter the new AgentSession. */
 	initialContextTransform?: (messages: AgentMessage[]) => AgentMessage[];
 }

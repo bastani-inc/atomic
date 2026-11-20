@@ -171,6 +171,7 @@ const forkReplayFilter = Symbol.for("atomic.subagents/fork-replay-filter@1");
 
 export interface InProcessChildPromptBehavior {
 	readonly systemPromptTransform: (prompt: string) => string;
+	readonly systemPromptSectionsTransform: (sections: Record<string, string>) => Record<string, string>;
 	readonly initialContextTransform: (messages: AgentMessage[]) => AgentMessage[];
 	readonly [forkReplayFilter]: {
 		project: (messages: AgentMessage[]) => AgentMessage[];
@@ -192,11 +193,43 @@ export function createInProcessChildSystemPromptTransform(
 	};
 }
 
+/**
+ * The child's view of each section of the prompt `createInProcessChildSystemPromptTransform` rewrites: the same
+ * rewrites applied section by section, sections left empty dropped, the boundary instructions first and the
+ * explicitly selected skills last. A resumed child keeps the prompt it was first sent and is told later changes to
+ * these sections as updates.
+ */
+export function createInProcessChildSystemPromptSectionsTransform(
+	policy: ChildPromptPolicy,
+	explicitSkillInjection = "",
+): (sections: Record<string, string>) => Record<string, string> {
+	return (sections) => {
+		const child: Record<string, string> = {
+			subagent_boundary: policy.fanoutAuthorized
+				? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS
+				: CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
+		};
+		for (const [name, text] of Object.entries(sections)) {
+			let rewritten = text;
+			if (!policy.inheritProjectContext) rewritten = stripProjectContext(rewritten);
+			if (!policy.inheritSkills) rewritten = stripInheritedSkills(rewritten);
+			rewritten = stripChildBoundaryInstructions(stripSubagentOrchestrationSkill(rewritten));
+			if (rewritten.trim()) child[name] = rewritten;
+		}
+		if (explicitSkillInjection) child.subagent_skills = explicitSkillInjection;
+		return child;
+	};
+}
+
 /** Build the construction-time transforms for one admitted in-process child. */
-export function createInProcessChildPromptBehavior(policy: ChildPromptPolicy): InProcessChildPromptBehavior {
+export function createInProcessChildPromptBehavior(
+	policy: ChildPromptPolicy,
+	explicitSkillInjection = "",
+): InProcessChildPromptBehavior {
 	const project = (messages: AgentMessage[]) => stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized);
 	return {
-		systemPromptTransform: createInProcessChildSystemPromptTransform(policy),
+		systemPromptTransform: createInProcessChildSystemPromptTransform(policy, explicitSkillInjection),
+		systemPromptSectionsTransform: createInProcessChildSystemPromptSectionsTransform(policy, explicitSkillInjection),
 		initialContextTransform: project,
 		[forkReplayFilter]: {
 			project,

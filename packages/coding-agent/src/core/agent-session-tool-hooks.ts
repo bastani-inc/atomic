@@ -23,6 +23,7 @@ import {
 import { sessionBlobOutput } from "./session-tool-output.ts";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
+import { projectTransformedPrompt } from "./transformed-system-prompt.ts";
 import { workspaceSandboxDenial } from "./workspace/session.ts";
 
 export function _installAgentToolHooks(this: AgentSession): void {
@@ -308,6 +309,12 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		assertToolPairingInvariant(guarded);
 		const forced = this._runSystemPromptOptions?.forceSystemPrompt ?? this._baseSystemPromptOptions.forceSystemPrompt;
 		if (forced === undefined) return projectToolLoadout(this, guarded);
+		// The session's own transformed prompt leads with the text it first sent; a prompt a handler forced replaces it.
+		const recorded =
+			this._systemPromptSectionsTransform && forced === this._baseSystemPromptOptions.forceSystemPrompt
+				? projectTransformedPrompt(guarded)
+				: undefined;
+		if (recorded) return projectToolLoadout(this, recorded);
 		const current = getCurrentSystemMessage(guarded);
 		const head: SystemMessage = {
 			role: "system",

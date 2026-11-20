@@ -279,6 +279,8 @@ export interface AgentSessionConfig {
 	/** Resolved workspace binding; a read-only binding refuses file-writing tools. */
 	workspace?: import("./workspace/resolve.ts").BoundWorkspace;
 	systemPromptTransform?: (prompt: string) => string;
+	/** The section-by-section form of `systemPromptTransform`; see `CreateAgentSessionOptions`. */
+	systemPromptSectionsTransform?: (sections: Record<string, string>) => Record<string, string>;
 	/**
 	 * Transform the canonical session projection whenever it becomes the finalized
 	 * context (session construction, provider requests, boundaries, recovery). The
