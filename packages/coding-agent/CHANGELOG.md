@@ -2,8 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Local SQLite storage runs each connection to a file on a worker thread of its own, so opening a session store, waiting for another process's write lock and synced commits no longer freeze typing, rendering, streamed output or clicks in `/tasks`. Loading a long session no longer holds the interface for its whole read. In-memory databases and connections passed to `wrapNodeSqliteDatabase` still run on the calling thread ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+- SDK: in one process, a write through a `DatabaseSync` you use directly to a file that an `openNodeSqliteDatabase` transaction holds open now waits for that transaction's lock on your thread and fails with `SQLITE_BUSY` after its busy timeout, where before it often ran after the transaction. A connection passed to `wrapNodeSqliteDatabase` waits for such a transaction off your thread instead. Use `openNodeSqliteDatabase` or `wrapNodeSqliteDatabase` for every connection to a shared file ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+
 ### Fixed
 
+- A write outside a transaction no longer fails with `database is locked` while another connection of the same process holds the write lock across an await: it now waits on its own connection's thread until that transaction commits ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
 - Building the `history://` search index of a long session no longer pauses typing and rendering while the index is written to a slow disk, and it sends fewer statements to the database ([#5666](https://github.com/bastani-inc/atomic/issues/5666))
 
 ## [0.10.0] - 2026-11-20

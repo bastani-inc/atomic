@@ -41,3 +41,30 @@ export function isExec(request: ConnectionRequest, sql: string): boolean {
 export function requestSql(request: ConnectionRequest): string | undefined {
 	return "sql" in request ? request.sql : undefined;
 }
+
+export interface ConnectionRequestTracker extends RequestInterception {
+	/** Requests sent to a connection's thread and not answered yet. */
+	readonly pending: number;
+}
+
+/**
+ * Counts the requests every adapter connection has in flight until `restore`. A test that steps fake timers waits
+ * between steps until none is: an answer from a connection's thread arrives on a real turn, never on a fake timer.
+ */
+export function trackConnectionRequests(): ConnectionRequestTracker {
+	let pending = 0;
+	const interception = interceptConnectionRequests(async (request, send) => {
+		pending++;
+		try {
+			return await send(request);
+		} finally {
+			pending--;
+		}
+	});
+	return {
+		restore: interception.restore,
+		get pending() {
+			return pending;
+		},
+	};
+}
