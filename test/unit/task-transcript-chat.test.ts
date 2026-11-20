@@ -2141,6 +2141,112 @@ test("Esc interrupts a running subagent's turn from its chat and never leaves; �
 	}
 });
 
+/** A running subagent's transcript whose queue Esc can take back, as its in-process session's does. */
+function pausableTranscript(session: SessionManager, queued: { steering: string[]; followUp: string[] }) {
+	const listeners = new Set<(event: AgentSessionEvent) => void>();
+	const state = {
+		running: true,
+		pauses: 0,
+		emit(event: AgentSessionEvent) {
+			for (const listener of [...listeners]) listener(event);
+		},
+	};
+	const transcript: TaskTranscriptSource = Object.assign(session, {
+		subscribe: (listener: (event: AgentSessionEvent) => void) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		isRunning: () => state.running,
+		getQueuedMessages: () => ({ steering: [...queued.steering], followUp: [...queued.followUp] }),
+		async pauseTurn() {
+			state.pauses++;
+			const taken = { steering: queued.steering.splice(0), followUp: queued.followUp.splice(0) };
+			state.running = false;
+			return taken;
+		},
+	});
+	return { transcript, state };
+}
+
+test("Esc in a subagent's chat hands its queued messages back ahead of the draft and pauses it, which stays resumable (EscPausesNotKills)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
+	const { transcript, state } = pausableTranscript(session, { steering: ["steer one"], followUp: ["follow two"] });
+	const host = await openTranscript(transcript);
+	try {
+		await host.type("draft");
+		host.inspector.handleInput("\x1b");
+		await flush();
+		assert.equal(state.pauses, 1, "Esc paused the subagent");
+		const text = host.text();
+		assert.match(text, /^Transcript/, "Esc never leaves the chat");
+		const order = ["steer one", "follow two", "draft"].map((line) => text.indexOf(line));
+		assert.ok(
+			order.every((at, index) => at >= 0 && (index === 0 || at > order[index - 1]!)),
+			"steering, then follow-up, then the draft, in the prompt",
+		);
+		assert.match(text, / · paused/, "the chat's header says the subagent is paused");
+		assert.doesNotMatch(text, / · stopped/);
+		assert.equal(host.fixture.runners[0].context.signal.aborted, false, "the subagent is paused, not stopped");
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("a paused subagent's empty prompt says a message continues it (PromptContinues)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
+	const { transcript } = pausableTranscript(session, { steering: [], followUp: [] });
+	const host = await openTranscript(transcript);
+	try {
+		host.inspector.handleInput("\x1b");
+		await flush();
+		const text = host.text();
+		assert.match(text, /Paused · send to continue/);
+		assert.doesNotMatch(text, /Stopped · send to resume/, "a pause is not a stop");
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("/tasks lists a paused subagent as paused until its next turn starts, also while its chat is closed (TasksStatusLive)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
+	const { transcript, state } = pausableTranscript(session, { steering: [], followUp: [] });
+	const host = await openTranscript(transcript);
+	try {
+		host.inspector.handleInput("\x1b");
+		await flush();
+		host.inspector.handleInput("\x1b[D");
+		host.inspector.handleInput("\x1b[D");
+		await flush();
+		const row = () => host.frame().find((line) => line.includes("Inspect the shared stack")) ?? "";
+		assert.match(row(), /‖.* paused/, "the list shows the subagent paused");
+		state.running = true;
+		state.emit({ type: "agent_start" } as AgentSessionEvent);
+		await flush();
+		assert.doesNotMatch(row(), /paused/, "its next turn shows it running again");
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("Esc hands queued messages back from a subagent with no turn running, as Esc does in the main chat", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
+	const { transcript, state } = pausableTranscript(session, { steering: ["waiting steer"], followUp: [] });
+	state.running = false;
+	const host = await openTranscript(transcript);
+	try {
+		host.inspector.handleInput("\x1b");
+		await flush();
+		assert.equal(state.pauses, 1);
+		assert.match(host.text(), /waiting steer/, "the queued message is back in the prompt");
+	} finally {
+		await host.dispose();
+	}
+});
+
 test("a subagent's view shows a finished task's notice with the main chat's notice line", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "Run the build in the background", timestamp: 1 });

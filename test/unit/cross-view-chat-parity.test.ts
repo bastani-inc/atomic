@@ -925,7 +925,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 		}
 	});
 
-	test("interrupting an attached subagent stops its elapsed clock, shows stopped in composer label and panel, and resumes on follow-up (#5239)", async () => {
+	test("pausing an attached subagent stops its elapsed clock, shows paused in composer label and panel, and resumes on follow-up (#5239)", async () => {
 		let now = 10_000;
 		vi.spyOn(Date, "now").mockImplementation(() => now);
 		const fixture = taskFixture();
@@ -1012,19 +1012,19 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 				"authoritative supervisor execution state remains running",
 			);
 
-			// Advance time by 10 seconds: elapsed clock must stay frozen and composer label must say stopped.
+			// Advance time by 10 seconds: elapsed clock must stay frozen and composer label must say paused.
 			now += 10_000;
 			const interruptedRows = plain(inspector.renderViewport(80, 24));
 			const interruptedRule =
 				interruptedRows.find((row) => isComposerTopRule(row) && row.includes("Inspect concurrent")) ?? "";
-			assert.match(interruptedRule, / · stopped ─$/, "interrupted composer label shows stopped instead of ticking");
+			assert.match(interruptedRule, / · paused ─$/, "paused composer label shows paused instead of ticking");
 			assert.ok(
-				interruptedRows.some((row) => row.includes("Stopped · send to resume")),
-				"interrupted composer placeholder shows Stopped · send to resume",
+				interruptedRows.some((row) => row.includes("Paused · send to continue")),
+				"paused composer placeholder shows Paused · send to continue",
 			);
 
 			const panelItems = agentPanelItems(ownerSession);
-			assert.equal(panelItems[0]?.state, "stopped", "panel item state reflects stopped after Esc interrupt");
+			assert.equal(panelItems[0]?.state, "paused", "panel item state reflects paused after Esc");
 			assert.equal(panelItems[0]?.elapsedMs, 14_000, "panel item elapsed clock stays frozen at 14s");
 
 			const agentBlockState = {};
@@ -1063,11 +1063,11 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 					).render(80),
 				);
 			assert.deepEqual(renderMainAgentBlock(), [
-				" ◼ Agent(worker · Inspect concurrent spawn locks.)",
-				"   ⎿  Stopped · 14s",
+				" ⏸ Agent(worker · Inspect concurrent spawn locks.)",
+				"   ⎿  Paused · 14s",
 			]);
 
-			// Sending a follow-up message resumes the subagent turn and clears the stopped override.
+			// Sending a follow-up message resumes the subagent turn and clears the paused override.
 			for (const ch of "hello again") inspector.handleInput(ch);
 			inspector.handleInput("\r");
 			await flush();
@@ -1138,7 +1138,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 			const secondTaskId = fixture.store.tasks[1]!.ref.taskId;
 			fixture.runners[1]!.context.bindTranscript(transcript);
 			await ownerTaskViewSource(fixture.store).interruptTask?.(secondTaskId);
-			assert.equal(taskPanelItem(fixture.store.tasks[1]!).state, "stopped");
+			assert.equal(taskPanelItem(fixture.store.tasks[1]!).state, "paused");
 			assert.equal(taskPanelItem(fixture.store.tasks[0]!).state, "running");
 		} finally {
 			inspector.dispose();

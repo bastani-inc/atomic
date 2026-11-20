@@ -153,20 +153,17 @@ async function subagentWaitingToRetry(liveOptions: LiveChildOptions = {}) {
 
 type RetryingSubagent = Awaited<ReturnType<typeof subagentWaitingToRetry>>;
 
-/** After Esc: the retry is cancelled, the turn ended as interrupted, and the child waits; the next message answers. */
+/** After Esc: the retry is cancelled, the turn ended paused, and the child waits; the reader's next message answers. */
 async function assertInterruptedAndResumable(child: RetryingSubagent): Promise<void> {
 	await until(child.retryCancelled, "the retry's cancellation");
-	await until(() => isTaskTurnInterrupted(child.fixture.store.tasks[0]!), "the task's stopped state");
+	await until(() => isTaskTurnInterrupted(child.fixture.store.tasks[0]!), "the task's paused state");
 	assert.equal(child.session.isRetrying, false, "the retry wait ended");
 	assert.equal(child.env.faux.state.callCount, 1, "the failed request was not sent again");
 	assert.equal(child.settled(), false, "the subagent did not end: it waits for the next message");
 	assert.equal(child.fixture.store.tasks[0]!.execution.kind, "running", "its task keeps running");
 
 	const sessionId = child.source.getSessionId();
-	await child.session.sendCustomMessage(
-		{ customType: "intercom", content: "carry on", display: true },
-		{ triggerTurn: true },
-	);
+	await child.session.prompt("carry on", { streamingBehavior: "steer" });
 	const result = await child.run;
 	assert.equal(result.status, "ok");
 	assert.equal(result.finalOutput, "answered after the interrupt");

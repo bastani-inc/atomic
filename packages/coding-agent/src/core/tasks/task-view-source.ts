@@ -598,7 +598,15 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			if (pause === undefined) return { ok: false, error: { message: "This task cannot be paused from here." } };
 			try {
 				const taken = await pause();
-				if (bound.value.session.isRunning?.() !== true) store.setTurnInterrupted(id, true);
+				if (session.isRunning?.() !== true) {
+					store.setTurnInterrupted(id, true);
+					// It is paused until its next turn starts, whether or not its chat is open to see that turn.
+					const unsubscribe = session.subscribe?.((event) => {
+						if (event.type !== "agent_start") return;
+						unsubscribe?.();
+						store.setTurnInterrupted(id, false);
+					});
+				}
 				return { ok: true, value: taken };
 			} catch (error) {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
