@@ -46,7 +46,8 @@ import {
 	showTaskInspector,
 } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
+import { makeTempDirectory } from "../helpers/runtime.js";
 
 /** A real parent and child session each load their resources; that load is the structural cost of these tests. */
 const LIVE_TIMEOUT_MS = 180_000;
@@ -187,8 +188,10 @@ async function supervisor() {
 			if (previous[name] === undefined) delete process.env[name];
 			else process.env[name] = previous[name];
 		}
-		removeTempDirectory(root);
 		vi.unstubAllEnvs();
+		// The child's Intercom spawns a detached broker for this agent dir that holds its SQLite files open, so Windows
+		// cannot delete them until it exits.
+		await removeTempRootReleasingBroker(root, agentDir);
 	});
 	return { session, gates, childRequests, childId: () => childId };
 }
