@@ -19,6 +19,7 @@ import {
 	ProxyTunnelError,
 	postgresTransport,
 	socketOpener,
+	TLS_VERIFICATION_CODES,
 } from "./proxy.js";
 
 /**
@@ -65,26 +66,6 @@ const CANCEL_REQUEST_CODE = 80877102;
 const DATABASE_LOCK_SCOPE = "atomic";
 /** The oldest server major version the adapter supports. */
 const MINIMUM_SERVER_VERSION = 140000;
-/**
- * Node's codes for a server certificate that TLS verification refused: the same on every attempt, so never retried.
- * @type {ReadonlySet<string>}
- */
-const TLS_VERIFICATION_CODES = new Set([
-	"ERR_TLS_CERT_ALTNAME_INVALID",
-	"UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-	"UNABLE_TO_GET_ISSUER_CERT",
-	"UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
-	"SELF_SIGNED_CERT_IN_CHAIN",
-	"DEPTH_ZERO_SELF_SIGNED_CERT",
-	"CERT_HAS_EXPIRED",
-	"CERT_NOT_YET_VALID",
-	"CERT_UNTRUSTED",
-	"CERT_REJECTED",
-	"CERT_SIGNATURE_FAILURE",
-	"CERT_CHAIN_TOO_LONG",
-	"INVALID_CA",
-	"HOSTNAME_MISMATCH",
-]);
 
 /**
  * The permanent failure a connection refused by TLS verification is (#5218), with the reason and the fix: a host name

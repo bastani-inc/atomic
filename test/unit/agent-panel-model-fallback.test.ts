@@ -366,11 +366,11 @@ for (const [hostName, mount] of [
 			// follows it there, and so does the panel once /tasks closes.
 			const tasks = await host.openTasks();
 			try {
-				await tasks.row(/∀ modeler +faux-panel-model\/primary high {2}Read the template/);
+				await tasks.row(/◯ modeler +faux-panel-model\/primary high {2}Read the template/);
 				gates.primary.resolve();
 				await vi.waitFor(() => assert.deepEqual(childRequests, ["primary", "backup"]), WAIT);
 				// The open list keeps its model column as wide as it was, so the task does not move under the reader.
-				await tasks.row(/∀ modeler +faux-panel-model\/backup low {4}Read the template/);
+				await tasks.row(/◯ modeler +faux-panel-model\/backup low {4}Read the template/);
 			} finally {
 				await tasks.close();
 			}
@@ -381,7 +381,7 @@ for (const [hostName, mount] of [
 			// It finishes: the panel lets it go, and /tasks keeps the model its last turn ran on.
 			gates.backup.resolve();
 			await vi.waitFor(() => assert.match(modelerRow(host.panel()), /^\(no modeler row/), WAIT);
-			await tasksRow(host, /✓ modeler +faux-panel-model\/backup low {2,}Read the template/);
+			await tasksRow(host, /● modeler +faux-panel-model\/backup low {2,}Read the template/);
 
 			// Resumed, it runs on the model its session saved, not the one its agent names: so does its row.
 			assert.ok(childId());
@@ -396,10 +396,10 @@ for (const [hostName, mount] of [
 					),
 				WAIT,
 			);
-			await tasksRow(host, /∀ modeler +faux-panel-model\/backup low {2,}Carry on with the template/);
+			await tasksRow(host, /◯ modeler +faux-panel-model\/backup low {2,}Carry on with the template/);
 			assert.doesNotMatch(host.panel().join("\n"), /primary/);
 			gates.resumed.resolve();
-			await tasksRow(host, /✓ modeler +faux-panel-model\/backup low {2,}Carry on with the template/);
+			await tasksRow(host, /● modeler +faux-panel-model\/backup low {2,}Carry on with the template/);
 			await vi.waitFor(() => assert.equal(session.isStreaming, false), WAIT);
 		},
 		LIVE_TIMEOUT_MS,

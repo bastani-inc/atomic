@@ -20,24 +20,40 @@ const MAX_PROXY_ANSWER_BYTES = 16 * 1024;
 const MAX_REASON_LENGTH = 80;
 
 /**
- * Node's codes for a certificate TLS verification refused: an https proxy that shows one is refused the same way on
- * every attempt.
+ * The codes of a certificate TLS verification refused, which it refuses the same way on every attempt, so a connection
+ * that fails with one is never retried (#6074): the host name check's code and Node's X509 certificate error codes,
+ * which Bun's `node:tls` reports too, except `OUT_OF_MEM`, which says nothing about the certificate. The adapter
+ * refuses a server's certificate with them, and an https proxy's.
  * @type {ReadonlySet<string>}
  */
-const TLS_VERIFICATION_CODES = new Set([
+export const TLS_VERIFICATION_CODES = new Set([
 	"ERR_TLS_CERT_ALTNAME_INVALID",
-	"UNABLE_TO_VERIFY_LEAF_SIGNATURE",
 	"UNABLE_TO_GET_ISSUER_CERT",
-	"UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
-	"SELF_SIGNED_CERT_IN_CHAIN",
-	"DEPTH_ZERO_SELF_SIGNED_CERT",
-	"CERT_HAS_EXPIRED",
+	"UNABLE_TO_GET_CRL",
+	"UNABLE_TO_DECRYPT_CERT_SIGNATURE",
+	"UNABLE_TO_DECRYPT_CRL_SIGNATURE",
+	"UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY",
+	"CERT_SIGNATURE_FAILURE",
+	"CRL_SIGNATURE_FAILURE",
 	"CERT_NOT_YET_VALID",
+	"CERT_HAS_EXPIRED",
+	"CRL_NOT_YET_VALID",
+	"CRL_HAS_EXPIRED",
+	"ERROR_IN_CERT_NOT_BEFORE_FIELD",
+	"ERROR_IN_CERT_NOT_AFTER_FIELD",
+	"ERROR_IN_CRL_LAST_UPDATE_FIELD",
+	"ERROR_IN_CRL_NEXT_UPDATE_FIELD",
+	"DEPTH_ZERO_SELF_SIGNED_CERT",
+	"SELF_SIGNED_CERT_IN_CHAIN",
+	"UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+	"UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+	"CERT_CHAIN_TOO_LONG",
+	"CERT_REVOKED",
+	"INVALID_CA",
+	"PATH_LENGTH_EXCEEDED",
+	"INVALID_PURPOSE",
 	"CERT_UNTRUSTED",
 	"CERT_REJECTED",
-	"CERT_SIGNATURE_FAILURE",
-	"CERT_CHAIN_TOO_LONG",
-	"INVALID_CA",
 	"HOSTNAME_MISMATCH",
 ]);
 

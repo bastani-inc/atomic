@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { evalWorkerExecArgv } from "../../utils/worker-threads.js";
 
 export type WorkerOutlineKind = "user" | "compaction" | "branch summary";
 
@@ -336,7 +337,7 @@ let nextRequestId = 1;
 
 function getWorker(): Worker {
 	if (!activeWorker) {
-		const worker = new Worker(WORKER_SCRIPT, { eval: true });
+		const worker = new Worker(WORKER_SCRIPT, { eval: true, execArgv: evalWorkerExecArgv() });
 		worker.on("message", (message: WorkerReply) => {
 			if (!activeTask || !message || message.id !== activeTask.id) return;
 			const task = activeTask;

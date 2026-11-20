@@ -16,7 +16,7 @@ import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
 import { slashCommandHint } from "./nav-keys.ts";
-import { WAITING_MARKER } from "./notice-line.ts";
+import { DONE_TASK_MARKER, RUNNING_TASK_MARKER, STOPPED_TASK_MARKER, WAITING_MARKER } from "./notice-line.ts";
 import { blockRows, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 const EMOJI_OR_IGNORABLE_PATTERN = String.raw`(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}`;
@@ -77,7 +77,7 @@ export function taskStatusAppearance(task: TaskRecord): {
 	if (isTaskTurnInterrupted(task)) return { label: "Paused · send to continue", icon: "‖", color: "muted" };
 	switch (taskState(task)) {
 		case "completed":
-			return { label: "Completed", icon: "✓", color: "success" };
+			return { label: "Completed", icon: DONE_TASK_MARKER.glyph, color: DONE_TASK_MARKER.color };
 		case "failed":
 			return { label: "Failed", icon: "✗", color: "error" };
 		case "killed":
@@ -85,14 +85,14 @@ export function taskStatusAppearance(task: TaskRecord): {
 		case "paused":
 			return { label: "Paused · awaiting resume", icon: "‖", color: "warning" };
 		case "released":
-			// It is not working: a still mark, not the running ∀, as its /tasks row and the agent panel show it.
+			// It is not working: a still mark, not the running circle, as its /tasks row and the agent panel show it.
 			return {
 				label: `Waiting on ${waitingReleasedTools(task) ?? "a tool call"}`,
 				icon: WAITING_MARKER.glyph,
 				color: WAITING_MARKER.color,
 			};
 		case "cancelled":
-			return { label: "Stopped", icon: "✗", color: "warning" };
+			return { label: "Stopped", icon: STOPPED_TASK_MARKER.glyph, color: STOPPED_TASK_MARKER.color };
 		case "cancelling":
 			return { label: "Stopping", icon: "!", color: "warning" };
 		case "input-needed":
@@ -100,7 +100,7 @@ export function taskStatusAppearance(task: TaskRecord): {
 		case "queued":
 			return { label: "Queued", icon: "○", color: "muted" };
 		default:
-			return { label: "Running", icon: "∀", color: "accent" };
+			return { label: "Running", icon: RUNNING_TASK_MARKER.glyph, color: RUNNING_TASK_MARKER.color };
 	}
 }
 

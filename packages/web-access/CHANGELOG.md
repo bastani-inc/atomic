@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed reading Chromium cookies failing in a Node process started with `--input-type=module`, and the process's `--import` and `--require` preloads running again for each read ([#6079](https://github.com/bastani-inc/atomic/issues/6079))
+
 ## [0.9.90] - 2026-11-19
 
 ### Fixed

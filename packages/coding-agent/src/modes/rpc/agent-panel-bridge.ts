@@ -54,7 +54,6 @@ import {
 	renderAgentPanelHint,
 	renderAgentPanelRows,
 } from "../interactive/components/agent-panel.ts";
-import { atomicWorkingFrame } from "../interactive/components/atomic-working-status.ts";
 import { ModelColumn } from "../interactive/components/model-column.ts";
 import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
 import { isSingleLeftClick } from "../interactive/components/single-click.ts";
@@ -583,7 +582,6 @@ export function bindAgentPanel(
 	let currentRows: AgentPanelRow[] = [];
 	let cachedRows: AgentPanelRow[] | undefined;
 	let cachedWidth = -1;
-	let cachedFrame = -1;
 	let cachedFaded = -1;
 	let cachedHiddenBelow = -1;
 	let cachedMain = false;
@@ -757,7 +755,6 @@ export function bindAgentPanel(
 							painted = { rows: currentRows, hiddenBelow: currentHiddenBelow, main: currentMain };
 							if (!Number.isFinite(w)) {
 								return renderAgentPanelRows(currentRows, w, THEMED_STYLE, {
-									frame: atomicWorkingFrame(),
 									faded,
 									hiddenBelow: currentHiddenBelow,
 									showMain: currentMain,
@@ -765,12 +762,10 @@ export function bindAgentPanel(
 									...idleMarks(),
 								});
 							}
-							const frame = atomicWorkingFrame();
 							const fadedMask = sliceFadedMask(currentRows, 0, AGENT_PANEL_IDLE_ROWS, state.model);
 							if (
 								cachedRows === currentRows &&
 								cachedWidth === w &&
-								cachedFrame === frame &&
 								cachedFaded === fadedMask &&
 								cachedHiddenBelow === currentHiddenBelow &&
 								cachedMain === currentMain &&
@@ -780,7 +775,6 @@ export function bindAgentPanel(
 							}
 							const renderStart = performance.now();
 							const lines = renderAgentPanelRows(currentRows, w, THEMED_STYLE, {
-								frame,
 								faded,
 								hiddenBelow: currentHiddenBelow,
 								showMain: currentMain,
@@ -790,7 +784,6 @@ export function bindAgentPanel(
 							spent += Math.max(0, performance.now() - renderStart);
 							cachedRows = currentRows;
 							cachedWidth = w;
-							cachedFrame = frame;
 							cachedFaded = fadedMask;
 							cachedHiddenBelow = currentHiddenBelow;
 							cachedMain = currentMain;
@@ -989,7 +982,6 @@ export async function showAgentPanel(
 				let paintedFocus:
 					| { rows: readonly AgentPanelRow[]; selectedId: string; scroll: number; showMain: boolean }
 					| undefined;
-				let cachedFrame = -1;
 				let cachedFaded = -1;
 				let cachedRowLines: string[] = [];
 				let materializedScroll = 0;
@@ -1158,7 +1150,6 @@ export async function showAgentPanel(
 							if (!Number.isFinite(w)) {
 								rowLines = renderAgentPanelRows(currentRows, w, style, {
 									selectedId: focus.selectedId,
-									frame: atomicWorkingFrame(),
 									faded,
 									scroll: focus.scroll,
 									showMain: focus.showMain,
@@ -1166,7 +1157,6 @@ export async function showAgentPanel(
 									...focusMarks(),
 								});
 							} else {
-								const frame = atomicWorkingFrame();
 								const fadedMask = sliceFadedMask(
 									currentRows,
 									focus.scroll,
@@ -1180,14 +1170,12 @@ export async function showAgentPanel(
 									cachedScroll === focus.scroll &&
 									cachedMain === focus.showMain &&
 									cachedViewed === focusViewed &&
-									cachedFrame === frame &&
 									cachedFaded === fadedMask
 								) {
 									rowLines = cachedRowLines;
 								} else {
 									rowLines = renderAgentPanelRows(currentRows, w, style, {
 										selectedId: focus.selectedId,
-										frame,
 										faded,
 										scroll: focus.scroll,
 										showMain: focus.showMain,
@@ -1200,7 +1188,6 @@ export async function showAgentPanel(
 									cachedScroll = focus.scroll;
 									cachedMain = focus.showMain;
 									cachedViewed = focusViewed;
-									cachedFrame = frame;
 									cachedFaded = fadedMask;
 									cachedRowLines = rowLines;
 								}

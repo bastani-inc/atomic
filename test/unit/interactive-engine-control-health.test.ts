@@ -36,6 +36,7 @@ async function controlHarness(control: (command: RpcCommandBody) => Promise<unkn
 		onEvent: () => () => {},
 		onGenerationEnded: () => () => {},
 		onInteractiveEngineMessage: () => () => {},
+		onQueuedDeliveryChange: () => () => {},
 		getState: async () => ({
 			thinkingLevel: "off",
 			isStreaming: true,

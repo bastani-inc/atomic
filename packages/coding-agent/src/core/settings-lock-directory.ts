@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { evalWorkerExecArgv } from "../utils/worker-threads.js";
 
 const QUEUED = 0;
 const CREATING = 1;
@@ -52,7 +53,7 @@ const pending = new Map<number, PendingCreation>();
 
 function creatorWorker(): Worker {
 	if (creator) return creator;
-	const worker = new Worker(CREATOR_SOURCE, { eval: true });
+	const worker = new Worker(CREATOR_SOURCE, { eval: true, execArgv: evalWorkerExecArgv() });
 	worker.unref();
 	worker.on("message", (reply: CreatorReply) => {
 		const creation = pending.get(reply.id);

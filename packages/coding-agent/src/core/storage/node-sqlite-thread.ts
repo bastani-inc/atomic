@@ -1,6 +1,7 @@
 import { Worker } from "node:worker_threads";
-import type { SqliteRow, SqliteValue } from "./database.js";
+import type { SqliteRow, SqliteStatement, SqliteValue } from "./database.js";
 import { sqliteDialect } from "./dialect.js";
+import type { SqliteSequence } from "./statement-sequence.js";
 
 /**
  * A node:sqlite connection that runs on a worker thread of its own (#5376). The thread owns the `DatabaseSync`; the
@@ -113,6 +114,29 @@ const handlers = {
 			}
 		}
 	},
+	// \`repeat\`, then each statement, in one request: the statements the caller would send one at a time, in the same
+	// order, each prepared when it is reached. The caller's abort flag is read where the caller would check its signal.
+	sequence: (request) => {
+		const abort = request.abort === undefined ? undefined : new Int32Array(request.abort);
+		const aborted = () => abort !== undefined && Atomics.load(abort, 0) !== 0;
+		let repeated = 0;
+		if (request.repeat !== undefined) {
+			const { statement: repeat, times, minChanges } = request.repeat;
+			while (repeated < times) {
+				if (aborted()) return { aborted: true };
+				const before = Number(statement("SELECT total_changes() AS changes").get().changes);
+				statement(repeat.sql).run(...bind(repeat.params));
+				const after = Number(statement("SELECT total_changes() AS changes").get().changes);
+				if (after - before < minChanges) break;
+				repeated++;
+			}
+		}
+		for (const { sql, params } of request.statements) {
+			if (aborted()) return { aborted: true };
+			statement(sql).run(...bind(params));
+		}
+		return { repeated };
+	},
 	dataVersion: () => Number(database.prepare("PRAGMA data_version").get()?.data_version ?? 0),
 	now: () => Number(database.prepare(workerData.nowSql).get().now),
 	jsonbExtract: () => {
@@ -139,12 +163,30 @@ parentPort.on("message", (request) => {
 });
 `;
 
+/**
+ * Statements sent as one request (see `SqliteSequence`). `abort` holds one `Int32` the caller sets to non-zero when its
+ * signal aborts: the thread reads it before each run of `repeat` and before each statement.
+ */
+export interface SequenceRequest {
+	readonly kind: "sequence";
+	readonly repeat?: SqliteSequence["repeat"];
+	readonly statements: readonly SqliteStatement[];
+	readonly abort?: SharedArrayBuffer;
+}
+
+/**
+ * What a sequence request is answered with: how many runs of `repeat` changed `minChanges` rows or more, or that it
+ * stopped because the caller's signal aborted.
+ */
+export type SequenceAnswer = { readonly repeated: number } | { readonly aborted: true };
+
 /** What a connection's thread is asked to do; each request is answered once, in the order it was sent. */
 export type ConnectionRequest =
 	| { readonly kind: "open"; readonly path: string; readonly readOnly: boolean }
 	| { readonly kind: "exec"; readonly sql: string }
 	| { readonly kind: "run" | "get" | "all"; readonly sql: string; readonly params: readonly SqliteValue[] }
-	| { readonly kind: "begin" | "dataVersion" | "now" | "jsonbExtract" | "close" };
+	| { readonly kind: "begin" | "dataVersion" | "now" | "jsonbExtract" | "close" }
+	| SequenceRequest;
 
 /** Rows as they cross from a connection's thread: the column names, then each row's values in their order. */
 interface RowTable {
@@ -153,16 +195,26 @@ interface RowTable {
 }
 
 /** What a request's answer carries as it crosses, before rows are rebuilt. */
-type ConnectionValue = RowTable | { readonly changes: number } | string | number | boolean | null | undefined;
+type ConnectionValue =
+	| RowTable
+	| { readonly changes: number }
+	| SequenceAnswer
+	| string
+	| number
+	| boolean
+	| null
+	| undefined;
 
 /**
- * What a request is answered with: `get` a row or undefined, `all` rows, `run` the changes, `open` the location,
- * `dataVersion` and `now` a number, `jsonbExtract` a boolean, the others undefined.
+ * What a request is answered with: `get` a row or undefined, `all` rows, `run` the changes, `sequence` a
+ * `SequenceAnswer`, `open` the location, `dataVersion` and `now` a number, `jsonbExtract` a boolean, the others
+ * undefined.
  */
 export type ConnectionAnswer =
 	| SqliteRow
 	| SqliteRow[]
 	| { readonly changes: number }
+	| SequenceAnswer
 	| string
 	| number
 	| boolean
