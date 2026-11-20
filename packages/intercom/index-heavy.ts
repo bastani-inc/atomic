@@ -222,6 +222,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    */
   let connectionWanted = false;
   /**
+   * The Intercom id a startup join registered under, written to the session at its first Intercom use: the join
+   * itself writes nothing to a session that may not have finished starting.
+   */
+  let unrecordedIdentity: { sessionId: string; intercomSessionId: string } | null = null;
+  /**
    * #4727: aborted when the runtime is cleaned up, so a broker start this session began stops before it writes into the
    * agent directory; renewed when the next session starts. Each connect reads the current one.
    */
@@ -1303,6 +1308,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       throw new Error("Intercom shutting down");
     }
     if (client && client.isConnected()) {
+      const identity = reason === "join" ? null : unrecordedIdentity;
+      if (identity) {
+        unrecordedIdentity = null;
+        if (identity.sessionId === currentSessionId && identity.intercomSessionId === client.sessionId) {
+          await recordIntercomSessionIdentity(identity.sessionId, identity.intercomSessionId);
+        }
+      }
       return client;
     }
     if (terminalHomeGroupError !== null) throw terminalHomeGroupError;
@@ -1377,8 +1389,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               supervisorRefusedSince = undefined;
               supervisorRefusalAttempts = 0;
             }
+            unrecordedIdentity = null;
             if (nextClient.sessionId && nextClient.sessionId !== preferredSessionId) {
-              await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
+              if (reason === "join") unrecordedIdentity = { sessionId: sessionIdAtStart, intercomSessionId: nextClient.sessionId };
+              else await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
             }
             // The broker forgot every reservation this connection made when the last one ended.
             if (nextClient.sessionId) {

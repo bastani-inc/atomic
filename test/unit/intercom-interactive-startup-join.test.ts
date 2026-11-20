@@ -100,13 +100,20 @@ function hostExtension(handlers: Map<string, LifecycleHandler[]>): Extension {
 /** One session's Intercom, loaded the way Atomic loads it, on a broker that records each registration. */
 function intercomSession(options: { activeTools?: readonly string[]; refuse?: () => boolean } = {}) {
 	const registrations: Registration[] = [];
+	const appended: string[] = [];
 	vi.mocked(spawnBrokerIfNeeded).mockResolvedValue(undefined);
-	vi.spyOn(IntercomClient.prototype, "connect").mockImplementation(
-		async (registration, _supervisor, _ownerToken, _messageSource, group) => {
-			if (options.refuse?.()) throw new Error("Intercom broker did not start");
-			registrations.push({ registration: structuredClone(registration), group });
-		},
-	);
+	vi.spyOn(IntercomClient.prototype, "connect").mockImplementation(async function (
+		this: IntercomClient,
+		registration,
+		_supervisor,
+		_ownerToken,
+		_messageSource,
+		group,
+	) {
+		if (options.refuse?.()) throw new Error("Intercom broker did not start");
+		registrations.push({ registration: structuredClone(registration), group });
+		Object.assign(this, { _sessionId: `intercom-${registrations.length}` });
+	});
 	vi.spyOn(IntercomClient.prototype, "isConnected").mockImplementation(() => registrations.length > 0);
 	vi.spyOn(IntercomClient.prototype, "disconnect").mockResolvedValue();
 	vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
@@ -123,7 +130,9 @@ function intercomSession(options: { activeTools?: readonly string[]; refuse?: ()
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
-		async appendEntry() {},
+		async appendEntry(customType: string) {
+			appended.push(customType);
+		},
 		getSessionName: () => sessionName,
 		setSessionName(value: string) {
 			sessionName = value;
@@ -140,7 +149,9 @@ function intercomSession(options: { activeTools?: readonly string[]; refuse?: ()
 	};
 	return {
 		registrations,
+		appended,
 		start: (ctx: ExtensionContext) => emit(SESSION_START, ctx),
+		firstTurn: (ctx: ExtensionContext) => emit({ type: "agent_start" } as never, ctx),
 		shutdown: (ctx: ExtensionContext) => emit(SESSION_SHUTDOWN, ctx),
 		useIntercom: (ctx: ExtensionContext, action = "status") => {
 			const tool = tools.get("intercom");
@@ -237,6 +248,59 @@ async function elapse(ms: number): Promise<void> {
 		while (performance.now() < until) await new Promise((resolve) => setImmediate(resolve));
 	}
 }
+
+describe("what the startup join leaves to the session", () => {
+	test("it writes nothing to the session; the session's first Intercom use records the id it joined under", async () => {
+		const session = intercomSession();
+		const ctx = sessionContext({ mode: "tui" }, []);
+		try {
+			await session.start(ctx);
+			await vi.waitFor(() => assert.equal(session.registrations.length, 1), { timeout: 5_000 });
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.deepEqual(session.appended, []);
+			await session.useIntercom(ctx);
+			assert.deepEqual(session.appended, ["intercom_session_identity"]);
+			assert.equal(session.registrations.length, 1, "the use reuses the startup connection");
+		} finally {
+			await session.shutdown(ctx);
+		}
+	});
+
+	test("a session whose folder is not trusted joins once it is trusted", async () => {
+		let trusted = false;
+		const session = intercomSession();
+		const ctx = sessionContext({ mode: "tui", isProjectTrusted: () => trusted }, []);
+		try {
+			await session.start(ctx);
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			assert.equal(session.registrations.length, 0, "no join while the folder's trust may still be undecided");
+			trusted = true;
+			await vi.waitFor(() => assert.equal(session.registrations.length, 1), { timeout: 5_000 });
+		} finally {
+			await session.shutdown(ctx);
+		}
+	});
+});
+
+describe("a session whose folder stays untrusted", () => {
+	afterEach(() => vi.useRealTimers());
+
+	test("joins when its first turn starts", async () => {
+		useBackoffClock();
+		const session = intercomSession();
+		const ctx = sessionContext({ mode: "tui", isProjectTrusted: () => false }, []);
+		try {
+			await session.start(ctx);
+			await elapse(120_000);
+			assert.equal(session.registrations.length, 0);
+			await session.firstTurn(ctx);
+			await elapse(1_000);
+			assert.equal(session.registrations.length, 1);
+		} finally {
+			await session.shutdown(ctx);
+		}
+	});
+});
 
 describe("turning the startup join off", () => {
 	async function joinsWithin(ms: number): Promise<boolean> {
