@@ -44,6 +44,9 @@ export interface EditorComponent extends Component {
 	/** Replace the up/down history, newest first as `getHistory` returns it, without changing the text */
 	setHistory?(newestFirst: readonly string[]): void;
 
+	/** Add entries older than the whole history behind it, newest first, without ending history browsing */
+	appendOlderHistory?(newestFirst: readonly string[]): void;
+
 	// =========================================================================
 	// Advanced text manipulation (optional)
 	// =========================================================================

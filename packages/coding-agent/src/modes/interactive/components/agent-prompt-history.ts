@@ -3,6 +3,7 @@ export interface PromptHistoryEditor {
 	addToHistory?(text: string): void;
 	getHistory?(): readonly string[];
 	setHistory?(newestFirst: readonly string[]): void;
+	appendOlderHistory?(newestFirst: readonly string[]): void;
 }
 
 /** As many prompts as the editor's own history keeps. */
@@ -51,9 +52,11 @@ export class AgentPromptHistory {
 		editor.setHistory([]);
 		prompts.then(
 			(loaded) => {
-				// What was submitted while the prompts were read stays newest.
-				if (generation === this.generation)
-					editor.setHistory?.([...(editor.getHistory?.() ?? []), ...[...loaded].reverse()]);
+				if (generation !== this.generation) return;
+				// What was submitted while the prompts were read stays newest, and browsing it goes on undisturbed.
+				const older = [...loaded].reverse();
+				if (editor.appendOlderHistory !== undefined) editor.appendOlderHistory(older);
+				else editor.setHistory?.([...(editor.getHistory?.() ?? []), ...older]);
 			},
 			() => {},
 		);

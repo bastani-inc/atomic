@@ -123,6 +123,27 @@ test("while a subagent's prompts are read, Up recalls what was submitted meanwhi
 	assert.deepEqual(recall(3), ["delivered at once", "trace the loader", "trace the loader"]);
 });
 
+test("a read that lands while Up is browsing keeps the browsing: Down still brings the unsent draft back", async () => {
+	const { editor, history, recall } = prompt();
+	const read = deferred<readonly string[]>();
+	history.viewAgent("task-1", read.promise);
+	editor.addToHistory("sent to the subagent");
+	editor.setText("my unsent draft");
+	editor.handleInput(UP);
+	editor.handleInput(UP);
+	assert.equal(editor.getText(), "sent to the subagent");
+	read.resolve(["trace the loader"]);
+	await read.promise;
+	await Promise.resolve();
+	editor.handleInput(UP);
+	assert.equal(editor.getText(), "trace the loader");
+	editor.handleInput(DOWN);
+	editor.handleInput(DOWN);
+	assert.equal(editor.getText(), "my unsent draft");
+	editor.setText("");
+	assert.deepEqual(recall(3), ["sent to the subagent", "trace the loader", "trace the loader"]);
+});
+
 test("a read that arrives after the view moved on is dropped: neither main nor the agent viewed now gets it", async () => {
 	const { history, recall } = prompt();
 	const late = deferred<readonly string[]>();

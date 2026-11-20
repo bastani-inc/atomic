@@ -93,3 +93,33 @@ describe("Editor.setHistory", () => {
 		assert.strictEqual(editor.getHistory().length, 100);
 	});
 });
+
+describe("Editor.appendOlderHistory", () => {
+	it("adds older entries behind the history without ending browsing: the shown entry and the parked draft stay", () => {
+		const editor = new Editor(new TuiMainScreen(new VirtualTerminal()), defaultEditorTheme);
+		editor.addToHistory("newest");
+		editor.setText("draft");
+		editor.handleInput("\x1b[A"); // to the start of the draft
+		editor.handleInput("\x1b[A");
+		assert.strictEqual(editor.getText(), "newest");
+
+		editor.appendOlderHistory(["newest", "older", "oldest"]);
+		assert.deepStrictEqual(editor.getHistory(), ["newest", "older", "oldest"]);
+		assert.strictEqual(editor.getText(), "newest");
+		editor.handleInput("\x1b[A");
+		assert.strictEqual(editor.getText(), "older");
+		editor.handleInput("\x1b[B");
+		editor.handleInput("\x1b[B");
+		assert.strictEqual(editor.getText(), "draft");
+	});
+
+	it("keeps entries as addToHistory would, and only up to 100 in all", () => {
+		const editor = new Editor(new TuiMainScreen(new VirtualTerminal()), defaultEditorTheme);
+		editor.addToHistory("a");
+		editor.appendOlderHistory(["a", " b ", "", "b", "a"]);
+		assert.deepStrictEqual(editor.getHistory(), ["a", "b", "a"]);
+		editor.appendOlderHistory(Array.from({ length: 150 }, (_, index) => `p${index}`));
+		assert.strictEqual(editor.getHistory().length, 100);
+		assert.deepStrictEqual(editor.getHistory().slice(0, 4), ["a", "b", "a", "p0"]);
+	});
+});
