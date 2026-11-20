@@ -232,7 +232,7 @@ async function assertPausedThenContinued(child: Awaited<ReturnType<typeof childW
 }
 
 test(
-	"Esc pauses a subagent whose steer was just delivered, before its reply began, with a follow-up queued: the follow-up comes back and the steer is not sent again (PauseHonored, NoDoubleDelivery)",
+	"Esc pauses a subagent whose steer was just delivered, before its reply began, with a follow-up queued: the follow-up comes back, the steer is not sent again, and nothing runs until the next message",
 	async () => {
 		const child = await childWithSlowReply("esc-pause-delivered-steer", 0);
 		// Enter on a steer while a step runs; the step ends and the steer is delivered: its request is out.
@@ -255,7 +255,7 @@ test(
 );
 
 test(
-	"Esc pauses a subagent whose follow-up was just delivered, before its reply began: the follow-up is not sent again (PauseHonored, NoDoubleDelivery)",
+	"Esc pauses a subagent whose follow-up was just delivered, before its reply began: the follow-up is not sent again, and nothing runs until the next message",
 	async () => {
 		const child = await childWithSlowReply("esc-pause-delivered-follow-up", 1);
 		// Alt+Enter while a step runs; the subagent would stop after the step, so it takes the follow-up.
