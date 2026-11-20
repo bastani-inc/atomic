@@ -66,7 +66,7 @@ test("a released subagent's row says what it waits on and how long, with a still
 	assert.equal(rowMeta(row(released("r"))), "waiting on bash · 12m");
 	const line = stripVTControlCharacters(renderBoardRow(row(released("r")), false, 80));
 	assert.match(line, /^ {2}◌ worker/);
-	assert.doesNotMatch(line, /∀/);
+	assert.doesNotMatch(line, /◯/);
 	assert.match(line, /waiting on bash · 12m$/);
 	assert.equal(visibleWidth(line), 80);
 	const narrow = stripVTControlCharacters(renderBoardRow(row(released("r")), false, 40));

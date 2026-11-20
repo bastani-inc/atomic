@@ -27,7 +27,7 @@ import {
 	renderNavHintLine,
 	TwoPressConfirm,
 } from "./nav-keys.ts";
-import { WAITING_MARKER } from "./notice-line.ts";
+import { DONE_TASK_MARKER, RUNNING_TASK_MARKER, STOPPED_TASK_MARKER, WAITING_MARKER } from "./notice-line.ts";
 import { taskDisplayText } from "./task-row.js";
 
 export type AgentPanelRow = AgentPanelItem;
@@ -350,15 +350,15 @@ const FILLED_CIRCLE = "●";
  * colour), and a filled one once done.
  */
 const PANEL_MARKS: Readonly<Record<AgentPanelState, PanelMark>> = {
-	running: { glyph: OPEN_CIRCLE, color: "muted" },
+	running: RUNNING_TASK_MARKER,
 	input: { glyph: "◆", color: "warning" },
 	paused: { glyph: "‖", color: "warning" },
 	queued: { glyph: "○", color: "dim" },
 	stopping: { glyph: "◼", color: "warning" },
 	waiting: WAITING_MARKER,
-	done: { glyph: FILLED_CIRCLE, color: "success" },
+	done: DONE_TASK_MARKER,
 	failed: { glyph: "✗", color: "error" },
-	stopped: { glyph: OPEN_CIRCLE, color: "error" },
+	stopped: STOPPED_TASK_MARKER,
 };
 const RUNNING_SHELL_MARK: PanelMark = { glyph: "⧗", color: "accent" };
 

@@ -3,6 +3,7 @@ import { visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { AgentPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { AgentPanelSourceHub } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import type { TaskRecord, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import {
 	AGENT_PANEL_MAIN_ID,
 	type AgentPanelRow,
@@ -11,8 +12,20 @@ import {
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { watchAtomicWorkingClock } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.js";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import {
+	renderBoardRow,
+	stateGlyph,
+	type TaskBoardRow,
+	type TaskBoardState,
+} from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
+import { taskDetailSummary } from "../../packages/coding-agent/src/modes/interactive/components/task-detail.js";
+import {
+	TaskRow,
+	taskStatusAppearance,
+} from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { bindAgentPanel, themedAgentPanelStyle } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import { taskRecord } from "../helpers/task-record.js";
 import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const plain: AgentPanelStyle = {
@@ -256,6 +269,60 @@ test("open-circle rows keep the single-cell fast path and never measure grapheme
 		}
 	} finally {
 		segment.mockRestore();
+	}
+});
+
+test("the /tasks list and a chat's task rows draw the panel's marks for running, done and stopped work", () => {
+	initTheme("dark");
+	const board: Record<TaskBoardState, { glyph: string; color: string }> = {
+		running: { glyph: "◯", color: "muted" },
+		done: { glyph: "●", color: "success" },
+		stopped: { glyph: "◯", color: "error" },
+		input: { glyph: "◆", color: "warning" },
+		queued: { glyph: "○", color: "muted" },
+		stopping: { glyph: "◼", color: "warning" },
+		waiting: { glyph: "◌", color: "dim" },
+		failed: { glyph: "✗", color: "error" },
+		paused: { glyph: "‖", color: "muted" },
+	};
+	for (const [state, mark] of Object.entries(board) as [TaskBoardState, { glyph: string; color: string }][]) {
+		assert.deepEqual(stateGlyph(state, "agent"), mark, state);
+		for (const width of [40, 80, 160]) {
+			const row: TaskBoardRow = {
+				id: "i",
+				kind: "item",
+				item: { id: "i", kind: "agent", state, name: "worker", task: "fix shipping batches" },
+			};
+			for (const selected of [false, true]) {
+				const line = renderBoardRow(row, selected, width);
+				const plain = stripVTControlCharacters(line);
+				// The mark keeps its cell: the name still starts in column 4 and the row fills the width.
+				assert.equal(plain.slice(2, 10), `${mark.glyph} worker`, `${state} at ${width}: ${plain}`);
+				assert.equal(visibleWidth(line), width, `${state} at ${width}`);
+				assert.ok(line.includes(theme.fg(mark.color as "muted", mark.glyph)), `${state} colour`);
+			}
+		}
+	}
+	assert.deepEqual(stateGlyph("running", "command"), { glyph: "⧗", color: "accent" }, "a shell keeps its hourglass");
+
+	const running = taskRecord("running");
+	const settled = (id: string, result: TaskResult, kind: TaskRecord["kind"] = "agent"): TaskRecord => ({
+		...taskRecord(id, kind),
+		execution: { kind: "settled", result },
+	});
+	const cases: readonly [TaskRecord, string, string, string][] = [
+		[running, "Running", "◯", "muted"],
+		[settled("done", { kind: "completed", output: running.output }), "Completed", "●", "success"],
+		[settled("shell", { kind: "cancelled", cause: "user" }, "command"), "Stopped", "◯", "error"],
+		// A row's own states keep their marks: a subagent stopped for good, or awaiting resume.
+		[settled("killed", { kind: "cancelled", cause: "user" }), "Killed (non-resumable)", "■", "warning"],
+		[settled("quit", { kind: "cancelled", cause: "quit" }), "Paused · awaiting resume", "‖", "warning"],
+	];
+	for (const [task, label, glyph, color] of cases) {
+		assert.deepEqual(taskStatusAppearance(task), { label, icon: glyph, color });
+		const first = new TaskRow(task).render(80)[0]!;
+		assert.ok(first.startsWith(theme.fg(color as "muted", glyph)), `${label} row: ${first}`);
+		assert.ok(taskDetailSummary(task).startsWith(theme.fg(color as "muted", `${glyph} ${label}`)), `${label} detail`);
 	}
 });
 

@@ -39,7 +39,7 @@ test("compact rows show states, zero counts and display-only truncation", async 
 		const lines = new TaskRow(sample, { duplicate: true }).render(40);
 		assert.ok(lines.every((line) => visibleWidth(line) <= 40));
 		assert.equal(sample.title, rawTitle);
-		assert.match(plain(lines), /∀ worker:/);
+		assert.match(plain(lines), /◯ worker:/);
 		assert.match(plain(lines), /0 tool uses/);
 		for (const kind of ["completed", "failed", "cancelled"] as const) {
 			const result =
@@ -161,7 +161,7 @@ test("an agent released while it waits shows released and what it waits on in /t
 	};
 	const row = plain(new TaskRow(released).render(120));
 	assert.match(row, /◌ agent: .*\n.*\n {2}waiting on bash \(toolu-7\)/);
-	assert.doesNotMatch(row, /∀|paused|awaiting resume|cancelled|killed|stopped/i);
+	assert.doesNotMatch(row, /◯|paused|awaiting resume|cancelled|killed|stopped/i);
 	assert.deepEqual(taskStatusAppearance(released), { label: "Waiting on bash", icon: "◌", color: "dim" });
 });
 
@@ -173,7 +173,7 @@ test("groups retain all tasks, one expansion hint and separate inspector type or
 		const tasks = fixture.store.tasks.map((task) => ({ ...task, launchGroupId: "parallel" }));
 		const text = plain(new TaskList(tasks).render(80));
 		assert.match(text, /worker · 6 running/);
-		assert.equal((text.match(/∀ worker:/g) ?? []).length, 6);
+		assert.equal((text.match(/◯ worker:/g) ?? []).length, 6);
 		assert.equal((text.match(/expand/g) ?? []).length, 1);
 		assert.match(text, /├─/);
 		assert.match(text, /└─/);
