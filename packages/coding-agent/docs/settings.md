@@ -83,6 +83,8 @@ See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/provid
 }
 ```
 
+A changed budget applies to new sessions. A resumed session keeps the budget it last used on the same model and thinking level, because a different budget would make the provider bill the cached conversation again; choosing another model or thinking level applies the setting.
+
 #### fallbackModels
 
 Ordered fallback chain for main-chat turns after same-model retries exhaust on a retryable failure:

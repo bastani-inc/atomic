@@ -685,6 +685,13 @@ export interface SystemMessage {
 export interface UserMessage {
 	role: "user";
 	content: string | (TextContent | ImageContent | DocumentContent)[];
+	/**
+	 * Request-time hint, never stored: the request gets a prompt-cache breakpoint at the end of the input sent up to and
+	 * including this message. Callers set it on a copy for one request, such as the first request of a resumed
+	 * session, so a cached prefix is found however much new input follows it. Providers with explicit breakpoints
+	 * honor it; others ignore it.
+	 */
+	cacheBreakpoint?: boolean;
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
@@ -698,6 +705,18 @@ export interface AssistantMessage {
 	responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
 	/** Exact provider-native effort level used for this response. Absent for legacy or unmanaged responses. */
 	providerThinkingLevel?: string;
+	/**
+	 * Thinking budget in tokens that the request's thinking level resolved to, before it was fitted under the context
+	 * window. Recorded by agents so a resumed session asks for the same budget as the session it continues.
+	 */
+	requestedThinkingBudget?: number;
+	/** Thinking budget in tokens the request sent, when the model thinks within a fixed budget. */
+	thinkingBudgetTokens?: number;
+	/**
+	 * The request sent `strict: "prefer"` tools without strict schemas because an earlier request of the session
+	 * exceeded the provider's strict-tool limits. A resumed session keeps that choice, as the session it continues did.
+	 */
+	strictToolsDisabled?: boolean;
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;
@@ -713,6 +732,8 @@ export interface AssistantMessage {
 	endTurn?: boolean;
 	timestamp: number; // Unix timestamp in milliseconds
 	durationMs?: number;
+	/** See {@link UserMessage.cacheBreakpoint}. */
+	cacheBreakpoint?: boolean;
 }
 
 /** A tool call made by another tool, such as a codemode script. */
@@ -749,6 +770,8 @@ export type ToolResultMessage<TDetails = JsonValue> =
 				isError: boolean;
 				timestamp: number; // Unix timestamp in milliseconds
 				durationMs?: number;
+				/** See {@link UserMessage.cacheBreakpoint}. */
+				cacheBreakpoint?: boolean;
 			}
 		: never;
 

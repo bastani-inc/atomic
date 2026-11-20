@@ -41,7 +41,7 @@ import {
 	getDeclaredTools,
 	getInitialSystemMessage,
 	normalizeContext,
-	resolveTranscript,
+	resolveRequestTranscript,
 	resolveTranscriptTools,
 } from "../utils/transcript.ts";
 import { uuidv7 } from "../utils/uuid.ts";
@@ -249,7 +249,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 	options?: OpenAICodexResponsesOptions,
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
-	const normalizedContext = resolveTranscript(context, model.compat?.supportsMidConvoSystemMessages);
+	const normalizedContext = resolveRequestTranscript(context, model.compat?.supportsMidConvoSystemMessages);
 
 	(async () => {
 		const output: AssistantMessage = {

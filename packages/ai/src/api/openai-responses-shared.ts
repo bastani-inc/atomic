@@ -40,7 +40,7 @@ import { shortHash } from "../utils/hash.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
-import { resolveTranscript, resolveTranscriptTools, type TranscriptToolSupport } from "../utils/transcript.ts";
+import { resolveRequestTranscript, resolveTranscriptTools, type TranscriptToolSupport } from "../utils/transcript.ts";
 import {
 	appendGrammarToolInputJsonDelta,
 	closeGrammarToolInputJson,
@@ -459,7 +459,7 @@ export function convertResponsesMessages<TApi extends Api>(
 	allowedToolCallProviders: ReadonlySet<string>,
 	options?: ConvertResponsesMessagesOptions,
 ): ResponseInput {
-	const normalizedContext = resolveTranscript(context, options?.supportsMidConvoSystemMessages);
+	const normalizedContext = resolveRequestTranscript(context, options?.supportsMidConvoSystemMessages);
 	const messages: ResponseInput = [];
 
 	const normalizeIdPart = (part: string): string => {

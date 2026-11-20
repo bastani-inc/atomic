@@ -250,6 +250,8 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 			visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets[name]}`).join("\n") : "(none)";
 		promptSections.tools = `Available tools:\n${toolsList}\n\nAdditional tools may be available.`;
 		promptSections.rules = `Guidelines:\n${buildRules(declaredTools, toolGuidelines, promptGuidelines, cwd)}`;
+		// The user's addendum precedes the docs, whose paths change with the installation.
+		if (appendSystemPrompt) promptSections.addendum = appendSystemPrompt;
 		promptSections.docs = `
 Atomic documentation (read when the user asks about computer use or automation, MCP, web access, intercom, subagents, or customizing Atomic itself, its SDK, orchestration, packages, extensions, themes, skills, or TUI):
 - Main documentation: ${readmePath}
@@ -272,12 +274,17 @@ Atomic documentation (read when the user asks about computer use or automation, 
 		const skillsPrompt = formatSkillsForPrompt(skills, skillFileReadTool).trim();
 		if (skillsPrompt) promptSections.skills = skillsPrompt;
 	}
-	promptSections.model = `Model name (used for commit attribution): ${modelName}\nModel reasoning level: ${modelReasoningLevel}`;
-	promptSections.date = `Current date: ${date}`;
-	promptSections.cwd = `Current working directory: ${cwd.replace(/\\/g, "/")}`;
+	// The sections that change most often come last, so a cached prompt prefix covers everything before them. A custom
+	// section of the same name still replaces one of them.
+	const lastSections: Record<string, string> = {
+		model: `Model name (used for commit attribution): ${modelName}\nModel reasoning level: ${modelReasoningLevel}`,
+		cwd: `Current working directory: ${cwd.replace(/\\/g, "/")}`,
+		date: `Current date: ${date}`,
+	};
 	for (const [name, content] of Object.entries(customSections)) {
-		if (content) promptSections[name] = content;
+		if (content && !(name in lastSections)) promptSections[name] = content;
 	}
+	for (const [name, content] of Object.entries(lastSections)) promptSections[name] = customSections[name] || content;
 
 	const sections: SystemPromptSections = { preamble: promptSections.preamble };
 	for (const [name, content] of Object.entries(promptSections)) {

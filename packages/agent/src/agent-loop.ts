@@ -15,6 +15,7 @@ import {
 	type SystemMessage,
 	type ToolResultMessage,
 	type ToolStateChanges,
+	thinkingBudgetForLevel,
 	toToolDeclaration,
 	validateToolArguments,
 } from "@bastani/atomic-ai";
@@ -415,8 +416,15 @@ async function streamAssistantResponse(
 		identity: mergeClientIdentity(DEFAULT_AGENT_IDENTITY, config.identity),
 		signal,
 	});
-	// Record the requested level, whichever stream function answered.
-	const result = async () => Object.assign(await response.result(), { thinkingLevel: config.reasoning ?? "off" });
+	// Record the requested level and the budget it resolved to, whichever stream function answered.
+	const requestedThinkingBudget = config.reasoning
+		? thinkingBudgetForLevel(config.reasoning, config.thinkingBudgets)
+		: undefined;
+	const result = async () =>
+		Object.assign(await response.result(), {
+			thinkingLevel: config.reasoning ?? "off",
+			...(requestedThinkingBudget === undefined ? {} : { requestedThinkingBudget }),
+		});
 
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;

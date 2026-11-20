@@ -1,6 +1,12 @@
 import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../src/core/keybindings.ts";
+import {
+	type QueuedDeliveryChange,
+	QueuedDeliveryRelay,
+	takeQueuedDeliveryChange,
+	withQueuedDeliveryChange,
+} from "../../src/core/queued-message-delivery.ts";
 import type { SessionManager } from "../../src/core/session-manager.js";
 import { serializeSessionMutation } from "../../src/core/session-mutation-queue.ts";
 import { EngineCustomUiService } from "../../src/modes/interactive-engine/engine-custom-ui.ts";
@@ -110,6 +116,9 @@ class LaggedPipe<T> {
 class InProcessEngineClient extends RpcClientApi {
 	private readonly pending = new Map<string, PendingRequest>();
 	private readonly listeners = new Set<EventListener>();
+	private readonly queuedDeliveryListeners = new Set<
+		(change: QueuedDeliveryChange, event: JsonAgentSessionEvent) => void
+	>();
 	private nextId = 0;
 	private readonly toEngine: LaggedPipe<RpcCommand>;
 	private readonly toHost: LaggedPipe<HostRecord>;
@@ -195,6 +204,9 @@ class InProcessEngineClient extends RpcClientApi {
 			}
 			return;
 		}
+		// As the host's client reads an engine's event line: what the engine says it is delivering, then the event.
+		const change = takeQueuedDeliveryChange(record);
+		if (change !== undefined) for (const listener of [...this.queuedDeliveryListeners]) listener(change, record);
 		for (const listener of [...this.listeners]) listener(record);
 	}
 
@@ -263,6 +275,11 @@ class InProcessEngineClient extends RpcClientApi {
 	onEvent(listener: EventListener): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
+	}
+
+	onQueuedDeliveryChange(listener: (change: QueuedDeliveryChange, event: JsonAgentSessionEvent) => void): () => void {
+		this.queuedDeliveryListeners.add(listener);
+		return () => this.queuedDeliveryListeners.delete(listener);
 	}
 
 	onGenerationEnded(listener: InteractiveEngineGenerationEndedListener): () => void {
@@ -354,6 +371,11 @@ export async function createEngineHostPair(
 		serializeEngineCommands?: boolean;
 		/** The engine draws its own UI, such as `/tasks`, which the host shows as an interactive engine's. */
 		engineUi?: boolean;
+		/**
+		 * Whether the engine tells the host which queued messages it is delivering, as it does for a host that asks.
+		 * Default true; false is an engine of an earlier version, or a host that did not ask.
+		 */
+		queuedDeliveries?: boolean;
 	},
 ): Promise<EngineHostPair> {
 	const lag = { toEngineMs: 0, toHostMs: 0 };
@@ -403,7 +425,14 @@ export async function createEngineHostPair(
 			? (command) => serializeSessionMutation(engineRuntimeHost, () => handle(command))
 			: handle,
 	);
-	const unsubscribe = engine.session.subscribe((event) => client.engineOutput(toJsonEvent(event)));
+	// A replacement engine starts telling the host afresh.
+	const newRelay = () => (options.queuedDeliveries === false ? undefined : new QueuedDeliveryRelay());
+	let relay = newRelay();
+	const unsubscribe = engine.session.subscribe((event) =>
+		client.engineOutput(
+			withQueuedDeliveryChange(toJsonEvent(event), relay?.note(engine.session, event)) as JsonAgentSessionEvent,
+		),
+	);
 	const local = new AgentSessionRuntime(
 		hostHarness.session,
 		{ cwd: hostHarness.tempDir, agentDir: hostHarness.tempDir } as never,
@@ -430,9 +459,14 @@ export async function createEngineHostPair(
 			// What the lost process held in memory is gone: its queue, and the turn it was running.
 			engine.session.clearQueue();
 			void engine.session.abort();
+			// Its replacement tells the host afresh.
+			relay = newRelay();
 		},
 		engineMessage: (message) => client.engineMessage(message),
-		endGeneration: ({ expected }) => client.endGeneration(expected),
+		endGeneration: ({ expected }) => {
+			client.endGeneration(expected);
+			relay = newRelay();
+		},
 		commandsReceived: client.commandsReceived,
 		holdHostTrafficFrom: (matches) => client.holdHostTrafficFrom(matches),
 		releaseHostTraffic: () => client.releaseHostTraffic(),
