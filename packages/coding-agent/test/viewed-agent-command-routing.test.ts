@@ -354,18 +354,15 @@ describe("a command typed for a subagent that went away, moved into main's promp
 	);
 
 	test(
-		"edited after the move, it runs as main runs what is typed there",
+		"edited into other text after the move, it runs as main runs what is typed there",
 		async () => {
-			screen = await movedIntoMain("/new");
+			screen = await movedIntoMain("/compact");
 			const { mode } = screen;
-			const sessionId = mode.session.sessionId;
-			mode.defaultEditor.handleInput(" ");
-			mode.defaultEditor.handleInput("\x7f");
-			assert.equal(mode.editor.getText(), "/new");
+			for (const char of " briefly") mode.defaultEditor.handleInput(char);
 			enter();
-			await until(() => mode.session.sessionId !== sessionId);
+			// Main's /compact runs at once; with no messages yet it says so.
+			await until(() => screen?.warnings.includes("Nothing to compact (no messages yet)") === true);
 			assert.equal(screen.promptSlot(), mode.editor, "no dialog");
-			await until(() => /New session started/.test(screen?.transcript() ?? ""));
 		},
 		HOST_TIMEOUT_MS,
 	);
