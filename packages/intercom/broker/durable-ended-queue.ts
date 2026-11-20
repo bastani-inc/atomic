@@ -21,13 +21,21 @@ import type {
 	EndedQueueRow,
 	EndedWakeBudgetEvent,
 } from "./sql-ended-child-queue-store.js";
+import { PRESENCE_REGISTRATION_BOUND_MS } from "./multinode-router.js";
 
 /**
  * #5999 durable wake queue: how long a session's registration waits, at most, for the broker to know whether its queue
  * of messages for subagents that ended is kept where it outlives the broker. A store that is not open by then is not
- * used by this broker: the queue stays in its memory, as before, and senders are told what a later broker lost.
+ * used by this broker: the queue stays in its memory, as before, and senders are told what a later broker lost. With a
+ * shared `storage`, it counts from when multi-node routing has started: the store opens in its database.
  */
 export const ENDED_QUEUE_OPEN_WAIT_MS = 2_000;
+/**
+ * With a shared `storage`, the longest that wait lasts in all, multi-node routing's start included (on a cold start its
+ * storage modules compile, and a remote database takes its time to answer): as long as a registration waits for its
+ * presence lease in that database.
+ */
+export const ENDED_QUEUE_ROUTING_WAIT_MS = PRESENCE_REGISTRATION_BOUND_MS;
 /** How long a send that may join a restored queue waits for the restored rows, at most. */
 export const ENDED_QUEUE_LOAD_WAIT_MS = 5_000;
 
@@ -76,6 +84,8 @@ interface SenderSnapshot {
 export interface DurableEndedQueueHost {
 	/** Opens the store this broker keeps the queue in, or resolves undefined when it keeps it in memory. */
 	readonly openStore: () => Promise<EndedChildQueueStore | undefined>;
+	/** With a shared `storage`: settles once multi-node routing's first attempt did, after which the store opens. */
+	readonly routingStarted: () => Promise<void> | undefined;
 	/**
 	 * This broker keeps the queue in memory although a store may hold messages: its sessions are told those were lost, so
 	 * the next broker that opens the store must drop them rather than deliver them.
@@ -167,7 +177,8 @@ export class DurableEndedQueue {
 	}
 
 	/**
-	 * Decide, once, which store keeps the queue; resolves when decided, within {@link ENDED_QUEUE_OPEN_WAIT_MS}. `restore`
+	 * Decide, once, which store keeps the queue; resolves when decided, within {@link ENDED_QUEUE_OPEN_WAIT_MS} (with a
+	 * shared `storage`, of routing's start, and within {@link ENDED_QUEUE_ROUTING_WAIT_MS} in all). `restore`
 	 * receives what an earlier broker kept, once the store is open: read a page at a time, the event loop running between
 	 * pages. Until then, sends to the subagents it kept messages for wait ({@link holds}), so none overtakes them.
 	 */
@@ -180,16 +191,28 @@ export class DurableEndedQueue {
 				resolve();
 			};
 		});
-		const timer = setTimeout(() => {
-			if (this.decidedNow) return;
-			this.host.log(
-				`Intercom broker keeps messages for subagents that ended in memory only: their store did not open within ${ENDED_QUEUE_OPEN_WAIT_MS} ms`,
-			);
-			this.host.retireStore();
-			this.loadedNow = true;
-			settle();
-		}, ENDED_QUEUE_OPEN_WAIT_MS);
-		timer.unref();
+		const timers: ReturnType<typeof setTimeout>[] = [];
+		const wait = (ms: number) => {
+			const timer = setTimeout(() => {
+				if (this.decidedNow) return;
+				this.host.log(
+					`Intercom broker keeps messages for subagents that ended in memory only: their store did not open within ${ms} ms`,
+				);
+				this.host.retireStore();
+				this.loadedNow = true;
+				settle();
+			}, ms);
+			timer.unref();
+			timers.push(timer);
+		};
+		const routing = this.host.routingStarted();
+		if (routing === undefined) wait(ENDED_QUEUE_OPEN_WAIT_MS);
+		else {
+			wait(ENDED_QUEUE_ROUTING_WAIT_MS);
+			void routing.then(() => {
+				if (!this.decidedNow) wait(ENDED_QUEUE_OPEN_WAIT_MS);
+			});
+		}
 		let finishLoad: () => void = () => {};
 		this.loading = new Promise<void>((resolve) => {
 			finishLoad = () => {
@@ -212,7 +235,7 @@ export class DurableEndedQueue {
 				finishLoad();
 				return;
 			}
-			clearTimeout(timer);
+			for (const timer of timers) clearTimeout(timer);
 			this.store = store;
 			if (store !== undefined) this.journalBudget(store);
 			else this.host.retireStore();
