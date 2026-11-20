@@ -211,25 +211,36 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 	const showError = mode.showError;
 	const jumpToTranscriptEnd = mode.jumpToTranscriptEnd;
 	own.showStatus = function (this: InteractiveModeBase, message: string, ...rest: unknown[]): void {
-		if (!agentShown()) return (showStatus as (...args: unknown[]) => void).call(this, message, ...rest);
+		if (!agentShown()) {
+			(showStatus as (...args: unknown[]) => void).call(this, message, ...rest);
+			return;
+		}
 		slot.addNotice("status", message);
 		mode.ui.requestRender();
 	};
 	own.showWarning = function (this: InteractiveModeBase, message: string, ...rest: unknown[]): void {
 		const target = rest[0];
-		if (!agentShown() || (target !== undefined && target !== mode.chatContainer))
-			return (showWarning as (...args: unknown[]) => void).call(this, message, ...rest);
+		if (!agentShown() || (target !== undefined && target !== mode.chatContainer)) {
+			(showWarning as (...args: unknown[]) => void).call(this, message, ...rest);
+			return;
+		}
 		slot.addNotice("warning", message);
 		mode.ui.requestRender();
 	};
 	own.showError = function (this: InteractiveModeBase, message: string): void {
-		if (!agentShown()) return showError.call(this, message);
+		if (!agentShown()) {
+			showError.call(this, message);
+			return;
+		}
 		slot.addNotice("error", message);
 		mode.ui.requestRender();
 	};
 	own.jumpToTranscriptEnd = function (this: InteractiveModeBase): void {
 		const viewed = switcher.viewed;
-		if (viewed.kind !== "agent") return jumpToTranscriptEnd.call(this);
+		if (viewed.kind !== "agent") {
+			jumpToTranscriptEnd.call(this);
+			return;
+		}
 		viewed.port.transcript.handleViewKey(TRANSCRIPT_JUMP_TO_END_URL);
 		mode.ui.requestRender();
 	};
@@ -246,7 +257,8 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 		if (agentShown()) {
 			slot.port = undefined;
 			const tui = mode.ui;
-			if (isViewportTUI(tui) && mode.fullscreenLayoutRoot !== undefined) tui.setLayoutRoot(mode.fullscreenLayoutRoot);
+			if (isViewportTUI(tui) && mode.fullscreenLayoutRoot !== undefined)
+				tui.setLayoutRoot(mode.fullscreenLayoutRoot);
 		}
 		if (slots.get(mode) === slot) slots.delete(mode);
 	};

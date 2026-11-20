@@ -1,5 +1,5 @@
-import type { TaskId } from "../../../core/tasks/contracts.js";
 import { dismissedAgentPanelItems, subscribeAgentPanel } from "../../../core/tasks/agent-panel-source.ts";
+import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.ts";

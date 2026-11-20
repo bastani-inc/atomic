@@ -862,7 +862,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	/** The subagent as the single chat screen's prompt, rule, working line and panel show it. */
 	viewStatus(agentKey: string): AgentViewStatus {
-		const task = this.liveTask();
 		const { name, label, placeholder, state } = this.composerText("view");
 		const session = this.followed;
 		const retrying = session?.chatSession?.isRetrying === true;
@@ -871,12 +870,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const readOnlyReason =
 			this.readOnlyReason() ??
 			(this.source.sendTaskMessage === undefined ? "Messages cannot reach this subagent from here." : undefined);
-		const elapsedMs =
-			task === undefined
-				? undefined
-				: (taskElapsedMs(task, taskClockRunning(task.execution.kind), this.elapsedClocks) ??
-					task.metrics?.elapsedMs);
-		const activity = this.source.followTaskTranscript(this.liveTaskId())?.publishedActivity;
+		const working = this.chat.workingLine(this.source.followTaskTranscript(this.liveTaskId())?.publishedActivity);
 		return {
 			taskId: this.liveTaskId(),
 			agentKey,
@@ -890,15 +884,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			queued: { steering: [...queued.steering], followUp: [...queued.followUp] },
 			...(readOnlyReason === undefined ? {} : { readOnlyReason }),
 			heldPrompt: this.heldPrompt() !== undefined,
-			...(busy
-				? {
-						working: {
-							...(elapsedMs === undefined ? {} : { elapsedMs }),
-							...(task?.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
-							...(activity === undefined ? {} : { activity }),
-						},
-					}
-				: {}),
+			...(working === undefined ? {} : { working }),
 			gone: this.gone,
 		};
 	}

@@ -1,7 +1,7 @@
 import type { TaskId } from "../../core/tasks/contracts.js";
+import { engineAgentViewRegistry } from "./agent-view-engine-registry.ts";
 import type { EngineAgentViewContext } from "./agent-view-rpc.ts";
 import type { AgentViewOpenData, AgentViewRpcCommand } from "./agent-view-rpc-types.ts";
-import { engineAgentViewRegistry } from "./agent-view-engine-registry.ts";
 import { createRpcErrorResponse, createRpcSuccessResponse } from "./rpc-responses.ts";
 import type { RpcResponse } from "./rpc-types.ts";
 

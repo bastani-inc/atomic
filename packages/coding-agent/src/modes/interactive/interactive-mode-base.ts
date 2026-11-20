@@ -248,7 +248,11 @@ export class InteractiveModeBase {
 		focusedIsViewportSearch: boolean,
 	): boolean => {
 		// A shown subagent's transcript takes the scroll keys (agent-view/transcript-slot.ts); main has no scroll view then.
-		if (this.agentView?.viewed.kind === "agent" && !isMouseInput && isFullscreenViewportAction(data, this.keybindings))
+		if (
+			this.agentView?.viewed.kind === "agent" &&
+			!isMouseInput &&
+			isFullscreenViewportAction(data, this.keybindings)
+		)
 			return false;
 		return shouldHandleFullscreenViewportInput(
 			this.renderer.getFocusedComponent(),

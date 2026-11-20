@@ -3,8 +3,9 @@
  * transcript is, its status for the prompt, rule, working line and panel, and the steering half the prompt sends
  * through. The isolated engine runs the same port for the views its host opens.
  */
-import type { TaskId } from "../../../core/tasks/contracts.js";
+
 import { firstSubagentAttempt, latestSubagentAttempt } from "../../../core/tasks/completion.js";
+import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import type { TaskTranscriptEnvironment } from "../components/task-transcript-page.ts";
 import { TaskAgentTranscriptPage } from "../components/task-transcript-page.ts";

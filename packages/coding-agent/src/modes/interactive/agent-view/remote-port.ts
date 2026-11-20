@@ -5,8 +5,8 @@
  */
 import type { TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import type { AgentViewOpenData } from "../../rpc/agent-view-rpc-types.ts";
 import { type RemoteTranscriptMount, remoteTranscriptMount } from "../../interactive-engine/remote-component.ts";
+import type { AgentViewOpenData } from "../../rpc/agent-view-rpc-types.ts";
 import { remoteAgentCommands } from "./agent-commands.ts";
 import { remoteAgentPrompts } from "./agent-prompts.ts";
 import { type AgentViewRuntime, createRemoteAgentSteering } from "./agent-steering.ts";
