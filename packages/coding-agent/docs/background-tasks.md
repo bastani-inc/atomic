@@ -15,7 +15,7 @@ Below the prompt, the **agent panel** lists the session's active background suba
   ● main
    ◯ worker    openai/gpt-5.5 high                    fix shipping batches          41m · ↓ 96.1k tokens
    ◯ debugger  github-copilot/claude-opus-5.5 medium  #5220 spawn lock              18m · ↓ 87.4k tokens
-     ⧗ shell   npm test                                                                              12s
+     ⧗ shell                                          npm test                                       12s
    ◯ worker    anthropic/claude-sonnet-4-5 high       picker clamp                          stopped · 6m
 ```
 
