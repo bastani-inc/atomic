@@ -50,7 +50,7 @@ export interface MainScreen {
 
 /**
  * A real interactive host over a real in-process session on the faux provider, initialized as the CLI starts it, with
- * `extensions` loaded on the main session.
+ * `extensions` loaded on the main session, and taking what the prompt submits as the CLI's input loop does.
  */
 export async function createMainScreen(extensions: InlineExtension[] = []): Promise<MainScreen> {
 	initTheme("dark");
@@ -109,6 +109,14 @@ export async function createMainScreen(extensions: InlineExtension[] = []): Prom
 	});
 	const mode = new InteractiveMode(runtime, { terminal: new FakeTerminal() });
 	await mode.init();
+	let stopped = false;
+	void (async () => {
+		while (!stopped) {
+			const input = await mode.getUserInput();
+			if (stopped) return;
+			await mode.runUserPromptTurn(input).catch(() => {});
+		}
+	})();
 	const promptSlot = () => mode.editorContainer.children.at(-1);
 	return {
 		mode,
@@ -116,6 +124,7 @@ export async function createMainScreen(extensions: InlineExtension[] = []): Prom
 		promptSlot,
 		promptSlotText: () => stripStyles(promptSlot()?.render(160).join("\n") ?? ""),
 		async cleanup() {
+			stopped = true;
 			mode.stop();
 			await runtime.dispose();
 			faux.unregister();
