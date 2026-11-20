@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- `/model`, `/scoped-models`, `/tree`, `/resume` and `/tasks` open their view without first flashing an empty prompt or a blank panel, and the chat above no longer jumps down and back: the prompt stays on screen until the view has something to draw. A panel the engine opens in the prompt's place, such as `/tasks` from its key, waits for its first frame the same way.
+- `/model`, `/scoped-models`, `/tree`, `/resume` and `/tasks` open their view without first flashing an empty prompt or a blank panel, and the chat above no longer jumps down and back: the prompt stays on screen until the view has something to draw. A panel the engine opens in the prompt's place, such as `/tasks` from its key, waits for its first frame the same way ([#6057](https://github.com/bastani-inc/atomic/pull/6057)).
 
 ## [0.10.0] - 2026-11-20
 
