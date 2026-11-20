@@ -80,7 +80,7 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 				await pi.sendMessage({
 					customType: "web-search-results",
 					content: payload.content,
-					display: "tool",
+					display: true,
 					details: payload.details,
 				}, { triggerTurn: true, deliverAs: "followUp" });
 			}

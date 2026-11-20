@@ -10,10 +10,42 @@ export function validateSessionEntryStructure(entries: readonly SessionEntry[], 
 			typeof entry !== "object" ||
 			typeof entry.id !== "string" ||
 			(entry.parentId !== null && typeof entry.parentId !== "string") ||
-			typeof entry.timestamp !== "string" ||
-			!validPayload(entry)
+			typeof entry.timestamp !== "string"
 		)
 			throw new SessionFormatVersionError(path, SESSION_FORMAT_VERSION);
+		readExtensionFields(entry);
+		if (!validPayload(entry)) throw new SessionFormatVersionError(path, SESSION_FORMAT_VERSION);
+	}
+}
+
+/**
+ * Releases before 0.10.2 stored these extension-supplied fields unchecked (#6097). Read them in place, the way the
+ * chat used them, and leave the stored bytes as they are:
+ * - a custom message's `display` by truthiness, so `"tool"` is shown and a missing `display` is hidden;
+ * - missing content as empty, and content that is neither text nor content blocks, which the chat could not draw and
+ *   the model never received, as an empty hidden message;
+ * - a `customType` that is not a string as no type;
+ * - a label that is not a string as no label.
+ */
+function readExtensionFields(entry: SessionEntry): void {
+	switch (entry.type) {
+		case "label":
+			if (entry.label !== undefined && typeof entry.label !== "string") entry.label = undefined;
+			return;
+		case "custom":
+			if (typeof entry.customType !== "string") entry.customType = "";
+			return;
+		case "custom_message": {
+			if (typeof entry.customType !== "string") entry.customType = "";
+			const content: unknown = entry.content;
+			if (content === undefined || content === null) entry.content = [];
+			else if (typeof content !== "string" && !Array.isArray(content)) {
+				entry.content = [];
+				entry.display = false;
+			}
+			if (typeof entry.display !== "boolean") entry.display = Boolean(entry.display);
+			return;
+		}
 	}
 }
 

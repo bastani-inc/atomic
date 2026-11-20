@@ -652,6 +652,8 @@ pi.sendMessage({
 });
 ```
 
+`display: true` shows the message in the chat; `false`, or leaving `display` out, keeps it out of the chat. `customType` must be a string and `content` a string or an array of content blocks: otherwise the call throws a `TypeError` and nothing is saved.
+
 **Options:**
 - `deliverAs` - Delivery mode:
   - `"steer"` (default) - Queues the message while streaming. Delivered after the current assistant turn finishes executing its tool calls, before the next LLM call.
@@ -673,7 +675,7 @@ pi.sendMessages([
 ], { triggerTurn: true });
 ```
 
-The batch supports `triggerTurn`, `excludeFromContext`, and `deliverAs: "steer" | "followUp" | "nextTurn"`. Interrupt delivery remains a single-message operation.
+The batch supports `triggerTurn`, `excludeFromContext`, and `deliverAs: "steer" | "followUp" | "nextTurn"`. Interrupt delivery remains a single-message operation. Each message follows the `pi.sendMessage()` rules; if one breaks them, the call throws a `TypeError` and none is sent.
 
 ### pi.sendUserMessage(content, options?)
 
@@ -710,7 +712,7 @@ See [send-user-message.ts](https://github.com/bastani-inc/atomic/blob/main/packa
 
 ### pi.appendEntry(customType, data?)
 
-Persist extension state (does NOT participate in LLM context).
+Persist extension state (does NOT participate in LLM context). `customType` must be a string; otherwise the returned promise rejects with a `TypeError` and nothing is saved.
 
 ```typescript
 await pi.appendEntry("my-state", { count: 42 });
@@ -765,7 +767,7 @@ if (name) {
 
 ### pi.setLabel(entryId, label)
 
-Set or clear a label on an entry. Labels are user-defined markers for bookmarking and navigation (shown in `/tree` selector).
+Set or clear a label on an entry. Labels are user-defined markers for bookmarking and navigation (shown in `/tree` selector). A label is a string, or `undefined` to clear it; any other value rejects with a `TypeError`.
 
 ```typescript
 // Set a label

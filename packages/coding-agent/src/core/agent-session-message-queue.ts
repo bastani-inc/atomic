@@ -52,6 +52,7 @@ import {
 	sessionLifetime,
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
+import { checkedCustomMessage } from "./session-manager-entries.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 import { parseSlashCommand } from "./slash-commands.js";
 
@@ -174,11 +175,12 @@ export async function sendCustomMessage<T = unknown>(
 	options?: SendMessageOptions,
 ): Promise<void> {
 	assertSessionOpen(this);
+	const checked = checkedCustomMessage(message);
 	return deliveredMessageTurn(this, () => {
 		const waking = wakeIdleSessionForHeartbeat(this, options);
 		return waking
-			? waking.then(() => admittedCustomMessage.call(this, message, options))
-			: admittedCustomMessage.call(this, message, options);
+			? waking.then(() => admittedCustomMessage.call(this, checked, options))
+			: admittedCustomMessage.call(this, checked, options);
 	});
 }
 
@@ -230,7 +232,8 @@ export async function sendCustomMessages<T = unknown>(
 	options?: SendMessagesOptions,
 ): Promise<void> {
 	assertSessionOpen(this);
-	return deliveredMessageTurn(this, () => admittedCustomMessages.call(this, messages, options));
+	const checked = messages.map((message) => checkedCustomMessage(message));
+	return deliveredMessageTurn(this, () => admittedCustomMessages.call(this, checked, options));
 }
 
 async function admittedCustomMessages<T>(

@@ -8,6 +8,7 @@ import { getNativeMcpToolIdentity, markNativeMcpToolDefinition } from "../mcp-ch
 import type { McpServerConfig, McpServerContribution } from "../mcp-servers.ts";
 import { lifecycleScopeForOwner } from "../session-lifecycle-scope.ts";
 import { drainSessionWork, hasCallingSessionWork, trackSessionWork } from "../session-lifecycle-work.ts";
+import { checkedCustomMessage, checkedCustomType, checkedLabel } from "../session-manager-entries.ts";
 import type { AgentPanelSource } from "../tasks/agent-panel-source.ts";
 import {
 	assertExtensionAction,
@@ -411,12 +412,15 @@ export function createExtensionAPI(
 
 		sendMessage(message, options): void | Promise<void> {
 			assertActive();
-			return runtime.sendMessage(message, options);
+			return runtime.sendMessage(checkedCustomMessage(message), options);
 		},
 
 		sendMessages(messages, options): void | Promise<void> {
 			assertActive();
-			return runtime.sendMessages(messages, options);
+			return runtime.sendMessages(
+				messages.map((message) => checkedCustomMessage(message)),
+				options,
+			);
 		},
 
 		sendUserMessage(content, options): void {
@@ -426,6 +430,7 @@ export function createExtensionAPI(
 
 		async appendEntry<T>(customType: string, data?: T): Promise<void> {
 			assertActive();
+			checkedCustomType(customType, "custom entry");
 			await trackAPIWork(() => runtime.appendEntry(customType, data));
 		},
 
@@ -441,6 +446,7 @@ export function createExtensionAPI(
 
 		async setLabel(entryId: string, label: string | undefined): Promise<void> {
 			assertActive();
+			checkedLabel(label);
 			await runtime.setLabel(entryId, label);
 		},
 
