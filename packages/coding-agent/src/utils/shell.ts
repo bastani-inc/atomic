@@ -7,7 +7,7 @@ import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
-import { evalWorkerExecArgv } from "./worker-threads.ts";
+import { evalWorkerExecArgv } from "./worker-threads.js";
 
 export interface ShellConfig {
 	shell: string;
