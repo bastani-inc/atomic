@@ -771,4 +771,53 @@ describe("the main prompt while a subagent is shown", () => {
 		},
 		HOST_TIMEOUT_MS,
 	);
+
+	test(
+		"browsing main's history and coming back leaves the moved text marked",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			screen.mode.editor.addToHistory?.("older main prompt");
+			await view(WORKER);
+			await screen.type("/compact now");
+			port.setStatus({ gone: true });
+			await settle();
+			await screen.press("\x01", "\x1b[A");
+			assert.equal(screen.mode.editor.getText(), "older main prompt");
+			await screen.press("\x1b[B");
+			assert.equal(screen.mode.editor.getText(), "/compact now");
+			const seen: unknown[] = [];
+			const editor = screen.mode.defaultEditor;
+			const submit = editor.onSubmit;
+			editor.onSubmit = (text: string) => {
+				seen.push(takeMovedDraftMark(screen!.mode, text));
+				return undefined;
+			};
+			try {
+				await screen.press(ENTER);
+			} finally {
+				editor.onSubmit = submit;
+			}
+			assert.deepEqual(seen, [{ agentName: "worker", text: "/compact now" }]);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a subagent's draft parked under its history comes back when the subagent is shown again",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			port.delivered = ["worker's task"];
+			await view(WORKER);
+			await until(() => screen?.mode.defaultEditor.getHistory().includes("worker's task") === true);
+			await screen.type("my draft");
+			await screen.press("\x01", "\x1b[A");
+			assert.equal(screen.mode.editor.getText(), "worker's task");
+			await view(undefined);
+			await view(WORKER);
+			assert.equal(screen.mode.editor.getText(), "my draft");
+		},
+		HOST_TIMEOUT_MS,
+	);
 });
