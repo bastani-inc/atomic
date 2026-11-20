@@ -988,22 +988,23 @@ function chatMessageQueue(session: AgentSession): TranscriptQueueMethods {
 	return {
 		queueMessage: (text, lane) =>
 			new Promise((resolve) => {
-				const accepted = () => resolve({ delivered: true });
 				session
 					.prompt(text, {
 						streamingBehavior: lane,
-						preflightResult: (success) => {
+						preflightResult: (success, disposition) => {
 							// A refusal rejects the prompt with its reason.
-							if (success) accepted();
+							if (success) resolve({ delivered: true, startedTurn: disposition === "started" });
 						},
 					})
 					// A prompt deferred past a settling run reports nothing before it ends; its end accepted it.
-					.then(accepted, (error: unknown) =>
-						resolve({
-							delivered: false,
-							reason: executionEnded(error) ? "ended" : "refused",
-							detail: error instanceof Error ? error.message : String(error),
-						}),
+					.then(
+						() => resolve({ delivered: true }),
+						(error: unknown) =>
+							resolve({
+								delivered: false,
+								reason: executionEnded(error) ? "ended" : "refused",
+								detail: error instanceof Error ? error.message : String(error),
+							}),
 					);
 			}),
 		clearQueue: async () => {

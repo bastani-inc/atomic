@@ -17,7 +17,14 @@ import { FINISHED_TASK_RETENTION, TaskEvictedError } from "./eviction-error.js";
 
 /** What a task's message channel reported for one message. */
 export type TaskMessageDelivery =
-	| { readonly delivered: true }
+	| {
+			readonly delivered: true;
+			/**
+			 * Whether the message started the session's next turn. One that waits in its queue, as in the hold of a turn
+			 * Esc paused, leaves an interrupted task interrupted. Absent where the channel does not say.
+			 */
+			readonly startedTurn?: boolean;
+	  }
 	| { readonly delivered: false; readonly reason: "refused"; readonly detail?: string }
 	/**
 	 * The task's execution ended before its session took the message: nothing was delivered, and a task that can be
