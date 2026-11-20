@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent whose context was cleared or compacted while it ran is reported by its own turns again. One that then finished was reported failed with "Child ended without completing an assistant turn of its own." and no answer; it is now reported done with its answer, including an answer it wrote before the clear when its last turn had no text. Turns from a subagent's earlier runs, or from the parent conversation a forked subagent started with, still never count as its own.
+
 ## [0.10.1] - 2026-11-20
 
 ### Fixed
