@@ -1,7 +1,8 @@
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../database.js";
+import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteStatement, SqliteValue } from "../database.js";
 import { dialectOf, type StorageDialect, type StorageTrigger } from "../dialect.js";
 import { applyStorageMigrations, withShortSchemaLockWaits } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
+import { type RunSequence, sequenceRunner } from "../statement-sequence.js";
 import type {
 	SessionSearchCoverage,
 	SessionSearchExtendOptions,
@@ -167,6 +168,17 @@ interface TrigramEngine {
 		docs: readonly SearchDoc[],
 		signal?: AbortSignal,
 	): Promise<void>;
+	/**
+	 * `merge` of `MERGE_STEPS_PER_WRITE` steps then `insert`, as one sequence, for a transaction that runs sequences
+	 * (#6082): whether every merge step found work. Absent where the engine has no merge steps.
+	 */
+	writeSequence?(
+		runSequence: RunSequence,
+		tables: SearchTables,
+		sid: number,
+		docs: readonly SearchDoc[],
+		signal?: AbortSignal,
+	): Promise<boolean>;
 	forget(tx: SqliteExecutor, tables: SearchTables, sessionId: string): Promise<void>;
 	candidates(
 		database: SqliteDatabase,
@@ -242,6 +254,26 @@ function forgetTrigger(tables: SearchTables, sessionTables: SessionTables, engin
 	};
 }
 
+/** One step of FTS5's incremental merge; it did work when `total_changes()` grew by 2 or more (see `merge`). */
+function ftsMergeStep(tables: SearchTables, steps: number) {
+	return {
+		statement: { sql: `INSERT INTO ${tables.fts} (${tables.fts}, rank) VALUES ('merge', ?)`, params: [MERGE_PAGES] },
+		times: steps,
+		minChanges: 2,
+	};
+}
+
+function ftsInsert(tables: SearchTables, sid: number, { seq, part, text }: SearchDoc): SqliteStatement {
+	return {
+		sql: `INSERT OR REPLACE INTO ${tables.fts} (rowid, body) VALUES ((? << 40) + (? << ${PART_BITS}) + ?, ?)`,
+		params: [sid, seq, part, withoutNul(text)],
+	};
+}
+
+function* ftsInserts(tables: SearchTables, sid: number, docs: readonly SearchDoc[]): Generator<SqliteStatement> {
+	for (const doc of docs) yield ftsInsert(tables, sid, doc);
+}
+
 const sqliteFts: TrigramEngine = {
 	async create(tx, _dialect, tables) {
 		await tx.exec(
@@ -259,29 +291,38 @@ const sqliteFts: TrigramEngine = {
 		await tx.run(`INSERT INTO ${tables.fts} (${tables.fts}, rank) VALUES ('automerge', 0)`);
 	},
 	async merge(tx, tables, steps, signal) {
-		for (let step = 0; step < steps; step++) {
+		const step = ftsMergeStep(tables, steps);
+		const runSequence = sequenceRunner(tx);
+		if (runSequence !== undefined) return (await runSequence({ repeat: step, statements: [], signal })) === steps;
+		for (let done = 0; done < steps; done++) {
 			signal?.throwIfAborted();
 			const before = await tx.get<SqliteRow & { changes: number | bigint }>("SELECT total_changes() AS changes");
-			await tx.run(`INSERT INTO ${tables.fts} (${tables.fts}, rank) VALUES ('merge', ?)`, MERGE_PAGES);
+			await tx.run(step.statement.sql, ...step.statement.params);
 			const after = await tx.get<SqliteRow & { changes: number | bigint }>("SELECT total_changes() AS changes");
-			if (Number(after?.changes) - Number(before?.changes) < 2) return false;
+			if (Number(after?.changes) - Number(before?.changes) < step.minChanges) return false;
 			await yieldTurn();
 		}
 		return true;
 	},
 	async insert(tx, tables, sid, docs, signal) {
-		for (const [index, { seq, part, text }] of docs.entries()) {
+		for (const [index, doc] of docs.entries()) {
 			signal?.throwIfAborted();
-			await tx.run(
-				`INSERT OR REPLACE INTO ${tables.fts} (rowid, body) VALUES ((? << 40) + (? << ${PART_BITS}) + ?, ?)`,
-				sid,
-				seq,
-				part,
-				withoutNul(text),
-			);
+			const { sql, params } = ftsInsert(tables, sid, doc);
+			await tx.run(sql, ...params);
 			if (index + 1 < docs.length) await yieldTurn();
 		}
 		signal?.throwIfAborted();
+	},
+	// The same statements in the same order, checking the signal at the same places, as `merge` and `insert` one
+	// statement at a time.
+	async writeSequence(runSequence, tables, sid, docs, signal) {
+		const repeated = await runSequence({
+			repeat: ftsMergeStep(tables, MERGE_STEPS_PER_WRITE),
+			statements: ftsInserts(tables, sid, docs),
+			signal,
+		});
+		signal?.throwIfAborted();
+		return repeated === MERGE_STEPS_PER_WRITE;
 	},
 	async forget(tx, tables, sessionId) {
 		await tx.run(
@@ -646,8 +687,13 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 				}
 				if (sid > MAX_SID) return false;
 				if (docs.length > 0) {
-					backlog = await this.engine.merge(tx, this.tables, MERGE_STEPS_PER_WRITE, options?.signal);
-					await this.engine.insert(tx, this.tables, sid, docs, options?.signal);
+					const runSequence = sequenceRunner(tx);
+					if (runSequence !== undefined && this.engine.writeSequence !== undefined) {
+						backlog = await this.engine.writeSequence(runSequence, this.tables, sid, docs, options?.signal);
+					} else {
+						backlog = await this.engine.merge(tx, this.tables, MERGE_STEPS_PER_WRITE, options?.signal);
+						await this.engine.insert(tx, this.tables, sid, docs, options?.signal);
+					}
 				}
 				const nextWhole = mergeWholeSeqs(row.whole_seqs, oversizedSeqs);
 				const updated = await tx.run(
@@ -718,8 +764,13 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 			let backlog = false;
 			const written = await this.database.transaction(async (tx) => {
 				if (!(await lockAndCheck(tx))) return false;
-				backlog = await this.engine.merge(tx, this.tables, MERGE_STEPS_PER_WRITE, options?.signal);
-				await this.engine.insert(tx, this.tables, sid, batch, options?.signal);
+				const runSequence = sequenceRunner(tx);
+				if (runSequence !== undefined && this.engine.writeSequence !== undefined) {
+					backlog = await this.engine.writeSequence(runSequence, this.tables, sid, batch, options?.signal);
+				} else {
+					backlog = await this.engine.merge(tx, this.tables, MERGE_STEPS_PER_WRITE, options?.signal);
+					await this.engine.insert(tx, this.tables, sid, batch, options?.signal);
+				}
 				return true;
 			}, txOptions);
 			if (!written) return false;
