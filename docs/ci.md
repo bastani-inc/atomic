@@ -495,7 +495,9 @@ Suite jobs upload `.ci-diagnostics/` under unique
 `test-diagnostics-<job>-<binary_platform>` artifact names. Preserve `always()`,
 `include-hidden-files: true`, the narrow upload path, 14-day retention and
 `if-no-files-found: ignore`. Jobs failing before test execution may have no
-diagnostic artifact.
+diagnostic artifact. The upload steps set `continue-on-error: true`: a failed
+upload (for example an artifact service timeout) shows as a warning, and the
+job's result is the tests' result.
 
 The root unit, integration and CI projects, and the coding-agent project, report
 lost Vitest fork workers. A worker that exits without a stop request or a kill call

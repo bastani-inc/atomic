@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import {
+	getKeybindings,
 	MULTI_CLICK_INTERVAL_MS,
+	matchesKey,
 	ScrollView,
+	setKeybindings,
 	stripTerminalSequences,
 	Text,
 	type TuiAltScreen,
@@ -14,6 +17,7 @@ import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js
 import type { AgentSession } from "../src/core/agent-session.js";
 import { setCallbackActivityReporter } from "../src/core/callback-activity.js";
 import type { MessageRenderer } from "../src/core/extensions/types.js";
+import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { CustomMessage } from "../src/core/messages.js";
 import {
 	supersedeBlockClicks,
@@ -225,6 +229,7 @@ async function mountIsolatedChat(renderers?: Readonly<Record<string, MessageRend
 		await settle();
 	};
 	return {
+		tui,
 		transcript,
 		frames,
 		bash,
@@ -273,6 +278,27 @@ test("an isolated row not redrawn since a resize compares at the transcript's se
 	} finally {
 		row.dispose();
 	}
+});
+
+test("a click on the expand hint of a tool block the isolated engine draws expands that block alone and presses no key", async () => {
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	closers.push(() => setKeybindings(previous));
+	const chat = await mountIsolatedChat();
+	const keys: string[] = [];
+	closers.push(
+		chat.tui.addInputListener((data) => {
+			keys.push(data);
+			return undefined;
+		}),
+	);
+	chat.bash("first", "first-command", lines(20, "first output"));
+	chat.bash("second", "second-command", lines(20, "second output"));
+	await chat.waitFor(/second output 20$/);
+	await chat.click(/earlier lines.*ctrl\+o/, "ctrl+o");
+	await chat.waitFor(/first output 1$/);
+	assert.ok(!chat.shows(/second output 1$/), chat.screen().join("\n"));
+	assert.equal(keys.filter((data) => matchesKey(data, "ctrl+o")).length, 0, "the hint is the block's own toggle");
 });
 
 test("a click on any row of a tool block the isolated engine draws expands it, and a second click collapses it", async () => {

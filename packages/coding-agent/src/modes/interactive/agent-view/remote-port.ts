@@ -6,6 +6,7 @@
 import type { TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { type RemoteTranscriptMount, remoteTranscriptMount } from "../../interactive-engine/remote-component.ts";
+import { type PlacedTranscriptFrame, placeTranscriptFrame } from "../../interactive-engine/transcript-frame-layout.ts";
 import type { AgentViewOpenData } from "../../rpc/agent-view-rpc-types.ts";
 import { remoteAgentCommands } from "./agent-commands.ts";
 import { remoteAgentPrompts } from "./agent-prompts.ts";
@@ -25,7 +26,8 @@ export const FIRST_FRAME_TIMEOUT_MS = 2_000;
 export class RemoteAgentTranscript implements AgentTranscriptComponent {
 	private readonly mount: RemoteTranscriptMount;
 	private readonly heldPrompt: () => boolean;
-	/** Rows of the engine's last frame above the rows shown, when it was taller than the area. */
+	/** How the frame painted last was placed in the rows shown (`PlacedTranscriptFrame`). */
+	private frameRows: PlacedTranscriptFrame["frameRows"];
 	private hidden = 0;
 
 	constructor(mount: RemoteTranscriptMount, heldPrompt: () => boolean) {
@@ -35,11 +37,13 @@ export class RemoteAgentTranscript implements AgentTranscriptComponent {
 
 	renderSized(width: number, height: number): string[] {
 		this.mount.rows = Math.max(1, height);
-		const lines = this.mount.component.render(width);
-		// A frame drawn for another height until the next one is here: keep its last rows, where the latest are.
-		this.hidden = Math.max(0, lines.length - height);
-		const shown = this.hidden > 0 ? lines.slice(this.hidden) : lines;
-		return shown.length < height ? [...shown, ...Array.from({ length: height - shown.length }, () => "")] : shown;
+		const component = this.mount.component;
+		const lines = component.render(width);
+		// A frame drawn for another height until the next one is here: its rows go where that frame will put them.
+		const placed = placeTranscriptFrame(lines, component.paintedLayout(), width, height);
+		this.frameRows = placed.frameRows;
+		this.hidden = placed.hidden;
+		return placed.lines;
 	}
 
 	render(width: number): string[] {
@@ -60,11 +64,21 @@ export class RemoteAgentTranscript implements AgentTranscriptComponent {
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		return this.mount.component.handleMouse({ ...event, y: event.y + this.hidden });
+		const row = this.frameRow(event.y);
+		return row === undefined ? undefined : this.mount.component.handleMouse({ ...event, y: row });
 	}
 
 	paintedRowKey(row: number): string | undefined {
-		return this.mount.component.paintedRowKey(row + this.hidden);
+		const frameRow = this.frameRow(row);
+		return frameRow === undefined ? undefined : this.mount.component.paintedRowKey(frameRow);
+	}
+
+	/** The frame row painted at `row`: a row the host left blank until the next frame takes no click. */
+	private frameRow(row: number): number | undefined {
+		const frameRows = this.frameRows;
+		if (frameRows === undefined) return row + this.hidden;
+		const index = Math.floor(row);
+		return index >= 0 && index < frameRows.length ? frameRows[index] : undefined;
 	}
 
 	invalidate(): void {

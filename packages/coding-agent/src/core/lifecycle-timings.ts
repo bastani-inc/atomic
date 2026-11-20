@@ -31,6 +31,11 @@ interface LifecycleTimingState {
 	sink: LifecycleTimingSink | undefined;
 	clock: () => bigint;
 	readonly recorded: Set<LifecycleTimingLabel>;
+	/**
+	 * Writes the installed trace's waiting lines. Kept here, not in this module, because the compiled binary's loader
+	 * installs the trace with its own copy of this module and the app it loads handles the quit with another.
+	 */
+	flushTrace?: () => void;
 }
 
 const STATE_KEY = Symbol.for("@bastani/atomic/lifecycle-timings");
@@ -114,6 +119,15 @@ export function lifecycleTraceWritten(): Promise<void> {
 }
 
 /**
+ * Write the trace lines still waiting for the writer's thread, once a quit has begun. Windows ends an isolated engine
+ * as soon as its host has the quit acknowledgement, without running exit handlers, so a line still waiting then would
+ * be lost. Does nothing when no trace is installed.
+ */
+export function flushLifecycleTraceAtQuit(): void {
+	getState().flushTrace?.();
+}
+
+/**
  * When `ATOMIC_STARTUP_TRACE` names a file, append this process's start and each lifecycle mark to it, one JSON line
  * each. A host and the engine child it starts inherit the variable, so one file holds both timelines. Lines are
  * appended off the event loop in mark order; whatever has not reached the file when the process exits is written then.
@@ -131,6 +145,8 @@ export function installLifecycleTraceFromEnv(env: NodeJS.ProcessEnv = process.en
 	};
 	const writeRemainingAtExit = (): void => writer.flushSync();
 	process.once("exit", writeRemainingAtExit);
+	const state = getState();
+	state.flushTrace = writeRemainingAtExit;
 	write("process-start", performance.timeOrigin);
 	const uninstallSink = installLifecycleTimingSink((record) =>
 		write(record.label, performance.timeOrigin + performance.now()),
@@ -139,5 +155,6 @@ export function installLifecycleTraceFromEnv(env: NodeJS.ProcessEnv = process.en
 		uninstallSink();
 		process.removeListener("exit", writeRemainingAtExit);
 		if (traceWriter === writer) traceWriter = undefined;
+		if (state.flushTrace === writeRemainingAtExit) state.flushTrace = undefined;
 	};
 }

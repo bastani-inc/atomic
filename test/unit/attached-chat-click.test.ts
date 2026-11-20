@@ -215,6 +215,49 @@ test("an attached click opens the group its call joined while the click was wait
 	}
 });
 
+test("in an attached chat, calls that join a group after a click expanded its first call are drawn on their own, collapsed", () => {
+	initTheme("dark");
+	const host = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
+	const finish = (id: string) => {
+		host.applyAgentEvent({ type: "tool_execution_start", toolCallId: id, toolName: "bash", args: { command: id } });
+		host.applyAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: id,
+			toolName: "bash",
+			result: { content: [{ type: "text", text: lines(20, id) }] },
+			isError: false,
+		});
+	};
+	const body = () => host.renderBody(100, 80).map((line) => stripVTControlCharacters(line).trimEnd());
+	const shows = (pattern: RegExp) => body().some((line) => pattern.test(line));
+	const clickOn = (text: string) => {
+		const row = body().findIndex((line) => line.includes(text));
+		return settled(host.handleBodyClick(click(2, row, 100, 80)));
+	};
+	try {
+		finish("first-call");
+		clickOn("first-call");
+		assert.ok(shows(/first-call line 1$/), body().join("\n"));
+
+		finish("second-call");
+		finish("third-call");
+		for (const call of ["second-call", "third-call"])
+			assert.ok(shows(new RegExp(`${call} line 20$`)), `${call} is not drawn:\n${body().join("\n")}`);
+		assert.ok(!shows(/second-call line 1$/) && !shows(/third-call line 1$/), body().join("\n"));
+		assert.ok(shows(/first-call line 1$/), body().join("\n"));
+
+		clickOn("second-call");
+		assert.ok(shows(/second-call line 1$/), body().join("\n"));
+		assert.ok(!shows(/third-call line 1$/), body().join("\n"));
+
+		host.toolOutputToggled();
+		assert.ok(shows(/Ran 3 shell commands/), body().join("\n"));
+		assert.ok(!shows(/call line 20$/), body().join("\n"));
+	} finally {
+		host.dispose();
+	}
+});
+
 test("a running tool block a click expanded stays expanded as its live output arrives", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "Run it", timestamp: 0 });

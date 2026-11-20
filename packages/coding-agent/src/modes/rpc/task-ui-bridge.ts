@@ -152,7 +152,7 @@ export async function showTaskInspector(
 		// On the single chat screen a subagent opens there, where the main chat was, and /tasks closes.
 		const session = boardSessions.get(options.board);
 		const bridge = session === undefined ? undefined : agentViewBridge(session);
-		if (bridge !== undefined) inspector.setAgentView((id) => bridge.requestView(id));
+		if (bridge !== undefined) inspector.setAgentView((id) => bridge.requestView(id, { keepScreen: true }));
 
 		const reopenOptions = { board: options.board };
 		inspector.setReopen((id) => {
