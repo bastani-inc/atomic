@@ -19,8 +19,11 @@ import {
 	SESSION_FORMAT_VERSION,
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_BYTES,
+	SESSION_HISTORY_SCAN_ENTRIES,
+	type SessionHistoryItem,
 	type SessionHistoryTotals,
 	type SessionRecordHeader,
+	type SessionScanPage,
 	type SessionStore,
 	type SessionSummary,
 } from "./types.js";
@@ -47,6 +50,53 @@ const createdAt = "2026-10-15T00:00:00.000Z";
 
 function header(id = "session"): SessionRecordHeader {
 	return { id, version: SESSION_FORMAT_VERSION, createdAt, cwd: "/project" };
+}
+
+/** Entry `i` of a scan's session as a tool result (10, 200), a call of another tool (20) or of `bash` (30). */
+function toolUse(i: number, entry: SessionEntry): SessionEntry {
+	const base = { ...entry, type: "message" } as const;
+	const call = (name: string) => ({
+		...base,
+		message: {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: `call-${i}`,
+					name,
+					arguments: { text: (entry as { message: { content: string } }).message.content },
+				},
+			],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "model",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 1,
+		},
+	});
+	if (i === 9 || i === 199)
+		return {
+			...base,
+			message: {
+				role: "toolResult",
+				toolCallId: `call-${i}`,
+				toolName: i === 9 ? "bash" : "custom",
+				content: [{ type: "text", text: "r" }],
+				isError: false,
+				timestamp: 1,
+			},
+		} as SessionEntry;
+	if (i === 19) return call("custom") as SessionEntry;
+	if (i === 29) return call("bash") as SessionEntry;
+	return entry;
 }
 
 function message(id: string, text: string, timestamp = Date.parse(createdAt)): SessionEntry {
@@ -387,6 +437,139 @@ export function registerSessionStoreConformance(
 					if (store.readEntrySizes && store.readEntryChunk && store.readRange && created.epoch !== undefined)
 						await assert.rejects(store.readRange("session", 1, 1, created.epoch), conflict("session", 1, 1));
 				},
+			);
+
+			check(
+				"reads a scan's pages, one read each, as the same entries as the default pages and rejects another generation (#5571)",
+				async (store, reload) => {
+					// 300 entries of 2-12 KiB around one larger than a page: some pages of a page's bytes, cut by bytes.
+					const entries = Array.from({ length: 301 }, (_, i) =>
+						i === 150
+							? message("big", "é".repeat(SESSION_HISTORY_PAGE_BYTES / 2 + 7))
+							: toolUse(i, message(`e${i}`, `${i} ${"漢x".repeat(700 + ((i * 997) % 3500))}`)),
+					);
+					const created = await store.create(header(), entries);
+					store = await reload(store);
+					const read = async (pageEntries?: number) => {
+						const pages: SessionHistoryItem[][] = [];
+						for await (const page of readSessionHistory(store, "session", pageEntries ? { pageEntries } : {}))
+							pages.push([...page.items]);
+						return pages;
+					};
+					const pages = await read();
+					const scanned = await read(SESSION_HISTORY_SCAN_ENTRIES);
+					assert.deepEqual(scanned.flat(), pages.flat());
+					assert.deepEqual(
+						scanned.flat().map((item) => ("entry" in item ? item.entry : item.seq)),
+						entries.map((entry, i) => (i === 150 ? 151 : entry)),
+					);
+					const bytes = (item: SessionHistoryItem) =>
+						"entry" in item ? Buffer.byteLength(JSON.stringify(item.entry)) : item.bytes;
+					for (const page of scanned)
+						assert.ok(
+							page.length === 1 ||
+								page.reduce((sum, item) => sum + bytes(item), 0) <= SESSION_HISTORY_PAGE_BYTES,
+						);
+					// A store that sizes its pages reads a scan in fewer of them; one that only loads its snapshot pages it alike.
+					if (store.readEntrySizes && store.readRange) assert.ok(scanned.length < pages.length);
+					if (!store.readScanPage || !store.readEntrySizes) return;
+					const { epoch } = await store.readEntrySizes("session", 1, 0);
+					// No entry for an empty range, only the session's head; without a generation, the current one.
+					const head = { header: header(), epoch, lastSeq: 301 };
+					assert.deepEqual(await store.readScanPage("session", 1, 0, epoch, 1), {
+						...head,
+						throughSeq: 0,
+						items: [],
+					});
+					assert.deepEqual(await store.readScanPage("session", 1, 0, undefined, 1), {
+						...head,
+						throughSeq: 0,
+						items: [],
+					});
+					const limited = await store.readScanPage("session", 3, 301, epoch, 2);
+					assert.deepEqual(limited, {
+						...head,
+						throughSeq: 4,
+						items: [
+							{ seq: 3, entry: entries[2] },
+							{ seq: 4, entry: entries[3] },
+						],
+					});
+					// A run stops before an entry larger than a page, which is a reference of its own.
+					const before = await store.readScanPage("session", 148, 301, epoch, 10);
+					assert.deepEqual(
+						before.items.map((item) => item.seq),
+						[148, 149, 150],
+					);
+					assert.equal(before.throughSeq, 150);
+					const big = {
+						kind: "oversized",
+						sessionId: "session",
+						epoch,
+						seq: 151,
+						bytes: bytes(scanned.flat()[150]!),
+					};
+					assert.deepEqual(await store.readScanPage("session", 151, 301, epoch, 10), {
+						...head,
+						throughSeq: 151,
+						items: [big],
+					});
+					// Only tool results, assistant messages calling a tool other than `exceptCalls`, and entries larger than
+					// a page, possibly with more; each page says how far it accounts for the range.
+					const select = { exceptCalls: ["bash"] };
+					const selected: SessionScanPage[] = [];
+					for (let from = 1; from <= 301; from = selected.at(-1)!.throughSeq + 1)
+						selected.push(
+							await store.readScanPage("session", from, 301, epoch, SESSION_HISTORY_SCAN_ENTRIES, { select }),
+						);
+					const seqs = selected.flatMap((page) => page.items.map((item) => item.seq));
+					for (const seq of [10, 20, 151, 200]) assert.ok(seqs.includes(seq), `selects ${seq}: ${seqs}`);
+					for (const seq of seqs) assert.ok([10, 20, 30, 151, 200].includes(seq), `selects no ${seq}`);
+					assert.deepEqual(
+						selected.flatMap((page) => page.items).filter((item) => item.seq !== 151),
+						seqs.filter((seq) => seq !== 151).map((seq) => ({ seq, entry: entries[seq - 1] })),
+					);
+					assert.ok(
+						selected.every((page) => page.lastSeq === 301 && page.items.length <= SESSION_HISTORY_SCAN_ENTRIES),
+					);
+					assert.equal(selected.at(-1)!.throughSeq, 301);
+					assert.ok(selected.length <= 4, `${selected.length} selected`);
+					assert.deepEqual(
+						(await store.readScanPage("session", 1, 301, epoch, 1, { select })).items.map((item) => item.seq),
+						[10],
+					);
+					// A run can end with the reference that follows it, which brings the first bytes of its JSON.
+					const trailing = await store.readScanPage("session", 148, 301, epoch, 10, {
+						trailingReference: true,
+						referencePrefix: 16,
+					});
+					assert.deepEqual(
+						trailing.items.map((item) => item.seq),
+						[148, 149, 150, 151],
+					);
+					assert.deepEqual(trailing.items.at(-1), big);
+					assert.equal(trailing.throughSeq, 151);
+					assert.deepEqual(
+						Buffer.from(trailing.prefixes?.get(151) ?? []).toString(),
+						JSON.stringify(entries[150]).slice(0, 16),
+					);
+					const after = await store.readScanPage("session", 1, 301, epoch, SESSION_HISTORY_SCAN_ENTRIES, {
+						select,
+						trailingReference: true,
+					});
+					assert.deepEqual(
+						after.items.map((item) => item.seq).filter((seq) => seq !== 30),
+						[10, 20, 151],
+					);
+					assert.equal(bytes(scanned.flat()[150]!), Buffer.byteLength(JSON.stringify(entries[150])));
+					await assert.rejects(store.readScanPage("missing", 1, 1, epoch, 1), notFound("missing"));
+					await store.replace("session", header(), [message("other", "replacement")], {
+						expectSeq: 301,
+						...(created.epoch === undefined ? {} : { epoch: created.epoch }),
+					});
+					await assert.rejects(store.readScanPage("session", 1, 1, epoch, 1), SessionConflictError);
+				},
+				LARGE_VALUE_TIMEOUT_MS,
 			);
 
 			check("replaces header and entries including parent and workflow metadata", async (store, reload) => {
