@@ -41,6 +41,7 @@ import { BUILTIN_SLASH_COMMAND_NAMES } from "./interactive-mode-helpers.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { handOffCompactionQueue, mainSteering } from "./interactive-queueing.ts";
+import { followStartedRunEcho } from "./interactive-render-chat.ts";
 import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
 import type { SteeringSubmitResult } from "./steering-queue-controller.ts";
 import { theme } from "./theme/theme.js";
@@ -668,16 +669,12 @@ async function submitToMainChat(
 		if ((this.session.isStreaming || this.promptTurn !== undefined) && !this.session.queuedMessagesPaused) {
 			prompt.addToHistory(text);
 			prompt.setText("");
-			// An engine sends its answer to this prompt together with the first events of the turn it started, and
-			// the host handles those events before the answer's callback runs. If the session already showed the
-			// message, echoing it again here would show it twice (#4272). It shows the message as sent, which an
-			// `input` hook may have rewritten (#4277), so any message it showed meanwhile counts.
+			// The session can show the message before this prompt's answer arrives: an engine sends its answer as the run
+			// starts, before or after the run's first events. If the session already showed the message, echoing it again
+			// here would show it twice (#4272). It shows the message as sent, which an `input` hook may have rewritten
+			// (#4277), so any message it showed meanwhile counts.
 			const shownBefore = this.userMessagesShownBySession;
-			let echoedStartedRun = false;
-			let showedUserMessage = false;
-			const unsubscribeUserMessages = this.session.subscribe((event) => {
-				if (event.type === "message_start" && event.message.role === "user") showedUserMessage = true;
-			});
+			const startedEcho = followStartedRunEcho(this, text, { sendShowsWorkingRow: false });
 			let submitted: SteeringSubmitResult;
 			try {
 				submitted = await mainSteering(this).submit(text, "steer", {
@@ -685,29 +682,21 @@ async function submitToMainChat(
 					// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
 					showAsQueued: !this.isExtensionCommand(text),
 					onAnswered: (success, disposition) => {
-						if (
+						const echoed =
 							success &&
 							disposition === "started" &&
 							!text.startsWith("/") &&
-							this.userMessagesShownBySession === shownBefore
-						) {
-							echoedStartedRun = true;
+							this.userMessagesShownBySession === shownBefore;
+						if (echoed) {
 							this.renderDeferredUserInput(text);
 							this.expectStartedUserInput(text, shownBefore);
 						}
-					},
-					onSent: () => {
-						// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
-						if (
-							echoedStartedRun &&
-							!showedUserMessage &&
-							this.deferredRenderedUserInputs?.includes(text) === true
-						)
-							this.discardDeferredRenderedUserInput(text);
+						// The run's own events decide this echo (#5135), however they and this answer are ordered.
+						startedEcho.answer(echoed);
 					},
 				});
 			} finally {
-				unsubscribeUserMessages();
+				startedEcho.close();
 			}
 			if (submitted.kind === "failed") throw submitted.error;
 			if (submitted.kind === "lost") {

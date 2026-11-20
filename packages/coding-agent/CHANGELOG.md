@@ -8,6 +8,8 @@
 - Tool calls that join a group after a click opened one of its calls now appear as their own folded blocks, and a click opens each one on its own. They used to be hidden until the group was folded again. Ctrl+O draws the whole group as one summary again.
 - A subagent shown on the chat screen no longer jumps when the prompt, autocomplete list or panel below it changes height: the rows already on screen stay where they are while its transcript redraws for the new size, and its notes and question form stay at the bottom.
 - Enter on a subagent in `/tasks` no longer shows the main chat's prompt for a moment before the subagent appears: the prompt, footer and panel stay as painted until the subagent is shown (or cannot be), while the transcript above keeps updating. A key press shows the screen as it is at once.
+- The working row under the prompt no longer disappears for a moment between two turns of a run (after a tool call, before the next request), so the chat above it no longer jumps down and back up; it stays still until the next turn starts. Subagent chats keep theirs the same way, and a subagent's working line no longer shows a smaller token count for a moment when an answer settles
+- A sent message and the working row under it no longer vanish and reappear for a moment when the engine answers that it started the run before the run's first events arrive, which happened on most first prompts of a session and on some later ones
 
 ## [0.10.0] - 2026-11-20
 

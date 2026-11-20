@@ -179,6 +179,22 @@ describe("prompt turn working indicator continuity", () => {
 		expect(context.promptTurnWorkingLoaderActive).toBe(false);
 	});
 
+	it("keeps the indicator for a run the session answered as started before the run's first events arrive", async () => {
+		const context = createContext({});
+		Object.assign(context, { expectStartedUserInput: vi.fn(), userMessagesShownBySession: 0 });
+		// An engine answers as the run starts; the run's agent_start, which takes the indicator over, comes later.
+		context.session.prompt = vi.fn(
+			async (_text: string, options?: { preflightResult?: (success: boolean, disposition?: string) => void }) => {
+				options?.preflightResult?.(true, "started");
+			},
+		) as PromptTurnContext["session"]["prompt"];
+
+		await context.runUserPromptTurn.call(context, "start a run");
+
+		expect(indicatorVisible(context)).toBe(true);
+		expect(context.promptTurnWorkingLoaderActive).toBe(false);
+	});
+
 	it("routes isolated slash commands to the engine without resuming held messages (#3468)", async () => {
 		const context = createContext({ slashHandled: true });
 		context.runtimeHost = Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime;
