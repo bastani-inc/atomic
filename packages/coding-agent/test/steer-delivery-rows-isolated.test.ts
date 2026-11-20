@@ -171,7 +171,7 @@ async function isolatedSubagent(child: Harness) {
 
 describe("a queued message the isolated engine's subagent takes", () => {
 	for (const lane of ["steer", "followUp"] as const) {
-		test(`is on the host's screen after every engine message, queued or in the transcript (${lane}, S9)`, async () => {
+		test(`is on the host's screen after every engine message, queued or in the transcript (${lane})`, async () => {
 			const hook = createGate();
 			const toolHold = createGate();
 			const child = await createHarness({
@@ -218,7 +218,7 @@ describe("a queued message the isolated engine's subagent takes", () => {
 		});
 	}
 
-	test("a queue taken back without a delivery sends its status before the transcript is drawn again, as before (S9)", async () => {
+	test("a queue taken back without a delivery sends its status before the transcript is drawn again, as before", async () => {
 		const toolHold = createGate();
 		const child = await createHarness({ tools: [holdTool(toolHold)] });
 		child.setResponses(busyTurnResponses());

@@ -60,7 +60,7 @@ describe("a queued message the subagent takes", () => {
 		["steering", "Steering: later one"],
 		["follow-up", "Follow-up: later one"],
 	] as const) {
-		test(`stays listed as a ${lane} row while its message_start hooks run, and leaves in the frame its row shows (S9)`, async () => {
+		test(`stays listed as a ${lane} row while its message_start hooks run, and leaves in the frame its row shows`, async () => {
 			const hook = createGate();
 			const chat = await openChat(holdMessageStart("later one", hook));
 			await chat.startBusyTurn();
@@ -82,7 +82,7 @@ describe("a queued message the subagent takes", () => {
 		});
 	}
 
-	test("taken together with the next one, each stays listed until its own row shows (S9)", async () => {
+	test("taken together with the next one, each stays listed until its own row shows", async () => {
 		const hook = createGate();
 		const chat = await openChat(holdMessageStart("first steer", hook), { steeringMode: "all" });
 		await chat.startBusyTurn();
@@ -106,7 +106,7 @@ describe("a queued message the subagent takes", () => {
 		assert.deepEqual(userTexts(chat.engine), ["first", "first steer", "second steer"]);
 	});
 
-	test("Alt+Up while it is taken gives nothing back and sends it once, as before the row stayed (S9)", async () => {
+	test("Alt+Up while it is taken gives nothing back and sends it once, as before the row stayed", async () => {
 		const hook = createGate();
 		const chat = await openChat(holdMessageStart("later one", hook));
 		await chat.startBusyTurn();
@@ -130,7 +130,7 @@ describe("a queued message the subagent takes", () => {
 describe("a chat over an agent session it does not steer", () => {
 	afterEach(() => releaseOpenGates());
 
-	test("gives nothing back on restore while the session delivers its taken message, as before (S9)", async () => {
+	test("gives nothing back on restore while the session delivers its taken message, as before", async () => {
 		initTheme("dark");
 		const hook = createGate();
 		const toolHold = createGate();
