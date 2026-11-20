@@ -1,27 +1,71 @@
 {
   "name": "@bastani/atomic-storage-postgres",
-  "version": "0.0.0",
+  "version": "0.10.2",
   "description": "PostgreSQL storage adapter for Atomic sessions and Intercom.",
-  "contributors": ["Norin Lavaee", "Alex Lavaee"],
+  "contributors": [
+    "Norin Lavaee",
+    "Alex Lavaee"
+  ],
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=22.19.0" },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "main": "./postgres.js",
   "types": "./postgres.d.ts",
-  "exports": { ".": { "types": "./postgres.d.ts", "import": "./postgres.js", "default": "./postgres.js" } },
-  "files": ["postgres.js", "postgres.d.ts", "auth.js", "auth.d.ts", "listen.js", "listen.d.ts", "proxy.js", "proxy.d.ts", "README.md", "CHANGELOG.md", "LICENSE"],
-  "publishConfig": { "access": "public" },
+  "exports": {
+    ".": {
+      "types": "./postgres.d.ts",
+      "import": "./postgres.js",
+      "default": "./postgres.js"
+    }
+  },
+  "files": [
+    "postgres.js",
+    "postgres.d.ts",
+    "auth.js",
+    "auth.d.ts",
+    "listen.js",
+    "listen.d.ts",
+    "proxy.js",
+    "proxy.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bastani-inc/atomic.git",
     "directory": "packages/storage-postgres"
   },
   "homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/storage-postgres#readme",
-  "bugs": { "url": "https://github.com/bastani-inc/atomic/issues" },
-  "keywords": ["atomic", "storage", "postgres", "postgresql", "bastani"],
-  "atomic": { "storageAdapters": ["./postgres.js"] },
-  "pi": { "storageAdapters": ["./postgres.js"] },
-  "dependencies": { "pg": "8.23.1", "pg-connection-string": "2.14.1" },
+  "bugs": {
+    "url": "https://github.com/bastani-inc/atomic/issues"
+  },
+  "keywords": [
+    "atomic",
+    "storage",
+    "postgres",
+    "postgresql",
+    "bastani"
+  ],
+  "atomic": {
+    "storageAdapters": [
+      "./postgres.js"
+    ]
+  },
+  "pi": {
+    "storageAdapters": [
+      "./postgres.js"
+    ]
+  },
+  "dependencies": {
+    "pg": "8.23.1",
+    "pg-connection-string": "2.14.1"
+  },
   "peerDependencies": {
     "@aws-sdk/rds-signer": "^3.1169.0",
     "@azure/identity": "^4.14.1",
@@ -29,9 +73,17 @@
     "google-auth-library": "^10.9.1 || ^11.3.4"
   },
   "peerDependenciesMeta": {
-    "@aws-sdk/rds-signer": { "optional": true },
-    "@azure/identity": { "optional": true },
-    "@bastani/atomic": { "optional": true },
-    "google-auth-library": { "optional": true }
+    "@aws-sdk/rds-signer": {
+      "optional": true
+    },
+    "@azure/identity": {
+      "optional": true
+    },
+    "@bastani/atomic": {
+      "optional": true
+    },
+    "google-auth-library": {
+      "optional": true
+    }
   }
 }
