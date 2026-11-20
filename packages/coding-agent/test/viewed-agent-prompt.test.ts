@@ -17,6 +17,7 @@ import { ModelRuntime } from "../src/core/model-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { TaskId } from "../src/core/tasks/contracts.js";
 import { InteractiveMode } from "../src/index.js";
+import { takeMovedDraftMark } from "../src/modes/interactive/agent-view/agent-drafts.ts";
 import { attachLostAgentQueueNotices } from "../src/modes/interactive/agent-view/prompt-retarget.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.ts";
@@ -648,6 +649,98 @@ describe("the main prompt while a subagent is shown", () => {
 			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
 			await view(undefined);
 			assert.equal(screen.mode.editor.getText(), "main draft");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a read-only subagent can be shown but takes no typing, and its empty prompt says why",
+		async () => {
+			screen = await mainScreen();
+			const port = worker({ readOnlyReason: "This subagent has finished; its chat is read-only." });
+			await view(WORKER);
+			assert.match(screen.prompt().join("\n"), /its chat is read-only/);
+			await screen.type("hello");
+			await screen.press(ENTER);
+			assert.equal(screen.mode.editor.getText(), "");
+			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a lost engine still reports the shown subagent's listed queue when its view closes first and the screen went back to main",
+		async () => {
+			screen = await mainScreen();
+			const port = worker({ busy: true, queued: { steering: ["queued one", "queued two"], followUp: [] } });
+			const ended = new Set<(event: InteractiveEngineGenerationEnded) => void>();
+			attachLostAgentQueueNotices(screen.mode, {
+				onGenerationEnded: (listener) => {
+					ended.add(listener);
+					return () => ended.delete(listener);
+				},
+			});
+			await view(WORKER);
+			// The engine's views close in the same emit, before the loss is reported: the screen shows main again.
+			port.setStatus({ gone: true });
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			for (const listener of ended)
+				listener({
+					generation: 1,
+					error: new Error("engine stopped"),
+					kind: "exit",
+					expected: false,
+				} as InteractiveEngineGenerationEnded);
+			assert.deepEqual(screen.warnings, [
+				"Engine restarted; 2 queued messages to worker weren't sent:\nqueued one\nqueued two",
+			]);
+			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"text typed for a subagent that is gone stays marked in main's prompt until it is submitted or edited",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			await view(WORKER);
+			await screen.type("/compact now");
+			port.setStatus({ gone: true });
+			await settle();
+			assert.equal(screen.mode.editor.getText(), "/compact now");
+			assert.deepEqual(takeMovedDraftMark(screen.mode, "/compact now"), {
+				agentName: "worker",
+				text: "/compact now",
+			});
+			assert.equal(takeMovedDraftMark(screen.mode, "/compact now"), undefined, "a submission takes the mark");
+
+			const again = worker();
+			await view(WORKER);
+			await screen.type("/new");
+			again.setStatus({ gone: true });
+			await settle();
+			assert.match(screen.mode.editor.getText(), /^\/new/);
+			await screen.type(" please");
+			assert.equal(takeMovedDraftMark(screen.mode, screen.mode.editor.getText()), undefined, "an edit clears it");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"text for a subagent that is gone joins main's own draft, not a history entry main's prompt was showing",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			screen.mode.editor.addToHistory?.("old prompt");
+			await screen.type("T");
+			await screen.press("\x01", "\x1b[A");
+			assert.equal(screen.mode.editor.getText(), "old prompt");
+			await view(WORKER);
+			await screen.type("x");
+			port.setStatus({ gone: true });
+			await settle();
+			assert.equal(screen.mode.editor.getText(), "x\n\nT");
 		},
 		HOST_TIMEOUT_MS,
 	);

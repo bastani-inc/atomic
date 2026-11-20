@@ -8,7 +8,7 @@ import {
 	SteeringQueueController,
 	type SteeringSubmitLane,
 } from "../steering-queue-controller.ts";
-import { type PromptHandle, promptHandle } from "./agent-drafts.ts";
+import { markMovedDraft, type PromptHandle, promptHandle, rewritePromptOwnText } from "./agent-drafts.ts";
 import type { AgentViewPort } from "./contracts.ts";
 import { routeViewedCommand, runViewedDoubleEscapeAction } from "./viewed-commands.ts";
 import { notifyViewed } from "./viewed-notices.ts";
@@ -104,8 +104,20 @@ function hold(mode: InteractiveModeBase, port: AgentViewPort): () => void {
 	};
 }
 
-/** Drop `port`'s controller once it is neither shown nor waiting on its subagent. */
+/**
+ * Drop `port`'s controller once it is neither shown nor waiting on its subagent. A subagent that is gone keeps it until
+ * the current task ends: when its engine was lost, its view closes and the screen shows main within the same report of
+ * the loss, and the loss's own notice still needs what its controller held.
+ */
 export function forgetIfIdle(mode: InteractiveModeBase, port: AgentViewPort): void {
+	if (port.status().gone) {
+		queueMicrotask(() => drop(mode, port));
+		return;
+	}
+	drop(mode, port);
+}
+
+function drop(mode: InteractiveModeBase, port: AgentViewPort): void {
 	const map = entriesOf(mode);
 	const entry = map.get(port);
 	if (entry === undefined || entry.busy > 0 || isViewed(mode, port)) return;
@@ -131,8 +143,9 @@ function giveBack(
 	combine: (current: string) => string,
 ): void {
 	if (port.status().gone) {
-		const main = promptHandle(mode, "main");
-		main.setText(combine(main.getExpandedText()));
+		// It joins what the reader typed into main's prompt, never a history entry main's prompt was showing.
+		const moved = rewritePromptOwnText(mode, { kind: "main" }, combine);
+		markMovedDraft(mode, port.status().name, moved);
 		mode.showWarning(goneAgentNotice(port.status().name));
 	} else prompt.setText(combine(prompt.getExpandedText()));
 	mode.updatePendingMessagesDisplay();
