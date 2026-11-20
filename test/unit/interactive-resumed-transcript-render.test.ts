@@ -413,6 +413,60 @@ test.each(["wheel", "wheel with reads between its events", "keys"] as const)(
 	},
 );
 
+test.each([
+	{ every: 16, events: 4, input: "wheel" },
+	{ every: 32, events: 4, input: "wheel" },
+	{ every: 16, events: 8, input: "wheel" },
+	{ every: 16, events: 1, input: "page keys" },
+] as const)(
+	"walking saved pages shorter than the screen by $input, with reads between its events, shows every saved row (a prompt in $every entries, $events events a frame, #5593)",
+	async ({ every, events, input }) => {
+		const { mode, tui, transcript, terminal } = await openResumedSession(0);
+		// Most saved entries draw no row, so a page of them is shorter than the screen: a read that lands after the wheel
+		// moved past the page the last frame's top row is on may release that page before the next frame.
+		const count = 60;
+		const steps: Record<number, SavedStep> = {};
+		for (let seq = 1; seq <= every * count; seq++)
+			if (seq % every !== 0) steps[seq] = { custom: "unrendered-record" };
+		await appendSavedHistory(mode.sessionManager, every * count, steps);
+		mode.renderInitialMessages();
+		// The prompts a frame shows, top to bottom, numbered 1..count; the prompt pinned over the first row is not a row.
+		const prompts = () =>
+			plainScreen(tui).flatMap((line) => {
+				const seq = line.trimStart().startsWith("↑") ? undefined : /P-(\d+)/.exec(line)?.[1];
+				return seq === undefined ? [] : [Number(seq) / every];
+			});
+		for (const down of [true, false]) {
+			if (down) transcript.scrollToStart();
+			else transcript.scrollToEnd();
+			const first = new RegExp(`P-0*${every}\\b`);
+			await settle(tui, (lines) => lines.some((line) => (down ? first : /at the end/).test(line)));
+			const seen = new Set(prompts());
+			let previous = prompts();
+			for (let step = 0; down ? !seen.has(count) : !seen.has(1); step++) {
+				assert.ok(step < 400, `never reached the ${down ? "end" : "start"}: ${seen.size} rows seen`);
+				for (let event = 0; event < events; event++) {
+					if (input === "page keys") terminal.input(down ? "\x1b[6~" : "\x1b[5~");
+					else terminal.input(`\x1b[<${down ? 65 : 64};10;10M`);
+					await nextTurn();
+				}
+				for (let turn = 0; turn < 3; turn++) {
+					await nextTurn();
+					tui.renderNow();
+				}
+				const shown = prompts();
+				if (shown.length && previous.length) {
+					const gap = down ? shown[0]! - previous.at(-1)! : previous[0]! - shown.at(-1)!;
+					assert.ok(gap <= 1, `${down ? "down" : "up"}: from ${previous.join(",")} to ${shown.join(",")}`);
+				}
+				for (const seq of shown) seen.add(seq);
+				if (shown.length) previous = shown;
+			}
+			assert.equal(seen.size, count, `every saved prompt was shown walking ${down ? "down" : "up"}`);
+		}
+	},
+);
+
 const thirtyLines = (label: string) => Array.from({ length: 30 }, (_, i) => `${label} line ${i + 1}`).join("\n");
 
 test("saved pages of the main chat draw each call once, finished, with its arguments and its click's expansion, read in either direction (#5593)", async () => {
