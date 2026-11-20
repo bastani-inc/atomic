@@ -1415,7 +1415,7 @@ class IntercomBroker {
           throw new Error("Invalid drop_ended_queued message");
         }
         // Durable wake queue: this session was told these were lost; only its own are dropped, and nobody is told again.
-        const session = this.sessions.get(currentId);
+        const session = currentId === null ? undefined : this.sessions.get(currentId);
         if (session !== undefined)
           this.endedQueue.settled(
             this.departedChildren.dropQueued(messageIds as string[], (held) =>
@@ -2177,7 +2177,7 @@ class IntercomBroker {
     const marker = this.endedQueueRetiredMarker();
     const retire = existsSync(marker);
     const continuity = {
-      servedSinceLastHolder: (lastHolderPid: string | undefined) => this.servedSinceLastHolder(lastHolderPid),
+      servedSinceLastHolder: (storeId: string) => this.servedSinceLastHolder(storeId),
       pid: String(process.pid),
     };
     let store: EndedChildQueueStore | undefined;
@@ -2192,16 +2192,39 @@ class IntercomBroker {
       store = await open({ home: router.durableHome, holder: router.brokerId, retire, ...continuity });
     }
     if (retire) rmSync(marker, { force: true });
+    // This broker holds the store now: recorded at once, without the store's write lock, so the next broker can tell it
+    // replaced this one (a write to the store can wait on another process's lock, or fail).
+    try {
+      writeFileSync(this.endedQueueHolderRecord(), JSON.stringify({ storeId: store.id, pid: String(process.pid) }), {
+        mode: 0o600,
+      });
+    } catch (error) {
+      console.error(
+        `Intercom broker could not record that it holds the store of messages for subagents that ended: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     return store;
   }
 
+  /** Durable wake queue: the store's identity and the pid of the broker holding it, next to the local store. */
+  private endedQueueHolderRecord(): string {
+    return `${getBrokerEndedChildQueuePath()}.holder`;
+  }
+
   /**
-   * Durable wake queue: whether a broker other than the store's last holder (`lastHolderPid`) may have served this agent
-   * directory since: an earlier version keeps no such queue, and told its sessions their messages were lost. Proven not
-   * when the last holder crashed (the pid file still names it), or exited in order with nothing started since (its
-   * exit record names it and the socket lock generation it left is the one before this broker's).
+   * Durable wake queue: whether a broker other than the store's last holder (its holder record names it) may have served
+   * this agent directory since: an earlier version keeps no such queue, and told its sessions their messages were lost.
+   * Proven not when the last holder crashed (the pid file still names it), or exited in order with nothing started since
+   * (its exit record names it and the socket lock generation it left is the one before this broker's).
    */
-  private servedSinceLastHolder(lastHolderPid: string | undefined): boolean {
+  private servedSinceLastHolder(storeId: string): boolean {
+    let lastHolderPid: string | undefined;
+    try {
+      const holder = JSON.parse(readFileSync(this.endedQueueHolderRecord(), "utf-8")) as { storeId?: unknown; pid?: unknown };
+      if (holder.storeId === storeId && typeof holder.pid === "string") lastHolderPid = holder.pid;
+    } catch {
+      // No record: nothing proves which broker held the store last.
+    }
     if (lastHolderPid === undefined) return true;
     const { pid, generationBefore } = this.predecessor;
     if (pid !== undefined) return pid !== lastHolderPid;

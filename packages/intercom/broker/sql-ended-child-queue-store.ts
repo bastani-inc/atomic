@@ -254,10 +254,10 @@ export async function openSqlEndedChildQueueStore(
 		readonly lockWaitMs?: number;
 		/**
 		 * Whether another broker can have served this home since the store's last holder, which kept nothing and told
-		 * senders their messages were lost: given the last holder's process id (as recorded here), says if this broker
-		 * proved it did not. Unproven, a store with messages is retired. Absent: never retired so.
+		 * senders their messages were lost: given the store's identity, says if this broker could not prove it did not.
+		 * Unproven, a store with messages is retired. Absent: never retired so.
 		 */
-		readonly servedSinceLastHolder?: (lastHolderPid: string | undefined) => boolean;
+		readonly servedSinceLastHolder?: (storeId: string) => boolean;
 		/** This broker's process id, recorded as the store's holder. */
 		readonly pid?: string;
 		/** A broker that kept the queue in memory told its sessions what this store kept was lost: drop it. */
@@ -326,7 +326,7 @@ export async function openSqlEndedChildQueueStore(
 	const known = await readMeta();
 	// Another broker (an earlier version, which keeps no such queue) served this home since the store's last holder: its
 	// sessions were told what the store kept was lost, so it is retired rather than delivered after all.
-	if (!retire && known !== undefined && servedSinceLastHolder?.(known.holderPid) === true) {
+	if (!retire && known !== undefined && servedSinceLastHolder?.(known.id) === true) {
 		const kept = await database.get<SqliteRow>(`SELECT 1 AS found FROM ${queue} WHERE home = ? AND keeper = ? LIMIT 1`, home, known.id);
 		if (kept !== undefined) retire = true;
 	}
@@ -517,7 +517,7 @@ export async function openLocalEndedChildQueueStore(
 	holder: string,
 	retire = false,
 	continuity: {
-		readonly servedSinceLastHolder?: (lastHolderPid: string | undefined) => boolean;
+		readonly servedSinceLastHolder?: (storeId: string) => boolean;
 		readonly pid?: string;
 	} = {},
 ): Promise<EndedChildQueueStore> {

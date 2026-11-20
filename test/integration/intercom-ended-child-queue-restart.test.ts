@@ -752,6 +752,45 @@ test(
 );
 
 test(
+	"a broker whose writes another process's lock held off is still known as the store's holder: the next one keeps what it queued (#5999)",
+	async () => {
+		const host = new Host();
+		await host.start();
+		const memory = new EndedQueueMemory();
+		const { ownerSession, childName, sender, messageId } = await heldMessage(host, "locked", memory);
+		await host.kill();
+		// Another process holds the store's write lock while the next broker starts: its writes fail after their wait.
+		const { DatabaseSync } = await import("node:sqlite");
+		const other = new DatabaseSync(getBrokerEndedChildQueuePath(host.agentDir));
+		other.exec("BEGIN IMMEDIATE");
+		try {
+			await host.start();
+			await again(host, "locked-sender", sender, { memory });
+			await sleep(6_000);
+		} finally {
+			other.exec("ROLLBACK");
+			other.close();
+		}
+		await host.kill();
+		await host.start();
+		const ownerBack = await owner(host, "locked", ownerSession);
+		const senderBack = await again(host, "locked-sender", sender, { memory });
+		await markEnded(ownerBack, childName, "stopped");
+		const continued = await resume(host, ownerBack, childName);
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(
+					continued.received.map(({ message }) => message.id),
+					[messageId],
+				),
+			WAIT,
+		);
+		assert.deepEqual(senderBack.lost, [], "nothing was lost");
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
 	"a store that cannot be opened keeps the queue in memory, and a restart tells each sender once that it was lost (#5999)",
 	async () => {
 		const host = new Host();

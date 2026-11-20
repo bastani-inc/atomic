@@ -72,6 +72,7 @@ import {
 import { IntercomSupervisorAuthorizationRefusedError, SUPERVISOR_AUTHORIZATION_REFUSED_CODE } from "../supervisor-refusal.js";
 import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 import {
+	ENDED_CHILD_OWNER_AWAY_MAX_MS,
 	ENDED_CHILD_WAKE_ANSWER_MS,
 	ENDED_CHILD_WAKE_START_MAX_MS,
 	PAUSED_RECIPIENT_TARGET,
@@ -83,9 +84,17 @@ import {
  * a paused subagent waits as long as the subagent is paused, so it is kept here until it reaches it or fails.
  */
 const ENDED_QUEUED_KEPT_MS = ENDED_CHILD_WAKE_ANSWER_MS + ENDED_CHILD_WAKE_START_MAX_MS;
+/**
+ * Durable wake queue: a broker that keeps the queue across restarts also waits up to 7 days for the session that would
+ * resume the subagent: such a message is kept here as long.
+ */
+const ENDED_QUEUED_KEPT_DURABLE_MS = ENDED_CHILD_OWNER_AWAY_MAX_MS + ENDED_QUEUED_KEPT_MS;
 /** #5999: whether the broker has given up a message queued to resume a subagent by now, so it is not kept here. */
-function expiredHere(kept: { readonly queue: "resuming" | "paused"; readonly at: number }, now: number): boolean {
-  return kept.queue === "resuming" && now - kept.at > ENDED_QUEUED_KEPT_MS;
+function expiredHere(
+  kept: { readonly queue: "resuming" | "paused"; readonly at: number; readonly durable?: true },
+  now: number,
+): boolean {
+  return kept.queue === "resuming" && now - kept.at > (kept.durable === true ? ENDED_QUEUED_KEPT_DURABLE_MS : ENDED_QUEUED_KEPT_MS);
 }
 
 /** #5999: the most messages kept here as queued for subagents that ended; the oldest is forgotten first. */
@@ -286,7 +295,7 @@ export interface LostEndedQueuedMessage {
  */
 export class EndedQueueMemory {
 	brokerInstanceId: string | undefined;
-	readonly kept = new Map<string, LostEndedQueuedMessage & { readonly at: number }>();
+	readonly kept = new Map<string, LostEndedQueuedMessage & { readonly at: number; readonly durable?: true }>();
 	/**
 	 * Durable wake queue: messages this session was told were lost, by the id of what kept them. A broker that keeps them
 	 * there after all (an older broker served in between) is told to drop them, so none is delivered after it was told
@@ -473,6 +482,8 @@ export class IntercomClient extends EventEmitter {
 	private brokerMarksEndedChildren = false;
 	/** #5999: the broker of the current registration wakes ended children and accepts `answer_ended_child_wake`. */
 	private brokerWakesEndedChildren = false;
+	/** Durable wake queue: the broker of the current registration keeps queued messages across restarts. */
+	private brokerDropsEndedQueued = false;
 	private brokerStampsReleasedChildren = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
@@ -772,6 +783,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerExtendsSaves = false;
         this.brokerMarksEndedChildren = false;
         this.brokerWakesEndedChildren = false;
+        this.brokerDropsEndedQueued = false;
         this.brokerStampsReleasedChildren = false;
         this._messageSource = undefined;
         this.disconnectError = null;
@@ -956,7 +968,8 @@ export class IntercomClient extends EventEmitter {
         this.brokerMarksEndedChildren = brokerMessage.marksEndedChildren === true;
         this.brokerWakesEndedChildren = this.brokerMarksEndedChildren && brokerMessage.wakesEndedChildren === true;
         this.noteBrokerInstance(typeof brokerMessage.instanceId === "string" ? brokerMessage.instanceId : undefined);
-        if (brokerMessage.dropsEndedQueued === true) this.dropToldLost();
+        this.brokerDropsEndedQueued = brokerMessage.dropsEndedQueued === true;
+        if (this.brokerDropsEndedQueued) this.dropToldLost();
         this.brokerStampsReleasedChildren = brokerMessage.stampsReleasedChildren === true;
         this._brokerProtocol = protocolRangeOf(brokerMessage.protocol as BrokerProtocolRange | undefined);
         void this.syncReach().catch(() => {});
@@ -1827,7 +1840,13 @@ export class IntercomClient extends EventEmitter {
     const now = Date.now();
     for (const [id, kept] of this.endedQueue.kept) if (expiredHere(kept, now)) this.endedQueue.kept.delete(id);
     this.endedQueue.kept.delete(messageId);
-    this.endedQueue.kept.set(messageId, { ...sent, messageId, queue, at: now });
+    this.endedQueue.kept.set(messageId, {
+      ...sent,
+      messageId,
+      queue,
+      at: now,
+      ...(this.brokerDropsEndedQueued ? { durable: true as const } : {}),
+    });
     while (this.endedQueue.kept.size > ENDED_QUEUED_MAX) this.endedQueue.kept.delete(this.endedQueue.kept.keys().next().value as string);
   }
 
@@ -1843,7 +1862,7 @@ export class IntercomClient extends EventEmitter {
     const now = Date.now();
     const lost = [...this.endedQueue.kept.values()]
       .filter((kept) => !expiredHere(kept, now))
-      .map(({ at: _at, ...message }) => message);
+      .map(({ at: _at, durable: _durable, ...message }) => message);
     this.endedQueue.kept.clear();
     for (const message of lost) {
       this.endedQueue.toldLost.delete(message.messageId);
