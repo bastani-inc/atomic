@@ -252,6 +252,12 @@ export interface TaskViewSource {
 	 */
 	interruptTask?(id: TaskId): Promise<TaskViewResult<undefined>>;
 	/**
+	 * Pauses an agent task, as Esc does in its chat: the messages typed into the chat that are still queued come back,
+	 * in order, for its editor, then its turn ends as {@link interruptTask} ends it. The task stays running, paused,
+	 * and its next message continues it. Absent where a view cannot pause a task.
+	 */
+	pauseTask?(id: TaskId): Promise<TaskViewResult<QueuedTaskMessages>>;
+	/**
 	 * Why a finished agent task's chat is read-only (it was stopped for good or is no longer kept), or `undefined` when
 	 * a message resumes it. Absent where finished tasks cannot be resumed from a view.
 	 */
@@ -316,6 +322,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	const clearTaskQueue = root.clearTaskQueue;
 	const taskCommands = root.taskCommands;
 	const interruptTask = root.interruptTask;
+	const pauseTask = root.pauseTask;
 	const taskReadOnlyReason = root.taskReadOnlyReason;
 	const taskStopped = root.taskStopped;
 	const view: TaskViewSource = {
@@ -360,6 +367,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 		...(clearTaskQueue === undefined ? {} : { clearTaskQueue: (id: TaskId) => clearTaskQueue.call(root, id) }),
 		...(taskCommands === undefined ? {} : { taskCommands: (id: TaskId) => taskCommands.call(root, id) }),
 		...(interruptTask === undefined ? {} : { interruptTask: (id: TaskId) => interruptTask.call(root, id) }),
+		...(pauseTask === undefined ? {} : { pauseTask: (id: TaskId) => pauseTask.call(root, id) }),
 		...(taskStopped === undefined ? {} : { taskStopped: (id: TaskId) => taskStopped.call(root, id) }),
 		...(taskReadOnlyReason === undefined
 			? {}
@@ -568,6 +576,30 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 					store.setTurnInterrupted(id, true);
 				}
 				return { ok: true, value: undefined };
+			} catch (error) {
+				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
+			}
+		},
+		async pauseTask(id) {
+			const task = lease(id);
+			if (!task.ok) return { ok: false, error: { message: task.error.message } };
+			const bound = taskTranscriptSource(task.value);
+			if (!bound.ok) return { ok: false, error: { message: "This task cannot be paused from here." } };
+			const session = bound.value.session;
+			// A session that cannot take its queue back is paused as an interrupt ends its turn; its queue stays.
+			const pause =
+				session.pauseTurn?.bind(session) ??
+				(session.interruptTurn === undefined
+					? undefined
+					: async () => {
+							await session.interruptTurn?.();
+							return { steering: [], followUp: [] };
+						});
+			if (pause === undefined) return { ok: false, error: { message: "This task cannot be paused from here." } };
+			try {
+				const taken = await pause();
+				if (bound.value.session.isRunning?.() !== true) store.setTurnInterrupted(id, true);
+				return { ok: true, value: taken };
 			} catch (error) {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
 			}

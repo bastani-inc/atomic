@@ -294,6 +294,11 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	abort(options?: SessionAbortOptions): Promise<void>;
 	/** Ends the current turn without closing the session to further messages, as Esc does in a subagent's chat. */
 	interruptTurn(): Promise<void>;
+	/**
+	 * Pauses the current turn as Esc does in a subagent's chat: returns the typed messages still queued, ends the turn,
+	 * and holds the rest of the queue until the next message continues the session.
+	 */
+	pauseTurn(): Promise<ClearedQueue>;
 	_sealMessageAdmissionIfDrained(): boolean;
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
@@ -518,6 +523,7 @@ export interface AgentSessionPublicSurface
 		| "getFollowUpMessages"
 		| "abort"
 		| "interruptTurn"
+		| "pauseTurn"
 		| "setModel"
 		| "cycleModel"
 		| "setThinkingLevel"
@@ -604,6 +610,10 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_undeliveredAgentStarts: number;
 	/** A child whose turn the user interrupted waits here: the next message it receives starts its next turn. */
 	_awaitingMessageAfterInterrupt: boolean;
+	/** A `pauseTurn` holds the queue: settles once its run did, and the next message releases the hold. */
+	_turnPause: PromiseWithResolvers<void> | undefined;
+	/** The release of a `pauseTurn` hold under way, which every next message waits for. */
+	_turnPauseRelease: Promise<void> | undefined;
 	_pendingInterruptDeliveries: number;
 	_priorityInterruptPending: boolean;
 	_activePromptCount: number;

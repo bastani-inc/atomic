@@ -16,7 +16,13 @@ import {
 	restoreProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import { markQueuedMessageImages, waitForCustomMessagePreparation } from "./agent-session-prompt.ts";
-import { abort, interruptTurn, pauseQueuedMessages, resumeQueuedMessages } from "./agent-session-queue-pause.ts";
+import {
+	abort,
+	interruptTurn,
+	pauseQueuedMessages,
+	pauseTurn,
+	resumeQueuedMessages,
+} from "./agent-session-queue-pause.ts";
 import { abortTurnRetries } from "./agent-session-retry.ts";
 import {
 	forgetAllTypedQueuedTexts,
@@ -643,6 +649,7 @@ export const agentSessionMessageQueueMethods = {
 	getFollowUpMessages,
 	abort,
 	interruptTurn,
+	pauseTurn,
 	setSteeringMode,
 	setFollowUpMode,
 };

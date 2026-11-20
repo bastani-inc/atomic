@@ -18,6 +18,7 @@ import {
 	queueHeldCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import { retryIsCurrent } from "./agent-session-retry.ts";
+import { releaseTurnPause, settleTurnPause } from "./agent-session-turn-pause.ts";
 import type {
 	PromptDisposition,
 	PromptOptions,
@@ -65,6 +66,11 @@ function holdSubagentMessageAdmission(session: AgentSession): () => void {
 
 function openRun(session: AgentSession): void {
 	openRuns.set(session, (openRuns.get(session) ?? 0) + 1);
+}
+
+/** Whether a run is open: its turn streams or waits to retry, or it has not settled after its turn. */
+export function hasOpenRun(session: AgentSession): boolean {
+	return openRuns.has(session);
 }
 
 function closeRun(session: AgentSession): void {
@@ -149,6 +155,9 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 	if (this._disposed || sessionGenerationClosing.has(this))
 		throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	if (subagentExecutionEnded(this)) throw subagentExecutionEndedError();
+	// A message to a session Esc paused continues it: the pause's hold goes first, so this message starts the turn.
+	const pauseRelease = releaseTurnPause(this);
+	if (pauseRelease !== undefined) await pauseRelease;
 	if (this._isEmittingAgentSettled && !queuesDuringAgentSettled(this, options)) {
 		// A run started by an agent_settled handler waits until every settled handler completes.
 		deferSettledAction(this, async () => await this.prompt(text, options));
@@ -886,6 +895,7 @@ async function settleSubagentMessages(session: AgentSession, keepMessageAdmissio
 		session._turnInterruptedByUser = false;
 		session._awaitingStartAfterInterrupt = true;
 		session._awaitingMessageAfterInterrupt = true;
+		settleTurnPause(session);
 		return;
 	}
 	// A turn that settles before the child's execution gave it its task, such as one an extension's interrupt started
