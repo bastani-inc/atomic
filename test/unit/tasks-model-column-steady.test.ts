@@ -685,3 +685,49 @@ test("rows already listed show their known models at once when they scroll into 
 		inspector.dispose();
 	}
 });
+
+test("a waiting row scrolled out of view does not wake the panel when its wait ends, and shows its model on return", () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	const settled = Array.from(
+		{ length: 9 },
+		(_, index): AgentPanelRow => ({
+			id: `r${index}`,
+			kind: "agent",
+			state: "running",
+			name: "worker",
+			task: `work ${index}`,
+			model: "faux/m",
+			thinking: "low",
+		}),
+	);
+	const fresh: AgentPanelRow = {
+		id: "fresh",
+		kind: "agent",
+		state: "running",
+		name: "worker",
+		task: "fresh work",
+		model: "faux/thinker",
+	};
+	let wakes = 0;
+	const column = new ModelColumn(() => {
+		wakes++;
+	});
+	const draw = (list: readonly AgentPanelRow[], scroll: number) =>
+		renderAgentPanelRows(list, 120, plainStyle, {
+			selectedId: list[scroll]!.id,
+			scroll,
+			showMain: true,
+			modelColumn: column,
+		}).map((line) => stripVTControlCharacters(line));
+	try {
+		draw(settled, 0);
+		const withFresh = [fresh, ...settled];
+		assert.doesNotMatch(draw(withFresh, 0).join("\n"), /faux\/thinker/, "a row added with no level yet waits");
+		assert.ok(!draw(withFresh, 2).some((line) => line.includes("fresh work")), "scrolled out");
+		vi.advanceTimersByTime(MODEL_LEVEL_WAIT_MS);
+		assert.equal(wakes, 0, "nothing on screen changes when its wait ends");
+		assert.match(draw(withFresh, 0).find((line) => line.includes("fresh work")) ?? "", /faux\/thinker {2}fresh work/);
+	} finally {
+		column.dispose();
+	}
+});

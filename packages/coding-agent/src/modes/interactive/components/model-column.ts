@@ -73,8 +73,11 @@ export function nextModelCell(
 /** One open view's model cells and column width. */
 export class ModelColumn {
 	private readonly cells = new Map<string, ModelCell>();
-	/** The deadlines of the waiting cells, by row id: few rows wait at once. */
-	private readonly waiting = new Map<string, number>();
+	/**
+	 * The deadlines of the waiting rows painted last, by row id. A waiting row out of view needs no timer: its next
+	 * paint shows its model if its time is up.
+	 */
+	private waiting = new Map<string, number>();
 	/**
 	 * The list the view last painted from; undefined before its first paint, and after it was too narrow for the
 	 * column. It is read only when it changes, and then only as far as a paint needs it.
@@ -117,29 +120,29 @@ export class ModelColumn {
 		};
 		const painted = new Set<string>();
 		const shown = new Set<string>();
+		const waiting = new Map<string, number>();
+		let earliest = Number.POSITIVE_INFINITY;
 		for (const [id, report] of reports) {
 			const before = this.cells.get(id);
 			const cell = nextModelCell(before, report, now, before === undefined && added(id));
 			painted.add(id);
 			this.cells.set(id, cell);
 			if (cell.kind === "shown") shown.add(id);
-			if (cell.kind === "waiting") this.waiting.set(id, cell.since + MODEL_LEVEL_WAIT_MS);
-			else this.waiting.delete(id);
+			else if (cell.kind === "waiting") {
+				const due = cell.since + MODEL_LEVEL_WAIT_MS;
+				waiting.set(id, due);
+				earliest = Math.min(earliest, due);
+			}
 		}
+		this.waiting = waiting;
 		if (listed !== previous) {
 			this.roster = listed;
 			if (this.cells.size > painted.size) {
 				const ids = new Set<string>();
 				for (const row of listed) ids.add(row.id);
-				for (const id of this.cells.keys()) {
-					if (painted.has(id) || ids.has(id)) continue;
-					this.cells.delete(id);
-					this.waiting.delete(id);
-				}
+				for (const id of this.cells.keys()) if (!painted.has(id) && !ids.has(id)) this.cells.delete(id);
 			}
 		}
-		let earliest = Number.POSITIVE_INFINITY;
-		for (const due of this.waiting.values()) earliest = Math.min(earliest, due);
 		this.arm(earliest);
 		return shown;
 	}
