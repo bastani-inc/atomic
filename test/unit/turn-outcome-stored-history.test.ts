@@ -73,21 +73,15 @@ function interleaved() {
 	return entries;
 }
 
-// `{ history: "full" }` was removed: a session opens at its window, which holds all of an uncompacted linear session.
-const opens = [
-	["by default", undefined],
-	['with history "tail"', { history: "tail" }],
-] as const;
-
-test.each(opens)(
-	"walking a resident session opened %s uses no store loads for saved diagnostic entries (#5649)",
-	async (_how, options) => {
+test.each(["full", "tail"] as const)(
+	"walking a resident %s session uses no store loads for saved diagnostic entries (#5649)",
+	async (history) => {
 		const store: SessionStore = new MemorySessionStore();
 		try {
 			store.readRange = undefined;
 			const entries = interleaved();
 			await store.create(header, entries);
-			const manager = await SessionManager.open(store, header.id, undefined, options);
+			const manager = await SessionManager.open(store, header.id, undefined, { history });
 			const load = vi.spyOn(store, "load");
 			const seen: SessionEntry[] = [];
 			await manager.forEachStoredEntry(1, (entry) => {
@@ -101,9 +95,9 @@ test.each(opens)(
 	},
 );
 
-test.each(opens)(
-	"a reopen %s reads a released history once without searching the file for each diagnostic (#5649)",
-	async (_how, options) => {
+test.each(["full", "tail"] as const)(
+	"a %s reopen reads a released history once without searching the file for each diagnostic (#5649)",
+	async (history) => {
 		const dir = await mkdtemp(join(tmpdir(), "atomic-outcome-spill-"));
 		const store = new MemorySessionStore(undefined, releasedHistoryFiles(dir));
 		try {
@@ -111,7 +105,7 @@ test.each(opens)(
 			await store.create(header, entries);
 			await store.releaseSession(header.id);
 			const searches = vi.spyOn(store, "findEntrySeq");
-			const manager = await SessionManager.open(store, header.id, undefined, options);
+			const manager = await SessionManager.open(store, header.id, undefined, { history });
 			assert.equal(manager.getLastSeq(), entries.length);
 			assert.equal(searches.mock.calls.length, 0);
 		} finally {

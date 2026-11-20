@@ -47,7 +47,6 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionEntryError, SessionManager } from "./session-manager.ts";
-import { assertWindowHistoryOption } from "./session-manager-core.ts";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
@@ -719,10 +718,9 @@ export class AgentSessionRuntime {
 			sessionDirectory?: string;
 			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
-			history?: "tail";
+			history?: "tail" | "full";
 		},
 	): Promise<{ cancelled: boolean }> {
-		assertWindowHistoryOption(options?.history);
 		return this.replace(async () => {
 			const beforeResult = await this.emitBeforeSwitch("resume", sessionId);
 			this.assertOpen();
@@ -908,12 +906,7 @@ export class AgentSessionRuntime {
 	 * when another node released it, has its checkouts prepared first, as `/resume` prepares them, and continues where
 	 * they were restored. Lookups in shared storage are bounded as `/resume`'s are.
 	 */
-	rehydrate(sessionId: string, options?: { readonly history?: "tail" }): Promise<AgentSession> {
-		try {
-			assertWindowHistoryOption(options?.history);
-		} catch (error) {
-			return Promise.reject(error);
-		}
+	rehydrate(sessionId: string, options?: { readonly history?: "tail" | "full" }): Promise<AgentSession> {
 		return this.admit(async () => {
 			const current = this.session as unknown as AgentSessionInternalSurface;
 			if (this.session.sessionId === sessionId && !current._disposed) return this.session;
@@ -932,7 +925,7 @@ export class AgentSessionRuntime {
 	}
 
 	/** Where a rehydrated session continues, decided checkout by checkout; see {@link continueSessionWhereItWorked}. */
-	private continueWhereItWorked(opened: SessionManager, history?: "tail"): Promise<SessionManager> {
+	private continueWhereItWorked(opened: SessionManager, history?: "tail" | "full"): Promise<SessionManager> {
 		const options = {
 			...this.resumeOptions("rehydrate"),
 			onNotices: (notices: readonly ResumeNotice[]) => this.queueResumeNotices(notices),
@@ -945,7 +938,7 @@ export class AgentSessionRuntime {
 		);
 	}
 
-	private async rehydrateFromStore(sessionId: string, history?: "tail"): Promise<AgentSession> {
+	private async rehydrateFromStore(sessionId: string, history?: "tail" | "full"): Promise<AgentSession> {
 		const store = this.session.sessionManager.getSessionStore();
 		if ((await this.boundedSessionLookup(store.readHeader(sessionId), sessionId)) === undefined) {
 			const storage = store.descriptor.adapter;

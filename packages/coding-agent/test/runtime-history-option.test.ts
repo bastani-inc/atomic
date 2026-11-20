@@ -118,30 +118,37 @@ test("runtime.switchSession and rehydrate always keep the window, with history a
 	assert.equal(manager.getEntry("early"), undefined);
 });
 
-test('{ history: "full" } is refused before any session opens, switches or wakes, instead of yielding the window (#5554)', async () => {
-	const runtime = await runtimeWithCompactedSessions(["kept", "other"]);
+test('loadFullHistory() and { history: "full" } still hold every stored entry for a caller that needs them all (#5554)', async () => {
+	const runtime = await runtimeWithCompactedSessions(["kept", "switched", "woken"]);
 	const manager = runtime.session.sessionManager;
 	const store = manager.getSessionStore();
-	// A JavaScript caller, or a cast, still reaches the removed value at runtime.
-	const full = { history: "full" } as unknown as { readonly history: "tail" };
-	const removed = { name: "TypeError", message: /"full" has been removed.*readHistory\(\)/ };
+	const full = { history: "full" } as const;
+	const holdsEveryEntry = (opened: SessionManager) => {
+		assert.equal(opened.hasFullHistory(), true);
+		assert.deepEqual(ids(opened.getEntries()).slice(0, history.length), ids(history));
+		assert.deepEqual(opened.getEntry("early"), history[0]);
+	};
 
-	await assert.rejects(SessionManager.open(store, "kept", undefined, full), removed);
-	await assert.rejects(manager.openSessionById("kept", undefined, undefined, full), removed);
-	await assert.rejects(SessionManager.continueRecent(store, manager.getCwd(), full), removed);
-	await assert.rejects(manager.createBranchedSession(manager.getLeafId() ?? "", full), removed);
+	holdsEveryEntry(await SessionManager.open(store, "kept", undefined, full));
+	holdsEveryEntry(await manager.openSessionById("kept", undefined, undefined, full));
+	holdsEveryEntry((await runtime.rehydrate("woken", full)).sessionManager);
+	await runtime.switchSession("switched", full);
+	holdsEveryEntry(runtime.session.sessionManager);
 
-	const before = runtime.session.sessionId;
-	await assert.rejects(runtime.switchSession("other", full), removed);
-	assert.equal(runtime.session.sessionId, before);
-	await assert.rejects(runtime.rehydrate("other", full), removed);
-	assert.equal(runtime.rehydratedSessionCount, 0);
+	// A window loads the rest on request, once for concurrent callers, and keeps it.
+	const window = await SessionManager.open(store, "kept");
+	assert.equal(window.hasFullHistory(), false);
+	const loading = window.loadFullHistory();
+	assert.equal(window.loadFullHistory(), loading);
+	await loading;
+	holdsEveryEntry(window);
+	assert.equal(window.getLeafId(), "later");
 
-	// The method itself is gone, so a call fails instead of returning with only the window.
-	assert.equal("loadFullHistory" in manager, false);
-	const opened = await SessionManager.open(store, "kept");
-	assert.equal(opened.hasFullHistory(), false);
-	assert.throws(() => (opened as unknown as { loadFullHistory(): Promise<void> }).loadFullHistory(), TypeError);
+	// A branch copy still takes only "tail".
+	await assert.rejects(window.createBranchedSession("later", full as unknown as { readonly history: "tail" }), {
+		name: "TypeError",
+		message: /accepts only history: "tail"/,
+	});
 });
 
 test("RPC import_session continues from the imported session's window and returns what the whole session showed (#5554)", async () => {

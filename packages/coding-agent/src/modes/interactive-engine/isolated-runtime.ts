@@ -18,7 +18,6 @@ import type { ExtensionError } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { type SessionEntry, SessionManager } from "../../core/session-manager.ts";
-import { assertWindowHistoryOption } from "../../core/session-manager-core.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
 import { retryStatusUpdate, type SessionRetryStatus } from "../../core/session-retry-status.js";
 import type { MemorySessionStore } from "../../core/storage/session/memory-session-store.js";
@@ -903,7 +902,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		sessionId: string,
 		options?: Parameters<AgentSessionRuntime["switchSession"]>[1],
 	): Promise<{ cancelled: boolean }> {
-		assertWindowHistoryOption(options?.history);
 		const result = await this.client.switchSession(sessionId, options?.cwdOverride, options?.sessionDirectory);
 		if (!result.cancelled) {
 			this.discardHeldHostEvents();

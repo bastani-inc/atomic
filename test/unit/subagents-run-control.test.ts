@@ -1795,14 +1795,12 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 	await h.sessionManager.appendThinkingLevelChange("high");
 	const forked = await forkFromParentConversation(h);
 	let childId: string | undefined;
-	// No manager can load a whole session any more; the child's transcript must not be paged in either.
-	const original = SessionManager.prototype.readHistory;
-	const hydrate = vi.spyOn(SessionManager.prototype, "readHistory").mockImplementation(function (
+	const original = SessionManager.prototype.loadFullHistory;
+	const hydrate = vi.spyOn(SessionManager.prototype, "loadFullHistory").mockImplementation(function (
 		this: SessionManager,
-		...args: Parameters<SessionManager["readHistory"]>
 	) {
-		if (this.getSessionId() === childId) throw new Error("compacted child history must stay unread");
-		return original.apply(this, args);
+		if (this.getSessionId() === childId) throw new Error("compacted child history must stay unloaded");
+		return original.call(this);
 	});
 	try {
 		const restarted = await restoreStartedChild(

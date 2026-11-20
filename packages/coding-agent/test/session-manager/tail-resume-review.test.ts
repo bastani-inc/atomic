@@ -235,20 +235,14 @@ test("a snapshot-only SDK store opens a window and pages the archive without kee
 	assert.equal(view.getLeafId(), "current");
 });
 
-test("reading the history rejects a same-length replacement instead of merging session generations (#5249)", async () => {
+test("hydration rejects a same-length replacement instead of merging session generations (#5249)", async () => {
 	const entries = [user("u", null), user("kept", "u"), boundary("c", "kept", "kept")];
 	const { open, store, header } = await fixture(entries);
 	const partial = await open();
 	await store.replace("session", header, [user("new", null), user("new2", "new"), user("new3", "new2")], {
 		expectSeq: 3,
 	});
-	await assert.rejects(
-		(async () => {
-			for await (const _page of partial.readHistory()) {
-			}
-		})(),
-		{ name: "SessionConflictError" },
-	);
+	await assert.rejects(partial.loadFullHistory(), { name: "SessionConflictError" });
 });
 
 test("resume excludes abandoned branches after the active boundary (#5249)", async () => {
@@ -268,14 +262,8 @@ test("resume excludes abandoned branches after the active boundary (#5249)", asy
 	);
 	const id = await partial.appendMessage({ role: "user", content: "new", timestamp: 1 });
 	assert.equal(id.length, 36);
-	const read: SessionEntry[] = [];
-	for await (const { items } of partial.readHistory())
-		for (const item of items) if ("entry" in item) read.push(item.entry);
-	assert.deepEqual(read, (await store.load("session")).entries);
-	assert.equal(
-		partial.getEntries().some((e) => e.id === "b" || e.id === "b2"),
-		false,
-	);
+	await partial.loadFullHistory();
+	assert.deepEqual(partial.getEntries(), (await store.load("session")).entries);
 });
 
 test("opening the tree returns historical ancestry without fetching old message bodies or hydrating the manager (#5554)", async () => {

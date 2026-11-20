@@ -46,10 +46,11 @@ export interface NewSessionOptions {
 
 export interface SessionOpenOptions {
 	/**
-	 * A session always opens at its current context window; `"tail"` is the default and the only value. Read older
-	 * entries with `readHistory()` or `readEntry(id)`. `"full"` was removed in 0.10.0 and is rejected.
+	 * `"tail"`, the default, opens the session at its current context window; read older entries with `readHistory()`
+	 * or `readEntry(id)`. `"full"` loads every stored entry into the manager and keeps it there; use it only when
+	 * every entry must stay in memory.
 	 */
-	readonly history?: "tail";
+	readonly history?: "tail" | "full";
 	/** The entry to resume from instead of the current leaf. */
 	readonly leafId?: string;
 }
@@ -399,6 +400,7 @@ export type ReadonlySessionManager = Pick<
 	| "getWorktreeRootMappings"
 	| "getWorktreePathContinuations"
 	| "hasFullHistory"
+	| "loadFullHistory"
 	| "getOmittedHistoryTotals"
 	| "getEntrySeq"
 	| "findEntrySeq"

@@ -47,14 +47,6 @@
 - `/resume` now lists sessions only. The agent panel, `/tasks` and terminal program status no longer show workflow runs. `/settings` and `atomic config` no longer offer workflow options. To continue work, resume the parent session and inspect its subagents in `/tasks`.
 - The installed `docs/workflows.md`, `docs/guides/workflows.md`, and `docs/workflows/` guides are retired. Published bookmarks redirect to [Orchestration](docs/orchestration.md) or [Migrating workflows](docs/orchestration/migrating-workflows.md). Update local file references to the new paths.
 - Task cancellation receipts can return `already-finishing`: the runner's outcome can no longer change, but its batch may still be using the directory. Wait for task settlement before removing its temporary worktree ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
-- `SessionManager.loadFullHistory()` and the `{ history: "full" }` option are removed; nothing loads a whole saved session into a live manager any more. `{ history: "full" }` passed to `SessionManager.open()`, `openSessionById()`, `continueRecent()`, `runtime.switchSession()` or `runtime.rehydrate()` is rejected with a `TypeError` before anything opens, and a call to `loadFullHistory()` fails because the method no longer exists (an optional `loadFullHistory?.()` call now does nothing). Extensions no longer have the whole history loaded before `session_start`: the state an extension saved with `pi.appendEntry()` on the current branch stays in `getBranch()` and `getEntries()`. An imported session (`SessionManager.importFromJsonl()`, `runtime.importFromJsonl()`, `/import`, RPC `import_session` and `atomic --import`) now continues from its current context window as a resumed one does, so `getEntries()` and `getTree()` after an import describe that window; what the session shows, its context and its export are unchanged. Read older entries a page at a time instead; the manager keeps none of them ([#5554](https://github.com/bastani-inc/atomic/issues/5554)):
-
-  ```ts
-  for await (const page of sessionManager.readHistory()) {
-    for (const item of page.items) if ("entry" in item) visit(item.entry);
-  }
-  const entry = await sessionManager.readEntry(entryId);
-  ```
 
 ### Added
 
@@ -67,6 +59,17 @@
 
 ### Changed
 
+- Atomic's own code reads older session entries a page at a time with `sessionManager.readHistory()` and `readEntry(id)`, and never loads a whole saved session into a live manager. Use `readHistory()` in extensions and SDK code too. `loadFullHistory()` and the `{ history: "full" }` option of `SessionManager.open()`, `openSessionById()`, `continueRecent()`, `runtime.switchSession()` and `runtime.rehydrate()` still work, but they load every entry of the session into memory; use them only when every entry must stay resident ([#5554](https://github.com/bastani-inc/atomic/issues/5554)):
+
+  ```ts
+  for await (const page of sessionManager.readHistory()) {
+    for (const item of page.items) if ("entry" in item) visit(item.entry);
+  }
+  const entry = await sessionManager.readEntry(entryId);
+  ```
+
+- An imported session (`SessionManager.importFromJsonl()`, `runtime.importFromJsonl()`, `/import`, RPC `import_session` and `atomic --import`) continues from its current context window, as a resumed one does. What it shows, its context and its export are unchanged, but `getEntries()`, `getBranch()` and `getTree()`, and RPC `get_entries` and `get_tree`, now describe that window after an import. Read older entries with `readHistory()` ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- `/session` no longer loads the whole session into memory to list the cost of each model, the cache hit rate and the wasted cache cost. It shows the rest of the summary at once, reads the earlier history a page at a time without keeping it, and adds those lines, which still cover the whole session, when the read ends ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Every chat shows a retry the same way: the main chat, in the same process or a separate engine, and subagent and task chats show `Retrying · response timed out · attempt 2/3 in 4s   esc cancel` with the spinner of the working line, instead of `Retrying (2/3) in 4s... (esc Cancel)` or a bare `retrying…`. The line names why the request failed in a few words, such as `rate limited`, `overloaded`, `server error 503` or `connection reset`, counts down to the next attempt, and reads `Working…` until that attempt starts. `esc cancel` appears only where Esc cancels the retry, and the key is clickable. A summary retry reads `Retrying summary · <reason> · attempt 1/3 in 2s`. The line always stays on one row: when the terminal is too narrow, the line shortens the reason with `…`. If the line still doesn't fit, it removes the reason, then the key hint, then the word `attempt`. The other waiting lines are in sentence case too: `Switching model…`, `Resuming…` and `Summarizing branch…`. Retries themselves are unchanged.
 - Closing or switching sessions no longer needs to describe a worktree child as reaped while Git is still using its checkout. Even if the close requested the stop, the receipt can say `already-finishing` instead. Children without temporary worktrees keep their usual close receipts ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 - Codemode scripts can launch single or parallel children with `tools.subagent`, wait with a budget, check status, and pause, quit or resume children their session launched. Scripts can `list` and `get` agent definitions, but `create`, `update` and `delete` still require direct calls. The new `models` action lists configured models and their supported thinking levels, both directly and from scripts ([#5927](https://github.com/bastani-inc/atomic/pull/5927)).
