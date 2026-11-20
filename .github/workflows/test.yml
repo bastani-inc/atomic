@@ -335,9 +335,15 @@ jobs:
   # Every store's conformance suite on the server backends (test/integration/storage-conformance-matrix.test.ts),
   # plus the integration files that need a libSQL server. The integration shards run the same matrix on SQLite
   # files only. Linux only: service containers need a Linux runner. See docs/ci.md ("Storage backend matrix").
+  # Two shards, each with its own libSQL server and PostgreSQL: on one server for every file, sqld was saturated and
+  # ordinary sqld tests ran past their 30 s budget.
   storage-conformance:
-    name: storage-conformance (linux-x64)
+    name: storage-conformance (linux-x64, ${{ matrix.shard }}/2)
     if: ${{ !github.event.pull_request.draft }}
+    strategy:
+      matrix:
+        shard: [1, 2]
+      fail-fast: false
     runs-on: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.storage-conformance.linux-amd64
     # Setup as in an integration shard, plus service startup and storage adapter conformance.
     timeout-minutes: 30
@@ -447,11 +453,12 @@ jobs:
         run: >-
           bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64)"
           -- npm run test:integration -- storage-conformance-matrix storage-postgres intercom-postgres sqld
+          --shard=${{ matrix.shard }}/2
       - name: Upload test diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-diagnostics-storage-conformance-linux-x64
+          name: test-diagnostics-storage-conformance-linux-x64-${{ matrix.shard }}
           path: .ci-diagnostics/
           include-hidden-files: true
           if-no-files-found: ignore
