@@ -247,6 +247,14 @@ export function childOfAttempt(task: Pick<TaskRecord, "launchOperationId">): str
 	return suffix > 0 ? operation.slice(0, suffix) : operation;
 }
 
+/**
+ * The subagent `task` is an attempt of, or `undefined` for an agent record that names no launch operation (a task
+ * view's own record, or one saved before records carried it): such a record is its own subagent, with no other attempts.
+ */
+function attemptChild(task: TaskRecord): string | undefined {
+	return typeof task.launchOperationId === "string" ? childOfAttempt(task) : undefined;
+}
+
 const NONE_SUPERSEDED: ReadonlySet<TaskId> = new Set();
 
 /**
@@ -281,13 +289,15 @@ function supersededAttempts(
 	const latest = new Map<string, { readonly task: TaskRecord; readonly index: number }>();
 	for (const [index, task] of tasks.entries()) {
 		if (task.kind !== "agent") continue;
-		const child = childOfAttempt(task);
+		const child = attemptChild(task);
+		if (child === undefined) continue;
 		const seen = latest.get(child);
 		if (seen === undefined || laterAttempt(task, index, seen.task, seen.index)) latest.set(child, { task, index });
 	}
 	const superseded = new Set<TaskId>();
 	for (const task of candidates) {
-		if (latest.get(childOfAttempt(task))?.task !== task) superseded.add(task.ref.taskId);
+		const child = attemptChild(task);
+		if (child !== undefined && latest.get(child)?.task !== task) superseded.add(task.ref.taskId);
 	}
 	return superseded.size === 0 ? NONE_SUPERSEDED : superseded;
 }
@@ -301,12 +311,12 @@ export function latestSubagentAttempt(tasks: readonly TaskRecord[], taskId: Task
 	const index = tasks.findIndex((task) => task.ref.taskId === taskId);
 	if (index < 0) return undefined;
 	const task = tasks[index]!;
-	if (task.kind !== "agent") return task;
-	const child = childOfAttempt(task);
+	const child = task.kind === "agent" ? attemptChild(task) : undefined;
+	if (child === undefined) return task;
 	// The same walk as supersededAttempts, so the row a list keeps and the attempt a chat follows are one task.
 	let latest: { readonly task: TaskRecord; readonly index: number } | undefined;
 	for (const [candidateIndex, candidate] of tasks.entries()) {
-		if (candidate.kind !== "agent" || childOfAttempt(candidate) !== child) continue;
+		if (candidate.kind !== "agent" || attemptChild(candidate) !== child) continue;
 		if (latest === undefined || laterAttempt(candidate, candidateIndex, latest.task, latest.index))
 			latest = { task: candidate, index: candidateIndex };
 	}
@@ -319,11 +329,11 @@ export function latestSubagentAttempt(tasks: readonly TaskRecord[], taskId: Task
  */
 export function firstSubagentAttempt(tasks: readonly TaskRecord[], taskId: TaskId): TaskRecord | undefined {
 	const task = tasks.find((candidate) => candidate.ref.taskId === taskId);
-	if (task?.kind !== "agent") return task;
-	const child = childOfAttempt(task);
+	const child = task?.kind === "agent" ? attemptChild(task) : undefined;
+	if (child === undefined) return task;
 	let first: { readonly task: TaskRecord; readonly index: number } | undefined;
 	for (const [index, candidate] of tasks.entries()) {
-		if (candidate.kind !== "agent" || childOfAttempt(candidate) !== child) continue;
+		if (candidate.kind !== "agent" || attemptChild(candidate) !== child) continue;
 		if (first === undefined || laterAttempt(first.task, first.index, candidate, index))
 			first = { task: candidate, index };
 	}

@@ -155,8 +155,10 @@ async function harness() {
 		session.running = false;
 		for (const listener of session.listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
 		fixture.runners[index]!.result.resolve({ kind: "completed", output: record.output });
-		await flush();
-		fixture.store.drain();
+		await until(() => {
+			fixture.store.drain();
+			return fixture.store.tasks[index]?.execution.kind === "settled";
+		});
 		await flush();
 	};
 	const started = async (title: string, operation: string, running = true) => {
@@ -292,7 +294,7 @@ test("an earlier attempt's id opens its subagent's one row and its live chat, as
 		);
 
 		h.inspector.openChat(first, "main chat");
-		await flush();
+		await until(() => WORKING_LINE.test(h.text()));
 		assert.match(chatLabel(h.text()), /^worker · continue please · /, `the chat opens:\n${h.text()}`);
 		assert.doesNotMatch(chatLabel(h.text()), /done$/);
 		assert.match(h.text(), /› from main\n ❯ Slow rounds/, "its header echoes the subagent's task from main");
@@ -331,8 +333,7 @@ test("a message to a running subagent that finishes before taking it resumes the
 		h.sessions[0]!.finishBeforeMessage = () => h.settle(0);
 		await h.type("one more step");
 		h.inspector.handleInput(ENTER);
-		await until(() => h.resumes.length > 0);
-		await flush();
+		await until(() => h.resumes.length > 0 && !/· done$/.test(chatLabel(h.text())));
 		assert.deepEqual(h.resumes, [{ taskId: h.fixture.store.tasks[0]!.ref.taskId, message: "one more step" }]);
 		assert.doesNotMatch(h.text(), /did not deliver|has ended/i, h.text());
 		assert.match(h.text(), /Message worker…/, "the editor is empty: nothing came back to it");
