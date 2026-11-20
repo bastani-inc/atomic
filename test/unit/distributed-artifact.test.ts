@@ -233,7 +233,7 @@ test("the artifact build fetches exactly the requested commit into its own direc
 		sha: SHA,
 		repository: "https://github.com/example/atomic.git",
 		nodeVersion: "v24.22.0",
-		bunVersion: "1.4.4",
+		bunVersion: "1.4.5",
 		remoteDir,
 	});
 	assert.deepEqual(script.split("\n"), [
@@ -241,7 +241,7 @@ test("the artifact build fetches exactly the requested commit into its own direc
 		"if ! command -v cc >/dev/null || ! command -v zstd >/dev/null; then sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq build-essential pkg-config unzip zstd git >/dev/null; fi",
 		'export PATH="$HOME/.local/node/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"',
 		'if [ "$(node --version 2>/dev/null)" != "v24.22.0" ]; then mkdir -p "$HOME/.local/node" && curl -fsSL https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-x64.tar.xz | tar -xJ -C "$HOME/.local/node" --strip-components=1; fi',
-		'if [ "$(bun --version 2>/dev/null)" != "1.4.4" ]; then curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4" >/dev/null; fi',
+		'if [ "$(bun --version 2>/dev/null)" != "1.4.5" ]; then curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.5" >/dev/null; fi',
 		"if ! command -v cargo >/dev/null; then curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null; fi",
 		`mkdir -p /tmp/atomic-distributed-test-build && mkdir ${remoteDir} ${remoteDir}/atomic && cd ${remoteDir}/atomic`,
 		"git init -q . && git remote add origin https://github.com/example/atomic.git",
@@ -261,7 +261,7 @@ test("the artifact build fetches exactly the requested commit into its own direc
 			sha: SHA,
 			repository: "https://example.com/a b.git; rm -rf ~",
 			nodeVersion: "v24.22.0",
-			bunVersion: "1.4.4",
+			bunVersion: "1.4.5",
 			remoteDir,
 		}).split("\n")[7],
 		"git init -q . && git remote add origin 'https://example.com/a b.git; rm -rf ~'",

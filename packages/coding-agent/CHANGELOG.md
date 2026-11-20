@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The standalone `atomic` binaries are now built with Bun 1.4.5, which includes upstream security fixes for TLS, HTTP and DNS in the embedded runtime. They now check custom CA certificates, such as those in `NODE_EXTRA_CA_CERTS` or a PostgreSQL `sslrootcert`, the way Node.js and the npm-installed `atomic` already do: a root certificate that is not marked as a CA, or that is limited to client authentication, is refused with `INVALID_PURPOSE`
+
 ## [0.10.0] - 2026-11-20
 
 Codemode and subagents replace workflows, subagents share the main chat screen with its steering and can be resumed by a message, and long sessions keep only their current context in memory.
