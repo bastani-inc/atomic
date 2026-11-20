@@ -724,7 +724,9 @@ export class DepartedChildren {
 		const full =
 			departure.queued.length >= MAX_HELD_SENDS
 				? `${MAX_HELD_SENDS} messages already wait for it`
-				: departure.queuedBytes + bytes > ENDED_CHILD_QUEUE_BYTES_MAX
+				: bytes > ENDED_CHILD_QUEUE_BYTES_MAX
+					? `it takes ${mebibytes(bytes)} where it is kept, more than the ${mebibytes(ENDED_CHILD_QUEUE_BYTES_MAX)} that can wait for one subagent`
+					: departure.queuedBytes + bytes > ENDED_CHILD_QUEUE_BYTES_MAX
 					? `${mebibytes(departure.queuedBytes)} of messages already wait for it`
 					: this.queuedBytesTotal + bytes > ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX
 						? `Intercom already keeps ${mebibytes(this.queuedBytesTotal)} of messages for subagents that ended`

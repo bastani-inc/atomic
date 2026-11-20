@@ -9,7 +9,7 @@ import {
 	openLocalEndedChildQueueStore,
 	openSqlEndedChildQueueStore,
 } from "../../packages/intercom/broker/sql-ended-child-queue-store.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 /**
  * #5999 durable wake queue: the store that keeps messages for subagents that ended across broker restarts, opened the
@@ -294,9 +294,21 @@ async function fillAndDrain(store: EndedChildQueueStore, count: number): Promise
 	await store.remove(ids);
 }
 
+/** The file's auto-vacuum mode: 0 none, 2 incremental. */
+async function autoVacuum(path: string): Promise<number> {
+	const { DatabaseSync } = await import("node:sqlite");
+	const check = new DatabaseSync(path, { readOnly: true });
+	try {
+		return (check.prepare("PRAGMA auto_vacuum").get() as { auto_vacuum: number }).auto_vacuum;
+	} finally {
+		check.close();
+	}
+}
+
 test("the store gives its disk space back once its queue drains", async () => {
 	const path = join(directory(), "ended-child-queue.sqlite");
 	const store = await open(path, "broker-1");
+	assert.equal(await autoVacuum(path), 2, "a new file can give space back");
 	await fillAndDrain(store, 24);
 	await vi.waitFor(() => assert.ok(onDisk(path) < 4 * 1024 * 1024, `still ${onDisk(path)} bytes`), {
 		timeout: 20_000,
@@ -325,14 +337,33 @@ test("a store from before that cannot give space back is converted once its queu
 		timeout: 20_000,
 		interval: 50,
 	});
-	const check = new DatabaseSync(path, { readOnly: true });
-	try {
-		assert.equal(
-			(check.prepare("PRAGMA auto_vacuum").get() as { auto_vacuum: number }).auto_vacuum,
-			2,
-			"incremental",
-		);
-	} finally {
-		check.close();
-	}
+	assert.equal(await autoVacuum(path), 2, "incremental");
+});
+
+test("a store from before that holds messages is not converted while they wait, only once it is opened empty", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const holding = await open(path, "broker-1");
+	await holding.add(entry("waiting"));
+	await holding.close();
+	// As a broker of the earlier release left it: no auto-vacuum, a message waiting.
+	const { DatabaseSync } = await import("node:sqlite");
+	const earlier = new DatabaseSync(path);
+	earlier.exec("PRAGMA auto_vacuum = NONE; VACUUM;");
+	earlier.close();
+	// Opened with a message waiting: rewriting it now would cost as much as the queue holds.
+	const busy = await open(path, "broker-3");
+	assert.equal(await autoVacuum(path), 0);
+	await busy.load();
+	await fillAndDrain(busy, 8);
+	await busy.remove(["waiting"]);
+	await sleep(500);
+	assert.equal(await autoVacuum(path), 0, "not converted while it runs");
+	await busy.close();
+	const empty = await open(path, "broker-4");
+	assert.equal(await autoVacuum(path), 2, "converted when opened empty");
+	await vi.waitFor(() => assert.ok(onDisk(path) < 4 * 1024 * 1024, `still ${onDisk(path)} bytes`), {
+		timeout: 20_000,
+		interval: 50,
+	});
+	await empty.close();
 });

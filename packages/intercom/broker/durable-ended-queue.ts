@@ -90,8 +90,10 @@ export interface DurableEndedQueueHost {
 }
 
 function snapshotOf(sender: BrokerConnectedSession): SenderSnapshot {
+	// Its presence status is free text a session sets and no delivery reads: kept, it would count toward every message.
+	const { status: _status, ...info } = sender.info;
 	return {
-		info: sender.info,
+		info,
 		...(sender.registrationGroup === undefined ? {} : { registrationGroup: sender.registrationGroup }),
 		...(sender.registrationName === undefined ? {} : { registrationName: sender.registrationName }),
 		...(sender.registrationReturnAddress === undefined ? {} : { registrationReturnAddress: sender.registrationReturnAddress }),

@@ -126,8 +126,11 @@ export interface EndedChildQueueStore {
  * milliseconds; the event loop runs between steps.
  */
 export const ENDED_QUEUE_VACUUM_STEP_PAGES = 256;
+/** How often, and how long apart, giving space back tries again while the database is busy. */
+const VACUUM_BUSY_RETRIES = 50;
+const VACUUM_BUSY_RETRY_MS = 20;
 /** The write-ahead log of the local file is cut back to this many bytes after a checkpoint. */
-const LOCAL_WAL_SIZE_LIMIT = 4 * 1024 * 1024;
+const LOCAL_WAL_SIZE_LIMIT = 64 * 1024;
 
 /** About how many bytes of messages one page of a load reads and parses before the event loop runs again. */
 export const ENDED_QUEUE_LOAD_PAGE_BYTES = 1024 * 1024;
@@ -378,44 +381,50 @@ export async function openSqlEndedChildQueueStore(
 	const writes = new OrderedWrites(database, lockWaitMs);
 	let compacting: Promise<void> | undefined;
 	let closing = false;
+	const pragmaOf = async (executor: SqliteExecutor, name: string): Promise<number> => {
+		const row = await executor.get<SqliteRow>(`PRAGMA ${name}`);
+		return Number(row === undefined ? 0 : Object.values(row)[0]);
+	};
 	/**
-	 * The local file gives back the space of messages that are gone, once its queue is empty. A file from before, which
-	 * cannot, is converted by one VACUUM while the queue is empty (it rewrites the live data: next to none). Then each
-	 * step frees at most {@link ENDED_QUEUE_VACUUM_STEP_PAGES} pages in a transaction of its own, the event loop running
-	 * between steps, and a checkpoint cuts the file and its log back. Nothing here waits for another process's lock: a
-	 * busy step is left for the next drain.
+	 * The local file gives back the space of messages that are gone, once its queue is empty: each step frees at most
+	 * {@link ENDED_QUEUE_VACUUM_STEP_PAGES} pages in a maintenance transaction of its own, which runs only while this
+	 * database is idle (it never joins or delays a message write, nor waits for another process's lock) and checks in
+	 * the same transaction that no message waits. The event loop runs between steps; a checkpoint that never waits then
+	 * cuts the file back. A busy database is left alone until the next drain.
 	 */
 	const giveSpaceBack = async (): Promise<void> => {
-		const pragma = async (name: string): Promise<number> => {
-			const row = await database.get<SqliteRow>(`PRAGMA ${name}`);
-			return Number(row === undefined ? 0 : Object.values(row)[0]);
-		};
-		const withoutLockWait = async (sql: string): Promise<boolean> => {
-			const configured = await pragma("busy_timeout");
-			await database.exec("PRAGMA busy_timeout = 0");
-			try {
-				await database.exec(sql);
-				return true;
-			} catch {
-				return false;
-			} finally {
-				await database.exec(`PRAGMA busy_timeout = ${configured}`);
-			}
-		};
-		const empty = async () =>
-			(await database.transaction((tx) => tx.get(`SELECT 1 AS found FROM ${queue} LIMIT 1`), { readOnly: true })) ===
-			undefined;
-		if (closing || !(await empty())) return;
-		if ((await pragma("auto_vacuum")) !== 2) {
-			if (!(await withoutLockWait("PRAGMA auto_vacuum = INCREMENTAL; VACUUM"))) return;
-		}
-		while (!closing && (await pragma("freelist_count")) > 0) {
+		const maintain = database.tryMaintenance?.bind(database);
+		if (maintain === undefined) return;
+		let busy = 0;
+		for (;;) {
+			if (closing) return;
 			await new Promise<void>((resolve) => setImmediate(resolve));
-			await database.transaction((tx) => tx.exec(`PRAGMA incremental_vacuum(${ENDED_QUEUE_VACUUM_STEP_PAGES})`), {
-				lockWaitMs: 0,
+			const step: { state: "messages" | "freed" | "clean" } = { state: "clean" };
+			const ran = await maintain(async (tx) => {
+				if ((await tx.get(`SELECT 1 AS found FROM ${queue} LIMIT 1`)) !== undefined) {
+					step.state = "messages";
+					return;
+				}
+				// A file not converted yet gives nothing back this way: it is converted when it is next opened empty.
+				if ((await pragmaOf(tx, "auto_vacuum")) !== 2 || (await pragmaOf(tx, "freelist_count")) === 0) return;
+				await tx.exec(`PRAGMA incremental_vacuum(${ENDED_QUEUE_VACUUM_STEP_PAGES})`);
+				step.state = "freed";
 			});
+			if (!ran) {
+				if (++busy > VACUUM_BUSY_RETRIES) return;
+				await new Promise<void>((resolve) => setTimeout(resolve, VACUUM_BUSY_RETRY_MS));
+				continue;
+			}
+			if (step.state === "messages") return;
+			if (step.state === "clean") break;
 		}
-		if (!closing) await withoutLockWait("PRAGMA wal_checkpoint(TRUNCATE)");
+		if (closing) return;
+		// Fold the log into the file (never waiting), then let one small write start the log afresh, which cuts it back
+		// to its size limit, and fold that in too.
+		await database.exec("PRAGMA wal_checkpoint(PASSIVE)");
+		// A write that changes nothing writes nothing: the header's user version, unused, flips between 0 and 1.
+		await writes.run(async (tx) => tx.exec(`PRAGMA user_version = ${(await pragmaOf(tx, "user_version")) === 0 ? 1 : 0}`));
+		await database.exec("PRAGMA wal_checkpoint(PASSIVE)");
 	};
 	const compactSoon = (): void => {
 		if (!compact || compacting !== undefined || closing) return;
@@ -427,6 +436,24 @@ export async function openSqlEndedChildQueueStore(
 	};
 	if (compact) {
 		await database.exec(`PRAGMA journal_size_limit = ${LOCAL_WAL_SIZE_LIMIT}`);
+		// A file that cannot give space back (new, or written before this) is converted while its queue is empty, before
+		// anything else can use it: VACUUM rewrites the live data, none then. It never waits for another process's lock;
+		// a busy file is converted at a later open.
+		const empty =
+			(await database.transaction((tx) => tx.get(`SELECT 1 AS found FROM ${queue} LIMIT 1`), { readOnly: true })) ===
+			undefined;
+		if (empty && (await pragmaOf(database, "auto_vacuum")) !== 2) {
+			const configured = await pragmaOf(database, "busy_timeout");
+			await database.exec("PRAGMA busy_timeout = 0");
+			try {
+				await database.exec("PRAGMA auto_vacuum = INCREMENTAL");
+				await database.exec("VACUUM");
+			} catch {
+				// Busy: converted at a later open.
+			} finally {
+				await database.exec(`PRAGMA busy_timeout = ${configured}`);
+			}
+		}
 		compactSoon();
 	}
 	/** Rows of one departure that this instance holds. */
@@ -689,12 +716,6 @@ export async function openLocalEndedChildQueueStore(
 	try {
 		if (process.platform !== "win32")
 			for (const file of [path, `${path}-wal`, `${path}-shm`]) if (existsSync(file)) chmodSync(file, 0o600);
-		// A new file can give space back from the start: set before its first table is created (on a file that has one,
-		// the setting writes its header, which would wait for another process's write lock). A file from before is
-		// converted once its queue is empty (see `compact`).
-		const pages = await database.get<SqliteRow & { page_count: number | bigint }>("PRAGMA page_count");
-		const tables = await database.get<SqliteRow>("SELECT 1 AS found FROM sqlite_master LIMIT 1");
-		if (Number(pages?.page_count ?? 0) <= 1 && tables === undefined) await database.exec("PRAGMA auto_vacuum = INCREMENTAL");
 		return await openSqlEndedChildQueueStore(
 			{ database, prefix: "" },
 			{ home: "local", holder, ownsDatabase: true, retire, compact: true, ...continuity },

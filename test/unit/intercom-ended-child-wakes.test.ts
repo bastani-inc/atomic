@@ -436,3 +436,20 @@ test("an owner with no host session to come back as that disconnects fails what 
 		],
 	);
 });
+
+test("a message that alone takes more than a subagent's 32 MiB where it is kept is refused saying so, not citing a backlog (#5999)", () => {
+	const failed: EndedChildWakeFailure[] = [];
+	const departed = new DepartedChildren(() => {}, undefined, undefined, undefined, {
+		failed: (failures) => failed.push(...failures),
+		budget: new EndedChildWakeBudget(),
+		ownerLive: () => true,
+		storedBytes: () => ENDED_CHILD_QUEUE_BYTES_MAX + 4 * 1024 * 1024,
+	});
+	ended(departed, "stopped", "hold");
+	const refused = departed.admitWake(CHILD, wakeSender(), send("m1"));
+	assert.ok(refused.kind === "refused");
+	assert.match(
+		refused.reason,
+		/The message was not queued for it: it takes 36 MiB where it is kept, more than the 32 MiB that can wait for one subagent\.$/,
+	);
+});
