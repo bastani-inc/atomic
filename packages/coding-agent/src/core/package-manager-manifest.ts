@@ -5,7 +5,7 @@ import { stripBom } from "../utils/text.ts";
 import type { McpServerConfig } from "./mcp-servers.ts";
 import type { FileKind, PackageFilter, PiManifest } from "./package-manager-types.ts";
 
-const MANIFEST_ENTRY_FIELDS = ["extensions", "skills", "prompts", "themes", "storageAdapters"] as const;
+const MANIFEST_ENTRY_FIELDS = ["extensions", "skills", "prompts", "themes", "storageAdapters", "agents"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -66,6 +66,8 @@ export function readPiManifest(packageRoot: string): PiManifest | null {
 }
 
 export function conventionDirsForResource(packageRoot: string, resourceType: FileKind): string[] {
+	// A package ships subagents only through its manifest's `agents` field: an `agents/` directory alone is not one.
+	if (resourceType === "agents") return [];
 	if (resourceType === "legacyWorkflowFiles") {
 		return [join(packageRoot, "workflows"), join(packageRoot, "workflow")];
 	}

@@ -7,9 +7,15 @@ export {
 	contextAgentDiscoveryOptions,
 	discoverAgents,
 	discoverAgentsAll,
+	discoverPackageAgents,
+	packageAgentInScope,
 } from "./agent-discovery.js";
 export type { AgentDirLoadResult, AgentLoadDiagnostic } from "./agent-loaders.js";
-export { loadAgentsFromDir, loadAgentsFromDirWithDiagnostics } from "./agent-loaders.js";
+export {
+	loadAgentsFromDir,
+	loadAgentsFromDirWithDiagnostics,
+	loadPackageAgentsWithDiagnostics,
+} from "./agent-loaders.js";
 export {
 	buildBuiltinOverrideConfig,
 	removeBuiltinAgentOverride,
@@ -21,10 +27,11 @@ export type {
 	AgentScope,
 	AgentSource,
 	BuiltinAgentOverrideBase,
+	PackageAgentOrigin,
 } from "./agent-types.js";
 export {
 	defaultInheritProjectContext,
 	defaultInheritSkills,
 	defaultSystemPromptMode,
 } from "./agent-types.js";
-export { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.js";
+export { buildRuntimeName, frontmatterNameForConfig, packageAgentNamespace, parsePackageName } from "./identity.js";

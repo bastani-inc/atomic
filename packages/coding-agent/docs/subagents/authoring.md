@@ -21,6 +21,9 @@ Common locations are:
 |---|---|
 | User | `~/.atomic/agent/agents/**/*.md` |
 | Project | `.atomic/agents/**/*.md` |
+| Package | The `agents` field of an installed package; see [package subagents](/packages/authoring#subagents) |
+
+A project agent replaces a user agent of the same name, and both replace package and builtin agents. See [Agent discovery](/subagents/reference#agent-discovery).
 
 A small custom read-only inspection agent:
 

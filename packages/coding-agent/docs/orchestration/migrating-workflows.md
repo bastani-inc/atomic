@@ -24,6 +24,7 @@ Review the new skill and its scripts. Use `/reload`, then `/skill:<name>` with y
 | Earlier definition | In the new skill |
 | --- | --- |
 | `ctx.stage`, `ctx.task`, pinned model and thinking level | Steps launching subagents from codemode in the parent chat, with the original prompt, inputs, and model requirements. |
+| Stage `fallbackModels`, `tools`, and `mcp` servers | A named [custom subagent](/subagents/authoring) that pins them, launched by name with no per-call `model`. See [Pinned stages](#pinned-stages). |
 | `ctx.parallel`, loops, retries | `tasks` batches, explicit round limits and checks between completion notices. Use an Intercom `group` when peers communicate. |
 | `ctx.tool`, deterministic helpers | Reviewed scripts in `scripts/`, called with validated arguments, original timeouts and success checks. |
 | Inputs, `ctx.ui`, human approval | Skill arguments and defaults; `ask_user_question` steps for missing information or decisions. A missing approval is not a pass. |
@@ -31,6 +32,30 @@ Review the new skill and its scripts. Use `/reload`, then `/skill:<name>` with y
 | Structured results, `ctx.exit` and blocked states | Per-child output files; codemode parses and validates them, preserves the output shape, and stops on failure or a missing prerequisite. |
 
 **Running the skill starts new work.** An old workflow run ID cannot resume a checkpoint. Confirm which external actions already happened before repeating any. New children have saved sessions; their orchestration script does not replay. See [recovery](/orchestration#what-survives-interruption).
+
+### Pinned stages
+
+When a stage pinned more than a model, the conversion writes an agent definition next to the skill, in `.atomic/agents/` for a project skill or `~/.atomic/agent/agents/` for a global one. The agent carries the effort on `model` and each `fallbackModels` entry, the stage's exact `tools`, and `mcp:<server>` (or `mcp:<server>/<tool>`) for each MCP server the stage used. It never overwrites an existing agent, and asks before adding an MCP server to your configuration.
+
+```markdown
+---
+name: triage-reviewer
+description: Review one triage report and classify it
+model: anthropic/claude-sonnet-4:high
+fallbackModels: openai/gpt-5:medium
+tools: read, search, mcp:issue-tracker
+---
+
+Classify the report you are given as bug, feature, or question, with file:line evidence.
+```
+
+The skill launches it from codemode without a `model`, so the agent's model and fallback chain apply:
+
+```js
+const launch = await tools.subagent({ agent: "triage-reviewer", task: report });
+```
+
+If you maintain the package the workflow came from, you can ask Atomic to add the skill and its agents to the package source instead. The agents go in its [`agents` manifest field](/packages/authoring#subagents) and run as `<namespace>.<name>`: in a package named `@acme/triage`, this agent would be `acme.triage.triage-reviewer`.
 
 ## If you used a builtin name
 

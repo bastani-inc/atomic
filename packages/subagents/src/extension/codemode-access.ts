@@ -37,6 +37,7 @@ const summary = {
 	name: string,
 	description: string,
 	scope: string,
+	package: optionalString,
 	executable: Type.Boolean(),
 	model: optionalString,
 	defaultContext: optionalString,

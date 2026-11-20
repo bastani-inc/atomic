@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import {
 	agentWakeDispatcher,
@@ -1070,6 +1070,45 @@ test("a woken child whose agent is no longer defined is reported unrestorable, n
 
 	assert.equal(outcome.kind, "unrestorable");
 	assert.equal(outcome.kind === "unrestorable" ? outcome.reason : "", 'agent "ghost" (project) is no longer defined');
+});
+
+test("a woken child launched from a package agent restores it while a user agent of the same full name overrides it (#5991)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "wake-package-agent");
+	const packageRoot = join(h.cwd, "review-kit");
+	const definition = join(packageRoot, "agents", "reviewer.md");
+	mkdirSync(dirname(definition), { recursive: true });
+	writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "@acme/review-kit" }));
+	writeFileSync(definition, "---\nname: reviewer\ndescription: Reviews diffs\n---\nReview.");
+	const packageFile = {
+		path: definition,
+		source: packageRoot,
+		scope: "user" as const,
+		packageRoot,
+		packageName: "@acme/review-kit",
+	};
+	const override: AgentConfig = {
+		...agent,
+		name: "acme.review-kit.reviewer",
+		source: "user",
+		filePath: "override.md",
+	};
+	Object.assign(h.ctx, { getPackageAgents: () => [packageFile] });
+	Object.assign(h.deps, { discoverAgents: () => ({ agents: [agent, override] }) });
+	await appendRecord(h, { ...record, agent: "acme.review-kit.reviewer", agentSource: "package" });
+
+	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, { prompt: "carry on" });
+	assert.equal(outcome.kind, "restored", JSON.stringify(outcome));
+
+	// Once the package is removed, its agent is gone even though the override still uses the name.
+	Object.assign(h.ctx, { getPackageAgents: () => [] });
+	const latest = await h.waitForLatest(record.childId, (entry) => entry.terminalStatus !== undefined);
+	await appendRecord(h, { ...latest, agent: "acme.review-kit.reviewer", agentSource: "package" });
+	const gone = await restoreSubagentChild(h.deps, h.ctx, record.childId, { prompt: "carry on" });
+	assert.equal(
+		gone.kind === "unrestorable" ? gone.reason : gone.kind,
+		'agent "acme.review-kit.reviewer" (package) is no longer defined',
+	);
 });
 
 test("a woken child recorded without its agent's source names only the agent when it is no longer defined (#4329)", async () => {

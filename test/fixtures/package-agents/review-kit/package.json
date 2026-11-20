@@ -1,0 +1,9 @@
+{
+	"name": "@acme/review-kit",
+	"version": "1.0.0",
+	"private": true,
+	"description": "Fixture package for #5991: ships one subagent definition through the `agents` manifest field.",
+	"atomic": {
+		"agents": ["./agents"]
+	}
+}
