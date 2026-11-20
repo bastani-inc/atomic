@@ -144,7 +144,7 @@ test("one x aimed at the selected running run never dismisses another run a refr
 		p.session,
 		async (panel) => {
 			const painted = paint(panel);
-			assert.match(painted, /∀ {2}◯ a /, painted);
+			assert.match(painted, /∀ ◯ a /, painted);
 			p.set([run("run:b", "done")]);
 			await microtasks();
 			panel.handleInput("x");
@@ -164,7 +164,7 @@ test("x x aimed at the selected running run never stops another run a refresh mo
 		p.session,
 		async (panel) => {
 			const painted = paint(panel);
-			assert.match(painted, /∀ {2}◯ a /, painted);
+			assert.match(painted, /∀ ◯ a /, painted);
 			p.set([run("run:b", "running")]);
 			await microtasks();
 			panel.handleInput("x");

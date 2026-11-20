@@ -35,9 +35,9 @@ test("a subagent's nested shell row keeps the task and right columns of its suba
 			viewedId: "task:a1",
 		}).map((line) => stripVTControlCharacters(line));
 		const [main, row, nested] = lines;
-		assert.equal(main, "  ● main".padEnd(main!.length), lines.join("\n"));
-		assert.ok(row!.startsWith("●  ◯ worker"), lines.join("\n"));
-		assert.ok(nested!.startsWith("     ⧗ shell"), lines.join("\n"));
+		assert.equal(main, "  ◯ main".padEnd(main!.length), lines.join("\n"));
+		assert.ok(row!.startsWith("  ● worker"), lines.join("\n"));
+		assert.ok(nested!.startsWith("    ⧗ shell"), lines.join("\n"));
 		// The model column shows from 100 columns: the shell's row leaves it blank and its command lines up.
 		assert.equal(row!.includes("openai/gpt-5 high"), width >= 100, lines.join("\n"));
 		assert.equal(nested!.indexOf("npm test"), row!.indexOf("fix the parser"), lines.join("\n"));

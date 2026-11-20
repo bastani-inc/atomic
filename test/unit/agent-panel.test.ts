@@ -314,7 +314,7 @@ test("the focused panel: ↑↓ select through main, enter or → opens, esc and
 		stripVTControlCharacters(line).trimEnd(),
 	);
 	assert.equal(lines[0], "  ● main");
-	assert.match(lines[2]!, /^∀ {2}◯ debugger/);
+	assert.match(lines[2]!, /^∀ ◯ debugger/);
 });
 
 test("x stops a running row only on a second press within three seconds and dismisses a finished one (#5224)", () => {
@@ -778,14 +778,14 @@ test("the focused panel scrolls to keep the selection in view and keeps every ro
 	for (let step = 0; step < 11; step++) press("\x1b[B");
 	assert.equal(focus.selectedId, "task:11");
 	assert.ok(
-		shown().some((line) => line.startsWith("∀  ◯ w11")),
+		shown().some((line) => line.startsWith("∀ ◯ w11")),
 		"the last row is reachable and shown",
 	);
 	assert.ok(shown().length <= 1 + 8 + 1, "main, eight rows and the fold line at most");
 	press("\x1b[H");
 	assert.equal(focus.selectedId, "main");
 	assert.ok(
-		shown().some((line) => line.startsWith("   ◯ w0")),
+		shown().some((line) => line.startsWith("  ◯ w0")),
 		"Home scrolls back to the top",
 	);
 	focus.selectedId = "task:5";

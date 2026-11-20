@@ -4,7 +4,7 @@
 
 ### Changed
 
-- The agent panel marks a running subagent with an open circle `◯` instead of the animated `∀`, a finished one with a green `●` and a stopped one with a red `◯`. The selection cursor is `∀` instead of `❯`, and the subagent rows sit one column to the right of the `main` row's mark. Other marks and the viewed `●` are unchanged
+- The agent panel marks a running subagent with an open circle `◯` instead of the animated `∀`, a finished one with a green `●` and a stopped one with a red `◯`. The agent you are viewing has a filled `●` and a bold row, and `main` shows a muted `◯` while you view a subagent. The selection cursor is `∀` instead of `❯`, and it is the only mark drawn before a row's status mark. Other status marks are unchanged ([#6090](https://github.com/bastani-inc/atomic/pull/6090))
 
 ## [0.10.1] - 2026-11-20
 

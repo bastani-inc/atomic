@@ -88,7 +88,7 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 		assert.equal(mounted.render(80).length, 2, "main, then one row per task");
 		assert.match(
 			stripVTControlCharacters(mounted.render(80).join("\n")),
-			/^ {3}◯ worker {2}Visible background review/m,
+			/^ {2}◯ worker {2}Visible background review/m,
 		);
 		fixture.runners[0].context.reportActivity({
 			reportId: "metrics",
@@ -161,7 +161,7 @@ test("a final task settlement deferred by the 8ms/50ms refresh budget schedules 
 		assert.equal(settledRenders, 0, "settlement refresh is deferred once the 8ms/50ms budget is spent");
 		assert.match(
 			stripVTControlCharacters(widget.render(80).join("\n")),
-			/^ {3}◯ worker {2}Visible background review/m,
+			/^ {2}◯ worker {2}Visible background review/m,
 		);
 		now += PANEL_REFRESH_WINDOW_MS;
 		vi.advanceTimersByTime(PANEL_REFRESH_WINDOW_MS);
