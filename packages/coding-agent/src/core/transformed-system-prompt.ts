@@ -6,8 +6,8 @@
  * of each section it renders and its owner (the session and the transform's key), and a later row records the
  * sections that changed. Requests lead with the recorded text, so a session reopened on another day or after an
  * upgrade keeps its cached prefix and is told what changed as section updates, as a session with the structured
- * prompt is. A prompt another owner recorded, in a session forked from another child or under a key that keeps more,
- * is never sent: the session records and sends its current prompt instead.
+ * prompt is. Only the latest recorded prompt is sent, and only by its owner: a session forked from another child's
+ * session, or reopened under another key, records and sends its current prompt instead.
  */
 import { createHash } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
@@ -38,11 +38,14 @@ export function transformedPromptOwner(sessionId: string, key: string): string {
 	return JSON.stringify([sessionId, key]);
 }
 
+/**
+ * The row of the latest recorded prompt, or -1. With an owner, -1 also when another owner recorded the latest one: a
+ * prompt recorded before it, and the changes recorded after it, are never sent again.
+ */
 function headIndex(messages: readonly AgentMessage[], owner?: string): number {
-	return messages.findLastIndex((message) => {
-		const head = transformedPromptOf(message)?.head;
-		return head !== undefined && (owner === undefined || head.owner === owner);
-	});
+	const index = messages.findLastIndex((message) => transformedPromptOf(message)?.head !== undefined);
+	if (index < 0 || owner === undefined) return index;
+	return transformedPromptOf(messages[index])?.head?.owner === owner ? index : -1;
 }
 
 function digest(text: string): string {

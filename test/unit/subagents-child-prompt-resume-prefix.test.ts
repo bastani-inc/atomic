@@ -66,13 +66,13 @@ function inheritedSkill(): Skill {
 	};
 }
 
-function resourceLoader(): ResourceLoader {
+function resourceLoader(projectContext = "PROJECT_CONTEXT_SENTINEL"): ResourceLoader {
 	return {
 		getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
 		getSkills: () => ({ skills: [inheritedSkill()], diagnostics: [] }),
 		getPrompts: () => ({ prompts: [], diagnostics: [] }),
 		getThemes: () => ({ themes: [], diagnostics: [] }),
-		getAgentsFiles: () => ({ agentsFiles: [{ path: "AGENTS.md", content: "PROJECT_CONTEXT_SENTINEL" }] }),
+		getAgentsFiles: () => ({ agentsFiles: [{ path: "AGENTS.md", content: projectContext }] }),
 		getSystemPrompt: () => "You review changes.",
 		getSystemPromptSource: () => undefined,
 		getAppendSystemPrompt: () => [],
@@ -154,7 +154,7 @@ async function openChild(
 	runtime: ModelRuntime,
 	model: Model<"anthropic-messages">,
 	skillVersion: number,
-	options: { recordsPrompt?: boolean; tools?: string[]; policy?: typeof policy } = {},
+	options: { recordsPrompt?: boolean; tools?: string[]; policy?: typeof policy; projectContext?: string } = {},
 ) {
 	const cwd = sessionManager.getCwd();
 	const childPolicy = options.policy ?? policy;
@@ -166,7 +166,7 @@ async function openChild(
 		modelRuntime: runtime,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager,
-		resourceLoader: resourceLoader(),
+		resourceLoader: resourceLoader(options.projectContext),
 		subagentPolicy: { ...childPolicy, managementActions: "restricted" },
 		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: options.tools ?? ["read"],
@@ -387,6 +387,10 @@ describe("a reopened subagent child keeps the prompt it sent", () => {
 		const legacy = await openChild(manager, runtime, model, 1, { recordsPrompt: false });
 		await legacy.prompt("first task");
 		await legacy.dispose();
+		assert.ok(
+			!manager.getEntries().some((entry) => entry.type === "message" && "transformedPrompt" in entry.message),
+			"a session without the section transform records no prompt",
+		);
 		// The process stopped after the next message was saved and before the model answered it.
 		await manager.appendMessage({
 			role: "user",
@@ -451,6 +455,35 @@ describe("a recorded prompt is only sent by the child and policy that recorded i
 			assert.doesNotMatch(updates(request), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
 		}
 		assert.equal(reused(requests[1], requests[2]), cachedPrefix(requests[1]).length);
+	});
+
+	test("a child reopened under its first policy again never sends what it was told under another", async () => {
+		const dir = makeTempDirectory("atomic-child-prompt-epochs-");
+		cleanups.push(() => removeTempDirectory(dir));
+		const requests: AnthropicPayload[] = [];
+		const { runtime, model } = await recordingRuntime(requests);
+		const runs = [
+			{ policy },
+			{ policy: inheritingPolicy },
+			{ policy: inheritingPolicy, projectContext: "PROJECT_CONTEXT_SENTINEL edited" },
+			{ policy },
+		];
+		for (const [index, options] of runs.entries()) {
+			const store = await sqliteStore(dir);
+			const manager =
+				index === 0
+					? await SessionManager.create(store.store, dir, { id: "child" })
+					: await SessionManager.open(store.store, "child");
+			const child = await openChild(manager, runtime, model, 1, options);
+			await child.prompt(`task ${index + 1}`);
+			await child.dispose();
+			await store.close();
+		}
+
+		assert.equal(requests.length, 4);
+		assert.match(updates(requests[2]), /PROJECT_CONTEXT_SENTINEL edited/);
+		const last = requests[3];
+		assert.doesNotMatch(JSON.stringify(last), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
 	});
 
 	test("a session forked from another child's session sends its own prompt", async () => {
