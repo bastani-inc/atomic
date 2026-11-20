@@ -7,7 +7,7 @@ description: Create an Atomic package, lay out its structure, and declare depend
 
 ## Creating an Atomic Package
 
-Add an app manifest to `package.json` or use conventional directories. The manifest key is the configured app name (`atomic` here, from `atomicConfig.name`; legacy `piConfig.name` is also read). The legacy `pi` key remains supported as a backwards-compatible shim. Include the `atomic-package` keyword for discoverability.
+Declare resources under the `atomic` key in `package.json` (legacy `pi` is still supported as a shim; paths are relative to the package root and support globs and `!exclusions`), and include `"atomic-package"` in `keywords`:
 
 ```json
 {
@@ -23,13 +23,9 @@ Add an app manifest to `package.json` or use conventional directories. The manif
 }
 ```
 
-Paths are relative to the package root. Arrays support glob patterns and `!exclusions`.
-
 ### Subagents
 
-A package can ship [custom subagents](/subagents/authoring) with `agents`: a list of agent `.md` files or directories, relative to the package root. Directories are searched recursively for `.md` files. Agents are only read from the manifest, never from a convention directory.
-
-Use package agents for named roles that need fixed settings: a model and fallback chain with their thinking levels, an exact tool list, and the MCP servers the role may use. A skill in the same package can then launch them by name.
+Ship [custom subagents](/subagents/authoring) via the `agents` array (relative `.md` files or directories searched recursively; manifest-only—never auto-discovered from convention directories).
 
 ```json
 {
@@ -59,19 +55,15 @@ tools: read, search, bash, mcp:acme-search
 Review the change you are given without editing files. Cite each issue with file:line evidence and stop once the diff and its call paths are covered.
 ```
 
-- **Name.** A package agent runs as `<namespace>.<name>`. The namespace is the package's `name`, lowercased, with an npm scope turned into a dotted prefix, so this agent is `acme.review-kit.reviewer`. A package without a `name` uses its directory name. A `package:` field in the agent's frontmatter is ignored, and an agent whose `name` contains a dot is not loaded.
-- **Pins.** Put a [reasoning level](/subagents/reference#reasoning-levels) on `model` and on each `fallbackModels` entry. `tools` is the exact tool list; `mcp:<server>` adds all of a server's tools and `mcp:<server>/<tool>` adds one. Ship the server itself with [`mcpServers`](#mcp-servers).
-- **Launching.** From codemode, `await tools.subagent({ agent: "acme.review-kit.reviewer", task })`. Leave out `model` on the call to keep the agent's model.
-- **Overrides.** A user or project agent with the same full name replaces the package's agent. For example, `~/.atomic/agent/agents/reviewer.md` with `name: reviewer` and `package: acme.review-kit` overrides the agent above. Builtin agent names contain no dot, so package agents never replace builtins.
-- **Trust.** Agents from a project-installed package are offered only in a trusted project. Agents from a package passed with `-e` are available for that run.
-- **Updates.** Run `/reload` after installing, updating, or removing a package. After `atomic remove`, its agents disappear on `/reload` or in the next session. A running subagent keeps the definition it started with.
-- **Filtering.** Narrow which agents load with an `agents` entry in the package's [settings filter](/packages/reference#package-filtering). `atomic config` does not list agents.
-
-`subagent({ action: "list" })`, `get`, and `/agents` show the package each agent comes from. `update` and `delete` refuse to change a package agent; edit the package or override the agent instead.
+- **Qualified name:** Runs as `<namespace>.<name>` where `<namespace>` is the lowercased package `name` with any `@scope/` converted to `<scope>.` (so `@acme/review-kit` + `reviewer` → `acme.review-kit.reviewer`; unnamed packages use their directory name). Frontmatter `package:` is ignored, and names containing dots are skipped.
+- **Pins & tools:** Attach [reasoning levels](/subagents/reference#reasoning-levels) directly to `model` and `fallbackModels`. `tools` is an exact allowlist; `mcp:<server>` adds all server tools and `mcp:<server>/<tool>` adds one. Ship the server itself with [`mcpServers`](#mcp-servers).
+- **Launching:** From codemode, call `await tools.subagent({ agent: "acme.review-kit.reviewer", task })` without a per-call `model` so the agent's pins apply.
+- **Overrides & trust:** User or project agents with matching full name (`name: reviewer` + `package: acme.review-kit`) override the package agent; builtins have no dots and cannot be replaced by packages. Project-installed package agents require project trust; `-e` package agents load for that run.
+- **Lifecycle & filtering:** Run `/reload` after install/update/remove (running subagents keep their launch definition). Filter per package with `agents` in [settings](/packages/reference#package-filtering) (`atomic config` does not list agents). `subagent` `update`/`delete` refuse package agents—edit the package or add an override instead.
 
 ### MCP Servers
 
-A package can contribute [MCP servers](/mcp-servers) with `mcpServers`. Point it at a JSON file in the standard `{ "mcpServers": { ... } }` shape, relative to the package root, or declare the servers inline:
+Contribute [MCP servers](/mcp-servers) via `mcpServers` in the manifest (manifest-only—not convention-discovered), either pointing to a JSON file or inline:
 
 ```json
 {
@@ -92,13 +84,13 @@ A package can contribute [MCP servers](/mcp-servers) with `mcpServers`. Point it
 }
 ```
 
-Entries use the same schema as `mcp.json`, including URL environment-variable interpolation, tool `exposure`, per-tool `toolExposure`, and request `timeout` in seconds. A relative `cwd` is resolved against the package root, so `"cwd": "."` lets a stdio server run files shipped in the package. MCP servers are only read from the manifest, never from a convention directory. Package manifests cannot select provider login credentials with `auth.provider`.
-
-Contributed servers have the lowest precedence: users can replace or disable one by name in their own MCP configuration, and filter them with `mcpServers` patterns in settings. Project packages contribute servers only in trusted projects. For a server whose configuration is computed at runtime, call [`pi.registerMcpServer()`](/extensions/api-reference#pi-registermcpserver-name-config) from an extension.
+- Uses the standard `mcp.json` schema (URL env interpolation, `exposure`, `toolExposure`, `timeout` in seconds). Relative `cwd` resolves against the package root (`"cwd": "."` targets files shipped in the package). `auth.provider` is not allowed in package manifests.
+- Contributed servers have lowest precedence: user/project configs can override or disable them by name, and settings can filter them via `mcpServers` patterns. Project packages contribute servers only in trusted projects.
+- For dynamically computed server configs, call [`pi.registerMcpServer()`](/extensions/api-reference#pi-registermcpserver-name-config) from an extension.
 
 ### Storage Adapters
 
-A package can provide [storage adapters](/storage#selecting-an-adapter) with `storageAdapters`, a list of adapter module paths relative to the package root. Put the database driver in `dependencies` so `atomic install` installs it with the package, and list `@bastani/atomic` in `peerDependencies`:
+Expose [storage adapters](/storage#selecting-an-adapter) via `storageAdapters` (manifest-only, paths relative to package root). Put database drivers in `dependencies` and `@bastani/atomic` in `peerDependencies`:
 
 ```json
 {
@@ -109,11 +101,11 @@ A package can provide [storage adapters](/storage#selecting-an-adapter) with `st
 }
 ```
 
-Users select the adapter with the package name, for example `"storage": { "adapter": "@example/atomic-libsql" }`, or with `<package>/<name>` when the package lists several adapters, where `<name>` is the adapter file's name without its extension. Storage adapters are only read from the manifest, never from a convention directory, and only from packages in user settings or package directories the process was given as extension paths. An application that embeds Atomic and loads its own package with `additionalExtensionPaths: [packageRoot]` or `--extension <dir>` can select its adapter by its package name without installing the package; Atomic checks those packages before the ones in settings. See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
+Select by package name (`"storage": { "adapter": "@example/atomic-libsql" }`) or `<package>/<file-stem>` when a package exports multiple adapters. Loaded only from user-settings packages or explicit extension paths (`--extension <dir>` / `additionalExtensionPaths`, which take precedence over settings). See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
 
 ### Gallery Metadata
 
-The package gallery currently recognizes legacy `pi-package` metadata, while new Atomic packages should also include `atomic-package`. Add `video` or `image` fields to show a preview:
+Include both `"atomic-package"` and legacy `"pi-package"` in `keywords` for gallery visibility, plus optional `video` (MP4; autoplays on hover, takes precedence over `image`) or `image` (PNG, JPEG, GIF, WebP):
 
 ```json
 {
@@ -127,37 +119,28 @@ The package gallery currently recognizes legacy `pi-package` metadata, while new
 }
 ```
 
-- **video**: MP4 only. On desktop, autoplays on hover. Clicking opens a fullscreen player.
-- **image**: PNG, JPEG, GIF, or WebP. Displayed as a static preview.
-
-If both are set, video takes precedence.
-
 ## Package Structure
 
 ### Convention Directories
 
-If no app manifest (`atomic`, or legacy `pi`) is present, Atomic auto-discovers resources from these directories:
+Without an `atomic` (or legacy `pi`) manifest key, Atomic auto-discovers:
 
-- `extensions/` loads `.ts` and `.js` files
-- `skills/` recursively finds `SKILL.md` folders and loads top-level `.md` files as skills
-- `prompts/` loads `.md` files
-- `themes/` loads `.json` files
+| Directory | Loaded files |
+| --- | --- |
+| `extensions/` | `.ts` and `.js` files |
+| `skills/` | Recursive `SKILL.md` folders + top-level `.md` files |
+| `prompts/` | `.md` files |
+| `themes/` | `.json` files |
 
-Subagents, MCP servers, and storage adapters are only read from the manifest.
+Subagents, MCP servers, and storage adapters require an explicit manifest entry.
 
-For reusable procedures, ship a [skill](/skills). Existing package workflow modules are never imported or executed. Ask the agent to [convert one to a skill](/orchestration/migrating-workflows). It locates the file through the older `workflows` or `workflow` manifest entry or directory. A project-installed package yields a project skill and is available only in a trusted project. Globally installed packages yield global skills. Conversion leaves the package untouched.
+**Legacy package workflows:** Ship repeatable procedures as [skills](/skills). Legacy workflow files in packages are never executed; ask Atomic to [convert them into skills](/orchestration/migrating-workflows) (leaves the package untouched; project-installed packages produce project skills in trusted projects, global packages produce global skills).
 
 ## Dependencies
 
-Third-party runtime dependencies belong in `dependencies` in `package.json`. Dependencies that do not register extensions, skills, prompt templates, or themes also belong in `dependencies`. When Atomic installs a package from npm or git, it runs the configured npm-compatible install command, so those dependencies are installed automatically.
-
-Atomic bundles core packages for extensions and skills. If you import any of these, list them in `peerDependencies` with a `"*"` range and do not bundle them: `@bastani/atomic`, `@bastani/atomic-ai`, `@bastani/atomic-agent-core`, `@bastani/atomic-tui`, `@bastani/atomic-codemode`, `@bastani/atomic-schema`, `@bastani/atomic-telemetry`, `typebox`. The legacy pi names of these packages (`@earendil-works/pi-*`, `@mariozechner/pi-*` and `@bastani/pi-ai`) still resolve to Atomic's copies and follow the same rule. Atomic does not install peer dependencies for npm packages or for git packages installed with npm, pnpm, or Bun. Local packages are not installed or modified, so their dependency tree is up to the package author.
-
-Do not list these host-provided packages in `dependencies`. An installed copy can bypass Atomic's extension module mapping and create duplicate classes, registries, and startup work. Atomic shows an extension warning when a package's `dependencies` include one of them.
-
-Other Atomic packages must be bundled in your tarball. Add them to `dependencies` and `bundledDependencies`, then reference their resources through `node_modules/` paths. Atomic loads packages with separate module roots, so separate installs do not collide or share modules.
-
-Example:
+- **Third-party runtime dependencies:** Declare in `dependencies`; Atomic runs your npm-compatible installer for npm and git packages automatically. Local path packages manage their own `node_modules`.
+- **Host-provided packages (`peerDependencies: "*"` only):** Never list `@bastani/atomic`, `@bastani/atomic-ai`, `@bastani/atomic-agent-core`, `@bastani/atomic-tui`, `@bastani/atomic-codemode`, `@bastani/atomic-schema`, `@bastani/atomic-telemetry`, `typebox`, or their legacy `@earendil-works/pi-*` / `@mariozechner/pi-*` / `@bastani/pi-ai` names in `dependencies` (doing so duplicates host registries and triggers a startup warning). Declare them in `peerDependencies` with `"*"` and do not bundle them.
+- **Depending on other Atomic packages:** Add them to both `dependencies` and `bundledDependencies`, then reference their resources via `node_modules/...` paths (each package loads with its own isolated module root):
 
 ```json
 {

@@ -5,19 +5,19 @@ description: "Share Intercom with your team through one database while sessions 
 
 # Team and CI setup
 
-A team can share Intercom routing through one libSQL or Turso database, so sessions on different machines message each other. Each person's sessions stay on their own machine, and CI runners can put their sessions in the shared database too, so teammates can inspect and resume them.
+Share one libSQL or Turso database across machines so teammates can message each other over Intercom while keeping their own sessions local. CI runners can point both sessions and Intercom at the same database using environment variables alone, so teammates can inspect and resume CI runs.
 
 | Scope | Sessions | Intercom |
-|---|---|---|
-| Individual (default) | local | local only |
-| Team | local (share with `/share` or export/import) | team database, project group |
-| CI and swarms | team database | team database, a group per run (`ATOMIC_INTERCOM_GROUP`) |
+| --- | --- | --- |
+| Individual (default) | Local | Local only |
+| Team | Local (share explicitly with `/share` or export/import) | Team database, project group |
+| CI and swarms | Team database | Team database, per-run group (`ATOMIC_INTERCOM_GROUP`) |
 
-`atomic team status` shows which of these is in effect, or `custom` when your selections match none of them.
+Run `atomic team status` to see the active profile (`individual`, `team`, `ci`, or `custom` if your settings do not match a preset).
 
 ## Join a team
 
-Install the adapter once per machine, get a token for the database, and join:
+Install the libSQL adapter once per machine, create a database token, and join:
 
 ```bash
 atomic install npm:@bastani/atomic-storage-libsql
@@ -25,58 +25,72 @@ turso db tokens create <db> > ~/team-token
 atomic team join libsql://<db>.turso.io --token-file ~/team-token
 ```
 
-`atomic team join <url> [--token-file <path>] [--prefix <prefix>]` checks everything before it changes anything: the URL, the token, the prefix, your global settings, the installed adapter, and a `SELECT 1` on the database, which must answer within 15 seconds. If any check fails, nothing is written. Then it:
+Command syntax: `atomic team join <url> [--token-file <path>] [--prefix <prefix>]`.
 
-1. stores the token in a private file in the agent directory (mode 600). Running the command again with the same token reuses that file;
-2. writes three keys of `~/.atomic/agent/settings.json` in one update: `storage`, set to the team database; `sessions.storage`, set to the local default store (`{ "path": "workflows/journal.sqlite" }`), so your transcripts stay on your machine; and `teamJoin`, a managed record of the `storage` value it wrote, which `atomic team leave` uses to tell your edits from the join's own value. Leave `teamJoin` as it is. If `sessions.storage` held another store, the command says which one it replaced. Every other setting keeps its value;
-3. restarts the Intercom broker so it routes through the team database;
-4. prints the profile, the Intercom group of the current project, and the same report as `atomic storage status`.
+Before writing anything, Atomic validates the URL, token, prefix, global settings, installed adapter, and a `SELECT 1` health check (15-second timeout). If any check fails, nothing changes. Otherwise, it:
 
-Use `--prefix` to keep several teams in one database. Everyone on a team must use the same URL and prefix. `atomic team join` accepts the same URLs as [`atomic storage join`](/storage#joining-a-machine-to-a-shared-database): `libsql://`, `https://`, `wss://`, or an absolute `file:` URL, which needs no token. URLs that contain the token are refused.
+1. Saves the token to a mode-`600` file in your agent directory (reusing it if you rerun with the same token).
+2. Updates three keys in `~/.atomic/agent/settings.json` atomically while leaving all other settings untouched:
+   - `storage`: set to the team database.
+   - `sessions.storage`: pinned to `{ "path": "workflows/journal.sqlite" }` so local transcripts stay private (prints a notice if it replaces another store).
+   - `teamJoin`: records the managed `storage` block so `atomic team leave` can distinguish managed values from your manual edits. Leave `teamJoin` unchanged.
+3. Restarts the Intercom broker so it routes through the team database.
+4. Prints the active profile, the current project's Intercom group, and the `atomic storage status` report.
 
-Sessions that were already running keep their Intercom group until they restart or run `/reload`.
+**URLs and prefixes:**
+- Supported URLs match [`atomic storage join`](/storage#joining-a-machine-to-a-shared-database): `libsql://`, `https://`, `wss://`, or an absolute `file:` URL (which needs no token). URLs containing an embedded token are refused.
+- Use `--prefix` to isolate multiple teams inside one database. Everyone on a team must pass the same URL and prefix.
+- Sessions that were already running keep their previous Intercom group until they restart or run `/reload`.
 
 ### Check and leave
 
 ```bash
-atomic team status          # profile, project group, and the storage report
-atomic team status --json   # the same as JSON
-atomic team leave           # back to the individual layout
+atomic team status          # Profile, project group, and storage report
+atomic team status --json   # JSON output
+atomic team leave           # Return to the individual layout
 ```
 
-`atomic team status` exits 1 when a selection is invalid, the adapter cannot load, or the database does not answer.
+`atomic team status` exits `1` if the selection is invalid, the adapter fails to load, or the database does not answer.
 
-`atomic team leave` removes `storage` and `teamJoin` only when `storage` is exactly the value that `team join` wrote (it matches the `teamJoin` record), and `sessions.storage` only while it is still the local pin. Any change you made, even to the URL or the prefix alone, keeps `storage` and its token file untouched, and the command says so. A `storage` written by an earlier build, which has no `teamJoin` record, is kept the same way: run `atomic team join` again once to record it. If another `storage` selection remains, `sessions.storage` stays too, so your sessions do not move to that store. That covers a `storage` you changed, a trusted project's `storage`, and, when you use the default agent directory, a `storage` in the legacy `~/.pi/agent/settings.json` that Atomic also reads. The command deletes the token file unless another setting, including those files, still references it, and restarts the Intercom broker. Running it again changes nothing.
+`atomic team leave` reverses a managed join safely:
 
-If the global or project settings cannot be read, fix them before leaving. The command keeps settings and token files unchanged rather than deleting a token whose references it cannot check.
+- Removes `storage` and `teamJoin` only when `storage` still exactly matches the `teamJoin` record. Any manual edit (even changing only the URL or prefix) leaves `storage` and its token file intact and reports why.
+- Keeps a `storage` entry written without a `teamJoin` record (for example from an earlier build). Run `atomic team join` once to record it before leaving.
+- Removes `sessions.storage` only while it is still the local pin and no other `storage` selection remains (including a customized `storage`, a trusted project's `storage`, or a legacy `~/.pi/agent/settings.json` `storage` when using the default agent directory).
+- Deletes the managed token file only if no remaining setting references it, then restarts the Intercom broker.
+- Refuses to modify settings or delete token files if global or project settings cannot be read; fix the unreadable file first.
+- Safe to run repeatedly; subsequent runs make no changes.
 
 ## Project groups
 
-While multi-node routing is on, a session that has no explicit group joins a project group instead of `default`:
+When multi-node routing is enabled, sessions without an explicit group automatically join a project group instead of `default`:
 
-- `project:<owner>/<repo>`, from the repository's `origin` remote. Clones over SSH and HTTPS of the same repository share one group.
-- In a repository without an `origin` remote, the repository's directory name; outside Git, the working directory's name.
+- `project:<owner>/<repo>` derived from the repository's `origin` remote (SSH and HTTPS clones map to the same group).
+- The repository directory name when there is no `origin` remote, or the working directory name outside Git.
 
-Sessions of different repositories on the same database cannot see or message each other unless they share a group. An explicit group still wins: `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `group`, or a subagent's inherited group. With one machine and no shared storage, sessions keep using `default`.
+Sessions in different repositories on the same database cannot see or message each other unless they join the same group. An explicit group always wins: `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `group`, or a subagent's inherited group. Without shared storage, single-machine sessions keep using `default`.
 
-Joining `default` explicitly while multi-node routing is on prints a one-line warning, because every teammate's sessions on the database can address that group. A session without a UI, such as `atomic -p` in CI, writes it to stderr once per process.
+Joining `default` explicitly while multi-node routing is enabled prints a warning (once per process to stderr in non-UI modes like `atomic -p`), because every teammate's session on the database can address `default`.
 
-Inside a Git repository, Atomic runs `git` to read the origin. If Git is not installed or fails there, the session's Intercom start fails with an error that names the install command or the failing `git` command. Setting `ATOMIC_INTERCOM_GROUP` avoids the lookup.
+Inside a Git repository, Atomic invokes `git` to read `origin`. If `git` is missing or fails, Intercom startup fails with the install command or failing `git` command. Set `ATOMIC_INTERCOM_GROUP` to bypass the lookup.
 
 ## CI and swarms
 
-A CI runner needs no settings file. Set these variables for the process:
+CI runners do not need a `settings.json` file. Configure them with environment variables:
 
 | Variable | Value |
-|---|---|
+| --- | --- |
 | `ATOMIC_PROFILE` | `ci` |
-| `ATOMIC_TEAM_URL` | The team database URL |
-| `ATOMIC_TEAM_TOKEN` or `ATOMIC_TEAM_TOKEN_FILE` | The token, or a file holding it. Only an absolute `file:` URL needs neither. Give the file as an absolute path, for example under `$RUNNER_TEMP`: a relative path is refused at startup, because each process Atomic starts would resolve it against its own working directory |
-| `ATOMIC_TEAM_PREFIX` | Optional: the prefix the team joined with |
+| `ATOMIC_TEAM_URL` | Team database URL |
+| `ATOMIC_TEAM_TOKEN` or `ATOMIC_TEAM_TOKEN_FILE` | Database token or absolute path to a token file (for example under `$RUNNER_TEMP`). Omit only for an absolute `file:` URL. Relative paths are rejected at startup because child processes may run in different working directories. |
+| `ATOMIC_TEAM_PREFIX` | Optional prefix matching the team's database prefix |
 
-With `ATOMIC_PROFILE=ci`, sessions and Intercom both use the team database in that process and the processes it starts. Nothing is written to settings. The token is read from the variable or the file when a store opens; it is never copied into settings, logs, or the selection a child process receives.
+With `ATOMIC_PROFILE=ci`, both sessions and Intercom use the team database for this process and every child process it spawns. Nothing is written to settings, and the token is read when opening a store—never copied into settings, logs, or child storage selections.
 
-Atomic checks these variables when it starts, before any session starts. A team variable without `ATOMIC_PROFILE`, or the profile without its URL or token, fails with one error that names every missing variable. An unknown profile, a bad URL, an unreadable or empty token file, and an invalid prefix fail the same way. More specific selections still win: `--storage`, `ATOMIC_STORAGE`, and the domain variables outrank the profile. `--storage` and `ATOMIC_STORAGE` outrank it for every store, Intercom included, while a domain variable outranks it only for its own store. As long as the profile still selects a store, startup fails with the `atomic install` command to run if the adapter cannot be loaded.
+**Validation and precedence:**
+- Atomic validates these variables at startup before opening a session. Missing paired variables (a team variable without `ATOMIC_PROFILE`, or `ATOMIC_PROFILE=ci` without a URL or token), unknown profiles, invalid URLs or prefixes, and empty or unreadable token files fail immediately with a single error listing everything missing.
+- More specific overrides win: `--storage` and `ATOMIC_STORAGE` override the profile for all stores (including Intercom), while domain-specific variables override only their own store.
+- If the profile still selects the adapter and it is not installed, startup fails with the `atomic install` command to run.
 
 ### GitHub Actions
 
@@ -95,36 +109,15 @@ jobs:
       - run: atomic -p "Fix the failing test in the checkout"
 ```
 
-In a [GitHub Agentic Workflows](https://github.github.com/gh-aw/) (gh-aw) workflow, run Atomic in a custom job from the frontmatter `jobs:`. gh-aw runs those as ordinary GitHub Actions jobs before its own agent, outside its sandbox, so the token can stay in a step's `env:`:
-
-```yaml
----
-on: workflow_dispatch
-jobs:
-  atomic:
-    runs-on: ubuntu-latest
-    env:
-      ATOMIC_PROFILE: ci
-      ATOMIC_TEAM_URL: ${{ vars.ATOMIC_TEAM_URL }}
-    steps:
-      - uses: actions/checkout@v5
-      - run: npm install -g @bastani/atomic
-      - run: atomic install npm:@bastani/atomic-storage-libsql
-      - run: atomic -p "Fix the failing test in the checkout"
-        env:
-          ATOMIC_TEAM_TOKEN: ${{ secrets.ATOMIC_TEAM_TOKEN }}
----
-```
-
-Do not put the token in the frontmatter `env:` or `steps:`: gh-aw makes those visible to its own agent, and `gh aw compile --strict` refuses secrets there.
-
-Keep the token in an encrypted secret, give it only to the step that needs it, and remember that every tool the agent runs in that step inherits it.
+Store the token in an encrypted secret, expose it only to the step that needs it, and remember that every tool the agent runs in that step inherits it.
 
 ### Caching between runs
 
-A hosted runner starts every job with an empty home directory. `atomic blueprint cache-key` names the cache entries worth keeping: the package stores your lockfiles point to, plus any extra paths in the `resume.cache` setting of `.atomic/settings.json` (see [Caches for runners](/guides/resume-on-any-machine#caches-for-runners)). Save them only from a trusted job on the default branch (`push`, `schedule` or `workflow_dispatch`), and restore them in agent jobs with `actions/cache/restore`, which cannot save.
+Hosted CI runners start with an empty home directory. Use `atomic blueprint cache-key` to compute cache keys and paths for package stores detected from lockfiles plus any extra paths in `.atomic/settings.json` under `resume.cache` (see [Caches for runners](/guides/resume-on-any-machine#caches-for-runners)).
 
-The trusted job runs [`atomic blueprint prebuild --park`](/guides/resume-on-any-machine#prebuilt-worktrees): it restores the commit into a worktree, builds it with the blueprints, which fills the package stores, puts the commit into Atomic's Git object store, and parks the `"kind": "build"` paths of `resume.cache` where the `build` entry saves them from:
+Save caches only from a trusted job on the default branch (`push`, `schedule`, or `workflow_dispatch`), and restore them read-only in agent jobs with `actions/cache/restore`.
+
+In the trusted job, run [`atomic blueprint prebuild --park`](/guides/resume-on-any-machine#prebuilt-worktrees) to restore the commit into a worktree, run its blueprints to warm package stores, write the commit into Atomic's Git object store, and park `"kind": "build"` paths from `resume.cache`:
 
 ```yaml
 on:
@@ -140,8 +133,8 @@ jobs:
       - run: npm install -g @bastani/atomic
       - id: keys
         run: atomic blueprint cache-key --format github-output >> "$GITHUB_OUTPUT"
-      - run: atomic blueprint prebuild --park --approve   # runs the blueprint, filling the detected stores: trust only your default branch
-      - run: atomic --list-models   # transpiles your installed extensions into Atomic's cache
+      - run: atomic blueprint prebuild --park --approve   # Runs blueprints to populate stores; trust only the default branch
+      - run: atomic --list-models   # Transpiles installed extensions into Atomic's cache
       - uses: actions/cache/save@v4
         with:
           key: ${{ steps.keys.outputs.stores-key }}
@@ -161,7 +154,7 @@ jobs:
           path: ${{ steps.keys.outputs.atomic-paths }}
 ```
 
-In the agent job, before Atomic starts, restore the same entries:
+In the agent job, restore those entries before launching Atomic:
 
 ```yaml
       - uses: actions/checkout@v5
@@ -192,15 +185,20 @@ In the agent job, before Atomic starts, restore the same entries:
       - run: atomic --session "$SESSION_ID" -p "Continue"
 ```
 
-A resume in the agent job then fetches only the commits the Git store lacks, and adopts the parked build output into a worktree at the path where the prebuild built it, so path-sensitive output such as Cargo's `target` stays valid. Without `"kind": "build"` paths in `resume.cache`, there is no `build` entry and its steps are skipped. Leave build paths out for repositories that build code from outside contributors on the default branch: whatever the trusted job builds, every agent job reuses. In a gh-aw workflow, put the same steps in the custom job that runs Atomic. Do not use gh-aw's frontmatter `cache:` for these entries: it runs `actions/cache`, which also saves from the agent job.
+When the agent job resumes a session, it fetches only the commits missing from the cached Git store and adopts parked build output into a worktree at the same path used during prebuild (preserving path-sensitive artifacts such as Cargo's `target`).
 
-The key changes when a lockfile or key file, `resume.cache`, the repository blueprint, the OS, the architecture or the Atomic version change, so a restore by exact key never gets stale content; the restore prefix falls back to the newest older entry, which package managers bring up to date. `cache-key` leaves out paths that could hold credentials and prints a warning on stderr, which does not reach `$GITHUB_OUTPUT`. An entry it leaves out has no outputs, and a cache step with an empty `path` fails, so restore only entries `cache-key` prints for your repository.
+- If `resume.cache` defines no `"kind": "build"` paths, `build-key` is empty and its steps are skipped.
+- Omit build paths if untrusted external contributor code builds on the default branch, because every agent job reuses the trusted job's build output.
+- Keys include lockfiles, key files, `resume.cache`, the repository blueprint, OS, architecture, and Atomic version, so exact hits never return stale content. `restore-keys` falls back to the newest older cache for package managers to update incrementally.
+- `cache-key` omits paths that may hold credentials and warns on stderr (leaving `$GITHUB_OUTPUT` clean). Restore only entries that `cache-key` outputs for your repository, because a cache step with an empty `path` fails.
 
 ### From the SDK
 
-`@bastani/atomic/storage` exposes the same operations as the commands: `joinTeam()`, `leaveTeam()`, and `getTeamProfile()`, which return promises, and `teamProfileSelection()`. `teamProfileSelection({ profile: "ci", url, token })` returns a selection you can pass as `createAgentSession({ storage })`, without touching settings. A literal `token` stays in memory: it serializes as `[redacted]` and is refused anywhere but the SDK. Pass `tokenFile` or `tokenEnv` instead to reference a file or an environment variable.
+`@bastani/atomic/storage` exports async helpers `joinTeam()`, `leaveTeam()`, and `getTeamProfile()`, plus `teamProfileSelection()`.
 
-Intercom has one broker per agent directory, chosen by the process, so give the CI profile variables to the host process (for Intercom in its own sessions) and to the agent processes it starts:
+Use `teamProfileSelection({ profile: "ci", url, token })` to pass a storage selection to `createAgentSession({ storage })` without modifying settings. An in-memory `token` stays in memory, serializes as `[redacted]`, and cannot be reopened by other processes; pass `tokenFile` or `tokenEnv` instead when child processes need it.
+
+Intercom runs one broker per agent directory, so pass the CI environment variables to both the host process and any spawned `atomic` processes:
 
 ```ts
 import { spawn } from "node:child_process";
@@ -210,26 +208,30 @@ import { teamProfileSelection } from "@bastani/atomic/storage";
 const url = process.env.TEAM_DATABASE_URL!;
 const token = process.env.TEAM_DATABASE_TOKEN!;
 
-// An agent in this process: its sessions use the team database.
+// In-process agent: sessions use the team database.
 const storage = teamProfileSelection({ profile: "ci", url, token });
 const { session } = await createAgentSession({ storage });
 await session.prompt("Summarize the failing tests");
 
-// Agent processes on the same database, Intercom included.
+// Spawned agent process: sessions and Intercom both use the team database.
 const child = spawn("atomic", ["-p", "Fix the failing test"], {
   env: { ...process.env, ATOMIC_PROFILE: "ci", ATOMIC_TEAM_URL: url, ATOMIC_TEAM_TOKEN: token },
   stdio: "inherit",
 });
 ```
 
-A selection with an in-memory token cannot be reopened by other processes; use `tokenFile` or `tokenEnv` when another process needs it. See [Team setup errors](/storage#team-setup-errors) for the typed errors these functions throw.
+See [Team setup errors](/storage#team-setup-errors) for the typed errors these functions throw.
 
 ## Security
 
-Anyone who can read the database can read everything in it: every session stored there (CI sessions in the CI profile), any workflow runs an earlier release stored there, and Intercom messages until shortly after they are delivered. Treat database access as full read access and give each team its own database. With Turso, create per-database tokens (`turso db tokens create <db>`), give CI tokens an `--expiration`, and when someone leaves, run `turso db tokens invalidate <db>` and hand out new tokens: Turso cannot revoke a single token. The team layout keeps individual sessions out of the database only because `sessions.storage` points at the local store; share a session deliberately with `/share` or export and import.
+Anyone with read access to the team database can read everything in it: all stored sessions (including CI sessions), any workflow runs written by earlier releases, and Intercom messages until shortly after delivery.
+
+- Give each team its own database and treat database access as full read access.
+- With Turso, issue per-database tokens (`turso db tokens create <db>`), set `--expiration` on CI tokens, and rotate access when someone leaves with `turso db tokens invalidate <db>` (Turso cannot revoke a single token).
+- In the team profile, individual sessions stay off the shared database only because `sessions.storage` is pinned locally. Share sessions intentionally with `/share` or export/import.
 
 ## Related
 
-- [Storage](/storage) — every storage selection and its precedence.
+- [Storage](/storage) — storage selections and precedence.
 - [Running Intercom across machines](/intercom/operations#running-intercom-across-machines) — multi-node routing details.
 - [Intercom groups](/intercom/reference#groups) — how groups isolate sessions.

@@ -7,7 +7,7 @@ description: Package filtering, scope, and deduplication contracts.
 
 ## Package Filtering
 
-Filter what a package loads using the object form in settings:
+Use the object form in `settings.json` to filter which resources load from a package:
 
 ```json
 {
@@ -26,29 +26,23 @@ Filter what a package loads using the object form in settings:
 }
 ```
 
-`+path` and `-path` are exact paths relative to the package root. `mcpServers` patterns match server names from the package manifest instead of paths, and `+name`/`-name` match a name exactly.
+**Pattern rules** (applied on top of the package manifest):
 
-- Omit a key to load all of that type.
-- Use `[]` to load none of that type.
-- `!pattern` excludes matches.
-- `+path` force-includes an exact path.
-- `-path` force-excludes an exact path.
-- Filters layer on top of the manifest. They narrow down what is already allowed.
+| Pattern | Meaning |
+| --- | --- |
+| *(key omitted)* | Load all resources of this type |
+| `[]` | Load none of this type |
+| `!pattern` | Exclude matching entries |
+| `+path` / `+name` | Force-include an exact relative path (or server name for `mcpServers`) |
+| `-path` / `-name` | Force-exclude an exact relative path (or server name for `mcpServers`) |
 
-In the top-level `extensions`, `skills`, `prompts`, and `themes` arrays, path patterns expand `~` to your home directory. For example, `!~/skills/legacy-*` excludes matching skills and `-~/skills/legacy` disables that exact skill directory.
-
-Package [subagents](/packages/authoring#subagents) have no top-level settings array. Filter them per package with `agents`, which matches agent file paths relative to the package root.
+- In top-level `extensions`, `skills`, `prompts`, and `themes` arrays, patterns expand `~` to your home directory (for example `!~/skills/legacy-*` or `-~/skills/legacy`).
+- Package [subagents](/packages/authoring#subagents) have no top-level settings array—filter them per package with `agents` (matching paths relative to the package root).
+- `mcpServers` matches server names from the manifest rather than file paths.
 
 ## Scope and Deduplication
 
-Packages can appear in both global and project settings. The project entry normally wins.
-
-A project entry with `autoload: false` instead adjusts the inherited global resources. It adds no newly auto-discovered resources; explicit include/exclude patterns control what loads.
-
-When two packages ship a subagent with the same full name, the first one found is used: packages passed with `-e`, then project-installed packages, then globally installed packages.
-
-Package identity is determined by:
-
-- npm: package name
-- git: repository URL without ref
-- local: resolved absolute path
+- **Project overrides global:** When the same package appears in both global and project settings, the project entry wins.
+- **Adjusting without autoloading:** Set `"autoload": false` on a project entry to filter inherited global resources without discovering new ones.
+- **Subagent collisions:** When multiple packages define the same full subagent name, precedence is `-e` packages → project-installed packages → globally installed packages.
+- **Package identity:** Matched by npm package name (`npm`), repository URL without `@ref` (`git`), or resolved absolute path (`local`).
