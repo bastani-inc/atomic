@@ -13,6 +13,7 @@ import { type IntercomClient, sameReachPolicy, type SendOptions, type SendResult
 import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDirectory } from "./types.js";
 import { OutboundAsks } from "./outbound-asks.js";
 import { HELD_FOR_AWAY_ASKER_TARGET, OFFLINE_SESSION_TARGET } from "./broker/held-reply-targets.js";
+import { PAUSED_RECIPIENT_TARGET, RESUMING_RECIPIENT_TARGET } from "./broker/ended-child-wakes.js";
 import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema, parseAskWait } from "./ask-wait.js";
 import { PeerDisconnectedError } from "./peer-disconnect-routing.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
@@ -55,6 +56,32 @@ import {
 
 /** The most direct sends one pattern send runs at once; its other recipients wait their turn. */
 const PATTERN_SEND_CONCURRENCY = 16;
+
+/**
+ * #5999: whether a `queued` answer names a subagent that ended: one being resumed for the message (`resuming subagent`),
+ * or one paused that gets it when it is continued (`paused subagent`).
+ */
+function endedRecipientQueue(target: string | undefined): "resuming" | "paused" | undefined {
+  if (target === RESUMING_RECIPIENT_TARGET) return "resuming";
+  if (target === PAUSED_RECIPIENT_TARGET) return "paused";
+  return undefined;
+}
+
+/**
+ * #5999: what a send or ask to a subagent that had ended answers: the message is queued, and reaches it as its next
+ * prompt once it is resumed, or, for one that was paused, once the session that launched it continues it. A reply, or a
+ * failure, arrives later as a message.
+ */
+function resumingRecipientText(to: string, queue: "resuming" | "paused", ask: boolean, askId?: string): string {
+  const what = ask ? "Ask" : "Message";
+  const queued =
+    queue === "resuming"
+      ? `${what} queued for ${to}: it had finished, so the session that launched it is resuming it, and it gets this message as its next prompt.`
+      : `${what} queued for ${to}: it is paused, so it is not resumed for this message; it gets it when the session that launched it continues it, after what it is continued with.`;
+  return ask
+    ? `${queued} This call does not wait: the reply arrives later as a message ("Reply to your ask ${askId} from ${to}"), or as a failed ask if the message cannot reach it.`
+    : `${queued} If the message cannot reach it you are told it was not delivered.`;
+}
 
 function retryErrorDetails(retryToken: string | undefined): Record<string, unknown> {
 	return retryToken === undefined ? { error: true } : { error: true, retryToken };
@@ -811,6 +838,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               attachments,
               replyTo,
               ...(broadcastId === undefined ? {} : { broadcastId }),
+              // #5999: a subagent that ended but can be resumed is resumed for a message to it alone, never for a pattern.
+              ...(fanOut === undefined ? { wakeEndedRecipient: true as const } : {}),
               ...deliveryOption,
             });
 
@@ -823,10 +852,11 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 messageId: result.id,
                 timestamp: Date.now(),
               });
+              const endedQueue = endedRecipientQueue(result.target);
               return {
                 content: [{
                   type: "text",
-                  text: `Message queued for ${to}`,
+                  text: endedQueue === undefined ? `Message queued for ${to}` : resumingRecipientText(to, endedQueue, false),
                 }],
                 isError: false,
                 details: {
@@ -835,6 +865,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                   queued: true,
                   target: result.target,
                   position: result.position,
+                  ...(endedQueue === undefined ? {} : { [endedQueue]: true as const }),
                 },
               };
             }
@@ -1081,6 +1112,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               attachments,
               replyTo,
               expectsReply: true,
+              // #5999: a subagent that ended but can be resumed is resumed for the ask; its reply arrives as a message.
+              wakeEndedRecipient: true,
               ...deliveryOption,
               // The broker names the recipient it authorized to answer, so its reply is matched to this ask: a target
               // the listing could not resolve (such as a peer's own session id, #3760), or a recipient that
@@ -1091,6 +1124,36 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               },
             });
 
+            const endedQueue = sendResult.queued === true ? endedRecipientQueue(sendResult.target) : undefined;
+            if (endedQueue !== undefined) {
+              // #5999: the recipient is being resumed for this ask, or gets it when it is continued: the ask stays open,
+              // and its reply arrives later as a message ("Reply to your ask ..."), or its failure as a failed ask.
+              askDelivered = true;
+              retryIdentities.release(retryIdentity);
+              retryIdentity = undefined;
+              wait?.cancel(new Error(`Ask queued for ${to}, which had ended`));
+              wait = null;
+              await outboundAsks().persist(questionId);
+              await pi.appendEntry("intercom_sent", {
+                to,
+                message: { text: message, attachments, replyTo },
+                messageId: sendResult.id,
+                timestamp: Date.now(),
+              });
+              return {
+                content: [{ type: "text", text: resumingRecipientText(to, endedQueue, true, questionId) }],
+                isError: false,
+                details: {
+                  messageId: sendResult.id,
+                  delivered: false,
+                  queued: true,
+                  [endedQueue]: true,
+                  askId: questionId,
+                  target: sendResult.target,
+                  position: sendResult.position,
+                },
+              };
+            }
             if (sendResult.queued === true) {
               outboundAsks().forget(questionId);
               retryIdentities.release(retryIdentity);

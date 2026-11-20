@@ -235,6 +235,16 @@ export interface RemoteSendRequest {
 /** Local sends the multi-node router has already checked against the shared outbox. */
 const checkedAgainstSharedOutbox = new WeakSet<SendClientMessage>();
 const sendersAtReceipt = new WeakMap<SendClientMessage, BrokerConnectedSession>();
+/**
+ * #5999: sends already answered `queued` for a subagent being resumed. They are delivered as their sender was when the
+ * broker took them, even once that sender's connection is gone: nobody waits on them any more.
+ */
+const detachedSends = new WeakSet<SendClientMessage>();
+
+/** #5999: deliver `clientMessage` as its sender was when it was first received, whether or not it is still connected. */
+export function detachSend(clientMessage: SendClientMessage): void {
+  detachedSends.add(clientMessage);
+}
 
 export type RemoteSendRouter = (request: RemoteSendRequest) => void;
 function wireMessageId(value: unknown): string {
@@ -329,18 +339,23 @@ export function handleBrokerSend(
 
 
   const liveSender = currentId ? sessions.get(currentId) : undefined;
-  if (!liveSender) {
+  const detachedSender = detachedSends.has(clientMessage) ? sendersAtReceipt.get(clientMessage) : undefined;
+  if (!liveSender && !detachedSender) {
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
     return;
   }
   let fromSession = sendersAtReceipt.get(clientMessage);
-  if (fromSession === undefined) {
+  if (fromSession === undefined && liveSender !== undefined) {
     fromSession = liveSender.reach === undefined ? liveSender : {
       ...liveSender,
       info: { ...liveSender.info, groups: liveSender.info.groups?.slice() },
       reach: { home: liveSender.reach.home, reachable: [...liveSender.reach.reachable] },
     };
     sendersAtReceipt.set(clientMessage, fromSession);
+  }
+  if (fromSession === undefined) {
+    write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
+    return;
   }
 	const senderIdentity = fromSession.registrationReturnAddress ?? fromSession.info.id;
 	const logicalTarget = typeof clientMessage.logicalTarget === "string" ? clientMessage.logicalTarget : clientMessage.to;

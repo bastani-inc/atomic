@@ -65,6 +65,8 @@ export interface BrokerStatusReport {
 	heldSends?: number;
 	/** Released-asker reply routes refused at capacity since broker start; absent from an older broker. */
 	droppedReleasedReplyRoutes?: number;
+	/** #5999: bytes of the messages queued for subagents that ended, to reach them when resumed; absent from an older broker. */
+	queuedBytes?: number;
 	/** The shared storage selection the broker read, as a digest of its JSON, and where it read it; absent without one. */
 	storage?: { digest: string; source: "env" | "settings" };
 	multiNode: BrokerMultiNodeStatus;
@@ -134,6 +136,12 @@ export interface EndedChildFrame {
 	aliases?: string[];
 	outcome: SubagentEndedOutcome;
 	childId?: string;
+	/**
+	 * #5999: what the owner does with a send that asks to wake this subagent (`send.wakeEndedRecipient`): resume it for the
+	 * message (`wake`, for one that finished on its own), or keep the message until it continues it (`hold`, for one
+	 * paused or quit). Sent only to a broker that advertised `wakesEndedChildren`; never with the `cancelled` outcome.
+	 */
+	messages?: "wake" | "hold";
 }
 
 /** One released subagent in a `reserve_released_children` frame. */
@@ -183,6 +191,11 @@ export interface Message {
   replyError?: string;
   /** #5154: with `replyError`: the recipient may only be away, so asking again later may reach it. */
   retryLater?: true;
+  /**
+   * #5999: set by the broker on a message it kept for a subagent that was paused or quit: the subagent takes it after
+   * what it is continued with, not as context before it. A client that does not know it takes it as before.
+   */
+  heldWhilePaused?: true;
   /**
    * Shared by every copy of one pattern send (`subagent-*`, `subagents:*`), each of which has its own `id`. A session
    * that several copies reach shows it once.
@@ -286,6 +299,12 @@ export type ClientMessage =
   | { type: "mark_ended_children"; requestId: string; children: EndedChildFrame[] }
   /** #4326: the owner is waking this child; the broker extends the sends held for it once per wake. */
   | { type: "acknowledge_released_child_wake"; requestId: string; childName: string; releaseStamp?: true }
+  /**
+   * #5999: the owner answers one `ended_child_wake`: it is resuming the child (`accepted`), or it is not, and `reason`
+   * says why; the messages queued for the child then fail with it. An answer that names another wake is ignored. Sent
+   * only in answer to a broker's `ended_child_wake`.
+   */
+  | { type: "answer_ended_child_wake"; childName: string; wakeId: string; accepted: boolean; reason?: string }
   | { type: "verify_released_child"; requestId: string; childName: string; broker: string; order: number }
   /** #4326: the owner answers one `released_child_reply` handoff; an ack that names another handoff is ignored. */
   /**
@@ -306,6 +325,11 @@ export type ClientMessage =
       resolveReplyTarget?: true;
       /** The sender understands `send_held` and may wait past its usual acknowledgement timeout (#3760). */
       awaitRestoringRecipient?: true;
+      /**
+       * #5999: a subagent that ended but can be resumed is resumed for this message by its owner; the send is answered
+       * `queued` (target `resuming subagent`) at once. Never set on one copy of a pattern send. An older broker ignores it.
+       */
+      wakeEndedRecipient?: true;
       /** #4642: send as this session, which this connection hosts. */
       hostedSender?: string;
       message: Message;
@@ -349,6 +373,8 @@ export type BrokerMessage =
 			extendsSaves?: true;
 			/** #4639: this broker accepts `mark_ended_children`; absent on older brokers, which drop a client that sends it. */
 			marksEndedChildren?: true;
+			/** #5999: this broker wakes ended subagents for a send that asks it, and accepts `answer_ended_child_wake`. */
+			wakesEndedChildren?: true;
 			/** This connection accepts stamped release requests and read-only checks of a stamped hold. */
 			stampsReleasedChildren?: true;
 			/** Broker routing mode at registration, for deciding whether a reply wait may release. */
@@ -405,6 +431,19 @@ export type BrokerMessage =
 	 * hold that starts empty, so a wake that fails is asked for again by the next send.
 	 */
 	| { type: "restoring_recipient_wake"; childName: string; capability?: string }
+	/**
+	 * #5999: a message is queued for a subagent this session reported ended with `wake`: resume it, and answer with
+	 * `answer_ended_child_wake` naming `wakeId`. `from` is the sender of the message that woke it; `depth` how far down a
+	 * chain of wakes this one is. Sent once per wake, until the child registers or the wake fails.
+	 */
+	| {
+			type: "ended_child_wake";
+			childName: string;
+			childId?: string;
+			wakeId: string;
+			from: { id: string; name?: string };
+			depth: number;
+	  }
 	/** #4326: `handoffId` identifies this handoff, so the owner's acknowledgement cannot confirm another reply that reuses the message id. */
 	| { type: "released_child_reply"; childName: string; handoffId: string; replyTo: string; from: SessionInfo; message: Message }
 	/**

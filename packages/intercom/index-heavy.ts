@@ -32,13 +32,25 @@ import {
   SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
   SUBAGENT_RELEASED_CHILD_WAKE_EVENT,
   type ReleasedChildWakeNotice,
+  SUBAGENT_ENDED_CHILD_WAKE_EVENT,
+  type EndedChildWakeRequest,
+  SUBAGENT_PEER_RESUME_EVENT,
+  isPeerResumeRequest,
+  type PeerResumeOutcome,
   waitForIntercomPeer,
 } from "./session-recovery.js";
+import { PAUSED_RECIPIENT_TARGET, RESUMING_RECIPIENT_TARGET } from "./broker/ended-child-wakes.js";
+
+/** #5999: how often a message kept for a paused subagent checks that the subagent's start went past its first turn. */
+const FIRST_TURN_POLL_MS = 50;
+/** #5999: the notice, in the session that launched a subagent, that it is resuming it for another session's message. */
+const ENDED_CHILD_WAKE_MESSAGE_TYPE = "intercom_subagent_wake";
 import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironmentAsync, type SessionEntry, sessionScopedExtensionState, type IntercomPolicyView } from "@bastani/atomic";
 import { appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+	type EndedChildWakeNotice,
 	IntercomClient,
 	IntercomReachUnsupportedError,
 	type ExpectedRouting,
@@ -93,7 +105,7 @@ import {
   unconsumedIntercomInbox,
 } from "./durable-inbox.js";
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
-import { resolveSessionTargetId } from "./session-target.js";
+import { resolveSessionTargetId, resolveSessionTargetIdIn } from "./session-target.js";
 import { InboundMessageAdmission } from "./inbound-message-admission.js";
 import { type AdmissionPlace, InboundAdmissionOrder } from "./inbound-admission-order.js";
 import { retryStableDelivery } from "./stable-delivery-retry.js";
@@ -228,6 +240,35 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let runtimeStarted = false;
   let runtimeGeneration = 0;
   let agentRunning = false;
+  /** #5999: messages kept for a paused subagent wait here for its first turn to start. */
+  const agentStartWaiters: Array<() => void> = [];
+  /**
+   * #5999: settles once this subagent's first turn has started (or it has none pending), or its start is given up.
+   * Messages kept for it while it was paused wait for this, so what it is continued with goes first.
+   */
+  function untilFirstTurnStarted(liveContext: ExtensionContext): Promise<void> {
+    const startup = liveContext.subagentPolicy?.startup;
+    if (startup?.firstTurnPending() !== true || agentRunning) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        clearInterval(poll);
+        startup.signal.removeEventListener("abort", finish);
+        const index = agentStartWaiters.indexOf(finish);
+        if (index >= 0) agentStartWaiters.splice(index, 1);
+        resolve();
+      };
+      // The start's own steps end its wait too: a start that skips its prompt, or is given up, never starts a turn.
+      const poll = setInterval(() => {
+        if (startup.firstTurnPending() !== true) finish();
+      }, FIRST_TURN_POLL_MS);
+      poll.unref?.();
+      agentStartWaiters.push(finish);
+      startup.signal.addEventListener("abort", finish, { once: true });
+    });
+  }
   let sessionHomeGroup: string | null = null;
   let brokerRouting: boolean | null = null;
   let selectedSharedStorage = false;
@@ -843,6 +884,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     messageGeneration: number,
   ): Promise<Admitted> {
     const entry = buildInboundEntry(from, message, channel);
+    // #5999: a message kept for this subagent while it was paused reaches it after what it is continued with: once its
+    // first turn has started, as any message to a running subagent does, never as context before that turn.
+    if (message.heldWhilePaused === true) await untilFirstTurnStarted(liveContext);
     // A subagent that has not started its first turn, as one whose held sends the broker hands over as it registers,
     // takes a message as context for that turn: written before it, without a turn of its own.
     if (
@@ -1061,6 +1105,43 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     nextClient.on("restoring_recipient_wake", (notice: { childName: string }) => {
       const wake: ReleasedChildWakeNotice = { childName: notice.childName };
       pi.events.emit(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, wake);
+    });
+    // #5999: a message waits at the broker for a child of this session that ended; Subagents resumes it, and answers.
+    nextClient.on("ended_child_wake", (notice: EndedChildWakeNotice) => {
+      let told = false;
+      const answer = (accepted: boolean, reason?: string): void => {
+        nextClient.answerEndedChildWake(notice.childName, notice.wakeId, accepted, reason);
+        if (!accepted || told || client !== nextClient || !getLiveContext()) return;
+        told = true;
+        // The user sees, where the child's result will arrive, who woke it and why.
+        const waker = notice.from.name ?? notice.from.id;
+        void Promise.resolve(
+          pi.sendMessage(
+            {
+              customType: ENDED_CHILD_WAKE_MESSAGE_TYPE,
+              content: `Resuming subagent \`${notice.childName}\`${notice.childId === undefined ? "" : ` (${notice.childId})`} for an Intercom message from ${waker}. It stays this session's subagent: its result arrives here.`,
+              display: true,
+              details: { childName: notice.childName, childId: notice.childId, from: notice.from, depth: notice.depth },
+            },
+            { triggerTurn: false },
+          ),
+        ).catch(() => {});
+      };
+      const request: EndedChildWakeRequest = {
+        childName: notice.childName,
+        ...(notice.childId === undefined ? {} : { childId: notice.childId }),
+        from: notice.from,
+        depth: notice.depth,
+        answer,
+      };
+      if (client === nextClient && getLiveContext()) {
+        try {
+          pi.events.emit(SUBAGENT_ENDED_CHILD_WAKE_EVENT, request);
+        } catch {
+          // Answered below as not taken.
+        }
+      }
+      if (request.handled !== true) answer(false, "the session that launched it cannot resume subagents right now");
     });
     nextClient.on("peer_disconnected", (notice: PeerDisconnectNotice) => {
       if (client !== nextClient) {
@@ -1374,6 +1455,37 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       : Promise.resolve();
   });
   // #4639: how children this session launched ended; a report lives on this connection, like a reservation.
+  // #5999: `subagent({ action: "resume" })` of a child another session launched is a message to it that asks to wake it:
+  // its launching session resumes it, under the same group and reach rules as any message.
+  pi.events.on(SUBAGENT_PEER_RESUME_EVENT, (payload) => {
+    if (!isPeerResumeRequest(payload) || payload.completion) return;
+    const request = payload;
+    request.completion = (async (): Promise<PeerResumeOutcome> => {
+      const activeClient = await ensureConnected("tool");
+      const listed = await activeClient.listSessions();
+      const live = resolveSessionTargetIdIn(listed, activeClient.supervisorSessionId, request.to);
+      // A live session is running: `resume` refuses it, as it refuses a running child of its own; nothing is sent.
+      if (live !== null) {
+        const session = listed.find((candidate) => candidate.id === live);
+        return { kind: "running", name: session?.name ?? live };
+      }
+      const result = await activeClient.send(request.to.trim(), {
+        text: request.message,
+        logicalTarget: request.to,
+        wakeEndedRecipient: true,
+      });
+      if (result.queued === true)
+        return result.target === RESUMING_RECIPIENT_TARGET
+          ? { kind: "resuming" }
+          : result.target === PAUSED_RECIPIENT_TARGET
+            ? { kind: "paused" }
+            : { kind: "queued" };
+      if (result.delivered) return { kind: "delivered" };
+      // A subagent that is gone says why; anything else is a target no session or subagent here answers to.
+      if (result.error === undefined || !("childName" in result.error)) return { kind: "unknown" };
+      return { kind: "refused", reason: result.reason ?? result.error.message };
+    })().catch((error: unknown) => ({ kind: "refused" as const, reason: toError(error).message }));
+  });
   pi.events.on(SUBAGENT_MARK_ENDED_CHILDREN_EVENT, (payload) => {
     if (!isMarkEndedChildrenRequest(payload) || payload.completion) return;
     const request = payload;
@@ -1459,7 +1571,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     setCurrentSessionId: (value) => { currentSessionId = value; },
     setCurrentModel: (value) => { currentModel = value; },
     setSessionStartedAt: (value) => { sessionStartedAt = value; },
-    setAgentRunning: (value) => { agentRunning = value; },
+    setAgentRunning: (value) => {
+      agentRunning = value;
+      if (value) for (const started of agentStartWaiters.splice(0)) started();
+    },
     activeTools,
     getLiveContext,
     rejectReplyWaiter,
