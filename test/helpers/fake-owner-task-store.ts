@@ -34,6 +34,9 @@ export class FakeOwnerTaskStore extends OwnerTaskStore {
 	override get ownerTasks(): TaskRecord[] {
 		return [...this.fakeRecords];
 	}
+	override get hasRunningChildTasks(): boolean {
+		return this.fakeRecords.some((task) => task.parentTaskId !== undefined && task.execution.kind !== "settled");
+	}
 	override get panelRevision(): number {
 		return this.fakeRevision;
 	}

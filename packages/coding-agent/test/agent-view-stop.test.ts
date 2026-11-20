@@ -148,12 +148,18 @@ test(
 			assert.equal(engine.engineListeners.size, 0, "engine message listeners left after stop");
 			assert.equal(engine.endedListeners.size, 0, "generation listeners left after stop");
 			const warnings: string[] = [];
+			let renders = 0;
 			mode.showWarning = (message: string) => warnings.push(message);
+			mode.ui.requestRender = () => {
+				renders++;
+			};
 			for (const listener of [...engine.endedListeners]) listener({ expected: false, generation: 1 });
 			for (const listener of [...engine.engineListeners]) listener({ type: "engine_view_agent", taskId: "task-1" });
-			await new Promise((resolve) => setTimeout(resolve, 20));
+			// Longer than the working line's clock tick: a timer left running would draw meanwhile.
+			await new Promise((resolve) => setTimeout(resolve, 300));
 			assert.deepEqual(engine.requests, []);
 			assert.deepEqual(warnings, []);
+			assert.equal(renders, 0);
 			await base.dispose();
 		} finally {
 			faux.unregister();
