@@ -470,9 +470,9 @@ function toError(error: unknown): Error {
 /**
  * Start the broker unless one answers. #4727: `signal` cancels the start until the broker process exists: nothing is
  * written into the agent directory once it aborts, and waiting for another spawner's broker stops at once. A broker
- * this call already launched is waited for until it listens, and stopped if it does not within the startup timeout, so
- * the call never returns while that broker is still writing its start-up files. An aborted call rejects with
- * `signal.reason`.
+ * this call already launched is waited for until it listens; when `signal` aborts first, or the broker does not listen
+ * within the startup timeout, it is stopped, so the call never returns while that broker is still writing its start-up
+ * files. An aborted call rejects with `signal.reason`.
  */
 export async function spawnBrokerIfNeeded(
   brokerCommand: string,
@@ -600,9 +600,12 @@ async function spawnBrokerHoldingLock(
 
       child.once("error", onError);
       child.once("exit", onExit);
+      // A disposed session stops waiting at once; the broker it launched is then stopped below, so the call still never
+      // returns while that broker is writing its start-up files.
       waitForBroker(
         readyTimeoutMs,
         announcement === undefined ? undefined : () => readBrokerStartAnnouncementAsync(announcement),
+        cancelSignal,
       ).then(() => {
         cleanup();
         resolve();

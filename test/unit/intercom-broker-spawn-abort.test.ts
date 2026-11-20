@@ -202,3 +202,27 @@ directSpawnTest("a disposed start stops the broker a wrapper command runs as its
 	await assert.rejects(start);
 	assert.equal(await waitUntilGone(brokerPid), true, "the wrapped broker is still running after the start settled");
 });
+
+directSpawnTest("a disposed start stops waiting for a broker that never listens, and stops that broker", async () => {
+	const markerPath = join(agentDir, "..", "hung-broker.pid");
+	const controller = new AbortController();
+	const start = spawnBrokerIfNeeded(
+		process.execPath,
+		neverReadyBrokerCommand(markerPath),
+		READY_TIMEOUT_MS,
+		undefined,
+		controller.signal,
+	);
+	while (!existsSync(markerPath)) await sleep(10);
+	const brokerPid = Number(readFileSync(markerPath, "utf8"));
+	cleanups.push(() => killIfAlive(brokerPid));
+	const aborted = performance.now();
+	controller.abort(new Error("session disposed"));
+
+	await assert.rejects(start);
+	assert.ok(
+		performance.now() - aborted < ABORTED_WAIT_BOUND_MS + BROKER_GONE_WAIT_MS,
+		"the disposed start kept waiting for its broker to listen",
+	);
+	assert.equal(await waitUntilGone(brokerPid), true, "the broker is still running after the start settled");
+});
