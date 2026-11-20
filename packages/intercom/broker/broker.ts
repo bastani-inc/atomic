@@ -73,8 +73,8 @@ type ReleasedAskerReplyRouter,
 	senderAtReceipt,
 } from "./send-handler.js";
 import { buildMessageSendSignature } from "./send-signature.js";
-import { DurableEndedQueue, type KeptFailure, isRestoredSend } from "./durable-ended-queue.js";
-import type { EndedChildQueueStore, EndedQueueSnapshot } from "./sql-ended-child-queue-store.js";
+import { DurableEndedQueue, type KeptFailure, isRestoredSend, type RestoredEndedQueues } from "./durable-ended-queue.js";
+import type { EndedChildQueueStore } from "./sql-ended-child-queue-store.js";
 import { ReturnPaths } from "./return-paths.js";
 import {
   type BrokerStateOpener,
@@ -1706,6 +1706,12 @@ class IntercomBroker {
 
   /** Route one send or ask frame, as received or again after a restoring subagent's hold ends (#3760). */
   private dispatchSend(socket: net.Socket, clientMessage: SendClientMessage, senderId: string | null): void {
+    // Durable wake queue: a send to a subagent an earlier broker kept messages for waits until they are taken up again, so
+    // a sender's later message never overtakes its earlier ones. Sends to other sessions never wait.
+    if (typeof clientMessage.to === "string" && this.endedQueue.holds(clientMessage.to)) {
+      this.endedQueue.whenRestored(() => this.dispatchSend(socket, clientMessage, senderId));
+      return;
+    }
     handleBrokerSend(
       socket,
       clientMessage,
@@ -2282,9 +2288,9 @@ class IntercomBroker {
    * reached their subagent are done; failures waiting for their sender wait on; the rest join their subagent's queue,
    * in order, under their owner (asked to wake it when it reports it again) or waiting for it to come back.
    */
-  private restoreEndedQueue(snapshot: EndedQueueSnapshot): void {
-    this.wakeBudget.restore(snapshot.budget);
-    const { queues, delivered, ownerless } = this.endedQueue.restoredQueues(snapshot.rows);
+  private restoreEndedQueue(restored: RestoredEndedQueues): void {
+    this.wakeBudget.restore(restored.budget);
+    const { queues, delivered, ownerless } = restored;
     for (const { held } of delivered) {
       const sender = this.queuedSenderOf(held);
       if (sender !== undefined) writeMessageIfOpen(sender.socket, { type: "delivered", messageId: held.messageId });

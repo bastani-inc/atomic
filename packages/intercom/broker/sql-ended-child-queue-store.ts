@@ -92,8 +92,14 @@ export interface EndedQueueDepartureKey {
 export interface EndedChildQueueStore {
 	/** This store's identity: the same across broker restarts while the store keeps its rows. */
 	readonly id: string;
-	/** Take every row of this home (also those an earlier instance held) and return them in order, with the budget. */
-	load(): Promise<EndedQueueSnapshot>;
+	/**
+	 * Take every row of this home (also those an earlier instance held) and return them in order, with the budget. The
+	 * rows are read a few at a time, at most about {@link ENDED_QUEUE_LOAD_PAGE_BYTES} of messages each, and `page` sees
+	 * each page as it is read; the event loop runs between pages, so a full queue never holds it for long.
+	 */
+	load(page?: (rows: readonly EndedQueueRow[]) => void): Promise<EndedQueueSnapshot>;
+	/** The subagent names and ids the kept messages are for (normalized), read before the messages themselves. */
+	targets(): Promise<string[]>;
 	/** Write one queued message, and a wake the bounds counted for it; `duplicate` when its id is already kept. */
 	add(entry: EndedQueueEntry, budget?: EndedWakeBudgetEvent): Promise<"added" | "duplicate">;
 	/** The messages reached their child, or their sender was told they failed. */
@@ -111,6 +117,9 @@ export interface EndedChildQueueStore {
 	recordBudget(event: EndedWakeBudgetEvent): Promise<void>;
 	close(): Promise<void>;
 }
+
+/** About how many bytes of messages one page of a load reads and parses before the event loop runs again. */
+export const ENDED_QUEUE_LOAD_PAGE_BYTES = 1024 * 1024;
 
 /** Budget events older than this are never read again: the wake window is 10 minutes. */
 const BUDGET_EVENT_RETENTION_MS = 60 * 60_000;
@@ -358,22 +367,58 @@ export async function openSqlEndedChildQueueStore(
 	let closed: Promise<void> | undefined;
 	return {
 		id,
-		async load() {
-			// Read without a write (never waiting for another process's write lock), then take the rows over: the first of
-			// this broker's ordered writes, so every later one finds them this instance's. An earlier instance of the same home
-			// is gone (its socket and start-up lock are this broker's), and a hung one is fenced out of every later write by
-			// `holder`. Rows of an earlier keeper are dropped: their senders were told they were lost.
-			const [rows, budget] = await database.transaction(
-				async (tx) => [
-					await tx.all<QueueRow>(
-						`SELECT seq, message_id, owner_session_id, owner_host, child_key, child_json, sender_json, request_json,
-							bytes, queued_at, wake_json, owner_away_since, failed_reason, failed_at, dispatched
-						 FROM ${queue} WHERE home = ? AND keeper = ? ORDER BY seq`,
+		async load(page) {
+			// Read without a write (never waiting for another process's write lock), a page at a time, then take the rows
+			// over: the first of this broker's ordered writes, so every later one finds them this instance's. An earlier
+			// instance of the same home is gone (its socket and start-up lock are this broker's), and a hung one is fenced out
+			// of every later write by `holder`. Rows of an earlier keeper are dropped: their senders were told they were lost.
+			const sizes = await database.transaction(
+				(tx) =>
+					tx.all<SqliteRow & { seq: number | bigint; bytes: number | bigint }>(
+						`SELECT seq, bytes FROM ${queue} WHERE home = ? AND keeper = ? ORDER BY seq`,
 						home,
 						keeper,
 					),
-					await tx.all<BudgetRow>(`SELECT child_key, kind, at, depth FROM ${wakes} WHERE home = ? ORDER BY at`, home),
-				] as const,
+				{ readOnly: true },
+			);
+			const pages: Array<readonly [number, number]> = [];
+			let first: number | undefined;
+			let last = 0;
+			let bytes = 0;
+			for (const size of sizes) {
+				const seq = Number(size.seq);
+				if (first !== undefined && bytes + Number(size.bytes) > ENDED_QUEUE_LOAD_PAGE_BYTES) {
+					pages.push([first, last]);
+					first = undefined;
+					bytes = 0;
+				}
+				first ??= seq;
+				last = seq;
+				bytes += Number(size.bytes);
+			}
+			if (first !== undefined) pages.push([first, last]);
+			const rows: EndedQueueRow[] = [];
+			for (const [from, to] of pages) {
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				const read = await database.transaction(
+					(tx) =>
+						tx.all<QueueRow>(
+							`SELECT seq, message_id, owner_session_id, owner_host, child_key, child_json, sender_json, request_json,
+								bytes, queued_at, wake_json, owner_away_since, failed_reason, failed_at, dispatched
+							 FROM ${queue} WHERE home = ? AND keeper = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
+							home,
+							keeper,
+							from,
+							to,
+						),
+					{ readOnly: true },
+				);
+				const parsed = read.map(rowOf);
+				rows.push(...parsed);
+				page?.(parsed);
+			}
+			const budget = await database.transaction(
+				(tx) => tx.all<BudgetRow>(`SELECT child_key, kind, at, depth FROM ${wakes} WHERE home = ? ORDER BY at`, home),
 				{ readOnly: true },
 			);
 			void writes
@@ -384,17 +429,32 @@ export async function openSqlEndedChildQueueStore(
 					await tx.run(`DELETE FROM ${wakes} WHERE home = ? AND at < ?`, home, Date.now() - BUDGET_EVENT_RETENTION_MS);
 				})
 				.catch(() => {});
-			{
-				return {
-					rows: rows.map(rowOf),
-					budget: budget.map((event) => ({
-						childKey: JSON.parse(event.child_key) as string,
-						kind: event.kind === "awake" ? ("awake" as const) : ("wake" as const),
-						at: Number(event.at),
-						depth: Number(event.depth),
-					})),
-				};
+			return {
+				rows,
+				budget: budget.map((event) => ({
+					childKey: JSON.parse(event.child_key) as string,
+					kind: event.kind === "awake" ? ("awake" as const) : ("wake" as const),
+					at: Number(event.at),
+					depth: Number(event.depth),
+				})),
+			};
+		},
+		async targets() {
+			const children = await database.transaction(
+				(tx) =>
+					tx.all<SqliteRow & { child_key: string; child_json: string }>(
+						`SELECT DISTINCT child_key, child_json FROM ${queue} WHERE home = ? AND keeper = ?`,
+						home,
+						keeper,
+					),
+				{ readOnly: true },
+			);
+			const targets = new Set<string>();
+			for (const child of children) {
+				targets.add(child.child_key);
+				for (const alias of (JSON.parse(child.child_json) as EndedQueueChild).aliases) targets.add(alias.trim().toLowerCase());
 			}
+			return [...targets];
 		},
 		add(entry, budget) {
 			return writes.run(async (tx) => {

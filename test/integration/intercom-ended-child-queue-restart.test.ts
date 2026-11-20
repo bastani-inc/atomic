@@ -634,10 +634,10 @@ test(
 		assert.equal(queued.queued, true, queued.reason);
 		await vi.waitFor(() => assert.equal(ownerBefore.wakes.length, 1), WAIT);
 		ownerBefore.client.answerEndedChildWake("subagent-worker-handed-1", ownerBefore.wakes[0]!.wakeId, true);
-		// The resumed subagent gets it; the broker dies before it hears that the subagent saved it.
-		const childBefore = await resume(host, ownerBefore, "subagent-worker-handed-1");
+		// The broker dies right after handing it to the resumed subagent, before it hears that the subagent saved it. (Whether
+		// the frame left the dying broker's pipe depends on the platform: either way the subagent may have it.)
+		await resume(host, ownerBefore, "subagent-worker-handed-1");
 		await host.exited();
-		await vi.waitFor(() => assert.deepEqual(texts(childBefore), ["did you get this?"]), WAIT);
 
 		await host.start();
 		const ownerAfter = await owner(host, "handed", ownerBefore);
@@ -786,6 +786,42 @@ test(
 			WAIT,
 		);
 		assert.deepEqual(senderBack.lost, [], "nothing was lost");
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a send to a subagent right after a restart, from a sender with messages still kept for it, reaches it after them (#5999)",
+	async () => {
+		const host = new Host();
+		await host.start();
+		const ownerBefore = await owner(host, "order");
+		const childName = "subagent-worker-order-1";
+		await endedChild(host, ownerBefore, childName, "stopped");
+		const senderBefore = await connect(host, "order-sender");
+		// Large enough that the next broker reads them for a while after it answers its first session.
+		const kept: string[] = [];
+		for (let index = 0; index < 12; index++) {
+			const queued = await senderBefore.client.send(childName, {
+				text: `kept ${index} ${"x".repeat(1024 * 1024 - 64)}`,
+				wakeEndedRecipient: true,
+			});
+			assert.equal(queued.queued, true, queued.reason);
+			kept.push(`kept ${index}`);
+		}
+		await host.kill();
+		await host.start();
+		// Its launching session is back and continues it at once, and the sender writes to it while it starts.
+		const ownerBack = await owner(host, "order", ownerBefore);
+		const sender = await again(host, "order-sender", senderBefore);
+		const child = await resume(host, ownerBack, childName);
+		const live = await sender.client.send(childName, { text: "after them" });
+		assert.equal(live.delivered, true, live.reason);
+		await vi.waitFor(() => assert.equal(child.received.length, 13), WAIT);
+		assert.deepEqual(
+			child.received.map(({ message }) => message.content.text.split(" x")[0]),
+			[...kept, "after them"],
+		);
 	},
 	RESTART_TEST_TIMEOUT_MS,
 );

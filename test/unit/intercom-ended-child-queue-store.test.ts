@@ -240,3 +240,38 @@ test("under another process's write lock, a message's write fails within one loc
 	await store.close();
 	await database.close();
 });
+
+test("a full queue is read a page at a time, and the event loop runs between pages", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const writer = await open(path, "broker-1");
+	const big = "x".repeat(400 * 1024);
+	for (let index = 0; index < 8; index++)
+		await writer.add({ ...entry(`m${index}`, "subagent-worker-1", big), bytes: big.length });
+	await writer.close();
+	const next = await open(path, "broker-2");
+	const pages: string[][] = [];
+	let ticks = 0;
+	const ticker = setInterval(() => {
+		ticks += 1;
+	}, 0);
+	const turns: number[] = [];
+	try {
+		const { rows } = await next.load((page) => {
+			pages.push(page.map((row) => row.messageId));
+			turns.push(ticks);
+		});
+		assert.deepEqual(
+			rows.map((row) => row.messageId),
+			["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7"],
+		);
+	} finally {
+		clearInterval(ticker);
+	}
+	assert.deepEqual(pages.flat(), ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7"], "in order, each once");
+	assert.ok(
+		pages.every((page) => page.length <= 2),
+		`at most about 1 MiB a page: ${JSON.stringify(pages)}`,
+	);
+	assert.ok(new Set(turns).size > 1, "timers ran between pages");
+	assert.deepEqual(await next.targets(), ["subagent-worker-1"]);
+});

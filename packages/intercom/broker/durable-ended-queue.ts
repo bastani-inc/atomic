@@ -18,7 +18,7 @@ import type {
 	EndedChildQueueStore,
 	EndedQueueEntry,
 	EndedQueueRow,
-	EndedQueueSnapshot,
+	EndedWakeBudgetEvent,
 } from "./sql-ended-child-queue-store.js";
 
 /**
@@ -32,6 +32,16 @@ export const ENDED_QUEUE_LOAD_WAIT_MS = 5_000;
 
 /** What a queued message's sender is told while its `queued` answer still waits for the message to be kept. */
 type EarlyOutcome = { readonly kind: "delivered" } | { readonly kind: "failed"; readonly reason: string };
+
+/** What an earlier broker kept, taken up again: see `DepartedChildren.restore`. */
+export interface RestoredEndedQueues {
+	readonly queues: readonly RestoredEndedQueue[];
+	/** Messages the delivered-message authority shows reached their subagent. */
+	readonly delivered: ReadonlyArray<{ readonly held: HeldSend; readonly sender: BrokerConnectedSession }>;
+	/** Messages whose launching session had no host session to come back as. */
+	readonly ownerless: ReadonlyArray<{ readonly held: HeldSend; readonly childName: string }>;
+	readonly budget: readonly EndedWakeBudgetEvent[];
+}
 
 /** A failure kept for a sender that was not connected when its queued message failed. */
 export interface KeptFailure {
@@ -121,6 +131,9 @@ export class DurableEndedQueue {
 	private loading: Promise<void> | undefined;
 	private loadedNow = false;
 	private readonly early = new Map<string, EarlyOutcome | undefined>();
+	/** While an earlier broker's messages are read: the subagents (names and ids) they are for. */
+	private pending: Set<string> | undefined;
+	private readonly deferred: Array<() => void> = [];
 	/** Failures kept for senders that were not connected, by the sender's return address (or session id). */
 	private readonly kept = new Map<string, Map<string, KeptFailure>>();
 
@@ -145,9 +158,10 @@ export class DurableEndedQueue {
 
 	/**
 	 * Decide, once, which store keeps the queue; resolves when decided, within {@link ENDED_QUEUE_OPEN_WAIT_MS}. `restore`
-	 * receives what an earlier broker kept, once the store is open.
+	 * receives what an earlier broker kept, once the store is open: read a page at a time, the event loop running between
+	 * pages. Until then, sends to the subagents it kept messages for wait ({@link holds}), so none overtakes them.
 	 */
-	decide(restore: (snapshot: EndedQueueSnapshot) => void): Promise<void> {
+	decide(restore: (restored: RestoredEndedQueues) => void): Promise<void> {
 		if (this.deciding !== undefined) return this.deciding;
 		let settle: () => void = () => {};
 		const decided = new Promise<void>((resolve) => {
@@ -198,16 +212,35 @@ export class DurableEndedQueue {
 				return;
 			}
 			try {
-				restore(await store.load());
+				this.pending = new Set(await store.targets());
+				const restored = this.restoration();
+				const { budget } = await store.load((rows) => restored.add(rows));
+				restore({ ...restored.result(), budget });
 			} catch (error) {
 				this.host.log(
 					`Intercom broker could not read the messages kept for subagents that ended: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
+			this.pending = undefined;
 			finishLoad();
+			for (const deferred of this.deferred.splice(0)) deferred();
 		})();
 		this.deciding = decided;
 		return decided;
+	}
+
+	/**
+	 * Whether a send to `target` waits for what an earlier broker kept for it to be taken up again: one of its senders'
+	 * later messages must not reach it first. Sends to any other session never wait.
+	 */
+	holds(target: string): boolean {
+		return this.pending !== undefined && this.pending.has(target.trim().toLowerCase());
+	}
+
+	/** Runs `send` once what an earlier broker kept is taken up again, after it, in the order asked. */
+	whenRestored(send: () => void): void {
+		if (this.pending === undefined) send();
+		else this.deferred.push(send);
 	}
 
 	/** Resolves once what an earlier broker kept is taken up again (or it is known there is none), within a bound. */
@@ -333,39 +366,39 @@ export class DurableEndedQueue {
 	}
 
 	/**
-	 * The rows an earlier broker kept, as `DepartedChildren.restore` takes them, and those it can tell at once: rows the
-	 * delivered-message authority shows reached their subagent, rows whose failure waits for its sender, and rows whose
-	 * owner can never come back (it had no host session).
+	 * The rows an earlier broker kept, page by page, as `DepartedChildren.restore` takes them, and those it can tell at
+	 * once: rows the delivered-message authority shows reached their subagent, rows whose failure waits for its sender,
+	 * and rows whose owner can never come back (it had no host session).
 	 */
-	restoredQueues(rows: readonly EndedQueueRow[]): {
-		readonly queues: RestoredEndedQueue[];
-		readonly delivered: Array<{ readonly held: HeldSend; readonly sender: BrokerConnectedSession }>;
-		readonly ownerless: Array<{ readonly held: HeldSend; readonly childName: string }>;
+	private restoration(): {
+		readonly add: (rows: readonly EndedQueueRow[]) => void;
+		readonly result: () => Omit<RestoredEndedQueues, "budget">;
 	} {
 		const queues = new Map<string, RestoredEndedQueue & { sends: Array<{ held: HeldSend; sender: WakeSender }> }>();
 		const delivered: Array<{ readonly held: HeldSend; readonly sender: BrokerConnectedSession }> = [];
 		const ownerless: Array<{ readonly held: HeldSend; readonly childName: string }> = [];
-		for (const row of rows) {
-			const sender = restoredSender(row);
-			const held = restoredHeld(row, sender);
-			if (row.failed !== undefined) {
-				this.keepRestoredFailure(held, row);
-				continue;
-			}
-			const known = this.host.delivered(held, sender);
-			if (known === "delivered") {
-				delivered.push({ held, sender });
-				continue;
-			}
-			if (known === "uncertain" || row.dispatched === true) markMaybeDelivered(held);
-			if (row.ownerHost === undefined) {
-				ownerless.push({ held, childName: row.child.childName });
-				continue;
-			}
-			const key = JSON.stringify([row.ownerHost, row.childKey]);
-			let queue = queues.get(key);
-			if (queue === undefined) {
-				queue = {
+		const add = (rows: readonly EndedQueueRow[]): void => {
+			for (const row of rows) {
+				const sender = restoredSender(row);
+				const held = restoredHeld(row, sender);
+				if (row.failed !== undefined) {
+					this.keepRestoredFailure(held, row);
+					continue;
+				}
+				const known = this.host.delivered(held, sender);
+				if (known === "delivered") {
+					delivered.push({ held, sender });
+					continue;
+				}
+				if (known === "uncertain" || row.dispatched === true) markMaybeDelivered(held);
+				if (row.ownerHost === undefined) {
+					ownerless.push({ held, childName: row.child.childName });
+					continue;
+				}
+				const key = JSON.stringify([row.ownerHost, row.childKey]);
+				const queue = queues.get(key);
+				// The latest row says how the departure stood last.
+				queues.set(key, {
 					ownerSessionId: row.ownerSessionId,
 					ownerHost: row.ownerHost,
 					childName: row.child.childName,
@@ -374,22 +407,15 @@ export class DurableEndedQueue {
 					...(row.child.childId === undefined ? {} : { childId: row.child.childId }),
 					outcome: row.child.outcome as SubagentEndedOutcome,
 					messages: row.child.messages as EndedChildMessages,
-					sends: [],
-					...(row.wake === undefined ? {} : { wake: row.wake }),
-					...(row.ownerAwaySince === undefined ? {} : { awaySince: row.ownerAwaySince }),
-				};
-				queues.set(key, queue);
+					sends: [...(queue?.sends ?? []), { held, sender: wakeSenderOfSnapshot(sender) }],
+					...(row.wake === undefined ? (queue?.wake === undefined ? {} : { wake: queue.wake }) : { wake: row.wake }),
+					...((queue?.awaySince ?? row.ownerAwaySince) === undefined
+						? {}
+						: { awaySince: (queue?.awaySince ?? row.ownerAwaySince) as number }),
+				});
 			}
-			queue.sends.push({ held, sender: wakeSenderOfSnapshot(sender) });
-			// The latest row says how the departure stood last.
-			const latest = {
-				...queue,
-				messages: row.child.messages as EndedChildMessages,
-				...(row.wake === undefined ? {} : { wake: row.wake }),
-			};
-			queues.set(key, latest);
-		}
-		return { queues: [...queues.values()], delivered, ownerless };
+		};
+		return { add, result: () => ({ queues: [...queues.values()], delivered, ownerless }) };
 	}
 
 	private keepRestoredFailure(held: HeldSend, row: EndedQueueRow): void {
