@@ -175,7 +175,18 @@ export type RequiredChecksSnapshot = {
 	readonly pullRequest: PrSnapshot;
 	readonly required: readonly RequiredCheck[];
 	readonly observations: readonly CheckObservation[];
+	readonly mergeableState: MergeableState;
 };
+
+export type MergeableState = "clean" | "unstable" | "has_hooks" | "blocked" | "behind" | "dirty" | "draft" | "unknown";
+
+const MERGEABLE_STATES: readonly MergeableState[] = ["clean", "unstable", "has_hooks"];
+const UNMERGEABLE_STATES: readonly MergeableState[] = ["behind", "dirty", "draft"];
+
+function parseMergeableState(value: string | null | undefined): MergeableState {
+	const known: readonly string[] = [...MERGEABLE_STATES, ...UNMERGEABLE_STATES, "blocked"];
+	return value !== null && value !== undefined && known.includes(value) ? (value as MergeableState) : "unknown";
+}
 
 export type PublishRun = {
 	readonly id: number;
@@ -290,9 +301,23 @@ export function evaluateRequiredChecks(
 	if (pending.length > 0) {
 		return { status: "pending", summary: `Required checks pending or not yet created: ${pending.join(", ")}.` };
 	}
+	const number = snapshot.pullRequest.number;
+	if (UNMERGEABLE_STATES.includes(snapshot.mergeableState)) {
+		return {
+			status: "failed",
+			summary: `GitHub cannot merge PR #${number}: its merge state is ${snapshot.mergeableState}.`,
+			evidenceUrl: snapshot.pullRequest.url,
+		};
+	}
+	if (!MERGEABLE_STATES.includes(snapshot.mergeableState)) {
+		return {
+			status: "pending",
+			summary: `All ${snapshot.required.length} configured required checks passed, but ${expected.baseRef}'s rules still block merging PR #${number} (merge state ${snapshot.mergeableState}), for example while required code scanning results are pending.`,
+		};
+	}
 	return {
 		status: "passed",
-		summary: `All ${snapshot.required.length} configured required checks passed for ${expected.pullRequest.headSha}.`,
+		summary: `All ${snapshot.required.length} configured required checks passed for ${expected.pullRequest.headSha}, and GitHub reports PR #${number} mergeable.`,
 		evidenceUrl: expected.pullRequest.url,
 	};
 }
@@ -505,6 +530,7 @@ type ApiPullRequest = {
 	readonly base: { readonly ref: string; readonly repo: { readonly full_name: string } };
 	readonly head: { readonly ref: string; readonly sha: string; readonly repo: { readonly full_name: string } | null };
 	readonly merge_commit_sha: string | null;
+	readonly mergeable_state?: string | null;
 };
 
 type ApiCommit = {
@@ -815,6 +841,7 @@ async function requiredChecksSnapshot(input: {
 		},
 		required,
 		observations,
+		mergeableState: parseMergeableState(pull.mergeable_state),
 	};
 }
 

@@ -6,10 +6,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { satisfies } from "semver";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(scriptDir, "..");
-const codingAgentDir = join(repoRoot, "packages/coding-agent");
-const rootLockfilePath = join(repoRoot, "package-lock.json");
-const shrinkwrapPath = join(codingAgentDir, "npm-shrinkwrap.json");
+const defaultRepoRoot = resolve(scriptDir, "..");
+
+function repositoryPaths(repoRoot) {
+	const codingAgentDir = join(repoRoot, "packages/coding-agent");
+	return {
+		codingAgentDir,
+		rootLockfilePath: join(repoRoot, "package-lock.json"),
+		shrinkwrapPath: join(codingAgentDir, "npm-shrinkwrap.json"),
+	};
+}
 // Atomic's forks of pi's packages publish in lockstep with @bastani/atomic.
 const forkedPackageNames = [
 	"@bastani/atomic-ai",
@@ -26,14 +32,20 @@ const allowedInstallScriptPackages = new Map([
 	["protobufjs@7.6.6", "postinstall only warns about protobufjs version scheme mismatches"],
 ]);
 
-const args = new Set(process.argv.slice(2));
-const checkOnly = args.has("--check");
-
-for (const arg of args) {
-	if (arg !== "--check") {
-		console.error(`Unknown argument: ${arg}`);
-		process.exit(1);
+function parseArguments(argv) {
+	let checkOnly = false;
+	let repoRoot = defaultRepoRoot;
+	for (let index = 0; index < argv.length; index++) {
+		const arg = argv[index];
+		if (arg === "--check") {
+			checkOnly = true;
+		} else if (arg === "--root" && argv[index + 1]) {
+			repoRoot = resolve(argv[++index]);
+		} else {
+			throw new Error(`Unknown argument: ${arg}`);
+		}
 	}
+	return { checkOnly, repoRoot };
 }
 
 function readJson(path) {
@@ -208,7 +220,7 @@ function buildInternalPackageEntries(workspaces) {
 	return entries;
 }
 
-function getInternalWorkspaces(lockPackages) {
+function getInternalWorkspaces(lockPackages, repoRoot) {
 	const workspaces = new Map();
 
 	for (const [lockPath, entry] of Object.entries(lockPackages)) {
@@ -424,7 +436,8 @@ function validateShrinkwrap(shrinkwrap, internalNames) {
 	}
 }
 
-async function generateShrinkwrap() {
+async function generateShrinkwrap(repoRoot = defaultRepoRoot) {
+	const { codingAgentDir, rootLockfilePath } = repositoryPaths(repoRoot);
 	const rootLock = readJson(rootLockfilePath);
 	if (rootLock.lockfileVersion !== 3 || !rootLock.packages) {
 		throw new Error("package-lock.json must be lockfileVersion 3 and contain a packages map");
@@ -432,7 +445,7 @@ async function generateShrinkwrap() {
 
 	const lockPackages = rootLock.packages;
 	const codingAgentPackage = readJson(join(codingAgentDir, "package.json"));
-	const internalWorkspaces = getInternalWorkspaces(lockPackages);
+	const internalWorkspaces = getInternalWorkspaces(lockPackages, repoRoot);
 	const generatedInternalPackages = buildInternalPackageEntries(internalWorkspaces);
 	const shrinkwrapPackages = {
 		"": copyPackageJsonEntry(codingAgentPackage, { includeName: true }),
@@ -498,7 +511,9 @@ async function generateShrinkwrap() {
 }
 
 async function main() {
-	const shrinkwrap = await generateShrinkwrap();
+	const { checkOnly, repoRoot } = parseArguments(process.argv.slice(2));
+	const { shrinkwrapPath } = repositoryPaths(repoRoot);
+	const shrinkwrap = await generateShrinkwrap(repoRoot);
 	const content = `${JSON.stringify(shrinkwrap, null, "\t")}\n`;
 
 	if (checkOnly) {

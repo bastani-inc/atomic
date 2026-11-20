@@ -51,6 +51,7 @@ function ciSnapshot(overrides: Partial<RequiredChecksSnapshot> = {}): RequiredCh
 		},
 		required: [{ context: "test (linux)", appId: 15368 }],
 		observations: [],
+		mergeableState: "clean",
 		...overrides,
 	};
 }
@@ -118,6 +119,7 @@ function apiPull() {
 		merged: false,
 		base: { ref: "main", repo: { full_name: "bastani-inc/atomic" } },
 		head: { ref: release.branch, sha: headSha, repo: { full_name: "bastani-inc/atomic" } },
+		mergeable_state: "clean",
 	};
 }
 
@@ -849,6 +851,77 @@ test("a failed exact required check fails closed", () => {
 	);
 	assert.equal(result.status, "failed");
 	assert.match(result.summary, /terminal failure/u);
+});
+
+const passingCheck = { context: "test (linux)", appId: 15368, state: "success" as const, sequence: 9 };
+
+test("passing required checks wait while the base branch's rules still block the merge", () => {
+	for (const mergeableState of ["blocked", "unknown"] as const) {
+		const result = evaluateRequiredChecks(ciSnapshot({ observations: [passingCheck], mergeableState }), expectedCi);
+		assert.equal(result.status, "pending", mergeableState);
+		assert.match(result.summary, /still block merging PR #42/u);
+		assert.match(result.summary, new RegExp(`merge state ${mergeableState}`, "u"));
+	}
+});
+
+test("passing required checks fail when GitHub cannot merge the PR", () => {
+	for (const mergeableState of ["behind", "dirty", "draft"] as const) {
+		const result = evaluateRequiredChecks(ciSnapshot({ observations: [passingCheck], mergeableState }), expectedCi);
+		assert.equal(result.status, "failed", mergeableState);
+		assert.match(result.summary, new RegExp(`merge state is ${mergeableState}`, "u"));
+	}
+});
+
+test("passing required checks pass once GitHub reports the PR mergeable", () => {
+	for (const mergeableState of ["clean", "unstable", "has_hooks"] as const) {
+		const result = evaluateRequiredChecks(ciSnapshot({ observations: [passingCheck], mergeableState }), expectedCi);
+		assert.equal(result.status, "passed", mergeableState);
+	}
+});
+
+test("the CI gate waits for code scanning that finishes after the required checks (0.10.0 release)", async () => {
+	let pullCalls = 0;
+	const transport = fakeTransport((argv) => {
+		const command = argv.join(" ");
+		if (command.endsWith(`/pulls/${pullRequest.number}`)) {
+			pullCalls += 1;
+			return commandResult(JSON.stringify({ ...apiPull(), mergeable_state: pullCalls < 3 ? "blocked" : "clean" }));
+		}
+		if (command.includes("/protection/required_status_checks")) {
+			return commandResult(JSON.stringify({ checks: [{ context: "test (linux)", app_id: 15368 }] }));
+		}
+		if (command.includes("/rules/branches/main")) {
+			return commandResult(
+				JSON.stringify([
+					{
+						type: "code_scanning",
+						parameters: { code_scanning_tools: [{ tool: "CodeQL", alerts_threshold: "errors" }] },
+					},
+				]),
+			);
+		}
+		if (command.includes("/check-runs")) {
+			return commandResult(
+				JSON.stringify({
+					check_runs: [
+						{ id: 2, name: "test (linux)", status: "completed", conclusion: "success", app: { id: 15368 } },
+					],
+				}),
+			);
+		}
+		if (command.includes("/status?")) return commandResult(JSON.stringify({ statuses: [] }));
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+	const boundary = createReleaseBoundary("/safe/fake/repository", { transport, clock: fakeClock() });
+	const ci = await boundary.waitForRequiredChecks({
+		release,
+		baseRef: "main",
+		pullRequest,
+		signal: new AbortController().signal,
+	});
+	assert.equal(ci.status, "passed");
+	assert.match(ci.summary, /mergeable/u);
+	assert.equal(pullCalls, 3);
 });
 
 test("required-check identity drift fails before check evaluation", () => {
