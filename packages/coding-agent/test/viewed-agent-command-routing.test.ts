@@ -3,6 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { TaskId } from "../src/core/tasks/contracts.js";
 import { AgentViewSwitcher } from "../src/modes/interactive/agent-view/agent-view-switcher.ts";
+import { setViewedNoticeSink } from "../src/modes/interactive/agent-view/viewed-notices.ts";
 import { createRig, type Rig } from "./helpers/busy-submission-rig.ts";
 import { FakeAgentViewPort } from "./helpers/fake-agent-view-port.ts";
 import { createMainScreen, type MainScreen } from "./helpers/viewed-agent-mode.ts";
@@ -30,7 +31,10 @@ const TASK = "task-worker-1" as TaskId;
 
 interface ViewedScreen extends MainScreen {
 	readonly port: FakeAgentViewPort;
+	/** The main chat's warnings. */
 	readonly warnings: string[];
+	/** Notices about the shown subagent alone, drawn under its transcript. */
+	readonly notices: string[];
 	readonly ran: string[];
 	/** Type `text` and press Enter; resolves once the submission is handled (a dialog it opens stays open). */
 	submit(text: string): Promise<void>;
@@ -74,11 +78,15 @@ async function viewSubagent(): Promise<ViewedScreen> {
 		warnings.push(message);
 		showWarning(message, target);
 	};
+	// Notices about the shown subagent alone go to the transcript area's sink; the test reads them there.
+	const notices: string[] = [];
+	setViewedNoticeSink(main.mode, { show: (text, kind) => void notices.push(`${kind}: ${text}`) });
 	assert.equal(await main.mode.agentView?.view(TASK), true);
 	const viewed = {
 		...main,
 		port,
 		warnings,
+		notices,
 		ran,
 		async submit(text: string) {
 			const submitted = main.mode.defaultEditor.onSubmit?.(text);
@@ -130,10 +138,11 @@ describe("commands typed while a subagent is shown on the main screen", () => {
 			const level = mode.session.thinkingLevel;
 			await screen.submit("/model other-model");
 			await screen.submit("/thinking high");
-			assert.deepEqual(screen.warnings, [
-				"/model changes the main conversation's model. Switch to main to use it.",
-				"/thinking changes the main conversation's thinking level. Switch to main to use it.",
+			assert.deepEqual(screen.notices, [
+				"warning: /model changes the main conversation's model. Switch to main to use it.",
+				"warning: /thinking changes the main conversation's thinking level. Switch to main to use it.",
 			]);
+			assert.deepEqual(screen.warnings, [], "nothing is added to the main chat");
 			assert.equal(mode.session.model?.id, model);
 			assert.equal(mode.session.thinkingLevel, level);
 			assert.equal(screen.promptSlot(), mode.editor, "no model selector opened");
@@ -239,6 +248,7 @@ describe("commands typed while a subagent is shown on the main screen", () => {
 			screen = await viewSubagent();
 			await screen.submit("/copy");
 			assert.deepEqual(clipboard.copied, ["the worker's answer"]);
+			assert.deepEqual(screen.notices, ["info: Copied last agent message to clipboard"]);
 			assert.deepEqual(screen.port.calls, []);
 		},
 		HOST_TIMEOUT_MS,
@@ -380,12 +390,13 @@ describe("keys that act on the main conversation while a subagent is shown", () 
 				"app.thinking.cycle",
 			])
 				screen.press(action);
-			assert.equal(screen.warnings.length, 4);
-			for (const warning of screen.warnings)
+			assert.equal(screen.notices.length, 4);
+			for (const notice of screen.notices)
 				assert.match(
-					warning,
-					/changes the main conversation's (model|thinking level)\. Switch to main to use it\./,
+					notice,
+					/^warning: .+ changes the main conversation's (model|thinking level)\. Switch to main to use it\./,
 				);
+			assert.deepEqual(screen.warnings, [], "nothing is added to the main chat");
 			assert.equal(mode.session.thinkingLevel, level);
 			assert.equal(screen.promptSlot(), mode.editor, "no model selector opened");
 		},
