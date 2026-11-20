@@ -621,22 +621,18 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		},
 		async sendTaskMessage(id, text, lane = "steer") {
 			// The message goes to the subagent's own session: queued on its lane while the subagent runs, and the first
-			// message of its next turn once it has finished and resumes, as `subagent resume` continues it. The two can
-			// trade places while the message is on its way: a running subagent can end before it takes the message, and
-			// a wake can resume a finished one first. The message then goes the other way, once.
+			// message of its next turn once it has finished and resumes, as `subagent resume` continues it. A running
+			// subagent can end before it takes the message; it then resumes with it, once it has finished. (A resume that
+			// a wake won runs as a new task, which the chat sends the message to again.)
 			for (let attempt = 0; ; attempt++) {
-				const mayRetry = attempt === 0;
 				const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
 				const resumer = taskResumer(store.supervisor);
 				if (record?.kind === "agent" && record.execution.kind === "settled" && resumer !== undefined) {
 					const reason = resumer.readOnlyReason(id);
 					if (reason !== undefined) throw new TaskMessageError("delivery-refused", { taskId: id, detail: reason });
 					const resumed = await resumer.resume(id, text);
-					if (resumed.ok) return;
-					// Resumed meanwhile: it runs again, and the message joins it.
-					store.drain();
-					if (mayRetry && agentTaskRunning(store, id)) continue;
-					throw new TaskMessageError("delivery-refused", { taskId: id, detail: resumed.reason });
+					if (!resumed.ok) throw new TaskMessageError("delivery-refused", { taskId: id, detail: resumed.reason });
+					return;
 				}
 				const task = lease(id);
 				if (!task.ok) throw new TaskMessageError("task-unavailable", { taskId: id });
@@ -656,7 +652,12 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 					store.setTurnInterrupted(id, false);
 					return;
 				}
-				if (delivery.reason === "ended" && mayRetry && resumer !== undefined && (await agentTaskSettles(store, id)))
+				if (
+					delivery.reason === "ended" &&
+					attempt === 0 &&
+					resumer !== undefined &&
+					(await agentTaskSettles(store, id))
+				)
 					continue;
 				if (delivery.reason === "unconfirmed")
 					throw new TaskMessageTimeoutError({
@@ -694,11 +695,6 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 
 /** How long a message that a subagent refused as its execution ended waits for its task to finish, to resume it. */
 const ENDED_TASK_SETTLE_WAIT_MS = 10_000;
-
-function agentTaskRunning(store: OwnerTaskStore, id: TaskId): boolean {
-	const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
-	return record?.kind === "agent" && record.execution.kind === "running";
-}
 
 /** Whether the agent task finishes within {@link ENDED_TASK_SETTLE_WAIT_MS}, once its execution has ended. */
 function agentTaskSettles(store: OwnerTaskStore, id: TaskId): Promise<boolean> {
