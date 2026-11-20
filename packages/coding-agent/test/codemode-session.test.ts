@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getCurrentSystemPrompt } from "@bastani/atomic-ai";
 import { fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
@@ -10,6 +10,7 @@ import {
 	CODEMODE_DOCS_PATH,
 	type CodemodeToolDetails,
 	createCodemodeDescription,
+	createCodemodeToolDefinition,
 } from "../src/extensions/codemode/tool.js";
 import { createMcpResultSchema } from "../src/extensions/mcp/tools.js";
 import { createHarness, getMessageText } from "./suite/harness.js";
@@ -1103,10 +1104,21 @@ test("codemode description points to the models reference only when models are e
 	const withModels = createCodemodeDescription([], { models: true });
 
 	assert(withModels.includes("`models`"));
-	assert(withModels.includes(CODEMODE_DOCS_PATH));
+	assert(withModels.includes("docs/codemode.md"));
 	assert(CODEMODE_DOCS_PATH.endsWith("codemode.md"));
 	assert(!withModels.includes("models.classify("));
 	assert(!createCodemodeDescription([], {}).includes("`models`"));
+});
+
+test("the codemode tool definition names no installation path, so reinstalling elsewhere keeps the prompt cache", () => {
+	const definition = createCodemodeToolDefinition({ models: true });
+
+	assert(!definition.description.includes(CODEMODE_DOCS_PATH));
+	assert(!definition.description.includes(dirname(CODEMODE_DOCS_PATH)));
+	assert(definition.promptGuidelines?.some((guideline) => guideline.includes(CODEMODE_DOCS_PATH)));
+	assert(
+		!createCodemodeToolDefinition({}).promptGuidelines?.some((guideline) => guideline.includes(CODEMODE_DOCS_PATH)),
+	);
 });
 
 test("codemode description says tools with output schemas resolve with their value on failure", () => {

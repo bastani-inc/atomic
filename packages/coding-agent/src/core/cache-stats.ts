@@ -17,6 +17,10 @@ export interface CacheMiss {
 	idleMs: number;
 	modelChanged: boolean;
 	cacheExpired: boolean;
+	/** Tool definitions changed after the previous request, as an update that redefines a tool does. */
+	toolsChanged: boolean;
+	/** The request had to send a smaller thinking budget than the previous one to fit the model's context window. */
+	contextNearLimit: boolean;
 }
 export interface CacheWasteTotals {
 	missedTokens: number;
@@ -46,11 +50,22 @@ export interface PreviousRequest {
 	model: string;
 	timestamp: number;
 	reportedCache: boolean;
+	thinkingLevel?: string;
+	/** Thinking budget the request sent, for a model that thinks within a fixed budget. */
+	thinkingBudgetTokens?: number;
+	/** A later system message changed the tool definitions. */
+	toolsChanged?: boolean;
 }
 
 export function describeCacheMissCause(miss: CacheMiss): string {
 	if (miss.modelChanged) return " after model switch";
+	if (miss.toolsChanged) return " after tool definitions changed";
+	if (miss.contextNearLimit) return " with the context near the model's limit";
 	return miss.cacheExpired ? " after cache TTL expiry" : "";
+}
+
+function requestThinkingLevel(message: AssistantMessage): string | undefined {
+	return (message as AssistantMessage & { thinkingLevel?: string }).thinkingLevel;
 }
 
 export function cacheMissAfter(
@@ -75,14 +90,22 @@ export function cacheMissAfter(
 	const reportedRequestCost = usage.cost.totalFromProvider && usage.cost.total > 0 ? usage.cost.total : undefined;
 	const idleMs = Math.max(0, message.timestamp - prev.timestamp);
 	const ttlMs = models.getPromptCacheTtlMs?.(prev.provider, prev.model);
+	const modelChanged = message.provider !== prev.provider || message.model !== prev.model;
 	return {
 		missedTokens,
 		missedCost,
 		...(paidRate > 0 ? { rebilledCost: missedTokens * paidRate } : {}),
 		...(reportedRequestCost !== undefined ? { reportedRequestCost } : {}),
 		idleMs,
-		modelChanged: message.provider !== prev.provider || message.model !== prev.model,
+		modelChanged,
 		cacheExpired: ttlMs !== undefined && idleMs >= ttlMs,
+		toolsChanged: prev.toolsChanged === true,
+		contextNearLimit:
+			!modelChanged &&
+			prev.thinkingBudgetTokens !== undefined &&
+			message.thinkingBudgetTokens !== undefined &&
+			message.thinkingBudgetTokens < prev.thinkingBudgetTokens &&
+			requestThinkingLevel(message) === prev.thinkingLevel,
 	};
 }
 
@@ -96,6 +119,10 @@ function previous(message: AssistantMessage, reportedCache: boolean): PreviousRe
 				model: message.model,
 				timestamp: message.timestamp,
 				reportedCache: reportedCache || usage.cacheRead + usage.cacheWrite > 0,
+				...(requestThinkingLevel(message) === undefined ? {} : { thinkingLevel: requestThinkingLevel(message) }),
+				...(message.thinkingBudgetTokens === undefined
+					? {}
+					: { thinkingBudgetTokens: message.thinkingBudgetTokens }),
 			}
 		: undefined;
 }
@@ -118,6 +145,14 @@ export function advanceCacheHistory(
 			};
 	} else if (entry.type === "message" && entry.message.role === "assistant") {
 		return previous(entry.message, prev?.reportedCache ?? false) ?? prev;
+	} else if (
+		prev &&
+		!prev.toolsChanged &&
+		entry.type === "message" &&
+		entry.message.role === "system" &&
+		((entry.message.toolsAdded?.length ?? 0) > 0 || (entry.message.toolsRemoved?.length ?? 0) > 0)
+	) {
+		return { ...prev, toolsChanged: true };
 	}
 	return prev;
 }

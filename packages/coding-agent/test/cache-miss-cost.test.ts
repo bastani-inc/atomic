@@ -145,3 +145,51 @@ describe("cache-miss cost display (#4688)", () => {
 		);
 	});
 });
+
+describe("cache-miss causes on resumed sessions", () => {
+	const rates = { input: 3, cacheRead: 0.3 };
+
+	test("names a tool definition change between the requests, as an upgrade that redefines a tool makes", () => {
+		const [cached, missed] = missAfterCachedRequest(ISSUE_TOKENS, rates);
+		const redefinition: SessionEntry = {
+			type: "message",
+			id: "update",
+			parentId: null,
+			timestamp: new Date(500).toISOString(),
+			message: {
+				role: "system",
+				content: "",
+				toolsRemoved: [{ name: "read" }],
+				toolsAdded: [{ name: "read", description: "Read a file at its new path", parameters: {} as never }],
+				timestamp: 500,
+			},
+		};
+		assert.match(
+			onlyMissNotice([cached!, redefinition, missed!], rates),
+			/^Prompt cache miss after tool definitions changed:/,
+		);
+	});
+
+	test("names a thinking budget lowered to fit the context window", () => {
+		const [cached, missed] = missAfterCachedRequest(ISSUE_TOKENS, rates).map((entry) =>
+			entry.type === "message" && entry.message.role === "assistant"
+				? {
+						...entry,
+						message: {
+							...entry.message,
+							thinkingLevel: "medium",
+							thinkingBudgetTokens: entry.id === "cached" ? 8192 : 2048,
+						} as AssistantMessage,
+					}
+				: entry,
+		);
+		assert.match(
+			onlyMissNotice([cached!, missed!], rates),
+			/^Prompt cache miss with the context near the model's limit:/,
+		);
+	});
+
+	test("names no cause when nothing between the requests explains the miss", () => {
+		assert.match(onlyMissNotice(missAfterCachedRequest(ISSUE_TOKENS, rates), rates), /^Prompt cache miss: /);
+	});
+});
