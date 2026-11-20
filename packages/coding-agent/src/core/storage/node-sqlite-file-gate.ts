@@ -69,10 +69,19 @@ export interface FileGate {
 
 interface Registry {
 	readonly files: Map<string, FileGate>;
-	readonly words: Map<string, { readonly state: Int32Array; users: number }>;
+	readonly words: Map<string, FileWord>;
 	readonly scopes: AsyncLocalStorage<HoldScope | undefined>;
-	nextTag: number;
 }
+
+/** One file's word and the tags of the connections that use it. */
+interface FileWord {
+	readonly state: Int32Array;
+	readonly tags: Set<number>;
+	lastTag: number;
+}
+
+/** Tags stay below this, so a mark (`tag * 4 + 3`) is a positive `Int32`. */
+const TAG_LIMIT = 2 ** 28;
 
 // Shared across module copies, as the transaction gates are: a copy that runs a transaction's callback and a copy whose
 // wrapped connection is called from it must see the same holds, words and asynchronous context.
@@ -82,7 +91,6 @@ const registry: Registry = registryBag[REGISTRY] ?? {
 	files: new Map(),
 	words: new Map(),
 	scopes: new AsyncLocalStorage(),
-	nextTag: 1,
 };
 registryBag[REGISTRY] = registry;
 
@@ -90,12 +98,20 @@ registryBag[REGISTRY] = registry;
 export function useFileLock(file: string): FileLock {
 	let word = registry.words.get(file);
 	if (word === undefined) {
-		word = { state: new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), users: 0 };
+		word = {
+			state: new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)),
+			tags: new Set(),
+			lastTag: 0,
+		};
 		registry.words.set(file, word);
 	}
-	word.users++;
-	const { state } = word;
-	const tag = registry.nextTag++;
+	// The next tag no connection to the file uses, from 1 up, wrapping before the marks would leave the Int32 range.
+	let tag = word.lastTag;
+	do tag = (tag % (TAG_LIMIT - 1)) + 1;
+	while (word.tags.has(tag));
+	word.lastTag = tag;
+	word.tags.add(tag);
+	const { state, tags } = word;
 	let released = false;
 	return {
 		buffer: state.buffer as SharedArrayBuffer,
@@ -110,8 +126,8 @@ export function useFileLock(file: string): FileLock {
 		release: () => {
 			if (released) return;
 			released = true;
-			const current = registry.words.get(file);
-			if (current !== undefined && --current.users === 0) registry.words.delete(file);
+			tags.delete(tag);
+			if (tags.size === 0 && registry.words.get(file)?.tags === tags) registry.words.delete(file);
 		},
 	};
 }

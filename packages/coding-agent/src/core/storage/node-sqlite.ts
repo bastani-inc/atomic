@@ -1330,6 +1330,8 @@ function releaseOnExit(connection: ThreadConnection, current: { hold?: FileHold 
 		const hold = current.hold;
 		current.hold = undefined;
 		releaseHold(hold);
+		// A thread that is gone no longer uses the word, whether or not its database is ever closed.
+		lock.release();
 	});
 }
 
