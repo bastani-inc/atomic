@@ -148,11 +148,10 @@ test(
 		);
 		await session.reload();
 
-		// `list` shows every definition, as it does for a user agent shadowing a builtin; the user's is among them.
-		const user = named(await p.listAgents(session), PACKAGE_AGENT).filter((agent) => agent.scope === "user");
+		// The overridden package agent cannot run under its name any more, so `list` offers only the user's definition.
 		assert.deepEqual(
-			user.map((agent) => agent.description),
-			["My own reviewer"],
+			named(await p.listAgents(session), PACKAGE_AGENT).map((agent) => `${agent.scope}: ${agent.description}`),
+			["user: My own reviewer"],
 		);
 		p.respondAsChild = () => ({ text: "user reviewer done" });
 		const outcome = await p.launch(session, PACKAGE_AGENT);
