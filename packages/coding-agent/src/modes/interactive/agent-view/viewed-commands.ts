@@ -198,3 +198,8 @@ export function runViewedDoubleEscapeAction(mode: InteractiveModeBase, action: "
 		await open();
 	});
 }
+
+/** Double Esc on an empty prompt while a subagent is shown: the main chat's tree or fork selector, after a confirm. */
+export function runViewedDoubleEscapeAction(mode: InteractiveModeBase, action: "tree" | "fork"): void {
+	void (action === "tree" ? mode.showTreeSelector() : mode.showUserMessageSelector());
+}
