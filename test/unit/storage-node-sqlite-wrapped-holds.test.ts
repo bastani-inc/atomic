@@ -675,3 +675,43 @@ test("wrapped calls made once the queue behind a threaded transaction is empty r
 	assert.ok(new Set(turns).size <= 2, `the writes made after the queue emptied took ${new Set(turns).size} turns`);
 	assert.equal((await values(threaded)).length, 2 + 1 + 20);
 });
+
+test("a wrapped call SQLite cannot prepare fails at once with its own error during a threaded transaction, as before (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped } = await openWrapped(path, 150);
+	// What node:sqlite reports for each, from a connection of the test's own.
+	const reference = new DatabaseSync(path);
+	cleanups.push(() => reference.close());
+	const calls: readonly [string, (database: SqliteDatabase) => Promise<unknown>][] = [
+		["SELECT * FROM nosuch", (database) => database.all("SELECT * FROM nosuch")],
+		["SELEC 1", (database) => database.get("SELEC 1")],
+		["INSERT INTO nosuch VALUES (1)", (database) => database.run("INSERT INTO nosuch VALUES (1)")],
+		[
+			"INSERT INTO nosuch VALUES (1); INSERT INTO items VALUES ('c')",
+			(database) => database.exec("INSERT INTO nosuch VALUES (1); INSERT INTO items VALUES ('c')"),
+		],
+	];
+	const { committed, settled } = await holdLock(threaded, 600);
+	for (const [sql, call] of calls) {
+		let expected: unknown;
+		try {
+			reference.exec(sql);
+		} catch (error) {
+			expected = error;
+		}
+		const failure = await call(wrapped).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		assert.ok(
+			failure instanceof StorageUnavailableError,
+			`${sql}: expected a storage failure, got ${String(failure)}`,
+		);
+		const cause = failure.cause as Error & { errcode?: number };
+		assert.equal(cause.message, (expected as Error).message, sql);
+		assert.equal(cause.errcode, (expected as { errcode?: number }).errcode, sql);
+		assert.equal(settled(), false, `${sql}: it waited for the transaction`);
+	}
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b"]);
+});

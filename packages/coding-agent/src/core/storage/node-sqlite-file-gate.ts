@@ -51,7 +51,7 @@ interface Waiter {
 	readonly fail: () => void;
 }
 
-/** Statements a calling-thread connection prepared to classify its calls while the file is held; see `readsOnly`. */
+/** Statements a calling-thread connection prepared to classify its calls while the file is held; see `classify`. */
 interface Plans {
 	readonly explained: Map<string, StatementSync>;
 	busyTimeout?: StatementSync;
@@ -425,8 +425,12 @@ function busyTimeoutOf(gate: FileGate, owner: object, database: DatabaseSync): n
 	}
 }
 
-/** A statement whose first keyword reads: anything else is never prepared for its plan. */
-const READ_STATEMENT = /^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*(?:SELECT|VALUES|WITH)\b/i;
+/** Comments and blanks before a statement's first keyword. */
+const LEAD = String.raw`^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*`;
+/** A statement whose first keyword reads. */
+const READ_STATEMENT = new RegExp(`${LEAD}(?:SELECT|VALUES|WITH)\\b`, "i");
+/** A PRAGMA, which SQLite may carry out while it prepares it: never prepared for its plan. */
+const PRAGMA_STATEMENT = new RegExp(`${LEAD}PRAGMA\\b`, "i");
 /**
  * Steps of SQLite's virtual machine that write a database file or change a connection's transaction or schema, as
  * opposed to the temporary tables and indexes a read sorts and deduplicates in. A write to a table opens it with
@@ -458,34 +462,53 @@ const WRITE_STEPS = new Set([
 ]);
 
 /**
- * Whether `sql`, run as one statement on `database`, only reads, so it never waits for the write lock in WAL mode,
- * which both kinds of connection put the file in. Proven from the plan SQLite makes for it, never by running it: no
- * step of it writes (see `WRITE_STEPS`) and no transaction it starts is a write transaction. A read runs at once
- * whatever functions or virtual tables it calls, as it always has; code of yours that it calls and that writes meets
- * the lock as it always did.
+ * What a wrapped call is, decided from the plan SQLite makes for its text on `database`, never by running it:
+ *
+ * - `invalid`: SQLite cannot prepare it (a missing table, a syntax error). It runs at once and fails with its own
+ *   error, as it always has: a statement that cannot be prepared runs nothing and takes no lock.
+ * - `read`: a single statement (`single`) whose plan has no step that writes (see `WRITE_STEPS`) and starts no write
+ *   transaction, whatever functions or virtual tables it calls. It runs at once: in WAL mode, which both kinds of
+ *   connection put the file in, a read never waits for the write lock, and code of yours that writes from inside it
+ *   meets the lock as it always did.
+ * - `write`: any other single statement, a PRAGMA included, which SQLite may carry out while it prepares it and so
+ *   is never prepared for its plan. It waits for the lock (see `runWhenFree`).
+ * - `script`: a call that may be several statements (`exec`). It waits like a write unless its first statement cannot
+ *   be prepared (`invalid`).
  *
  * The plan of a text is prepared once while the file is held and run again for later calls; whether a statement writes
  * does not change with the schema.
  */
-export function readsOnly(gate: FileGate, owner: object, database: DatabaseSync, sql: string): boolean {
-	if (!READ_STATEMENT.test(sql)) return false;
+export function classify(
+	gate: FileGate,
+	owner: object,
+	database: DatabaseSync,
+	sql: string,
+	single: boolean,
+): "read" | "write" | "script" | "invalid" {
+	const otherwise = single ? "write" : "script";
+	if (PRAGMA_STATEMENT.test(sql)) return otherwise;
 	const plans = plansOf(gate, owner);
-	try {
-		let explained = plans.explained.get(sql);
-		if (explained === undefined) {
+	let explained = plans.explained.get(sql);
+	if (explained === undefined) {
+		try {
 			explained = database.prepare(`EXPLAIN ${sql}`);
-			if (plans.explained.size >= MAX_PLANS) plans.explained.delete(plans.explained.keys().next().value!);
-			plans.explained.set(sql, explained);
+		} catch {
+			return "invalid";
 		}
+		if (plans.explained.size >= MAX_PLANS) plans.explained.delete(plans.explained.keys().next().value!);
+		plans.explained.set(sql, explained);
+	}
+	if (!single || !READ_STATEMENT.test(sql)) return otherwise;
+	try {
 		for (const step of explained.all()) {
 			const opcode = String(step.opcode);
 			// Transaction p2: whether it is a write transaction.
-			if (WRITE_STEPS.has(opcode) || (opcode === "Transaction" && Number(step.p2) !== 0)) return false;
+			if (WRITE_STEPS.has(opcode) || (opcode === "Transaction" && Number(step.p2) !== 0)) return "write";
 		}
-		return true;
+		return "read";
 	} catch {
 		plans.explained.delete(sql);
-		return false;
+		return "write";
 	}
 }
 

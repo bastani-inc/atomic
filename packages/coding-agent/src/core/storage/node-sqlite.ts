@@ -61,6 +61,7 @@ import {
 } from "./errors.js";
 import { fileIdentity, fileIdentityAsync } from "./file-identity.js";
 import {
+	classify,
 	currentHoldScope,
 	type FileHold,
 	type FileLock,
@@ -69,7 +70,6 @@ import {
 	heldElsewhere,
 	holdFile,
 	inBacklog,
-	readsOnly,
 	releaseHold,
 	runInHold,
 	runWhenFree,
@@ -1869,25 +1869,31 @@ class NodeSqliteDatabase implements SqliteDatabase {
 
 	exec(sql: string): Promise<void> {
 		const made = this.holdScope();
-		return this.enqueueStatement(() => this.besideHolds(made, undefined, () => this.executor.exec(sql)));
+		return this.enqueueStatement(() => this.besideHolds(made, sql, false, () => this.executor.exec(sql)));
 	}
 
 	run(sql: string, ...params: readonly SqliteValue[]) {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
-		return this.enqueueStatement(() => this.besideHolds(made, sql, () => this.executor.run(sql, ...bound), bound));
+		return this.enqueueStatement(() =>
+			this.besideHolds(made, sql, true, () => this.executor.run(sql, ...bound), bound),
+		);
 	}
 
 	get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T | undefined> {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
-		return this.enqueueStatement(() => this.besideHolds(made, sql, () => this.executor.get<T>(sql, ...bound), bound));
+		return this.enqueueStatement(() =>
+			this.besideHolds(made, sql, true, () => this.executor.get<T>(sql, ...bound), bound),
+		);
 	}
 
 	all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
-		return this.enqueueStatement(() => this.besideHolds(made, sql, () => this.executor.all<T>(sql, ...bound), bound));
+		return this.enqueueStatement(() =>
+			this.besideHolds(made, sql, true, () => this.executor.all<T>(sql, ...bound), bound),
+		);
 	}
 
 	/**
@@ -1915,7 +1921,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 */
 	private besideHolds<T>(
 		made: { readonly scope: HoldScope | undefined; readonly backlog: boolean } | undefined,
-		statement: string | undefined,
+		sql: string,
+		single: boolean,
 		call: () => Promise<T>,
 		params: readonly SqliteValue[] = [],
 	): Promise<T> {
@@ -1927,8 +1934,12 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		if (params.some((value) => typeof value === "string" && value.includes("\0"))) return call();
 		const owner = this.connection;
 		const database = owner.connection;
-		// While no transaction is open the file's calls only take their turn: a read is not explained for it.
-		if (statement !== undefined && gate.holds.size > 0 && readsOnly(gate, owner, database, statement)) return call();
+		// While no transaction is open the file's calls only take their turn: nothing is explained for it. A text SQLite
+		// cannot prepare fails at once with its own error, before any wait.
+		if (gate.holds.size > 0) {
+			const kind = classify(gate, owner, database, sql, single);
+			if (kind === "read" || kind === "invalid") return call();
+		}
 		return runWhenFree(file, gate, owner, database, call, () => unavailable(this.descriptor, sqliteBusyError()));
 	}
 
