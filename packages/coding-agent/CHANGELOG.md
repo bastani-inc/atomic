@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A queued message in the main chat no longer disappears for a frame when the session takes it. Its `Steering:` or `Follow-up:` row now stays until the message shows in the transcript, and goes in the same frame, also while an extension's `message_start` hook is still running and, in the default isolated mode, when the engine's updates reach the screen one at a time ([#6080](https://github.com/bastani-inc/atomic/issues/6080)).
+
 ## [0.10.1] - 2026-11-20
 
 Typing and rendering keep going while Atomic reads and writes its local SQLite files, and the chat screen no longer flashes blank or shifted frames.

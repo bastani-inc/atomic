@@ -1,4 +1,9 @@
 import type { PromptDisposition, UserMessageWithRawText } from "../../core/agent-session-types.js";
+import {
+	NO_QUEUED_MESSAGES,
+	type QueuedMessageLanes,
+	queuedMessagesUnderWay,
+} from "../../core/queued-message-delivery.ts";
 import { parseSlashCommand } from "../../core/slash-commands.js";
 import {
 	clearInteractiveEngineQueue,
@@ -112,11 +117,41 @@ InteractiveModeBase.prototype.clearAllQueues = async function (
 	return mainSteering(this).clearAll(options);
 };
 
+/**
+ * The messages the main chat's session took from its queue whose own row the transcript does not show yet. Its queue
+ * no longer lists them; the chat draws them as queued ahead of their lane until their `message_start` arrives. In
+ * process they are read from the session with its queue; an isolated engine tells the host about them with its events.
+ */
+function mainQueuedDeliveries(mode: InteractiveModeBase): QueuedMessageLanes {
+	const runtime = mode.runtimeHost;
+	return runtime instanceof IsolatedInteractiveRuntime
+		? runtime.queuedMessagesUnderWay()
+		: queuedMessagesUnderWay(mode.session);
+}
+
+/** The messages being delivered that the main chat's rows drew when they were last built. */
+const drawnDeliveries = new WeakMap<InteractiveModeBase, QueuedMessageLanes>();
+
+/**
+ * Build the main chat's rows again when the messages being delivered changed since they were drawn without an event
+ * that builds them: a delivery that ended without its `message_start` (a hook failed, or the session already shows the
+ * input). Its row goes with the next event the session sends.
+ */
+export function redrawMainQueuedDeliveries(mode: InteractiveModeBase): void {
+	// While a subagent is shown, the rows are its queue.
+	if (mode.agentView?.viewed?.kind === "agent") return;
+	if ((drawnDeliveries.get(mode) ?? NO_QUEUED_MESSAGES) === mainQueuedDeliveries(mode)) return;
+	mode.updatePendingMessagesDisplay();
+	mode.ui.requestRender();
+}
+
 InteractiveModeBase.prototype.updatePendingMessagesDisplay = function (this: InteractiveModeBase): void {
 	this.pendingMessagesContainer.clear();
 	// While a subagent is shown, the rows above the prompt are its queue, drawn as the main chat draws its own.
 	const viewed = viewedSteering(this);
 	if (viewed !== undefined) {
+		// The main chat's rows are not drawn meanwhile: keep none of their texts.
+		drawnDeliveries.delete(this);
 		const shown = this.agentView?.viewed;
 		const rows = queuedMessageRows(
 			viewed.allQueued(),
@@ -130,7 +165,10 @@ InteractiveModeBase.prototype.updatePendingMessagesDisplay = function (this: Int
 	for (const component of this.pendingBashComponents) {
 		this.pendingMessagesContainer.addChild(component);
 	}
-	const rows = queuedMessageRows(this.getAllQueuedMessages());
+	// Drawing only: Alt+Up, Esc and engine recovery use the session's own queue, which no longer lists these.
+	const delivering = mainQueuedDeliveries(this);
+	drawnDeliveries.set(this, delivering);
+	const rows = queuedMessageRows(this.getAllQueuedMessages(), delivering);
 	if (rows.length > 0) {
 		const dequeueKey = this.getAppKeyDisplay("app.message.dequeue");
 		this.pendingMessagesContainer.addChild(new QueuedMessagesView(rows, dequeueKey, (text) => theme.fg("dim", text)));
@@ -535,6 +573,11 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 		this.updatePendingMessagesDisplay();
 		this.ui.requestRender();
 	});
+	// The engine was lost or retired its session: what it was delivering never shows here.
+	const stopForgotten = runtime.onQueuedDeliveriesForgotten(() => {
+		this.updatePendingMessagesDisplay();
+		this.ui.requestRender();
+	});
 	const stopRecovered = runtime.onEngineRecovered((replaced) => {
 		const known = knownAtLoss;
 		knownAtLoss = undefined;
@@ -560,6 +603,7 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 	});
 	return () => {
 		stopEnded();
+		stopForgotten();
 		stopRecovered();
 	};
 };
