@@ -4,7 +4,7 @@ import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
 import { classifyChatCommand } from "../skill-command-autocomplete.ts";
 import type { SteeringQueueController } from "../steering-queue-controller.ts";
 import type { ChatMessageEntry } from "./chat-message-renderer.ts";
-import { setChatSessionEditorText } from "./chat-session-host-editor.ts";
+import { recordChatSessionPrompt, setChatSessionEditorText } from "./chat-session-host-editor.ts";
 import {
 	decrementOptimisticUserSignature,
 	incrementOptimisticUserSignature,
@@ -77,7 +77,7 @@ async function submitAfterInterruptSettlement<TExtraEntry extends ChatTranscript
 	mode: ChatSessionSubmitMode,
 ): Promise<void> {
 	const editorText = state.inputBuffer;
-	state.editor?.addToHistory?.(text);
+	recordChatSessionPrompt(state, text);
 	try {
 		state.sdkBusy = true;
 		state.statusMessage = CHAT_SESSION_RESUMING_STATUS;
@@ -153,7 +153,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			return;
 		}
 	}
-	state.editor?.addToHistory?.(text);
+	recordChatSessionPrompt(state, text);
 	if (state.compacting) {
 		setChatSessionEditorText(state, "");
 		state.compactionQueuedMessages = [...state.compactionQueuedMessages, { text, mode }];
@@ -623,7 +623,7 @@ async function sendChatSessionText<TExtraEntry extends ChatTranscriptEntryLike>(
 	text: string,
 	mode: ChatSessionSubmitMode,
 ): Promise<void> {
-	state.editor?.addToHistory?.(text);
+	recordChatSessionPrompt(state, text);
 	setChatSessionEditorText(state, "");
 	state.requestRender?.();
 	try {
@@ -668,7 +668,7 @@ async function submitSteeredChatSession<TExtraEntry extends ChatTranscriptEntryL
 		notifyChatSessionWarning(state, "! shell commands are not available in this chat");
 		return;
 	}
-	state.editor?.addToHistory?.(text);
+	recordChatSessionPrompt(state, text);
 	if (state.compacting) {
 		setChatSessionEditorText(state, "");
 		state.compactionQueuedMessages = [...state.compactionQueuedMessages, { text, mode }];

@@ -30,6 +30,19 @@ describe("a subagent's chat", () => {
 		assert.deepEqual(userTexts(chat.engine), []);
 	});
 
+	test("Up recalls what was sent from the chat, also after the chat was left and opened again, as the main chat recalls it", async () => {
+		const chat = await openChat();
+		await chat.startBusyTurn();
+		await chat.enter("x one");
+		await chat.enter("x two");
+		await chat.reopen();
+		assert.equal(chat.editorText(), "");
+		await chat.press("\x1b[A");
+		assert.equal(chat.editorText(), "x two");
+		await chat.press("\x1b[A");
+		assert.equal(chat.editorText(), "x one");
+	});
+
 	test("/model is refused with a notice and never reaches the subagent", async () => {
 		const chat = await openChat();
 		await chat.startBusyTurn();

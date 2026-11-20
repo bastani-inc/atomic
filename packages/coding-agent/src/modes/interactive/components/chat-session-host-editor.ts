@@ -240,6 +240,20 @@ export function handleChatSessionInput<TExtraEntry extends ChatTranscriptEntryLi
 	return false;
 }
 
+/** Up recalls a submission: the editor's history, and the chat's own record of it, which outlives the editor. */
+export function recordChatSessionPrompt<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	text: string,
+): void {
+	state.editor?.addToHistory?.(text);
+	const trimmed = text.trim();
+	if (!trimmed || state.sentPrompts.at(-1) === trimmed) return;
+	state.sentPrompts = [...state.sentPrompts, trimmed].slice(-PROMPT_HISTORY_LIMIT);
+}
+
+/** As many submissions as the editor's own history keeps. */
+const PROMPT_HISTORY_LIMIT = 100;
+
 export function setChatSessionEditorText<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	text: string,

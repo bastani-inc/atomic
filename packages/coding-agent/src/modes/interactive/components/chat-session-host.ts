@@ -29,6 +29,7 @@ import {
 	createChatSessionEditor,
 	handleChatSessionInput,
 	hasChatSessionTransientModal,
+	recordChatSessionPrompt,
 	setChatSessionEditorText,
 } from "./chat-session-host-editor.ts";
 import {
@@ -1079,6 +1080,16 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		readonly followUp: readonly string[];
 	}): number {
 		return restoreTakenQueuedMessages(this.state, taken);
+	}
+
+	/** What Up recalls in this chat, oldest first, so a chat opened again later can recall it too. */
+	promptHistory(): readonly string[] {
+		return this.state.sentPrompts;
+	}
+
+	/** Let Up recall `prompts`, oldest first, as if they had been sent from this chat. */
+	seedPromptHistory(prompts: readonly string[]): void {
+		for (const prompt of prompts) recordChatSessionPrompt(this.state, prompt);
 	}
 
 	/** Every message the chat lists as queued, per lane, as its queued rows show them. */

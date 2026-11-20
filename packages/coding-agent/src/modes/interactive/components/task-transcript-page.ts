@@ -123,6 +123,8 @@ const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredM
 let chatCount = 0;
 /** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
 const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
+/** What Up recalled in a task's chat when the reader left it, oldest first, for when they come back. */
+const keptPromptHistories = new WeakMap<TaskViewSource, Map<TaskId, readonly string[]>>();
 
 function failureText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -454,6 +456,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			commands: { handleSlashCommand: (text) => this.runCommand(text) },
 		});
 		pagedNotices.set(this.chat, this.#notices);
+		this.chat.seedPromptHistory(keptPromptHistories.get(source)?.get(taskId) ?? []);
 		this.restoreDraft();
 		this.restoreUndelivered();
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
@@ -789,6 +792,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			const kept = keptDrafts.get(this.source) ?? new Map<TaskId, string>();
 			kept.set(this.taskId, this.chat.inputText());
 			keptDrafts.set(this.source, kept);
+		}
+		if (!this.disposed && this.chat.promptHistory().length > 0) {
+			// Up recalls what was sent from this chat when the reader opens it again, as the main chat, which stays, does.
+			const kept = keptPromptHistories.get(this.source) ?? new Map<TaskId, readonly string[]>();
+			kept.set(this.taskId, this.chat.promptHistory());
+			keptPromptHistories.set(this.source, kept);
 		}
 		this.disposed = true;
 		this.reportQueue();
