@@ -18,7 +18,6 @@ import {
 	resolveTopLevelParallelMaxTasks,
 	type SingleResult,
 	type SubagentToolResult,
-	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
 import { resolveSubagentAutoModel } from "../shared/auto-model.js";
@@ -239,12 +238,6 @@ export async function runParallelPath(
 		// where it would overwrite a project's own progress.md.
 		const progressDir = firstProgressIndex === -1 ? undefined : join(artifactsDir, "progress", runId);
 		if (progressDir) await writeInitialProgressFile(progressDir);
-
-		if (params.context === "fork") {
-			for (let i = 0; i < taskTexts.length; i++) {
-				taskTexts[i] = wrapForkTask(taskTexts[i]!);
-			}
-		}
 
 		const results = await runForegroundParallelTasks({
 			runWorktrees,

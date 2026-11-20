@@ -27,7 +27,6 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agent-type
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
-import { wrapForkTask } from "../../packages/subagents/src/shared/types-runtime.js";
 
 /**
  * Structural cost, not a slow test: each case builds a real parent AgentSession and
@@ -162,7 +161,7 @@ async function forkFixture(reply: Reply) {
 		const resolver = createForkContextResolver(parentManager, "fork");
 		return Promise.all(
 			[0, 1].map(async (index) =>
-				runSingleInProcess(cwd, worker(cwd), wrapForkTask(`task ${index}`), {
+				runSingleInProcess(cwd, worker(cwd), `task ${index}`, {
 					cwd,
 					runId: `fork-own-output-${index}`,
 					index,

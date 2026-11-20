@@ -1056,6 +1056,9 @@ async function constructAgentSession(
 				parentHiddenTools: session
 					.getActiveToolNames()
 					.filter((name) => isToolDeclarationHidden(session as unknown as AgentSessionInternalSurface, name)),
+				parentToolNames: session
+					.getActiveToolNames()
+					.filter((name) => !isToolDeclarationHidden(session as unknown as AgentSessionInternalSurface, name)),
 			}),
 			scopedModels: options.scopedModels,
 			// Undefined follows the settings' current `fallbackModels`, also once a project is trusted later.

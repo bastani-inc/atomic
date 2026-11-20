@@ -393,6 +393,7 @@ function nextTransformedPrompt(
 		head,
 		sections.transform(buildSystemPromptSections(session._baseSystemPromptOptions)),
 		sections.fork && forkOf(session, messages, sections.fork),
+		session.model && `${session.model.provider}/${session.model.id}`,
 	);
 }
 

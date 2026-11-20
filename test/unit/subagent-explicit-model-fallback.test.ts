@@ -406,14 +406,23 @@ for (const forkFromParent of [false, true]) {
 			);
 			const [before, , after] = requests as [ProviderRequest, ProviderRequest, ProviderRequest];
 			assert.ok(before.systemPrompt.includes(CHILD_ROLE), before.systemPrompt);
-			assert.equal(
-				after.systemPrompt,
-				before.systemPrompt.replace(
-					"Model name (used for commit attribution): Argon 4",
-					"Model name (used for commit attribution): Sol 6",
-				),
-				"the same child prompt, with only the model it runs on changed",
-			);
+			if (forkFromParent) {
+				// A fork keeps the conversation it continues as it was sent, and is told the model it now runs on after it.
+				assert.ok(after.systemPrompt.startsWith(before.systemPrompt), "the same prompt, with the change after it");
+				assert.match(
+					after.systemPrompt.slice(before.systemPrompt.length),
+					/Model name \(used for commit attribution\): Sol 6/,
+				);
+			} else {
+				assert.equal(
+					after.systemPrompt,
+					before.systemPrompt.replace(
+						"Model name (used for commit attribution): Argon 4",
+						"Model name (used for commit attribution): Sol 6",
+					),
+					"the same child prompt, with only the model it runs on changed",
+				);
+			}
 			assert.deepEqual(after.tools, before.tools, "the same tools");
 			assert.deepEqual(before.tools, ["read"]);
 			assert.doesNotMatch(after.systemPrompt, /PARENT TASK/);

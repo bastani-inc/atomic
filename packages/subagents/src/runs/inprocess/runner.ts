@@ -98,7 +98,7 @@ import {
 } from "../shared/cancellation-recovery.js";
 import { finishElapsedSpan } from "../shared/elapsed.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
-import { createInProcessChildPromptBehavior } from "./prompt-behavior.js";
+import { createInProcessChildPromptBehavior, forkedChildTools } from "./prompt-behavior.js";
 import {
 	SessionStartBudget,
 	type SessionStartProgress,
@@ -2451,6 +2451,9 @@ export class SubagentControlRuntime {
 				created = await beforeStartDeadline(
 					createAgentSession({
 						...inherited,
+						...(parentSessionId === undefined
+							? {}
+							: { tools: forkedChildTools(inherited.tools, inherited.parentToolNames) }),
 						...explicitEffort,
 						extensionBindings,
 						customTools: admitted.policy.customTools ?? inherited.customTools,

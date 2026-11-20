@@ -107,12 +107,6 @@ export function removedSubagentActionMessage(action: string): string {
 	return `The subagent action "${action}" was removed. Use { action: "quit", id } to stop a child gracefully; it stays resumable with { action: "resume", id, message? }.`;
 }
 
-export const DEFAULT_FORK_PREAMBLE =
-	"You are a delegated subagent running from a fork of the parent session. " +
-	"Treat the inherited conversation as reference-only context, not a live thread to continue. " +
-	"Do not continue or answer prior messages as if they are waiting for a reply. " +
-	"Your sole job is to execute the task below and return a focused result for that task using your tools.";
-
 function normalizeTopLevelParallelValue(value: unknown): number | undefined {
 	const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
 	if (!Number.isInteger(parsed) || parsed < 1) return undefined;
@@ -129,14 +123,6 @@ export function resolveTopLevelParallelConcurrency(override: unknown, configValu
 
 export function resolveTopLevelParallelRunningCapacity(value: unknown): number {
 	return normalizeTopLevelParallelValue(value) ?? DEFAULT_RUNNING_CAPACITY;
-}
-
-export function wrapForkTask(task: string, preamble?: string | false): string {
-	if (preamble === false) return task;
-	const effectivePreamble = preamble ?? DEFAULT_FORK_PREAMBLE;
-	const wrappedPrefix = `${effectivePreamble}\n\nTask:\n`;
-	if (task.startsWith(wrappedPrefix)) return task;
-	return `${wrappedPrefix}${task}`;
 }
 
 // ============================================================================

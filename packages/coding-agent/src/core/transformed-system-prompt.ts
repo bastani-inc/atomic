@@ -33,6 +33,8 @@ export interface TransformedPromptHead {
 	/** A digest of each section the model is told at this row, before its `sections` changes. */
 	readonly digests: Record<string, string>;
 	readonly owner: string;
+	/** The model (`provider/id`) the text was recorded for: another model is sent its own prompt. */
+	readonly model?: string;
 }
 
 export interface TransformedPromptRecord {
@@ -173,15 +175,21 @@ export function nextTransformedPromptRecord(
 	prompt: TransformedPrompt,
 	desired: SystemPromptSections,
 	fork?: TransformedPromptFork,
+	model?: string,
 ): TransformedPromptRecord | undefined {
-	const state = transformedPromptState(messages, owner);
+	const recorded = transformedPromptState(messages, owner);
+	// Another model reads nothing of the recorded prompt's cache: it is sent the prompt as it is now, naming only itself.
+	const state =
+		recorded?.head.content !== undefined && recorded.head.model !== undefined && recorded.head.model !== model
+			? undefined
+			: recorded;
 	if (state !== undefined) {
 		const forked = state.head.fork !== undefined;
 		const own = (name: string) => !forked || typeof state.changed.get(name) === "string";
 		const sections = changedSections(state.digests, forked ? forkOwnSections(desired) : desired, own);
 		return sections ? { sections } : undefined;
 	}
-	if (fork !== undefined && latestHeadIndex(messages) < 0) {
+	if (fork !== undefined && recorded === undefined && latestHeadIndex(messages) < 0) {
 		const digests = digestsOf(fork.sections);
 		const sections = changedSections(new Map(Object.entries(digests)), forkOwnSections(desired), () => false);
 		const forked = { note: fork.note, ...(fork.hidden?.length ? { hidden: [...fork.hidden] } : {}) };
@@ -189,7 +197,10 @@ export function nextTransformedPromptRecord(
 	}
 	const digests = digestsOf(prompt.sections);
 	const sections = changedSections(new Map(Object.entries(digests)), desired, () => true);
-	return { head: { content: prompt.content, digests, owner }, ...(sections ? { sections } : {}) };
+	return {
+		head: { content: prompt.content, digests, owner, ...(model === undefined ? {} : { model }) },
+		...(sections ? { sections } : {}),
+	};
 }
 
 /**

@@ -12,13 +12,14 @@ import {
 	getModel,
 	type Model,
 } from "@bastani/atomic-ai/compat";
+import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../../packages/coding-agent/src/core/agent-session-methods.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import type { ResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
-import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
+import { type CreateAgentSessionOptions, createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { Skill } from "../../packages/coding-agent/src/core/skills.js";
@@ -26,9 +27,11 @@ import { createSyntheticSourceInfo } from "../../packages/coding-agent/src/core/
 import { forkToolDeclarations } from "../../packages/coding-agent/src/core/transformed-system-prompt.js";
 import { createCodemodeExtension } from "../../packages/coding-agent/src/extensions/codemode/index.js";
 import { createTestExtensionsResult } from "../../packages/coding-agent/test/utilities.js";
-import { createInProcessChildPromptBehavior } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
+import {
+	createInProcessChildPromptBehavior,
+	forkedChildTools,
+} from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
-import { wrapForkTask } from "../../packages/subagents/src/shared/types-runtime.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const PROVIDER = "fork-prompt-cache";
@@ -167,9 +170,12 @@ async function recordingRuntime(compat: object, reply: Reply = textReply) {
 	return { runtime, parentModel, otherModel, requests };
 }
 
-async function codemodeOnly() {
+type Codemode = "only" | "direct";
+
+async function codemode(mode: Codemode | undefined) {
+	if (mode === undefined) return undefined;
 	return createTestExtensionsResult([
-		{ path: "builtin:codemode", factory: createCodemodeExtension({ mode: "only" }) },
+		{ path: "builtin:codemode", factory: createCodemodeExtension(mode === "only" ? { mode: "only" } : {}) },
 	]);
 }
 
@@ -177,7 +183,7 @@ async function openParent(
 	manager: SessionManager,
 	runtime: ModelRuntime,
 	model: Model<"anthropic-messages">,
-	options: { tools?: string[]; codemodeOnly?: boolean } = {},
+	options: { tools?: string[]; codemode?: Codemode } = {},
 ) {
 	const cwd = manager.getCwd();
 	const { session } = await createAgentSession({
@@ -189,7 +195,7 @@ async function openParent(
 		modelRuntime: runtime,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager: manager,
-		resourceLoader: resourceLoader(undefined, options.codemodeOnly ? await codemodeOnly() : undefined),
+		resourceLoader: resourceLoader(undefined, await codemode(options.codemode)),
 		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: options.tools ?? ["read", "bash", "edit"],
 	});
@@ -205,8 +211,9 @@ async function openFork(
 	options: {
 		tools?: string[];
 		policy?: typeof narrow;
-		codemodeOnly?: boolean;
+		codemode?: Codemode;
 		parentHiddenTools?: readonly string[];
+		customTools?: CreateAgentSessionOptions["customTools"];
 	} = {},
 ) {
 	const cwd = manager.getCwd();
@@ -226,10 +233,11 @@ async function openFork(
 		modelRuntime: runtime,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager: manager,
-		resourceLoader: resourceLoader("You review changes.", options.codemodeOnly ? await codemodeOnly() : undefined),
+		resourceLoader: resourceLoader("You review changes.", await codemode(options.codemode)),
 		subagentPolicy: { ...policy, managementActions: "restricted", depth: 1 },
 		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: options.tools ?? ["read"],
+		...(options.customTools ? { customTools: options.customTools } : {}),
 		...behavior,
 	});
 	cleanups.push(() => session.dispose());
@@ -282,7 +290,13 @@ async function parentAndFork(compat: object, reply?: Reply, parentOptions?: Para
 	assert.ok(forkManager);
 	// What the runner reads from the parent when it starts the child.
 	const childOptions = (parent as unknown as AgentSessionInternalSurface)._childSessionOptions?.({});
-	return { ...recorded, parentManager, forkManager, parentHiddenTools: childOptions?.parentHiddenTools };
+	return {
+		...recorded,
+		parentManager,
+		forkManager,
+		parentHiddenTools: childOptions?.parentHiddenTools,
+		parentToolNames: childOptions?.parentToolNames,
+	};
 }
 
 describe("a forked subagent continues its parent's cached request", () => {
@@ -293,7 +307,7 @@ describe("a forked subagent continues its parent's cached request", () => {
 		test(`its first request extends the parent's last one, with a narrower tool policy (${mode})`, async () => {
 			const { runtime, parentModel, requests, parentManager, forkManager } = await parentAndFork(compat);
 			const child = await openFork(forkManager, runtime, parentModel);
-			await child.prompt(wrapForkTask("child task"));
+			await child.prompt("child task");
 
 			assert.equal(requests.length, 3);
 			const [, parentLast, forkFirst] = requests;
@@ -315,7 +329,7 @@ describe("a forked subagent continues its parent's cached request", () => {
 		for (const compat of [NATIVE, FLAT_TOOLS]) {
 			const { runtime, parentModel, requests, forkManager } = await parentAndFork(compat);
 			const child = await openFork(forkManager, runtime, parentModel, { tools: ["read", "todo"] });
-			await child.prompt(wrapForkTask("child task"));
+			await child.prompt("child task");
 
 			const [, parentLast, forkFirst] = requests.map((request) => request.payload);
 			if (compat === NATIVE) {
@@ -334,7 +348,7 @@ describe("a forked subagent continues its parent's cached request", () => {
 	test("keeps the project context and skills its parent was sent, whatever its own inheritance", async () => {
 		const { runtime, parentModel, requests, forkManager } = await parentAndFork(NATIVE);
 		const child = await openFork(forkManager, runtime, parentModel, { policy: inheriting });
-		await child.prompt(wrapForkTask("child task"));
+		await child.prompt("child task");
 
 		const [, parentLast, forkFirst] = requests.map((request) => request.payload);
 		assert.ok(extendsRequest(parentLast, forkFirst));
@@ -349,22 +363,83 @@ describe("a forked subagent continues its parent's cached request", () => {
 				undefined,
 				{
 					tools: ["read", "bash", "codemode"],
-					codemodeOnly: true,
+					codemode: "only",
 				},
 			);
 			assert.deepEqual([...(parentHiddenTools ?? [])].sort(), ["bash", "read"]);
 			const child = await openFork(forkManager, runtime, parentModel, {
 				tools: ["read", "codemode"],
-				codemodeOnly: true,
+				codemode: "only",
 				parentHiddenTools,
 			});
-			await child.prompt(wrapForkTask("child task"));
+			await child.prompt("child task");
 
 			const [, parentLast, forkFirst] = requests.map((request) => request.payload);
 			assert.ok(extendsRequest(parentLast, forkFirst), "the fork declares the tools the parent declared");
 			assert.doesNotMatch(added(parentLast, forkFirst), /"name":"bash"/);
 			assert.doesNotMatch(added(parentLast, forkFirst), /tool_removal/, "the fork keeps the codemode it may call");
 		}
+	});
+
+	test("a worker fork without codemode keeps the parent's tool list where tools cannot be added, reaching its own tools through codemode", async () => {
+		const supervisor: string[] = [];
+		const reply: Reply = (model, count) =>
+			count === 3
+				? message(model, [
+						{
+							type: "toolCall",
+							id: "call_supervisor",
+							name: "codemode",
+							arguments: { code: 'return await tools.contact_supervisor({ message: "done" });' },
+						},
+					])
+				: count === 4
+					? message(model, [
+							{
+								type: "toolCall",
+								id: "call_bash",
+								name: "codemode",
+								arguments: { code: 'return await tools.bash({ command: "echo outside" });' },
+							},
+						])
+					: textReply(model, count);
+		const { runtime, parentModel, requests, forkManager, parentToolNames } = await parentAndFork(FLAT_TOOLS, reply, {
+			tools: ["read", "bash", "codemode"],
+			codemode: "direct",
+		});
+		const tools = forkedChildTools(["read", "contact_supervisor"], parentToolNames);
+		assert.deepEqual(tools, ["read", "contact_supervisor", "codemode"]);
+		const child = await openFork(forkManager, runtime, parentModel, {
+			tools,
+			codemode: "direct",
+			customTools: [
+				{
+					name: "contact_supervisor",
+					label: "Contact supervisor",
+					description: "Send the supervisor a message.",
+					parameters: Type.Object({ message: Type.String() }),
+					execute: async (_id, params) => {
+						supervisor.push((params as { message: string }).message);
+						return { content: [{ type: "text", text: "delivered" }], details: {} };
+					},
+				},
+			],
+		});
+		await child.prompt("child task");
+
+		const [, parentLast, forkFirst] = requests.map((request) => request.payload);
+		assert.ok(extendsRequest(parentLast, forkFirst), "the fork keeps the parent's tool list and conversation");
+		assert.match(added(parentLast, forkFirst), /Call contact_supervisor through codemode/);
+		assert.deepEqual(supervisor, ["done"]);
+		const results = child.messages.filter((entry) => entry.role === "toolResult");
+		assert.deepEqual(
+			results.map((result) => [result.toolName, result.isError]),
+			[
+				["codemode", false],
+				["codemode", true],
+			],
+		);
+		assert.match(JSON.stringify(results[1].content), /tools\.bash does not exist/);
 	});
 
 	test("refuses a call to a parent tool outside its policy", async () => {
@@ -377,7 +452,7 @@ describe("a forked subagent continues its parent's cached request", () => {
 				: textReply(model, count);
 		const { runtime, parentModel, forkManager } = await parentAndFork(FLAT_TOOLS, reply);
 		const child = await openFork(forkManager, runtime, parentModel);
-		await child.prompt(wrapForkTask("child task"));
+		await child.prompt("child task");
 
 		const results = child.messages.filter((entry) => entry.role === "toolResult");
 		assert.deepEqual(
@@ -394,7 +469,7 @@ describe("a forked subagent continues its parent's cached request", () => {
 	test("on another model it still sends the parent's conversation, as its own request", async () => {
 		const { runtime, otherModel, requests, forkManager } = await parentAndFork(NATIVE);
 		const child = await openFork(forkManager, runtime, otherModel);
-		await child.prompt(wrapForkTask("child task"));
+		await child.prompt("child task");
 
 		const [, parentLast, forkFirst] = requests;
 		assert.notEqual(forkFirst.payload.model, parentLast.payload.model);
@@ -409,7 +484,7 @@ describe("a forked subagent continues its parent's cached request", () => {
 		vi.setSystemTime(DAY_ONE);
 		const { runtime, parentModel, requests, forkManager } = await parentAndFork(NATIVE);
 		const child = await openFork(forkManager, runtime, parentModel);
-		await child.prompt(wrapForkTask("child task"));
+		await child.prompt("child task");
 		await child.dispose();
 		const reopen = () => SessionManager.open(forkManager.getSessionStore(), forkManager.getSessionId());
 		vi.setSystemTime(DAY_TWO);
