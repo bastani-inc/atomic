@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, quitting now gives the engine up to five seconds to shut down, as on Linux and macOS, so extensions' `session_shutdown` handlers run and the engine writes its `shutdown` record for `ATOMIC_EVENT_LOOP_BLOCK_MS`. Before, the engine was ended at once. A quit now waits for that shutdown work, up to the five seconds ([#6075](https://github.com/bastani-inc/atomic/issues/6075)).
+
 ## [0.10.1] - 2026-11-20
 
 Typing and rendering keep going while Atomic reads and writes its local SQLite files, and the chat screen no longer flashes blank or shifted frames.

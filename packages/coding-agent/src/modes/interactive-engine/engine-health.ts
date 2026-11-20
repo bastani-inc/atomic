@@ -4,8 +4,11 @@ import type { InteractiveEngineGenerationEnded } from "./engine-generation.ts";
 export type EngineDiagnosticListener = (diagnostic: ActivityWatchdogDiagnostic) => void;
 
 export interface EngineHealthDeps {
-	/** Terminate the current (or hung replacement) engine child. */
-	stop(): Promise<void>;
+	/**
+	 * Terminate the current (or hung replacement) engine child. `graceful` lets a ready
+	 * engine run its own shutdown first, within the client's bound.
+	 */
+	stop(options?: { graceful?: boolean }): Promise<void>;
 	/** Replace the engine child and reload host state from it. */
 	restart(replacementReady: () => void): Promise<void>;
 	/** Drop streaming/compaction/callback activity owned by the dead generation. */
@@ -159,15 +162,16 @@ export class EngineHealthController {
 	 * its spawn: the client's restart permit is voided by `deps.stop()`, and the
 	 * attempt is then awaited so no child, and no host initialization, outlives
 	 * teardown. Idempotent, and bounded by the client's own stop deadlines.
+	 * `graceful` is passed to that stop: a quit lets the engine run its own shutdown.
 	 */
-	shutdown(): Promise<void> {
+	shutdown(options?: { graceful?: boolean }): Promise<void> {
 		if (this.shutdownPromise) return this.shutdownPromise;
 		this.stopped = true;
 		this.rescueRequested = false;
 		this.replacementNeeded = false;
 		this.resetControls();
 		this.shutdownPromise = (async () => {
-			await this.stopQuietly();
+			await this.stopQuietly(options);
 			await this.attempt?.catch(() => {});
 			await this.termination?.catch(() => {});
 		})();
@@ -235,9 +239,9 @@ export class EngineHealthController {
 		return true;
 	}
 
-	private async stopQuietly(): Promise<void> {
+	private async stopQuietly(options?: { graceful?: boolean }): Promise<void> {
 		try {
-			await this.deps.stop();
+			await this.deps.stop(options);
 		} catch {
 			// A stop failure must not strand the escape hatch: the restart still
 			// replaces the child and reports any real failure.

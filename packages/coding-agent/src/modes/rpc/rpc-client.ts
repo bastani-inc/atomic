@@ -284,12 +284,17 @@ export class RpcClient extends RpcClientApi {
 	/**
 	 * Explicit stop. Voids any in-flight restart permit, so a replacement caught
 	 * between its own stop and start can never spawn after this returns.
+	 *
+	 * With `graceful`, an interactive engine child that has reported ready runs its own
+	 * shutdown, including extensions' `session_shutdown` handlers, for up to five seconds
+	 * on every platform. Without it a Windows engine is ended at once, because Windows
+	 * has no signal a process can handle for this.
 	 */
-	stop(): Promise<void> {
+	stop(options?: { graceful?: boolean }): Promise<void> {
 		this.restartRevision += 1;
 		if (this.stopPromise) return this.stopPromise;
 		if (!this.process) return Promise.resolve();
-		const stopPromise = this.stopCurrentGeneration().finally(() => {
+		const stopPromise = this.stopCurrentGeneration(options?.graceful === true).finally(() => {
 			if (this.stopPromise === stopPromise) this.stopPromise = undefined;
 		});
 		this.stopPromise = stopPromise;
@@ -302,10 +307,12 @@ export class RpcClient extends RpcClientApi {
 	 * stdout settles, so an ownership frame it already sent still reaches its
 	 * request; only then is the generation retired (see RpcTerminalDrain).
 	 */
-	private async stopCurrentGeneration(): Promise<void> {
+	private async stopCurrentGeneration(graceful = false): Promise<void> {
 		const child = this.process;
 		if (!child) return;
 		const endedGeneration = this.generation;
+		// The engine reports ready once it handles the end of its input; until then a stop ends it at once.
+		const engineReady = this.enginePid !== undefined;
 		const stopError = rpcTransportError("Agent process stopped");
 		this.invalidateEngineShortcuts();
 		const terminateTree = this.engineMonitor !== undefined;
@@ -324,7 +331,7 @@ export class RpcClient extends RpcClientApi {
 		// Claim before terminating so the exit this provokes does not relabel a
 		// deliberate stop; an exit that already claimed keeps its own error.
 		this.terminalDrain.claim(endedGeneration, stopError);
-		await terminateRpcClientProcess(child, terminateTree);
+		await terminateRpcClientProcess(child, terminateTree, graceful && engineReady);
 		await this.beginTerminalDrain(endedGeneration, stopError);
 		this.stopReadingStdout?.();
 		this.stopReadingStdout = null;
