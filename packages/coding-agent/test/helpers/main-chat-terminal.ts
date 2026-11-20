@@ -80,9 +80,17 @@ export function normalizedFrame(lines: readonly string[]): string[] {
 			// path leaves room for the branch, which may be cut short.
 			.replace(/~?(\/[^\s/·()]+){2,}\/?( \([^)·\s]*\)?)?/g, "<path>")
 			.trimEnd();
-		return /%\/\d+k \(auto\)$/.test(masked) ? masked.replace(/\d+(\.\d+)?k?/g, "n") : masked;
+		if (!USAGE_ROW.test(masked)) return masked;
+		// The usage row is right-aligned, so its indent follows the width of its figures: mask the figures and indent the
+		// row again to the same right edge, which still compares that edge and every other character.
+		return masked.trimStart().replace(TOKEN_FIGURE, "n").padStart(masked.length);
 	});
 }
+
+/** The usage row ends with the context usage and window, as in `1.2%/128.0k (auto)`. */
+const USAGE_ROW = /%\/\d+(\.\d)?[kMBTQ]? \(auto\)$/;
+/** A token figure or percentage: `2`, `1.5k`, `128.0k`, `1.2M`, `1.2`. */
+const TOKEN_FIGURE = /\d+(\.\d+)?[kMBTQ]?/g;
 
 type FauxContext = Parameters<Extract<FauxResponseStep, (...args: never[]) => unknown>>[0];
 
