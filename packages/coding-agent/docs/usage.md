@@ -20,7 +20,7 @@ The interface has four main areas:
 - **Startup header** - shortcuts plus named lists of loaded context files, prompt templates, skills, and extensions; use the expand-tools shortcut (Ctrl+O by default) to switch those lists to source paths
 - **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
 - **Editor** - where you type; border color indicates the current thinking level
-- **Footer** - token/cache usage, cost, and context usage above the editor; below it, the current model, reasoning level, working directory, Git branch, and session name while the agent is idle, or the bound interrupt key while it works (a turn, compaction, automatic retry, or `!` command). Press `?` on an empty prompt for the main chat's key overview
+- **Footer** - token/cache usage, cost, and context usage above the editor; below it, the current model, reasoning level, working directory, Git branch, and session name while the agent is idle, or the bound interrupt key while it works (`esc to interrupt` on `main`, `esc to pause` while viewing a subagent). When background subagents are active, the [agent panel](/background-tasks#the-agent-panel) appears below the footer; selecting a subagent swaps the transcript and points the same prompt at it. Press `?` on an empty prompt for the key overview
 
 The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
 
@@ -49,13 +49,13 @@ Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening
 
 The `@` and `/` menus end with one hint line naming the keys that work there. Tab completes without sending. Enter inserts an `@` path; for a `/`-prefixed completion, including an absolute path, Enter submits the completed prompt. Remapped menu keys appear only when an app shortcut or earlier menu action does not take them first.
 
-Ctrl+R searches the prompts the current chat has recorded, newest first: prompts sent through templates or skills as you typed them, and a prompt an `input` hook rewrote as the hook left it. ↑ and ↓ still walk through what you typed. In writable subagent chats, the search uses that chat's transcript. Esc clears the search, then closes it without changing your draft or interrupting the agent. While search or completion is open, its own hint line replaces the chat's normal keys. Read-only chats keep their transcript scrolling keys and do not open prompt search.
+Ctrl+R searches the viewed agent's recorded prompts, newest first: prompts sent through templates or skills as you typed them, and a prompt an `input` hook rewrote as the hook left it. ↑ and ↓ walk the same agent's history — on `main`, the main chat's history; while viewing a subagent, that subagent's own delivered prompts followed by what you send while viewing it (queued messages come back with Alt+Up rather than ↑). Esc clears the search, then closes it without changing your draft or interrupting the agent. While search or completion is open, its own hint line replaces the chat's normal keys.
 
 Prompt history keeps what you typed, including input rewritten by an extension before it reaches the model. An `input` hook does not erase the original from saved session history. Avoid typing secrets directly into prompts.
 
 See [Keybindings](/keybindings) for all shortcuts and customization.
 
-On native Windows, `!` and `!!` execute PowerShell (preferring PowerShell 7 `pwsh.exe`, then Windows PowerShell `powershell.exe`; see [Windows](/windows) for the locations checked). Linux, macOS, and WSL use Bash. Extension-provided execution operations still take precedence. `shellCommandPrefix` is still prepended, so use syntax matching the selected shell; `shellPath` configures Bash, not Windows interactive PowerShell. Escape or Ctrl+C cancels a running command. `!!` output remains excluded from model context.
+On native Windows, `!` and `!!` execute PowerShell (preferring PowerShell 7 `pwsh.exe`, then Windows PowerShell `powershell.exe`; see [Windows](/windows) for the locations checked). Linux, macOS, and WSL use Bash. Extension-provided execution operations still take precedence. `shellCommandPrefix` is still prepended, so use syntax matching the selected shell; `shellPath` configures Bash, not Windows interactive PowerShell. Escape or Ctrl+C cancels a running command. `!!` output remains excluded from model context. While viewing a subagent, `!` and `!!` commands are refused with a notice; switch to `main` to run them.
 
 On Windows, ALT+Z lends the terminal to an interactive PowerShell subshell. Type `exit` to return to the same Atomic session; owned background tasks keep running. CTRL+Z remains editor undo. On POSIX systems, CTRL+Z suspends Atomic and `fg` resumes it.
 
@@ -76,7 +76,7 @@ Startup typing does not apply to non-TTY input, print or RPC mode, or metadata c
 
 ## Slash Commands
 
-Type `/` in the editor to open command completion. Extensions can register custom commands, skills are available as `/skill:name`, and prompt templates expand via `/templatename`.
+Type `/` in the editor to open command completion. Extensions can register custom commands, skills are available as `/skill:name`, and prompt templates expand via `/templatename`. While viewing a subagent, built-in commands run on `main` (asking to confirm for commands that replace or rewrite the main conversation, refusing `/model` and `/thinking`, and using `/copy` for the viewed subagent's last message), while skills, prompt templates, and user or project extension commands go to the viewed subagent; see [Commands while viewing a subagent](/background-tasks#commands-while-viewing-a-subagent).
 
 `/settings` lists each setting with its value, shortening long labels first on narrow terminals. Type to search; Enter or Space changes the selected setting, stepping a value in place or opening its picker (a value followed by `›`). Right does not change or save a setting, including inside a value picker. The selected setting's description shows under the list, and Esc clears a search before it closes.
 
@@ -107,7 +107,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 
 ## Message Queue
 
-You can submit messages while the agent is still working:
+You can submit messages while the agent is still working (the same queue and interrupt keys apply whether you are viewing `main` or a subagent, with `Esc` pausing a viewed subagent instead of interrupting `main`):
 
 - **Enter** queues a steering message, delivered after the current assistant turn finishes executing its tool calls.
 - **ALT+Enter** queues a follow-up message, delivered after the agent finishes all work.

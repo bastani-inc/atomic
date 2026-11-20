@@ -29,20 +29,28 @@ export function isRestingPanelRow(kind: PanelRowKind, state: PanelRowState): boo
 	return kind === "agent" && (state === "stopped" || state === "paused");
 }
 
+/**
+ * Whether a subagent's own shell is listed under its subagent's row: while it has not finished. A finished one
+ * leaves at once, as a finished subagent does.
+ */
+export function nestedShellListed(state: PanelRowState): boolean {
+	return state !== "done" && state !== "failed" && state !== "stopped";
+}
+
 /** What decides whether one row is listed, besides its own kind and state. */
 export interface PanelRowContext {
 	/** Something in the panel is active: a row in an active state, or a running background shell. */
 	readonly active: boolean;
 	/** The row is resting and already left the panel, because nothing was active, and has not run since. */
 	readonly retired: boolean;
-	/** Whether the panel marked the row to be kept. */
+	/** Whether the panel marked the row to be kept: the subagent the screen shows stays listed, even finished. */
 	readonly kept: boolean;
 }
 
 /**
  * Whether the panel lists a row. `finished` is true for a row that is done, failed or stopped, and not merely
- * interrupted. Shells are never rows; a resting row stays only while something is active and it has not left yet; a
- * finished subagent leaves at once; everything else is listed.
+ * interrupted. Shells are never rows of their own; a kept row is listed; a resting row stays only while something is
+ * active and it has not left yet; a finished subagent leaves at once; everything else is listed.
  */
 export function panelRowListed(
 	kind: PanelRowKind,
@@ -51,6 +59,7 @@ export function panelRowListed(
 	context: PanelRowContext,
 ): boolean {
 	if (kind === "shell") return false;
+	if (context.kept) return true;
 	if (isRestingPanelRow(kind, state)) return context.active && !context.retired;
 	return !finished;
 }

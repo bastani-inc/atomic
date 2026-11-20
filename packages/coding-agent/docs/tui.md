@@ -852,7 +852,7 @@ export default function (pi: ExtensionAPI) {
 
 ### Pattern 7b: Attached Composer
 
-A chat that talks to something other than the main agent should not look like the main chat. `applyAttachedComposer(style, label, placeholder, lines)` takes an editor's rendered lines and returns them in the form Atomic uses for subagent chats: accent-coloured rules above and below the prompt, the top rule ending in a bold `label`, and a dim `placeholder` after the cursor while nothing is typed.
+When an extension or custom SDK host embeds a secondary chat editor, `applyAttachedComposer(style, label, placeholder, lines)` distinguishes it from the main prompt: accent-coloured rules above and below the prompt, the top rule ending in a bold `label`, and a dim `placeholder` after the cursor while nothing is typed.
 
 ```typescript
 import { applyAttachedComposer, CustomEditor, type ExtensionAPI, type Theme } from "@bastani/atomic";
