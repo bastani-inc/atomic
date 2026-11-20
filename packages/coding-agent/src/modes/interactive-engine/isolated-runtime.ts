@@ -429,8 +429,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.patchSession(session);
 		return session;
 	}
-	async openTaskInspector(taskId?: string): Promise<void> {
-		await this.client.requestInternal({ type: "open_task_inspector", ...(taskId ? { taskId } : {}) });
+	async openTaskInspector(taskId?: string, options: { readonly waitedShellOf?: string } = {}): Promise<void> {
+		await this.client.requestInternal({
+			type: "open_task_inspector",
+			...(taskId ? { taskId } : {}),
+			...(options.waitedShellOf ? { waitedShellOf: options.waitedShellOf } : {}),
+		});
 	}
 	async openAgentPanel(): Promise<void> {
 		await this.client.requestInternal({ type: "open_agent_panel" });
