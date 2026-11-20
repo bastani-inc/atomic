@@ -5,7 +5,7 @@ description: Install Atomic with a package manager or a release archive, and uni
 
 # Installation
 
-**Outcome:** Atomic is on your `PATH` and `atomic --version` prints a version.
+**Outcome:** `atomic` is on your `PATH` and `atomic --version` prints a version.
 
 **Prerequisites:** A supported shell. See [Prerequisites](/quickstart#prerequisites).
 
@@ -13,84 +13,66 @@ description: Install Atomic with a package manager or a release archive, and uni
 
 ### Package managers
 
-Install with npm:
+Requires Node.js 22.19 or newer (or Bun 1.4.2+ for Bun installs):
 
 ```bash
 npm install -g @bastani/atomic
+# or: pnpm add -g @bastani/atomic
+# or: bun add -g @bastani/atomic
 ```
 
-With pnpm:
-
-```bash
-pnpm add -g @bastani/atomic
-```
-
-With Bun:
-
-```bash
-bun add -g @bastani/atomic
-```
-
-Atomic does not require package install scripts. Add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
-
-Sessions are kept in a local SQLite database by default, `~/.atomic/workflows/journal.sqlite`. No database server or separate database installation is needed, and Atomic manages the file itself. To share sessions across machines, see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
-
-Keep a standalone archive's complete directory, including `node_modules`, libraries, and licenses. Package managers select the runtime for your platform automatically.
-
+- Atomic does not require package install scripts; pass `--ignore-scripts` if you disable lifecycle scripts.
+- Package managers select the right platform runtime automatically. Keep a standalone archive's complete directory (`node_modules`, libraries, licenses) intact.
+- Sessions are stored locally in `~/.atomic/workflows/journal.sqlite` with no database server needed. To share sessions across machines, see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
 
 ### Release archive
 
-Alternatively, install the self-contained release archive, which needs no Node.js or package manager.
-
-On macOS or Linux:
+Install the self-contained release archive without Node.js or a package manager:
 
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
 ```
 
-On Windows PowerShell:
-
 ```powershell
+# Windows PowerShell
 irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 ```
 
-The installer downloads only the matching GitHub Release archive and `SHA256SUMS`, verifies the checksum, and keeps the complete payload in a versioned directory.
+The installer fetches the matching GitHub Release archive and `SHA256SUMS`, verifies the SHA-256 checksum, and installs into a versioned directory:
 
-In an interactive terminal it prints the release and platform it is installing, draws a live progress bar with the percentage and megabytes downloaded, confirms each phase on one line, shows the Atomic logo (UTF-8 terminals on macOS/Linux, Windows Terminal on Windows), and ends with a `To start:` block. PATH guidance appears only when the launcher directory is not already on your `PATH`. When a different version is installed it prints `Installed version: <tag>` before upgrading.
+| Platform | Default payload directory | Default launcher | PATH behavior |
+| --- | --- | --- | --- |
+| macOS / Linux | `~/.local/share/atomic` | `~/.local/bin/atomic` | Never edits shell rc files; prints a paste-safe `export PATH=...` (or `fish_add_path`) command if missing |
+| Windows | `%LOCALAPPDATA%\atomic` | `%LOCALAPPDATA%\atomic\bin\atomic.cmd` | Adds the bin directory to User PATH when missing and tells you to open a new terminal |
 
-Set `NO_COLOR=1` for plain text instead: no colours, no progress bar, and no logo, with `Downloading <archive> (<size> MB) ... done` in place of the bar. The installer also switches to plain output on its own when standard output is not a terminal, when `CI` is set, or (on macOS/Linux) when `TERM` is `dumb` or unset. Plain mode changes only the presentation; verification, error messages, and exit codes stay the same.
-
-On macOS or Linux, the default paths are `~/.local/share/atomic` for versioned payloads and `~/.local/bin/atomic` for the launcher. The installer never edits your shell configuration; when `~/.local/bin` is not on your `PATH` it prints a paste-safe `export PATH=...` command (or `fish_add_path` for fish) and names the startup file to add it to.
-
-On Windows, the defaults are `%LOCALAPPDATA%\atomic` for payloads and `%LOCALAPPDATA%\atomic\bin\atomic.cmd` for the launcher. The installer prints `Installed to <path>`, and when it adds the bin directory to your User PATH it says so and asks you to open a new terminal.
-
-The installer accepts these environment variables:
+**Terminal output:** In an interactive terminal, the installer prints the release, platform, live download progress bar, one-line phase confirmations, logo (UTF-8 terminals on macOS/Linux; Windows Terminal on Windows), `Installed version: <tag>` on upgrades, and a `To start:` block. Set `NO_COLOR=1` for plain text output (`Downloading <archive> (<size> MB) ... done`); plain mode also activates automatically when stdout is not a TTY, `CI` is set, or Unix `TERM` is unset/`dumb`. Verification, errors, and exit codes are identical.
 
 #### ATOMIC_VERSION
 
-Pin an exact release tag instead of the latest release, or pass a flag that overrides it. On macOS or Linux:
+Pin an exact release tag (`MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION`) via `ATOMIC_VERSION` or a flag (which overrides the env var):
 
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh -s -- --ref 0.9.11
 ```
 
-On Windows PowerShell:
-
 ```powershell
+# Windows PowerShell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1))) -Ref 0.9.11
 ```
 
-Pins use Atomic's `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION` release tag form and are honored literally: if GitHub answers with a different release tag, the installer stops before downloading anything rather than installing a version you did not ask for.
+Pins are honored literally: if GitHub returns a different tag, the installer aborts before downloading.
 
 #### Rerunning the installer
 
-If the release you ask for (or the latest release, when you pin nothing) is already installed and healthy, the installer prints `atomic <tag> is already installed; skipping download (use --force to reinstall)` and stops there. It prints `Installed to <path>` and any PATH guidance, but it downloads nothing and leaves the installed files alone. With a pinned version it makes no network request at all, so a rerun also works while GitHub is unavailable; with no pin it still looks up the latest release tag. Healthy means the launcher and payload are in place and the launcher still matches the hash the installer recorded when it installed it: an empty or changed launcher is reinstalled. On Windows it also adds the bin directory to your User PATH if it went missing.
+If the requested version (or latest release when unpinned) is already installed and healthy, the installer prints `atomic <tag> is already installed; skipping download (use --force to reinstall)`, prints the install path and any PATH guidance, and exits without downloading.
 
-An install counts as healthy when `current` points at that release's version directory inside the install root (a `current` that points at a versions directory somewhere else is repaired) and the launcher resolves to it. On macOS/Linux that means the launcher link resolves to an executable `current/atomic`; the installer never runs the installed binary to decide. On Windows it means `current\atomic.exe --version` reports the release and the `atomic.cmd` shim and `atomic-current` junction match what the installer creates. On both platforms the version directory must still hold the files Atomic needs to start: `package.json`, `app.js`, `native-modifiers.js`, `native-module-path.js`, `native-platform.js`, and the `builtin` and `node_modules` directories. A different version, or a missing or broken launcher or payload, installs exactly as before and repairs the install.
+- **Offline reruns:** Pinned reruns make no network request. Unpinned reruns still check for the latest tag.
+- **Health checks:** An install is healthy when `current` points to the target version inside the install root (a `current` that points at a versions directory somewhere else is repaired), the launcher matches its recorded hash and resolves to `current`, and the version directory must still hold the files Atomic needs to start: `package.json`, `app.js`, `native-modifiers.js`, `native-module-path.js`, `native-platform.js`, `builtin/`, and `node_modules/`. On macOS/Linux, the launcher link must resolve to an executable `current/atomic` (without executing it). On Windows, `current\atomic.exe --version` must match, `atomic.cmd` and `atomic-current` must match, and a missing User PATH entry is restored. Any broken or missing piece triggers a full repair install.
+- **Concurrency and atomic switches:** Only one installer runs per install directory at a time. A second run waits up to 30 minutes (override in seconds with `ATOMIC_INSTALL_LOCK_TIMEOUT`), printing `Waiting for another atomic installer ... to finish...`. A killed installer releases its lock and the next run cleans up partial files. The previous `atomic` version stays usable until the final switch.
 
-Only one installer works on an install directory at a time. A second one started meanwhile prints `Waiting for another atomic installer ... to finish...` and continues once the first exits; after 30 minutes it gives up (set `ATOMIC_INSTALL_LOCK_TIMEOUT` to another number of seconds). An installer that was killed releases its claim, and the next run removes the partial files it left. While a new version is put in place, `atomic` keeps starting the previous one until the switch, and an interrupted install leaves the previous version usable.
-
-To reinstall a healthy install anyway, pass `--force` on macOS/Linux or `-Force` on Windows, or set `ATOMIC_FORCE_INSTALL=1`. The environment variable works with `curl ... | sh` and `irm ... | iex`, where you cannot pass a flag:
+To force a reinstall, pass `--force` on macOS/Linux or `-Force` on Windows, or set `ATOMIC_FORCE_INSTALL=1`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh -s -- --force
@@ -104,69 +86,69 @@ $env:ATOMIC_FORCE_INSTALL = "1"; irm https://raw.githubusercontent.com/bastani-i
 
 #### ATOMIC_INSTALL_DIR
 
-Override the install root that holds the versioned payloads (default `~/.local/share/atomic` on macOS/Linux, `%LOCALAPPDATA%\atomic` on Windows). On macOS/Linux, a relative value resolves against the physical directory where the installer starts and is used exactly as given, including any trailing whitespace or newline. The install root cannot equal or sit inside the launcher path (`ATOMIC_BIN_DIR/atomic`); impossible layouts fail before any download or filesystem change.
+Override the versioned payload root (default `~/.local/share/atomic` on macOS/Linux, `%LOCALAPPDATA%\atomic` on Windows). On macOS/Linux, a relative value resolves against the physical directory where the installer starts and is used verbatim, including any trailing whitespace or newline. The install root cannot equal or sit inside the launcher path (`ATOMIC_BIN_DIR/atomic`); invalid layouts fail before downloading.
 
 #### ATOMIC_BIN_DIR
 
-Override the launcher directory (default `~/.local/bin` on macOS/Linux, `%LOCALAPPDATA%\atomic\bin` on Windows). Relative values resolve the same way as `ATOMIC_INSTALL_DIR`. It cannot sit inside the install root's `current` or `versions` directories, which the installer replaces on every install. A Unix value containing `:` cannot be one PATH entry, so the installer prints direct-run guidance instead of editing PATH.
+Override the launcher directory (default `~/.local/bin` on macOS/Linux, `%LOCALAPPDATA%\atomic\bin` on Windows). Relative values resolve the same way as `ATOMIC_INSTALL_DIR`. It cannot sit inside the install root's `current` or `versions` directories. On Unix, values containing `:` cannot be added as one `PATH` entry, so the installer prints direct-run instructions instead.
 
 #### GITHUB_TOKEN / GH_TOKEN
 
-Optional. The installer finds the latest release and confirms a pinned `ATOMIC_VERSION` through github.com, so most installs make no GitHub API request. It asks the API only when github.com gives no clear answer, and without a token the API allows 60 requests an hour per network address. If the installer reports that GitHub's API rate limit was reached, set a token (for example `GITHUB_TOKEN=$(gh auth token)`) or try again later. Curl and GNU Wget keep the token in a protected temporary file instead of process arguments. BusyBox Wget remains supported without a token, and with a token when the latest-release redirect avoids the API; if an authenticated API fallback is needed, install curl or GNU Wget rather than exposing the token.
+Optional. The installer resolves releases via `github.com` redirects first and falls back to the GitHub API (60 unauthenticated requests/hour per IP) only when needed. If rate-limited, pass `GITHUB_TOKEN=$(gh auth token)` (or `GH_TOKEN`).
+
+`curl` and GNU `wget` pass the token through a protected temporary file instead of process arguments. BusyBox `wget` works without a token or when redirects avoid the API; use `curl` or GNU `wget` if authenticated API fallback is needed.
 
 <a id="which-runtime-runs-your-workflows" />
 
 ### Which runtime runs Atomic?
 
-A package-manager install runs on Node; the standalone binaries run on Bun. Installing Bun separately does not change which runtime hosts an npm-installed Atomic. [Codemode scripts](/codemode) run in a JavaScript sandbox with no direct Node or Bun APIs.
+Package-manager installs run on Node.js; standalone release archives run on Bun. Installing Bun separately does not switch an npm install to Bun. [Codemode scripts](/codemode) always run inside a sandboxed JavaScript VM with no direct Node or Bun APIs.
 
 ### Git
 
-Atomic needs git 2.30.0 or newer for worktrees, git packages, and the footer branch. It uses the first `git` in an absolute directory on your `PATH` (never the working directory) when that git runs and reports 2.30.0 or newer. Otherwise it downloads a portable git, the build GitHub Desktop ships from [desktop/dugite-native](https://github.com/desktop/dugite-native), the same way it provides `fd` and `rg`:
+Atomic requires Git 2.30.0 or newer for worktrees, git packages, and the footer branch display. It uses the first `git` found in an absolute `PATH` directory (never the working directory) if it reports 2.30.0+. Otherwise, Atomic downloads a verified portable Git ([desktop/dugite-native](https://github.com/desktop/dugite-native)) just like `fd` and `rg`:
 
-- **Where:** `~/.atomic/agent/bin/git/` (under the directory `ATOMIC_CODING_AGENT_DIR` points to, when set).
-- **When:** at interactive startup and the first time a git package is installed or updated. Run `/tools` to see which git Atomic uses, its version, and why none is available.
-- **Verified:** Atomic pins one release and checks every download against a SHA-256 stored in its source. A download that does not match is discarded and nothing is installed.
-- **Updates:** when a new Atomic version pins a different git release, the next start that can reach github.com selects the new release. Commands already using an older release keep their executable and helper paths. Offline, or after a failed download, the older copy keeps working, Atomic says so once, and `/tools` shows why; it tries again at the next start.
-- **Platforms:** macOS x64 and arm64, Linux x64, arm64, and armv7 with glibc 2.34 or newer, and Windows x64, arm64, and x86.
-- **Agent shells:** when no `git` is on your `PATH` at all, the `bash` tool puts the portable git first on `PATH`, so agents run the same git Atomic uses. An older system git stays on `PATH` for your shells; Atomic uses the portable copy only for its own git commands.
-- **Offline:** with `ATOMIC_OFFLINE=1` Atomic never downloads git. A portable git that is already installed keeps working.
+- **Location:** `~/.atomic/agent/bin/git/` (or under `ATOMIC_CODING_AGENT_DIR`).
+- **When:** Downloaded at interactive startup or on the first git package install/update. Run `/tools` to check which Git Atomic uses and why.
+- **Verification:** Pinned to one release and verified against a built-in SHA-256 checksum; mismatched downloads are discarded.
+- **Updates:** When a new Atomic version pins a newer Git release, the next online start switches to it while running commands finish on the older copy. Offline or after a failed download, the cached copy continues working and `/tools` notes the reason.
+- **Supported platforms:** macOS (x64, arm64), Linux with glibc 2.34+ (x64, arm64, armv7), and Windows (x64, arm64, x86).
+- **Agent shells:** If no `git` is on `PATH`, the `bash` tool prepends portable Git so agents can run `git`. If an older system `git` is on `PATH`, your shells keep it while Atomic uses portable Git internally.
+- **Offline mode:** `ATOMIC_OFFLINE=1` prevents downloads; an already-cached portable Git still works.
+- **Cache cleanup:** Older portable releases stay cached while existing commands may use them. Close running Atomic sessions before deleting `~/.atomic/agent/bin/git/`. The next online startup downloads git again; until then, offline use needs a system git.
 
-Older portable releases stay cached while existing commands may use them. To reclaim that space, close the Atomic sessions using the tools directory before removing its `git/` cache. The next online startup downloads git again; until then, offline use needs a system git.
+If no suitable Git is found and portable download is unavailable, install Git for your platform (shown in the error and `/tools`):
 
-When no git is available and Atomic cannot download one, the error names the command for your system and `/tools` shows it:
-
-| System | Command |
-|---|---|
+| System | Install command |
+| --- | --- |
 | macOS | `xcode-select --install` |
 | Windows | `winget install --id Git.Git -e --source winget` |
-| Ubuntu 22.04 and newer, Debian and derivatives | `apt-get install git` |
-| Ubuntu earlier than 22.04 | `add-apt-repository ppa:git-core/ppa && apt update && apt install git` (its own package is older than 2.30) |
+| Ubuntu 22.04+, Debian and derivatives | `apt-get install git` |
+| Ubuntu earlier than 22.04 | `add-apt-repository ppa:git-core/ppa && apt update && apt install git` |
 | Fedora, RHEL, Rocky, Alma, Oracle Linux | `dnf install git` |
-| Amazon Linux 2 and 2023 | `yum install git` and `dnf install git` |
+| Amazon Linux 2 / 2023 | `yum install git` / `dnf install git` |
 | openSUSE, SLES | `zypper install git` |
 | Arch, Manjaro | `pacman -S git` |
 | Alpine and other musl distributions | `apk add git` |
 | Void, Gentoo, Mageia, NixOS | `xbps-install git`, `emerge --ask --verbose dev-vcs/git`, `urpmi git`, `nix-env -i git` |
 | Termux, FreeBSD, OpenBSD, illumos | `pkg install git`, `pkg install git`, `pkg_add git`, `pkg install developer/versioning/git` |
 
-Linux commands are for a root shell. Other systems: see [git-scm.com/downloads](https://git-scm.com/downloads).
+Run Linux package-manager commands as root. See [git-scm.com/downloads](https://git-scm.com/downloads) for other systems.
 
-Certificates and HTTPS differ by platform:
-
-- **Linux:** the portable git verifies servers with its bundled CA file. Set `GIT_SSL_CAINFO` to use your own bundle; while Atomic sets it, it takes precedence over `http.sslCAInfo` in your git config. HTTPS clones and fetches use the system libcurl, so install it if your image lacks it, for example `apt install libcurl4`. Local operations such as commits and worktrees do not need it.
-- **macOS:** the portable git uses the system's certificate trust.
-- **Windows:** the portable git uses the Windows certificate store, like Git for Windows.
+**HTTPS certificates with portable Git:**
+- **Linux:** Uses its bundled CA file (override with `GIT_SSL_CAINFO`, which takes precedence over `http.sslCAInfo` while set). HTTPS clones/fetches require system `libcurl` (for example `apt install libcurl4`); local operations do not.
+- **macOS:** Uses system certificate trust.
+- **Windows:** Uses the Windows certificate store.
 
 ### Alpine and musl Linux archives
 
-The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. Keep the complete archive, including payload-local `libgcc` and `libstdc++`; stock Alpine needs no runtime package install.
+The shell installer detects Alpine and downloads `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. Keep the complete archive, including payload-local `libgcc` and `libstdc++`; stock Alpine needs no runtime package install.
 
-Clipboard setup depends on your environment:
+**Clipboard support:**
+- Install `wl-clipboard` (Wayland), `xclip` or `xsel` (X11), or the Termux:API app + `termux-api` package (Termux).
+- OSC 52 forwards clipboard writes over SSH, Mosh, or Rex and acts as a fallback on headless Linux. Set `ATOMIC_CLIPBOARD_OSC52=1` (legacy alias `PI_CLIPBOARD_OSC52=1`) to force terminal forwarding; your terminal must support OSC 52 and forwarding cannot verify the local write.
 
-- **Clipboard:** install `wl-clipboard` on Wayland, `xclip` or `xsel` on X11, or the Termux:API app and `termux-api` package on Termux. OSC 52 forwards copies over SSH, Mosh, or Rex and is a fallback on headless Linux. Set `ATOMIC_CLIPBOARD_OSC52=1`, or the legacy `PI_CLIPBOARD_OSC52=1`, to force terminal forwarding. Your terminal must support it; forwarding does not confirm a successful local clipboard write.
-
-Then start Atomic in the project directory you want it to work on:
+Start Atomic in your project directory:
 
 ```bash
 cd /path/to/project
@@ -175,51 +157,38 @@ atomic
 
 ### Updating while Intercom is running
 
-Atomic sessions on one machine share an Intercom broker that keeps running after the version that started it is replaced. Installing with the release-archive installers, or running `atomic update`, finishes by running `atomic intercom upgrade` with the new version. If the older broker has no sessions connected, it is stopped and the next session starts the new one. If sessions are still connected, nothing is interrupted: the next session you start on the new version takes the broker over.
+Sessions on one machine share a single Intercom broker process. Both the release-archive installers and `atomic update` finish by running `atomic intercom upgrade` with the newly installed binary:
 
-The step runs only when the installed version has `atomic intercom upgrade`, so installing an older release with `--ref` or `-Ref` skips it without a warning, and `atomic update` skips it with a note when the `atomic` on your PATH is not the version it just installed. If the step fails, the install or update still succeeds and prints a warning. Run `atomic intercom upgrade` yourself at any time; it is safe to repeat. It is also the command to run after updating with a package manager such as `npm install -g` rather than `atomic update`.
+- If no sessions are connected, the older broker stops and the next session starts the new one.
+- If sessions are still connected, they are not interrupted; the next session started on the new version takes over the broker.
+
+Installing an older release with `--ref`/`-Ref` skips this step silently if that version lacks `atomic intercom upgrade`. `atomic update` skips it with a note if `atomic` on `PATH` points to a different binary than the one updated. If the step fails, the install still succeeds with a warning.
+
+You can run `atomic intercom upgrade` manually anytime (it is idempotent), and you should run it after upgrading via a package manager such as `npm install -g`.
 
 ## Uninstall
 
-On macOS or Linux, for a default archive install, remove `~/.local/share/atomic` and the `~/.local/bin/atomic` link.
+**Release archive:**
+- **macOS / Linux:** delete `~/.local/share/atomic` and `~/.local/bin/atomic`.
+- **Windows:** delete `%LOCALAPPDATA%\atomic`. If you set `ATOMIC_BIN_DIR`, also remove `atomic.cmd` and the `atomic-current` junction from that directory, then remove it from User PATH.
 
-On Windows, remove `%LOCALAPPDATA%\atomic`. If you set `ATOMIC_BIN_DIR`, also remove `atomic.cmd` and the `atomic-current` junction from that directory, then remove the directory from your User PATH.
-
-For a package install, remove the global package with the same package manager. With npm:
+**Package manager:**
 
 ```bash
 npm uninstall -g @bastani/atomic
+# or: pnpm remove -g @bastani/atomic
+# or: bun remove -g @bastani/atomic
 ```
 
-With pnpm:
-
-```bash
-pnpm remove -g @bastani/atomic
-```
-
-With Bun:
-
-```bash
-bun remove -g @bastani/atomic
-```
-
-These commands remove the CLI only. User configuration, auth, sessions, and packages remain under `~/.atomic/agent/` unless you delete that directory yourself.
+Uninstalling removes only the CLI. Your config, credentials, sessions, and installed packages remain in `~/.atomic/agent/` until you delete that directory.
 
 ## Verify the install
-
-Run:
 
 ```bash
 atomic --version
 ```
 
-Expected output is a single version line, for example:
-
-```text
-0.9.14-alpha.2
-```
-
-If the shell reports `command not found`, the launcher directory is not on your `PATH` yet. Open a new shell, or add the bin directory the installer printed to your `PATH` and try again.
+You should see a single version line (for example `0.9.14-alpha.2`). If your shell reports `command not found`, open a new shell or add the installer's bin directory to `PATH`.
 
 ## Next step
 

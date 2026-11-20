@@ -5,79 +5,82 @@ description: "The codemode script reference: globals, tool calls, stored values,
 
 # Codemode
 
-The `codemode` tool lets the model write a JavaScript script that calls Atomic's other tools and runs non-LLM models, such as classifiers and image models. Only the script's output reaches the model, so a script can run calls in parallel and filter large results before the model sees them. It is active by default; to change that selection, see [`codemode` in Built-in tools](/tools#codemode). The sandbox is the [`@bastani/atomic-codemode`](/libraries/codemode) library, which you can also use in your own apps.
+`codemode` lets the model run a JavaScript script that calls Atomic tools and non-LLM models (classifiers and image generators) and returns only the filtered result. It is enabled by default; see [`codemode` in Built-in tools](/tools#codemode) to toggle it. To embed the sandbox in your own app, see [`@bastani/atomic-codemode`](/libraries/codemode).
 
 ## Scripts
 
-The tool input is raw JavaScript source, not JSON and not a markdown code fence. It runs as the body of an async function in a QuickJS sandbox, so top-level `await` and `return` work. The sandbox has no Node APIs, file system, network, or timers; scripts reach the outside world only through tools and `models`.
+Pass raw JavaScript source (no JSON wrapper or markdown code fences). Code runs as an async function body inside a QuickJS sandbox, so top-level `await` and `return` work. The sandbox has no Node APIs, filesystem, network, or timers—external access goes exclusively through `tools` and `models`.
 
-A script may start with an options line. It must be the first line; an options line anywhere else fails the call before the script runs:
+Optional first-line directives configure output budget and timeout (must be line 1 or the call fails):
 
 ```js
 // @options: {"max_output_tokens": 2000, "timeout_ms": 60000}
 ```
 
-- `max_output_tokens` (default 10000) limits the output. Longer output keeps its start and end, and the full text is written to a temp file whose path is included in the result.
-- `timeout_ms` is a hard deadline for the whole script, including any wait for a free worker. It is unset by default. Image generation can take minutes, so do not set a short deadline for scripts that generate images.
+- **`max_output_tokens`** (default `10000`) — caps returned text. Overflow keeps the start and end and writes full output to a temp file whose path is included.
+- **`timeout_ms`** (unset by default) — hard deadline for the whole script, including waiting for a worker slot. Avoid short deadlines when generating images, which can take minutes.
 
-The result starts with `Script completed` or `Script failed`, the wall time, and the output. Text and image items appear in order. When output has multiple text items (from `text()` or `return`), each starts with a `==> text N/M <==` line. Console calls follow the other output in one `<console_output>` block, with one line per call. A failed script keeps its partial output, followed by `Script error:` and the error. Tool calls are real: calls made before a failure are not undone. Calls still running when the script ends are cancelled, and unawaited promises are discarded.
+**Result format:** Starts with `Script completed` or `Script failed` plus wall time, followed by text and image items in order. Multiple text items (from `text()` / `return`) are separated by `==> text N/M <==`. `console.*` output follows in one `<console_output>` block. On failure, partial output is kept before `Script error:`. Side effects from completed tool calls are **not** rolled back; still-running calls are cancelled and unawaited promises are dropped when the script exits.
 
 ## Globals
 
 | Global | Purpose |
-|---|---|
-| `tools.<name>(args)` | Call a tool. See [Call tools](#call-tools). |
-| `text(value)` | Add a text item to the output. Strings are added as is, other values as JSON. |
-| `image(value)` | Add an image to the output: a base64 `data:` URL, an `{ image_url }` object, or an image block `{ type: "image", data, mimeType }` such as those returned by MCP tools and `models.generateImages()`. Remote URLs are not supported. PNG, JPEG, GIF, and WebP are accepted. SVG is not: Atomic saves generated SVG images itself, see [Generate images](#generate-images). Each image is also saved to a temp file, and the result names the path before the image. |
-| `console.log(...)` | Add a line to the `<console_output>` block after other output. Arguments are joined with spaces; `info`, `warn`, `error`, and `debug` do the same. |
-| `return value` | A top-level `return` adds the value like `text()`. |
-| `exit()` | End the script successfully. |
-| `store(key, value)` / `load(key)` | Keep small JSON values across `codemode` calls. See [Store values](#store-values). |
-| `ALL_TOOLS` | Every script-callable tool as `{ name, description }`, including tools the description does not list. [Model-only tools](#model-only-tools) are excluded. |
-| `searchTools(query, { limit?, namespace? })` | Rank script-callable tools by relevance (BM25, default limit 8). Resolves to `{ name, description }[]`. A query that is a tool's name, or the part after a `__` separator such as `thread_read` for `mcp__app__thread_read`, ranks that tool first. A query that names an active model-only tool exactly returns it first with a hint to call it directly as a top-level tool. |
-| `describeTool(name)` | Resolves to a script-callable tool's description and TypeScript declaration, a hint to call an active model-only tool directly as a top-level tool, or `undefined`. |
-| `describeNamespace(name)` | Resolves to `{ name, description?, instructions?, tools }` for a namespace such as an MCP server, or `undefined`. |
-| `models` | List and run non-LLM models. See [Models](#models). |
+| --- | --- |
+| `tools.<name>(args)` | Call a permitted tool. See [Call tools](#call-tools). |
+| `text(value)` | Emit a text item (strings verbatim, other values as JSON). |
+| `image(value)` | Emit an image from a base64 `data:` URL, `{ image_url }`, or `{ type: "image", data, mimeType }` (PNG, JPEG, GIF, WebP; no remote URLs or SVG—see [Generate images](#generate-images)). Also saves to a temp file and prints its path. |
+| `console.log(...)` | Append a space-joined line to `<console_output>` (`info`, `warn`, `error`, `debug` behave identically). |
+| `return value` | Top-level `return` emits `value` like `text()`. |
+| `exit()` | End the script immediately with success. |
+| `store(key, value)` / `load(key)` | Persist small JSON values across `codemode` calls on this branch. See [Store values](#store-values). |
+| `ALL_TOOLS` | Array of `{ name, description }` for every script-callable tool (excludes [model-only tools](#model-only-tools)). |
+| `searchTools(query, { limit?, namespace? })` | BM25 search over script-callable tools (default `limit: 8`). Exact tool names or suffixes after `__` (such as `thread_read` for `mcp__app__thread_read`) rank first. An exact active model-only tool name returns a hint to call it directly. |
+| `describeTool(name)` | Returns a script-callable tool's description and TypeScript declaration, a direct-call hint for an active model-only tool, or `undefined`. |
+| `describeNamespace(name)` | Returns `{ name, description?, instructions?, tools }` for a namespace (such as an MCP server), or `undefined`. |
+| `models` | Inspect and invoke classifier and image models. See [Models](#models). |
 
 ## Call tools
 
-Every script-callable tool in the session is a method of `tools`, named by its identifier: characters that are not valid in a JavaScript identifier become `_`, so the MCP tool `mcp__dev-docs__search` is `tools.mcp__dev_docs__search`. Each method takes one object with the tool's arguments.
+Every script-callable tool is exposed on `tools` with non-identifier characters converted to `_` (for example `mcp__dev-docs__search` becomes `tools.mcp__dev_docs__search`). Each method accepts one argument object.
 
-What a call resolves to depends on the tool:
+**Return values:**
+- **Tools with `outputSchema`:** Resolve to their structured object (including structured failures). `bash` resolves to `{ output, truncated, full_output_path?, exit_code, wall_time_seconds }` even for non-zero exit codes; `output` keeps up to 1 MiB (first and last 512 KiB around an omission marker if truncated, with full text in `full_output_path`).
+- **MCP tools:** Resolve to `CallToolResult` (`content`, `isError`, and typed `structuredContent`).
+- **`read`:** Resolves to text (including path headers and line numbers unless `:raw`), or for images to `{ type: "image", data, mimeType, note }` usable directly with `image()`.
+- **Other tools (`edit`, `write`, etc.):** Resolve to text.
 
-- Tools with an output schema resolve to a structured value. `bash` resolves to `{ output, truncated, full_output_path?, exit_code, wall_time_seconds }`, also for non-zero exit codes. Its `output` is not limited to what the model sees directly: it holds up to 1 MiB, and longer output keeps its first and last 512 KiB around an omission marker, with `truncated` set and the full output in `full_output_path`.
-- MCP tools resolve to their `CallToolResult`, including `isError` and `structuredContent`. Their declarations spell out `content`, `isError`, and `structuredContent` typed from the server's output schema.
-- `read` resolves to the returned text (including path headers and line numbers unless `:raw` is used), or for an image to an image block `{ type: "image", data, mimeType, note }` that `image()` shows. `data` is the base64 image the model would see and `note` the accompanying text, such as resize hints.
-- Other tools, such as `edit` and `write`, resolve to their text output.
-
-A call that fails, is blocked, or gets invalid arguments rejects with an `Error` that carries the tool's error text, except that a tool with an output schema also resolves on failure when it returned its structured value (for example `bash` with a non-zero exit code), so check its fields. Use `Promise.allSettled()` to keep the results of the calls that succeed. Reading a tool that does not exist throws an error that names the close matches, so `tools.Bash` suggests `tools.bash`; check for a tool with `"name" in tools`.
-
-The `codemode` description lists tools with their TypeScript declarations, grouped by namespace (for example one MCP server). Tools with `deferred` exposure are not listed, so the description stays the same while they register. Listed declarations share a budget of 3000 estimated tokens (`codemode.inlineBudget` in [settings](/settings#tools)). Scripts find the other tools with `searchTools()`, `describeTool()`, `describeNamespace()`, or by filtering `ALL_TOOLS`.
-
-While `codemode` is active, `codemode.mode` in [settings](/settings#tools) decides how the other tools are presented. With `on` (default) declared tools stay declared, and their descriptions say in one line how scripts call them and what the call resolves to. With `only` ordinary direct tools are hidden from the model and listed in the `codemode` description instead, so the model calls them through scripts; active model-only tools such as `ask_user_question` stay declared as top-level tools. Tool declarations in the `codemode` description, `describeTool()`, and `ALL_TOOLS` carry the tools' prompt guidelines, since the system prompt rules only cover declared tools.
+**Errors & discovery:**
+- Failed, blocked, or invalid calls reject with `Error` (except schema-backed tools that return a structured error value—check `exit_code` or `isError`). Use `Promise.allSettled()` for independent calls.
+- Accessing an unknown tool throws with close-match suggestions (for example `tools.Bash` suggests `tools.bash`). Check availability with `"name" in tools`.
+- Inline tool declarations share a `3000`-token budget (`codemode.inlineBudget` in [settings](/settings#tools)); deferred tools stay unlisted and are found via `searchTools()`, `describeTool()`, `describeNamespace()`, or `ALL_TOOLS`.
+- `codemode.mode` in [settings](/settings#tools) controls tool visibility: `"on"` (default) keeps direct tools declared alongside codemode; `"only"` hides ordinary direct tools so the model calls them through codemode while keeping active model-only tools (like `ask_user_question`) top-level. Declarations in `codemode`, `describeTool()`, and `ALL_TOOLS` carry each tool's prompt guidelines.
 
 ### Model-only tools
 
-Tools without script access, such as `ask_user_question`, are not in `tools` or `ALL_TOOLS`, and `searchTools()` never ranks them as matches. They cannot be called from inside a `codemode` script; when one is needed and available in the session, the model calls that separate top-level tool directly instead of trying to reach it through `codemode`, so a missing entry in `tools` does not mean the tool is unavailable. While such a tool is active, `searchTools()` and `describeTool()` answer its exact name, such as `describeTool("ask_user_question")`, with a hint to call it directly as a top-level tool, not from a script. The hint does not make the tool callable from scripts.
+Tools without script access (such as `ask_user_question`) are absent from `tools`, `ALL_TOOLS`, and `searchTools()` rankings. Call them as top-level tools instead. Querying their exact name with `searchTools()` or `describeTool()` returns a hint to call them directly (it does not make them script-callable).
 
-Some model-only tools let scripts use part of them. `tools.subagent({ agent, task })` or `tools.subagent({ tasks })` returns task IDs at admission. Use `status`, a bounded `wait`, or the parent session's completion notices to follow its children. The script's deadline cancels any in-progress wait, not the child; admitted children also keep running if the script returns or throws. Scripts can also pause, quit or resume this session's children and inspect agent definitions and the model catalog. See [Subagents from codemode scripts](/subagents#from-codemode-scripts).
-
-`intercom` is in `tools` with `list`, `status`, `pending`, and `send` to an exact target, each resolving to a structured value; its other actions, and sends to globs or `subagents:` targets, fail with a message to call the tool directly. See [Intercom from codemode scripts](/intercom/reference#from-codemode-scripts).
+Two tools expose a script-safe subset:
+- **`tools.subagent`:** Launches children (`{ agent, task }` or `{ tasks }`) and returns task IDs at admission; also supports `status`, bounded `wait`, `pause`, `quit`, `resume`, and agent/model inspection. A script timeout cancels `wait`, not the child; admitted children continue after a script returns or throws. See [Subagents from codemode scripts](/subagents#from-codemode-scripts).
+- **`tools.intercom`:** Supports `list`, `status`, `pending`, and `send` to an exact target (returning structured results). Other actions and glob/`subagents:` targets must be called directly. See [Intercom from codemode scripts](/intercom/reference#from-codemode-scripts).
 
 ## Store values
 
-`store(key, value)` keeps a JSON value under a string key for later `codemode` calls; storing `undefined` deletes the key. `load(key)` returns the value, or `undefined`. Writes are kept only when the script succeeds: each successful script that stores values appends a `codemode-store` custom entry to the session, so resumed sessions keep the values and each branch sees only the values written on its path.
+`store(key, value)` saves a JSON value for subsequent `codemode` calls; `store(key, undefined)` deletes it; `load(key)` reads it back (or `undefined`).
 
-The store is for small state such as IDs, cursors, or summaries. One value may have at most 262144 characters of JSON and all values together at most 1048576. Do not store image data; show images with `image()`, which also saves them to a temp file.
+- Persists only when the script succeeds by appending a `codemode-store` session entry, so values survive resume and stay isolated per session branch.
+- Size caps: 262,144 JSON characters per value, 1,048,576 characters total across all keys. Do not store images—emit them with `image()`, which writes a temp file automatically.
 
 ## Models
 
-`models` reaches the model catalog and runs non-LLM models with the session's credentials: classifiers, which answer typed questions about JSON state and, for some models, images, and image models, which generate images. Chat models are listed but cannot be run from scripts. Classifier models include [TypeSafe Jev](/providers#typesafe-jev), [OpenAI GPT-6 Luna](/models#use-classifier-models), and [local llama.cpp models](/llama-cpp); image models include OpenRouter's, such as `google/gemini-2.5-flash-image` and `black-forest-labs/flux.2-pro`, which use the same `OPENROUTER_API_KEY` or `/login` credential as its chat models, and OpenAI's GPT Image models under `openai-images`, such as `gpt-image-2.6-flare`, which reuse your [OpenAI API key](/providers#subscription-and-api-key-at-the-same-time). Neither kind appears in `/model`.
+`models` accesses the model catalog and calls non-LLM models using the session's credentials:
+- **Classifiers:** Answer typed questions about JSON state (and images when supported). Examples: [TypeSafe Jev](/providers#typesafe-jev), [OpenAI GPT-6 Luna](/models#use-classifier-models), and [local llama.cpp models](/llama-cpp).
+- **Image models:** Generate or edit images. Examples: OpenRouter (`google/gemini-2.5-flash-image`, `black-forest-labs/flux.2-pro`, reusing your OpenRouter credential) and OpenAI (`openai-images`, such as `gpt-image-2.6-flare`, reusing your [OpenAI API key](/providers#subscription-and-api-key-at-the-same-time)).
+
+Chat models are listed in the catalog but cannot be called from scripts. Neither classifiers nor image models appear in `/model`.
 
 ```ts
 type ModelType = "chat" | "image" | "classifier";
 
-/** A catalog entry. `provider` and `id` identify it; other fields depend on the type. */
 interface ModelInfo {
   type?: ModelType;
   provider: string;
@@ -90,46 +93,35 @@ interface ModelInfo {
 }
 
 declare const models: {
-  /** Every known model of a type, optionally for one provider. */
   getModelsOfType(type: ModelType, provider?: string): Promise<ModelInfo[]>;
-  /** Models of a type whose provider has working credentials. */
   getAvailableOfType(type: ModelType, provider?: string): Promise<ModelInfo[]>;
-  /** One catalog entry, or undefined. */
   getModelOfType(type: ModelType, provider: string, id: string): Promise<ModelInfo | undefined>;
-  /** Answer `context.questions` about `context.state`; answers are in `result.answers` by question ID. */
   classify(model: ModelInfo, context: ClassifierContext): Promise<ClassifierResult>;
-  /** Generate images from `context.input` text and image blocks; show `result.output` blocks with image(). Can take minutes. */
   generateImages(model: ModelInfo, context: ImagesContext, options?: ImagesOptions): Promise<ImagesResult>;
 };
 ```
 
-`classify()` and `generateImages()` use only the `provider` and `id` of `model`, so `{ provider, id }` works as well, and a script-supplied `baseUrl` or headers never receive the credentials. They do not throw on provider errors: check `stopReason` and `errorMessage`; `generateImages()` also sets `error` for a classified failure. A malformed model or context does throw, with the expected shape in the message; an unknown or mistyped model points to `models.getAvailableOfType()`. At most four such calls run at once per script; more calls wait for a free slot, so `Promise.all()` over many items is fine. Their usage is added to the `codemode` tool result and counts toward the session cost.
-
-Model IDs differ between providers. Use `models.getAvailableOfType(type)` to find the IDs that work with the current credentials.
+- Pass a `ModelInfo` or `{ provider, id }`; script-supplied `baseUrl` or headers are ignored so credentials cannot be redirected.
+- Provider errors do not throw—check `stopReason`, `errorMessage`, and (for images) `error`. Malformed arguments or unknown models do throw and point to `models.getAvailableOfType(type)`.
+- Up to 4 model calls run concurrently per script (extra calls queue, so `Promise.all()` is safe). Token usage and cost count toward the session total.
 
 ### Classify
 
 ```ts
 interface ClassifierContext {
-  /** The data to classify. */
   state: Record<string, unknown>;
   images?: { type: "image"; data: string; mimeType: string }[];
-  /** Questions by ID. One call answers all of them. */
   questions: Record<string, ClassifierQuestion>;
 }
 
 type ClassifierQuestion =
-  /** Pick one label. `criteria` maps each label to what it means. */
   | { type: "choice"; instructions: string; criteria: Record<string, string> }
-  /** Score on an ordered scale. `criteria` describes each level, lowest first. */
-  | { type: "score"; instructions: string; criteria: string[] }
-  /** Yes or no. */
+  | { type: "score"; instructions: string; criteria: string[] } // Lowest level first
   | { type: "bool"; instructions: string; criteria: { true: string; false: string } };
 
 interface ClassifierResult {
   provider: string;
   model: string;
-  /** Answers by question ID. */
   answers: Record<string, ClassifierAnswer>;
   usage?: ModelUsage;
   stopReason: "stop" | "error" | "aborted";
@@ -138,16 +130,13 @@ interface ClassifierResult {
 
 type ClassifierAnswer =
   | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
-  /** `score` is the expected level index, from 0 to `criteria.length - 1`. */
-  | { type: "score"; score: number; confidence: number }
-  /** Probability of `true`. */
+  | { type: "score"; score: number; confidence: number } // Expected index, 0..criteria.length - 1
   | { type: "bool"; probability: number };
 
-/** Token counts and cost in USD, when the service reports them. */
 type ModelUsage = { input: number; output: number; totalTokens: number; cost: { total: number } };
 ```
 
-Classify several items by calling `classify()` once per item. This script sorts feedback messages, for example ones a tool returned earlier in the script:
+Classify multiple items in parallel:
 
 ```js
 const jev = await models.getModelOfType("classifier", "typesafe", "jev-latest");
@@ -177,7 +166,7 @@ return results.map((result, i) =>
 );
 ```
 
-Classifiers whose `input` includes `"image"` can judge images alongside the state. `tools.read()` returns image blocks that `images` accepts. Text-only classifiers and APIs that cannot send images return an error result for nonempty `images`.
+When a classifier's `input` includes `"image"`, pass image blocks (such as those returned by `tools.read()`) in `images` (text-only models return an error result for non-empty `images`):
 
 ```js
 const luna = await models.getModelOfType("classifier", "openai-decisions", "gpt-6-luna");
@@ -200,11 +189,10 @@ return result.stopReason === "stop" ? result.answers : result.errorMessage;
 
 ```ts
 interface ImagesContext {
-  /** The prompt as text blocks, plus image blocks to edit or use as references. */
   input: (TextBlock | ImageBlock)[];
 }
 
-/** Request options. Other options, such as `apiKey`, `headers` or `fetch`, throw. Each is sent only when set. */
+// Unsupported options (such as `apiKey`, `headers`, or `fetch`) throw.
 interface ImagesOptions {
   size?: string;
   quality?: "low" | "medium" | "high" | "xhigh" | "max" | "auto";
@@ -215,7 +203,6 @@ interface ImagesOptions {
   frameCount?: number;
   frameDurationMs?: number;
   complexity?: "low" | "medium" | "high";
-  /** Optional. Leave it out unless you choose the model that writes the SVG; see below. */
   svg?: { model: string; reasoning?: { effort?: string } };
   moderation?: "auto" | "low";
   safetyIdentifier?: string;
@@ -224,27 +211,23 @@ interface ImagesOptions {
 interface ImagesResult {
   provider: string;
   model: string;
-  /** Generated images, and text blocks for models that also return text. */
   output: (TextBlock | ImageBlock)[];
   usage?: ModelUsage;
-  /** For SVG output: the model that wrote the SVG. */
   svgModel?: string;
   stopReason: "stop" | "error" | "aborted";
   errorMessage?: string;
-  /** A classified failure: `name`, a stable `code`, `retryable`, `hint` and safe `fields`. */
   error?: { name: string; code: string; message: string; hint?: string; retryable: boolean; fields: Record<string, unknown> };
 }
 
 type TextBlock = { type: "text"; text: string };
-/** `data` is base64. An image without a `role` is the base image (the first) or a reference. */
 type ImageBlock = { type: "image"; data: string; mimeType: string; role?: "markup" | "mask" };
 ```
 
-The options are those of OpenAI's GPT Image models under `openai-images`; OpenRouter image models ignore them. The first image without a `role` is the base image to edit and the others are references. An image with `role: "markup"` is a transparent PNG with annotations, sent as `markup` and applied to the first image, which it must match in size; one with `role: "mask"` is an alpha-channel mask for the first image. They cannot be combined. `outputFormat: "gif"` returns an animation (`frameCount` 2-16, `frameDurationMs` 20-2000) and `"svg"` returns SVG; both need a GPT Image 2.6 model and generation without images. A request that cannot succeed does not throw: before anything is sent it returns `stopReason: "error"` with `error.code` `invalid-option` and `error.fields.field` naming the option. `error.code` is also `moderation-blocked`, `user-error`, `quota-exceeded`, `rate-limited`, `server-error`, `timeout` or `api-error`; branch on it, and on `error.retryable`, not on the message. See [Image generation](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels) for each code.
-
-SVG output needs no other option: `{ outputFormat: "svg" }` works on every account. Some accounts must name the model that writes the SVG. When the API answers that `svg.model` is required and the call set no `svg`, Atomic retries once with `gpt-6.1-sol` and `result.svgModel` reports the model used. OpenAI's API reference lists no authoring models and no default, so `gpt-6.1-sol` is a value that worked in testing, not a documented default. Pass `svg: { model, reasoning }` to choose another model; an `svg` you pass is always sent as given and never retried or replaced. If the API rejects the retry's `svg` as unsupported, Atomic retries once more without it. A rejected `svg.model` or `svg` returns `error.code` `invalid-option` with `error.fields.field` `svg.model` or `svg`, and `error.fields.reason` `required-by-api`, `rejected-by-api` or `unsupported-by-api`. SVG authoring takes tens of seconds (plain requests took 12 to 46 seconds in testing, and OpenAI says complex prompts can take up to 2 minutes), and Atomic sets no request timeout shorter than 10 minutes, so a script that sets `timeout_ms` should allow at least 180000.
-
-Show generated images with `image(block)`. Do not print `data` with `text()`, `console`, or `return`: it is large and the model cannot read it as text. A script that generates images without showing any gets a note saying so. `image()` accepts PNG, JPEG, GIF and WebP, so show an animated GIF with `image(block)`. It does not accept SVG: Atomic saves each SVG that `models.generateImages()` returns to a private temp `.svg` file and names its path in the result, as `[SVG saved to <path> (image/svg+xml, <size>)]`. An SVG block (`image/svg+xml`) holds XML text, which a script can read with `atob(block.data)`. `image()` also saves each image to a private temp file and puts its path in the result, so a later turn can copy or move the file.
+- **Provider options:** `ImagesOptions` targets OpenAI's `openai-images` models (OpenRouter models ignore them). The first untagged image is the base image to edit; additional untagged images are references. `role: "markup"` is a same-size transparent PNG overlay; `role: "mask"` is an alpha mask (mutually exclusive).
+- **GIF & SVG:** `outputFormat: "gif"` (`frameCount` `2`–`16`, `frameDurationMs` `20`–`2000`) and `"svg"` require a GPT Image 2.6 model with text-only input.
+- **SVG authoring model:** `{ outputFormat: "svg" }` works without extra options. If an account requires `svg.model` and you omitted `svg`, Atomic retries once with `gpt-6.1-sol` (reported in `result.svgModel`), and retries once without `svg` if rejected as unsupported. An explicit `svg: { model, reasoning }` is sent verbatim without automatic fallback. Allow at least `timeout_ms: 180000` for SVG requests (Atomic's own request timeout is at least 10 minutes).
+- **Structured errors:** Invalid options fail locally with `stopReason: "error"`, `error.code: "invalid-option"`, and `error.fields.field` (plus `error.fields.reason`: `required-by-api`, `rejected-by-api`, or `unsupported-by-api` for SVG). Other codes: `moderation-blocked`, `user-error`, `quota-exceeded`, `rate-limited`, `server-error`, `timeout`, `api-error`. Branch on `error.code` and `error.retryable` (see [Image generation](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels)).
+- **Displaying & saving output:** Call `image(block)` for PNG, JPEG, GIF, and WebP (never print base64 `data` via `text()`/`return`; scripts that generate images without showing any receive a note). `image()` also saves each image to a private temp file and prints its path. For SVG (`image/svg+xml`), Atomic automatically saves a private temp `.svg` file (`[SVG saved to <path> (image/svg+xml, <size>)]`), and scripts can inspect XML text via `atob(block.data)`.
 
 ```js
 // @options: {"timeout_ms": 300000}
@@ -259,7 +242,7 @@ for (const block of result.output) {
 }
 ```
 
-A plain SVG request, which Atomic recovers when the account needs `svg.model`, and a four-frame GIF:
+SVG and animated GIF with GPT Image 2.6:
 
 ```js
 // @options: {"timeout_ms": 180000}
@@ -268,6 +251,7 @@ const logo = await models.generateImages(flare, {
   input: [{ type: "text", text: "A flat red paper lantern icon" }],
 }, { outputFormat: "svg" });
 if (logo.stopReason !== "stop") return logo.error ?? logo.errorMessage;
+
 const gif = await models.generateImages(flare, {
   input: [{ type: "text", text: "A paper lantern swinging gently, flat vector style" }],
 }, { outputFormat: "gif", frameCount: 4, frameDurationMs: 200, size: "512x512" });
@@ -276,12 +260,11 @@ for (const block of gif.output) if (block.type === "image") image(block);
 return { svgModel: logo.svgModel, svg: logo.output.map((block) => block.mimeType) };
 ```
 
-Extensions call classifiers and image models through `ctx.modelRegistry.classify()` and `ctx.modelRegistry.generateImages()`, without codemode.
+Extensions can call `ctx.modelRegistry.classify()` and `ctx.modelRegistry.generateImages()` directly without codemode.
 
 ## Limits
 
-- A script's VM has 256 MB of memory. Running out throws `InternalError: out of memory`; filter or aggregate large data instead of accumulating it.
-- Stopping a script or reaching its deadline ends the call promptly. In the standalone `atomic` binary (Bun), a built-in that does not check for interruption, such as a long string search, can keep computing in its worker until it returns.
-- At most two codemode workers may be alive across all sessions in one Atomic process; `ATOMIC_CODEMODE_MAX_WORKERS` changes the limit. A cancelled worker occupies its slot until it exits. At capacity, new scripts wait for a free worker in arrival order. A script that gets no worker within 60 seconds, or before its `timeout_ms`, fails without running.
-- A script that waits on a promise that can never settle (no tool call pending) fails immediately, since there are no timers.
-- Scripts cannot start other `codemode` scripts.
+- **Memory:** 256 MiB per script VM (`InternalError: out of memory`); filter or aggregate data instead of buffering everything.
+- **Cancellation:** Stopping a script or hitting `timeout_ms` cancels the call promptly. In the standalone Bun binary, non-interruptible native built-ins (such as a long regex/string search) finish before the worker exits.
+- **Worker concurrency:** Default max `2` live workers per Atomic process (override with `ATOMIC_CODEMODE_MAX_WORKERS`). Cancelled workers occupy a slot until exit. Additional scripts queue in FIFO order and fail if no slot opens within 60 seconds (or `timeout_ms`).
+- **Deadlocks & nesting:** Waiting on a promise with no pending tool call fails immediately (there are no timers). Scripts cannot invoke `codemode` recursively.
