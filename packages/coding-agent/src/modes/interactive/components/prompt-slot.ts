@@ -49,6 +49,8 @@ type PromptSlotState =
 	| { readonly kind: "live" }
 	| {
 			readonly kind: "held";
+			/** Which hold this is. */
+			readonly token: object;
 			/** The rows the slot drew last, at `width`, with their key hints made plain text: they run nothing. */
 			readonly rows: readonly string[];
 			readonly width: number;
@@ -99,13 +101,14 @@ export class PromptSlot extends Container {
 		const drawn = this.drawn;
 		if (!drawn) return SETTLED;
 		const generation = this.generation;
-		this.beginHold(drawn.rows, drawn.width, generation);
-		const state = this.state;
+		const token = this.beginHold(drawn.rows, drawn.width, generation).token;
 		return {
-			// A command that ends with nothing mounted shows the slot as it is; a mounted view decides for itself.
+			// A command that ends with nothing mounted shows the slot as it is; a mounted view decides for itself. The
+			// handle keeps only the hold's token, not its rows: a command can keep it until its view closes.
 			settle: () => {
-				if (this.state === state && this.state.kind === "held" && this.generation === generation) {
-					this.state.end();
+				const state = this.state;
+				if (state.kind === "held" && state.token === token && this.generation === generation) {
+					state.end();
 					this.ui.requestRender();
 				}
 			},
@@ -126,7 +129,7 @@ export class PromptSlot extends Container {
 			this.children.some(awaitsFirstContent)
 		) {
 			// A view mounted with nothing to draw yet, as an engine panel before its first frame: the rows stay.
-			rows = this.beginHold(this.drawn.rows, width, this.drawn.generation);
+			rows = this.beginHold(this.drawn.rows, width, this.drawn.generation).rows;
 		}
 		this.showingHeldRows = rows !== live;
 		this.drawn = { width, rows, generation: this.generation };
@@ -148,8 +151,11 @@ export class PromptSlot extends Container {
 		return this.generation === state.generation || this.children.some(awaitsFirstContent);
 	}
 
-	/** Answers the rows it holds. */
-	private beginHold(rows: readonly string[], width: number, generation: number): readonly string[] {
+	private beginHold(
+		rows: readonly string[],
+		width: number,
+		generation: number,
+	): Extract<PromptSlotState, { kind: "held" }> {
 		if (this.state.kind === "held") this.state.end();
 		let ended = false;
 		const end = () => {
@@ -166,12 +172,13 @@ export class PromptSlot extends Container {
 		timer.unref?.();
 		const held = {
 			kind: "held",
+			token: {},
 			rows: rows.map(stripHintMarkers),
 			width,
 			generation,
 			end,
 		} as const;
 		this.state = held;
-		return held.rows;
+		return held;
 	}
 }
