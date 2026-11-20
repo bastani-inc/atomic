@@ -502,7 +502,7 @@ export function renderAgentPanelRows(
 	else if (modelColumn !== undefined) {
 		const showing = modelColumn.paint(
 			shown.map((row, i) => [row.id, panelModelReport(row, models[i]!)] as const),
-			rows.map((row) => row.id),
+			rows,
 		);
 		for (let i = 0; i < count; i++) if (!showing.has(shown[i]!.id)) models[i] = "";
 	}

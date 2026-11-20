@@ -2026,7 +2026,7 @@ export class TaskInspector implements Component {
 				paintedRows.map(
 					(row) => [row.id, rowModelReport(row, reported.get(row.id) ?? NO_MODEL, this.store)] as const,
 				),
-				all.map((row) => row.id),
+				all,
 			);
 			models = new Map(
 				paintedRows.map((row) => [row.id, shown.has(row.id) ? (reported.get(row.id) ?? NO_MODEL) : NO_MODEL]),

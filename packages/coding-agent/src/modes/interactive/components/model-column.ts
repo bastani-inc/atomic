@@ -39,19 +39,20 @@ const UNKNOWN: ModelCell = { kind: "unknown" };
 const SHOWN: ModelCell = { kind: "shown" };
 
 /**
- * The cell after a paint sees `report` at `now`. `cell` is undefined for a row the view has not painted yet: on the
- * view's first paint (`opened` false) a known model shows at once, as it always did; a row that appears in a view
- * already `opened` is new, and its model waits for its level like one that becomes known.
+ * The cell after a paint sees `report` at `now`. `cell` is undefined for a row the view has not painted yet. A row
+ * the view already listed, as on its first paint or when it scrolls into view, shows a known model at once, as it
+ * always did; a row `added` to the list since the view last painted is new, and its model waits for its level like
+ * one that becomes known.
  */
 export function nextModelCell(
 	cell: ModelCell | undefined,
 	report: ModelCellReport,
 	now: number,
-	opened: boolean,
+	added: boolean,
 ): ModelCell {
 	const model = report.model;
 	if (cell === undefined) {
-		if (!opened) return model === undefined ? UNKNOWN : SHOWN;
+		if (!added) return model === undefined ? UNKNOWN : SHOWN;
 		cell = UNKNOWN;
 	}
 	switch (cell.kind) {
@@ -71,9 +72,14 @@ export function nextModelCell(
 
 /** One open view's model cells and column width. */
 export class ModelColumn {
-	private cells = new Map<string, ModelCell>();
-	/** The view painted its rows since it opened, or since it was too narrow for the column. */
-	private opened = false;
+	private readonly cells = new Map<string, ModelCell>();
+	/** The deadlines of the waiting cells, by row id: few rows wait at once. */
+	private readonly waiting = new Map<string, number>();
+	/**
+	 * The list the view last painted from; undefined before its first paint, and after it was too narrow for the
+	 * column. It is read only when it changes, and then only as far as a paint needs it.
+	 */
+	private roster: readonly { readonly id: string }[] | undefined;
 	private heldWidth = -1;
 	/** The widest column this view painted at `heldWidth`, and the one it painted last. */
 	private held = 0;
@@ -89,37 +95,60 @@ export class ModelColumn {
 
 	/**
 	 * Moves the cell of each row painted now on by what it reports and returns the ids of the rows that show their
-	 * model. Rows `listed` but not painted, such as rows scrolled out of view, keep their cells; other rows are forgotten.
+	 * model. `listed` is every row of the view, painted or not: rows scrolled out of view keep their cells. Only when it
+	 * is another list than last time is any of it read: the last list, to tell a row added since from one scrolled into
+	 * view, and the new one, to forget the kept cells of rows no longer in it. A paint otherwise costs what its painted
+	 * rows cost.
 	 */
 	paint(
 		reports: Iterable<readonly [id: string, report: ModelCellReport]>,
-		listed: Iterable<string> = [],
+		listed: readonly { readonly id: string }[],
 	): ReadonlySet<string> {
 		const now = performance.now();
-		const next = new Map<string, ModelCell>();
+		const previous = this.roster;
+		let previousIds: Set<string> | undefined;
+		const added = (id: string): boolean => {
+			if (previous === undefined || previous === listed) return false;
+			if (previousIds === undefined) {
+				previousIds = new Set();
+				for (const row of previous) previousIds.add(row.id);
+			}
+			return !previousIds.has(id);
+		};
+		const painted = new Set<string>();
 		const shown = new Set<string>();
 		for (const [id, report] of reports) {
-			const cell = nextModelCell(this.cells.get(id), report, now, this.opened);
-			next.set(id, cell);
+			const before = this.cells.get(id);
+			const cell = nextModelCell(before, report, now, before === undefined && added(id));
+			painted.add(id);
+			this.cells.set(id, cell);
 			if (cell.kind === "shown") shown.add(id);
+			if (cell.kind === "waiting") this.waiting.set(id, cell.since + MODEL_LEVEL_WAIT_MS);
+			else this.waiting.delete(id);
 		}
-		for (const id of listed) {
-			const kept = next.has(id) ? undefined : this.cells.get(id);
-			if (kept !== undefined) next.set(id, kept);
+		if (listed !== previous) {
+			this.roster = listed;
+			if (this.cells.size > painted.size) {
+				const ids = new Set<string>();
+				for (const row of listed) ids.add(row.id);
+				for (const id of this.cells.keys()) {
+					if (painted.has(id) || ids.has(id)) continue;
+					this.cells.delete(id);
+					this.waiting.delete(id);
+				}
+			}
 		}
 		let earliest = Number.POSITIVE_INFINITY;
-		for (const cell of next.values())
-			if (cell.kind === "waiting") earliest = Math.min(earliest, cell.since + MODEL_LEVEL_WAIT_MS);
-		this.cells = next;
-		this.opened = true;
+		for (const due of this.waiting.values()) earliest = Math.min(earliest, due);
 		this.arm(earliest);
 		return shown;
 	}
 
 	/** Forgets every cell, as when the view is too narrow for the column: its next paint is like a first one. */
 	forget(): void {
-		this.cells = new Map();
-		this.opened = false;
+		this.cells.clear();
+		this.waiting.clear();
+		this.roster = undefined;
 		this.disarm();
 	}
 
@@ -184,11 +213,10 @@ export class ModelColumn {
 		this.timerAt = Number.POSITIVE_INFINITY;
 		let earliest = Number.POSITIVE_INFINITY;
 		let expired = false;
-		for (const [id, cell] of this.cells) {
-			if (cell.kind !== "waiting") continue;
-			const due = cell.since + MODEL_LEVEL_WAIT_MS;
+		for (const [id, due] of this.waiting) {
 			if (due <= deadline) {
 				this.cells.set(id, SHOWN);
+				this.waiting.delete(id);
 				expired = true;
 			} else earliest = Math.min(earliest, due);
 		}

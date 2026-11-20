@@ -582,3 +582,106 @@ test("no model column appears while a waiting row's model is too wide for any co
 		inspector.dispose();
 	}
 });
+
+test("an open panel's model column reads only the rows it draws, however many rows the list has", () => {
+	const reads = new Array<number>(4096).fill(0);
+	const rows = Array.from({ length: 4096 }, (_, index): AgentPanelRow => {
+		const row = {
+			kind: "agent",
+			state: "running",
+			name: "worker",
+			task: "read rows",
+			model: "faux/m",
+			thinking: "low",
+			elapsedMs: 1000,
+		} as const;
+		return Object.defineProperty({ ...row }, "id", {
+			enumerable: true,
+			get() {
+				reads[index]!++;
+				return `r${index}`;
+			},
+		}) as AgentPanelRow;
+	});
+	const column = new ModelColumn();
+	/** The reads of rows outside the drawn window `[start, start + 8)` during one draw. */
+	const hiddenReads = (list: readonly AgentPanelRow[], scroll: number) => {
+		reads.fill(0);
+		renderAgentPanelRows(list, 120, plainStyle, {
+			selectedId: `r${scroll}`,
+			scroll,
+			showMain: true,
+			modelColumn: column,
+		});
+		return reads.reduce((sum, count, index) => (index >= scroll && index < scroll + 8 ? sum : sum + count), 0);
+	};
+	try {
+		assert.equal(hiddenReads(rows, 0), 0, "first draw");
+		assert.equal(hiddenReads(rows, 0), 0, "unchanged draw");
+		assert.equal(hiddenReads([...rows], 0), 0, "a new list, nothing remembered off screen");
+		const scrolled = [...rows];
+		hiddenReads(scrolled, 8);
+		assert.equal(hiddenReads(scrolled, 8), 0, "unchanged draw after scrolling");
+	} finally {
+		column.dispose();
+	}
+});
+
+test("rows already listed show their known models at once when they scroll into view, in the panel and in /tasks", async () => {
+	// Models known, levels not reported, unknown to any registry: shown as they are, as when the list opened.
+	const items = Array.from(
+		{ length: 16 },
+		(_, index): TaskBoardItem => ({
+			id: `r${index}`,
+			kind: "agent",
+			state: "running",
+			name: "worker",
+			task: `work ${String(index).padStart(2, "0")}`,
+			model: `faux/m${index % 3}`,
+		}),
+	);
+	const column = new ModelColumn();
+	const panel = (scroll: number) =>
+		renderAgentPanelRows(items, 120, plainStyle, {
+			selectedId: `r${scroll}`,
+			scroll,
+			showMain: true,
+			modelColumn: column,
+		})
+			.map((line) => stripVTControlCharacters(line))
+			.filter((line) => /work \d\d/.test(line));
+	const fixture = taskFixture();
+	fixtures.push(fixture);
+	const inspector = new TaskInspector(
+		fixture.store,
+		() => {},
+		() => {},
+	);
+	inspector.setBoardSource({ items: () => items, subscribe: () => () => {} });
+	inspector.open();
+	const board = () =>
+		inspector
+			.renderViewport(120, 12)
+			.map((line) => stripVTControlCharacters(line))
+			.filter((line) => /work \d\d/.test(line));
+	try {
+		assert.equal(panel(0).filter((line) => /faux\/m\d/.test(line)).length, 8);
+		const page2 = panel(8);
+		assert.equal(page2.filter((line) => /faux\/m\d/.test(line)).length, 8, page2.join("\n"));
+		const first = board();
+		assert.ok(first.length > 0 && first.every((line) => /faux\/m\d/.test(line)), first.join("\n"));
+		for (let press = 0; press < 15; press++) inspector.handleInput("\u001b[B");
+		const scrolled = board();
+		assert.ok(
+			scrolled.some((line) => line.includes("work 15")),
+			scrolled.join("\n"),
+		);
+		assert.ok(
+			scrolled.every((line) => /faux\/m\d/.test(line)),
+			scrolled.join("\n"),
+		);
+	} finally {
+		column.dispose();
+		inspector.dispose();
+	}
+});
