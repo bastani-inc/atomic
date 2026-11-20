@@ -92,27 +92,63 @@ async function hungBrokerProfile() {
 	};
 }
 
+/**
+ * Run a session once, unmeasured, in the compile cache the measured run then uses: start it, send its first prompt
+ * and quit. It does not join Intercom, so it starts no broker.
+ */
+async function warmCompileCache(args: readonly string[], cwd: string, env: Record<string, string>): Promise<void> {
+	const warmup = startPtyProgram({
+		executable: process.execPath,
+		args,
+		cwd,
+		env: { ...env, ATOMIC_INTERCOM_JOIN_AT_STARTUP: "0" },
+		timeoutMs: 3 * CLI_START_TIMEOUT_MS,
+		cols: 160,
+		rows: 40,
+	});
+	try {
+		await warmup.waitForScreen((s) => s.includes("❯"), CLI_START_TIMEOUT_MS, "the warm-up prompt");
+		warmup.write("hello");
+		await warmup.waitForScreen((s) => s.includes("❯ hello"), CLI_START_TIMEOUT_MS, "the warm-up's first prompt");
+		warmup.write("\r");
+		await warmup.waitForScreen((s) => s.includes("B-ACK"), CLI_START_TIMEOUT_MS, "the warm-up's first reply");
+		warmup.write("/quit");
+		await warmup.waitForScreen((s) => s.includes("❯ /quit"), CLI_START_TIMEOUT_MS, "the warm-up's quit command");
+		warmup.write("\r");
+		assert.equal((await warmup.exited).exitCode, 0);
+	} finally {
+		warmup.kill();
+	}
+}
+
 describe("quitting a session whose startup join is waiting for a broker that never listens", () => {
 	for (const host of ["isolated", "in-process"] as const) {
 		test(
 			`exits at once and leaves no broker running (${host} terminal)`,
 			async () => {
 				const profile = await hungBrokerProfile();
+				const args = [
+					CLI,
+					"--offline",
+					"--provider",
+					"scripted",
+					"--model",
+					"local",
+					host === "isolated" ? "--approve" : "--no-approve",
+				];
+				// Each session has a compile cache of its own. The isolated terminal's engine starts with it cold, as on
+				// the first run after an install, when its runtime would spend seconds writing the cache on exit
+				// (#6075). An in-process terminal writing its whole cache on exit takes seconds too, so it starts warm.
+				const env = { ...profile.env, NODE_COMPILE_CACHE: profile.compileCache };
+				if (host === "in-process") {
+					await warmCompileCache(args, profile.cwd, env);
+					assert.equal(profile.brokerPid(), undefined, "the warm-up started no broker");
+				}
 				const session = startPtyProgram({
 					executable: process.execPath,
-					args: [
-						CLI,
-						"--offline",
-						"--provider",
-						"scripted",
-						"--model",
-						"local",
-						host === "isolated" ? "--approve" : "--no-approve",
-					],
+					args,
 					cwd: profile.cwd,
-					// The isolated terminal's engine starts from a cold compile cache of its own, as on the first run
-					// after an install, when its runtime would spend seconds writing the cache on exit (#6075).
-					env: host === "isolated" ? { ...profile.env, NODE_COMPILE_CACHE: profile.compileCache } : profile.env,
+					env,
 					timeoutMs: 3 * CLI_START_TIMEOUT_MS,
 					cols: 160,
 					rows: 40,
