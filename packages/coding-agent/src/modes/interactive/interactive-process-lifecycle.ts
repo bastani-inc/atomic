@@ -2,18 +2,12 @@ import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
 import { terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
-import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { APP_TITLE, chalk, killTrackedDetachedChildren } from "./interactive-mode-deps.ts";
 import { formatCrashExtensionHint, formatResumeCommand, isDeadTerminalError } from "./interactive-mode-helpers.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
-import {
-	handOffCompactionQueue,
-	settleSubmission,
-	showQueueRestoreFailure,
-	showSubmissionAsQueued,
-} from "./interactive-queueing.ts";
+import { handOffCompactionQueue, mainSteering, showQueueRestoreFailure } from "./interactive-queueing.ts";
 import { chatHistoryBuilt } from "./interactive-startup-chat-container.ts";
 import { isWindowsSubshellActive, openWindowsSubshell } from "./interactive-windows-subshell.ts";
 
@@ -324,32 +318,21 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 	if (this.session.isStreaming) {
 		this.editor.addToHistory?.(text);
 		this.editor.setText("");
-		// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
-		const shownAsQueued = this.isExtensionCommand(text) ? undefined : showSubmissionAsQueued(this, text, "followUp");
-		const settle = () => {
-			if (shownAsQueued) settleSubmission(this, shownAsQueued);
-		};
-		let accepted = false;
-		try {
-			await this.session.prompt(text, {
-				streamingBehavior: "followUp",
-				preflightResult: (success) => {
-					accepted = success;
-					settle();
-				},
-			});
-		} catch (error) {
-			settle();
-			if (accepted) throw error;
-			if (isRpcRequestAcceptedFailure(error)) {
-				this.showError(error.message);
-				return;
-			}
-			// A refused follow-up goes back to the editor with the reason, as a refused steering message does (#4696).
-			restoreRefusedSubmission(this, error, rawText);
+		const submitted = await mainSteering(this).submit(text, "followUp", {
+			route: "queue",
+			// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
+			showAsQueued: !this.isExtensionCommand(text),
+		});
+		if (submitted.kind === "failed") throw submitted.error;
+		if (submitted.kind === "lost") {
+			this.showError(submitted.error.message);
 			return;
 		}
-		settle();
+		if (submitted.kind === "refused") {
+			// A refused follow-up goes back to the editor with the reason, as a refused steering message does (#4696).
+			restoreRefusedSubmission(this, submitted.error, rawText);
+			return;
+		}
 		this.updatePendingMessagesDisplay();
 		this.ui.requestRender();
 	}

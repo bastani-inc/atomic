@@ -27,32 +27,26 @@ export function queuedMessagesHint(dequeueKey: string): string {
 
 /**
  * The queued messages of one chat, drawn above its prompt: a blank line, one dim row per message cut to the width,
- * and the hint for the key that edits them. Draws nothing while nothing is queued.
+ * and the hint for the key that edits them. Draws nothing while nothing is queued. Rows are styled when the view is
+ * built, so a chat rebuilds the view when its queue, key or theme changes.
  */
 export class QueuedMessagesView implements Component {
-	private readonly rows: readonly QueuedMessageRow[];
-	private readonly dequeueKey: string;
-	private readonly dim: (text: string) => string;
+	private readonly lines: readonly TruncatedText[];
 
 	constructor(rows: readonly QueuedMessageRow[], dequeueKey: string, dim: (text: string) => string) {
-		this.rows = rows;
-		this.dequeueKey = dequeueKey;
-		this.dim = dim;
+		this.lines =
+			rows.length === 0
+				? []
+				: [
+						...rows.map((row) => new TruncatedText(dim(`${queuedMessageLabel(row.lane)}: ${row.text}`), 1, 0)),
+						new TruncatedText(dim(queuedMessagesHint(dequeueKey)), 1, 0),
+					];
 	}
 
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		if (this.rows.length === 0) return [];
-		const lines = new Spacer(1).render(width);
-		for (const row of this.rows) {
-			lines.push(...line(this.dim(`${queuedMessageLabel(row.lane)}: ${row.text}`), width));
-		}
-		lines.push(...line(this.dim(queuedMessagesHint(this.dequeueKey)), width));
-		return lines;
+		if (this.lines.length === 0) return [];
+		return [...new Spacer(1).render(width), ...this.lines.flatMap((line) => line.render(width))];
 	}
-}
-
-function line(text: string, width: number): string[] {
-	return new TruncatedText(text, 1, 0).render(width);
 }
