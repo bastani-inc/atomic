@@ -17,12 +17,57 @@ Add an app manifest to `package.json` or use conventional directories. The manif
     "extensions": ["./extensions"],
     "skills": ["./skills"],
     "prompts": ["./prompts"],
-    "themes": ["./themes"]
+    "themes": ["./themes"],
+    "agents": ["./agents"]
   }
 }
 ```
 
 Paths are relative to the package root. Arrays support glob patterns and `!exclusions`.
+
+### Subagents
+
+A package can ship [custom subagents](/subagents/authoring) with `agents`: a list of agent `.md` files or directories, relative to the package root. Directories are searched recursively for `.md` files. Agents are only read from the manifest, never from a convention directory.
+
+Use package agents for named roles that need fixed settings: a model and fallback chain with their thinking levels, an exact tool list, and the MCP servers the role may use. A skill in the same package can then launch them by name.
+
+```json
+{
+  "name": "@acme/review-kit",
+  "keywords": ["atomic-package"],
+  "atomic": {
+    "skills": ["./skills"],
+    "agents": ["./agents"],
+    "mcpServers": {
+      "acme-search": { "url": "https://mcp.acme.dev", "headers": { "Authorization": "Bearer ${ACME_TOKEN}" } }
+    }
+  }
+}
+```
+
+`agents/reviewer.md`:
+
+```markdown
+---
+name: reviewer
+description: Review a diff for correctness and security regressions without editing files
+model: anthropic/claude-sonnet-4:high
+fallbackModels: openai/gpt-5:medium, anthropic/claude-haiku-4-5:low
+tools: read, search, bash, mcp:acme-search
+---
+
+Review the change you are given without editing files. Cite each issue with file:line evidence and stop once the diff and its call paths are covered.
+```
+
+- **Name.** A package agent runs as `<namespace>.<name>`. The namespace is the package's `name`, lowercased, with an npm scope turned into a dotted prefix, so this agent is `acme.review-kit.reviewer`. A package without a `name` uses its directory name. A `package:` field in the agent's frontmatter is ignored, and an agent whose `name` contains a dot is not loaded.
+- **Pins.** Put a [reasoning level](/subagents/reference#reasoning-levels) on `model` and on each `fallbackModels` entry. `tools` is the exact tool list; `mcp:<server>` adds all of a server's tools and `mcp:<server>/<tool>` adds one. Ship the server itself with [`mcpServers`](#mcp-servers).
+- **Launching.** From codemode, `await tools.subagent({ agent: "acme.review-kit.reviewer", task })`. Leave out `model` on the call to keep the agent's model.
+- **Overrides.** A user or project agent with the same full name replaces the package's agent. For example, `~/.atomic/agent/agents/reviewer.md` with `name: reviewer` and `package: acme.review-kit` overrides the agent above. Builtin agent names contain no dot, so package agents never replace builtins.
+- **Trust.** Agents from a project-installed package are offered only in a trusted project. Agents from a package passed with `-e` are available for that run.
+- **Updates.** Run `/reload` after installing, updating, or removing a package. After `atomic remove`, its agents disappear on `/reload` or in the next session. A running subagent keeps the definition it started with.
+- **Filtering.** Narrow which agents load with an `agents` entry in the package's [settings filter](/packages/reference#package-filtering). `atomic config` does not list agents.
+
+`subagent({ action: "list" })`, `get`, and `/agents` show the package each agent comes from. `update` and `delete` refuse to change a package agent; edit the package or override the agent instead.
 
 ### MCP Servers
 
@@ -97,6 +142,8 @@ If no app manifest (`atomic`, or legacy `pi`) is present, Atomic auto-discovers 
 - `skills/` recursively finds `SKILL.md` folders and loads top-level `.md` files as skills
 - `prompts/` loads `.md` files
 - `themes/` loads `.json` files
+
+Subagents, MCP servers, and storage adapters are only read from the manifest.
 
 For reusable procedures, ship a [skill](/skills). Existing package workflow modules are never imported or executed. Ask the agent to [convert one to a skill](/orchestration/migrating-workflows). It locates the file through the older `workflows` or `workflow` manifest entry or directory. A project-installed package yields a project skill and is available only in a trusted project. Globally installed packages yield global skills. Conversion leaves the package untouched.
 

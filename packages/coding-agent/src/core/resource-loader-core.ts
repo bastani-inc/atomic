@@ -22,6 +22,7 @@ import { loadProjectTrustExtensions, reloadDefaultResourceLoader } from "./resou
 import type {
 	DefaultResourceLoaderInheritanceSnapshot,
 	DefaultResourceLoaderOptions,
+	PackageAgentFile,
 	ResourceExtensionPaths,
 	ResourceLoader,
 	ResourceLoaderReloadOptions,
@@ -85,6 +86,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private appendSystemPrompt: string[];
 	private appendSystemPromptSourcePaths: string[];
 	private legacyWorkflowFiles?: LegacyWorkflowFiles;
+	private packageAgents: readonly PackageAgentFile[];
 	private mcpServerContributions: McpServerContribution[];
 	private trustedBorrowedProjectLocalSources?: Set<string>;
 	private lastSkillPaths: string[];
@@ -174,6 +176,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.agentsFiles = [];
 		this.appendSystemPrompt = [];
 		this.appendSystemPromptSourcePaths = [];
+		this.packageAgents = [];
 		this.mcpServerContributions = [];
 		this.trustedBorrowedProjectLocalSources =
 			inheritanceSnapshot?.trustedBorrowedProjectLocalSources === undefined
@@ -236,6 +239,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getLegacyWorkflowFiles(): LegacyWorkflowFiles | undefined {
 		return this.legacyWorkflowFiles;
+	}
+
+	/** Enabled subagent definitions from package manifests' `agents` field, discovered by the last reload. */
+	getPackageAgents(): readonly PackageAgentFile[] {
+		return this.packageAgents;
 	}
 
 	/** Enabled package-manifest MCP servers discovered by the last reload. */
@@ -437,6 +445,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.appendSystemPrompt = candidate.appendSystemPrompt;
 		this.appendSystemPromptSourcePaths = candidate.appendSystemPromptSourcePaths;
 		this.legacyWorkflowFiles = candidate.legacyWorkflowFiles;
+		this.packageAgents = candidate.packageAgents;
 		this.mcpServerContributions = candidate.mcpServerContributions;
 		this.trustedBorrowedProjectLocalSources = candidate.trustedBorrowedProjectLocalSources;
 		this.lastSkillPaths = candidate.lastSkillPaths;

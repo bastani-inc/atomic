@@ -29,6 +29,7 @@ export function createAccumulator(): ResourceAccumulator {
 		prompts: new Map(),
 		themes: new Map(),
 		legacyWorkflowFiles: new Map(),
+		agents: new Map(),
 		mcpServers: new Map(),
 	};
 }
@@ -52,12 +53,13 @@ export async function toResolvedPaths(accumulator: ResourceAccumulator): Promise
 		});
 	};
 
-	const [extensions, skills, prompts, themes, legacyWorkflowFiles] = await Promise.all([
+	const [extensions, skills, prompts, themes, legacyWorkflowFiles, agents] = await Promise.all([
 		mapToResolved(accumulator.extensions),
 		mapToResolved(accumulator.skills),
 		mapToResolved(accumulator.prompts),
 		mapToResolved(accumulator.themes),
 		mapToResolved(accumulator.legacyWorkflowFiles),
+		mapToResolved(accumulator.agents),
 	]);
 	return {
 		extensions,
@@ -65,6 +67,7 @@ export async function toResolvedPaths(accumulator: ResourceAccumulator): Promise
 		prompts,
 		themes,
 		legacyWorkflowFiles,
+		agents,
 		mcpServers: [...accumulator.mcpServers.values()],
 	};
 }

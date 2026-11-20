@@ -63,6 +63,7 @@ export interface ExtensionContextSource {
 	getDecisionModel?(): string;
 	getHttpIdleTimeoutMs?(): number;
 	getSkillCatalog?(): SkillCatalog;
+	getPackageAgents?(): readonly import("../resource-loader-types.ts").PackageAgentFile[];
 	getAgentTaskHost?(): import("../tasks/agent-adapter.js").AgentTaskHost;
 }
 
@@ -376,6 +377,14 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 					getSkillCatalog: () => {
 						source.assertActive();
 						return source.getSkillCatalog!();
+					},
+				}
+			: {}),
+		...(source.getPackageAgents
+			? {
+					getPackageAgents: () => {
+						source.assertActive();
+						return source.getPackageAgents!();
 					},
 				}
 			: {}),

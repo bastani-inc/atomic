@@ -49,6 +49,7 @@
 
 ### Added
 
+- Packages can ship subagent definitions: list agent `.md` files or directories under `agents` in the `atomic` manifest. They load from globally installed, project-installed and `-e` packages, follow a package's `agents` filter in settings, and change with `/reload`. Agents of a project-installed package are offered only in a trusted project. Extensions read the enabled files with `ctx.getPackageAgents()`; a custom SDK `ResourceLoader` can supply them with `getPackageAgents()` ([#5991](https://github.com/bastani-inc/atomic/issues/5991)).
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Extension tools can distinguish nested calls from model-issued calls with `ctx.parentToolCallId`.
 - Custom session stores can implement `readForkWindow(sessionId, entryId)` to supply a subagent's retained branch and labels without opening the whole parent. Stores without the method keep their existing fork behavior ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).

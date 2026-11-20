@@ -187,6 +187,12 @@ export interface ExtensionContext {
 	/** Current loader-owned skill candidates and exact selector resolver. */
 	getSkillCatalog?(): SkillCatalog;
 	/**
+	 * Subagent definition files that installed packages ship through their manifest's `agents` field, as resolved by
+	 * the last resource reload: enabled by the package filters, and only from project-installed packages when the
+	 * project is trusted.
+	 */
+	getPackageAgents?(): readonly import("../resource-loader-types.ts").PackageAgentFile[];
+	/**
 	 * The owning session's `decisionModel`: an exact `provider/model`, `"auto"` or `""`. Every decision uses it: the
 	 * `structured_output` tool without a `model`, readiness after a steer, and `decide()`. Does not change the chat model.
 	 */
