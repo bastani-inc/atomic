@@ -140,8 +140,13 @@ test(
 			assert.equal((await sessionA.exited).exitCode, 0);
 
 			const [code, stdout, stderr] = await outcome;
-			assert.equal(code, 0, stderr);
-			assert.match(stdout, /B-DONE .*Current session/s, stdout);
+			const intercomFile = (name: string) => {
+				const path = join(agentDir, "intercom", name);
+				return existsSync(path) ? readFileSync(path, "utf8").slice(-2_000) : "<none>";
+			};
+			const diagnostics = `${stdout}\n${stderr}\nbroker.log: ${intercomFile("broker.log")}\nspawn lock: ${intercomFile("broker.spawn.lock")}`;
+			assert.equal(code, 0, diagnostics);
+			assert.match(stdout, /B-DONE .*Current session/s, diagnostics);
 		} finally {
 			sessionA.kill();
 			if (firstBrokerPid !== undefined && isProcessAlive(firstBrokerPid)) {
