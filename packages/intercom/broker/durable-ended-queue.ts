@@ -33,6 +33,13 @@ export const ENDED_QUEUE_LOAD_WAIT_MS = 5_000;
 /** What a queued message's sender is told while its `queued` answer still waits for the message to be kept. */
 type EarlyOutcome = { readonly kind: "delivered" } | { readonly kind: "failed"; readonly reason: string };
 
+/** A queued message as the store keeps it: its frame and its sender as JSON, and the bytes they take. */
+interface StoredForm {
+	readonly requestJson: string;
+	readonly senderJson: string;
+	readonly bytes: number;
+}
+
 /** What an earlier broker kept, taken up again: see `DepartedChildren.restore`. */
 export interface RestoredEndedQueues {
 	readonly queues: readonly RestoredEndedQueue[];
@@ -83,8 +90,10 @@ export interface DurableEndedQueueHost {
 }
 
 function snapshotOf(sender: BrokerConnectedSession): SenderSnapshot {
+	// Its presence status is free text a session sets and no delivery reads: kept, it would count toward every message.
+	const { status: _status, ...info } = sender.info;
 	return {
-		info: sender.info,
+		info,
 		...(sender.registrationGroup === undefined ? {} : { registrationGroup: sender.registrationGroup }),
 		...(sender.registrationName === undefined ? {} : { registrationName: sender.registrationName }),
 		...(sender.registrationReturnAddress === undefined ? {} : { registrationReturnAddress: sender.registrationReturnAddress }),
@@ -288,7 +297,31 @@ export class DurableEndedQueue {
 		return senderAtReceipt(held.clientMessage as SendClientMessage);
 	}
 
+	/**
+	 * The bytes `held` takes in the store, as it is written there: its frame and its sender, as JSON. Undefined while only
+	 * memory keeps the queue. Serialized once, and written as serialized.
+	 */
+	storedBytes(held: HeldSend): number | undefined {
+		if (this.store === undefined) return undefined;
+		return this.storedForm(held)?.bytes;
+	}
+
+	private readonly stored = new WeakMap<HeldSend, StoredForm>();
+
+	private storedForm(held: HeldSend): StoredForm | undefined {
+		const known = this.stored.get(held);
+		if (known !== undefined) return known;
+		const sender = this.senderOf(held);
+		if (sender === undefined) return undefined;
+		const requestJson = JSON.stringify(held.clientMessage);
+		const senderJson = JSON.stringify(snapshotOf(sender));
+		const form = { requestJson, senderJson, bytes: Buffer.byteLength(requestJson) + Buffer.byteLength(senderJson) };
+		this.stored.set(held, form);
+		return form;
+	}
+
 	private entryOf(held: HeldSend, departure: JournalDeparture, sender: BrokerConnectedSession): EndedQueueEntry {
+		const form = this.storedForm(held);
 		return {
 			messageId: held.messageId,
 			ownerSessionId: departure.ownerSessionId,
@@ -297,7 +330,8 @@ export class DurableEndedQueue {
 			child: departure.child,
 			sender: snapshotOf(sender) as unknown as Record<string, unknown>,
 			request: held.clientMessage as Record<string, unknown>,
-			bytes: intercomMessageBytes((held.clientMessage.message as Message).content),
+			...(form === undefined ? {} : { requestJson: form.requestJson, senderJson: form.senderJson }),
+			bytes: form?.bytes ?? intercomMessageBytes((held.clientMessage.message as Message).content),
 			queuedAt: Date.now(),
 			...(departure.wake === undefined ? {} : { wake: departure.wake }),
 		};

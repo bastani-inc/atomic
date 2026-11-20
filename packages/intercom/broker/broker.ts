@@ -429,6 +429,8 @@ class IntercomBroker {
       ownerHost: (ownerSessionId) => this.sessions.get(ownerSessionId)?.registrationReturnAddress,
       journal: this.endedQueue.journal,
       evicted: (sends) => this.dispatchHeldSends(sends),
+      // Durable wake queue: the caps count what a message takes in the store.
+      storedBytes: (held) => this.endedQueue.storedBytes(held),
     },
   );
   /** Return paths: who may answer a sender outside its groups that wrote to it. */
@@ -2310,7 +2312,7 @@ class IntercomBroker {
       ownerless.map(({ held, childName }) => ({
         held,
         childName,
-        reason: notResumedReason(childName, "the session that launched it ended before it was resumed"),
+        reason: notResumedReason(childName, "the session that launched it disconnected before it was resumed"),
       })),
     );
     const liveOwner = (host: string): string | undefined => {
