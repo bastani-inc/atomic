@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Container } from "@bastani/atomic-tui";
 import { beforeAll, test } from "vitest";
 import { AtomicWorkingLoader } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
@@ -111,10 +112,10 @@ test("turn_start resets extension cadence and fences delegate callbacks after re
 	}
 });
 
-test("turn_end removes the main Atomic loader and fences its 88ms callback before the next turn", async () => {
+test("turn_end holds the main Atomic loader still, fencing its 88ms callback, until the next turn restarts it", async () => {
 	const timers = installLifecycleFakeClock();
 	let renders = 0;
-	const children: object[] = [];
+	const statusContainer = new Container();
 	const ui = {
 		requestRender() {
 			renders += 1;
@@ -136,20 +137,13 @@ test("turn_end removes the main Atomic loader and fences its 88ms callback befor
 		workingRunMeter: new WorkingRunMeter(),
 		loadingAnimation: undefined,
 		settingsManager: { getClearOnShrink: () => false },
-		statusContainer: {
-			clear() {
-				children.length = 0;
-			},
-			addChild(child: object) {
-				children.push(child);
-			},
-		},
+		statusContainer,
 		createWorkingLoader,
 		stopWorkingLoader: InteractiveModeBase.prototype.stopWorkingLoader,
 		showWorkingLoaderNow: InteractiveModeBase.prototype.showWorkingLoaderNow,
 	} as unknown as InteractiveModeBase;
 	mode.loadingAnimation = createWorkingLoader();
-	children.push(mode.loadingAnimation);
+	statusContainer.addChild(mode.loadingAnimation);
 
 	try {
 		await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
@@ -157,16 +151,24 @@ test("turn_end removes the main Atomic loader and fences its 88ms callback befor
 		const completedTurnTick = timers.capturedAnimationCallbacks().at(-1)!;
 		const beforeEnd = renders;
 
+		const heldLoader = mode.loadingAnimation as AtomicWorkingLoader;
+		const drawn = statusContainer.render(64);
+
 		await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_end" } as never);
 
-		assert.equal(mode.loadingAnimation, undefined);
+		assert.equal(mode.loadingAnimation, heldLoader, "the row stays mounted between turns");
+		assert.equal(heldLoader.betweenTurns, true);
 		assert.equal(timers.intervalCount(), 0);
-		assert.equal(renders, beforeEnd + 1, "turn_end requests one immediate cleanup repaint");
+		assert.equal(renders, beforeEnd, "nothing on screen changed, so nothing repaints");
 		completedTurnTick();
-		assert.equal(renders, beforeEnd + 1, "completed-turn callback cannot repaint");
+		assert.equal(renders, beforeEnd, "completed-turn callback cannot repaint");
+		timers.advanceBy(880);
+		assert.deepEqual(statusContainer.render(64), drawn, "the held row stays exactly as drawn");
 
 		await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
 		const nextLoader = mode.loadingAnimation as AtomicWorkingLoader;
+		assert.equal(nextLoader, heldLoader, "the next turn restarts the same row");
+		assert.equal(nextLoader.betweenTurns, false);
 		assert.match(workingLine(nextLoader), /\u001b\[38;2;112;117;159m∀/);
 		assert.equal(timers.intervalCount(), 1);
 		const afterRestart = renders;
@@ -183,10 +185,10 @@ test("turn_end removes the main Atomic loader and fences its 88ms callback befor
 	}
 });
 
-test("turn_end removes a delegated extension loader and fences its callback before the next turn", async () => {
+test("turn_end holds a delegated extension loader on its last frame, fencing its callback, until the next turn", async () => {
 	const timers = installLifecycleFakeClock();
 	let renders = 0;
-	const children: object[] = [];
+	const statusContainer = new Container();
 	const ui = {
 		requestRender() {
 			renders += 1;
@@ -209,20 +211,13 @@ test("turn_end removes a delegated extension loader and fences its callback befo
 		workingRunMeter: new WorkingRunMeter(),
 		loadingAnimation: undefined,
 		settingsManager: { getClearOnShrink: () => false },
-		statusContainer: {
-			clear() {
-				children.length = 0;
-			},
-			addChild(child: object) {
-				children.push(child);
-			},
-		},
+		statusContainer,
 		createWorkingLoader,
 		stopWorkingLoader: InteractiveModeBase.prototype.stopWorkingLoader,
 		showWorkingLoaderNow: InteractiveModeBase.prototype.showWorkingLoaderNow,
 	} as unknown as InteractiveModeBase;
 	mode.loadingAnimation = createWorkingLoader();
-	children.push(mode.loadingAnimation);
+	statusContainer.addChild(mode.loadingAnimation);
 
 	try {
 		await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
@@ -230,18 +225,27 @@ test("turn_end removes a delegated extension loader and fences its callback befo
 		assert.equal(timers.intervalCount(), 1);
 		assert.equal(timers.intervalDelays().at(-1), 137);
 		const completedTurnTick = timers.capturedAnimationCallbacks().at(-1)!;
-		const beforeEnd = renders;
+		timers.advanceBy(137);
+		assert.match(workingLine(mode.loadingAnimation as AtomicWorkingLoader), /^ Y /);
+		const heldLoader = mode.loadingAnimation as AtomicWorkingLoader;
+		const beforeHeld = renders;
 
 		await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_end" } as never);
 
-		assert.equal(mode.loadingAnimation, undefined);
+		assert.equal(mode.loadingAnimation, heldLoader, "the row stays mounted between turns");
 		assert.equal(timers.intervalCount(), 0);
-		assert.equal(renders, beforeEnd + 1, "turn_end requests one immediate delegated cleanup repaint");
+		assert.equal(renders, beforeHeld, "nothing on screen changed, so nothing repaints");
+		timers.advanceBy(137 * 3);
+		assert.match(workingLine(heldLoader), /^ Y /, "the custom indicator keeps its last frame");
+		const heldLine = workingLine(heldLoader);
+		heldLoader.setMessage("changed between turns");
+		assert.equal(workingLine(heldLoader), heldLine, "the held row keeps the ended turn's message");
 		completedTurnTick();
-		assert.equal(renders, beforeEnd + 1, "completed delegated callback cannot repaint");
+		assert.equal(renders, beforeHeld, "completed delegated callback cannot repaint");
 
 		await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
 		const nextLoader = mode.loadingAnimation as AtomicWorkingLoader;
+		assert.equal(nextLoader, heldLoader, "the next turn restarts the same row");
 		assert.match(workingLine(nextLoader), /^ X /);
 		assert.equal(timers.intervalCount(), 1);
 		assert.equal(timers.intervalDelays().at(-1), 137);

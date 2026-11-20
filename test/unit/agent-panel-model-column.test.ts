@@ -301,7 +301,8 @@ test("a change of model alone repaints the panel's row at once, before its clock
 		});
 		fixture.store.drain();
 		await vi.waitFor(() => assert.ok(renders > painted, "the model change asks for a repaint"));
-		assert.match(row(), /worker {2}faux\/backup low {2}Read/);
+		// The panel keeps its model column as wide as it was while it stays open, so the task does not move.
+		assert.match(row(), /worker {2}faux\/backup low {4}Read/);
 	} finally {
 		unbind();
 		vi.useRealTimers();
