@@ -76,9 +76,16 @@ export interface UsageCostBreakdownEntry {
 
 type MessageWithUsage = { role: "toolResult"; usage?: Usage };
 
-export function getUsageCostBreakdown(entries: SessionEntry[]): UsageCostBreakdownEntry[] {
+export function getUsageCostBreakdown(entries: Iterable<SessionEntry>): UsageCostBreakdownEntry[] {
+	const breakdown = usageCostBreakdown();
+	for (const entry of entries) breakdown.add(entry);
+	return breakdown.result();
+}
+
+/** The cost by model of entries added one at a time, so a reader can add entries from pages it does not keep. */
+export function usageCostBreakdown() {
 	const totalsByKey = new Map<string, UsageTotals>();
-	for (const entry of entries) {
+	const add = (entry: SessionEntry): void => {
 		let key: string | undefined;
 		let usage: Usage | undefined;
 		if (entry.type === "usage") {
@@ -98,17 +105,19 @@ export function getUsageCostBreakdown(entries: SessionEntry[]): UsageCostBreakdo
 			key = "Tools/summaries";
 			usage = entry.usage;
 		}
-		if (!key || !usage) continue;
+		if (!key || !usage) return;
 		const totals = totalsByKey.get(key) ?? createUsageTotals();
 		addUsageToTotals(totals, usage);
 		totalsByKey.set(key, totals);
-	}
-	return [...totalsByKey]
-		.map(([key, totals]) => ({
-			key,
-			cost: totals.cost,
-			tokens: totals.input + totals.output + totals.cacheRead + totals.cacheWrite,
-		}))
-		.filter((entry) => entry.cost > 0 || entry.tokens > 0)
-		.sort((a, b) => b.cost - a.cost);
+	};
+	const result = (): UsageCostBreakdownEntry[] =>
+		[...totalsByKey]
+			.map(([key, totals]) => ({
+				key,
+				cost: totals.cost,
+				tokens: totals.input + totals.output + totals.cacheRead + totals.cacheWrite,
+			}))
+			.filter((entry) => entry.cost > 0 || entry.tokens > 0)
+			.sort((a, b) => b.cost - a.cost);
+	return { add, result };
 }
