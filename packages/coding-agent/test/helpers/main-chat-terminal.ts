@@ -131,8 +131,10 @@ export async function startMainChat(
 		readonly beforeRun?: (mode: InteractiveMode) => Promise<void> | void;
 		/** On the isolated host, the engine draws its own UI, such as `/tasks`. */
 		readonly engineUi?: boolean;
-		/** Extensions the session loads (the engine's, on the isolated host, which shows their UI on the host). */
+		/** Extensions the session loads (the engine's, on the isolated host). */
 		readonly extensions?: ExtensionFactory[];
+		/** On the isolated host, the engine's extensions show their UI on the host, as a real engine's do. */
+		readonly extensionUi?: boolean;
 	} = {},
 ): Promise<MainChatTerminal> {
 	const stops: Array<() => Promise<void> | void> = [];
@@ -146,7 +148,8 @@ export async function startMainChat(
 		const created = await createEngineHostPair({
 			tools,
 			engineUi: options.engineUi,
-			...(options.extensions === undefined ? {} : { engineExtensions: options.extensions, extensionUi: true }),
+			engineExtensions: options.extensions,
+			extensionUi: options.extensionUi,
 		});
 		pair = created;
 		stops.push(() => created.cleanup());

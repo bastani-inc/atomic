@@ -35,6 +35,9 @@ type ShareContext = {
 	showError: (message: string) => void;
 };
 
+/** The first line of an exported session `id`. */
+const header = (id: string) => `${JSON.stringify({ type: "session", id })}\n`;
+
 describe("InteractiveMode /share", () => {
 	beforeAll(() => initTheme("dark"));
 
@@ -68,7 +71,7 @@ describe("InteractiveMode /share", () => {
 			session: {
 				exportToJsonl: async (path, options) => {
 					exportOptions.push(options);
-					writeFileSync(path, name);
+					writeFileSync(path, header(name));
 					if (name === "A") await bUploaded;
 					return path;
 				},
@@ -89,7 +92,7 @@ describe("InteractiveMode /share", () => {
 
 		await vi.waitFor(() => assert.equal(uploadPaths.length, 2));
 		assert.notEqual(uploadPaths[0], uploadPaths[1]);
-		assert.deepEqual(uploadPaths.map((path) => readFileSync(path, "utf8")).sort(), ["A", "B"]);
+		assert.deepEqual(uploadPaths.map((path) => readFileSync(path, "utf8")).sort(), [header("A"), header("B")]);
 		for (const [index, child] of processes.entries()) {
 			child.stdout.end(`https://gist.github.com/test/${index + 1}\n`);
 			child.stderr.end();
@@ -217,7 +220,7 @@ describe("InteractiveMode /share", () => {
 			const run = share(async (path) => {
 				exporting.resolve(path);
 				await writing.promise;
-				writeFileSync(path, "session");
+				writeFileSync(path, header("A"));
 				return path;
 			});
 			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
@@ -241,7 +244,7 @@ describe("InteractiveMode /share", () => {
 			let exportedPath = "";
 			const run = share(async (path) => {
 				exportedPath = path;
-				writeFileSync(path, "session");
+				writeFileSync(path, header("A"));
 				return path;
 			});
 			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
@@ -320,7 +323,7 @@ describe("InteractiveMode /share", () => {
 			const run = share(async (path) => {
 				started.resolve();
 				await exporting.promise;
-				writeFileSync(path, current);
+				writeFileSync(path, header(current));
 				return path;
 			});
 			run.context.session.sessionManager = { getSessionId: () => current };
@@ -329,6 +332,25 @@ describe("InteractiveMode /share", () => {
 			await started.promise;
 			current = "B";
 			exporting.resolve();
+			let finished = false;
+			void run.done.then(() => {
+				finished = true;
+			});
+			await vi.waitFor(() => assert.ok(finished || run.spawned.length > 1));
+			assert.equal(run.spawned.length, 1, "no gist is created");
+			await run.done;
+			assert.deepEqual(run.statuses, ["Share cancelled: the session changed"]);
+			assert.ok(run.showsPrompt());
+		});
+
+		it("an export that holds another session is not uploaded, even when the session shown is the one asked for", async () => {
+			// The session switched while the export started and switched back before it ended.
+			const run = share(async (path) => {
+				writeFileSync(path, header("B"));
+				return path;
+			});
+			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			run.spawned[0]?.child.emit("close", 0);
 			let finished = false;
 			void run.done.then(() => {
 				finished = true;

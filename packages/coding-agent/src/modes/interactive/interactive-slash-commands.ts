@@ -264,6 +264,20 @@ function stopGh(child: ReturnType<typeof spawn>): void {
 	child.once("close", () => clearTimeout(timer));
 }
 
+/** The session id in the header, the first line, of the exported session file `file`. */
+async function exportedSessionId(file: string): Promise<string | undefined> {
+	const handle = await fs.promises.open(file, "r");
+	try {
+		const { buffer, bytesRead } = await handle.read(Buffer.alloc(16_384), 0, 16_384, 0);
+		const header = JSON.parse(buffer.toString("utf8", 0, bytesRead).split("\n", 1)[0] ?? "") as { id?: unknown };
+		return typeof header.id === "string" ? header.id : undefined;
+	} catch {
+		return undefined;
+	} finally {
+		await handle.close();
+	}
+}
+
 /** Run `gh auth status`; `started` receives the child, so a cancel can stop it. */
 function ghAuthStatus(started: (child: ReturnType<typeof spawn>) => void): Promise<number | null> {
 	return new Promise((resolve) => {
@@ -311,11 +325,14 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	};
 	const cancelled = () => loader.signal.aborted;
 	// Another session took this one's place before it was exported, or while it was: neither is shared.
+	const sessionChanged = () => {
+		restoreEditor();
+		this.showStatus("Share cancelled: the session changed");
+	};
 	const replaced = () => {
 		if (cancelled() || (this.session === session && session.sessionManager.getSessionId() === sessionId))
 			return false;
-		restoreEditor();
-		this.showStatus("Share cancelled: the session changed");
+		sessionChanged();
 		return true;
 	};
 
@@ -361,6 +378,13 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 			return;
 		}
 		if (cancelled() || replaced()) return;
+		// The file holds the session asked for, whatever changed on the way: another never leaves under its name.
+		const exportedId = await exportedSessionId(tmpFile);
+		if (cancelled()) return;
+		if (exportedId !== sessionId) {
+			sessionChanged();
+			return;
+		}
 
 		// Create a secret gist
 		try {

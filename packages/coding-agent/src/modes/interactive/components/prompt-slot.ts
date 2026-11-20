@@ -50,6 +50,20 @@ function inertRow(row: string): string {
 	return stripHintMarkers(row).replace(HYPERLINK, "");
 }
 
+/** What a render of the slot drew. */
+interface Drawn {
+	readonly width: number;
+	readonly rows: readonly string[];
+	/** The children it drew, counted by `generation`. */
+	readonly generation: number;
+	/** Live content drawn onto the screen: not held rows, not a view yet to draw, not under a held dock. */
+	readonly live: boolean;
+	/** It drew a run's working status in the prompt. */
+	readonly runStatus: boolean;
+	/** The working status changes counted when it drew (`ScreenHold.statusEpoch`). */
+	readonly statusEpoch: number;
+}
+
 type PromptSlotState =
 	| { readonly kind: "live" }
 	| {
@@ -82,20 +96,7 @@ export class PromptSlot extends Container {
 	/** Counts changes of `children`. */
 	private generation = 0;
 	/** What the last render drew. */
-	private drawn:
-		| {
-				readonly width: number;
-				readonly rows: readonly string[];
-				/** The children it drew, counted by `generation`. */
-				readonly generation: number;
-				/** Live content drawn onto the screen: not held rows, not a view yet to draw, not under a held dock. */
-				readonly live: boolean;
-				/** It drew a run's working status in the prompt. */
-				readonly runStatus: boolean;
-				/** The working status changes counted when it drew (`ScreenHold.statusEpoch`). */
-				readonly statusEpoch: number;
-		  }
-		| undefined;
+	private drawn: Drawn | undefined;
 	private showingHeldRows = false;
 	private readonly ui: Pick<TUI, "requestRender">;
 	private readonly showsRunStatus: () => boolean;
@@ -158,7 +159,7 @@ export class PromptSlot extends Container {
 		this.screen.begin("prompt", (ended) => {
 			const drawn = this.drawn;
 			if (drawn === undefined || !this.mayHold()) return undefined;
-			const held = this.beginHold(drawn.rows, drawn.width, generation, ended);
+			const held = this.beginHold(drawn, drawn.width, generation, ended);
 			token = held.token;
 			return held.end;
 		});
@@ -195,7 +196,7 @@ export class PromptSlot extends Container {
 		) {
 			// A view mounted with nothing to draw yet, as an engine panel before its first frame: the rows stay.
 			this.screen.begin("prompt", (ended) => {
-				const held = this.beginHold(previous.rows, width, previous.generation, ended);
+				const held = this.beginHold(previous, width, previous.generation, ended);
 				rows = held.rows;
 				return held.end;
 			});
@@ -223,8 +224,9 @@ export class PromptSlot extends Container {
 		return this.generation === state.generation || this.children.some(awaitsFirstContent);
 	}
 
+	/** Hold the rows `seed` drew, the slot's last render. */
 	private beginHold(
-		rows: readonly string[],
+		seed: Drawn,
 		width: number,
 		generation: number,
 		ended: () => void,
@@ -235,6 +237,8 @@ export class PromptSlot extends Container {
 			over = true;
 			clearTimeout(timer);
 			if (this.state === held) this.state = { kind: "live" };
+			// Nothing drawn since the hold began: its rows were kept once, and no later hold keeps them again.
+			if (this.drawn === seed) this.drawn = { ...seed, live: false };
 			ended();
 		};
 		const timer = setTimeout(() => {
@@ -246,7 +250,7 @@ export class PromptSlot extends Container {
 		const held = {
 			kind: "held",
 			token: {},
-			rows: rows.map(inertRow),
+			rows: seed.rows.map(inertRow),
 			width,
 			generation,
 			end,

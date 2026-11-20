@@ -43,7 +43,7 @@ async function start(host: "in-process" | "isolated", extensions?: ExtensionFact
 		writes.push({ terminal: this, at: performance.now(), data });
 		write.call(this, data);
 	});
-	const chat = await startMainChat(host, { engineUi: true, extensions });
+	const chat = await startMainChat(host, { engineUi: true, extensions, extensionUi: extensions !== undefined });
 	chats.push(chat);
 	await chat.settled(/❯/);
 	return chat;
