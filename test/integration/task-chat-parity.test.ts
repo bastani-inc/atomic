@@ -49,9 +49,9 @@ test("the main chat retains its task through tool end, agent end, background act
 		const rows = stripAnsi(main.renderFooter(80).join("\n"))
 			.split("\n")
 			.map((line) => line.trim())
-			.filter((line) => /^∀ \S+ {2}/.test(line));
+			.filter((line) => /^◯ \S+ {2}/.test(line));
 		assert.equal(rows.length, 1);
-		assert.match(rows[0]!, /^∀ worker {2}Inspect task projection\s+running$/);
+		assert.match(rows[0]!, /^◯ worker {2}Inspect task projection\s+running$/);
 	};
 	try {
 		await fixture.start();
@@ -210,7 +210,7 @@ test("six task anchors stay complete behind a bounded viewport", async () => {
 		assert.ok(renders > 0);
 		assert.equal(main.entries().filter((entry) => entry.kind === "task").length, 6);
 		const all = main.renderBody(80, 100).join("\n");
-		assert.equal((stripAnsi(all).match(/∀ worker:/g) ?? []).length, 6);
+		assert.equal((stripAnsi(all).match(/◯ worker:/g) ?? []).length, 6);
 		assert.equal(main.renderBody(80, 5).length, 5);
 		const entries = main.entries().filter((entry) => entry.kind === "task");
 		main.handleScrollInput("\x1b[1;5H");

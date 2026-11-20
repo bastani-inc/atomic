@@ -38,7 +38,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { formatResumeCommand } from "./interactive-mode-helpers.ts";
-import { noteSteeringSaved, reconcileQueuedSubmissions } from "./interactive-queueing.ts";
+import { noteSteeringSaved, reconcileQueuedSubmissions, redrawMainQueuedDeliveries } from "./interactive-queueing.ts";
 import {
 	breakMainToolGroup,
 	endMainAssistantMessage,
@@ -868,6 +868,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			break;
 		}
 	}
+	redrawMainQueuedDeliveries(this);
 	const receipt = chatReceipt(event);
 	if (receipt) {
 		chatRecordsChanged(this, receipt);

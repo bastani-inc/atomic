@@ -87,6 +87,10 @@ export function startBrokerWatchdog(socketPath: string, instanceId: string, logP
 	try {
 		const worker = new Worker(WATCHDOG_SOURCE, {
 			eval: true,
+			// None of the process's flags: an `--input-type=module` would make this CommonJS source a module, and the
+			// process's preloads would run again in the watchdog. Under Node's permission model a worker is restricted
+			// only by the flags it starts with, so there it keeps them.
+			execArgv: process.permission === undefined ? [] : undefined,
 			workerData: {
 				socketPath,
 				instanceId,

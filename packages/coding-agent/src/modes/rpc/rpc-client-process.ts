@@ -48,6 +48,7 @@ export async function prepareRpcClientBootstrap(
 		hostPid: process.pid,
 		guardFile: guardianFile,
 		projectResourceWithdrawals: true,
+		queuedDeliveries: true,
 		...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
 		...(trustDecisions ? { trustDecisions } : {}),
 	});

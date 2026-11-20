@@ -47,6 +47,14 @@ export interface NoticeLineSpec {
  */
 export const WAITING_MARKER = { glyph: "◌", color: "dim" } as const;
 
+/**
+ * The marks the agent panel, the `/tasks` list and a chat's task rows share: an open circle while the work runs (grey,
+ * still), a filled one once it is done, and an open circle in the error colour once it was stopped.
+ */
+export const RUNNING_TASK_MARKER = { glyph: "◯", color: "muted" } as const;
+export const DONE_TASK_MARKER = { glyph: "●", color: "success" } as const;
+export const STOPPED_TASK_MARKER = { glyph: "◯", color: "error" } as const;
+
 /** The marker and colour of each status, so a status reads without colour too. */
 export const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: string; readonly color: ThemeColor }>> = {
 	success: { glyph: "●", color: "success" },
