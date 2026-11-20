@@ -136,6 +136,11 @@ export interface DepartedChildrenWakeHooks {
 	readonly journal?: DepartedChildrenJournal;
 	/** Held sends of subagents forgotten to make room while restoring, for ordinary routing. */
 	readonly evicted?: (sends: readonly HeldSend[]) => void;
+	/**
+	 * Durable wake queue: the bytes a message takes where it is kept (its frame and its sender, as written), which the
+	 * caps count; undefined while only memory keeps the queue, where they count its text.
+	 */
+	readonly storedBytes?: (held: HeldSend) => number | undefined;
 }
 
 /** Durable wake queue: one departure, as its rows name it. */
@@ -605,7 +610,7 @@ export class DepartedChildren {
 			this.failQueued(departure, () =>
 				kept
 					? pausedOwnerGoneReason(departure.childName)
-					: notResumedReason(departure.childName, "the session that launched it ended before it was resumed"),
+					: notResumedReason(departure.childName, "the session that launched it disconnected before it was resumed"),
 			);
 		}
 		if (away.length > 0) this.wakes?.journal?.ownerAway(away.map((departure) => this.journalDeparture(departure)), Date.now());
@@ -711,12 +716,17 @@ export class DepartedChildren {
 		if (this.queuedIds.has(held.messageId)) return { kind: "queued", target: queue, duplicate: true };
 		const ownerHere = !this.orphans.has(departure) && hooks.ownerLive(departure.ownerSessionId);
 		const target = targetOf(held);
-		// Nobody waits on a queued message any more, so the queue is bounded by count and bytes, per child and in all.
+		// Nobody waits on a queued message any more, so the queue is bounded by count and bytes, per child and in all: the
+		// bytes it takes where it is kept.
+		const stored = hooks.storedBytes?.(held);
+		if (stored !== undefined) queuedBytesOf.set(held, stored);
 		const bytes = queuedMessageBytes(held);
 		const full =
 			departure.queued.length >= MAX_HELD_SENDS
 				? `${MAX_HELD_SENDS} messages already wait for it`
-				: departure.queuedBytes + bytes > ENDED_CHILD_QUEUE_BYTES_MAX
+				: bytes > ENDED_CHILD_QUEUE_BYTES_MAX
+					? `it takes ${mebibytes(bytes)} where it is kept, more than the ${mebibytes(ENDED_CHILD_QUEUE_BYTES_MAX)} that can wait for one subagent`
+					: departure.queuedBytes + bytes > ENDED_CHILD_QUEUE_BYTES_MAX
 					? `${mebibytes(departure.queuedBytes)} of messages already wait for it`
 					: this.queuedBytesTotal + bytes > ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX
 						? `Intercom already keeps ${mebibytes(this.queuedBytesTotal)} of messages for subagents that ended`
@@ -1158,7 +1168,10 @@ export function notResumedReason(childName: string, why: string): string {
 	return `Subagent ${JSON.stringify(childName)} was not resumed for this message: ${why}. The message was not delivered.`;
 }
 
-/** The bytes of each queued message, counted once (a restarted broker takes them from the store). */
+/**
+ * The bytes of each queued message the caps count, counted once: what it takes in the durable store (a restarted broker
+ * reads them from it), or its text while only memory keeps the queue.
+ */
 const queuedBytesOf = new WeakMap<HeldSend, number>();
 
 function queuedMessageBytes(held: HeldSend): number {

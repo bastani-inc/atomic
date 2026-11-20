@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
 	type EndedChildQueueStore,
 	type EndedQueueEntry,
 	openLocalEndedChildQueueStore,
 	openSqlEndedChildQueueStore,
 } from "../../packages/intercom/broker/sql-ended-child-queue-store.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 /**
  * #5999 durable wake queue: the store that keeps messages for subagents that ended across broker restarts, opened the
@@ -280,3 +281,192 @@ test("a full queue is read a page at a time, and the event loop runs between pag
 	assert.ok(new Set(turns).size > 1, "timers ran between pages");
 	assert.deepEqual(await next.targets(), ["subagent-worker-1"]);
 });
+
+/** The bytes the store's file and its write-ahead log take on disk now. */
+function onDisk(path: string): number {
+	return [path, `${path}-wal`].reduce((total, file) => total + (existsSync(file) ? statSync(file).size : 0), 0);
+}
+
+async function fillAndDrain(store: EndedChildQueueStore, count: number): Promise<void> {
+	const big = "x".repeat(1024 * 1024 - 64);
+	const ids = Array.from({ length: count }, (_, index) => `m${index}`);
+	for (const id of ids) await store.add({ ...entry(id, "subagent-worker-1", big), bytes: big.length });
+	await store.remove(ids);
+}
+
+/** The file's auto-vacuum mode: 0 none, 2 incremental. */
+async function autoVacuum(path: string): Promise<number> {
+	const { DatabaseSync } = await import("node:sqlite");
+	const check = new DatabaseSync(path, { readOnly: true });
+	try {
+		return (check.prepare("PRAGMA auto_vacuum").get() as { auto_vacuum: number }).auto_vacuum;
+	} finally {
+		check.close();
+	}
+}
+
+test("the store gives its disk space back once its queue drains", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const store = await open(path, "broker-1");
+	assert.equal(await autoVacuum(path), 2, "a new file can give space back");
+	await fillAndDrain(store, 24);
+	await vi.waitFor(() => assert.ok(onDisk(path) < 4 * 1024 * 1024, `still ${onDisk(path)} bytes`), {
+		timeout: 20_000,
+		interval: 50,
+	});
+	// It is still the same store, and keeps working.
+	assert.equal(await store.add(entry("after")), "added");
+	assert.deepEqual(
+		(await store.load()).rows.map((row) => row.messageId),
+		["after"],
+	);
+});
+
+test("a store from before that cannot give space back is converted once its queue is empty, and then does", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const first = await open(path, "broker-1");
+	await first.close();
+	// As a broker of the earlier release left it: no auto-vacuum.
+	const { DatabaseSync } = await import("node:sqlite");
+	const earlier = new DatabaseSync(path);
+	earlier.exec("PRAGMA auto_vacuum = NONE; VACUUM;");
+	earlier.close();
+	const store = await open(path, "broker-2");
+	await fillAndDrain(store, 24);
+	await vi.waitFor(() => assert.ok(onDisk(path) < 4 * 1024 * 1024, `still ${onDisk(path)} bytes`), {
+		timeout: 20_000,
+		interval: 50,
+	});
+	assert.equal(await autoVacuum(path), 2, "incremental");
+});
+
+test("a store from before that holds messages is not converted while they wait, only once it is opened empty", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const holding = await open(path, "broker-1");
+	await holding.add(entry("waiting"));
+	await holding.close();
+	// As a broker of the earlier release left it: no auto-vacuum, a message waiting.
+	const { DatabaseSync } = await import("node:sqlite");
+	const earlier = new DatabaseSync(path);
+	earlier.exec("PRAGMA auto_vacuum = NONE; VACUUM;");
+	earlier.close();
+	// Opened with a message waiting: rewriting it now would cost as much as the queue holds.
+	const busy = await open(path, "broker-3");
+	assert.equal(await autoVacuum(path), 0);
+	await busy.load();
+	await fillAndDrain(busy, 8);
+	await busy.remove(["waiting"]);
+	await sleep(500);
+	assert.equal(await autoVacuum(path), 0, "not converted while it runs");
+	await busy.close();
+	const empty = await open(path, "broker-4");
+	assert.equal(await autoVacuum(path), 2, "converted when opened empty");
+	await vi.waitFor(() => assert.ok(onDisk(path) < 4 * 1024 * 1024, `still ${onDisk(path)} bytes`), {
+		timeout: 20_000,
+		interval: 50,
+	});
+	await empty.close();
+});
+
+test("giving space back after a drain never waits for another process's write lock: a message sent once it is free is kept", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const database = await openNodeSqliteDatabase(path);
+	const store = await openSqlEndedChildQueueStore(
+		{ database, prefix: "" },
+		{ home: "local", holder: "broker-1", lockWaitMs: 1_000, compact: true },
+	);
+	// Another process takes the write lock while the store tidies up after a drain (once the freed pages are folded
+	// into the file), and holds it for longer than a message write waits for it.
+	const { DatabaseSync } = await import("node:sqlite");
+	let other: InstanceType<typeof DatabaseSync> | undefined;
+	let lockedAt = 0;
+	const exec = database.exec.bind(database);
+	database.exec = async (sql) => {
+		await exec(sql);
+		if (other === undefined && /wal_checkpoint/i.test(sql)) {
+			other = new DatabaseSync(path);
+			other.exec("BEGIN IMMEDIATE");
+			lockedAt = performance.now();
+			setTimeout(() => {
+				other!.exec("ROLLBACK");
+				other!.close();
+			}, 1_300);
+		}
+	};
+	await fillAndDrain(store, 4);
+	await vi.waitFor(() => assert.ok(other !== undefined, "the store tidied up"), { timeout: 10_000, interval: 10 });
+	await sleep(lockedAt + 1_400 - performance.now());
+	// The lock is free again: a message sent now is kept, at once.
+	const started = performance.now();
+	assert.equal(await store.add(entry("after")), "added");
+	assert.ok(performance.now() - started < 500, `kept after ${(performance.now() - started).toFixed(0)} ms`);
+	await store.close();
+	await database.close();
+});
+
+test("a small drain with no space to give back costs no transaction beyond its writes, nor does opening an empty store", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const database = await openNodeSqliteDatabase(path);
+	let transactions = 0;
+	const transaction = database.transaction.bind(database);
+	database.transaction = ((callback, options) => {
+		if (options?.readOnly !== true) transactions += 1;
+		return transaction(callback, options);
+	}) as typeof database.transaction;
+	let maintenance = 0;
+	const maintain = database.tryMaintenance!.bind(database);
+	database.tryMaintenance = async (callback) => {
+		const ran = await maintain(callback);
+		if (ran) maintenance += 1;
+		return ran;
+	};
+	const store = await openSqlEndedChildQueueStore(
+		{ database, prefix: "" },
+		{ home: "local", holder: "broker-1", compact: true },
+	);
+	await sleep(300);
+	const opened = transactions;
+	for (let index = 0; index < 20; index++) {
+		await store.add(entry(`m${index}`));
+		await store.remove([`m${index}`]);
+	}
+	await sleep(300);
+	await store.close();
+	// One for each message written and one for each removed, as without giving space back.
+	assert.equal(transactions - opened, 40);
+	assert.equal(maintenance, 0, "no housekeeping transaction, at open or after a drain");
+	await database.close();
+});
+
+test("after a write waits out another process's lock and the next is refused at once, later writes go through and the store closes", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	// Opened as a broker opens it: its writes wait 5 s for another process's write lock.
+	const store = await openLocalEndedChildQueueStore(path, "broker-1");
+	let last = performance.now();
+	let stalled = 0;
+	const ticker = setInterval(() => {
+		const now = performance.now();
+		stalled = Math.max(stalled, now - last);
+		last = now;
+	}, 5);
+	const { DatabaseSync } = await import("node:sqlite");
+	const other = new DatabaseSync(path);
+	other.exec("BEGIN IMMEDIATE");
+	setTimeout(() => {
+		other.exec("ROLLBACK");
+		other.close();
+	}, 5_500);
+	try {
+		await assert.rejects(store.add(entry("m1")), /locked/, "the first write waits out the lock, then fails");
+		await assert.rejects(store.add(entry("m2")), /locked/, "the next one, within a lock wait, fails at once");
+		await sleep(6_000);
+		// The lock is free and the wait is over: a write now is kept, and a remove goes through.
+		const settled = (write: Promise<unknown>) => Promise.race([write, sleep(3_000).then(() => "still waiting")]);
+		assert.equal(await settled(store.add(entry("m3"))), "added");
+		assert.equal(await settled(store.remove(["m3"])), undefined);
+		assert.equal(await settled(store.close().then(() => "closed")), "closed");
+	} finally {
+		clearInterval(ticker);
+	}
+	assert.ok(stalled < 50, `the event loop stalled for ${stalled.toFixed(1)} ms`);
+}, 30_000);
