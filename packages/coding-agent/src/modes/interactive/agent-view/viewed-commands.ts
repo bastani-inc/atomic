@@ -145,6 +145,8 @@ const GATED_ACTIONS: ReadonlyMap<AppKeybinding, { readonly command: string; read
  */
 export function installViewedCommandGates(mode: InteractiveModeBase, switcher: AgentViewSwitcher): () => void {
 	const unwatch = switcher.onChange(() => applyViewedAutocomplete(mode));
+	// A host whose prompt takes no key actions has no keys to gate.
+	if (!((mode.defaultEditor as { actionHandlers?: unknown }).actionHandlers instanceof Map)) return unwatch;
 	const editors = [mode.defaultEditor, mode.editor].filter(
 		(editor, index, all): editor is typeof mode.defaultEditor =>
 			all.indexOf(editor) === index && (editor as { actionHandlers?: unknown }).actionHandlers instanceof Map,

@@ -1028,21 +1028,23 @@ function chatMessageQueue(session: AgentSession): TranscriptQueueMethods {
 function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands {
 	const loader = session.resourceLoader as AgentSession["resourceLoader"] | undefined;
 	const templates = session.promptTemplates as AgentSession["promptTemplates"] | undefined;
-	const runner = session.extensionRunner as AgentSession["extensionRunner"] | undefined;
+	const runner = session.extensionRunner as Partial<AgentSession["extensionRunner"]> | undefined;
 	return {
 		cwd,
 		skills: loader === undefined ? emptySkillCatalog() : getSkillCatalog(loader),
 		skillCommandsEnabled: session.settingsManager?.getEnableSkillCommands() ?? false,
-		promptTemplates: (templates ?? []).map(({ name, description, sourceInfo }) => ({
+		promptTemplates: (Array.isArray(templates) ? templates : []).map(({ name, description, sourceInfo }) => ({
 			name,
 			description,
 			sourceInfo,
 		})),
-		extensionCommands: (runner?.getRegisteredCommands() ?? []).map(({ invocationName, description, sourceInfo }) => ({
-			name: invocationName,
-			description,
-			sourceInfo,
-		})),
+		extensionCommands: (runner?.getRegisteredCommands?.() ?? []).map(
+			({ invocationName, description, sourceInfo }) => ({
+				name: invocationName,
+				description,
+				sourceInfo,
+			}),
+		),
 	};
 }
 
