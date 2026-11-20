@@ -217,6 +217,8 @@ Interactive model and thinking choices automatically become startup defaults. Th
 | `app.message.followUp` | `alt+enter` | Queue follow-up message |
 | `app.message.dequeue` | `alt+up` | Restore queued messages to editor |
 
+The message queue keys work the same in the main chat and in a subagent's chat: while the agent works, Enter queues a steering message and `app.message.followUp` a follow-up, each shown as a `Steering:` or `Follow-up:` row above the prompt until the agent reads it, and `app.message.dequeue` brings every queued message back into the prompt.
+
 ### Navigation
 
 The same keys move between the main chat, subagent chats and lists everywhere:
