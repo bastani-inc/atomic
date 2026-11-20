@@ -168,12 +168,77 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 		if (at >= 0) children[at] = shown ? slot : mode.documentContainer;
 	};
 
+	/**
+	 * What the screen does differently while a subagent is shown, attached when one is first shown and detached when
+	 * main is again: with main shown the mode has nothing of this, exactly as before.
+	 */
+	const attach = (): (() => void) => {
+		// A replaced renderer starts on main's root; a shown subagent keeps its place.
+		const offRenderer = mode.onTuiRendererChange(() => {
+			if (agentShown()) applyLayout();
+		});
+		// Scroll keys go to the shown transcript, as they go to main's while main is shown. The screen's own viewport
+		// declines them meanwhile (`shouldHandleViewportInput`).
+		const removeInput = mode.addTuiInputListener((data) => {
+			const viewed = switcher.viewed;
+			if (viewed.kind !== "agent" || focusedComponent(mode) !== mode.editor) return undefined;
+			if (!isFullscreenViewportAction(data, mode.keybindings)) return undefined;
+			if (!isKeyRelease(data)) viewed.port.transcript.handleViewKey(data);
+			mode.ui.requestRender();
+			return { consume: true };
+		});
+		const own = mode as unknown as Record<string, unknown>;
+		const overridden = ["showStatus", "showWarning", "showError", "jumpToTranscriptEnd"] as const;
+		const ownBefore = new Map(
+			overridden.filter((name) => Object.hasOwn(mode, name)).map((name) => [name, own[name]] as const),
+		);
+		const showStatus = mode.showStatus;
+		const showWarning = mode.showWarning;
+		const showError = mode.showError;
+		const jumpToTranscriptEnd = mode.jumpToTranscriptEnd;
+		// Main's notices stay main's, rows in its transcript as before; while a subagent is shown they are also drawn
+		// under its transcript, where the reader is looking.
+		own.showStatus = function (this: InteractiveModeBase, message: string, ...rest: unknown[]): void {
+			(showStatus as (...args: unknown[]) => void).call(this, message, ...rest);
+			if (agentShown()) mirror("status", message);
+		};
+		own.showWarning = function (this: InteractiveModeBase, message: string, ...rest: unknown[]): void {
+			(showWarning as (...args: unknown[]) => void).call(this, message, ...rest);
+			const target = rest[0];
+			if (agentShown() && (target === undefined || target === mode.chatContainer)) mirror("warning", message);
+		};
+		own.showError = function (this: InteractiveModeBase, message: string): void {
+			showError.call(this, message);
+			if (agentShown()) mirror("error", message);
+		};
+		// The jump to the latest row acts on what is shown.
+		own.jumpToTranscriptEnd = function (this: InteractiveModeBase): void {
+			const viewed = switcher.viewed;
+			if (viewed.kind !== "agent") {
+				jumpToTranscriptEnd.call(this);
+				return;
+			}
+			viewed.port.transcript.handleViewKey(TRANSCRIPT_JUMP_TO_END_URL);
+			mode.ui.requestRender();
+		};
+		return () => {
+			offRenderer();
+			removeInput();
+			for (const name of overridden) {
+				if (ownBefore.has(name)) own[name] = ownBefore.get(name);
+				else delete own[name];
+			}
+		};
+	};
+	let detach: (() => void) | undefined;
+
 	const offChange = switcher.onChange(({ to }) => {
 		unwatchPort?.();
 		unwatchPort = undefined;
 		slot.clearNotices();
 		slot.port = to.kind === "agent" ? to.port : undefined;
 		if (to.kind === "agent") {
+			detach ??= attach();
 			unwatchPort = to.port.subscribe(() => {
 				syncFocus();
 				mode.ui.requestRender();
@@ -183,75 +248,25 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 		tui.resetTextSelection?.();
 		applyLayout();
 		syncFocus();
+		if (to.kind === "main") {
+			detach?.();
+			detach = undefined;
+		}
 		mode.ui.requestRender();
 	});
-	// A replaced renderer starts on main's root; a shown subagent keeps its place.
-	const offRenderer = mode.onTuiRendererChange(() => {
-		if (agentShown()) applyLayout();
-	});
-
-	// Scroll keys go to the shown transcript, as they go to main's while main is shown. The screen's own viewport
-	// declines them meanwhile (`shouldHandleViewportInput`).
-	const removeInput = mode.addTuiInputListener((data) => {
-		const viewed = switcher.viewed;
-		if (viewed.kind !== "agent" || focusedComponent(mode) !== mode.editor) return undefined;
-		if (!isFullscreenViewportAction(data, mode.keybindings)) return undefined;
-		if (!isKeyRelease(data)) viewed.port.transcript.handleViewKey(data);
-		mode.ui.requestRender();
-		return { consume: true };
-	});
-
-	// The jump to the latest row acts on what is shown.
-	const own = mode as unknown as Record<string, unknown>;
-	const overridden = ["showStatus", "showWarning", "showError", "jumpToTranscriptEnd"] as const;
-	const ownBefore = new Map(
-		overridden.filter((name) => Object.hasOwn(mode, name)).map((name) => [name, own[name]] as const),
-	);
 	const mirror = (kind: NoticeKind, text: string) => {
 		slot.addNotice(kind, text);
 		mode.ui.requestRender();
 	};
 	// Notices about the shown subagent alone (a refused command, its pause failing) are drawn under it only.
 	setViewedNoticeSink(mode, { show: (text, kind) => mirror(kind === "info" ? "status" : kind, text) });
-	const showStatus = mode.showStatus;
-	const showWarning = mode.showWarning;
-	const showError = mode.showError;
-	const jumpToTranscriptEnd = mode.jumpToTranscriptEnd;
-	// Main's notices stay main's, rows in its transcript as before; while a subagent is shown they are also drawn under
-	// its transcript, where the reader is looking.
-	own.showStatus = function (this: InteractiveModeBase, message: string, ...rest: unknown[]): void {
-		(showStatus as (...args: unknown[]) => void).call(this, message, ...rest);
-		if (agentShown()) mirror("status", message);
-	};
-	own.showWarning = function (this: InteractiveModeBase, message: string, ...rest: unknown[]): void {
-		(showWarning as (...args: unknown[]) => void).call(this, message, ...rest);
-		const target = rest[0];
-		if (agentShown() && (target === undefined || target === mode.chatContainer)) mirror("warning", message);
-	};
-	own.showError = function (this: InteractiveModeBase, message: string): void {
-		showError.call(this, message);
-		if (agentShown()) mirror("error", message);
-	};
-	own.jumpToTranscriptEnd = function (this: InteractiveModeBase): void {
-		const viewed = switcher.viewed;
-		if (viewed.kind !== "agent") {
-			jumpToTranscriptEnd.call(this);
-			return;
-		}
-		viewed.port.transcript.handleViewKey(TRANSCRIPT_JUMP_TO_END_URL);
-		mode.ui.requestRender();
-	};
 
 	return () => {
 		setViewedNoticeSink(mode, undefined);
 		offChange();
-		offRenderer();
-		removeInput();
 		unwatchPort?.();
-		for (const name of overridden) {
-			if (ownBefore.has(name)) own[name] = ownBefore.get(name);
-			else delete own[name];
-		}
+		detach?.();
+		detach = undefined;
 		if (agentShown()) {
 			slot.port = undefined;
 			const tui = mode.ui;

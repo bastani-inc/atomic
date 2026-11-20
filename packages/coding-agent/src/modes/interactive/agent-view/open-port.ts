@@ -2,7 +2,7 @@ import { dismissedAgentPanelItems, subscribeAgentPanel } from "../../../core/tas
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../../core/tasks/task-view-source.js";
-import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.ts";
+import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
 import { ChatSessionHost } from "../components/chat-session-host.ts";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../components/task-transcript-page.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
