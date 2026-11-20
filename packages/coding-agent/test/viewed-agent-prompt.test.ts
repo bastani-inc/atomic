@@ -744,4 +744,31 @@ describe("the main prompt while a subagent is shown", () => {
 		},
 		HOST_TIMEOUT_MS,
 	);
+
+	test(
+		"the moved text's mark is still there when Enter submits it, though the editor empties itself first",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			await view(WORKER);
+			await screen.type("/compact now");
+			port.setStatus({ gone: true });
+			await settle();
+			// The commands gate reads the mark at the top of the main route, as the submit handler starts.
+			const seen: unknown[] = [];
+			const editor = screen.mode.defaultEditor;
+			const submit = editor.onSubmit;
+			editor.onSubmit = (text: string) => {
+				seen.push(takeMovedDraftMark(screen!.mode, text));
+				return undefined;
+			};
+			try {
+				await screen.press(ENTER);
+			} finally {
+				editor.onSubmit = submit;
+			}
+			assert.deepEqual(seen, [{ agentName: "worker", text: "/compact now" }]);
+		},
+		HOST_TIMEOUT_MS,
+	);
 });

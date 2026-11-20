@@ -271,9 +271,13 @@ export function takeMovedDraftMark(mode: InteractiveModeBase, submitted: string)
 	return mark !== undefined && mark.text.trim() === submitted.trim() ? mark : undefined;
 }
 
-/** Main's prompt now reads `text`: an edit that leaves it other than the move left it clears the mark. */
+/**
+ * Main's prompt now reads `text`: an edit that leaves it other than the move left it clears the mark. An empty prompt
+ * keeps it: Enter empties the editor just before it submits, and an empty prompt cannot be submitted, so the mark
+ * stays only for exactly the moved text typed again, which still asks.
+ */
 export function noteMainPromptEdit(mode: InteractiveModeBase, text: string): void {
-	if (promptDrafts(mode).switching) return;
+	if (promptDrafts(mode).switching || text === "") return;
 	const mark = movedMarks.get(mode);
 	if (mark !== undefined && mark.text !== text) movedMarks.delete(mode);
 }
