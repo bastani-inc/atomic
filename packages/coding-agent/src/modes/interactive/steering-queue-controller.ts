@@ -289,10 +289,10 @@ export class SteeringQueueController {
 				? this.showAsQueued({ text, mode: queueLane })
 				: undefined;
 		/** Stop showing the copy; one the target took into its queue unlisted is remembered until a listing shows it. */
-		const settle = (queuedByTarget = false) => {
+		const settle = (inTargetQueue = false) => {
 			if (!shown || !this.settle(shown)) return;
 			this.editor.requestRender();
-			if (!queuedByTarget) return;
+			if (!inTargetQueue) return;
 			if (this.inFlightAtLoss.delete(shown)) this.addLost(shown);
 			else this.acceptedUnlisted.push(shown);
 		};
@@ -307,7 +307,7 @@ export class SteeringQueueController {
 				preflightResult: (success, answered) => {
 					accepted = success;
 					disposition = answered;
-					settle(success && (answered === undefined || answered === "queued" || answered === "started"));
+					settle(success && queuedByTarget(answered));
 					options.onAnswered?.(success, answered);
 				},
 			});
@@ -324,7 +324,7 @@ export class SteeringQueueController {
 			return { kind: "refused", error };
 		}
 		if (shown && this.givenBackByRecovery.has(shown)) return { kind: "queued" };
-		settle(disposition === undefined || disposition === "queued" || disposition === "started");
+		settle(queuedByTarget(disposition));
 		return { kind: disposition ?? (queueLane !== undefined ? "queued" : "started") };
 	}
 
@@ -375,6 +375,14 @@ export class SteeringQueueController {
 	async restoreAll(editorText: () => string, options?: SteeringClearOptions): Promise<SteeringRestore | undefined> {
 		return restoredQueue(await this.clearAll(options), editorText);
 	}
+}
+
+/**
+ * Whether an accepted submission waits in the target's queue: answered `queued`, or by a target that does not say. One
+ * the target `started` its next turn with was delivered, and one it `handled` ran at once; neither is queued.
+ */
+function queuedByTarget(disposition: PromptDisposition | undefined): boolean {
+	return disposition === undefined || disposition === "queued";
 }
 
 /**
