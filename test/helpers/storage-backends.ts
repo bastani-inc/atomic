@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { createClient, type Transaction } from "@libsql/client";
 import pg from "pg";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
@@ -9,6 +8,7 @@ import type { WithSqliteDatabaseSubject } from "../../packages/coding-agent/src/
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import { makeTempDirectory, removeTempDirectory } from "./runtime.js";
+import { interceptConnectionRequests, isExec } from "./sqlite-connection-requests.js";
 
 /**
  * The storage backends every store's conformance suite runs on (#4793): a local SQLite file, a libSQL server (sqld)
@@ -94,15 +94,13 @@ export const sqliteFileBackend: StorageBackend = {
 		};
 	},
 	async withRollbackFailure(cause, operation) {
-		const exec = DatabaseSync.prototype.exec;
-		DatabaseSync.prototype.exec = function (sql) {
-			if (sql === "ROLLBACK") throw cause;
-			return exec.call(this, sql);
-		};
+		const failing = interceptConnectionRequests((request, send) =>
+			isExec(request, "ROLLBACK") ? Promise.reject(cause) : send(request),
+		);
 		try {
 			await operation();
 		} finally {
-			DatabaseSync.prototype.exec = exec;
+			failing.restore();
 		}
 	},
 };

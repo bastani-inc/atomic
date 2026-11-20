@@ -1,8 +1,8 @@
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { WithSqliteDatabaseSubject } from "../../packages/coding-agent/src/core/storage/testing.js";
 import { makeTempDirectory, removeTempDirectory } from "./runtime.js";
+import { interceptConnectionRequests, isExec } from "./sqlite-connection-requests.js";
 
 export const withNodeSqliteDatabase: WithSqliteDatabaseSubject = async (body) => {
 	const directory = makeTempDirectory("atomic-storage-");
@@ -19,15 +19,13 @@ export const withNodeSqliteDatabase: WithSqliteDatabaseSubject = async (body) =>
 				return database;
 			},
 			async withRollbackFailure(cause, operation) {
-				const exec = DatabaseSync.prototype.exec;
-				DatabaseSync.prototype.exec = function (sql) {
-					if (sql === "ROLLBACK") throw cause;
-					return exec.call(this, sql);
-				};
+				const failing = interceptConnectionRequests((request, send) =>
+					isExec(request, "ROLLBACK") ? Promise.reject(cause) : send(request),
+				);
 				try {
 					await operation();
 				} finally {
-					DatabaseSync.prototype.exec = exec;
+					failing.restore();
 				}
 			},
 		});

@@ -971,6 +971,12 @@ export declare function tryAdvisoryLockAsync(path: string, waitMs: number): Prom
  */
 export declare function trySharedAdvisoryLock(path: string, waitMs: number): AdvisoryLock | null
 
+/**
+ * Asynchronous form of {@link trySharedAdvisoryLock}: acquires the shared advisory lock on a worker thread without
+ * blocking the JavaScript event loop.
+ */
+export declare function trySharedAdvisoryLockAsync(path: string, waitMs: number): Promise<AdvisoryLock | null>
+
 export type WaitOutcome =
   | { kind: 'settled'; taskId: string; result: TaskResult }
   | { kind: 'yielded'; taskId: string; waitId: string; reason: YieldReason }

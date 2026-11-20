@@ -150,33 +150,7 @@ export interface OwnedArea {
 	readonly owner: string;
 }
 
-export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
-	{
-		owner: "#5376 (node:sqlite statements off the event loop)",
-		functions: [
-			"databaseNow",
-			"NodeSqliteDatabase.tryBegin/this.driver()",
-			"NodeSqliteDatabase.dataVersion/this.driver()",
-			"NodeSqliteDatabase.createExecutor/statement",
-			"NodeSqliteDatabase.createExecutor/<returned>.exec/execute()",
-			"NodeSqliteDatabase.createExecutor/<returned>.run/execute()",
-			"NodeSqliteDatabase.createExecutor/<returned>.get/execute()",
-			"NodeSqliteDatabase.createExecutor/<returned>.all/execute()",
-			"NodeSqliteDatabase.close/this.tail.then()/this.driver()",
-			"openConnection",
-			"openNodeSqliteDatabase",
-			"openNodeSqliteDatabase/switchToWriteAheadLog()",
-			// The open's shared lock: a non-waiting open and flock, with no form off the event loop yet.
-			"acquireOpenLock",
-		].map((name) => ({ file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name })),
-		sampledCallersOfOwnedCalls: ["NodeSqliteDatabase.commitAlone", "NodeSqliteDatabase.commitMembers"].map(
-			(name) => ({
-				file: "packages/coding-agent/src/core/storage/node-sqlite.ts",
-				name,
-			}),
-		),
-	},
-];
+export const OWNED_ELSEWHERE: readonly OwnedArea[] = [];
 
 export const STARTUP_ONLY: readonly ReviewedSelector[] = [
 	{
@@ -286,6 +260,24 @@ export interface ReviewedEdge {
 }
 
 export const GUARDED_CALLS: readonly ReviewedEdge[] = [
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "send" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadConnection.request" },
+		reason:
+			"statements run on the calling thread only for an in-memory database, which has no file to wait for and no lock another connection holds, and for a connection its caller opened and passed to wrapNodeSqliteDatabase, a DatabaseSync that cannot move to another thread; openNodeSqliteDatabase runs every connection to a file on a thread of its own (#5376)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openNodeSqliteDatabase" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openOnCallerThread" },
+		reason:
+			"opens on the calling thread only a database isInMemoryDatabase proves in memory: it has no file, so opening it never waits for the disk or a lock; every other path, an unreadable URI included, opens on a thread of its own (#5376)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "acquireOpenLock" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "legacySharedOpenLock" },
+		reason:
+			"takes the open lock on the calling thread, tried once without waiting, only with a native binding older than the one this package ships, which lacks trySharedAdvisoryLockAsync; the shipped binding takes it on a native worker (#5376)",
+	},
 	{
 		from: { file: "packages/coding-agent/src/core/agent-session.ts", name: "AgentSessionBase.constructor" },
 		to: { file: "packages/coding-agent/src/utils/shell.ts", name: "isPowerShellAvailable" },
