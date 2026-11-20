@@ -153,7 +153,8 @@ describe("an interactive session that never used Intercom is reachable from anot
 					executable: process.execPath,
 					args: [CLI, ...profile.args, host === "isolated" ? "--approve" : "--no-approve"],
 					cwd: profile.cwdB,
-					env: { ...profile.env, TERM: "xterm-256color" },
+					// The PTY inherits this runner's environment, where the test setup turns the startup join off.
+					env: { ...profile.env, TERM: "xterm-256color", ATOMIC_INTERCOM_JOIN_AT_STARTUP: "" },
 					timeoutMs: 4 * CLI_START_TIMEOUT_MS,
 					cols: 200,
 					rows: 48,

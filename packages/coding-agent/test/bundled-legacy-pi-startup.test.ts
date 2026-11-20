@@ -78,6 +78,7 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 				NO_COLOR: "1",
 				ATOMIC_PACKAGE_DIR: packageDir,
 				ATOMIC_SKIP_VERSION_CHECK: "1",
+				ATOMIC_INTERCOM_JOIN_AT_STARTUP: "0",
 				...(mode === "interactive" ? { ATOMIC_INTERACTIVE_ENGINE_CHILD: "1" } : {}),
 			},
 			stdio: "pipe",
@@ -336,6 +337,7 @@ it.skipIf(!tmuxAvailable)(
 			ATOMIC_CODING_AGENT_DIR: agentDir,
 			ATOMIC_PACKAGE_DIR: packageDir,
 			ATOMIC_SKIP_VERSION_CHECK: "1",
+			ATOMIC_INTERCOM_JOIN_AT_STARTUP: "0",
 		};
 		const command = [
 			"env -i",
