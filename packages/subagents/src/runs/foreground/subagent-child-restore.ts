@@ -55,6 +55,7 @@ import {
 	indexSubagentChildOwner,
 	loadSubagentChildRecord,
 	readableSubagentChildRecordOf,
+	SUBAGENT_CHILD_RECORD_TYPE,
 } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
@@ -327,6 +328,64 @@ async function entriesAfterLaunch(
 	return branch.slice(launchIndex);
 }
 
+/**
+ * Whether the pause a record names still holds in the child's saved session: the session still holds the entry the
+ * pause was taken at, and no user message reached the child after it. What its interrupted turn left (its answer, the
+ * results of its stopped calls) and what a restore notes are not messages to it. A version that does not record pauses
+ * leaves the record's pause behind when it continues the child; the message it continues it with ends the pause.
+ *
+ * A pause recorded without its entry, as builds before `pausedAtLeafId` recorded it, holds as those builds held it,
+ * unless a user message reached the child after the record of that pause was saved (`recordedAt`, when it is known).
+ */
+function pauseStillHolds(
+	branch: ReturnType<SessionManager["getBranch"]> | undefined,
+	pausedAtLeafId: string | null | undefined,
+	recordedAt?: number,
+): boolean {
+	if (branch === undefined) return false;
+	if (pausedAtLeafId === undefined)
+		return (
+			recordedAt === undefined ||
+			branch.every((entry) => !(isUserMessage(entry) && Date.parse(entry.timestamp) > recordedAt))
+		);
+	const pausedAt = pausedAtLeafId === null ? -1 : branch.findIndex((entry) => entry.id === pausedAtLeafId);
+	if (pausedAtLeafId !== null && pausedAt === -1) return false;
+	return branch.slice(pausedAt + 1).every((entry) => !isUserMessage(entry));
+}
+
+function isUserMessage(entry: ReturnType<SessionManager["getBranch"]>[number]): boolean {
+	return entry.type === "message" && entry.message.role === "user";
+}
+
+/**
+ * When the owner's session saved the record where child `childId`'s current pause began: the first of the records that
+ * say it is paused since the last one that says otherwise. A version that writes whole merged records keeps saying
+ * paused after it continued the child, so a later record does not date the pause; a record that says nothing of pauses
+ * after them (an older writer's) does not end them either. `undefined` when the owner's session does not hold where
+ * that run of records begins.
+ */
+function pauseRecordedAt(ctx: ExtensionContext, childId: string): number | undefined {
+	const entries = ctx.sessionManager.getEntries();
+	let began: (typeof entries)[number] | undefined;
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (entry?.type !== "custom" || entry.customType !== SUBAGENT_CHILD_RECORD_TYPE) continue;
+		const data = entry.data as Partial<SubagentChildRecord> | undefined;
+		if (data?.childId !== childId) continue;
+		if (data.pausedByUser === true) began = entry;
+		else if (began !== undefined) return recordTime(began);
+		else if (data.pausedByUser === false) return undefined;
+	}
+	// The run reaches the oldest record the session holds: it began there only if the session holds its whole history.
+	const wholeHistory = typeof ctx.sessionManager.hasFullHistory !== "function" || ctx.sessionManager.hasFullHistory();
+	return began !== undefined && wholeHistory ? recordTime(began) : undefined;
+}
+
+function recordTime(entry: { readonly timestamp: string }): number | undefined {
+	const at = Date.parse(entry.timestamp);
+	return Number.isNaN(at) ? undefined : at;
+}
+
 async function ownSessionModelCandidate(
 	sessionManager: SessionManager,
 	record: SubagentChildRecord,
@@ -585,6 +644,8 @@ async function relaunchChild(
 	let cwd = await mapRestoredPathAsync(record.cwd, scope);
 	let cwdVerdict: CwdVerdict;
 	let sessionManager: SessionManager | undefined;
+	/** The child's session as it was saved, before restoring it changes anything: where a recorded pause is checked. */
+	let savedBranch: ReturnType<SessionManager["getBranch"]> | undefined;
 	if (fresh) {
 		cwdVerdict = await checkLaunchCwd(cwd);
 		if (cwdVerdict.state === "missing") return unrestorable(`its working directory no longer exists: ${cwd}`);
@@ -605,6 +666,7 @@ async function relaunchChild(
 	} else {
 		const reopened = await reopenChildSession(ctx, { ...record, cwd });
 		if ("reason" in reopened) return unrestorable(reopened.reason);
+		savedBranch = reopened.sessionManager.getBranch();
 		sessionManager = await continueChildWhereItWorked(ctx, cwd, reopened.sessionManager);
 		cwd = await mapRestoredPathAsync(sessionManager.getCwd(), scope);
 		cwdVerdict = await checkLaunchCwd(cwd);
@@ -710,7 +772,15 @@ async function relaunchChild(
 		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
 	// Session recovery of a child the user had paused: it comes back paused, prompted with nothing, as it was.
 	const restoredPaused =
-		resume === undefined && !fresh && sessionManager !== undefined && latest.pausedByUser === true;
+		resume === undefined &&
+		!fresh &&
+		sessionManager !== undefined &&
+		latest.pausedByUser === true &&
+		pauseStillHolds(
+			savedBranch,
+			latest.pausedAtLeafId,
+			latest.pausedAtLeafId === undefined ? pauseRecordedAt(ctx, record.childId) : undefined,
+		);
 	const promptless = resume?.promptless === true && heldMessages.length === 0;
 	const wakePlan =
 		!redispatch &&
@@ -755,7 +825,8 @@ async function relaunchChild(
 		...(fresh?.share === undefined ? {} : { share: fresh.share }),
 		...(prompts.followUps.length > 0 && !restoredPaused ? { resumeFollowUps: prompts.followUps } : {}),
 		...(prompts.taskLiteral ? { resumeTaskLiteral: true } : {}),
-		...(restoredPaused ? { resumePaused: true } : {}),
+		// A pause its record still names but that no longer holds is cleared, so the record says what the child is.
+		...(restoredPaused ? { resumePaused: true } : latest.pausedByUser === true ? { resumePaused: false } : {}),
 		// Present, even empty, whenever the wake took the results its record held: they are cleared once delivered.
 		...(wakePlan
 			? {

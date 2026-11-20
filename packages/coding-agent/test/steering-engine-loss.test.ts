@@ -27,10 +27,11 @@ function listed(rig: Rig): string {
 
 /**
  * The main chat on an isolated engine whose turn holds in a tool round until `finishTurn`. With `holdAnswer`, the
- * answer to the first message delivered after that round also waits until it is released.
+ * answer to the first message delivered after that round also waits until it is released; with `holdNextTurn`, so
+ * does the answer that opens the turn after that one.
  */
 async function mainChatOnEngine(
-	options: { holdAnswer?: Promise<void> } = {},
+	options: { holdAnswer?: Promise<void>; holdNextTurn?: Promise<void> } = {},
 ): Promise<{ rig: Rig; finishTurn: () => void; rows: () => string[] }> {
 	const toolHold = createGate();
 	const rig = await createRig("isolated", "quiet", { tools: [holdTool(toolHold)] });
@@ -40,15 +41,17 @@ async function mainChatOnEngine(
 		InteractiveMode.prototype,
 		"handleEvent",
 	);
+	// InteractiveMode's handler hears every event; these are the ones the steering controller follows.
 	rig.host.session.subscribe((event) => {
-		if (event.type === "queue_update") void handleEvent.call(rig.host, event);
+		if (event.type === "queue_update" || (event.type === "message_end" && event.message.role === "user"))
+			void handleEvent.call(rig.host, event);
 	});
 	const attach: (this: Rig["host"]) => () => void = Reflect.get(
 		InteractiveMode.prototype,
 		"attachSteeringEngineRecovery",
 	);
 	cleanups.push(attach.call(rig.host));
-	const holdAnswer = options.holdAnswer;
+	const { holdAnswer, holdNextTurn } = options;
 	rig.engine.setResponses([
 		fauxAssistantMessage([fauxToolCall("hold", {})], { stopReason: "toolUse" }),
 		holdAnswer
@@ -57,7 +60,13 @@ async function mainChatOnEngine(
 					return fauxAssistantMessage("answer 1");
 				}
 			: fauxAssistantMessage("answer 1"),
-		...Array.from({ length: 6 }, (_, index) => fauxAssistantMessage(`answer ${index + 2}`)),
+		holdNextTurn
+			? async () => {
+					await holdNextTurn;
+					return fauxAssistantMessage("answer 2");
+				}
+			: fauxAssistantMessage("answer 2"),
+		...Array.from({ length: 5 }, (_, index) => fauxAssistantMessage(`answer ${index + 3}`)),
 	]);
 	await rig.host.defaultEditor.onSubmit?.("first");
 	await toolHold.entered.promise;
@@ -119,6 +128,85 @@ test("a message the crashed engine already delivered is not given back, though t
 		["warning: Engine restarted; 1 queued message wasn't sent and is back in the editor"],
 	);
 	assert.equal(userTexts(rig.engine).filter((text) => text === "steer alpha").length, 1);
+});
+
+test("a message the engine started its next turn with is never given back by a later crash", async () => {
+	const nextTurn = Promise.withResolvers<void>();
+	cleanups.push(() => nextTurn.resolve());
+	const { rig, finishTurn, rows } = await mainChatOnEngine({ holdNextTurn: nextTurn.promise });
+	// The host stops hearing the engine as the tool round ends, so it still shows the turn running once it has ended.
+	rig.pair!.holdHostTrafficFrom((record) => (record as { type?: string }).type === "tool_execution_end");
+	finishTurn();
+	await waitFor(
+		"the engine to end its turn",
+		() => !rig.engine.session.isStreaming && rig.engine.session.messages.at(-1)?.role === "assistant",
+	);
+	assert.equal(rig.host.session.isStreaming, true, "the host still shows the turn running");
+
+	// Sent as a steer, the engine starts its next turn with it: the model receives it.
+	const sent = rig.host.defaultEditor.onSubmit?.("late steer");
+	await waitFor("the engine to start a turn with it", () => userTexts(rig.engine).includes("late steer"));
+	await rig.pair!.releaseHostTraffic();
+	await sent;
+	await waitFor("the host to show that turn", () => rig.host.session.isStreaming);
+	// A message queued in that turn is still the engine's when it crashes.
+	await rig.host.defaultEditor.onSubmit?.("queued after");
+	await waitFor("the engine to list it to the host", () => listed(rig) === "queued after/");
+
+	rig.host.editor.setText("draft");
+	rig.pair!.crash();
+	nextTurn.resolve();
+	await waitFor("the restore notice", () => rig.host.notices.some((notice) => notice.includes("Engine restarted")));
+
+	assert.equal(rig.host.editor.getText(), "queued after\n\ndraft", "only the message the model never received");
+	assert.deepEqual(
+		rig.host.notices.filter((notice) => notice.includes("Engine restarted")),
+		["warning: Engine restarted; 1 queued message wasn't sent and is back in the editor"],
+	);
+	assert.deepEqual(rows(), []);
+	assert.equal(userTexts(rig.engine).filter((text) => text === "late steer").length, 1);
+});
+
+test("a message the engine started its next turn with but had not saved when it crashed comes back", async () => {
+	const nextTurn = Promise.withResolvers<void>();
+	const saveGate = Promise.withResolvers<void>();
+	cleanups.push(() => {
+		nextTurn.resolve();
+		saveGate.resolve();
+	});
+	const { rig, finishTurn, rows } = await mainChatOnEngine({ holdNextTurn: nextTurn.promise });
+	// The engine saves the message it starts its next turn with only once the gate opens.
+	const manager = rig.engine.session.sessionManager;
+	const appendMessage = manager.appendMessage.bind(manager);
+	manager.appendMessage = async (message) => {
+		if (message.role === "user" && JSON.stringify(message.content).includes("unsaved steer")) await saveGate.promise;
+		return appendMessage(message);
+	};
+	rig.pair!.holdHostTrafficFrom((record) => (record as { type?: string }).type === "tool_execution_end");
+	finishTurn();
+	await waitFor(
+		"the engine to end its turn",
+		() => !rig.engine.session.isStreaming && rig.engine.session.messages.at(-1)?.role === "assistant",
+	);
+	assert.equal(rig.host.session.isStreaming, true, "the host still shows the turn running");
+	const sent = rig.host.defaultEditor.onSubmit?.("unsaved steer");
+	await waitFor("the engine to start a turn with it", () => rig.engine.session.isStreaming);
+	await rig.pair!.releaseHostTraffic();
+	await sent;
+
+	// The engine dies before it saved the message: its replacement reloads the session without it.
+	rig.host.editor.setText("draft");
+	rig.pair!.crash();
+	const agentState = rig.engine.session.agent.state;
+	agentState.messages = agentState.messages.filter(
+		(message) => !(message.role === "user" && JSON.stringify(message.content).includes("unsaved steer")),
+	);
+	nextTurn.resolve();
+	await waitFor("the restore notice", () => rig.host.notices.some((notice) => notice.includes("Engine restarted")));
+
+	assert.equal(rig.host.editor.getText(), "unsaved steer\n\ndraft", "the model never received it: it comes back");
+	assert.deepEqual(rows(), []);
+	saveGate.resolve();
 });
 
 test("a deliberate engine stop gives nothing back", async () => {

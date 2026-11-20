@@ -2141,8 +2141,15 @@ test("Esc pauses a running subagent from its chat and never leaves; ← on an em
 	}
 });
 
-/** A running subagent's transcript whose queue Esc can take back, as its in-process session's does. */
-function pausableTranscript(session: SessionManager, queued: { steering: string[]; followUp: string[] }) {
+/**
+ * A running subagent's transcript whose queue Esc can take back, as its in-process session's does. With `warning`, its
+ * pause answers that it would not survive a restart; with `held`, the pause answers only once `held` settles.
+ */
+function pausableTranscript(
+	session: SessionManager,
+	queued: { steering: string[]; followUp: string[] },
+	options: { warning?: string; held?: Promise<void> } = {},
+) {
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	const state = {
 		running: true,
@@ -2172,7 +2179,8 @@ function pausableTranscript(session: SessionManager, queued: { steering: string[
 			state.pauses++;
 			const taken = { steering: queued.steering.splice(0), followUp: queued.followUp.splice(0) };
 			state.running = false;
-			return taken;
+			await options.held;
+			return options.warning === undefined ? taken : { ...taken, warning: options.warning };
 		},
 	});
 	return { transcript, state };
@@ -2198,6 +2206,42 @@ test("Esc in a subagent's chat hands its queued messages back ahead of the draft
 		assert.match(text, / · paused/, "the chat's header says the subagent is paused");
 		assert.doesNotMatch(text, / · stopped/);
 		assert.equal(host.fixture.runners[0].context.signal.aborted, false, "the subagent is paused, not stopped");
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("Esc on a subagent whose pause a restart would not keep says so in its chat", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
+	const warning = "worker's pause was not saved: if Atomic restarts, it continues instead of staying paused.";
+	const { transcript } = pausableTranscript(session, { steering: [], followUp: [] }, { warning });
+	const host = await openTranscript(transcript);
+	try {
+		host.inspector.handleInput("\x1b");
+		await flush();
+		assert.match(host.text(), /pause was not saved: if Atomic restarts, it continues/);
+		assert.match(host.text(), / · paused/);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("a pause a restart would not keep, answered after the reader left its chat, is told in the main chat", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
+	const warning = "worker's pause was not saved: if Atomic restarts, it continues instead of staying paused.";
+	const held = Promise.withResolvers<void>();
+	const notices: string[] = [];
+	const { transcript } = pausableTranscript(session, { steering: [], followUp: [] }, { warning, held: held.promise });
+	const host = await openTranscript(transcript, { environment: { notify: (message) => notices.push(message) } });
+	try {
+		host.inspector.handleInput("\x1b");
+		await flush();
+		host.inspector.dispose();
+		held.resolve();
+		await flush();
+		assert.deepEqual(notices, [warning]);
 	} finally {
 		await host.dispose();
 	}
