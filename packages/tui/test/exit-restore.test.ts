@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { presentedScreens } from "./presented-screens.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/exit-without-stop.ts", import.meta.url));
 
@@ -29,7 +30,16 @@ describe("terminal restore on process exit", () => {
 			assert.equal(count(output, sequence), 1, JSON.stringify(sequence));
 		}
 		assert.ok(output.indexOf("\x1b[<u") < output.indexOf("\x1b[?1049l"), "Kitty pop must precede leaving alt screen");
-		assert.ok(output.endsWith("\x1b[?1049l\x1b[?25h"));
+		// The fixture exits before its first frame, so the update opened on entering fullscreen ends once the shell is back.
+		assert.ok(output.endsWith("\x1b[?1049l\x1b[?25h\x1b[?2026l"));
+	});
+
+	it("keeps the shell on screen when the process exits before the first frame", async () => {
+		const output = runFixture("exit");
+		const presented = await presentedScreens([output], 20, 3, "$ atomic\r\n");
+
+		assert.deepStrictEqual(presented.screens, [["$ atomic", "", ""]]);
+		assert.strictEqual(presented.held, false);
 	});
 
 	it("does not restore twice after a normal stop()", () => {

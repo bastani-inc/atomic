@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Starting Atomic in fullscreen, or returning to it from an external editor or a subshell, no longer blanks the terminal before the first frame: the previous screen stays until the full interface replaces it.
+
 ## [0.10.0] - 2026-11-20
 
 Codemode and subagents replace workflows, subagents share the main chat screen with its steering and can be resumed by a message, and long sessions keep only their current context in memory.

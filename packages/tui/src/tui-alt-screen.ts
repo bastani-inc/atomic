@@ -106,6 +106,29 @@ function clickTime(): number {
 }
 
 const COPY_ERROR_FLASH_DURATION_MS = 5000;
+
+/**
+ * Which screen the renderer holds. Entering the alternate screen opens a synchronized update that lasts until the first
+ * frame ends it, so the terminal keeps showing what was there before (the shell, or the screen left by an external
+ * editor) until a complete frame replaces it, rather than a blank screen while that frame is prepared.
+ * - `main-screen`: not started, or stopped.
+ * - `awaiting-first-frame`: on the alternate screen, inside the update opened on entry at `enteredAt`
+ *   (`performance.now()`), with no frame drawn yet.
+ * - `showing-frames`: a frame ended that update; every later write that changes the screen is its own update.
+ */
+type AltScreenPhase =
+	| { kind: "main-screen" }
+	| { kind: "awaiting-first-frame"; enteredAt: number }
+	| { kind: "showing-frames" };
+
+/**
+ * How long the update opened on entering fullscreen may have been open when the first frame is written. Terminals end
+ * an update that stays open too long, and some do not restart that clock when an update begins again while one is
+ * open. A first frame written later ends the old update and begins a new one, so it still lands in one step; the
+ * cleared screen shows in between, as it did before the entry was held at all.
+ */
+const FIRST_FRAME_HOLD_LIMIT_MS = 100;
+
 // Regular mode delegates double-click selection to the terminal emulator. Fullscreen owns mouse selection,
 // so it uses iTerm2's default "characters considered part of a word" set:
 // https://github.com/gnachman/iTerm2/blob/7f4ff739721f95d0b93003d8701c4523a7edf261/sources/Settings/iTermPreferences.m#L743
@@ -445,7 +468,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly implicitDocument: Component;
 	private readonly implicitScrollView: ScrollView;
 	private readonly flashes: AltScreenFlashContainer;
-	private altScreenActive = false;
+	private screenPhase: AltScreenPhase = { kind: "main-screen" };
 	private imageProtocol: ImageProtocol = null;
 	private savedCapabilities?: TerminalCapabilities;
 	private readonly uploadedKittyImages = new Map<number, CachedKittyImage>();
@@ -613,7 +636,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.stopScrollbarHover();
 		this.stopScrollbarDrag();
 		this.flashes.dispose();
-		this.altScreenActive = true;
 		const capabilities = getCapabilities();
 		this.imageProtocol = capabilities.images;
 		this.uploadedKittyImages.clear();
@@ -647,8 +669,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			term.startsWith("screen")
 				? ENABLE_BUTTON_MOTION_MOUSE
 				: ENABLE_ALL_MOTION_MOUSE;
+		// The update stays open while the terminal is set up (keyboard protocol flags belong to the screen they are pushed
+		// on, so the switch comes first) and the first frame is prepared; that frame ends it.
+		this.screenPhase = { kind: "awaiting-first-frame", enteredAt: performance.now() };
 		this.terminal.write(
-			`${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? mouseSequence : ""}\x1b[2J\x1b[H\x1b[?25l`,
+			`${BEGIN_SYNCHRONIZED_OUTPUT}${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? mouseSequence : ""}\x1b[2J\x1b[H\x1b[?25l`,
 		);
 	}
 
@@ -662,16 +687,22 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.stopScrollbarDrag();
 		this.clearComponentMouseGesture();
 		this.flashes.dispose();
-		if (!this.altScreenActive) return;
+		if (this.screenPhase.kind === "main-screen") return;
+		const resets = `${this.deleteKittyImages()}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}`;
+		// Before the first frame, the update opened on entry stays open until afterTerminalStop has left the alternate
+		// screen, so the terminal goes from what it showed before straight back to it.
 		this.terminal.write(
-			`${BEGIN_SYNCHRONIZED_OUTPUT}${this.deleteKittyImages()}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${END_SYNCHRONIZED_OUTPUT}`,
+			this.screenPhase.kind === "awaiting-first-frame"
+				? resets
+				: `${BEGIN_SYNCHRONIZED_OUTPUT}${resets}${END_SYNCHRONIZED_OUTPUT}`,
 		);
 		this.uploadedKittyImages.clear();
 	}
 
 	protected override afterTerminalStop(options: TuiStopOptions): void {
-		if (!this.altScreenActive) return;
-		this.altScreenActive = false;
+		const phase = this.screenPhase;
+		if (phase.kind === "main-screen") return;
+		this.screenPhase = { kind: "main-screen" };
 		const savedCapabilities = this.savedCapabilities;
 		this.savedCapabilities = undefined;
 		const restoreCapabilities = () => {
@@ -704,7 +735,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return;
 		} else {
 			const width = Math.max(1, this.terminal.columns);
-			this.lastDocument = this.prepareExitRows(this.render(width), width);
+			try {
+				this.lastDocument = this.prepareExitRows(this.render(width), width);
+			} catch (error) {
+				// Nothing below ends the update opened on entry when the transcript cannot be drawn.
+				if (phase.kind === "awaiting-first-frame") this.terminal.write(END_SYNCHRONIZED_OUTPUT);
+				throw error;
+			}
 			let buffer = EXIT_TRANSCRIPT_START;
 			for (let row = 0; row < this.lastDocument.length; row++) {
 				if (row > 0) buffer += "\r\n";
@@ -764,13 +801,18 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	protected override getExitRestorePrefix(): string {
 		const prefix = super.getExitRestorePrefix();
-		if (!this.altScreenActive) return prefix;
-		return `${END_SYNCHRONIZED_OUTPUT}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${prefix}`;
+		if (this.screenPhase.kind === "main-screen") return prefix;
+		// Before the first frame, the update opened on entry ends after the main screen is back (see the suffix).
+		const release = this.screenPhase.kind === "showing-frames" ? END_SYNCHRONIZED_OUTPUT : "";
+		return `${release}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${prefix}`;
 	}
 
 	protected override getExitRestoreSuffix(): string {
 		// Kitty keyboard flags are per screen, so the terminal pops them before the alternate screen is left.
-		return `${super.getExitRestoreSuffix()}${this.altScreenActive ? `${EXIT_ALT_SCREEN}\x1b[?25h` : ""}`;
+		const suffix = super.getExitRestoreSuffix();
+		if (this.screenPhase.kind === "main-screen") return suffix;
+		const release = this.screenPhase.kind === "awaiting-first-frame" ? END_SYNCHRONIZED_OUTPUT : "";
+		return `${suffix}${EXIT_ALT_SCREEN}\x1b[?25h${release}`;
 	}
 
 	private deleteKittyImages(): string {
@@ -1238,7 +1280,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private waitForSingleClick(result: TuiMouseDispatchResult, start: ClickTarget): void {
 		const action = result.whenSingleClick;
 		if (action === undefined) return;
-		if (start.count !== 1 || !this.altScreenActive) {
+		if (start.count !== 1 || this.screenPhase.kind === "main-screen") {
 			result.onSingleClickCancel?.();
 			return;
 		}
@@ -2726,7 +2768,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override doRender(): void {
-		if (this.stopped || !this.altScreenActive) return;
+		if (this.stopped || this.screenPhase.kind === "main-screen") return;
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
 		const rendered = this.renderScreen(width, height);
@@ -2824,7 +2866,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			buffer += "\x1b[?25l";
 		}
 		buffer += END_SYNCHRONIZED_OUTPUT;
+		// The first frame begins an update too, which changes nothing while the one opened on entry is still open. Once
+		// that one has been open longer than FIRST_FRAME_HOLD_LIMIT_MS the frame ends it first: the terminal may be about
+		// to give up on it, and beginning it again would not restart the terminal's clock.
+		const phase = this.screenPhase;
+		if (phase.kind === "awaiting-first-frame" && performance.now() - phase.enteredAt > FIRST_FRAME_HOLD_LIMIT_MS) {
+			buffer = `${END_SYNCHRONIZED_OUTPUT}${buffer}`;
+		}
 		this.terminal.write(buffer);
+		this.screenPhase = { kind: "showing-frames" };
 
 		this.previousScreen = screen;
 		this.previousScreenWidth = width;

@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Fixed
+
+- `TuiAltScreen` keeps what was on screen before it started (the shell, or the screen an external editor left) until its first frame replaces it in one synchronized update, instead of showing a blank screen while that frame is prepared. This applies each time it starts, including after `stop()`. A first frame that comes more than 100 ms after the start ends that update and begins a new one, so it still draws in one step; the cleared screen shows briefly first, as before.
+
 ## [0.10.0] - 2026-11-20
 
 ### Breaking Changes
