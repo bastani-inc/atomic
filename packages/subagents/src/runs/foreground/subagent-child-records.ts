@@ -154,6 +154,12 @@ export interface SubagentChildRecord {
 	readonly worktree?: SubagentChildWorktree;
 	readonly terminalStatus?: string;
 	/**
+	 * The user paused the running child from its chat (Esc) and its next turn has not started: session recovery restores
+	 * it paused, prompted with nothing, until the user continues it. Written `false` once it no longer is; absent in
+	 * records of a child never paused and in records written before Atomic recorded it, which restore as before.
+	 */
+	readonly pausedByUser?: boolean;
+	/**
 	 * Steering and follow-up messages the child had queued but not read when pause or quit stopped
 	 * task `taskId`, in order. Resume delivers them once, before its own message; a later task's record supersedes them.
 	 */

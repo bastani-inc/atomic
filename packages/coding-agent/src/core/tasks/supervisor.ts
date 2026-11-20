@@ -135,6 +135,8 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	 * released, without starting a turn, so the message sent next starts it. A no-op on a task that is not paused.
 	 */
 	resumeTurn?(): Promise<void>;
+	/** Whether the task is paused ({@link pauseTurn}) and waits for the user to continue it. */
+	turnPaused?(): boolean;
 	/** The messages queued for the session now, for a viewer that missed their `queue_update`. */
 	getQueuedMessages?(): QueuedTaskMessages;
 	readonly completionSource?: TaskCompletionSource;
