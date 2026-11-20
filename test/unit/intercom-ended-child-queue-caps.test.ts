@@ -27,7 +27,7 @@ import {
 	openLocalEndedChildQueueStore,
 	openSqlEndedChildQueueStore,
 } from "../../packages/intercom/broker/sql-ended-child-queue-store.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 /**
  * Durable wake queue: the 32 MiB per-subagent and 256 MiB per-broker caps hold for what the store keeps on disk, also
@@ -39,6 +39,8 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 const OWNER = "owner-session";
 const HOST = "owner-host";
 const MiB = 1024 * 1024;
+/** How long the store's writes wait for another process's lock in the tests that hold it. */
+const LOCK_WAIT_MS = 300;
 /** About 1 MiB where it is kept: its text, and its frame and sender as JSON. */
 const TEXT = "x".repeat(MiB - 1024);
 
@@ -188,7 +190,7 @@ function sendMany(
 
 test("a delivered message whose row another process's lock kept from being deleted counts against its subagent's 32 MiB until the delete, retried once the lock is free, goes through", async () => {
 	const path = storePath();
-	const { departed, queue, logs } = await broker(path, { lockWaitMs: 300 });
+	const { departed, queue, logs } = await broker(path, { lockWaitMs: LOCK_WAIT_MS });
 	const child = "subagent-worker-caps-1";
 	const sender = wakeSender("peer");
 	departed.mark(OWNER, [paused(child)]);
@@ -207,6 +209,8 @@ test("a delivered message whose row another process's lock kept from being delet
 		timeout: 30_000,
 		interval: 20,
 	});
+	// The lock wait since the failed delete is over (until then the writes are refused at once); the lock is still held.
+	await sleep(LOCK_WAIT_MS);
 	other.exec("ROLLBACK");
 	other.close();
 	// It is paused again at once, and senders send as much again: the rows still on disk count.

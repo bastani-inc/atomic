@@ -215,7 +215,7 @@ export const ENDED_QUEUE_FILE_BYTES_MAX = 4 * ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX 
 /** How many rows one page of counting what the store keeps reads before the event loop runs again. */
 const COUNT_PAGE_ROWS = 2_048;
 /** How many rows (by their sequence) one range of the sums a store counts when it opens covers. */
-const COUNT_SUM_ROWS = 16_384;
+const COUNT_SUM_ROWS = 8_192;
 
 /** How long after a failed delete it is tried again, at first; each failure doubles it, up to the most. */
 const RETRY_DELETE_FIRST_MS = 100;
