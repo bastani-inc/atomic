@@ -818,11 +818,14 @@ test("a wrapped PRAGMA behind empty statements or under EXPLAIN is not carried o
 
 test("a wrapped write of a temporary table or of another attached file runs at once during a threaded transaction, as before, and one of the same file waits (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
+	// Created before the connection that attaches it, so it is removed only after that connection closed.
+	const otherPath = databasePath();
 	const { raw, wrapped } = await openWrapped(path, 150);
 	raw.exec("CREATE TEMP TABLE scratch (x)");
-	raw.exec(`ATTACH '${databasePath()}' AS other`);
+	raw.exec(`ATTACH '${otherPath}' AS other`);
 	raw.exec("CREATE TABLE other.t (x)");
 	raw.exec(`ATTACH '${path}' AS alias`);
+	cleanups.push(() => raw.exec("DETACH other; DETACH alias"));
 	const { committed, settled } = await holdLock(threaded, 600);
 	for (const sql of [
 		"CREATE TEMP TABLE scratch2 (x)",
