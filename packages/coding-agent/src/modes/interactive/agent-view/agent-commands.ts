@@ -14,13 +14,18 @@ export async function localAgentCommands(
 	return catalog === undefined ? undefined : agentViewCommands(catalog);
 }
 
-/** The same, read through the isolated engine for view `viewId`. */
+/** The same, read through the isolated engine for view `viewId`; none while the engine cannot answer. */
 export async function remoteAgentCommands(
 	runtime: AgentViewRuntime,
 	viewId: string,
 ): Promise<AgentViewCommands | undefined> {
-	const commands = await runtime.requestAgentView<AgentViewCommands | null>({ type: "agent_view_commands", viewId });
-	return commands ?? undefined;
+	try {
+		const commands = await runtime.requestAgentView<AgentViewCommands | null>({ type: "agent_view_commands", viewId });
+		return commands ?? undefined;
+	} catch {
+		// A closed view, or an engine that is restarting: the prompt still completes main's commands.
+		return undefined;
+	}
 }
 
 /**
