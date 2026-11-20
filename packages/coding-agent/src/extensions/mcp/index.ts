@@ -20,6 +20,10 @@
  * Every call runs through pi's tool pipeline, so `tool_call`/`tool_result` hooks and permission
  * extensions apply to MCP tools the same way they do to built-in tools.
  *
+ * The session records each declared MCP tool's listing (tool-records.ts). A resumed session declares those tools
+ * from their records while their servers reconnect, so its requests keep the tool list the provider cached; a call
+ * waits for the server and runs only if the server lists the same tool again.
+ *
  * Problems found at startup (config errors, failed connections, servers that need a sign-in) are
  * reported once. `/mcp` opens a manager to sign in, reconnect, enable or disable servers, and change
  * their exposure; the last two are saved to the `mcp.json` that defines the server, or apply to the
@@ -45,6 +49,7 @@ import { sliceHead } from "../../core/tools/truncate.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { CODEMODE_TOOL_NAME } from "../codemode/tool.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../tool-search/tool.js";
+import type { Tool as McpTool } from "./client/index.js";
 import {
 	getMcpToolExposure,
 	type LoadedMcpConfig,
@@ -52,18 +57,29 @@ import {
 	type McpExposure,
 	type McpServerConfigPatch,
 	type McpServerEntry,
+	mcpRequestTimeoutMs,
 	updateMcpServerConfigAsync,
 } from "./config.ts";
 import type { McpOAuthCredentialStore, McpSignInPrompt } from "./oauth.ts";
-import {
-	createMcpResourceToolDefinitions,
-	LIST_MCP_RESOURCE_TEMPLATES_TOOL,
-	LIST_MCP_RESOURCES_TOOL,
-	READ_MCP_RESOURCE_TOOL,
-} from "./resources.js";
+import { createMcpResourceToolDefinitions } from "./resources.js";
 import { loadMcpRuntime } from "./runtime.lazy.ts";
 import type * as McpRuntime from "./runtime.ts";
 import type { McpServerConnection, McpServerLog, McpTransportFactory } from "./runtime.ts";
+import {
+	declaredMcpToolNames,
+	isRecordedToolName,
+	MCP_TOOL_RECORD_ENTRY_TYPE,
+	type McpResourceServerRecord,
+	type McpToolRecord,
+	type McpToolRecordData,
+	type McpToolRecords,
+	RESOURCE_TOOL_NAMES,
+	readToolRecords,
+	recordableTool,
+	sameListedTool,
+	sameToolRecord,
+	transportFingerprint,
+} from "./tool-records.ts";
 import { createMcpToolDefinition, createMcpToolName, createMcpToolRenderers, type McpToolDetails } from "./tools.ts";
 import { type McpMenu, type McpUi, showMcpManager } from "./ui.ts";
 
@@ -102,12 +118,6 @@ export interface McpExtensionOptions {
 }
 
 const DEFAULT_STARTUP_WAIT_MS = 10_000;
-
-const RESOURCE_TOOL_NAMES: ReadonlySet<string> = new Set([
-	LIST_MCP_RESOURCES_TOOL,
-	LIST_MCP_RESOURCE_TEMPLATES_TOOL,
-	READ_MCP_RESOURCE_TOOL,
-]);
 
 /** A configured server. Disabled servers have no connection. */
 interface McpServer {
@@ -416,6 +426,25 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const serverTools = new Map<string, Set<string>>();
 		/** Last definition registered under each tool name, to re-register withdrawn tools as hidden. */
 		const definitions = new Map<string, ToolDefinition<TSchema, McpToolDetails>>();
+		/** Each registered tool name's server and that server's latest listing of the tool. */
+		const listedTools = new Map<string, { server: string; tool: McpTool }>();
+		/**
+		 * Tool names registered from the session's records (see tool-records.ts) that their server has not listed
+		 * since the session started. They stay declared while the server connects; calls wait for it.
+		 */
+		const recordedOnly = new Set<string>();
+		/** The latest records on the session's branch. */
+		let toolRecords: McpToolRecords = { tools: new Map(), resourceServers: undefined };
+		/** Tool records being appended, by name, and the resource servers being appended, as JSON. */
+		const recordingTools = new Map<string, McpToolRecord>();
+		let recordingResources: string | undefined;
+		/** MCP tool and resource tool names the session's transcript declares to the model now. */
+		let declaredNames = new Set<string>();
+		/**
+		 * Servers that had resources when the session declared the resource tools and have not finished connecting
+		 * since it started. The resource tools stay declared for them meanwhile.
+		 */
+		const pendingResourceServers = new Set<string>();
 
 		// Render resumed MCP calls even when their server has not connected or never connects.
 		pi.registerToolRenderer((toolName, next) => {
@@ -435,16 +464,93 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			return createMcpToolRenderers(label);
 		});
 
+		/** Exposure of one of a server's tools, from its config and the subagent policy. */
+		const exposureFor = (entry: McpServerEntry, tool: string, name: string): McpExposure => {
+			const server = entry.name;
+			const configuredExposure = getMcpToolExposure(entry.config, tool);
+			const selected =
+				(subagentMcpDirectTools !== undefined &&
+					matchesMcpDirectToolSelection(subagentMcpDirectTools, server, tool)) ||
+				(latestContext?.subagentPolicy?.tools?.includes(name) ?? false);
+			return selected && configuredExposure !== "hidden" && exposureOf(entry) !== "hidden"
+				? "direct"
+				: subagentMcpDirectTools === undefined && !latestContext?.subagentPolicy?.tools
+					? configuredExposure
+					: "hidden";
+		};
+
+		/**
+		 * The definition of a server's tool. `recorded` marks a definition built from the session's record before the
+		 * server listed the tool: a call to it runs only once the server lists the same tool under the same name.
+		 */
+		const defineTool = (
+			entry: McpServerEntry,
+			tool: McpTool,
+			name: string,
+			instructions: string | undefined,
+			recorded?: McpTool,
+		): ToolDefinition<TSchema, McpToolDetails> => {
+			const server = entry.name;
+			const description = entry.config.description?.trim();
+			const definition = createMcpToolDefinition({
+				server,
+				tool,
+				name,
+				exposure: exposureFor(entry, tool.name, name),
+				namespace: {
+					name: mcpNamespace(server),
+					...(description ? { description } : {}),
+					...(instructions ? { instructions } : {}),
+				},
+				timeoutMs: mcpRequestTimeoutMs(entry.config),
+				getClient: async () => {
+					const current = findServer(server);
+					if (!current || !isEnabled(current)) throw new Error(`MCP server "${server}" is disabled.`);
+					const client = current.connection;
+					if (!client) throw new Error(`MCP server "${server}" is still starting.`);
+					if (recorded) {
+						// The call waited for the server's connection attempt (tool_call below). Run it only against the
+						// tool the session declared: the server must list it again, unchanged, under this name.
+						const listed = listedTools.get(name);
+						if (!listed || listed.server !== server) {
+							throw new Error(
+								client.state === "connected" || client.state === "disconnected"
+									? `MCP tool "${server}/${tool.name}" is no longer available.`
+									: `MCP server "${server}" did not reconnect (${describeState(current, false)}), so its tool "${tool.name}" is not available.`,
+							);
+						}
+						if (!sameListedTool(listed.tool, recorded)) {
+							throw new Error(
+								`MCP tool "${server}/${tool.name}" changed since this session declared it, so the call did not run. Its new definition is declared with the next request.`,
+							);
+						}
+					}
+					if (
+						getMcpToolExposure(current.entry.config, tool.name) === "hidden" ||
+						(client.state === "connected" && !client.tools.some((offered) => offered.name === tool.name))
+					) {
+						throw new Error(`MCP tool "${server}/${tool.name}" is no longer available.`);
+					}
+					return client;
+				},
+				readableResources: () => resourceServers().some((current) => current.name === server),
+			});
+			markNativeMcpToolDefinition(definition, { server, tool: tool.name });
+			return definition;
+		};
+
+		/** Re-register a tool as hidden, which takes it out of the declared tools. */
+		const withdrawTool = (name: string) => {
+			const definition = definitions.get(name);
+			if (definition) pi.registerTool({ ...definition, exposure: "hidden" });
+			listedTools.delete(name);
+			recordedOnly.delete(name);
+		};
+
 		const registerTools = (connection: McpServerConnection) => {
 			if (!servers.some((candidate) => candidate.connection === connection)) return;
 			const server = connection.entry.name;
 			const entry = findServer(server)?.entry ?? connection.entry;
-			const description = entry.config.description?.trim();
-			const namespace = {
-				name: mcpNamespace(server),
-				...(description ? { description } : {}),
-				...(connection.instructions ? { instructions: connection.instructions } : {}),
-			};
 			const previous = serverTools.get(server) ?? new Set<string>();
 			const current = new Set<string>();
 			// Like Codex, all tools whose names sanitize to the same name get the hash suffix, so which
@@ -465,63 +571,137 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				current.add(name);
 				return name;
 			};
-			for (const tool of connection.tools) {
+			// Register in the order of the tool names, not the server's listing, so the order the tools are declared
+			// in does not depend on how the server happens to list them.
+			const listing = [...connection.tools].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+			for (const tool of listing) {
 				const name = assignName(tool.name, `${server}\0${tool.name}`);
-				const configuredExposure = getMcpToolExposure(entry.config, tool.name);
-				const selected =
-					(subagentMcpDirectTools !== undefined &&
-						matchesMcpDirectToolSelection(subagentMcpDirectTools, server, tool.name)) ||
-					(latestContext?.subagentPolicy?.tools?.includes(name) ?? false);
-				const exposure =
-					selected && configuredExposure !== "hidden" && exposureOf(entry) !== "hidden"
-						? "direct"
-						: subagentMcpDirectTools === undefined && !latestContext?.subagentPolicy?.tools
-							? configuredExposure
-							: "hidden";
-				const definition = createMcpToolDefinition({
-					server,
-					tool,
-					name,
-					exposure,
-					namespace,
-					timeoutMs: connection.timeoutMs,
-					getClient: async () => {
-						const current = findServer(server);
-						if (!current || !isEnabled(current)) throw new Error(`MCP server "${server}" is disabled.`);
-						const client = current.connection;
-						if (!client) throw new Error(`MCP server "${server}" is still starting.`);
-						if (
-							getMcpToolExposure(current.entry.config, tool.name) === "hidden" ||
-							(client.state === "connected" && !client.tools.some((offered) => offered.name === tool.name))
-						) {
-							throw new Error(`MCP tool "${server}/${tool.name}" is no longer available.`);
-						}
-						return client;
-					},
-					readableResources: () => resourceServers().some((current) => current.name === server),
-				});
-				markNativeMcpToolDefinition(definition, { server, tool: tool.name });
+				const definition = defineTool(entry, tool, name, connection.instructions);
 				definitions.set(definition.name, definition);
+				listedTools.set(name, { server, tool });
+				recordedOnly.delete(name);
 				pi.registerTool(definition);
 			}
 			serverTools.set(server, current);
 			// Tools cannot be unregistered, so tools the server dropped are re-registered as hidden. When
 			// the server offers them again they are registered with their configured exposure above.
-			for (const name of previous) {
-				const definition = definitions.get(name);
-				if (!current.has(name) && definition) pi.registerTool({ ...definition, exposure: "hidden" });
-			}
+			for (const name of previous) if (!current.has(name)) withdrawTool(name);
 			syncResourceTools();
+			void recordDeclaredTools();
 		};
 
 		/** Make a disabled server's tools unreachable. */
 		const hideTools = (server: string) => {
-			for (const name of serverTools.get(server) ?? []) {
-				const definition = definitions.get(name);
-				if (definition) pi.registerTool({ ...definition, exposure: "hidden" });
-			}
+			for (const name of serverTools.get(server) ?? []) withdrawTool(name);
 			serverTools.set(server, new Set());
 			syncResourceTools();
+		};
+
+		/**
+		 * Record the server's listing of each MCP tool the transcript declares, when it changed since the last record
+		 * on the branch, so a resumed session can keep declaring the tool while the server reconnects.
+		 */
+		const recordDeclaredTools = async (): Promise<void> => {
+			const records = toolRecords;
+			const tools: McpToolRecord[] = [];
+			for (const name of [...declaredNames].sort()) {
+				const listed = listedTools.get(name);
+				const entry = listed && findServer(listed.server)?.entry;
+				if (!listed || !entry || recordedOnly.has(name)) continue;
+				const record: McpToolRecord = {
+					name,
+					server: listed.server,
+					transport: transportFingerprint(entry),
+					tool: recordableTool(listed.tool),
+				};
+				const known = [records.tools.get(name), recordingTools.get(name)];
+				if (known.some((previous) => previous && sameToolRecord(previous, record))) continue;
+				recordingTools.set(name, record);
+				tools.push(record);
+			}
+			let resourceServers: McpResourceServerRecord[] | undefined;
+			if (pendingResourceServers.size === 0 && [...RESOURCE_TOOL_NAMES].some((name) => declaredNames.has(name))) {
+				const current = serversWithResources()
+					.map((server) => ({ server: server.entry.name, transport: transportFingerprint(server.entry) }))
+					.sort((a, b) => (a.server < b.server ? -1 : a.server > b.server ? 1 : 0));
+				const json = JSON.stringify(current);
+				const known = [JSON.stringify(records.resourceServers), recordingResources];
+				if (current.length > 0 && !known.includes(json)) {
+					recordingResources = json;
+					resourceServers = current;
+				}
+			}
+			if (tools.length === 0 && !resourceServers) return;
+			const settled = () => {
+				for (const record of tools)
+					if (recordingTools.get(record.name) === record) recordingTools.delete(record.name);
+				if (resourceServers && recordingResources === JSON.stringify(resourceServers))
+					recordingResources = undefined;
+			};
+			// The records count once they are stored; a failed write is tried again with the next change.
+			try {
+				await pi.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, {
+					tools,
+					...(resourceServers ? { resourceServers } : {}),
+				});
+				if (toolRecords === records) {
+					for (const record of tools) records.tools.set(record.name, record);
+					if (resourceServers) records.resourceServers = resourceServers;
+				}
+			} catch {
+				// Without the record, a later resume treats these tools as before: removed until their server connects.
+			} finally {
+				settled();
+			}
+		};
+
+		/**
+		 * On session start, register the tools the transcript declares from their records, for servers that are still
+		 * configured with the same URL or command, so the first requests keep declaring them while the servers
+		 * connect. Every recorded name keeps its owner, so a server that connects first cannot take another
+		 * server's name. A server that connects lists its tools again and they replace these definitions; the ones of
+		 * a server that does not connect are withdrawn once its attempt settles.
+		 */
+		const restoreRecordedTools = (ctx: ExtensionContext) => {
+			const branch = ctx.sessionManager.getBranch();
+			toolRecords = readToolRecords(branch);
+			declaredNames = declaredMcpToolNames(branch);
+			for (const name of declaredNames) {
+				const record = toolRecords.tools.get(name);
+				if (!record) continue;
+				// The name stays its server's: another server that connects first cannot take it, and a call to it
+				// waits for this server.
+				toolOwners.set(name, `${record.server}\0${record.tool.name}`);
+				const server = findServer(record.server);
+				if (!server || !isEnabled(server) || transportFingerprint(server.entry) !== record.transport) continue;
+				if (exposureFor(server.entry, record.tool.name, name) === "hidden") continue;
+				const definition = defineTool(server.entry, record.tool, name, undefined, record.tool);
+				definitions.set(name, definition);
+				recordedOnly.add(name);
+				const names = serverTools.get(record.server) ?? new Set<string>();
+				names.add(name);
+				serverTools.set(record.server, names);
+				pi.registerTool(definition);
+			}
+			// The resource tools stay declared while a server that had resources reconnects.
+			if ([...RESOURCE_TOOL_NAMES].some((name) => declaredNames.has(name))) {
+				for (const { server: name, transport } of toolRecords.resourceServers ?? []) {
+					const server = findServer(name);
+					if (server && isEnabled(server) && transportFingerprint(server.entry) === transport) {
+						pendingResourceServers.add(name);
+					}
+				}
+				syncResourceTools();
+			}
+		};
+
+		/** Withdraw the recorded tools of a server whose connection attempt settled without listing them. */
+		const withdrawUnlistedRecords = (server: string) => {
+			for (const name of serverTools.get(server) ?? []) {
+				if (!recordedOnly.has(name)) continue;
+				withdrawTool(name);
+				serverTools.get(server)?.delete(name);
+			}
 		};
 
 		/** Enabled servers with resources whose exposure is not `hidden`, which the resource tools reach. */
@@ -540,6 +720,11 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		 */
 		const syncResourceTools = () => {
 			const exposures = new Set(serversWithResources().map((server) => exposureOf(server.entry)));
+			for (const name of pendingResourceServers) {
+				const server = findServer(name);
+				if (server && isEnabled(server) && exposureOf(server.entry) !== "hidden")
+					exposures.add(exposureOf(server.entry));
+			}
 			const exposure = (["direct", "codemode", "deferred"] as const).find((candidate) => exposures.has(candidate));
 			const next = exposure ?? "hidden";
 			if (next === resourceToolsExposure || (resourceToolsExposure === undefined && next === "hidden")) return;
@@ -547,7 +732,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			resourceToolsExposure = next;
 			const resourceDefinitions = createMcpResourceToolDefinitions({ exposure: next, servers: resourceServers });
 			for (const definition of resourceDefinitions) pi.registerTool(definition);
-			if (wasDirect) {
+			// Hidden tools leave the declared tools when they are registered; only other exposures need this.
+			if (wasDirect && next !== "hidden") {
 				const names = new Set(resourceDefinitions.map((definition) => definition.name));
 				pi.setActiveTools(pi.getActiveTools().filter((name) => !names.has(name)));
 			}
@@ -679,11 +865,18 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const isCurrent = () =>
 				!signal.aborted && server.attempt === attempt && isEnabled(server) && servers.includes(server);
 			const ready = (async () => {
-				await after;
-				if (!isCurrent()) return;
-				const connection = await createConnection(server, isCurrent);
-				if (!connection || !isCurrent()) return;
-				await connection.getClient().catch(() => undefined);
+				try {
+					await after;
+					if (!isCurrent()) return;
+					const connection = await createConnection(server, isCurrent);
+					if (!connection || !isCurrent()) return;
+					await connection.getClient().catch(() => undefined);
+				} finally {
+					if (isCurrent()) {
+						withdrawUnlistedRecords(server.entry.name);
+						if (pendingResourceServers.delete(server.entry.name)) syncResourceTools();
+					}
+				}
 			})();
 			server.ready = ready.catch(() => undefined);
 			return ready;
@@ -1211,6 +1404,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const registered = registeredServers();
 			overridden = registered.overridden;
 			servers = [...loaded.servers.map((entry) => ({ entry })), ...registered.servers];
+			restoreRecordedTools(ctx);
 			emitChange();
 			// Codemode or tool_search is activated from the config: the first prompt does not wait for
 			// servers whose tools are not declared to the model, and scripts or searches wait for them.
@@ -1294,6 +1488,24 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			await waitForServers(waiting, ctx.signal);
 		});
 
+		// Keep track of the MCP tools the transcript declares, and record the ones whose listing was not recorded yet.
+		pi.on("message_end", async (event) => {
+			const { message } = event;
+			if (message.role !== "system" || (!message.toolsAdded && !message.toolsRemoved)) return;
+			for (const tool of message.toolsRemoved ?? []) declaredNames.delete(tool.name);
+			for (const tool of message.toolsAdded ?? []) if (isRecordedToolName(tool.name)) declaredNames.add(tool.name);
+			// Stored before the request that declares the tools is sent.
+			await recordDeclaredTools();
+		});
+
+		// Another branch declares other tools and carries other records.
+		pi.on("session_tree", (_event, ctx) => {
+			const branch = ctx.sessionManager.getBranch();
+			toolRecords = readToolRecords(branch);
+			declaredNames = declaredMcpToolNames(branch);
+			void recordDeclaredTools();
+		});
+
 		// Pick up sign-ins done outside the session, such as `pi mcp login` run by the agent.
 		pi.on("turn_start", async (_event, ctx) => {
 			if (tokensAtSignIn.size > 0) await reconnectSignedIn(ctx);
@@ -1338,6 +1550,13 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			serverTools.clear();
 			definitions.clear();
 			toolOwners.clear();
+			listedTools.clear();
+			recordedOnly.clear();
+			toolRecords = { tools: new Map(), resourceServers: undefined };
+			recordingTools.clear();
+			recordingResources = undefined;
+			pendingResourceServers.clear();
+			declaredNames = new Set();
 			tokensAtSignIn.clear();
 			resourceToolsExposure = undefined;
 			servers = [];

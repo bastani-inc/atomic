@@ -56,6 +56,13 @@ export type {
 } from "../../core/mcp-servers.ts";
 export { getMcpToolExposure } from "../../core/mcp-servers.ts";
 
+const DEFAULT_TIMEOUT_SECONDS = 60;
+
+/** How long a request to the server may take, in milliseconds: its `timeout`, or 60 seconds. */
+export function mcpRequestTimeoutMs(config: McpServerConfig): number {
+	return (config.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
+}
+
 export interface McpServerEntry {
 	name: string;
 	config: McpServerConfig;

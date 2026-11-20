@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A resumed session keeps declaring the MCP tools it was using while their servers reconnect, so its first requests no longer drop and re-add them, which made the model provider read the whole conversation again uncached. A call to such a tool waits for its server and runs only if the server still offers the same tool; the tools of a server that fails to connect, needs a sign-in, is no longer configured, or changed them are removed or updated as before. A server's tools are declared in name order, whatever order the server lists them in
+
 ## [0.10.1] - 2026-11-20
 
 Typing and rendering keep going while Atomic reads and writes its local SQLite files, and the chat screen no longer flashes blank or shifted frames.
