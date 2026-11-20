@@ -242,8 +242,9 @@ test("under another process's write lock, a message's write fails within one loc
 		other.exec("ROLLBACK");
 		other.close();
 	}
-	// The lock is free again: once the breaker's wait is over, writes go through.
-	await new Promise((resolve) => setTimeout(resolve, 350));
+	// The lock is free again: once the breaker's wait is over, writes go through (twice its wait: a timer may fire early
+	// by the event loop's own lag).
+	await new Promise((resolve) => setTimeout(resolve, 2 * 300));
 	assert.equal(await store.add(entry("m3")), "added");
 	await store.close();
 	await database.close();
@@ -469,8 +470,9 @@ test("after a write waits out another process's lock and the next is refused at 
 			other.exec("ROLLBACK");
 			other.close();
 		}
-		// Writes are refused at once for a lock wait after the first failed; that wait is over once this one is.
-		await sleep(ENDED_QUEUE_LOCK_WAIT_MS);
+		// Writes are refused at once for a lock wait after the first failed; that wait is over once this one is (with room
+		// for a timer that fires early by the event loop's own lag).
+		await sleep(ENDED_QUEUE_LOCK_WAIT_MS + LOCK_WAIT_STALL_MAX_MS);
 		// The lock is free and the wait is over: a write now is kept, and a remove goes through.
 		const settled = (write: Promise<unknown>) =>
 			Promise.race([write, sleep(ENDED_QUEUE_LOCK_WAIT_MS).then(() => "still waiting")]);
@@ -497,8 +499,9 @@ test("the store still gives its disk space back after another process held its w
 	await assert.rejects(store.add(entry("refused")));
 	other.exec("ROLLBACK");
 	other.close();
-	// Once the breaker's wait is over, a queue fills and drains: its space is given back as before.
-	await sleep(400);
+	// Once the breaker's wait is over (twice it, for a timer that fires early), a queue fills and drains: its space is
+	// given back as before.
+	await sleep(2 * 300);
 	await fillAndDrain(store, 8);
 	await vi.waitFor(() => assert.ok(onDisk(path) < 4 * 1024 * 1024, `still ${onDisk(path)} bytes`), {
 		timeout: 20_000,

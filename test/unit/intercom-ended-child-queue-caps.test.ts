@@ -224,8 +224,9 @@ test("a delivered message whose row another process's lock kept from being delet
 		timeout: 30_000,
 		interval: 20,
 	});
-	// The lock wait since the failed delete is over (until then the writes are refused at once); the lock is still held.
-	await sleep(LOCK_WAIT_MS);
+	// The lock wait since the failed delete is over (until then the writes are refused at once; twice that, for a timer
+	// that fires early by the event loop's own lag); the lock is still held.
+	await sleep(2 * LOCK_WAIT_MS);
 	other.exec("ROLLBACK");
 	other.close();
 	// It is paused again at once, and senders send as much again: the rows still on disk count.
