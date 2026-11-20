@@ -664,6 +664,7 @@ async function submitSteeredChatSession<TExtraEntry extends ChatTranscriptEntryL
 	const bash = parseBashInput(text);
 	if (bash?.command && !state.commands.runBash) {
 		// The agent's shell is not this chat's to run: the command stays in the editor, and nothing reaches the agent.
+		setChatSessionEditorText(state, text);
 		notifyChatSessionWarning(state, "! shell commands are not available in this chat");
 		return;
 	}

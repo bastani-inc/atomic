@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
-import type { Component, EditorComponent, EditorTheme, TUI } from "@bastani/atomic-tui";
+import {
+	type Component,
+	type EditorComponent,
+	type EditorTheme,
+	getKeybindings,
+	setKeybindings,
+	type TUI,
+} from "@bastani/atomic-tui";
 import { describe, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
+import { KeybindingsManager, useWindowsKeybindings } from "../src/core/keybindings.ts";
 import {
 	interruptChatSession,
 	restoreQueuedMessagesToEditor,
@@ -18,6 +26,9 @@ import type {
 } from "../src/modes/interactive/components/chat-session-host-types.ts";
 
 const identity = (text: string): string => text;
+
+/** The dequeue key (`app.message.dequeue`): a legacy terminal's Alt+Up, or Alt+Q with the Windows bindings. */
+const DEQUEUE_KEY = useWindowsKeybindings() ? "\x1bq" : "\x1bp";
 
 const style: ChatSessionHostStyle = {
 	dim: identity,
@@ -171,19 +182,25 @@ describe("chat session host Escape queue restoration", () => {
 		await emptyCallbacks.interruptPromise();
 		assert.equal(status.mock.calls.length, 0);
 
-		const dequeueStatus = vi.fn();
-		const dequeueState = makeState({ isStreaming: () => false, showStatus: dequeueStatus });
-		dequeueState.inputBuffer = "draft";
-		dequeueState.pendingSteeringMessages = ["queued"];
-		const dequeueCallbacks = makeCallbacks(dequeueState);
-		assert.equal(handleChatSessionInput(dequeueState, "\x1bp", dequeueCallbacks.callbacks), true);
-		assert.equal(dequeueState.inputBuffer, "queued\n\ndraft");
-		assert.deepEqual(dequeueStatus.mock.calls, []);
+		const previousKeybindings = getKeybindings();
+		setKeybindings(new KeybindingsManager());
+		try {
+			const dequeueStatus = vi.fn();
+			const dequeueState = makeState({ isStreaming: () => false, showStatus: dequeueStatus });
+			dequeueState.inputBuffer = "draft";
+			dequeueState.pendingSteeringMessages = ["queued"];
+			const dequeueCallbacks = makeCallbacks(dequeueState);
+			assert.equal(handleChatSessionInput(dequeueState, DEQUEUE_KEY, dequeueCallbacks.callbacks), true);
+			assert.equal(dequeueState.inputBuffer, "queued\n\ndraft");
+			assert.deepEqual(dequeueStatus.mock.calls, []);
 
-		const emptyDequeueStatus = vi.fn();
-		const emptyDequeueState = makeState({ isStreaming: () => false, showStatus: emptyDequeueStatus });
-		const emptyDequeueCallbacks = makeCallbacks(emptyDequeueState);
-		assert.equal(handleChatSessionInput(emptyDequeueState, "\x1bp", emptyDequeueCallbacks.callbacks), true);
-		assert.deepEqual(emptyDequeueStatus.mock.calls, [["No queued messages to restore"]]);
+			const emptyDequeueStatus = vi.fn();
+			const emptyDequeueState = makeState({ isStreaming: () => false, showStatus: emptyDequeueStatus });
+			const emptyDequeueCallbacks = makeCallbacks(emptyDequeueState);
+			assert.equal(handleChatSessionInput(emptyDequeueState, DEQUEUE_KEY, emptyDequeueCallbacks.callbacks), true);
+			assert.deepEqual(emptyDequeueStatus.mock.calls, [["No queued messages to restore"]]);
+		} finally {
+			setKeybindings(previousKeybindings);
+		}
 	});
 });

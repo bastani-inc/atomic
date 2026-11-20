@@ -186,6 +186,8 @@ export async function showTaskInspector(
 							fullscreen ? inspector.paintedRowKey(row) : undefined,
 						handleInput: (data: string) => {
 							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);
+							// Ctrl+C clears a chat's typed prompt, as in the main chat; on an empty one it closes the view.
+							if (inspector.clearTypedPrompt()) return true;
 							closed = true;
 							done();
 							return true;
