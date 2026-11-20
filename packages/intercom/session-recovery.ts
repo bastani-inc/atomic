@@ -30,6 +30,60 @@ export interface ReleasedChildWakeNotice {
 }
 
 /**
+ * #5999: Intercom asks Subagents to resume a child this session launched, which it reported ended with `wake`, for a
+ * message the broker queued for it. Payload: {@link EndedChildWakeRequest}; Subagents answers through `answer`.
+ */
+export const SUBAGENT_ENDED_CHILD_WAKE_EVENT = "subagent:ended-child-wake";
+
+export interface EndedChildWakeRequest {
+	readonly childName: string;
+	readonly childId?: string;
+	/** The sender of the message that woke it, as the broker named it. */
+	readonly from: { readonly id: string; readonly name?: string };
+	/** How far down a chain of wakes this one is (1: its sender was not itself woken). */
+	readonly depth: number;
+	/**
+	 * Resuming it (`true`), or not, and why. A resume that is accepted and fails later answers again with `false`; the
+	 * messages queued for the child then fail with that reason.
+	 */
+	readonly answer: (accepted: boolean, reason?: string) => void;
+	/** Set by the extension that takes the request. */
+	handled?: boolean;
+}
+
+/**
+ * #5999: Subagents asks Intercom to send `message` to `to`, a subagent another session launched, waking it through that
+ * session if it ended: `subagent({ action: "resume" })` of a child this session did not launch.
+ */
+export const SUBAGENT_PEER_RESUME_EVENT = "subagent:peer-resume";
+
+export type PeerResumeOutcome =
+	/** It had ended: the message is queued for it and its launching session is resuming it. */
+	| { readonly kind: "resuming" }
+	/** It is live: the message was delivered to it as any message is. */
+	| { readonly kind: "delivered" }
+	/** It was paused or quit: it is not resumed for a message; the message waits until its launching session continues it. */
+	| { readonly kind: "paused" }
+	/** Queued for another reason (it is offline elsewhere). */
+	| { readonly kind: "queued" }
+	/** It is a live session: nothing was sent, as `resume` refuses a running child. */
+	| { readonly kind: "running"; readonly name: string }
+	/** No session or subagent answers to it here. */
+	| { readonly kind: "unknown" }
+	| { readonly kind: "refused"; readonly reason: string };
+
+export interface PeerResumeRequest {
+	readonly to: string;
+	readonly message: string;
+	completion?: Promise<PeerResumeOutcome>;
+}
+
+export function isPeerResumeRequest(value: unknown): value is PeerResumeRequest {
+	const request = value as Partial<PeerResumeRequest> | null | undefined;
+	return typeof request?.to === "string" && typeof request.message === "string";
+}
+
+/**
  * Subagents asks Intercom to reserve released children by name for this session's broker connection, any number at a
  * time, or to park them (`wake: false`); calling again replaces a child's reservation (#4326).
  */
@@ -76,6 +130,8 @@ export interface EndedChildRequest {
 	readonly aliases?: readonly string[];
 	readonly outcome: SubagentEndedOutcome;
 	readonly childId?: string;
+	/** #5999: resume it for a message that asks to wake it (`wake`), or keep the message until it is continued (`hold`). */
+	readonly messages?: "wake" | "hold";
 }
 
 export interface MarkEndedChildrenRequest {
@@ -221,6 +277,7 @@ function isEndedChildRequest(value: unknown): value is EndedChildRequest {
 		ENDED_OUTCOMES.has(child.outcome) &&
 		(child.group === undefined || typeof child.group === "string") &&
 		(child.childId === undefined || typeof child.childId === "string") &&
+		(child.messages === undefined || child.messages === "wake" || child.messages === "hold") &&
 		(child.aliases === undefined ||
 			(Array.isArray(child.aliases) && child.aliases.every((alias) => typeof alias === "string")))
 	);

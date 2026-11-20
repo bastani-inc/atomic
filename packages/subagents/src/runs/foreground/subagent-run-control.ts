@@ -1,4 +1,5 @@
 import type { AgentTaskHost, ExtensionContext, TaskId } from "@bastani/atomic";
+import type { PeerResumeOutcome, PeerResumeRequest } from "../../../../intercom/session-recovery.js";
 import {
 	isSubagentChildSession,
 	type ResumeInFlight,
@@ -22,6 +23,7 @@ import {
 	admittedSubagentChild,
 	awaitResumeCheck,
 	beginReleasedChildStop,
+	isReleasedChildStopPending,
 	isReleasedChildWakeActive,
 	ReleasedChildResumeInterruptedError,
 	ReleasedChildResumeRunningError,
@@ -806,7 +808,11 @@ async function resumeChild(
 		liveResumeAdmissions(ctx, ownerSessionId),
 	);
 	if (typeof resolved === "string") return errorResult(action, resolved);
-	if (!resolved) return errorResult(action, `Unknown subagent '${request.id}': this session launched no such child.`);
+	if (!resolved) {
+		const unknown = errorResult(action, `Unknown subagent '${request.id}': this session launched no such child.`);
+		// #5999: a subagent another session launched resumes through that session, for a message sent to it.
+		return (await resumePeerChild(deps, request.id, request.message, unknown)) ?? unknown;
+	}
 	if ("ownerSessionId" in resolved) {
 		const saved = ownedRecords(ctx).get(resolved.childId);
 		const closing = saved && saved.taskId === resolved.taskId && pendingChildWorktreeRelease(saved);
@@ -945,6 +951,133 @@ async function resumeChild(
 		},
 	);
 }
+/**
+ * #5999: `resume` of a subagent this session did not launch: an Intercom message to it, under the group and reach rules
+ * every message follows, that asks to wake it. The session that launched it resumes it and keeps it: its result,
+ * notices and pause or quit stay there. Undefined when Intercom is not there to send it.
+ */
+async function resumePeerChild(
+	deps: SubagentChildRestoreDeps,
+	id: string,
+	message: string | undefined,
+	unknown: SubagentToolResult,
+): Promise<SubagentToolResult | undefined> {
+	const target = id.trim();
+	const request: PeerResumeRequest = { to: target, message: message?.trim() ? message : SUBAGENT_PEER_RESUME_MESSAGE };
+	try {
+		deps.pi.events.emit(SUBAGENT_PEER_RESUME_EVENT, request);
+	} catch {
+		return undefined;
+	}
+	if (request.completion === undefined) return undefined;
+	const outcome: PeerResumeOutcome = await request.completion;
+	const action = "resume";
+	switch (outcome.kind) {
+		case "resuming":
+			return controlResult(
+				`${target} had finished, so it is being resumed by the session that launched it, with your message as its next prompt. That session keeps it: its result goes there, and it can pause or quit it. Its reply to you, if any, arrives as an Intercom message.`,
+				{ action, children: [], ...(message ? { message } : {}) },
+			);
+		case "delivered":
+			return controlResult(
+				`${target} is running, so it was not resumed: your message was delivered to it over Intercom.`,
+				{ action, children: [], ...(message ? { message } : {}) },
+			);
+		case "paused":
+			return controlResult(
+				`${target} was paused or quit by the session that launched it, so it is not resumed for your message: that session decides when it continues. Your message is queued and reaches it then, after what it is continued with.`,
+				{ action, children: [], ...(message ? { message } : {}) },
+			);
+		case "queued":
+			return controlResult(`Your message to ${target} is queued for it; it receives it when it is back.`, {
+				action,
+				children: [],
+				...(message ? { message } : {}),
+			});
+		case "running":
+			return errorResult(
+				action,
+				`${outcome.name} is running, so there is nothing to resume; send it a message with the intercom tool instead.`,
+			);
+		case "unknown":
+			return unknown;
+		default:
+			return errorResult(action, `${target} was not resumed: ${outcome.reason}`);
+	}
+}
+
+/**
+ * Subagents → Intercom (#5999): send a message to a subagent another session launched, waking it through that session
+ * if it ended. Payload: `PeerResumeRequest` (`@bastani/intercom` `session-recovery.ts`).
+ */
+export const SUBAGENT_PEER_RESUME_EVENT = "subagent:peer-resume";
+
+/** What a subagent resumed by another session's `resume` without a message is sent. */
+export const SUBAGENT_PEER_RESUME_MESSAGE =
+	"Please continue where you left off. If you have finished your task, reply briefly with where it stands, then stop.";
+
+/** #5999: the prompt a child resumed for an Intercom message runs; the message itself reaches it over Intercom. */
+export function subagentMessageWakePrompt(waker: string): string {
+	return `You were resumed because ${waker} sent you an Intercom message after your run had ended. Read that message and do what it asks; if it asks a question, answer it with the intercom tool. Then stop.`;
+}
+
+/**
+ * #5999: resume a child this session launched for an Intercom message the broker queued for it, as `resume` does, with
+ * the sender named in its prompt. `answer` tells the broker whether it is being resumed: `true` once it is decided, or
+ * `false` and why, also when a resume it accepted fails after all. A child already starting or running needs nothing:
+ * its registration delivers the message. Never throws.
+ */
+export async function wakeSubagentChildForMessage(
+	deps: SubagentChildRestoreDeps,
+	ctx: ExtensionContext,
+	childId: string,
+	waker: string,
+	answer: (accepted: boolean, reason?: string) => void,
+): Promise<SubagentToolResult | undefined> {
+	try {
+		const owner = subagentChildOwnerOperations(deps.pi, ctx);
+		deps = { ...deps, pi: owner.pi };
+		ctx = owner.ctx;
+		const ownerSessionId = subagentChildOwner(ctx).sessionId;
+		const record = ownedRecords(ctx).get(childId);
+		if (record === undefined) {
+			answer(false, "the session that launched it no longer keeps it");
+			return undefined;
+		}
+		const reopening = () =>
+			liveResumeAdmissions(ctx, ownerSessionId).has(childId) ||
+			isReleasedChildWakeActive(subagentWakeKey(ownerSessionId, childId)) ||
+			subagentChildRestoring(ownerSessionId, childId) !== undefined;
+		if (reopening()) {
+			answer(true);
+			return undefined;
+		}
+		const terminalReason =
+			record.state === "terminal" ? NON_RESUMABLE_STATUSES.get(record.terminalStatus ?? "") : undefined;
+		if (terminalReason) {
+			answer(false, `it cannot be resumed: ${terminalReason}`);
+			return undefined;
+		}
+		// A pause or quit of it in flight wins over a message that would run it again.
+		if (isReleasedChildStopPending(subagentWakeKey(ownerSessionId, childId))) {
+			answer(false, "the session that launched it is pausing or quitting it");
+			return undefined;
+		}
+		answer(true);
+		const result = await resumeChild(deps, ctx, {
+			action: "resume",
+			id: childId,
+			message: subagentMessageWakePrompt(waker),
+		});
+		if (result.isError && !reopening())
+			answer(false, result.content.map((part) => (part.type === "text" ? part.text : "")).join(" "));
+		return result;
+	} catch (error) {
+		answer(false, (error as Error).message);
+		return undefined;
+	}
+}
+
 /** What `status` reads of a child; a child whose records left the session's window has no more, and holds nothing. */
 type StatusFacts = Pick<
 	SubagentChildRecord,

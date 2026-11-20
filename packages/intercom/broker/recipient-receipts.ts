@@ -21,8 +21,11 @@ export interface AwaitedReceipt<Recipient> {
 	readonly targetIdentity: string;
 	/** The frame written to the recipient, written again when it registers again before confirming. */
 	readonly frame: BrokerMessage;
-	/** Runs once, on the recipient's confirmation. `sender` is absent once the sender's wait has ended. */
-	readonly complete: (recipient: Recipient, sender: ReceiptSender | undefined) => void;
+	/**
+	 * Runs once, on the recipient's confirmation. `sender` is absent once the sender's wait has ended. `paused` (#5999):
+	 * the recipient keeps the message until its paused turn is continued.
+	 */
+	readonly complete: (recipient: Recipient, sender: ReceiptSender | undefined, paused?: true) => void;
 	/** Runs when the sender's wait ends before the recipient confirms. */
 	readonly expire: (sender: ReceiptSender) => void;
 	/**
@@ -101,12 +104,13 @@ export class RecipientReceipts<Recipient> {
 	}
 
 	/** Settle a held message when the confirming recipient is the one it was written to. */
-	settle(messageId: string, targetIdentity: string, recipient: Recipient): boolean {
+	settle(messageId: string, targetIdentity: string, recipient: Recipient, paused?: true): boolean {
 		const entry = this.pending.get(messageId);
 		if (entry === undefined || entry.targetIdentity !== targetIdentity) return false;
 		const sender = entry.sender;
 		this.drop(messageId);
-		entry.complete(recipient, sender);
+		if (paused === true) entry.complete(recipient, sender, true);
+		else entry.complete(recipient, sender);
 		return true;
 	}
 

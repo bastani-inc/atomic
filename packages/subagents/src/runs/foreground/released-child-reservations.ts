@@ -38,6 +38,13 @@ export interface EndedChildMark {
 	readonly aliases: readonly string[];
 	readonly outcome: EndedChildOutcome;
 	readonly childId: string;
+	/**
+	 * #5999: what this session does with an Intercom message sent to it that asks to wake it: a child that finished on its
+	 * own (completed or failed) is resumed for it (`wake`); one stopped on purpose (paused, quit, interrupted) is not, and
+	 * gets it when it is continued (`hold`). A child cancelled for good has neither. Told only to a broker that wakes
+	 * ended children.
+	 */
+	readonly messages?: "wake" | "hold";
 }
 
 /** What the broker holds for one released child: its name, its other ids, and whether a send wakes its owner. */
@@ -186,6 +193,7 @@ export function endedChildMark(
 		aliases: [record.childSessionId, record.releasedIntercomId].filter((id): id is string => id !== undefined),
 		outcome,
 		childId: record.childId,
+		...(outcome === "cancelled" ? {} : { messages: outcome === "stopped" ? ("hold" as const) : ("wake" as const) }),
 	};
 }
 

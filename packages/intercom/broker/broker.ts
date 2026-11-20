@@ -63,6 +63,8 @@ type ReleasedAskerReplyRouter,
 	type ReturnPathAuthority,
 	returnPathParty,
 	type SendClientMessage,
+	detachSend,
+	messageFrameFor,
 } from "./send-handler.js";
 import { ReturnPaths } from "./return-paths.js";
 import {
@@ -86,7 +88,21 @@ import {
 	validateReleasedChildFrame,
 } from "./released-children.js";
 import { boundedReleaseReasons, type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
-import { DepartedChildren, type HeldSendRefusal, validateEndedChildrenFrame } from "./departed-children.js";
+import {
+	DepartedChildren,
+	departureKey,
+	type HeldSendRefusal,
+	validateEndedChildrenFrame,
+	type WakeSender,
+} from "./departed-children.js";
+import {
+	EndedChildWakeBudget,
+	type EndedChildWakeFailure,
+	type EndedChildWakeRequest,
+	isHeldWhilePaused,
+	isQueuedForWake,
+	sendWakesEndedRecipient,
+} from "./ended-child-wakes.js";
 import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } from "./recipient-gone-errors.js";
 import { NotHostedSessionError, serializeIntercomHostedSessionError } from "./hosted-session-errors.js";
 import {
@@ -285,6 +301,18 @@ function readRegistrationReach(
 	return { reach };
 }
 
+/** #5999: a sender that may wake an ended subagent: who the owner is told woke it, and its own key as a subagent. */
+function wakeSenderOf(from: ConnectedSession): WakeSender {
+	const name = from.info.name?.trim();
+	return {
+		...holdSenderOf(from),
+		waker: { id: from.info.id, ...(name ? { name } : {}) },
+		...(from.supervisorId !== undefined && from.registrationName !== undefined
+			? { wakeKey: departureKey(from.supervisorId, from.registrationName) }
+			: {}),
+	};
+}
+
 function holdSenderOf(from: ConnectedSession, answersAsk?: true): HoldSender {
 	return {
 		id: from.info.id,
@@ -356,7 +384,18 @@ class IntercomBroker {
     error === undefined ? this.failHeldSend(held, reason, reasonCode) : this.failHeldSendWith(held, error),
   );
   /** #4639: subagents whose session is gone, held for until they return or their owner says why they ended. */
-  private departedChildren = new DepartedChildren((refusals) => this.refuseHeldSends(refusals));
+  private departedChildren = new DepartedChildren(
+    (refusals) => this.refuseHeldSends(refusals),
+    undefined,
+    undefined,
+    undefined,
+    {
+      // #5999: a subagent that ended but can be resumed is woken for a message through its owner, within these bounds.
+      failed: (failures) => this.failQueuedForWake(failures),
+      budget: new EndedChildWakeBudget(),
+      ownerLive: (ownerSessionId) => this.sessions.has(ownerSessionId),
+    },
+  );
   /** Return paths: who may answer a sender outside its groups that wrote to it. */
   private readonly returnPaths = new ReturnPaths();
   private readonly returnPathAuthority: ReturnPathAuthority = createReturnPathAuthority(this.returnPaths, this.sessions);
@@ -782,6 +821,9 @@ class IntercomBroker {
             brokerStatus: true as const,
             extendsSaves: true as const,
             marksEndedChildren: true as const,
+            wakesEndedChildren: true as const,
+            // #5999: a client that kept messages queued for subagents that ended learns when a new broker lost them.
+            instanceId: this.instanceId,
             stampsReleasedChildren: true as const,
             multiNodeRouting: this.multiNodeStatus,
             protocol: { ...BROKER_PROTOCOL },
@@ -855,17 +897,21 @@ class IntercomBroker {
               });
             }
           }
-          for (const send of this.restoringRecipients.consume(
+          // #4639: a subagent whose session dropped is back under its owner's authorization; its held sends follow.
+          // #5999: what was queued for its wake goes first: it was sent before anything its restart held since.
+          const departedSends =
+            registered !== undefined && supervisorId !== undefined
+              ? this.departedChildren.registered(registered, sessionGroups(info), supervisorId)
+              : [];
+          const restoredSends = this.restoringRecipients.consume(
             consumedCapability,
             registered
               ? { childName: registered, groups: sessionGroups(info), ...(supervisorId ? { authorizedBy: supervisorId } : {}) }
               : undefined,
-          ))
-            this.dispatchSend(send.socket, send.clientMessage, send.senderId);
-          // #4639: a subagent whose session dropped is back under its owner's authorization; its held sends follow.
-          if (registered !== undefined && supervisorId !== undefined)
-            for (const send of this.departedChildren.registered(registered, sessionGroups(info), supervisorId))
-              this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+          );
+          for (const send of departedSends.filter(isQueuedForWake)) this.dispatchQueuedForWake(send, registered);
+          for (const send of restoredSends) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+          this.dispatchHeldSends(departedSends.filter((send) => !isQueuedForWake(send)));
         };
         // Multi-node S5: brokers on other hosts find this session through its presence lease, so registration
         // completes once the lease is written (or bounded attempts found it still held elsewhere). The session is
@@ -1183,7 +1229,8 @@ class IntercomBroker {
             ...(typeof clientMessage.holdMs === "number" ? { holdMs: clientMessage.holdMs } : {}),
           },
         );
-        this.dispatchHeldSends(this.departedChildren.supersede(currentId, childName));
+        // #5999: a subagent resumed for a message keeps what was queued for it until it registers.
+        this.dispatchHeldSends(this.departedChildren.supersede(currentId, childName, true));
         // #5352: acknowledged once senders on other brokers can find the reservation (bounded by the router).
         const requestId = clientMessage.requestId;
         // `published: false`: reserved here, and written for other brokers once the shared database takes it.
@@ -1307,6 +1354,21 @@ class IntercomBroker {
         break;
       }
 
+      case "answer_ended_child_wake": {
+        const { childName, wakeId, accepted, reason } = clientMessage;
+        if (
+          typeof childName !== "string" ||
+          typeof wakeId !== "string" ||
+          typeof accepted !== "boolean" ||
+          (reason !== undefined && typeof reason !== "string")
+        ) {
+          throw new Error("Invalid answer_ended_child_wake message");
+        }
+        // #5999: only the owner the wake was asked of answers it; any other answer names no wake of its own.
+        this.departedChildren.answerWake(currentId, childName, wakeId, accepted, reason?.slice(0, 1_000));
+        break;
+      }
+
       case "verify_released_child": {
         const { requestId, childName, order } = clientMessage;
         if (typeof requestId !== "string" || typeof childName !== "string" || typeof order !== "number") {
@@ -1335,6 +1397,9 @@ class IntercomBroker {
         }
         const marked = this.departedChildren.mark(currentId, validation.children);
         this.refuseHeldSends(marked.refused);
+        // #5999: sends that waited for this verdict and asked to wake their subagent are queued for it now.
+        for (const { held, target } of marked.queued) this.answerQueuedForWake(held, target);
+        for (const wake of marked.wakes) this.wakeEndedChildOwner(wake);
         this.dispatchHeldSends(marked.evicted);
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
         break;
@@ -1469,7 +1534,12 @@ class IntercomBroker {
 				this.pendingQuestions.releaseHeld(clientMessage.messageId, recipient.registrationReturnAddress);
 			if (recipient?.acknowledgesReceipt === true) {
 				this.multiNode?.received(recipient, clientMessage.messageId);
-				this.receipts.settle(clientMessage.messageId, deliveryTargetIdentity(recipient), recipient);
+				this.receipts.settle(
+					clientMessage.messageId,
+					deliveryTargetIdentity(recipient),
+					recipient,
+					clientMessage.paused === true ? true : undefined,
+				);
 			}
 			break;
 		}
@@ -1764,6 +1834,7 @@ class IntercomBroker {
       reservations: this.restoringRecipients.size,
       heldSends: this.restoringRecipients.heldSendCount + this.departedChildren.heldSendCount,
       droppedReleasedReplyRoutes: this.releasedAskerReplies.droppedRoutes,
+      queuedBytes: this.departedChildren.queuedBytes,
       ...(setting === undefined
         ? {}
         : { storage: { digest: sharedStorageDigest(setting), source: sharedStorageSettingSource() } }),
@@ -1892,11 +1963,22 @@ class IntercomBroker {
    * `Session not found`; a send to one its owner reported gone gets the gone refusal.
    */
   private readonly holdForRestoringRecipient: RestoringRecipientHold = ({ socket, from, clientMessage, target, messageId, attemptId, answersAsk }) => {
-    const held: HeldSend = { socket, senderId: from.info.id, messageId, clientMessage, ...(attemptId === undefined ? {} : { attemptId }) };
+    const held: HeldSend = {
+      socket,
+      senderId: from.info.id,
+      messageId,
+      clientMessage,
+      ...(attemptId === undefined ? {} : { attemptId }),
+      ...(from.registrationReturnAddress === undefined ? {} : { senderReturnAddress: from.registrationReturnAddress }),
+    };
     const sender = holdSenderOf(from, answersAsk);
+    // #5999: a send that asks to wake a subagent its owner resumes for a message is queued for it, before anything else
+    // (the hold of a paused child, or of one starting) would hold its sender.
+    const wakeSender = answersAsk === undefined && sendWakesEndedRecipient(clientMessage) ? wakeSenderOf(from) : undefined;
+    if (wakeSender !== undefined && this.queueForEndedChildWake(held, target, wakeSender)) return true;
     const admission = this.restoringRecipients.admit(target, sender, held, clientMessage.awaitRestoringRecipient === true);
     if (admission.kind === "none")
-      return this.holdForDepartedChild(held, target, sender, clientMessage.awaitRestoringRecipient === true);
+      return this.holdForDepartedChild(held, target, sender, clientMessage.awaitRestoringRecipient === true, wakeSender);
     if (admission.kind === "refused" && admission.error !== undefined) this.failHeldSendWith(held, admission.error);
     else if (admission.kind === "refused") this.failHeldSend(held, admission.reason, admission.reasonCode);
     else writeMessageIfOpen(socket, { type: "send_held", messageId, ...(attemptId === undefined ? {} : { attemptId }), timeoutMs: admission.timeoutMs });
@@ -1949,9 +2031,110 @@ class IntercomBroker {
     return held;
   }
 
+  /**
+   * #5999: a send that asks to wake an ended subagent its owner resumes for a message: queued for it, its sender told so
+   * at once, and the owner asked to resume it when this is the first message queued. False when no such subagent is the
+   * target: the send is decided as before.
+   */
+  private queueForEndedChildWake(held: HeldSend, target: string, sender: WakeSender): boolean {
+    // A child its owner reported gone keeps that answer; one its owner already holds (restoring, resuming or pausing it)
+    // takes the message without another wake.
+    const reserved = this.restoringRecipients.peek(target, sender);
+    if (reserved === "gone") return false;
+    const admission = this.departedChildren.admitWake(target, sender, held, reserved === "active");
+    if (admission.kind === "none") return false;
+    if (admission.kind === "refused") {
+      this.refuseHeldSends([{ held, error: admission.error, reason: admission.reason }]);
+      return true;
+    }
+    this.answerQueuedForWake(held, admission.target);
+    if (admission.wake !== undefined) this.wakeEndedChildOwner(admission.wake);
+    return true;
+  }
+
+  /**
+   * #5999: tell the sender its message is queued for a subagent being resumed, or paused, and why (`target`); nothing it
+   * waits on is held.
+   */
+  private answerQueuedForWake(held: HeldSend, target: string): void {
+    detachSend(held.clientMessage);
+    writeMessageIfOpen(held.socket, {
+      type: "queued",
+      messageId: held.messageId,
+      ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
+      target,
+      position: 1,
+    });
+  }
+
+  /** #5999: ask the owner to resume its ended child for the messages now queued for it. */
+  private wakeEndedChildOwner(wake: EndedChildWakeRequest): void {
+    const owner = this.sessions.get(wake.ownerSessionId);
+    if (owner === undefined) return;
+    writeMessageIfOpen(owner.socket, {
+      type: "ended_child_wake",
+      childName: wake.childName,
+      ...(wake.childId === undefined ? {} : { childId: wake.childId }),
+      wakeId: wake.wakeId,
+      from: wake.waker,
+      depth: wake.depth,
+    });
+  }
+
+  /**
+   * #5999: messages queued for a wake that will not reach their subagent. Their senders were already answered, so each
+   * is told as a delivery failure of that message, from the subagent it was for: an ask fails, a send shows the failure.
+   * A sender that is gone has nobody left to tell.
+   */
+  private failQueuedForWake(failures: readonly EndedChildWakeFailure[]): void {
+    for (const { held, childName, reason } of failures) {
+      const sender = this.queuedSenderOf(held);
+      if (sender === undefined) continue;
+      const addressed = held.clientMessage.logicalTarget;
+      const from: SessionInfo = {
+        id: (typeof addressed === "string" ? addressed : held.clientMessage.to).trim(),
+        name: childName,
+        cwd: sender.info.cwd,
+        model: "",
+        pid: 0,
+        startedAt: Date.now(),
+        lastActivity: Date.now(),
+      };
+      writeMessageIfOpen(
+        sender.socket,
+        messageFrameFor(sender, from, {
+          id: `wake-failed:${held.messageId}`,
+          timestamp: Date.now(),
+          replyTo: held.messageId,
+          replyError: reason,
+          content: { text: reason },
+        }),
+      );
+    }
+  }
+
+  /**
+   * #5999: the session to tell about a message queued for a subagent's wake: its sender on the connection that sent it,
+   * or, once that connection is gone, the sender's session back under the same return address.
+   */
+  private queuedSenderOf(held: HeldSend): ConnectedSession | undefined {
+    const sender = this.sessions.get(held.senderId);
+    if (sender !== undefined && sender.socket === held.socket) return sender;
+    if (held.senderReturnAddress === undefined) return undefined;
+    for (const session of this.sessions.values())
+      if (session.registrationReturnAddress === held.senderReturnAddress && session.hostedBy === undefined) return session;
+    return undefined;
+  }
+
   /** #4639: a subagent whose session is gone: hold the send for its return or its owner's verdict, or refuse it with why. */
-  private holdForDepartedChild(held: HeldSend, target: string, sender: HoldSender, canHold: boolean): boolean {
-    const admission = this.departedChildren.admit(target, sender, held, canHold);
+  private holdForDepartedChild(
+    held: HeldSend,
+    target: string,
+    sender: HoldSender,
+    canHold: boolean,
+    wakeSender?: WakeSender,
+  ): boolean {
+    const admission = this.departedChildren.admit(target, sender, held, canHold, wakeSender);
     if (admission.kind === "none") return false;
     if (admission.kind === "refused") this.refuseHeldSends([{ held, error: admission.error }]);
     else
@@ -1965,20 +2148,64 @@ class IntercomBroker {
   }
 
   private dispatchHeldSends(sends: readonly HeldSend[]): void {
-    for (const send of sends) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+    for (const send of sends) {
+      if (isQueuedForWake(send)) this.dispatchQueuedForWake(send);
+      else this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+    }
+  }
+
+  /**
+   * #5999: deliver a message queued for a subagent's wake, now that the subagent `childName` registered again. Its sender
+   * was answered `queued` and may be gone: it is delivered as its sender was when it was sent, and what the delivery
+   * would tell the sender stays here, except a refusal, which the sender gets as that message's delivery failure. One
+   * kept while the subagent was paused is marked so, so the subagent takes it after what it is continued with.
+   */
+  private dispatchQueuedForWake(send: HeldSend, childName: string = send.clientMessage.to.trim()): void {
+    const clientMessage = send.clientMessage as SendClientMessage & { message: Message };
+    if (isHeldWhilePaused(send)) clientMessage.message = { ...clientMessage.message, heldWhilePaused: true };
+    const write = (socket: net.Socket, frame: BrokerMessage): boolean => {
+      if (socket !== send.socket) return writeMessageIfOpen(socket, frame);
+      const about = (frame as { readonly messageId?: unknown }).messageId;
+      if (about !== send.messageId) return writeMessageIfOpen(socket, frame);
+      if (frame.type === "delivery_failed")
+        this.failQueuedForWake([{ held: send, childName, reason: frame.reason }]);
+      // The sender stops keeping the message as queued: it reached the subagent.
+      if (frame.type === "delivered") {
+        const sender = this.queuedSenderOf(send);
+        if (sender !== undefined) writeMessageIfOpen(sender.socket, { type: "delivered", messageId: send.messageId });
+      }
+      return true;
+    };
+    handleBrokerSend(
+      send.socket,
+      send.clientMessage,
+      send.senderId,
+      this.sessions,
+      this.deliveredMessages,
+      write,
+      this.supervisorChannel,
+      this.pendingQuestions,
+      writeMessageWithOutcome,
+      this.holdForRestoringRecipient,
+      this.receipts,
+      this.routeRemote,
+      (sender, group) => this.canInspectSelectedGroup(sender, group),
+      this.routeReleasedAskerReply,
+      this.returnPathAuthority,
+    );
   }
 
   /** #4639: refuse held sends with the typed error naming why their subagent is gone; its message is the reason. */
   private refuseHeldSends(refusals: readonly HeldSendRefusal[]): void {
-    for (const { held, error } of refusals) this.failHeldSendWith(held, error);
+    for (const { held, error, reason } of refusals) this.failHeldSendWith(held, error, reason);
   }
 
-  private failHeldSendWith(held: HeldSend, error: IntercomRecipientGoneError): void {
+  private failHeldSendWith(held: HeldSend, error: IntercomRecipientGoneError, reason = error.message): void {
     writeMessageIfOpen(held.socket, {
       type: "delivery_failed",
       messageId: held.messageId,
       ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
-      reason: error.message,
+      reason,
       recipientError: serializeIntercomRecipientGoneError(error),
     });
   }
@@ -2055,8 +2282,11 @@ class IntercomBroker {
 
   private releaseReservation(key: string, ownerSessionId: string, gone: string | undefined, refusal: string | undefined): void {
     const bounded = boundedReleaseReasons(gone, refusal);
+    const childName = this.restoringRecipients.childOf(key, ownerSessionId);
     const released = this.restoringRecipients.release(key, ownerSessionId, bounded.gone, bounded.refusal);
     if (released === undefined) return;
+    // #5999: what was queued for the child fails with why its owner gave it up.
+    if (childName !== undefined) this.departedChildren.holdEnded(ownerSessionId, childName, released);
     this.multiNode?.restoringReleased(key, ownerSessionId, released.gone, released.refusal);
     for (const send of released.held) {
       if (released.gone !== undefined) this.failHeldSend(send, released.gone);
@@ -2259,7 +2489,7 @@ class IntercomBroker {
     // until its host session connects again and reserves them.
     const unreserved = [
       ...this.restoringRecipients.dropOwner(sessionId, departed.registrationReturnAddress),
-      ...this.departedChildren.dropOwner(sessionId, departed.registrationReturnAddress),
+      ...this.departedChildren.dropOwner(sessionId, departed.registrationReturnAddress, ended),
     ];
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
     this.failParkedKept(sessionId);

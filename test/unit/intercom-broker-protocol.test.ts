@@ -133,11 +133,13 @@ const PROTOCOL_2_FRAMES: readonly BrokerOutboundFrame[] = [
 	},
 	{ type: "released_children_ack", requestId: "r" },
 	{ type: "restoring_recipient_wake", childName: "worker" },
+	{ type: "ended_child_wake", childName: "worker", wakeId: "w", from: { id: "p" }, depth: 1 },
 ];
 
 describe("frames a broker writes to a client of protocol 1 (#4538)", () => {
 	test("the frames of protocol 2 are exactly those a 0.9.71 client does not handle", () => {
 		assert.deepEqual([...PROTOCOL_2_FRAME_TYPES].sort(), [
+			"ended_child_wake",
 			"peer_rebound",
 			"released_child_reply",
 			"released_children_ack",

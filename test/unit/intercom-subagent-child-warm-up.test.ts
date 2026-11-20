@@ -354,6 +354,65 @@ describe("Intercom heavy runtime admitted child registration", () => {
 		}
 	});
 
+	test("a message kept while it was paused never holds its start, and reaches it after its first turn started (#5999)", async () => {
+		const handlers: LifecycleHandlers = new Map();
+		const pi = harnessPi(handlers, new Map());
+		const sendMessage = vi.fn(async (_message: unknown, _options?: unknown) => {});
+		pi.sendMessage = sendMessage;
+		mockBrokerClient(() => {});
+		vi.mocked(IntercomClient.prototype.connect).mockImplementation(async function (this: IntercomClient) {
+			const peer = {
+				id: "paused-message-sender",
+				name: "peer",
+				cwd: process.cwd(),
+				model: "test-model",
+				pid: process.pid,
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+				groups: ["workflow:run-1"],
+			};
+			this.emit("message", peer, {
+				id: "kept-while-paused",
+				timestamp: Date.now(),
+				heldWhilePaused: true,
+				content: { text: "kept for when you are continued" },
+			});
+			// The same sender's next message, sent after it, follows it.
+			this.emit("message", peer, {
+				id: "sent-after",
+				timestamp: Date.now(),
+				content: { text: "and one more thing" },
+			});
+		});
+		vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
+		intercomHeavy(pi);
+		let firstTurnPending = true;
+		const ctx = connectedChildContext({
+			...admittedChildPolicy,
+			startup: {
+				signal: new AbortController().signal,
+				enterStep() {},
+				firstTurnPending: () => firstTurnPending,
+			},
+		});
+		try {
+			const startedAt = performance.now();
+			assert.deepEqual(await emitThroughHost(handlers, ctx, SESSION_START), []);
+			assert.ok(performance.now() - startedAt < 2_000, "its start does not wait for the kept message");
+			assert.equal(sendMessage.mock.calls.length, 0, "nothing of it is written as context before its first turn");
+			// What it is continued with starts its first turn; the kept message follows it.
+			firstTurnPending = false;
+			await emitThroughHost(handlers, ctx, { type: "agent_start" } as never);
+			await vi.waitFor(() => assert.equal(sendMessage.mock.calls.length, 2));
+			const written = sendMessage.mock.calls.map((call) => JSON.stringify(call[0]));
+			assert.match(written[0]!, /kept for when you are continued/);
+			assert.match(written[1]!, /and one more thing/, "one sender's messages keep their order");
+			for (const message of written) assert.doesNotMatch(message, /Messages received before you started/);
+		} finally {
+			await emitThroughHost(handlers, ctx, SESSION_SHUTDOWN);
+		}
+	});
+
 	test("leaves a session without a typed child identity lazy", async () => {
 		const current = heavyFixture();
 		try {
