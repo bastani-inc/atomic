@@ -90,12 +90,29 @@ export function sameToolRecord(left: McpToolRecord, right: McpToolRecord): boole
 	);
 }
 
-/** A hash of what the server connects to, without the credentials its headers or environment may hold. */
+/**
+ * The scheme, host, port and path of a server URL. Credentials, the query and the fragment are left out: they may
+ * hold secrets, and a call to a recorded tool runs only if the server lists the same tool again anyway.
+ */
+function urlTarget(url: string): string {
+	if (URL.canParse(url)) {
+		const { protocol, host, pathname } = new URL(url);
+		return `${protocol}//${host}${pathname}`;
+	}
+	// Not a URL until its placeholders are filled in, such as `${MCP_URL}`: cut the same parts out of the text.
+	const [beforeQuery = ""] = url.split(/[?#]/, 1);
+	return beforeQuery.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/]*@/, "$1");
+}
+
+/**
+ * A hash of what the server connects to. It leaves out the credentials a URL, headers or environment may hold, so
+ * the session stores nothing derived from them.
+ */
 export function transportFingerprint(entry: McpServerEntry): string {
 	const { config } = entry;
 	const target =
 		"url" in config
-			? { url: config.url }
+			? { url: urlTarget(config.url) }
 			: { command: config.command, args: config.args ?? [], ...(config.cwd ? { cwd: config.cwd } : {}) };
 	return createHash("sha256").update(JSON.stringify(target)).digest("hex").slice(0, 16);
 }

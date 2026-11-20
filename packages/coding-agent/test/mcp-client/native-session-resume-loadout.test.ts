@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Context, resolveTranscriptTools } from "@bastani/atomic-ai";
@@ -28,7 +29,7 @@ import { createInMemoryTransportPair } from "../../src/extensions/mcp/client/tes
 import type { McpExposure, McpServerEntry } from "../../src/extensions/mcp/config.ts";
 import { createMcpExtension } from "../../src/extensions/mcp/index.ts";
 import { McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.ts";
-import { MCP_TOOL_RECORD_ENTRY_TYPE } from "../../src/extensions/mcp/tool-records.ts";
+import { MCP_TOOL_RECORD_ENTRY_TYPE, transportFingerprint } from "../../src/extensions/mcp/tool-records.ts";
 import { createMcpToolName } from "../../src/extensions/mcp/tools.ts";
 import { getMessageText } from "../suite/harness.ts";
 
@@ -662,5 +663,49 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 				removed: ["list_mcp_resource_templates", "list_mcp_resources", "mcp__docs__search", "read_mcp_resource"],
 			},
 		]);
+	});
+
+	it("fingerprints a server URL by its scheme, host, port and path only", () => {
+		const fingerprint = (url: string) => transportFingerprint({ name: "docs", config: { url }, source: "test" });
+		const bare = fingerprint("https://mcp.example.com:8443/v1/mcp");
+
+		expect(fingerprint("https://user:pass@mcp.example.com:8443/v1/mcp?api_key=sk-secret#top")).toBe(bare);
+		expect(fingerprint("https://mcp.example.com:8443/v1/mcp?api_key=another")).toBe(bare);
+		for (const other of [
+			"http://mcp.example.com:8443/v1/mcp",
+			"https://other.example.com:8443/v1/mcp",
+			"https://mcp.example.com:9443/v1/mcp",
+			"https://mcp.example.com:8443/v2/mcp",
+		]) {
+			expect(fingerprint(other)).not.toBe(bare);
+		}
+		// A URL that is not one until its placeholders are filled in loses the same parts.
+		expect(fingerprint(`\${MCP_URL}?api_key=\${MCP_KEY}`)).toBe(fingerprint(`\${MCP_URL}`));
+	});
+
+	it("stores nothing derived from a server URL's credentials or query in the session", async () => {
+		const fixture = await createFixture();
+		const url = "http://user:pass@docs.invalid/mcp?api_key=sk-secret-6094";
+		const { sessionFile } = await liveSession(fixture, {
+			servers: { docs: { tools: [SEARCH], calls: [] } },
+			urls: { docs: url },
+		});
+
+		const stored = readFileSync(sessionFile, "utf8");
+		const records = stored
+			.split("\n")
+			.filter((line) => line.includes(MCP_TOOL_RECORD_ENTRY_TYPE))
+			.map((line) => JSON.parse(line) as { data: { tools: { transport: string }[] } });
+		expect(records.map((record) => record.data.tools.map((tool) => tool.transport))).toEqual([
+			[transportFingerprint({ name: "docs", config: { url: "http://docs.invalid/mcp" }, source: "test" })],
+		]);
+		const hashes = (text: string) => {
+			const hex = createHash("sha256").update(text).digest("hex");
+			return [hex, hex.slice(0, 16)];
+		};
+		for (const secret of [url, JSON.stringify({ url }), "api_key=sk-secret-6094", "sk-secret-6094", "user:pass"]) {
+			expect(stored).not.toContain(secret);
+			for (const hash of hashes(secret)) expect(stored).not.toContain(hash);
+		}
 	});
 });
