@@ -28,7 +28,11 @@ import {
 	taskPanelState,
 	taskRunGeneration,
 } from "../../core/tasks/agent-panel-source.ts";
-import { latestSubagentAttempt, supersededSettledAttempts } from "../../core/tasks/completion.js";
+import {
+	latestSubagentAttempt,
+	latestSubagentAttempts,
+	supersededSettledAttempts,
+} from "../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
@@ -123,10 +127,13 @@ function nestedShells(
 	ownerTasks: readonly TaskRecord[],
 ): ReadonlyMap<string, readonly TaskRecord[]> {
 	const nested = new Map<string, TaskRecord[]>();
+	// Grouped once, on the first shell listed: every lookup after it is a map read.
+	let latestOf: ((taskId: TaskId) => TaskRecord | undefined) | undefined;
 	for (const task of ownerTasks) {
 		if (task.parentTaskId === undefined || taskPanelRole(task) !== "shell") continue;
 		if (!nestedShellListed(taskPanelState(task))) continue;
-		const parent = latestSubagentAttempt(tasks, task.parentTaskId);
+		latestOf ??= latestSubagentAttempts(tasks);
+		const parent = latestOf(task.parentTaskId);
 		if (parent?.kind !== "agent") continue;
 		const rowId = `task:${parent.ref.taskId}`;
 		const shells = nested.get(rowId);

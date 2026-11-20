@@ -27,6 +27,7 @@ import {
 	type QueuedTaskMessages,
 	type TaskMessageDelivery,
 	type TaskMessageLane,
+	type TaskSlashCommand,
 	type TaskTranscriptSource,
 	taskExtensionStatuses,
 	taskOwnTranscriptEntries,
@@ -190,6 +191,10 @@ export interface TaskCommandCatalog {
 	readonly cwd: string;
 	/** The session's `/skill:` commands; empty when its settings do not offer skills as commands. */
 	readonly skillCommands: readonly Pick<SkillCatalogCommand, "name" | "description" | "sourceInfo">[];
+	/** The session's prompt templates; absent where the session does not list them. */
+	readonly promptTemplates?: readonly TaskSlashCommand[];
+	/** The session's extension commands; absent where the session does not list them. */
+	readonly extensionCommands?: readonly TaskSlashCommand[];
 }
 
 /** The prompt and latest reply of an agent task, for its detail page. */
@@ -574,6 +579,8 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 							sourceInfo,
 						}))
 					: [],
+				...(commands.promptTemplates === undefined ? {} : { promptTemplates: commands.promptTemplates }),
+				...(commands.extensionCommands === undefined ? {} : { extensionCommands: commands.extensionCommands }),
 			};
 		},
 		watchExtensionStatuses(id, listener) {

@@ -324,6 +324,30 @@ export function latestSubagentAttempt(tasks: readonly TaskRecord[], taskId: Task
 }
 
 /**
+ * `latestSubagentAttempt(tasks, id)` for many ids over one `tasks` list: the attempts are grouped in one pass, so each
+ * lookup is a map read. Answers exactly what `latestSubagentAttempt(tasks, id)` answers, for every id.
+ */
+export function latestSubagentAttempts(tasks: readonly TaskRecord[]): (taskId: TaskId) => TaskRecord | undefined {
+	const byId = new Map<TaskId, TaskRecord>();
+	const latest = new Map<string, { readonly task: TaskRecord; readonly index: number }>();
+	for (const [index, task] of tasks.entries()) {
+		// The first record of an id is the one `latestSubagentAttempt` finds.
+		if (!byId.has(task.ref.taskId)) byId.set(task.ref.taskId, task);
+		if (task.kind !== "agent") continue;
+		const child = attemptChild(task);
+		if (child === undefined) continue;
+		const seen = latest.get(child);
+		if (seen === undefined || laterAttempt(task, index, seen.task, seen.index)) latest.set(child, { task, index });
+	}
+	return (taskId) => {
+		const task = byId.get(taskId);
+		if (task === undefined) return undefined;
+		const child = task.kind === "agent" ? attemptChild(task) : undefined;
+		return child === undefined ? task : (latest.get(child)?.task ?? task);
+	};
+}
+
+/**
  * The first attempt in `tasks` of the subagent that `taskId` is an attempt of: the launch whose task its conversation
  * starts with. The task itself when it is not an agent; `undefined` when `tasks` does not hold it.
  */
