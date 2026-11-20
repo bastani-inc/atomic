@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed SQLite selectors in the `read` tool failing in a Node process started with `--input-type=module`, for example an SDK script run with `node --input-type=module --eval`, and that process's `--import` and `--require` preloads running again for every selector. Diagnostic logs, settings locks, history search and the engine's child-process guardian had the same problem. Their worker threads now start without the process's command-line flags, except under Node's permission model, where they keep its restrictions ([#6079](https://github.com/bastani-inc/atomic/issues/6079))
+
 ## [0.10.1] - 2026-11-20
 
 Typing and rendering keep going while Atomic reads and writes its local SQLite files, and the chat screen no longer flashes blank or shifted frames.

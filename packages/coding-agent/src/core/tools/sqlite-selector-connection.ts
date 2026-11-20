@@ -1,4 +1,6 @@
+import { isBuiltin } from "node:module";
 import { Worker } from "node:worker_threads";
+import { evalWorkerExecArgv } from "../../utils/eval-worker.js";
 import type { SqliteRow, SqliteValue } from "../storage/database.js";
 
 export type SqliteSelectorValue = string | number | boolean | null;
@@ -126,8 +128,12 @@ export class SqliteSelectorConnection {
 	}
 
 	static async open(path: string, options: { readonly readonly?: boolean } = {}): Promise<SqliteSelectorConnection> {
+		// Asked on this thread, without loading the module: the worker starts without the process's flags, so a
+		// `--no-experimental-sqlite` given to the process would not reach it.
+		if (!isBuiltin("node:sqlite")) throw new Error(MISSING_NODE_SQLITE);
 		const worker = new Worker(CONNECTION_SOURCE, {
 			eval: true,
+			execArgv: evalWorkerExecArgv(),
 			workerData: { path, readonly: options.readonly === true },
 		});
 		const connection = new SqliteSelectorConnection(worker);
