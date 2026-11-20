@@ -17,7 +17,9 @@ import { ModelRuntime } from "../src/core/model-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { TaskId } from "../src/core/tasks/contracts.js";
 import { InteractiveMode } from "../src/index.js";
+import { attachLostAgentQueueNotices } from "../src/modes/interactive/agent-view/prompt-retarget.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.ts";
 import { stripAnsi } from "../src/utils/ansi.js";
 import { FakeAgentViewPort } from "./helpers/fake-agent-view-port.ts";
 
@@ -579,6 +581,42 @@ describe("the main prompt while a subagent is shown", () => {
 			await settle();
 			assert.equal(screen.mode.agentView?.viewed.kind, "main");
 			assert.equal(screen.mode.editor.getText(), "my draft");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a lost engine reports in full what the shown subagent had queued or on its way; nothing is sent again",
+		async () => {
+			screen = await mainScreen();
+			const port = worker({ busy: true, queued: { steering: ["listed steer"], followUp: [] } });
+			port.promptAnswer = () => new Promise<void>(() => {});
+			const ended = new Set<(event: InteractiveEngineGenerationEnded) => void>();
+			attachLostAgentQueueNotices(screen.mode, {
+				onGenerationEnded: (listener) => {
+					ended.add(listener);
+					return () => ended.delete(listener);
+				},
+			});
+			await view(WORKER);
+			await screen.type("on its way");
+			await screen.press(ENTER);
+			const end = (expected: boolean) => {
+				for (const listener of ended)
+					listener({
+						generation: 1,
+						error: new Error("engine stopped"),
+						kind: "exit",
+						expected,
+					} as InteractiveEngineGenerationEnded);
+			};
+			end(true);
+			assert.deepEqual(screen.warnings, []);
+			end(false);
+			assert.deepEqual(screen.warnings, [
+				"Engine restarted; 2 queued messages to worker weren't sent:\nlisted steer\non its way",
+			]);
+			assert.deepEqual(port.calls, [{ kind: "prompt", text: "on its way", lane: "steer" }]);
 		},
 		HOST_TIMEOUT_MS,
 	);

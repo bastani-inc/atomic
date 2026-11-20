@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
 import type { PromptDisposition } from "../src/core/agent-session-types.js";
 import type { TaskId } from "../src/core/tasks/contracts.js";
-import { type AgentViewRuntime, createRemoteAgentSteering } from "../src/modes/interactive/agent-view/agent-steering.ts";
+import {
+	type AgentViewRuntime,
+	createRemoteAgentSteering,
+} from "../src/modes/interactive/agent-view/agent-steering.ts";
 import type { AgentViewStatus } from "../src/modes/interactive/agent-view/contracts.ts";
 import { SteeringQueueController } from "../src/modes/interactive/steering-queue-controller.ts";
 import type { EngineAgentViewContext } from "../src/modes/rpc/agent-view-rpc.ts";

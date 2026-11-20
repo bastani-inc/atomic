@@ -1,6 +1,8 @@
 import { type Component, decodePrintableKey, isKeyRelease, matchesKey } from "@bastani/atomic-tui";
+import { firstSubagentAttempt } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.ts";
+import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
+import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
 import { promptHistoryFor } from "../components/agent-prompt-history.ts";
 import { AtomicWorkedStatusComponent, watchAtomicWorkingClock } from "../components/atomic-working-status.ts";
 import { keyText } from "../components/keybinding-hints.js";
@@ -235,6 +237,12 @@ export function typedText(keys: readonly string[]): string {
 	return text;
 }
 
+/** The subagent `taskId` is an attempt of, as its first attempt's id, where this process holds its tasks. */
+function agentKeyOf(mode: InteractiveModeBase, taskId: TaskId): TaskId {
+	const tasks = getOwnerTaskStore(mode.session)?.tasks;
+	return (tasks === undefined ? undefined : firstSubagentAttempt(tasks, taskId)?.ref.taskId) ?? taskId;
+}
+
 /** Text typed for a subagent that was being opened when the request did not land, kept for when it is shown. */
 const heldForTask = new WeakMap<InteractiveModeBase, Map<TaskId, string>>();
 
@@ -271,8 +279,10 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 			mode.showWarning(`The subagent could not be shown; what you typed for it was not sent:\n${text}`);
 			return;
 		}
+		// Kept under the subagent across its attempts where this process knows them: a resume meanwhile moves its row.
+		const key = agentKeyOf(mode, taskId);
 		const kept = keptFor();
-		kept.set(taskId, `${kept.get(taskId) ?? ""}${text}`);
+		kept.set(key, `${kept.get(key) ?? ""}${text}`);
 		notifyViewed(mode, "What you typed for the subagent is kept for it.", "info");
 	};
 	const stopListening = mode.addTuiInputListener((data) => {
@@ -320,6 +330,14 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 function reportLostAgentQueues(mode: InteractiveModeBase): () => void {
 	const runtime = mode.runtimeHost;
 	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
+	return attachLostAgentQueueNotices(mode, runtime);
+}
+
+/** Show D7's notices when `runtime`'s engine generation ends unexpectedly. Answers the detach. */
+export function attachLostAgentQueueNotices(
+	mode: InteractiveModeBase,
+	runtime: Pick<IsolatedInteractiveRuntime, "onGenerationEnded">,
+): () => void {
 	return runtime.onGenerationEnded((event) => {
 		if (event.expected) return;
 		for (const { port, controller } of liveAgentSteering(mode)) {
