@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "vitest";
-import { runBunSubprocess } from "../../packages/web-access/subprocess.ts";
+import { AsyncSubprocessError, runBunSubprocess } from "../../packages/web-access/subprocess.ts";
 import { extractVideoFrame, getLocalVideoDuration } from "../../packages/web-access/video-extract.ts";
 import { getYouTubeStreamInfo } from "../../packages/web-access/youtube-extract.ts";
 import { inheritedPipes } from "../fixtures/web-subprocess-inherited-pipes.js";
@@ -13,9 +13,9 @@ import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
 test.each(["abort", "timeout", "overflow"] as const)("Node bounds inherited-pipe cleanup after %s", inheritedPipes);
 
 /**
- * The ceiling for a child that has to start, run a one-line script and exit: what the tests check is how its exit is
- * mapped, not how long it takes. Starting Bun or Node on a loaded Windows host has taken more than a second, which the
- * former 1 s ceiling turned into a timeout.
+ * The ceiling for a child that has to start, run a short script and exit: what the tests check is how its exit is
+ * mapped, or a budget the child measures itself, not how long the run takes. Starting Bun or Node on a loaded Windows
+ * host has taken more than a second, which the former 1 s ceiling turned into a timeout.
  */
 const CHILD_RUN_TIMEOUT_MS = 20_000;
 
@@ -51,14 +51,29 @@ function executable(path: string, body: string): void {
 	chmodSync(path, 0o755);
 }
 
-async function assertResponsiveBinaryDrain(run: typeof runBunSubprocess): Promise<void> {
+/**
+ * How long the drain child waits for the parent's release once it has reported ready. The child measures it from
+ * its own readiness, so its startup, which has taken more than a second on a loaded Windows host, is not counted:
+ * what is measured is how soon the parent's event loop runs while the child's output is pending. A synchronous
+ * drain never releases the child, so its companion test always waits this long.
+ */
+const RELEASE_BUDGET_MS = 1_000;
+/** The drain child's exit code when no release arrived within RELEASE_BUDGET_MS of its readiness. */
+const RELEASE_MISSED_EXIT_CODE = 3;
+/** A child start slower than the former 1 s budget, which counted the child's startup (#6076). */
+const SLOW_CHILD_START_MS = 1_150;
+
+async function assertResponsiveBinaryDrain(run: typeof runBunSubprocess, childStartDelayMs = 0): Promise<void> {
 	const directory = mkdtempSync(join(tmpdir(), "atomic-web-handshake-"));
 	const ready = join(directory, "ready");
 	const release = join(directory, "release");
 	let callbackRan = false;
 	// Readiness is published only after the first bytes are written. The child
-	// cannot write the remaining bytes or exit until this event-loop callback runs.
-	// Poll frequency is not an assertion: one callback after readiness suffices.
+	// cannot write the remaining bytes until this event-loop callback runs, and
+	// exits with RELEASE_MISSED_EXIT_CODE if it has not run within
+	// RELEASE_BUDGET_MS of readiness. The run's own timeout only bounds a child
+	// that never gets that far. Poll frequency is not an assertion: one callback
+	// after readiness suffices.
 	const timer = setInterval(() => {
 		if (!existsSync(ready) || callbackRan) return;
 		writeFileSync(release, "");
@@ -71,13 +86,24 @@ async function assertResponsiveBinaryDrain(run: typeof runBunSubprocess): Promis
 				"-e",
 				`
 				const { existsSync, writeFileSync } = await import('node:fs');
+				await Bun.sleep(${childStartDelayMs});
 				await new Promise(resolve => process.stdout.write(Buffer.from([0, 1]), resolve));
 				writeFileSync('ready', '');
-				while (!existsSync('release')) await Bun.sleep(1);
-				process.stdout.write(Buffer.from([2, 255]));
+				const readyAt = performance.now();
+				let released = existsSync('release');
+				while (!released && performance.now() - readyAt < ${RELEASE_BUDGET_MS}) {
+					await Bun.sleep(1);
+					released = existsSync('release');
+				}
+				if (released) {
+					process.stdout.write(Buffer.from([2, 255]));
+				} else {
+					process.stderr.write('no release within ${RELEASE_BUDGET_MS} ms of ready');
+					process.exitCode = ${RELEASE_MISSED_EXIT_CODE};
+				}
 			`,
 			],
-			{ timeoutMs: 1_000, maxStdoutBytes: 1024, cwd: directory },
+			{ timeoutMs: CHILD_RUN_TIMEOUT_MS, maxStdoutBytes: 1024, cwd: directory },
 		);
 		assert.ok(callbackRan, "parent callback must release the pending child/output");
 		assert.deepEqual([...result.stdout], [0, 1, 2, 255]);
@@ -87,26 +113,39 @@ async function assertResponsiveBinaryDrain(run: typeof runBunSubprocess): Promis
 	}
 }
 
+/** A drain that blocks the parent's event loop until the child exits, mapping a failed exit as runBunSubprocess does. */
+const synchronousDrain: typeof runBunSubprocess = async (command, args, options) => {
+	const result = spawnSyncCollect([command, ...args], { cwd: options.cwd, timeout: options.timeoutMs });
+	const stderr = result.stderr.toString("utf8");
+	if (result.exitCode !== 0) {
+		// A failed exit alone could mean failed startup. Prove the child reached
+		// its output barrier and the blocked parent never acknowledged it.
+		assert.ok(existsSync(join(options.cwd!, "ready")));
+		assert.equal(existsSync(join(options.cwd!, "release")), false);
+		throw new AsyncSubprocessError(`${command} exited with code ${result.exitCode}`, {
+			code: String(result.exitCode),
+			stderr,
+		});
+	}
+	return { ...result, stderr };
+};
+
+/** The drain child gave up waiting for the parent's release. */
+function missedRelease(error: AsyncSubprocessError): boolean {
+	return error.code === String(RELEASE_MISSED_EXIT_CODE);
+}
+
 test("Bun subprocess execution drains binary output without blocking the event loop", async () => {
 	await assertResponsiveBinaryDrain(runBunSubprocess);
 });
 
 test("binary drain responsiveness handshake rejects a synchronous drain", async () => {
-	await assert.rejects(
-		assertResponsiveBinaryDrain(async (command, args, options) => {
-			try {
-				const result = spawnSyncCollect([command, ...args], { cwd: options.cwd, timeout: options.timeoutMs });
-				return { ...result, stderr: result.stderr.toString("utf8") };
-			} catch (error) {
-				// A timeout alone could mean failed startup. Prove the child reached
-				// its output barrier and the blocked parent never acknowledged it.
-				assert.ok(existsSync(join(options.cwd!, "ready")));
-				assert.equal(existsSync(join(options.cwd!, "release")), false);
-				throw error;
-			}
-		}),
-		(error: NodeJS.ErrnoException) => error.code === "ETIMEDOUT",
-	);
+	await assert.rejects(assertResponsiveBinaryDrain(synchronousDrain), missedRelease);
+});
+
+test("binary drain handshake does not count a slow child start against its budget (#6076)", async () => {
+	await assertResponsiveBinaryDrain(runBunSubprocess, SLOW_CHILD_START_MS);
+	await assert.rejects(assertResponsiveBinaryDrain(synchronousDrain, SLOW_CHILD_START_MS), missedRelease);
 });
 
 test("Bun subprocess execution enforces timeout and output byte caps", async () => {
