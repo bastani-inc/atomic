@@ -610,12 +610,19 @@ describe("a forked subagent continues its parent's cached request", () => {
 		const grandparent = SessionManager.inMemory(dir);
 		await turn(grandparent, "grandparent task");
 		// The parent is a fork this version made, with a turn of its own after its start.
-		const parent = await createForkContextResolver(grandparent, "fork").sessionManagerForIndex(0);
-		assert.ok(parent);
-		await turn(parent, "parent task");
-		// Its fork, made as an earlier version made one, records no start of its own.
-		const fork = await parent.captureFork(parent.getLeafId()!)();
-		assert.equal(forkedParentSessionId(fork), parent.getSessionId(), "the parent's turn is not the fork's own");
+		const fork = await createForkContextResolver(grandparent, "fork").sessionManagerForIndex(0);
+		assert.ok(fork);
+		await turn(fork, "parent task");
+		const parentSessionId = fork.getSessionId();
+		// A fork of it that records no start of its own but copies the parent's, as an earlier version that did not
+		// know the entry copied it as an extension's state: here a copy of the whole branch.
+		await fork.createBranchedSession(fork.getLeafId()!);
+		assert.notEqual(fork.getSessionId(), parentSessionId);
+		assert.ok(
+			fork.getBranch().some((entry) => entry.type === "custom" && entry.customType === "subagent-fork-start"),
+			"the copy holds the parent's start",
+		);
+		assert.equal(forkedParentSessionId(fork), parentSessionId, "the parent's turn is not the fork's own");
 	});
 
 	for (const madeByEarlierVersion of [true, false]) {
