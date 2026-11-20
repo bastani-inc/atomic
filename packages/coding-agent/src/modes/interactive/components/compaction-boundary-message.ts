@@ -12,7 +12,7 @@ import {
 } from "../../../core/messages.ts";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound } from "./keybinding-hints.js";
-import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { blockRows, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 import { formatWorkingTokens } from "./working-run-meter.ts";
 
 /** The mark every compaction boundary line starts with. */
@@ -87,6 +87,11 @@ export class CompactionBoundaryMessageComponent extends Box {
 
 	isExpanded(): boolean {
 		return this.expanded;
+	}
+
+	/** Its rows: an expand hint in them is part of the block, which a click on it expands or collapses. */
+	override render(width: number): string[] {
+		return blockRows(super.render(width));
 	}
 
 	/** Every row of the compaction boundary, its padding included. */

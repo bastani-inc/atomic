@@ -240,6 +240,35 @@ take() {
     pane) have_pane=1; pane=$(cat <&3) || :; return 1 ;;
   esac
 }
+# How long, in whole seconds, one wait for the worker's next line lasts before
+# the helper checks for a stop request. A signal normally interrupts the wait at
+# once, but bash 5.2 and older miss one that arrives just as `read` starts to
+# wait: its trap then runs only after the next line, which a stalled capture can
+# hold back until the deadline.
+read_slice=1
+# What a wait that timed out had read of a line, kept for the next wait.
+partial=""
+# Read the worker's next line into `line`. Returns 1 at the end of its output,
+# and, with `until-cancelled`, 2 once a stop request has been noted.
+next_line() {
+  local part rc
+  while :; do
+    rc=0
+    IFS= read -r -t "$read_slice" part <&3 || rc=$?
+    if (( rc == 0 )); then
+      line=$partial$part
+      partial=""
+      return 0
+    fi
+    # A timed-out read returns more than 128; anything else is the end.
+    if (( rc <= 128 )); then
+      partial=""
+      return 1
+    fi
+    partial+=$part
+    if [[ ${1-} == until-cancelled && -n "$cancelled" ]]; then return 2; fi
+  done
+}
 # Ask the worker and its timer to stop, and kill a capture still running.
 signal_worker() {
   stopping_worker=1
@@ -254,7 +283,7 @@ stop_worker() {
   local line
   if [[ -n "$worker" ]]; then
     signal_worker
-    while IFS= read -r line <&3 && take "$line"; do :; done
+    while next_line && take "$line"; do :; done
     exec 3<&-
     worker=""
   fi
@@ -273,8 +302,9 @@ trap 'on_signal TERM' TERM
 if [[ -z "$cancelled" ]]; then
   exec 3< <(watch_pane)
   worker=$!
-  # The first status wins. A signal ends this loop at the worker's next line.
-  while [[ -z "$status$cancelled" ]] && IFS= read -r line <&3 && take "$line"; do :; done
+  # The first status wins. A signal ends this loop at the worker's next line, or
+  # within a read slice when that line does not come.
+  while [[ -z "$status$cancelled" ]] && next_line until-cancelled && take "$line"; do :; done
 fi
 stop_worker
 if [[ -n "$cancelled" ]]; then

@@ -18,6 +18,8 @@ import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
 	renderHostedChatEntry,
+	type ToolChatEntry,
+	toolEntryGroupHead,
 } from "./chat-message-renderer.ts";
 import {
 	hasChatSessionTransientModal,
@@ -44,7 +46,7 @@ import { clickableKeyTextHint } from "./nav-keys.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import { retrySecondsLeft, retryWaitMessage } from "./retry-status-line.ts";
 import { taskDisplayText } from "./task-row.js";
-import { toolGroupRoleKey } from "./tool-group-tracker.ts";
+import { drawsApartFromGroup, type ToolGroupHead, toolGroupRoleKey } from "./tool-group-tracker.ts";
 import { isClickExpandableBlock, sameRows, withBlockRenderTime } from "./transcript-block-clicks.ts";
 import {
 	AgentTokenMeter,
@@ -527,6 +529,44 @@ export function transcriptEntryName<TExtraEntry extends ChatTranscriptEntryLike>
 	return expansionKey(entry) ?? `entry:${renderIdentityKey(state, entry)}`;
 }
 
+/** Whether `entry` is drawn expanded: as a click last set it, or else as the chat's setting last drew it. */
+function drawnExpanded<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ChatSessionHostEntry<TExtraEntry>,
+): boolean {
+	return (
+		expandedOverride(state, entry) ??
+		state.expandedOverridesFor ??
+		state.getChatRenderSettings?.()?.toolOutputExpanded === true
+	);
+}
+
+/**
+ * The first call of the group the call `entry` is folded into, as the call's drawing needs it. Until a click sets a
+ * call's expansion, every call has the chat's, and a group stands for each of its calls without one.
+ */
+function groupHeadOf<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ToolChatEntry,
+): ToolGroupHead | undefined {
+	if (state.expandedOverrides.size === 0) return undefined;
+	const head = toolEntryGroupHead(entry);
+	return head && { isExpanded: () => drawnExpanded(state, head as ChatSessionHostEntry<TExtraEntry>) };
+}
+
+/** Whether the call `entry` is drawn, and clicked, apart from the group it is folded into. */
+function drawnApart<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ToolChatEntry,
+): boolean {
+	if (entry.groupRole?.kind !== "hidden") return false;
+	const head = groupHeadOf(state, entry);
+	return (
+		head !== undefined &&
+		drawsApartFromGroup(entry.groupRole, drawnExpanded(state, entry as ChatSessionHostEntry<TExtraEntry>), head)
+	);
+}
+
 export function setExpandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	entry: ChatSessionHostEntry<TExtraEntry>,
@@ -560,6 +600,11 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,
 			state.assistantCard,
 		);
+		if (entry.kind === "tool") {
+			(component as Partial<{ setGroupHead(head: ToolGroupHead | undefined): void }>).setGroupHead?.(
+				groupHeadOf(state, entry),
+			);
+		}
 		const echoed = resolveEchoedInitialPrompt(state);
 		if (
 			entry.kind === "user" &&
@@ -600,6 +645,7 @@ export function transcriptCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 		streaming,
 		streaming && state.bodyViewport.getScrollFromBottom() === 0,
 		...(message === undefined ? [] : inPlaceKeyParts(message)),
+		message?.kind === "tool" && drawnApart(state, message),
 	];
 }
 
