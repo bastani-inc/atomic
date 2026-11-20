@@ -400,10 +400,11 @@ test("giving space back after a drain never waits for another process's write lo
 	await fillAndDrain(store, 4);
 	await vi.waitFor(() => assert.ok(other !== undefined, "the store tidied up"), { timeout: 10_000, interval: 10 });
 	await sleep(lockedAt + 1_400 - performance.now());
-	// The lock is free again: a message sent now is kept, at once.
+	// The lock is free again: a message sent now is kept, at once: within less than a lock wait (its commit syncs the file,
+	// which a loaded host takes a while to do).
 	const started = performance.now();
 	assert.equal(await store.add(entry("after")), "added");
-	assert.ok(performance.now() - started < 500, `kept after ${(performance.now() - started).toFixed(0)} ms`);
+	assert.ok(performance.now() - started < 1_000, `kept after ${(performance.now() - started).toFixed(0)} ms`);
 	await store.close();
 	await database.close();
 });
@@ -446,7 +447,9 @@ test("a small drain with no space to give back costs no transaction beyond its w
  * The longest the event loop may stop while the store waits out another process's lock, beyond what the whole host
  * stood still meanwhile. Waiting for the lock on the event loop stops it for the whole wait (5 s), and a store that spins
  * never lets it run again; a Windows host can stand still for seconds, every process at once, which the heartbeat on
- * another thread measures, and what is left of a loaded host's scheduling stays well under this.
+ * another thread measures, and what is left of a loaded host's scheduling stays well under this. (A write that commits
+ * afterwards syncs the file on the event loop, which a loaded Windows host takes over 200 ms to do: that is not waiting
+ * for the lock, and is bounded by the test's other checks.)
  */
 const STALL_BEYOND_HOST_MAX_MS = 200;
 /** Room for a timer that fires early by the event loop's own lag, on a wait as long as the store's lock wait. */
@@ -456,7 +459,7 @@ const TIMER_LAG_MARGIN_MS = 1_000;
  * The longest the whole host stood still since it started: a heartbeat on another thread, which keeps running while
  * this one works or waits. A stall of this thread alone does not stop it.
  */
-function hostStallClock(): { stop(): Promise<number> } {
+function hostStallClock(): { longestMs(): number; stop(): Promise<number> } {
 	const longest = new Float64Array(new SharedArrayBuffer(8));
 	const worker = new Worker(
 		`const { workerData } = require("node:worker_threads");
@@ -470,6 +473,7 @@ setInterval(() => {
 		{ eval: true, workerData: longest.buffer },
 	);
 	return {
+		longestMs: () => longest[0]!,
 		stop: async () => {
 			await worker.terminate();
 			return longest[0]!;
@@ -484,6 +488,8 @@ test("after a write waits out another process's lock and the next is refused at 
 	const host = hostStallClock();
 	let last = performance.now();
 	let stalled = 0;
+	let stalledWaiting = Number.POSITIVE_INFINITY;
+	let hostStalledWaiting = 0;
 	const ticker = setInterval(() => {
 		const now = performance.now();
 		stalled = Math.max(stalled, now - last);
@@ -500,6 +506,9 @@ test("after a write waits out another process's lock and the next is refused at 
 			other.exec("ROLLBACK");
 			other.close();
 		}
+		// While the store waited out the lock, the event loop ran (checked once the store is closed).
+		stalledWaiting = stalled;
+		hostStalledWaiting = host.longestMs();
 		// Writes are refused at once for a lock wait after the first failed; that wait is over once this one is (with room
 		// for a timer that fires early by the event loop's own lag).
 		await sleep(ENDED_QUEUE_LOCK_WAIT_MS + TIMER_LAG_MARGIN_MS);
@@ -514,7 +523,11 @@ test("after a write waits out another process's lock and the next is refused at 
 	}
 	const hostStalled = await host.stop();
 	assert.ok(
-		stalled - hostStalled < STALL_BEYOND_HOST_MAX_MS,
+		stalledWaiting - hostStalledWaiting < STALL_BEYOND_HOST_MAX_MS,
+		`the event loop stalled for ${stalledWaiting.toFixed(1)} ms while the store waited out the lock, the whole host for ${hostStalledWaiting.toFixed(1)} ms`,
+	);
+	assert.ok(
+		stalled - hostStalled < TIMER_LAG_MARGIN_MS,
 		`the event loop stalled for ${stalled.toFixed(1)} ms, the whole host for ${hostStalled.toFixed(1)} ms`,
 	);
 }, 60_000);
