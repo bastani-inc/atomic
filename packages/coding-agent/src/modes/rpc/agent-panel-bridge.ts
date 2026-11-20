@@ -55,6 +55,7 @@ import {
 	renderAgentPanelRows,
 } from "../interactive/components/agent-panel.ts";
 import { atomicWorkingFrame } from "../interactive/components/atomic-working-status.ts";
+import { ModelColumn } from "../interactive/components/model-column.ts";
 import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
 import { isSingleLeftClick } from "../interactive/components/single-click.ts";
 import { dismissedTasks } from "../interactive/components/task-dismissal.ts";
@@ -591,6 +592,11 @@ export function bindAgentPanel(
 	let painted: { rows: readonly AgentPanelRow[]; hiddenBelow: number; main: boolean } | undefined;
 	let cachedLines: string[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
+	/** The panel's model column, measured afresh each time the panel is mounted. */
+	const modelColumn = new ModelColumn(() => {
+		cachedRows = undefined;
+		ui.requestRender();
+	});
 
 	const publishCounts = (counts: AgentPanelCounts) => {
 		if (
@@ -626,6 +632,7 @@ export function bindAgentPanel(
 		cachedLines = [];
 		const wasMounted = mounted;
 		mounted = false;
+		modelColumn.reset();
 		stopTimer();
 		if (resetCounts) publishCounts(EMPTY_PANEL_COUNTS);
 		if (wasMounted) {
@@ -754,6 +761,7 @@ export function bindAgentPanel(
 									faded,
 									hiddenBelow: currentHiddenBelow,
 									showMain: currentMain,
+									modelColumn,
 									...idleMarks(),
 								});
 							}
@@ -776,6 +784,7 @@ export function bindAgentPanel(
 								faded,
 								hiddenBelow: currentHiddenBelow,
 								showMain: currentMain,
+								modelColumn,
 								...idleMarks(),
 							});
 							spent += Math.max(0, performance.now() - renderStart);
@@ -985,6 +994,10 @@ export async function showAgentPanel(
 				let cachedRowLines: string[] = [];
 				let materializedScroll = 0;
 				let tick: ReturnType<typeof setInterval> | undefined;
+				const modelColumn = new ModelColumn(() => {
+					cachedRows = undefined;
+					tui.requestRender();
+				});
 				const finish = () => {
 					if (finished) return;
 					finished = true;
@@ -1149,6 +1162,7 @@ export async function showAgentPanel(
 									faded,
 									scroll: focus.scroll,
 									showMain: focus.showMain,
+									modelColumn,
 									...focusMarks(),
 								});
 							} else {
@@ -1177,6 +1191,7 @@ export async function showAgentPanel(
 										faded,
 										scroll: focus.scroll,
 										showMain: focus.showMain,
+										modelColumn,
 										...focusMarks(),
 									});
 									cachedRows = currentRows;
@@ -1231,6 +1246,7 @@ export async function showAgentPanel(
 						if (disposed) return;
 						disposed = true;
 						if (tick !== undefined) clearInterval(tick);
+						modelColumn.dispose();
 						unsubscribe();
 						if (!finished) queueMicrotask(finish);
 					},

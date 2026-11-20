@@ -155,10 +155,14 @@ test("ChatSessionHost resets luminous phase and cadence on every turn start", ()
 		assert.equal(renderedRgb(host), "#1c2c3c");
 		assert.equal(isBold(host), false);
 
+		const drawn = rawWorkingLine(host);
 		host.applyAgentEvent({ type: "turn_end" } as never);
 		assert.equal(host.hasAnimationTick(), false);
 		turnTimer();
-		assert.equal(workingLine(host), undefined);
+		timers.advanceBy(880);
+		assert.equal(rawWorkingLine(host), drawn, "between turns the row stays exactly as drawn");
+		host.applyAgentEvent({ type: "agent_end", messages: [] } as never);
+		assert.match(workingLine(host) ?? "", /^ ∀ Schlepped for /, "the run's end replaces the held row");
 	} finally {
 		host.dispose();
 		timers.restore();
@@ -250,10 +254,15 @@ test("ChatSessionHost reduced motion keeps each lifecycle static while metadata 
 		assert.equal(renderRequests, beforeContentEvent + 2, "elapsed metadata repaints at one second");
 		assert.match(workingLine(host) ?? "", /^ ∀ /);
 
+		const drawn = host.renderWorkingStatus(64);
 		host.applyAgentEvent({ type: "turn_end" } as never);
-		assert.deepEqual(host.renderWorkingStatus(64), []);
+		const repaints = renderRequests;
+		assert.deepEqual(host.renderWorkingStatus(64), drawn, "between turns the row stays as drawn");
 		assert.equal(host.hasAnimationTick(), false);
 		assert.equal(timers.intervalCount(), 0);
+		timers.advanceBy(3000);
+		assert.equal(renderRequests, repaints, "a held row repaints nothing, not even its elapsed time");
+		assert.deepEqual(host.renderWorkingStatus(64), drawn);
 	} finally {
 		host.dispose();
 		timers.restore();

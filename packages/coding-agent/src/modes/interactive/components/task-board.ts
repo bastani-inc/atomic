@@ -1,11 +1,12 @@
 import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
-import { type AgentPanelItem, taskPanelModel } from "../../../core/tasks/agent-panel-source.ts";
+import { type AgentPanelItem, modelHasReasoning, taskPanelModel } from "../../../core/tasks/agent-panel-source.ts";
 import { waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import { shownSpanMs, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_MODEL_MIN_WIDTH, formatPanelElapsed, panelModelText } from "./agent-panel.ts";
+import type { ModelCellReport } from "./model-column.ts";
 import { WAITING_MARKER } from "./notice-line.ts";
 import { taskDisplayText, taskLabel, taskState } from "./task-row.js";
 
@@ -196,7 +197,7 @@ export interface BoardRowModel {
 	readonly width: number;
 }
 
-const NO_MODEL: BoardRowModel = { text: "", width: 0 };
+export const NO_MODEL: BoardRowModel = { text: "", width: 0 };
 
 /**
  * A row's model column: empty for a shell and for a row with no known model. `owner` is the task store the row's task
@@ -213,26 +214,46 @@ export function rowModel(row: TaskBoardRow, owner?: object): BoardRowModel {
 }
 
 /**
- * The width of the model column `rows` share at `width`, 0 for none; `models` are their `rowModel`s, in order. As in
- * the agent panel, rows narrower than 100 columns have none, and neither do rows where it would clip a row's right
- * column or leave a task under 8 cells.
+ * What a row with model cell `model` (its `rowModel`) reports to the view's `ModelColumn`: whether it names a model,
+ * whether its reasoning level is known or the row finished, and, asked only when needed, whether `owner`'s model
+ * registry gives its model no levels.
  */
+export function rowModelReport(row: TaskBoardRow, model: BoardRowModel, owner?: object): ModelCellReport {
+	const reported = row.kind === "task" ? row.task : row.item;
+	return {
+		model: model.width > 0 && typeof reported.model === "string" ? reported.model : undefined,
+		settled: Boolean(reported.thinking) || rowFinished(row),
+		levelless: () =>
+			typeof reported.model === "string" && modelHasReasoning(owner ?? reported, reported.model) === false,
+	};
+}
+
+/**
+ * Whether a model column `column` cells wide fits `rows` at `width`. As in the agent panel, rows narrower than 100
+ * columns have none, and neither do rows where it would clip a row's right column or leave a task under 8 cells.
+ */
+export function boardModelFits(rows: readonly TaskBoardRow[], width: number): (column: number) => boolean {
+	return (column) => {
+		if (width < AGENT_PANEL_MODEL_MIN_WIDTH) return false;
+		const fixed = 2 + 2 + nameColumnFor(width) + column + 2;
+		for (const row of rows) {
+			const meta = visibleWidth(rowMeta(row));
+			const right = meta > 0 ? 2 + meta : 0;
+			if (fixed + right > width || (rowTask(row).length > 0 && width - fixed - right < MIN_TASK_WIDTH)) return false;
+		}
+		return true;
+	};
+}
+
+/** The width of the model column `rows` share at `width`, 0 for none; `models` are their `rowModel`s, in order. */
 export function boardModelColumn(
 	rows: readonly TaskBoardRow[],
 	models: readonly BoardRowModel[],
 	width: number,
 ): number {
-	if (width < AGENT_PANEL_MODEL_MIN_WIDTH) return 0;
 	let column = 0;
 	for (const model of models) column = Math.max(column, model.width);
-	if (column === 0) return 0;
-	const fixed = 2 + 2 + nameColumnFor(width) + column + 2;
-	for (const row of rows) {
-		const meta = visibleWidth(rowMeta(row));
-		const right = meta > 0 ? 2 + meta : 0;
-		if (fixed + right > width || (rowTask(row).length > 0 && width - fixed - right < MIN_TASK_WIDTH)) return 0;
-	}
-	return column;
+	return column > 0 && boardModelFits(rows, width)(column) ? column : 0;
 }
 
 /** `model`: the model column every row of the list shares (`boardModelColumn`) and this row's cell of it. */

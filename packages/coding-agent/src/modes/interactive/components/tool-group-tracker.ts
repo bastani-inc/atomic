@@ -2,7 +2,28 @@ import type { AssistantMessage } from "@bastani/atomic-ai";
 import type { ToolGroupFamily, ToolGroupRole } from "./tool-block.ts";
 
 export type ToolGroupMemberState = "pending" | "done" | "failed" | "background";
-export type ToolGroupRoleSink = (role: ToolGroupRole) => void;
+/**
+ * Takes a call's place in its group. A call folded into a group (`hidden`) also gets what stands for the group's first
+ * call, as it was appended or bound, so that it can tell whether that call still stands for it.
+ */
+export type ToolGroupRoleSink = (role: ToolGroupRole, head?: object) => void;
+
+/** The first call of the group a folded call is in, as the folded call's drawing needs it. */
+export interface ToolGroupHead {
+	/** Whether the first call is expanded; undefined once it is no longer drawn. */
+	isExpanded(): boolean | undefined;
+}
+
+/**
+ * Whether a call folded into a group is drawn, and takes clicks, on its own: a click left it at another expansion than
+ * the group's first call, so that call's summary or rows do not stand for it. A call with no first call to compare
+ * with is drawn as its group draws it.
+ */
+export function drawsApartFromGroup(role: ToolGroupRole, expanded: boolean, head: ToolGroupHead | undefined): boolean {
+	if (role.kind !== "hidden" || head === undefined) return false;
+	const headExpanded = head.isExpanded();
+	return headExpanded === undefined || headExpanded !== expanded;
+}
 
 interface ToolGroupMember {
 	readonly id: string;
@@ -10,7 +31,11 @@ interface ToolGroupMember {
 	readonly barrierBefore: boolean;
 	state: ToolGroupMemberState;
 	role: ToolGroupRole;
+	/** The group's first call, for a call folded into it. */
+	head: ToolGroupMember | undefined;
 	apply: ToolGroupRoleSink;
+	/** What stands for the call where it is drawn: its row or its entry. */
+	handle: object | undefined;
 }
 
 const STANDALONE: ToolGroupRole = { kind: "standalone" };
@@ -97,10 +122,11 @@ export class ToolGroupTracker {
 		this.groupBash = options.groupBash ?? false;
 	}
 
-	append(id: string, toolName: string, state: ToolGroupMemberState, apply: ToolGroupRoleSink): void {
+	append(id: string, toolName: string, state: ToolGroupMemberState, apply: ToolGroupRoleSink, handle?: object): void {
 		const existing = this.members.get(id);
 		if (existing !== undefined) {
 			existing.apply = apply;
+			this.rehandle(existing, handle);
 			existing.state = state;
 			this.reclassify();
 			return;
@@ -111,7 +137,9 @@ export class ToolGroupTracker {
 			barrierBefore: this.barrierPending && this.run.length > 0,
 			state,
 			role: STANDALONE,
+			head: undefined,
 			apply,
+			handle,
 		};
 		this.barrierPending = false;
 		this.run.push(member);
@@ -128,11 +156,20 @@ export class ToolGroupTracker {
 		this.compact();
 	}
 
-	bind(id: string, apply: ToolGroupRoleSink): void {
+	bind(id: string, apply: ToolGroupRoleSink, handle?: object): void {
 		const member = this.members.get(id);
 		if (member === undefined) return;
 		member.apply = apply;
-		apply(member.role);
+		this.rehandle(member, handle);
+		apply(member.role, member.head?.handle);
+	}
+
+	/** What now stands for `member`; the calls folded into its group get it too. */
+	private rehandle(member: ToolGroupMember, handle: object | undefined): void {
+		if (handle === undefined || member.handle === handle) return;
+		member.handle = handle;
+		if (member.role.kind !== "head") return;
+		for (const folded of this.run) if (folded.head === member) folded.apply(folded.role, handle);
 	}
 
 	break(): void {
@@ -191,13 +228,14 @@ export class ToolGroupTracker {
 		this.assign(first, { kind: "head", clauses });
 		for (let index = start + 1; index < end; index += 1) {
 			const member = this.run[index];
-			if (member !== undefined) this.assign(member, HIDDEN);
+			if (member !== undefined) this.assign(member, HIDDEN, first);
 		}
 	}
 
-	private assign(member: ToolGroupMember, role: ToolGroupRole): void {
-		if (sameToolGroupRole(member.role, role)) return;
+	private assign(member: ToolGroupMember, role: ToolGroupRole, head?: ToolGroupMember): void {
+		if (sameToolGroupRole(member.role, role) && member.head === head) return;
 		member.role = role;
-		member.apply(role);
+		member.head = head;
+		member.apply(role, head?.handle);
 	}
 }

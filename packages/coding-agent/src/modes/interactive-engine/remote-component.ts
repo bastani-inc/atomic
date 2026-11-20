@@ -22,6 +22,7 @@ import type {
 } from "./protocol.ts";
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
 import { TerminalModeController } from "./terminal-mode-controller.ts";
+import type { TranscriptFrameLayout } from "./transcript-frame-layout.ts";
 
 export type RemoteComponentRuntime = Pick<
 	IsolatedInteractiveRuntime,
@@ -83,6 +84,9 @@ class RemoteComponent implements Component {
 	/** What the engine component drew on each row of `lines`, and of the frame the last `render` returned. */
 	private rowKeys: readonly string[] | undefined;
 	private paintedRowKeys: readonly string[] | undefined;
+	/** How a viewed subagent's transcript laid out `lines`, and the frame the last `render` returned. */
+	private layout: TranscriptFrameLayout | undefined;
+	private paintedFrameLayout: TranscriptFrameLayout | undefined;
 	/** The number of the last click forwarded to the engine. */
 	private clickId = 0;
 	private dirty = true;
@@ -145,7 +149,13 @@ class RemoteComponent implements Component {
 		// crashes on any rendered line wider than the terminal).
 		this.paintedFrame = this.frame;
 		this.paintedRowKeys = this.rowKeys;
+		this.paintedFrameLayout = this.layout;
 		return this.frameClamp.clamp(this.lines, width);
+	}
+
+	/** How the frame the last `render` returned laid out its rows, when the engine said. */
+	paintedLayout(): TranscriptFrameLayout | undefined {
+		return this.paintedFrameLayout;
 	}
 
 	/** What the engine component drew on `row` of the frame this host painted, when it names its rows. */
@@ -299,12 +309,14 @@ class RemoteComponent implements Component {
 		scrollRequest?: WidgetScrollRequest,
 		frame?: number,
 		rowKeys?: readonly string[],
+		layout?: TranscriptFrameLayout,
 	): void {
 		if (this.disposed || requestId < this.appliedRequestId) return;
 		this.appliedRequestId = requestId;
 		this.lines = lines;
 		this.frame = frame;
 		this.rowKeys = rowKeys;
+		this.layout = layout;
 		this.scrollRequest = scrollRequest;
 		this.onFrame?.();
 		let answeredKey = false;
@@ -347,7 +359,14 @@ class RemoteComponent implements Component {
 /** The engine component behind a transcript mount, as the host's transcript area uses it. */
 export type RemoteTranscriptComponent = Pick<
 	RemoteComponent,
-	"render" | "handleInput" | "handleMouse" | "paintedRowKey" | "invalidate" | "prime" | "hostColorDepth"
+	| "render"
+	| "handleInput"
+	| "handleMouse"
+	| "paintedRowKey"
+	| "paintedLayout"
+	| "invalidate"
+	| "prime"
+	| "hostColorDepth"
 >;
 
 /**
@@ -621,6 +640,7 @@ export class RemoteComponentController {
 						message.scrollRequest,
 						message.frame,
 						message.rowKeys,
+						message.layout,
 					);
 				break;
 			case "engine_custom_input_result":

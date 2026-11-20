@@ -14,6 +14,7 @@ import type { KeyId } from "../../core/keybindings.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import type { AgentViewState, AgentViewStatus } from "../interactive/agent-view/contracts.ts";
 import type { ToolGroupFamily, ToolGroupRole } from "../interactive/components/tool-block.ts";
+import { parseTranscriptFrameLayout, type TranscriptFrameLayout } from "./transcript-frame-layout.ts";
 
 /**
  * Version 4 separates minimal session binding from optional resource readiness.
@@ -103,7 +104,12 @@ export type InteractiveEngineMessage =
 	/** The status of a subagent the host shows on its main screen (view `viewId`), on every change. */
 	| { type: "engine_agent_view_status"; viewId: string; status: AgentViewStatus }
 	/** The engine's agent panel or `/tasks` asks the host to show a subagent, or main when `taskId` is null. */
-	| { type: "engine_view_agent"; taskId: string | null }
+	| {
+			type: "engine_view_agent";
+			taskId: string | null;
+			/** The request closes `/tasks`: the host keeps its prompt and panel as painted until the subagent is shown. */
+			keepScreen?: true;
+	  }
 	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
 	 * The child took ownership of a correlated RPC request: it has parsed the
@@ -146,6 +152,8 @@ export type InteractiveEngineMessage =
 			frame?: number;
 			/** What the component reports it drew on each row, for components that name their rows. */
 			rowKeys?: string[];
+			/** How a viewed subagent's transcript laid out this frame, so the host can place it in another height. */
+			layout?: TranscriptFrameLayout;
 	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string }
@@ -539,7 +547,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		}
 		case "engine_view_agent":
 			return typeof value.taskId === "string" || value.taskId === null
-				? { type: value.type, taskId: value.taskId }
+				? { type: value.type, taskId: value.taskId, ...(value.keepScreen === true ? { keepScreen: true } : {}) }
 				: undefined;
 		case "engine_activity_started":
 			return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
@@ -660,6 +668,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						...(Array.isArray(value.rowKeys) && value.rowKeys.every((key) => typeof key === "string")
 							? { rowKeys: value.rowKeys as string[] }
 							: {}),
+						...layoutField(value.layout),
 						...(isJsonObject(value.scrollRequest) &&
 						typeof value.scrollRequest.version === "number" &&
 						typeof value.scrollRequest.scrollTop === "number"
@@ -765,6 +774,11 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 
 export function parseEngineExplicitQuitCommand(line: string): EngineExplicitQuitCommand | undefined {
 	return parseJsonObject(line)?.type === "engine_explicit_quit" ? { type: "engine_explicit_quit" } : undefined;
+}
+
+function layoutField(value: unknown): { layout?: TranscriptFrameLayout } {
+	const layout = parseTranscriptFrameLayout(value);
+	return layout === undefined ? {} : { layout };
 }
 
 function isCellCount(value: unknown): value is number {

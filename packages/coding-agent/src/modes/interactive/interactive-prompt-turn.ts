@@ -4,6 +4,7 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
+import { followStartedRunEcho, type StartedRunEchoFollower } from "./interactive-render-chat.ts";
 import { type InteractiveSubmission, toInteractiveSubmission } from "./interactive-submission.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function (
@@ -36,12 +37,12 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	// whether the turn actually started before deciding to restore the draft.
 	let turnStarted = false;
 	let refused = false;
-	let started = false;
-	let showedUserMessage = false;
+	// The session answered that it started a run for this prompt, and the prompt call returned.
+	let runStarted = false;
 	const unsubscribeTurnStart = this.session.subscribe((event) => {
 		if (event.type === "agent_start") turnStarted = true;
-		if (event.type === "message_start" && event.message.role === "user") showedUserMessage = true;
 	});
+	let echo: StartedRunEchoFollower | undefined;
 	try {
 		if (deferredStartupNeedsPromptGate) {
 			await this.ensureDeferredStartupComplete();
@@ -57,6 +58,9 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 				await this.session.resumeQueuedMessages();
 			}
 			const shownBefore = this.userMessagesShownBySession;
+			const startedEcho = followStartedRunEcho(this, userInput, { sendShowsWorkingRow: true });
+			echo = startedEcho;
+			let started = false;
 			await this.session.prompt(userInput, {
 				streamingBehavior: "steer",
 				preflightResult: (success, disposition) => {
@@ -68,14 +72,15 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 						started = true;
 						this.expectStartedUserInput(userInput, shownBefore);
 					}
+					// The run's own events decide its echo (#5135), however they and this answer are ordered.
+					if (success) startedEcho.answer(disposition === "started");
 					if (success) settleDispatch();
 				},
 			});
-			// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
-			if (started && !showedUserMessage && this.deferredRenderedUserInputs?.includes(userInput) === true)
-				this.discardDeferredRenderedUserInput(userInput);
+			runStarted = started;
 		}
 	} catch (error) {
+		echo?.close();
 		this.discardDeferredRenderedUserInput(userInput);
 		if (refused && !turnStarted) {
 			restoreRefusedSubmission(this, error, draft);
@@ -89,13 +94,16 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		}
 	} finally {
 		unsubscribeTurnStart();
+		echo?.close();
 		if (this.promptTurn === turn) this.promptTurn = undefined;
 		if (!refused || turnStarted) settleDispatch();
 		this.promptTurnWorkingLoaderActive = false;
 		// A submission that resolves without starting an agent turn (e.g. a
 		// handled slash command) never emits `agent_end`, so clear the pre-shown
-		// spinner here when idle to avoid a lingering indicator.
-		if (!turnStarted && !this.session.isStreaming && this.workingRunMeter.snapshot() === undefined) {
+		// spinner here when idle to avoid a lingering indicator. A run the session
+		// answered as started, whose events have not arrived yet, takes the spinner
+		// over at its `agent_start` and ends it at its `agent_end`.
+		if (!turnStarted && !runStarted && !this.session.isStreaming && this.workingRunMeter.snapshot() === undefined) {
 			this.workingRunMeter.stop();
 			this.stopWorkingLoader();
 		}

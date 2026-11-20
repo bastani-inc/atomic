@@ -338,7 +338,7 @@ const knownReasoning = new WeakMap<object, Map<string, boolean>>();
  * Whether the model registry of the session that owns `owner` (a task record or its owner's clocks) gives `model`
  * reasoning levels; undefined when that session, or its registry, does not know the model.
  */
-function modelHasReasoning(owner: object, model: string): boolean | undefined {
+export function modelHasReasoning(owner: object, model: string): boolean | undefined {
 	const runtime = (getOwnerTaskSession(owner) as ModelReasoningSession | undefined)?.modelRuntime;
 	const slash = model.indexOf("/");
 	if (runtime === undefined || typeof runtime.getModel !== "function" || slash <= 0) return undefined;

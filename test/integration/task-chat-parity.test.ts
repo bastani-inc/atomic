@@ -9,6 +9,7 @@ import {
 	taskCompletionNotice,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import { TaskList } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
+import { blockRows } from "../../packages/coding-agent/src/modes/interactive/components/transcript-block-clicks.js";
 import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.js";
 import {
 	disposeInteractiveTasks,
@@ -160,6 +161,8 @@ test("main CLI projection mounts once on a late binding and shares complete row 
 	const fixture = taskFixture();
 	const mode = { session: {}, chatContainer: new Container(), toolOutputExpanded: false, ui: { requestRender() {} } };
 	refreshInteractiveTasks(mode);
+	// The chat draws the list's rows as blocks a click expands: a click on a row's expand hint toggles that row.
+	const listRows = () => blockRows(new TaskList(fixture.store.tasks).render(80));
 	try {
 		await fixture.start("late binding");
 		assert.equal(mode.chatContainer.children.length, 0);
@@ -176,10 +179,10 @@ test("main CLI projection mounts once on a late binding and shares complete row 
 			refreshInteractiveTasks(mode);
 			assert.equal(mode.chatContainer.children.length, 1);
 			assert.equal(mode.chatContainer.children[0], anchor);
-			assert.deepEqual(mode.chatContainer.render(80), new TaskList(fixture.store.tasks).render(80));
+			assert.deepEqual(mode.chatContainer.render(80), listRows());
 		}
 		await fixture.settle();
-		assert.deepEqual(mode.chatContainer.render(80), new TaskList(fixture.store.tasks).render(80));
+		assert.deepEqual(mode.chatContainer.render(80), listRows());
 		mode.toolOutputExpanded = true;
 		assert.match(mode.chatContainer.render(80).join("\n"), /action 0[\s\S]*action 1[\s\S]*action 2/);
 	} finally {

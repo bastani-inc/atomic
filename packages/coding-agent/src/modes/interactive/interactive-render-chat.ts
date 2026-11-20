@@ -57,7 +57,14 @@ import { createMarkdownTransform } from "./components/markdown-transform.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ThemedText } from "./components/themed-text.js";
 import type { ToolGroupRole } from "./components/tool-block.ts";
-import { assistantCallBreaks, type ToolGroupMemberState, ToolGroupTracker } from "./components/tool-group-tracker.ts";
+import {
+	assistantCallBreaks,
+	type ToolGroupHead,
+	type ToolGroupMemberState,
+	type ToolGroupRoleSink,
+	ToolGroupTracker,
+} from "./components/tool-group-tracker.ts";
+import { isClickExpandableBlock } from "./components/transcript-block-clicks.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { countChatMessages, InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import {
@@ -111,6 +118,12 @@ import { followChosenExpansion, SavedPageCallsBuilder } from "./interactive-save
 import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { refreshInteractiveTasks } from "./interactive-task-projection.js";
+import {
+	nextStartedRunEcho,
+	STARTED_RUN_ECHO_SENT,
+	type StartedRunEchoEvent,
+	startedRunEchoEvent,
+} from "./started-run-echo.ts";
 
 function countDroppedThinkingBlocks(message: AssistantMessage): number {
 	return (message.diagnostics ?? []).reduce((count, diagnostic) => {
@@ -210,6 +223,26 @@ const echoReadEpochs = new WeakMap<Component[], number>();
 
 interface GroupedToolComponent {
 	setGroupRole(role: ToolGroupRole): void;
+	setGroupHead?(head: ToolGroupHead | undefined): void;
+}
+
+/**
+ * Gives `component`, and `entry` when the row draws one, its place in a group of calls. A call folded into a group is
+ * told the group's first row too, without keeping it alive, so that it is drawn on its own while a click has left
+ * the two at different expansions.
+ */
+function groupedRowSink(component: GroupedToolComponent, entry?: { groupRole?: ToolGroupRole }): ToolGroupRoleSink {
+	return (role, head) => {
+		if (entry) entry.groupRole = role;
+		component.setGroupRole(role);
+		const headRow = head as Component | undefined;
+		if (role.kind !== "hidden" || !isClickExpandableBlock(headRow)) {
+			component.setGroupHead?.(undefined);
+			return;
+		}
+		const row = new WeakRef(headRow);
+		component.setGroupHead?.({ isExpanded: () => row.deref()?.isExpanded() });
+	};
 }
 interface MainToolGrouping {
 	readonly tracker: ToolGroupTracker;
@@ -291,7 +324,7 @@ export function trackMainToolComponent(
 		(grouping.lastMember !== undefined && hasRowsSinceLastMember(mode.chatContainer, grouping.lastMember, component))
 	)
 		grouping.tracker.break();
-	grouping.tracker.append(toolCallId, toolName, "pending", (role) => component.setGroupRole(role));
+	grouping.tracker.append(toolCallId, toolName, "pending", groupedRowSink(component), component);
 	grouping.lastMember = component;
 }
 
@@ -328,10 +361,7 @@ function renderGroupedChatEntries(
 		else if (entry.kind !== "tool") grouping.carriedBreak = false;
 		const component = mode.addRenderedChatEntry(entry);
 		if (entry.kind === "tool" && isGroupedToolComponent(component)) {
-			grouping.tracker.bind(entry.toolCallId, (role) => {
-				entry.groupRole = role;
-				component.setGroupRole(role);
-			});
+			grouping.tracker.bind(entry.toolCallId, groupedRowSink(component, entry), component);
 			grouping.lastMember = component;
 		}
 		onEntry(entry, component);
@@ -445,6 +475,81 @@ InteractiveModeBase.prototype.expectStartedUserInput = function (
 	if (this.userMessagesShownBySession !== shownBefore) this.discardDeferredRenderedUserInput(text);
 	else this.startedDeferredUserInput = text;
 };
+
+/** Follows one sent message's echo through `StartedRunEcho` (see there). */
+export interface StartedRunEchoFollower {
+	/** The session answered the prompt: `started` when it started a run for this message. */
+	answer(started: boolean): void;
+	/** The send ended without a run to wait for (failed, or not sent): stop following, leaving the echo alone. */
+	close(): void;
+}
+
+/**
+ * Follow the echo of `text` from just before it is sent until the run it started shows the message (the echo stays as
+ * that message) or gets past it without one (the echo goes, #5135), whichever order the answer and the run's events
+ * arrive in. A run that settles or loses its engine before it starts drops the echo, and the working row the send
+ * showed when `sendShowsWorkingRow`, as the answer alone used to.
+ */
+export function followStartedRunEcho(
+	mode: InteractiveModeBase,
+	text: string,
+	options: { readonly sendShowsWorkingRow: boolean },
+): StartedRunEchoFollower {
+	let state = STARTED_RUN_ECHO_SENT;
+	const stops: Array<() => void> = [];
+	const stop = (): void => {
+		for (const release of stops.splice(0)) release();
+	};
+	let watchingEngine = false;
+	const apply = (event: StartedRunEchoEvent): void => {
+		if (state.kind === "settled") return;
+		state = nextStartedRunEcho(state, event);
+		if (state.kind === "awaiting-run-message" && !watchingEngine) {
+			// Only a run answered as started waits on its engine, and is lost with it.
+			watchingEngine = true;
+			const runtime = mode.runtimeHost;
+			if (runtime instanceof IsolatedInteractiveRuntime)
+				stops.push(runtime.onGenerationEnded(() => apply({ type: "lost" })));
+		}
+		if (state.kind !== "settled") return;
+		stop();
+		if (state.echo === "left") return;
+		if (mode.deferredRenderedUserInputs?.includes(text) === true) mode.discardDeferredRenderedUserInput(text);
+		// What the send's own end does when no run started: the working row it showed has no run to end it.
+		if (
+			state.echo === "never-ran" &&
+			options.sendShowsWorkingRow &&
+			!mode.session.isStreaming &&
+			mode.workingRunMeter.snapshot() === undefined
+		) {
+			mode.workingRunMeter.stop();
+			mode.stopWorkingLoader();
+		}
+	};
+	// A run the host saw start and not settle before the send ends before this message's run can start: until it
+	// settles, its events are not this run's. A user message shown meanwhile still counts, as it always did.
+	let earlierRun = mode.session.turnStartedAt !== undefined;
+	stops.push(
+		mode.session.subscribe((event) => {
+			if (earlierRun && (event.type === "agent_settled" || event.type === "session_released")) {
+				earlierRun = false;
+				return;
+			}
+			const echoEvent = startedRunEchoEvent(event);
+			if (echoEvent && (!earlierRun || echoEvent.type === "user-message")) apply(echoEvent);
+		}),
+	);
+	return {
+		answer: (started) => {
+			// Everything of an earlier run came before this answer.
+			earlierRun = false;
+			apply({ type: "answer", started });
+		},
+		close: () => {
+			if (state.kind === "awaiting-answer") stop();
+		},
+	};
+}
 
 /** Show a user message from the session: in place of its echo, or of the echo of the run it started, or as new. */
 InteractiveModeBase.prototype.showSessionUserMessage = function (this: InteractiveModeBase, message: Message): void {
@@ -1142,10 +1247,7 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 	const component = adopted ?? kept ?? mode.addRenderedChatEntry(entry);
 	if (!saved && entry.kind === "tool" && isGroupedToolComponent(component)) {
 		const grouping = mainToolGrouping(mode);
-		grouping.tracker.bind(entry.toolCallId, (role) => {
-			entry.groupRole = role;
-			component.setGroupRole(role);
-		});
+		grouping.tracker.bind(entry.toolCallId, groupedRowSink(component, entry), component);
 		if (latest) grouping.lastMember = component;
 	}
 	if (entry.kind === "assistant" && !adopted) addServiceTierWarnings(mode, entry.message);
