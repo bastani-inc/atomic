@@ -35,9 +35,16 @@ async function flush(): Promise<void> {
 	for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-/** Turns of the event loop until `done` holds: a resume launches its attempt over several asynchronous steps. */
+/** How long a step may take on a loaded runner before the assertion after it reports what is missing. */
+const STEP_BUDGET_MS = 5_000;
+
+/**
+ * Turns of the event loop, timers included, until `done` holds or the step's budget is spent: a resume launches its
+ * attempt, and the chat follows it, over several asynchronous steps.
+ */
 async function until(done: () => boolean): Promise<void> {
-	for (let i = 0; i < 200 && !done(); i++) await new Promise<void>((resolve) => setImmediate(resolve));
+	const deadline = Date.now() + STEP_BUDGET_MS;
+	while (!done() && Date.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 1));
 }
 
 type Listener = (event: AgentSessionEvent) => void;
@@ -294,7 +301,7 @@ test("a finished subagent's chat follows its resumed attempt: header and working
 
 		await h.type("continue please");
 		h.inspector.handleInput(ENTER);
-		await until(() => !/· done$/.test(chatLabel(h.text())));
+		await until(() => !/· done$/.test(chatLabel(h.text())) && WORKING_LINE.test(h.text()));
 		assert.deepEqual(
 			h.resumes.map((resume) => resume.message),
 			["continue please"],
