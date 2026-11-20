@@ -12,7 +12,7 @@ import { type ModelSwitchThinkingSettings, thinkingLevelForModelSwitch } from ".
 import { getModelSearchText } from "../modes/interactive/model-search.ts";
 
 /**
- * Format a number as human-readable (e.g., 200000 -> "200K", 1000000 -> "1M")
+ * Format a number as human-readable (e.g., 200000 -> "200k", 1000000 -> "1M")
  */
 function formatTokenCount(count: number): string {
 	if (count >= 1_000_000) {
@@ -21,7 +21,7 @@ function formatTokenCount(count: number): string {
 	}
 	if (count >= 1_000) {
 		const thousands = count / 1_000;
-		return thousands % 1 === 0 ? `${thousands}K` : `${thousands.toFixed(1)}K`;
+		return thousands % 1 === 0 ? `${thousands}k` : `${thousands.toFixed(1)}k`;
 	}
 	return count.toString();
 }

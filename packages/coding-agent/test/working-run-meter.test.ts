@@ -56,6 +56,14 @@ describe("working line time and tokens (#5224)", () => {
 		assert.equal(formatWorkingMeta({ elapsedMs: 134_000, tokens: 18_400 }), "2m 14s · ↓ 18.4k tokens");
 	});
 
+	test("millions of tokens read as M beside the minutes of a long run", () => {
+		assert.equal(formatWorkingMeta({ elapsedMs: 243_000, tokens: 1_200_000 }), "4m 3s · ↓ 1.2M tokens");
+		assert.equal(
+			formatWorkingMeta({ elapsedMs: 3_900_000, tokens: 1_000_000_000, requesting: true }),
+			"1h 5m · ↑ 1B tokens",
+		);
+	});
+
 	test("the meter counts the run's finished messages by usage and the streaming one by estimate", () => {
 		let now = 1_000;
 		const meter = new WorkingRunMeter(() => now);

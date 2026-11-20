@@ -53,6 +53,32 @@ describe("--list-models", () => {
 		assert.equal(parsed.thinkingLevel, "low");
 	});
 
+	it("writes thousands of tokens with a lowercase k and millions with an uppercase M", async () => {
+		const limits = [
+			[999, "999"],
+			[1_000, "1k"],
+			[200_000, "200k"],
+			[999_499, "999.5k"],
+			[999_500, "999.5k"],
+			[1_000_000, "1M"],
+			[9_999_999, "10.0M"],
+			[1_000_000_000, "1000M"],
+		] as const;
+		harness = await createHarness({
+			models: limits.map(([tokens], index) => ({
+				id: `limit-${index}`,
+				contextWindow: tokens,
+				maxTokens: tokens,
+			})),
+		});
+
+		const rows = await listedRows();
+		assert.deepEqual(
+			rows.slice(1).map((row) => row.slice(2, 4)),
+			limits.map(([, text]) => [text, text]),
+		);
+	});
+
 	it("finds a model by its display name (#4269)", async () => {
 		harness = await createHarness({
 			models: [
