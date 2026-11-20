@@ -214,7 +214,7 @@ export const ENDED_QUEUE_FILE_BYTES_MAX = 4 * ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX 
 
 /** How many rows one page of counting what the store keeps reads before the event loop runs again. */
 const COUNT_PAGE_ROWS = 2_048;
-/** How many rows (by their sequence) one range of the sums a store counts when it opens covers. */
+/** How many rows one statement of the sums a store counts when it opens covers. */
 const COUNT_SUM_ROWS = 8_192;
 
 /** How long after a failed delete it is tried again, at first; each failure doubles it, up to the most. */
@@ -824,39 +824,38 @@ export async function openSqlEndedChildQueueStore(
 		}
 	};
 	// What the caps count of the store, read before anything is added: the sums of every row of this home, per subagent,
-	// an earlier keeper's too (they stay until this broker takes the rows over). Summed a range of rows at a time, the
-	// event loop running between ranges; `load` then counts this keeper's rows by id as it reads them.
+	// an earlier keeper's too (they stay until this broker takes the rows over). Summed a page of rows at a time, the
+	// event loop running between pages; `load` then counts this keeper's rows by id as it reads them.
 	const ledger = new CountedRows();
-	// Two statements: SQLite looks a lone MIN or MAX up in the index, but scans it for both at once.
-	const first = await database.get<SqliteRow & { seq: number | bigint | null }>(
-		`SELECT MIN(seq) AS seq FROM ${queue} WHERE home = ?`,
-		home,
-	);
-	const last = await database.get<SqliteRow & { seq: number | bigint | null }>(
-		`SELECT MAX(seq) AS seq FROM ${queue} WHERE home = ?`,
-		home,
-	);
-	if (first?.seq !== null && first?.seq !== undefined && last?.seq !== null && last?.seq !== undefined) {
-		for (let from = Number(first.seq) - 1; from < Number(last.seq); from += COUNT_SUM_ROWS) {
-			const sums = await database.all<
-				SqliteRow & {
-					owner_host: string;
-					owner_session_id: string;
-					child_key: string;
-					keeper: string;
-					bytes: number | bigint;
-				}
-			>(
-				`SELECT owner_host, owner_session_id, child_key, keeper, SUM(bytes) AS bytes FROM ${queue}
-				 WHERE home = ? AND seq > ? AND seq <= ? GROUP BY owner_host, owner_session_id, child_key, keeper`,
-				home,
-				from,
-				from + COUNT_SUM_ROWS,
-			);
-			for (const sum of sums)
-				ledger.countSum(countedKey(sum.owner_host, sum.owner_session_id, sum.child_key), Number(sum.bytes), sum.keeper !== keeper);
-			await new Promise<void>((resolve) => setImmediate(resolve));
+	// A page of rows (by their sequence) per statement, so the number of statements follows the rows, never the span of
+	// their sequence numbers (shared by every home of a shared database, and never reused).
+	for (let after = -1; ; ) {
+		const sums = await database.all<
+			SqliteRow & {
+				owner_host: string;
+				owner_session_id: string;
+				child_key: string;
+				keeper: string;
+				page_bytes: number | bigint;
+				last_seq: number | bigint;
+				row_count: number | bigint;
+			}
+		>(
+			`SELECT owner_host, owner_session_id, child_key, keeper, SUM(bytes) AS page_bytes, MAX(seq) AS last_seq, COUNT(*) AS row_count
+			 FROM (SELECT owner_host, owner_session_id, child_key, keeper, bytes, seq FROM ${queue}
+				WHERE home = ? AND seq > ? ORDER BY seq LIMIT ${COUNT_SUM_ROWS}) page
+			 GROUP BY owner_host, owner_session_id, child_key, keeper`,
+			home,
+			after,
+		);
+		let rows = 0;
+		for (const sum of sums) {
+			ledger.countSum(countedKey(sum.owner_host, sum.owner_session_id, sum.child_key), Number(sum.page_bytes), sum.keeper !== keeper);
+			rows += Number(sum.row_count);
+			after = Math.max(after, Number(sum.last_seq));
 		}
+		if (rows < COUNT_SUM_ROWS) break;
+		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
 	/** Delete one row this instance holds, its message too; whether there was one. */
 	const deleteRow = async (tx: SqliteExecutor, messageId: string): Promise<boolean> => {
