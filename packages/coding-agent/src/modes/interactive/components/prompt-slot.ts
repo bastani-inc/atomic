@@ -1,11 +1,5 @@
-import {
-	type Component,
-	Container,
-	isKeyRelease,
-	stripHintMarkers,
-	type TUI,
-	type TuiMouseEvent,
-} from "@bastani/atomic-tui";
+import { type Component, Container, stripHintMarkers, type TUI, type TuiMouseEvent } from "@bastani/atomic-tui";
+import { ScreenHold } from "../screen-hold.ts";
 
 /**
  * The longest the prompt's slot keeps showing what it showed while a view is on its way: as long as a key in a view
@@ -40,17 +34,20 @@ export function holdPromptSlot(slot: Container): PromptSlotHold {
 	return slot instanceof PromptSlot ? slot.hold() : SETTLED;
 }
 
+/**
+ * Whether what `slot` last drew is live and still current: not held rows, no view still waiting for its first frame,
+ * drawn onto the screen, and nothing mounted and no run's working status changed since.
+ */
+export function promptSlotDrewLive(slot: Container): boolean {
+	return !(slot instanceof PromptSlot) || slot.drewLive;
+}
+
 /** The opening and closing sequences of an OSC 8 hyperlink; the text between them is kept. */
 const HYPERLINK = /\x1b\]8;[^;\x07\x1b]*;[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
 /** `row` as it looks, with nothing on it that a click could run: no key hints and no links. */
 function inertRow(row: string): string {
 	return stripHintMarkers(row).replace(HYPERLINK, "");
-}
-
-/** A key the user pressed: not the release of one, nor a mouse or focus report. */
-function isKeyPress(data: string): boolean {
-	return !isKeyRelease(data) && !data.startsWith("\x1b[<") && data !== "\x1b[I" && data !== "\x1b[O";
 }
 
 type PromptSlotState =
@@ -74,7 +71,8 @@ type PromptSlotState =
  * around it stay put. Only these rows wait: everything else on the screen keeps drawing.
  *
  * The rows come back live when the view is up and has something to draw, when the command ends without one, on the
- * user's next key, at another width, or after `PROMPT_SLOT_HOLD_MS`.
+ * user's next key, at another width, or after `PROMPT_SLOT_HOLD_MS`. The slot holds only through the screen's hold
+ * (`ScreenHold`): never while another part of the screen is held, and only rows it drew from live content.
  *
  * A prompt that draws a run's working status in its own rows is never held: the hold would stop that status moving, and
  * could keep showing it after the run ended.
@@ -83,16 +81,52 @@ export class PromptSlot extends Container {
 	private state: PromptSlotState = { kind: "live" };
 	/** Counts changes of `children`. */
 	private generation = 0;
-	private drawn: { readonly width: number; readonly rows: readonly string[]; readonly generation: number } | undefined;
+	/** What the last render drew. */
+	private drawn:
+		| {
+				readonly width: number;
+				readonly rows: readonly string[];
+				/** The children it drew, counted by `generation`. */
+				readonly generation: number;
+				/** Live content drawn onto the screen: not held rows, not a view yet to draw, not under a held dock. */
+				readonly live: boolean;
+				/** It drew a run's working status in the prompt. */
+				readonly runStatus: boolean;
+				/** The working status changes counted when it drew (`ScreenHold.statusEpoch`). */
+				readonly statusEpoch: number;
+		  }
+		| undefined;
 	private showingHeldRows = false;
 	private readonly ui: Pick<TUI, "requestRender">;
 	private readonly showsRunStatus: () => boolean;
+	private readonly screen: ScreenHold;
 
-	/** `showsRunStatus` answers whether the prompt draws a run's working status in its rows now. */
-	constructor(ui: Pick<TUI, "requestRender">, showsRunStatus: () => boolean = () => false) {
+	/**
+	 * `showsRunStatus` answers whether the prompt draws a run's working status in its rows now; `screen` is the hold of
+	 * the screen the slot is on.
+	 */
+	constructor(
+		ui: Pick<TUI, "requestRender">,
+		showsRunStatus: () => boolean = () => false,
+		screen: ScreenHold = new ScreenHold(),
+	) {
 		super();
 		this.ui = ui;
 		this.showsRunStatus = showsRunStatus;
+		this.screen = screen;
+	}
+
+	/** Whether the last render drew live content that is still current (`promptSlotDrewLive`). */
+	get drewLive(): boolean {
+		const drawn = this.drawn;
+		return (
+			drawn?.live === true && drawn.generation === this.generation && drawn.statusEpoch === this.screen.statusEpoch
+		);
+	}
+
+	/** Whether a hold may keep what the last render drew: current live content, with no run's working status in it. */
+	private mayHold(): boolean {
+		return this.drewLive && this.drawn?.runStatus === false && !this.showsRunStatus();
 	}
 
 	override addChild(component: Component): void {
@@ -112,16 +146,23 @@ export class PromptSlot extends Container {
 
 	/** Keep showing what the slot drew last until the view a command opens is up or the command settles. */
 	hold(): PromptSlotHold {
-		const drawn = this.drawn;
-		if (!drawn || this.showsRunStatus()) return SETTLED;
 		const generation = this.generation;
-		const token = this.beginHold(drawn.rows, drawn.width, generation).token;
+		let token: object | undefined;
+		this.screen.begin("prompt", (ended) => {
+			const drawn = this.drawn;
+			if (drawn === undefined || !this.mayHold()) return undefined;
+			const held = this.beginHold(drawn.rows, drawn.width, generation, ended);
+			token = held.token;
+			return held.end;
+		});
+		if (token === undefined) return SETTLED;
+		const own = token;
 		return {
 			// A command that ends with nothing mounted shows the slot as it is; a mounted view decides for itself. The
 			// handle keeps only the hold's token, not its rows: a command can keep it until its view closes.
 			settle: () => {
 				const state = this.state;
-				if (state.kind === "held" && state.token === token && this.generation === generation) {
+				if (state.kind === "held" && state.token === own && this.generation === generation) {
 					state.end();
 					this.ui.requestRender();
 				}
@@ -133,27 +174,37 @@ export class PromptSlot extends Container {
 		const live = super.render(width);
 		let rows: readonly string[] = live;
 		const state = this.state;
+		const previous = this.drawn;
 		if (state.kind === "held") {
 			if (this.showsHeldRows(state, width)) rows = state.rows;
 			else state.end();
 		} else if (
-			this.drawn !== undefined &&
-			this.drawn.width === width &&
-			this.drawn.generation !== this.generation &&
+			previous?.live === true &&
+			!previous.runStatus &&
+			previous.statusEpoch === this.screen.statusEpoch &&
+			previous.width === width &&
+			previous.generation !== this.generation &&
 			this.children.some(awaitsFirstContent) &&
 			!this.showsRunStatus()
 		) {
 			// A view mounted with nothing to draw yet, as an engine panel before its first frame: the rows stay.
-			rows = this.beginHold(this.drawn.rows, width, this.drawn.generation).rows;
+			this.screen.begin("prompt", (ended) => {
+				const held = this.beginHold(previous.rows, width, previous.generation, ended);
+				rows = held.rows;
+				return held.end;
+			});
 		}
 		this.showingHeldRows = rows !== live;
-		this.drawn = { width, rows, generation: this.generation };
+		this.drawn = {
+			width,
+			rows,
+			generation: this.generation,
+			// Under a held dock the slot is drawn unseen: what it draws then never reached the screen.
+			live: rows === live && !this.children.some(awaitsFirstContent) && this.screen.region !== "dock",
+			runStatus: this.showsRunStatus(),
+			statusEpoch: this.screen.statusEpoch,
+		};
 		return rows === live ? live : [...rows];
-	}
-
-	/** Input on its way to the focused component: the user's next key sees the slot as it is. */
-	noteInput(data: string): void {
-		if (this.state.kind === "held" && isKeyPress(data)) this.state.end();
 	}
 
 	/** Held rows are a picture of what was there: a click on them reaches nothing. */
@@ -170,17 +221,18 @@ export class PromptSlot extends Container {
 		rows: readonly string[],
 		width: number,
 		generation: number,
+		ended: () => void,
 	): Extract<PromptSlotState, { kind: "held" }> {
-		if (this.state.kind === "held") this.state.end();
-		let ended = false;
+		let over = false;
 		const end = () => {
-			if (ended) return;
-			ended = true;
+			if (over) return;
+			over = true;
 			clearTimeout(timer);
 			if (this.state === held) this.state = { kind: "live" };
+			ended();
 		};
 		const timer = setTimeout(() => {
-			if (ended) return;
+			if (over) return;
 			end();
 			this.ui.requestRender();
 		}, PROMPT_SLOT_HOLD_MS);

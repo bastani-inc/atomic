@@ -8,7 +8,7 @@
 - A sent message and the working row under it no longer vanish and reappear for a moment when the engine answers that it started the run before the run's first events arrive, which happened on most first prompts of a session and on some later ones
 - `/model`, `/scoped-models`, `/tree`, `/resume` and `/tasks` open their view without first flashing an empty prompt or a blank panel, and the chat above no longer jumps down and back: the prompt stays on screen until the view has something to draw. A panel the engine opens in the prompt's place, such as `/tasks` from its key, waits for its first frame the same way ([#6057](https://github.com/bastani-inc/atomic/pull/6057)).
 - A subagent shown on the chat screen no longer jumps when the prompt, autocomplete list or panel below it changes height: the rows already on screen stay where they are while its transcript redraws for the new size, and its notes and question form stay at the bottom.
-- Enter on a subagent in `/tasks` no longer shows the main chat's prompt for a moment before the subagent appears: the prompt, footer and panel stay as painted until the subagent is shown (or cannot be), while the transcript above keeps updating. A key press shows the screen as it is at once.
+- Enter on a subagent in `/tasks` no longer shows the main chat's prompt for a moment before the subagent appears: the prompt, footer and panel stay as painted until the subagent is shown (or cannot be), while the transcript above keeps updating. Any key you press shows the screen as it is at once, as does a run starting or finishing.
 
 ## [0.10.0] - 2026-11-20
 

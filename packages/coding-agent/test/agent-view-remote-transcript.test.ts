@@ -323,8 +323,9 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 	/** The dock while `/tasks` is open over the prompt: its list of subagents in the prompt's place. */
 	const TASKS = "Tasks · 1 working\n❯ worker  investigate\n↑↓ select · enter open";
 
-	async function tasksOpen(lines = 30) {
+	async function tasksOpen(lines = 30, beforeBind?: (ui: ReturnType<typeof mainScreen>) => void) {
 		const ui = mainScreen();
+		beforeBind?.(ui);
 		const editor = ui.mode.editor as unknown as Text;
 		editor.setText(TASKS);
 		const sub = await liveSubagent(lines);
@@ -512,6 +513,34 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 			await vi.waitFor(() => assert.ok(shown !== undefined), FRAME_WAIT);
 			assert.ok(has(shown ?? [], /sub line 30$/), shown?.join("\n"));
 			assert.deepEqual(shown?.slice(-3), ["❯ prompt", "panel row", "footer"]);
+		} finally {
+			await view.dispose();
+		}
+	});
+
+	test("a key another handler takes first (Ctrl+C clearing the prompt) still shows the held dock live", async () => {
+		const taken: string[] = [];
+		// The main screen's own key handlers are set up before the single chat screen, and take some keys outright.
+		const view = await tasksOpen(30, (ui) =>
+			ui.tui.addInputListener((data) => {
+				if (data !== "\x03") return undefined;
+				taken.push(data);
+				return { consume: true };
+			}),
+		);
+		try {
+			const tasks = view.ui.screen();
+			view.engine.holdCommands();
+			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true });
+			view.closeTasks();
+			assert.deepEqual(view.ui.screen(), tasks);
+			view.ui.terminal.input("\x03");
+			assert.deepEqual(taken, ["\x03"]);
+			const live = view.ui.screen();
+			assert.ok(!has(live, /enter open/), live.join("\n"));
+			assert.deepEqual(live.slice(-2), ["❯ prompt", "footer"]);
+			view.engine.releaseCommands();
+			await vi.waitFor(() => assert.equal(view.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
 		} finally {
 			await view.dispose();
 		}

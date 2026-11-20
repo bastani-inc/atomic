@@ -6,7 +6,9 @@ import {
 	holdPromptSlot,
 	PROMPT_SLOT_HOLD_MS,
 	PromptSlot,
+	promptSlotDrewLive,
 } from "../src/modes/interactive/components/prompt-slot.ts";
+import { ScreenHold } from "../src/modes/interactive/screen-hold.ts";
 
 /**
  * The prompt's slot, driven through the orders in which a command's view can arrive: mounted at once or after an await,
@@ -38,13 +40,14 @@ function pendingView(...lines: string[]): { view: Component; ready(): void } {
 /** The slot showing the typed command, whose Enter has just cleared the prompt: the editor is the same child. */
 function slotWithPrompt(width = 40) {
 	const requestRender = vi.fn();
-	const slot = new PromptSlot({ requestRender });
+	const screen = new ScreenHold();
+	const slot = new PromptSlot({ requestRender }, () => false, screen);
 	let lines = ["❯ /model", "  model  Select model"];
 	const editor: Component = { render: () => lines, invalidate: () => {} };
 	slot.addChild(editor);
 	assert.deepEqual(slot.render(width), ["❯ /model", "  model  Select model"]);
 	lines = ["❯ "];
-	return { slot, requestRender, editor };
+	return { slot, requestRender, editor, screen };
 }
 
 function mountView(slot: PromptSlot, view: Component): void {
@@ -93,13 +96,14 @@ test("a view that closes before it drew gives back the live prompt, though the s
 });
 
 test("the user's next key shows the live slot; lifting the Enter key, a mouse report or a focus report does not", () => {
-	const { slot } = slotWithPrompt();
+	const { slot, screen } = slotWithPrompt();
 	holdPromptSlot(slot);
-	slot.noteInput("\x1b[13;1:3u");
-	slot.noteInput("\x1b[<0;5;5M");
-	slot.noteInput("\x1b[I");
+	screen.noteInput("\x1b[13;1:3u");
+	screen.noteInput("\x1b[<0;5;5M");
+	screen.noteInput("\x1b[I");
 	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
-	slot.noteInput("j");
+	screen.noteInput("j");
+	assert.equal(screen.region, undefined);
 	assert.deepEqual(slot.render(40), ["❯ "]);
 });
 
@@ -145,13 +149,20 @@ test("held rows run nothing: their key hints and links are plain text and a clic
 	assert.equal(clicks.length, 0);
 });
 
-test("a late settle of an older command leaves a newer hold alone", () => {
-	const { slot, requestRender } = slotWithPrompt();
-	const older = holdPromptSlot(slot);
-	holdPromptSlot(slot);
-	older.settle();
-	assert.equal(requestRender.mock.calls.length, 0);
+test("a command run while another's hold is held joins it: the first one's settle shows the slot live", () => {
+	vi.useFakeTimers();
+	const { slot, requestRender, screen } = slotWithPrompt();
+	const first = holdPromptSlot(slot);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS - 50);
+	const second = holdPromptSlot(slot);
+	second.settle();
+	assert.equal(screen.region, "prompt", "the joined request ends nothing");
 	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
+	vi.advanceTimersByTime(50);
+	assert.equal(screen.region, undefined, "the bound is the first hold's, not moved by the second");
+	assert.equal(requestRender.mock.calls.length, 1);
+	first.settle();
+	assert.deepEqual(slot.render(40), ["❯ "]);
 });
 
 test("an extension's component is drawn at once: the slot reads nothing it did not register", () => {
@@ -205,4 +216,42 @@ test("a prompt drawing a run's working status is not held, and a status that app
 	runStatus = true;
 	lines = ["── ∀ Working", "❯ "];
 	assert.deepEqual(slot.render(40), ["── ∀ Working", "❯ "], "a run started: its status shows as it moves");
+});
+
+test("while another part of the screen is held, a command's hold joins it: the slot keeps nothing", () => {
+	const { slot, screen } = slotWithPrompt();
+	let dockEnded = 0;
+	const releaseDock = screen.begin("dock", () => () => dockEnded++);
+	const hold = holdPromptSlot(slot);
+	assert.deepEqual(slot.render(40), ["❯ "], "the slot draws live: it holds nothing of its own");
+	assert.equal(screen.region, "dock");
+	hold.settle();
+	assert.equal(dockEnded, 0, "the joined request ends nothing");
+	releaseDock();
+	assert.equal(dockEnded, 1);
+});
+
+test("a hold keeps only rows drawn from live content, never held rows or a view yet to draw", () => {
+	vi.useFakeTimers();
+	const { slot, screen } = slotWithPrompt();
+	holdPromptSlot(slot);
+	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
+	assert.equal(promptSlotDrewLive(slot), false, "it drew held rows");
+	screen.end();
+	holdPromptSlot(slot);
+	assert.equal(screen.region, undefined, "rows another hold kept are not held again");
+	assert.deepEqual(slot.render(40), ["❯ "]);
+	assert.equal(promptSlotDrewLive(slot), true);
+
+	const panel = pendingView("Tasks");
+	mountView(slot, panel.view);
+	slot.render(40);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	assert.deepEqual(slot.render(40), [], "past the bound the panel is drawn as it is");
+	assert.equal(promptSlotDrewLive(slot), false, "a panel yet to draw is not live content");
+	holdPromptSlot(slot);
+	assert.equal(screen.region, undefined);
+	panel.ready();
+	assert.deepEqual(slot.render(40), ["Tasks"]);
+	assert.equal(promptSlotDrewLive(slot), true);
 });

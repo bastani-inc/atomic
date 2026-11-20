@@ -30,7 +30,7 @@ import { escapeViewedAgent, submitToViewedAgent } from "./agent-view/viewed-subm
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { bindMainComposerAgentRows, MainComposerKeyOverlay } from "./components/main-composer-keys.ts";
-import { holdPromptSlot, PromptSlot } from "./components/prompt-slot.ts";
+import { holdPromptSlot } from "./components/prompt-slot.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
@@ -44,6 +44,7 @@ import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./intera
 import { handOffCompactionQueue, mainSteering } from "./interactive-queueing.ts";
 import { followStartedRunEcho } from "./interactive-render-chat.ts";
 import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
+import { screenHoldOf } from "./screen-hold.ts";
 import type { SteeringSubmitResult } from "./steering-queue-controller.ts";
 import { theme } from "./theme/theme.js";
 
@@ -76,13 +77,15 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	if (mode.keybindings) {
 		bindMainComposerAgentRows(mode.keybindings, () => mainComposerPanelCounts(mode));
 	}
+	// A part of the screen held while a view is on its way is shown live before any key handler acts on the key, a key
+	// another handler then takes (Ctrl+C, the stop-all chord) included.
+	mode.addTuiInputListener((data) => {
+		screenHoldOf(mode).noteInput(data);
+		return undefined;
+	});
 	mode.addTuiInputListener(() =>
 		mode.builtInHeader instanceof StartupIdentityComponent ? void mode.builtInHeader.settle() : undefined,
 	);
-	mode.addTuiInputListener((data) => {
-		if (mode.editorContainer instanceof PromptSlot) mode.editorContainer.noteInput(data);
-		return undefined;
-	});
 	mode.addTuiInputListener((data) =>
 		routeGlobalClearInput(data, {
 			// Physical identity first: safety routing must survive an `app.clear` remap.
