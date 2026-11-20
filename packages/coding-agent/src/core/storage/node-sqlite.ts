@@ -61,6 +61,7 @@ import {
 } from "./errors.js";
 import { fileIdentity, fileIdentityAsync } from "./file-identity.js";
 import {
+	connectionWaits,
 	currentHoldScope,
 	type FileHold,
 	type FileLock,
@@ -71,8 +72,8 @@ import {
 	inBacklog,
 	modeOf,
 	releaseHold,
+	runDeferred,
 	runInHold,
-	runInTurn,
 	runTryingFirst,
 	runWhenFree,
 	sqliteBusyError,
@@ -1917,9 +1918,10 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * a call made inside that transaction's callback (`scope`), which the transaction waits for. Otherwise a single
 	 * statement (`request`, run synchronously) whose plan proves a refusal has done nothing is tried at once with a busy
 	 * timeout of 0 and, refused the lock, waits off this thread and is tried again (see `runTryingFirst`); any other runs
-	 * as it always has, behind calls of its connection already waiting (see `runInTurn`); a script of several
-	 * statements waits until no transaction of this thread holds the lock (see `modeOf`). Parameters `call` refuses
-	 * (text with a NUL) are refused before anything else, as `call` would at once.
+	 * as it always has; a script of several statements waits until no transaction of this thread holds the lock (see
+	 * `modeOf`). A call made while an earlier call of the same connection waits is decided and run in its turn behind it
+	 * (see `runDeferred`). Parameters `call` refuses (text with a NUL) are refused before anything else, as `call` would
+	 * at once.
 	 */
 	private besideHolds<T>(
 		made: { readonly scope: HoldScope | undefined; readonly backlog: boolean } | undefined,
@@ -1936,19 +1938,14 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		if (params.some((value) => typeof value === "string" && value.includes("\0"))) return call();
 		const owner = this.connection;
 		const database = owner.connection;
-		const mode = modeOf(gate, owner, database, request.sql, single);
-		if (mode === "as before") return runInTurn(gate, database, call);
-		if (mode === "script")
-			return runWhenFree(file, gate, owner, database, call, () => unavailable(this.descriptor, sqliteBusyError()));
-		return runTryingFirst(
-			file,
-			gate,
-			owner,
-			database,
-			() => this.call(request) as T,
-			call,
-			() => unavailable(this.descriptor, sqliteBusyError()),
-		);
+		const attempt = () => this.call(request) as T;
+		const busy = () => unavailable(this.descriptor, sqliteBusyError());
+		if (connectionWaits(gate, database))
+			return runDeferred(file, gate, owner, database, { sql: request.sql, params, single }, attempt, call, busy);
+		const mode = modeOf(gate, owner, database, request.sql, params, single);
+		if (mode === "as before") return call();
+		if (mode === "script") return runWhenFree(file, gate, owner, database, call, busy);
+		return runTryingFirst(file, gate, owner, database, attempt, call, busy);
 	}
 
 	/** Idle-only housekeeping: do not join a batch, wait behind an operation on this handle or another handle's

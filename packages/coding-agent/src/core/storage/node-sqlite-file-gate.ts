@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
-import type { DatabaseSync, StatementSync } from "node:sqlite";
+import type { DatabaseSync, SQLInputValue, StatementSync } from "node:sqlite";
 
 /**
  * A connection on a thread of its own taking or holding a file's write lock: open from the moment it sends
@@ -43,14 +43,26 @@ export interface FileLock {
 	release(): void;
 }
 
+/** A call waiting for its turn; one decided only at its turn (see `runDeferred`) is armed then. */
 interface Waiter {
-	readonly deadline: number;
-	readonly timer: ReturnType<typeof setTimeout> | undefined;
-	/** The connection the call runs on: later calls on it wait behind this one (see `runInTurn`). */
+	deadline: number;
+	timer: ReturnType<typeof setTimeout> | undefined;
+	/** The connection the call runs on: later calls on it wait behind this one (see `runDeferred`). */
 	readonly connection: DatabaseSync;
 	/** Runs the call if it can run now; whether it did. */
-	readonly tryRun: () => boolean;
-	readonly fail: () => void;
+	tryRun: () => boolean;
+	fail: () => void;
+}
+
+/** A waiter for a call on `connection` that is decided at its turn: no deadline until then. */
+function undecidedWaiter(connection: DatabaseSync): Waiter {
+	return {
+		deadline: Number.POSITIVE_INFINITY,
+		timer: undefined,
+		connection,
+		tryRun: () => false,
+		fail: () => {},
+	};
 }
 
 /** Statements a calling-thread connection prepared to decide how its calls run while the file is held; see `modeOf`. */
@@ -59,6 +71,8 @@ interface Plans {
 	busyTimeout?: StatementSync;
 	/** Whether the file is in WAL mode; see `inWriteAheadLog`. */
 	writeAheadLog?: boolean;
+	/** Whether the connection lets its busy timeout be set; see `triesAllowed`. */
+	timeoutSettable?: boolean;
 }
 
 /**
@@ -84,6 +98,8 @@ interface Registry {
 	/** Wrapped connections to each file that are open: closed ones, and ones collected unclosed, no longer count. */
 	readonly wrapped: Map<string, number>;
 	readonly collected: FinalizationRegistry<{ readonly release: () => void }>;
+	/** Connections that refused their busy timeout back after a try: never tried first again (see `attemptOnce`). */
+	readonly untried: WeakSet<DatabaseSync>;
 }
 
 /** One file's word and the tags of the connections that use it. */
@@ -106,6 +122,7 @@ const registry: Registry = registryBag[REGISTRY] ?? {
 	scopes: new AsyncLocalStorage(),
 	wrapped: new Map(),
 	collected: new FinalizationRegistry((use) => use.release()),
+	untried: new WeakSet(),
 };
 registryBag[REGISTRY] = registry;
 
@@ -367,37 +384,49 @@ export function runWhenFree<T>(
 	const timeoutMs = busyTimeoutOf(gate, owner, database);
 	if (timeoutMs === undefined) return run();
 	return new Promise<T>((resolve, reject) => {
-		const waiter: Waiter = {
-			deadline: performance.now() + timeoutMs,
-			// Decided once the event loop handled what it already received, such as the exit of a connection's thread,
-			// which a timer runs ahead of.
-			// At its deadline it fails if the word is taken. While the word is free it keeps its place: a free lock is
-			// never reported busy, and its turn comes (see `runNextWaiter`), so its busy timeout bounds how long it waits
-			// for the lock, not for its turn.
-			timer: setTimeout(
-				() =>
-					setImmediate(() => {
-						const index = gate.waiters.indexOf(waiter);
-						if (index === -1 || Atomics.load(state, 0) === FREE) return;
-						gate.waiters.splice(index, 1);
-						waiter.fail();
-						ranThisTurn(file, gate);
-						forgetIfIdle(file, gate);
-					}),
-				timeoutMs,
-			),
-			connection: database,
-			tryRun: () => {
-				const ran = runAdmitted(state, run);
-				if (ran === undefined) return false;
-				resolve(ran);
-				return true;
-			},
-			fail: () => reject(busy()),
-		};
+		const waiter = undecidedWaiter(database);
 		gate.waiters.push(waiter);
-		watchWord(file, gate, state);
+		armWhenFree(file, gate, waiter, state, timeoutMs, run, resolve, reject, busy);
 	});
+}
+
+/** Makes `waiter` run `run` once the word is free, for `runWhenFree`. */
+function armWhenFree<T>(
+	file: string,
+	gate: FileGate,
+	waiter: Waiter,
+	state: Int32Array,
+	timeoutMs: number,
+	run: () => Promise<T>,
+	resolve: (value: T | PromiseLike<T>) => void,
+	reject: (error: unknown) => void,
+	busy: () => Error,
+): void {
+	waiter.deadline = performance.now() + timeoutMs;
+	// Decided once the event loop handled what it already received, such as the exit of a connection's thread, which
+	// a timer runs ahead of. At its deadline it fails if the word is taken. While the word is free it keeps its place:
+	// a free lock is never reported busy, and its turn comes (see `runNextWaiter`), so its busy timeout bounds how long
+	// it waits for the lock, not for its turn.
+	waiter.timer = setTimeout(
+		() =>
+			setImmediate(() => {
+				const index = gate.waiters.indexOf(waiter);
+				if (index === -1 || Atomics.load(state, 0) === FREE) return;
+				gate.waiters.splice(index, 1);
+				waiter.fail();
+				ranThisTurn(file, gate);
+				forgetIfIdle(file, gate);
+			}),
+		timeoutMs,
+	);
+	waiter.tryRun = () => {
+		const ran = runAdmitted(state, run);
+		if (ran === undefined) return false;
+		resolve(ran);
+		return true;
+	};
+	waiter.fail = () => reject(busy());
+	watchWord(file, gate, state);
 }
 
 /**
@@ -418,7 +447,7 @@ function watchWord(file: string, gate: FileGate, state: Int32Array): void {
 			continue;
 		}
 		// Until the last deadline: each waiter's own timer decides at its deadline, so a watch never runs past it.
-		// Calls without a deadline (see `runInTurn`) need no watch: they run in their turn, whatever the word.
+		// Calls not decided yet (see `runDeferred`) need no watch: they are decided in their turn, whatever the word.
 		const deadlines = gate.waiters.map((waiter) => waiter.deadline).filter(Number.isFinite);
 		const untilMs = Math.max(...deadlines) - performance.now();
 		if (deadlines.length === 0 || untilMs <= 0) return;
@@ -490,10 +519,7 @@ const PRAGMA_NAME = new RegExp(
 function unquoted(name: string): string {
 	const quote = name[0];
 	if (quote === '"' || quote === "'" || quote === "`")
-		return name
-			.slice(1, -1)
-			.replaceAll(quote + quote, quote)
-			.toLowerCase();
+		return name.slice(1, -1).replaceAll(`${quote}${quote}`, quote).toLowerCase();
 	if (quote === "[") return name.slice(1, -1).toLowerCase();
 	return name.toLowerCase();
 }
@@ -564,12 +590,41 @@ function usesOtherCollation(opcode: string, p4: string): boolean {
 
 /** A VACUUM, which may create the file it writes into before it is refused. */
 const VACUUM_STATEMENT = /^VACUUM\b/i;
-/** A word naming one of `UNSAFE_FUNCTIONS` but `sqlite_attach`, whose statement, ATTACH, names it otherwise. */
-const UNSAFE_WORD = /\b(?:changes|total_changes|last_insert_rowid|load_extension)\b/i;
+/** `UNSAFE_FUNCTIONS` but `sqlite_attach`, whose statement, ATTACH, names it otherwise. */
+const UNSAFE_NAMES = ["changes", "total_changes", "last_insert_rowid", "load_extension"];
+/** An INSERT, UPDATE or DELETE, possibly after a WITH clause: listing its plan resets `changes()`. */
+const CHANGING_STATEMENT = /^(?:INSERT|REPLACE|UPDATE|DELETE|WITH)\b/i;
+/**
+ * A string literal or a comment, which names nothing; or a name, bare (SQLite reads any character past ASCII as part of
+ * one) or quoted.
+ */
+const WORD =
+	/'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|"((?:[^"]|"")*)"|\[([^\]]*)\]|`((?:[^`]|``)*)`|([A-Za-z_\u0080-\u{10FFFF}][\w$\u0080-\u{10FFFF}]*)/gu;
 
-/** `sql` without its string literals and comments, which name nothing it calls. */
-function withoutStringsAndComments(sql: string): string {
-	return sql.replace(/'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)/g, " ");
+/** The names `sql` uses, bare or quoted, in lower case: outside its string literals and comments. */
+function namesIn(sql: string): Set<string> {
+	const names = new Set<string>();
+	for (const [, double, bracket, backtick, bare] of sql.matchAll(WORD)) {
+		const name = double?.replaceAll('""', '"') ?? bracket ?? backtick?.replaceAll("``", "`") ?? bare;
+		if (name !== undefined) names.add(name.toLowerCase());
+	}
+	return names;
+}
+
+/**
+ * Whether `statement` names a function whose result a listing of its plan could change, which resets `changes()`
+ * for an INSERT, UPDATE or DELETE: one of `UNSAFE_NAMES`, or, for such a statement, a function SQLite does not build
+ * in, which could read the counters itself. When the connection cannot list its functions, every INSERT, UPDATE or
+ * DELETE counts.
+ */
+function namesUnsafeFunction(statement: string, database: DatabaseSync): boolean {
+	const names = namesIn(statement);
+	if (UNSAFE_NAMES.some((name) => names.has(name))) return true;
+	if (!CHANGING_STATEMENT.test(statement)) return false;
+	const userFunctions = functionsNotBuiltIn(database);
+	if (userFunctions === undefined) return true;
+	for (const name of userFunctions) if (names.has(name)) return true;
+	return false;
 }
 
 /** The database numbers of a connection's main database, the file itself, and of its temporary database. */
@@ -583,43 +638,73 @@ const TEMP_DATABASE = 1;
  *   statement whose plan proves that a refusal comes from its opening steps, before it did anything: the only
  *   databases it writes are the file and the temporary one, and the file is in WAL mode, where a commit needs no
  *   further lock; it calls no code but SQLite's own (no function or collating sequence SQLite does not build in, no
- *   virtual table, no `UNSAFE_FUNCTIONS`); it is no VACUUM, which may create the file it writes into before it is refused. A PRAGMA,
- *   which is never prepared ahead since SQLite may carry one out while preparing it, is tried first only if it is one
- *   of `TRIED_PRAGMAS`. An `exec` of no statement is tried first.
+ *   virtual table, no `UNSAFE_FUNCTIONS`); it is no VACUUM, which may create the file it writes into before it is
+ *   refused. A PRAGMA, which is never prepared ahead since SQLite may carry one out while preparing it, is tried first
+ *   only if it is one of `TRIED_PRAGMAS`. An `exec` of no statement is tried first.
  * - `as before`: every other single statement, and every call while the connection is inside a transaction of its
- *   own or the file is not in WAL mode. It runs exactly as it always has, with the connection's own busy timeout, in
- *   its turn behind calls of its connection already waiting (see `runInTurn`).
- * - `script`: an `exec` of more than one statement, or of text that cannot be split for sure (see
- *   `splitStatements`). It waits until no transaction of this thread holds the lock (see `runWhenFree`), so no part of
- *   it runs while the lock is held. An `exec` of exactly one statement runs as that statement.
+ *   own or the file is not in WAL mode. It runs exactly as it always has, with the connection's own busy timeout.
+ * - `script`: an `exec` of more than one statement (see `splitStatements`). It waits until no transaction of this
+ *   thread holds the lock (see `runWhenFree`), so no part of it runs while the lock is held. An `exec` of exactly one
+ *   statement runs as that statement.
+ *
+ * At a busy timeout of 0 every call runs as before: it never waits for the lock, and setting the timeout, as a try
+ * does, would remove a busy handler an extension installed, which reads as a timeout of 0.
  *
  * The plan of a statement is made once while the file is held and listed again for later calls. Listing the plan of
  * an INSERT, UPDATE or DELETE resets the connection's `changes()`, which the statement's own run sets again; so a
- * statement that names a function reading the change counters runs as before without its plan being listed.
+ * statement that names a function that reads the change counters or may (see `namesUnsafeFunction`) runs as before
+ * without its plan being listed.
  */
 export function modeOf(
 	gate: FileGate,
 	owner: object,
 	database: DatabaseSync,
 	sql: string,
+	params: readonly SQLInputValue[],
 	single: boolean,
 ): "try first" | "as before" | "script" {
+	if (busyTimeoutOf(gate, owner, database) === 0) return "as before";
 	if (!single) {
 		const statements = splitStatements(sql);
-		if (statements === undefined || statements.length > 1) return "script";
+		if (statements.length > 1) return "script";
 		if (statements.length === 0) return "try first";
-		return modeOf(gate, owner, database, statements[0]!, true);
+		return modeOf(gate, owner, database, statements[0]!, params, true);
 	}
 	// Inside a transaction of its own, a write's upgrade of the connection's read is refused at once, with no busy
 	// handler, and a try again could succeed or be refused otherwise.
-	if (database.isTransaction !== false || !inWriteAheadLog(gate, owner, database)) return "as before";
+	if (
+		database.isTransaction !== false ||
+		!inWriteAheadLog(gate, owner, database) ||
+		!triesAllowed(gate, owner, database)
+	)
+		return "as before";
 	// Decided on the text SQLite reads, past the blanks, comments and empty statements it skips.
 	const statement = sql.replace(LEADING, "");
 	if (PRAGMA_STATEMENT.test(statement)) return pragmaTriedFirst(statement) ? "try first" : "as before";
 	// Decided without its plan: listing the plan of an INSERT, UPDATE or DELETE resets the connection's changes().
-	if (VACUUM_STATEMENT.test(statement) || UNSAFE_WORD.test(withoutStringsAndComments(statement))) return "as before";
-	const steps = planSteps(gate, owner, database, statement);
+	if (VACUUM_STATEMENT.test(statement) || namesUnsafeFunction(statement, database)) return "as before";
+	const steps = planSteps(gate, owner, database, statement, params);
 	return steps !== undefined && triesSafely(steps, database) ? "try first" : "as before";
+}
+
+/**
+ * Whether calls on `database`, which `owner` owns, may be tried first: it never refused its busy timeout back after a
+ * try, and, checked once while the file is held, before anything is tried, the timeout can be read and set to the
+ * value it has. An authorizer you set can refuse either; then every call runs as before, and the timeout is never set.
+ */
+function triesAllowed(gate: FileGate, owner: object, database: DatabaseSync): boolean {
+	if (registry.untried.has(database)) return false;
+	const plans = plansOf(gate, owner);
+	if (plans.timeoutSettable === undefined) {
+		const timeoutMs = busyTimeoutOf(gate, owner, database);
+		try {
+			if (timeoutMs !== undefined) setBusyTimeout(database, timeoutMs);
+			plans.timeoutSettable = timeoutMs !== undefined;
+		} catch {
+			plans.timeoutSettable = false;
+		}
+	}
+	return plans.timeoutSettable;
 }
 
 /**
@@ -695,18 +780,44 @@ type Attempt<T> =
 	| { readonly kind: "busy"; readonly error: unknown };
 
 /**
- * Runs `attempt`, a call that runs synchronously on `database`, once with a busy timeout of 0, then gives the connection
- * back `timeoutMs`.
+ * Runs `attempt`, a call that runs synchronously on `database`, once with a busy timeout of 0, then gives the
+ * connection back `timeoutMs`. Undefined, having run nothing, when the connection no longer tries calls first or
+ * refuses the busy timeout of 0 (an authorizer you set can, though it allowed the value it had; see `triesAllowed`):
+ * the call is to run as before. When the connection refuses the value back after the try, twice, the try's outcome is
+ * final, a refusal of the lock included, and the connection is never tried first again: its busy timeout stays 0.
  */
-function attemptOnce<T>(database: DatabaseSync, timeoutMs: number, attempt: () => T): Attempt<T> {
-	setBusyTimeout(database, 0);
+function attemptOnce<T>(database: DatabaseSync, timeoutMs: number, attempt: () => T): Attempt<T> | undefined {
+	if (registry.untried.has(database)) return undefined;
 	try {
-		return { kind: "done", value: attempt() };
-	} catch (error) {
-		return plainBusy(error) ? { kind: "busy", error } : { kind: "failed", error };
-	} finally {
-		setBusyTimeout(database, timeoutMs);
+		setBusyTimeout(database, 0);
+	} catch {
+		registry.untried.add(database);
+		return undefined;
 	}
+	let outcome: Attempt<T>;
+	try {
+		outcome = { kind: "done", value: attempt() };
+	} catch (error) {
+		outcome = plainBusy(error) ? { kind: "busy", error } : { kind: "failed", error };
+	}
+	if (!timeoutRestored(database, timeoutMs)) {
+		registry.untried.add(database);
+		if (outcome.kind === "busy") return { kind: "failed", error: outcome.error };
+	}
+	return outcome;
+}
+
+/** Gives `database` back its busy timeout after a try, trying twice; whether it took it. */
+function timeoutRestored(database: DatabaseSync, timeoutMs: number): boolean {
+	for (let tries = 0; tries < 2; tries++) {
+		try {
+			setBusyTimeout(database, timeoutMs);
+			return true;
+		} catch {
+			// Tried again once, then given up.
+		}
+	}
+	return false;
 }
 
 /** Sets the connection's busy timeout: a setting of the connection, which touches no file. */
@@ -732,11 +843,12 @@ export function runTryingFirst<T>(
 	busy: () => Error,
 ): Promise<T> {
 	const timeoutMs = busyTimeoutOf(gate, owner, database);
-	if (timeoutMs === undefined) return runInTurn(gate, database, asBefore);
+	if (timeoutMs === undefined) return asBefore();
 	runNextWaiter(file, gate);
 	let refusal: unknown;
 	if (gate.waiters.length === 0 && !gate.paced) {
 		const first = attemptOnce(database, timeoutMs, attempt);
+		if (first === undefined) return asBefore();
 		if (first.kind !== "busy") {
 			ranThisTurn(file, gate);
 			return first.kind === "done" ? Promise.resolve(first.value) : Promise.reject(first.error);
@@ -744,68 +856,127 @@ export function runTryingFirst<T>(
 		refusal = first.error;
 	}
 	return new Promise<T>((resolve, reject) => {
-		const settle = (outcome: Attempt<T>): boolean => {
-			if (outcome.kind === "busy") {
-				refusal = outcome.error;
-				return false;
-			}
-			if (outcome.kind === "done") resolve(outcome.value);
-			else reject(outcome.error);
-			return true;
-		};
-		const waiter: Waiter = {
-			deadline: performance.now() + timeoutMs,
-			// At its deadline it is tried once more if it is the oldest; refused, or behind others while the lock is taken,
-			// it fails with the refusal. Behind others while the lock is free, it keeps its place.
-			timer: setTimeout(
-				() =>
-					setImmediate(() => {
-						const index = gate.waiters.indexOf(waiter);
-						if (index === -1) return;
-						if (index === 0 && settle(attemptOnce(database, timeoutMs, attempt))) {
-							gate.waiters.shift();
-							ranThisTurn(file, gate);
-						} else if (index === 0 || wordTaken(file)) {
-							gate.waiters.splice(index, 1);
-							waiter.fail();
-							ranThisTurn(file, gate);
-						}
-						forgetIfIdle(file, gate);
-					}),
-				timeoutMs,
-			),
-			connection: database,
-			tryRun: () => settle(attemptOnce(database, timeoutMs, attempt)),
-			// Refused at its last try, it fails with that refusal; never tried, with SQLITE_BUSY as the runtime reports it.
-			fail: () => reject(refusal ?? busy()),
-		};
+		const waiter = undecidedWaiter(database);
 		gate.waiters.push(waiter);
-		const state = registry.words.get(file)?.state;
-		if (state !== undefined) watchWord(file, gate, state);
-		pollWaiters(file, gate);
+		armTry(file, gate, waiter, database, timeoutMs, attempt, asBefore, refusal, resolve, reject, busy);
 	});
 }
 
 /**
- * Runs `run`, a call on `database` that runs as it always has, at once, unless an earlier call on the same connection
- * waits, from this or another wrapped handle: then in its turn behind it, so no call runs on a connection between a
- * refused try of an earlier call and the try that follows, as none could while SQLite's busy handler waited. Only its
- * turn is waited for: then it runs, with the connection's own busy timeout.
+ * Makes `waiter` try `attempt` again on each wake until its deadline, `timeoutMs` from now, for `runTryingFirst`;
+ * `refusal` is the SQLITE_BUSY of its last try, if any.
  */
-export function runInTurn<T>(gate: FileGate, database: DatabaseSync, run: () => Promise<T>): Promise<T> {
-	if (!gate.waiters.some((waiter) => waiter.connection === database)) return run();
-	return new Promise<T>((resolve) => {
-		gate.waiters.push({
-			deadline: Number.POSITIVE_INFINITY,
-			timer: undefined,
-			connection: database,
-			tryRun: () => {
-				resolve(run());
+function armTry<T>(
+	file: string,
+	gate: FileGate,
+	waiter: Waiter,
+	database: DatabaseSync,
+	timeoutMs: number,
+	attempt: () => T,
+	asBefore: () => Promise<T>,
+	refusal: unknown,
+	resolve: (value: T | PromiseLike<T>) => void,
+	reject: (error: unknown) => void,
+	busy: () => Error,
+): void {
+	let lastRefusal = refusal;
+	// A try the connection does not allow runs the call as before (see `attemptOnce`).
+	const settle = (outcome: Attempt<T> | undefined): boolean => {
+		if (outcome === undefined) {
+			resolve(asBefore());
+			return true;
+		}
+		if (outcome.kind === "busy") {
+			lastRefusal = outcome.error;
+			return false;
+		}
+		if (outcome.kind === "done") resolve(outcome.value);
+		else reject(outcome.error);
+		return true;
+	};
+	waiter.deadline = performance.now() + timeoutMs;
+	// At its deadline it is tried once more if it is the oldest; refused, or behind others while the lock is taken, it
+	// fails with the refusal. Behind others while the lock is free, it keeps its place.
+	waiter.timer = setTimeout(
+		() =>
+			setImmediate(() => {
+				const index = gate.waiters.indexOf(waiter);
+				if (index === -1) return;
+				if (index === 0 && settle(attemptOnce(database, timeoutMs, attempt))) {
+					gate.waiters.shift();
+					ranThisTurn(file, gate);
+				} else if (index === 0 || wordTaken(file)) {
+					gate.waiters.splice(index, 1);
+					waiter.fail();
+					ranThisTurn(file, gate);
+				}
+				forgetIfIdle(file, gate);
+			}),
+		timeoutMs,
+	);
+	waiter.tryRun = () => settle(attemptOnce(database, timeoutMs, attempt));
+	// Refused at its last try, it fails with that refusal; never tried, with SQLITE_BUSY as the runtime reports it.
+	waiter.fail = () => reject(lastRefusal ?? busy());
+	const state = registry.words.get(file)?.state;
+	if (state !== undefined) watchWord(file, gate, state);
+	pollWaiters(file, gate);
+}
+
+/** Whether a call on `database` waits for its turn. */
+export function connectionWaits(gate: FileGate, database: DatabaseSync): boolean {
+	return gate.waiters.some((waiter) => waiter.connection === database);
+}
+
+/**
+ * Runs a call on `database`, which `owner` owns, behind an earlier call on the same connection that waits, from this
+ * or another wrapped handle, so no call runs on a connection between a refused try of an earlier call and the try that
+ * follows, as none could while SQLite's busy handler waited. It is decided (see `modeOf`) only at its turn,
+ * since listing the plan of an INSERT, UPDATE or DELETE resets the connection's `changes()`, which a call before it
+ * could read; then it runs as `runTryingFirst` or `runWhenFree` would, or as before, with `call`. Once no threaded
+ * transaction holds the file, it runs as before.
+ */
+export function runDeferred<T>(
+	file: string,
+	gate: FileGate,
+	owner: object,
+	database: DatabaseSync,
+	statement: { readonly sql: string; readonly params: readonly SQLInputValue[]; readonly single: boolean },
+	attempt: () => T,
+	call: () => Promise<T>,
+	busy: () => Error,
+): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const waiter = undecidedWaiter(database);
+		waiter.tryRun = () => {
+			const mode = scopedHoldOpen(gate)
+				? modeOf(gate, owner, database, statement.sql, statement.params, statement.single)
+				: "as before";
+			const state = registry.words.get(file)?.state;
+			const timeoutMs = mode === "as before" ? undefined : busyTimeoutOf(gate, owner, database);
+			if (timeoutMs === undefined || (mode === "script" && state === undefined)) {
+				resolve(call());
 				return true;
-			},
-			// It has no deadline, and runs once it is the oldest.
-			fail: () => {},
-		});
+			}
+			if (mode === "script") {
+				const ran = runAdmitted(state!, call);
+				if (ran !== undefined) {
+					resolve(ran);
+					return true;
+				}
+				armWhenFree(file, gate, waiter, state!, timeoutMs, call, resolve, reject, busy);
+				return false;
+			}
+			const first = attemptOnce(database, timeoutMs, attempt);
+			if (first === undefined) resolve(call());
+			else if (first.kind === "done") resolve(first.value);
+			else if (first.kind === "failed") reject(first.error);
+			else {
+				armTry(file, gate, waiter, database, timeoutMs, attempt, call, first.error, resolve, reject, busy);
+				return false;
+			}
+			return true;
+		};
+		gate.waiters.push(waiter);
 	});
 }
 
@@ -836,10 +1007,10 @@ function pollWaiters(file: string, gate: FileGate): void {
 /**
  * The statements of an `exec` text, split as SQLite reads them: past quoted strings and names (`'…'`, `"…"`, `` `…` ``,
  * `[…]`) and comments, with a trigger's body (`CREATE TRIGGER … BEGIN … END`) kept in its statement. Empty statements
- * are dropped. Undefined when the text ends inside a quote, a comment or a trigger's body, so its statements cannot be
- * told apart for sure.
+ * are dropped. A comment left open runs to the end of the text; past a quote left open, or in a trigger's body without
+ * its END, the rest of the text is one statement, which SQLite fails.
  */
-export function splitStatements(sql: string): string[] | undefined {
+export function splitStatements(sql: string): string[] {
 	const statements: string[] = [];
 	let start = 0;
 	let words: string[] = [];
@@ -855,17 +1026,18 @@ export function splitStatements(sql: string): string[] | undefined {
 			let end = sql.indexOf(close, index + 1);
 			// A doubled quote stands for the quote itself, except in a bracketed name.
 			while (end !== -1 && close !== "]" && sql[end + 1] === close) end = sql.indexOf(close, end + 2);
-			if (end === -1) return undefined;
-			index = end + 1;
 			tokens = true;
+			// Unterminated: SQLite fails the statement there, after the ones before it ran.
+			if (end === -1) break;
+			index = end + 1;
 			lastWord = "";
 		} else if (char === "-" && sql[index + 1] === "-") {
 			const end = sql.indexOf("\n", index + 2);
 			index = end === -1 ? sql.length : end + 1;
 		} else if (char === "/" && sql[index + 1] === "*") {
+			// Unterminated, the comment runs to the end of the text.
 			const end = sql.indexOf("*/", index + 2);
-			if (end === -1) return undefined;
-			index = end + 2;
+			index = end === -1 ? sql.length : end + 2;
 		} else if (char === ";") {
 			index += 1;
 			// Inside a trigger's body, only the semicolon after its END ends the statement.
@@ -891,36 +1063,36 @@ export function splitStatements(sql: string): string[] | undefined {
 			index += 1;
 		}
 	}
-	if (tokens) {
-		if (trigger() && lastWord !== "END") return undefined;
-		statements.push(sql.slice(start));
-	}
+	// Past an unterminated quote, or in a trigger's body without its END, SQLite fails the rest as one statement.
+	if (tokens) statements.push(sql.slice(start));
 	return statements;
 }
 
 /**
  * The steps of the plan of `sql`, listed now from the plan kept for it (SQLite prepares a kept plan again when this
  * connection changed its schema since, and fails it if the statement no longer prepares), or from a new one; undefined
- * when SQLite cannot make one.
+ * when SQLite cannot make one. The plan is bound to the call's `params` first, so parameters the statement cannot
+ * bind fail before the plan is listed, which resets `changes()` (see `modeOf`), as the statement fails before it runs.
  */
 function planSteps(
 	gate: FileGate,
 	owner: object,
 	database: DatabaseSync,
 	sql: string,
+	params: readonly SQLInputValue[],
 ): ReturnType<StatementSync["all"]> | undefined {
 	const plans = plansOf(gate, owner);
 	const kept = plans.explained.get(sql);
 	if (kept !== undefined) {
 		try {
-			return kept.all();
+			return kept.all(...params);
 		} catch {
 			plans.explained.delete(sql);
 		}
 	}
 	try {
 		const explained = database.prepare(`EXPLAIN ${sql}`);
-		const steps = explained.all();
+		const steps = explained.all(...params);
 		if (plans.explained.size >= MAX_PLANS) plans.explained.delete(plans.explained.keys().next().value!);
 		plans.explained.set(sql, explained);
 		return steps;

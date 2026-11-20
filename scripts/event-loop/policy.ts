@@ -279,6 +279,30 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 			"prepares and lists the plan of a call's statement, and the connection's functions, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file: it does not run the statement or wait for the file's write lock (#6081)",
 	},
 	{
+		from: {
+			file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts",
+			name: "runDeferred/Promise()/waiter.tryRun",
+		},
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "modeOf" },
+		reason:
+			"decides, at its turn, how a call made while an earlier call of its connection waits runs: lists the plan of its statement and reads settings of a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file: it does not run the statement or wait for the file's write lock (#6081)",
+	},
+	{
+		from: {
+			file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts",
+			name: "runDeferred/Promise()/waiter.tryRun",
+		},
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "busyTimeoutOf" },
+		reason:
+			"reads PRAGMA busy_timeout, a setting of the connection that touches no file, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "timeoutRestored" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "setBusyTimeout" },
+		reason:
+			"gives a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, its busy timeout back after a statement ran with a busy timeout of 0: a setting of the connection that touches no file (#6081)",
+	},
+	{
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "attemptOnce" },
 		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "setBusyTimeout" },
 		reason:

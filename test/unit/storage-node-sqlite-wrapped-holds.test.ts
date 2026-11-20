@@ -1039,10 +1039,147 @@ test("a wrapped statement that reads the change counters during a threaded trans
 	const { path, threaded } = await sharedFile();
 	const { raw, wrapped } = await openWrapped(path);
 	raw.exec("CREATE TEMP TABLE scratch (x)");
-	await wrapped.run("INSERT INTO scratch VALUES (1), (2), (3)");
+	// A function of yours that reads the counters through the connection.
+	raw.function("read_prior", () => Number(raw.prepare("SELECT changes() AS n").get()?.n));
 	const { committed, settled } = await holdLock(threaded);
-	assert.deepEqual(await wrapped.get("INSERT INTO scratch VALUES (changes()) RETURNING x"), { x: 3 });
-	assert.deepEqual(await wrapped.get("SELECT changes() AS n, total_changes() AS total"), { n: 1, total: 4 });
+	for (const call of ["changes()", '"changes"()', "[changes]()", "`changes`()", "read_prior()", '"read_prior"()']) {
+		await wrapped.run("INSERT INTO scratch VALUES (1), (2), (3)");
+		assert.deepEqual(await wrapped.get(`INSERT INTO scratch VALUES (${call}) RETURNING x`), { x: 3 }, call);
+	}
+	assert.deepEqual(await wrapped.get("SELECT changes() AS n, total_changes() AS total"), { n: 1, total: 24 });
 	assert.equal(settled(), false, "a call waited for the transaction");
 	await committed;
+});
+
+test("a wrapped write whose parameters SQLite cannot bind during a threaded transaction fails as before, leaving the change counters alone (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path);
+	raw.exec("CREATE TEMP TABLE scratch (x)");
+	// What node:sqlite reports for the parameter, from a connection of the test's own.
+	const reference = new DatabaseSync(":memory:");
+	cleanups.push(() => reference.close());
+	let expected: unknown;
+	try {
+		reference.prepare("SELECT ?").get(2n ** 80n);
+	} catch (error) {
+		expected = error;
+	}
+	const { committed, settled } = await holdLock(threaded);
+	await wrapped.run("INSERT INTO scratch VALUES (1), (2), (3)");
+	const { error } = await outcome(wrapped.run("INSERT INTO scratch VALUES (?)", 2n ** 80n));
+	assert.ok(error instanceof StorageUnavailableError, `expected a storage failure, got ${String(error)}`);
+	assert.equal((error.cause as Error).message, (expected as Error).message);
+	assert.deepEqual(await wrapped.get("SELECT changes() AS n"), { n: 3 });
+	assert.equal(settled(), false, "a call waited for the transaction");
+	await committed;
+});
+
+test("a wrapped call made while earlier calls of its connection wait is decided in its turn, so a count queued before it reads what the call before did (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path);
+	const counter = wrapNodeSqliteDatabase(raw);
+	const third = wrapNodeSqliteDatabase(raw);
+	cleanups.push(() => counter.close());
+	cleanups.push(() => third.close());
+	raw.exec("CREATE TEMP TABLE scratch (x)");
+	const { committed } = await holdLock(threaded);
+	let thirdCall: Promise<unknown> | undefined;
+	// The third handle's write is made as soon as the first write ran, while the count still waits for its turn.
+	const written = wrapped.run("INSERT INTO items VALUES ('c')").then((result) => {
+		thirdCall = third.run("INSERT INTO scratch VALUES (1)");
+		return result;
+	});
+	await sleep(0);
+	const counted = await counter.get<{ n: number }>("SELECT changes() AS n");
+	assert.deepEqual(counted, { n: 1 });
+	assert.deepEqual(await written, { changes: 1 });
+	assert.deepEqual(await thirdCall, { changes: 1 });
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b", "c"]);
+});
+
+/**
+ * Makes `raw` refuse to set its busy timeout, as an authorizer set with `setAuthorizer` can, once it allowed `allowed`
+ * such settings.
+ */
+function refuseBusyTimeoutSettings(raw: DatabaseSync, allowed = 0): void {
+	const exec = raw.exec.bind(raw);
+	let left = allowed;
+	raw.exec = (sql: string) => {
+		if (/^PRAGMA busy_timeout\s*=/i.test(sql) && left-- <= 0) throw new Error("not authorized");
+		return exec(sql);
+	};
+}
+
+test("a wrapped connection that refuses to set its busy timeout runs its calls as before during a threaded transaction (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path, 37);
+	raw.exec("CREATE TEMP TABLE scratch (x)");
+	refuseBusyTimeoutSettings(raw);
+	const { committed, settled } = await holdLock(threaded);
+	assert.deepEqual(await wrapped.run("INSERT INTO scratch VALUES (1)"), { changes: 1 });
+	assert.equal(settled(), false, "the call waited for the transaction");
+	assert.deepEqual({ ...raw.prepare("PRAGMA busy_timeout").get() }, { timeout: 37 });
+	assert.deepEqual({ ...raw.prepare("SELECT count(*) AS n FROM scratch").get() }, { n: 1 });
+	await committed;
+});
+
+test("a wrapped write whose connection refuses its busy timeout back after a try during a threaded transaction is not tried again (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path, 150);
+	raw.exec("CREATE TEMP TABLE scratch (x)");
+	// The handle sets the busy timeout it has, then 0 for the try; setting it back is refused.
+	refuseBusyTimeoutSettings(raw, 2);
+	const { committed, settled } = await holdLock(threaded);
+	const { error } = await outcome(wrapped.run("INSERT INTO items VALUES ('c')"));
+	assertBusy(error, "INSERT INTO items");
+	assert.equal(settled(), false, "the write waited for the transaction");
+	assert.deepEqual({ ...raw.prepare("PRAGMA busy_timeout").get() }, { timeout: 0 });
+	// The connection is no longer tried first: its calls run as before.
+	assert.deepEqual(await wrapped.run("INSERT INTO scratch VALUES (1)"), { changes: 1 });
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b"]);
+});
+
+test("a wrapped exec of one statement SQLite reads to the end of the text runs as that statement during a threaded transaction (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped } = await openWrapped(path, 150);
+	// What node:sqlite reports, from a connection of the test's own.
+	const reference = new DatabaseSync(":memory:");
+	cleanups.push(() => reference.close());
+	let expected: unknown;
+	try {
+		reference.exec("SELECT 'unterminated");
+	} catch (error) {
+		expected = error;
+	}
+	const { committed, settled } = await holdLock(threaded, 600);
+	await wrapped.exec("SELECT 1 /* unterminated");
+	const { error } = await outcome(wrapped.exec("SELECT 'unterminated"));
+	assert.ok(error instanceof StorageUnavailableError, `expected a storage failure, got ${String(error)}`);
+	assert.equal((error.cause as Error).message, (expected as Error).message);
+	assert.equal(settled(), false, "a call waited for the transaction");
+	await committed;
+});
+
+test("with a busy timeout of 0, a wrapped call during a threaded transaction runs as before and its busy timeout is never set (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path, 0);
+	raw.exec("CREATE TEMP TABLE scratch (x)");
+	const settings: string[] = [];
+	const exec = raw.exec.bind(raw);
+	raw.exec = (sql: string) => {
+		if (/^PRAGMA busy_timeout\s*=/i.test(sql)) settings.push(sql);
+		return exec(sql);
+	};
+	const { committed, settled } = await holdLock(threaded, 600);
+	// A script runs up to the write SQLite refuses at once, as before.
+	const { error } = await outcome(wrapped.exec("INSERT INTO scratch VALUES (1); INSERT INTO items VALUES ('c')"));
+	assertBusy(error, "the script");
+	assert.deepEqual({ ...raw.prepare("SELECT count(*) AS n FROM scratch").get() }, { n: 1 });
+	assertBusy((await outcome(wrapped.run("INSERT INTO items VALUES ('d')"))).error, "INSERT INTO items");
+	assert.equal(settled(), false, "a call waited for the transaction");
+	assert.deepEqual(settings, []);
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b"]);
 });
