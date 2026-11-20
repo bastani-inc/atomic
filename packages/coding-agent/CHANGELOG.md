@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Building the `history://` search index of a long session is fast again when the CPUs are busy, and still leaves typing and rendering free: each page of entries and its index merge reach the SQLite connection's thread as one request instead of one per statement, so the first `history://` search of a session without an index covers as many entries per call as before 0.10.1 ([#6082](https://github.com/bastani-inc/atomic/issues/6082)).
+
 ## [0.10.1] - 2026-11-20
 
 Typing and rendering keep going while Atomic reads and writes its local SQLite files, and the chat screen no longer flashes blank or shifted frames.

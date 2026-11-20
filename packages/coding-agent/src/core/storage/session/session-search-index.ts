@@ -2,7 +2,7 @@ import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteStatement, Sqlite
 import { dialectOf, type StorageDialect, type StorageTrigger } from "../dialect.js";
 import { applyStorageMigrations, withShortSchemaLockWaits } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
-import { sequenceRunner } from "../statement-sequence.js";
+import { type RunSequence, sequenceRunner } from "../statement-sequence.js";
 import type {
 	SessionSearchCoverage,
 	SessionSearchExtendOptions,
@@ -168,9 +168,12 @@ interface TrigramEngine {
 		docs: readonly SearchDoc[],
 		signal?: AbortSignal,
 	): Promise<void>;
-	/** `merge` of `MERGE_STEPS_PER_WRITE` steps, then `insert`: whether every merge step found work. */
-	write(
-		tx: SqliteExecutor,
+	/**
+	 * `merge` of `MERGE_STEPS_PER_WRITE` steps then `insert`, as one sequence, for a transaction that runs sequences
+	 * (#6082): whether every merge step found work. Absent where the engine has no merge steps.
+	 */
+	writeSequence?(
+		runSequence: RunSequence,
 		tables: SearchTables,
 		sid: number,
 		docs: readonly SearchDoc[],
@@ -310,15 +313,9 @@ const sqliteFts: TrigramEngine = {
 		}
 		signal?.throwIfAborted();
 	},
-	// One request to a connection that takes sequences (#6082): the same statements in the same order, checking the
-	// signal at the same places, as `merge` and `insert` one statement at a time.
-	async write(tx, tables, sid, docs, signal) {
-		const runSequence = sequenceRunner(tx);
-		if (runSequence === undefined) {
-			const backlog = await sqliteFts.merge(tx, tables, MERGE_STEPS_PER_WRITE, signal);
-			await sqliteFts.insert(tx, tables, sid, docs, signal);
-			return backlog;
-		}
+	// The same statements in the same order, checking the signal at the same places, as `merge` and `insert` one
+	// statement at a time.
+	async writeSequence(runSequence, tables, sid, docs, signal) {
 		const repeated = await runSequence({
 			repeat: ftsMergeStep(tables, MERGE_STEPS_PER_WRITE),
 			statements: ftsInserts(tables, sid, docs),
@@ -454,10 +451,6 @@ const postgresTrigrams: TrigramEngine = {
 	},
 	async prepareWrites() {},
 	async merge() {
-		return false;
-	},
-	async write(tx, tables, sid, docs, signal) {
-		await postgresTrigrams.insert(tx, tables, sid, docs, signal);
 		return false;
 	},
 	async insert(tx, tables, sid, docs, signal) {
@@ -693,7 +686,15 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 					sid = Number(created!.sid);
 				}
 				if (sid > MAX_SID) return false;
-				if (docs.length > 0) backlog = await this.engine.write(tx, this.tables, sid, docs, options?.signal);
+				if (docs.length > 0) {
+					const runSequence = sequenceRunner(tx);
+					if (runSequence !== undefined && this.engine.writeSequence !== undefined) {
+						backlog = await this.engine.writeSequence(runSequence, this.tables, sid, docs, options?.signal);
+					} else {
+						backlog = await this.engine.merge(tx, this.tables, MERGE_STEPS_PER_WRITE, options?.signal);
+						await this.engine.insert(tx, this.tables, sid, docs, options?.signal);
+					}
+				}
 				const nextWhole = mergeWholeSeqs(row.whole_seqs, oversizedSeqs);
 				const updated = await tx.run(
 					`UPDATE ${this.tables.state} SET indexed_seq = ?, entry_id = ? WHERE sid = ? AND session_id = ? AND format = ? AND indexed_seq = ? AND revision = ?`,
@@ -763,7 +764,13 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 			let backlog = false;
 			const written = await this.database.transaction(async (tx) => {
 				if (!(await lockAndCheck(tx))) return false;
-				backlog = await this.engine.write(tx, this.tables, sid, batch, options?.signal);
+				const runSequence = sequenceRunner(tx);
+				if (runSequence !== undefined && this.engine.writeSequence !== undefined) {
+					backlog = await this.engine.writeSequence(runSequence, this.tables, sid, batch, options?.signal);
+				} else {
+					backlog = await this.engine.merge(tx, this.tables, MERGE_STEPS_PER_WRITE, options?.signal);
+					await this.engine.insert(tx, this.tables, sid, batch, options?.signal);
+				}
 				return true;
 			}, txOptions);
 			if (!written) return false;

@@ -108,28 +108,53 @@ test("a sequence runs nothing after a statement that fails, and fails with the e
 	assert.equal(String(failure.cause), String(alone.cause));
 });
 
-test("a sequence whose signal aborted before its statements ran runs none of them and rejects with the signal's reason (#6082)", async () => {
+test.each([
+	["", () => {}],
+	// A listener of the caller's own that keeps the abort event from listeners after it does not keep it from the thread.
+	[
+		" and a listener stops the abort event",
+		(signal: AbortSignal) => signal.addEventListener("abort", (event) => event.stopImmediatePropagation()),
+	],
+])(
+	"a sequence whose signal aborted before its statements ran runs none of them and rejects with the signal's reason%s (#6082)",
+	async (_case, listen) => {
+		const database = await openFile();
+		const controller = new AbortController();
+		listen(controller.signal);
+		const reason = new Error("stopped");
+		// Aborted after the caller's own check and before the request reaches the connection's thread: only the thread's
+		// check can stop the statements.
+		watchSequences((_request, send) => {
+			controller.abort(reason);
+			return send();
+		});
+		const { failure, rows } = await database.transaction(async (tx) => {
+			const failure = await runnerOf(tx)({
+				statements: [insert("a"), insert("b")],
+				signal: controller.signal,
+			}).then(
+				() => assert.fail("the sequence succeeded"),
+				(error: unknown) => error,
+			);
+			return { failure, rows: await values(tx) };
+		});
+		assert.equal(failure, reason);
+		assert.deepEqual(rows, []);
+	},
+);
+
+test("an abort event dispatched on a signal that did not abort stops nothing (#6082)", async () => {
 	const database = await openFile();
 	const controller = new AbortController();
-	const reason = new Error("stopped");
-	// Aborted after the caller's own check and before the request reaches the connection's thread: only the thread's
-	// check can stop the statements.
 	watchSequences((_request, send) => {
-		controller.abort(reason);
+		controller.signal.dispatchEvent(new Event("abort"));
 		return send();
 	});
-	const { failure, rows } = await database.transaction(async (tx) => {
-		const failure = await runnerOf(tx)({
-			statements: [insert("a"), insert("b")],
-			signal: controller.signal,
-		}).then(
-			() => assert.fail("the sequence succeeded"),
-			(error: unknown) => error,
-		);
-		return { failure, rows: await values(tx) };
+	const rows = await database.transaction(async (tx) => {
+		await runnerOf(tx)({ statements: [insert("a"), insert("b")], signal: controller.signal });
+		return values(tx);
 	});
-	assert.equal(failure, reason);
-	assert.deepEqual(rows, []);
+	assert.deepEqual(rows, ["a", "b"]);
 });
 
 test("a sequence reports the failing statement's error, not the abort, when its signal aborts after the statement failed (#6082)", async () => {
@@ -183,10 +208,23 @@ test("a sequence longer than one request goes in requests of 256 statements, eac
 	const { sent, overlapping } = watchSequences();
 	const count = 2 * REQUEST_STATEMENTS + 88;
 	const expected = Array.from({ length: count }, (_, index) => `v${index}`);
+	// How many statements the sequence had taken from the caller when it sent each request.
+	let taken = 0;
+	const takenAtSend: number[] = [];
+	watchSequences((_request, send) => {
+		takenAtSend.push(taken);
+		return send();
+	});
+	function* statements() {
+		for (const value of expected) {
+			taken++;
+			yield insert(value);
+		}
+	}
 	const rows = await database.transaction(async (tx) => {
 		await runnerOf(tx)({
 			repeat: { statement: insert("first"), times: 1, minChanges: 1 },
-			statements: expected.map(insert),
+			statements: statements(),
 		});
 		return values(tx);
 	});
@@ -200,6 +238,7 @@ test("a sequence longer than one request goes in requests of 256 statements, eac
 		],
 	);
 	assert.equal(overlapping(), 1);
+	assert.deepEqual(takenAtSend, [REQUEST_STATEMENTS, 2 * REQUEST_STATEMENTS, count]);
 });
 
 test("a sequence fails at a statement with NUL text as that statement fails alone, after the statements before it ran (#6082)", async () => {
@@ -231,6 +270,15 @@ test("only a transaction of a file connection on a thread of its own runs sequen
 		// A wrapper that forwards what it does not change, whose own `run` must still see every statement.
 		const decorated = new Proxy(tx, { get: (target, key) => Reflect.get(target, key) });
 		assert.equal(sequenceRunner(decorated), undefined);
+	});
+	// A caller that replaces the handle's own `run` or `get` (with a function of its own) sees every statement through it.
+	await file.transaction(async (tx) => {
+		tx.run = tx.run.bind(tx);
+		assert.equal(sequenceRunner(tx), undefined, "a transaction whose run was replaced");
+	});
+	await file.transaction(async (tx) => {
+		tx.get = tx.get.bind(tx);
+		assert.equal(sequenceRunner(tx), undefined, "a transaction whose get was replaced");
 	});
 	await inMemory.transaction(async (tx) => assert.equal(sequenceRunner(tx), undefined));
 	await wrapped.transaction(async (tx) => assert.equal(sequenceRunner(tx), undefined));

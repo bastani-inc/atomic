@@ -120,6 +120,8 @@ interface Traffic {
 	/** Merge steps and inserts sent one at a time. */
 	readonly ftsStatements: number;
 	readonly perTransaction: readonly number[];
+	/** Requests carrying merge steps or inserts, for each transaction. */
+	readonly ftsPerTransaction: readonly number[];
 }
 
 /** Records the requests file connections send their threads until it is stopped: those of one store's connection. */
@@ -144,28 +146,38 @@ function watchTraffic(): { stop(): Traffic } {
 			let sequences = 0;
 			let ftsStatements = 0;
 			const perTransaction: number[] = [];
+			const ftsPerTransaction: number[] = [];
 			let open: number | undefined;
+			let fts = 0;
 			for (const request of requests) {
-				if (request.kind === "begin") open = 0;
+				if (request.kind === "begin") {
+					open = 0;
+					fts = 0;
+				}
 				if (open !== undefined) open++;
 				if (request.kind === "exec" && (request.sql === "COMMIT" || request.sql === "ROLLBACK")) {
 					if (request.sql === "COMMIT") commits++;
-					if (open !== undefined) perTransaction.push(open);
+					if (open !== undefined) {
+						perTransaction.push(open);
+						ftsPerTransaction.push(fts);
+					}
 					open = undefined;
 				}
 				if (request.kind === "run" && (ftsMerge(request.sql) || ftsInsert(request.sql))) {
 					ftsStatements++;
+					fts++;
 					if (ftsMerge(request.sql)) merges++;
 				}
 				if (request.kind === "sequence") {
 					sequences++;
+					fts++;
 					const answer = answers.get(request) as { readonly repeated: number } | undefined;
 					// The runs that did work, and the one that found none and stopped the merge.
 					if (request.repeat !== undefined && answer !== undefined)
 						merges += answer.repeated + (answer.repeated < request.repeat.times ? 1 : 0);
 				}
 			}
-			return { commits, merges, sequences, ftsStatements, perTransaction };
+			return { commits, merges, sequences, ftsStatements, perTransaction, ftsPerTransaction };
 		},
 	};
 }
@@ -197,9 +209,10 @@ test("the history:// search index sends each page of entries with its merge step
 	const traffic = watchTraffic();
 	await searches(store);
 	const coverage = await store.searchIndex?.coverage("long", HISTORY_TEXT_FORMAT);
-	const { perTransaction } = traffic.stop();
+	const { perTransaction, ftsPerTransaction } = traffic.stop();
 	assert.equal(coverage?.indexedSeq, ENTRIES, "the search indexed the whole session");
 	assert.ok(perTransaction.length > 10, `the build wrote in ${perTransaction.length} transactions`);
+	assert.equal(Math.max(...ftsPerTransaction), 1, "a transaction sent its merge steps and inserts in one request");
 	assert.ok(
 		Math.max(...perTransaction) <= MAX_TRANSACTION_REQUESTS,
 		`a transaction of the build sent ${Math.max(...perTransaction)} requests`,
@@ -224,6 +237,59 @@ test("the history:// search index is built the same, with the same merge work an
 	);
 	assert.deepEqual(await indexRows(together.raw), await indexRows(oneByOne.raw));
 	assert.deepEqual(foundTogether, foundOneByOne);
+});
+
+test.each([
+	[
+		"wraps it",
+		(tx: SqliteExecutor, seen: (sql: string) => void): SqliteExecutor =>
+			new Proxy(tx, {
+				get(target, key) {
+					if (key === "run")
+						return (sql: string, ...params: readonly SqliteValue[]) => {
+							seen(sql);
+							return target.run(sql, ...params);
+						};
+					return Reflect.get(target, key);
+				},
+			}),
+	],
+	[
+		"replaces its run",
+		(tx: SqliteExecutor, seen: (sql: string) => void): SqliteExecutor => {
+			const run = tx.run;
+			tx.run = (sql, ...params) => {
+				seen(sql);
+				return run.call(tx, sql, ...params);
+			};
+			return tx;
+		},
+	],
+])("a caller that %s sees each statement of an index write (#6082)", async (_how, decorate) => {
+	const inserts: string[] = [];
+	const { raw } = await openStore();
+	const store = await SqlSessionStore.open(
+		new Proxy(raw, {
+			get(target, key) {
+				if (key === "transaction")
+					return <T>(
+						body: (tx: SqliteExecutor) => Promise<T>,
+						options?: Parameters<SqliteDatabase["transaction"]>[1],
+					) =>
+						target.transaction((tx) => body(decorate(tx, (sql) => ftsInsert(sql) && inserts.push(sql))), options);
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		}),
+	);
+	cleanups.push(() => store.close());
+	const texts = [
+		{ seq: 1, text: "alpha" },
+		{ seq: 2, text: "bravo" },
+		{ seq: 3, text: "cider" },
+	];
+	assert.equal(await store.searchIndex!.extend("long", HISTORY_TEXT_FORMAT, 0, 3, texts), true);
+	assert.equal(inserts.length, 3);
 });
 
 test("an index write whose signal aborts after its page's statements ran publishes nothing (#6082)", async () => {

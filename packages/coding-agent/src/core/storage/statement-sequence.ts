@@ -24,22 +24,32 @@ export interface SqliteSequence {
  */
 export type RunSequence = (sequence: SqliteSequence) => Promise<number>;
 
+/** A sequence runner, with the statement methods it stands for as the executor had them when it was offered. */
+interface OfferedSequences {
+	readonly run: RunSequence;
+	readonly statements: Pick<SqliteExecutor, "run" | "get">;
+}
+
 // Shared across module reloads, as the transaction handles are.
 const SEQUENCES = Symbol.for("atomic-storage/statement-sequences@1");
-const sequenceBag = globalThis as typeof globalThis & Record<symbol, WeakMap<SqliteExecutor, RunSequence> | undefined>;
-const sequences = sequenceBag[SEQUENCES] ?? new WeakMap<SqliteExecutor, RunSequence>();
+const sequenceBag = globalThis as typeof globalThis &
+	Record<symbol, WeakMap<SqliteExecutor, OfferedSequences> | undefined>;
+const sequences = sequenceBag[SEQUENCES] ?? new WeakMap<SqliteExecutor, OfferedSequences>();
 sequenceBag[SEQUENCES] = sequences;
 
 /** Lets `executor`, and not a wrapper around it, run sequences through `run`. */
 export function offerSequences(executor: SqliteExecutor, run: RunSequence): void {
-	sequences.set(executor, run);
+	sequences.set(executor, { run, statements: { run: executor.run, get: executor.get } });
 }
 
 /**
  * How `executor` runs a sequence in one call to its connection, where that saves a round trip per statement (a
  * transaction of a SQLite file connection on a thread of its own); undefined for any other executor, including a
- * wrapper around such a one, whose own `run` must see each statement.
+ * wrapper around such a one or one whose `run` or `get` was replaced, whose own methods must see each statement.
  */
 export function sequenceRunner(executor: SqliteExecutor): RunSequence | undefined {
-	return sequences.get(executor);
+	const offered = sequences.get(executor);
+	if (offered === undefined) return undefined;
+	const { statements } = offered;
+	return executor.run === statements.run && executor.get === statements.get ? offered.run : undefined;
 }
