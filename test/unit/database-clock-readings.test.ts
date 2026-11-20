@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
+import { DatabaseSync } from "node:sqlite";
+import { type SqliteDatabase, wrapNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
@@ -11,9 +12,11 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
  * answer is the one it would give at a single instant. SQLite returns one time for every reading within a statement, but
  * PostgreSQL's clock_timestamp() moves on between two readings. Every SQLite connection of this file reads `clock`
  * instead, which moves on by `step` ms at every reading as PostgreSQL's does, so a statement that reads it twice shows.
+ * The mock reaches only connections this thread opens: a connection `openNodeSqliteDatabase` opens to a file runs on a
+ * thread of its own (#5376), so the stores here get one this thread opened and wrapped.
  */
 
-const clock = vi.hoisted(() => ({ now: 0, step: 0 }));
+const clock = vi.hoisted(() => ({ now: 0, step: 0, reads: 0 }));
 
 vi.mock("node:sqlite", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:sqlite")>();
@@ -23,6 +26,7 @@ vi.mock("node:sqlite", async (importOriginal) => {
 			const read = (): number => {
 				const at = clock.now;
 				clock.now += clock.step;
+				clock.reads += 1;
 				return at;
 			};
 			// SQLite's millisecond clock reads julianday(), its second clock unixepoch().
@@ -41,14 +45,19 @@ function pin(at: number): void {
 	clock.step = 0;
 }
 
-/** Runs `read` on a clock that starts at `at` and moves on by 1 ms at every reading, then stops it. */
+/**
+ * Runs `read` on a clock that starts at `at` and moves on by 1 ms at every reading, then stops it. `read` must read
+ * this clock: a statement that read another one would show nothing of how often it reads.
+ */
 async function movingFrom<T>(at: number, read: () => Promise<T>): Promise<T> {
 	clock.now = at;
 	clock.step = 1;
+	const readsBefore = clock.reads;
 	try {
 		return await read();
 	} finally {
 		clock.step = 0;
+		assert.ok(clock.reads > readsBefore, "the statements read the test's clock");
 	}
 }
 
@@ -62,9 +71,11 @@ afterEach(async () => {
 async function database(): Promise<SqliteDatabase> {
 	const directory = makeTempDirectory("database-clock-");
 	cleanups.push(() => removeTempDirectory(directory));
-	const opened = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
-	cleanups.push(() => opened.close());
-	return opened;
+	const connection = new DatabaseSync(join(directory, "journal.sqlite"));
+	cleanups.push(() => connection.close());
+	const wrapped = wrapNodeSqliteDatabase(connection);
+	cleanups.push(() => wrapped.close());
+	return wrapped;
 }
 
 test("a broker lists a lease as live only while its age is within the stale bound (#4768)", async () => {

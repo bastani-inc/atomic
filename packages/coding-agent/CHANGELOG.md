@@ -13,6 +13,14 @@
 - Starting Atomic in fullscreen, or returning to it from an external editor, a subshell or a suspended session, no longer blanks the terminal before the first frame: the previous screen stays until the full interface replaces it in one screen update. WezTerm and Alacritty keep the previous behavior, because they hold back their answers to Atomic's startup terminal queries until that update ends ([#6056](https://github.com/bastani-inc/atomic/pull/6056)).
 - On Windows, the startup trace (`ATOMIC_STARTUP_TRACE`) keeps the engine's last lines, such as `engine-resources-ready`, when you quit soon after they are recorded. Windows ends the engine as soon as the host has its quit acknowledgement, without running exit handlers, so the engine now writes any waiting lines before it acknowledges, as the event-loop diagnostic already does. This also holds in the standalone binary. The [event-loop diagnostic's docs](docs/development.md#finding-what-freezes-the-ui) now say which engine records Windows does not get.
 - A new subagent's row in `/tasks` and the agent panel no longer shifts its task twice as its model and then its reasoning level arrive. The row shows its model together with its level, or alone if no level arrives within a second, and a model without reasoning levels at once. While `/tasks` or the panel stays open, the model column no longer narrows while it still fits, so rows do not move when the subagent with the longest model falls back or leaves.
+### Changed
+
+- Local SQLite storage runs each connection to a file on a worker thread of its own, so opening a session store, waiting for another process's write lock and synced commits no longer freeze typing, rendering, streamed output or clicks in `/tasks`. Loading a long session no longer holds the interface for its whole read. In-memory databases and connections passed to `wrapNodeSqliteDatabase` still run on the calling thread ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+- SDK: in one process, a `DatabaseSync` of your own or a `wrapNodeSqliteDatabase` handle that writes a file while an `openNodeSqliteDatabase` transaction on it is open can now wait for its busy timeout on your thread and fail with `SQLITE_BUSY`, where before the write usually ran after the transaction. Open every handle that writes a shared file with `openNodeSqliteDatabase` ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+
+### Fixed
+
+- A write outside a transaction no longer fails with `database is locked` while another connection of the same process holds the write lock across an await: it now waits on its own connection's thread until that transaction commits ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
 
 ## [0.10.0] - 2026-11-20
 

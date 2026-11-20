@@ -29,6 +29,7 @@ import { basename, dirname, join, resolve, win32 } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { isSharedArrayBuffer, isUint8Array } from "node:util/types";
 import type * as native from "@bastani/atomic-natives";
 import type {
 	SqliteDatabase,
@@ -57,6 +58,7 @@ import {
 	StorageWriterQueueUnusableError,
 	StoreClosedError,
 } from "./errors.js";
+import { type ConnectionAnswer, type ConnectionRequest, ThreadConnection } from "./node-sqlite-thread.js";
 import { isSqliteBusy, switchToWriteAheadLog, switchToWriteAheadLogSync } from "./write-ahead-log.js";
 
 /** Loaded at the first degradation only, so opening a database does not load debug output. */
@@ -94,14 +96,18 @@ const DATABASE_NOW = `SELECT ${sqliteDialect.nowMs} AS now`;
 
 /** An in-memory connection of the process's own, which the database clock is read through. */
 let clockConnection: DatabaseSync | undefined;
+/** node:sqlite's connection class, once an open loaded it. */
+let loadedDatabaseSync: typeof DatabaseSync | undefined;
 
 /**
  * Now on the clock SQLite reads for `unixepoch()`: the system clock, which every process shares, whatever this
  * process's own says. SQLite reads it from the operating system, not from a database file, so a connection of the
- * process's own reads the same time as every handle's, and a handle can read it after it is closed.
+ * process's own reads the same time as every handle's, and a handle can read it after it is closed. A connection on a
+ * thread of its own reads it there; this reads it on the calling thread, for a connection there and for the
+ * synchronous `getWriterQueueStats`.
  */
-function databaseNow(Database: typeof DatabaseSync): number {
-	clockConnection ??= new Database(":memory:");
+function databaseNow(): number {
+	clockConnection ??= new loadedDatabaseSync!(":memory:");
 	return Number(clockConnection.prepare(DATABASE_NOW).get()!.now);
 }
 
@@ -193,8 +199,8 @@ class SqliteWriteQueue {
 	private readonly directory: string;
 	private readonly noticeDirectory: string;
 	private readonly degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void;
-	/** Now on the database's clock, in milliseconds. */
-	readonly now: () => number;
+	/** Now on the database's clock, in milliseconds, read where the connection runs. */
+	readonly now: () => number | Promise<number>;
 	private observedAt: number | undefined;
 	/** Time this writer was seen to run while it looked at the queue; see `advance`. */
 	private runningMs = 0;
@@ -205,7 +211,7 @@ class SqliteWriteQueue {
 	constructor(
 		databasePath: string,
 		degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void,
-		now: () => number,
+		now: () => number | Promise<number>,
 	) {
 		this.directory = `${databasePath}-writers`;
 		this.noticeDirectory = `${databasePath}-wakes`;
@@ -389,7 +395,7 @@ class SqliteWriteQueue {
 		}
 		// An empty queue, as contention leaves it, is read without the clock.
 		if (names.length === 0) return [];
-		const now = this.now();
+		const now = databaseNow();
 		const entries: QueueEntry[] = [];
 		for (const name of names.sort()) {
 			if (name === except) continue;
@@ -436,7 +442,7 @@ class SqliteWriteQueue {
 			if (!("error" in entry)) entries.push(entry);
 			else if (!isVanishedTicket(entry.error)) throw entry.error;
 		}
-		const { live, abandoned } = this.judge(entries, this.now());
+		const { live, abandoned } = this.judge(entries, await this.now());
 		for (const name of abandoned) await this.removeEntryOffLoop(name);
 		return live;
 	}
@@ -467,7 +473,7 @@ class SqliteWriteTicket {
 	async keepLive(): Promise<boolean> {
 		if (performance.now() - this.refreshed < TICKET_REFRESH_MS) return false;
 		this.refreshed = performance.now();
-		const now = new Date(this.queue.now());
+		const now = new Date(await this.queue.now());
 		try {
 			await utimes(this.path, now, now);
 			return false;
@@ -671,7 +677,7 @@ export function sqliteOpenLockPath(databasePath: string): string {
 }
 
 type NativeOpenLocks = Pick<typeof native, "tryAdvisoryLock" | "trySharedAdvisoryLock"> &
-	Partial<Pick<typeof native, "tryAdvisoryLockAsync">>;
+	Partial<Pick<typeof native, "tryAdvisoryLockAsync" | "trySharedAdvisoryLockAsync">>;
 
 interface HeldOpenLock {
 	readonly lock: { release(): void };
@@ -730,6 +736,22 @@ function sqliteTargetFilePath(spec: string): string | undefined {
 	}
 }
 
+/**
+ * Whether SQLite opens `spec` as an in-memory database: `:memory:`, `file::memory:`, or a `file:` URI whose last `mode`
+ * parameter, the one SQLite applies, is `memory`. Anything else, a URI this cannot read included, may be a file.
+ */
+function isInMemoryDatabase(spec: string): boolean {
+	if (spec === ":memory:") return true;
+	if (!spec.startsWith("file:")) return false;
+	const hashIndex = spec.indexOf("#");
+	const withoutHash = hashIndex === -1 ? spec : spec.slice(0, hashIndex);
+	const queryIndex = withoutHash.indexOf("?");
+	const uriPart = queryIndex === -1 ? withoutHash : withoutHash.slice(0, queryIndex);
+	if (uriPart === "file::memory:") return true;
+	const query = new URLSearchParams(queryIndex === -1 ? "" : withoutHash.slice(queryIndex + 1));
+	return query.getAll("mode").at(-1) === "memory";
+}
+
 function isMissingOpenLockDir(error: unknown): boolean {
 	if (isMissingFile(error)) return true;
 	const message = error instanceof Error ? error.message : String(error);
@@ -776,7 +798,10 @@ async function acquireOpenLock(
 		let lock: { release(): void } | null = null;
 		let refusal: unknown;
 		try {
-			lock = locks.trySharedAdvisoryLock(sqliteFilePath(lockPath), 0);
+			lock =
+				locks.trySharedAdvisoryLockAsync === undefined
+					? legacySharedOpenLock(locks, sqliteFilePath(lockPath))
+					: await locks.trySharedAdvisoryLockAsync(sqliteFilePath(lockPath), 0);
 		} catch (error) {
 			if (readOnly) return undefined;
 			if (await isPassingOpenLockRefusal(error, lockPath)) refusal = error;
@@ -801,6 +826,14 @@ async function acquireOpenLock(
 		await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
 		delay = Math.min(delay * 2, 50);
 	}
+}
+
+/**
+ * The shared open lock, tried once on the calling thread, for a native binding older than the one this package ships,
+ * which has no form of it that runs elsewhere: an open still respects another process's exclusive lock.
+ */
+function legacySharedOpenLock(locks: NativeOpenLocks, lockPath: string): { release(): void } | null {
+	return locks.trySharedAdvisoryLock(lockPath, 0);
 }
 
 /**
@@ -959,7 +992,7 @@ async function writeLockHolder(directory: string, own: string): Promise<WriteLoc
 
 interface TransactionGates {
 	readonly files: Map<string, Promise<void>>;
-	readonly connections: WeakMap<DatabaseSync, Promise<void>>;
+	readonly connections: WeakMap<object, Promise<void>>;
 }
 
 // Share gates across module reloads as well as adapter instances. Only live queues retain file identities.
@@ -968,7 +1001,7 @@ const gateBag = globalThis as typeof globalThis & Record<symbol, TransactionGate
 const gates: TransactionGates = gateBag[TRANSACTION_GATES] ?? { files: new Map(), connections: new WeakMap() };
 gateBag[TRANSACTION_GATES] = gates;
 
-function gateTransaction<T>(identity: string | DatabaseSync, operation: () => Promise<T>): Promise<T> {
+function gateTransaction<T>(identity: string | object, operation: () => Promise<T>): Promise<T> {
 	const prior = typeof identity === "string" ? gates.files.get(identity) : gates.connections.get(identity);
 	const result = (prior ?? Promise.resolve()).then(operation);
 	const settled = result.then(
@@ -1178,9 +1211,114 @@ function normalizeRow(row: Record<string, SqliteValue>): SqliteRow {
 	);
 }
 
+/**
+ * A connection whose statements run on the calling thread: an in-memory database, which never waits for the disk or
+ * for a lock another connection holds, and a connection its caller opened and passed to `wrapNodeSqliteDatabase` (a
+ * `DatabaseSync` cannot move to another thread). It answers each request as a connection's own thread does.
+ */
+class CallerThreadConnection {
+	private readonly connection: DatabaseSync;
+	private readonly ownsConnection: boolean;
+
+	constructor(connection: DatabaseSync, ownsConnection: boolean) {
+		this.connection = connection;
+		this.ownsConnection = ownsConnection;
+	}
+
+	request(request: ConnectionRequest): ConnectionAnswer {
+		switch (request.kind) {
+			case "open":
+				return this.connection.location();
+			case "exec":
+				this.connection.exec(request.sql);
+				return undefined;
+			case "run":
+				return { changes: Number(this.statement(request.sql).run(...request.params).changes) };
+			case "get": {
+				const row = this.statement(request.sql).get(...request.params);
+				return row === undefined ? undefined : normalizeRow(row);
+			}
+			case "all":
+				return this.statement(request.sql)
+					.all(...request.params)
+					.map((row) => normalizeRow(row));
+			case "begin":
+				this.begin();
+				return undefined;
+			case "dataVersion":
+				return Number(this.connection.prepare("PRAGMA data_version").get()?.data_version ?? 0);
+			case "now":
+				return databaseNow();
+			case "jsonbExtract":
+				try {
+					this.statement("SELECT jsonb_extract('[]', '$')");
+					return true;
+				} catch (error) {
+					if (error instanceof Error && error.message === "no such function: jsonb_extract") return false;
+					throw error;
+				}
+			case "close":
+				if (this.ownsConnection) this.connection.close();
+				finalizeReleasedStatements();
+				return undefined;
+		}
+	}
+
+	private statement(sql: string) {
+		const prepared = this.connection.prepare(sql);
+		prepared.setReadBigInts(true);
+		return prepared;
+	}
+
+	/** One `BEGIN IMMEDIATE` that does not wait for a busy lock; see `NodeSqliteDatabase.tryBegin`. */
+	private begin(): void {
+		const configured = Number(this.connection.prepare("PRAGMA busy_timeout").get()?.timeout ?? 0);
+		this.connection.exec("PRAGMA busy_timeout=0");
+		let began = false;
+		try {
+			this.connection.exec("BEGIN IMMEDIATE");
+			began = true;
+		} finally {
+			try {
+				this.connection.exec(`PRAGMA busy_timeout=${configured}`);
+			} catch (restoreFailure) {
+				// Never hand back a transaction on a connection whose lock wait is no longer the configured one.
+				if (began) this.connection.exec("ROLLBACK");
+				// biome-ignore lint/correctness/noUnsafeFinally: a failed restore must replace the attempt's outcome.
+				throw restoreFailure;
+			}
+		}
+	}
+}
+
+/** Where a connection's statements run: a thread of its own, or the calling thread. */
+type SqliteConnection = ThreadConnection | CallerThreadConnection;
+
+/**
+ * Sends one request to `connection`: a promise of its answer from a connection on a thread of its own, and the answer
+ * itself from one on the calling thread, which runs it before returning, as node:sqlite does.
+ */
+function send(connection: SqliteConnection, request: ConnectionRequest): ConnectionAnswer | Promise<ConnectionAnswer> {
+	if (!(connection instanceof ThreadConnection) || !("params" in request)) return connection.request(request);
+	return connection.request({ ...request, params: request.params.map(sendable) });
+}
+
+/**
+ * A binary value as a connection's thread is sent it: the bytes it holds now, as a statement on the calling thread
+ * binds them when it runs. A message shares a `SharedArrayBuffer` with the thread, so a change the caller makes before
+ * the thread runs the statement would reach it, and it copies the whole buffer behind a view, so a view of part of a
+ * buffer, or of a shared one, is sent as a copy of its own bytes. Any other value is sent as it is.
+ */
+function sendable(value: SqliteValue): SqliteValue {
+	if (!isUint8Array(value)) return value;
+	if (!isSharedArrayBuffer(value.buffer) && value.byteOffset === 0 && value.byteLength === value.buffer.byteLength)
+		return value;
+	return new Uint8Array(value);
+}
+
 class NodeSqliteDatabase implements SqliteDatabase {
 	readonly descriptor: StorageDescriptor;
-	private readonly connection: DatabaseSync;
+	private readonly connection: SqliteConnection;
 	private jsonbExtract?: Promise<boolean>;
 	private tail: Promise<void> = Promise.resolve();
 	/** Operations queued on this connection so far; a batch's `position` is the one that commits it. */
@@ -1191,8 +1329,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private closePromise?: Promise<void>;
 	private readonly executor: ReturnType<NodeSqliteDatabase["createExecutor"]>;
 
-	private readonly ownsConnection: boolean;
-	private readonly transactionIdentity: string | DatabaseSync;
+	private readonly transactionIdentity: string | object;
 	private readonly lockWaitMs: number;
 	private readonly groupCommitHoldMs: number;
 	/** Cross-process first-come-first-served order for the write lock; absent for in-memory databases. */
@@ -1207,10 +1344,9 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private readonly degradations = new Map<StorageWriterQueueDegradedReason, StorageWriterQueueDegradedError>();
 
 	constructor(
-		connection: DatabaseSync,
+		connection: SqliteConnection,
 		descriptor: StorageDescriptor,
-		ownsConnection = true,
-		transactionIdentity: string | DatabaseSync = connection,
+		transactionIdentity: string | object = connection,
 		lockWaitMs = DEFAULT_NODE_SQLITE_LOCK_WAIT_MS,
 		groupCommitHoldMs = DEFAULT_GROUP_COMMIT_HOLD_MS,
 		openLock?: HeldOpenLock,
@@ -1218,7 +1354,6 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		this.lockWaitMs = lockWaitMs;
 		this.groupCommitHoldMs = groupCommitHoldMs;
 		this.transactionIdentity = transactionIdentity;
-		this.ownsConnection = ownsConnection;
 		this.connection = connection;
 		this.descriptor = descriptor;
 		this.openLock = openLock;
@@ -1227,7 +1362,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			this.writeQueue = new SqliteWriteQueue(
 				transactionIdentity,
 				(reason, cause) => this.degraded(reason, cause),
-				() => databaseNow(connection.constructor as typeof DatabaseSync),
+				() => send(connection, { kind: "now" }) as number | Promise<number>,
 			);
 			this.holderRecord = new SqliteHolderRecord(transactionIdentity, (cause) =>
 				this.degraded("holder-record-unavailable", cause),
@@ -1270,45 +1405,37 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		return this.lockUse.stats(this.queueOp(() => this.writeQueue?.liveTickets().length ?? 0));
 	}
 
-	private driver<T>(operation: () => T): T {
+	/**
+	 * Sends one request to the connection. A driver failure is a `StorageUnavailableError`, thrown at once by a
+	 * connection on the calling thread and rejected by one on a thread of its own.
+	 */
+	private call(request: ConnectionRequest): ConnectionAnswer | Promise<ConnectionAnswer> {
+		let answer: ConnectionAnswer | Promise<ConnectionAnswer>;
 		try {
-			return operation();
+			answer = send(this.connection, request);
 		} catch (cause) {
 			throw unavailable(this.descriptor, cause);
 		}
+		if (!(answer instanceof Promise)) return answer;
+		return answer.catch((cause: unknown) => {
+			throw unavailable(this.descriptor, cause);
+		});
 	}
 
 	/**
 	 * One non-blocking `BEGIN IMMEDIATE`. node:sqlite runs `busy_timeout` synchronously, so a lock held by another
-	 * process would freeze this process's event loop for the whole timeout. The attempt runs with `busy_timeout=0`
-	 * and the connection's own value is restored before returning or throwing, so single statements outside a
-	 * transaction keep it. Callers reach this only through `enqueue` and the transaction gate, so nothing else runs
-	 * on the connection in between.
+	 * process would hold the connection's thread for the whole timeout. The attempt runs with `busy_timeout=0` and the
+	 * connection's own value is restored before answering, so single statements outside a transaction keep it.
+	 * Callers reach this only through `enqueue` and the transaction gate, so nothing else runs on the connection in
+	 * between.
 	 */
-	private tryBegin(): void {
-		this.driver(() => {
-			const configured = Number(this.connection.prepare("PRAGMA busy_timeout").get()?.timeout ?? 0);
-			this.connection.exec("PRAGMA busy_timeout=0");
-			let began = false;
-			try {
-				this.connection.exec("BEGIN IMMEDIATE");
-				began = true;
-			} finally {
-				try {
-					this.connection.exec(`PRAGMA busy_timeout=${configured}`);
-				} catch (restoreFailure) {
-					// Never hand back a transaction on a connection whose lock wait is no longer the configured one.
-					if (began) this.connection.exec("ROLLBACK");
-					// biome-ignore lint/correctness/noUnsafeFinally: a failed restore must replace the attempt's outcome.
-					throw restoreFailure;
-				}
-			}
-		});
+	private tryBegin(): undefined | Promise<undefined> {
+		return this.call({ kind: "begin" }) as undefined | Promise<undefined>;
 	}
 
 	/** Changes whenever another connection commits to the database: the lock is being used, not held idle. */
-	private dataVersion(): number {
-		return this.driver(() => Number(this.connection.prepare("PRAGMA data_version").get()?.data_version ?? 0));
+	private async dataVersion(): Promise<number> {
+		return (await this.call({ kind: "dataVersion" })) as number;
 	}
 
 	/**
@@ -1337,7 +1464,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				if (waiting.length > 0) ticket = await this.queueFileOp(() => queue.join(waiting));
 			}
 			// Read only once this writer waits, so an uncontended transaction pays nothing for it.
-			let version = ticket === undefined ? undefined : this.dataVersion();
+			let version = ticket === undefined ? undefined : await this.dataVersion();
 			let stalledSince = performance.now();
 			let lastCause: unknown;
 			for (;;) {
@@ -1345,7 +1472,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				if (ticket !== undefined) notices = await this.watchTicket(ticket, notices);
 				const behind = ticket !== undefined && (await this.queueFileOp(() => ticket!.behindOthers()));
 				if (!behind) {
-					const refused = this.attemptBegin();
+					const attempt = this.attemptBegin();
+					const refused = attempt instanceof Promise ? await attempt : attempt;
 					if (refused === undefined) {
 						holding = true;
 						this.acquired(waitStarted);
@@ -1359,7 +1487,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 					}
 				}
 				// Only another connection's commit is progress; a queued writer measures its stall the same way.
-				const current = this.dataVersion();
+				const current = await this.dataVersion();
 				const committed = version !== undefined && current !== version;
 				if (version === undefined) version = current;
 				else if (committed) {
@@ -1391,16 +1519,23 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
-	/** One attempt at the lock: `undefined` once it is taken, or the SQLITE_BUSY that refused it. Anything else throws. */
+	/**
+	 * One attempt at the lock: `undefined` once it is taken, or the SQLITE_BUSY that refused it. Anything else fails.
+	 * Answered at once on the calling thread, and as a promise by a connection on a thread of its own.
+	 */
 	private attemptBegin(): unknown {
-		try {
-			this.tryBegin();
-			return undefined;
-		} catch (error) {
+		const refusal = (error: unknown): unknown => {
 			const cause = error instanceof StorageUnavailableError ? error.cause : undefined;
 			if (!isSqliteBusy(cause)) throw error;
 			return cause;
+		};
+		let attempt: undefined | Promise<undefined>;
+		try {
+			attempt = this.tryBegin();
+		} catch (error) {
+			return refusal(error);
 		}
+		return attempt instanceof Promise ? attempt.then(() => undefined, refusal) : undefined;
 	}
 
 	/**
@@ -1416,7 +1551,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		const until = performance.now() + LOCK_RELEASE_RETRY_MS;
 		for (let attempt = 0; attempt < LOCK_RELEASE_RETRY_ATTEMPTS && performance.now() < until; attempt++) {
 			await new Promise<void>((resolve) => setImmediate(resolve));
-			if (this.attemptBegin() === undefined) return true;
+			if ((await this.attemptBegin()) === undefined) return true;
 		}
 		return false;
 	}
@@ -1514,44 +1649,25 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
+	/**
+	 * Statements on the connection, each sent the moment it is called, so calls a transaction makes without awaiting
+	 * the ones before run in the order it made them, as on a connection that runs each one as it is called.
+	 */
 	private createExecutor(active: () => boolean): SqliteExecutor & { checkJsonbExtract(): Promise<boolean> } {
-		const execute = async <T>(operation: () => T, params: readonly SqliteValue[] = []): Promise<T> => {
+		const execute = async <T>(request: ConnectionRequest, params: readonly SqliteValue[] = []): Promise<T> => {
 			if (!active()) throw new StorageTransactionClosedError();
 			const invalidIndex = params.findIndex((value) => typeof value === "string" && value.includes("\0"));
 			if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
-			return this.driver(operation);
-		};
-		const statement = (sql: string) => {
-			const prepared = this.connection.prepare(sql);
-			prepared.setReadBigInts(true);
-			return prepared;
+			return this.call(request) as T | Promise<T>;
 		};
 		return {
-			checkJsonbExtract: () =>
-				execute(() => {
-					try {
-						statement("SELECT jsonb_extract('[]', '$')");
-						return true;
-					} catch (error) {
-						if (error instanceof Error && error.message === "no such function: jsonb_extract") return false;
-						throw error;
-					}
-				}),
-			exec: (sql) => execute(() => this.connection.exec(sql)),
-			run: (sql, ...params) => execute(() => ({ changes: Number(statement(sql).run(...params).changes) }), params),
+			checkJsonbExtract: () => execute<boolean>({ kind: "jsonbExtract" }),
+			exec: (sql) => execute<void>({ kind: "exec", sql }),
+			run: (sql, ...params) => execute<{ changes: number }>({ kind: "run", sql, params }, params),
 			get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
-				execute(() => {
-					const row = statement(sql).get(...params);
-					return row === undefined ? undefined : (normalizeRow(row) as T);
-				}, params),
+				execute<T | undefined>({ kind: "get", sql, params }, params),
 			all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
-				execute(
-					() =>
-						statement(sql)
-							.all(...params)
-							.map((row) => normalizeRow(row) as T),
-					params,
-				),
+				execute<T[]>({ kind: "all", sql, params }, params),
 		};
 	}
 
@@ -1616,7 +1732,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				const start = performance.now();
 				await this.holderRecord?.trying();
 				try {
-					if (this.attemptBegin() !== undefined) {
+					const attempt = this.attemptBegin();
+					if ((attempt instanceof Promise ? await attempt : attempt) !== undefined) {
 						await this.holderRecord?.free();
 						return false;
 					}
@@ -1838,10 +1955,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			this.closePromise = this.tail.then(async () => {
 				try {
 					await this.holderRecord?.close();
-					this.driver(() => {
-						if (this.ownsConnection) this.connection.close();
-						finalizeReleasedStatements();
-					});
+					await this.call({ kind: "close" });
 				} finally {
 					await releaseOpenLock(this.openLock);
 				}
@@ -1889,18 +2003,30 @@ export function ordinarySqlitePath<T extends string | null>(location: T): T {
 }
 
 /**
- * Opens `path` with SQLite, through the long-path form when it needs it, and has the connection report its location as
- * the ordinary path, so every reader of it (identity, error messages, callers comparing paths) sees the path it was
- * given whatever its length (#5139).
+ * Opens an in-memory database (see `isInMemoryDatabase`) on the calling thread: it has no file, so neither opening it
+ * nor its statements wait for the disk, and SQLite's busy handler never waits for it, since no connection of any
+ * process holds a lock on it.
  */
-function openConnection(Database: typeof DatabaseSync, path: string, readOnly: boolean): DatabaseSync {
-	const opened = sqliteFilePath(path);
-	const connection = new Database(opened, { readOnly });
-	if (opened !== path) {
-		const location = connection.location.bind(connection);
-		connection.location = (name?: string) => ordinarySqlitePath(location(name));
-	}
-	return connection;
+function openOnCallerThread(
+	Database: typeof DatabaseSync,
+	path: string,
+	readOnly: boolean,
+): { readonly connection: CallerThreadConnection; readonly location: string | null } {
+	const connection = new Database(path, { readOnly });
+	return { connection: new CallerThreadConnection(connection, true), location: connection.location() };
+}
+
+/**
+ * Opens `path` with SQLite on a thread of its own, through the long-path form when it needs it, and reports its
+ * location as the ordinary path, so every reader of it (identity, error messages, callers comparing paths) sees the
+ * path it was given whatever its length (#5139).
+ */
+async function openOnOwnThread(
+	path: string,
+	readOnly: boolean,
+): Promise<{ readonly connection: ThreadConnection; readonly location: string | null }> {
+	const { connection, location } = await ThreadConnection.open(path, { readOnly, openAs: sqliteFilePath(path) });
+	return { connection, location: ordinarySqlitePath(location) };
 }
 
 export async function openNodeSqliteDatabase(
@@ -1932,21 +2058,28 @@ export async function openNodeSqliteDatabase(
 	} catch (cause) {
 		throw new StorageAdapterLoadError("node:sqlite", cause as StorageFailureCause);
 	}
+	loadedDatabaseSync ??= Database;
 	const targetFile = sqliteTargetFilePath(path);
 	let heldOpenLock: HeldOpenLock | undefined;
-	let connection: DatabaseSync | undefined;
+	let connection: SqliteConnection | undefined;
 	try {
 		if (!readOnly && targetFile !== undefined) await mkdir(dirname(targetFile), { recursive: true });
 		heldOpenLock = await acquireOpenLock(targetFile, readOnly, busyTimeoutMs);
-		connection = openConnection(Database, path, readOnly);
-		connection.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
+		// A file-backed connection runs on a thread of its own, so opening it, waiting for its locks and its synced
+		// commits never hold this thread (#5376).
+		const opened = isInMemoryDatabase(path)
+			? openOnCallerThread(Database, path, readOnly)
+			: await openOnOwnThread(path, readOnly);
+		const configured = opened.connection;
+		connection = configured;
+		const exec = (sql: string) => send(configured, { kind: "exec", sql });
+		await exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
 		if (!readOnly) {
-			const writable = connection;
 			// SQLite does not wait for another process's lock while it changes the mode; the switch waits itself.
-			await switchToWriteAheadLog((sql) => writable.exec(sql), busyTimeoutMs);
-			writable.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
+			await switchToWriteAheadLog(exec, busyTimeoutMs);
+			await exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
 		}
-		const location = connection.location();
+		const location = opened.location;
 		const identity =
 			location === null
 				? connection
@@ -1957,13 +2090,13 @@ export async function openNodeSqliteDatabase(
 			await releaseOpenLock(heldOpenLock);
 			heldOpenLock = await acquireOpenLock(identity, readOnly, busyTimeoutMs);
 		}
-		const database = new NodeSqliteDatabase(connection, descriptor, true, identity, lockWaitMs, holdMs, heldOpenLock);
+		const database = new NodeSqliteDatabase(connection, descriptor, identity, lockWaitMs, holdMs, heldOpenLock);
 		Object.defineProperty(database, "readOnly", { value: readOnly });
 		if (!readOnly) await database.openHolderRecord();
 		return database;
 	} catch (cause) {
 		try {
-			connection?.close();
+			if (connection !== undefined) await send(connection, { kind: "close" });
 		} catch {
 			// Preserve the opening failure if cleanup also fails.
 		} finally {
@@ -1986,7 +2119,14 @@ export function wrapNodeSqliteDatabase(connection: DatabaseSync): SqliteDatabase
 		// SQLite does not wait for another process's lock while it changes the mode; the switch waits itself.
 		switchToWriteAheadLogSync((sql) => connection.exec(sql), WRAPPED_BUSY_TIMEOUT_MS);
 		connection.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
-		return new NodeSqliteDatabase(connection, descriptor, false, connection, undefined, undefined, heldOpenLock);
+		return new NodeSqliteDatabase(
+			new CallerThreadConnection(connection, false),
+			descriptor,
+			connection,
+			undefined,
+			undefined,
+			heldOpenLock,
+		);
 	} catch (cause) {
 		void releaseOpenLock(heldOpenLock);
 		throw unavailable(descriptor, cause);

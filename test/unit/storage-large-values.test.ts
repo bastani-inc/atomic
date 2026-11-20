@@ -25,7 +25,7 @@ import {
 
 import { withLibsqlDatabase } from "../helpers/libsql-database.js";
 import { rowLimitedDatabase } from "../helpers/row-limited-database.js";
-import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
+import { withCallerThreadSqliteDatabase, withNodeSqliteDatabase } from "../helpers/storage-database.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 /**
@@ -379,7 +379,7 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 			return prepare.call(this, sql);
 		} as typeof prepare;
 		try {
-			await withNodeSqliteDatabase(async ({ database }) => {
+			await withCallerThreadSqliteDatabase(async ({ database }) => {
 				const store = await SqlSessionStore.open(database);
 				const entries = [
 					message("first", null, "short"),
@@ -407,7 +407,7 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 			return prepare.call(this, sql);
 		} as typeof prepare;
 		try {
-			await withNodeSqliteDatabase(async ({ database }) => {
+			await withCallerThreadSqliteDatabase(async ({ database }) => {
 				const store = await SqlSessionStore.open(database);
 				const entries = [
 					message("first", null, "short"),
@@ -441,7 +441,7 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 			return prepare.call(this, sql);
 		} as typeof prepare;
 		try {
-			await withNodeSqliteDatabase(async ({ database }) => {
+			await withCallerThreadSqliteDatabase(async ({ database }) => {
 				const store = await SqlSessionStore.open(database);
 				await store.create(header(), []);
 				await store.openMarkers.put("session", { token: "t", pid: 1, host: "h" });
@@ -461,7 +461,7 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 	});
 
 	test("a long session loads in time linear in its entries, not one scan of the rest per page (#4954)", async () => {
-		await withNodeSqliteDatabase(async ({ database }) => {
+		await withCallerThreadSqliteDatabase(async ({ database }) => {
 			const store = await SqlSessionStore.open(database);
 			const entries = Array.from({ length: 3000 }, (_, index) =>
 				message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, `${index} `.repeat(2_000)),
@@ -474,7 +474,7 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 	});
 
 	test("single-entry pages shrink their fetches instead of repeatedly measuring large batches (#4954)", async () => {
-		await withNodeSqliteDatabase(async ({ database }) => {
+		await withCallerThreadSqliteDatabase(async ({ database }) => {
 			const store = await SqlSessionStore.open(database);
 			const entries = Array.from({ length: 40 }, (_, index) =>
 				message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, "x".repeat(600_000)),
@@ -492,7 +492,7 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 	])(
 		"legacy entries longer than a page are measured a bounded number of times when they $layout (#4954)",
 		async ({ long }) => {
-			await withNodeSqliteDatabase(async ({ database }) => {
+			await withCallerThreadSqliteDatabase(async ({ database }) => {
 				const store = await SqlSessionStore.open(database);
 				const entries = Array.from({ length: 40 }, (_, index) =>
 					message(
@@ -526,7 +526,7 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 	])(
 		"$entriesCount entries load without small fetch round trips (#4954)",
 		async ({ entriesCount, firstChars, maxStatements }) => {
-			await withNodeSqliteDatabase(async ({ database }) => {
+			await withCallerThreadSqliteDatabase(async ({ database }) => {
 				const store = await SqlSessionStore.open(database);
 				const entries = Array.from({ length: entriesCount }, (_, index) =>
 					message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, "x".repeat(index === 0 ? firstChars : 100)),
@@ -555,7 +555,7 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 	test(
 		"a long listing reads in time linear in its sessions, not one scan of the rest per page (#4954)",
 		async () => {
-			await withNodeSqliteDatabase(async ({ database }) => {
+			await withCallerThreadSqliteDatabase(async ({ database }) => {
 				await database.exec("PRAGMA synchronous=OFF");
 				const store = await SqlSessionStore.open(database);
 				const sessions = 600;
@@ -580,7 +580,8 @@ const LONG_VALUE_CHARS = 10_000;
 
 /**
  * Runs `body` with SQLite's `length()` replaced, on every connection, by one that counts the long values it measures:
- * the session store measures each row it reads for paging, so the count is the rows `body`'s statements scanned.
+ * the session store measures each row it reads for paging, so the count is the rows `body`'s statements scanned. Only
+ * connections on this thread see the replacement: tests that count use `withCallerThreadSqliteDatabase` (#5376).
  */
 async function countLongValuesMeasured<T>(
 	body: () => Promise<T>,
