@@ -2017,8 +2017,11 @@ export class TaskInspector implements Component {
 		const paintedRows = painted.filter((line): line is TaskBoardRow => typeof line !== "string");
 		// A row whose model became known while the board shows it waits for its reasoning level, so its task moves once.
 		let models: Map<string, BoardRowModel> | undefined;
+		// The widest label as the rows report it: a label still waiting for its level counts for whether any column fits.
+		let widest = 0;
 		if (width - 1 >= AGENT_PANEL_MODEL_MIN_WIDTH) {
 			const reported = new Map(paintedRows.map((row) => [row.id, rowModel(row, this.store)] as const));
+			for (const model of reported.values()) widest = Math.max(widest, model.width);
 			const shown = this.modelColumn.paint(
 				paintedRows.map(
 					(row) => [row.id, rowModelReport(row, reported.get(row.id) ?? NO_MODEL, this.store)] as const,
@@ -2031,7 +2034,7 @@ export class TaskInspector implements Component {
 		} else this.modelColumn.forget();
 		let measured = 0;
 		for (const model of models?.values() ?? []) measured = Math.max(measured, model.width);
-		const modelColumn = this.modelColumn.column(width - 1, measured, boardModelFits(paintedRows, width - 1));
+		const modelColumn = this.modelColumn.column(width - 1, measured, boardModelFits(paintedRows, width - 1), widest);
 		const modelOf = (row: TaskBoardRow) =>
 			modelColumn === 0
 				? undefined

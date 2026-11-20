@@ -494,6 +494,9 @@ export function renderAgentPanelRows(
 		queues[i] = Number.isSafeInteger(raw.queued) && (raw.queued ?? 0) > 0 ? ` · ${raw.queued} queued` : undefined;
 	}
 	const modelColumn = options.modelColumn;
+	// The widest label as the rows report it: a label still waiting for its level counts for whether any column fits.
+	let widest = 0;
+	for (const model of models) if (model.length > 0) widest = Math.max(widest, cellWidth(model));
 	// Too narrow for the column: the rows are seen afresh once it is wide enough again, as on a first paint.
 	if (modelColumn !== undefined && !(width >= AGENT_PANEL_MODEL_MIN_WIDTH)) modelColumn.forget();
 	else if (modelColumn !== undefined) {
@@ -518,7 +521,7 @@ export function renderAgentPanelRows(
 	};
 	// An open panel's column does not narrow while it fits (`ModelColumn.column`).
 	const fits = (column: number) => width >= AGENT_PANEL_MODEL_MIN_WIDTH && modelFits(column);
-	if (modelColumn !== undefined) modelWidth = modelColumn.column(width, modelWidth, fits);
+	if (modelColumn !== undefined) modelWidth = modelColumn.column(width, modelWidth, fits, widest);
 	else if (modelWidth > 0 && !fits(modelWidth)) modelWidth = 0;
 	const viewing = options.viewedId !== undefined;
 	const lines: string[] = [];

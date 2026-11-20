@@ -19,6 +19,7 @@ import {
 import {
 	boardModelColumn,
 	boardModelFits,
+	type TaskBoardItem,
 	type TaskBoardRow,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
@@ -27,6 +28,17 @@ import { bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-
 import { taskFixture } from "../helpers/task-projection.js";
 
 const TASK = "Read the template and do what it says for each package";
+const plainStyle: AgentPanelStyle = {
+	dim: (text) => text,
+	text: (text) => text,
+	muted: (text) => text,
+	border: (text) => text,
+	bold: (text) => text,
+	accent: (text) => text,
+	success: (text) => text,
+	error: (text) => text,
+	warning: (text) => text,
+};
 const fixtures: Array<ReturnType<typeof taskFixture>> = [];
 
 beforeAll(() => {
@@ -322,17 +334,7 @@ test("the agent panel keeps its model column's width while the widest model leav
 });
 
 test("a panel's held model column gives way to the narrower column a row needs, and comes back once it fits again", () => {
-	const plain: AgentPanelStyle = {
-		dim: (text) => text,
-		text: (text) => text,
-		muted: (text) => text,
-		border: (text) => text,
-		bold: (text) => text,
-		accent: (text) => text,
-		success: (text) => text,
-		error: (text) => text,
-		warning: (text) => text,
-	};
+	const plain = plainStyle;
 	const column = new ModelColumn();
 	const wide: AgentPanelRow = {
 		id: "wide",
@@ -519,5 +521,64 @@ test("a subagent row that first appears in an open /tasks or panel with its mode
 	} finally {
 		panel.unbind();
 		board.inspector.dispose();
+	}
+});
+
+test("no model column appears while a waiting row's model is too wide for any column, as without the wait", async () => {
+	const fixture = taskFixture();
+	fixtures.push(fixture);
+	type Item = TaskBoardItem & Record<string, unknown>;
+	let items: Item[] = [
+		{
+			id: "w",
+			kind: "agent",
+			state: "waiting",
+			name: "waiter",
+			task: "wait for the build",
+			waitingOn: "bash, read, edit, write, grep",
+		},
+		{ id: "a", kind: "agent", state: "running", name: "alpha", task: "Alpha task: read the template and do it" },
+		{ id: "b", kind: "agent", state: "running", name: "bravo", task: "Bravo task: read the template and do it" },
+	];
+	const listeners = new Set<() => void>();
+	const inspector = new TaskInspector(
+		fixture.store,
+		() => {},
+		() => {},
+	);
+	inspector.setBoardSource({
+		items: () => items,
+		subscribe: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+	});
+	inspector.open();
+	const column = new ModelColumn();
+	const set = (id: string, patch: Partial<Item>) => {
+		items = items.map((item) => (item.id === id ? { ...item, ...patch } : item));
+		for (const listener of listeners) listener();
+	};
+	const origins = () => {
+		const board = inspector.renderViewport(101, 24).map((line) => stripVTControlCharacters(line));
+		const panel = renderAgentPanelRows(items, 100, plainStyle, { modelColumn: column }).map((line) =>
+			stripVTControlCharacters(line),
+		);
+		const at = (lines: readonly string[]) => (lines.find((line) => line.includes("Bravo")) ?? "").indexOf("Bravo");
+		return `${at(board)}/${at(panel)}`;
+	};
+	try {
+		const seen = [origins()];
+		set("a", { model: "openrouter/anthropic/claude-sonnet-4.5" });
+		seen.push(origins());
+		set("b", { model: "faux/s" });
+		seen.push(origins());
+		set("b", { thinking: "low" });
+		seen.push(origins());
+		set("a", { thinking: "high" });
+		seen.push(origins());
+		assert.deepEqual(seen, Array(5).fill(seen[0]), "Bravo's task never moves");
+	} finally {
+		inspector.dispose();
 	}
 });

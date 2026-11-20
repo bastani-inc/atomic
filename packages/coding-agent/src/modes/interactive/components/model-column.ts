@@ -127,16 +127,17 @@ export class ModelColumn {
 	 * The column width to paint at `width`, for shown labels at most `measured` cells wide; `fits(column)` says whether
 	 * a column that wide leaves every painted row its whole right column and some of its task. It is `measured`, or the
 	 * widest column this view painted at this width that still fits, else the one it painted last if that fits: the
-	 * column does not narrow while it fits. It is 0 when even `measured` does not fit, as labels are never cut to fit.
+	 * column does not narrow while it fits. It is 0 when even the widest label the rows report, `widest`, shown or still
+	 * waiting, does not fit, as labels are never cut to fit: there is then no column, exactly as without waiting.
 	 */
-	column(width: number, measured: number, fits: (column: number) => boolean): number {
+	column(width: number, measured: number, fits: (column: number) => boolean, widest = measured): number {
 		if (width !== this.heldWidth) {
 			this.heldWidth = width;
 			this.held = 0;
 			this.last = 0;
 		}
 		let column = 0;
-		if (measured === 0 || fits(measured)) {
+		if (widest === 0 || fits(widest)) {
 			column = measured;
 			if (this.held > column && fits(this.held)) column = this.held;
 			else if (this.last > column && fits(this.last)) column = this.last;
