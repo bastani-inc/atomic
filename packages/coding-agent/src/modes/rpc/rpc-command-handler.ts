@@ -187,9 +187,12 @@ export function createRpcCommandHandler({
 				if (!keybindings || !taskInspectorUi)
 					return createRpcErrorResponse(id, command.type, "Task inspection requires an interactive host");
 				const ui = session.extensionRunner.getUIContext();
-				void showEngineTaskInspector(session, engineTaskInspectorUi(ui, taskInspectorUi), command.taskId).catch(
-					(error: unknown) => ui.notify(sourceError(error).message, "error"),
-				);
+				void showEngineTaskInspector(
+					session,
+					engineTaskInspectorUi(ui, taskInspectorUi),
+					command.taskId,
+					command.waitedShellOf === undefined ? {} : { waitedShellOf: command.waitedShellOf },
+				).catch((error: unknown) => ui.notify(sourceError(error).message, "error"));
 				return createRpcSuccessResponse(id, command.type);
 			}
 			case "open_agent_panel": {

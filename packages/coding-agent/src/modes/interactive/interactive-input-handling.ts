@@ -18,7 +18,12 @@ import {
 	remoteProxyHandlesCtrlC,
 } from "../interactive-engine/remote-input-ownership.ts";
 import { agentPanelCounts, agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
-import { agentPanelBoardSource, showTaskInspector } from "../rpc/task-ui-bridge.js";
+import {
+	agentPanelBoardSource,
+	openWaitedShellOf,
+	showTaskInspector,
+	type TaskInspectorUi,
+} from "../rpc/task-ui-bridge.js";
 import { type PromptHandle, promptHandle } from "./agent-view/agent-drafts.ts";
 import { escapeViewedAgent, submitToViewedAgent } from "./agent-view/viewed-submit.ts";
 import { isChatSessionWorking } from "./components/footer.ts";
@@ -38,6 +43,25 @@ import { handOffCompactionQueue, mainSteering } from "./interactive-queueing.ts"
 import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
 import type { SteeringSubmitResult } from "./steering-queue-controller.ts";
 import { theme } from "./theme/theme.js";
+
+/** Whether the prompt has the keyboard; a host without focus tracking always gives it the prompt. */
+function promptHasFocus(mode: InteractiveModeBase): boolean {
+	const focused = (mode.ui as { getFocusedComponent?(): object | null }).getFocusedComponent?.();
+	return focused === undefined || focused === mode.editor;
+}
+
+/** Where `/tasks` mounts in this process, with the chat's render settings. */
+function taskInspectorUi(mode: InteractiveModeBase): TaskInspectorUi {
+	const ui = mode.createExtensionUIContext();
+	return {
+		custom: (factory, options) => mode.showExtensionCustom(factory, options),
+		getChatRenderSettings: ui.getChatRenderSettings,
+		getFooterDataProvider: ui.getFooterDataProvider,
+		getToolsExpanded: ui.getToolsExpanded,
+		setToolsExpanded: ui.setToolsExpanded,
+		notify: ui.notify,
+	};
+}
 
 function mainComposerPanelCounts(mode: InteractiveModeBase) {
 	return mode.runtimeHost instanceof IsolatedInteractiveRuntime
@@ -126,6 +150,8 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			return undefined;
 		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor)) return undefined;
 		if (this.editor.capturesViewportInput) return undefined;
+		// A shown subagent's question form takes the keys while it has the focus: ↓ moves its choice there.
+		if (this.agentView?.viewed.kind === "agent" && !promptHasFocus(this)) return undefined;
 		// A click on the `↓ agents` hint focuses the panel whatever the prompt holds; a typed ↓ does only on an empty one.
 		if (this.editor !== this.defaultEditor || this.isBashMode) return undefined;
 		if (this.editor.getText() !== "" && !isHintActivation()) return undefined;
@@ -150,6 +176,22 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			setToolsExpanded: ui.setToolsExpanded,
 			notify: ui.notify,
 		}).catch((error: unknown) => this.showWarning(sourceError(error).message));
+		return { consume: true };
+	});
+	// While the screen shows a subagent that waits on its shells, the waited-shell key opens the newest one's output.
+	this.addTuiInputListener((data) => {
+		const viewed = this.agentView?.viewed;
+		if (viewed?.kind !== "agent" || isKeyRelease(data) || !this.keybindings.matches(data, "app.tasks.openWaited"))
+			return undefined;
+		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor) || !promptHasFocus(this))
+			return undefined;
+		const status = viewed.port.status();
+		if (status.state !== "waiting") return undefined;
+		const opened =
+			this.runtimeHost instanceof IsolatedInteractiveRuntime
+				? this.runtimeHost.openTaskInspector(undefined, { waitedShellOf: status.taskId })
+				: openWaitedShellOf(this.session, taskInspectorUi(this), status.taskId);
+		void opened.catch((error: unknown) => this.showWarning(sourceError(error).message));
 		return { consume: true };
 	});
 	// Set up handlers on defaultEditor - they use this.editor for text access
