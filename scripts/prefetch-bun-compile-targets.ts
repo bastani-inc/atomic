@@ -2,7 +2,7 @@
  * Puts the Bun runtimes that `bun build --compile --target=<target>` embeds where Bun
  * looks for them, so scripts/build-binaries.sh never downloads one itself.
  *
- * Bun 1.4.4 resolves a cross-compile target to `$BUN_INSTALL_CACHE_DIR/<name>-v<version>`
+ * Bun 1.4.5 resolves a cross-compile target to `$BUN_INSTALL_CACHE_DIR/<name>-v<version>`
  * (`$HOME/.bun/install/cache` when the variable is unset) and, if that file is missing,
  * fetches `https://registry.npmjs.org/@oven/<name>/-/<name>-<version>.tgz` on one
  * connection with no retry. On CI runners that fetch has run at about 45 KB/s, which
@@ -155,7 +155,7 @@ async function main(): Promise<void> {
 	const invalid = platforms.filter((platform) => !isPlatform(platform));
 	if (invalid.length > 0) throw new Error(`Invalid platform: ${invalid.join(", ")}; valid: ${PLATFORMS.join(", ")}`);
 
-	// The same resolution Bun 1.4.4 applies when `bun build --compile` looks for a target runtime.
+	// The same resolution Bun 1.4.5 applies when `bun build --compile` looks for a target runtime.
 	const runtimeDir =
 		process.env.BUN_INSTALL_CACHE_DIR ||
 		(process.env.HOME ? join(process.env.HOME, ".bun", "install", "cache") : ".bun-cache");

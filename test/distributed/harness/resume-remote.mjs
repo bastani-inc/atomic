@@ -24,7 +24,7 @@ export const GITLESS_EGRESS_DENIED_BUDGET_MS = 11 * 60_000;
 export const POOL_WORK_LEASE_MS = 20_000;
 /** How long the campaign's work waits for a capable host before it fails for want of one. */
 export const POOL_CLAIM_WINDOW_MS = 300_000;
-const BUN_VERSION = "1.4.4";
+const BUN_VERSION = "1.4.5";
 const POLL_MS = 1_000;
 const BASE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /** What the recording node's model writes, and the read tool returns through the recorded absolute path. */

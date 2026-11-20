@@ -174,7 +174,7 @@ At the end the suite checks:
 
 The suite needs at least three nodes, including the git-less node. On refs with the workflow runtime it covers all seven original acceptance scenarios of #4329. On newer refs it still exercises session resume, released-session and subagent wake, and Git provisioning; the report marks the workflow-only scenarios 2, 3 and 4 unavailable.
 It runs the same session, workflow, released-session and pooled-child fixtures as the reduced multi-process acceptance
-tests, with each node's own Atomic home and one shared, authenticated sqld namespace. A pinned Bun 1.4.4 binary is
+tests, with each node's own Atomic home and one shared, authenticated sqld namespace. A pinned Bun 1.4.5 binary is
 copied over the private control path and checked on each node. A run's synthetic Git remotes are copied to the same
 path on each node; the nodes and database never need a public endpoint. Below, n1 is the first node, n2 the second and
 n3 the git-less node.

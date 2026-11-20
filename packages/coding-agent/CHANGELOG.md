@@ -22,6 +22,9 @@
 
 - A write outside a transaction no longer fails with `database is locked` while another connection of the same process holds the write lock across an await: it now waits on its own connection's thread until that transaction commits ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
 - Building the `history://` search index of a long session no longer pauses typing and rendering while the index is written to a slow disk ([#5666](https://github.com/bastani-inc/atomic/issues/5666))
+### Changed
+
+- The standalone `atomic` binaries are now built with Bun 1.4.5, which includes upstream security fixes for TLS, HTTP and DNS in the embedded runtime. They now check custom CA certificates, such as those in `NODE_EXTRA_CA_CERTS` or a PostgreSQL `sslrootcert`, the way Node.js and the npm-installed `atomic` already do: a root certificate that is not marked as a CA, or that is limited to client authentication, is refused with `INVALID_PURPOSE`
 
 ## [0.10.0] - 2026-11-20
 
