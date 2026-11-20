@@ -29,6 +29,7 @@ import { basename, dirname, join, resolve, win32 } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { isSharedArrayBuffer, isUint8Array } from "node:util/types";
 import type * as native from "@bastani/atomic-natives";
 import type {
 	SqliteDatabase,
@@ -1017,60 +1018,6 @@ function gateTransaction<T>(identity: string | object, operation: () => Promise<
 	return result;
 }
 
-/** The connections on threads of their own that are taking or hold one file's write lock (see `markThreadedWriter`). */
-interface ThreadedFileWriters {
-	count: number;
-	/** Settles once none is left. */
-	readonly idle: Promise<void>;
-	readonly settle: () => void;
-}
-
-// Shared across module reloads as well as adapter instances, as the transaction gates are, by file identity.
-const THREADED_WRITERS = Symbol.for("atomic-storage/node-sqlite-threaded-writers@1");
-const writersBag = globalThis as typeof globalThis & Record<symbol, Map<string, ThreadedFileWriters> | undefined>;
-const threadedWriters: Map<string, ThreadedFileWriters> = writersBag[THREADED_WRITERS] ?? new Map();
-writersBag[THREADED_WRITERS] = threadedWriters;
-
-/**
- * Records that a connection on a thread of its own is taking the write lock of `file`, from just before it sends its
- * `BEGIN IMMEDIATE`; the returned call ends that, once, when the attempt was refused or failed, or once the connection
- * let go of the lock it took. A connection on the calling thread to the same file waits for none to be left before
- * a statement that may need the lock (see `NodeSqliteDatabase.besideThreadedWriters`).
- */
-function markThreadedWriter(file: string): () => void {
-	let writers = threadedWriters.get(file);
-	if (writers === undefined) {
-		let settle!: () => void;
-		const idle = new Promise<void>((resolve) => {
-			settle = resolve;
-		});
-		writers = { count: 0, idle, settle };
-		threadedWriters.set(file, writers);
-	}
-	const marked = writers;
-	marked.count += 1;
-	let ended = false;
-	return () => {
-		if (ended) return;
-		ended = true;
-		marked.count -= 1;
-		if (marked.count > 0) return;
-		if (threadedWriters.get(file) === marked) threadedWriters.delete(file);
-		marked.settle();
-	};
-}
-
-/** The file a connection on the calling thread opened, as `openNodeSqliteDatabase` identifies it; none in memory. */
-function callerThreadFile(location: string): string | undefined {
-	const file = sqliteTargetFilePath(location);
-	if (file === undefined) return undefined;
-	try {
-		return realpathSync.native(file);
-	} catch {
-		return undefined;
-	}
-}
-
 /** Copies binary parameters so queued work binds the bytes the caller passed, not later buffer contents. */
 function snapshotParams(params: readonly SqliteValue[]): SqliteValue[] {
 	return params.map((value) => (value instanceof Uint8Array ? new Uint8Array(value) : value));
@@ -1352,7 +1299,21 @@ type SqliteConnection = ThreadConnection | CallerThreadConnection;
  * itself from one on the calling thread, which runs it before returning, as node:sqlite does.
  */
 function send(connection: SqliteConnection, request: ConnectionRequest): ConnectionAnswer | Promise<ConnectionAnswer> {
-	return connection.request(request);
+	if (!(connection instanceof ThreadConnection) || !("params" in request)) return connection.request(request);
+	return connection.request({ ...request, params: request.params.map(sendable) });
+}
+
+/**
+ * A binary value as a connection's thread is sent it: the bytes it holds now, as a statement on the calling thread
+ * binds them when it runs. A message shares a `SharedArrayBuffer` with the thread, so a change the caller makes before
+ * the thread runs the statement would reach it, and it copies the whole buffer behind a view, so a view of part of a
+ * buffer, or of a shared one, is sent as a copy of its own bytes. Any other value is sent as it is.
+ */
+function sendable(value: SqliteValue): SqliteValue {
+	if (!isUint8Array(value)) return value;
+	if (!isSharedArrayBuffer(value.buffer) && value.byteOffset === 0 && value.byteLength === value.buffer.byteLength)
+		return value;
+	return new Uint8Array(value);
 }
 
 class NodeSqliteDatabase implements SqliteDatabase {
@@ -1377,13 +1338,6 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private readonly holderRecord?: SqliteHolderRecord;
 	private readonly openLock?: HeldOpenLock;
 	private readonly lockUse = new WriteLockUse();
-	/**
-	 * The file a connection on the calling thread opened, whose statements wait for this process's connections on
-	 * threads of their own that are taking or hold its write lock; see `besideThreadedWriters`.
-	 */
-	private readonly callerThreadFile?: string;
-	/** Ends the record that this connection, on a thread of its own, holds the write lock; see `markThreadedWriter`. */
-	private lockMark?: () => void;
 	/** The ticket of the writer holding the lock, on its way out of the queue while the transaction runs. */
 	private leaving?: { readonly ticket: string; readonly left: Promise<void> };
 	/** What the writers' queue gave up on, once per reason, in the order it first happened. */
@@ -1396,9 +1350,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		lockWaitMs = DEFAULT_NODE_SQLITE_LOCK_WAIT_MS,
 		groupCommitHoldMs = DEFAULT_GROUP_COMMIT_HOLD_MS,
 		openLock?: HeldOpenLock,
-		callerThreadFile?: string,
 	) {
-		this.callerThreadFile = callerThreadFile;
 		this.lockWaitMs = lockWaitMs;
 		this.groupCommitHoldMs = groupCommitHoldMs;
 		this.transactionIdentity = transactionIdentity;
@@ -1577,29 +1529,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			if (!isSqliteBusy(cause)) throw error;
 			return cause;
 		};
-		// A connection on a thread of its own may take the lock while this thread runs other work.
-		const unmark =
-			this.connection instanceof ThreadConnection && typeof this.transactionIdentity === "string"
-				? markThreadedWriter(this.transactionIdentity)
-				: undefined;
 		let attempt: undefined | Promise<undefined>;
 		try {
 			attempt = this.tryBegin();
 		} catch (error) {
-			unmark?.();
 			return refusal(error);
 		}
-		if (!(attempt instanceof Promise)) return undefined;
-		return attempt.then(
-			() => {
-				this.lockMark = unmark;
-				return undefined;
-			},
-			(error: unknown) => {
-				unmark?.();
-				return refusal(error);
-			},
-		);
+		return attempt instanceof Promise ? attempt.then(() => undefined, refusal) : undefined;
 	}
 
 	/**
@@ -1664,9 +1600,6 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * handed on is still noticed by that writer's recheck timer, so it never fails the transaction.
 	 */
 	private async released(committed: boolean): Promise<void> {
-		const unmark = this.lockMark;
-		this.lockMark = undefined;
-		unmark?.();
 		this.lockUse.released(committed);
 		const recorded = this.holderRecord?.free();
 		const leaving = this.leaving;
@@ -1757,93 +1690,22 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	}
 
 	exec(sql: string): Promise<void> {
-		return this.enqueueStatement(() => this.besideThreadedWriters(() => this.executor.exec(sql)));
+		return this.enqueueStatement(() => this.executor.exec(sql));
 	}
 
 	run(sql: string, ...params: readonly SqliteValue[]) {
 		const bound = snapshotParams(params);
-		return this.enqueueStatement(() => this.besideThreadedWriters(() => this.executor.run(sql, ...bound), sql));
+		return this.enqueueStatement(() => this.executor.run(sql, ...bound));
 	}
 
 	get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T | undefined> {
 		const bound = snapshotParams(params);
-		return this.enqueueStatement(() => this.besideThreadedWriters(() => this.executor.get<T>(sql, ...bound), sql));
+		return this.enqueueStatement(() => this.executor.get<T>(sql, ...bound));
 	}
 
 	all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> {
 		const bound = snapshotParams(params);
-		return this.enqueueStatement(() => this.besideThreadedWriters(() => this.executor.all<T>(sql, ...bound), sql));
-	}
-
-	/**
-	 * Runs one call of a connection on the calling thread to a file, `call`, without stopping this thread while a
-	 * connection of this process on a thread of its own takes or holds the file's write lock: SQLite's busy handler would
-	 * wait for that lock on this thread, which the other connection needs to commit and let go of it. Without such a
-	 * connection, and for every other connection, the call runs at once, as it always has.
-	 *
-	 * Otherwise a call that is one statement, `statement`, runs at once unless SQLite plans to write the file for it, as
-	 * a read does. A write, and a call that may be several statements (`exec`), wait off this thread, before anything of
-	 * them runs, until no such connection is left, and then run as always; or, once the connection's busy timeout has
-	 * passed, as SQLite's busy handler would have waited, they run without waiting for the lock, failing as the busy
-	 * handler then would.
-	 */
-	private besideThreadedWriters<T>(call: () => Promise<T>, statement?: string): Promise<T> {
-		const file = this.callerThreadFile;
-		if (file === undefined || !threadedWriters.has(file)) return call();
-		if (statement !== undefined && !this.writesFile(statement)) return call();
-		return this.afterThreadedWriters(file, call);
-	}
-
-	/**
-	 * Whether SQLite's plan for `statement` writes the database file, and so needs its write lock; a statement SQLite
-	 * cannot plan runs and fails as always.
-	 */
-	private writesFile(statement: string): boolean {
-		let plan: SqliteRow[];
-		try {
-			plan = this.call({ kind: "all", sql: `EXPLAIN ${statement}`, params: [] }) as SqliteRow[];
-		} catch {
-			return false;
-		}
-		return plan.some((step) => step.opcode === "Transaction" && Number(step.p1) === 0 && Number(step.p2) !== 0);
-	}
-
-	private async afterThreadedWriters<T>(file: string, call: () => Promise<T>): Promise<T> {
-		const busyTimeoutMs = this.busyTimeout();
-		const deadline = performance.now() + busyTimeoutMs;
-		for (;;) {
-			const writers = threadedWriters.get(file);
-			if (writers === undefined) return call();
-			const remainingMs = deadline - performance.now();
-			if (remainingMs <= 0) return this.withoutBusyWait(call, busyTimeoutMs);
-			let timer: ReturnType<typeof setTimeout> | undefined;
-			await Promise.race([
-				writers.idle,
-				new Promise<void>((resolve) => {
-					timer = setTimeout(resolve, remainingMs);
-				}),
-			]);
-			clearTimeout(timer);
-		}
-	}
-
-	private busyTimeout(): number {
-		return Number(
-			(this.call({ kind: "get", sql: "PRAGMA busy_timeout", params: [] }) as SqliteRow | undefined)?.timeout ?? 0,
-		);
-	}
-
-	/**
-	 * Runs `call` on the calling thread with a busy timeout of 0, then gives the connection back `busyTimeoutMs`, unless
-	 * the call set a busy timeout of its own.
-	 */
-	private withoutBusyWait<T>(call: () => Promise<T>, busyTimeoutMs: number): Promise<T> {
-		this.call({ kind: "exec", sql: "PRAGMA busy_timeout=0" });
-		try {
-			return call();
-		} finally {
-			if (this.busyTimeout() === 0) this.call({ kind: "exec", sql: `PRAGMA busy_timeout=${busyTimeoutMs}` });
-		}
+		return this.enqueueStatement(() => this.executor.all<T>(sql, ...bound));
 	}
 
 	/** Idle-only housekeeping: do not join a batch, wait behind an operation on this handle or another handle's
@@ -2264,7 +2126,6 @@ export function wrapNodeSqliteDatabase(connection: DatabaseSync): SqliteDatabase
 			undefined,
 			undefined,
 			heldOpenLock,
-			callerThreadFile(descriptor.location),
 		);
 	} catch (cause) {
 		void releaseOpenLock(heldOpenLock);
