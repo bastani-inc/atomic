@@ -190,20 +190,41 @@ function nameColumnFor(width: number): number {
 	return Math.min(NAME_COLUMN, Math.max(6, Math.floor((width - 6) / 3)));
 }
 
-/** A row's model column, as the agent panel shows it: empty for a shell and for a row with no known model. */
-export function rowModel(row: TaskBoardRow): string {
-	if (row.kind === "item") return panelModelText(row.item);
-	return row.task.kind === "agent" ? panelModelText({ kind: "agent", ...taskPanelModel(row.task) }) : "";
+/** A row's model column text, as the agent panel shows it, and its width in cells. */
+export interface BoardRowModel {
+	readonly text: string;
+	readonly width: number;
+}
+
+const NO_MODEL: BoardRowModel = { text: "", width: 0 };
+
+/**
+ * A row's model column: empty for a shell and for a row with no known model. `owner` is the task store the row's task
+ * belongs to: its session's model registry says whether the model has reasoning levels.
+ */
+export function rowModel(row: TaskBoardRow, owner?: object): BoardRowModel {
+	const text =
+		row.kind === "item"
+			? panelModelText(row.item)
+			: row.task.kind === "agent"
+				? panelModelText({ kind: "agent", ...taskPanelModel(row.task, owner ?? row.task) })
+				: "";
+	return text.length === 0 ? NO_MODEL : { text, width: visibleWidth(text) };
 }
 
 /**
- * The width of the model column `rows` share at `width`, 0 for none. As in the agent panel, rows narrower than 100
- * columns have none, and neither do rows where it would clip a row's right column or leave a task under 8 cells.
+ * The width of the model column `rows` share at `width`, 0 for none; `models` are their `rowModel`s, in order. As in
+ * the agent panel, rows narrower than 100 columns have none, and neither do rows where it would clip a row's right
+ * column or leave a task under 8 cells.
  */
-export function boardModelColumn(rows: readonly TaskBoardRow[], width: number): number {
+export function boardModelColumn(
+	rows: readonly TaskBoardRow[],
+	models: readonly BoardRowModel[],
+	width: number,
+): number {
 	if (width < AGENT_PANEL_MODEL_MIN_WIDTH) return 0;
 	let column = 0;
-	for (const row of rows) column = Math.max(column, visibleWidth(rowModel(row)));
+	for (const model of models) column = Math.max(column, model.width);
 	if (column === 0) return 0;
 	const fixed = 2 + 2 + nameColumnFor(width) + column + 2;
 	for (const row of rows) {
@@ -214,15 +235,23 @@ export function boardModelColumn(rows: readonly TaskBoardRow[], width: number): 
 	return column;
 }
 
-/** `modelColumn`: the width of the model column every row of the list shares (`boardModelColumn`), 0 for none. */
-export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: number, modelColumn = 0): string {
+/** `model`: the model column every row of the list shares (`boardModelColumn`) and this row's cell of it. */
+export function renderBoardRow(
+	row: TaskBoardRow,
+	selected: boolean,
+	width: number,
+	model?: { readonly column: number; readonly cell: BoardRowModel },
+): string {
 	const state = rowState(row);
 	const { glyph, color } = stateGlyph(state, row.kind === "task" ? row.task.kind : row.item.kind);
 	const marker = selected ? theme.fg("accent", "❯ ") : "  ";
 
 	const nameColumn = nameColumnFor(width);
-	const model = modelColumn > 0 ? truncateToWidth(rowModel(row), modelColumn) : "";
-	const modelCell = modelColumn > 0 ? `${model}${" ".repeat(Math.max(0, modelColumn - visibleWidth(model)) + 2)}` : "";
+	const modelColumn = model === undefined ? 0 : model.column;
+	const modelCell =
+		model === undefined || modelColumn === 0
+			? ""
+			: `${model.cell.text}${" ".repeat(Math.max(0, modelColumn - model.cell.width) + 2)}`;
 	const nameWidth = nameColumn + (modelColumn > 0 ? modelColumn + 2 : 0);
 	const name = truncateToWidth(rowName(row), nameColumn - 1);
 	const namePadded = name + " ".repeat(Math.max(1, nameColumn - visibleWidth(name)));

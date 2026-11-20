@@ -36,6 +36,7 @@ import {
 	type TaskViewSource,
 } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
+import { AGENT_PANEL_MODEL_MIN_WIDTH } from "./agent-panel.ts";
 import { parseWheelReport } from "./chat-transcript.js";
 import { renderExtensionStatusRow } from "./footer.ts";
 import {
@@ -55,6 +56,7 @@ import {
 	renderPeekCard,
 	rowFinished,
 	rowMatches,
+	rowModel,
 	rowName,
 	rowState,
 	rowTask,
@@ -1991,7 +1993,7 @@ export class TaskInspector implements Component {
 						questionPrefix !== "" &&
 						shownQuestion.startsWith(questionPrefix);
 					const shownRow = stripVTControlCharacters(
-						renderBoardRow(row, row.id === selected?.id, width - 1, modelColumn),
+						renderBoardRow(row, row.id === selected?.id, width - 1, modelOf(row)),
 					);
 					if (questionInCard || (question !== "" && shownRow.includes(question)))
 						this.paintedPrompts.set(row.id, prompt);
@@ -2004,10 +2006,18 @@ export class TaskInspector implements Component {
 			}
 		};
 		const slice = body.slice(start, start + room);
-		const modelColumn = boardModelColumn(
-			slice.filter((line): line is TaskBoardRow => typeof line !== "string"),
-			width - 1,
-		);
+		// The rows as they are painted, with their live elapsed times: the model column is decided on those, once.
+		const painted = slice.map((line) => (typeof line === "string" ? line : this.withBoardElapsed(line)));
+		const paintedRows = painted.filter((line): line is TaskBoardRow => typeof line !== "string");
+		const models =
+			width - 1 >= AGENT_PANEL_MODEL_MIN_WIDTH
+				? new Map(paintedRows.map((row) => [row.id, rowModel(row, this.store)]))
+				: undefined;
+		const modelColumn = models === undefined ? 0 : boardModelColumn(paintedRows, [...models.values()], width - 1);
+		const modelOf = (row: TaskBoardRow) =>
+			modelColumn === 0
+				? undefined
+				: { column: modelColumn, cell: models?.get(row.id) ?? rowModel(row, this.store) };
 		const previousSelectedPrompt = selected !== undefined ? this.paintedPrompts.get(selected.id) : undefined;
 		this.paintedPrompts.clear();
 		const drawnTasks: TaskRecord[] = [];
@@ -2032,11 +2042,11 @@ export class TaskInspector implements Component {
 			}
 		}
 		this.navigation.paint(drawnTasks);
-		const renderedWindow = slice.map((line) =>
+		const renderedWindow = painted.map((line) =>
 			clip(
 				typeof line === "string"
 					? line
-					: ` ${renderBoardRow(this.withBoardElapsed(line), line.id === selected?.id, width - 1, modelColumn)}`,
+					: ` ${renderBoardRow(line, line.id === selected?.id, width - 1, modelOf(line))}`,
 			),
 		);
 		if (shortViewport) {

@@ -346,4 +346,19 @@ test("a subagent on a model without reasoning levels shows no level, as the foot
 	assert.match(shown.find((line) => /thinking work/.test(line))!, /worker {2}local\/thinker off {7}thinking work/);
 	// A model the registry does not know shows the level it reports.
 	assert.match(shown.find((line) => /unknown work/.test(line))!, /worker {2}elsewhere\/unlisted off {2}unknown work/);
+	// /tasks reads the same registry: the same rows, the same levels.
+	const inspector = new TaskInspector(
+		fixture.store,
+		() => {},
+		() => {},
+	);
+	try {
+		const board = inspector.renderViewport(140, 14).map((line) => stripVTControlCharacters(line));
+		const row = (task: string) => board.find((line) => line.includes(task)) ?? board.join("\n");
+		assert.match(row("plain work"), /worker {8}local\/plain {13}plain work/);
+		assert.match(row("thinking work"), /worker {8}local\/thinker off {7}thinking work/);
+		assert.match(row("unknown work"), /worker {8}elsewhere\/unlisted off {2}unknown work/);
+	} finally {
+		inspector.dispose();
+	}
 });
