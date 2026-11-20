@@ -258,6 +258,11 @@ export interface TaskViewSource {
 	 */
 	pauseTask?(id: TaskId): Promise<TaskViewResult<QueuedTaskMessages>>;
 	/**
+	 * Continues an agent task {@link pauseTask} paused, as the user's send does in its chat: its queue is released, so
+	 * the message sent next starts its turn. A no-op on a task that is not paused.
+	 */
+	resumeTask?(id: TaskId): Promise<TaskViewResult<undefined>>;
+	/**
 	 * Why a finished agent task's chat is read-only (it was stopped for good or is no longer kept), or `undefined` when
 	 * a message resumes it. Absent where finished tasks cannot be resumed from a view.
 	 */
@@ -323,6 +328,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	const taskCommands = root.taskCommands;
 	const interruptTask = root.interruptTask;
 	const pauseTask = root.pauseTask;
+	const resumeTask = root.resumeTask;
 	const taskReadOnlyReason = root.taskReadOnlyReason;
 	const taskStopped = root.taskStopped;
 	const view: TaskViewSource = {
@@ -368,6 +374,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 		...(taskCommands === undefined ? {} : { taskCommands: (id: TaskId) => taskCommands.call(root, id) }),
 		...(interruptTask === undefined ? {} : { interruptTask: (id: TaskId) => interruptTask.call(root, id) }),
 		...(pauseTask === undefined ? {} : { pauseTask: (id: TaskId) => pauseTask.call(root, id) }),
+		...(resumeTask === undefined ? {} : { resumeTask: (id: TaskId) => resumeTask.call(root, id) }),
 		...(taskStopped === undefined ? {} : { taskStopped: (id: TaskId) => taskStopped.call(root, id) }),
 		...(taskReadOnlyReason === undefined
 			? {}
@@ -612,6 +619,17 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
 			}
 		},
+		async resumeTask(id) {
+			const task = lease(id);
+			if (!task.ok) return { ok: false, error: { message: task.error.message } };
+			const bound = taskTranscriptSource(task.value);
+			try {
+				if (bound.ok) await bound.value.session.resumeTurn?.();
+				return { ok: true, value: undefined };
+			} catch (error) {
+				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
+			}
+		},
 		taskStopped(id) {
 			const record = store.getTask(id);
 			return (
@@ -660,10 +678,9 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				} catch (cause) {
 					throw new TaskMessageError("delivery-unconfirmed", named, { cause });
 				}
-				if (delivery.delivered) {
-					store.setTurnInterrupted(id, false);
-					return;
-				}
+				// A paused subagent shows as running again when its next turn starts, not when it took a message: one it
+				// takes without the reader continuing it waits until they do.
+				if (delivery.delivered) return;
 				if (delivery.reason === "ended" && mayRetry && resumer !== undefined && (await agentTaskSettles(store, id)))
 					continue;
 				if (delivery.reason === "unconfirmed")

@@ -114,6 +114,8 @@ export interface RuntimeBuildOptions {
 
 export interface AgentSessionQueuePauseControl {
 	readonly queuedMessagesPaused: boolean;
+	/** Whether Esc in the session's chat paused it (`pauseTurn`): its queue is held until the user continues it. */
+	readonly turnPaused: boolean;
 	pauseQueuedMessages(): void;
 	/** Release the hold without starting a turn; true means raw queued work was released. */
 	resumeQueuedMessages(beforeRelease?: () => void): Promise<boolean>;
@@ -299,6 +301,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	 * and holds the rest of the queue until the next message continues the session.
 	 */
 	pauseTurn(): Promise<ClearedQueue>;
+	/** Continues a session `pauseTurn` paused: its hold is released, so the user's message sent next starts the turn. */
+	resumeTurn(): Promise<void>;
 	_sealMessageAdmissionIfDrained(): boolean;
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
@@ -524,6 +528,8 @@ export interface AgentSessionPublicSurface
 		| "abort"
 		| "interruptTurn"
 		| "pauseTurn"
+		| "resumeTurn"
+		| "turnPaused"
 		| "setModel"
 		| "cycleModel"
 		| "setThinkingLevel"

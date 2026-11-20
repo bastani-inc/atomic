@@ -451,6 +451,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			// What the reader types goes to the subagent's own session as the main chat's goes to its own: queued in its
 			// lane while it works, else its next turn, and the dequeue key takes the queue back.
 			steering: this.steeringTarget(),
+			// Esc paused it: the reader's next message continues it, as their send continues the main chat after Esc.
+			isPaused: () => this.paused(),
 			commands: { handleSlashCommand: (text) => this.runCommand(text) },
 		});
 		pagedNotices.set(this.chat, this.#notices);
@@ -729,7 +731,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
 		const name = taskDisplayText(task?.agentName ?? this.sessionName() ?? "subagent");
 		const waiting = task?.attention.kind === "input-needed";
-		const paused = task !== undefined && isTaskTurnInterrupted(task);
+		const paused = this.paused();
 		const state =
 			task === undefined
 				? undefined
@@ -844,6 +846,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.heldPrompt()?.kind === "select" &&
 			(this.heldPrompt()?.choices?.length ?? 0) > 10
 		);
+	}
+
+	/** Whether Esc paused the subagent: it waits, still running, for the reader's next message. */
+	private paused(): boolean {
+		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		return task !== undefined && isTaskTurnInterrupted(task);
 	}
 
 	interruptible(): boolean {
@@ -1222,6 +1230,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private steeringTarget(): ChatSteeringTarget {
 		return {
 			prompt: (text, options) => this.send(text, options?.streamingBehavior ?? "steer"),
+			resume: async (text, lane) => {
+				const resume = this.source.resumeTask;
+				if (resume !== undefined) {
+					const resumed = await resume.call(this.source, this.taskId);
+					if (!resumed.ok) throw new Error(resumed.error.message);
+				}
+				await this.send(text, lane === "followUp" ? "followUp" : "steer");
+			},
 			clearQueue: async () => {
 				const taken = await this.takeQueue();
 				return { steering: [...taken.steering], followUp: [...taken.followUp] };

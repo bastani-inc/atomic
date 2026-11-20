@@ -2147,6 +2147,9 @@ function pausableTranscript(session: SessionManager, queued: { steering: string[
 	const state = {
 		running: true,
 		pauses: 0,
+		/** How many messages had been sent when each resume came. */
+		resumed: [] as number[],
+		sent: [] as Array<{ text: string; lane: string }>,
 		emit(event: AgentSessionEvent) {
 			for (const listener of [...listeners]) listener(event);
 		},
@@ -2155,6 +2158,13 @@ function pausableTranscript(session: SessionManager, queued: { steering: string[
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
+		},
+		async resumeTurn() {
+			state.resumed.push(state.sent.length);
+		},
+		async queueMessage(text: string, lane: "steer" | "followUp") {
+			state.sent.push({ text, lane });
+			return { delivered: true as const };
 		},
 		isRunning: () => state.running,
 		getQueuedMessages: () => ({ steering: [...queued.steering], followUp: [...queued.followUp] }),
@@ -2204,6 +2214,28 @@ test("a paused subagent's empty prompt says a message continues it (PromptContin
 		const text = host.text();
 		assert.match(text, /Paused · send to continue/);
 		assert.doesNotMatch(text, /Stopped · send to resume/, "a pause is not a stop");
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("the reader's next message continues a paused subagent: it is released first, then sent (PromptContinues)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
+	const { transcript, state } = pausableTranscript(session, { steering: [], followUp: [] });
+	const host = await openTranscript(transcript);
+	try {
+		await host.type("draft before");
+		host.inspector.handleInput("\r");
+		await flush();
+		assert.deepEqual(state.resumed, [], "a running subagent is not resumed: the message is queued");
+		host.inspector.handleInput("\x1b");
+		await flush();
+		await host.type("carry on");
+		host.inspector.handleInput("\r");
+		await flush();
+		assert.deepEqual(state.sent.at(-1), { text: "carry on", lane: "steer" });
+		assert.deepEqual(state.resumed, [1], "the paused subagent is continued before the message goes");
 	} finally {
 		await host.dispose();
 	}

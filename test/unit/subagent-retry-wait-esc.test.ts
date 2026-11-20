@@ -163,6 +163,7 @@ async function assertInterruptedAndResumable(child: RetryingSubagent): Promise<v
 	assert.equal(child.fixture.store.tasks[0]!.execution.kind, "running", "its task keeps running");
 
 	const sessionId = child.source.getSessionId();
+	await child.source.resumeTurn?.();
 	await child.session.prompt("carry on", { streamingBehavior: "steer" });
 	const result = await child.run;
 	assert.equal(result.status, "ok");

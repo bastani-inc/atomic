@@ -1,7 +1,7 @@
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasOpenRun } from "./agent-session-prompt.ts";
 import { abortTurnRetries } from "./agent-session-retry.ts";
-import { settleTurnPause } from "./agent-session-turn-pause.ts";
+import { releaseTurnPause, settleTurnPause } from "./agent-session-turn-pause.ts";
 import type { ClearedQueue, SessionAbortOptions } from "./agent-session-types.js";
 import { cancelFirstPromptModel } from "./first-prompt-model.ts";
 
@@ -128,6 +128,15 @@ export async function pauseTurn(this: AgentSession): Promise<ClearedQueue> {
 	// A child's run settles in `settleSubagentMessages`; any other session's has once its turn ended.
 	if (this._subagentMessageAdmission === undefined) settled.resolve();
 	return taken;
+}
+
+/**
+ * Continue a session {@link pauseTurn} paused, as the user's send does after Esc in the main chat: once the paused run has
+ * settled, the hold is released without starting a turn, so the user's message sent next starts it and what was held
+ * follows. Anything else, a plain `prompt()` included, waits in the hold while the session is paused.
+ */
+export async function resumeTurn(this: AgentSession): Promise<void> {
+	await releaseTurnPause(this);
 }
 
 /** Internal teardown never redirects cancellation into a replacement generation. */

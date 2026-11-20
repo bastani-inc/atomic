@@ -118,6 +118,7 @@ test(
 			assert.equal(child.settled(), false, "it is paused, not ended");
 			assert.deepEqual(child.source().getQueuedMessages?.(), { steering: [], followUp: [] });
 
+			await child.source().resumeTurn!();
 			await session.prompt("continue with this", { streamingBehavior: "steer" });
 			const result = await child.run;
 			assert.equal(result.status, "ok");
@@ -154,6 +155,7 @@ test(
 			assert.equal(child.inputs.length, 0);
 			assert.equal(child.settled(), false);
 
+			await child.source().resumeTurn!();
 			await session.prompt("now carry on", { streamingBehavior: "steer" });
 			const result = await child.run;
 			assert.equal(result.status, "ok");
@@ -188,6 +190,7 @@ test(
 			assert.equal(child.inputs.length, 0);
 			assert.equal(child.settled(), false);
 
+			await child.source().resumeTurn!();
 			await child.session().prompt("over to you", { streamingBehavior: "steer" });
 			const result = await child.run;
 			assert.equal(result.status, "ok");
@@ -197,6 +200,34 @@ test(
 				delivered.indexOf("parent asks") > delivered.indexOf("over to you"),
 				"the held message follows the reader's",
 			);
+		} finally {
+			child.stop.abort("user");
+			await child.run;
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a message that reaches a paused subagent without the reader continuing it waits, as a message sent before Esc but accepted after it waits in the main chat",
+	async () => {
+		const child = await blockedChild("esc-pause-plain-prompt");
+		try {
+			await child.source().pauseTurn!();
+			// What its own extension or a message accepted after Esc sends: a plain prompt, not the reader's continue.
+			await child.session().prompt("sent without the reader", { streamingBehavior: "steer" });
+			await pause(RESTART_WINDOW_MS);
+			assert.equal(child.source().isRunning?.(), false, "a plain prompt does not continue a paused subagent");
+			assert.equal(child.inputs.length, 0);
+			assert.deepEqual(child.source().getQueuedMessages?.()?.steering, ["sent without the reader"], "it is listed");
+
+			await child.source().resumeTurn!();
+			await child.session().prompt("the reader continues", { streamingBehavior: "steer" });
+			const result = await child.run;
+			assert.equal(result.status, "ok");
+			const delivered = child.inputs.flat().join("\n");
+			assert.ok(delivered.indexOf("the reader continues") >= 0);
+			assert.ok(delivered.indexOf("sent without the reader") > delivered.indexOf("the reader continues"));
 		} finally {
 			child.stop.abort("user");
 			await child.run;
