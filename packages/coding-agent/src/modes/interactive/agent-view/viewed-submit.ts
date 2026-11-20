@@ -8,7 +8,7 @@ import {
 	SteeringQueueController,
 	type SteeringSubmitLane,
 } from "../steering-queue-controller.ts";
-import { type PromptHandle, promptHandle } from "./agent-drafts.ts";
+import { markMovedDraft, type PromptHandle, promptHandle, rewritePromptOwnText } from "./agent-drafts.ts";
 import type { AgentViewPort } from "./contracts.ts";
 import { routeViewedCommand, runViewedDoubleEscapeAction } from "./viewed-commands.ts";
 import { notifyViewed } from "./viewed-notices.ts";
@@ -143,8 +143,9 @@ function giveBack(
 	combine: (current: string) => string,
 ): void {
 	if (port.status().gone) {
-		const main = promptHandle(mode, "main");
-		main.setText(combine(main.getExpandedText()));
+		// It joins what the reader typed into main's prompt, never a history entry main's prompt was showing.
+		const moved = rewritePromptOwnText(mode, { kind: "main" }, combine);
+		markMovedDraft(mode, port.status().name, moved);
 		mode.showWarning(goneAgentNotice(port.status().name));
 	} else prompt.setText(combine(prompt.getExpandedText()));
 	mode.updatePendingMessagesDisplay();

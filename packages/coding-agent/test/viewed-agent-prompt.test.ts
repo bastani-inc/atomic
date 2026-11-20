@@ -17,6 +17,7 @@ import { ModelRuntime } from "../src/core/model-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { TaskId } from "../src/core/tasks/contracts.js";
 import { InteractiveMode } from "../src/index.js";
+import { takeMovedDraftMark } from "../src/modes/interactive/agent-view/agent-drafts.ts";
 import { attachLostAgentQueueNotices } from "../src/modes/interactive/agent-view/prompt-retarget.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.ts";
@@ -694,6 +695,52 @@ describe("the main prompt while a subagent is shown", () => {
 				"Engine restarted; 2 queued messages to worker weren't sent:\nqueued one\nqueued two",
 			]);
 			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"text typed for a subagent that is gone stays marked in main's prompt until it is submitted or edited",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			await view(WORKER);
+			await screen.type("/compact now");
+			port.setStatus({ gone: true });
+			await settle();
+			assert.equal(screen.mode.editor.getText(), "/compact now");
+			assert.deepEqual(takeMovedDraftMark(screen.mode, "/compact now"), {
+				agentName: "worker",
+				text: "/compact now",
+			});
+			assert.equal(takeMovedDraftMark(screen.mode, "/compact now"), undefined, "a submission takes the mark");
+
+			const again = worker();
+			await view(WORKER);
+			await screen.type("/new");
+			again.setStatus({ gone: true });
+			await settle();
+			assert.match(screen.mode.editor.getText(), /^\/new/);
+			await screen.type(" please");
+			assert.equal(takeMovedDraftMark(screen.mode, screen.mode.editor.getText()), undefined, "an edit clears it");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"text for a subagent that is gone joins main's own draft, not a history entry main's prompt was showing",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			screen.mode.editor.addToHistory?.("old prompt");
+			await screen.type("T");
+			await screen.press("\x01", "\x1b[A");
+			assert.equal(screen.mode.editor.getText(), "old prompt");
+			await view(WORKER);
+			await screen.type("x");
+			port.setStatus({ gone: true });
+			await settle();
+			assert.equal(screen.mode.editor.getText(), "x\n\nT");
 		},
 		HOST_TIMEOUT_MS,
 	);
