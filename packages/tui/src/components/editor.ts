@@ -256,6 +256,68 @@ interface EditorSnapshot {
 	pasteCounter: number;
 }
 
+declare const editorDraftBrand: unique symbol;
+
+/**
+ * A prompt's whole state, as {@link Editor.snapshotDraft} took it: its text, cursor and scroll, its paste registry, its
+ * undo history and kill ring, and where Up-history browsing stands with the draft it parked. Only
+ * {@link Editor.restoreDraft} reads it; restoring it more than once gives the same prompt each time.
+ */
+export interface EditorDraft {
+	readonly [editorDraftBrand]: true;
+}
+
+interface EditorDraftState {
+	readonly state: EditorState;
+	readonly pastes: ReadonlyMap<number, string>;
+	readonly pasteCounter: number;
+	readonly undoStack: UndoStack<EditorSnapshot>;
+	readonly killRing: KillRing;
+	readonly lastAction: "kill" | "yank" | "type-word" | null;
+	readonly historyIndex: number;
+	readonly historyDraft: EditorState | null;
+	readonly scrollOffset: number;
+	readonly preferredVisualCol: number | null;
+	readonly snappedFromCursorCol: number | null;
+}
+
+const editorDrafts = new WeakMap<EditorDraft, EditorDraftState>();
+
+/**
+ * The text the reader typed into the prompt `draft` holds, with pastes expanded: while it was browsing Up history,
+ * the draft Up parked, not the history entry shown.
+ */
+export function editorDraftText(draft: EditorDraft): string {
+	const saved = editorDrafts.get(draft);
+	if (saved === undefined) return "";
+	const state = saved.historyIndex >= 0 && saved.historyDraft !== null ? saved.historyDraft : saved.state;
+	let text = state.lines.join("\n");
+	for (const [pasteId, pasteContent] of saved.pastes) {
+		const markerRegex = new RegExp(`\\[paste #${pasteId}( (\\+\\d+ lines|\\d+ chars))?\\]`, "g");
+		text = text.replace(markerRegex, () => pasteContent);
+	}
+	return text;
+}
+
+/** The state of a prompt nothing was typed into yet: empty, with no undo history, kill ring or Up browsing. */
+export function emptyEditorDraft(): EditorDraft {
+	const draft = Object.freeze({}) as EditorDraft;
+	editorDrafts.set(draft, {
+		state: { lines: [""], cursorLine: 0, cursorCol: 0 },
+		pastes: new Map(),
+		pasteCounter: 0,
+		undoStack: new UndoStack<EditorSnapshot>(),
+		killRing: new KillRing(),
+		lastAction: null,
+		historyIndex: -1,
+		historyDraft: null,
+		scrollOffset: 0,
+		preferredVisualCol: null,
+		snappedFromCursorCol: null,
+	});
+	return draft;
+}
+
 interface AutocompleteRequestOptions {
 	force: boolean;
 	explicitTab: boolean;
@@ -537,6 +599,58 @@ export class Editor implements Component, Focusable {
 		// Limit history size
 		if (this.history.length > 100) {
 			this.history.pop();
+		}
+	}
+
+	/**
+	 * The prompt's whole state, detached: editing on afterwards leaves it as it was. The prompt itself is not changed.
+	 * Up history is not part of it.
+	 */
+	snapshotDraft(): EditorDraft {
+		const draft = Object.freeze({}) as EditorDraft;
+		editorDrafts.set(draft, {
+			state: structuredClone(this.state),
+			pastes: new Map(this.pastes),
+			pasteCounter: this.pasteCounter,
+			undoStack: this.undoStack.clone(),
+			killRing: this.killRing.clone(),
+			lastAction: this.lastAction,
+			historyIndex: this.historyIndex,
+			historyDraft: this.historyDraft === null ? null : structuredClone(this.historyDraft),
+			scrollOffset: this.scrollOffset,
+			preferredVisualCol: this.preferredVisualCol,
+			snappedFromCursorCol: this.snappedFromCursorCol,
+		});
+		return draft;
+	}
+
+	/**
+	 * Put back a prompt {@link snapshotDraft} took, from this editor or another: its text, cursor, paste registry, undo
+	 * history, kill ring and Up-history browsing. An open completion menu closes. A prompt that was browsing an entry the
+	 * current Up history no longer has comes back as the draft Up parked. Reports the text to `onChange`, as `setText`
+	 * does.
+	 */
+	restoreDraft(draft: EditorDraft): void {
+		const saved = editorDrafts.get(draft);
+		if (saved === undefined) return;
+		this.cancelAutocomplete();
+		this.jumpMode = null;
+		const browsing = saved.historyIndex >= 0 && saved.historyIndex < this.history.length;
+		// A prompt that browsed a history no longer there comes back as the draft Up parked, not the entry it showed.
+		const parked = !browsing && saved.historyIndex >= 0 ? saved.historyDraft : null;
+		Object.assign(this.state, structuredClone(parked ?? saved.state));
+		this.pastes = new Map(saved.pastes);
+		this.pasteCounter = saved.pasteCounter;
+		this.undoStack = saved.undoStack.clone();
+		this.killRing = saved.killRing.clone();
+		this.lastAction = saved.lastAction;
+		this.historyIndex = browsing ? saved.historyIndex : -1;
+		this.historyDraft = browsing && saved.historyDraft !== null ? structuredClone(saved.historyDraft) : null;
+		this.scrollOffset = saved.scrollOffset;
+		this.preferredVisualCol = saved.preferredVisualCol;
+		this.snappedFromCursorCol = saved.snappedFromCursorCol;
+		if (this.onChange) {
+			this.onChange(this.getText());
 		}
 	}
 

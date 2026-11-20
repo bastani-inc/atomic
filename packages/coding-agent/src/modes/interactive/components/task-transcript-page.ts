@@ -29,7 +29,6 @@ import {
 	taskClocksFor,
 	taskElapsedMs,
 } from "../../../core/tasks/live-elapsed.js";
-import { isTaskMessageError, TaskMessageError } from "../../../core/tasks/message-error.js";
 import { getOwnerTaskSession, isTaskTurnInterrupted, setTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import type {
 	ChatBoxSession,
@@ -52,6 +51,7 @@ import {
 } from "../../../core/tasks/task-view-source.js";
 import { noteSavedSeq } from "../../../core/tasks/transcript-origin.js";
 import { copyToClipboard } from "../../../utils/clipboard.js";
+import { pauseAgent, resumeAgent, sendAgentMessage, takeAgentQueue } from "../agent-view/agent-steering.ts";
 import type { AgentViewState, AgentViewStatus } from "../agent-view/contracts.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
 import {
@@ -1107,9 +1107,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	async interrupt(): Promise<TaskViewResult<undefined>> {
-		const pause = this.source.pauseTask;
-		if (pause !== undefined) {
-			const paused = await pause.call(this.source, this.liveTaskId());
+		if (this.source.pauseTask !== undefined) {
+			const paused = await pauseAgent(this.source, this.liveTaskId());
 			if (!paused.ok) return paused;
 			if (!this.disposed) this.restoreQueuedToEditor(paused.value);
 			else {
@@ -1473,11 +1472,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return {
 			prompt: (text, options) => this.send(text, options?.streamingBehavior ?? "steer"),
 			resume: async (text, lane) => {
-				const resume = this.source.resumeTask;
-				if (resume !== undefined) {
-					const resumed = await resume.call(this.source, this.liveTaskId());
-					if (!resumed.ok) throw new Error(resumed.error.message);
-				}
+				await resumeAgent(this.source, this.liveTaskId());
 				await this.send(text, lane === "followUp" ? "followUp" : "steer");
 			},
 			clearQueue: async () => {
@@ -1489,32 +1484,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	/** Resolves once the subagent's session accepted `text`, waiting on `lane` while it works. */
 	private async send(text: string, lane: TaskMessageLane): Promise<void> {
-		const send = this.source.sendTaskMessage;
-		const sentTo = this.liveTask();
-		const taskId = sentTo?.ref.taskId ?? this.taskId;
-		if (send === undefined) throw new TaskMessageError("messages-unsupported", { taskId });
 		try {
-			try {
-				await send.call(this.source, taskId, text, lane);
-			} catch (error) {
-				// The subagent changed while the message was on its way: a wake or another resume started it again, so the
-				// resume this asked for was refused, or the attempt it went to ended before taking it. Nothing reached it,
-				// so it goes once more to the subagent as it is now, as if typed a moment later: a running attempt takes
-				// it, and a finished one is resumed with it. A delivery that may have happened is never sent twice.
-				const now = this.liveTask();
-				const changed =
-					now !== undefined &&
-					(now.ref.taskId !== taskId ||
-						(now.execution.kind === "settled") !== (sentTo?.execution.kind === "settled"));
-				if (
-					!changed ||
-					!isTaskMessageError(error) ||
-					error.code === "delivery-unconfirmed" ||
-					this.source.taskReadOnlyReason?.(now.ref.taskId) !== undefined
-				)
-					throw error;
-				await send.call(this.source, now.ref.taskId, text, lane);
-			}
+			await sendAgentMessage(this.source, () => this.liveTask(), this.taskId, text, lane);
 		} catch (error) {
 			if (!this.disposed) throw error;
 			this.keepUndelivered(text, failureText(error));
@@ -1522,12 +1493,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	/** Every message waiting in the subagent's queue, taken back in its own answer. */
-	private async takeQueue(): Promise<QueuedTaskMessages> {
-		const clear = this.source.clearTaskQueue;
-		if (clear === undefined) return { steering: [], followUp: [] };
-		const taken = await clear.call(this.source, this.liveTaskId());
-		if (!taken.ok) throw new Error(taken.error.message);
-		return taken.value;
+	private takeQueue(): Promise<QueuedTaskMessages> {
+		return takeAgentQueue(this.source, this.liveTaskId());
 	}
 
 	/**
