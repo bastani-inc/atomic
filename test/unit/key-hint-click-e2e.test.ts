@@ -232,6 +232,38 @@ test("a subagent chat's hints in /tasks run their keys: pgup and pgdn by the hal
 	}
 });
 
+test("in a subagent chat, a click on a tool block's expand hint expands that block alone, and the footer's ctrl+o expand still expands every block", async () => {
+	const ui = makeScreen();
+	const fixture = taskFixture();
+	const expanded = { value: false };
+	try {
+		await fixture.start("Subagent task");
+		const session = await sessionWithBash("child-cmd", "child", 120);
+		fixture.runners[0]!.context.bindTranscript(Object.assign(session, { subscribe: () => () => {} }));
+		const closed = showTaskInspector(taskUi(ui, expanded), fixture.store, fixture.store.tasks[0]!.ref.taskId);
+		await flush();
+		ui.terminal.input("\r");
+		await flush();
+		assert.ok(ui.shows(/earlier lines.*ctrl\+o/), ui.screen().join("\n"));
+		await ui.click(/earlier lines.*ctrl\+o/, "ctrl+o");
+		await pastDoubleClick();
+		ui.tui.renderNow();
+		assert.equal(expanded.value, false, "the block's hint is its own toggle, not a press of ctrl+o");
+		assert.ok(!ui.shows(/earlier lines/), `the block shows its whole output:\n${ui.screen().join("\n")}`);
+
+		await ui.click(/ctrl\+o expand/, "ctrl+o");
+		assert.equal(expanded.value, true, "the footer's hint expands every block");
+		await pastDoubleClick();
+		await ui.click(/← tasks/, "← tasks");
+		await flush();
+		ui.terminal.input("\x1b");
+		assert.equal(await closed, "closed");
+	} finally {
+		ui.tui.stop();
+		await fixture.dispose();
+	}
+});
+
 test("a dialog's hints run their keys: ↓ of ↑↓ select moves, enter choose picks, esc cancel cancels", async () => {
 	const ui = makeScreen();
 	const chosen: string[] = [];

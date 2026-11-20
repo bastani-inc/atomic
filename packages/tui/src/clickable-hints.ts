@@ -337,6 +337,42 @@ export function readHintSpans(line: string): { readonly line: string; readonly s
 	return { line: text, spans };
 }
 
+/**
+ * `line` with the hints that press a key `drop` accepts drawn as plain text, so a click on their text reaches whatever
+ * draws them. Their text, its style and every other hint stay as they are, in the same columns.
+ */
+export function withoutKeyHints(line: string, drop: (key: KeyId) => boolean): string {
+	if (!line.includes(HINT_OPEN)) return line;
+	let kept = "";
+	let index = 0;
+	while (index < line.length) {
+		const next = line.indexOf("\x1b", index);
+		if (next === -1) {
+			kept += line.slice(index);
+			break;
+		}
+		kept += line.slice(index, next);
+		const ansi = extractAnsiCode(line, next);
+		if (!ansi) {
+			kept += "\x1b";
+			index = next + 1;
+			continue;
+		}
+		index = next + ansi.length;
+		if (ansi.code.startsWith(HINT_OPEN)) {
+			const action = decodeAction(ansi.code.slice(HINT_OPEN.length).replace(/(?:\x07|\x1b\\)$/, ""));
+			// An opening marker also ends the hint before it, as a closing marker in its place does; the dropped
+			// hint's own closing marker then closes nothing.
+			if (action?.kind === "key" && drop(action.key)) {
+				kept += HINT_CLOSE;
+				continue;
+			}
+		}
+		kept += ansi.code;
+	}
+	return kept;
+}
+
 /** The action of the hint painted at `column`, among a row's `spans`. */
 export function hintActionAt(spans: readonly HintSpan[] | undefined, column: number): HintAction | undefined {
 	return spans?.find((span) => column >= span.start && column < span.end)?.action;

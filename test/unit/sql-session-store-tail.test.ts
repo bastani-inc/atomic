@@ -161,6 +161,15 @@ async function hasResumeIndex(database: SqliteDatabase): Promise<boolean> {
 	return "resume" in (JSON.parse(row!.summary_state) as Record<string, unknown>);
 }
 
+/**
+ * How much more CPU time than the controls the rebuild may take. CPU time leaves out time spent waiting for other
+ * processes, but a busy host still charges more of it for the same work (shared cores and caches, lower clock speeds).
+ * The rebuild and the controls cost the same on an idle host, yet a loaded CI runner charged one rebuild twice what
+ * the controls around it took. Three times leaves room for that, and still fails a rebuild that parses each payload
+ * again for every projected field (five times) or joins its chunks again for every field (over twenty).
+ */
+const LOADED_HOST_CPU_FACTOR = 3;
+
 describe("SqlSessionStore tail reads (#5249)", () => {
 	it("reads a compacted session's tail without the history rows before it (#5249)", async () => {
 		for (const history of [40, 400]) {
@@ -595,22 +604,21 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 						],
 						{ encoding: "utf8" },
 					),
-				) as { micros: number; peakBytes: number; toolCalls: number };
-			// CPU time excludes time waiting for other test workers. Bracket the run with two independent controls
-			// to measure allocator and timer noise on this machine rather than setting a machine-specific RSS/time limit.
+				) as { micros: number; peakBytes: number; readBytes: number; toolCalls: number };
+			// Bracket the run with two independent controls to measure allocator and timer noise on this machine rather
+			// than setting a machine-specific RSS/time limit.
 			const first = measure("joined");
 			const actual = measure("stored");
 			const second = measure("joined");
 			assert.equal(first.toolCalls, errors ? 0 : chunkedEntries);
 			assert.equal(actual.toolCalls, first.toolCalls);
-			const cpuJitterFraction = 0.2;
+			const measured = JSON.stringify({ actual, first, second });
+			// Like the joined projection, the rebuild keeps every payload in the database and reads back only metadata:
+			// less than one stored chunk, while each entry here spans several. This does not depend on the host's load.
+			assert.ok(actual.readBytes < SESSION_ENTRY_CHUNK_BYTES, measured);
 			const allocatorSlackBytes = 2 * SESSION_ENTRY_CHUNK_BYTES;
-			const cpuBudget = Math.max(first.micros, second.micros) * (1 + cpuJitterFraction);
-			const peakBudget = Math.max(first.peakBytes, second.peakBytes) + allocatorSlackBytes;
-			assert.ok(
-				actual.micros <= cpuBudget && actual.peakBytes <= peakBudget,
-				JSON.stringify({ actual, first, second }),
-			);
+			assert.ok(actual.peakBytes <= Math.max(first.peakBytes, second.peakBytes) + allocatorSlackBytes, measured);
+			assert.ok(actual.micros <= Math.max(first.micros, second.micros) * LOADED_HOST_CPU_FACTOR, measured);
 		},
 		120_000,
 	);

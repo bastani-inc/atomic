@@ -37,7 +37,8 @@ export function startChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscr
 	if (state.disposed) return;
 	clearChatSessionAnimation(state);
 	state.workedRun = undefined;
-	state.workingLifecycleActive = true;
+	state.workingLifecycle = { kind: "turn" };
+	state.workingRowDrawn = undefined;
 	state.workingLifecycleGeneration += 1;
 	state.workingFrame = atomicWorkingFrame();
 }
@@ -45,8 +46,30 @@ export function startChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscr
 export function stopChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): void {
-	state.workingLifecycleActive = false;
+	state.workingLifecycle = { kind: "off" };
 	clearChatSessionAnimation(state);
+}
+
+/**
+ * At a turn's end, keep the turn's working row on screen, held still as it last drew, while the run goes on: the next
+ * turn restarts it, so no frame between two turns shows the chat without it. Returns whether it was held.
+ */
+export function holdChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): boolean {
+	if (state.workingLifecycle.kind !== "turn") return false;
+	state.workingLifecycle = { kind: "held", drawn: state.workingRowDrawn };
+	clearChatSessionAnimation(state);
+	return true;
+}
+
+/** End a row held between turns as the turn's end used to end it, before anything but the next turn changes the row. */
+export function endHeldChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	if (state.workingLifecycle.kind !== "held") return;
+	state.workingMessage = undefined;
+	stopChatSessionWorkingLifecycle(state);
 }
 
 /**
@@ -84,6 +107,7 @@ function openChatSessionExternalPromptLifecycle<TExtraEntry extends ChatTranscri
 	preserveStatusMessage: boolean,
 ): number | undefined {
 	if (state.disposed) return undefined;
+	endHeldChatSessionWorkingLifecycle(state);
 	if (!isChatSessionStreaming(state)) state.workingRunMeter.stop();
 	if (!preserveStatusMessage) state.statusMessage = "";
 	state.sdkBusy = true;
@@ -101,12 +125,13 @@ export function settleChatSessionPromptLifecycle<TExtraEntry extends ChatTranscr
 	state: ChatSessionHostState<TExtraEntry>,
 	submittedGeneration: number | undefined,
 ): void {
+	endHeldChatSessionWorkingLifecycle(state);
 	if (submittedGeneration === undefined) {
 		state.sdkBusy = false;
 		return;
 	}
 	const lifecycleWasReplaced = state.workingLifecycleGeneration !== submittedGeneration;
-	if (lifecycleWasReplaced && state.workingLifecycleActive) return;
+	if (lifecycleWasReplaced && state.workingLifecycle.kind !== "off") return;
 	state.sdkBusy = false;
 	if (!lifecycleWasReplaced && !isChatSessionStreaming(state)) {
 		stopChatSessionWorkingLifecycle(state);
@@ -131,7 +156,7 @@ function clearChatSessionAnimation<TExtraEntry extends ChatTranscriptEntryLike>(
 function chatSessionLineAnimates<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): boolean {
-	return state.workingLifecycleActive || state.compacting || isChatSessionRetryStatus(state.statusMessage);
+	return state.workingLifecycle.kind === "turn" || state.compacting || isChatSessionRetryStatus(state.statusMessage);
 }
 
 export function syncChatSessionAnimationTick<TExtraEntry extends ChatTranscriptEntryLike>(

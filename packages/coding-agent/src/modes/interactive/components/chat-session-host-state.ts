@@ -34,6 +34,22 @@ import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 import { WorkingRunMeter, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
 /** The chat's status while work it started is still under way; the chat shows it as its working line. */
+
+/** What the working row drew: its animation phase and its run meta. */
+export interface ChatSessionWorkingRowDrawn {
+	readonly frame: number;
+	readonly meta: WorkingRunSnapshot | undefined;
+}
+
+/**
+ * The working row's lifecycle (`ChatSessionHostState.workingLifecycle`). A held row keeps what it last drew (or, when it
+ * has not drawn yet, what it first draws).
+ */
+export type ChatSessionWorkingLifecycle =
+	| { readonly kind: "off" }
+	| { readonly kind: "turn" }
+	| { readonly kind: "held"; readonly drawn: ChatSessionWorkingRowDrawn | undefined };
+
 export const CHAT_SESSION_RESUMING_STATUS = "Resuming…";
 /** A retry's wait; with the retry's details the line reads `Retrying · <reason> · attempt 1/3 in 2s` instead. */
 export const CHAT_SESSION_RETRYING_STATUS = "Retrying…";
@@ -91,6 +107,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly echoedInitialPrompt: string | (() => string | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
 	readonly workingTokenCount: (() => number | undefined) | undefined;
+	/** The last token count shown from `workingTokenCount`, with the counted total it was shown at. */
+	countedTokensShown: { readonly counted: number; readonly count: number } | undefined = undefined;
 	readonly isPaused: (() => boolean) | undefined;
 	readonly isDisabled: (() => boolean) | undefined;
 	readonly isBashRunningOverride: (() => boolean) | undefined;
@@ -143,7 +161,13 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	/** What the chat knows of the retry its working line shows while the status is a retry's wait. */
 	retryWait: RetryWait | undefined = undefined;
 	readonly canCancelRetry: (() => boolean) | undefined;
-	workingLifecycleActive: boolean;
+	/**
+	 * The working row: off, animating for a turn, or held still between two turns of a run as last drawn. The next turn
+	 * restarts a held row; anything else that changes the row first ends it as the turn's end did.
+	 */
+	workingLifecycle: ChatSessionWorkingLifecycle;
+	/** What the working row last drew during a turn, which a row held between turns keeps. */
+	workingRowDrawn: ChatSessionWorkingRowDrawn | undefined = undefined;
 	workingLifecycleGeneration = 0;
 	disposed = false;
 	pendingSteeringMessages: readonly string[] = [];
@@ -291,7 +315,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.echoedInitialPrompt = opts.echoedInitialPrompt;
 		this.isStreamingOverride = opts.isStreaming;
 		this.workingTokenCount = opts.workingTokenCount;
-		this.workingLifecycleActive = opts.isStreaming?.() === true;
+		this.workingLifecycle = opts.isStreaming?.() === true ? { kind: "turn" } : { kind: "off" };
 		this.isPaused = opts.isPaused;
 		this.isDisabled = opts.isDisabled;
 		this.isBashRunningOverride = opts.isBashRunning;

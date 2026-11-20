@@ -326,6 +326,20 @@ export class AtomicWorkedStatusComponent implements Component {
 const BORDER_LINE_CONTROLS =
 	/(\x1b\[[0-?]*[ -/]*[@-~]|\x1b[\]_][^\x07\x1b]*(?:\x07|\x1b\\))|[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f-\x9f]/g;
 
+/** What a working row drew: its animation phase and its run meta. */
+interface WorkingRowDrawn {
+	readonly frame: number;
+	readonly meta: WorkingRunMetaInput | undefined;
+}
+
+/**
+ * Running animates. Held is a row whose turn ended while its run goes on: it keeps what it last drew (or, when it has
+ * not drawn yet, what it first draws) until the next turn restarts it.
+ */
+type WorkingRowMotion =
+	| { readonly kind: "running" }
+	| { readonly kind: "held"; readonly drawn: WorkingRowDrawn | undefined };
+
 /** Loader-compatible ordinary working surface. Explicit extension indicators delegate to pi-tui unchanged. */
 export class AtomicWorkingLoader implements Component {
 	private readonly ui: TUI;
@@ -339,6 +353,12 @@ export class AtomicWorkingLoader implements Component {
 	private meta: (() => WorkingRunMetaInput | undefined) | undefined;
 	private logo = false;
 	private metaTimer: ReturnType<typeof setInterval> | undefined;
+	/**
+	 * Running animates; held is a row whose turn ended while its run goes on, kept exactly as last drawn (phase, run
+	 * meta and message) until the next turn restarts it.
+	 */
+	private motion: WorkingRowMotion = { kind: "running" };
+	private lastDrawn: WorkingRowDrawn | undefined;
 
 	constructor(
 		ui: TUI,
@@ -356,9 +376,10 @@ export class AtomicWorkingLoader implements Component {
 
 	render(width: number): string[] {
 		if (this.delegate) return this.delegate.render(width);
-		const meta = this.meta?.();
+		const drawn = this.drawn();
+		const meta = drawn.meta;
 		return new AtomicWorkingStatusComponent({
-			frame: atomicWorkingFrame(),
+			frame: drawn.frame,
 			message: workingMessageText(this.message, workingMessageColumns(width, meta)),
 			spinnerColor: this.spinnerColor,
 			messageColor: this.messageColor,
@@ -398,6 +419,39 @@ export class AtomicWorkingLoader implements Component {
 		return truncateToWidth(this.renderSingleBorderLine(width).trimStart(), Math.min(1, width), "");
 	}
 
+	private drawn(): WorkingRowDrawn {
+		if (this.motion.kind === "held") {
+			const drawn = this.motion.drawn ?? { frame: atomicWorkingFrame(), meta: this.meta?.() };
+			this.motion = { kind: "held", drawn };
+			return drawn;
+		}
+		this.lastDrawn = { frame: atomicWorkingFrame(), meta: this.meta?.() };
+		return this.lastDrawn;
+	}
+
+	/** Whether the row is held between two turns of its run (`holdBetweenTurns`). */
+	get betweenTurns(): boolean {
+		return this.motion.kind === "held";
+	}
+
+	/**
+	 * The turn ended and the run continues: keep the row on screen exactly as drawn, with no timers, until the next turn
+	 * restarts it (`resetForTurn`) or it is stopped. It keeps the phase and run meta it last drew, read nothing new; a
+	 * custom indicator keeps its own last frame.
+	 */
+	holdBetweenTurns(): void {
+		if (this.motion.kind === "held") return;
+		this.motion = { kind: "held", drawn: this.lastDrawn };
+		// Late callbacks of the delegate's stopped timer are fenced.
+		this.delegateGeneration += 1;
+		this.delegate?.stop();
+		const stopClock = this.stopClock;
+		this.stopClock = undefined;
+		stopClock?.();
+		if (this.metaTimer) clearInterval(this.metaTimer);
+		this.metaTimer = undefined;
+	}
+
 	start(): void {
 		if (this.indicator) {
 			this.stop();
@@ -421,6 +475,8 @@ export class AtomicWorkingLoader implements Component {
 	}
 
 	stop(): void {
+		this.motion = { kind: "running" };
+		this.lastDrawn = undefined;
 		this.delegateGeneration += 1;
 		const delegate = this.delegate;
 		this.delegate = undefined;
@@ -452,7 +508,13 @@ export class AtomicWorkingLoader implements Component {
 	private armMetaTimer(): void {
 		if (this.metaTimer) clearInterval(this.metaTimer);
 		this.metaTimer = undefined;
-		if (this.indicator || this.delegate || !this.meta || (!this.logo && process.env.ATOMIC_REDUCED_MOTION !== "1"))
+		if (
+			this.motion.kind === "held" ||
+			this.indicator ||
+			this.delegate ||
+			!this.meta ||
+			(!this.logo && process.env.ATOMIC_REDUCED_MOTION !== "1")
+		)
 			return;
 		const timer = setInterval(() => this.ui.requestRender(), 1000);
 		timer.unref?.();
@@ -460,6 +522,8 @@ export class AtomicWorkingLoader implements Component {
 	}
 
 	setMessage(message: AtomicWorkingMessage): void {
+		// A held row shows the ended turn's message until the next turn sets its own.
+		if (this.motion.kind === "held") return;
 		this.message = message;
 		this.delegate?.setMessage(workingMessageText(message));
 		this.ui.requestRender();

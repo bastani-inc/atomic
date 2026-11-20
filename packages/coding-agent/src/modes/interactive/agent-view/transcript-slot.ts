@@ -2,6 +2,7 @@ import {
 	type Component,
 	isKeyRelease,
 	isViewportTUI,
+	stripHintMarkers,
 	Text,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
@@ -51,6 +52,8 @@ export class AgentTranscriptSlot implements Component {
 	port: AgentViewPort | undefined;
 	/** The rows the transcript had in the last frame; undefined before one was drawn. */
 	transcriptRows: number | undefined;
+	/** The rows the whole area had in the last frame, notices included. */
+	paintedRows: number | undefined;
 	private notices: Notice[] = [];
 	private readonly fallbackRows: () => number;
 
@@ -69,6 +72,7 @@ export class AgentTranscriptSlot implements Component {
 			typeof transcript.renderSized === "function" ? transcript.renderSized(width, rows) : transcript.render(width);
 		const lines = drawn.length > rows ? drawn.slice(drawn.length - rows) : drawn;
 		this.transcriptRows = rows;
+		this.paintedRows = height;
 		return [...lines, ...Array.from({ length: rows - lines.length }, () => ""), ...notices];
 	}
 
@@ -116,7 +120,104 @@ export class AgentTranscriptSlot implements Component {
 	}
 }
 
+/** An OSC 8 hyperlink's opening or closing sequence. */
+const HYPERLINK = /\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+/** What the renderer ends every row it writes with; it adds it again to the held rows. */
+const ROW_END = "\x1b[0m\x1b]8;;\x07";
+
+/** A row as the screen showed it, without its links: drawn again, it writes the same text and styles. */
+function heldRow(line: string): string {
+	const row = line.endsWith(ROW_END) ? line.slice(0, -ROW_END.length) : line;
+	return stripHintMarkers(row).replace(HYPERLINK, "");
+}
+
+/**
+ * The rows the dock below the transcript painted last, drawn in its place while it is held. They are only text, with
+ * no links or clickable hints left in them: what they acted on is gone. A press on them shows the dock live and does
+ * nothing else; a frame of another size than the one they were painted in ends the hold too.
+ */
+class HeldDockRows implements Component {
+	private readonly lines: string[];
+	/** Whether the screen is still the one the rows were painted on, at the same size. */
+	private readonly sameScreen: (width: number) => boolean;
+	/** The dock drawn live: unseen while held, and shown for a frame of another size before the hold has ended. */
+	private readonly live: (width: number) => string[];
+	private readonly onEnd: () => void;
+
+	constructor(
+		lines: string[],
+		sameScreen: (width: number) => boolean,
+		live: (width: number) => string[],
+		onEnd: () => void,
+	) {
+		this.lines = lines.map(heldRow);
+		this.sameScreen = sameScreen;
+		this.live = live;
+		this.onEnd = onEnd;
+	}
+
+	render(width: number): string[] {
+		// The live dock is drawn too, unseen: what it shows from the engine (the panel) asks for its frames now, and
+		// has them when the hold ends rather than one paint later.
+		const live = this.live(width);
+		if (this.sameScreen(width)) return this.lines;
+		this.onEnd();
+		return live;
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		// A wheel turn scrolls as it does over the live dock.
+		if (event.type === "wheel") return undefined;
+		if (event.type !== "press") return { handled: true, render: false };
+		this.onEnd();
+		// The release comes back here: it is not a click on whatever is drawn live under the pointer by then.
+		return { capture: true };
+	}
+
+	invalidate(): void {}
+}
+
+/** What is below the transcript: drawn live, or held as painted while a subagent `/tasks` opened is on its way. */
+type DockState =
+	| { readonly kind: "live" }
+	| {
+			readonly kind: "held";
+			/** Which hold this is: its release names it by number, so it keeps nothing of the held rows alive. */
+			readonly hold: number;
+			readonly rows: HeldDockRows;
+			readonly timer: ReturnType<typeof setTimeout>;
+			/** Stops listening for a replaced renderer, which ends the hold. */
+			readonly offRenderer: () => void;
+			/** The layout root while held, for the transcript part it was made with. */
+			root: { readonly part: Component; readonly root: Component } | undefined;
+	  };
+
+/**
+ * A key press, which shows a held dock live before it runs. Not a key release or a focus report, which the reader
+ * did not type, nor the pointer: the screen's viewport takes it first, and the held rows take no clicks.
+ */
+function endsDockHold(data: string): boolean {
+	return (
+		!isKeyRelease(data) &&
+		data !== "\x1b[I" &&
+		data !== "\x1b[O" &&
+		!data.startsWith("\x1b[<") &&
+		!data.startsWith("\x1b[M")
+	);
+}
+
 const slots = new WeakMap<InteractiveModeBase, AgentTranscriptSlot>();
+const dockHolds = new WeakMap<InteractiveModeBase, (timeoutMs: number) => () => void>();
+
+/**
+ * Keep the dock below the transcript (prompt, footer, panel) as it was painted, at most `timeoutMs`, while the
+ * transcript above keeps drawing live: `/tasks` closes while the subagent it opens is on its way, and the main chat's
+ * prompt is not painted in between. A key press, a press on the held rows, another size or renderer, and the
+ * answered release show it live again. Only the fullscreen renderer holds; answers the release.
+ */
+export function holdTranscriptDock(mode: InteractiveModeBase, timeoutMs: number): () => void {
+	return dockHolds.get(mode)?.(timeoutMs) ?? (() => {});
+}
 
 function focusedComponent(mode: InteractiveModeBase): object | null | undefined {
 	return (mode.ui as { getFocusedComponent?(): object | null }).getFocusedComponent?.();
@@ -137,6 +238,8 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 	slots.set(mode, slot);
 	let agentRoot: Component | undefined;
 	let unwatchPort: (() => void) | undefined;
+	let dock: DockState = { kind: "live" };
+	let holds = 0;
 	const agentShown = () => switcher.viewed.kind === "agent";
 
 	/** The question form of a held prompt takes the keys while it is open; the prompt has them otherwise. */
@@ -153,6 +256,20 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 		const tui = mode.ui;
 		const shown = agentShown();
 		if (isViewportTUI(tui)) {
+			const held = dock;
+			const part = shown ? slot : mode.transcriptScrollView;
+			if (held.kind === "held" && part !== undefined) {
+				if (held.root?.part !== part)
+					held.root = {
+						part,
+						root: new VStack([
+							{ component: part, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+							{ component: held.rows, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+						]),
+					};
+				tui.setLayoutRoot(held.root.root);
+				return;
+			}
 			if (shown && mode.fullscreenDock !== undefined) {
 				agentRoot ??= new VStack([
 					{ component: slot, basis: 0, grow: 1, shrink: 1, minSize: 1 },
@@ -232,6 +349,66 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 	};
 	let detach: (() => void) | undefined;
 
+	const endDockHold = (held: DockState) => {
+		if (dock !== held || held.kind !== "held") return;
+		clearTimeout(held.timer);
+		held.offRenderer();
+		dock = { kind: "live" };
+		applyLayout();
+		mode.ui.requestRender();
+	};
+	dockHolds.set(mode, (timeoutMs) => {
+		const tui = mode.ui;
+		const screen = (tui as { getScreenLines?(): string[] }).getScreenLines?.();
+		const rows = tui.terminal.rows;
+		const top = agentShown() ? slot.paintedRows : mode.transcriptScrollView?.viewportHeight;
+		if (
+			dock.kind === "held" ||
+			!isViewportTUI(tui) ||
+			// An overlay over the screen is in the rows too; the screen without it is not what they show.
+			tui.hasOverlay() ||
+			mode.fullscreenDock === undefined ||
+			screen === undefined ||
+			screen.length !== rows ||
+			top === undefined ||
+			top < 1 ||
+			top >= rows
+		)
+			return () => {};
+		const hold = ++holds;
+		const end = () => {
+			if (dock.kind === "held" && dock.hold === hold) endDockHold(dock);
+		};
+		const timer = setTimeout(end, timeoutMs);
+		timer.unref?.();
+		const columns = tui.terminal.columns;
+		const fullscreenDock = mode.fullscreenDock;
+		dock = {
+			kind: "held",
+			hold,
+			rows: new HeldDockRows(
+				screen.slice(top),
+				(width) => width === columns && tui.terminal.columns === columns && tui.terminal.rows === rows,
+				(width) => fullscreenDock.render(width),
+				() => queueMicrotask(end),
+			),
+			timer,
+			offRenderer: mode.onTuiRendererChange(end),
+			root: undefined,
+		};
+		applyLayout();
+		return end;
+	});
+	// One listener for every hold, added here and never while keys are being handled (a listener added then would see
+	// the key that started the hold): a key shows the screen live before it runs, where the reader can see it land.
+	// Clicks and wheel turns reach the screen as painted: the transcript above is live, the held rows are inert. It
+	// does nothing while no hold is held, so with main shown the screen is exactly as before.
+	const removeHoldInput = mode.addTuiInputListener?.((data) => {
+		const held = dock;
+		if (held.kind === "held" && endsDockHold(data)) endDockHold(held);
+		return undefined;
+	});
+
 	const offChange = switcher.onChange(({ to }) => {
 		unwatchPort?.();
 		unwatchPort = undefined;
@@ -262,6 +439,9 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 	setViewedNoticeSink(mode, { show: (text, kind) => mirror(kind === "info" ? "status" : kind, text) });
 
 	return () => {
+		endDockHold(dock);
+		removeHoldInput?.();
+		if (dockHolds.get(mode) !== undefined && slots.get(mode) === slot) dockHolds.delete(mode);
 		setViewedNoticeSink(mode, undefined);
 		offChange();
 		unwatchPort?.();

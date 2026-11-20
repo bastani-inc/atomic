@@ -33,6 +33,7 @@ import {
 	type SerializableOverlayOptions,
 	serializeInteractiveEngineMessage,
 } from "./protocol.ts";
+import { transcriptLayoutOf } from "./transcript-frame-layout.ts";
 
 interface CustomUiOptions {
 	purpose?: "prompt" | "navigation";
@@ -717,6 +718,7 @@ export class EngineCustomUiService {
 	private sendFrame(componentId: string, requestId: number, record: ActiveComponent, lines: string[]): void {
 		const scrollRequest = (record.component as ScrollableWidgetComponent).getScrollRequest?.();
 		const rowKeys = rowKeysOf(record.component, lines.length);
+		const layout = record.transcript === true ? transcriptLayoutOf(record.component) : undefined;
 		record.frame = (record.frame ?? 0) + 1;
 		this.send({
 			type: "engine_custom_frame",
@@ -725,6 +727,7 @@ export class EngineCustomUiService {
 			lines,
 			frame: record.frame,
 			...(rowKeys ? { rowKeys } : {}),
+			...(layout ? { layout } : {}),
 			...(scrollRequest ? { scrollRequest } : {}),
 		});
 	}
