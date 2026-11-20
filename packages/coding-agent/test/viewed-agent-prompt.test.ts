@@ -802,4 +802,22 @@ describe("the main prompt while a subagent is shown", () => {
 		},
 		HOST_TIMEOUT_MS,
 	);
+
+	test(
+		"a subagent's draft parked under its history comes back when the subagent is shown again",
+		async () => {
+			screen = await mainScreen();
+			const port = worker();
+			port.delivered = ["worker's task"];
+			await view(WORKER);
+			await until(() => screen?.mode.defaultEditor.getHistory().includes("worker's task") === true);
+			await screen.type("my draft");
+			await screen.press("\x01", "\x1b[A");
+			assert.equal(screen.mode.editor.getText(), "worker's task");
+			await view(undefined);
+			await view(WORKER);
+			assert.equal(screen.mode.editor.getText(), "my draft");
+		},
+		HOST_TIMEOUT_MS,
+	);
 });
