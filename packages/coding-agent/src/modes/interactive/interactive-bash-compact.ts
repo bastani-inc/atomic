@@ -169,6 +169,7 @@ InteractiveModeBase.prototype.stop = function (
 	discardChatMount(this);
 	releaseSavedChatHistory(this, true);
 	this.disposeActiveSelector();
+	this.disposeAgentView?.();
 	this.disposeInteractiveEngineHost();
 	this.disposeInteractiveEngineHost = () => {};
 	if (this.settingsManager.getShowTerminalProgress()) {

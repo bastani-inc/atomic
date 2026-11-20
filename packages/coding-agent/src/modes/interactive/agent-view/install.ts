@@ -31,25 +31,41 @@ export function agentViewSwitcher(mode: InteractiveModeBase): AgentViewSwitcher 
  */
 export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 	const switcher = agentViewSwitcher(mode);
-	installTranscriptSlot(mode, switcher);
-	installPromptRetarget(mode, switcher);
-	installViewedCommandGates(mode, switcher);
+	const undo: (() => void)[] = [
+		installTranscriptSlot(mode, switcher),
+		installPromptRetarget(mode, switcher),
+		installViewedCommandGates(mode, switcher),
+	];
 	const runtime = mode.runtimeHost;
 	if (runtime instanceof IsolatedInteractiveRuntime) {
-		runtime.onEngineMessage((message) => {
-			if (message.type !== "engine_view_agent") return;
-			switcher.requestView(message.taskId === null ? undefined : (message.taskId as TaskId));
-		});
-		runtime.onGenerationEnded(() => switcher.reset("generation-lost"));
-		switcher.onChange(({ to }) => {
-			const taskId = to.kind === "agent" ? to.port.status().taskId : undefined;
-			void runtime
-				.requestAgentView({ type: "set_viewed_agent", ...(taskId === undefined ? {} : { taskId }) })
-				.catch(() => {
-					// A lost engine forgets what was shown; its replacement starts on main.
-				});
-		});
+		undo.push(
+			runtime.onEngineMessage((message) => {
+				if (message.type !== "engine_view_agent") return;
+				switcher.requestView(message.taskId === null ? undefined : (message.taskId as TaskId));
+			}),
+			runtime.onGenerationEnded(() => switcher.reset("generation-lost")),
+			switcher.onChange(({ to }) => {
+				const taskId = to.kind === "agent" ? to.port.status().taskId : undefined;
+				void runtime
+					.requestAgentView({ type: "set_viewed_agent", ...(taskId === undefined ? {} : { taskId }) })
+					.catch(() => {
+						// A lost engine forgets what was shown; its replacement starts on main.
+					});
+			}),
+		);
 	}
+	mode.disposeAgentView = () => {
+		mode.disposeAgentView = undefined;
+		// Main is shown again first, while every part still follows the switcher, then each part is taken down.
+		switcher.dispose();
+		for (const release of undo.reverse()) {
+			try {
+				release();
+			} catch {
+				// One part's failure must not keep the others installed.
+			}
+		}
+	};
 	return switcher;
 }
 

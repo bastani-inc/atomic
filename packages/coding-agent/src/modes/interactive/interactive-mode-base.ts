@@ -299,6 +299,8 @@ export class InteractiveModeBase {
 	fullscreenDock: Component | undefined;
 	/** What the single chat screen shows, main or a subagent; set up by `installAgentView`. */
 	agentView: AgentViewSwitcher | undefined;
+	/** Takes the single chat screen down when the mode stops: main is shown, and every listener it added is removed. */
+	disposeAgentView: (() => void) | undefined;
 
 	resourceDisclosureContainer: Container;
 	startupNoticesContainer: Container;
