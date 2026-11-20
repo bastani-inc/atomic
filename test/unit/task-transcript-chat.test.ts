@@ -2186,7 +2186,7 @@ function pausableTranscript(
 	return { transcript, state };
 }
 
-test("Esc in a subagent's chat hands its queued messages back ahead of the draft and pauses it, which stays resumable (EscPausesNotKills)", async () => {
+test("Esc in a subagent's chat hands its queued messages back ahead of the draft and pauses it, which stays resumable", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
 	const { transcript, state } = pausableTranscript(session, { steering: ["steer one"], followUp: ["follow two"] });
@@ -2247,7 +2247,7 @@ test("a pause a restart would not keep, answered after the reader left its chat,
 	}
 });
 
-test("a paused subagent's empty prompt says a message continues it (PromptContinues)", async () => {
+test("a paused subagent's empty prompt says a message continues it", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
 	const { transcript } = pausableTranscript(session, { steering: [], followUp: [] });
@@ -2263,7 +2263,7 @@ test("a paused subagent's empty prompt says a message continues it (PromptContin
 	}
 });
 
-test("the reader's next message continues a paused subagent: it is released first, then sent (PromptContinues)", async () => {
+test("the reader's next message continues a paused subagent: it is released first, then sent", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
 	const { transcript, state } = pausableTranscript(session, { steering: [], followUp: [] });
@@ -2285,7 +2285,7 @@ test("the reader's next message continues a paused subagent: it is released firs
 	}
 });
 
-test("/tasks lists a paused subagent as paused until its next turn starts, also while its chat is closed (TasksStatusLive)", async () => {
+test("/tasks lists a paused subagent as paused until its next turn starts, also while its chat is closed", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
 	const { transcript, state } = pausableTranscript(session, { steering: [], followUp: [] });
