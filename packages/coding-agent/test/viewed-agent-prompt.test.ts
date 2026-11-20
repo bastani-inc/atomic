@@ -620,4 +620,36 @@ describe("the main prompt while a subagent is shown", () => {
 		},
 		HOST_TIMEOUT_MS,
 	);
+
+	test(
+		"Esc while the shown subagent waits to retry pauses it, which ends the wait (#5507)",
+		async () => {
+			screen = await mainScreen();
+			const port = worker({ retrying: true, working: { kind: "busy", message: "Retrying in 3s · esc cancel" } });
+			await view(WORKER);
+			assert.match(screen.workingLine().join("\n"), /Retrying in 3s/);
+			await screen.press(ESC);
+			await until(() => port.calls.length === 1);
+			assert.deepEqual(port.calls, [{ kind: "pause" }]);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"Ctrl+C clears what is typed in the shown subagent's prompt, and nothing else",
+		async () => {
+			screen = await mainScreen();
+			const port = worker({ busy: true });
+			await screen.type("main draft");
+			await view(WORKER);
+			await screen.type("half a thought");
+			await screen.press(CTRL_C);
+			assert.equal(screen.mode.editor.getText(), "");
+			assert.deepEqual(port.calls, []);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+			await view(undefined);
+			assert.equal(screen.mode.editor.getText(), "main draft");
+		},
+		HOST_TIMEOUT_MS,
+	);
 });
