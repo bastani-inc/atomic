@@ -452,4 +452,25 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 			await view.dispose();
 		}
 	});
+
+	test("a resize while the subagent is on its way shows the dock live in its first frame at the new size", async () => {
+		const view = await tasksOpen();
+		try {
+			const tasks = view.ui.screen();
+			view.engine.holdCommands();
+			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true });
+			view.closeTasks();
+			assert.deepEqual(view.ui.screen(), tasks);
+			view.ui.terminal.resize(60, 20);
+			const resized = view.ui.screen();
+			assert.ok(!has(resized, /enter open/), resized.join("\n"));
+			assert.deepEqual(resized.slice(-2), ["❯ prompt", "footer"]);
+			await flush();
+			assert.deepEqual(view.ui.screen().slice(-2), ["❯ prompt", "footer"]);
+			view.engine.releaseCommands();
+			await vi.waitFor(() => assert.equal(view.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
+		} finally {
+			await view.dispose();
+		}
+	});
 });

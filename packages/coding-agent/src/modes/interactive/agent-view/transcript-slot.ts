@@ -6,7 +6,6 @@ import {
 	Text,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
-	truncateToWidth,
 	VStack,
 } from "@bastani/atomic-tui";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "../components/transcript-follow-indicator.ts";
@@ -139,22 +138,28 @@ function heldRow(line: string): string {
  */
 class HeldDockRows implements Component {
 	private readonly lines: string[];
-	private readonly width: number;
 	/** Whether the screen is still the one the rows were painted on, at the same size. */
 	private readonly sameScreen: (width: number) => boolean;
+	/** The dock drawn live, for a frame of another size before the hold has ended. */
+	private readonly live: (width: number) => string[];
 	private readonly onEnd: () => void;
 
-	constructor(lines: string[], width: number, sameScreen: (width: number) => boolean, onEnd: () => void) {
+	constructor(
+		lines: string[],
+		sameScreen: (width: number) => boolean,
+		live: (width: number) => string[],
+		onEnd: () => void,
+	) {
 		this.lines = lines.map(heldRow);
-		this.width = width;
 		this.sameScreen = sameScreen;
+		this.live = live;
 		this.onEnd = onEnd;
 	}
 
 	render(width: number): string[] {
 		if (this.sameScreen(width)) return this.lines;
 		this.onEnd();
-		return width < this.width ? this.lines.map((line) => truncateToWidth(line, width, "")) : this.lines;
+		return this.live(width);
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
@@ -178,6 +183,8 @@ type DockState =
 			readonly hold: number;
 			readonly rows: HeldDockRows;
 			readonly timer: ReturnType<typeof setTimeout>;
+			/** Stops listening for a replaced renderer, which ends the hold. */
+			readonly offRenderer: () => void;
 			/** The layout root while held, for the transcript part it was made with. */
 			root: { readonly part: Component; readonly root: Component } | undefined;
 	  };
@@ -342,6 +349,7 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 	const endDockHold = (held: DockState) => {
 		if (dock !== held || held.kind !== "held") return;
 		clearTimeout(held.timer);
+		held.offRenderer();
 		dock = { kind: "live" };
 		applyLayout();
 		mode.ui.requestRender();
@@ -370,16 +378,19 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 		};
 		const timer = setTimeout(end, timeoutMs);
 		timer.unref?.();
+		const columns = tui.terminal.columns;
+		const fullscreenDock = mode.fullscreenDock;
 		dock = {
 			kind: "held",
 			hold,
 			rows: new HeldDockRows(
 				screen.slice(top),
-				tui.terminal.columns,
-				(width) => mode.ui === tui && width === tui.terminal.columns && tui.terminal.rows === rows,
+				(width) => width === columns && tui.terminal.columns === columns && tui.terminal.rows === rows,
+				(width) => fullscreenDock.render(width),
 				() => queueMicrotask(end),
 			),
 			timer,
+			offRenderer: mode.onTuiRendererChange(end),
 			root: undefined,
 		};
 		applyLayout();
