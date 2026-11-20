@@ -2485,13 +2485,19 @@ export class SubagentControlRuntime {
 			 * the child restored paused from its record. Views show the child paused only from then on.
 			 */
 			let pauseAcknowledged = admitted.spec.resumePaused === true;
-			/** Reports the pause, or its end; a pause's report settles once its record is saved (`false`: it was not). */
+			/** The save of the pause reported last, while it is the child's state: a later Esc waits for it too. */
+			let pauseSave: Promise<boolean> | undefined;
+			/**
+			 * Reports the pause, or its end. A pause's report settles once its record is saved (`false`: it was not); a pause
+			 * already reported answers with that report's save.
+			 */
 			const reportTurnPaused = (paused: boolean): Promise<boolean> | undefined => {
-				if (turnPausedReported === paused) return undefined;
+				if (turnPausedReported === paused) return paused ? pauseSave : undefined;
 				turnPausedReported = paused;
 				// A pause names the entry its session ends at, so a restart can tell it still ends there.
 				const saved = taskHooks?.reportTurnPaused?.(paused, paused ? sessionManager.getLeafId() : undefined);
-				return saved instanceof Promise ? saved : undefined;
+				pauseSave = paused && saved instanceof Promise ? saved : undefined;
+				return pauseSave;
 			};
 			/** Ends the current turn with `end` and waits for the next one, keeping the child's elapsed span in step. */
 			const endTurn = async <T>(end: () => Promise<T>): Promise<T> => {

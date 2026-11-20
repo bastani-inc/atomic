@@ -749,3 +749,76 @@ test(
 	},
 	LIVE_RESTORE_TIMEOUT_MS,
 );
+
+test(
+	"a second Esc while the first pause is still being saved waits for that save too: nothing shows paused before it",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-second-esc" })], {
+				stopReason: "toolUse",
+			}),
+		]);
+		const parent = parentSession(env.root, {
+			beforeAppend: async (record) => {
+				if (record?.pausedByUser === true) await pause(SLOW_PAUSE_RECORD_DELAY_MS);
+				return true;
+			},
+		});
+		const runId = "esc-pause-second-esc";
+		const childId = `${runId}:0`;
+		const liveOptions = env.options(runId);
+		const host = taskHost("second-esc");
+		const store = new OwnerTaskStore(host.ownerBinding.supervisor, host.ownerBinding.owner);
+		try {
+			assert.ok(store.connect().ok);
+			const launched = await runAgentTask({
+				host,
+				cwd: env.root,
+				agents: [agent],
+				agent: "worker",
+				task: "run until paused",
+				options: { ...liveOptions, index: 0, sessionDir: join(env.root, "children", runId) },
+				recordChild: createSubagentChildRecordSink(parent.pi, parent.ctx(host)),
+				runtime: {
+					runSync: (...args) =>
+						runSync(args[0], args[1], args[2], args[3], {
+							...args[4],
+							testSession: false,
+							getChildSessionOptions: liveOptions.getChildSessionOptions,
+						}),
+				},
+			});
+			assert.equal(launched.kind, "admitted");
+			const task = launched.kind === "admitted" ? launched.observation.taskId : "";
+			await until(() => env.blockStarted() && transcriptOf(host, task) !== undefined, LIVE_CHILD_START_WAIT_MS);
+			const source = transcriptOf(host, task)!;
+			const view = ownerTaskViewSource(store);
+			let answered = 0;
+			const first = view.pauseTask!(task as TaskId).then(() => {
+				answered++;
+			});
+			// The reader presses Esc again a moment later, while the first pause is still being saved.
+			await pause(3);
+			const second = source.pauseTurn!().then(() => {
+				answered++;
+			});
+			const deadline = performance.now() + SLOW_PAUSE_RECORD_DELAY_MS / 2;
+			while (performance.now() < deadline) {
+				store.drain();
+				const shown = store.getTask(task as TaskId);
+				assert.equal(source.turnPaused?.(), false, "its session's answer waits for the saved pause");
+				assert.ok(shown === undefined || !isTaskTurnInterrupted(shown), "/tasks waits for the saved pause");
+				assert.equal(answered, 0, "neither Esc is answered before the pause is saved");
+				await pause(50);
+			}
+			await Promise.all([first, second]);
+			assert.equal(parent.latest(childId)?.pausedByUser, true);
+			assert.equal(source.turnPaused?.(), true, "once saved, it is paused");
+		} finally {
+			store.dispose();
+			await host.close("session-close");
+		}
+	},
+	LIVE_RESTORE_TIMEOUT_MS,
+);
