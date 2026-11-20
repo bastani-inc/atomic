@@ -200,13 +200,14 @@ describe("the working line counts a turn from its start through its retries (#55
 		async (outcome) => {
 			let submit!: () => Promise<void>;
 			const chat = mainChat((mode) => {
-				let observer: ((event: AgentSessionEvent) => void) | undefined;
+				// Every listener hears every event, as with a session.
+				const observers = new Set<(event: AgentSessionEvent) => void>();
 				Object.assign(mode.session, {
 					isStreaming: false,
 					subscribe(listener: (event: AgentSessionEvent) => void) {
-						observer = listener;
+						observers.add(listener);
 						return () => {
-							observer = undefined;
+							observers.delete(listener);
 						};
 					},
 					resumeQueuedMessages: async () => {},
@@ -214,7 +215,7 @@ describe("the working line counts a turn from its start through its retries (#55
 						const source = {
 							...chat,
 							emit: async (event: AgentSessionEvent) => {
-								observer?.(event);
+								for (const observer of [...observers]) observer(event);
 								await chat.emit(event);
 							},
 						};

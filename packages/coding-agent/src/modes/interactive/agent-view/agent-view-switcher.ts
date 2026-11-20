@@ -1,5 +1,5 @@
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import type { AgentViewBridge } from "./agent-view-bridge.ts";
+import type { AgentViewBridge, AgentViewRequestOptions } from "./agent-view-bridge.ts";
 import { type AgentViewChange, type AgentViewPort, VIEWING_MAIN, type ViewedTarget } from "./contracts.ts";
 
 /** How a pending request ended: its subagent was shown, could not be, or another request replaced it. */
@@ -15,6 +15,9 @@ export const NOT_SHOWN = "That subagent can no longer be shown.";
 
 /** Opens the port of the subagent `taskId` is an attempt of; undefined when there is no such subagent to show. */
 export type OpenAgentViewPort = (taskId: TaskId) => Promise<AgentViewPort | undefined>;
+
+/** Keeps what the screen shows below its transcript as painted until the answer runs; answers that release. */
+export type HoldAgentViewScreen = () => () => void;
 
 /**
  * What the single chat screen shows. Every part that differs while a subagent is shown reads `viewed` at the moment it
@@ -32,10 +35,14 @@ export class AgentViewSwitcher implements AgentViewBridge {
 	private pending: TaskId | undefined;
 	private readonly openPort: OpenAgentViewPort;
 	private readonly notify: (message: string) => void;
+	private readonly holdScreen: HoldAgentViewScreen | undefined;
+	/** Releases the screen held for the pending request, when that request asked to keep it. */
+	private releaseScreen: (() => void) | undefined;
 
-	constructor(openPort: OpenAgentViewPort, notify: (message: string) => void) {
+	constructor(openPort: OpenAgentViewPort, notify: (message: string) => void, holdScreen?: HoldAgentViewScreen) {
 		this.openPort = openPort;
 		this.notify = notify;
+		this.holdScreen = holdScreen;
 	}
 
 	get viewed(): ViewedTarget {
@@ -65,9 +72,10 @@ export class AgentViewSwitcher implements AgentViewBridge {
 
 	/**
 	 * Show the subagent `taskId` is an attempt of, or main when undefined. The latest request wins: a port opened for
-	 * a request a later one superseded is released unused. Answers whether the screen shows what was asked.
+	 * a request a later one superseded is released unused. Answers whether the screen shows what was asked. With
+	 * `keepScreen`, what the screen shows below its transcript stays as painted while the request is pending.
 	 */
-	async view(taskId: TaskId | undefined): Promise<boolean> {
+	async view(taskId: TaskId | undefined, options?: AgentViewRequestOptions): Promise<boolean> {
 		if (this.disposed) return false;
 		const request = ++this.request;
 		if (taskId === undefined) {
@@ -81,6 +89,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 			return true;
 		}
 		this.setPending(taskId, "superseded");
+		if (options?.keepScreen === true && this.releaseScreen === undefined) this.releaseScreen = this.holdScreen?.();
 		let landed = false;
 		try {
 			landed = await this.open(request, taskId);
@@ -129,8 +138,8 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		return true;
 	}
 
-	requestView(taskId: TaskId | undefined): void {
-		void this.view(taskId).catch((error: unknown) =>
+	requestView(taskId: TaskId | undefined, options?: AgentViewRequestOptions): void {
+		void this.view(taskId, options).catch((error: unknown) =>
 			this.notify(error instanceof Error ? error.message : String(error)),
 		);
 	}
@@ -158,6 +167,10 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		const previous = this.pending;
 		if (previous === taskId) return;
 		this.pending = taskId;
+		// The screen held for the request that stops pending is shown live again once the listeners ran: a request
+		// that landed has its subagent laid out by then, so the next paint shows it with its prompt and panel.
+		const releaseScreen = this.releaseScreen;
+		this.releaseScreen = undefined;
 		const settled = previous === undefined ? undefined : { taskId: previous, outcome };
 		for (const listener of [...this.pendingListeners]) {
 			try {
@@ -166,6 +179,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 				// A listener's failure must not stop the others.
 			}
 		}
+		releaseScreen?.();
 	}
 
 	dispose(): void {

@@ -10,8 +10,16 @@ export interface AgentViewBridge {
 	/** The task id of the subagent the screen shows; undefined while it shows main. */
 	viewedTaskId(): TaskId | undefined;
 	/** Show the subagent `taskId` is an attempt of, or main when undefined. The host decides; nothing is awaited. */
-	requestView(taskId: TaskId | undefined): void;
+	requestView(taskId: TaskId | undefined, options?: AgentViewRequestOptions): void;
 	subscribe(listener: () => void): () => void;
+}
+
+export interface AgentViewRequestOptions {
+	/**
+	 * The request closes what asked for it (`/tasks`): the prompt, footer and panel stay as painted until the subagent
+	 * is shown or cannot be, so the main chat's prompt is never painted in between.
+	 */
+	readonly keepScreen?: boolean;
 }
 
 const bridges = new WeakMap<object, AgentViewBridge>();

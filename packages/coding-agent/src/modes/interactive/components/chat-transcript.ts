@@ -634,6 +634,20 @@ export interface ScrollableComponentViewportOptions {
 	readonly scrollbarTrackStyle?: (text: string) => string;
 }
 
+/** Where a viewport's frame drew the rows of its stack. */
+export interface PaintedViewportWindow {
+	/** Rows the frame has. */
+	readonly rows: number;
+	/** The stack row drawn first. */
+	readonly firstRow: number;
+	/** Rows the whole stack has, on and off screen. */
+	readonly totalRows: number;
+	/** Rows at the top of the frame that are not stack rows: the pinned prompt. */
+	readonly headRows: number;
+	/** Rows at the bottom of the frame that are not stack rows: the jump-to-latest row. */
+	readonly footRows: number;
+}
+
 export interface WheelReport {
 	readonly direction: -1 | 1;
 	readonly alt: boolean;
@@ -655,7 +669,15 @@ export class ScrollableComponentViewport implements Component {
 	private lastComponentRowCounts: readonly number[] = [];
 	private lastWidth = 0;
 	/** Where the last frame drew content: its first stack row, and the frame rows the pinned prompt took above it. */
-	private lastPaint: { readonly start: number; readonly pinRows: number; readonly contentRows: number } | undefined;
+	private lastPaint:
+		| {
+				readonly start: number;
+				readonly pinRows: number;
+				readonly contentRows: number;
+				readonly rows: number;
+				readonly lineCount: number;
+		  }
+		| undefined;
 	private maxScroll = 0;
 	/**
 	 * Absolute row `scrollTo` asked for, still waiting for the render that can
@@ -939,7 +961,7 @@ export class ScrollableComponentViewport implements Component {
 				: undefined;
 		const pin = pinned === undefined ? [] : [truncateToWidth(pinned, contentWidth, "")];
 		const contentRows = this.visibleRows - indicator.length - pin.length;
-		this.lastPaint = { start, pinRows: pin.length, contentRows };
+		this.lastPaint = { start, pinRows: pin.length, contentRows, rows: this.visibleRows, lineCount };
 		const visible = [
 			...pin,
 			...this.renderVisibleRows(componentRows, start, start + contentRows).map(withoutTerminalControl),
@@ -981,6 +1003,19 @@ export class ScrollableComponentViewport implements Component {
 	/** The first stack row the last frame drew, for holding the view where it is. */
 	firstVisibleRow(): number | undefined {
 		return this.lastPaint?.start;
+	}
+
+	/** Where the last frame drew the stack's rows; undefined before a frame was drawn. */
+	paintedWindow(): PaintedViewportWindow | undefined {
+		const paint = this.lastPaint;
+		if (paint === undefined) return undefined;
+		return {
+			rows: paint.rows,
+			firstRow: paint.start,
+			totalRows: paint.lineCount,
+			headRows: paint.pinRows,
+			footRows: paint.rows - paint.pinRows - paint.contentRows,
+		};
 	}
 
 	/** Stop the scrollbar timer and release the last frame's hit-test and anchor state. */

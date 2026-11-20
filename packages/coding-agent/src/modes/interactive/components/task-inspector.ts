@@ -627,13 +627,16 @@ export class TaskInspector implements Component {
 	setAgentView(view: ((taskId: TaskId) => void) | undefined): void {
 		this.agentView = view;
 	}
-	/** Shows `task` on the screen when it is a subagent and the screen can: the inspector closes first. */
+	/**
+	 * Shows `task` on the screen when it is a subagent and the screen can, then closes: the request comes first, so the
+	 * screen keeps what it shows until the subagent is there.
+	 */
 	private showAgent(task: TaskRecord): boolean {
 		const view = this.agentView;
 		if (view === undefined || task.kind !== "agent") return false;
 		this.navigation.focus = { kind: "composer" };
-		this.close();
 		view(task.ref.taskId);
+		this.close();
 		return true;
 	}
 	private orderedSections(): TaskListSection[] {

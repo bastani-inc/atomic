@@ -9,6 +9,7 @@ import {
 	keyHintAction,
 	readHintSpans,
 	slashCommandHint,
+	withoutKeyHints,
 } from "../src/clickable-hints.ts";
 import { Text } from "../src/components/text.ts";
 import { keyInputData, matchesKey } from "../src/keys.ts";
@@ -479,6 +480,65 @@ describe("a hint keeps its action on every row it is drawn over, and no further"
 			`esc dialog  rupt the running turn${" ".repeat(7)}`,
 		);
 		assert.deepStrictEqual(hintsOn(row), ["escape: esc ", "escape: rupt the running turn"]);
+	});
+});
+
+describe("withoutKeyHints", () => {
+	it("draws the hints for the keys it drops as plain text and keeps every other hint and the text's style", () => {
+		const line = `\x1b[2m(${clickableKeyTextHint("ctrl+o/f7", " to expand")}, ${clickableKeyTextHint("esc", " cancel")}, ${slashCommandHint("/tasks to manage")})\x1b[22m`;
+		const kept = withoutKeyHints(line, (key) => key === "ctrl+o" || key === "f7");
+		assert.strictEqual(
+			stripTerminalSequences(readHintSpans(kept).line),
+			"(ctrl+o/f7 to expand, esc cancel, /tasks to manage)",
+		);
+		assert.deepStrictEqual(hintsOn(kept), ["escape: esc cancel", "/tasks: /tasks to manage"]);
+		assert.ok(kept.startsWith("\x1b[2m(") && kept.endsWith(")\x1b[22m"), JSON.stringify(kept));
+	});
+
+	it("ends a hint the dropped one was drawn inside where the dropped one began, as the opening marker did", () => {
+		const line = clickableHint(
+			`inspect ${clickableKeyTextHint("ctrl+o", " open")} more`,
+			commandHintAction("/tasks"),
+		);
+		assert.deepStrictEqual(hintsOn(line), ["/tasks: inspect ", "ctrl+o: ctrl+o open"]);
+		const kept = withoutKeyHints(line, (key) => key === "ctrl+o");
+		assert.strictEqual(stripTerminalSequences(readHintSpans(kept).line), "inspect ctrl+o open more");
+		assert.deepStrictEqual(hintsOn(kept), ["/tasks: inspect "]);
+	});
+
+	it("keeps every other hint in the columns it had, even next to text the dropped hint split", () => {
+		const line = `\u{1F1FA}${clickableHint("\u{1F1F8}", keyHintAction("ctrl+o"))}${slashCommandHint("/tasks")}`;
+		const before = readHintSpans(line).spans.filter((span) => span.action.kind === "command");
+		const after = readHintSpans(withoutKeyHints(line, (key) => key === "ctrl+o")).spans;
+		assert.deepStrictEqual(after, before);
+	});
+
+	it("returns a line with no hint for those keys as it was", () => {
+		const line = `${clickableKeyTextHint("esc", " cancel")} plain`;
+		assert.strictEqual(
+			withoutKeyHints(line, (key) => key === "ctrl+o"),
+			line,
+		);
+		assert.strictEqual(
+			withoutKeyHints("plain \x1b[1mbold\x1b[22m", () => true),
+			"plain \x1b[1mbold\x1b[22m",
+		);
+	});
+
+	it("drops the part of a hint left on a row it wrapped onto", () => {
+		const rows = new Text(
+			`(${clickableKeyTextHint("ctrl+o", " for prompt, tool calls and full result")})`,
+			0,
+			0,
+		).render(40);
+		assert.deepStrictEqual(rows.map(hintsOn), [
+			["ctrl+o: ctrl+o for prompt, tool calls and full"],
+			["ctrl+o: result"],
+		]);
+		assert.deepStrictEqual(
+			rows.map((row) => hintsOn(withoutKeyHints(row, (key) => key === "ctrl+o"))),
+			[[], []],
+		);
 	});
 });
 
