@@ -98,7 +98,11 @@ function hostExtension(handlers: Map<string, LifecycleHandler[]>): Extension {
 }
 
 /** One session's Intercom, loaded the way Atomic loads it, on a broker that records each registration. */
-function intercomSession(options: { activeTools?: readonly string[]; refuse?: () => boolean } = {}) {
+type HeavyModule = { default: (pi: ExtensionAPI) => void | Promise<void> };
+
+function intercomSession(
+	options: { activeTools?: readonly string[]; refuse?: () => boolean; importHeavy?: () => Promise<HeavyModule> } = {},
+) {
 	const registrations: Registration[] = [];
 	const appended: string[] = [];
 	vi.mocked(spawnBrokerIfNeeded).mockResolvedValue(undefined);
@@ -141,7 +145,7 @@ function intercomSession(options: { activeTools?: readonly string[]; refuse?: ()
 		setActiveTools() {},
 		events: createEventBus(),
 	} as never as ExtensionAPI;
-	intercom(pi);
+	intercom(pi, options.importHeavy === undefined ? {} : { importHeavy: options.importHeavy });
 	const emit = async (event: LifecycleEvent, ctx: ExtensionContext): Promise<ExtensionError[]> => {
 		const reported: ExtensionError[] = [];
 		await runGenericHandlers([hostExtension(handlers)], ctx, event, (error) => reported.push(error));
@@ -321,6 +325,53 @@ describe("a session whose folder stays untrusted", () => {
 		} finally {
 			await early.shutdown(earlyCtx);
 		}
+	});
+});
+
+describe("quitting while the startup join is still loading Intercom", () => {
+	afterEach(() => vi.useRealTimers());
+
+	test("does not wait for the load, and the load cleans itself up when it finishes", async () => {
+		useBackoffClock();
+		const load = Promise.withResolvers<HeavyModule>();
+		const heavyEvents: string[] = [];
+		let imports = 0;
+		const session = intercomSession({
+			importHeavy: () => {
+				imports += 1;
+				return load.promise;
+			},
+		});
+		const ctx = sessionContext({ mode: "tui" }, []);
+		await session.start(ctx);
+		await elapse(4_000);
+		assert.equal(imports, 1, "the startup join is loading Intercom");
+
+		let closed = false;
+		const closing = session.shutdown(ctx).then(() => {
+			closed = true;
+		});
+		await elapse(500);
+		assert.equal(closed, true, "closing the session waited for Intercom to load");
+
+		load.resolve({
+			default(heavyPi) {
+				heavyPi.on("session_start", () => {
+					heavyEvents.push("session_start");
+				});
+				heavyPi.on("session_shutdown", () => {
+					heavyEvents.push("session_shutdown");
+				});
+			},
+		});
+		await closing;
+		await elapse(500);
+		assert.equal(session.registrations.length, 0);
+		assert.deepEqual(
+			heavyEvents.filter((event) => event === "session_start").length,
+			0,
+			"nothing starts in a closed session",
+		);
 	});
 });
 

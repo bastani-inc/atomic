@@ -153,7 +153,11 @@ type ShutdownSnapshot = LifecycleSnapshot<"session_shutdown"> & { generation: nu
 type IntercomLease = LifecycleLease<ShutdownSnapshot>;
 type SessionSnapshot = LifecycleSnapshot<"session_start"> & { generation: number; lease: IntercomLease };
 type IntercomHeavyHandle = HeavyHandle<CapturedHeavy>;
-type HeavyAttempt = { lease: IntercomLease; promise: Promise<IntercomHeavyHandle> };
+/**
+ * `background` while only the startup join waits for the load: closing the session then does not wait for it, and a
+ * load that finishes after the session closed cleans itself up.
+ */
+type HeavyAttempt = { lease: IntercomLease; promise: Promise<IntercomHeavyHandle>; background: boolean };
 type ReplayAttempt = { lease: IntercomLease; heavy: CapturedHeavy; promise: Promise<void> };
 type ActiveLifecycleState = {
 	turnStart: LifecycleSnapshot<"turn_start"> | null;
@@ -381,6 +385,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		await waitForPriorCleanup(lease);
 		const existing = heavyAttempt;
 		if (existing?.lease === lease) {
+			if (!quiet) existing.background = false;
 			const handle = await existing.promise;
 			assertLease(lease);
 			if (!sessionSnapshot && ctx) {
@@ -438,7 +443,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				throw error;
 			}
 		})();
-		heavyAttempt = { lease, promise };
+		heavyAttempt = { lease, promise, background: quiet };
 		void promise.then(
 			() => undefined,
 			(error: unknown) => {
@@ -635,7 +640,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		retireLifecycleLease(lease, { event, ctx, generation, diagnosticRoute });
 		shutdownDiagnosticRoute = diagnosticRoute;
 		const retiredHeavy = loadedHeavy?.heavy ?? null;
-		const retiredAttempt = heavyAttempt?.lease === lease ? heavyAttempt.promise : null;
+		const retiredAttempt = heavyAttempt?.lease === lease && !heavyAttempt.background ? heavyAttempt.promise : null;
 		const retiredReplay = replayAttempt?.lease === lease ? replayAttempt.promise : null;
 		sessionSnapshot = null;
 		heavyAttempt = null;
