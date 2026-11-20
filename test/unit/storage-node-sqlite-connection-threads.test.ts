@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	openNodeSqliteDatabase,
+	wrapNodeSqliteDatabase,
+} from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { isSqliteBusy } from "../../packages/coding-agent/src/core/storage/write-ahead-log.js";
 import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 import { observeRowsAndFailures } from "../helpers/node-sqlite-observations.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
@@ -137,4 +143,88 @@ test("rows and driver errors cross from a connection's thread as they come from 
 	const inMemory = await openNodeSqliteDatabase(":memory:");
 	cleanups.push(() => inMemory.close());
 	assert.deepStrictEqual(await observeRowsAndFailures(threaded), await observeRowsAndFailures(inMemory));
+});
+
+/** A connection this thread opens itself and wraps, on the file of `threaded`; closed with the test. */
+function wrappedBeside(threaded: SqliteDatabase, busyTimeoutMs: number): SqliteDatabase {
+	const raw = new DatabaseSync(threaded.descriptor.location);
+	const wrapped = wrapNodeSqliteDatabase(raw);
+	raw.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
+	cleanups.push(async () => {
+		await wrapped.close();
+		raw.close();
+	});
+	return wrapped;
+}
+
+/** A read that keeps a connection busy for a while: long enough for the event loop to turn while it runs. */
+const SLOW_READ =
+	"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 300000) SELECT sum(i) AS s FROM n";
+
+test("a write through a wrapped connection, made while a transaction on a thread holds the file's lock, runs after it commits without stopping the event loop (#5376)", async () => {
+	const threaded = await open(databasePath());
+	await threaded.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	const wrapped = wrappedBeside(threaded, HOLD_MS);
+	let write: Promise<unknown> | undefined;
+	const { value, stallMs } = await longestStall(async () => {
+		await threaded.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES ('threaded')");
+			// Made from the event loop while the transaction holds the lock, not awaited by it.
+			setImmediate(() => {
+				write = wrapped.run("INSERT INTO items VALUES ('wrapped')");
+			});
+			await tx.get(SLOW_READ);
+		});
+		return write;
+	});
+	assert.ok(value !== undefined, "the wrapped write was made while the transaction ran");
+	await value;
+	assert.deepEqual(await rows(threaded), ["threaded", "wrapped"]);
+	assert.ok(stallMs < MAX_EVENT_LOOP_STALL_MS, `the event loop stalled for ${Math.round(stallMs)} ms`);
+});
+
+test("a read through a wrapped connection that a transaction on a thread awaits runs at once (#5376)", async () => {
+	const threaded = await open(databasePath());
+	await threaded.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	const wrapped = wrappedBeside(threaded, BUSY_TIMEOUT_MS);
+	const started = performance.now();
+	const read = await threaded.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('uncommitted')");
+		return wrapped.get<{ n: number }>("SELECT count(*) AS n FROM items");
+	});
+	assert.deepEqual(read, { n: 0 }, "the read saw the file before the transaction committed");
+	assert.ok(performance.now() - started < BUSY_TIMEOUT_MS / 2, "the read did not wait for the busy timeout");
+});
+
+test("a write through a wrapped connection that a transaction on a thread awaits fails busy after its busy timeout without stopping the event loop (#5376)", async () => {
+	const threaded = await open(databasePath());
+	await threaded.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	const wrapped = wrappedBeside(threaded, HOLD_MS);
+	const { value, stallMs } = await longestStall(() =>
+		threaded.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES ('threaded')");
+			return wrapped.run("INSERT INTO items VALUES ('wrapped')").then(
+				() => "wrote",
+				(error: unknown) => error,
+			);
+		}),
+	);
+	assert.ok(value instanceof StorageUnavailableError, String(value));
+	assert.ok(isSqliteBusy(value), "it failed as SQLite's busy handler fails once its busy timeout passed");
+	assert.deepEqual(await rows(threaded), ["threaded"]);
+	assert.ok(stallMs < MAX_EVENT_LOOP_STALL_MS, `the event loop stalled for ${Math.round(stallMs)} ms`);
+});
+
+test("a wrapped connection's busy timeout reads and changes as always while a transaction on a thread holds the file's lock (#5376)", async () => {
+	const threaded = await open(databasePath());
+	await threaded.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	const wrapped = wrappedBeside(threaded, BUSY_TIMEOUT_MS);
+	const seen = await threaded.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('threaded')");
+		const before = await wrapped.get<{ timeout: number }>("PRAGMA busy_timeout");
+		await wrapped.run("PRAGMA busy_timeout=37");
+		return [before, await wrapped.get<{ timeout: number }>("PRAGMA busy_timeout")];
+	});
+	assert.deepEqual(seen, [{ timeout: BUSY_TIMEOUT_MS }, { timeout: 37 }]);
+	assert.deepEqual(await wrapped.get("PRAGMA busy_timeout"), { timeout: 37 });
 });
