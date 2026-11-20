@@ -1,3 +1,4 @@
+import { createInterface } from "node:readline";
 import { createCacheMissModelSource, formatCacheWaste } from "../../core/cache-stats.ts";
 import { formatResumeTimings, latestResumeTimings } from "../../core/resume/timings.ts";
 import {
@@ -251,118 +252,205 @@ InteractiveModeBase.prototype.handleImportCommand = async function (
 };
 
 const GH_AUTH_STATUS_TIMEOUT_MS = 30_000;
+/** How long a cancelled gh process gets to exit after it is asked to before it is killed. */
+const GH_CANCEL_GRACE_MS = 2_000;
 
-function ghAuthStatus(): Promise<number | null> {
+/** Stop a gh process the user cancelled: ask it to exit, and kill it if it is still running after the grace period. */
+function stopGh(child: ReturnType<typeof spawn>): void {
+	child.kill();
+	const timer = setTimeout(() => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	}, GH_CANCEL_GRACE_MS);
+	timer.unref?.();
+	child.once("close", () => clearTimeout(timer));
+}
+
+/** The session id in the header, the first line, of the exported session file `file`. */
+async function exportedSessionId(file: string): Promise<string | undefined> {
+	const input = fs.createReadStream(file, { encoding: "utf8" });
+	const lines = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
+	try {
+		for await (const line of lines) {
+			const header = JSON.parse(line) as { id?: unknown };
+			return typeof header.id === "string" ? header.id : undefined;
+		}
+		return undefined;
+	} catch {
+		return undefined;
+	} finally {
+		lines.close();
+		input.destroy();
+	}
+}
+
+/** Run `gh auth status`; `started` receives the child, so a cancel can stop it. */
+function ghAuthStatus(started: (child: ReturnType<typeof spawn>) => void): Promise<number | null> {
 	return new Promise((resolve) => {
 		const child = spawn("gh", ["auth", "status"], {
 			env: createChildProcessEnvironment(),
 			stdio: "ignore",
 			timeout: GH_AUTH_STATUS_TIMEOUT_MS,
 		});
+		started(child);
 		child.once("error", () => resolve(null));
 		child.once("close", (code) => resolve(code));
 	});
 }
 
 InteractiveModeBase.prototype.handleShareCommand = async function (this: InteractiveModeBase): Promise<void> {
-	// Check if gh is available and logged in
-	try {
-		if ((await ghAuthStatus()) !== 0) {
-			this.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
-			return;
-		}
-	} catch {
-		this.showError("GitHub CLI (gh) is not installed. Install it from https://cli.github.com/");
-		return;
-	}
-
-	// Share an export-only JSONL copy carrying context for the viewer. The
-	// persisted session is not mutated.
-	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "atomic-share-"));
-	const tmpFile = path.join(tempDir, "session.jsonl");
-	try {
-		await this.session.exportToJsonl(tmpFile, {
-			includeShareContext: true,
-			snapshotContent: false,
-			toolOutputContent: false,
-		});
-	} catch (error: unknown) {
-		await fs.promises.rm(tempDir, { recursive: true, force: true });
-		this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
-		return;
-	}
-
-	// Show cancellable loader, replacing the editor
+	// The session to share is the one shown when the command was given.
+	const session = this.session;
+	const sessionId = session.sessionManager.getSessionId();
+	// The cancellable loader takes the prompt's place at once: checking gh and exporting the session take a while.
 	const loader = new BorderedLoader(this.ui, theme, "Creating gist...");
 	this.editorContainer.clear();
 	this.editorContainer.addChild(loader);
 	this.ui.setFocus(loader);
 	this.ui.requestRender();
 
+	let restored = false;
 	const restoreEditor = () => {
+		if (restored) return;
+		restored = true;
 		loader.dispose();
+		// A view that has taken the loader's place since keeps it.
+		if (!this.editorContainer.children.includes(loader)) return;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.ui.setFocus(this.editor);
-		fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {
-			// Ignore cleanup errors
-		});
+		this.ui.requestRender();
 	};
 
-	// Create a secret gist asynchronously
-	let proc: ReturnType<typeof spawn> | null = null;
-
+	// The gh process running now, which a cancel stops.
+	let proc: ReturnType<typeof spawn> | undefined;
 	loader.onAbort = () => {
-		proc?.kill();
+		if (proc !== undefined) stopGh(proc);
 		restoreEditor();
 		this.showStatus("Share cancelled");
 	};
-
-	try {
-		const result = await new Promise<{
-			stdout: string;
-			stderr: string;
-			code: number | null;
-		}>((resolve) => {
-			proc = spawn("gh", ["gist", "create", "--public=false", tmpFile], { env: createChildProcessEnvironment() });
-			let stdout = "";
-			let stderr = "";
-			proc.stdout?.on("data", (data) => {
-				stdout += data.toString();
-			});
-			proc.stderr?.on("data", (data) => {
-				stderr += data.toString();
-			});
-			proc.on("error", (error) => resolve({ stdout, stderr: stderr || error.message, code: null }));
-			proc.on("close", (code) => resolve({ stdout, stderr, code }));
-		});
-
-		if (loader.signal.aborted) return;
-
+	const cancelled = () => loader.signal.aborted;
+	// Another session took this one's place before it was exported, or while it was: neither is shared.
+	const sessionChanged = () => {
 		restoreEditor();
+		this.showStatus("Share cancelled: the session changed");
+	};
+	const replaced = () => {
+		if (cancelled() || (this.session === session && session.sessionManager.getSessionId() === sessionId))
+			return false;
+		sessionChanged();
+		return true;
+	};
 
-		if (result.code !== 0) {
-			const errorMsg = result.stderr?.trim() || "Unknown error";
-			this.showError(`Failed to create gist: ${errorMsg}`);
-			return;
-		}
-
-		// Extract gist ID from the URL returned by gh
-		// gh returns something like: https://gist.github.com/username/GIST_ID
-		const gistUrl = result.stdout?.trim();
-		const gistId = gistUrl?.split("/").pop();
-		if (!gistId) {
-			this.showError("Failed to parse gist ID from gh output");
-			return;
-		}
-
-		// Create the preview URL
-		const previewUrl = getShareViewerUrl(gistId);
-		this.showStatus(`Share URL: ${hyperlink(previewUrl, previewUrl)}\nGist: ${hyperlink(gistUrl, gistUrl)}`);
-	} catch (error: unknown) {
-		if (!loader.signal.aborted) {
+	// Each step is awaited before the next, also after a cancel, so the directory is removed only once nothing writes
+	// into it any more.
+	let tempDir: string | undefined;
+	try {
+		// Check if gh is available and logged in
+		try {
+			const status = await ghAuthStatus((child) => {
+				proc = child;
+			});
+			proc = undefined;
+			if (cancelled() || replaced()) return;
+			if (status !== 0) {
+				restoreEditor();
+				this.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
+				return;
+			}
+		} catch {
+			proc = undefined;
+			if (cancelled()) return;
 			restoreEditor();
-			this.showError(`Failed to create gist: ${error instanceof Error ? error.message : "Unknown error"}`);
+			this.showError("GitHub CLI (gh) is not installed. Install it from https://cli.github.com/");
+			return;
+		}
+
+		// Share an export-only JSONL copy carrying context for the viewer. The
+		// persisted session is not mutated.
+		tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "atomic-share-"));
+		if (cancelled() || replaced()) return;
+		const tmpFile = path.join(tempDir, "session.jsonl");
+		try {
+			await session.exportToJsonl(tmpFile, {
+				includeShareContext: true,
+				snapshotContent: false,
+				toolOutputContent: false,
+			});
+		} catch (error: unknown) {
+			if (cancelled()) return;
+			restoreEditor();
+			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
+			return;
+		}
+		if (cancelled() || replaced()) return;
+		// The file holds the session asked for, whatever changed on the way: another never leaves under its name.
+		const exportedId = await exportedSessionId(tmpFile);
+		if (cancelled()) return;
+		if (exportedId !== sessionId) {
+			sessionChanged();
+			return;
+		}
+
+		// Create a secret gist
+		try {
+			const result = await new Promise<{
+				stdout: string;
+				stderr: string;
+				code: number | null;
+			}>((resolve) => {
+				const child = spawn("gh", ["gist", "create", "--public=false", tmpFile], {
+					env: createChildProcessEnvironment(),
+				});
+				proc = child;
+				let stdout = "";
+				let stderr = "";
+				child.stdout?.on("data", (data) => {
+					stdout += data.toString();
+				});
+				child.stderr?.on("data", (data) => {
+					stderr += data.toString();
+				});
+				child.on("error", (error) => resolve({ stdout, stderr: stderr || error.message, code: null }));
+				child.on("close", (code) => resolve({ stdout, stderr, code }));
+			});
+			proc = undefined;
+
+			if (cancelled()) return;
+
+			restoreEditor();
+
+			if (result.code !== 0) {
+				const errorMsg = result.stderr?.trim() || "Unknown error";
+				this.showError(`Failed to create gist: ${errorMsg}`);
+				return;
+			}
+
+			// Extract gist ID from the URL returned by gh
+			// gh returns something like: https://gist.github.com/username/GIST_ID
+			const gistUrl = result.stdout?.trim();
+			const gistId = gistUrl?.split("/").pop();
+			if (!gistId) {
+				this.showError("Failed to parse gist ID from gh output");
+				return;
+			}
+
+			// Create the preview URL
+			const previewUrl = getShareViewerUrl(gistId);
+			this.showStatus(`Share URL: ${hyperlink(previewUrl, previewUrl)}\nGist: ${hyperlink(gistUrl, gistUrl)}`);
+		} catch (error: unknown) {
+			proc = undefined;
+			if (!cancelled()) {
+				restoreEditor();
+				this.showError(`Failed to create gist: ${error instanceof Error ? error.message : "Unknown error"}`);
+			}
+		}
+	} finally {
+		// Whatever ended the share, the prompt comes back once.
+		restoreEditor();
+		if (tempDir !== undefined) {
+			await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {
+				// Ignore cleanup errors
+			});
 		}
 	}
 };
