@@ -531,3 +531,16 @@ test("x on the shown subagent's finished row dismisses it and tells the panel's 
 	assert.ok(dismissedAgentPanelItems(session).has("task:a1"));
 	assert.ok(told > 0, "the dismissal is told");
 });
+
+test("a resumed subagent is one row: the mark and its pin follow its latest attempt, whichever attempt the screen names", () => {
+	const first = { ...done(agent("a1")), launchOperationId: "op-a1", launchOrdinal: 1 } as TaskRecord;
+	const resumed = { ...agent("a1-r", "worker"), launchOperationId: "op-a1:resume:1", launchOrdinal: 2 } as TaskRecord;
+	const others = ["b1", "b2", "b3", "b4"].map((id, index) => ({ ...agent(id, `w${id}`), launchOrdinal: 3 + index }));
+	for (const named of ["a1", "a1-r"]) {
+		const { session } = panelSession([first, resumed, ...others], named);
+		const lines = idlePanel(session).lines();
+		const marked = lines.filter((line) => line.startsWith("●"));
+		assert.equal(marked.length, 1, lines.join("\n"));
+		assert.match(marked[0]!, /^● \S worker +job a1-r/, lines.join("\n"));
+	}
+});
