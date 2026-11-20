@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A server certificate that TLS verification refuses because its CA is not marked as a CA or is limited to client authentication (`INVALID_PURPOSE`), or because its chain has more intermediate CAs than its root allows (`PATH_LENGTH_EXCEEDED`), now fails the open at once, naming the reason and the `sslrootcert` fix, instead of being retried five times as an unreachable server. The same holds for every other certificate verification code Node.js and Bun report, such as `CERT_REVOKED`, directly, through a proxy, and for an https proxy's own certificate ([#6074](https://github.com/bastani-inc/atomic/issues/6074))
+
 ## [0.9.90] - 2026-11-19
 
 ### Added
