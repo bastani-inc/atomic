@@ -4,7 +4,7 @@ import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { isTaskMessageError, TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { QueuedTaskMessages, TaskMessageLane } from "../../../core/tasks/supervisor.js";
 import type { TaskViewResult, TaskViewSource } from "../../../core/tasks/task-view-source.js";
-import type { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.ts";
+import type { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
 import type { SteeringLane, SteeringSubmitLane, SteeringTarget } from "../steering-queue-controller.ts";
 import type { AgentSteeringPort, AgentViewStatus } from "./contracts.ts";
 
