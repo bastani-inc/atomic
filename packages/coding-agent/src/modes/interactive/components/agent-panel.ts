@@ -17,8 +17,6 @@ import {
 	taskClockOf,
 	taskClockRunning,
 } from "../../../core/tasks/live-elapsed.js";
-import { getGlobalTheme } from "../theme/global-theme.ts";
-import { ATOMIC_WORKING_FRAMES, atomicWorkingGlyph } from "./atomic-working-status.ts";
 import type { ModelCellReport, ModelColumn } from "./model-column.ts";
 import {
 	clickableKeyTextHint,
@@ -56,35 +54,10 @@ export interface AgentPanelStyle extends NavKeyStyle {
 const FINISHED: ReadonlySet<AgentPanelState> = new Set(["done", "failed", "stopped"]);
 const NON_PRINTABLE_ASCII = /[^\x20-\x7e]/;
 const NON_SINGLE_CELL = /[^\x20-\x7e\u00b7\u25b0\u25b1\u2193]/;
-const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀⧗◆‖○◌◼✓✗●❯]/;
+const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀⧗◆‖○◯◌◼✓✗●❯]/;
 const SGR_SEQUENCE = /\x1b\[[\d;:]*m/g;
 const MAX_CACHED_LINE_WIDTHS = 512;
 const singleCellLineWidths = new Map<string, number>();
-let glyphThemeRef: ReturnType<typeof getGlobalTheme>;
-let glyphNoColor: string | undefined;
-let glyphReducedMotion: string | undefined;
-const glyphCache: Array<string | undefined> = new Array(ATOMIC_WORKING_FRAMES.length);
-
-function cachedWorkingGlyph(frame: number): string {
-	const themeRef = getGlobalTheme();
-	const noColor = process.env.NO_COLOR;
-	const reduced = process.env.ATOMIC_REDUCED_MOTION;
-	if (themeRef !== glyphThemeRef || noColor !== glyphNoColor || reduced !== glyphReducedMotion) {
-		glyphThemeRef = themeRef;
-		glyphNoColor = noColor;
-		glyphReducedMotion = reduced;
-		glyphCache.fill(undefined);
-	}
-	const count = ATOMIC_WORKING_FRAMES.length;
-	const index = reduced === "1" ? 3 : ((frame % count) + count) % count;
-	let cached = glyphCache[index];
-	if (cached === undefined) {
-		cached = atomicWorkingGlyph(index);
-		glyphCache[index] = cached;
-	}
-	return cached;
-}
-
 export function isFinishedPanelRow(row: Pick<AgentPanelRow, "state">): boolean {
 	return FINISHED.has(row.state) && !isInterruptedPanelTask(row);
 }
@@ -363,28 +336,34 @@ export class AgentPanelModel {
 	}
 }
 
-function glyph(row: AgentPanelRow, style: AgentPanelStyle, frame: number | undefined): string {
-	switch (row.state) {
-		case "running":
-			if (row.kind === "shell") return style.accent("⧗");
-			return frame === undefined ? style.accent("∀") : cachedWorkingGlyph(frame);
-		case "input":
-			return style.warning("◆");
-		case "paused":
-			return style.warning("‖");
-		case "queued":
-			return style.dim("○");
-		case "stopping":
-			return style.warning("◼");
-		case "waiting":
-			return style[WAITING_MARKER.color](WAITING_MARKER.glyph);
-		case "done":
-			return style.success("✓");
-		case "failed":
-			return style.error("✗");
-		case "stopped":
-			return style.muted("◼");
-	}
+interface PanelMark {
+	readonly glyph: string;
+	readonly color: "muted" | "dim" | "accent" | "success" | "error" | "warning";
+}
+
+/**
+ * A row's mark for each state. Each state has its own mark and colour, and every mark is one cell, so a row keeps its
+ * columns when its state changes. A subagent shows an open circle while it runs and when it was stopped (in the error
+ * colour), and a filled one once done.
+ */
+const PANEL_MARKS: Readonly<Record<AgentPanelState, PanelMark>> = {
+	running: { glyph: "◯", color: "muted" },
+	input: { glyph: "◆", color: "warning" },
+	paused: { glyph: "‖", color: "warning" },
+	queued: { glyph: "○", color: "dim" },
+	stopping: { glyph: "◼", color: "warning" },
+	waiting: WAITING_MARKER,
+	done: { glyph: "●", color: "success" },
+	failed: { glyph: "✗", color: "error" },
+	stopped: { glyph: "◯", color: "error" },
+};
+const RUNNING_SHELL_MARK: PanelMark = { glyph: "⧗", color: "accent" };
+
+function glyph(row: AgentPanelRow, style: AgentPanelStyle, selected: boolean): string {
+	const mark = row.state === "running" && row.kind === "shell" ? RUNNING_SHELL_MARK : PANEL_MARKS[row.state];
+	// A running subagent's circle reads with its row: grey, and in the default colour while the row is selected.
+	if (selected && mark === PANEL_MARKS.running) return style.text(mark.glyph);
+	return style[mark.color](mark.glyph);
 }
 
 function stateWord(row: AgentPanelRow): string {
@@ -423,7 +402,6 @@ function rightColumn(row: AgentPanelRow, width: number): string {
 
 export interface AgentPanelRenderOptions {
 	readonly selectedId?: string;
-	readonly frame?: number;
 	readonly faded?: (row: AgentPanelRow) => boolean;
 	readonly scroll?: number;
 	readonly hiddenAbove?: number;
@@ -455,6 +433,8 @@ function panelModelReport(row: AgentPanelRow, label: string): ModelCellReport {
 
 /** The cells a nested shell row is indented by. */
 const NESTED_INDENT = 2;
+/** The cells the rows under the main row are indented by, so their marks sit one cell right of main's. */
+const CHILD_INDENT = 1;
 
 /** The main-chat row leads the panel whenever it lists a subagent. */
 export function panelShowsMain(rows: readonly Pick<AgentPanelRow, "kind">[]): boolean {
@@ -478,6 +458,8 @@ export function renderAgentPanelRows(
 	const queues = new Array<string | undefined>(count);
 	let nameWidth = 4;
 	let modelWidth = 0;
+	// Without a main row (a chat's own list) the rows keep the main row's place.
+	const childIndent = showMain ? CHILD_INDENT : 0;
 	const nested = (row: AgentPanelRow) => options.nestShells === true && row.kind === "shell";
 	for (let i = 0; i < count; i++) {
 		const raw = shown[i]!;
@@ -510,7 +492,7 @@ export function renderAgentPanelRows(
 	// The model column shows only while every row keeps its whole right column and some of its task beside it. A nested
 	// row's indent is inside the name column, so `nameWidth` spans it.
 	const modelFits = (column: number) => {
-		const fixed = 6 + nameWidth + column + 2;
+		const fixed = 6 + childIndent + nameWidth + column + 2;
 		for (let i = 0; i < count; i++) {
 			const queued = queues[i];
 			const rightWidth = cellWidth(queued === undefined ? rights[i]! : rights[i]! + queued);
@@ -536,14 +518,15 @@ export function renderAgentPanelRows(
 		queued?: string,
 		model?: string,
 		indent = 0,
+		under = 0,
 	) => {
 		const selected = options.selectedId === id;
 		const viewed = viewing && options.viewedId === id;
-		const cursor = selected ? style.accent(style.bold("❯ ")) : viewed ? `${style.accent("●")} ` : "  ";
-		const lead = indent > 0 ? `${cursor}${" ".repeat(indent)}` : cursor;
+		const cursor = selected ? style.accent(style.bold("∀ ")) : viewed ? `${style.accent("●")} ` : "  ";
+		const lead = indent + under > 0 ? `${cursor}${" ".repeat(indent + under)}` : cursor;
 		const paint = (text: string) => (dim ? style.dim(text) : selected ? style.text(text) : style.muted(text));
 		if (width < 40) {
-			const shortName = fitToWidth(name, Math.max(1, width - 5 - indent)).text;
+			const shortName = fitToWidth(name, Math.max(1, width - 5 - indent - under)).text;
 			const short = `${lead}${glyphText} ${viewed ? style.accent(shortName) : paint(shortName)}`;
 			return lines.push(clampLine(short, width));
 		}
@@ -556,7 +539,7 @@ export function renderAgentPanelRows(
 			model === undefined || modelWidth === 0
 				? ""
 				: `${model.length > 0 ? style.dim(model) : ""}${" ".repeat(modelWidth - cellWidth(model) + 2)}`;
-		const fixed = 6 + headWidth + (modelCell.length > 0 ? modelWidth + 2 : 0);
+		const fixed = 6 + under + headWidth + (modelCell.length > 0 ? modelWidth + 2 : 0);
 		let shownRight = right;
 		let shownQueued = queued;
 		if (fixed + cellWidth(queued === undefined ? right : right + queued) + 1 > width) {
@@ -583,9 +566,10 @@ export function renderAgentPanelRows(
 	for (let i = 0; i < count; i++) {
 		const raw = shown[i]!;
 		const dim = options.faded?.(raw) === true;
+		const mark = glyph(raw, style, options.selectedId === raw.id);
 		line(
 			raw.id,
-			dim ? style.dim(glyph(raw, style, undefined)) : glyph(raw, style, options.frame),
+			dim ? style.dim(mark) : mark,
 			names[i]!,
 			nameWidths[i]!,
 			tasks[i]!,
@@ -594,6 +578,7 @@ export function renderAgentPanelRows(
 			queues[i],
 			models[i],
 			nested(raw) ? NESTED_INDENT : 0,
+			childIndent,
 		);
 	}
 	if (hiddenBelow > 0) lines.push(style.dim(truncateToWidth(`  +${hiddenBelow} more`, width)));

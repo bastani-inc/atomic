@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The agent panel marks a running subagent with an open circle `◯` instead of the animated `∀`, a finished one with a green `●` and a stopped one with a red `◯`. The selection cursor is `∀` instead of `❯`, and the subagent rows sit one column to the right of the `main` row's mark. Other marks and the viewed `●` are unchanged
+
 ## [0.10.1] - 2026-11-20
 
 Typing and rendering keep going while Atomic reads and writes its local SQLite files, and the chat screen no longer flashes blank or shifted frames.

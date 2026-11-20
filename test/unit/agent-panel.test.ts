@@ -23,7 +23,6 @@ import {
 	renderAgentPanelHint,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
-import { atomicWorkingGlyph } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.js";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.js";
 import { applyAttachedComposer } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
 import { getGlobalTheme } from "../../packages/coding-agent/src/modes/interactive/theme/global-theme.js";
@@ -98,7 +97,7 @@ test("panel styling preserves foreground overrides on installed theme instances 
 	}
 });
 
-test("panel colors and running glyphs follow theme, color and motion changes after cached renders (#5239)", () => {
+test("panel colors and running marks follow theme, color and motion changes after cached renders (#5239)", () => {
 	initTheme("dark");
 	const previous = getGlobalTheme()!;
 	const noColor = process.env.NO_COLOR;
@@ -113,9 +112,9 @@ test("panel colors and running glyphs follow theme, color and motion changes aft
 				for (const motion of [undefined, "1"]) {
 					if (motion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
 					else process.env.ATOMIC_REDUCED_MOTION = motion;
-					for (const frame of [0, 4, 9, 0]) {
-						const line = renderAgentPanelRows([ROWS[0]!], 100, paint, { frame })[0]!;
-						assert.ok(line.startsWith(`  ${atomicWorkingGlyph(frame)} `));
+					for (let paints = 0; paints < 3; paints++) {
+						const line = renderAgentPanelRows([ROWS[0]!], 100, paint)[0]!;
+						assert.ok(line.startsWith(`  ${theme.fg("muted", "◯")} `));
 						assert.ok(visibleWidth(line) <= 100);
 					}
 					for (const colorName of ["dim", "text", "muted", "accent", "success", "error", "warning"] as const) {
@@ -144,7 +143,6 @@ test("single-cell panel frames avoid repeated grapheme segmentation (#5239)", ()
 				[{ ...ROWS[0]!, name: "cost7391", task: `frame cost probe 7391-${frame}` }],
 				120,
 				plain,
-				{ frame },
 			);
 			assert.equal(segment.mock.calls.filter(([text]) => text.includes("frame cost probe 7391")).length, 0);
 			assert.equal(visibleWidth(lines[0]!), 120);
@@ -154,13 +152,13 @@ test("single-cell panel frames avoid repeated grapheme segmentation (#5239)", ()
 	}
 });
 
-test("repeated single-cell animation frames reuse their measured line widths (#5239)", () => {
+test("repeated single-cell renders reuse their measured line widths (#5239)", () => {
 	initTheme("dark");
 	const rows = [{ ...ROWS[0]!, task: "steadyframe7392" }];
-	for (let frame = 0; frame < 10; frame++) renderAgentPanelRows(rows, 120, plain, { frame });
+	for (let paints = 0; paints < 10; paints++) renderAgentPanelRows(rows, 120, plain);
 	const replace = vi.spyOn(String.prototype, "replace");
 	try {
-		for (let frame = 0; frame < 20; frame++) renderAgentPanelRows(rows, 120, plain, { frame });
+		for (let paints = 0; paints < 20; paints++) renderAgentPanelRows(rows, 120, plain);
 		assert.equal(
 			replace.mock.contexts.filter((text) => typeof text === "string" && text.includes("steadyframe7392")).length,
 			0,
@@ -185,10 +183,10 @@ test("panel rows show glyph, name, task, elapsed and tokens, right-aligned at 16
 	assert.deepEqual(
 		wide.map((line) => line.replace(/ {2,}/g, "  ").trimEnd()),
 		[
-			"  ∀ worker  fix shipping batches  41m · ↓ 96.1k tokens",
-			"  ∀ debugger  #5220 spawn lock  18m · ↓ 87.4k tokens",
-			"  ∀ ralph  stage implement  12m · ↓ 61.0k tokens",
-			"  ✓ worker  picker clamp  done · 6m",
+			"  ◯ worker  fix shipping batches  41m · ↓ 96.1k tokens",
+			"  ◯ debugger  #5220 spawn lock  18m · ↓ 87.4k tokens",
+			"  ◯ ralph  stage implement  12m · ↓ 61.0k tokens",
+			"  ● worker  picker clamp  done · 6m",
 		],
 	);
 	for (const width of [160, 80]) {
@@ -200,7 +198,7 @@ test("panel rows show glyph, name, task, elapsed and tokens, right-aligned at 16
 	assert.match(narrow[0]!, /41m$/, "narrow rows drop tokens");
 	assert.match(narrow[2]!, /stage implement/, "narrow rows retain the task text");
 	const tiny = renderAgentPanelRows(ROWS, 30, plain);
-	assert.deepEqual(tiny[0], "  ∀ worker", "very narrow rows keep the glyph and name");
+	assert.deepEqual(tiny[0], "  ◯ worker", "very narrow rows keep the glyph and name");
 });
 
 test("the unfocused panel shows four rows and folds the rest; empty renders nothing (#5224)", () => {
@@ -316,7 +314,7 @@ test("the focused panel: ↑↓ select through main, enter or → opens, esc and
 		stripVTControlCharacters(line).trimEnd(),
 	);
 	assert.equal(lines[0], "  ● main");
-	assert.match(lines[2]!, /^❯ ∀ debugger/);
+	assert.match(lines[2]!, /^∀ {2}◯ debugger/);
 });
 
 test("x stops a running row only on a second press within three seconds and dismisses a finished one (#5224)", () => {
@@ -553,7 +551,6 @@ test("rows whose name, task or stage label starts with combining marks stay with
 				for (const selectedId of [undefined, AGENT_PANEL_MAIN_ID, ...rows.map((row) => row.id)]) {
 					const lines = renderAgentPanelRows(rows, width, style, {
 						...(selectedId === undefined ? {} : { selectedId }),
-						frame: 0,
 					});
 					for (const line of lines) {
 						assert.ok(
@@ -781,14 +778,14 @@ test("the focused panel scrolls to keep the selection in view and keeps every ro
 	for (let step = 0; step < 11; step++) press("\x1b[B");
 	assert.equal(focus.selectedId, "task:11");
 	assert.ok(
-		shown().some((line) => line.startsWith("❯ ∀ w11")),
+		shown().some((line) => line.startsWith("∀  ◯ w11")),
 		"the last row is reachable and shown",
 	);
 	assert.ok(shown().length <= 1 + 8 + 1, "main, eight rows and the fold line at most");
 	press("\x1b[H");
 	assert.equal(focus.selectedId, "main");
 	assert.ok(
-		shown().some((line) => line.startsWith("  ∀ w0")),
+		shown().some((line) => line.startsWith("   ◯ w0")),
 		"Home scrolls back to the top",
 	);
 	focus.selectedId = "task:5";

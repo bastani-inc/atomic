@@ -290,7 +290,7 @@ test("task footer rows color current work and hide settled results without delet
 		const task = taskRecord("footer-theme");
 		const glyph = (color: "accent" | "warning", text: string) =>
 			assert.ok((renderTaskFooter([task], 80)[0] ?? "").includes(theme.fg(color, text)));
-		assert.match(plain(renderTaskFooter([task], 80)), /^ {2}∀ agent/);
+		assert.match(plain(renderTaskFooter([task], 80)), /^ {2}◯ agent/);
 		task.execution = { kind: "settled", result: { kind: "completed", output: task.output } };
 		assert.deepEqual(renderTaskFooter([task], 80), []);
 		task.execution = { kind: "settled", result: { kind: "failed", code: "Test", message: "Failure" } };
@@ -311,12 +311,12 @@ test("task footer lists only active background tasks, newest first, not retained
 		plain(renderTaskFooter(tasks, width))
 			.split("\n")
 			.map((line) => line.replace(/ {2,}/g, "  ").trimEnd());
-	assert.deepEqual(rows([agent], 100), ["  ∀ agent  Task agent  running"]);
+	assert.deepEqual(rows([agent], 100), ["  ◯ agent  Task agent  running"]);
 	// Shells are counted below the rows, as the main chat's hint counts them, not listed.
-	assert.deepEqual(rows([agent, shell], 100), ["  ∀ agent  Task agent  running", "  1 shell"]);
+	assert.deepEqual(rows([agent, shell], 100), ["  ◯ agent  Task agent  running", "  1 shell"]);
 	const failure = taskRecord("failure");
 	failure.execution = { kind: "settled", result: { kind: "failed", code: "fixture", message: "Failed" } };
-	assert.deepEqual(rows([agent, shell, failure], 60), ["  ∀ agent  Task agent  running", "  1 shell"]);
+	assert.deepEqual(rows([agent, shell, failure], 60), ["  ◯ agent  Task agent  running", "  1 shell"]);
 	assert.deepEqual(renderTaskFooter([failure], 60), []);
 });
 

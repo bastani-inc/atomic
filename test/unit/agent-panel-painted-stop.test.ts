@@ -95,7 +95,7 @@ test("one x aimed at a run drawn as running does not dismiss it after it finishe
 	const p = panelHarness([run("run:deploy", "running")]);
 	await withFocusedPanel(p.session, async (panel) => {
 		const painted = paint(panel);
-		assert.match(painted, /❯ .*deploy/);
+		assert.match(painted, /∀ .*deploy/);
 		assert.match(painted, /x stop/);
 		p.set([run("run:deploy", "done")]);
 		await microtasks();
@@ -144,7 +144,7 @@ test("one x aimed at the selected running run never dismisses another run a refr
 		p.session,
 		async (panel) => {
 			const painted = paint(panel);
-			assert.match(painted, /❯ . a /, painted);
+			assert.match(painted, /∀ {2}◯ a /, painted);
 			p.set([run("run:b", "done")]);
 			await microtasks();
 			panel.handleInput("x");
@@ -164,7 +164,7 @@ test("x x aimed at the selected running run never stops another run a refresh mo
 		p.session,
 		async (panel) => {
 			const painted = paint(panel);
-			assert.match(painted, /❯ . a /, painted);
+			assert.match(painted, /∀ {2}◯ a /, painted);
 			p.set([run("run:b", "running")]);
 			await microtasks();
 			panel.handleInput("x");

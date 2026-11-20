@@ -49,9 +49,9 @@ test("the main chat retains its task through tool end, agent end, background act
 		const rows = stripAnsi(main.renderFooter(80).join("\n"))
 			.split("\n")
 			.map((line) => line.trim())
-			.filter((line) => /^∀ \S+ {2}/.test(line));
+			.filter((line) => /^◯ \S+ {2}/.test(line));
 		assert.equal(rows.length, 1);
-		assert.match(rows[0]!, /^∀ worker {2}Inspect task projection\s+running$/);
+		assert.match(rows[0]!, /^◯ worker {2}Inspect task projection\s+running$/);
 	};
 	try {
 		await fixture.start();

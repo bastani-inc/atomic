@@ -124,7 +124,7 @@ test("Enter on a subagent row of the focused panel shows that subagent on the sc
 	});
 	await showAgentPanel(session, ui);
 	// The newest subagent leads the panel, and ↓ focused it.
-	assert.match(mounts[0]![1] ?? "", /^❯ .* explorer /, mounts[0]!.join("\n"));
+	assert.match(mounts[0]![1] ?? "", /^∀ .* explorer /, mounts[0]!.join("\n"));
 	assert.deepEqual(bridge.requests, ["a2"]);
 	assert.equal(mounts.length, 1, "no subagent page is mounted after the panel");
 });
@@ -208,7 +208,7 @@ test("the shown subagent stays listed once it finished, marked, with main above 
 	const shown = panelSession([done(agent("a1"))], "a1");
 	const lines = idlePanel(shown.session).lines();
 	assert.equal(lines[0], "  ● main", lines.join("\n"));
-	assert.match(lines[1] ?? "", /^● ✓ worker +job a1 +done$/, lines.join("\n"));
+	assert.match(lines[1] ?? "", /^● {2}● worker +job a1 +done$/, lines.join("\n"));
 	assert.equal(lines.length, 2, lines.join("\n"));
 
 	const main = panelSession([done(agent("a1"))]);
@@ -239,10 +239,10 @@ test("a subagent's own running shells are listed right under it, indented, and l
 	const panel = idlePanel(session);
 	let lines = panel.lines();
 	assert.equal(lines[0], "  ● main", lines.join("\n"));
-	assert.match(lines[1] ?? "", /^ {2}\S explorer {2}job a2/, lines.join("\n"));
-	assert.match(lines[2] ?? "", /^ {2}\S worker {4}job a1/, lines.join("\n"));
+	assert.match(lines[1] ?? "", /^ {3}\S explorer {2}job a2/, lines.join("\n"));
+	assert.match(lines[2] ?? "", /^ {3}\S worker {4}job a1/, lines.join("\n"));
 	// The shell's name starts under its subagent's, and its command in the task column.
-	assert.match(lines[3] ?? "", /^ {4}⧗ shell {3}npm test +\d+s$/, lines.join("\n"));
+	assert.match(lines[3] ?? "", /^ {5}⧗ shell {3}npm test +\d+s$/, lines.join("\n"));
 	assert.equal(lines.length, 4, lines.join("\n"));
 
 	store.update("s1", done);
@@ -438,7 +438,7 @@ test("in the engine, set_viewed_agent marks the shown subagent in its panel, and
 	const answer = await handleSetViewedAgent({ id: "v1", type: "set_viewed_agent", taskId: "a1" }, context);
 	assert.equal(answer.success, true);
 	await tick();
-	assert.match(panel.lines().find((line) => line.startsWith("●")) ?? "", /^● \S worker /, panel.lines().join("\n"));
+	assert.match(panel.lines().find((line) => line.startsWith("●")) ?? "", /^● {2}\S worker /, panel.lines().join("\n"));
 
 	const { ui } = hostUi((component) => {
 		component.handleInput(ENTER);
@@ -581,7 +581,7 @@ test("a resumed subagent is one row: the mark and its pin follow its latest atte
 		const lines = idlePanel(session).lines();
 		const marked = lines.filter((line) => line.startsWith("●"));
 		assert.equal(marked.length, 1, lines.join("\n"));
-		assert.match(marked[0]!, /^● \S worker +job a1-r/, lines.join("\n"));
+		assert.match(marked[0]!, /^● {2}\S worker +job a1-r/, lines.join("\n"));
 	}
 });
 
