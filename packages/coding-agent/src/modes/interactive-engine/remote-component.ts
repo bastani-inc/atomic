@@ -11,6 +11,7 @@ import {
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
+import { awaitFirstContent } from "../interactive/components/prompt-slot.ts";
 import { isSingleLeftClick } from "../interactive/components/single-click.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type {
@@ -281,6 +282,11 @@ class RemoteComponent implements Component {
 
 	invalidate(): void {
 		this.dirty = true;
+	}
+
+	/** Nothing to draw yet: the engine has not sent its first frame. */
+	awaitingFirstContent(): boolean {
+		return !this.disposed && this.appliedRequestId === 0;
 	}
 
 	/** Called with each frame the engine sends, once it is the one `render` returns. */
@@ -733,6 +739,8 @@ export class RemoteComponentController {
 						() => tui.requestImmediateRender(),
 					);
 					component.hostColorDepth = tui.terminal?.colorDepth;
+					// In the prompt's place, the rows there stay until its first frame is here.
+					if (!overlay) awaitFirstContent(component, () => component.awaitingFirstContent());
 					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
 					this.mounted.set(componentId, mounted);
 					// Bind this component to the real host terminal so a buffered

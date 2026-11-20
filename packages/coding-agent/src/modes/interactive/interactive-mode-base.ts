@@ -24,6 +24,7 @@ import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import { type AtomicWorkingLoader, DEFAULT_WORKING_MESSAGE } from "./components/atomic-working-status.ts";
 import { mainComposerFooterHints } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
+import { PromptSlot } from "./components/prompt-slot.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
 import { WidgetContainer } from "./components/scroll-widget.js";
 import { WorkingRunMeter } from "./components/working-run-meter.ts";
@@ -797,7 +798,7 @@ export class InteractiveModeBase {
 		});
 
 		this.editor = this.defaultEditor;
-		this.editorContainer = new Container();
+		this.editorContainer = new PromptSlot(this.ui);
 		this.editorContainer.addChild(this.editor as Component);
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(
