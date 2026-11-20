@@ -4,6 +4,7 @@ import {
 	getInteractiveEngineRemoteCommandCompletions,
 	getInteractiveEngineRemoteCommands,
 } from "../interactive-engine/extension-ui-bridge.ts";
+import type { AgentViewCommands, AgentViewPort } from "./agent-view/contracts.ts";
 import { createChatAutocompleteProvider } from "./chat-autocomplete.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -11,6 +12,7 @@ import {
 	type AutocompleteProvider,
 	BUILTIN_SLASH_COMMANDS,
 	BUNDLED_EXTENSION_SLASH_COMMANDS,
+	CombinedAutocompleteProvider,
 	type ExtensionRunner,
 	fuzzyFilter,
 	getModelSearchText,
@@ -102,10 +104,8 @@ InteractiveModeBase.prototype.buildRemoteSlashCommands = function (
 	return remoteCommands;
 };
 
-InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
-	this: InteractiveModeBase,
-): AutocompleteProvider {
-	// Define commands for autocomplete
+/** The built-in commands as the main prompt completes them, with their argument completions. */
+function builtinSlashCommands(this: InteractiveModeBase): SlashCommand[] {
 	const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
 		name: command.name,
 		argumentHint: command.argumentHint,
@@ -166,6 +166,14 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 		logoutCommand.getArgumentCompletions = (prefix: string) =>
 			getLoginProviderCompletions(this.getLogoutProviderOptions(), prefix);
 	}
+	return slashCommands;
+}
+
+InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
+	this: InteractiveModeBase,
+): AutocompleteProvider {
+	// Define commands for autocomplete
+	const slashCommands = builtinSlashCommands.call(this);
 
 	// Convert prompt templates to SlashCommand format for autocomplete
 	const templateCommands: SlashCommand[] = this.session.promptTemplates.map((cmd) => ({
@@ -248,8 +256,113 @@ InteractiveModeBase.prototype.setupAutocompleteProvider = function (
 	}
 
 	this.autocompleteProvider = provider;
-	this.defaultEditor.setAutocompleteProvider(provider, options);
+	// While a subagent is shown the prompt keeps completing its commands; main's provider is ready for the way back.
+	const shown = viewedAgentAutocompleteProvider(this) ?? provider;
+	this.defaultEditor.setAutocompleteProvider(shown, options);
 	if (this.editor !== this.defaultEditor) {
-		this.editor.setAutocompleteProvider?.(provider);
+		this.editor.setAutocompleteProvider?.(shown);
 	}
 };
+
+const viewedAgentProviders = new WeakMap<AgentViewPort, AutocompleteProvider>();
+
+/** The completion of the subagent the screen shows, or undefined while main is shown. */
+function viewedAgentAutocompleteProvider(mode: InteractiveModeBase): AutocompleteProvider | undefined {
+	const viewed = mode.agentView?.viewed;
+	if (viewed?.kind !== "agent") return undefined;
+	let provider = viewedAgentProviders.get(viewed.port);
+	if (provider === undefined) {
+		provider = createViewedAgentAutocompleteProvider(mode, viewed.port);
+		viewedAgentProviders.set(viewed.port, provider);
+	}
+	return provider;
+}
+
+/** Point the prompt's completion at what the screen shows: main's provider, or the shown subagent's. */
+export function applyViewedAutocomplete(mode: InteractiveModeBase): void {
+	const shown = viewedAgentAutocompleteProvider(mode) ?? mode.autocompleteProvider;
+	if (shown === undefined) return;
+	mode.defaultEditor.setAutocompleteProvider(shown);
+	if (mode.editor !== mode.defaultEditor) mode.editor.setAutocompleteProvider?.(shown);
+}
+
+/**
+ * What the prompt completes while a subagent is shown: the built-ins that work there (every one but `/model` and
+ * `/thinking`), the extension commands Atomic ships, which run on main, then the subagent's own skills, prompt
+ * templates and extension commands, and `@` and Tab paths under its cwd. The subagent's catalog is read again for
+ * every completion, so a resume or a reload never leaves a stale list.
+ */
+function createViewedAgentAutocompleteProvider(mode: InteractiveModeBase, port: AgentViewPort): AutocompleteProvider {
+	// Applying a selected completion needs no catalog.
+	const completion = new CombinedAutocompleteProvider([], "", null);
+	return {
+		async getSuggestions(lines, cursorLine, cursorCol, options) {
+			if (options.signal.aborted) return null;
+			let agent: AgentViewCommands | undefined;
+			try {
+				agent = await port.commands();
+			} catch {
+				// Its catalog cannot be read now: main's commands still complete.
+			}
+			if (options.signal.aborted) return null;
+			const commands = viewedMainSlashCommands(mode);
+			const taken = new Set(commands.map((command) => command.name));
+			for (const command of [
+				...(agent?.skillCommands ?? []),
+				...(agent?.promptTemplates ?? []),
+				...(agent?.extensionCommands ?? []),
+			]) {
+				if (taken.has(command.name)) continue;
+				taken.add(command.name);
+				commands.push({
+					name: command.name,
+					...(command.description === undefined ? {} : { description: command.description }),
+				});
+			}
+			return createChatAutocompleteProvider(
+				commands,
+				agent?.cwd ?? mode.sessionManager.getCwd(),
+				mode.fdPath,
+			).getSuggestions(lines, cursorLine, cursorCol, options);
+		},
+		applyCompletion: (...args) => completion.applyCompletion(...args),
+		shouldTriggerFileCompletion: (...args) => completion.shouldTriggerFileCompletion(...args),
+	};
+}
+
+/** Main's commands that work while a subagent is shown: built-ins but the refused ones, and the bundled extensions'. */
+function viewedMainSlashCommands(mode: InteractiveModeBase): SlashCommand[] {
+	const builtins = builtinSlashCommands
+		.call(mode)
+		.filter((command) => command.name !== "model" && command.name !== "thinking");
+	const registered = mode.session.extensionRunner
+		.getRegisteredCommands()
+		.filter((command) => !BUILTIN_SLASH_COMMAND_NAMES.has(command.name))
+		.filter((command) => command.sourceInfo.configurationOrigin === "bundled");
+	const registeredNames = new Set(registered.map((command) => command.invocationName));
+	const bundled: SlashCommand[] = [
+		...(mode.deferredStartupPending
+			? BUNDLED_EXTENSION_SLASH_COMMANDS.filter(
+					(command) => !BUILTIN_SLASH_COMMAND_NAMES.has(command.name) && !registeredNames.has(command.name),
+				).map((command) => ({
+					name: command.name,
+					description: command.description,
+					getArgumentCompletions: command.getArgumentCompletions,
+				}))
+			: []),
+		...registered.map((command) => ({
+			name: command.invocationName,
+			description: mode.prefixAutocompleteDescription(command.description, command.sourceInfo),
+			getArgumentCompletions: command.getArgumentCompletions,
+		})),
+	];
+	const remoteBundled = new Set(
+		getInteractiveEngineRemoteCommands(mode.runtimeHost)
+			.filter((command) => command.source === "extension" && command.sourceInfo.configurationOrigin === "bundled")
+			.map((command) => command.name),
+	);
+	const remote = mode
+		.buildRemoteSlashCommands([...builtins, ...bundled])
+		.filter((command) => remoteBundled.has(command.name));
+	return [...builtins, ...bundled, ...remote];
+}

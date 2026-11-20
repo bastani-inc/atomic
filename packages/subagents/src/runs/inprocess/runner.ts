@@ -1021,13 +1021,30 @@ function chatMessageQueue(session: AgentSession): TranscriptQueueMethods {
 	};
 }
 
-/** What a chat of the child completes and expands: its cwd and its own skills. A test session has no resources. */
+/**
+ * What a chat of the child completes and expands: its cwd, its own skills, prompt templates and extension commands.
+ * A test session has no resources.
+ */
 function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands {
 	const loader = session.resourceLoader as AgentSession["resourceLoader"] | undefined;
+	const templates = session.promptTemplates as AgentSession["promptTemplates"] | undefined;
+	const runner = session.extensionRunner as Partial<AgentSession["extensionRunner"]> | undefined;
 	return {
 		cwd,
 		skills: loader === undefined ? emptySkillCatalog() : getSkillCatalog(loader),
 		skillCommandsEnabled: session.settingsManager?.getEnableSkillCommands() ?? false,
+		promptTemplates: (Array.isArray(templates) ? templates : []).map(({ name, description, sourceInfo }) => ({
+			name,
+			description,
+			sourceInfo,
+		})),
+		extensionCommands: (runner?.getRegisteredCommands?.() ?? []).map(
+			({ invocationName, description, sourceInfo }) => ({
+				name: invocationName,
+				description,
+				sourceInfo,
+			}),
+		),
 	};
 }
 
@@ -1289,12 +1306,13 @@ function settledSkill(skill: Skill): Skill {
 /**
  * The commands a settled child keeps: its skills' names, descriptions and sources, copied once for every child. A
  * skill's name is a slice of its whole SKILL.md text, so keeping the catalog itself would keep every skill file the
- * child loaded (#5186).
+ * child loaded (#5186). Its prompt templates and extension commands are copied the same way.
  */
 async function settledCommands(commands: TranscriptCommands): Promise<TranscriptCommands> {
 	const winners = commands.skills.commands.flatMap((command) =>
 		command.name === command.skill.name ? [settledSkill(command.skill)] : [],
 	);
+	const copied = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 	return {
 		cwd: commands.cwd,
 		skills: await buildSkillCatalogAsync(
@@ -1302,6 +1320,8 @@ async function settledCommands(commands: TranscriptCommands): Promise<Transcript
 			winners,
 		),
 		skillCommandsEnabled: commands.skillCommandsEnabled,
+		...(commands.promptTemplates === undefined ? {} : { promptTemplates: copied(commands.promptTemplates) }),
+		...(commands.extensionCommands === undefined ? {} : { extensionCommands: copied(commands.extensionCommands) }),
 	};
 }
 
