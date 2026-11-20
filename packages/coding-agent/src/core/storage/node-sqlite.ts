@@ -1311,6 +1311,19 @@ class CallerThreadConnection {
 	}
 }
 
+/**
+ * Closes `current`'s hold when the connection's thread exits: a thread that is gone holds no lock, whatever the
+ * transaction's callback still does. Outside the database's methods, so the listener keeps only the cell, not the
+ * database.
+ */
+function releaseOnExit(connection: ThreadConnection, current: { hold?: FileHold }): void {
+	connection.onExit(() => {
+		const hold = current.hold;
+		current.hold = undefined;
+		releaseHold(hold);
+	});
+}
+
 /** Where a connection's statements run: a thread of its own, or the calling thread. */
 type SqliteConnection = ThreadConnection | CallerThreadConnection;
 
@@ -1364,8 +1377,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * the calling thread `waits` for those holds before a statement that could wait for the lock on this thread.
 	 */
 	private readonly fileGate?: { readonly file: string; readonly role: "holds" | "waits" };
-	/** The hold of the transaction this connection takes or holds the write lock for; see `FileHold`. */
-	private hold?: FileHold;
+	/**
+	 * The hold of the transaction this connection takes or holds the write lock for (see `FileHold`), in a cell of its
+	 * own that the thread's exit listener keeps, so the listener does not keep this database.
+	 */
+	private readonly current: { hold?: FileHold } = {};
 	/** The ticket of the writer holding the lock, on its way out of the queue while the transaction runs. */
 	private leaving?: { readonly ticket: string; readonly left: Promise<void> };
 	/** What the writers' queue gave up on, once per reason, in the order it first happened. */
@@ -1382,12 +1398,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	) {
 		this.fileGate = fileGate;
 		// A thread that is gone holds no lock, whatever the transaction's callback still does.
-		if (fileGate?.role === "holds" && connection instanceof ThreadConnection)
-			connection.onExit(() => {
-				const hold = this.hold;
-				this.hold = undefined;
-				releaseHold(hold);
-			});
+		if (fileGate?.role === "holds" && connection instanceof ThreadConnection) releaseOnExit(connection, this.current);
 		this.lockWaitMs = lockWaitMs;
 		this.groupCommitHoldMs = groupCommitHoldMs;
 		this.transactionIdentity = transactionIdentity;
@@ -1576,13 +1587,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			return refusal(error);
 		}
 		if (!(attempt instanceof Promise)) {
-			this.hold = hold;
+			this.current.hold = hold;
 			holdTaken(hold);
 			return undefined;
 		}
 		return attempt.then(
 			() => {
-				this.hold = hold;
+				this.current.hold = hold;
 				holdTaken(hold);
 				return undefined;
 			},
@@ -1655,8 +1666,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * handed on is still noticed by that writer's recheck timer, so it never fails the transaction.
 	 */
 	private async released(committed: boolean): Promise<void> {
-		const hold = this.hold;
-		this.hold = undefined;
+		const hold = this.current.hold;
+		this.current.hold = undefined;
 		releaseHold(hold);
 		this.lockUse.released(committed);
 		const recorded = this.holderRecord?.free();
@@ -1964,17 +1975,17 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private async commitAlone(queued: QueuedTransaction): Promise<void> {
 		let active = true;
 		try {
-			const value = await runInHold(this.hold, queued.scope, () =>
+			const value = await runInHold(this.current.hold, queued.scope, () =>
 				queued.callback(this.createExecutor(() => active)),
 			);
 			active = false;
-			holdLettingGo(this.hold);
+			holdLettingGo(this.current.hold);
 			await this.executor.exec("COMMIT");
 			await this.released(true);
 			queued.resolve(value);
 		} catch (cause) {
 			active = false;
-			holdLettingGo(this.hold);
+			holdLettingGo(this.current.hold);
 			try {
 				await this.executor.exec("ROLLBACK");
 			} catch (rollbackCause) {
@@ -2000,7 +2011,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			let active = true;
 			try {
 				await this.executor.exec(`SAVEPOINT ${savepoint}`);
-				const value = await runInHold(this.hold, queued.scope, () =>
+				const value = await runInHold(this.current.hold, queued.scope, () =>
 					queued.callback(this.createExecutor(() => active)),
 				);
 				active = false;
@@ -2021,7 +2032,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		const ran = batch.members.splice(0, outcomes.length);
 		let commitCause: unknown;
 		let committed = true;
-		holdLettingGo(this.hold);
+		holdLettingGo(this.current.hold);
 		try {
 			await this.executor.exec("COMMIT");
 		} catch (cause) {
@@ -2050,7 +2061,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		cause: unknown,
 		rollbackCause: unknown,
 	): Promise<void> {
-		holdLettingGo(this.hold);
+		holdLettingGo(this.current.hold);
 		await this.rollbackQuietly();
 		await this.released(false);
 		const failed = outcomes.length;

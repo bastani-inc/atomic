@@ -88,16 +88,26 @@ export function holdLettingGo(hold: FileHold | undefined): void {
 	hold.phase = "letting go";
 }
 
-/** Fails, with SQLITE_BUSY, the file's waiting calls whose deadline has passed. */
+/**
+ * Fails, with SQLITE_BUSY, the file's calls whose deadline has passed by now, once the event loop handled what it
+ * already received: a call that a thread's exit, already reported, let run in the meantime has run.
+ */
 function failOverdue(file: string): void {
 	const gate = registry.files.get(file);
 	if (gate === undefined) return;
 	const now = performance.now();
-	for (const waiter of gate.waiters.filter((waiting) => now >= waiting.deadline)) {
-		gate.waiters.splice(gate.waiters.indexOf(waiter), 1);
-		clearTimeout(waiter.timer);
-		waiter.fail();
-	}
+	const overdue = gate.waiters.filter((waiting) => now >= waiting.deadline);
+	if (overdue.length === 0) return;
+	setImmediate(() => {
+		for (const waiter of overdue) {
+			const index = gate.waiters.indexOf(waiter);
+			if (index === -1) continue;
+			gate.waiters.splice(index, 1);
+			clearTimeout(waiter.timer);
+			waiter.fail();
+		}
+		forgetIfIdle(file, gate);
+	});
 }
 
 /**
@@ -175,13 +185,19 @@ export function waitForHolds<T>(
 	return new Promise<T>((resolve, reject) => {
 		const waiter: Waiter = {
 			deadline: performance.now() + timeoutMs,
-			timer: setTimeout(() => {
-				const index = gate.waiters.indexOf(waiter);
-				if (index === -1 || !lockTaken(gate)) return;
-				gate.waiters.splice(index, 1);
-				forgetIfIdle(file, gate);
-				reject(busy());
-			}, timeoutMs),
+			// Decided once the event loop handled what it already received, such as the answer to a COMMIT or the exit
+			// of a connection's thread, which a timer runs ahead of.
+			timer: setTimeout(
+				() =>
+					setImmediate(() => {
+						const index = gate.waiters.indexOf(waiter);
+						if (index === -1 || !lockTaken(gate)) return;
+						gate.waiters.splice(index, 1);
+						forgetIfIdle(file, gate);
+						reject(busy());
+					}),
+				timeoutMs,
+			),
 			run: () => resolve(run()),
 			fail: () => reject(busy()),
 		};
@@ -227,9 +243,10 @@ const CALLS_CODE = /^(?:Function|PureFunc|Agg[A-Z]\w*|V[A-Z]\w*|Program)$/;
 /**
  * What one statement does, proven from the plan SQLite makes for it on `database`, never by running it: `reads` when
  * it only reads, so it never waits for the write lock in WAL mode, which both kinds of connection put the file in;
- * `writes` when it takes the file's write lock before anything else and runs no code but SQLite's own; `not proven`
- * otherwise. Either proof needs a plan that calls no function, virtual table or trigger (whose code could wait for a
- * lock or write), uses no attached database, and was made for the schema the file has now. `writes` is only asked for
+ * `writes` when it takes the file's write lock before anything else and calls no function, virtual table or trigger;
+ * `not proven` otherwise. Either proof needs a plan that calls no function, virtual table or trigger (whose code could
+ * wait for a lock or write), uses no attached database, and was made for the schema the file has now. A collating
+ * sequence an extension registered still runs: it compares values and is not told apart. `writes` is only asked for
  * when `forWrite`.
  *
  * The plan of a text is prepared once while the file is held and run again for later calls: SQLite makes it again when

@@ -14,6 +14,7 @@ import {
 	wrapNodeSqliteDatabase,
 } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { ThreadConnection } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
+import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { interceptConnectionRequests, isExec } from "../helpers/sqlite-connection-requests.js";
 
@@ -549,4 +550,24 @@ test("a transaction requested inside a threaded transaction's callback keeps tha
 	await Promise.all([first, outer]);
 	assert.deepEqual(read, { n: 1 });
 	assert.equal(calls, 1);
+});
+
+test("a threaded handle dropped without closing is not kept by its connection's thread (#6081)", async () => {
+	const path = databasePath();
+	let thread: ThreadConnection | undefined;
+	const interception = interceptConnectionRequests((request, send, connection) => {
+		thread ??= connection;
+		return send(request);
+	});
+	cleanups.push(() => interception.restore());
+	const handles = trackCollection();
+	await (async () => {
+		const database = await openNodeSqliteDatabase(path);
+		await database.exec("CREATE TABLE items (value TEXT)");
+		handles.track(database);
+	})();
+	// The thread stays until it is closed or collected with its connection.
+	cleanups.push(() => (Reflect.get(thread!, "worker") as Worker).terminate().then(() => {}));
+	await collectEverythingTracked(handles);
+	assert.deepEqual(handles.uncollected(), [], "the connection's thread keeps the handle");
 });
