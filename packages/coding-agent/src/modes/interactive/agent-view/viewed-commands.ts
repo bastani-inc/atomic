@@ -10,6 +10,7 @@ import { mergeRestoredDraft } from "../interactive-prompt-restore.ts";
 import { type MainCommandOrigin, viewedAgentCommand } from "../subagent-chat-commands.ts";
 import type { AgentViewSwitcher } from "./agent-view-switcher.ts";
 import type { AgentViewPort } from "./contracts.ts";
+import { notifyViewed } from "./viewed-notices.ts";
 
 /**
  * Where a submission typed while a subagent is shown goes: `agent` (sent to it), `main` (the caller runs it as the
@@ -41,20 +42,22 @@ export async function routeViewedCommand(
 			await runWithMainShown(mode, text);
 			return "handled";
 		case "refuse":
-			mode.showWarning(refusalNotice(`/${command.name}`, command.name === "thinking" ? "thinking" : "model"));
+			notifyViewed(mode, refusalNotice(`/${command.name}`, command.name === "thinking" ? "thinking" : "model"), "warning");
 			return "handled";
 		case "copy":
 			await copyLastMessage(mode, port);
 			return "handled";
 		case "confirm": {
-			const typedIn = shownPrompt(mode);
 			if (!(await confirmMainConversation(mode, port, `/${command.name}`))) {
-				// The command comes back in front of what the prompt holds now, as it was typed.
-				const prompt =
-					mode.agentView?.viewed.kind === "agent" && mode.agentView.viewed.port === port
-						? typedIn
-						: shownPrompt(mode);
-				prompt.setText(mergeRestoredDraft(text, prompt.getExpandedText()));
+				const viewed = mode.agentView?.viewed;
+				if (viewed?.kind === "agent" && viewed.port === port) {
+					// The command comes back in front of what the subagent's prompt holds now, as it was typed.
+					const prompt = shownPrompt(mode);
+					prompt.setText(mergeRestoredDraft(text, prompt.getExpandedText()));
+				} else {
+					// The screen left the subagent meanwhile. In another prompt one Enter would run the command unasked.
+					mode.showWarning(`${text} was not run.`);
+				}
 				return "handled";
 			}
 			await runWithMainShown(mode, text);
@@ -100,17 +103,18 @@ export function refusalNotice(command: string, sets: "model" | "thinking"): stri
 	return `${command} changes the main conversation's ${what}. Switch to main to use it.`;
 }
 
+/** `/copy` while a subagent is shown copies its last message; the notices are about it alone. */
 async function copyLastMessage(mode: InteractiveModeBase, port: AgentViewPort): Promise<void> {
 	try {
 		const text = await port.lastAgentMessageText();
 		if (!text) {
-			mode.showError("No agent messages to copy yet.");
+			notifyViewed(mode, "No agent messages to copy yet.", "error");
 			return;
 		}
 		await copyToClipboard(text);
-		mode.showStatus("Copied last agent message to clipboard");
+		notifyViewed(mode, "Copied last agent message to clipboard", "info");
 	} catch (error) {
-		mode.showError(error instanceof Error ? error.message : String(error));
+		notifyViewed(mode, error instanceof Error ? error.message : String(error), "error");
 	}
 }
 
@@ -158,7 +162,7 @@ export function installViewedCommandGates(mode: InteractiveModeBase, switcher: A
 				return;
 			}
 			if (gate.refused !== undefined) {
-				mode.showWarning(refusalNotice(keyDisplayText(action) || gate.command, gate.refused));
+				notifyViewed(mode, refusalNotice(keyDisplayText(action) || gate.command, gate.refused), "warning");
 				return;
 			}
 			void confirmMainConversation(mode, viewed.port, gate.command).then(async (yes) => {
@@ -197,9 +201,4 @@ export function runViewedDoubleEscapeAction(mode: InteractiveModeBase, action: "
 		await mode.agentView?.view(undefined);
 		await open();
 	});
-}
-
-/** Double Esc on an empty prompt while a subagent is shown: the main chat's tree or fork selector, after a confirm. */
-export function runViewedDoubleEscapeAction(mode: InteractiveModeBase, action: "tree" | "fork"): void {
-	void (action === "tree" ? mode.showTreeSelector() : mode.showUserMessageSelector());
 }

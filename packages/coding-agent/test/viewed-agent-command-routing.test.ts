@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { TaskId } from "../src/core/tasks/contracts.js";
 import { AgentViewSwitcher } from "../src/modes/interactive/agent-view/agent-view-switcher.ts";
@@ -60,6 +61,10 @@ async function viewSubagent(): Promise<ViewedScreen> {
 				handler: async () => void ran.push("/plan on main"),
 			}),
 	]);
+	// The main session binds its extensions after the screen starts; their commands are routed once bound.
+	const runner = () => main.mode.session.extensionRunner;
+	await until(() => runner().getCommand("appcmd") !== undefined && runner().getCommand("plan") !== undefined);
+	await new Promise((resolve) => setImmediate(resolve));
 	const port = new FakeAgentViewPort({ taskId: TASK, name: "worker" });
 	port.lastMessage = "the worker's answer";
 	opened.port = port;
@@ -241,24 +246,26 @@ describe("commands typed while a subagent is shown on the main screen", () => {
 });
 
 describe("the prompt's completion while a subagent is shown", () => {
-	/** The prompt with its completion menu, once the completion for `text` typed into the empty prompt settled. */
-	async function completionsFor(text: string): Promise<string> {
+	/**
+	 * The prompt with its completion menu after `text` is typed into the empty prompt: once the menu shows `expected`,
+	 * or, without it, once the completion had time to answer. The host rebuilds its completion when the session's
+	 * resources settle, which closes an open menu as it does in the main chat; the text is typed again then.
+	 */
+	async function completionsFor(text: string, expected?: RegExp): Promise<string> {
 		const editor = screen?.mode.defaultEditor;
 		assert.ok(editor);
-		editor.setText("");
-		for (const char of text) editor.handleInput(char);
 		let menu = "";
-		let last = "";
-		let stableSince = Date.now();
-		// The completion is asynchronous: the menu is read once it has not changed for a while.
-		await until(() => {
-			menu = (editor.render(160) as string[]).join("\n");
-			if (menu !== last) {
-				last = menu;
-				stableSince = Date.now();
+		for (let attempt = 0; attempt < 5; attempt++) {
+			editor.setText("");
+			for (const char of text) editor.handleInput(char);
+			const started = Date.now();
+			while (Date.now() - started < 1500) {
+				menu = stripVTControlCharacters((editor.render(160) as string[]).join("\n"));
+				if (expected?.test(menu)) return menu;
+				await new Promise((resolve) => setTimeout(resolve, 10));
 			}
-			return Date.now() - stableSince > 300;
-		});
+			if (expected === undefined) return menu;
+		}
 		return menu;
 	}
 
@@ -272,20 +279,14 @@ describe("the prompt's completion while a subagent is shown", () => {
 				promptTemplates: [{ name: "review-template", description: "A template" }],
 				extensionCommands: [{ name: "review-command", description: "The subagent's command" }],
 			};
-			const menu = await completionsFor("/revi");
-			assert.match(menu, /skill:reviewer/);
-			assert.match(menu, /review-template/);
-			assert.match(menu, /review-command/);
-			const commands = await completionsFor("/");
-			assert.match(commands, /settings/);
-			assert.doesNotMatch(commands, /\bmodel\b.*Select model/);
-			assert.equal(
-				(await completionsFor("/mod")).includes("Select model"),
-				false,
-				"/model is not offered",
-			);
-			assert.match(await completionsFor("/appc"), /appcmd/);
-			assert.equal((await completionsFor("/pla")).includes("A command the user installed"), false);
+			const menu = await completionsFor("/revi", /review-command/);
+			assert.match(menu, /skill:reviewer\s+Review a diff/);
+			assert.match(menu, /review-template\s+A template/);
+			assert.match(await completionsFor("/", /settings/), /settings\s+Open settings menu/);
+			assert.match(await completionsFor("/appc", /appcmd/), /appcmd\s+.*An app command Atomic ships/);
+			assert.doesNotMatch(await completionsFor("/mod"), /Select model/, "/model is not offered");
+			assert.doesNotMatch(await completionsFor("/thin"), /Set thinking level/, "/thinking is not offered");
+			assert.doesNotMatch(await completionsFor("/pla"), /A command the user installed/, "main's own /plan is not");
 		},
 		HOST_TIMEOUT_MS,
 	);
@@ -301,8 +302,8 @@ describe("the prompt's completion while a subagent is shown", () => {
 				extensionCommands: [],
 			};
 			await screen.mode.agentView?.view(undefined);
-			assert.match(await completionsFor("/mod"), /Select model/);
-			assert.match(await completionsFor("/pla"), /plan/);
+			assert.match(await completionsFor("/mod", /Select model/), /model/);
+			assert.match(await completionsFor("/pla", /A command the user installed/), /plan/);
 			assert.doesNotMatch(await completionsFor("/skill:r"), /skill:reviewer/);
 		},
 		HOST_TIMEOUT_MS,
@@ -396,18 +397,15 @@ describe("commands typed while a subagent is shown, on the isolated host", () =>
 			rigs.push(rig);
 			const runtime = rig.pair?.runtime;
 			assert.ok(runtime);
-			// The first extension stands for one Atomic ships.
-			const app = rig.engine.session.resourceLoader
-				.getExtensions()
-				.extensions.find((extension) => extension.commands.has("appcmd"));
-			assert.ok(app);
-			app.sourceInfo.configurationOrigin = "bundled";
 			await runtime.waitUntilResourcesReady();
-			await until(() =>
-				runtime
-					.getRemoteCommands()
-					.some((command) => command.name === "appcmd" && command.sourceInfo.configurationOrigin === "bundled"),
+			await until(() => runtime.getRemoteCommands().some((command) => command.name === "appcmd"));
+			// The engine's catalog marks /appcmd as an extension Atomic ships, as it marks the bundled ones.
+			const catalog = runtime.getRemoteCommands().map((command) =>
+				command.name === "appcmd"
+					? { ...command, sourceInfo: { ...command.sourceInfo, configurationOrigin: "bundled" as const } }
+					: command,
 			);
+			Object.defineProperty(runtime, "getRemoteCommands", { configurable: true, value: () => catalog });
 			const port = new FakeAgentViewPort({ taskId: TASK, name: "worker" });
 			const switcher = new AgentViewSwitcher(async () => port, () => {});
 			Object.assign(rig.host, { agentView: switcher });
