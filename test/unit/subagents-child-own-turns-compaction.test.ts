@@ -26,7 +26,6 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agent-type
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
-import { wrapForkTask } from "../../packages/subagents/src/shared/types-runtime.js";
 
 /**
  * Structural cost, not a slow test: each case builds a real parent AgentSession and a real child AgentSession with
@@ -214,7 +213,7 @@ async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: Fi
 		await parentManager.appendMessage(assistant("PARENT_ANSWER: the parent's settled answer"));
 		const childManager = await createForkContextResolver(parentManager, "fork").sessionManagerForIndex(0);
 		assert.ok(childManager);
-		return { result: await run(wrapForkTask("do the task"), childManager), childManager };
+		return { result: await run("do the task", childManager), childManager };
 	};
 	/**
 	 * A child continued in the session of its previous run, which ended with `EARLIER_ANSWER`, or with an entry after it

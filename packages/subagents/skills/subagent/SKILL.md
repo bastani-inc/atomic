@@ -174,7 +174,7 @@ subagent({
 })
 ```
 
-`context: "fork"` creates a branched child session from the current persisted parent session. It does **not** create a fresh minimal review context or filter history down to only the relevant parts. Use it when you want a separate writer thread that can still reference the parent session history. For adversarial review, prefer fresh context so the specialist inspects the repo directly.
+`context: "fork"` creates a branched child session from the current persisted parent session. It does **not** create a fresh minimal review context or filter history down to only the relevant parts: the child continues the parent's conversation exactly as the parent sent it, with the parent's system prompt, project context, skills catalog and tools, and adds its own role and task after it. With the same model and thinking level, its first request is therefore read from the parent's prompt cache. Use it when the child needs the parent's conversation. Use fresh context for independent work, which sends a smaller context, and for adversarial review, so the specialist inspects the repo directly.
 
 ### Parallel execution
 
@@ -423,7 +423,7 @@ If a prompt-template extension is installed, additional user prompt templates ca
 ## Important Constraints
 
 - **Forking requires a persisted parent session.** If the current session does not have a persisted session file, forked runs fail.
-- **Forked runs inherit parent history.** They are branched threads, not fresh filtered contexts. Use fresh context for adversarial review unless the user explicitly asks for forked context.
+- **Forked runs inherit parent history.** They are branched threads, not fresh filtered contexts: the agent's `inheritProjectContext` and `inheritSkills` apply to fresh children, not to what the parent already sent; launch with `context: "fresh"` to keep the project context and skills out. A forked child can still call only its own tools; a call to another tool the parent declared fails. Use fresh context for adversarial review unless the user explicitly asks for forked context.
 - **Delegation is one level deep and not configurable.** A subagent cannot call `subagent`: every launch and run control (`pause`, `resume`, `quit`) from inside a child is refused. Only `list`, `get`, `status`, and `wait` stay available to a child.
 - **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `killed` means the child was cancelled for good by owner or batch cancellation (or, in older sessions, the removed kill action); it cannot be resumed and is not the same as `failed`. `paused` and `quit` children stay resumable.
 - **Builtin coordination respects caller restrictions.** Every builtin agent declares `intercom`, but a parent that disables it prevents live coordination. Resolve decisions up front when running without coordination tools.
@@ -442,7 +442,7 @@ A strong pattern is one writer plus advisory/research/review specialists around 
 
 ### Use fork for branched writer threads
 
-Forked runs are useful when a writer should reason in a separate thread while still inheriting the parent's accumulated context. For adversarial review, prefer fresh-context specialists that inspect the repo and diff directly unless the user explicitly requests forked context.
+Forked runs are useful when a writer should reason in a separate thread while still inheriting the parent's accumulated context. A fork on the parent's model and thinking level reads the parent's conversation from the prompt cache, so forking a long conversation costs little input; a fork on another model or provider reads nothing from it, and one on another thinking level may read only part of it, depending on the model. For adversarial review, prefer fresh-context specialists that inspect the repo and diff directly unless the user explicitly requests forked context.
 
 ### Prefer narrow tasks
 

@@ -321,6 +321,18 @@ for (const trigger of ["startup-error", "mid-session-error", "context-overflow"]
 	);
 }
 
+/** The model a prompt names last: a later section update supersedes the one the prompt started with. */
+function lastNamedModel(prompt: string): string | undefined {
+	return [...prompt.matchAll(/Model name \(used for commit attribution\): (.+)/g)].at(-1)?.[1];
+}
+
+/** The same child prompt, with only the model it now runs on told after it. */
+function assertToldNewModel(before: string, after: string): void {
+	assert.ok(after.startsWith(before), "the prompt the child was sent is kept");
+	assert.equal(lastNamedModel(after.slice(before.length)), "Sol 6");
+	assert.doesNotMatch(after.slice(before.length), /You are|Argon 4/, "only the model section is sent again");
+}
+
 test(
 	"an explicit model never takes up the settings fallbackModels chain when the parent's model adds no candidate",
 	async () => {
@@ -353,8 +365,7 @@ test(
 		assert.equal(result.requestedModel, `${REQUESTED}:high`);
 		assert.deepEqual(result.attemptedModels, [REQUESTED, ALLOWED_OTHER]);
 		const fallbackPrompt = requests.at(-1)!.systemPrompt;
-		assert.match(fallbackPrompt, /Model name \(used for commit attribution\): Sol 6/);
-		assert.doesNotMatch(fallbackPrompt, /Argon 4/);
+		assert.equal(lastNamedModel(fallbackPrompt), "Sol 6", "the fallback model is told its own name last");
 		// Run status, by the run and by the child, says it too.
 		const ranOn = "ran on account-a/sol  high, not the requested account-a/argon  high";
 		const runStatus = inspectInProcessChildStatus("explicit-agent-chain");
@@ -406,14 +417,8 @@ for (const forkFromParent of [false, true]) {
 			);
 			const [before, , after] = requests as [ProviderRequest, ProviderRequest, ProviderRequest];
 			assert.ok(before.systemPrompt.includes(CHILD_ROLE), before.systemPrompt);
-			assert.equal(
-				after.systemPrompt,
-				before.systemPrompt.replace(
-					"Model name (used for commit attribution): Argon 4",
-					"Model name (used for commit attribution): Sol 6",
-				),
-				"the same child prompt, with only the model it runs on changed",
-			);
+			// The child keeps the prompt it was sent, and is told the model it now runs on after it.
+			assertToldNewModel(before.systemPrompt, after.systemPrompt);
 			assert.deepEqual(after.tools, before.tools, "the same tools");
 			assert.deepEqual(before.tools, ["read"]);
 			assert.doesNotMatch(after.systemPrompt, /PARENT TASK/);
@@ -484,13 +489,7 @@ test(
 			assert.match(read, new RegExp(CHILD_SENTINEL));
 			assert.doesNotMatch(read, new RegExp(PARENT_SENTINEL));
 		}
-		assert.equal(
-			requests[2]!.systemPrompt,
-			requests[0]!.systemPrompt.replace(
-				"Model name (used for commit attribution): Argon 4",
-				"Model name (used for commit attribution): Sol 6",
-			),
-		);
+		assertToldNewModel(requests[0]!.systemPrompt, requests[2]!.systemPrompt);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
