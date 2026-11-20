@@ -298,6 +298,8 @@ pi.on("session_shutdown", async (event, ctx) => {
 
 `fromSignal` is set only on `reason: "quit"`. Ctrl+D and `/quit` leave it unset. Use it to tell a deliberate exit from the host stopping the process, for example to keep externally registered state that a restart can resume from.
 
+When you quit the interactive app, `session_shutdown` handlers have about five seconds to finish; a handler still running then is stopped with the rest of the session.
+
 ### Agent Events
 
 #### before_agent_start

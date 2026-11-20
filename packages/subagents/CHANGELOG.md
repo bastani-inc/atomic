@@ -13,6 +13,7 @@
 ### Fixed
 
 - A subagent reopened on another day or after Atomic was updated keeps the prompt its provider has cached. It is sent the system prompt it started with, and what changed since, such as the date, the model it falls back to or its skills, as updates after it, so the provider no longer processes its whole conversation again. A subagent last run by an earlier version is processed in full once more, on its first run after updating. A subagent whose agent now inherits differently, for example no longer the project context, starts over with its current prompt, and a session forked from a subagent's session uses a prompt of its own ([#6093](https://github.com/bastani-inc/atomic/pull/6093)).
+- A subagent whose context was cleared or compacted while it ran, and that then finished, is reported done with its answer. It was reported failed with "Child ended without completing an assistant turn of its own." and its answer was missing. When its last turn has no text, the answer it wrote before the clear is reported. Turns from its earlier runs, or from the parent conversation a forked subagent starts with, still never count as its own ([#6098](https://github.com/bastani-inc/atomic/pull/6098)).
 - A forked subagent made in the same millisecond as its parent's last reply, or after the system clock stepped back, continues its parent's conversation and prompt cache instead of starting over with a prompt of its own ([#6099](https://github.com/bastani-inc/atomic/pull/6099)).
 
 ## [0.10.1] - 2026-11-20

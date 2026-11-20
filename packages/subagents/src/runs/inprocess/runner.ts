@@ -39,7 +39,7 @@ import {
 	watchHeldPromptAttention,
 	withTaskTranscriptArchive,
 } from "@bastani/atomic";
-import { readSessionHistory, readSessionHistoryChunks } from "@bastani/atomic/storage";
+import { readSessionHistory, readSessionHistoryChunks, type SessionHistoryItem } from "@bastani/atomic/storage";
 import {
 	type Api,
 	type AssistantMessage,
@@ -1429,17 +1429,109 @@ function statsFor(session: AgentSession | undefined, fallbackSessionId: string):
 type BranchEntry = ReturnType<SessionManager["getBranch"]>[number];
 type TranscriptMessage = Extract<BranchEntry, { type: "message" }>["message"];
 
+/** Where an attempt began: its session's leaf when it launched, and that leaf's position in the session. */
+interface AttemptLaunch {
+	readonly leafId: string | null;
+	/** 0 for an empty session; undefined when the session does not say. */
+	readonly leafSeq: number | undefined;
+}
+
+function attemptLaunch(manager: SessionManager): AttemptLaunch {
+	const leafId = manager.getLeafId();
+	if (leafId === null) return { leafId, leafSeq: 0 };
+	return { leafId, leafSeq: typeof manager.getEntrySeq === "function" ? manager.getEntrySeq(leafId) : undefined };
+}
+
+function assistantTurns(entries: readonly BranchEntry[]): AssistantMessage[] {
+	return entries.flatMap((entry) =>
+		entry.type === "message" && entry.message.role === "assistant" ? [entry.message] : [],
+	);
+}
+
+/** A turn that ended in neither a model error nor an abort. */
+function completedTurn(turn: AssistantMessage): boolean {
+	return turn.stopReason !== "error" && turn.stopReason !== "aborted";
+}
+
 /**
- * The messages this attempt produced: entries on the child's branch after its launch leaf.
- * A forked child's session also carries the parent's history up to the fork point, and none
- * of that is the child's output (#3987). A launch leaf missing from the branch yields
- * nothing rather than the whole inherited transcript.
+ * The assistant turns this attempt produced: those on the child's branch after its launch leaf. A forked child's
+ * session also carries the parent's history up to the fork point, and none of that is the child's output (#3987). A
+ * launch leaf missing from the branch yields nothing rather than the whole inherited transcript.
+ *
+ * A compaction during the attempt releases from the session's memory everything before its window, the launch leaf
+ * among it. The attempt's turns are then the ones held from that window on and, read from the session's store, the
+ * ones between its launch and the window, newest first and only as far back as its result depends on: until they
+ * hold text and either a turn that completed or a last turn that failed. When the store cannot be read, they are the
+ * turns read so far with every one the session holds in memory after the launch, including those a compaction kept
+ * from before its window. The result is a promise only when a read is needed.
  */
-function messagesSinceLaunch(manager: SessionManager, launchLeafId: string | null): TranscriptMessage[] {
+function turnsSinceLaunch(
+	manager: SessionManager,
+	launch: AttemptLaunch,
+): AssistantMessage[] | Promise<AssistantMessage[]> {
 	const branch = manager.getBranch();
-	const launchIndex = launchLeafId === null ? -1 : branch.findIndex((entry) => entry.id === launchLeafId);
-	if (launchLeafId !== null && launchIndex === -1) return [];
-	return branch.slice(launchIndex + 1).flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+	const heldFrom = typeof manager.getHeldTail === "function" ? manager.getHeldTail().fromSeq : 1;
+	const { leafSeq } = launch;
+	if (
+		leafSeq === undefined ||
+		leafSeq >= heldFrom ||
+		(leafSeq === 0 && heldFrom <= 1) ||
+		typeof manager.getEntrySeq !== "function" ||
+		typeof manager.readHistory !== "function"
+	) {
+		const launchIndex = launch.leafId === null ? -1 : branch.findIndex((entry) => entry.id === launch.leafId);
+		if (launch.leafId !== null && launchIndex === -1) return [];
+		return assistantTurns(branch.slice(launchIndex + 1));
+	}
+	const seqOf = (entry: BranchEntry) => manager.getEntrySeq(entry.id) ?? 0;
+	// Entries before the window that a compaction keeps in memory are on the branch too; the store has those.
+	const held = assistantTurns(branch.filter((entry) => seqOf(entry) >= Math.max(heldFrom, leafSeq + 1)));
+	let hasText = outputFor(held) !== "";
+	let decided = held.at(-1)?.stopReason === "error" || held.some(completedTurn);
+	const leaf = branch.at(-1);
+	if ((hasText && decided) || leaf === undefined) return held;
+	const branchLeafSeq = seqOf(leaf);
+	// Runs at once up to its first read: the read covers the session as it is now.
+	return (async () => {
+		const earlier: { readonly seq: number; readonly turn: AssistantMessage }[] = [];
+		try {
+			const pages = manager.readHistory({
+				branchLeafSeq,
+				fromSeq: leafSeq + 1,
+				toSeq: heldFrom - 1,
+				direction: "backward",
+			});
+			read: for await (const { items } of pages) {
+				for (let index = items.length - 1; index >= 0; index -= 1) {
+					const entry = await storedEntry(manager, items[index]!);
+					if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+					const turn = entry.message;
+					if (held.length === 0 && earlier.length === 0 && turn.stopReason === "error") decided = true;
+					earlier.push({ seq: items[index]!.seq, turn });
+					hasText ||= outputFor([turn]) !== "";
+					decided ||= completedTurn(turn);
+					if (hasText && decided) break read;
+				}
+			}
+		} catch {
+			const known = new Map(earlier.map(({ seq, turn }) => [seq, turn]));
+			for (const entry of branch) {
+				const seq = seqOf(entry);
+				if (seq > leafSeq && seq < heldFrom && entry.type === "message" && entry.message.role === "assistant")
+					known.set(seq, entry.message);
+			}
+			return [...[...known].sort(([left], [right]) => left - right).map(([, turn]) => turn), ...held];
+		}
+		return [...earlier.reverse().map(({ turn }) => turn), ...held];
+	})();
+}
+
+/** A history item as its entry, reading an entry too large for a history page from its chunks. */
+async function storedEntry(manager: SessionManager, item: SessionHistoryItem): Promise<SessionEntry> {
+	if ("entry" in item) return item.entry;
+	const chunks: Uint8Array[] = [];
+	for await (const chunk of manager.readHistoryChunks(item)) chunks.push(chunk);
+	return JSON.parse(Buffer.concat(chunks).toString("utf8")) as SessionEntry;
 }
 
 function hasPartialHistory(manager: SessionManager): boolean {
@@ -1525,10 +1617,8 @@ function unsavedWorkCause(error: string, keptAnswer: boolean): string {
 		: `The child's session could not save its work (${error}).`;
 }
 
-function outputFor(ownMessages: readonly TranscriptMessage[]): string {
-	return lastNonEmptyAssistantText(
-		ownMessages.filter((message) => message.role === "assistant") as Parameters<typeof lastNonEmptyAssistantText>[0],
-	);
+function outputFor(ownTurns: readonly AssistantMessage[]): string {
+	return lastNonEmptyAssistantText(ownTurns);
 }
 
 /**
@@ -1539,15 +1629,14 @@ function outputFor(ownMessages: readonly TranscriptMessage[]): string {
  * ended its last turn, when one did.
  */
 function failedChildCause(
-	ownMessages: readonly TranscriptMessage[],
+	ownTurns: readonly AssistantMessage[],
 ): { readonly cause: string; readonly modelError?: string } | undefined {
-	const ownTurns = ownMessages.flatMap((message) => (message.role === "assistant" ? [message] : []));
 	const lastTurn = ownTurns.at(-1);
 	if (lastTurn?.stopReason === "error") {
 		const modelError = lastTurn.errorMessage?.trim() || "the model request failed without an error message";
 		return { cause: modelError, modelError };
 	}
-	if (ownTurns.some((turn) => turn.stopReason !== "error" && turn.stopReason !== "aborted")) return undefined;
+	if (ownTurns.some(completedTurn)) return undefined;
 	const errorMessage = ownTurns.findLast((turn) => turn.errorMessage?.trim())?.errorMessage?.trim();
 	return { cause: errorMessage || "Child ended without completing an assistant turn of its own." };
 }
@@ -1625,12 +1714,12 @@ async function cancelledEnvelope(
 	session: AgentSession | undefined,
 	spec: ChildSpec,
 	stats: AttemptStats,
-	ownMessages: readonly TranscriptMessage[],
+	ownTurns: readonly AssistantMessage[],
 ): Promise<string> {
 	return (
 		await recoverCancelledChildOutput({
 			progressPath: spec.progressPath,
-			assistantText: outputFor(ownMessages),
+			assistantText: outputFor(ownTurns),
 			toolCount: stats.toolCalls,
 			sessionPath: session?.sessionFile ?? spec.sessionManager?.getSessionFile(),
 			...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
@@ -2206,8 +2295,8 @@ export class SubagentControlRuntime {
 		/** A child restored paused counts as paused from its start, before its session holds its queue. */
 		let restoringPaused = admitted.spec.resumePaused === true;
 		let parentCommandTaskOwner: ChildCommandTaskOwner | undefined;
-		// Messages this attempt produced; a forked child's inherited history is never among them.
-		let ownMessages: () => TranscriptMessage[] = () => [];
+		// Assistant turns this attempt produced; a forked child's inherited history is never among them.
+		let ownTurns: () => AssistantMessage[] | Promise<AssistantMessage[]> = () => [];
 		const executionEnded = new AbortController();
 		const turnDrainedListeners = new Set<() => void>();
 
@@ -2410,8 +2499,8 @@ export class SubagentControlRuntime {
 				stopHeldPromptAttention = watchHeldPromptAttention(childSession.sessionId, (report) =>
 					taskHooks.reportActivity(report),
 				);
-			const launchLeafId = sessionManager.getLeafId();
-			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
+			const launch = attemptLaunch(sessionManager);
+			ownTurns = () => turnsSinceLaunch(sessionManager, launch);
 			let created: { session: AgentSession };
 			const prepared = preparing === undefined ? undefined : await beforeStartDeadline(preparing);
 			if (prepared === undefined) {
@@ -2945,6 +3034,12 @@ export class SubagentControlRuntime {
 					...skillReport,
 				};
 			}
+			// A compaction can leave part of the attempt only in the session's store. Everything below reads how the attempt
+			// ended after that read: a stop that lands while it runs is one the attempt took, and it settles first, as a stop
+			// during the attempt does.
+			const turns = ownTurns();
+			const producedTurns = turns instanceof Promise ? await turns : turns;
+			if (turns instanceof Promise) await terminating;
 			// #5210: what the session could not save it still holds in memory; the child's answer is among it.
 			const unsaved = termination === undefined ? session.getPersistenceFailure() : undefined;
 			const finalAnswer = unsaved === undefined ? undefined : finalAnswerOf(unsaved.unsavedMessages);
@@ -2952,11 +3047,10 @@ export class SubagentControlRuntime {
 				unsavedAnswer = unsavedAnswerEntry(sessionManager, finalAnswer);
 				unsavedAnswers.set(sessionManager.getSessionId(), finalAnswer);
 			}
-			const producedMessages = ownMessages();
-			const output = outputFor(finalAnswer === undefined ? producedMessages : [...producedMessages, finalAnswer]);
+			const output = outputFor(finalAnswer === undefined ? producedTurns : [...producedTurns, finalAnswer]);
 			// A child that settled without a stop failed when its last turn failed or it completed no successful turn of
 			// its own (#3987, #4188). A named model's failure says that no other model ran in its place.
-			const failure = termination === undefined ? failedChildCause(producedMessages) : undefined;
+			const failure = termination === undefined ? failedChildCause(producedTurns) : undefined;
 			const noOutput =
 				unsaved !== undefined
 					? unsavedWorkCause(unsaved.error, finalAnswer !== undefined)
@@ -2973,7 +3067,7 @@ export class SubagentControlRuntime {
 			this.native.finishChildAttempt(token, nativeStatus(status));
 			const envelope =
 				termination === PARENT_CANCEL_CAUSE
-					? await cancelledEnvelope(session, admitted.spec, stats, producedMessages)
+					? await cancelledEnvelope(session, admitted.spec, stats, producedTurns)
 					: status === "interrupted"
 						? INTERRUPTED_ENVELOPE
 						: boundedEnvelope(output || noOutput || termination || "(no output)", undefined);
@@ -3045,7 +3139,7 @@ export class SubagentControlRuntime {
 					path: admitted.identity.path,
 					envelope:
 						termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
-							? await cancelledEnvelope(session, admitted.spec, stats, ownMessages())
+							? await cancelledEnvelope(session, admitted.spec, stats, await ownTurns())
 							: this.killedChildren.has(admitted.identity.path)
 								? "Killed. This child cannot be resumed."
 								: INTERRUPTED_ENVELOPE,

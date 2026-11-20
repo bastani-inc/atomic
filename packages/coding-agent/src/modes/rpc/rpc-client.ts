@@ -18,6 +18,7 @@ import {
 	type EngineKeybindingState,
 	type InteractiveEngineCommand,
 	type InteractiveEngineMessage,
+	parseInteractiveEngineMessage,
 	serializeInteractiveEngineFrame,
 } from "../interactive-engine/protocol.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -123,6 +124,11 @@ export class RpcClient extends RpcClientApi {
 	private retainedGenerationEnd: InteractiveEngineGenerationEnded | undefined;
 	private readonly activeActivityIds = new Set<string>();
 	private enginePid: number | undefined;
+	/**
+	 * The engine generation an explicit stop retired, whose child may still write while it shuts down, and
+	 * whether that child said its shutdown is complete.
+	 */
+	private stoppedEngine: { generation: number; shutdownComplete: PromiseWithResolvers<void> } | undefined;
 
 	private declare options: RpcClientOptions;
 
@@ -286,12 +292,17 @@ export class RpcClient extends RpcClientApi {
 	/**
 	 * Explicit stop. Voids any in-flight restart permit, so a replacement caught
 	 * between its own stop and start can never spawn after this returns.
+	 *
+	 * With `graceful`, an interactive engine child that has reported ready runs its own
+	 * shutdown, including extensions' `session_shutdown` handlers, for up to five seconds
+	 * on every platform. Without it a Windows engine is ended at once, because Windows
+	 * has no signal a process can handle for this.
 	 */
-	stop(): Promise<void> {
+	stop(options?: { graceful?: boolean }): Promise<void> {
 		this.restartRevision += 1;
 		if (this.stopPromise) return this.stopPromise;
 		if (!this.process) return Promise.resolve();
-		const stopPromise = this.stopCurrentGeneration().finally(() => {
+		const stopPromise = this.stopCurrentGeneration(options?.graceful === true).finally(() => {
 			if (this.stopPromise === stopPromise) this.stopPromise = undefined;
 		});
 		this.stopPromise = stopPromise;
@@ -304,10 +315,12 @@ export class RpcClient extends RpcClientApi {
 	 * stdout settles, so an ownership frame it already sent still reaches its
 	 * request; only then is the generation retired (see RpcTerminalDrain).
 	 */
-	private async stopCurrentGeneration(): Promise<void> {
+	private async stopCurrentGeneration(graceful = false): Promise<void> {
 		const child = this.process;
 		if (!child) return;
 		const endedGeneration = this.generation;
+		// The engine reports ready once it handles the end of its input; until then a stop ends it at once.
+		const engineReady = this.enginePid !== undefined;
 		const stopError = rpcTransportError("Agent process stopped");
 		this.invalidateEngineShortcuts();
 		const terminateTree = this.engineMonitor !== undefined;
@@ -320,13 +333,27 @@ export class RpcClient extends RpcClientApi {
 		this.engineMonitor = undefined;
 		this.stdinWriter = undefined;
 		this.process = null;
+		// When this stop ends an engine generation, updates read before it reach the host before the host hears
+		// the generation ended, and what the engine writes while it shuts down does not reach the host at all
+		// (handleStoppedEngineLine). A generation that already ended on its own keeps its terminal drain.
+		const shutdownComplete = Promise.withResolvers<void>();
+		if (terminateTree && endedGeneration > this.lastEndedGeneration) {
+			for (const event of this.eventBuffer?.drain() ?? []) {
+				try {
+					this.emitEvent(event);
+				} catch {
+					// As for a line read while the engine is stopped, a listener that throws does not end the stop.
+				}
+			}
+			this.stoppedEngine = { generation: endedGeneration, shutdownComplete };
+		}
 		// Publish before terminating so host controllers tear down this generation's
 		// UI while the writer is detached: disposal cannot write into a replacement.
 		this.publishGenerationEnded(endedGeneration, stopError, "explicit-stop", true);
 		// Claim before terminating so the exit this provokes does not relabel a
 		// deliberate stop; an exit that already claimed keeps its own error.
 		this.terminalDrain.claim(endedGeneration, stopError);
-		await terminateRpcClientProcess(child, terminateTree);
+		await terminateRpcClientProcess(child, terminateTree, graceful && engineReady, shutdownComplete.promise);
 		await this.beginTerminalDrain(endedGeneration, stopError);
 		this.stopReadingStdout?.();
 		this.stopReadingStdout = null;
@@ -525,6 +552,12 @@ export class RpcClient extends RpcClientApi {
 		return eventsPromise;
 	}
 	private handleLine(line: string, generation: number): void {
+		// Ahead of the terminal drain, which a transport error during the stop can begin: it would swallow the
+		// engine's report that its shutdown is complete.
+		if (this.stoppedEngine?.generation === generation) {
+			this.handleStoppedEngineLine(line, this.stoppedEngine.shutdownComplete);
+			return;
+		}
 		if (this.terminalDrain.observe(generation, line, (id) => this.pendingRequests.markAccepted(id))) return;
 		if (this.engineMonitor?.handleLine(line)) return;
 		try {
@@ -548,6 +581,27 @@ export class RpcClient extends RpcClientApi {
 			else this.emitEvent(event);
 		} catch {
 			if (this.engineMonitor) this.failTransport(rpcTransportError("Interactive engine emitted malformed JSONL"));
+		}
+	}
+	/**
+	 * A line an engine writes while an explicit stop ends it. The host has already torn down that generation's UI,
+	 * so its extension UI requests, engine frames and events are dropped. What settles its own requests still
+	 * counts, as in its terminal drain, a failed shutdown is still reported, and the stop learns when the engine
+	 * says its shutdown is complete.
+	 */
+	private handleStoppedEngineLine(line: string, shutdownComplete: PromiseWithResolvers<void>): void {
+		const message = parseInteractiveEngineMessage(line);
+		if (message) {
+			if (message.type === "engine_request_accepted") this.pendingRequests.markAccepted(message.requestId);
+			else if (message.type === "engine_shutdown_complete") shutdownComplete.resolve();
+			return;
+		}
+		try {
+			const data = JSON.parse(line) as { type?: string; id?: string };
+			if (data.type === "response" && data.id) this.pendingRequests.resolve(data.id, data as RpcResponse);
+			else if (data.type === "shutdown_error") this.emitEvent(data as RpcEvent);
+		} catch {
+			// A malformed line, or a listener that throws, is ignored as for any line once the engine monitor is gone.
 		}
 	}
 	private emitEvent(event: RpcEvent): void {

@@ -65,7 +65,7 @@ function createRuntime(
 		onEvent(listener: (event: RpcEvent) => void): () => void;
 		onGenerationEnded(listener: () => void): () => void;
 		waitForInteractiveEngineBound(): Promise<void>;
-		stop(): Promise<void>;
+		stop(options?: { graceful?: boolean }): Promise<void>;
 		announceExplicitQuit?(): Promise<boolean>;
 		getState(): Promise<RpcSessionState>;
 		requestInternal<T>(command: { type: string }): Promise<T>;
@@ -223,6 +223,7 @@ describe("isolated interactive startup shutdown", () => {
 		onStop: () => Promise<void> = async () => {},
 	) {
 		const order: string[] = [];
+		const stops: ({ graceful?: boolean } | undefined)[] = [];
 		const events: SessionShutdownEvent[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
@@ -242,8 +243,9 @@ describe("isolated interactive startup shutdown", () => {
 					order.push("announce");
 					return acknowledged;
 				},
-				stop: async () => {
+				stop: async (stopOptions) => {
 					order.push("stop");
+					stops.push(stopOptions);
 					await onStop();
 				},
 				getState: async () => createState(),
@@ -252,7 +254,7 @@ describe("isolated interactive startup shutdown", () => {
 				getEntries: async () => ({ entries: [], leafId: null }),
 			});
 			await runtime.dispose(options);
-			return { order, events };
+			return { order, events, stops };
 		} finally {
 			harness.cleanup();
 		}
@@ -270,6 +272,18 @@ describe("isolated interactive startup shutdown", () => {
 
 		assert.deepEqual(order, ["stop", "stop"]);
 		assert.deepEqual(events, [{ type: "session_shutdown", reason: "quit", fromSignal: true }]);
+	});
+
+	test("an explicit quit lets the engine run its own shutdown before it is ended (#6075)", async () => {
+		const { stops } = await disposeAndObserve();
+
+		assert.deepEqual(stops, [{ graceful: true }, { graceful: true }]);
+	});
+
+	test("a host signal keeps the stop that ends the engine at once on Windows (#6075)", async () => {
+		const { stops } = await disposeAndObserve({ fromSignal: true });
+
+		assert.deepEqual(stops, [{ graceful: false }, { graceful: false }]);
 	});
 
 	async function herdrReleasesAfterQuit(acknowledged: boolean): Promise<string[][]> {
