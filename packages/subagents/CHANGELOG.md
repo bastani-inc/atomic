@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- An agent's `inheritProjectContext` and `inheritSkills` no longer keep the parent's project context or skills out of a forked subagent: a fork continues the parent's conversation as the parent sent it, so these settings now shape fresh children only. To keep the project context and skills out, launch the agent with `context: "fresh"` ([#6093](https://github.com/bastani-inc/atomic/pull/6093)).
+
 ### Changed
 
-- A forked subagent (`context: "fork"`) continues its parent's conversation exactly as the parent last sent it: the same system prompt, including the project context and skills the parent was sent, the same tools and the same messages, including the parent's earlier subagent calls. It adds a short note, its own role and its task after it, and keeps the parent's prompt-cache key, so on the parent's model and thinking level its first request is read from the parent's prompt cache. A fork can still call only its own tools: a call to another tool the parent declared fails with an error naming the tools it may call. The agent's `inheritProjectContext` and `inheritSkills` now shape fresh children only. The subagent tool, the `subagent` skill and the docs recommend `fork` when a child needs the parent's conversation and `fresh` for independent work ([#6093](https://github.com/bastani-inc/atomic/pull/6093)).
+- A forked subagent (`context: "fork"`) continues its parent's conversation exactly as the parent last sent it: the same system prompt, including the project context and skills the parent was sent, the same tools and the same messages, including the parent's earlier subagent calls. It adds a short note, its own role and its task after it, and keeps the parent's prompt-cache key, so on the parent's model and thinking level its first request is read from the parent's prompt cache. A fork can still call only its own tools: a call to another tool the parent declared fails with an error naming the tools it may call. The subagent tool, the `subagent` skill and the docs recommend `fork` when a child needs the parent's conversation and `fresh` for independent work ([#6093](https://github.com/bastani-inc/atomic/pull/6093)).
 
 ### Fixed
 
