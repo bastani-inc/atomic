@@ -5,7 +5,8 @@ import { setAgentViewBridge } from "./agent-view-bridge.ts";
 import { AgentViewSwitcher, type OpenAgentViewPort } from "./agent-view-switcher.ts";
 import { openAgentViewPort } from "./open-port.ts";
 import { installPromptRetarget } from "./prompt-retarget.ts";
-import { installTranscriptSlot } from "./transcript-slot.ts";
+import { FIRST_FRAME_TIMEOUT_MS } from "./remote-port.ts";
+import { holdTranscriptDock, installTranscriptSlot } from "./transcript-slot.ts";
 import { installViewedCommandGates } from "./viewed-commands.ts";
 
 const switchers = new WeakMap<InteractiveModeBase, AgentViewSwitcher>();
@@ -20,7 +21,11 @@ export function agentViewSwitcher(
 ): AgentViewSwitcher {
 	let switcher = switchers.get(mode);
 	if (switcher === undefined) {
-		switcher = new AgentViewSwitcher(openPort, (message) => mode.showWarning(message));
+		switcher = new AgentViewSwitcher(
+			openPort,
+			(message) => mode.showWarning(message),
+			() => holdTranscriptDock(mode, FIRST_FRAME_TIMEOUT_MS),
+		);
 		switchers.set(mode, switcher);
 		mode.agentView = switcher;
 	}
@@ -44,7 +49,9 @@ export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 		undo.push(
 			runtime.onEngineMessage((message) => {
 				if (message.type !== "engine_view_agent") return;
-				switcher.requestView(message.taskId === null ? undefined : (message.taskId as TaskId));
+				switcher.requestView(message.taskId === null ? undefined : (message.taskId as TaskId), {
+					keepScreen: message.keepScreen === true,
+				});
 			}),
 			runtime.onGenerationEnded(() => switcher.reset("generation-lost")),
 			switcher.onChange(({ to }) => {

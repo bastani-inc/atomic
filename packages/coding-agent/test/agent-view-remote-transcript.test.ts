@@ -4,14 +4,19 @@
  * The engine side and the host side talk through the real engine protocol lines.
  */
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings, type Text } from "@bastani/atomic-tui";
+import { getKeybindings, hyperlink, setKeybindings, type Text, type TuiMouseEvent } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import type { ExtensionUIContext } from "../src/core/extensions/index.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { bindOwnerTaskStore } from "../src/core/tasks/owner-store.js";
 import { AgentViewSwitcher } from "../src/modes/interactive/agent-view/agent-view-switcher.ts";
-import { openRemoteAgentViewPort, type RemoteAgentViewPort } from "../src/modes/interactive/agent-view/remote-port.ts";
+import {
+	FIRST_FRAME_TIMEOUT_MS,
+	openRemoteAgentViewPort,
+	type RemoteAgentViewPort,
+} from "../src/modes/interactive/agent-view/remote-port.ts";
+import { holdTranscriptDock } from "../src/modes/interactive/agent-view/transcript-slot.ts";
 import { dismissedTasks } from "../src/modes/interactive/components/task-dismissal.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { EngineCustomUiService } from "../src/modes/interactive-engine/engine-custom-ui.ts";
@@ -106,6 +111,8 @@ function enginePair(ui: ReturnType<typeof mainScreen>, sub: Awaited<ReturnType<t
 	const switcher = new AgentViewSwitcher(
 		(taskId) => openRemoteAgentViewPort(runtime as never, taskId, { width: ui.terminal.columns, rows: 16 }),
 		(message) => ui.notices.push(`switcher: ${message}`),
+		// As installAgentView wires it: /tasks keeps the dock as painted while the subagent is on its way.
+		() => holdTranscriptDock(ui.mode, FIRST_FRAME_TIMEOUT_MS),
 	);
 	return {
 		switcher,
@@ -308,6 +315,139 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 			await vi.waitFor(() => assert.ok(!has(view.ui.screen(), /sub line 30$/)), FRAME_WAIT);
 			const { waiting, arrived } = await view.resizePrompt(1);
 			assertNothingMoves(waiting, arrived);
+		} finally {
+			await view.dispose();
+		}
+	});
+
+	/** The dock while `/tasks` is open over the prompt: its list of subagents in the prompt's place. */
+	const TASKS = "Tasks · 1 working\n❯ worker  investigate\n↑↓ select · enter open";
+
+	async function tasksOpen(lines = 30) {
+		const ui = mainScreen();
+		const editor = ui.mode.editor as unknown as Text;
+		editor.setText(TASKS);
+		const sub = await liveSubagent(lines);
+		const engine = enginePair(ui, sub);
+		const uninstall = ui.bind(engine.switcher);
+		return {
+			ui,
+			sub,
+			engine,
+			/** `/tasks` closes: the prompt is back in the dock. */
+			closeTasks: () => editor.setText("❯ prompt"),
+			async dispose() {
+				uninstall();
+				engine.dispose();
+				ui.tui.stop();
+				await sub.fixture.dispose();
+			},
+		};
+	}
+
+	test("keeps /tasks painted until the subagent Enter opened there is shown, then shows it with the prompt", async () => {
+		const view = await tasksOpen();
+		try {
+			const tasks = view.ui.screen();
+			assert.ok(has(tasks, /main line 40$/) && has(tasks, /enter open/), tasks.join("\n"));
+			// The engine's first frame of the subagent waits; meanwhile /tasks closes.
+			view.engine.holdCommands();
+			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true });
+			view.closeTasks();
+			assert.deepEqual(view.ui.screen(), tasks, "the main prompt is not painted while the subagent is on its way");
+			await flush();
+			assert.deepEqual(view.ui.screen(), tasks);
+			view.engine.releaseCommands();
+			await vi.waitFor(() => assert.equal(view.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
+			const shown = view.ui.screen();
+			assert.ok(has(shown, /sub line 30$/), shown.join("\n"));
+			assert.ok(!has(shown, /main line|enter open/), shown.join("\n"));
+			assert.deepEqual(shown.slice(-2), ["❯ prompt", "footer"]);
+		} finally {
+			await view.dispose();
+		}
+	});
+
+	test("a key while the subagent is on its way shows the screen live before it runs; a key release does not", async () => {
+		const view = await tasksOpen();
+		try {
+			const tasks = view.ui.screen();
+			view.engine.holdCommands();
+			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true });
+			view.closeTasks();
+			view.ui.terminal.input("\x1b[97;1:3u");
+			view.ui.terminal.input("\x1b[<35;5;3M");
+			view.ui.terminal.input("\x1b[<0;5;3m");
+			assert.deepEqual(view.ui.screen(), tasks);
+			view.ui.terminal.input("a");
+			const live = view.ui.screen();
+			assert.ok(has(live, /main line 40$/) && !has(live, /enter open/), live.join("\n"));
+			assert.deepEqual(live.slice(-2), ["❯ prompt", "footer"]);
+			view.engine.releaseCommands();
+			await vi.waitFor(() => assert.equal(view.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
+		} finally {
+			await view.dispose();
+		}
+	});
+
+	test("a subagent that cannot be shown, or a request without keepScreen, leaves the screen live", async () => {
+		const view = await tasksOpen();
+		try {
+			const tasks = view.ui.screen();
+			view.engine.switcher.requestView("no-such-task" as never, { keepScreen: true });
+			view.closeTasks();
+			await vi.waitFor(
+				() => assert.ok(view.ui.notices.some((notice) => notice.startsWith("switcher:"))),
+				FRAME_WAIT,
+			);
+			const failed = view.ui.screen();
+			assert.notDeepEqual(failed, tasks);
+			assert.deepEqual(failed.slice(-2), ["❯ prompt", "footer"]);
+
+			(view.ui.mode.editor as unknown as Text).setText(TASKS);
+			view.ui.screen();
+			view.engine.holdCommands();
+			view.engine.switcher.requestView(view.sub.taskId);
+			view.closeTasks();
+			assert.deepEqual(
+				view.ui.screen().slice(-2),
+				["❯ prompt", "footer"],
+				"the panel's Enter keeps the screen live",
+			);
+			view.engine.releaseCommands();
+			await vi.waitFor(() => assert.equal(view.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
+		} finally {
+			await view.dispose();
+		}
+	});
+
+	test("a press on the held /tasks rows shows the screen live and acts on nothing; the held rows keep no links", async () => {
+		const view = await tasksOpen();
+		try {
+			const editor = view.ui.mode.editor as unknown as Text & { handleMouse?(event: TuiMouseEvent): object };
+			editor.setText(`${hyperlink("Tasks · 1 working", "https://example.invalid/tasks")}\n❯ worker\nenter open`);
+			const tasks = view.ui.screen();
+			const opensLink = (line: string) => /\x1b\]8;[^;\x07\x1b]*;[^\x07\x1b]/.test(line);
+			assert.ok(view.ui.tui.getScreenLines().some(opensLink), "/tasks drew its link");
+			const pressed: string[] = [];
+			editor.handleMouse = (event) => {
+				pressed.push(event.type);
+				return { handled: true };
+			};
+			view.engine.holdCommands();
+			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true });
+			view.closeTasks();
+			assert.deepEqual(view.ui.screen(), tasks);
+			assert.ok(!view.ui.tui.getScreenLines().some(opensLink), "the held rows keep no links");
+			const row = tasks.findIndex((line) => line.includes("Tasks · 1 working")) + 1;
+			view.ui.terminal.input(`\x1b[<0;3;${row}M`);
+			view.ui.terminal.input(`\x1b[<0;3;${row}m`);
+			await flush();
+			const live = view.ui.screen();
+			assert.ok(!has(live, /enter open/), live.join("\n"));
+			assert.deepEqual(pressed, [], "the live prompt under the pointer saw no press");
+			view.engine.releaseCommands();
+			await vi.waitFor(() => assert.equal(view.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
 		} finally {
 			await view.dispose();
 		}

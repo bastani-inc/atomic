@@ -104,7 +104,12 @@ export type InteractiveEngineMessage =
 	/** The status of a subagent the host shows on its main screen (view `viewId`), on every change. */
 	| { type: "engine_agent_view_status"; viewId: string; status: AgentViewStatus }
 	/** The engine's agent panel or `/tasks` asks the host to show a subagent, or main when `taskId` is null. */
-	| { type: "engine_view_agent"; taskId: string | null }
+	| {
+			type: "engine_view_agent";
+			taskId: string | null;
+			/** The request closes `/tasks`: the host keeps its prompt and panel as painted until the subagent is shown. */
+			keepScreen?: true;
+	  }
 	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
 	 * The child took ownership of a correlated RPC request: it has parsed the
@@ -542,7 +547,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		}
 		case "engine_view_agent":
 			return typeof value.taskId === "string" || value.taskId === null
-				? { type: value.type, taskId: value.taskId }
+				? { type: value.type, taskId: value.taskId, ...(value.keepScreen === true ? { keepScreen: true } : {}) }
 				: undefined;
 		case "engine_activity_started":
 			return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
