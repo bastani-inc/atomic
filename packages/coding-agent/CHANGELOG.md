@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent shown on the chat screen no longer jumps when the prompt, autocomplete list or panel below it changes height: the rows already on screen stay where they are while its transcript redraws for the new size, and its notes and question form stay at the bottom.
+
 ## [0.10.0] - 2026-11-20
 
 Codemode and subagents replace workflows, subagents share the main chat screen with its steering and can be resumed by a message, and long sessions keep only their current context in memory.

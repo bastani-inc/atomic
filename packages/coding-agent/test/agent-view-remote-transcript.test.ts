@@ -4,7 +4,7 @@
  * The engine side and the host side talk through the real engine protocol lines.
  */
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, type Text } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import type { ExtensionUIContext } from "../src/core/extensions/index.ts";
@@ -68,6 +68,9 @@ function enginePair(ui: ReturnType<typeof mainScreen>, sub: Awaited<ReturnType<t
 		ui: engineUi,
 	});
 	const requests: AgentViewRpcCommandBody[] = [];
+	// While held, the host's commands wait to reach the engine, as they do while the engine is busy.
+	let held: InteractiveEngineCommand[] | undefined;
+	const deliver = (command: InteractiveEngineCommand) => child.handleLine(serializeInteractiveEngineFrame(command));
 	const runtime = {
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			hostListeners.add(listener);
@@ -79,7 +82,8 @@ function enginePair(ui: ReturnType<typeof mainScreen>, sub: Awaited<ReturnType<t
 		},
 		sendEngineCommand: (command: InteractiveEngineCommand) => {
 			sent.push(command);
-			child.handleLine(serializeInteractiveEngineFrame(command));
+			if (held) held.push(command);
+			else deliver(command);
 		},
 		getGeneration: () => generation,
 		async requestAgentView<T>(command: AgentViewRpcCommandBody): Promise<T> {
@@ -109,6 +113,14 @@ function enginePair(ui: ReturnType<typeof mainScreen>, sub: Awaited<ReturnType<t
 		sent,
 		requests,
 		engineMessages,
+		holdCommands: () => {
+			held ??= [];
+		},
+		releaseCommands: () => {
+			const waiting = held ?? [];
+			held = undefined;
+			for (const command of waiting) deliver(command);
+		},
 		loseEngine: () => {
 			generation++;
 			for (const listener of [...generationListeners]) listener();
@@ -211,6 +223,93 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 			engine.dispose();
 			ui.tui.stop();
 			await sub.fixture.dispose();
+		}
+	});
+
+	/**
+	 * Every row painted while the engine's frame for the new height is on its way is blank or already the row that
+	 * frame puts there: nothing painted moves when it arrives.
+	 */
+	function assertNothingMoves(waiting: readonly string[], arrived: readonly string[]): void {
+		assert.equal(waiting.length, arrived.length);
+		const moved = waiting.flatMap((line, row) => (line === "" || line === arrived[row] ? [] : [row]));
+		assert.deepEqual(
+			moved,
+			[],
+			`rows ${moved.join(", ")} moved\n--- while waiting ---\n${waiting.join("\n")}\n--- arrived ---\n${arrived.join("\n")}`,
+		);
+	}
+
+	async function viewedWithPrompt(lines: number, promptRows: number) {
+		const ui = mainScreen();
+		const editor = ui.mode.editor as unknown as Text;
+		editor.setText(Array.from({ length: promptRows }, (_, row) => `❯ prompt ${row + 1}`).join("\n"));
+		const sub = await liveSubagent(lines);
+		const engine = enginePair(ui, sub);
+		const uninstall = ui.bind(engine.switcher);
+		assert.equal(await engine.switcher.view(sub.taskId), true);
+		ui.screen();
+		return {
+			ui,
+			sub,
+			engine,
+			/** The prompt takes `rows` rows: what is painted before the engine answers, and once it has. */
+			async resizePrompt(rows: number) {
+				engine.holdCommands();
+				editor.setText(Array.from({ length: rows }, (_, row) => `❯ prompt ${row + 1}`).join("\n"));
+				const waiting = ui.screen();
+				engine.releaseCommands();
+				await flush();
+				return { waiting, arrived: ui.screen() };
+			},
+			async dispose() {
+				uninstall();
+				engine.dispose();
+				ui.tui.stop();
+				await sub.fixture.dispose();
+			},
+		};
+	}
+
+	test("keeps the latest rows in place while the frame for a taller transcript area is on its way", async () => {
+		const view = await viewedWithPrompt(30, 3);
+		try {
+			const before = view.ui.screen();
+			assert.ok(has(before, /sub line 30$/), before.join("\n"));
+			const { waiting, arrived } = await view.resizePrompt(1);
+			assertNothingMoves(waiting, arrived);
+			// The rows above the latest open when the frame arrives; the latest stay at the bottom of the area.
+			const latest = (lines: readonly string[]) => lines.findIndex((line) => /sub line 30$/.test(line));
+			assert.equal(latest(waiting), latest(arrived));
+			assert.equal(latest(arrived), latest(before) + 2);
+		} finally {
+			await view.dispose();
+		}
+	});
+
+	test("keeps a short transcript at the top while the frame for a smaller transcript area is on its way", async () => {
+		const view = await viewedWithPrompt(2, 1);
+		try {
+			const before = view.ui.screen();
+			const first = (lines: readonly string[]) => lines.findIndex((line) => /sub line 1$/.test(line));
+			assert.ok(first(before) >= 0, before.join("\n"));
+			const { waiting, arrived } = await view.resizePrompt(3);
+			assertNothingMoves(waiting, arrived);
+			assert.equal(first(waiting), first(before));
+		} finally {
+			await view.dispose();
+		}
+	});
+
+	test("keeps a reader scrolled up on the rows they read while the frame for a taller area is on its way", async () => {
+		const view = await viewedWithPrompt(30, 3);
+		try {
+			view.ui.terminal.input(PAGE_UP);
+			await vi.waitFor(() => assert.ok(!has(view.ui.screen(), /sub line 30$/)), FRAME_WAIT);
+			const { waiting, arrived } = await view.resizePrompt(1);
+			assertNothingMoves(waiting, arrived);
+		} finally {
+			await view.dispose();
 		}
 	});
 });
