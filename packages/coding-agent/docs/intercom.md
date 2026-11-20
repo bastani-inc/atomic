@@ -163,7 +163,7 @@ A `send` or `ask` to a subagent that already completed or failed resumes it: the
 
 A busy non-interactive recipient that is not an admitted subagent can still refuse a message without interrupting its task. A successful `send` receipt means the recipient saved the message, not that its model accepted it. The refusal carries the original reply thread: an `ask` gets it as a failed-ask message (or as an error while its call is still waiting); otherwise the sender sees **Intercom delivery failed** feedback with a `Sent:` timestamp. That feedback bypasses the ordinary idle queue and does not trigger a standalone agent turn. During an active turn, protected delivery makes it visible and reconciles it at a protocol-safe boundary. Its wording describes the refused send, not the recipient's later activity.
 
-Atomic enables ordinary `intercom` by default, but it respects tool allowlists, exclusions and `noTools: "all"`. Include `"intercom"` in an explicit allowlist when needed. SDK hosts can disable the entire package with `builtins: { intercom: false }`; reload does not restore it. `contact_supervisor` remains subagent-only. An interactive session whose tool selection leaves out `intercom` does not join at startup; it joins when you open `/intercom` or press ALT+M.
+Atomic enables ordinary `intercom` by default, but it respects tool allowlists, exclusions and `noTools: "all"`. Include `"intercom"` in an explicit allowlist when needed. SDK hosts can disable the entire package with `builtins: { intercom: false }`; reload does not restore it. `contact_supervisor` remains subagent-only. An interactive session whose tool selection leaves out `intercom` does not join at startup.
 
 ## How Connection Works
 
