@@ -12,9 +12,11 @@ import {
 	stopAgentPanelItem,
 	subscribeAgentPanelExtensions,
 } from "../../core/tasks/agent-panel-source.ts";
+import { latestSubagentAttempt, waitingReleasedShells } from "../../core/tasks/completion.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
-import type { TaskViewSource } from "../../core/tasks/task-view-source.js";
+import { launchedTaskViewSource, ownerTaskViewSource, type TaskViewSource } from "../../core/tasks/task-view-source.js";
+import { agentViewBridge } from "../interactive/agent-view/agent-view-bridge.ts";
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
 import { type TaskBoardSource, TaskInspector } from "../interactive/components/task-inspector.js";
 import { taskDisplayText } from "../interactive/components/task-row.js";
@@ -83,11 +85,34 @@ export async function showEngineTaskInspector(
 	session: AgentSession,
 	ui: TaskInspectorUi,
 	taskId?: string,
+	options: { readonly waitedShellOf?: string } = {},
 ): Promise<void> {
 	session.getAgentTaskHost();
 	const store = getOwnerTaskStore(session);
 	if (!store) throw new Error("Task owner is unavailable");
+	if (options.waitedShellOf !== undefined) {
+		await openWaitedShellOf(session, ui, options.waitedShellOf);
+		return;
+	}
 	await showTaskInspector(ui, store, taskId, { board: agentPanelBoardSource(session) });
+}
+
+/**
+ * The waited-shell key of the subagent `taskId` the screen shows: while it waits on the shells it launched, `/tasks`
+ * opens at the output of the newest one still running, in that subagent's own task list. Nothing opens otherwise.
+ */
+export async function openWaitedShellOf(session: object, ui: TaskInspectorUi, taskId: string): Promise<void> {
+	const store = getOwnerTaskStore(session);
+	if (store === undefined) return;
+	const agent = latestSubagentAttempt(store.ownerTasks, taskId as TaskId);
+	const shell = agent === undefined ? undefined : waitingReleasedShells(agent, store.ownerTasks).at(-1);
+	if (agent === undefined || shell === undefined) return;
+	const source = launchedTaskViewSource(ownerTaskViewSource(store), shell.parentTaskId ?? agent.ref.taskId);
+	await showTaskInspector(ui, store, shell.ref.taskId, {
+		chat: true,
+		backLabel: agent.agentName ?? "back",
+		source,
+	});
 }
 
 /** Main CLI mount, shared by the local host and its isolated engine. */
@@ -124,6 +149,10 @@ export async function showTaskInspector(
 	);
 	if (options.board) {
 		inspector.setBoardSource(options.board);
+		// On the single chat screen a subagent opens there, where the main chat was, and /tasks closes.
+		const session = boardSessions.get(options.board);
+		const bridge = session === undefined ? undefined : agentViewBridge(session);
+		if (bridge !== undefined) inspector.setAgentView((id) => bridge.requestView(id));
 
 		const reopenOptions = { board: options.board };
 		inspector.setReopen((id) => {

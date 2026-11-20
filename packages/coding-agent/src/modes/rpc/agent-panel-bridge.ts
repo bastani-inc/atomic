@@ -17,6 +17,7 @@ import {
 	dismissedAgentPanelItems,
 	lazyTaskPanelItem,
 	materializePanelItem,
+	notifyAgentPanelChanged,
 	openAgentPanelItem,
 	sampleAgentPanelSources,
 	sourceError,
@@ -81,6 +82,8 @@ type PanelRankCache = PanelRanking & {
 	readonly generation: number;
 	readonly dismissed: ReadonlySet<string>;
 	readonly bridge: AgentViewBridge | undefined;
+	/** What the bridge said the screen shows when this was ranked. */
+	readonly requested: TaskId | undefined;
 };
 
 interface PanelRanking {
@@ -104,8 +107,7 @@ function rankingOf(cache: PanelRankCache, rows: AgentPanelRow[] = cache.rows): P
  * The row id of the subagent the screen shows, as the panel lists it: a resumed subagent is its latest attempt, so the
  * mark follows it. Undefined while the screen shows main, or shows nothing this session lists.
  */
-function viewedRowId(bridge: AgentViewBridge | undefined, tasks: readonly TaskRecord[]): string | undefined {
-	const requested = bridge?.viewedTaskId();
+function viewedRowId(requested: TaskId | undefined, tasks: readonly TaskRecord[]): string | undefined {
 	if (requested === undefined) return undefined;
 	const latest = latestSubagentAttempt(tasks, requested);
 	return latest?.kind === "agent" ? `task:${latest.ref.taskId}` : undefined;
@@ -245,6 +247,7 @@ function rankPanelSession(
 	const limit = Math.max(0, options.limit ?? Number.POSITIVE_INFINITY);
 	const materialize = (row: AgentPanelRow): AgentPanelRow => currentPanelItem(store, row);
 	const bridge = agentViewBridge(session);
+	const requested = bridge?.viewedTaskId();
 	const cached =
 		state.rankCaches?.get(cap) ??
 		(limit === 0
@@ -258,7 +261,7 @@ function rankPanelSession(
 		cached.hub === hub &&
 		cached.generation === generation &&
 		cached.bridge === bridge &&
-		cached.viewed === viewedRowId(bridge, store === undefined ? [] : ownerTaskViewSource(store).backgroundTasks) &&
+		cached.requested === requested &&
 		sameIds(cached.dismissed, dismissed)
 	) {
 		const end = Math.min(cached.rows.length, start + limit);
@@ -286,7 +289,7 @@ function rankPanelSession(
 	// A resumed or woken subagent is listed as its latest attempt only.
 	const superseded = tasks.length === 0 ? new Set<TaskId>() : supersededSettledAttempts(tasks);
 	// The subagent the screen shows stays listed while it is shown, finished or not; its own shells are listed under it.
-	const viewed = viewedRowId(bridge, tasks);
+	const viewed = viewedRowId(requested, tasks);
 	let viewedRow: (() => AgentPanelRow) | undefined;
 	const shellsOf =
 		bridge === undefined || store === undefined ? undefined : nestedShells(tasks, store.ownerBackgroundTasks);
@@ -412,9 +415,23 @@ function rankPanelSession(
 	const ranked = inputRows.concat(runningRows, otherRows, finishedRows);
 	const ordered = shellsOf === undefined || shellsOf.size === 0 ? ranked : withNestedShells(ranked, shellsOf, store);
 	let rows = Number.isFinite(cap) ? ordered.slice(0, cap) : ordered;
-	// The panel below the prompt always draws the shown subagent's row: it takes the last place when it is further down.
-	if (viewedRow !== undefined && Number.isFinite(cap) && cap > 0 && !rows.some((row) => row.id === viewed))
-		rows = rows.slice(0, cap - 1).concat(viewedRow());
+	// The panel below the prompt always draws the shown subagent's row and its shells: they take the last places when
+	// they are further down.
+	if (viewedRow !== undefined && viewed !== undefined && Number.isFinite(cap) && cap > 0) {
+		const shells = shellsOf?.get(viewed) ?? [];
+		const at = ordered.findIndex((row) => row.id === viewed);
+		// Ranked past the cap, the shown row was never placed: it and its shells are made here.
+		const group = (
+			at < 0
+				? [viewedRow(), ...shells.map((shell) => taskPanelItem(shell, source && taskClockOf(source)))]
+				: ordered.slice(at, at + 1 + shells.length)
+		).slice(0, cap);
+		if (at < 0 || at + group.length > cap)
+			rows = ordered
+				.filter((row) => !group.includes(row))
+				.slice(0, cap - group.length)
+				.concat(group);
+	}
 	const end = Math.min(rows.length, start + limit);
 	for (let index = start; index < end; index++) rows[index] = state.model.withElapsed(materialize(rows[index]!), now);
 	state.rankCaches ??= new Map();
@@ -426,6 +443,7 @@ function rankPanelSession(
 		generation,
 		dismissed: new Set(dismissed),
 		bridge,
+		requested,
 		rows,
 		counts: panelCounts,
 		main,
@@ -674,8 +692,12 @@ export function bindAgentPanel(
 							event.y,
 						);
 						if (id === undefined) return undefined;
-						// The main row is the chat the reader is already in.
-						if (id === AGENT_PANEL_MAIN_ID) return { handled: true };
+						if (id === AGENT_PANEL_MAIN_ID) {
+							// The main row is the chat the reader is in, unless the screen shows a subagent: then it shows main.
+							const bridge = agentViewBridge(session);
+							if (bridge?.viewedTaskId() !== undefined) bridge.requestView(undefined);
+							return { handled: true };
+						}
 						const row = painted.rows.find((candidate) => candidate.id === id);
 						if (row === undefined) return undefined;
 						openPanelRow(session, inspector, materializePanelItem(row), report).catch(report);
@@ -1000,6 +1022,8 @@ export async function showAgentPanel(
 						const taskId = panelTaskId(row);
 						if (taskId !== undefined && store !== undefined)
 							dismissedTasks(ownerTaskViewSource(store)).add(taskId);
+						// The screen shows it: its watchers learn it is gone, and the screen shows main.
+						if (row.id === focusViewed) notifyAgentPanelChanged(session);
 						try {
 							dirty = false;
 							currentRows = focusedRows(focus.scroll);

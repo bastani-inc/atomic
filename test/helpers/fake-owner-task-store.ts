@@ -22,6 +22,11 @@ export class FakeOwnerTaskStore extends OwnerTaskStore {
 				}));
 				return { ok: true, value: undefined };
 			},
+			/** A shell's output names the shell, so a page shows whose output it reads. */
+			readTaskOutput: async (lease: { readonly fakeTaskId: string }) => ({
+				ok: false,
+				error: { code: "OutputUnavailable", message: `no output kept for ${lease.fakeTaskId}` },
+			}),
 		};
 		super(supervisor as never, {} as never);
 		this.fakeRecords = records;

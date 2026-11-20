@@ -282,6 +282,7 @@ export class TaskInspector implements Component {
 	private itemFinishedAcknowledged = false;
 
 	private reopen?: (id: string) => void;
+	private agentView?: (taskId: TaskId) => void;
 
 	private selectionChosen = false;
 	private rowsById = new Map<string, TaskBoardRow>();
@@ -328,14 +329,16 @@ export class TaskInspector implements Component {
 				this.scroll = 0;
 				void this.loadDetail();
 			},
-			openChat: () => {
+			openChat: (task) => {
+				if (this.showAgent(task)) return;
 				this.chatFrom = "list";
 				this.detailGeneration++;
 				this.openTranscript();
 				// A task with no chat here (no transcript in this host) stays on its detail page.
 				if (this.transcript === undefined) void this.loadDetail();
 			},
-			transcript: () => {
+			transcript: (task) => {
+				if (this.showAgent(task)) return;
 				this.chatFrom = "detail";
 				this.detailGeneration++;
 				this.openTranscript();
@@ -381,6 +384,8 @@ export class TaskInspector implements Component {
 					openQuestion(route);
 					return;
 				}
+				const asking = this.selected();
+				if (asking !== undefined && this.showAgent(asking)) return;
 				this.chatFrom = "detail";
 				this.detailGeneration++;
 				this.openTranscript();
@@ -612,6 +617,22 @@ export class TaskInspector implements Component {
 
 	setReopen(reopen: ((id: string) => void) | undefined): void {
 		this.reopen = reopen;
+	}
+	/**
+	 * Where a subagent opens: with `view`, the screen shows it in place of its chat page, and the inspector closes.
+	 * Shells still open their output here.
+	 */
+	setAgentView(view: ((taskId: TaskId) => void) | undefined): void {
+		this.agentView = view;
+	}
+	/** Shows `task` on the screen when it is a subagent and the screen can: the inspector closes first. */
+	private showAgent(task: TaskRecord): boolean {
+		const view = this.agentView;
+		if (view === undefined || task.kind !== "agent") return false;
+		this.navigation.focus = { kind: "composer" };
+		this.close();
+		view(task.ref.taskId);
+		return true;
 	}
 	private orderedSections(): TaskListSection[] {
 		const dismissed = dismissedTasks(this.store);
