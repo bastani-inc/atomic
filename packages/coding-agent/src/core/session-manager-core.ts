@@ -558,6 +558,11 @@ export class SessionManager {
 		return this.historyStartSeq <= 1;
 	}
 
+	/**
+	 * Load every stored entry of the session, on every branch, into this manager, which then holds the whole session in
+	 * memory. Prefer `readHistory()`, which reads older entries a page at a time without keeping them, or `readEntry(id)`;
+	 * Atomic itself never calls this.
+	 */
 	loadFullHistory(): Promise<void> {
 		if (this.hasFullHistory()) return Promise.resolve();
 		this.historyLoad ??= this.hydrateHistory().finally(() => {
@@ -1123,6 +1128,8 @@ export class SessionManager {
 			manager.restore(snapshot);
 			await manager.initialize();
 			await storeSessionBlobs(this.store, snapshot.header.id, blobs);
+			// The imported file is saved; continue from its current context window, as a resume does (#5554).
+			manager.restoreOpened(await readStoredSession(this.store, snapshot.header.id, undefined), manager.sessionFile);
 			return manager;
 		} finally {
 			await source.close();
@@ -2333,7 +2340,7 @@ export class SessionManager {
 		return this.runMutation(async () => {
 			if (options?.history !== undefined && options.history !== "tail")
 				throw new TypeError(
-					'Session history: "full" has been removed. Use sessionManager.readHistory() to iterate older entries.',
+					'createBranchedSession() accepts only history: "tail"; leave the option out to copy the whole branch.',
 				);
 			if (options?.history === "tail") {
 				const receipts = new Map<string, OversizedSessionEntry>();
