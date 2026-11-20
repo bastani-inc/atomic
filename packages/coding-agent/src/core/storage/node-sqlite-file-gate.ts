@@ -437,14 +437,19 @@ function busyTimeoutOf(gate: FileGate, owner: object, database: DatabaseSync): n
 	}
 }
 
-/** Comments and blanks before a statement's first keyword. */
-const LEAD = String.raw`^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*`;
-/** A statement whose first keyword reads. */
-const READ_STATEMENT = new RegExp(`${LEAD}(?:SELECT|VALUES|WITH)\\b`, "i");
-/** A PRAGMA, which SQLite may carry out while it prepares it: never prepared for its plan. */
-const PRAGMA_STATEMENT = new RegExp(`${LEAD}PRAGMA\\b`, "i");
+/** A blank or a comment, which SQLite skips between words. */
+const GAP = String.raw`(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)`;
+/** What SQLite skips before a statement's first word: blanks, comments and empty statements. */
+const LEADING = new RegExp(`^(?:${GAP}|;)*`);
+/** A statement whose first keyword reads (on text without what `LEADING` matches). */
+const READ_STATEMENT = /^(?:SELECT|VALUES|WITH)\b/i;
+/**
+ * A PRAGMA, alone or under EXPLAIN or EXPLAIN QUERY PLAN (on text without what `LEADING` matches): SQLite may carry it
+ * out while it prepares it, so it is never prepared ahead.
+ */
+const PRAGMA_STATEMENT = new RegExp(`^(?:EXPLAIN${GAP}+(?:QUERY${GAP}+PLAN${GAP}+)?)?PRAGMA\\b`, "i");
 /** A statement that only lists a plan: it runs nothing, whatever it explains. */
-const EXPLAIN_STATEMENT = new RegExp(`${LEAD}EXPLAIN\\b`, "i");
+const EXPLAIN_STATEMENT = /^EXPLAIN\b/i;
 /**
  * Steps of SQLite's virtual machine that write a database file or change a connection's transaction or schema, as
  * opposed to the temporary tables and indexes a read sorts and deduplicates in. A write to a table opens it with
@@ -500,16 +505,18 @@ export function classify(
 	single: boolean,
 ): "read" | "write" | "script" | "invalid" {
 	if (!single) return "script";
-	if (PRAGMA_STATEMENT.test(sql)) return "write";
+	// Decided on the text SQLite reads, past the blanks, comments and empty statements it skips.
+	const statement = sql.replace(LEADING, "");
+	if (PRAGMA_STATEMENT.test(statement)) return "write";
 	// Prepared first, as the call itself prepares it: if that fails now, the call fails at once with its own error.
 	try {
 		database.prepare(sql);
 	} catch {
 		return "invalid";
 	}
-	if (EXPLAIN_STATEMENT.test(sql)) return "read";
-	const steps = planSteps(gate, owner, database, sql);
-	if (steps === undefined || !READ_STATEMENT.test(sql)) return "write";
+	if (EXPLAIN_STATEMENT.test(statement)) return "read";
+	const steps = planSteps(gate, owner, database, statement);
+	if (steps === undefined || !READ_STATEMENT.test(statement)) return "write";
 	for (const step of steps) {
 		const opcode = String(step.opcode);
 		// Transaction p2: whether it is a write transaction.

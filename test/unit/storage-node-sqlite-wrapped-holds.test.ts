@@ -796,3 +796,26 @@ test("a wrapped call whose statement no longer prepares fails at once with its o
 	assert.equal(settled(), false, "a call waited for the transaction");
 	await committed;
 });
+
+test("a wrapped PRAGMA behind empty statements or under EXPLAIN is not carried out while a threaded transaction holds the lock, and a SELECT behind them reads at once (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path, 2);
+	const timeout = () => Number(raw.prepare("PRAGMA busy_timeout").get()?.timeout);
+	const { committed, settled } = await holdLock(threaded, 600);
+	for (const sql of [
+		"; PRAGMA busy_timeout=7",
+		"EXPLAIN PRAGMA busy_timeout=7",
+		" ;; /* x */ EXPLAIN QUERY PLAN PRAGMA busy_timeout=7",
+	]) {
+		const failure = await wrapped.get(sql).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		assert.ok(failure instanceof StorageUnavailableError, `${sql}: expected SQLITE_BUSY, got ${String(failure)}`);
+		assert.equal((failure.cause as { errcode?: number }).errcode, 5);
+		assert.equal(timeout(), 2, `${sql} changed the busy timeout while it waited`);
+	}
+	assert.deepEqual(await wrapped.get("; -- before\n SELECT count(*) AS n FROM items"), { n: 0 });
+	assert.equal(settled(), false, "the SELECT waited for the transaction");
+	await committed;
+});
