@@ -7,6 +7,7 @@ import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
+import { evalWorkerExecArgv } from "./worker-threads.js";
 
 export interface ShellConfig {
 	shell: string;
@@ -445,6 +446,7 @@ export function startParentProcessGuardian(parentPid: number, stopFile?: string)
 	if (detachedChildGuardian) return async () => {};
 	const guardian = new Worker(PARENT_GUARDIAN_SOURCE, {
 		eval: true,
+		execArgv: evalWorkerExecArgv(),
 		workerData: { parentPid, stopFile, aiAgent: createChildProcessEnvironment().AI_AGENT },
 	});
 	detachedChildGuardian = guardian;

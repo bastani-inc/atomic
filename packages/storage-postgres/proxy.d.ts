@@ -16,6 +16,12 @@ export type PostgresSocketFactory = (target: ProxyTarget) => Duplex | Promise<Du
 export const PROXY_ANSWER_TIMEOUT_MS: 8000;
 
 /**
+ * The codes of a certificate TLS verification refused, for a server's certificate and an https proxy's: a connection
+ * that fails with one is not retried.
+ */
+export const TLS_VERIFICATION_CODES: ReadonlySet<string>;
+
+/**
  * Whether a `NO_PROXY` value exempts `host` on `port`, as Atomic's HTTPS clients decide it: entries separated by commas
  * or white space; a host matches itself and its subdomains, `*.name` only subdomains, `*` every host; an entry with a
  * port matches that port only.

@@ -80,7 +80,7 @@ test("a stop key for a vanished selection cannot dismiss or stop the replacement
 	for (const state of ["done", "running"] as const) {
 		const h = harness([item("selected", "running"), item("other", state)]);
 		try {
-			assert.match(h.paint(), /❯ ∀ selected/);
+			assert.match(h.paint(), /❯ ◯ selected/);
 			h.replace([item("other", state)]);
 			h.inspector.handleInput("x");
 			if (state === "running") h.inspector.handleInput("x");
@@ -115,7 +115,7 @@ test("a dismissed stopped run returns when the same id resumes (#5224)", async (
 		assert.deepEqual(h.dismissed, ["run:release"]);
 		assert.doesNotMatch(h.paint(), /Build release/);
 		h.replace([item("release", "running")]);
-		assert.match(h.paint(), /❯ ∀ release.*Build release/);
+		assert.match(h.paint(), /❯ ◯ release.*Build release/);
 	} finally {
 		await h.dispose();
 	}

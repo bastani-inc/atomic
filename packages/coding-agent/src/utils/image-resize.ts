@@ -6,6 +6,7 @@ import {
 	type ResizeImageWorkerResponse,
 	resizeImageInProcess,
 } from "./image-resize-core.js";
+import { startModuleWorker } from "./worker-threads.js";
 
 export type { ImageResizeOptions, ResizedImage } from "./image-resize-core.js";
 
@@ -22,7 +23,7 @@ function isResizeImageWorkerResponse(value: unknown): value is ResizeImageWorker
 }
 
 function createResizeWorker(workerSpecifier: string | URL): Worker {
-	return new Worker(workerSpecifier);
+	return typeof workerSpecifier === "string" ? new Worker(workerSpecifier) : startModuleWorker(workerSpecifier);
 }
 
 async function resizeImageInWorker(
