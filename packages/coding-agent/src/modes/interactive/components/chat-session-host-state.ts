@@ -1,6 +1,7 @@
 import type { Component, EditorComponent, MarkdownTheme, TUI } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { type QueueUpdateDeliveries, queuedTextsUnderWay } from "../../../core/queued-message-delivery.ts";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { rowSource, savedRowKey, savedSeqOf, savedTaskRowKey } from "../../../core/tasks/transcript-origin.js";
@@ -148,6 +149,18 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	disposed = false;
 	pendingSteeringMessages: readonly string[] = [];
 	pendingFollowUpMessages: readonly string[] = [];
+	/**
+	 * Messages the agent's turn took out of its queue whose own row is not in the transcript yet, as the last
+	 * `queue_update` named them. The chat draws each as a queued row, ahead of its lane, until its `message_start`
+	 * reaches the chat or its delivery ends without one, so the message is on screen in every frame. Drawing only:
+	 * the queue the chat restores, clears and counts is `pending*`, as the agent lists it.
+	 */
+	deliveringQueuedMessages: QueueUpdateDeliveries | undefined = undefined;
+
+	/** The texts of `lane` the chat draws as queued ahead of its queue while the agent delivers them. */
+	deliveringTexts(lane: "steer" | "followUp"): string[] {
+		return queuedTextsUnderWay(this.deliveringQueuedMessages, lane);
+	}
 	/** Messages sent while the agent works that its queue does not list yet; shown as queued from submit (#4696). */
 	unconfirmedQueuedMessages: readonly { text: string; mode: "steer" | "followUp" }[] = [];
 	compactionQueuedMessages: readonly { text: string; mode: ChatSessionSubmitMode }[] = [];

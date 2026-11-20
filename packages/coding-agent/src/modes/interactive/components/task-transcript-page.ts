@@ -850,6 +850,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const retrying = session?.chatSession?.isRetrying === true;
 		const busy = session?.isRunning?.() === true || retrying;
 		const queued = this.chat.queuedMessages();
+		const delivering = this.chat.deliveringMessages();
 		const readOnlyReason =
 			this.readOnlyReason() ??
 			(this.source.sendTaskMessage === undefined ? "Messages cannot reach this subagent from here." : undefined);
@@ -865,6 +866,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			paused: this.paused(),
 			retrying,
 			queued: { steering: [...queued.steering], followUp: [...queued.followUp] },
+			...(delivering.steering.length === 0 && delivering.followUp.length === 0
+				? {}
+				: { delivering: { steering: [...delivering.steering], followUp: [...delivering.followUp] } }),
 			...(readOnlyReason === undefined ? {} : { readOnlyReason }),
 			heldPrompt: this.heldPrompt() !== undefined,
 			...(working === undefined ? {} : { working }),

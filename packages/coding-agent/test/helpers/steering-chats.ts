@@ -28,7 +28,7 @@ const WIDTH = 120;
 const HEIGHT = 40;
 
 /** A turn that runs one tool round, held until released, then answers each later message with one reply. */
-function busyTurnResponses(): FauxResponseStep[] {
+export function busyTurnResponses(): FauxResponseStep[] {
 	return [
 		fauxAssistantMessage([fauxToolCall("hold", {})], { stopReason: "toolUse" }),
 		...Array.from({ length: 8 }, (_, index) => fauxAssistantMessage(`answer ${index + 1}`)),
@@ -129,7 +129,7 @@ const flush = async () => {
  * the steering lanes a chat of it uses. A typed message goes to the child's own session on `lane` and resolves once the
  * session accepted it; its queue comes back from the session's own answer, as typed.
  */
-function childTranscript(child: Harness): TaskTranscriptSource {
+export function childTranscript(child: Harness): TaskTranscriptSource {
 	return {
 		getSessionId: () => child.sessionManager.getSessionId(),
 		getEntries: () => child.sessionManager.getEntries(),

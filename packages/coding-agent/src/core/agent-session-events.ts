@@ -60,6 +60,12 @@ import { hostNoticeForEvent } from "./host-notices.js";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
 import {
+	beginQueuedMessageDelivery,
+	endQueuedMessageDelivery,
+	noteQueueUpdateDeliveries,
+	type QueuedMessageDelivery,
+} from "./queued-message-delivery.ts";
+import {
 	abortSessionWork,
 	drainSessionReload,
 	drainSessionWork,
@@ -105,14 +111,17 @@ export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 
 export function _emitQueueUpdate(this: AgentSession): void {
 	const held = heldInputView(this);
-	this._emit({
+	const event: AgentSessionEvent = {
 		type: "queue_update",
 		steering: [...this._steeringMessages, ...held.steering],
 		followUp: [...this._followUpMessages, ...held.followUp],
-	});
+	};
+	noteQueueUpdateDeliveries(this, event);
+	this._emit(event);
 }
 
-const consumedQueuedMessageEvents = new WeakSet<object>();
+/** The `message_start` of a queued message the turn took, with its delivery until that event reaches the listeners. */
+const consumedQueuedMessageEvents = new WeakMap<object, QueuedMessageDelivery>();
 /** Sessions whose run was just stopped at its request boundary, with the reported cause (#4226). */
 const pendingPersistenceStops = new WeakMap<object, string>();
 /** Agent-core's synthetic failure replies to those stops. */
@@ -194,15 +203,18 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	if (event.type === "agent_end" && retryIsCurrent(this, retryGeneration)) this._createRetryPromiseForAgentEnd(event);
 	// Agent-core has already consumed this message. Reflect admission before an
 	// Escape/abort can restore it from a stale queue while earlier hooks settle.
+	let delivery: QueuedMessageDelivery | undefined;
 	if (event.type === "message_start" && event.message.role === "user") {
 		// Image-only messages have empty text, and still leave the queue (pi #8612).
 		const text = this._getUserMessageText(event.message);
 		const queue = [this._steeringMessages, this._followUpMessages].find((messages) => messages.includes(text));
 		if (queue) {
 			queue.splice(queue.indexOf(text), 1);
-			forgetTypedQueuedText(this, queue === this._steeringMessages ? "steer" : "followUp", text);
+			const lane = queue === this._steeringMessages ? "steer" : "followUp";
+			forgetTypedQueuedText(this, lane, text);
 			this._admittedQueuedMessageAwaitingReply = text;
-			consumedQueuedMessageEvents.add(event);
+			delivery = beginQueuedMessageDelivery(this, lane, text);
+			consumedQueuedMessageEvents.set(event, delivery);
 		}
 	}
 	const awaitProtectedPersistence =
@@ -242,6 +254,8 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 			: undefined;
 	processing.then(releasePin, (error) => {
 		releasePin?.();
+		// A queued message whose processing failed before its message_start went out never reaches the listeners.
+		endQueuedMessageDelivery(this, delivery);
 		// #3105: callbacks interrupted by terminal disposal remain observable at shutdown.
 		if (this._disposed) {
 			const failures = shutdownEventFailures.get(this) ?? [];
@@ -340,6 +354,7 @@ export async function _processAgentEvent(
 		// awaits this queue, so the reset lands before the run's first projection.
 		this._callerReplacedNextRequestContext = false;
 	}
+	const delivery = consumedQueuedMessageEvents.get(event);
 	if (event.type === "message_start" && event.message.role === "user") {
 		this._overflowRecoveryAttempted = false;
 		this._recoverableLengthRecoveryAttempted = false;
@@ -357,8 +372,14 @@ export async function _processAgentEvent(
 		await this._emitExtensionEvent(event);
 		if (event.type === "agent_start") this._undeliveredAgentStarts -= 1;
 		if (event.type === "agent_end" && this.isRetrying) this._emit({ ...event, retryPending: true });
-		else if (event.type !== "message_end" && !repeatsShownInput(this, event)) this._emit(event);
+		else if (event.type !== "message_end" && !repeatsShownInput(this, event)) {
+			// A queued message leaves the queue its chat shows as its own row reaches the listeners.
+			endQueuedMessageDelivery(this, delivery);
+			this._emit(event);
+		}
 	} finally {
+		// Its message_start never reaches the listeners: a hook failed, or the session already shows the input (#5135).
+		endQueuedMessageDelivery(this, delivery);
 		// Agent-core has consumed this protected input already. Its durability
 		// boundary cannot be skipped by a fallible extension or session listener.
 		if (protectedMessage !== undefined) {

@@ -99,13 +99,31 @@ const LEGACY_WAITING_SINGLE_CLICKS = 16;
  */
 class RemoteComponentTui extends TuiMainScreen {
 	private readonly paint: () => void;
+	/** A frame was asked for and is not painted yet: its paced render has not run. */
+	private framePending = false;
 
 	constructor(terminal: Terminal, paint: () => void) {
 		super(terminal, undefined, getAgentDir());
 		this.paint = paint;
 	}
 
+	override requestRender(force?: boolean): void {
+		this.framePending = true;
+		super.requestRender(force);
+	}
+
+	override requestImmediateRender(): void {
+		this.framePending = true;
+		super.requestImmediateRender();
+	}
+
+	/** Paint the frame asked for now, ahead of its paced render; nothing when every asked-for frame is painted. */
+	paintPendingFrame(): void {
+		if (this.framePending) this.renderNow();
+	}
+
 	protected override doRender(): void {
+		this.framePending = false;
 		if (!this.stopped) this.paint();
 	}
 }
@@ -386,7 +404,7 @@ export class EngineCustomUiService {
 	mountTranscript(
 		viewId: string,
 		factory: (tui: TUI) => Component & { dispose?(): void },
-	): { readonly componentId: string; readonly tui: TUI; close(): void } {
+	): { readonly componentId: string; readonly tui: TUI; close(): void; paintPendingFrame(): void } {
 		const componentId = `remote_component_${++this.nextId}`;
 		const terminal = new RemoteTerminal(
 			() => this.send({ type: "engine_custom_invalidate", componentId }),
@@ -404,7 +422,12 @@ export class EngineCustomUiService {
 		tui.setFocus(component);
 		this.active.set(componentId, { component, resolve: () => {}, terminal, tui, overlay: false, transcript: true });
 		this.send({ type: "engine_custom_open", componentId, overlay: false, placement: "transcript", viewId });
-		return { componentId, tui, close: () => this.disposeComponent(componentId, false) };
+		return {
+			componentId,
+			tui,
+			close: () => this.disposeComponent(componentId, false),
+			paintPendingFrame: () => tui.paintPendingFrame(),
+		};
 	}
 
 	getHostCustomUiState(): HostCustomUiState {
