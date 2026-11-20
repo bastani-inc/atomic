@@ -175,12 +175,15 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 		assert.match(peek40, /\? keys$/u);
 		assert.ok(visibleWidth(peek40) <= 40);
 
+		// The way out and `? keys` outrank Esc's hint, as the main chat's footer keeps its outer hints over its own.
 		const attached40 = renderNavHintLine(taskChatKeys("main chat", true, false, true), 40, plainStyle, keys);
-		assert.equal(attached40, "  ← main chat · esc interrupt · ? keys");
+		assert.equal(attached40, "  ← main chat · ? keys");
 		assert.ok(visibleWidth(attached40) <= 40);
+		const attached41 = renderNavHintLine(taskChatKeys("main chat", true, false, true), 41, plainStyle, keys);
+		assert.equal(attached41, "  ← main chat · esc to interrupt · ? keys");
 
 		const stage40 = renderNavHintLine(taskChatKeys("graph", true, false, true), 40, plainStyle, keys);
-		assert.equal(stage40, "  ← graph · esc interrupt · ? keys");
+		assert.equal(stage40, "  ← graph · esc to interrupt · ? keys");
 		assert.ok(visibleWidth(stage40) <= 40);
 	});
 

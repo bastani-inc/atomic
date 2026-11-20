@@ -2115,13 +2115,13 @@ test("Esc interrupts a running subagent's turn from its chat and never leaves; �
 	});
 	const host = await openTranscript(transcript);
 	try {
-		assert.match(host.text(), /← task · esc interrupt · pgup\/pgdn scroll · \? keys/);
+		assert.match(host.text(), /← task · esc to interrupt · pgup\/pgdn scroll · \? keys/);
 		host.inspector.handleInput("\x1b");
 		await flush();
 		assert.equal(interrupts, 1, "Esc interrupted the subagent's current turn");
 		assert.match(host.text(), /^Transcript/, "Esc never leaves the chat");
 		assert.equal(host.fixture.runners[0].context.signal.aborted, false, "the subagent keeps running");
-		assert.doesNotMatch(host.text(), /esc interrupt/, "an idle subagent has no turn to interrupt");
+		assert.doesNotMatch(host.text(), /esc to interrupt/, "an idle subagent has no turn to interrupt");
 		host.inspector.handleInput("\x1b");
 		assert.equal(interrupts, 1, "Esc on an idle subagent does nothing");
 		await host.type("?");
