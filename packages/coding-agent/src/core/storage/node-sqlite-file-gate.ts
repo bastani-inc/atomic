@@ -5,11 +5,14 @@ import type { DatabaseSync, StatementSync } from "node:sqlite";
 /**
  * A connection on a thread of its own taking or holding a file's write lock: open from the moment it sends
  * `BEGIN IMMEDIATE` until it learns that the attempt was refused or failed, or until its transaction let go of the
- * lock. A call made inside its transaction's callback runs in its hold's asynchronous context (`runInHold`), and calls
- * that waited for the file run when the file's last hold closes (`releaseHold`).
+ * lock. Only a `scoped` hold, one opened while the process had a wrapped connection to the file, makes wrapped calls
+ * wait: its transaction's callback runs in its asynchronous context (`runInHold`), so calls made inside it are told
+ * apart. A process that wraps no connection to the file never enters that context, and wrapped calls made while an
+ * unscoped hold is open run at once, as they always have.
  */
 export interface FileHold {
 	readonly file: string;
+	readonly scoped: boolean;
 	open: boolean;
 }
 
@@ -65,12 +68,18 @@ export interface FileGate {
 	readonly waiters: Waiter[];
 	readonly plans: WeakMap<object, Plans>;
 	watching: boolean;
+	/** A call ran on this file in the current turn of the event loop; the next one waits for the next turn. */
+	paced: boolean;
+	pumping: boolean;
 }
 
 interface Registry {
 	readonly files: Map<string, FileGate>;
 	readonly words: Map<string, FileWord>;
 	readonly scopes: AsyncLocalStorage<HoldScope | undefined>;
+	/** Wrapped connections to each file that are open: closed ones, and ones collected unclosed, no longer count. */
+	readonly wrapped: Map<string, number>;
+	readonly collected: FinalizationRegistry<{ readonly release: () => void }>;
 }
 
 /** One file's word and the tags of the connections that use it. */
@@ -91,6 +100,8 @@ const registry: Registry = registryBag[REGISTRY] ?? {
 	files: new Map(),
 	words: new Map(),
 	scopes: new AsyncLocalStorage(),
+	wrapped: new Map(),
+	collected: new FinalizationRegistry((use) => use.release()),
 };
 registryBag[REGISTRY] = registry;
 
@@ -146,22 +157,52 @@ function runAdmitted<T>(state: Int32Array, call: () => Promise<T>): Promise<T> |
 	}
 }
 
-/** Opens a hold on `file`, identified as `fileIdentity` identifies it. */
+/**
+ * A wrapped connection, `owner`, to `file` counts as open until `release` or until `owner` is collected, whichever
+ * comes first; see `FileHold`.
+ */
+export function useWrappedFile(file: string, owner: object): { release(): void } {
+	registry.wrapped.set(file, (registry.wrapped.get(file) ?? 0) + 1);
+	let released = false;
+	const use = {
+		release: () => {
+			if (released) return;
+			released = true;
+			const count = (registry.wrapped.get(file) ?? 1) - 1;
+			if (count > 0) registry.wrapped.set(file, count);
+			else registry.wrapped.delete(file);
+		},
+	};
+	registry.collected.register(owner, use, use);
+	return {
+		release: () => {
+			registry.collected.unregister(use);
+			use.release();
+		},
+	};
+}
+
+/** Opens a hold on `file`, identified as `fileIdentity` identifies it, scoped if a wrapped connection to it is open. */
 export function holdFile(file: string): FileHold {
 	let gate = registry.files.get(file);
 	if (gate === undefined) {
-		gate = { holds: new Set(), waiters: [], plans: new WeakMap(), watching: false };
+		gate = { holds: new Set(), waiters: [], plans: new WeakMap(), watching: false, paced: false, pumping: false };
 		registry.files.set(file, gate);
 	}
-	const hold: FileHold = { file, open: true };
+	const hold: FileHold = { file, scoped: registry.wrapped.has(file), open: true };
 	gate.holds.add(hold);
 	return hold;
 }
 
+/** Whether a scoped hold of the gate's file is open. */
+function scopedHoldOpen(gate: FileGate): boolean {
+	for (const hold of gate.holds) if (hold.scoped) return true;
+	return false;
+}
+
 /**
- * Closes `hold`, once. When it was the file's last, the calls waiting for the file run now, oldest first, before
- * anything else can take the lock again; one that finds the word taken (a call before it began a transaction) stops
- * the rest, which go on waiting.
+ * Closes `hold`, once. When it was the file's last, the oldest call waiting for the file runs now, if the word is free
+ * and no call ran in this turn; the others follow one per turn (see `runNextWaiter`).
  */
 export function releaseHold(hold: FileHold | undefined): void {
 	if (hold === undefined || !hold.open) return;
@@ -169,22 +210,55 @@ export function releaseHold(hold: FileHold | undefined): void {
 	const gate = registry.files.get(hold.file);
 	if (gate === undefined) return;
 	gate.holds.delete(hold);
-	if (gate.holds.size === 0) runWaiters(gate);
+	if (!scopedHoldOpen(gate)) runNextWaiter(hold.file, gate);
 	forgetIfIdle(hold.file, gate);
 }
 
-/** Runs the gate's waiting calls, oldest first, while the word is free. */
-function runWaiters(gate: FileGate): void {
-	while (gate.waiters.length > 0) {
-		const waiter = gate.waiters[0]!;
-		if (!waiter.tryRun()) return;
-		gate.waiters.shift();
+/**
+ * Runs the oldest waiting call if the word is free and no call ran on the file in this turn of the event loop, and
+ * schedules the next one for the next turn: calls that queued up behind a long transaction run one per turn, so none
+ * of them holds the event loop for the time of all of them. A call that finds the word taken waits again, still under
+ * its own deadline.
+ */
+function runNextWaiter(file: string, gate: FileGate): void {
+	if (gate.paced || gate.waiters.length === 0) return;
+	const waiter = gate.waiters[0]!;
+	if (!waiter.tryRun()) {
+		failOverdue(gate);
+		return;
+	}
+	gate.waiters.shift();
+	clearTimeout(waiter.timer);
+	ranThisTurn(file, gate);
+}
+
+/** The word is taken: calls waiting past their deadline fail now, having run nothing; the others keep their place. */
+function failOverdue(gate: FileGate): void {
+	const now = performance.now();
+	for (const waiter of gate.waiters.filter((waiting) => now >= waiting.deadline)) {
+		gate.waiters.splice(gate.waiters.indexOf(waiter), 1);
 		clearTimeout(waiter.timer);
+		waiter.fail();
 	}
 }
 
+/** Notes that a call ran on the file in this turn; the next waiting one gets the next turn. */
+function ranThisTurn(file: string, gate: FileGate): void {
+	gate.paced = true;
+	if (gate.pumping) return;
+	gate.pumping = true;
+	setImmediate(() => {
+		gate.pumping = false;
+		gate.paced = false;
+		const state = registry.words.get(file)?.state;
+		runNextWaiter(file, gate);
+		if (state !== undefined) watchWord(file, gate, state);
+		forgetIfIdle(file, gate);
+	});
+}
+
 function forgetIfIdle(file: string, gate: FileGate): void {
-	if (gate.holds.size === 0 && gate.waiters.length === 0 && registry.files.get(file) === gate)
+	if (gate.holds.size === 0 && gate.waiters.length === 0 && !gate.pumping && registry.files.get(file) === gate)
 		registry.files.delete(file);
 }
 
@@ -194,7 +268,10 @@ function forgetIfIdle(file: string, gate: FileGate): void {
  * told apart.
  */
 export function runInHold<T>(hold: FileHold | undefined, scope: HoldScope | undefined, callback: () => T): T {
-	return registry.scopes.run(hold === undefined ? scope : { hold, outer: scope }, callback);
+	const store = hold?.scoped === true ? { hold, outer: scope } : scope;
+	// Nothing to change, as always for a process that wraps no connection to a file: no context is entered.
+	if (store === registry.scopes.getStore()) return callback();
+	return registry.scopes.run(store, callback);
 }
 
 /** The holds whose callbacks the caller runs in; captured when a call is made, not when it runs. */
@@ -209,7 +286,8 @@ export function currentHoldScope(): HoldScope | undefined {
  */
 export function heldElsewhere(file: string, scope: HoldScope | undefined): FileGate | undefined {
 	const gate = registry.files.get(file);
-	if (gate === undefined || gate.holds.size === 0) return undefined;
+	// Calls still queued from the last transaction keep their place, and one runs per turn: a new one queues behind.
+	if (gate === undefined || (!scopedHoldOpen(gate) && gate.waiters.length === 0 && !gate.paced)) return undefined;
 	for (let inner = scope; inner !== undefined; inner = inner.outer) {
 		if (inner.hold.open && inner.hold.file === file) return undefined;
 	}
@@ -232,10 +310,13 @@ export function runWhenFree<T>(
 ): Promise<T> {
 	const state = registry.words.get(file)?.state;
 	if (state === undefined) return run();
-	// Calls already waiting go first.
-	runWaiters(gate);
-	const now = gate.waiters.length === 0 ? runAdmitted(state, run) : undefined;
-	if (now !== undefined) return now;
+	// Calls already waiting go first, and one runs per turn.
+	runNextWaiter(file, gate);
+	const now = gate.waiters.length === 0 && !gate.paced ? runAdmitted(state, run) : undefined;
+	if (now !== undefined) {
+		ranThisTurn(file, gate);
+		return now;
+	}
 	const timeoutMs = busyTimeoutOf(gate, owner, database);
 	if (timeoutMs === undefined) return run();
 	return new Promise<T>((resolve, reject) => {
@@ -243,13 +324,16 @@ export function runWhenFree<T>(
 			deadline: performance.now() + timeoutMs,
 			// Decided once the event loop handled what it already received, such as the exit of a connection's thread,
 			// which a timer runs ahead of.
+			// At its deadline it fails if the word is taken. While the word is free it keeps its place: a free lock is
+			// never reported busy, and its turn comes (see `runNextWaiter`), so its busy timeout bounds how long it waits
+			// for the lock, not for its turn.
 			timer: setTimeout(
 				() =>
 					setImmediate(() => {
 						const index = gate.waiters.indexOf(waiter);
-						if (index === -1) return;
+						if (index === -1 || Atomics.load(state, 0) === FREE) return;
 						gate.waiters.splice(index, 1);
-						if (!waiter.tryRun()) waiter.fail();
+						waiter.fail();
 						forgetIfIdle(file, gate);
 					}),
 				timeoutMs,
@@ -277,8 +361,10 @@ function watchWord(file: string, gate: FileGate, state: Int32Array): void {
 		const observed = Atomics.load(state, 0);
 		// Freed since the caller found it taken: run what waits now rather than wait for a change that already came.
 		if (observed === FREE) {
-			runWaiters(gate);
+			// Free: the oldest runs now or at the next turn (see `runNextWaiter`); nothing to watch for until then.
+			runNextWaiter(file, gate);
 			forgetIfIdle(file, gate);
+			if (gate.paced) return;
 			continue;
 		}
 		// Until the last deadline: each waiter's own timer decides at its deadline, so a watch never runs past it.
@@ -292,7 +378,7 @@ function watchWord(file: string, gate: FileGate, state: Int32Array): void {
 		gate.watching = true;
 		void result.value.then(() => {
 			gate.watching = false;
-			runWaiters(gate);
+			runNextWaiter(file, gate);
 			forgetIfIdle(file, gate);
 			watchWord(file, gate, state);
 		});

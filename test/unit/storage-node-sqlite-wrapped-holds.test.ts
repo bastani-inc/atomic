@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { AsyncLocalStorage } from "node:async_hooks";
 import { symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -585,4 +586,85 @@ test("a wrapped write whose short busy timeout ends before the threaded BEGIN re
 	}
 	await committed;
 	assert.deepEqual(await values(threaded), ["c", "a"]);
+});
+
+test("wrapped writes queued behind a threaded transaction run one per turn of the event loop, in order (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped } = await openWrapped(path);
+	// Turns of the event loop, counted by an immediate that schedules itself; calls that complete in one turn share a
+	// count.
+	let turn = 0;
+	let counting = true;
+	const count = () => {
+		turn++;
+		if (counting) setImmediate(count);
+	};
+	setImmediate(count);
+	const { committed } = await holdLock(threaded);
+	const completedIn: number[] = [];
+	const writes = Array.from({ length: 50 }, (_, index) =>
+		wrapped.run("INSERT INTO items VALUES (?)", `w${index}`).then(() => {
+			completedIn.push(turn);
+		}),
+	);
+	await Promise.all([committed, ...writes]);
+	counting = false;
+	const perTurn = new Map<number, number>();
+	for (const each of completedIn) perTurn.set(each, (perTurn.get(each) ?? 0) + 1);
+	assert.ok(Math.max(...perTurn.values()) <= 2, `${Math.max(...perTurn.values())} writes ran in one turn`);
+	assert.deepEqual(await values(threaded), ["a", "b", ...Array.from({ length: 50 }, (_, index) => `w${index}`)]);
+});
+
+/** The asynchronous context the storage layer runs threaded transactions' callbacks in, shared by its module copies. */
+function holdScopes(): AsyncLocalStorage<object | undefined> {
+	const bag = globalThis as typeof globalThis &
+		Record<symbol, { readonly scopes: AsyncLocalStorage<object | undefined> } | undefined>;
+	return bag[Symbol.for("atomic-storage/node-sqlite-file-holds@1")]!.scopes;
+}
+
+test("a threaded transaction enters no asynchronous context unless a wrapped connection to its file is open (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const enters = vi.spyOn(holdScopes(), "run");
+	cleanups.push(() => enters.mockRestore());
+	const write = (value: string) =>
+		threaded.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES (?)", value);
+		});
+	// A wrapped connection to another file does not count.
+	await openWrapped(databasePath());
+	await write("unwrapped");
+	assert.equal(enters.mock.calls.length, 0);
+	const { wrapped } = await openWrapped(path);
+	await write("wrapped");
+	assert.equal(enters.mock.calls.length, 1);
+	await wrapped.close();
+	enters.mockClear();
+	await write("closed");
+	assert.equal(enters.mock.calls.length, 0);
+	assert.deepEqual(await values(threaded), ["unwrapped", "wrapped", "closed"]);
+});
+
+test("a wrapped connection opened inside a running threaded transaction's callback behaves as before (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	await threaded.run("INSERT INTO items VALUES ('before')");
+	const busyTimeoutMs = 200;
+	let read: string[] | undefined;
+	let failure: unknown;
+	let waitedMs = 0;
+	await threaded.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('a')");
+		const { wrapped } = await openWrapped(path, busyTimeoutMs);
+		read = await values(wrapped);
+		const started = performance.now();
+		failure = await wrapped.run("INSERT INTO items VALUES ('c')").then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		waitedMs = performance.now() - started;
+	});
+	assert.deepEqual(read, ["before"]);
+	assert.ok(failure instanceof StorageUnavailableError, `expected SQLITE_BUSY, got ${String(failure)}`);
+	assert.equal((failure.cause as { errcode?: number }).errcode, 5);
+	assert.ok(waitedMs >= busyTimeoutMs - 5, `it failed after ${Math.round(waitedMs)} ms`);
+	assert.deepEqual(await values(threaded), ["before", "a"]);
 });

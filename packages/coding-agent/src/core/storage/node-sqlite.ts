@@ -74,6 +74,7 @@ import {
 	runWhenFree,
 	sqliteBusyError,
 	useFileLock,
+	useWrappedFile,
 } from "./node-sqlite-file-gate.js";
 import {
 	type ConnectionAnswer,
@@ -1407,6 +1408,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private readonly current: { hold?: FileHold } = {};
 	/** This connection's share of its file's lock word, which its thread moves as it takes and lets go of the lock. */
 	private readonly fileLock?: FileLock;
+	/** That this wrapped connection to its file is open, which scopes the holds of threaded ones (see `FileHold`). */
+	private readonly wrappedUse?: { release(): void };
 	/** The ticket of the writer holding the lock, on its way out of the queue while the transaction runs. */
 	private leaving?: { readonly ticket: string; readonly left: Promise<void> };
 	/** What the writers' queue gave up on, once per reason, in the order it first happened. */
@@ -1426,6 +1429,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			this.fileLock = useFileLock(fileGate.file);
 			releaseOnExit(connection, this.current, this.fileLock);
 		}
+		if (fileGate?.role === "waits") this.wrappedUse = useWrappedFile(fileGate.file, this);
 		this.lockWaitMs = lockWaitMs;
 		this.groupCommitHoldMs = groupCommitHoldMs;
 		this.transactionIdentity = transactionIdentity;
@@ -1921,7 +1925,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		if (params.some((value) => typeof value === "string" && value.includes("\0"))) return call();
 		const owner = this.connection;
 		const database = owner.connection;
-		if (statement !== undefined && readsOnly(gate, owner, database, statement)) return call();
+		// While no transaction is open the file's calls only take their turn: a read is not explained for it.
+		if (statement !== undefined && gate.holds.size > 0 && readsOnly(gate, owner, database, statement)) return call();
 		return runWhenFree(file, gate, owner, database, call, () => unavailable(this.descriptor, sqliteBusyError()));
 	}
 
@@ -2181,6 +2186,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 					await this.holderRecord?.close();
 					await this.call({ kind: "close" });
 				} finally {
+					this.wrappedUse?.release();
 					this.fileLock?.release();
 					await releaseOpenLock(this.openLock);
 				}
