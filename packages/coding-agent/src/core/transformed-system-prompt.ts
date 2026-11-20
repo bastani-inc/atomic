@@ -156,6 +156,11 @@ function changedSections(
 	return Object.keys(changes).length > 0 ? changes : undefined;
 }
 
+/** Whether any row of `messages` recorded a transformed prompt, under any owner. */
+export function hasRecordedTransformedPrompt(messages: readonly AgentMessage[]): boolean {
+	return messages.some((message) => transformedPromptOf(message) !== undefined);
+}
+
 /** Whether `owner` recorded the transformed prompt the next request leads with. */
 export function hasTransformedPrompt(messages: readonly AgentMessage[], owner: string): boolean {
 	return headIndex(messages, owner) >= 0;

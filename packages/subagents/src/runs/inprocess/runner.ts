@@ -98,7 +98,7 @@ import {
 } from "../shared/cancellation-recovery.js";
 import { finishElapsedSpan } from "../shared/elapsed.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
-import { createInProcessChildPromptBehavior, forkedChildTools } from "./prompt-behavior.js";
+import { createInProcessChildPromptBehavior, forkedChildTools, forkedParentSessionId } from "./prompt-behavior.js";
 import {
 	SessionStartBudget,
 	type SessionStartProgress,
@@ -2439,7 +2439,7 @@ export class SubagentControlRuntime {
 					throw new Error("Skills not found: subagent");
 				}
 				const skillInjection = buildSkillInjection(selectedSkills.resolved);
-				const parentSessionId = sessionManager.getHeader()?.parentSessionId;
+				const parentSessionId = forkedParentSessionId(sessionManager);
 				const forked =
 					parentSessionId === undefined ? undefined : forkedChildTools(inherited.tools, inherited.parentToolNames);
 				const promptBehavior = createInProcessChildPromptBehavior(

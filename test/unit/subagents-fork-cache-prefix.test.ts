@@ -31,7 +31,9 @@ import { createCodemodeExtension } from "../../packages/coding-agent/src/extensi
 import { createTestExtensionsResult } from "../../packages/coding-agent/test/utilities.js";
 import {
 	createInProcessChildPromptBehavior,
+	createInProcessChildSystemPromptTransform,
 	forkedChildTools,
+	forkedParentSessionId,
 } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -217,16 +219,18 @@ async function openFork(
 		parentHiddenTools?: readonly string[];
 		customTools?: CreateAgentSessionOptions["customTools"];
 		codemodeRoutingOnly?: boolean;
+		/** The parent the runner found the session continues (`forkedParentSessionId`); by default its header's. */
+		forkedFrom?: string;
 	} = {},
 ) {
 	const cwd = manager.getCwd();
 	const policy = options.policy ?? narrow;
-	const parentSessionId = manager.getHeader()?.parentSessionId;
-	assert.ok(parentSessionId, "a fork's session names its parent");
-	const behavior = createInProcessChildPromptBehavior(policy, '<skill name="checks">\nRun the checks.\n</skill>', {
-		parentSessionId,
-		parentHiddenTools: options.parentHiddenTools,
-	});
+	const parentSessionId = "forkedFrom" in options ? options.forkedFrom : manager.getHeader()?.parentSessionId;
+	const behavior = createInProcessChildPromptBehavior(
+		policy,
+		'<skill name="checks">\nRun the checks.\n</skill>',
+		parentSessionId === undefined ? undefined : { parentSessionId, parentHiddenTools: options.parentHiddenTools },
+	);
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir: cwd,
@@ -547,6 +551,47 @@ describe("a forked subagent continues its parent's cached request", () => {
 			],
 		);
 		assert.deepEqual(secretRuns, []);
+	});
+
+	test("a fork child an earlier version ran is reopened as the child it was, under its own prompt", async () => {
+		const { runtime, parentModel, requests, parentManager, forkManager } = await parentAndFork(NATIVE);
+		assert.equal(forkedParentSessionId(forkManager), parentManager.getSessionId(), "a new fork continues its parent");
+		// The earlier version: the child's own transformed prompt, the parent's orchestration history filtered out, and
+		// no recorded prompt.
+		const cwd = forkManager.getCwd();
+		const { session: legacy } = await createAgentSession({
+			cwd,
+			agentDir: cwd,
+			model: parentModel,
+			thinkingLevel: "off",
+			modelRuntime: runtime,
+			settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
+			sessionManager: forkManager,
+			resourceLoader: resourceLoader("You review changes."),
+			subagentPolicy: { ...narrow, managementActions: "restricted", depth: 1 },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
+			tools: ["read"],
+			...createInProcessChildPromptBehavior(narrow),
+			systemPromptSections: undefined,
+			systemPromptTransform: createInProcessChildSystemPromptTransform(narrow),
+		});
+		await legacy.prompt("child task");
+		await legacy.dispose();
+
+		const reopenedManager = await SessionManager.open(forkManager.getSessionStore(), forkManager.getSessionId());
+		const parentSessionId = forkedParentSessionId(reopenedManager);
+		assert.equal(parentSessionId, undefined, "its own turns are already there: it is reopened as the child it was");
+		const reopened = await openFork(reopenedManager, runtime, parentModel, { forkedFrom: parentSessionId });
+		await reopened.prompt("follow-up");
+
+		const last = requests.at(-1)!.payload;
+		assert.doesNotMatch(JSON.stringify(last), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
+		assert.doesNotMatch(JSON.stringify(last), /You are now a subagent started from the conversation above/);
+		assert.match(JSON.stringify(last.system), /You are a child subagent, not the parent orchestrator/);
+		assert.deepEqual(
+			(last.tools as { name: string }[]).map((tool) => tool.name).filter((name) => !name.startsWith("__")),
+			["read"],
+		);
 	});
 
 	test("refuses a call to a parent tool outside its policy", async () => {

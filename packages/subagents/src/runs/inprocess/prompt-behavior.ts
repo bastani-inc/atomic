@@ -1,3 +1,4 @@
+import { hasRecordedTransformedPrompt } from "@bastani/atomic";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
@@ -247,6 +248,24 @@ export function forkedChildTools(
 	if (tools === undefined || tools.includes("codemode") || !parentToolNames?.includes("codemode"))
 		return { tools: tools && [...tools], codemodeRoutingOnly: false };
 	return { tools: [...tools, "codemode"], codemodeRoutingOnly: true };
+}
+
+/**
+ * The parent whose conversation a child's session continues as a fork, or undefined. A fork continues that
+ * conversation from its first request: a fork session that already holds the child's own turns without a recorded
+ * prompt (an earlier version ran it) is reopened as the child it was, under its own prompt.
+ */
+export function forkedParentSessionId(session: {
+	getHeader(): { readonly parentSessionId?: string; readonly createdAt: string } | null;
+	buildSessionContext(): { readonly messages: readonly AgentMessage[] };
+}): string | undefined {
+	const header = session.getHeader();
+	if (header?.parentSessionId === undefined) return undefined;
+	const { messages } = session.buildSessionContext();
+	if (hasRecordedTransformedPrompt(messages)) return header.parentSessionId;
+	const forkedAt = Date.parse(header.createdAt);
+	const ownTurns = messages.some((message) => message.role === "assistant" && message.timestamp >= forkedAt);
+	return ownTurns ? undefined : header.parentSessionId;
 }
 
 /** The note that opens what a forked child adds after its parent's conversation. */
