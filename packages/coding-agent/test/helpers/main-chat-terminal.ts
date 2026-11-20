@@ -74,7 +74,9 @@ export function normalizedFrame(lines: readonly string[]): string[] {
 			.replace(/\b\d+(\.\d+)?(ms|s|m)\b/g, "N$2")
 			// A running tool's header shows its elapsed time only once it has run for a while.
 			.replace(/^( *\S .*\)) · N(ms|s|m)$/, "$1")
-			.replace(/(\/[^\s/·()]+){2,}\/?( \([^)]*\))?/g, "<path>")
+			// A folder under the home directory is shown from `~`, as on a runner whose checkout is there; its shorter
+			// path leaves room for the branch, which may be cut short.
+			.replace(/~?(\/[^\s/·()]+){2,}\/?( \([^)·\s]*\)?)?/g, "<path>")
 			.trimEnd();
 		return /%\/\d+k \(auto\)$/.test(masked) ? masked.replace(/\d+(\.\d+)?k?/g, "n") : masked;
 	});
