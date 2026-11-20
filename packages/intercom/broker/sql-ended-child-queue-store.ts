@@ -149,9 +149,16 @@ function rowOf(row: QueueRow): EndedQueueRow {
 	};
 }
 
+/** How long a write waits for another process's write lock (on a timer, never blocking the event loop) before it fails. */
+export const ENDED_QUEUE_LOCK_WAIT_MS = 5_000;
+
 /**
  * Writes in order, a batch per transaction: writes asked for while one commits go together in the next, so a burst of
  * queued messages costs one commit, and an insert is always committed before a later delete of the same row.
+ *
+ * A batch that could not get the write lock within {@link ENDED_QUEUE_LOCK_WAIT_MS} fails, and so do the batches behind
+ * it, at once, for as long again: a queued message's sender then hears within one lock wait, never one per batch
+ * ahead of it (its client stops waiting for an answer after 10 s).
  */
 class OrderedWrites {
 	private pending: Array<{
@@ -160,8 +167,13 @@ class OrderedWrites {
 		readonly reject: (error: unknown) => void;
 	}> = [];
 	private running: Promise<void> | undefined;
+	private brokenUntil = Number.NEGATIVE_INFINITY;
+	private brokenBy: unknown;
 
-	constructor(private readonly database: SqliteDatabase) {}
+	constructor(
+		private readonly database: SqliteDatabase,
+		private readonly lockWaitMs = ENDED_QUEUE_LOCK_WAIT_MS,
+	) {}
 
 	run<T>(write: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
 		return new Promise<T>((resolve, reject) => {
@@ -178,6 +190,10 @@ class OrderedWrites {
 	private async drain(): Promise<void> {
 		while (this.pending.length > 0) {
 			const batch = this.pending.splice(0);
+			if (performance.now() < this.brokenUntil) {
+				for (const item of batch) item.reject(this.brokenBy);
+				continue;
+			}
 			try {
 				// Each write in a savepoint of its own: one that fails rolls back alone and fails only its caller.
 				const results = await this.database.transaction(async (tx) => {
@@ -194,13 +210,15 @@ class OrderedWrites {
 						}
 					}
 					return outcomes;
-				});
+				}, { lockWaitMs: this.lockWaitMs });
 				batch.forEach((item, index) => {
 					const outcome = results[index]!;
 					if (outcome.ok) item.resolve(outcome.value);
 					else item.reject(outcome.error);
 				});
 			} catch (error) {
+				this.brokenUntil = performance.now() + this.lockWaitMs;
+				this.brokenBy = error;
 				for (const item of batch) item.reject(error);
 			}
 		}
@@ -219,10 +237,13 @@ export async function openSqlEndedChildQueueStore(
 		holder,
 		ownsDatabase = false,
 		retire = false,
+		lockWaitMs = ENDED_QUEUE_LOCK_WAIT_MS,
 	}: {
 		readonly home: string;
 		readonly holder: string;
 		readonly ownsDatabase?: boolean;
+		/** How long a write waits for another process's write lock (default {@link ENDED_QUEUE_LOCK_WAIT_MS}). */
+		readonly lockWaitMs?: number;
 		/** A broker that kept the queue in memory told its sessions what this store kept was lost: drop it. */
 		readonly retire?: boolean;
 	},
@@ -292,7 +313,7 @@ export async function openSqlEndedChildQueueStore(
 		});
 	}
 	const keeper = id;
-	const writes = new OrderedWrites(database);
+	const writes = new OrderedWrites(database, lockWaitMs);
 	/** Rows of one departure that this instance holds. */
 	const departureWhere = (departure: EndedQueueDepartureKey) =>
 		departure.ownerHost === undefined
@@ -443,9 +464,6 @@ export async function openSqlEndedChildQueueStore(
 	};
 }
 
-/** How long a write to the local file waits for another process's write lock before it fails (on a timer, never blocking). */
-const LOCAL_LOCK_WAIT_MS = 5_000;
-
 /**
  * #5999: the queue in the local file `path` (the Intercom directory's `ended-child-queue.sqlite`), owner-only, through
  * the storage layer's node:sqlite database: its transactions wait for another process's write lock on a timer, never
@@ -458,7 +476,10 @@ export async function openLocalEndedChildQueueStore(
 ): Promise<EndedChildQueueStore> {
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	const { openNodeSqliteDatabase } = await import("@bastani/atomic/storage");
-	const database = await openNodeSqliteDatabase(path, { busyTimeoutMs: LOCAL_LOCK_WAIT_MS, lockWaitMs: LOCAL_LOCK_WAIT_MS });
+	const database = await openNodeSqliteDatabase(path, {
+		busyTimeoutMs: ENDED_QUEUE_LOCK_WAIT_MS,
+		lockWaitMs: ENDED_QUEUE_LOCK_WAIT_MS,
+	});
 	try {
 		if (process.platform !== "win32")
 			for (const file of [path, `${path}-wal`, `${path}-shm`]) if (existsSync(file)) chmodSync(file, 0o600);

@@ -404,6 +404,69 @@ test(
 );
 
 test(
+	"a launching session that goes away keeps its subagents' messages waiting; back, it resumes the finished one; ended, they fail once (#5999)",
+	async () => {
+		const host = new Host();
+		await host.start();
+		const ownerBefore = await owner(host, "away");
+		await endedChild(host, ownerBefore, "subagent-worker-away-1", "completed");
+		await endedChild(host, ownerBefore, "subagent-worker-away-paused-1", "stopped");
+		const sender = await connect(host, "away-sender");
+		const first = await sender.client.send("subagent-worker-away-1", {
+			text: "before it left",
+			wakeEndedRecipient: true,
+		});
+		assert.equal(first.queued, true, first.reason);
+		await vi.waitFor(() => assert.equal(ownerBefore.wakes.length, 1), WAIT);
+		// It goes away without ending (its process exits; `atomic -c` brings it back), before it answered the wake.
+		await ownerBefore.client.disconnect({ resumable: true });
+		await sleep(SETTLE_MS);
+		const meanwhile = await sender.client.send("subagent-worker-away-1", {
+			text: "while it was away",
+			wakeEndedRecipient: true,
+		});
+		assert.equal(meanwhile.queued, true, meanwhile.reason);
+		assert.equal(meanwhile.target, RESUMING_RECIPIENT_TARGET);
+		const paused = await sender.client.send("subagent-worker-away-paused-1", {
+			text: "held",
+			wakeEndedRecipient: true,
+		});
+		assert.equal(paused.queued, true, paused.reason);
+		assert.deepEqual(
+			sender.received.filter(({ message }) => message.replyError !== undefined),
+			[],
+			"nothing fails while it may come back",
+		);
+
+		const ownerBack = await owner(host, "away", ownerBefore);
+		await markEnded(ownerBack, "subagent-worker-away-1", "completed");
+		await markEnded(ownerBack, "subagent-worker-away-paused-1", "stopped");
+		await vi.waitFor(() => assert.equal(ownerBack.wakes.length, 1), WAIT);
+		ownerBack.client.answerEndedChildWake("subagent-worker-away-1", ownerBack.wakes[0]!.wakeId, true);
+		const resumed = await resume(host, ownerBack, "subagent-worker-away-1");
+		await vi.waitFor(() => assert.deepEqual(texts(resumed), ["before it left", "while it was away"]), WAIT);
+
+		// It ends for good: nothing can continue its paused subagent, whose message fails once.
+		await ownerBack.client.disconnect();
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(
+					sender.received
+						.filter(({ message }) => message.replyError !== undefined)
+						.map(({ message }) => message.replyError),
+					[
+						`Subagent "subagent-worker-away-paused-1" is paused and the session that launched it ended, so nothing can continue it now. The message was not delivered; send it again if it is still needed.`,
+					],
+				),
+			WAIT,
+		);
+		await sleep(SETTLE_MS);
+		assert.equal(sender.received.filter(({ message }) => message.replyError !== undefined).length, 1, "once");
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
 	"a broker killed after keeping a message and before answering it: the retry with its id is answered queued, and it arrives once (#5999)",
 	async () => {
 		const host = new Host();
