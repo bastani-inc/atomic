@@ -9,29 +9,30 @@ Background subagents keep working after the launch call returns. You can continu
 
 ### The agent panel
 
-Below the prompt, the **agent panel** lists the session's active background subagents, one row each. A `main` row comes first and stands for the main chat. Whichever agent the screen shows is marked with `●`:
+Below the prompt, the **agent panel** lists the session's active background subagents, one row each. A `main` row comes first and stands for the main chat. Whichever agent the screen shows has a filled `●` and reads in bold:
 
 ```text
   ● main
-  ∀ worker    openai/gpt-5.5 high                    fix shipping batches           41m · ↓ 96.1k tokens
-  ∀ debugger  github-copilot/claude-opus-5.5 medium  #5220 spawn lock               18m · ↓ 87.4k tokens
-    ⧗ shell   npm test                                                                               12s
-  ◼ worker    anthropic/claude-sonnet-4-5 high       picker clamp                           stopped · 6m
+  ◯ worker    openai/gpt-5.5 high                    fix shipping batches           41m · ↓ 96.1k tokens
+  ◯ debugger  github-copilot/claude-opus-5.5 medium  #5220 spawn lock               18m · ↓ 87.4k tokens
+    ⧗ shell                                          npm test                                        12s
+  ◯ worker    anthropic/claude-sonnet-4-5 high       picker clamp                           stopped · 6m
 ```
 
 - **Each row shows** the status, the agent's name, the model it runs on and its reasoning level, what it works on, how long it has run, and the tokens it has used. A waiting row shows its question.
-- **Viewed marker (`●`):** While viewing the main chat, `● main` is active. While viewing a subagent, an accent `●` appears before its row (`❯` takes that column while the selection cursor is on it, with its name still highlighted) and `main` is muted. A resumed subagent stays one row, and `●` follows its latest attempt.
+- **Viewed marker (`●`):** While viewing the main chat, `● main` is bold. While viewing a subagent, its row is bold and its open circle is filled (`●`), and `main` shows a muted `◯`. A resumed subagent stays one row, and `●` follows its latest attempt.
 - **The model column** names the model the subagent runs on now, as `provider/model-id`, then its reasoning level, as the footer shows the main chat's. A model without reasoning levels shows no level. The column follows the subagent: it changes as soon as the subagent falls back to another model, is resumed on a different one, or changes its reasoning level. A stopped or paused row shows the model its last turn ran on. A row whose model is not known yet leaves the column blank. When a subagent's model becomes known while you look at its row, the row shows it together with its reasoning level, or the model alone if no level arrives within a second, so the row's task moves only once. While the panel or `/tasks` stays open, the column keeps its width as long as it fits, even when the longest model leaves; it is measured again when the terminal is resized or the list is opened again.
 - The task title in the panel and on the prompt's top rule stops at a whole character. A shortened title ends in `…`.
 - **Status glyphs:**
-  - `∀` running
+  - `◯` running, in grey (`●` while you view it)
   - `◆` needs input, with its question when it waits on one
   - `‖` paused
   - `○` queued
   - `◌` waiting on a detached call or shell (released)
-  - `✓` done
+  - `●` done, in green
   - `✗` failed, showing the reason
-  - `◼` stopped
+  - `◼` stopping
+  - `◯` stopped, in red (`●` while you view it)
   - `⧗` running shell (nested under the subagent that started it)
 - **Finished subagents** leave the panel as soon as they finish, except the subagent you are currently viewing: it stays listed until you switch to another agent or dismiss it (`x`), which switches back to `main`. `/tasks` still lists finished subagents. A stopped, paused, or interrupted subagent stays while another subagent or background shell is still running, and leaves once nothing is running. Switching sessions or starting unrelated work does not bring it back. If it resumes and stops again while other work is running, it reappears as one row, even if the panel was closed during the resume. A stopped row reads dim after 30 seconds. As the terminal narrows, each task is shortened first; below 100 columns, or when a row would be left no room for its task or its time, the model column is dropped, and below 70 columns the token count.
 - **Up to four rows** show while the prompt has focus, then `+N more`; the focused panel shows eight at a time. The `main` row does not count toward either. The viewed subagent and its running shells are always kept visible in the four rows (taking the last slots when they rank lower), and `+N more` counts every omitted row, nested shells included.
@@ -42,7 +43,7 @@ The main chat's background shells are not panel rows; the footer counts the runn
 
 Press **↓** on an empty prompt to focus the panel, whether you are viewing `main` or a subagent (while a viewed subagent's question form has focus, ↓ moves its selection instead):
 
-- **↑↓** select rows, including `main` and nested shell rows.
+- **↑↓** select rows, including `main` and nested shell rows. The selected row is marked with `∀` before its mark and reads in the default text colour.
 - **Enter** or **→** on a subagent row switches the chat screen to that subagent and returns focus to the prompt.
 - **Enter** or **→** on `main` switches back to the main chat and returns focus to the prompt.
 - **Enter** or **→** on a nested shell row opens that shell's output in `/tasks` without changing which agent the chat screen shows (`←` returns to the focused panel).
@@ -88,7 +89,7 @@ Typing `/` offers completion for every built-in (`/model` and `/thinking` includ
 Run `/tasks` to inspect work without stopping it:
 
 - The list opens in the editor slot, with the conversation visible above it. It lists the subagents and shells of the session, running and finished.
-- Its header counts them, for example `Tasks  1 needs input · 3 working · 2 done`, and the rows are grouped **Needs input**, **Working** and **Done**. Each row is one line: its status mark (`⧗` for a running shell), its name, a subagent's model and reasoning level in the agent panel's model column, its task (or the question, while it waits for an answer), and on the right how long it has waited, run or took, in the agent panel's format (`3m`, `1h 6m`), with its tokens. A finished subagent's row shows the model its last turn ran on; the model column follows the panel's width rules.
+- Its header counts them, for example `Tasks  1 needs input · 3 working · 2 done`, and the rows are grouped **Needs input**, **Working** and **Done**. Each row is one line: its status mark (the agent panel's: a grey `◯` running, a green `●` done, a red `◯` stopped, `⧗` for a running shell), its name, a subagent's model and reasoning level in the agent panel's model column, its task (or the question, while it waits for an answer), and on the right how long it has waited, run or took, in the agent panel's format (`3m`, `1h 6m`), with its tokens. A finished subagent's row shows the model its last turn ran on; the model column follows the panel's width rules.
 - The hint line lists the keys that work on the selected row: `↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← close · ? keys`. On a finished row `x` reads `dismiss`.
 - Space opens a peek card under the selected row, and the rest of the list stays in place:
   - A subagent or shell shows its model, current tool call and usage.
@@ -208,7 +209,7 @@ Supervisor progress messages are labelled **Historical supervisor update** with 
 
 Stopping a subagent through `/tasks` (`x`, then `x` again within 3 seconds) stops it resumably, as `subagent({ action: "quit", id })` does. It delivers a **paused** notice line and quit context to the parent model. The notice arrives only after termination is confirmed, not while the task is **Stopping**. It requires no final response from the child. Cancelling queued work sends the notice without starting it. Send it a message while viewing it, or use `subagent({ action: "resume", id })`, to resume it. Ctrl+X Ctrl+K stops subagents the same way.
 
-A subagent stopped with `subagent({ action: "pause" | "quit", id })` is not ended. Its notice line reads **paused · awaiting resume** or **quit · awaiting resume**. The model context gives `Stop reason: pause` or `quit` and names the call that continues it, `subagent({ action: "resume", id: "<child-id>" })`, instead of telling the model the execution has ended. Its `/tasks` row shows **Stopped** (`◼`); viewing it shows `Stopped · send to resume` in the prompt and accepts a message to continue it.
+A subagent stopped with `subagent({ action: "pause" | "quit", id })` is not ended. Its notice line reads **paused · awaiting resume** or **quit · awaiting resume**. The model context gives `Stop reason: pause` or `quit` and names the call that continues it, `subagent({ action: "resume", id: "<child-id>" })`, instead of telling the model the execution has ended. Its `/tasks` row shows it as stopped (a red `◯`); viewing it shows `Stopped · send to resume` in the prompt and accepts a message to continue it.
 
 A subagent that completed or failed keeps its own session. Its notice tells the model the execution has ended and not to restart it merely to retrieve its result, and names the call that continues it with a follow-up, for example `Resume it with subagent({ action: "resume", id: "a760c0ec:0", message: "…" }) to continue it with a follow-up.` When the notice knows the child's Intercom name, it adds that the child takes Intercom messages under that name again once resumed. The id is the child id. A notice restored after a restart without its task record names the task id, which `resume` also accepts. Expanding the notice line (Ctrl+O) of a completed, failed, paused or quit subagent shows the same id as `resume id <child-id>` under the line; the collapsed line is unchanged. In `/tasks`, the expanded row and the detail page of such a subagent name it too, as `resume id <child-id>` and `Resume id <child-id>`, on its latest attempt only: once you resume it, the earlier attempt no longer shows the id. A subagent cancelled for good, one released while it waits, and background shells name no resume id.
 

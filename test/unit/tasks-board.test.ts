@@ -142,7 +142,7 @@ test("/tasks groups native tasks and extension rows as Needs input, Working and 
 			"Needs input, then Working, then Done",
 		);
 		assert.match(text, /◆ ralph +Approve this plan\? +waiting 3m$/m);
-		assert.match(text, /∀ worker +Spawn lock fix/, "a working row shows Atomic's ∀");
+		assert.match(text, /◯ worker +Spawn lock fix/, "a working row shows the running circle");
 		assert.match(text, /✗ review-pr +stage verify · gate failed: 2 jobs +failed · 4m$/m);
 		assert.match(
 			lines.at(-1) ?? "",
@@ -283,7 +283,7 @@ test("a finished run with no current stage reads its progress, the filter box ha
 	};
 	const h = await harness([waitingRun, finished]);
 	try {
-		assert.match(h.text(), /✓ approve-demo +1\/1 +done · 10s/);
+		assert.match(h.text(), /● approve-demo +1\/1 +done · 10s/);
 		assert.doesNotMatch(h.text(), /approve-demo +·/, "no separator before an empty task");
 		h.inspector.handleInput(SPACE);
 		h.text();
@@ -320,7 +320,7 @@ test("/tasks opens on its first row, a waiting run above a working subagent, and
 			.map((line) => stripVTControlCharacters(line).trimEnd())
 			.join("\n");
 		assert.match(text, /❯ ◆ ralph/, "the waiting run, the first row, is selected");
-		assert.match(text, /∀ worker +Spawn lock fix +1m$/m, "/tasks counts from when another view first saw the task");
+		assert.match(text, /◯ worker +Spawn lock fix +1m$/m, "/tasks counts from when another view first saw the task");
 		inspector.dispose();
 	} finally {
 		await fixture.dispose();
@@ -343,10 +343,10 @@ test("/tasks formats only visible rows when navigating a large board (#5224)", a
 	try {
 		const viewportRows = 12;
 		taskReads = 0;
-		assert.match(h.text(100, viewportRows), /❯ ∀ run-0/);
+		assert.match(h.text(100, viewportRows), /❯ ◯ run-0/);
 		h.inspector.handleInput("\x1b[F");
 		const last = h.text(100, viewportRows);
-		assert.match(last, /❯ ∀ run-999/);
+		assert.match(last, /❯ ◯ run-999/);
 		assert.ok(last.split("\n").length <= viewportRows);
 		assert.ok(taskReads <= viewportRows * 2, `two paints read ${taskReads} task descriptions`);
 	} finally {
@@ -495,7 +495,7 @@ test("a run that finishes between the two presses of x is not dismissed unseen (
 		h.inspector.handleInput("x");
 		assert.deepEqual(h.runs.calls.dismissed, [], "the press meant for stop only acknowledges");
 		assert.deepEqual(h.runs.calls.stopped, []);
-		assert.match(h.text(), /✓ build/);
+		assert.match(h.text(), /● build/);
 		h.inspector.handleInput("x");
 		assert.deepEqual(h.runs.calls.dismissed, ["run:build"], "a later press dismisses");
 	} finally {

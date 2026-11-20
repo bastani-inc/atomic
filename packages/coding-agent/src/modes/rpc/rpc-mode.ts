@@ -19,8 +19,9 @@ import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
+import { QueuedDeliveryRelay } from "../../core/queued-message-delivery.ts";
 import { onBlueprintBuildFinished, onBlueprintBuildWaiting } from "../../core/resume/blueprint/barrier.ts";
-import { isInteractiveEngineChild } from "../../utils/interactive-engine-env.ts";
+import { interactiveEngineStartupEnv, isInteractiveEngineChild } from "../../utils/interactive-engine-env.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
@@ -136,6 +137,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		sessionPicker,
 		inputForm,
 		writeEngineLine: interactiveEngineChild ? writeRawStdout : undefined,
+		// Only a host that asked for them reads the queued messages the main session is delivering.
+		queuedDeliveries:
+			interactiveEngineChild && interactiveEngineStartupEnv().queuedDeliveries
+				? new QueuedDeliveryRelay()
+				: undefined,
 		reloadCoordinator,
 		onStartupReload: deferInteractiveEngineResources ? options.onStartupReload : undefined,
 	});
@@ -169,9 +175,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	// The host mirrors this child's extension UI. Tell it to reset when a session retires, on the same
 	// stdout stream as the UI requests, so the reset precedes those of the session that replaces it.
 	if (interactiveEngineChild) {
-		runtimeHost.setBeforeSessionInvalidate(() =>
-			writeRawStdout(serializeInteractiveEngineMessage({ type: "engine_extension_ui_reset" })),
-		);
+		runtimeHost.setBeforeSessionInvalidate(() => {
+			// The host forgets the queued messages the retiring session was delivering when it reads the reset.
+			sessionBinding.retireQueuedDeliveries();
+			writeRawStdout(serializeInteractiveEngineMessage({ type: "engine_extension_ui_reset" }));
+		});
 	}
 
 	const handleCommand = createRpcCommandHandler({

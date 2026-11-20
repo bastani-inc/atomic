@@ -9,6 +9,26 @@ function defaultWorkerUrl(): URL {
 	return new URL(import.meta.url.endsWith(".ts") ? "./worker.ts" : "./worker.js", import.meta.url);
 }
 
+/** Whether the process was started with `--input-type`, on its command line or in `NODE_OPTIONS`. */
+function startedWithInputType(): boolean {
+	return [...process.execArgv, ...(process.env.NODE_OPTIONS ?? "").split(/\s+/)].some(
+		(flag) => flag === "--input-type" || flag.startsWith("--input-type="),
+	);
+}
+
+/**
+ * Starts the worker with the process's flags, which can include the loaders its module needs. Node refuses
+ * `--input-type` for an ES module given as a worker's entry, and a worker inherits it from a process started with it
+ * (`node --input-type=module --eval ...`), so there this package's own worker is imported from evaluated source. A
+ * `workerUrl` given in the options starts as given.
+ */
+function startWorker(workerUrl: string | URL | undefined, workerData: WorkerData): Worker {
+	if (workerUrl !== undefined) return new Worker(workerUrl, { workerData });
+	const url = defaultWorkerUrl();
+	if (!startedWithInputType()) return new Worker(url, { workerData });
+	return new Worker(`import(${JSON.stringify(url.href)});`, { eval: true, workerData });
+}
+
 /**
  * An error a stopping worker reports, or its termination's failure, reaches no run; it is only kept from being thrown.
  * A module function, so a worker still exiting holds nothing of the run through it.
@@ -41,7 +61,7 @@ function workerLauncher(options: CodemodeSandboxOptions): VmLauncher {
 		const releaseWorker = options.acquireWorker?.();
 		let worker: Worker;
 		try {
-			worker = new Worker(options.workerUrl ?? defaultWorkerUrl(), { workerData });
+			worker = startWorker(options.workerUrl, workerData);
 		} catch (error) {
 			releaseWorker?.();
 			throw new Error(`Failed to start worker: ${errorMessage(error)}`);

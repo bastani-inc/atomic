@@ -250,18 +250,19 @@ describe("AgentSession MCP tools after resume and reload", () => {
 		expect(harness.session.getActiveToolNames()).not.toContain("loader");
 	});
 
-	it("does not activate restored tools that register after the next prompt starts", async () => {
+	it("keeps restored tools active when their server connects after the next prompt starts", async () => {
 		const first = await setup();
 		await loadDocsSearch(first.harness);
 
 		const second = await setup(first.harness.sessionManager, [], 200);
 		second.harness.setResponses([fauxAssistantMessage("done")]);
 		await second.harness.session.prompt("go");
+		expect(second.harness.session.getActiveToolNames()).toContain("mcp__docs__search");
 		await vi.waitFor(() =>
-			expect(second.harness.session.getAllTools().some((tool) => tool.name === "mcp__docs__search")).toBe(true),
+			expect(second.harness.session.getAllTools().find((tool) => tool.name === "mcp__docs__search")).toBeDefined(),
 		);
 
-		expect(second.harness.session.getActiveToolNames()).not.toContain("mcp__docs__search");
+		expect(second.harness.session.getActiveToolNames()).toContain("mcp__docs__search");
 	});
 
 	it("declares tools tool_search loaded again after /reload", async () => {

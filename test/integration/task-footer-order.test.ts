@@ -46,7 +46,7 @@ test("the engine lists its active tasks below MCP and drops them once they finis
 		main.tui.renderNow();
 		return stripTerminalSequences(getLayoutFrame(main.tui).lines.join("\n"));
 	};
-	const taskRows = (screen: string) => screen.split("\n").filter((row) => /^ {2}[∀✓✗] worker /.test(row));
+	const taskRows = (screen: string) => screen.split("\n").filter((row) => /^ {2}[◯●✗] worker /.test(row));
 	const assertOrder = async (expected: readonly RegExp[]) => {
 		// A store drain can finish one refresh window before the engine panel publishes its new rows.
 		if (main)

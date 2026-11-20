@@ -6,6 +6,7 @@ import { chatReceipt } from "../../core/chat-receipts.js";
 import type { ProjectTrustContext } from "../../core/extensions/index.js";
 import { FooterDataProvider } from "../../core/footer-data-provider.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
+import { type QueuedDeliveryRelay, withQueuedDeliveryChange } from "../../core/queued-message-delivery.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
@@ -35,6 +36,8 @@ interface RpcSessionBindingOptions {
 	inputForm?: EngineInputFormService;
 	/** Send terminal UI updates from the interactive engine child to its host. */
 	writeEngineLine?: (line: string) => void;
+	/** Tells a host that asked for them which queued messages the session is delivering, on its event lines. */
+	queuedDeliveries?: QueuedDeliveryRelay;
 	requestShutdown: () => void;
 	checkShutdownRequested?: () => void;
 	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
@@ -57,6 +60,7 @@ export class RpcSessionBinding {
 	private readonly sessionPicker: EngineSessionPickerService | undefined;
 	private readonly inputForm: EngineInputFormService | undefined;
 	private readonly writeEngineLine: ((line: string) => void) | undefined;
+	private readonly queuedDeliveries: QueuedDeliveryRelay | undefined;
 	private readonly requestShutdown: () => void;
 	private readonly checkShutdownRequested: (() => void) | undefined;
 	private readonly reloadCoordinator: KeybindingsReloadCoordinator<AgentSession> | undefined;
@@ -75,6 +79,7 @@ export class RpcSessionBinding {
 		sessionPicker,
 		inputForm,
 		writeEngineLine,
+		queuedDeliveries,
 		reloadCoordinator,
 		onStartupReload,
 	}: RpcSessionBindingOptions) {
@@ -89,6 +94,7 @@ export class RpcSessionBinding {
 		this.sessionPicker = sessionPicker;
 		this.inputForm = inputForm;
 		this.writeEngineLine = writeEngineLine;
+		this.queuedDeliveries = queuedDeliveries;
 		this.reloadCoordinator = reloadCoordinator;
 		this.onStartupReload = onStartupReload;
 		this.session = runtimeHost.session;
@@ -123,6 +129,11 @@ export class RpcSessionBinding {
 
 	get currentSession(): AgentSession {
 		return this.session;
+	}
+
+	/** The bound session is being replaced: its later events tell the host nothing about queued messages. */
+	retireQueuedDeliveries(): void {
+		this.queuedDeliveries?.retire(this.session);
 	}
 
 	async rebindSession(): Promise<void> {
@@ -259,7 +270,8 @@ export class RpcSessionBinding {
 			const receipt = this.writeEngineLine && chatReceipt(event);
 			const json = toJsonEvent(event);
 			const withSaved = saved === undefined ? json : { ...json, entryId: saved.entryId, seq: saved.seq };
-			this.output(receipt ? { ...withSaved, atomicChatReceipt: receipt } : withSaved);
+			const record = withQueuedDeliveryChange(withSaved, this.queuedDeliveries?.note(session, event));
+			this.output(receipt ? { ...record, atomicChatReceipt: receipt } : record);
 			if (event.type === "agent_settled") this.checkShutdownRequested?.();
 		});
 		this.unsubscribeBackpressure = session.agent.subscribe(async () => {

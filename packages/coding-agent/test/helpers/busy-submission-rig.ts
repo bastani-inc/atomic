@@ -6,6 +6,8 @@ import { Type } from "typebox";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import type { Settings } from "../../src/core/settings-manager.ts";
 import type { ResourceLoader } from "../../src/index.ts";
+import type { InteractiveModeBase } from "../../src/modes/interactive/interactive-mode-base.ts";
+import { redrawMainQueuedDeliveries } from "../../src/modes/interactive/interactive-queueing.ts";
 import { createHarness, getMessageText, type Harness } from "../suite/harness.ts";
 import { createEngineHostPair, type EngineHostPair } from "./in-process-engine-pair.ts";
 import {
@@ -185,6 +187,9 @@ export async function createRig(wiring: Wiring, load: Load, options: RigOptions)
 	}
 	host.session.subscribe((event) => {
 		if (event.type === "queue_update") host.updatePendingMessagesDisplay();
+		// As the chat's own event handler does after every event: a message the session was delivering stays listed until
+		// it shows, or until the session sends anything after it never will.
+		else redrawMainQueuedDeliveries(host as unknown as InteractiveModeBase);
 	});
 	stateDescriber = () =>
 		JSON.stringify({
