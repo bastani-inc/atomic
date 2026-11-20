@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { closeSync, constants, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
@@ -21,6 +22,8 @@ const savedTempEnv = TEMP_ENV_KEYS.map((key) => [key, process.env[key]] as const
 
 /** After the grace period: the guardian's window and the wait for a killed engine's exit, after which stop throws. */
 const ESCALATION_BOUND_MS = 500 + 5_000;
+/** How often the test polls for a file to change. */
+const POLL_MS = 10;
 /** Longer than any test here; a child left behind by a failed test exits by then. */
 const CHILD_LIFETIME_MS = 120_000;
 
@@ -32,8 +35,10 @@ function startEngine(behavior: EngineBehavior): { client: RpcClient; record: str
 	const script = join(dir, "engine.mjs");
 	writeFileSync(
 		script,
-		`import { appendFileSync, writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(started)}, "");
+		`import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+// Tell the test where the host writes the guardian's stop file.
+const bootstrap = process.argv[process.argv.indexOf("--internal-engine-bootstrap") + 1];
+writeFileSync(${JSON.stringify(started)}, JSON.parse(readFileSync(bootstrap, "utf8")).guardFile);
 if (${JSON.stringify(behavior)} !== "never-ready") {
 	process.stdout.write(JSON.stringify({ type: "engine_ready", protocolVersion: 4, pid: process.pid }) + "\\n");
 }
@@ -105,7 +110,7 @@ describe("RpcClient graceful engine stop on Windows", () => {
 		const { client, record, started } = startEngine("never-ready");
 		const starting = client.start();
 		starting.catch(() => {});
-		while (!existsSync(started)) await new Promise((resolve) => setTimeout(resolve, 10));
+		while (!existsSync(started)) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
 
 		const elapsedMs = await stopOnWindows(client, { graceful: true });
 
@@ -139,4 +144,35 @@ describe("RpcClient graceful engine stop on Windows", () => {
 		assert.equal(readRecord(record), "shutdown started\n");
 		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS + ESCALATION_BOUND_MS, `stop took ${elapsedMs} ms`);
 	});
+
+	// A FIFO with no reader holds the write that creates the guardian's stop file, as a stalled disk would.
+	test.skipIf(process.platform === "win32")(
+		"a quit returns once the engine is ended while the guardian's stop file is still being written (#6075)",
+		async () => {
+			const temporary = mkdtempSync(join(realTmpdir, "atomic-graceful-engine-stop-tmp-"));
+			tempDirs.push(temporary);
+			for (const key of TEMP_ENV_KEYS) process.env[key] = temporary;
+			const { client, record, started } = startEngine("hangs-in-shutdown");
+			await client.start();
+			const stopFile = readFileSync(started, "utf8");
+			assert.equal(spawnSync("mkfifo", [stopFile]).status, 0);
+			let reader: number | undefined;
+			try {
+				const elapsedMs = await stopOnWindows(client, { graceful: true });
+
+				assert.equal(readRecord(record), "shutdown started\n");
+				assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS + ESCALATION_BOUND_MS, `stop took ${elapsedMs} ms`);
+				// Let the write finish: the stop file is then removed.
+				reader = openSync(stopFile, constants.O_RDONLY | constants.O_NONBLOCK);
+				const deadline = performance.now() + ESCALATION_BOUND_MS;
+				while (existsSync(stopFile) && performance.now() < deadline) {
+					await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+				}
+				assert.equal(existsSync(stopFile), false, "the stop file is removed once its write settles");
+			} finally {
+				reader ??= existsSync(stopFile) ? openSync(stopFile, constants.O_RDONLY | constants.O_NONBLOCK) : undefined;
+				if (reader !== undefined) closeSync(reader);
+			}
+		},
+	);
 });

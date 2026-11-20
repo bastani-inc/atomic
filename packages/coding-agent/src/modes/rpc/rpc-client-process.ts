@@ -161,22 +161,33 @@ export async function terminateRpcClientProcess(
 	child.once("exit", resolveExit);
 	const guardianFile = guardianFiles.get(child);
 	const inputClosed = graceful && processTree && process.platform === "win32" && child.stdin !== null;
+	// Closing stdin, unlike a signal on Windows, has not ended the engine through its handle: on that path the kill
+	// follows the guardian's window even when its stop file cannot be written, or not in time, and a write still
+	// pending then is cleaned up once it settles rather than holding up the stop.
+	let stopFileWrite: Promise<void> | undefined;
+	let stopFileWritePending = false;
+	const removeGuardianFile = async (): Promise<void> => {
+		if (!guardianFile) return;
+		if (stopFileWritePending) void stopFileWrite?.then(() => rm(guardianFile, { force: true })).catch(() => {});
+		else await rm(guardianFile, { force: true });
+	};
 	if (inputClosed) child.stdin?.end();
 	else child.kill("SIGTERM");
 	if (await exitsWithin(exited, processTree ? ENGINE_SHUTDOWN_GRACE_MS : RPC_CHILD_SHUTDOWN_GRACE_MS)) {
-		if (guardianFile) await rm(guardianFile, { force: true });
+		await removeGuardianFile();
 		return;
 	}
-	let stopFileWritten = Promise.resolve();
 	if (processTree && guardianFile) {
 		const written = writeFile(guardianFile, "stop");
-		stopFileWritten = written.catch(() => {});
-		// Closing stdin, unlike a signal on Windows, has not ended the engine through its handle: the kill below
-		// follows the guardian's window even when the stop file cannot be written, or not in time.
-		if (!inputClosed) await written;
+		if (inputClosed) {
+			stopFileWritePending = true;
+			const settled = () => {
+				stopFileWritePending = false;
+			};
+			stopFileWrite = written.then(settled, settled);
+		} else await written;
 		if (await exitsWithin(exited, ENGINE_KILL_STEP_MS)) {
-			await stopFileWritten;
-			await rm(guardianFile, { force: true });
+			await removeGuardianFile();
 			return;
 		}
 	}
@@ -192,10 +203,7 @@ export async function terminateRpcClientProcess(
 	if (!(await exitsWithin(exited, reportMs))) {
 		throw new Error(`Agent process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
 	}
-	if (guardianFile) {
-		await stopFileWritten;
-		await rm(guardianFile, { force: true });
-	}
+	await removeGuardianFile();
 }
 
 export function createInteractiveJsonlOptions(enabled: boolean): { maxBytesPerTurn?: number } {
