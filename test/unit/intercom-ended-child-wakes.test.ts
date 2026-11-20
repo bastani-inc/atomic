@@ -205,7 +205,7 @@ test("a paused subagent is never woken: its message waits for it to be continued
 	assert.deepEqual(
 		failed.map((failure) => failure.reason),
 		[
-			`Subagent "${CHILD}" was not resumed for this message: it was still paused after an hour. The message was not delivered.`,
+			`Subagent "${CHILD}" is paused and was not continued within an hour. The message was not delivered; send it again once it is continued if it is still needed.`,
 		],
 	);
 });

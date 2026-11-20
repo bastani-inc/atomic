@@ -2282,10 +2282,11 @@ class IntercomBroker {
 
   private releaseReservation(key: string, ownerSessionId: string, gone: string | undefined, refusal: string | undefined): void {
     const bounded = boundedReleaseReasons(gone, refusal);
+    const childName = this.restoringRecipients.childOf(key, ownerSessionId);
     const released = this.restoringRecipients.release(key, ownerSessionId, bounded.gone, bounded.refusal);
     if (released === undefined) return;
     // #5999: what was queued for the child fails with why its owner gave it up.
-    this.departedChildren.holdEnded(ownerSessionId, released.childName, released);
+    if (childName !== undefined) this.departedChildren.holdEnded(ownerSessionId, childName, released);
     this.multiNode?.restoringReleased(key, ownerSessionId, released.gone, released.refusal);
     for (const send of released.held) {
       if (released.gone !== undefined) this.failHeldSend(send, released.gone);

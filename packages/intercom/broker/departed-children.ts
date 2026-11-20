@@ -587,7 +587,12 @@ export class DepartedChildren {
 		// A paused child's messages wait for its owner to continue it, for a bounded time; so do those of a child its owner
 		// is already starting again.
 		if (messages === "hold" && departure.queueTimer === undefined)
-			this.armQueueTimer(departure, ENDED_CHILD_HOLD_MAX_MS, `it was still paused after ${minutesOf(ENDED_CHILD_HOLD_MAX_MS)}`);
+			this.armQueueTimer(
+				departure,
+				ENDED_CHILD_HOLD_MAX_MS,
+				`Subagent ${JSON.stringify(departure.childName)} is paused and was not continued within ${minutesOf(ENDED_CHILD_HOLD_MAX_MS)}. The message was not delivered; send it again once it is continued if it is still needed.`,
+				true,
+			);
 		else if (departure.queueTimer === undefined)
 			this.armQueueTimer(departure, ENDED_CHILD_WAKE_START_MAX_MS, "it did not start in time");
 		markQueuedForWake(held, messages);
@@ -599,12 +604,15 @@ export class DepartedChildren {
 		return wake === undefined ? { kind: "queued", target: queue } : { kind: "queued", target: queue, wake };
 	}
 
-	/** Fail what is queued for the child, for `why`, unless it registers within `ms`; replaces any earlier deadline. */
-	private armQueueTimer(departure: Departure, ms: number, why: string): void {
+	/**
+	 * Fail what is queued for the child, for `why` (the whole reason when `whole`), unless it registers within `ms`;
+	 * replaces any earlier deadline.
+	 */
+	private armQueueTimer(departure: Departure, ms: number, why: string, whole = false): void {
 		this.disarmQueueTimer(departure);
 		const timer = setTimeout(() => {
 			if (departure.queueTimer !== timer) return;
-			this.failQueued(departure, () => notResumedReason(departure.childName, why));
+			this.failQueued(departure, () => (whole ? why : notResumedReason(departure.childName, why)));
 		}, ms);
 		timer.unref();
 		this.liveTimers += 1;

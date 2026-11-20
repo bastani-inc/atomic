@@ -512,19 +512,22 @@ export class RestoringRecipients {
 		ownerSessionId: string,
 		goneReason: string | undefined,
 		refusal?: string,
-	):
-		| { readonly held: HeldSend[]; readonly childName: string; readonly gone?: string; readonly refusal?: string }
-		| undefined {
+	): { readonly held: HeldSend[]; readonly gone?: string; readonly refusal?: string } | undefined {
 		const reservation = this.reservations.get(key);
 		if (reservation === undefined || reservation.ownerSessionId !== ownerSessionId) return undefined;
 		const held = this.take(reservation);
-		const childName = reservation.childName;
 		if (goneReason === undefined) {
 			this.forget(reservation);
-			return refusal === undefined ? { held, childName } : { held, childName, refusal };
+			return refusal === undefined ? { held } : { held, refusal };
 		}
 		reservation.gone = goneRecipientReason(reservation.childName, goneReason);
-		return { held, childName, gone: reservation.gone };
+		return { held, gone: reservation.gone };
+	}
+
+	/** #5999: the child `ownerSessionId`'s reservation `key` holds sends for, if it holds one. */
+	childOf(key: string, ownerSessionId: string): string | undefined {
+		const reservation = this.reservations.get(key);
+		return reservation?.ownerSessionId === ownerSessionId ? reservation.childName : undefined;
 	}
 
 	/**
