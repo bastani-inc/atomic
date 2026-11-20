@@ -266,6 +266,16 @@ SDK users can read the typed error from a failed assistant message with `getGitH
 
 The guards and `findGitHubCopilotError()` reject malformed serialized errors too. Only minimal relays containing `name`, `code` and an optional string `message` can be reconstructed without structured fields; a malformed full payload is never rebuilt with its context discarded.
 
+#### Responses that end without a finish reason
+
+GitHub Copilot sometimes ends a response stream normally without reporting a finish reason; this has been seen with Gemini models. On Chat Completions, a stream that is cut off never sends its final `data: [DONE]` event, so for every Copilot model on Chat Completions Atomic uses that event to tell such a response from a cut-off stream:
+
+- A response whose tool calls are all complete, each with arguments that parse as a JSON object, ends with `toolUse`. A response with text and no tool call ends with `stop`.
+- A response with no text and no tool call is an `empty-response` error, retried like any other.
+- A response with a tool call that may be incomplete, or a stream that ends without `[DONE]`, is still `stream-ended-early`.
+
+When Atomic infers the stop reason, the message's `rawStopReason` stays unset and its `diagnostics` hold a `github_copilot_inferred_stop_reason` entry (`GITHUB_COPILOT_INFERRED_STOP_REASON_DIAGNOSTIC`) with the inferred `stopReason`, so `/debug` output and session exports show it. Streams that report a finish reason are handled as before.
+
 #### Endpoint routing for personal access tokens
 
 OAuth logins get their Copilot host from the token GitHub issues during login. A token saved through `/login` as an API key, or set in `COPILOT_GITHUB_TOKEN`, has no such exchange, so Atomic resolves the host itself, highest precedence first:

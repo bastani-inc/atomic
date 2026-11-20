@@ -705,7 +705,12 @@ function errorCases(family: Family): ErrorCase[] {
 		},
 		{
 			name: "a stream that ends before its finish reason",
-			respond: stream(chat ? CHAT_TRUNCATED_TURN : RESPONSES_TRUNCATED_TURN),
+			// A Chat Completions stream that is cut off never sends its final `[DONE]`.
+			respond: () =>
+				new Response(sseBody(chat ? CHAT_TRUNCATED_TURN : RESPONSES_TRUNCATED_TURN, { done: false }), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				}),
 			type: GitHubCopilotStreamEndedEarlyError,
 			code: "stream-ended-early",
 			retryable: true,
