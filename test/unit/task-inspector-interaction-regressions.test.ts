@@ -729,7 +729,7 @@ test("extension agent and shell items share live elapsed clocks between AgentPan
 			subscribe: () => () => {},
 		});
 		const frame = plain(inspector.renderViewport(100, 24));
-		assert.match(frame, /∀ helper +index repository +1m\b/);
+		assert.match(frame, /◯ helper +index repository +1m\b/);
 		const directRow = stripVTControlCharacters(
 			renderBoardRow({ id: "ext:agent-1", kind: "item", item: makeItem() }, false, 100),
 		);

@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The agent panel marks a running subagent with an open circle `◯` instead of the animated `∀`, a finished one with a green `●` and a stopped one with a red `◯`. The agent you are viewing has a filled `●` and a bold row, and `main` shows a muted `◯` while you view a subagent. The selection cursor is `∀` instead of `❯`, and it is the only mark drawn before a row's status mark. The `/tasks` list and a chat's task rows use the same running, done and stopped marks. Other status marks are unchanged ([#6090](https://github.com/bastani-inc/atomic/pull/6090))
+
 ### Fixed
 
+- Fixed SQLite selectors in the `read` tool failing in a Node process started with `--input-type=module`, for example an SDK script run with `node --input-type=module --eval`, and that process's `--import` and `--require` preloads running again for every selector. Diagnostic logs, settings locks, history search and the engine's child-process guardian had the same problem. Their worker threads now start without the process's command-line flags, except under Node's permission model, where they keep its restrictions. Image resizing in such a process now runs on its worker thread again instead of on the calling thread ([#6079](https://github.com/bastani-inc/atomic/issues/6079))
 - A queued message in the main chat no longer disappears for a frame when the session takes it. Its `Steering:` or `Follow-up:` row now stays until the message shows in the transcript, and goes in the same frame, also while an extension's `message_start` hook is still running and, in the default isolated mode, when the engine's updates reach the screen one at a time ([#6080](https://github.com/bastani-inc/atomic/issues/6080)).
 
 ## [0.10.1] - 2026-11-20

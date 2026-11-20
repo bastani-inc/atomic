@@ -135,7 +135,7 @@ for (const [view, render] of [
 	test(`${view} counts its running shells like the main chat's hint line instead of listing them as rows`, () => {
 		const rows = plain(render(tasksWithShells(), 80));
 		assert.equal(rows.filter((row) => row.includes("⧗")).length, 0, rows.join("\n"));
-		assert.equal(rows.filter((row) => /∀ agent/.test(row)).length, 1, rows.join("\n"));
+		assert.equal(rows.filter((row) => /◯ agent/.test(row)).length, 1, rows.join("\n"));
 		const count = rows.find((row) => /\bshells\b/.test(row));
 		assert.ok(count !== undefined, rows.join("\n"));
 		assert.equal(count.trim(), mainShellSegments(1).join(" · "));

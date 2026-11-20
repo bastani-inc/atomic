@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
-import { TLSSocket } from "node:tls";
+import { createServer as createTlsServer, getCACertificates, setDefaultCACertificates, TLSSocket } from "node:tls";
 import { inspect } from "node:util";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
+import { startConnectProxy } from "../helpers/http-connect-proxy.js";
 import { postgresSkipReason, postgresTestPassword, postgresTestUrl } from "../helpers/postgres-database.js";
 import { connectTestServer } from "../helpers/postgres-proxy.js";
 import { makeTempDirectory, removeTempDirectory, spawnSyncCollect, writeTextSync } from "../helpers/runtime.js";
@@ -214,5 +215,277 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres sslmode (#5113)", ()
 
 	test("an explicit uselibpqcompat keeps pg's own reading of sslmode (#5113)", async () => {
 		await assertConnects({ sslmode: "require", uselibpqcompat: "true" });
+	});
+});
+
+/** The host name the refused chains' server certificates carry, which only a proxy can reach. */
+const REFUSED_HOST = "db.invalid";
+
+/**
+ * Roots TLS verification will not anchor a server certificate to, and the code it reports for each (#6074): one that is
+ * not a CA, one limited to client authentication, and one whose path length an intermediate CA exceeds.
+ */
+const REFUSED_ROOTS: readonly {
+	readonly name: string;
+	readonly extensions: readonly string[];
+	readonly intermediate: boolean;
+	readonly code: string;
+}[] = [
+	{
+		name: "a root that is not a CA",
+		extensions: ["basicConstraints=critical,CA:FALSE"],
+		intermediate: false,
+		code: "INVALID_PURPOSE",
+	},
+	{
+		name: "a root limited to client authentication",
+		extensions: [
+			"basicConstraints=critical,CA:TRUE",
+			"keyUsage=critical,keyCertSign,cRLSign",
+			"extendedKeyUsage=clientAuth",
+		],
+		intermediate: false,
+		code: "INVALID_PURPOSE",
+	},
+	{
+		name: "a root whose path length the chain exceeds",
+		extensions: ["basicConstraints=critical,CA:TRUE,pathlen:0", "keyUsage=critical,keyCertSign,cRLSign"],
+		intermediate: true,
+		code: "PATH_LENGTH_EXCEEDED",
+	},
+];
+
+/**
+ * Writes a root with `extensions` and a server certificate for {@link REFUSED_HOST} and 127.0.0.1 under it, through an
+ * intermediate CA when `intermediate`; returns the root's file and the chain a server shows.
+ */
+function writeRefusedChain(
+	directory: string,
+	prefix: string,
+	extensions: readonly string[],
+	intermediate: boolean,
+): { root: string; cert: Buffer; key: Buffer } {
+	writeTextSync(
+		join(directory, `${prefix}-root.cnf`),
+		`[req]\ndistinguished_name = dn\n[dn]\n[root]\n${extensions.join("\n")}\n`,
+	);
+	openssl(
+		directory,
+		"req",
+		"-x509",
+		"-newkey",
+		"rsa:2048",
+		"-nodes",
+		"-days",
+		"2",
+		"-subj",
+		`/CN=Atomic test ${prefix} root`,
+		"-config",
+		`${prefix}-root.cnf`,
+		"-extensions",
+		"root",
+		"-keyout",
+		`${prefix}-root.key`,
+		"-out",
+		`${prefix}-root.pem`,
+	);
+	/** Signs a new certificate for `subject` with `issuer`'s key. */
+	const sign = (name: string, subject: string, issuer: string, lines: readonly string[]) => {
+		openssl(
+			directory,
+			"req",
+			"-newkey",
+			"rsa:2048",
+			"-nodes",
+			"-subj",
+			subject,
+			"-keyout",
+			`${name}.key`,
+			"-out",
+			`${name}.csr`,
+		);
+		writeTextSync(join(directory, `${name}.ext`), `${lines.join("\n")}\n`);
+		openssl(
+			directory,
+			"x509",
+			"-req",
+			"-in",
+			`${name}.csr`,
+			"-CA",
+			`${issuer}.pem`,
+			"-CAkey",
+			`${issuer}.key`,
+			"-CAcreateserial",
+			"-days",
+			"2",
+			"-extfile",
+			`${name}.ext`,
+			"-out",
+			`${name}.pem`,
+		);
+	};
+	let issuer = `${prefix}-root`;
+	if (intermediate) {
+		sign(`${prefix}-intermediate`, `/CN=Atomic test ${prefix} intermediate`, issuer, [
+			"basicConstraints=critical,CA:TRUE",
+			"keyUsage=critical,keyCertSign,cRLSign",
+		]);
+		issuer = `${prefix}-intermediate`;
+	}
+	sign(`${prefix}-server`, `/CN=${REFUSED_HOST}`, issuer, [
+		`subjectAltName=DNS:${REFUSED_HOST},IP:127.0.0.1`,
+		"extendedKeyUsage=serverAuth",
+	]);
+	const server = readFileSync(join(directory, `${prefix}-server.pem`));
+	return {
+		root: join(directory, `${prefix}-root.pem`),
+		cert: intermediate
+			? Buffer.concat([server, readFileSync(join(directory, `${prefix}-intermediate.pem`))])
+			: server,
+		key: readFileSync(join(directory, `${prefix}-server.key`)),
+	};
+}
+
+/**
+ * A server that answers an SSLRequest as PostgreSQL does and shows `chain` in the TLS handshake that follows; it counts
+ * the SSLRequests, one per connection attempt.
+ */
+async function startRefusedFront(chain: {
+	cert: Buffer;
+	key: Buffer;
+}): Promise<{ port: number; attempts(): number; close(): Promise<void> }> {
+	let attempts = 0;
+	const sockets = new Set<Socket>();
+	const server = createServer((client) => {
+		sockets.add(client);
+		client.on("error", () => {});
+		client.once("data", (request: Buffer) => {
+			assert.equal(request.readInt32BE(4), SSL_REQUEST_CODE);
+			attempts++;
+			client.write("S");
+			const secure = new TLSSocket(client, { isServer: true, cert: chain.cert, key: chain.key });
+			secure.on("error", () => client.destroy());
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address !== null && typeof address === "object");
+	return {
+		port: address.port,
+		attempts: () => attempts,
+		close: () =>
+			new Promise<void>((resolve) => {
+				for (const socket of sockets) socket.destroy();
+				server.close(() => resolve());
+			}),
+	};
+}
+
+/** The error opening `url` and running a statement failed with. */
+async function openFailure(url: string, proxy?: string): Promise<Error> {
+	const outcome = await openPostgresDatabase({
+		url,
+		password: "fixture-password",
+		...(proxy === undefined ? {} : { proxy }),
+	}).then(
+		async (database) => {
+			try {
+				await database.get("SELECT 1 AS one");
+			} finally {
+				await database.close();
+			}
+		},
+		(error: Error) => error,
+	);
+	assert.ok(outcome instanceof Error, "the database opened");
+	return outcome;
+}
+
+// No PostgreSQL server is reached: the handshake fails first. The tests run with the other TLS tests, where openssl,
+// which writes the certificates, is present.
+describe.skipIf(postgresSkipReason !== undefined)("A refused certificate authority (#6074)", () => {
+	let directory: string;
+
+	beforeAll(() => {
+		directory = makeTempDirectory("atomic-pg-tls-refused-");
+	});
+	afterAll(() => {
+		removeTempDirectory(directory);
+	});
+
+	for (const [index, refused] of REFUSED_ROOTS.entries()) {
+		test(`a server certificate under ${refused.name} fails at once with ${refused.code} and the sslrootcert fix, directly and through a proxy (#6074)`, async () => {
+			const chain = writeRefusedChain(directory, `refused-${index}`, refused.extensions, refused.intermediate);
+			const front = await startRefusedFront(chain);
+			const proxy = await startConnectProxy({
+				routes: (target) =>
+					target === `${REFUSED_HOST}:5432` ? { host: "127.0.0.1", port: front.port } : undefined,
+			});
+			const query = `sslmode=verify-ca&sslrootcert=${encodeURIComponent(chain.root)}`;
+			try {
+				for (const [route, opening] of [
+					["directly", () => openFailure(`postgresql://atomic@127.0.0.1:${front.port}/atomic?${query}`)],
+					[
+						"through a proxy",
+						() => openFailure(`postgresql://atomic@${REFUSED_HOST}:5432/atomic?${query}`, proxy.url),
+					],
+				] as const) {
+					const before = front.attempts();
+					const error = await opening();
+					const shown = inspect(error, { depth: null });
+					assert.equal(error.name, "StorageUnavailableError", `${route}: ${shown}`);
+					assert.ok(causeCodes(error).includes(refused.code), `${route}: ${shown}`);
+					assert.ok(
+						shown.includes(`The server's TLS certificate was not accepted (${refused.code}: `),
+						`${route}: ${shown}`,
+					);
+					assert.ok(
+						shown.includes("Add sslrootcert=<CA file> with the server's CA to the URL"),
+						`${route}: ${shown}`,
+					);
+					assert.equal(front.attempts() - before, 1, `${route}: the refused certificate was asked for again`);
+				}
+				assert.equal(proxy.requests.length, 1, "the tunnel was asked for again");
+			} finally {
+				await proxy.close();
+				await front.close();
+			}
+		});
+	}
+
+	test("an https proxy whose certificate is under a root that is not a CA is refused at once, naming the code (#6074)", async () => {
+		const chain = writeRefusedChain(directory, "refused-proxy", ["basicConstraints=critical,CA:FALSE"], false);
+		let connections = 0;
+		const requests: Buffer[] = [];
+		const secure = createTlsServer({ cert: chain.cert, key: chain.key }, (socket) => {
+			socket.on("error", () => {});
+			socket.on("data", (chunk: Buffer) => requests.push(chunk));
+		});
+		secure.on("connection", () => connections++);
+		secure.on("tlsClientError", () => {});
+		await new Promise<void>((resolve) => secure.listen(0, "127.0.0.1", resolve));
+		const address = secure.address();
+		assert.ok(address !== null && typeof address === "object");
+		// The proxy's certificate is checked against the CAs Node trusts: here, with the refused root among them.
+		const trusted = getCACertificates("default");
+		setDefaultCACertificates([...trusted, readFileSync(chain.root, "utf8")]);
+		try {
+			const error = await openFailure(
+				`postgresql://atomic@${REFUSED_HOST}:5432/atomic?sslmode=verify-ca&sslrootcert=${encodeURIComponent(chain.root)}`,
+				`https://127.0.0.1:${address.port}`,
+			);
+			assert.equal(error.name, "StorageUnavailableError", inspect(error, { depth: null }));
+			assert.ok(
+				error.message.includes(
+					`the proxy https://127.0.0.1:${address.port} showed a TLS certificate that was not accepted (INVALID_PURPOSE), so no tunnel to ${REFUSED_HOST}:5432 was opened`,
+				),
+				error.message,
+			);
+			assert.equal(connections, 1, "the proxy was connected to again");
+			assert.equal(requests.length, 0, "a tunnel request reached a proxy that was not trusted");
+		} finally {
+			setDefaultCACertificates(trusted);
+			await new Promise<void>((resolve) => secure.close(() => resolve()));
+		}
 	});
 });

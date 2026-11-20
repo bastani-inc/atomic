@@ -498,7 +498,7 @@ test("a subagent paused by Esc shows as paused in /tasks, listed with the work i
 			plain(inspector.renderPicker(100, 24))
 				.split("\n")
 				.find((line) => line.includes("Spawn lock fix")) ?? "";
-		assert.match(row(), /∀ worker +Spawn lock fix +1m$/);
+		assert.match(row(), /◯ worker +Spawn lock fix +1m$/);
 		fixture.store.setTurnInterrupted(fixture.store.tasks[0]!.ref.taskId, true);
 		assert.match(row(), /‖ worker +Spawn lock fix +paused · 1m$/);
 		assert.match(

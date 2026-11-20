@@ -66,7 +66,7 @@ test("a released subagent's row says what it waits on and how long, with a still
 	assert.equal(rowMeta(row(released("r"))), "waiting on bash · 12m");
 	const line = stripVTControlCharacters(renderBoardRow(row(released("r")), false, 80));
 	assert.match(line, /^ {2}◌ worker/);
-	assert.doesNotMatch(line, /∀/);
+	assert.doesNotMatch(line, /◯/);
 	assert.match(line, /waiting on bash · 12m$/);
 	assert.equal(visibleWidth(line), 80);
 	const narrow = stripVTControlCharacters(renderBoardRow(row(released("r")), false, 40));
@@ -107,7 +107,7 @@ test("the agent panel shows a released subagent as waiting, kept among unfinishe
 	const text = lines.join("\n");
 	assert.match(text, /◌ worker/);
 	assert.match(text, /waiting on bash · 12m/);
-	assert.doesNotMatch(text, /∀/);
+	assert.doesNotMatch(text, /◯/);
 });
 
 test("a chat's task footer lists a released subagent as waiting, and counts its running shells", () => {
@@ -116,7 +116,7 @@ test("a chat's task footer lists a released subagent as waiting, and counts its 
 	assert.match(footer, /◌ worker .*waiting on bash · 12m/);
 	assert.match(footer, /^ {2}1 shell$/m);
 	assert.doesNotMatch(footer, /npm run build/);
-	assert.doesNotMatch(footer, /∀ worker/);
+	assert.doesNotMatch(footer, /◯ worker/);
 });
 
 test("a released attempt is superseded by a later attempt of the same subagent, and a re-released latest attempt still waits", () => {
