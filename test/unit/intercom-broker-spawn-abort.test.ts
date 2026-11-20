@@ -5,6 +5,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
+import { readProcessStartToken } from "../../packages/coding-agent/src/core/process-start-token.js";
 import { isProcessAlive } from "../../packages/intercom/broker/broker-stop.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import {
@@ -42,7 +43,45 @@ afterEach(async () => {
 	rmSync(join(agentDir, ".."), { recursive: true, force: true });
 });
 
-function killIfAlive(pid: number): void {
+/** A process a broker command of this test started, and when it started. */
+interface RecordedProcess {
+	readonly pid: number;
+	readonly started: string | undefined;
+}
+
+/** Where a process's start can be read, so that a pid is never taken for a later process given the same pid. */
+const READS_PROCESS_STARTS = process.platform === "linux" || process.platform === "win32";
+
+/**
+ * The process that records its pid in `markerPath`, and when it started, read the moment it has recorded itself, while
+ * it still runs. Rejects once `settled` settles with nothing recorded.
+ */
+async function recordedProcess(markerPath: string, settled: Promise<unknown>): Promise<RecordedProcess> {
+	let done = false;
+	settled.then(
+		() => {
+			done = true;
+		},
+		() => {
+			done = true;
+		},
+	);
+	for (;;) {
+		const pid = existsSync(markerPath) ? Number(readFileSync(markerPath, "utf8")) : 0;
+		if (Number.isInteger(pid) && pid > 0) return { pid, started: await readProcessStartToken(pid) };
+		if (done) throw new Error(`No broker recorded its pid in ${markerPath}`);
+		await sleep(10);
+	}
+}
+
+/**
+ * Kills `recorded` if it still runs. By the time a cleanup runs, the start under test has usually stopped it already,
+ * and Windows gives a stopped process's pid to a new process within seconds: a kill by pid alone would end whatever
+ * holds that pid by then, such as another test's or another job's broker. So the pid is killed only while it still
+ * names the process that started then.
+ */
+async function killIfStillRunning({ pid, started }: RecordedProcess): Promise<void> {
+	if (started !== undefined ? (await readProcessStartToken(pid)) !== started : READS_PROCESS_STARTS) return;
 	try {
 		process.kill(pid, "SIGKILL");
 	} catch {
@@ -158,21 +197,21 @@ directSpawnTest(
 		const controller = new AbortController();
 		await startOlderBroker(() => controller.abort(new Error("session disposed")));
 
-		await assert.rejects(
-			upgradeBroker(
-				process.execPath,
-				neverReadyBrokerCommand(markerPath),
-				NEVER_READY_TIMEOUT_MS,
-				undefined,
-				undefined,
-				undefined,
-				controller.signal,
-			),
+		const upgrade = upgradeBroker(
+			process.execPath,
+			neverReadyBrokerCommand(markerPath),
+			NEVER_READY_TIMEOUT_MS,
+			undefined,
+			undefined,
+			undefined,
+			controller.signal,
 		);
-		const replacementPid = Number(readFileSync(markerPath, "utf8"));
-		cleanups.push(() => killIfAlive(replacementPid));
+		const replacement = await recordedProcess(markerPath, upgrade);
+		cleanups.push(() => killIfStillRunning(replacement));
+
+		await assert.rejects(upgrade);
 		assert.equal(
-			await waitUntilGone(replacementPid),
+			await waitUntilGone(replacement.pid),
 			true,
 			"the replacement broker is still starting after the upgrade settled",
 		);
@@ -206,13 +245,12 @@ directSpawnTest("a disposed start stops the broker a wrapper command runs as its
 		undefined,
 		controller.signal,
 	);
-	while (!existsSync(markerPath)) await sleep(10);
-	const brokerPid = Number(readFileSync(markerPath, "utf8"));
-	cleanups.push(() => killIfAlive(brokerPid));
+	const broker = await recordedProcess(markerPath, start);
+	cleanups.push(() => killIfStillRunning(broker));
 	controller.abort(new Error("session disposed"));
 
 	await assert.rejects(start);
-	assert.equal(await waitUntilGone(brokerPid), true, "the wrapped broker is still running after the start settled");
+	assert.equal(await waitUntilGone(broker.pid), true, "the wrapped broker is still running after the start settled");
 });
 
 directSpawnTest("a disposed start stops waiting for a broker that never listens, and stops that broker", async () => {
@@ -225,9 +263,8 @@ directSpawnTest("a disposed start stops waiting for a broker that never listens,
 		undefined,
 		controller.signal,
 	);
-	while (!existsSync(markerPath)) await sleep(10);
-	const brokerPid = Number(readFileSync(markerPath, "utf8"));
-	cleanups.push(() => killIfAlive(brokerPid));
+	const broker = await recordedProcess(markerPath, start);
+	cleanups.push(() => killIfStillRunning(broker));
 	const aborted = performance.now();
 	controller.abort(new Error("session disposed"));
 
@@ -236,7 +273,7 @@ directSpawnTest("a disposed start stops waiting for a broker that never listens,
 		performance.now() - aborted < ABORTED_WAIT_BOUND_MS + BROKER_GONE_WAIT_MS,
 		"the disposed start kept waiting for its broker to listen",
 	);
-	assert.equal(await waitUntilGone(brokerPid), true, "the broker is still running after the start settled");
+	assert.equal(await waitUntilGone(broker.pid), true, "the broker is still running after the start settled");
 });
 
 /**
@@ -270,9 +307,8 @@ test(
 			undefined,
 			owner.signal,
 		);
-		while (!existsSync(markerPath)) await sleep(10);
-		const cancelledPid = Number(readFileSync(markerPath, "utf8"));
-		cleanups.push(() => killIfAlive(cancelledPid));
+		const cancelled = await recordedProcess(markerPath, first);
+		cleanups.push(() => killIfStillRunning(cancelled));
 		// Stops the broker this test starts and removes its files once Windows has let go of the broker log.
 		cleanups.push(() => removeTempRootReleasingBroker(join(agentDir, ".."), agentDir));
 		const waiting = spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], READY_TIMEOUT_MS);
