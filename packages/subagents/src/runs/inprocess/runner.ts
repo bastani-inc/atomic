@@ -709,6 +709,23 @@ export function nextTurnSettled(
 	});
 }
 
+/** How long a pause waits for its record to be saved before it is shown anyway. */
+const PAUSE_RECORD_WAIT_MS = 10_000;
+
+/** Whether a pause's record was saved, within {@link PAUSE_RECORD_WAIT_MS}. */
+async function pauseRecordSaved(saved: Promise<boolean>): Promise<boolean> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const late = new Promise<false>((resolve) => {
+		timer = setTimeout(() => resolve(false), PAUSE_RECORD_WAIT_MS);
+		timer.unref?.();
+	});
+	try {
+		return await Promise.race([saved, late]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 function createTestSession(sessionManager: SessionManager, spec: ChildSpec): AgentSession {
 	const listeners = new Set<AgentSessionEventListener>();
 	const testOptions = typeof spec.testSession === "object" ? spec.testSession : {};
@@ -2463,12 +2480,13 @@ export class SubagentControlRuntime {
 			let interruptGeneration = 0;
 			/** Whether the child's record says the user paused it; its next turn clears that. */
 			let turnPausedReported = false;
-			const reportTurnPaused = (paused: boolean): void => {
-				if (turnPausedReported === paused) return;
+			/** Reports the pause, or its end; a pause's report settles once its record is saved (`false`: it was not). */
+			const reportTurnPaused = (paused: boolean): Promise<boolean> | undefined => {
+				if (turnPausedReported === paused) return undefined;
 				turnPausedReported = paused;
 				// A pause names the entry its session ends at, so a restart can tell it still ends there.
-				if (paused) taskHooks?.reportTurnPaused?.(true, sessionManager.getLeafId());
-				else taskHooks?.reportTurnPaused?.(false);
+				const saved = taskHooks?.reportTurnPaused?.(paused, paused ? sessionManager.getLeafId() : undefined);
+				return saved instanceof Promise ? saved : undefined;
 			};
 			/** Ends the current turn with `end` and waits for the next one, keeping the child's elapsed span in step. */
 			const endTurn = async <T>(end: () => Promise<T>): Promise<T> => {
@@ -2519,7 +2537,7 @@ export class SubagentControlRuntime {
 			const pauseTurn = async (): Promise<QueuedTaskMessages> => {
 				if (termination !== undefined) return { steering: [], followUp: [] };
 				// Recorded with the hold, before the turn ends: a restart from here on restores the child paused.
-				reportTurnPaused(true);
+				const saved = reportTurnPaused(true);
 				const open =
 					transcriptSession.isStreaming ||
 					transcriptSession.isRetrying ||
@@ -2527,6 +2545,12 @@ export class SubagentControlRuntime {
 				const taken = open
 					? await endTurn(() => transcriptSession.pauseTurn())
 					: await transcriptSession.pauseTurn();
+				// The pause is shown once a restart would keep it: once its record is saved. One that cannot be saved is
+				// shown all the same, and a restart restores the child as one never paused.
+				if (saved !== undefined && !(await pauseRecordSaved(saved)))
+					console.warn(
+						`atomic-subagents: the pause of ${admitted.spec.agent.name} was not saved; a restart continues it`,
+					);
 				return taken.typed ?? taken;
 			};
 			const settleInterruptedTurns = async (): Promise<void> => {

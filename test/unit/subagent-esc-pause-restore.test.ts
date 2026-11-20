@@ -36,6 +36,8 @@ const LIVE_RESTORE_TIMEOUT_MS = 180_000;
 /** Long enough for a restored child to send a request, had anything prompted it. */
 const RESTART_WINDOW_MS = 250;
 const CONDITION_WAIT_MS = 20_000;
+/** How long the owner's session takes to save a pause, in the test of a slow save. */
+const PAUSE_RECORD_DELAY_MS = 400;
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -66,12 +68,19 @@ function taskHost(name: string): AgentTaskHost {
 	return new AgentTaskHost({ scope: { kind: "session", sessionId: `${name}-${randomUUID()}` }, authorizeLaunch() {} });
 }
 
-/** The parent session the child records are written to, as the subagents extension writes them. */
-function parentSession(cwd: string) {
+/**
+ * The parent session the child records are written to, as the subagents extension writes them. `beforeAppend` runs
+ * before each record is written, and the record is dropped when it answers `false`, as when the process is gone.
+ */
+function parentSession(
+	cwd: string,
+	options: { beforeAppend?: (data: SubagentChildRecord | undefined) => Promise<boolean> } = {},
+) {
 	const sessionManager = SessionManager.inMemory(cwd);
 	const pi = {
 		events: { on: () => () => {}, emit() {} },
 		appendEntry: async (customType: string, data?: SubagentChildRecord) => {
+			if (options.beforeAppend !== undefined && !(await options.beforeAppend(data))) return;
 			await sessionManager.appendCustomEntry(customType, data);
 		},
 		getSessionName: () => "parent-session",
@@ -362,6 +371,76 @@ test(
 				"it is not told to continue on its own",
 			);
 			assert.equal(parent.latest(childId)?.pausedByUser, true);
+		} finally {
+			await after.close("session-close");
+		}
+	},
+	LIVE_RESTORE_TIMEOUT_MS,
+);
+
+test(
+	"Esc's pause is shown once its record is saved: a crash right after it restores the subagent paused",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-slow-record" })], {
+				stopReason: "toolUse",
+			}),
+		]);
+		/** Set when the process dies: nothing it still had to write reaches its session. */
+		let gone = false;
+		// The owner's session is slow to save the pause.
+		const parent = parentSession(env.root, {
+			beforeAppend: async (record) => {
+				if (record?.pausedByUser === true) await pause(PAUSE_RECORD_DELAY_MS);
+				return !gone;
+			},
+		});
+		const runId = "esc-pause-slow-record";
+		const childId = `${runId}:0`;
+		const liveOptions = env.options(runId);
+		const launchOptions = (options: RunSyncOptions): RunSyncOptions => ({
+			...options,
+			testSession: false,
+			getChildSessionOptions: liveOptions.getChildSessionOptions,
+		});
+		const before = taskHost("before-slow-record");
+		const launched = await runAgentTask({
+			host: before,
+			cwd: env.root,
+			agents: [agent],
+			agent: "worker",
+			task: "run until paused",
+			options: { ...liveOptions, index: 0, sessionDir: join(env.root, "children", runId) },
+			recordChild: createSubagentChildRecordSink(parent.pi, parent.ctx(before)),
+			runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+		});
+		assert.equal(launched.kind, "admitted");
+		const firstTask = launched.kind === "admitted" ? launched.observation.taskId : "";
+		await until(() => env.blockStarted() && transcriptOf(before, firstTask) !== undefined, LIVE_CHILD_START_WAIT_MS);
+		const requestsBeforeRestart = env.faux.state.callCount;
+
+		await transcriptOf(before, firstTask)!.pauseTurn!();
+		assert.equal(parent.latest(childId)?.pausedByUser, true, "the pause is saved by the time it is shown");
+		// The process dies right after the chat showed the pause.
+		gone = true;
+		await before.close("session-close");
+		gone = false;
+
+		const after = taskHost("after-slow-record");
+		try {
+			const deps: SubagentChildRestoreDeps = {
+				pi: parent.pi,
+				config: {},
+				discoverAgents: () => ({ agents: [agent] }),
+				runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+			};
+			const [outcome] = await restoreSubagentChildren(deps, parent.ctx(after));
+			assert.equal(outcome?.kind, "restored");
+			const restoredTask = outcome?.kind === "restored" ? outcome.taskId : "";
+			await until(() => transcriptOf(after, restoredTask)?.turnPaused?.() === true);
+			await pause(RESTART_WINDOW_MS);
+			assert.equal(env.faux.state.callCount, requestsBeforeRestart, "nothing prompted the restored subagent");
 		} finally {
 			await after.close("session-close");
 		}

@@ -972,6 +972,7 @@ export async function runAgentTask(input: {
 									if (paused) pausedAtLeafId = leafId;
 									recordsPause = true;
 									recordChild("running");
+									return input.recordChild?.saved?.();
 								},
 								reportStart,
 								onExecution: (execution) => {
