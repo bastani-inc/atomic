@@ -4,9 +4,12 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+## [0.10.1-alpha.1] - 2026-11-20
+
 ### Added
 
-- `withoutKeyHints(line, drop)` turns the hints for the keys `drop` accepts back into plain text, keeping their text, their style and every other hint, so a click on that text reaches the component that draws it.
+- `withoutKeyHints(line, drop)` turns the hints for the keys `drop` accepts back into plain text, keeping their text, their style and every other hint, so a click on that text reaches the component that draws it ([#6062](https://github.com/bastani-inc/atomic/pull/6062)).
+
 ### Fixed
 
 - `TuiAltScreen` keeps what was on screen before it started (the shell, or the screen an external editor left) until its first frame replaces it in one synchronized update, instead of showing a blank screen while that frame is prepared. This applies each time it starts, including after `stop()`. A first frame that comes more than 50 ms after the start ends that update and begins a new one, so it still draws in one step; the cleared screen shows briefly first, as before. WezTerm and Alacritty answer the startup queries only once an update ends, so they enter fullscreen as before ([#6056](https://github.com/bastani-inc/atomic/pull/6056)).
