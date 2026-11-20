@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <b>The verifiable coding agent runtime. Run checks and delegate work from the parent chat.</b>
+  <b>Terminal coding-agent runtime with codemode, subagents, MCP, web access, and Intercom.</b>
 </p>
 
 <p align="center">
@@ -17,13 +17,13 @@
 
 ---
 
-Atomic is a verifiable coding agent runtime for the terminal. Describe a repeatable procedure in a skill, use codemode to run checks, and use subagents for work that benefits from an independent context. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Atomic Packages](#atomic-packages) and share them with others via npm or git.
+Atomic is a terminal coding-agent runtime. Use built-in tools for file edits and shell commands, codemode to script multi-step checks, and subagents to delegate work to isolated contexts. Extend Atomic with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes), or bundle and share them as [Atomic Packages](#atomic-packages) via npm or git.
 
-Atomic includes bundled integrations for subagents, MCP, web access, and Intercom. See [Orchestration](docs/orchestration.md) for running multi-step tasks and [Migrating workflows](docs/orchestration/migrating-workflows.md) for converting an earlier definition to a skill.
+Atomic bundles first-party integrations for subagents, MCP, web access, and Intercom. See [Orchestration](docs/orchestration.md) for multi-step tasks and [Migrating workflows](docs/orchestration/migrating-workflows.md) to convert an earlier workflow file to a skill.
 
-Atomic runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps.
+Run Atomic interactively, in print or JSON mode, over RPC for process integration, or embedded via the TypeScript SDK.
 
-See the [Atomic documentation](https://docs.bastani.ai/) for guides, and [CONTRIBUTING.md](https://github.com/bastani-inc/atomic/blob/main/CONTRIBUTING.md) to get involved.
+Full documentation: [docs.bastani.ai](https://docs.bastani.ai/) · Contributing: [CONTRIBUTING.md](https://github.com/bastani-inc/atomic/blob/main/CONTRIBUTING.md)
 
 ## Table of Contents
 
@@ -53,14 +53,11 @@ See the [Atomic documentation](https://docs.bastani.ai/) for guides, and [CONTRI
 
 ## Quick Start
 
-```bash
-bun install -g @bastani/atomic
-```
-
-Or with npm:
+Install globally with npm or Bun:
 
 ```bash
 npm install -g @bastani/atomic
+# or: bun install -g @bastani/atomic
 ```
 
 Authenticate with an API key:
@@ -70,24 +67,24 @@ export ANTHROPIC_API_KEY=sk-ant-...
 atomic
 ```
 
-Or use your existing subscription:
+Or sign in with an existing subscription:
 
 ```bash
 atomic
-/login  # Then select provider
+/login   # Select a provider
 ```
 
-Then just talk to Atomic. By default, Atomic gives the model six coding tools: `read`, `write`, `edit`, `bash`, `find`, and `search`. On native Windows, Atomic also enables `powershell` when `pwsh.exe` or `powershell.exe` is available. The model uses these to fulfill your requests. `edit` replaces exact text, so it works however a file was last changed; see [docs/tools.md](docs/tools.md). Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Atomic packages](#atomic-packages).
+By default, Atomic provides built-in coding tools (`read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, `codemode`, plus `powershell` on native Windows when available). `edit` performs exact-text replacement without requiring an earlier `read`; see [docs/tools.md](docs/tools.md).
 
-**Platform notes:** [Windows](docs/windows.md) | [Alpine/musl Linux](docs/getting-started/installation.md#alpine-and-musl-linux-archives) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
+**Platform guides:** [Windows](docs/windows.md) | [Alpine/musl Linux](docs/getting-started/installation.md#alpine-and-musl-linux-archives) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
 ---
 
 ## Providers & Models
 
-For each built-in provider, Atomic maintains a list of tool-capable models, updated with every release. Authenticate via subscription (`/login`) or API key, then select any model from that provider via `/model` (or CTRL+L).
+Atomic ships a curated list of tool-capable models for each built-in provider. Authenticate via `/login` or an API key, then pick any model with `/model` (`Ctrl+L`).
 
-**Subscriptions:**
+**Subscriptions (`/login`):**
 - Anthropic Claude Pro/Max
 - OpenAI ChatGPT Plus/Pro (Codex)
 - GitHub Copilot
@@ -96,50 +93,14 @@ For each built-in provider, Atomic maintains a list of tool-capable models, upda
 - xAI (Grok/X subscription)
 
 **API keys:**
-- Anthropic
-- Ant Ling
-- OpenAI
-- Azure OpenAI
-- DeepSeek
-- NVIDIA NIM
-- Google Gemini
-- Google Vertex
-- Amazon Bedrock
-- Mistral
-- Groq
-- Cerebras
-- Cloudflare AI Gateway
-- Cloudflare Workers AI
-- xAI
-- OpenRouter
-- Vercel AI Gateway
-- ZAI
-- ZAI Coding Plan (China)
-- OpenCode Zen
-- OpenCode Go
-- Hugging Face
-- Fireworks
-- Together AI
-- Baseten
-- Kimi For Coding
-- Meta
-- MiniMax
-- MiniMax (China)
-- Moonshot AI
-- Moonshot AI (China)
-- Qwen Token Plan
-- Qwen Token Plan (Individual)
-- Qwen Token Plan (China)
-- Xiaomi MiMo
-- Xiaomi MiMo Token Plan (China)
-- Xiaomi MiMo Token Plan (Amsterdam)
-- Xiaomi MiMo Token Plan (Singapore)
+Anthropic, Ant Ling, OpenAI, Azure OpenAI, DeepSeek, NVIDIA NIM, Google Gemini, Google Vertex, Amazon Bedrock, Mistral, Groq, Cerebras, Cloudflare AI Gateway, Cloudflare Workers AI, xAI, OpenRouter, Vercel AI Gateway, ZAI, ZAI Coding Plan (China), OpenCode Zen, OpenCode Go, Hugging Face, Fireworks, Together AI, Baseten, Kimi For Coding, Meta, MiniMax, MiniMax (China), Moonshot AI, Moonshot AI (China), Qwen Token Plan, Qwen Token Plan (Individual), Qwen Token Plan (China), Xiaomi MiMo, Xiaomi MiMo Token Plan (China / Amsterdam / Singapore).
 
-See [docs/providers.md](docs/providers.md) for detailed setup instructions.
+See [docs/providers.md](docs/providers.md) for provider setup and environment variables.
 
-Atomic's Pi 0.84.1 model/runtime surface includes Claude Opus 5 on Anthropic and Bedrock, model-capability-aware strict JSON-schema and OpenAI Lark/regex tool sampling, ETag-revalidated cached catalogs, persisted llama.cpp models, arbitrary OpenAI-compatible `samplingParams`, opt-in vLLM thinking-token budgets through `compat.supportsThinkingTokenBudget`, and finishless-stream stop inference through `compat.supportsFinishReason`. A populated `ANTHROPIC_AUTH_TOKEN` makes Anthropic models available/selectable while sending header-only bearer auth—with no synthesized API key or `x-api-key`—across chat and summary/compaction requests. Typed RPC model listings expose constrained-sampling flags through optional `ModelInfo.compat`; capability flags are enforcement claims, so unsupported `require` constraints fail instead of being silently weakened. Custom `models.json` is read from the active Atomic agent directory only; it is not merged across `.pi` and `.atomic` paths. See [models](docs/models.md), [providers](docs/providers.md), [RPC](docs/rpc/protocol.md#get_available_models), and [extensions](docs/extensions/authoring.md#constrained-sampling).
-
-**Custom providers & models:** Add providers via the active agent directory's `models.json` (normally `~/.atomic/agent/models.json`; `ATOMIC_CODING_AGENT_DIR`/`PI_CODING_AGENT_DIR` can select another directory) if they speak a supported API (OpenAI, Anthropic, Google). For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
+**Model runtime capabilities:**
+- **Constrained tool sampling:** Model-capability-aware strict JSON-schema and OpenAI Lark/regex tool sampling. Unsupported `require` constraints fail instead of silently downgrading; RPC model listings expose flags via `ModelInfo.compat`. See [extensions](docs/extensions/authoring.md#constrained-sampling) and [RPC](docs/rpc/protocol.md#get_available_models).
+- **Bearer auth for Anthropic:** Setting `ANTHROPIC_AUTH_TOKEN` enables Anthropic models using header-only bearer auth (no synthesized `x-api-key`) across chat and summary/compaction requests.
+- **Custom providers & models:** Add OpenAI-, Anthropic-, or Google-compatible providers in the active agent directory's `models.json` (normally `~/.atomic/agent/models.json`; not merged with legacy `.pi`). Supports `samplingParams`, `compat.supportsThinkingTokenBudget`, `compat.supportsFinishReason`, and persisted `llama.cpp` models. Use extensions for custom APIs or OAuth. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
 
 ---
 
@@ -147,191 +108,172 @@ Atomic's Pi 0.84.1 model/runtime surface includes Claude Opus 5 on Anthropic and
 
 <p align="center"><img src="docs/images/interactive-mode.png" alt="Interactive Mode" width="600"></p>
 
-The interface from top to bottom:
+The fullscreen TUI has four areas from top to bottom:
 
-- **Startup header** - Shows shortcuts (`/hotkeys` for all), loaded AGENTS.md files, prompt templates, skills, and extensions
-- **Messages** - Your messages, assistant responses, tool calls and results, notifications, errors, and extension UI
-- **Editor** - Where you type; border color indicates thinking level, with streaming activity shown in a separate status row
-- **Footer** - Working directory, session name, total token/cache usage, cost, context usage, current model
+- **Startup header** — keybinding hints (`/hotkeys` for all), loaded context files, prompt templates, skills, and extensions.
+- **Messages** — prompts, responses, tool calls and results, notices, errors, and extension UI.
+- **Editor** — input box; border color reflects thinking level, and a status row shows streaming activity.
+- **Footer** — working directory, session name, token/cache usage, cost, context usage, and active model.
 
-The editor can be temporarily replaced by other UI, like built-in `/settings` or custom UI from extensions (e.g., a Q&A tool that lets the user answer model questions in a structured format). [Extensions](#extensions) can also replace the editor, add widgets above/below it, a status line, custom footer, or overlays.
+[Extensions](#extensions) can replace the editor, show temporary UI (such as `/settings` or Q&A selectors), or add widgets, status lines, custom footers, and overlays.
 
 ### Editor
 
 | Feature | How |
-|---------|-----|
+| --- | --- |
 | File reference | Type `@` to fuzzy-search project files |
-| Path completion | Tab to complete paths |
-| Multi-line | SHIFT+Enter (or CTRL+Enter on Windows Terminal) |
-| Images | CTRL+V to paste (ALT+V on Windows), or drag onto terminal |
-| Bash commands | `!command` runs and sends output to LLM, `!!command` runs without sending |
+| Path completion | `Tab` to complete paths |
+| Multi-line | `Shift+Enter` (or `Ctrl+Enter` on Windows Terminal) |
+| Images | `Ctrl+V` (`Alt+V` on Windows) or drag onto terminal |
+| Shell commands | `!command` runs and sends output to the model; `!!command` runs without sending output |
 
-Standard editing keybindings for delete word, undo, etc. See [docs/keybindings.md](docs/keybindings.md).
+See [docs/keybindings.md](docs/keybindings.md) for editing shortcuts.
 
 ### Commands
 
-Type `/` in the editor to trigger commands. [Extensions](#extensions) can register custom commands, [skills](#skills) are available as `/skill:name`, and [prompt templates](#prompt-templates) expand via `/templatename`.
+Type `/` in the editor to open commands. [Extensions](#extensions) register custom commands, [skills](#skills) run as `/skill:<name>`, and [prompt templates](#prompt-templates) expand as `/<template>`.
 
 | Command | Description |
-|---------|-------------|
-| `/login`, `/logout` | OAuth authentication |
-| `/model` | Switch models and automatically save the startup default |
-| `/thinking` | Switch thinking level and automatically save the startup default |
-| `/scoped-models` | Enable/disable models for CTRL+P cycling |
-| `/settings` | Theme, message delivery, transport, and other preferences |
-| `/resume` | Pick from previous sessions |
+| --- | --- |
+| `/login`, `/logout` | OAuth and API key authentication |
+| `/model` | Switch model and save as the startup default |
+| `/thinking` | Switch thinking level and save as the startup default |
+| `/scoped-models` | Enable or disable models for `Ctrl+P` cycling |
+| `/settings` | Edit theme, message delivery, transport, and other preferences |
+| `/resume` | Pick a previous session |
 | `/new` | Start a new session |
-| `/name <name>` | Set session display name |
-| `/session` | Show session info (file, ID, messages, tokens, cost) |
-| `/tree` | Jump to any point in the session and continue from there |
-| `/fork` | Create a new session from a previous user message |
-| `/clone` | Duplicate the current active branch into a new session |
-| `/compact [instructions]` | Clear the context window; the agent recovers what it needs from session history |
-| `/copy` | Copy last assistant message to clipboard |
-| `/export [file]` | Export session to HTML file |
-| `/share` | Upload as private GitHub gist with shareable HTML link |
+| `/name <name>` | Set the session display name |
+| `/session` | Show session ID, file, messages, tokens, and cost |
+| `/tree` | Jump to any point in the session and branch from there |
+| `/fork` | Create a new session from an earlier user message |
+| `/clone` | Duplicate the active branch into a new session |
+| `/compact [instructions]` | Clear the context window; the agent recovers needed details from history |
+| `/copy` | Copy the last assistant message to clipboard |
+| `/export [file]` | Export the session to HTML |
+| `/share` | Upload as a private GitHub gist with a shareable HTML link |
 | `/reload` | Reload keybindings, extensions, skills, prompts, and context files (themes hot-reload automatically) |
-| `/hotkeys` | Show all keyboard shortcuts |
-| `/changelog` | Display the full version history |
-| `/exit` | Exit Atomic |
-| `/quit` | Quit Atomic |
+| `/hotkeys` | List all keyboard shortcuts |
+| `/changelog` | Show version history |
+| `/exit`, `/quit` | Exit Atomic |
 
 ### Keyboard Shortcuts
 
-See `/hotkeys` for the full list. Customize via the active agent directory's `keybindings.json` (normally `~/.atomic/agent/keybindings.json`). See [docs/keybindings.md](docs/keybindings.md).
-
-**Commonly used:**
+Run `/hotkeys` for the full list. Customize in `~/.atomic/agent/keybindings.json` (or under `ATOMIC_CODING_AGENT_DIR`). See [docs/keybindings.md](docs/keybindings.md).
 
 | Key | Action |
-|-----|--------|
-| CTRL+C | Interrupt active or queued work; when idle, clear editor |
-| CTRL+C twice while idle | Quit |
-| Escape | Abort active work and hold queued messages |
-| Escape twice | Open `/tree` |
-| CTRL+L | Open model selector |
-| CTRL+P / SHIFT+CTRL+P | Cycle scoped models forward/backward |
-| SHIFT+Tab | Cycle thinking level |
-| CTRL+O | Collapse/expand tool output |
-| CTRL+T | Collapse/expand thinking blocks |
-| CTRL+G | Edit chat or extension-editor text through the configured, environment, or platform external editor |
+| --- | --- |
+| `Ctrl+C` | Interrupt active or queued work; when idle, clear editor |
+| `Ctrl+C` twice (idle) | Quit |
+| `Escape` | Abort active work and hold queued messages |
+| `Escape` twice | Open `/tree` |
+| `Ctrl+L` | Open model selector |
+| `Ctrl+P` / `Shift+Ctrl+P` | Cycle scoped models forward / backward |
+| `Shift+Tab` | Cycle thinking level |
+| `Ctrl+O` | Collapse or expand tool output |
+| `Ctrl+T` | Collapse or expand thinking blocks |
+| `Ctrl+G` | Open the current editor buffer in your external editor |
 
 ### Message Queue
 
-Submit messages while the agent is working:
+Send messages while the agent is still working:
 
-- **Enter** queues a *steering* message, delivered after the current assistant turn finishes executing its tool calls
-- **ALT+Enter** queues a *follow-up* message, delivered only after the agent finishes all work
-- **Escape** or **Ctrl+C** aborts active/queued work and pauses queued messages in place; submitting the next ordinary chat message resumes them once in their original per-queue order. After the abort settles, a later idle Ctrl+C still clears the editor and a second quick idle press quits without dequeuing the hold
-- **ALT+Up** explicitly retrieves queued messages back to the editor instead of resuming them
+- **`Enter`** queues a *steering* message, delivered after the current turn's tool calls finish.
+- **`Alt+Enter`** queues a *follow-up* message, delivered after the agent finishes all work. (On Windows Terminal, remap `Alt+Enter` from fullscreen first; see [docs/terminal-setup.md](docs/terminal-setup.md).)
+- **`Escape`** or **`Ctrl+C`** aborts active work and pauses queued messages in place. Sending the next regular message resumes held messages once in order. While idle, `Ctrl+C` clears the editor and a second quick press quits without releasing held messages.
+- **`Alt+Up`** pulls queued messages back into the editor instead of resuming them.
 
-On Windows Terminal, `ALT+Enter` is fullscreen by default. Remap it in [docs/terminal-setup.md](docs/terminal-setup.md) so Atomic can receive the follow-up shortcut.
-
-Configure delivery in [settings](docs/settings.md): `steeringMode` and `followUpMode` can be `"one-at-a-time"` (default, waits for response) or `"all"` (delivers all queued at once). `transport` selects provider transport preference (`"sse"`, `"websocket"`, `"websocket-cached"`, or `"auto"`) for providers that support multiple transports.
+Configure `steeringMode` and `followUpMode` (`"one-at-a-time"` default, or `"all"`) and `transport` (`"sse"`, `"websocket"`, `"websocket-cached"`, `"auto"`) in [settings](docs/settings.md).
 
 ---
 
 ## Sessions
 
-Sessions are stored as JSONL files with a tree structure. Each entry has an `id` and `parentId`, enabling in-place branching without creating new files. See [docs/session-format.md](docs/session-format.md) for file format.
+Sessions store an append-only tree of entries (`id` and `parentId`), enabling in-place branching in one session. See [docs/session-format.md](docs/session-format.md).
 
 ### Management
 
-Sessions auto-save to `~/.atomic/agent/sessions/` organized by working directory (legacy `~/.pi/agent/sessions/` sessions remain readable for compatibility).
+Sessions auto-save per working directory in the default local SQLite store (`~/.atomic/workflows/journal.sqlite`; legacy `~/.atomic/agent/sessions/` and `~/.pi/agent/sessions/` JSONL files remain readable).
 
 ```bash
-atomic -c                  # Continue most recent session
-atomic -r                  # Browse and select from past sessions
-atomic --no-session        # No resumable session (released history may use disk)
-atomic --session <id|prefix> # Use an exact ID or unique 8-hex UUID prefix
-atomic --import <file>       # Import a format-4 JSONL export into session storage
-atomic --session-id <id>   # Use/create an exact project-local session ID
-atomic --name "Refactor"   # Set the session display name
+atomic -c                    # Continue the most recent session
+atomic -r                    # Browse and pick a past session
+atomic --no-session          # No resumable session (released history may use disk)
+atomic --session <id|prefix> # Open an exact ID or unique 8-hex UUID prefix
+atomic --import <file>       # Import a format-4 JSONL export into storage
+atomic --session-id <id>     # Open or create an exact project-local session ID
+atomic --name "Refactor"     # Set the session display name
 atomic --fork <id|prefix>    # Fork an exact ID or unique 8-hex UUID prefix
 ```
 
-Use `/session` in interactive mode to see the current session ID before reusing it with `--session <id>`, `--session-id <id>`, or `--fork <id>`.
+Run `/session` interactively to copy the current session ID for `--session`, `--session-id`, or `--fork`.
 
 ### Branching
 
-**`/tree`** - Navigate the session tree in-place. Select any previous point, continue from there, and switch between branches. All history preserved in a single file.
+- **`/tree`** — Jump to any earlier entry and continue on a new branch without creating a new session.
+  - Type to search, `Ctrl+←`/`Ctrl+→` or `Alt+←`/`Alt+→` to fold/jump branches, `←`/`→` to page.
+  - `Ctrl+O` cycles filters (`default` → `no-tools` → `user-only` → `labeled-only` → `all`).
+  - `Shift+L` bookmarks an entry with a label; `Shift+T` toggles label timestamps.
+- **`/fork`** — Pick an earlier user message on the active branch, copy the path up to it into a new session, and load that prompt into the editor.
+- **`/clone`** — Duplicate the full active branch into a new session at the current point.
+- **`--fork <id|prefix>`** — Fork an existing session from the CLI into the current project.
 
 <p align="center"><img src="docs/images/tree-view.png" alt="Tree View" width="600"></p>
 
-- Search by typing, fold/unfold and jump between branches with CTRL+←/CTRL+→ or ALT+←/ALT+→, page with ←/→
-- Filter modes (CTRL+O): default → no-tools → user-only → labeled-only → all
-- Press SHIFT+L to label entries as bookmarks and SHIFT+T to toggle label timestamps
-
-**`/fork`** - Create a new session file from a previous user message on the active branch. Opens a selector, copies the active path up to that point, and places the selected prompt in the editor for modification.
-
-**`/clone`** - Duplicate the current active branch into a new session file at the current position. The new session keeps the full active-path history and opens with an empty editor.
-
-**`--fork <id|prefix>`** copies the selected session into a new session in the current project. Use an exact session ID or a unique eight-character hexadecimal UUID prefix.
-
 ### Compaction
 
-Long sessions can exhaust context windows. By default, compaction makes no model call: it clears the context window and leaves one message that tells the agent where its earlier conversation is in session history and what to recover first, such as `<keepContext>` spans, your requests and constraints. The agent recovers it with its own `read` and `search` tools. With a compactor model such as `morph/morph-compactor` set in `compactionModel`, the compactor's output replaces the context instead.
+When a session approaches the context limit, compaction clears the active context window without a model call by default. Atomic leaves a recovery pointer telling the agent where earlier history lives and what to recover first (`<keepContext>` spans, requests, and constraints) using `read` and `search`. Setting `compactionModel` (such as `morph/morph-compactor`) replaces the context with that model's summary instead.
 
-**Manual:** `/compact [instructions]`. Instructions tell the agent what to recover first.
+- **Manual:** `/compact [instructions]` (instructions guide what the agent recovers first).
+- **Automatic:** Enabled by default on context overflow (compacts and retries once) or near the limit. Configure in `/settings` or `settings.json`.
+- **Full history stays intact:** Use `/tree` to revisit earlier entries. See [docs/compaction.md](docs/compaction.md).
 
-**Automatic:** Enabled by default. Triggers on context overflow (compacts and retries once) or when approaching the limit. Configure via `/settings` or `settings.json`.
-
-The full history stays in the session; use `/tree` to revisit it. See [docs/compaction.md](docs/compaction.md) for details.
-
-Session model context is projected from append-only history. Extensions can append a `context_edit` to omit or replace an earlier message only for future model requests; raw history and usage remain unchanged:
+Extensions can hide or replace an earlier message for future model turns using `context_edit` without altering raw history or usage records (Atomic uses the same mechanism when retrying a failed attempt):
 
 ```typescript
 const assistantId = sessionManager.appendMessage(partialAssistant);
-sessionManager.appendContextEdit(assistantId, null); // Hidden from model context, retained in JSONL.
+sessionManager.appendContextEdit(assistantId, null); // Omitted from model context, kept in history.
 ```
-
-Atomic uses the same mechanism itself when it retries a failed attempt: the attempt stays in the JSONL file but is omitted from what the model sees.
 
 ---
 
 ## Settings
 
-Use `/settings` to modify common options, or edit JSON files directly:
+Use `/settings` interactively, or edit JSON files directly:
 
 | Location | Scope |
-|----------|-------|
-| `~/.atomic/agent/settings.json` | Global (all projects; legacy `~/.pi/agent/settings.json` also works) |
-| `.atomic/settings.json` | Project (overrides global; legacy `.pi/settings.json` also works after trust) |
+| --- | --- |
+| `~/.atomic/agent/settings.json` | Global (legacy `~/.pi/agent/settings.json` also works) |
+| `.atomic/settings.json` | Project override (legacy `.pi/settings.json` also works once trusted) |
 
-See [docs/settings.md](docs/settings.md) for all options.
+See [docs/settings.md](docs/settings.md) for every option and default.
 
 ### Telemetry and update checks
 
-Atomic has two separate startup features:
+Atomic runs two independent startup network checks:
 
-- **Update check:** checks whether a newer Atomic version exists. Disable it with `ATOMIC_SKIP_VERSION_CHECK=1` (`PI_SKIP_VERSION_CHECK=1` remains a legacy alias). Disabling update checks only turns off this check. The update check is independent of version-adoption telemetry.
-- **Version-adoption telemetry:** measures whether releases reach real interactive launches and which versions stay in use. The metric is version-adoption pings / first-interactive-launch pings, not installs, users, MAU, or retention. Repeated eligible launches on several machines overcount. Opt-outs, offline mode, and dropped best-effort requests undercount.
+- **Update check:** Checks for a newer Atomic release. Disable with `ATOMIC_SKIP_VERSION_CHECK=1` (legacy `PI_SKIP_VERSION_CHECK=1`).
+- **Version-adoption telemetry:** Sends one bodyless `GET` request to `https://atomic-version-adoption.bastani-atomic.workers.dev/v1/version-adoption?version=<version>` with the standard `atomic/<version> (<platform>; <runtime>; <arch>)` User-Agent (no UUID, cookie, auth header, or user data).
+  - **When it fires:** Interactive mode only, and only on the first launch with fresh settings or the first launch after upgrading to a version with changelog entries. Never on every launch, npm install, reinstall keeping settings, or `-p`/RPC modes.
+  - **What is stored:** UTC date, version, and aggregate count (Cloudflare processes standard transient IP/TLS metadata to serve the request).
+  - **Opt out:** Set `"enableInstallTelemetry": false` in `settings.json` or `ATOMIC_TELEMETRY=0` (`PI_TELEMETRY=0`). Set `ATOMIC_TELEMETRY=1`/`true`/`yes` to force on. Does not affect update checks.
 
-  Atomic sends one GET to `https://atomic-version-adoption.bastani-atomic.workers.dev/v1/version-adoption` with the running version as the `version` query parameter and the existing `atomic/<version> (<platform>; <runtime>; <arch>)` User-Agent. There is no request body, UUID, cookie, auth header, or user content.
-
-  The ping fires only in interactive mode, and only on the first interactive launch with fresh settings (no recorded changelog version), or the first interactive launch after an update whose version has changelog entries. It does not fire on every launch, on npm install, on a reinstall that kept settings, or in `-p` / RPC modes.
-
-  Atomic stores only UTC date, version, and an aggregate count, retained as aggregates. Cloudflare, the hosting provider, necessarily processes transient connection metadata (IP, TLS) to serve the request. That is not a promise of platform-wide zero logging.
-
-  Opt out by setting `enableInstallTelemetry` to `false` in `settings.json`, or by setting `ATOMIC_TELEMETRY=0` (`PI_TELEMETRY=0` remains a legacy alias). `ATOMIC_TELEMETRY=1`/`true`/`yes` forces the ping on. This does not disable update checks.
-
-Use `--offline` or `ATOMIC_OFFLINE=1` (`PI_OFFLINE=1` remains a legacy alias) to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry.
+Pass `--offline` or set `ATOMIC_OFFLINE=1` (`PI_OFFLINE=1`) to disable all startup network calls (update checks, package update checks, and version-adoption telemetry).
 
 ---
 
 ## Context Files
 
-Atomic loads `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` at startup from:
-- `~/.atomic/agent/` (global; legacy `~/.pi/agent/` also works)
-- Parent directories (walking up from cwd)
-- Current directory
+At startup, Atomic loads `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` from:
 
-An `AGENTS.override.md` file replaces that directory's `AGENTS.md` or `CLAUDE.md`; context from other directories is still concatenated.
+1. `~/.atomic/agent/` (global; legacy `~/.pi/agent/` also works)
+2. Parent directories walking down to the current directory
+3. The current directory
 
-Use for project instructions, conventions, common commands. Disable context file loading with `--no-context-files` (or `-nc`).
+Within a directory, `AGENTS.override.md` replaces `AGENTS.md` and `CLAUDE.md`; files from different directories concatenate. Disable with `--no-context-files` (`-nc`).
 
 ### System Prompt
 
-Replace the default system prompt with `.atomic/SYSTEM.md` (project; legacy `.pi/SYSTEM.md` also works) or `~/.atomic/agent/SYSTEM.md` (global; legacy `~/.pi/agent/SYSTEM.md` also works). Append without replacing via `APPEND_SYSTEM.md`.
+Replace the default system prompt with `.atomic/SYSTEM.md` (project) or `~/.atomic/agent/SYSTEM.md` (global); append with `APPEND_SYSTEM.md` (legacy `.pi/` paths also work).
 
 ---
 
@@ -339,7 +281,7 @@ Replace the default system prompt with `.atomic/SYSTEM.md` (project; legacy `.pi
 
 ### Prompt Templates
 
-Reusable prompts as Markdown files. Type `/name` to expand.
+Save reusable Markdown prompts in `~/.atomic/agent/prompts/`, `.atomic/prompts/` (legacy `.pi/` paths work), or an [Atomic package](#atomic-packages). Expand them with `/<name>`:
 
 ```markdown
 <!-- ~/.atomic/agent/prompts/review.md -->
@@ -347,11 +289,11 @@ Review this code for bugs, security issues, and performance problems.
 Focus on: {{focus}}
 ```
 
-Place in `~/.atomic/agent/prompts/`, `.atomic/prompts/` (legacy `~/.pi/agent/prompts/` and `.pi/prompts/` also work), or an [Atomic package](#atomic-packages) to share with others. See [docs/prompt-templates.md](docs/prompt-templates.md).
+See [docs/prompt-templates.md](docs/prompt-templates.md).
 
 ### Skills
 
-On-demand capability packages following the [Agent Skills standard](https://agentskills.io). Invoke via `/skill:name` or let the agent load them automatically.
+On-demand capability packages following the [Agent Skills standard](https://agentskills.io). Trigger with `/skill:<name>` or let the agent load them automatically:
 
 ```markdown
 <!-- ~/.atomic/agent/skills/my-skill/SKILL.md -->
@@ -363,11 +305,11 @@ Use this skill when the user asks about X.
 2. Then that
 ```
 
-Place in `~/.atomic/agent/skills/`, `~/.agents/skills/`, `.atomic/skills/` (legacy `~/.pi/agent/skills/` and `.pi/skills/` also work), or `.agents/skills/` (from `cwd` up through parent directories) or an [Atomic package](#atomic-packages) to share with others. See [docs/skills.md](docs/skills.md).
+Discovered from `~/.atomic/agent/skills/`, `~/.agents/skills/`, `.atomic/skills/`, `.agents/skills/` (walking up from `cwd`), legacy `.pi/skills/`, and [Atomic packages](#atomic-packages). See [docs/skills.md](docs/skills.md).
 
 ### Extensions
 
-TypeScript modules that extend Atomic with custom tools, commands, keyboard shortcuts, event handlers, and UI components.
+TypeScript modules that register tools, commands, keybindings, event handlers, and custom TUI components:
 
 ```typescript
 export default function (pi: ExtensionAPI) {
@@ -377,7 +319,9 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-`turn_end` and `agent_before_settle` are actionable persistence boundaries. Handlers can append structural entries and request one continuation. Later handlers see earlier proposals:
+The default export may be `async`; Atomic awaits it before continuing startup (for example to fetch a remote model list before `pi.registerProvider()`).
+
+`turn_end` and `agent_before_settle` handlers can append structural entries and request a one-shot continuation (later handlers see earlier proposals; error and aborted turns always exit):
 
 ```typescript
 let replacedResponse = false;
@@ -400,67 +344,46 @@ pi.on("turn_end", (event) => {
 });
 ```
 
-Continuation is one-shot per boundary result, not per registered handler. It ensures one next provider request: tool-result, steering, or follow-up scheduling can satisfy that request without adding another one; otherwise Atomic makes one context-only request. Guard handlers like the example above because an unconditional `continue: true` is evaluated again after the next response and can loop indefinitely. Error and aborted responses remain hard exits.
+Always guard `continue: true` so it cannot loop indefinitely. Use `agent_before_settle` for final checks after retries, compaction, and queued input finish. See [docs/extensions/events.md](docs/extensions/events.md#agent_start-/-agent_end-/-agent_before_settle-/-agent_settled).
 
-Use `agent_before_settle` for final actions after retries, compaction, and queued input are exhausted. See [docs/extensions/events.md](docs/extensions/events.md#agent_start-/-agent_end-/-agent_before_settle-/-agent_settled).
-
-The default export can also be `async`. Atomic waits for async extension factories before startup continues, which is useful for one-time initialization such as fetching remote model lists before calling `pi.registerProvider()`.
-
-**What's possible:**
-- Custom tools (or replace built-in tools entirely)
-- Sub-agents and plan mode
-- Custom compaction and summarization
-- Permission gates and path protection
-- Custom editors and UI components
-- Status lines, headers, footers
-- Git checkpointing and auto-commit
-- SSH and sandbox execution
-- MCP server integration
-- Make Atomic look like Claude Code
-- Games while waiting (yes, Doom runs)
-- ...anything you can dream up
-
-Place in `~/.atomic/agent/extensions/`, `.atomic/extensions/` (legacy `~/.pi/agent/extensions/` and `.pi/extensions/` also work), or an [Atomic package](#atomic-packages) to share with others. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
+Place extensions in `~/.atomic/agent/extensions/`, `.atomic/extensions/` (legacy `.pi/` paths work), or an [Atomic package](#atomic-packages). See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
 
 ### Themes
 
-Built-in: `dark`, `light`, `catppuccin-frappe`, `catppuccin-latte`, `catppuccin-macchiato`, and `catppuccin-mocha`. Custom themes hot-reload: modify the active theme file and Atomic immediately applies changes.
+Built-in themes: `dark`, `light`, `catppuccin-frappe`, `catppuccin-latte`, `catppuccin-macchiato`, and `catppuccin-mocha`. Active custom themes hot-reload on save.
 
-Place in `~/.atomic/agent/themes/`, `.atomic/themes/` (legacy `~/.pi/agent/themes/` and `.pi/themes/` also work), or an [Atomic package](#atomic-packages) to share with others. See [docs/themes.md](docs/themes.md).
+Place custom themes in `~/.atomic/agent/themes/`, `.atomic/themes/` (legacy `.pi/` paths work), or an [Atomic package](#atomic-packages). See [docs/themes.md](docs/themes.md).
 
 ### Atomic Packages
 
-Bundle and share extensions, skills, prompts, and themes via npm or git. Find packages on [npmjs.com](https://www.npmjs.com/search?q=keywords%3Aatomic-package) or [Discord](https://discord.com/channels/1456806362351669492/1457744485428629628).
+Share extensions, skills, prompts, themes, subagent definitions, MCP servers, and storage adapters via npm or git. Browse packages on [npmjs.com](https://www.npmjs.com/search?q=keywords%3Aatomic-package) or [Discord](https://discord.com/channels/1456806362351669492/1457744485428629628).
 
-> **Security:** Atomic packages run with full system access. Extensions execute arbitrary code, and skills can instruct the model to perform any action including running executables. Review source code before installing third-party packages.
+> **Security:** Atomic packages run with full system access. Review source code before installing third-party packages.
 
 ```bash
 atomic install npm:@foo/atomic-tools
-atomic install npm:@foo/atomic-tools@1.2.3      # pinned version
+atomic install npm:@foo/atomic-tools@1.2.3      # Pinned version
 atomic install git:github.com/user/repo
-atomic install git:github.com/user/repo@v1  # tag or commit
+atomic install git:github.com/user/repo@v1      # Pinned tag or commit
 atomic install git:git@github.com:user/repo
-atomic install git:git@github.com:user/repo@v1  # tag or commit
-atomic install https://github.com/user/repo
-atomic install https://github.com/user/repo@v1      # tag or commit
-atomic install ssh://git@github.com/user/repo
-atomic install ssh://git@github.com/user/repo@v1    # tag or commit
-atomic remove npm:@foo/atomic-tools
-atomic uninstall npm:@foo/atomic-tools          # alias for remove
+atomic install https://github.com/user/repo@v1
+atomic install ssh://git@github.com/user/repo@v1
+atomic remove npm:@foo/atomic-tools             # Alias: atomic uninstall
 atomic list
-atomic update                               # update Atomic only
-atomic update --all                         # update Atomic and packages
-atomic update --extensions                  # update packages only
-atomic update --models                      # force-refresh authenticated provider model catalogs
-atomic update --self                        # update Atomic only
-atomic update --self --force                # reinstall Atomic even if current
-atomic update npm:@foo/atomic-tools         # update one package
-atomic config                               # enable/disable extensions, skills, prompts, themes
+atomic update                                   # Update Atomic only
+atomic update --all                             # Update Atomic and packages
+atomic update --extensions                      # Update packages only
+atomic update --models                          # Force-refresh model catalogs
+atomic update --self --force                    # Reinstall Atomic even if current
+atomic update npm:@foo/atomic-tools             # Update one package
+atomic config                                   # Enable/disable resources
 ```
 
-Packages install to `~/.atomic/agent/git/` (git) or global npm. Use `-l` for project-local installs (`.atomic/git/`, `.atomic/npm/`; legacy `.pi/git/` and `.pi/npm/` are compatibility fallbacks). Git `@ref` values are pinned tags or commits; pinned packages are skipped by `atomic update --extensions` and `atomic update --all`, so use `atomic install git:host/user/repo@new-ref` to move an existing package to a new ref. Git packages install dependencies with `npm install --omit=dev` by default, so runtime deps must be listed under `dependencies`; when `npmCommand` is configured, git packages use plain `install` for compatibility with wrappers. If you use a Node version manager and want package installs to reuse a stable npm context, set `npmCommand` in `settings.json`, for example `["mise", "exec", "node@20", "--", "npm"]`.
+- Pass `-l` for project-local installs (`.atomic/git/`, `.atomic/npm/`; global git installs go to `~/.atomic/agent/git/`).
+- Pinned `@ref` git packages are skipped by `atomic update --extensions` / `--all`; run `atomic install git:host/user/repo@new-ref` to move to a new ref.
+- Git packages run `npm install --omit=dev` (put runtime packages in `dependencies`). Set `npmCommand` in `settings.json` (for example `["mise", "exec", "node@20", "--", "npm"]`) to pin an npm wrapper; custom `npmCommand` runs plain `install`.
 
-Create a package by adding an app-name manifest key to `package.json` (`atomic` for this package). The legacy `pi` key is still accepted as a backwards-compatible shim:
+Declare resources under the `atomic` key in `package.json` (legacy `pi` key is still accepted), or rely on convention directories (`extensions/`, `skills/`, `prompts/`, `themes/`):
 
 ```json
 {
@@ -475,8 +398,6 @@ Create a package by adding an app-name manifest key to `package.json` (`atomic` 
 }
 ```
 
-Without a manifest, Atomic auto-discovers from conventional directories (`extensions/`, `skills/`, `prompts/`, `themes/`).
-
 See [docs/packages.md](docs/packages.md).
 
 ---
@@ -488,8 +409,7 @@ See [docs/packages.md](docs/packages.md).
 ```typescript
 import { createAgentSession, SessionManager } from "@bastani/atomic";
 
-// By default, createAgentSession builds a ModelRuntime from the active agent
-// directory's auth.json and models.json.
+// Builds a ModelRuntime from the active agent directory's auth.json and models.json by default.
 const { session } = await createAgentSession({
   sessionManager: SessionManager.inMemory(),
 });
@@ -497,39 +417,28 @@ const { session } = await createAgentSession({
 await session.prompt("What files are in the current directory?");
 ```
 
-For advanced multi-session runtime replacement, use `createAgentSessionRuntime()` and `AgentSessionRuntime`.
-
-See [docs/sdk.md](docs/sdk.md) and [examples/sdk/](examples/sdk/).
+For multi-session runtime replacement, use `createAgentSessionRuntime()` and `AgentSessionRuntime`. See [docs/sdk.md](docs/sdk.md) and [examples/sdk/](examples/sdk/).
 
 ### RPC Mode
 
-For non-Node.js integrations, use RPC mode over stdin/stdout:
+Integrate from any language over stdin/stdout:
 
 ```bash
 atomic --mode rpc
 ```
 
-RPC mode uses strict LF-delimited JSONL framing. Clients must split records on `\n` only. Do not use generic line readers like Node `readline`, which also split on Unicode separators inside JSON payloads.
-
-See [docs/rpc.md](docs/rpc.md) for the protocol.
+RPC uses strict LF-delimited JSONL framing. Split records on `\n` only—avoid line readers like Node `readline` that also split on Unicode line separators inside JSON payloads. See [docs/rpc.md](docs/rpc.md).
 
 ---
 
 ## Philosophy
 
-Atomic is aggressively extensible so it does not have to dictate your workflow. The distribution bundles first-party extensions for subagents, MCP, web access, and Intercom, while still letting you build or install alternative [extensions](#extensions), [skills](#skills), and [Atomic packages](#atomic-packages). This keeps Atomic adaptable without forcing every workflow into the core CLI.
+Atomic pairs a small, extensible core with bundled first-party integrations for common engineering workflows:
 
-**Bundled subagents.** Delegate work to a specialist from the parent chat or from a codemode script and pick up the result when its completion notice arrives.
-
-**Bundled MCP, web access, and intercom.** Atomic ships first-party integrations for MCP tools, web/repository/document/video extraction, and cross-session coordination. These are packaged extensions rather than hard-coded agent behavior, so they remain configurable and replaceable.
-
-**Security stays explicit.** Run in a container, use project trust controls, or build confirmation flows with [extensions](#extensions) inline with your environment and security requirements.
-
-**Composable planning and task tracking.** Use codemode, subagents, and todos, write plans to files, or install a package that matches your team's process.
-
-**Foreground bash only.** Use tmux or explicit extensions for background work. Full observability, direct interaction.
-
-Upstream Pi's minimal-core rationale is documented in the [original blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/); Atomic preserves the extensibility model while also bundling first-party capabilities for common workflows.
+- **Extensible core:** Swap tools, UI components, providers, and workflows through [extensions](#extensions), [skills](#skills), and [Atomic packages](#atomic-packages).
+- **Bundled integrations:** Subagents, MCP, web access, and Intercom ship as packaged extensions so they remain configurable and replaceable.
+- **Explicit security:** Control trust per project with `/trust`, isolate execution in containers, or add custom confirmation hooks via extensions.
+- **Composable task execution:** Combine codemode scripts, subagents, background tasks (`/tasks`), and file-based todos rather than locking into one rigid pipeline.
 
 ---
 
@@ -542,13 +451,12 @@ atomic [options] [--] [@files...] [messages...]
 ### Package Commands
 
 ```bash
-atomic install <source> [-l]         # Install package, -l for project-local
-atomic remove <source> [-l]          # Remove package
-atomic uninstall <source> [-l]       # Alias for remove
-atomic update [source|self|atomic]   # Update Atomic only, or one package source
+atomic install <source> [-l]         # Install package (-l for project-local)
+atomic remove <source> [-l]          # Remove package (alias: uninstall)
+atomic update [source|self|atomic]   # Update Atomic or one package
 atomic update --all                  # Update Atomic and packages
 atomic update --extensions           # Update packages only
-atomic update --models               # Force-refresh authenticated provider model catalogs
+atomic update --models               # Force-refresh authenticated model catalogs
 atomic update --self                 # Update Atomic only
 atomic update --self --force         # Reinstall Atomic even if current
 atomic update --extension <src>      # Update one package
@@ -559,95 +467,89 @@ atomic config                        # Enable/disable package resources
 ### Modes
 
 | Flag | Description |
-|------|-------------|
-| (default) | Interactive mode (fullscreen TUI) |
-| `-p`, `--print` | Print response and exit |
-| `--mode json` | Output all events as JSON lines (see [docs/json.md](docs/json.md)) |
-| `--mode rpc` | RPC mode for process integration (see [docs/rpc.md](docs/rpc.md)) |
-| `--export <in> [out]` | Export session to HTML |
-
-In print mode, Atomic also reads piped stdin and merges it into the initial prompt:
-
-```bash
-cat README.md | atomic -p "Summarize this text"
-```
+| --- | --- |
+| *(default)* | Interactive fullscreen TUI |
+| `-p`, `--print` | Print response and exit (also merges piped stdin into the initial prompt) |
+| `--mode json` | Stream events as JSON lines ([docs/json.md](docs/json.md)) |
+| `--mode rpc` | JSON-RPC over stdin/stdout ([docs/rpc.md](docs/rpc.md)) |
+| `--export <in> [out]` | Export a session to HTML |
 
 ### Model Options
 
 | Option | Description |
-|--------|-------------|
-| `--provider <name>` | Provider (anthropic, openai, google, etc.) |
-| `--model <pattern>` | Model pattern or ID (supports `provider/id` and optional `:<thinking>`) |
-| `--api-key <key>` | API key (overrides env vars) |
-| `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (subject to model capabilities) |
-| `--models <patterns>` | Comma-separated patterns for CTRL+P cycling |
+| --- | --- |
+| `--provider <name>` | Select provider (`anthropic`, `openai`, `google`, etc.) |
+| `--model <pattern>` | Model ID or pattern (supports `provider/id` and `:<thinking>`) |
+| `--api-key <key>` | API key override |
+| `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `--models <patterns>` | Comma-separated patterns for `Ctrl+P` cycling |
 | `--list-models [search]` | List available models |
 
 ### Session Options
 
 | Option | Description |
-|--------|-------------|
-| `-c`, `--continue` | Continue most recent session |
-| `-r`, `--resume` | Browse and select session |
-| `--session <id\|prefix>` | Use an exact ID or unique 8-hex UUID prefix |
-| `--import <file>` | Import a format-4 JSONL export into session storage |
-| `--session-id <id>` | Use an exact project session ID; warn and create it when missing |
-| `--fork <id\|prefix>` | Fork an exact ID or unique 8-hex UUID prefix |
+| --- | --- |
+| `-c`, `--continue` | Continue the most recent session |
+| `-r`, `--resume` | Browse and pick a past session |
+| `--session <id\|prefix>` | Open by exact ID or unique 8-hex UUID prefix |
+| `--import <file>` | Import a format-4 JSONL export into storage |
+| `--session-id <id>` | Open or create an exact project session ID |
+| `--fork <id\|prefix>` | Fork by exact ID or unique 8-hex UUID prefix |
 | `--session-dir <dir>` | Custom session storage directory |
-| `--name <name>`, `-n <name>` | Set the session display name |
-| `--no-session` | No resumable session; [released history may use disk](docs/sessions.md) |
+| `--name <name>`, `-n <name>` | Set session display name |
+| `--no-session` | No resumable session ([released history may use disk](docs/sessions.md)) |
 
 ### Tool Options
 
 | Option | Description |
-|--------|-------------|
-| `--tools <list>`, `-t <list>` | Allowlist specific tool names across built-in, extension, and custom tools; mandatory ordinary `intercom` remains available |
-| `--exclude-tools <list>`, `-xt <list>` | Denylist specific built-in, extension, and custom tools; mandatory ordinary `intercom` cannot be excluded |
-| `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
-| `--no-tools`, `-nt` | Disable every tool except mandatory ordinary `intercom` |
+| --- | --- |
+| `--tools <list>`, `-t <list>` | Allowlist tool names (built-in, extension, custom); ordinary `intercom` remains available |
+| `--exclude-tools <list>`, `-xt <list>` | Denylist tool names; ordinary `intercom` cannot be excluded |
+| `--no-builtin-tools`, `-nbt` | Disable built-in tools while keeping extension/custom tools |
+| `--no-tools`, `-nt` | Disable all tools except ordinary `intercom` |
 
-Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. `edit` applies exact-text replacements and `write` replaces whole files; neither requires an earlier `read`. Archive selectors are Bun-native, and internal-resource selectors use the session router when available. Use `--exclude-tools` to disable one or more tools while leaving the rest available.
+Default built-in tools: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, `codemode`, plus `powershell` on native Windows when available. See [docs/tools.md](docs/tools.md).
 
 ### Project Trust Options
 
 | Option | Description |
-|--------|-------------|
-| `--approve`, `-a` | Trust project-local files/resources for this run |
-| `--no-approve`, `-na` | Ignore project-local files/resources for this run |
+| --- | --- |
+| `--approve`, `-a` | Trust project-local resources for this run |
+| `--no-approve`, `-na` | Ignore project-local resources for this run |
 
-Project trust gates `.atomic`/legacy `.pi` project resources, project package settings, project-local context files, and `.agents/skills` discovered from the project tree. Saved trust decisions can be managed with `/trust`; see [docs/security.md](docs/security.md).
+Project trust gates `.atomic`/`.pi` resources, project settings, project context files, and project `.agents/skills`. Manage saved decisions with `/trust`; see [docs/security.md](docs/security.md).
 
 ### Resource Options
 
 | Option | Description |
-|--------|-------------|
+| --- | --- |
 | `-e`, `--extension <source>` | Load extension from path, npm, or git (repeatable) |
-| `--no-extensions`, `-ne` | Disable optional extension discovery; mandatory bundled Intercom remains loaded |
+| `--no-extensions`, `-ne` | Disable optional extension discovery (Intercom stays loaded) |
 | `--skill <path>` | Load skill (repeatable) |
 | `--no-skills`, `-ns` | Disable skill discovery |
 | `--prompt-template <path>` | Load prompt template (repeatable) |
 | `--no-prompt-templates`, `-np` | Disable prompt template discovery |
 | `--theme <path>` | Load theme (repeatable) |
 | `--no-themes` | Disable theme discovery |
-| `--no-context-files`, `-nc` | Disable context-file discovery and loading |
+| `--no-context-files`, `-nc` | Disable context-file loading |
 
-Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings.json (e.g., `--no-extensions -e ./my-ext.ts`).
+Combine `--no-*` with explicit flags to override `settings.json` (for example `--no-extensions -e ./my-ext.ts`).
 
 ### Other Options
 
 | Option | Description |
-|--------|-------------|
-| `--system-prompt <text>` | Replace default prompt (context files and skills still appended) |
+| --- | --- |
+| `--system-prompt <text>` | Replace default system prompt (context files and skills still append) |
 | `--append-system-prompt <text>` | Append to system prompt |
-| `--offline` | Disable startup network operations, including update checks, package updates, and telemetry |
+| `--offline` | Disable startup network operations (update checks, package updates, telemetry) |
 | `--verbose` | Force verbose startup |
-| `--` | Stop option parsing; remaining arguments are prompts or `@file` inputs |
+| `--` | Stop option parsing; remaining args are prompts or `@file` inputs |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
 
 ### File Arguments
 
-Prefix files with `@` to include in the message:
+Prefix files with `@` to attach them to the prompt:
 
 ```bash
 atomic @prompt.md "Answer this"
@@ -658,63 +560,41 @@ atomic @code.ts @test.ts "Review these files"
 ### Examples
 
 ```bash
-# Interactive with initial prompt
-atomic "List all .ts files in src/"
-
-# Non-interactive
-atomic -p "Summarize this codebase"
-
-# Prompt beginning with a dash
-atomic -p -- "- Summarize these points"
-
-# Non-interactive with piped stdin
-cat README.md | atomic -p "Summarize this text"
-
-# Different model
-atomic --provider openai --model gpt-4o "Help me refactor"
-
-# Model with provider prefix (no --provider needed)
-atomic --model openai/gpt-4o "Help me refactor"
-
-# Model with thinking level shorthand
-atomic --model sonnet:high "Solve this complex problem"
-
-# Limit model cycling
-atomic --models "claude-*,gpt-4o"
-
-# Read-only mode
-atomic --tools read,search,find,ls -p "Review the code"
-
-# High thinking level
-atomic --thinking high "Solve this complex problem"
+atomic "List all .ts files in src/"                     # Interactive with initial prompt
+atomic -p "Summarize this codebase"                     # Non-interactive print mode
+atomic -p -- "- Summarize these points"                 # Prompt starting with a dash
+cat README.md | atomic -p "Summarize this text"         # Piped stdin
+atomic --model openai/gpt-4o "Help me refactor"         # Provider/model prefix
+atomic --model sonnet:high "Solve this complex problem" # Thinking level shorthand
+atomic --models "claude-*,gpt-4o"                       # Scope Ctrl+P cycling
+atomic --tools read,search,find -p "Review the code"    # Read-only mode
+atomic --thinking high "Solve this complex problem"     # Explicit thinking level
 ```
 
 ### Environment Variables
 
 | Variable | Description |
-|----------|-------------|
-| `AI_AGENT` | Set to `atomic` by Atomic's CLI, RPC, and compiled binary entry points, and in every Atomic-owned child-process environment, so generic tooling can attribute those processes correctly. Child environments force this value even when the caller supplies another value; the caller's environment object is not mutated. |
-| `ATOMIC_CODING_AGENT_DIR` | Override config directory (default: `~/.atomic/agent`; `PI_CODING_AGENT_DIR` is a legacy alias) |
-| `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory (overridden by `--session-dir`; `PI_CODING_AGENT_SESSION_DIR` is a legacy alias) |
-| `ATOMIC_PACKAGE_DIR` | Override package directory (useful for Nix/Guix where store paths tokenize poorly; `PI_PACKAGE_DIR` is a legacy alias) |
-| `ATOMIC_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry (`PI_OFFLINE` is a legacy alias) |
-| `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. `PI_SKIP_VERSION_CHECK` is a legacy alias. |
-| `ATOMIC_TELEMETRY` | Override version-adoption pings. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable. This does not disable update checks (`PI_TELEMETRY` is a legacy alias). |
-| `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and use a static working identity |
-| `ATOMIC_NO_PTY` | Set to `1` to disable PTY use for bash commands (`PI_NO_PTY` is a legacy alias) |
-| `NODE_COMPILE_CACHE` | Override Node's persistent compile-cache directory; set `NODE_DISABLE_COMPILE_CACHE=1` to opt out |
-| `PI_CACHE_RETENTION` | Provider/upstream-specific prompt-cache retention knob; set to `long` where supported. This is not an `ATOMIC_*` alias and has no Atomic-prefixed equivalent. |
-| `VISUAL`, `EDITOR` | External editor for CTRL+G |
+| --- | --- |
+| `AI_AGENT` | Set to `atomic` by CLI, RPC, binary entry points, and Atomic-owned child processes so tooling can identify them (caller env object is not mutated). |
+| `ATOMIC_CODING_AGENT_DIR` | Override config directory (default `~/.atomic/agent`; legacy `PI_CODING_AGENT_DIR`). |
+| `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session directory (overridden by `--session-dir`; legacy `PI_CODING_AGENT_SESSION_DIR`). |
+| `ATOMIC_PACKAGE_DIR` | Override package directory (for Nix/Guix store paths; legacy `PI_PACKAGE_DIR`). |
+| `ATOMIC_OFFLINE` | Disable startup network calls (legacy `PI_OFFLINE`). |
+| `ATOMIC_SKIP_VERSION_CHECK` | Skip startup version check (legacy `PI_SKIP_VERSION_CHECK`). |
+| `ATOMIC_TELEMETRY` | Override version-adoption pings (`1`/`true`/`yes` or `0`/`false`/`no`; legacy `PI_TELEMETRY`). |
+| `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup animations and use a static working indicator. |
+| `ATOMIC_NO_PTY` | Set to `1` to disable PTY allocation for bash commands (legacy `PI_NO_PTY`). |
+| `NODE_COMPILE_CACHE` | Override Node's compile-cache directory (`NODE_DISABLE_COMPILE_CACHE=1` disables it). |
+| `PI_CACHE_RETENTION` | Provider prompt-cache retention knob (`long` where supported; no `ATOMIC_*` alias). |
+| `VISUAL`, `EDITOR` | External editor opened by `Ctrl+G`. |
 
-Bash and PowerShell commands receive an execution-time session snapshot through `ATOMIC_SESSION_ID`, `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL`. The `PI_SESSION_ID`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL` aliases carry identical values. Session file variables are not exposed. Unrelated inherited or caller-supplied environment variables are preserved.
+Shell commands (`bash` and `powershell`) receive an execution-time session snapshot in `ATOMIC_SESSION_ID`, `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL` (with matching `PI_*` aliases). Session file paths are not exposed, and other environment variables pass through unchanged.
 
 ---
 
 ## Contributing & Development
 
-See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines and [docs/development.md](docs/development.md) for setup, forking, and debugging.
-
----
+See [CONTRIBUTING.md](../../CONTRIBUTING.md) and [docs/development.md](docs/development.md).
 
 ## License
 
