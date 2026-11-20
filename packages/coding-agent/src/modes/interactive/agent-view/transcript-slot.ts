@@ -12,6 +12,7 @@ import { type InteractiveModeBase, isFullscreenViewportAction } from "../interac
 import { theme } from "../theme/theme.js";
 import type { AgentViewSwitcher } from "./agent-view-switcher.ts";
 import type { AgentViewPort } from "./contracts.ts";
+import { setViewedNoticeSink } from "./viewed-notices.ts";
 
 /** Rows the prompt, footer and panel take below the transcript before the first frame says how many they take. */
 const ESTIMATED_DOCK_ROWS = 10;
@@ -128,8 +129,8 @@ export function transcriptSlotRows(mode: InteractiveModeBase): number {
 
 /**
  * Draw the viewed subagent's transcript where the main transcript is, and main's again when main is shown. While a
- * subagent is shown, the mode's status, warning and error notices are drawn at the bottom of its transcript.
- * Answers the uninstall.
+ * subagent is shown, the mode's status, warning and error notices, which stay main's, are also drawn at the bottom of
+ * its transcript, as are the notices about it alone (`notifyViewed`). Answers the uninstall.
  */
 export function installTranscriptSlot(mode: InteractiveModeBase, switcher: AgentViewSwitcher): () => void {
 	const slot = new AgentTranscriptSlot(() => Math.max(1, mode.ui.terminal.rows - ESTIMATED_DOCK_ROWS));
@@ -200,40 +201,36 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 		return { consume: true };
 	});
 
-	// Notices and the jump to the latest row act on what is shown; while main is shown they are main's, unchanged.
+	// The jump to the latest row acts on what is shown.
 	const own = mode as unknown as Record<string, unknown>;
 	const overridden = ["showStatus", "showWarning", "showError", "jumpToTranscriptEnd"] as const;
 	const ownBefore = new Map(
 		overridden.filter((name) => Object.hasOwn(mode, name)).map((name) => [name, own[name]] as const),
 	);
+	const mirror = (kind: NoticeKind, text: string) => {
+		slot.addNotice(kind, text);
+		mode.ui.requestRender();
+	};
+	// Notices about the shown subagent alone (a refused command, its pause failing) are drawn under it only.
+	setViewedNoticeSink(mode, { show: (text, kind) => mirror(kind === "info" ? "status" : kind, text) });
 	const showStatus = mode.showStatus;
 	const showWarning = mode.showWarning;
 	const showError = mode.showError;
 	const jumpToTranscriptEnd = mode.jumpToTranscriptEnd;
+	// Main's notices stay main's, rows in its transcript as before; while a subagent is shown they are also drawn under
+	// its transcript, where the reader is looking.
 	own.showStatus = function (this: InteractiveModeBase, message: string, ...rest: unknown[]): void {
-		if (!agentShown()) {
-			(showStatus as (...args: unknown[]) => void).call(this, message, ...rest);
-			return;
-		}
-		slot.addNotice("status", message);
-		mode.ui.requestRender();
+		(showStatus as (...args: unknown[]) => void).call(this, message, ...rest);
+		if (agentShown()) mirror("status", message);
 	};
 	own.showWarning = function (this: InteractiveModeBase, message: string, ...rest: unknown[]): void {
+		(showWarning as (...args: unknown[]) => void).call(this, message, ...rest);
 		const target = rest[0];
-		if (!agentShown() || (target !== undefined && target !== mode.chatContainer)) {
-			(showWarning as (...args: unknown[]) => void).call(this, message, ...rest);
-			return;
-		}
-		slot.addNotice("warning", message);
-		mode.ui.requestRender();
+		if (agentShown() && (target === undefined || target === mode.chatContainer)) mirror("warning", message);
 	};
 	own.showError = function (this: InteractiveModeBase, message: string): void {
-		if (!agentShown()) {
-			showError.call(this, message);
-			return;
-		}
-		slot.addNotice("error", message);
-		mode.ui.requestRender();
+		showError.call(this, message);
+		if (agentShown()) mirror("error", message);
 	};
 	own.jumpToTranscriptEnd = function (this: InteractiveModeBase): void {
 		const viewed = switcher.viewed;
@@ -246,6 +243,7 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 	};
 
 	return () => {
+		setViewedNoticeSink(mode, undefined);
 		offChange();
 		offRenderer();
 		removeInput();
