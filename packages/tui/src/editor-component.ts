@@ -1,4 +1,5 @@
 import type { AutocompleteProvider } from "./autocomplete.ts";
+import type { EditorDraft } from "./components/editor.ts";
 import type { Component } from "./tui.ts";
 
 /**
@@ -41,6 +42,12 @@ export interface EditorComponent extends Component {
 
 	getHistory?(): readonly string[];
 
+	/** Replace the up/down history, newest first as `getHistory` returns it, without changing the text */
+	setHistory?(newestFirst: readonly string[]): void;
+
+	/** Add entries older than the whole history behind it, newest first, without ending history browsing */
+	appendOlderHistory?(newestFirst: readonly string[]): void;
+
 	// =========================================================================
 	// Advanced text manipulation (optional)
 	// =========================================================================
@@ -53,6 +60,12 @@ export interface EditorComponent extends Component {
 	 * Falls back to getText() if not implemented.
 	 */
 	getExpandedText?(): string;
+
+	/** The prompt's whole state (text, cursor, pastes, undo, Up-history browsing), detached from later editing. */
+	snapshotDraft?(): EditorDraft;
+
+	/** Put back a prompt state {@link snapshotDraft} took. */
+	restoreDraft?(draft: EditorDraft): void;
 
 	// =========================================================================
 	// Autocomplete support (optional)

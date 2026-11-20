@@ -1,3 +1,4 @@
+import { viewedAgentPromptHistory } from "./components/agent-prompt-history.ts";
 import {
 	PromptHistorySelectorComponent,
 	promptHistoryEntries,
@@ -6,7 +7,13 @@ import {
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 
 InteractiveModeBase.prototype.showPromptHistorySearch = function (this: InteractiveModeBase): void {
-	const entries = promptHistoryEntries(sessionPromptsFromEntries(this.session.sessionManager.getEntries()));
+	// While the prompt writes to a viewed agent, the search is over what Up recalls for it, never main's prompts.
+	const viewed = viewedAgentPromptHistory(this.defaultEditor);
+	const entries = promptHistoryEntries(
+		viewed === undefined
+			? sessionPromptsFromEntries(this.session.sessionManager.getEntries())
+			: [...viewed].reverse().map((text) => ({ text })),
+	);
 	this.showSelector((done) => {
 		let settled = false;
 		const selector = new PromptHistorySelectorComponent(entries, {
