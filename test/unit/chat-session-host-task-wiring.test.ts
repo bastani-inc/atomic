@@ -618,14 +618,14 @@ test("a chat's footer follows the session it is given, and counts the tasks of i
 		const rows = (footer: string) => footer.split("\n").map((line) => line.replace(/ {2,}/g, "  ").trimEnd());
 		assert.deepEqual(rows(text(withSource.renderFooter(80))), [
 			`first-model • ${BOX_FOOTER_CWD}`,
-			"  ∀ worker  Footer count  running",
+			"  ◯ worker  Footer count  running",
 		]);
 		for (const host of [bare, empty])
 			assert.deepEqual(text(host.renderFooter(80)).split("\n"), [`first-model • ${BOX_FOOTER_CWD}`]);
 		current = boxSession("second-model");
 		assert.deepEqual(rows(text(withSource.renderFooter(80))), [
 			`second-model • ${BOX_FOOTER_CWD}`,
-			"  ∀ worker  Footer count  running",
+			"  ◯ worker  Footer count  running",
 		]);
 	} finally {
 		withSource.dispose();
@@ -650,7 +650,7 @@ test("a chat that has an agent session counts the tasks of that session's own st
 		}),
 	);
 	try {
-		assert.match(text(host.renderFooter(80)), /∀ worker {2}Owned by the session/);
+		assert.match(text(host.renderFooter(80)), /◯ worker {2}Owned by the session/);
 	} finally {
 		host.dispose();
 		await owned.dispose();

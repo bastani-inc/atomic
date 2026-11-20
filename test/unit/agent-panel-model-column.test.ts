@@ -93,9 +93,9 @@ beforeAll(() => {
 
 test("a subagent row shows the model it runs on and its reasoning level after its name, in a column aligned across rows", () => {
 	assert.deepEqual(lines([debugger_, worker, deployer], 160), [
-		row(`  ∀ debugger  github-copilot/claude-opus-5.5 medium  ${TASK}`, "16m · ↓ 437.3k tokens", 160),
-		row("  ∀ worker    faux/faux-2 low                        fix shipping batches", "41m · ↓ 96.1k tokens", 160),
-		row("  ∀ deployer                                         build", "3m", 160),
+		row(`  ◯ debugger  github-copilot/claude-opus-5.5 medium  ${TASK}`, "16m · ↓ 437.3k tokens", 160),
+		row("  ◯ worker    faux/faux-2 low                        fix shipping batches", "41m · ↓ 96.1k tokens", 160),
+		row("  ◯ deployer                                         build", "3m", 160),
 	]);
 });
 
@@ -109,8 +109,8 @@ test("a row whose model has no reasoning level shows the model alone, and a leve
 			120,
 		),
 		[
-			row("  ∀ worker    faux/plain       fix shipping batches", "41m · ↓ 96.1k tokens", 120),
-			row("  ∀ deployer  faux/faux-2 off  build", "3m", 120),
+			row("  ◯ worker    faux/plain       fix shipping batches", "41m · ↓ 96.1k tokens", 120),
+			row("  ◯ deployer  faux/faux-2 off  build", "3m", 120),
 		],
 	);
 });
@@ -122,7 +122,7 @@ test("as the row narrows the task truncates first, then below 100 columns the mo
 		const room = width - 53 - "16m · ↓ 437.3k tokens".length - 2;
 		assert.equal(
 			first,
-			row(`  ∀ debugger  github-copilot/claude-opus-5.5 medium  ${cut(TASK, room)}`, "16m · ↓ 437.3k tokens", width),
+			row(`  ◯ debugger  github-copilot/claude-opus-5.5 medium  ${cut(TASK, room)}`, "16m · ↓ 437.3k tokens", width),
 			`width ${width}`,
 		);
 	}
@@ -190,7 +190,7 @@ test("the model column is dropped when it would leave a row without its task or 
 	const queued: AgentPanelRow = { ...worker, queued: 3 };
 	assert.match(
 		lines([debugger_, queued], 100)[1]!,
-		/^ {2}∀ worker {4}faux\/faux-2 low {24}fix shippin\.\.\. {2}41m · ↓ 96\.1k tokens · 3 queued$/,
+		/^ {2}◯ worker {4}faux\/faux-2 low {24}fix shippin\.\.\. {2}41m · ↓ 96\.1k tokens · 3 queued$/,
 	);
 });
 
@@ -204,7 +204,7 @@ test("a long model label keeps its reasoning level and is cut in its id", () => 
 	assert.equal(
 		line,
 		row(
-			`  ∀ worker  ${cut("openrouter/anthropic/claude-3.7-sonnet-20250219-extended", 34)} xhigh  fix shipping batches`,
+			`  ◯ worker  ${cut("openrouter/anthropic/claude-3.7-sonnet-20250219-extended", 34)} xhigh  fix shipping batches`,
 			"41m · ↓ 96.1k tokens",
 			160,
 		),
@@ -400,8 +400,8 @@ test("an extension row whose own model or thinking fields are not text keeps its
 			],
 		);
 		const shown = lines(items.slice(1), 120);
-		assert.match(shown[0]!, /^ {2}∀ thinking-flag {20}deploy/);
-		assert.match(shown[3]!, /^ {2}∀ named {10}local\/runner low {2}deploy/);
+		assert.match(shown[0]!, /^ {2}◯ thinking-flag {20}deploy/);
+		assert.match(shown[3]!, /^ {2}◯ named {10}local\/runner low {2}deploy/);
 	} finally {
 		hub.dispose();
 	}

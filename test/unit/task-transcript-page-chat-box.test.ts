@@ -50,7 +50,7 @@ const text = (rows: readonly string[]) => plain(rows).join("\n");
  * A chat's own active tasks below its footer: subagents as agent-panel rows (#5224), and its running shells counted on
  * one line, as the main chat's hint counts them.
  */
-const TASK_ROW = /^ {2}(?:∀ |\d+ shells?\b)/;
+const TASK_ROW = /^ {2}(?:◯ |\d+ shells?\b)/;
 const taskRows = (rows: readonly string[]) => plain(rows).filter((row) => TASK_ROW.test(row));
 
 /** The attached composer's top rule: the main composer's rule, ending in its label and one rule glyph (#5224). */
@@ -820,7 +820,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		);
 		const [only, ...rest] = plain(page.render(80, 1));
 		assert.deepEqual(rest, []);
-		assert.doesNotMatch(only ?? "", /^ {2}∀ /, "one row goes to the list, not the footer");
+		assert.doesNotMatch(only ?? "", /^ {2}◯ /, "one row goes to the list, not the footer");
 		const before = renders;
 		page.handleInput("\x1b[B");
 		assert.ok(renders > before, "a key on the list repaints");

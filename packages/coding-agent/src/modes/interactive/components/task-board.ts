@@ -7,7 +7,7 @@ import { isTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_MODEL_MIN_WIDTH, formatPanelElapsed, panelModelText } from "./agent-panel.ts";
 import type { ModelCellReport } from "./model-column.ts";
-import { WAITING_MARKER } from "./notice-line.ts";
+import { DONE_TASK_MARKER, RUNNING_TASK_MARKER, STOPPED_TASK_MARKER, WAITING_MARKER } from "./notice-line.ts";
 import { taskDisplayText, taskLabel, taskState } from "./task-row.js";
 
 export type TaskBoardState = AgentPanelItem["state"];
@@ -116,15 +116,15 @@ export function stateGlyph(state: TaskBoardState, kind?: TaskBoardItem["kind"] |
 		case "waiting":
 			return WAITING_MARKER;
 		case "done":
-			return { glyph: "✓", color: "success" };
+			return DONE_TASK_MARKER;
 		case "failed":
 			return { glyph: "✗", color: "error" };
 		case "paused":
 			return { glyph: "‖", color: "muted" };
 		case "stopped":
-			return { glyph: "◼", color: "muted" };
+			return STOPPED_TASK_MARKER;
 		default:
-			return { glyph: kind === "shell" || kind === "command" ? "⧗" : "∀", color: "accent" };
+			return kind === "shell" || kind === "command" ? { glyph: "⧗", color: "accent" } : RUNNING_TASK_MARKER;
 	}
 }
 

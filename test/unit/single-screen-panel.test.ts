@@ -124,7 +124,7 @@ test("Enter on a subagent row of the focused panel shows that subagent on the sc
 	});
 	await showAgentPanel(session, ui);
 	// The newest subagent leads the panel, and ↓ focused it.
-	assert.match(mounts[0]![1] ?? "", /^❯ .* explorer /, mounts[0]!.join("\n"));
+	assert.match(mounts[0]![1] ?? "", /^∀ .* explorer /, mounts[0]!.join("\n"));
 	assert.deepEqual(bridge.requests, ["a2"]);
 	assert.equal(mounts.length, 1, "no subagent page is mounted after the panel");
 });
@@ -152,15 +152,15 @@ function done(task: TaskRecord): TaskRecord {
 	} as TaskRecord;
 }
 
-/** A drawn row as its mark and name: `● w1` for the shown subagent's row, `  w2` for another; other lines as drawn. */
+/**
+ * A drawn row as its mark and name: `● w1` for the shown subagent's row, `◯ w2` for another, `  ⧗ shell` for a nested
+ * shell; other lines as drawn.
+ */
 function rowName(line: string): string {
 	if (/^ {2}(\+\d+|↑ \d+) more$/.test(line)) return line;
-	return `${line.slice(0, 2)}${
-		line
-			.slice(4)
-			.trimStart()
-			.split(/\s{2,}/)[0]
-	}`;
+	const row = line.slice(2);
+	const indent = row.length - row.trimStart().length;
+	return `${row.slice(0, indent)}${row.slice(indent).split(/\s{2,}/)[0]}`;
 }
 
 interface IdleWidget {
@@ -204,11 +204,16 @@ function idlePanel(session: object, inspector?: TaskInspectorUi) {
 	};
 }
 
+/** The subagent row the screen shows: its mark in column 2 is the filled circle (main's own row aside). */
+function isShownRow(line: string): boolean {
+	return line.startsWith("  ● ") && !line.startsWith("  ● main");
+}
+
 test("the shown subagent stays listed once it finished, marked, with main above it; shown main lists nothing finished", () => {
 	const shown = panelSession([done(agent("a1"))], "a1");
 	const lines = idlePanel(shown.session).lines();
-	assert.equal(lines[0], "  ● main", lines.join("\n"));
-	assert.match(lines[1] ?? "", /^● ✓ worker +job a1 +done$/, lines.join("\n"));
+	assert.equal(lines[0], "  ◯ main", lines.join("\n"));
+	assert.match(lines[1] ?? "", /^ {2}● worker +job a1 +done$/, lines.join("\n"));
 	assert.equal(lines.length, 2, lines.join("\n"));
 
 	const main = panelSession([done(agent("a1"))]);
@@ -220,7 +225,7 @@ test("the panel below the prompt always draws the shown subagent: past its four 
 	const { session } = panelSession(tasks, "a1");
 	const lines = idlePanel(session).lines();
 	// Newest first: w6 w5 w4, then the shown w1 instead of w3; w3 and w2 are the two more.
-	assert.deepEqual(lines.map(rowName), ["  main", "  w6", "  w5", "  w4", "● w1", "  +2 more"], lines.join("\n"));
+	assert.deepEqual(lines.map(rowName), ["◯ main", "◯ w6", "◯ w5", "◯ w4", "● w1", "  +2 more"], lines.join("\n"));
 });
 
 /** A shell the subagent `parent` launched: it names the subagent's task and its session. */
@@ -416,7 +421,7 @@ test("pinned below the prompt, the shown subagent keeps its shells under it, and
 	const tasks = ["a1", "a2", "a3", "a4", "a5", "a6"].map((id) => agent(id, `w${id.slice(1)}`));
 	const { session } = panelSession([...tasks, shellOf("s1", "a1")], "a1");
 	const lines = idlePanel(session).lines();
-	assert.deepEqual(lines.map(rowName), ["  main", "  w6", "  w5", "● w1", "  ⧗ shell", "  +3 more"], lines.join("\n"));
+	assert.deepEqual(lines.map(rowName), ["◯ main", "◯ w6", "◯ w5", "● w1", "  ⧗ shell", "  +3 more"], lines.join("\n"));
 });
 
 test("a dismissed subagent is not kept, even while the screen still shows it", () => {
@@ -433,12 +438,14 @@ test("in the engine, set_viewed_agent marks the shown subagent in its panel, and
 	const context = { session, send: (message: InteractiveEngineMessage) => sent.push(message) } as never;
 	disposers.push(installEngineAgentViewBridge(context));
 	const panel = idlePanel(session);
-	assert.ok(!panel.lines().some((line) => line.startsWith("●")), "main is shown");
+	assert.ok(!panel.lines().some((line) => isShownRow(line)), "main is shown");
+	assert.equal(panel.lines()[0], "  ● main", panel.lines().join("\n"));
 
 	const answer = await handleSetViewedAgent({ id: "v1", type: "set_viewed_agent", taskId: "a1" }, context);
 	assert.equal(answer.success, true);
 	await tick();
-	assert.match(panel.lines().find((line) => line.startsWith("●")) ?? "", /^● \S worker /, panel.lines().join("\n"));
+	assert.match(panel.lines().find((line) => isShownRow(line)) ?? "", /^ {2}● worker /, panel.lines().join("\n"));
+	assert.equal(panel.lines()[0], "  ◯ main", panel.lines().join("\n"));
 
 	const { ui } = hostUi((component) => {
 		component.handleInput(ENTER);
@@ -446,11 +453,11 @@ test("in the engine, set_viewed_agent marks the shown subagent in its panel, and
 	await showAgentPanel(session, ui);
 	// ↓ focused the newest row, explorer; the host decides, so the engine's mark waits for its answer.
 	assert.deepEqual(sent, [{ type: "engine_view_agent", taskId: "a2" }]);
-	assert.match(panel.lines().find((line) => line.startsWith("●")) ?? "", /worker/);
+	assert.match(panel.lines().find((line) => isShownRow(line)) ?? "", /worker/);
 
 	await handleSetViewedAgent({ type: "set_viewed_agent" }, context);
 	await tick();
-	assert.ok(!panel.lines().some((line) => line.startsWith("●")), "main is shown again");
+	assert.ok(!panel.lines().some((line) => isShownRow(line)), "main is shown again");
 });
 
 function waiting(task: TaskRecord): TaskRecord {
@@ -579,9 +586,9 @@ test("a resumed subagent is one row: the mark and its pin follow its latest atte
 	for (const named of ["a1", "a1-r"]) {
 		const { session } = panelSession([first, resumed, ...others], named);
 		const lines = idlePanel(session).lines();
-		const marked = lines.filter((line) => line.startsWith("●"));
+		const marked = lines.filter((line) => isShownRow(line));
 		assert.equal(marked.length, 1, lines.join("\n"));
-		assert.match(marked[0]!, /^● \S worker +job a1-r/, lines.join("\n"));
+		assert.match(marked[0]!, /^ {2}● worker +job a1-r/, lines.join("\n"));
 	}
 });
 
