@@ -1,7 +1,7 @@
 // S-B (prompt) owns this module. C0 stub: the types are the contract; the implementations refuse.
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
-import type { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.ts";
+import type { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
 import type { SteeringTarget } from "../steering-queue-controller.ts";
 import type { AgentSteeringPort, AgentViewStatus } from "./contracts.ts";
 
