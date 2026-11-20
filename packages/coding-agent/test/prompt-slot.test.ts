@@ -255,3 +255,24 @@ test("a hold keeps only rows drawn from live content, never held rows or a view 
 	assert.deepEqual(slot.render(40), ["Tasks"]);
 	assert.equal(promptSlotDrewLive(slot), true);
 });
+
+test("a run's working status drawn elsewhere changing leaves a held prompt held, and a later hold still takes", () => {
+	const { slot, screen } = slotWithPrompt();
+	holdPromptSlot(slot);
+	screen.statusChanged();
+	assert.equal(screen.region, "prompt");
+	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
+	screen.end();
+	slot.render(40);
+	screen.statusChanged();
+	holdPromptSlot(slot);
+	assert.equal(screen.region, "prompt", "the status changed since the slot drew, but not in its rows");
+});
+
+test("a run's working status changing shows a held dock live", () => {
+	const screen = new ScreenHold();
+	let ended = 0;
+	screen.begin("dock", () => () => ended++);
+	screen.statusChanged();
+	assert.equal(ended, 1);
+});

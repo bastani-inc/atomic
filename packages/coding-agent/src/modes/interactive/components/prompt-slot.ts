@@ -116,7 +116,10 @@ export class PromptSlot extends Container {
 		this.screen = screen;
 	}
 
-	/** Whether the last render drew live content that is still current (`promptSlotDrewLive`). */
+	/**
+	 * Whether the last render drew live content that is still current (`promptSlotDrewLive`): what a held dock, which
+	 * has the status area in it too, may keep.
+	 */
 	get drewLive(): boolean {
 		const drawn = this.drawn;
 		return (
@@ -124,9 +127,13 @@ export class PromptSlot extends Container {
 		);
 	}
 
-	/** Whether a hold may keep what the last render drew: current live content, with no run's working status in it. */
+	/**
+	 * Whether a hold may keep what the last render drew: live content of the children the slot has now, with no run's
+	 * working status in it. A status drawn elsewhere on the screen is not in these rows.
+	 */
 	private mayHold(): boolean {
-		return this.drewLive && this.drawn?.runStatus === false && !this.showsRunStatus();
+		const drawn = this.drawn;
+		return drawn?.live === true && drawn.generation === this.generation && !drawn.runStatus && !this.showsRunStatus();
 	}
 
 	override addChild(component: Component): void {
@@ -181,7 +188,6 @@ export class PromptSlot extends Container {
 		} else if (
 			previous?.live === true &&
 			!previous.runStatus &&
-			previous.statusEpoch === this.screen.statusEpoch &&
 			previous.width === width &&
 			previous.generation !== this.generation &&
 			this.children.some(awaitsFirstContent) &&

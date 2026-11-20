@@ -38,7 +38,7 @@ export class ScreenHold {
 	private state: ScreenHoldState = { kind: "live" };
 	private statusChanges = 0;
 
-	/** Counts the changes of a run's working status: rows painted before the latest change show one that is gone. */
+	/** Counts the changes of a run's working status: a dock painted before the latest change shows one that is gone. */
 	get statusEpoch(): number {
 		return this.statusChanges;
 	}
@@ -73,10 +73,13 @@ export class ScreenHold {
 		if (this.state.kind === "held") this.state.end();
 	}
 
-	/** A run's working status started or ended: no part of the screen keeps showing the one it had. */
+	/**
+	 * A run's working status started or ended: a held dock, which has the status area in it, shows it live again. A held
+	 * prompt never has a working status in it (`PromptSlot` does not hold one that draws it), so it stays held.
+	 */
 	statusChanged(): void {
 		this.statusChanges++;
-		this.end();
+		if (this.state.kind === "held" && this.state.region === "dock") this.state.end();
 	}
 
 	/** Input on its way to the screen, before any handler sees it: a key press shows the screen live. */
