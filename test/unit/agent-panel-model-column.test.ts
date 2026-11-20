@@ -29,7 +29,7 @@ const plain: AgentPanelStyle = {
 	warning: (text) => text,
 };
 
-const TASK = "Read /fast/tmp/oop/recovery/model-partner-template.md and do what it says";
+const TASK = "Read docs/model-partner-template.md and do what it says for each package";
 
 const debugger_: AgentPanelRow = {
 	id: "task:debugger",
@@ -247,7 +247,7 @@ test("/tasks agent rows show the same model column, aligned, and drop it below 1
 			wide.join("\n"),
 		);
 		assert.equal(at(wide[0]!), at(wide[1]!), "the model column is aligned");
-		const tasks = wide.map((line) => line.search(/Read \/fast|fix shipping/));
+		const tasks = wide.map((line) => line.search(/Read docs|fix shipping/));
 		assert.equal(tasks[0], tasks[1], "the task column is aligned after it");
 		assert.equal(tasks[0], at(wide[0]!) + "github-copilot/claude-opus-5.5 medium".length + 2);
 		const narrow = board(99);
