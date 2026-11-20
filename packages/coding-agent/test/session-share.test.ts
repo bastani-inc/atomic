@@ -343,6 +343,24 @@ describe("InteractiveMode /share", () => {
 			assert.ok(run.showsPrompt());
 		});
 
+		it("an export whose header is long is uploaded when it holds the session asked for", async () => {
+			const run = share(async (path) => {
+				writeFileSync(path, `${JSON.stringify({ type: "session", cwd: "x".repeat(70_000), id: "A" })}\n{}\n`);
+				return path;
+			});
+			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			run.spawned[0]?.child.emit("close", 0);
+			await vi.waitFor(() => assert.equal(run.spawned.length, 2), "the gist is created");
+			const gist = run.spawned[1]?.child;
+			gist?.stdout.end("https://gist.github.com/test/1\n");
+			gist?.stderr.end();
+			gist?.emit("close", 0);
+			await run.done;
+			assert.deepEqual(run.errors, []);
+			assert.equal(run.statuses.length, 1);
+			assert.match(run.statuses[0] ?? "", /Share URL/);
+		});
+
 		it("an export that holds another session is not uploaded, even when the session shown is the one asked for", async () => {
 			// The session switched while the export started and switched back before it ended.
 			const run = share(async (path) => {

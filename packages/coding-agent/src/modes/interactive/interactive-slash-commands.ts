@@ -1,3 +1,4 @@
+import { createInterface } from "node:readline";
 import { createCacheMissModelSource, formatCacheWaste } from "../../core/cache-stats.ts";
 import { formatResumeTimings, latestResumeTimings } from "../../core/resume/timings.ts";
 import {
@@ -266,15 +267,19 @@ function stopGh(child: ReturnType<typeof spawn>): void {
 
 /** The session id in the header, the first line, of the exported session file `file`. */
 async function exportedSessionId(file: string): Promise<string | undefined> {
-	const handle = await fs.promises.open(file, "r");
+	const input = fs.createReadStream(file, { encoding: "utf8" });
+	const lines = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
 	try {
-		const { buffer, bytesRead } = await handle.read(Buffer.alloc(16_384), 0, 16_384, 0);
-		const header = JSON.parse(buffer.toString("utf8", 0, bytesRead).split("\n", 1)[0] ?? "") as { id?: unknown };
-		return typeof header.id === "string" ? header.id : undefined;
+		for await (const line of lines) {
+			const header = JSON.parse(line) as { id?: unknown };
+			return typeof header.id === "string" ? header.id : undefined;
+		}
+		return undefined;
 	} catch {
 		return undefined;
 	} finally {
-		await handle.close();
+		lines.close();
+		input.destroy();
 	}
 }
 
