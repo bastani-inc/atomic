@@ -1,11 +1,11 @@
 import type { TaskId } from "../../src/core/tasks/contracts.js";
-import type { QueuedTaskMessages } from "../../src/core/tasks/supervisor.js";
 import type { TaskViewResult } from "../../src/core/tasks/task-view-source.js";
 import type {
 	AgentTranscriptComponent,
 	AgentViewCommands,
 	AgentViewPort,
 	AgentViewStatus,
+	PausedTaskMessages,
 } from "../../src/modes/interactive/agent-view/contracts.ts";
 import type { SteeringPromptOptions, SteeringTarget } from "../../src/modes/interactive/steering-queue-controller.ts";
 
@@ -30,7 +30,7 @@ export class FakeAgentViewPort implements AgentViewPort {
 	promptAnswer: (text: string, options?: SteeringPromptOptions) => Promise<void> = async (_text, options) => {
 		options?.preflightResult?.(true, options.streamingBehavior === undefined ? "started" : "queued");
 	};
-	pauseAnswer: TaskViewResult<QueuedTaskMessages> = { ok: true, value: { steering: [], followUp: [] } };
+	pauseAnswer: TaskViewResult<PausedTaskMessages> = { ok: true, value: { steering: [], followUp: [] } };
 	delivered: readonly string[] = [];
 	commandCatalog: AgentViewCommands | undefined;
 	lastMessage: string | undefined;
@@ -88,7 +88,7 @@ export class FakeAgentViewPort implements AgentViewPort {
 		return () => this.listeners.delete(listener);
 	}
 
-	async pause(): Promise<TaskViewResult<QueuedTaskMessages>> {
+	async pause(): Promise<TaskViewResult<PausedTaskMessages>> {
 		this.calls.push({ kind: "pause" });
 		return this.pauseAnswer;
 	}

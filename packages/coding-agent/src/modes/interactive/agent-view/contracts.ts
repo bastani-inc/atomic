@@ -91,12 +91,15 @@ export interface AgentViewCommands {
 	readonly extensionCommands: readonly AgentViewCommand[];
 }
 
+/** What a pause took back from the subagent's queue, and why a restart would not keep the pause, when it would not. */
+export type PausedTaskMessages = QueuedTaskMessages & { readonly warning?: string };
+
 /** The steering half of a port. */
 export interface AgentSteeringPort {
 	/** Where the prompt's messages go: busy, paused and queued follow `status()`; the calls reach the subagent. */
 	readonly steering: SteeringTarget;
 	/** Esc: pause the subagent, answering the messages taken back from its queue, steering first. */
-	pause(): Promise<TaskViewResult<QueuedTaskMessages>>;
+	pause(): Promise<TaskViewResult<PausedTaskMessages>>;
 }
 
 /** One subagent, reachable from the host whether it runs in this process or in the isolated engine. */

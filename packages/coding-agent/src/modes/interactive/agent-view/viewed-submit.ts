@@ -232,6 +232,8 @@ function pauseViewedAgent(mode: InteractiveModeBase, port: AgentViewPort): void 
 					notifyViewed(mode, paused.error.message, "warning");
 					return;
 				}
+				// A pause a restart would not keep says why: under the subagent while it is shown, else in the main chat.
+				if (paused.value.warning !== undefined) notifyViewed(mode, paused.value.warning, "warning");
 				giveBackQueued(mode, port, prompt, paused.value);
 			},
 			(error: unknown) => notifyViewed(mode, errorText(error), "warning"),

@@ -264,9 +264,10 @@ export interface TaskViewSource {
 	/**
 	 * Pauses an agent task, as Esc does in its chat: the messages typed into the chat that are still queued come back,
 	 * in order, for its editor, then its turn ends as {@link interruptTask} ends it. The task stays running, paused,
-	 * and its next message continues it. Absent where a view cannot pause a task.
+	 * and its next message continues it. `warning` says why the pause would not survive a restart, when it would not.
+	 * Absent where a view cannot pause a task.
 	 */
-	pauseTask?(id: TaskId): Promise<TaskViewResult<QueuedTaskMessages>>;
+	pauseTask?(id: TaskId): Promise<TaskViewResult<QueuedTaskMessages & { readonly warning?: string }>>;
 	/**
 	 * Continues an agent task {@link pauseTask} paused, as the user's send does in its chat: its queue is released, so
 	 * the message sent next starts its turn. A no-op on a task that is not paused.

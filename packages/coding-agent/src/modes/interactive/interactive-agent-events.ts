@@ -37,7 +37,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { formatResumeCommand } from "./interactive-mode-helpers.ts";
-import { reconcileQueuedSubmissions } from "./interactive-queueing.ts";
+import { noteSteeringSaved, reconcileQueuedSubmissions } from "./interactive-queueing.ts";
 import {
 	breakMainToolGroup,
 	endMainAssistantMessage,
@@ -490,7 +490,10 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 
 		case "message_end":
 			noteMessageReceipt(this, event);
-			if (event.message.role === "user") break;
+			if (event.message.role === "user") {
+				noteSteeringSaved(this, event.message);
+				break;
+			}
 			this.workingRunMeter.settled(event.message);
 			if (this.streamingComponent && event.message.role === "assistant") {
 				this.streamingMessage = event.message;

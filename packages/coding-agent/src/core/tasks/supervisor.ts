@@ -146,9 +146,10 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	 * Pauses the session's current turn, as Esc does in its chat: the messages typed into the chat that are still
 	 * queued come back, in order, for its editor; the turn ends as {@link interruptTurn} ends it; and the task stays
 	 * running, paused, until its next message (the user's or another agent's) continues it. Anything else queued waits
-	 * for that message. Absent where the task's turn cannot be paused from a view.
+	 * for that message. `warning` says why the pause would not survive a restart, when it would not. Absent where the
+	 * task's turn cannot be paused from a view.
 	 */
-	pauseTurn?(): Promise<QueuedTaskMessages>;
+	pauseTurn?(): Promise<QueuedTaskMessages & { readonly warning?: string }>;
 	/**
 	 * Continues a task {@link pauseTurn} paused, as the user's send does: once its paused run has settled its queue is
 	 * released, without starting a turn, so the message sent next starts it. A no-op on a task that is not paused.

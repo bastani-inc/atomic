@@ -4,9 +4,8 @@
  */
 
 import type { ClearedQueue, PromptDisposition } from "../../core/agent-session-types.js";
-import type { QueuedTaskMessages } from "../../core/tasks/supervisor.js";
 import type { TaskViewResult } from "../../core/tasks/task-view-source.js";
-import type { AgentViewCommands, AgentViewStatus } from "../interactive/agent-view/contracts.ts";
+import type { AgentViewCommands, AgentViewStatus, PausedTaskMessages } from "../interactive/agent-view/contracts.ts";
 import type { SteeringSubmitLane } from "../interactive/steering-queue-controller.ts";
 
 export type AgentViewRpcCommand =
@@ -66,7 +65,7 @@ export type AgentViewRpcResponse =
 			type: "response";
 			command: "agent_view_pause";
 			success: true;
-			data: TaskViewResult<QueuedTaskMessages>;
+			data: TaskViewResult<PausedTaskMessages>;
 	  }
 	| {
 			id?: string;

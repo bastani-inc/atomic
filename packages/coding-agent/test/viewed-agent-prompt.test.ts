@@ -19,6 +19,7 @@ import type { TaskId } from "../src/core/tasks/contracts.js";
 import { InteractiveMode } from "../src/index.js";
 import { takeMovedDraftMark } from "../src/modes/interactive/agent-view/agent-drafts.ts";
 import { attachLostAgentQueueNotices } from "../src/modes/interactive/agent-view/prompt-retarget.ts";
+import { setViewedNoticeSink } from "../src/modes/interactive/agent-view/viewed-notices.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.ts";
 import { stripAnsi } from "../src/utils/ansi.js";
@@ -495,6 +496,25 @@ describe("the main prompt while a subagent is shown", () => {
 			assert.deepEqual(port.calls, [{ kind: "pause" }]);
 			assert.equal(screen.mode.session.queuedMessagesPaused, false);
 			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a pause that a restart would not keep says why",
+		async () => {
+			screen = await mainScreen();
+			const port = worker({ busy: true });
+			port.pauseAnswer = {
+				ok: true,
+				value: { steering: [], followUp: [], warning: "The pause could not be saved; a restart continues worker." },
+			};
+			await view(WORKER);
+			const notices: string[] = [];
+			setViewedNoticeSink(screen.mode, { show: (text) => notices.push(text) });
+			await screen.press(ESC);
+			await until(() => notices.length > 0);
+			assert.deepEqual(notices, ["The pause could not be saved; a restart continues worker."]);
 		},
 		HOST_TIMEOUT_MS,
 	);

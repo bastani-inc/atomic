@@ -6,7 +6,7 @@ import type { QueuedTaskMessages, TaskMessageLane } from "../../../core/tasks/su
 import type { TaskViewResult, TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import type { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
 import type { SteeringLane, SteeringSubmitLane, SteeringTarget } from "../steering-queue-controller.ts";
-import type { AgentSteeringPort, AgentViewStatus } from "./contracts.ts";
+import type { AgentSteeringPort, AgentViewStatus, PausedTaskMessages } from "./contracts.ts";
 
 /** The isolated runtime as the agent-view proxies use it. */
 export type AgentViewRuntime = Pick<
@@ -98,7 +98,7 @@ export async function takeAgentQueue(source: TaskViewSource, taskId: TaskId): Pr
  * Esc: pause the subagent and answer what came back from its queue, steering first. A source that cannot pause ends
  * its turn as an interrupt does, and nothing comes back.
  */
-export async function pauseAgent(source: TaskViewSource, taskId: TaskId): Promise<TaskViewResult<QueuedTaskMessages>> {
+export async function pauseAgent(source: TaskViewSource, taskId: TaskId): Promise<TaskViewResult<PausedTaskMessages>> {
 	const pause = source.pauseTask;
 	if (pause !== undefined) return pause.call(source, taskId);
 	const interrupt = source.interruptTask;
@@ -174,6 +174,6 @@ export function createRemoteAgentSteering(ctx: RemoteAgentContext): AgentSteerin
 	};
 	return {
 		steering,
-		pause: () => runtime.requestAgentView<TaskViewResult<QueuedTaskMessages>>({ type: "agent_view_pause", viewId }),
+		pause: () => runtime.requestAgentView<TaskViewResult<PausedTaskMessages>>({ type: "agent_view_pause", viewId }),
 	};
 }
