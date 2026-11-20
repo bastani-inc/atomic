@@ -2696,11 +2696,30 @@ export class SubagentControlRuntime {
 				if (event.type === "model_fallback_start" && !signals.abort.aborted) {
 					if (!attemptedModels.includes(event.to)) attemptedModels.push(event.to);
 					effectiveModelId = event.to;
+					// The session takes the fallback's level before it says it fell back: report the two together, so no
+					// view pairs the new model with the level the old one ran at.
+					effectiveThinking = thinkingLevelForSession(session) ?? effectiveThinking;
 					progressState.model = event.to;
+					if (effectiveThinking !== undefined) progressState.thinking = effectiveThinking;
 					onModelChange?.(effectiveModelId, effectiveThinking);
 					reportModel();
 					emitProgress(true);
-				} else if (event.type === "thinking_level_changed") {
+				} else if (event.type === "model_changed" && !signals.abort.aborted) {
+					// Every switch of its model, also one no fallback announced (a fallback whose retry was superseded, an
+					// extension's setModel): its task names the model it runs on now.
+					const modelId = `${event.model.provider}/${event.model.id}`;
+					const thinking = thinkingLevelForSession(session) ?? effectiveThinking;
+					if (modelId !== effectiveModelId || thinking !== effectiveThinking) {
+						if (event.source === "fallback" && !attemptedModels.includes(modelId)) attemptedModels.push(modelId);
+						effectiveModelId = modelId;
+						effectiveThinking = thinking;
+						progressState.model = modelId;
+						if (thinking !== undefined) progressState.thinking = thinking;
+						onModelChange?.(effectiveModelId, effectiveThinking);
+						reportModel();
+						emitProgress(true);
+					}
+				} else if (event.type === "thinking_level_changed" && event.level !== effectiveThinking) {
 					effectiveThinking = event.level;
 					progressState.thinking = effectiveThinking;
 					onModelChange?.(effectiveModelId, effectiveThinking);

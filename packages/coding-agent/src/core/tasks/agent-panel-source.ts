@@ -5,6 +5,7 @@ import { waitingReleasedTools, withoutSupersededAttempts } from "./completion.js
 import type { TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.js";
 import {
+	getOwnerTaskSession,
 	getOwnerTaskStore,
 	isTaskTurnInterrupted,
 	taskResumedTurns,
@@ -32,6 +33,13 @@ export interface AgentPanelItem {
 	readonly elapsedMs?: number;
 	readonly elapsedSpan?: TaskRecord["elapsedSpan"];
 	readonly tokens?: number;
+	/**
+	 * The model the row's agent runs on now, as `provider/id`, shown after its name. A subagent's changes as soon as it
+	 * switches model, as on a fallback; once it stops, it is the model its last turn ran on.
+	 */
+	readonly model?: string;
+	/** The reasoning level it runs at, shown after the model. None for a model without reasoning levels. */
+	readonly thinking?: string;
 	readonly progress?: { readonly done: number; readonly total: number };
 	readonly question?: string;
 	readonly choices?: readonly string[];
@@ -310,9 +318,63 @@ const cachedTaskItems = new WeakMap<
 		readonly taskId: string;
 		readonly clocks: TaskElapsedClocks | undefined;
 		readonly interrupted: boolean;
+		/** The reasoning level the record reports; the item shows it only for a model with reasoning levels. */
+		readonly thinking: string | undefined;
 		readonly item: AgentPanelItem;
 	}
 >();
+
+/** What a session's model registry tells about a model: enough to know whether it has reasoning levels. */
+interface ModelReasoningSession {
+	readonly modelRuntime?: {
+		getModel?(provider: string, modelId: string): { readonly reasoning?: boolean } | undefined;
+	};
+}
+
+const MAX_KNOWN_REASONING = 256;
+const knownReasoning = new WeakMap<object, Map<string, boolean>>();
+
+/**
+ * Whether the model registry of the session that owns `owner` (a task record or its owner's clocks) gives `model`
+ * reasoning levels; undefined when that session, or its registry, does not know the model.
+ */
+function modelHasReasoning(owner: object, model: string): boolean | undefined {
+	const runtime = (getOwnerTaskSession(owner) as ModelReasoningSession | undefined)?.modelRuntime;
+	const slash = model.indexOf("/");
+	if (runtime === undefined || typeof runtime.getModel !== "function" || slash <= 0) return undefined;
+	let known = knownReasoning.get(runtime);
+	const cached = known?.get(model);
+	if (cached !== undefined) return cached;
+	let reasoning: boolean | undefined;
+	try {
+		const found = runtime.getModel(model.slice(0, slash), model.slice(slash + 1));
+		reasoning = found === undefined ? undefined : found.reasoning === true;
+	} catch {
+		return undefined;
+	}
+	if (reasoning === undefined) return undefined;
+	if (known === undefined) {
+		known = new Map();
+		knownReasoning.set(runtime, known);
+	} else if (known.size >= MAX_KNOWN_REASONING) known.clear();
+	known.set(model, reasoning);
+	return reasoning;
+}
+
+/**
+ * A subagent's model column (`AgentPanelItem.model` and `thinking`): the model its record says it runs on now, and the
+ * level beside it, as the main footer shows the chat's own: none for a model without reasoning levels. A level for a
+ * model the owner session's registry does not know is shown as reported. A shell has none.
+ */
+export function taskPanelModel(
+	task: Pick<TaskRecord, "kind" | "model" | "thinking">,
+	owner: object = task,
+): { readonly model?: string; readonly thinking?: string } {
+	if (task.kind !== "agent" || task.model === undefined) return {};
+	const thinking =
+		task.thinking === undefined || modelHasReasoning(owner, task.model) === false ? undefined : task.thinking;
+	return thinking === undefined ? { model: task.model } : { model: task.model, thinking };
+}
 const lazyTaskItems = new WeakMap<
 	TaskRecord,
 	{
@@ -382,12 +444,15 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		cached.item.task === title &&
 		cached.item.elapsedMs === task.metrics?.elapsedMs &&
 		cached.item.tokens === task.metrics?.tokenCount &&
+		cached.item.model === (kind === "agent" ? task.model : undefined) &&
+		cached.thinking === task.thinking &&
 		cached.item.question === question &&
 		cached.item.reason === reason &&
 		cached.item.waitingOn === waitingOn &&
 		cached.item.runGeneration === runGeneration
 	)
 		return cached.item;
+	const model = taskPanelModel(task, clocks ?? task);
 	const item: AgentPanelItem = {
 		id: `${taskPrefix}${task.ref.taskId}`,
 		kind,
@@ -397,6 +462,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		...(task.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
 		...(task.elapsedSpan === undefined ? {} : { elapsedSpan: task.elapsedSpan }),
 		...(task.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
+		...model,
 		...(question ? { question } : {}),
 		...(reason === undefined ? {} : { reason }),
 		...(waitingOn === undefined ? {} : { waitingOn }),
@@ -404,7 +470,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 	};
 	if (interrupted) markInterruptedPanelTask(item);
 	if (clocks !== undefined) bindTaskClock(item, clocks);
-	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, interrupted, item });
+	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, interrupted, thinking: task.thinking, item });
 	return item;
 }
 
@@ -435,6 +501,12 @@ export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedCl
 		},
 		get waitingOn() {
 			return taskPanelItem(task, sourceClocks).waitingOn;
+		},
+		get model() {
+			return taskPanelItem(task, sourceClocks).model;
+		},
+		get thinking() {
+			return taskPanelItem(task, sourceClocks).thinking;
 		},
 	};
 	if (interrupted) markInterruptedPanelTask(item);
@@ -791,6 +863,22 @@ function readPanelChoices(value: unknown): string[] | false | undefined {
 	return valid ? choices : false;
 }
 
+/**
+ * An optional text field a row written before it existed may lack, or carry of its own as another kind of value, an
+ * accessor that throws or a strict proxy's missing key: any of those reads as absent, and the row stays as it was.
+ */
+function readOptionalPanelText(item: object, key: "model" | "thinking"): string | undefined {
+	let value: unknown;
+	try {
+		value = (item as Record<string, unknown>)[key];
+	} catch (error) {
+		drainCaught(error);
+		return undefined;
+	}
+	drainThenable(value);
+	return typeof value === "string" ? value : undefined;
+}
+
 function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined {
 	if (drainThenable(raw) || typeof raw !== "object" || raw === null) return undefined;
 	const row = raw as Partial<Record<keyof AgentPanelItem, unknown>>;
@@ -828,6 +916,9 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	drainThenable(endedAt);
 	const runGeneration = row.runGeneration;
 	drainThenable(runGeneration);
+	// Read after every field the panel read before them, so a row written before they existed reads as it did.
+	const model = readOptionalPanelText(row, "model");
+	const thinking = readOptionalPanelText(row, "thinking");
 
 	if (
 		typeof id !== "string" ||
@@ -870,6 +961,8 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	};
 	if (elapsedMs !== undefined) item.elapsedMs = elapsedMs;
 	if (tokens !== undefined) item.tokens = tokens;
+	if (model !== undefined) item.model = model;
+	if (thinking !== undefined) item.thinking = thinking;
 	if (progress !== undefined) item.progress = progress;
 	if (question !== undefined) item.question = question;
 	if (choices !== undefined) item.choices = choices;
