@@ -1,5 +1,5 @@
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.ts";
+import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { setAgentViewBridge } from "./agent-view-bridge.ts";
 import { AgentViewSwitcher } from "./agent-view-switcher.ts";
