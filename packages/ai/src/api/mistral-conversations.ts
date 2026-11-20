@@ -134,7 +134,10 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 	options?: MistralOptions,
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
-	const normalizedContext = resolveRequestTranscript(context, model.compat?.supportsMidConvoSystemMessages);
+	// Mistral rejects a user message directly after a tool message.
+	const normalizedContext = resolveRequestTranscript(context, model.compat?.supportsMidConvoSystemMessages, {
+		userAfterToolResults: false,
+	});
 
 	(async () => {
 		const output = createOutput(model);

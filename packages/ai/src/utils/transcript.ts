@@ -145,7 +145,11 @@ export function resolveTranscript(
  * or after the last one, as a user message of its own. An update never goes inside a tool result.
  * Blocks are only ever added after what an earlier request sent, so its cached prefix stays the same.
  */
-export function appendSystemMessageUpdates(context: TranscriptContext): TranscriptContext {
+export function appendSystemMessageUpdates(
+	context: TranscriptContext,
+	options: SystemMessageUpdateOptions = {},
+): TranscriptContext {
+	const userAfterToolResults = options.userAfterToolResults ?? true;
 	const messages = context.messages;
 	const firstSystem = messages.findIndex(isSystemMessage);
 	const firstInput =
@@ -167,17 +171,19 @@ export function appendSystemMessageUpdates(context: TranscriptContext): Transcri
 	/** Places the pending updates before `next`, the message about to be added, or at the end; returns `next` to add. */
 	const placeUpdates = (next: Message | undefined): Message | undefined => {
 		if (!updates) return next;
+		const last = result.at(-1);
+		// Where no user message may follow tool messages, an update waits for the next user message to lead.
+		if (!userAfterToolResults && last?.role === "toolResult" && next?.role !== "user") return next;
 		const { texts, timestamp } = updates;
 		updates = undefined;
 		// Appended blocks only ever follow blocks an earlier request already sent, so the cached block prefix stays
 		// intact; a leading block goes into a message no request has sent yet.
-		const last = result.at(-1);
 		if (last?.role === "user") {
 			replaceLast({ ...last, content: [...asBlocks(last.content), ...texts] });
 			return next;
 		}
 		// Never inside a tool result, where the model would read it as tool output.
-		if (last?.role === "toolResult") {
+		if (last?.role === "toolResult" && userAfterToolResults) {
 			const update: UserMessage = { role: "user", content: texts, timestamp };
 			afterToolResults.add(update);
 			result.push(update);
@@ -219,6 +225,15 @@ export function appendSystemMessageUpdates(context: TranscriptContext): Transcri
 	return { messages: result } as TranscriptContext;
 }
 
+export interface SystemMessageUpdateOptions {
+	/**
+	 * Whether a user message may directly follow tool results (default true). When false, as on endpoints whose
+	 * templates reject a user message after a tool message, an update after tool results waits and leads the next user
+	 * message instead; it is never put in a tool message, and no assistant message is added to make room for it.
+	 */
+	userAfterToolResults?: boolean;
+}
+
 /** User messages of prompt updates that {@link appendSystemMessageUpdates} placed directly after tool results. */
 const afterToolResults = new WeakSet<Message>();
 
@@ -243,8 +258,9 @@ function asBlocks(content: UserMessage["content"]): Exclude<UserMessage["content
 export function resolveRequestTranscript(
 	context: TranscriptContext,
 	supportsMidConvoSystemMessages: boolean | undefined,
+	options?: SystemMessageUpdateOptions,
 ): TranscriptContext {
-	return supportsMidConvoSystemMessages ? context : appendSystemMessageUpdates(context);
+	return supportsMidConvoSystemMessages ? context : appendSystemMessageUpdates(context, options);
 }
 
 /** Strip executable and display-only fields from a tool before transcript comparison or persistence. */

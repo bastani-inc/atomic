@@ -52,6 +52,8 @@ interface Transport {
 	apiKey?: string;
 	/** The payload field holding the conversation; every other field must not change. */
 	conversation: "messages" | "contents" | "input";
+	/** No user message may follow a tool message, so an update after tool results waits for the next user message. */
+	holdsAfterToolResults?: boolean;
 }
 
 const transports: Transport[] = [
@@ -157,6 +159,26 @@ const transports: Transport[] = [
 		stream: streamMistral as StreamFunction,
 		apiKey: "test-key",
 		conversation: "messages",
+		holdsAfterToolResults: true,
+	},
+	{
+		name: "OpenAI Chat Completions on a host whose template rejects a user message after a tool message",
+		model: {
+			...offline,
+			id: "strict-template-model",
+			name: "Strict template model",
+			api: "openai-completions",
+			provider: "custom-provider",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 100_000,
+			maxTokens: 1_000,
+			compat: { requiresAssistantAfterToolResult: true },
+		},
+		stream: streamCompletions as StreamFunction,
+		apiKey: "test-key",
+		conversation: "messages",
+		holdsAfterToolResults: true,
 	},
 ];
 
@@ -298,13 +320,35 @@ describe("prompt updates keep user and assistant turns alternating, outside tool
 				{ role: "user", content: "steered", timestamp: 8 },
 			];
 			for (const messages of [liveUpdate, toolUpdate, [...toolUpdate, secondUpdate], twoUpdatesThenInput]) {
-				const conversation = (await capture(transport, messages))[transport.conversation] as Array<{ role?: string }>;
+				const conversation = (await capture(transport, messages))[transport.conversation] as Array<{
+					role?: string;
+					parts?: unknown[];
+				}>;
 				const roles = conversation.map((item) => item.role);
-				const adjacent = roles.findIndex((role, index) => role === "user" && roles[index - 1] === "user");
+				// Gemini's own shape for tool results with images is a user turn after the function responses.
+				const adjacent = roles.findIndex(
+					(role, index) =>
+						role === "user" && roles[index - 1] === "user" && !JSON.stringify(conversation[index - 1]).includes("functionResponse"),
+				);
 				expect(adjacent, JSON.stringify(roles)).toBe(-1);
-				expect(JSON.stringify(conversation)).toContain("Current date: 2026-11-20");
 				// The model reads text inside a tool result as tool output, with less authority than a prompt update.
 				for (const result of toolResults(conversation)) expect(JSON.stringify(result)).not.toContain("Current date");
+				if (transport.conversation === "contents") {
+					// Gemini gets the update as a user turn of its own after the function responses' turn.
+					for (const item of conversation)
+						if (JSON.stringify(item).includes("functionResponse"))
+							expect(JSON.stringify(item)).not.toContain("Current date: 2026-11-20");
+				}
+				const held = transport.holdsAfterToolResults && messages.at(-1)?.role === "system";
+				if (held) {
+					expect(JSON.stringify(conversation)).not.toContain("Current date: 2026-11-20");
+					expect(roles.at(-1)).toBe("tool");
+				} else expect(JSON.stringify(conversation)).toContain("Current date: 2026-11-20");
+				if (transport.holdsAfterToolResults && messages === twoUpdatesThenInput) {
+					const next = JSON.stringify(conversation.at(-1));
+					expect(next.indexOf("Current date: 2026-11-20")).toBeGreaterThanOrEqual(0);
+					expect(next.indexOf("Current date: 2026-11-20")).toBeLessThan(next.indexOf("steered"));
+				}
 			}
 		});
 	}
@@ -333,6 +377,11 @@ describe("an update after tool results an earlier request sent, as on a resume a
 			];
 			const before = (await capture(transport, sent))[transport.conversation];
 			const after = (await capture(transport, [...sent, resumeUpdate]))[transport.conversation];
+			if (transport.holdsAfterToolResults) {
+				// It waits for the next user message to lead.
+				expect(JSON.stringify(after)).toBe(JSON.stringify(before));
+				return;
+			}
 			// Only the cache marker, which moves to the newest block on every request, may differ.
 			expect(JSON.stringify(withoutCacheMarkers(toolResults(after)))).toBe(
 				JSON.stringify(withoutCacheMarkers(toolResults(before))),
