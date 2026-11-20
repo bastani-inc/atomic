@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Building the `history://` search index of a long session no longer pauses typing and rendering while the index is written to a slow disk, and it sends fewer statements to the database ([#5666](https://github.com/bastani-inc/atomic/issues/5666))
+
 ## [0.10.0] - 2026-11-20
 
 Codemode and subagents replace workflows, subagents share the main chat screen with its steering and can be resumed by a message, and long sessions keep only their current context in memory.
