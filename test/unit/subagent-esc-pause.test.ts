@@ -92,7 +92,7 @@ async function blockedChild(runId: string) {
 }
 
 test(
-	"Esc pauses a busy subagent: its queued messages come back, and nothing restarts it until the next message, which continues it (EscPausesNotKills, PromptContinues)",
+	"Esc pauses a busy subagent: its queued messages come back, and nothing restarts it until the next message, which continues it",
 	async () => {
 		const child = await blockedChild("esc-pause-typed");
 		try {
@@ -132,6 +132,141 @@ test(
 			child.stop.abort("user");
 			await child.run;
 		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+/** The user message a request ends with, which the model is asked to answer; undefined when it ends otherwise. */
+function askedToAnswer(context: { messages: ReadonlyArray<{ role: string; content: unknown }> }): string | undefined {
+	const last = context.messages.findLast((message) => message.role !== "system");
+	if (last?.role !== "user") return undefined;
+	const content = last.content;
+	if (typeof content === "string") return content;
+	return Array.isArray(content)
+		? content.map((part: { type?: string; text?: string }) => (part.type === "text" ? part.text : "")).join("")
+		: "";
+}
+
+/**
+ * Runs a child that works one step (a tool that runs until `finishStep`), answers `quickReplies` times, then gets a
+ * slow reply whose first token has not arrived when Esc ends the request, then answers the reader's next message.
+ * `asked` records each user message a request asked the model to answer.
+ */
+async function childWithSlowReply(runId: string, quickReplies: number) {
+	const env = await liveChildEnvironment(cleanups);
+	const asked: string[] = [];
+	const slowRequested = Promise.withResolvers<void>();
+	const record = (context: { messages: ReadonlyArray<{ role: string; content: unknown }> }) => {
+		const text = askedToAnswer(context);
+		if (text !== undefined) asked.push(text);
+	};
+	const recorded =
+		(reply: ReturnType<typeof fauxAssistantMessage>) =>
+		(context: { messages: ReadonlyArray<{ role: string; content: unknown }> }) => {
+			record(context);
+			return reply;
+		};
+	env.faux.setResponses([
+		recorded(
+			fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "step" }, { id: `${runId}-step` })], {
+				stopReason: "toolUse",
+			}),
+		),
+		...Array.from({ length: quickReplies }, () => recorded(fauxAssistantMessage("step reported"))),
+		async (context, options) => {
+			record(context);
+			slowRequested.resolve();
+			const signal = options?.signal;
+			if (signal !== undefined && !signal.aborted)
+				await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+			return fauxAssistantMessage("a reply Esc cut off");
+		},
+		recorded(fauxAssistantMessage("answered the next message")),
+	]);
+	let source: TaskTranscriptSource | undefined;
+	const stop = new AbortController();
+	let settled = false;
+	const run = runSingleInProcess(env.root, agent(), "work in steps", {
+		...env.options(runId, {
+			signal: stop.signal,
+			taskExecution: {
+				signal: stop.signal,
+				reportActivity() {},
+				bindTranscript(bound) {
+					if (bound.chatSession !== undefined) source ??= bound;
+				},
+				onExecution() {},
+			},
+		}),
+	}).finally(() => {
+		settled = true;
+	});
+	cleanups.push(() => stop.abort("user"));
+	await until(() => env.answers.length === 1 && source !== undefined, LIVE_CHILD_START_WAIT_MS);
+	return {
+		run,
+		asked,
+		slowRequested: slowRequested.promise,
+		settled: () => settled,
+		source: source!,
+		session: source!.chatSession as unknown as AgentSession,
+		finishStep: () => env.answers[0]!({ content: [{ type: "text", text: "step done" }], details: undefined }),
+	};
+}
+
+/** After Esc: nothing asks the model anything until the reader's next message, which continues the same run. */
+async function assertPausedThenContinued(child: Awaited<ReturnType<typeof childWithSlowReply>>, delivered: string) {
+	await pause(RESTART_WINDOW_MS);
+	assert.deepEqual(child.asked.slice(1), [delivered], "the model was asked once, and nothing asked it again");
+	assert.equal(child.source.isRunning?.(), false, "the paused subagent runs no turn");
+	assert.equal(child.settled(), false, "it is paused, not ended");
+
+	await child.source.resumeTurn!();
+	// No turn pause outlives the continue, or it would keep the next interrupted delivery from its answer.
+	assert.equal(child.session.turnPaused, false, "the continue ends the pause");
+	await child.session.prompt("continue with this", { streamingBehavior: "steer" });
+	const result = await child.run;
+	assert.equal(result.status, "ok");
+	assert.equal(result.finalOutput, "answered the next message");
+	assert.deepEqual(child.asked.slice(1), [delivered, "continue with this"], "the reader's message continues it");
+}
+
+test(
+	"Esc pauses a subagent whose steer was just delivered, before its reply began, with a follow-up queued: the follow-up comes back, the steer is not sent again, and nothing runs until the next message",
+	async () => {
+		const child = await childWithSlowReply("esc-pause-delivered-steer", 0);
+		// Enter on a steer while a step runs; the step ends and the steer is delivered: its request is out.
+		await child.session.prompt("QA", { streamingBehavior: "steer" });
+		child.finishStep();
+		await child.slowRequested;
+		// Alt+Enter on a follow-up, then Esc.
+		await child.session.prompt("LT", { streamingBehavior: "followUp" });
+
+		const taken = await child.source.pauseTurn!();
+
+		assert.deepEqual(
+			{ steering: [...taken.steering], followUp: [...taken.followUp] },
+			{ steering: [], followUp: ["LT"] },
+			"the queued follow-up comes back; the steer the model already received does not",
+		);
+		await assertPausedThenContinued(child, "QA");
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"Esc pauses a subagent whose follow-up was just delivered, before its reply began: the follow-up is not sent again, and nothing runs until the next message",
+	async () => {
+		const child = await childWithSlowReply("esc-pause-delivered-follow-up", 1);
+		// Alt+Enter while a step runs; the subagent would stop after the step, so it takes the follow-up.
+		await child.session.prompt("LT", { streamingBehavior: "followUp" });
+		child.finishStep();
+		await child.slowRequested;
+
+		const taken = await child.source.pauseTurn!();
+
+		assert.deepEqual([...taken.steering, ...taken.followUp], [], "nothing was still queued");
+		await assertPausedThenContinued(child, "LT");
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );

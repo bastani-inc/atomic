@@ -13,6 +13,10 @@ import type {
 } from "openai/resources/chat/completions.js";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import { githubCopilotEmptyResponse, recordGitHubCopilotFailure } from "../providers/github-copilot-errors.ts";
+import {
+	inferGitHubCopilotStopReason,
+	recordGitHubCopilotInferredStopReason,
+} from "../providers/github-copilot-stop-reason.ts";
 import { GitHubCopilotStreamAttempt } from "../providers/github-copilot-stream-attempt.ts";
 import type {
 	AssistantMessage,
@@ -55,9 +59,10 @@ import {
 import { getAtomicEnvValue } from "../utils/provider-env.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
-import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
+import { admitOpenAIRequests, getFetchAdmission, wrapFetchPreservingAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { DoneEventWatch } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
@@ -401,6 +406,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 		const streamAttempt = new GitHubCopilotStreamAttempt();
+		// GitHub Copilot sometimes ends a response stream normally without a finish reason (seen with Gemini models);
+		// whether the stream delivered its final `[DONE]` tells such a response from a stream that was cut off.
+		const doneEvent = model.provider === "github-copilot" ? new DoneEventWatch() : undefined;
 
 		try {
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
@@ -412,13 +420,16 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const retryTransport = ProviderRetryTransport.for(options);
+			const transportFetch = retryTransport?.fetch ?? options?.fetch;
 			const client = createClient(
 				model,
 				normalizedContext,
 				apiKey,
 				options?.headers,
 				options?.identity,
-				retryTransport?.fetch ?? options?.fetch,
+				doneEvent
+					? wrapFetchPreservingAdmission(transportFetch ?? globalThis.fetch, (send) => doneEvent.watch(send))
+					: transportFetch,
 				cacheSessionId,
 				compat,
 				options?.apiKey,
@@ -479,6 +490,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			let thinkingBlock: ThinkingContent | null = null;
 			let opaqueReasoning: { block: ThinkingContent; data: string } | null = null;
 			let hasFinishReason = false;
+			// Set when a finished tool call is not provably complete, which only a finish reason can then vouch for.
+			let incompleteToolCall = false;
 			const toolCallBlocksByIndex = new Map<number, ToolCall>();
 			const toolCallBlocksById = new Map<string, ToolCall>();
 			const toolCallStates = new Map<ToolCall, ToolCallState>();
@@ -513,6 +526,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					const input = toolCallStates.get(block)!.input;
 					toolCallStates.delete(block);
 					if (input.kind === "custom") {
+						// A custom tool's input has no end of its own on this API.
+						incompleteToolCall = true;
 						const delta = closeGrammarToolInputJson(input.buffer, input.property, undefined);
 						if (delta !== undefined) {
 							stream.push({
@@ -524,6 +539,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						}
 					} else {
 						Object.assign(block, input.arguments.finish());
+						// Arguments cut off mid-object do not parse; a call with no arguments has `{}`.
+						if (!block.name || input.arguments.text.trim() === "" || block.argumentsError !== undefined) {
+							incompleteToolCall = true;
+						}
 					}
 					stream.push({
 						type: "toolcall_end",
@@ -775,18 +794,31 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			if (output.stopReason === "aborted") {
 				throw new Error("Request was aborted");
 			}
+			const inferredStopReason =
+				doneEvent?.received && compat.supportsFinishReason && !hasFinishReason
+					? inferGitHubCopilotStopReason(output, !incompleteToolCall)
+					: undefined;
+			if (inferredStopReason) {
+				output.stopReason = inferredStopReason;
+			}
 			if (!hasFinishReason && !compat.supportsFinishReason) {
 				output.stopReason = output.content.some((block) => block.type === "toolCall") ? "toolUse" : "stop";
 			}
 			if (output.stopReason === "error") {
 				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
-			if ((compat.supportsFinishReason && !hasFinishReason) || output.stopReason === "pending") {
+			if (
+				(compat.supportsFinishReason && !hasFinishReason && !inferredStopReason) ||
+				output.stopReason === "pending"
+			) {
 				throw new Error("Stream ended without finish_reason");
 			}
 
 			const emptyResponse = githubCopilotEmptyResponse(output);
 			if (emptyResponse) throw emptyResponse;
+			if (inferredStopReason) {
+				recordGitHubCopilotInferredStopReason(output);
+			}
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
