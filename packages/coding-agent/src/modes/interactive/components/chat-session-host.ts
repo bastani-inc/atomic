@@ -59,6 +59,7 @@ import {
 } from "./chat-session-host-rendering.ts";
 import {
 	disposeChatSession,
+	endHeldChatSessionWorkingLifecycle,
 	isChatSessionBashRunning,
 	isChatSessionStreaming,
 	notifyChatSessionStatus,
@@ -468,6 +469,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		}
 		this.state.liveChat.clearPendingTools();
 		this.state.newMessages.reset();
+		this.state.countedTokensShown = undefined;
 		stopChatSessionWorkingLifecycle(this.state);
 		syncChatSessionAnimationTick(this.state);
 	}
@@ -1026,7 +1028,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		requestSide?: boolean,
 	): void {
 		if (this.state.disposed) return;
-		if (!this.state.workingLifecycleActive) startChatSessionWorkingLifecycle(this.state);
+		endHeldChatSessionWorkingLifecycle(this.state);
+		if (this.state.workingLifecycle.kind === "off") startChatSessionWorkingLifecycle(this.state);
 		if (this.state.workingRunMeter.snapshot() === undefined) {
 			const run = runInProgress(messages, streaming);
 			this.state.workingRunMeter.resume(
