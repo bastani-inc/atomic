@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The working row under the prompt no longer disappears for a moment between two turns of a run (after a tool call, before the next request), so the chat above it no longer jumps down and back up; it stays still until the next turn starts. Subagent chats keep theirs the same way, and a subagent's working line no longer shows a smaller token count for a moment when an answer settles
+- A sent message and the working row under it no longer vanish and reappear for a moment when the engine answers that it started the run before the run's first events arrive, which happened on most first prompts of a session and on some later ones
+
 ## [0.10.0] - 2026-11-20
 
 Codemode and subagents replace workflows, subagents share the main chat screen with its steering and can be resumed by a message, and long sessions keep only their current context in memory.

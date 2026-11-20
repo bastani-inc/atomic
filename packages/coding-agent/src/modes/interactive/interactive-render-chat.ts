@@ -111,6 +111,12 @@ import { followChosenExpansion, SavedPageCallsBuilder } from "./interactive-save
 import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { refreshInteractiveTasks } from "./interactive-task-projection.js";
+import {
+	nextStartedRunEcho,
+	STARTED_RUN_ECHO_SENT,
+	type StartedRunEchoEvent,
+	startedRunEchoEvent,
+} from "./started-run-echo.ts";
 
 function countDroppedThinkingBlocks(message: AssistantMessage): number {
 	return (message.diagnostics ?? []).reduce((count, diagnostic) => {
@@ -445,6 +451,70 @@ InteractiveModeBase.prototype.expectStartedUserInput = function (
 	if (this.userMessagesShownBySession !== shownBefore) this.discardDeferredRenderedUserInput(text);
 	else this.startedDeferredUserInput = text;
 };
+
+/** Follows one sent message's echo through `StartedRunEcho` (see there). */
+export interface StartedRunEchoFollower {
+	/** The session answered the prompt: `started` when it started a run for this message. */
+	answer(started: boolean): void;
+	/** The send ended without a run to wait for (failed, or not sent): stop following, leaving the echo alone. */
+	close(): void;
+}
+
+/**
+ * Follow the echo of `text` from just before it is sent until the run it started shows the message (the echo stays as
+ * that message) or gets past it without one (the echo goes, #5135), whichever order the answer and the run's events
+ * arrive in. A run that settles or loses its engine before it starts drops the echo, and the working row the send
+ * showed when `sendShowsWorkingRow`, as the answer alone used to.
+ */
+export function followStartedRunEcho(
+	mode: InteractiveModeBase,
+	text: string,
+	options: { readonly sendShowsWorkingRow: boolean },
+): StartedRunEchoFollower {
+	let state = STARTED_RUN_ECHO_SENT;
+	const stops: Array<() => void> = [];
+	const stop = (): void => {
+		for (const release of stops.splice(0)) release();
+	};
+	let watchingEngine = false;
+	const apply = (event: StartedRunEchoEvent): void => {
+		if (state.kind === "settled") return;
+		state = nextStartedRunEcho(state, event);
+		if (state.kind === "awaiting-run-message" && !watchingEngine) {
+			// Only a run answered as started waits on its engine, and is lost with it.
+			watchingEngine = true;
+			const runtime = mode.runtimeHost;
+			if (runtime instanceof IsolatedInteractiveRuntime)
+				stops.push(runtime.onGenerationEnded(() => apply({ type: "lost" })));
+		}
+		if (state.kind !== "settled") return;
+		stop();
+		if (state.echo === "left") return;
+		if (mode.deferredRenderedUserInputs?.includes(text) === true) mode.discardDeferredRenderedUserInput(text);
+		// What the send's own end does when no run started: the working row it showed has no run to end it.
+		if (
+			state.echo === "never-ran" &&
+			options.sendShowsWorkingRow &&
+			!mode.session.isStreaming &&
+			mode.workingRunMeter.snapshot() === undefined
+		) {
+			mode.workingRunMeter.stop();
+			mode.stopWorkingLoader();
+		}
+	};
+	stops.push(
+		mode.session.subscribe((event) => {
+			const echoEvent = startedRunEchoEvent(event);
+			if (echoEvent) apply(echoEvent);
+		}),
+	);
+	return {
+		answer: (started) => apply({ type: "answer", started }),
+		close: () => {
+			if (state.kind === "awaiting-answer") stop();
+		},
+	};
+}
 
 /** Show a user message from the session: in place of its echo, or of the echo of the run it started, or as new. */
 InteractiveModeBase.prototype.showSessionUserMessage = function (this: InteractiveModeBase, message: Message): void {
