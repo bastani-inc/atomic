@@ -2440,6 +2440,8 @@ export class SubagentControlRuntime {
 				}
 				const skillInjection = buildSkillInjection(selectedSkills.resolved);
 				const parentSessionId = sessionManager.getHeader()?.parentSessionId;
+				const forked =
+					parentSessionId === undefined ? undefined : forkedChildTools(inherited.tools, inherited.parentToolNames);
 				const promptBehavior = createInProcessChildPromptBehavior(
 					admitted.policy,
 					skillInjection,
@@ -2451,9 +2453,7 @@ export class SubagentControlRuntime {
 				created = await beforeStartDeadline(
 					createAgentSession({
 						...inherited,
-						...(parentSessionId === undefined
-							? {}
-							: { tools: forkedChildTools(inherited.tools, inherited.parentToolNames) }),
+						...(forked ? { tools: forked.tools } : {}),
 						...explicitEffort,
 						extensionBindings,
 						customTools: admitted.policy.customTools ?? inherited.customTools,
@@ -2462,6 +2462,7 @@ export class SubagentControlRuntime {
 						onResourceAdmissionWait: (waiting) => startBudget.admissionWait(waiting),
 						subagentPolicy: {
 							...admitted.policy,
+							...(forked?.codemodeRoutingOnly ? { codemodeRoutingOnly: true } : {}),
 							executionEnded: executionEnded.signal,
 							onTurnDrained: () => {
 								for (const listener of turnDrainedListeners) listener();

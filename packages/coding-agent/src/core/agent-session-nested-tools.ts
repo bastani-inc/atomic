@@ -9,11 +9,12 @@ import { combineUsage } from "./usage-totals.ts";
 const runners = new WeakMap<AgentSession, NestedToolCallRunner>();
 
 export function getCallableTools(session: AgentSession, active = new Set(session.getActiveToolNames())): AgentTool[] {
+	const routingOnly = session._subagentPolicy?.codemodeRoutingOnly === true;
 	return [...session._toolRegistry.values()].flatMap((tool): AgentTool[] => {
 		const definition = session.getToolDefinition(tool.name);
 		const exposure = definition?.exposure ?? "direct";
 		if (exposure === "codemode" || exposure === "deferred" || (exposure === "direct" && active.has(tool.name)))
-			return [tool];
+			return routingOnly && !active.has(tool.name) ? [] : [tool];
 		const access = definition?.scriptAccess;
 		if (exposure !== "model-only" || !access || !active.has(tool.name)) return [];
 		// Scripts reach a model-only tool only through its script access: its description, output and refusals.

@@ -5,6 +5,8 @@
  * Anthropic request serialization against scripted replies; no network is contacted.
  */
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	type AssistantMessage,
 	anthropicMessagesApi,
@@ -214,6 +216,7 @@ async function openFork(
 		codemode?: Codemode;
 		parentHiddenTools?: readonly string[];
 		customTools?: CreateAgentSessionOptions["customTools"];
+		codemodeRoutingOnly?: boolean;
 	} = {},
 ) {
 	const cwd = manager.getCwd();
@@ -234,7 +237,12 @@ async function openFork(
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager: manager,
 		resourceLoader: resourceLoader("You review changes.", await codemode(options.codemode)),
-		subagentPolicy: { ...policy, managementActions: "restricted", depth: 1 },
+		subagentPolicy: {
+			...policy,
+			managementActions: "restricted",
+			depth: 1,
+			...(options.codemodeRoutingOnly ? { codemodeRoutingOnly: true } : {}),
+		},
 		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: options.tools ?? ["read"],
 		...(options.customTools ? { customTools: options.customTools } : {}),
@@ -407,10 +415,12 @@ describe("a forked subagent continues its parent's cached request", () => {
 			tools: ["read", "bash", "codemode"],
 			codemode: "direct",
 		});
-		const tools = forkedChildTools(["read", "contact_supervisor"], parentToolNames);
+		const { tools, codemodeRoutingOnly } = forkedChildTools(["read", "contact_supervisor"], parentToolNames);
 		assert.deepEqual(tools, ["read", "contact_supervisor", "codemode"]);
+		assert.equal(codemodeRoutingOnly, true);
 		const child = await openFork(forkManager, runtime, parentModel, {
 			tools,
+			codemodeRoutingOnly,
 			codemode: "direct",
 			customTools: [
 				{
@@ -440,6 +450,103 @@ describe("a forked subagent continues its parent's cached request", () => {
 			],
 		);
 		assert.match(JSON.stringify(results[1].content), /tools\.bash does not exist/);
+	});
+
+	test("a codemode the fork adds reaches only the child's own tools, as a fresh child of the same agent can", async () => {
+		const secretRuns: string[] = [];
+		const secret: NonNullable<CreateAgentSessionOptions["customTools"]>[number] = {
+			name: "secret",
+			label: "Secret",
+			description: "A deferred tool the child has but has not activated.",
+			exposure: "deferred",
+			parameters: Type.Object({}),
+			execute: async () => {
+				secretRuns.push("ran");
+				return { content: [{ type: "text", text: "secret" }], details: {} };
+			},
+		};
+		const script = (id: string, code: string) => ({
+			type: "toolCall" as const,
+			id,
+			name: "codemode",
+			arguments: { code },
+		});
+		const scripts = [
+			script("call_models", 'return await models.getAvailableOfType("classifier");'),
+			script("call_secret", "return await tools.secret({});"),
+			script("call_bash", 'return await tools.bash({ command: "echo outside" });'),
+			script("call_read", 'return await tools.read({ path: "notes.txt" });'),
+		];
+		const reply: Reply = (model, count) => (count === 3 ? message(model, scripts) : textReply(model, count));
+		const { runtime, parentModel, forkManager, parentToolNames } = await parentAndFork(NATIVE, reply, {
+			tools: ["read", "bash", "codemode"],
+			codemode: "direct",
+		});
+		writeFileSync(join(forkManager.getCwd(), "notes.txt"), "the child's own file");
+		const { tools, codemodeRoutingOnly } = forkedChildTools(["read", "secret"], parentToolNames);
+		const fork = await openFork(forkManager, runtime, parentModel, {
+			tools,
+			codemodeRoutingOnly,
+			codemode: "direct",
+			customTools: [secret],
+		});
+		// Registered, but outside what the child may call now.
+		fork.setActiveToolsByName(["read", "codemode"]);
+		await fork.prompt("child task");
+
+		const results = fork.messages.filter((entry) => entry.role === "toolResult");
+		assert.deepEqual(
+			results.map((result) => [result.toolCallId, result.isError]),
+			[
+				["call_models", true],
+				["call_secret", true],
+				["call_bash", true],
+				["call_read", false],
+			],
+		);
+		assert.match(JSON.stringify(results[0].content), /models is not defined/);
+		assert.match(JSON.stringify(results[1].content), /tools\.secret does not exist/);
+		assert.match(JSON.stringify(results[2].content), /tools\.bash does not exist/);
+		assert.deepEqual(secretRuns, []);
+
+		// A fresh child of the same read-only agent has no codemode at all: it cannot reach any of them either.
+		const freshReplies: Reply = (model, count) =>
+			count === 1
+				? message(model, [
+						script("call_fresh", "return await tools.secret({});"),
+						{ type: "toolCall", id: "call_secret_direct", name: "secret", arguments: {} },
+					])
+				: textReply(model, count);
+		const freshRecorded = await recordingRuntime(NATIVE, freshReplies);
+		const dir = makeTempDirectory("atomic-fork-fresh-");
+		cleanups.push(() => removeTempDirectory(dir));
+		const { session: fresh } = await createAgentSession({
+			cwd: dir,
+			agentDir: dir,
+			model: freshRecorded.parentModel,
+			thinkingLevel: "off",
+			modelRuntime: freshRecorded.runtime,
+			settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
+			sessionManager: SessionManager.inMemory(dir),
+			resourceLoader: resourceLoader("You review changes.", await codemode("direct")),
+			subagentPolicy: { ...narrow, managementActions: "restricted", depth: 1 },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
+			tools: ["read", "secret"],
+			customTools: [secret],
+			...createInProcessChildPromptBehavior(narrow),
+		});
+		cleanups.push(() => fresh.dispose());
+		fresh.setActiveToolsByName(["read"]);
+		await fresh.prompt("child task");
+		const freshResults = fresh.messages.filter((entry) => entry.role === "toolResult");
+		assert.deepEqual(
+			freshResults.map((result) => [result.toolName, result.isError]),
+			[
+				["codemode", true],
+				["secret", true],
+			],
+		);
+		assert.deepEqual(secretRuns, []);
 	});
 
 	test("refuses a call to a parent tool outside its policy", async () => {

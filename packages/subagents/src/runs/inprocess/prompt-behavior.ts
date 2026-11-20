@@ -234,18 +234,19 @@ export function createInProcessChildSystemPromptSectionsTransform(
 }
 
 /**
- * The tools a forked child runs with: its own, plus codemode when its parent's requests declare codemode. The child
- * then calls codemode as its parent's conversation declares it; codemode reaches only the child's own tools, so it
- * grants nothing the child cannot call, and it reaches the tools only the child has where the provider cannot add
- * them to the parent's tool list.
+ * The tools a forked child runs with: its own, plus codemode when its parent's requests declare codemode and its own
+ * tools do not include it. That codemode (`codemodeRoutingOnly`) is a routing channel: its scripts reach exactly the
+ * child's own tools, with no models, so it grants nothing a fresh child of the same agent could not do. It lets the
+ * child call codemode as its parent's conversation declares it, and reach the tools only the child has where the
+ * provider cannot add them to the parent's tool list.
  */
 export function forkedChildTools(
 	tools: readonly string[] | undefined,
 	parentToolNames: readonly string[] | undefined,
-): string[] | undefined {
+): { readonly tools: string[] | undefined; readonly codemodeRoutingOnly: boolean } {
 	if (tools === undefined || tools.includes("codemode") || !parentToolNames?.includes("codemode"))
-		return tools && [...tools];
-	return [...tools, "codemode"];
+		return { tools: tools && [...tools], codemodeRoutingOnly: false };
+	return { tools: [...tools, "codemode"], codemodeRoutingOnly: true };
 }
 
 /** The note that opens what a forked child adds after its parent's conversation. */
