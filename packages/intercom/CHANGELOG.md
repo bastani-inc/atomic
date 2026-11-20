@@ -18,6 +18,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Fixed
 
+- The size limits on messages queued for subagents that finished or were paused (32 MiB per subagent, 256 MiB per broker) now hold for what the store keeps. A message delivered while another process held the store's lock keeps counting until the broker deletes it, once that process lets go. A restarted broker counts what the store kept as it takes the messages up again, without slowing its start or that restore: until then, a message for such a subagent waits for the count, at most 2 seconds, and is then queued, refused with the size-limit reason if it does not fit, or refused saying Intercom is still counting if the count has not finished. When a subagent's queues merge as the session that launched it comes back, every message is kept, and new messages to it are refused until it is back under the limit. A failure kept for a sender that is away no longer keeps the whole message. A message the local file has no room for is refused with the size-limit reason, and the messages written with it are kept.
 - Reconnecting to Intercom no longer leaves a false reservation warning for a released subagent when the broker can confirm it still holds sends for that release. Checking the hold does not extend it or send another wake ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
 
 ## [0.9.90] - 2026-11-19

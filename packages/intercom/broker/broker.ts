@@ -107,6 +107,7 @@ import {
 	type WakeSender,
 } from "./departed-children.js";
 import {
+	EndedChildQueueFullError,
 	EndedChildWakeBudget,
 	type EndedChildWakeFailure,
 	type EndedChildWakeRequest,
@@ -430,8 +431,9 @@ class IntercomBroker {
       ownerHost: (ownerSessionId) => this.sessions.get(ownerSessionId)?.registrationReturnAddress,
       journal: this.endedQueue.journal,
       evicted: (sends) => this.dispatchHeldSends(sends),
-      // Durable wake queue: the caps count what a message takes in the store.
+      // Durable wake queue: the caps count what a message takes in the store, and what the store keeps.
       storedBytes: (held) => this.endedQueue.storedBytes(held),
+      storedCounts: (departure) => this.endedQueue.storedCounts(departure),
     },
   );
   /** Return paths: who may answer a sender outside its groups that wrote to it. */
@@ -1475,6 +1477,7 @@ class IntercomBroker {
         this.refuseHeldSends(marked.refused);
         // #5999: sends that waited for this verdict and asked to wake their subagent are queued for it now.
         for (const { held, target, kept } of marked.queued) this.answerQueuedForWake(held, target, kept);
+        for (const held of marked.uncounted) this.decideOnceCounted(held);
         for (const wake of marked.wakes) this.wakeEndedChildOwner(wake);
         this.dispatchHeldSends(marked.evicted);
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
@@ -2119,6 +2122,18 @@ class IntercomBroker {
    * at once, and the owner asked to resume it when this is the first message queued. False when no such subagent is the
    * target: the send is decided as before.
    */
+  /** Durable wake queue: sends that already waited for the store to count what it kept: decided as things stand. */
+  private readonly countWaited = new WeakSet<HeldSend["clientMessage"]>();
+
+  /**
+   * Durable wake queue: a message that may not fit while the store still counts what it kept waits for the count, at
+   * most the store's open wait, and is then decided again: queued if it fits, or refused with the cap's reason.
+   */
+  private decideOnceCounted(held: HeldSend): void {
+    this.countWaited.add(held.clientMessage);
+    void this.endedQueue.untilCounted().then(() => this.dispatchSend(held.socket, held.clientMessage, held.senderId));
+  }
+
   private queueForEndedChildWake(held: HeldSend, target: string, sender: WakeSender): boolean {
     // Durable wake queue: what an earlier broker kept may be for this target, and this may be a retry of one of them
     // whose answer the restart cut off: the send waits until it is taken up again (bounded), then is decided anew.
@@ -2130,8 +2145,18 @@ class IntercomBroker {
     // takes the message without another wake.
     const reserved = this.restoringRecipients.peek(target, sender);
     if (reserved === "gone") return false;
-    const admission = this.departedChildren.admitWake(target, sender, held, reserved === "active");
+    const admission = this.departedChildren.admitWake(
+      target,
+      sender,
+      held,
+      reserved === "active",
+      this.countWaited.has(held.clientMessage),
+    );
     if (admission.kind === "none") return false;
+    if (admission.kind === "uncounted") {
+      this.decideOnceCounted(held);
+      return true;
+    }
     if (admission.kind === "refused") {
       this.refuseHeldSends([{ held, error: admission.error, reason: admission.reason }]);
       return true;
@@ -2394,7 +2419,11 @@ class IntercomBroker {
             type: "delivery_failed",
             messageId: held.messageId,
             ...attempt,
-            reason: `Intercom could not keep this message for ${held.clientMessage.to.trim()} until it is continued (${why}); it was not queued. Send it again.`,
+            // The store had no room left for it: refused as for a full queue.
+            reason:
+              error instanceof EndedChildQueueFullError && error.reason !== undefined
+                ? error.reason
+                : `Intercom could not keep this message for ${held.clientMessage.to.trim()} until it is continued (${why}); it was not queued. Send it again.`,
           });
         } else if (early !== undefined) answerEarly(early);
         // Already on its way to the subagent: its outcome answers it.
