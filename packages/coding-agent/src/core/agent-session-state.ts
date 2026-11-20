@@ -1,5 +1,5 @@
 import type { AgentMessage, ThinkingLevel } from "@bastani/atomic-agent-core";
-import { getCurrentSystemMessage, getCurrentTools, type SystemMessage } from "@bastani/atomic-ai";
+import { getCurrentSystemMessage, getCurrentTools, getSystemMessageText, type SystemMessage } from "@bastani/atomic-ai";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { type GitToolStatus, getGitStatus, getGitStatusAsync } from "../utils/tools-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
@@ -9,11 +9,11 @@ import { syncSessionHistoryTool } from "./agent-session-tool-registry.ts";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
 import { legacyWorkflowSection } from "./legacy-workflow-files.js";
+import type { SystemPromptSectionsTransform } from "./sdk-types.ts";
 import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import {
 	buildSessionMemoryGuideline,
-	buildSystemPrompt,
 	buildSystemPromptSections,
 	diffSystemPromptSections,
 	type NormalizedBuildSystemPromptOptions,
@@ -38,6 +38,16 @@ import {
 	type ToolSelectionSource,
 	type ToolStatusReport,
 } from "./tool-status.js";
+import {
+	forkToolDeclarations,
+	hasTransformedPrompt,
+	nextTransformedPromptRecord,
+	type SystemMessageWithTransformedPrompt,
+	type TransformedPromptFork,
+	type TransformedPromptRecord,
+	toolChangeSupport,
+	transformedPromptOwner,
+} from "./transformed-system-prompt.ts";
 
 export function getActiveToolNames(this: AgentSession): string[] {
 	return this.agent.state.tools.map((t) => t.name);
@@ -274,9 +284,14 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 		},
 	});
 	if (this._systemPromptTransform) {
-		this._baseSystemPromptOptions.forceSystemPrompt = this._systemPromptTransform(
-			buildSystemPrompt(this._baseSystemPromptOptions),
+		const sections = buildSystemPromptSections(this._baseSystemPromptOptions);
+		const content = this._systemPromptTransform(
+			getSystemMessageText({ role: "system", content: "", sections, timestamp: 0 }),
 		);
+		this._baseSystemPromptOptions.forceSystemPrompt = content;
+		this._transformedPromptHead = this._systemPromptSections
+			? { content, sections: this._systemPromptSections.transform(sections) }
+			: undefined;
 	}
 	// A model switch partway through a run, such as a fallback, must tell the next request which model it goes to
 	// (#4188). A running turn whose prompt is still this session's own transformed prompt takes the rebuilt one. A prompt
@@ -349,7 +364,84 @@ export function _preparePromptAndToolLoadout(
 	options.selectedTools = applyToolLoadout(this, options.selectedTools).map((tool) => tool.name);
 	options.hiddenTools = options.selectedTools.filter((name) => isToolDeclarationHidden(this, name));
 	const sections = diffSystemPromptSections(current?.sections ?? {}, buildSystemPromptSections(options));
-	return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
+	const transformedPrompt = nextTransformedPrompt(this, messages);
+	if (!sections && !transformedPrompt) return undefined;
+	const update: SystemMessageWithTransformedPrompt = {
+		role: "system",
+		content: "",
+		...(sections ? { sections } : {}),
+		...(transformedPrompt ? { transformedPrompt } : {}),
+		timestamp: Date.now(),
+	};
+	return update;
+}
+
+/**
+ * The transformed prompt record the next request adds: the prompt `_rebuildSystemPrompt` built when no row sent one,
+ * otherwise the sections of the session's current prompt that changed since it was last told them.
+ */
+function nextTransformedPrompt(
+	session: AgentSession,
+	messages: readonly AgentMessage[],
+): TransformedPromptRecord | undefined {
+	const sections = session._systemPromptSections;
+	const head = session._transformedPromptHead;
+	if (!sections || !head) return undefined;
+	return nextTransformedPromptRecord(
+		messages,
+		transformedPromptOwner(session.sessionManager.getSessionId(), sections.key),
+		head,
+		sections.transform(buildSystemPromptSections(session._baseSystemPromptOptions)),
+		sections.fork && forkOf(session, messages, sections.fork),
+	);
+}
+
+/** The conversation a fork continues, as the model was told it, and the note that opens what the fork adds. */
+function forkOf(
+	session: AgentSession,
+	messages: readonly AgentMessage[],
+	fork: NonNullable<SystemPromptSectionsTransform["fork"]>,
+): TransformedPromptFork {
+	const hidden = new Set(fork.hiddenTools ?? []);
+	const inherited = getCurrentTools(messages).filter((tool) => !hidden.has(tool.name));
+	const callable = session.getActiveToolNames();
+	const { throughCodemode } = forkToolDeclarations(inherited, toolChangeSupport(session.model?.compat), callable);
+	const declared = new Set(inherited.map((tool) => tool.name));
+	const sections = Object.entries(getCurrentSystemMessage(messages)?.sections ?? {}).flatMap(([name, text]) =>
+		text === null ? [] : [[name, text] as const],
+	);
+	return {
+		sections: Object.fromEntries(sections),
+		...(fork.hiddenTools?.length ? { hidden: fork.hiddenTools } : {}),
+		note: fork.note({
+			tools: callable,
+			throughCodemode: throughCodemode ? callable.filter((name) => !declared.has(name)) : [],
+		}),
+	};
+}
+
+/**
+ * Record the transformed prompt before a run that starts without a prompt, such as a woken child's continued turn, when
+ * no row has sent it yet: a session last run by an earlier version then keeps the prompt its first request sends.
+ */
+export function _recordTransformedPromptHead(this: AgentSession): Promise<void> | undefined {
+	const messages = this.agent.state.messages;
+	const sections = this._systemPromptSections;
+	if (
+		!sections ||
+		messages.length === 0 ||
+		hasTransformedPrompt(messages, transformedPromptOwner(this.sessionManager.getSessionId(), sections.key))
+	)
+		return undefined;
+	const transformedPrompt = nextTransformedPrompt(this, messages);
+	if (!transformedPrompt) return undefined;
+	const update: SystemMessageWithTransformedPrompt = {
+		role: "system",
+		content: "",
+		transformedPrompt,
+		timestamp: Date.now(),
+	};
+	return this.sessionManager.appendMessage(update).then(() => this._refreshFinalizedContext());
 }
 
 export function preservesInitialToolLoadout(session: AgentSession): boolean {
@@ -503,6 +595,7 @@ export const agentSessionStateMethods = {
 	_normalizePromptSnippet,
 	_normalizePromptGuidelines,
 	_rebuildSystemPrompt,
+	_recordTransformedPromptHead,
 	_preparePromptAndToolLoadout,
 	_restoreToolsFromTranscript,
 	_refreshBaseSystemPromptFromActiveTools,

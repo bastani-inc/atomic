@@ -21,8 +21,9 @@ import {
 	holdToolsUntilBuilt,
 } from "./resume/blueprint/barrier.ts";
 import { sessionBlobOutput } from "./session-tool-output.ts";
-import { projectToolLoadout } from "./tool-loadout.js";
+import { isToolDeclarationHidden, projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
+import { projectTransformedPrompt, toolChangeSupport, transformedPromptOwner } from "./transformed-system-prompt.ts";
 import { workspaceSandboxDenial } from "./workspace/session.ts";
 
 export function _installAgentToolHooks(this: AgentSession): void {
@@ -308,6 +309,19 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		assertToolPairingInvariant(guarded);
 		const forced = this._runSystemPromptOptions?.forceSystemPrompt ?? this._baseSystemPromptOptions.forceSystemPrompt;
 		if (forced === undefined) return projectToolLoadout(this, guarded);
+		// The session's own transformed prompt leads with the text it first sent; a prompt a handler forced replaces it.
+		const sections = this._systemPromptSections;
+		const recorded =
+			sections && forced === this._baseSystemPromptOptions.forceSystemPrompt
+				? projectTransformedPrompt(
+						guarded,
+						transformedPromptOwner(this.sessionManager.getSessionId(), sections.key),
+						toolChangeSupport(this.model?.compat),
+						this.getActiveToolNames(),
+						(name) => isToolDeclarationHidden(this, name),
+					)
+				: undefined;
+		if (recorded) return recorded;
 		const current = getCurrentSystemMessage(guarded);
 		const head: SystemMessage = {
 			role: "system",

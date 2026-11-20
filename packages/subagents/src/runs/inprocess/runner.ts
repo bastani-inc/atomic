@@ -98,7 +98,7 @@ import {
 } from "../shared/cancellation-recovery.js";
 import { finishElapsedSpan } from "../shared/elapsed.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
-import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
+import { createInProcessChildPromptBehavior, forkedChildTools, forkedParentSessionId } from "./prompt-behavior.js";
 import {
 	SessionStartBudget,
 	type SessionStartProgress,
@@ -2439,12 +2439,21 @@ export class SubagentControlRuntime {
 					throw new Error("Skills not found: subagent");
 				}
 				const skillInjection = buildSkillInjection(selectedSkills.resolved);
-				const promptBehavior = createInProcessChildPromptBehavior(admitted.policy);
-				const systemPromptTransform = createInProcessChildSystemPromptTransform(admitted.policy, skillInjection);
+				const parentSessionId = forkedParentSessionId(sessionManager);
+				const forked =
+					parentSessionId === undefined ? undefined : forkedChildTools(inherited.tools, inherited.parentToolNames);
+				const promptBehavior = createInProcessChildPromptBehavior(
+					admitted.policy,
+					skillInjection,
+					parentSessionId === undefined
+						? undefined
+						: { parentSessionId, parentHiddenTools: inherited.parentHiddenTools },
+				);
 				startBudget.enter("creating-session");
 				created = await beforeStartDeadline(
 					createAgentSession({
 						...inherited,
+						...(forked ? { tools: forked.tools } : {}),
 						...explicitEffort,
 						extensionBindings,
 						customTools: admitted.policy.customTools ?? inherited.customTools,
@@ -2453,6 +2462,7 @@ export class SubagentControlRuntime {
 						onResourceAdmissionWait: (waiting) => startBudget.admissionWait(waiting),
 						subagentPolicy: {
 							...admitted.policy,
+							...(forked?.codemodeRoutingOnly ? { codemodeRoutingOnly: true } : {}),
 							executionEnded: executionEnded.signal,
 							onTurnDrained: () => {
 								for (const listener of turnDrainedListeners) listener();
@@ -2471,7 +2481,6 @@ export class SubagentControlRuntime {
 						settingsManager,
 						sessionManager,
 						...promptBehavior,
-						systemPromptTransform,
 					}),
 					// The attempt already failed; a session that comes up after its deadline is never used.
 					(late) => late.session.dispose().catch(() => undefined),

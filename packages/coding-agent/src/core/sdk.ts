@@ -100,6 +100,7 @@ import type { SessionStore } from "./storage/session/types.js";
 import { assertTeamAdapterInstalled } from "./storage/team.js";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
+import { isToolDeclarationHidden } from "./tool-loadout.js";
 import { createToolNameMatcher } from "./tool-selection.ts";
 import { refreshConfig as refreshAskUserQuestionConfig } from "./tools/ask-user-question/config.ts";
 import type { ProjectHistory } from "./tools/history-protocol.ts";
@@ -785,6 +786,8 @@ async function constructAgentSession(
 	};
 	const onPayload: NonNullable<ModelRuntimeSimpleStreamOptions["onPayload"]> = (payload, model) =>
 		preparePayload(payload, model);
+	// A forked subagent keeps the prompt-cache key of the session whose conversation it continues.
+	const requestSessionId = () => options.systemPromptSections?.fork?.sessionId ?? sessionManager.getSessionId();
 
 	agent = new Agent({
 		initialState: {
@@ -910,7 +913,7 @@ async function constructAgentSession(
 				return { authResult, requestModel, fastRouteStreamOptions, requestOptions };
 			};
 			const { authResult, requestModel, fastRouteStreamOptions, requestOptions } = await prepare();
-			if (streamOptions?.sessionId === sessionManager.getSessionId()) {
+			if (streamOptions?.sessionId === requestSessionId()) {
 				const prefix = [...agent.state.messages];
 				const warmOptions: ModelRuntimeSimpleStreamOptions = {
 					...fastRouteStreamOptions,
@@ -976,7 +979,7 @@ async function constructAgentSession(
 				headers: response.headers,
 			});
 		},
-		sessionId: sessionManager.getSessionId(),
+		sessionId: requestSessionId(),
 		transformContext: async (messages) => {
 			const runner = extensionRunnerRef.current;
 			const transformed = runner ? await runner.emitContext(messages) : messages;
@@ -1044,8 +1047,8 @@ async function constructAgentSession(
 							"snapshots",
 							settingsManager.getWorktreeSnapshotSettings(),
 						),
-			childSessionOptions: (child) =>
-				inheritChildSessionOptionsWithDefaults(
+			childSessionOptions: (child) => ({
+				...inheritChildSessionOptionsWithDefaults(
 					{
 						cwd,
 						agentDir,
@@ -1072,6 +1075,13 @@ async function constructAgentSession(
 					session.getAllTools().map((tool) => tool.name),
 					builtinDefaultToolNames,
 				),
+				parentHiddenTools: session
+					.getActiveToolNames()
+					.filter((name) => isToolDeclarationHidden(session as unknown as AgentSessionInternalSurface, name)),
+				parentToolNames: session
+					.getActiveToolNames()
+					.filter((name) => !isToolDeclarationHidden(session as unknown as AgentSessionInternalSurface, name)),
+			}),
 			scopedModels: options.scopedModels,
 			// Undefined follows the settings' current `fallbackModels`, also once a project is trusted later.
 			fallbackModels: options.fallbackModels,
@@ -1093,6 +1103,7 @@ async function constructAgentSession(
 			inheritedHistory: options.inheritedHistory,
 			resourceAdmission: options.resourceAdmission ?? undefined,
 			systemPromptTransform: options.systemPromptTransform,
+			systemPromptSections: options.systemPromptSections,
 			contextProjectionTransform: options.initialContextTransform,
 			workspace,
 		});

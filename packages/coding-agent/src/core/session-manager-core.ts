@@ -149,6 +149,7 @@ import {
 } from "./storage/session/window-answer.js";
 import { writeChunksAtomically } from "./storage/transfer-files.js";
 import { carryCompletionEvidence, shareCompletionEvidence } from "./tasks/reopened-completion.js";
+import { carriedTransformedPrompt, type SystemMessageWithTransformedPrompt } from "./transformed-system-prompt.ts";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type {
 	PathContinuation,
@@ -1456,8 +1457,17 @@ export class SessionManager {
 				this.leafId,
 				coveredThroughEntryId,
 			);
-			const systemMessage = getCurrentSystemMessage(this.buildSessionProjection().messages);
-			if (systemMessage) entry.systemMessage = { ...systemMessage, timestamp: new Date(entry.timestamp).getTime() };
+			const projected = this.buildSessionProjection().messages;
+			const systemMessage = getCurrentSystemMessage(projected);
+			const transformedPrompt = carriedTransformedPrompt(projected);
+			if (systemMessage) {
+				const carried: SystemMessageWithTransformedPrompt = {
+					...systemMessage,
+					...(transformedPrompt ? { transformedPrompt } : {}),
+					timestamp: new Date(entry.timestamp).getTime(),
+				};
+				entry.systemMessage = carried;
+			}
 			const expanded = await this.expandForBoundary([firstKeptEntryId, coveredThroughEntryId]);
 			if (expanded) precondition?.();
 			await this._appendEntry(entry, expanded);
