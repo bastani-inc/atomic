@@ -544,9 +544,10 @@ test(
 		await owner.client.disconnect();
 		await vi.waitFor(() => assert.equal(sender.received.length, 1), WAIT);
 		assert.equal(sender.received[0]!.message.replyTo, sent.id);
-		assert.match(
-			sender.received[0]!.message.replyError ?? "",
-			/the session that launched it ended before it was resumed/,
+		// The text main gives, byte for byte.
+		assert.equal(
+			sender.received[0]!.message.replyError,
+			`Subagent "${childName}" was not resumed for this message: the session that launched it disconnected before it was resumed. The message was not delivered.`,
 		);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
