@@ -257,6 +257,11 @@ export interface ChildSpec {
 	readonly resumeToolResults?: readonly DetachedToolResult[];
 	/** The wake only hands back tool results: the continued turn is the whole run, and `task` is not prompted. */
 	readonly skipTaskPrompt?: boolean;
+	/**
+	 * The user had paused the child (Esc in its chat) when Atomic restarted: its reopened session comes back paused, as
+	 * it was, with nothing prompted and no turn started, and waits for the user to continue it.
+	 */
+	readonly resumePaused?: boolean;
 	readonly redispatchDetachedCalls?: boolean;
 }
 
@@ -2019,6 +2024,7 @@ export class SubagentControlRuntime {
 			| "bindChildSession"
 			| "bindChildLaunch"
 			| "toolResultsSaved"
+			| "reportTurnPaused"
 			| "setExtensionStatus"
 			| "clearExtensionStatuses"
 		>,
@@ -2054,6 +2060,7 @@ export class SubagentControlRuntime {
 					| "bindChildSession"
 					| "bindChildLaunch"
 					| "toolResultsSaved"
+					| "reportTurnPaused"
 					| "setExtensionStatus"
 					| "clearExtensionStatuses"
 			  >
@@ -2159,6 +2166,8 @@ export class SubagentControlRuntime {
 		const token = guard.token;
 		this.attemptTokens.set(admitted.identity.path, token);
 		let session: AgentSession | undefined;
+		/** A child restored paused counts as paused from its start, before its session holds its queue. */
+		let restoringPaused = admitted.spec.resumePaused === true;
 		let parentCommandTaskOwner: ChildCommandTaskOwner | undefined;
 		// Messages this attempt produced; a forked child's inherited history is never among them.
 		let ownMessages: () => TranscriptMessage[] = () => [];
@@ -2412,7 +2421,8 @@ export class SubagentControlRuntime {
 								for (const listener of turnDrainedListeners) listener();
 							},
 							taskPending: () => taskPending,
-							turnPaused: () => session?.turnPaused === true,
+							// Intercom acknowledges a message to a paused child as held; a restored one is from its start.
+							turnPaused: () => restoringPaused || session?.turnPaused === true,
 							// Intercom registers the child before its first turn, inside this start's budget.
 							startup: {
 								signal: startBudget.signal,
@@ -2451,6 +2461,13 @@ export class SubagentControlRuntime {
 			const transcriptSession = session;
 			let refreshElapsed: (() => void) | undefined;
 			let interruptGeneration = 0;
+			/** Whether the child's record says the user paused it; its next turn clears that. */
+			let turnPausedReported = false;
+			const reportTurnPaused = (paused: boolean): void => {
+				if (turnPausedReported === paused) return;
+				turnPausedReported = paused;
+				taskHooks?.reportTurnPaused?.(paused);
+			};
 			/** Ends the current turn with `end` and waits for the next one, keeping the child's elapsed span in step. */
 			const endTurn = async <T>(end: () => Promise<T>): Promise<T> => {
 				const generation = ++interruptGeneration;
@@ -2499,6 +2516,8 @@ export class SubagentControlRuntime {
 			 */
 			const pauseTurn = async (): Promise<QueuedTaskMessages> => {
 				if (termination !== undefined) return { steering: [], followUp: [] };
+				// Recorded with the hold, before the turn ends: a restart from here on restores the child paused.
+				reportTurnPaused(true);
 				const open =
 					transcriptSession.isStreaming ||
 					transcriptSession.isRetrying ||
@@ -2547,6 +2566,7 @@ export class SubagentControlRuntime {
 				interruptTurn,
 				pauseTurn,
 				resumeTurn: () => transcriptSession.resumeTurn(),
+				turnPaused: () => transcriptSession.turnPaused === true,
 				getQueuedMessages: () => ({
 					steering: transcriptSession.getSteeringMessages(),
 					followUp: transcriptSession.getFollowUpMessages(),
@@ -2648,6 +2668,8 @@ export class SubagentControlRuntime {
 					});
 				}
 				if (event.type === "agent_start") {
+					// The user continued it: no longer paused, also for a restart.
+					reportTurnPaused(false);
 					markTaskDispatched();
 					this.native.publishChildStatus(admitted.identity.path, nativeStatus("running"));
 				} else if (event.type === "tool_execution_start") {
@@ -2697,9 +2719,23 @@ export class SubagentControlRuntime {
 				await recoverChildSession(session, admitted.spec);
 				await settleInterruptedTurns();
 			}
+			// The user had paused it: it comes back paused, prompted with nothing, and waits for them to continue it.
+			const resumedPaused = !termination && admitted.spec.resumePaused === true;
+			if (resumedPaused) {
+				taskPending = false;
+				unsent.task = undefined;
+				startBudget.end();
+				reportTurnPaused(true);
+				await endTurn(() => transcriptSession.pauseTurn());
+			}
+			restoringPaused = false;
 			const redispatched =
-				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
-			if (redispatched !== undefined) {
+				!termination && !resumedPaused && admitted.spec.redispatchDetachedCalls
+					? session.redispatchDetachedToolCalls()
+					: undefined;
+			if (resumedPaused) {
+				// Nothing is prompted: what it was held for waits in its paused session.
+			} else if (redispatched !== undefined) {
 				taskPending = false;
 				unsent.task = unsent.followUps.shift();
 			} else if (!termination && admitted.spec.resumeToolResults?.length) {
