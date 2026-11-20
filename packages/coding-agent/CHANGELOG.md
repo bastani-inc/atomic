@@ -5,6 +5,7 @@
 ### Fixed
 
 - On Windows, quitting now gives the engine up to five seconds to shut down, as on Linux and macOS, so extensions' `session_shutdown` handlers run and the engine writes its `shutdown` record for `ATOMIC_EVENT_LOOP_BLOCK_MS`. Before, the engine was ended at once. A quit now waits for that shutdown work, up to the five seconds ([#6075](https://github.com/bastani-inc/atomic/issues/6075)).
+- When Atomic stops its engine, to quit or to restart an unresponsive one, notifications and events the engine sends while it shuts down no longer reach the interface, and a message the engine had already taken is no longer treated as never sent ([#6075](https://github.com/bastani-inc/atomic/issues/6075)).
 
 ## [0.10.1] - 2026-11-20
 
