@@ -160,6 +160,12 @@ export interface SubagentChildRecord {
 	 */
 	readonly pausedByUser?: boolean;
 	/**
+	 * The leaf entry of the child's own session when the user paused it (`null` for an empty session). The pause holds
+	 * only while no user message reached that session since: records merge field by field, so a version that does not
+	 * record pauses leaves `pausedByUser` as it was when it continues the child. Absent where `pausedByUser` is.
+	 */
+	readonly pausedAtLeafId?: string | null;
+	/**
 	 * Steering and follow-up messages the child had queued but not read when pause or quit stopped
 	 * task `taskId`, in order. Resume delivers them once, before its own message; a later task's record supersedes them.
 	 */

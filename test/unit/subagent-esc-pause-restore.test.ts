@@ -15,6 +15,7 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { SUBAGENT_CHILD_RECORD_TYPE } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
 	readSubagentChildRecords,
@@ -207,6 +208,84 @@ test(
 			await until(() => parent.latest(childId)?.pausedByUser === false);
 		} finally {
 			store.dispose();
+			await after.close("session-close");
+		}
+	},
+	LIVE_RESTORE_TIMEOUT_MS,
+);
+
+test(
+	"a pause an older version continued after a restart is not restored paused: the message that continued the subagent ends it",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-downgrade" })], { stopReason: "toolUse" }),
+		]);
+		const parent = parentSession(env.root);
+		const runId = "esc-pause-downgrade";
+		const childId = `${runId}:0`;
+		const liveOptions = env.options(runId);
+		const launchOptions = (options: RunSyncOptions): RunSyncOptions => ({
+			...options,
+			testSession: false,
+			getChildSessionOptions: liveOptions.getChildSessionOptions,
+		});
+
+		// This version: the reader pauses the working child, and Atomic closes.
+		const before = taskHost("before-downgrade");
+		const launched = await runAgentTask({
+			host: before,
+			cwd: env.root,
+			agents: [agent],
+			agent: "worker",
+			task: "run until paused",
+			options: { ...liveOptions, index: 0, sessionDir: join(env.root, "children", runId) },
+			recordChild: createSubagentChildRecordSink(parent.pi, parent.ctx(before)),
+			runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+		});
+		assert.equal(launched.kind, "admitted");
+		const firstTask = launched.kind === "admitted" ? launched.observation.taskId : "";
+		await until(() => env.blockStarted() && transcriptOf(before, firstTask) !== undefined, LIVE_CHILD_START_WAIT_MS);
+		await transcriptOf(before, firstTask)!.pauseTurn!();
+		await until(() => parent.latest(childId)?.pausedByUser === true);
+		await before.close("session-close");
+		await until(() => parent.latest(childId)?.state === "running");
+		const paused = parent.latest(childId)!;
+		assert.ok(paused.childSessionFile !== undefined, "the child's session is saved in a file");
+
+		// An older version restores it as it restores any running child: it continues it with the continuation prompt,
+		// and the record it writes says nothing of pauses, so the pause written before stays in the merged record.
+		const child = await SessionManager.open(paused.childSessionFile, undefined, paused.cwd);
+		await child.appendMessage({ role: "user", content: SUBAGENT_RESUME_CONTINUATION_PROMPT, timestamp: Date.now() });
+		await child.appendMessage(fauxAssistantMessage("continued by the older version"));
+		const { pausedByUser: _pausedByUser, pausedAtLeafId: _pausedAtLeafId, ...older } = paused;
+		await parent.pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, { ...older, taskId: "older-version-task" });
+		assert.equal(parent.latest(childId)?.pausedByUser, true, "the older version's record keeps the pause behind");
+
+		// This version again: the child is restored as it is restored without a pause, continued with the prompt.
+		const inputs: string[] = [];
+		env.faux.setResponses([
+			(context) => {
+				inputs.push(newInput(context));
+				return fauxAssistantMessage("answered after the upgrade");
+			},
+		]);
+		const after = taskHost("after-upgrade");
+		try {
+			const deps: SubagentChildRestoreDeps = {
+				pi: parent.pi,
+				config: {},
+				discoverAgents: () => ({ agents: [agent] }),
+				runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+			};
+			const [outcome] = await restoreSubagentChildren(deps, parent.ctx(after));
+			assert.equal(outcome?.kind, "restored");
+			const restoredTask = outcome?.kind === "restored" ? outcome.taskId : "";
+			await until(() => inputs.length > 0);
+			assert.ok(inputs[0]?.includes(SUBAGENT_RESUME_CONTINUATION_PROMPT), "it is continued, as a running child is");
+			assert.notEqual(transcriptOf(after, restoredTask)?.turnPaused?.(), true);
+			await until(() => parent.latest(childId)?.pausedByUser === false);
+		} finally {
 			await after.close("session-close");
 		}
 	},

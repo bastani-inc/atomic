@@ -2466,7 +2466,9 @@ export class SubagentControlRuntime {
 			const reportTurnPaused = (paused: boolean): void => {
 				if (turnPausedReported === paused) return;
 				turnPausedReported = paused;
-				taskHooks?.reportTurnPaused?.(paused);
+				// A pause names the entry its session ends at, so a restart can tell it still ends there.
+				if (paused) taskHooks?.reportTurnPaused?.(true, sessionManager.getLeafId());
+				else taskHooks?.reportTurnPaused?.(false);
 			};
 			/** Ends the current turn with `end` and waits for the next one, keeping the child's elapsed span in step. */
 			const endTurn = async <T>(end: () => Promise<T>): Promise<T> => {

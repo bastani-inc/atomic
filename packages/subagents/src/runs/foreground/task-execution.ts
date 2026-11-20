@@ -628,10 +628,13 @@ export async function runAgentTask(input: {
 	let recordSpan: TaskElapsedSpan | undefined;
 	/**
 	 * Whether the user paused this child from its chat and its next turn has not started. Recorded once it was ever
-	 * paused here, or the launch restores a paused child, so a later record clears it; never otherwise.
+	 * paused here, or the launch restores a child whose record names a pause (held or not), so a later record clears it;
+	 * never otherwise.
 	 */
 	let turnPaused = input.options.resumePaused === true;
-	let recordsPause = turnPaused;
+	let recordsPause = input.options.resumePaused !== undefined;
+	/** The leaf entry of the child's session its latest pause was taken at; unknown until a pause reports it. */
+	let pausedAtLeafId: string | null | undefined;
 	const recordChildTask = (
 		taskId: TaskId,
 		state: SubagentChildRecordInput["state"],
@@ -683,6 +686,9 @@ export async function runAgentTask(input: {
 			...(input.schedule?.limit === undefined ? {} : { runConcurrency: input.schedule.limit }),
 			...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 			...(recordsPause ? { pausedByUser: state === "running" && turnPaused } : {}),
+			...(recordsPause && state === "running" && turnPaused && pausedAtLeafId !== undefined
+				? { pausedAtLeafId }
+				: {}),
 		};
 		input.recordChild?.record(record);
 		// #4639: once its session is gone, a send to the child is told why it ended and how to resume it.
@@ -961,8 +967,9 @@ export async function runAgentTask(input: {
 								},
 								// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
 								toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
-								reportTurnPaused: (paused) => {
+								reportTurnPaused: (paused, leafId) => {
 									turnPaused = paused;
+									if (paused) pausedAtLeafId = leafId;
 									recordsPause = true;
 									recordChild("running");
 								},

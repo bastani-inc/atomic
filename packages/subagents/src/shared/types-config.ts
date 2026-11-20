@@ -155,7 +155,10 @@ export interface RunSyncOptions {
 	resumeToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
 	/** A wake that only hands back tool results: the continued turn is the whole run and the task is not prompted. */
 	skipTaskPrompt?: boolean;
-	/** The user had paused the child when Atomic restarted: it is restored paused, with nothing prompted. */
+	/**
+	 * The user had paused the child when Atomic restarted: it is restored paused, with nothing prompted. `false` restores
+	 * a child whose record still names a pause that no longer holds, and records that it is not paused.
+	 */
 	resumePaused?: boolean;
 	wakeToolResultIds?: readonly string[];
 	/** The calls the child is told are still running, recorded with every record its run writes (#5014). */
