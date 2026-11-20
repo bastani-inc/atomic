@@ -115,7 +115,17 @@ async function harness() {
 		await until(() => fixture.runners.length > runner);
 		const session = childSession(conversation, running);
 		sessions.push(session);
-		if (bound) fixture.runners[runner]!.context.bindTranscript(session);
+		if (bound) {
+			fixture.runners[runner]!.context.bindTranscript(session);
+			// A running attempt reports what it does once its session runs, which updates its task.
+			if (running)
+				taskValue(
+					fixture.runners[runner]!.context.reportActivity({
+						reportId: `started-${runner}`,
+						change: { kind: "action", tool: "read", text: "README.md" },
+					}),
+				);
+		}
 		conversations.set(operation.split(":resume:")[0]!, conversation);
 		let launched: TaskId | undefined;
 		await until(() => {
