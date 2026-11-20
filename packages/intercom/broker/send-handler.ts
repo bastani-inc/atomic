@@ -956,9 +956,11 @@ export function handleBrokerSend(
         pendingQuestions.releaseHeldFailures(message.replyTo, fromSession.info.id, recipient.registrationReturnAddress);
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
       returnPaths?.delivered(recipient, returnPathParty(fromSession), fromSession.info, message.id, handedOver);
-      // #5999: a subagent whose turn its user paused saved the message and keeps it until it is continued.
+      // #5999: a subagent whose turn its user paused saved the message and keeps it until it is continued. Only a sender
+      // that understands that answer (it asked to wake an ended recipient) is told so; any other gets `delivered`, as
+      // before: an older client takes `queued` for an ask as a send it may forget.
       notify(
-        paused === true
+        paused === true && clientMessage.wakeEndedRecipient === true
           ? { type: "queued", messageId: message.id, attemptId: senderAttemptId, target: PAUSED_LIVE_RECIPIENT_TARGET, position: 1 }
           : { type: "delivered", messageId: message.id, attemptId: senderAttemptId },
       );

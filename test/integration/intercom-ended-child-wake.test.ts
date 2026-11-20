@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import type { EventEmitter } from "node:events";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -19,6 +20,19 @@ const { ENDED_CHILD_WAKE_CHAIN_MAX, PAUSED_LIVE_RECIPIENT_TARGET, PAUSED_RECIPIE
 	await import("../../packages/intercom/broker/ended-child-wakes.js");
 
 type Client = InstanceType<typeof IntercomClient>;
+
+/** The Intercom client of main before #5999, which never asks to wake an ended recipient. */
+interface MainClient extends EventEmitter {
+	connect(session: object): Promise<void>;
+	send(
+		to: string,
+		options: { text: string; expectsReply?: boolean },
+	): Promise<{ id: string; delivered: boolean; queued?: boolean; target?: string; reason?: string }>;
+	disconnect(): Promise<void>;
+}
+const { IntercomClient: MainIntercomClient } = (await import(
+	join(repoRoot, "test/fixtures/intercom-main-pre-5999/broker/client.ts")
+)) as { IntercomClient: new (returnAddress: string, options?: { acknowledgesReceipt?: true }) => MainClient };
 type Notice = import("../../packages/intercom/broker/client.js").EndedChildWakeNotice;
 interface Received {
 	readonly from: { readonly id: string; readonly name?: string };
@@ -328,9 +342,23 @@ test(
 );
 
 test(
-	"a live subagent whose user paused its turn keeps the message, and its sender is told it is paused (#5999)",
+	"a live subagent whose user paused its turn keeps the message: a current sender is told it is paused, an older one gets delivered as before (#5999)",
 	async () => {
 		const sender = await connect("live-paused-sender");
+		const older = new MainIntercomClient(randomUUID(), { acknowledgesReceipt: true });
+		older.on("error", () => {});
+		brokerFixture.onCleanup(() => older.disconnect().catch(() => undefined));
+		await older.connect({
+			name: "live-paused-older-sender",
+			model: "test-model",
+			cwd: repoRoot,
+			pid: process.pid,
+			status: "idle",
+			startedAt: Date.now(),
+			lastActivity: Date.now(),
+			group: "default",
+			groups: ["default"],
+		});
 		const child = new IntercomClient(randomUUID(), { acknowledgesReceipt: true });
 		child.on("error", () => {});
 		brokerFixture.onCleanup(() => child.disconnect().catch(() => undefined));
@@ -355,12 +383,27 @@ test(
 			undefined,
 			"default",
 		);
-		const kept = await sender.client.send("subagent-worker-live-paused-1", { text: "when you are back" });
+		const kept = await sender.client.send("subagent-worker-live-paused-1", {
+			text: "when you are back",
+			wakeEndedRecipient: true,
+		});
 		assert.equal(kept.delivered, false);
 		assert.equal(kept.queued, true, kept.reason);
 		assert.equal(kept.target, PAUSED_LIVE_RECIPIENT_TARGET);
+
+		// A client of main never asked to wake an ended recipient: it is answered as main's broker answers it.
+		const olderSend = await older.send("subagent-worker-live-paused-1", { text: "from an older session" });
+		assert.equal(olderSend.delivered, true, olderSend.reason);
+		assert.equal(olderSend.queued, undefined);
+		const olderAsk = await older.send("subagent-worker-live-paused-1", { text: "an older ask", expectsReply: true });
+		assert.equal(olderAsk.delivered, true, "its ask stays open, as on main");
+		assert.equal(olderAsk.queued, undefined);
+
 		paused = false;
-		const delivered = await sender.client.send("subagent-worker-live-paused-1", { text: "now" });
+		const delivered = await sender.client.send("subagent-worker-live-paused-1", {
+			text: "now",
+			wakeEndedRecipient: true,
+		});
 		assert.equal(delivered.delivered, true, "once it is continued, messages are delivered as before");
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
