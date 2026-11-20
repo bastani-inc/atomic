@@ -138,6 +138,31 @@ describe("the single chat screen's switcher", () => {
 		assert.equal(gone.disposed, true);
 	});
 
+	test("tells how each pending request ended: shown, failed, or replaced by a later one", async () => {
+		const opening = deferred<AgentViewPort | undefined>();
+		const shown = new FakeAgentViewPort({ taskId: id("c") });
+		const switcher = new AgentViewSwitcher(
+			async (taskId) => (taskId === id("a") ? opening.promise : taskId === id("c") ? shown : undefined),
+			() => {},
+		);
+		const settled: string[] = [];
+		switcher.onPending((_pending, ended) => {
+			if (ended) settled.push(`${ended.taskId}:${ended.outcome}`);
+		});
+
+		const replaced = switcher.view(id("a"));
+		await switcher.view(id("b"));
+		opening.resolve(undefined);
+		await replaced;
+		await switcher.view(id("c"));
+		const cancelled = switcher.view(id("d"));
+		switcher.cancelPending();
+		await cancelled;
+
+		assert.deepEqual(settled, ["a:superseded", "b:failed", "c:shown", "d:superseded"]);
+		assert.equal(shownName(switcher), "worker");
+	});
+
 	test("keeps the shown port when another attempt of the same subagent is asked for", async () => {
 		const shown = new FakeAgentViewPort({ taskId: id("a1"), agentKey: "a" });
 		const again = new FakeAgentViewPort({ taskId: id("a2"), agentKey: "a" });
