@@ -10,21 +10,7 @@ import { formatModelLabel, MODEL_LABEL_FIELD_SEPARATOR } from "../core/model-lab
 import type { ModelRuntime } from "../core/model-runtime.js";
 import { type ModelSwitchThinkingSettings, thinkingLevelForModelSwitch } from "../core/model-switch-thinking-level.ts";
 import { getModelSearchText } from "../modes/interactive/model-search.ts";
-
-/**
- * Format a number as human-readable (e.g., 200000 -> "200K", 1000000 -> "1M")
- */
-function formatTokenCount(count: number): string {
-	if (count >= 1_000_000) {
-		const millions = count / 1_000_000;
-		return millions % 1 === 0 ? `${millions}M` : `${millions.toFixed(1)}M`;
-	}
-	if (count >= 1_000) {
-		const thousands = count / 1_000;
-		return thousands % 1 === 0 ? `${thousands}K` : `${thousands.toFixed(1)}K`;
-	}
-	return count.toString();
-}
+import { formatTokenCount } from "../utils/token-count.ts";
 
 /**
  * List available models, optionally filtered by search pattern.

@@ -14,6 +14,7 @@ import { DynamicBorder } from "../../modes/interactive/components/dynamic-border
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { FramedSelector, type SelectorItem } from "../../modes/interactive/components/selector.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
+import { formatTokenCount } from "../../utils/token-count.ts";
 import type { LlamaModelInfo, LlamaProgress } from "./client.js";
 import type { HuggingFaceModel } from "./huggingface.js";
 import { HuggingFaceSearch } from "./huggingface-ui.js";
@@ -32,12 +33,12 @@ interface ProgressState extends LlamaProgress {
 
 function contextLabel(model: LlamaModelInfo): string | undefined {
 	const context = model.meta?.n_ctx ?? model.meta?.n_ctx_train;
-	if (context) return context >= 1000 ? `${Math.round(context / 1000)}k` : String(context);
+	if (context) return formatTokenCount(context);
 	const args = model.status.args ?? [];
 	for (let index = 0; index < args.length - 1; index++) {
 		if (args[index] !== "--ctx-size" && args[index] !== "-c" && args[index] !== "-ctx") continue;
 		const value = Number(args[index + 1]);
-		if (Number.isFinite(value) && value > 0) return value >= 1000 ? `${Math.round(value / 1000)}k` : String(value);
+		if (Number.isFinite(value) && value > 0) return formatTokenCount(value);
 	}
 	return undefined;
 }
@@ -129,13 +130,16 @@ class LlamaView implements LlamaUi, Focusable {
 			return loaded || left.id.localeCompare(right.id);
 		});
 		const byId = new Map(sorted.map((model) => [model.id, model]));
+		const modelItems = sorted.map((model) => ({
+			id: model.id,
+			value: model.id,
+			label: model.id,
+			description: modelDescription(model),
+		}));
+		// A long model id gives way to its status and context size, which stay whole.
+		const statusWidth = Math.max(0, ...modelItems.map((item) => visibleWidth(item.description)));
 		const items: SelectorItem<string>[] = [
-			...sorted.map((model) => ({
-				id: model.id,
-				value: model.id,
-				label: model.id,
-				description: modelDescription(model),
-			})),
+			...modelItems,
 			{
 				id: DOWNLOAD_VALUE,
 				value: DOWNLOAD_VALUE,
@@ -152,6 +156,7 @@ class LlamaView implements LlamaUi, Focusable {
 				maxVisible: MAX_VISIBLE_ITEMS,
 				confirmLabel: "load/unload/download",
 				cancelLabel: "close",
+				...(statusWidth > 0 ? { minDescriptionWidth: statusWidth } : {}),
 				keybindings: this.keybindings,
 				onSelect: (item) => {
 					if (item.value === DOWNLOAD_VALUE) resolve({ type: "download" });

@@ -17,6 +17,7 @@ import {
 	taskClockOf,
 	taskClockRunning,
 } from "../../../core/tasks/live-elapsed.js";
+import { formatTokenCount } from "../../../utils/token-count.ts";
 import type { ModelCellReport, ModelColumn } from "./model-column.ts";
 import {
 	clickableKeyTextHint,
@@ -139,20 +140,6 @@ export function formatPanelElapsed(ms: number): string {
 	const minutes = Math.floor(seconds / 60);
 	if (minutes < 60) return `${minutes}m`;
 	return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-}
-
-export function formatPanelTokens(tokens: number): string {
-	if (!Number.isFinite(tokens) || tokens < 0) return "0";
-	const rounded = Math.round(tokens);
-	if (rounded < 1000) return String(rounded);
-	const units = ["k", "M", "B", "T", "Q"];
-	let amount = tokens / 1000;
-	let unit = 0;
-	while (Math.round(amount * 10) >= 10_000 && unit < units.length - 1) {
-		amount /= 1000;
-		unit++;
-	}
-	return `${amount.toFixed(1)}${units[unit]}`;
 }
 
 export class AgentPanelModel {
@@ -430,7 +417,7 @@ function stateWord(row: AgentPanelRow): string {
 function rightColumn(row: AgentPanelRow, width: number): string {
 	const elapsed = row.elapsedMs === undefined ? "" : formatPanelElapsed(row.elapsedMs);
 	if (row.state === "running") {
-		const tokens = row.tokens === undefined || width < 70 ? "" : `↓ ${formatPanelTokens(row.tokens)} tokens`;
+		const tokens = row.tokens === undefined || width < 70 ? "" : `↓ ${formatTokenCount(row.tokens)} tokens`;
 		if (elapsed.length > 0 && tokens.length > 0) return `${elapsed} · ${tokens}`;
 		return elapsed || tokens || "running";
 	}

@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { formatTokenCount } from "../../utils/token-count.ts";
 import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { formatSize } from "../tools/truncate.ts";
@@ -117,7 +118,8 @@ export function formatTaskHeartbeatStatus(task: TaskHeartbeatTask): string {
 			);
 		if (task.turnCount !== undefined) parts.push(formatCount(task.turnCount, "turn"));
 		if (task.toolCount !== undefined) parts.push(formatCount(task.toolCount, "tool call"));
-		if (task.tokenCount !== undefined) parts.push(formatCount(task.tokenCount, "token"));
+		if (task.tokenCount !== undefined)
+			parts.push(`${formatTokenCount(task.tokenCount)} token${task.tokenCount === 1 ? "" : "s"}`);
 		if (task.model !== undefined) {
 			const model = formatModelLabel(task.model, { thinkingLevel: task.thinking });
 			parts.push(

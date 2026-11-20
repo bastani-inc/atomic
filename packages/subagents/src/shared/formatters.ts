@@ -2,16 +2,9 @@
  * Formatting utilities for display output
  */
 
-import { formatModelReferenceLabel, sliceHead } from "@bastani/atomic";
+import { formatModelReferenceLabel, formatTokenCount, sliceHead } from "@bastani/atomic";
 import { THINKING_LEVELS } from "./model-info.js";
 import type { Usage } from "./types.js";
-
-/**
- * Format token count with k suffix for large numbers
- */
-export function formatTokens(n: number): string {
-	return n < 1000 ? String(n) : n < 10000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
-}
 
 /**
  * A subagent's model as every model label reads (#4269): its raw `provider/id`, then its level, which a known
@@ -29,10 +22,10 @@ export function formatModelThinking(model?: string, thinking?: string): string {
 export function formatUsage(u: Usage): string {
 	const parts: string[] = [];
 	if (u.turns) parts.push(`${u.turns} turn${u.turns > 1 ? "s" : ""}`);
-	if (u.input) parts.push(`in:${formatTokens(u.input)}`);
-	if (u.output) parts.push(`out:${formatTokens(u.output)}`);
-	if (u.cacheRead) parts.push(`R${formatTokens(u.cacheRead)}`);
-	if (u.cacheWrite) parts.push(`W${formatTokens(u.cacheWrite)}`);
+	if (u.input) parts.push(`in:${formatTokenCount(u.input)}`);
+	if (u.output) parts.push(`out:${formatTokenCount(u.output)}`);
+	if (u.cacheRead) parts.push(`R${formatTokenCount(u.cacheRead)}`);
+	if (u.cacheWrite) parts.push(`W${formatTokenCount(u.cacheWrite)}`);
 	if (u.cost) parts.push(`$${u.cost.toFixed(4)}`);
 	return parts.join(" ");
 }

@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
-import type { TaskHeartbeatDetails } from "../../packages/coding-agent/src/core/tasks/heartbeat-notice.js";
+import {
+	formatTaskHeartbeatStatus,
+	type TaskHeartbeatDetails,
+} from "../../packages/coding-agent/src/core/tasks/heartbeat-notice.js";
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
 import { TaskDetail } from "../../packages/coding-agent/src/modes/interactive/components/task-detail.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -97,4 +100,27 @@ test("/tasks detail shows a running task's heartbeat cadence, or that it is off"
 	assert.match(detail(0), /Heartbeat off/);
 	assert.doesNotMatch(detail(15 * MINUTE, true), /Heartbeat/, "finished tasks no longer heartbeat");
 	assert.doesNotMatch(detail(undefined), /Heartbeat/);
+});
+
+test("a heartbeat notice writes a subagent's tokens as every other view does", () => {
+	const tokens = (tokenCount: number) =>
+		formatTaskHeartbeatStatus({
+			taskId: "task-agent",
+			kind: "agent",
+			title: "Trace the auth flow",
+			elapsedMs: 30 * MINUTE,
+			intervalMs: 15 * MINUTE,
+			tokenCount,
+		})
+			.split(" · ")
+			.find((part) => /tokens?$/.test(part));
+	for (const [count, expected] of [
+		[1, "1 token"],
+		[999, "999 tokens"],
+		[1_000, "1.0k tokens"],
+		[9_999, "10.0k tokens"],
+		[999_950, "1.0M tokens"],
+		[1_234_567, "1.2M tokens"],
+	] as const)
+		assert.equal(tokens(count), expected, `token count ${count}`);
 });
