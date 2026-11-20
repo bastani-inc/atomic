@@ -1,174 +1,156 @@
 # Quickstart
 
-**Outcome:** Atomic is installed, authenticated, and has completed one useful task in your repository.
-
-Follow the steps below to install Atomic and complete your first useful session. Atomic runs coding-agent sessions with tools, codemode, subagents, verification, and human approvals for engineering work.
-
-Work through the steps in order. Each links to a focused page with full instructions.
+**Outcome:** Atomic is installed, authenticated, and has completed a real task in your repository.
 
 ## Onboarding path
 
-1. **[Install Atomic](/getting-started/installation)** — package manager or self-contained release archive.
-2. **[Authenticate](/getting-started/authentication)** — subscription login or API key.
-3. **[Run your first session](/getting-started/first-session)** — start Atomic, run a task, and delegate work to subagents.
-4. **[Add project instructions](/getting-started/project-instructions)** — teach Atomic your repository's conventions with `AGENTS.md`.
+Follow these four pages in order for full setup instructions, or use the quick commands below:
 
-Then come back here for [common things to try](#common-things-to-try) and [next steps](#next-steps).
+1. **[Install Atomic](/getting-started/installation)** — package manager or self-contained release archive.
+2. **[Authenticate](/getting-started/authentication)** — subscription login (`/login`) or API key.
+3. **[Run your first session](/getting-started/first-session)** — run a task, inspect tools, and delegate to subagents.
+4. **[Add project instructions](/getting-started/project-instructions)** — define repository conventions in `AGENTS.md`.
 
 ## Prerequisites
 
-- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.2+ for Bun installs.
+- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun (1.4.2+ for Bun installs).
 - **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`; Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
-- **Model-provider access** — use a supported subscription login or API key. Run `/login` after startup.
+- **Model provider:** a supported subscription login (`/login`) or API key.
 
 ## Install
 
-The install commands and every installer knob, default path, and platform note now live on the installation page.
-
-Moved to [Installation](/getting-started/installation#install).
-
-### Package managers
-
-Moved to [Installation](/getting-started/installation#package-managers).
-
-Full detail: package manager commands and the `--ignore-scripts` note.
-
-### Release archive
-
-Moved to [Installation](/getting-started/installation#release-archive).
-
-Full detail: version pinning, `ATOMIC_VERSION`, `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, `GITHUB_TOKEN`/`GH_TOKEN`, rerunning the installer (it skips the download when the version is already installed; `--force`, `-Force`, or `ATOMIC_FORCE_INSTALL=1` reinstalls), default paths, and PATH guidance. It also describes what the installer prints: the release and platform, a live download progress bar, one-line phase confirmations, the Atomic logo, and a `To start:` block, or plain text when `NO_COLOR=1` is set, `CI` is set, or output is not a terminal.
-
-#### ATOMIC_VERSION
-
-Moved to [Installation](/getting-started/installation#atomic_version).
-
-#### ATOMIC_INSTALL_DIR
-
-Moved to [Installation](/getting-started/installation#atomic_install_dir).
-
-#### ATOMIC_BIN_DIR
-
-Moved to [Installation](/getting-started/installation#atomic_bin_dir).
-
-#### GITHUB_TOKEN / GH_TOKEN
-
-Moved to [Installation](/getting-started/installation#github_token-/-gh_token).
-
+<a id="package-managers" />
+<a id="release-archive" />
+<a id="atomic_version" />
+<a id="atomic_install_dir" />
+<a id="atomic_bin_dir" />
+<a id="github_token-/-gh_token" />
 <a id="which-runtime-runs-your-workflows" />
+<a id="which-runtime-runs-atomic" />
+<a id="alpine-and-musl-linux-archives" />
+<a id="uninstall" />
 
-### Which runtime runs Atomic?
+Install with npm (or pnpm / Bun):
 
-Moved to [Installation](/getting-started/installation#which-runtime-runs-atomic).
+```bash
+npm install -g @bastani/atomic
+```
 
-### Alpine and musl Linux archives
+Or install the self-contained release archive (no Node.js required):
 
-Moved to [Installation](/getting-started/installation#alpine-and-musl-linux-archives).
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
+```
 
-## Uninstall
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+```
 
-Moved to [Installation](/getting-started/installation#uninstall).
+Verify the install:
 
-Full detail: removing the install root, the launcher, and the PATH entry on every platform.
+```bash
+atomic --version
+```
+
+See [Installation](/getting-started/installation#install) for [package managers](/getting-started/installation#package-managers), [release archive options](/getting-started/installation#release-archive) (`ATOMIC_VERSION`, `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, `GITHUB_TOKEN`/`GH_TOKEN`, `--force`/`-Force`/`ATOMIC_FORCE_INSTALL=1`, Alpine/musl archives, portable Git), and [uninstalling](/getting-started/installation#uninstall).
 
 ## Authenticate
 
-Moved to [Authentication](/getting-started/authentication#authenticate).
+<a id="option-1-subscription-login" />
+<a id="option-2-api-key" />
 
-Full detail: `/login` subscription providers and API-key environment variables.
+Either log in with a subscription inside Atomic:
 
-### Option 1: subscription login
+```bash
+atomic
+/login
+```
 
-Moved to [Authentication](/getting-started/authentication#option-1-subscription-login).
+Or export an API key before starting:
 
-### Option 2: API key
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+atomic
+```
 
-Moved to [Authentication](/getting-started/authentication#option-2-api-key).
+See [Authentication](/getting-started/authentication#authenticate) for all options and verification steps.
 
 ## First session
 
-Moved to [First session](/getting-started/first-session#first-session-2).
-
-Full detail: starting Atomic, delegating work to subagents, top skills, and the default tools and prompts.
-
 <a id="try-the-built-in-workflows" />
-
-### Use an earlier workflow
-
-Workflows are now skills. Ask Atomic to convert an old workflow file to a skill. See [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task) for the alternative.
-
-### Monitor and steer a run
-
-Use `/tasks` to inspect background subagents. See [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task).
-
-### Top skills to invoke directly
-
-Moved to [First session](/getting-started/first-session#top-skills-to-invoke-directly).
-
+<a id="use-an-earlier-workflow" />
+<a id="monitor-and-steer-a-run" />
+<a id="top-skills-to-invoke-directly" />
 <a id="create-your-own-workflow-in-natural-language" />
+<a id="describe-a-reusable-procedure" />
+<a id="default-tools-and-prompts" />
 
-### Describe a reusable procedure
+Start Atomic inside a repository and ask it to inspect the project:
 
-Describe the task to Atomic, or give it an existing workflow definition and ask it to convert the file to a skill. See [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task).
+```bash
+cd /path/to/project
+atomic
+```
 
-### Default tools and prompts
+```text
+List the top-level directories in this repository and say what each one holds.
+```
 
-Moved to [First session](/getting-started/first-session#default-tools-and-prompts).
+- Use `/tasks` to inspect background subagents and shells.
+- Use `/skill:<name>` to invoke a reusable skill directly (see [Top skills](/getting-started/first-session#top-skills-to-invoke-directly)).
+- Workflows are now skills: pass an older workflow file to Atomic to convert it into a skill, or see [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task).
+- See [First session](/getting-started/first-session#first-session-2) for the full walkthrough and [default tools](/getting-started/first-session#default-tools-and-prompts).
 
 ## Give Atomic project instructions
 
-Moved to [Project instructions](/getting-started/project-instructions#give-atomic-project-instructions).
-
-Full detail: `AGENTS.md` discovery, precedence, and what to put in it.
+Add an `AGENTS.md` file at the root of your repository so Atomic follows your test commands and coding conventions automatically. Run `/reload` after editing it. See [Project instructions](/getting-started/project-instructions#give-atomic-project-instructions).
 
 ## Common things to try
 
 ### Reference files
 
-Type `@` in any interactive editor to fuzzy-search files; or pass files on the command line:
+Type `@` in the editor to fuzzy-search project files, or pass `@file` arguments on the CLI:
 
 ```bash
 atomic @README.md "Summarize this"
 atomic @src/app.ts @src/app.test.ts "Review these together"
 ```
 
-Paste images with native macOS Cmd+V or Ctrl+V. On Windows, use Alt+V instead of Ctrl+V. You can also drag images into supported terminals.
-
-Inside tmux on macOS, use `Ctrl+V` for reliable image paste. Native `Cmd+V` depends on your terminal and may not work through tmux.
-
-When the clipboard contains both text and an image, Ctrl+V prefers the image. Cmd+V may paste either, depending on how the terminal delivers the gesture.
+Paste images with `Cmd+V` (macOS) or `Ctrl+V` (`Alt+V` on Windows), or drag images into supported terminals. Inside tmux on macOS, use `Ctrl+V`. When the clipboard holds both text and an image, `Ctrl+V` prefers the image; `Cmd+V` depends on the terminal.
 
 ### Run shell commands
 
-In interactive mode:
+Prefix a command in the editor with `!` to run it and attach its output to the model context, or `!!` to run it without sending output to the model:
 
 ```text
 !bun run lint
 ```
 
-The command output is sent to the model. Use `!!command` to run a command without adding its output to the model context.
-
 ### Switch models
 
-Use `/model` or CTRL+L to choose a model. Use SHIFT+Tab to cycle thinking level. Use CTRL+P / SHIFT+CTRL+P to cycle through scoped models.
+- `/model` or `Ctrl+L` — pick a model.
+- `Shift+Tab` — cycle thinking level.
+- `Ctrl+P` / `Shift+Ctrl+P` — cycle scoped models.
 
 ### Continue later
 
-Sessions are saved automatically:
+Sessions auto-save per working directory:
 
 ```bash
-atomic -c                  # Continue most recent session
-atomic -r                  # Browse previous sessions
-atomic --name "my task"    # Set session display name at startup
-atomic --session <id|prefix> # Open an exact ID or unique 8-hex UUID prefix
+atomic -c                    # Continue the most recent session
+atomic -r                    # Pick a previous session
+atomic --name "my task"      # Set a display name at startup
+atomic --session <id|prefix> # Open by exact ID or unique 8-hex UUID prefix
 atomic --import <file>       # Import a format-4 JSONL export
 ```
 
-Inside Atomic, use `/resume`, `/new`, `/tree`, `/fork`, and `/clone` to manage sessions.
+Inside interactive mode, use `/resume`, `/new`, `/tree`, `/fork`, and `/clone`.
 
 ### Non-interactive mode
 
-For one-shot prompts:
+Run one-shot prompts with `-p` (`--print`):
 
 ```bash
 atomic -p "Summarize this codebase"
@@ -176,18 +158,18 @@ cat README.md | atomic -p "Summarize this text"
 atomic -p @screenshot.png "What's in this image?"
 ```
 
-Use `--mode json` for JSON event output or `--mode rpc` for process integration.
+Use `--mode json` for a JSON event stream or `--mode rpc` for stdin/stdout process integration.
 
 ## Next steps
 
-- [Using Atomic](/usage) - interactive mode, slash commands, sessions, context files, and CLI reference.
-- [Orchestration](/orchestration) - use codemode and subagents for multi-step work.
-- [Skills](/skills) - reusable expert instructions invoked with `/skill:<name>`.
-- [Providers](/providers) - authentication and model setup.
-- [Settings](/settings) - global and project configuration.
-- [Keybindings](/keybindings) - shortcuts and customization.
-- [Atomic Packages](/packages) - install shared extensions, skills, prompts, and themes.
-- [Security](/security) - project trust, what Atomic is allowed to touch, and how to report a vulnerability. Read this before you trust a project or install someone else's skills, extensions, or packages.
-- [Containerization](/containerization) - run Atomic or its tools inside an isolated environment.
+- [Interactive use](/usage) — slash commands, shortcuts, and message queueing.
+- [Orchestration](/orchestration) — combine codemode, subagents, and skills for multi-step work.
+- [Skills](/skills) — reusable procedures invoked with `/skill:<name>`.
+- [Providers](/providers) — provider setup and authentication.
+- [Settings](/settings) — global and project configuration.
+- [Keybindings](/keybindings) — shortcuts and remapping.
+- [Atomic Packages](/packages) — install shared extensions, skills, prompts, and themes.
+- [Security](/security) — project trust, tool permissions, and vulnerability reporting. Read before trusting a project or installing third-party packages.
+- [Containerization](/containerization) — run Atomic in an isolated environment.
 
-Platform notes: [Windows](/windows), [Termux](/termux), [tmux](/tmux), [Terminal setup](/terminal-setup), [Shell aliases](/shell-aliases).
+Platform guides: [Windows](/windows), [Termux](/termux), [tmux](/tmux), [Terminal setup](/terminal-setup), [Shell aliases](/shell-aliases).

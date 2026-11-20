@@ -3,34 +3,28 @@ title: "SDK"
 description: "Embed Atomic in a Node.js application."
 ---
 
-> Atomic can help you use the SDK. Ask it to build an integration for your use case.
-
 # SDK
 
-Use the SDK to embed Atomic in an application, build a custom interface, or integrate agent capabilities into an automated workflow.
+<a id="on-this-page-and-its-reference" />
 
-**Example use cases:**
-- Build a custom UI (web, desktop, mobile)
-- Integrate agent capabilities into existing applications
-- Create automated pipelines with agent reasoning
-- Build custom tools that spawn sub-agents
-- Test agent behavior programmatically
+Embed Atomic in Node.js apps to build custom UIs, integrate agent sessions into backend services, or drive automated pipelines programmatically. Working examples live in [examples/sdk/](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/sdk).
 
-See [examples/sdk/](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/sdk) for working examples from minimal to full control.
-
-## On this page and its reference
-
-This page covers the SDK quick start, its core concepts, and one complete example. Options, resource loaders, return types, run modes, and exports live in the [SDK API reference](/sdk/reference).
-
-For a custom host that runs background work, see [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor-s1), [Supervised command SDK](/sdk/reference#supervised-command-sdk), and [Task transcript references](/sdk/reference#task-transcript-references).
-
-For the standalone SQLite facade and adapter conformance suite, see [SQLite storage API](/storage).
-
-Not sure the SDK is the right integration mode? Compare it with RPC and JSON mode on [Programmatic use](/programmatic).
-
-To serve an agent over HTTP, see [Embedding Atomic in a web server](/sdk/web-server), which walks through a Next.js App Router route that streams session output to a browser.
+- **Full options & exports:** [SDK API reference](/sdk/reference) (also covers [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor-s1), [Supervised command SDK](/sdk/reference#supervised-command-sdk), and [Task transcript references](/sdk/reference#task-transcript-references)).
+- **SQLite & custom storage adapters:** [SQLite storage API](/storage).
+- **Serving over HTTP:** [Embedding Atomic in a web server](/sdk/web-server) (Next.js App Router streaming guide).
+- **Choosing an integration mode:** Compare SDK, RPC, and JSON on [Programmatic use](/programmatic).
 
 ## Quick Start
+
+Install `@bastani/atomic` (the SDK ships in the main package; pass `--ignore-scripts` if you disable dependency install scripts):
+
+```bash
+npm install @bastani/atomic
+# or: pnpm add @bastani/atomic
+# or: bun add @bastani/atomic
+```
+
+Create a session, stream text deltas, and dispose cleanly in `finally`:
 
 ```typescript
 import { createAgentSession, ModelRuntime, SessionManager } from "@bastani/atomic";
@@ -55,103 +49,44 @@ try {
 }
 ```
 
-`ModelRuntime` is the canonical asynchronous provider runtime when an integration wants provider-owned credentials, dynamic catalogs, and native providers in one object:
-
-```typescript
-import { createAgentSession, ModelRuntime, SessionManager } from "@bastani/atomic";
-
-const modelRuntime = await ModelRuntime.create();
-const { session } = await createAgentSession({
-  sessionManager: SessionManager.inMemory(),
-  modelRuntime,
-});
-```
-
-`ModelRuntime.create()` accepts custom `authPath`, `modelsPath`, credential storage, and runtime auth overrides, plus the model-catalog options `allowModelNetwork`, `modelRefreshTimeoutMs`, `modelsStorePath`, and `modelsStore` (see [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh)). `ModelRegistry` and `AuthStorage` remain available as Atomic's synchronous compatibility facades. Use `readStoredCredential(provider, authPath?)` for a lightweight read of one stored provider credential.
-
-Use `await resolveRestoredModelReference(provider, modelId, modelRuntime)` to resolve a saved model without selecting a settings default. It returns the authenticated exact model, reconstructs eligible custom or dynamic IDs, or returns `undefined` when restoration is unavailable. Import it from `@bastani/atomic` and check the result before creating a session when restoration must not fall back to another model.
-
-Extensions supplied directly to SDK sessions can use the exported `InlineExtension` type. Extension APIs and event types include native `registerProvider(Provider)`, `registerEntryRenderer`, `entry_appended`, `before_provider_headers`, and `agent_settled`.
-
-The package root also exports `buildContextEntries`, `sessionEntryToContextMessages`, and `CompactionEntry` for converting durable session branches into model context. The equivalent active-session operation is `sessionManager.buildContextEntries()`.
+- **`ModelRuntime`:** Canonical async runtime for credentials, native providers, and dynamic catalogs. Accepts `authPath`, `modelsPath`, `credentials`, runtime auth overrides, and catalog options `allowModelNetwork`, `modelRefreshTimeoutMs`, `modelsStorePath`, and `modelsStore` (see [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh)). Legacy synchronous facades `ModelRegistry` and `AuthStorage` remain available; `readStoredCredential(provider, authPath?)` reads one stored credential.
+- **Exact model restoration:** Call `await resolveRestoredModelReference(provider, modelId, modelRuntime)` to resolve an authenticated saved model (including custom/dynamic IDs) or get `undefined` without falling back to a default.
+- **Extensions & context helpers:** Exported root types/helpers include `InlineExtension`, `registerProvider(Provider)`, `registerEntryRenderer`, `entry_appended`, `before_provider_headers`, `agent_settled`, `buildContextEntries`, `sessionEntryToContextMessages`, `CompactionEntry`, and `sessionManager.buildContextEntries()`.
 
 ## Installation
 
-Install `@bastani/atomic` as a project dependency with npm, pnpm, or Bun:
-
-With npm:
-
-```bash
-npm install @bastani/atomic
-```
-
-With pnpm:
-
-```bash
-pnpm add @bastani/atomic
-```
-
-With Bun:
-
-```bash
-bun add @bastani/atomic
-```
-
-Atomic does not require package install scripts. If you want to disable dependency lifecycle scripts during the Atomic install, you can add `--ignore-scripts` to the install command.
-
-The SDK is included in the main package. No separate SDK package is needed.
-
-### Migrating an existing Node host
-
-Use the installed package's ESM exports, not checkout paths or extension-loader aliases:
+For TypeScript ESM Node apps, set `"type": "module"` in `package.json` and `"module": "NodeNext"`, `"moduleResolution": "NodeNext"`, `"strict": true` in `tsconfig.json` (typechecks cleanly with `skipLibCheck: false`). Import directly from `@bastani/atomic`:
 
 ```typescript
 import { createAgentSession, type HostInput } from "@bastani/atomic";
 ```
 
-For TypeScript Node applications, use `"type": "module"` in `package.json` and `module: "NodeNext"`, `moduleResolution: "NodeNext"`, and `strict: true` in `tsconfig.json`. Declaration checking works with `skipLibCheck: false`; disabling it is not required. No ambient module declarations, source aliases, CLI process, or terminal is needed.
+### Migrating an existing Node host
 
-When upgrading an existing host:
+<a id="migrating-from-the-experimental-client" />
+<a id="experimental-harness-factory" />
 
-- Remove manual registration of Atomic's shipped builtin extensions. They and their resources are included by default. Use `builtins` to disable packages; use `tools`/`excludedTools` to control tool access. An empty tool allowlist also excludes Intercom.
-- Supply all five `HostInput` methods (`confirm`, `select`, `input`, `editor`, `questionnaire`) through `extensionBindings.humanInput`. Preserve question text and option values, honor each request's abort signal, and return literal `true` only for explicit approval. No adapter is not consent: ordinary dialogs reject with `HumanInputUnavailable`. Do not translate cancellation into approval.
-- Remove `workflows` from the `builtins` option. The workflow SDK and builtin definition subpaths are no longer exported. To migrate an old workflow, ask Atomic to convert its definition to a skill. The agent reads the file as text, leaves it untouched, and writes a new skill in the matching project or global skills directory. Run the new skill with codemode and subagents.
-- Always `await session.dispose()` in `finally`, including on failure. Disposal is asynchronous and can reject with `ShutdownFailed` after attempting all cleanup; do not hide that rejection or call `process.exit()` to force a successful shutdown. Each session owns its own work, even when services are shared.
-
-MCP servers and web providers still require their normal configuration and credentials. Importing the SDK does not connect them or take over standard input. Route host diagnostics through `extensionBindings.onDiagnostic`; a missing provider or extractor is an error, not an empty successful result.
-
-If creation reports `BuiltinUnavailable`, reinstall the complete package and its dependencies rather than copying only `dist/index.js` into your application.
-
-## Migrating from the experimental client
-
-The `@bastani/atomic/client` entrypoint is no longer available because upstream Pi stopped publishing its client and protocol packages. Use `createAgentSession()` from `@bastani/atomic` in-process, or [RPC mode](/rpc) with `--mode rpc` or `@bastani/atomic/rpc-entry`. Pin the previous release if you still need the experimental client. The CLI, RPC mode and extensions are unaffected.
-
-## Experimental Harness factory
-
-For the current supported integration, start with [createAgentSession()](#createagentsession) and the [SDK API reference](/sdk/reference).
+- **Builtins are automatic:** Remove manual registration of shipped builtin extensions; disable selectively with `builtins` and restrict tools with `tools` / `excludedTools` (`tools: []` also excludes Intercom).
+- **Host input:** Supply all five `HostInput` methods (`confirm`, `select`, `input`, `editor`, `questionnaire`) on `extensionBindings.humanInput`, honoring abort signals and returning literal `true` only on explicit approval (missing adapter rejects with `HumanInputUnavailable`).
+- **Removed `workflows` builtin:** Remove `workflows` from `builtins`; workflow SDK exports were removed. Convert older workflow files into skills ([Migrating workflows](/orchestration/migrating-workflows)).
+- **Always `await session.dispose()` in `finally`:** Disposal is async and may reject with `ShutdownFailed` after attempting all cleanup; do not swallow it or call `process.exit()`.
+- **Diagnostics & packaging:** Route operational events via `extensionBindings.onDiagnostic`. If creation throws `BuiltinUnavailable`, reinstall the full package rather than copying only `dist/index.js`.
+- **Removed experimental client:** `@bastani/atomic/client` was removed; use `createAgentSession()` in-process or [RPC mode](/rpc) (`--mode rpc` / `@bastani/atomic/rpc-entry`).
 
 ## Core Concepts
 
 ### createAgentSession()
 
-The main factory function for a single `AgentSession`.
-
-`createAgentSession()` includes Atomic's shipped subagents, MCP, web access and Intercom, plus their bundled resources. It uses normal user, project and configured-package discovery when no `resourceLoader` is supplied. A custom loader supplies your resources; the factory adds shipped builtins without changing the loader's options. Services still need their existing configuration and credentials.
-
-Use `builtins: { "web-access": false, intercom: false }` to disable specific shipped packages and their resources. Omitted keys remain enabled, including with `builtins: {}`. Tool selection is separate: `tools: []` and `noTools: "all"` expose no tools, including Intercom; `noTools: "all"` also overrides a nonempty allowlist. `excludedTools` wins over selection. Suppression survives reload. See [tool precedence](/sdk/reference#tools) for `defaultTools` and `noTools: "builtin"`.
-
-Creation finishes extension startup before returning. Pass `extensionBindings` when startup hooks need your host bindings. Later `session.bindExtensions(...)` updates those bindings without replaying `session_start`; reload starts a new extension generation. Missing shipped assets reject with an error whose `code` is `BuiltinUnavailable` and whose message names the package. Reinstall the package rather than continuing with a partially available session.
-
-Opening or binding a session never recovers work an earlier process left unfinished. That work includes restoring background subagents, replaying interrupted deliveries, and showing undelivered background results. Call `await session.startPendingRecovery("resume")` once you are ready to show its output. It runs once per session and resolves with a report: `{ replayed, dropped, completions, notices }`.
+Creates a single `AgentSession` with bundled subagents, MCP, web access, and Intercom enabled by default (plus normal user/project/package discovery unless a custom `resourceLoader` is passed).
 
 ```typescript
 import { createAgentSession, SessionManager } from "@bastani/atomic";
 
-// Minimal: defaults with DefaultResourceLoader
+// Defaults with DefaultResourceLoader
 const { session } = await createAgentSession();
 
-// Custom: override specific options
-const { session } = await createAgentSession({
+// Custom selection
+const { session: custom } = await createAgentSession({
   model: myModel,
   tools: ["read", "bash"],
   // Or keep defaults and remove specific tools:
@@ -160,9 +95,13 @@ const { session } = await createAgentSession({
 });
 ```
 
+- **Disable builtins or tools:** Pass `builtins: { "web-access": false, intercom: false }` to disable packages. `tools: []` or `noTools: "all"` disables every tool including Intercom; `excludedTools` always wins and survives `/reload`. See [tool precedence](/sdk/reference#tools).
+- **Startup hooks & rebinding:** `createAgentSession()` completes extension `session_start` before returning—pass `extensionBindings` here if startup hooks need them. Later `session.bindExtensions(...)` updates bindings without replaying `session_start`.
+- **Explicit recovery:** Opening a session never auto-recovers interrupted work. Call `await session.startPendingRecovery("resume")` once ready to display output; returns `{ replayed, dropped, completions, notices }`.
+
 ### Workspaces
 
-Pass `workspace` to bind a session to a repository, branch and worktree. The value comes from `workspace({ … })`.
+Bind a session to a Git repository, branch, and worktree with `workspace({ ... })` (requires Git 2.33+):
 
 ```typescript
 import { createAgentSession, workspace } from "@bastani/atomic";
@@ -173,18 +112,13 @@ const { session, workspace: binding } = await createAgentSession({ workspace: ap
 const reviewer = await createAgentSession({ workspace: api.readOnly() });
 ```
 
-- **Resolution:** a local `repo` must be a repository root. A remote is cloned once per host into a shared store under `repos/` in the [storage home](/storage#storage-home) (`~/.atomic/repos/` by default, or `<agentDir>/repos/` when `ATOMIC_CODING_AGENT_DIR` is customized) and worktrees are added from it after a fetch, so they start from the remote as it is now. A missing branch is created from `base`. An existing worktree must belong to the repository and be on the branch. A worktree whose checkout was interrupted, for example by a crash, is added again on the next bind. Workspaces need git 2.33 or later. A `sessionManager` passed together with a workspace must already work inside its worktree, since shell commands run in its directory; one elsewhere fails with `WorkspaceConfigError` (field `sessionManager`). The check runs once the workspace is bound, because an `"auto"` worktree's path is known only then.
-- **Working directory:** the session runs in the bound worktree. An explicit `cwd` resolves against it and must stay inside it.
-- **Read-only:** a `"read-only"` workspace does not offer `write`, `edit` or `todo`, also when an explicit `tools` list names them, and refuses them if one is active anyway. Shell tools still run. This is not operating-system sandboxing.
-- **Recording and resume:** the resolved binding is stored in the session as a `workspace_binding` entry and returned as `result.workspace` and `session.workspace`. Reopening that session with the same workspace restores the recorded binding: it verifies the repository and branch, re-adds a deleted worktree, and keeps the recorded base commit and label. To know the worktree before creating the session, for example to pass its directory as `cwd`, call `bindSessionWorkspace(workspace, sessionManager)` on the reopened session manager; it restores the recorded binding, or resolves the workspace when the session has none, and `createAgentSession` then reuses that binding.
-- **Children:** subagent children inherit the workspace. A child of a read-only session stays read-only even when it passes its own workspace.
-- **Changes:** `workspaceChangeSet(binding)` returns the committed changes since the base commit, and `publishPullRequest(changeSet, { draft: true })` pushes them and opens a pull request with the GitHub CLI.
-
-Invalid options throw `WorkspaceConfigError`; binding failures reject with `WorkspaceBindingError` (for example `wrong-branch`, `cwd-outside-worktree`, or `git-unavailable` when git cannot be started). Both are checked before the session is created.
+- **Resolution:** Local `repo` must be a repo root; remote repos clone once under `<storageHome>/repos/` ([storage home](/storage#storage-home)) and create worktrees after fetching. Missing branches start at `base`; existing worktrees must match repo and branch (interrupted checkouts re-create automatically). Explicit `cwd` resolves inside the worktree, and a supplied `sessionManager` must already be inside it (`WorkspaceConfigError` otherwise).
+- **Read-only (`api.readOnly()`):** Removes and blocks `write`, `edit`, and `todo` (even if listed in `tools`; shell tools still run—not an OS sandbox). Children stay read-only even with their own workspace.
+- **Persistence & PRs:** Saved as a `workspace_binding` entry and restored on reopen (call `bindSessionWorkspace(workspace, sessionManager)` beforehand if you need the path early). Inspect commits with `workspaceChangeSet(binding)` and open PRs via `publishPullRequest(changeSet, { draft: true })`. Invalid options throw `WorkspaceConfigError`; binding failures throw `WorkspaceBindingError` (`wrong-branch`, `cwd-outside-worktree`, `git-unavailable`).
 
 ### Shared resource admission
 
-SDK hosts can pass `resourceAdmission` to `createAgentSession()` to share their own capacity policy across sessions and managed shell commands:
+Enforce host-wide session and process capacity caps via `resourceAdmission`:
 
 ```typescript
 import type { ResourceAdmission } from "@bastani/atomic";
@@ -203,25 +137,14 @@ const resourceAdmission: ResourceAdmission = {
 const { session } = await createAgentSession({ resourceAdmission });
 ```
 
-`capacity` is your host's admission service. `kind` is `"session"` or `"process"`. Make acquisition cancellation-aware and the returned release function idempotent. `resourceAdmissionSignal` cancels a wait for session capacity; children inherit the admission service, not that signal. Pass the same service whenever your runtime factory creates a replacement session.
-
-A session holds its permit until clean disposal. A managed command holds its permit through background execution and confirmed process cleanup, even after an observation wait returns. Failed launches release their permits after rollback. Cleanup failures keep capacity reserved; inspect and resolve them instead of recycling a slot on a timer. Arbitrary processes created outside Atomic's managed command APIs are not counted.
-
-Your admission service must reconcile abandoned holders after a host crash. Atomic does not treat lease expiry as cleanup proof or clear a service's retained permits automatically.
-
-On Unix, Atomic calls `permit.bindProcess({ kind: "unix-process-group", id })` on a process permit once the command's process group exists and before the launch returns, if the permit provides it. Persist the identity with the permit so a replacement host can check whether the group is still alive before it frees the capacity. The identity only names the group and gives no right to signal it. Windows commands report no identity, so keep those permits reserved until normal cleanup confirms them. If `bindProcess` rejects, Atomic cancels the command, fails the launch, and releases the permit only after cleanup is confirmed.
-
-A parent session keeps its permit while it waits for a child, so a child that queued for a permit could wait on its own parent. Atomic marks child sessions (subagents and other sessions built from `getChildSessionOptions()`) with `request.delegated`. For those requests, grant a permit immediately or throw. Never queue them or exceed the cap. A cap of one, or a cap filled by parents, therefore rejects delegation with your error instead of stalling. Set the cap above the number of parents that can be live at once if you need children to run.
-
-Use `withResourceAdmission(resourceAdmission, async () => { ... })` to apply a service to SDK sessions and managed commands launched within an asynchronous operation, including commands using an existing task owner. An explicit session service wins for that session; commands in the operation use its scoped service. Pass `resourceAdmission: null` for a session that takes no permit even inside such a scope.
-
-A child session built from `getChildSessionOptions()` uses only its parent's service, or none when its parent holds none: a scope the parent's turn happens to run in never applies to the parent's children.
-
-A turn that a delivered message starts (an extension's `sendMessage`, `sendMessages` or `sendUserMessage`, or the session's `sendCustomMessage`, `sendCustomMessages` or `sendUserMessage`) runs under the receiving session's own service, or none when it holds none, wherever the message was sent from. A session's commands therefore never wait on the service of a scope that only sent it a message. `prompt()` still runs in its caller's scope.
+- `kind` is `"session"` or `"process"`. Make `acquire` honor `signal` (`resourceAdmissionSignal` cancels session wait; children inherit the service, not that signal) and make release functions idempotent.
+- **Deadlock rule (`request.delegated`):** Parents hold their session permit while children run, so **never queue** `request.delegated` acquisitions—grant immediately or throw, and size your cap above max concurrent parents.
+- **Permit lifetime & crash recovery:** Session permits release on clean `dispose()`; managed command permits release after confirmed process cleanup (never recycle on a timer). On Unix, implement `permit.bindProcess({ kind: "unix-process-group", id })` to persist process-group identity for post-crash reconciliation (Windows commands report no identity).
+- **Scoping:** Wrap async flows in `withResourceAdmission(service, fn)` (explicit session service wins; `resourceAdmission: null` opts out). Child sessions from `getChildSessionOptions()` and delivered-message turns always use their own/parent service rather than a sender's scope.
 
 ### Session storage
 
-`createAgentSession()` persists sessions in `~/.atomic/workflows/journal.sqlite` by default, under `session_` table prefixes. Pass `sessionStore` to choose storage explicitly:
+Sessions default to `~/.atomic/workflows/journal.sqlite` (`session_` prefix). Override with `sessionStore`, `storage` (same shape as `settings.json` `storage` or `teamProfileSelection()` — see [Team and CI setup](/guides/team-setup#from-the-sdk)), or an explicit `sessionManager`:
 
 ```typescript
 const { session } = await createAgentSession({
@@ -229,17 +152,10 @@ const { session } = await createAgentSession({
 });
 ```
 
-Other selections are `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "database", database, prefix? }`, and `{ kind: "adapter", module, options?, secrets?, prefix? }`. `database` must implement the async `SqliteDatabase` facade. Install your own driver and expose an adapter module for a remote database; Atomic bundles only its local `node:sqlite` adapter. See [Storage adapters](/storage).
-
-An application that ships its adapter in its own Atomic package can select it by package name. List the adapter under `storageAdapters` in the package manifest, pass the package directory to `new DefaultResourceLoader({ additionalExtensionPaths: [packageRoot] })` before opening storage, and use `module: "@example/app"` (or `adapter` in settings and the storage variables). The processes Atomic starts receive the resolved module. See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
-
-`createAgentSession({ storage })` takes a selection in the form of the top-level `storage` setting, such as the one `teamProfileSelection()` returns. An explicit `sessionStore` takes precedence. See [Team and CI setup](/guides/team-setup#from-the-sdk).
-
-`sessionStore` also accepts a `SessionStore` instance. A supplied `sessionManager` takes precedence and remains caller-owned. Otherwise, explicit SDK storage wins over the process-level variables (`ATOMIC_SESSIONS_STORAGE` or the session-directory variable, then `ATOMIC_STORAGE`), `sessions.storage`, shared `storage`, and the persistent default. Memory is never a default or an opening-failure fallback. The `sessionDir` factory option has been removed; use a JSONL `sessionStore` selection instead. See [Session storage settings](/settings#sessions) for scope and path rules, and [Selecting storage per process](/storage#selecting-storage-per-process) to choose storage for the processes a host starts, such as `atomic --mode rpc` children, without editing settings.
-
-Atomic closes stores it opens from a selection when the session is disposed, after pending writes finish. Supplied `SessionStore` instances and stores belonging to supplied managers remain caller-owned. With `{ kind: "database", database }`, Atomic closes its store but leaves your database open. Always await `session.dispose()` and close caller-owned stores when no session still uses them.
-
-Resume by opening the ID in the chosen store, then pass that manager to the factory:
+- **Selections:** `{ kind: "sqlite", path, prefix? }`, `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "database", database, prefix? }`, `{ kind: "adapter", module, options?, secrets?, prefix? }`, or a `SessionStore` instance. Legacy `sessionDir` was removed.
+- **Precedence:** `sessionManager` → `sessionStore` → `storage` → process env/flags (`ATOMIC_SESSIONS_STORAGE` / `ATOMIC_STORAGE` — see [Selecting storage per process](/storage#selecting-storage-per-process)) → settings (`sessions.storage` → `storage` — see [Session settings](/settings#sessions)) → default SQLite. Memory is never a fallback.
+- **Package adapters:** Pass `additionalExtensionPaths: [packageRoot]` on `DefaultResourceLoader` before opening storage to select an embedded package adapter by name ([Adapters from Atomic packages](/storage#adapters-from-atomic-packages)).
+- **Ownership & resume:** Atomic closes stores opened from selections during `dispose()` (leaving caller-owned `SessionStore`, `SessionManager`, and `database` instances open). Await every `SessionManager` mutation and `pi.appendEntry`/`setSessionName`/`setLabel`/`setThinkingLevel` (there is no `flush()`; see [Storage errors](/storage#storage-errors)):
 
 ```typescript
 import { createAgentSession, resolveSessionStore, SessionManager } from "@bastani/atomic";
@@ -258,19 +174,14 @@ try {
 }
 ```
 
-Await every `SessionManager` mutation before reading dependent state. Writes resolve after commit; a failure rejects with a typed error without publishing the failed entry. There is no `flush()` step. Extension `pi.appendEntry`, `pi.setSessionName`, `pi.setLabel`, and `pi.setThinkingLevel` also return promises. `ExtensionContext.sessionSignal` aborts when reload or shutdown starts, before admitted work is drained. Use it to stop waiting on long-running command resources, but keep awaiting any session write already started. See [SessionManager API](/session-format#sessionmanager-api) and [Storage errors](/storage#storage-errors).
+`ExtensionContext.sessionSignal` aborts when reload or shutdown begins so extensions can cancel long waits while still awaiting already-started session writes.
 
 ### Human input without a terminal
 
-Pass `extensionBindings.humanInput` to answer extension dialogs and `ask_user_question` in a Node host. `HostInput` requires all five methods: `confirm`, `select`, `input`, `editor` and `questionnaire`. `QuestionParams` and `QuestionnaireResult` are exported from `@bastani/atomic`; questionnaire answers retain their question indices, answer kinds, selections, previews and notes.
+<a id="binding-and-withdrawing-an-input-adapter" />
+<a id="diagnostics-and-provider-state" />
 
-Each callback receives a `HostInputOptions` argument with a runtime-generated `requestId`, the originating `sessionId`, and an `AbortSignal`. Route the question to that session, not whichever chat is currently visible, and stop presenting it when the signal aborts. Child sessions inherit an explicitly supplied `humanInput` adapter. In the interactive CLI, subagent questions wait in their own task views. Plain RPC clients and SDK hosts that provide only `uiContext` keep receiving child dialogs through that presentation, since they have no built-in task inspector. Setting `mode: "tui"` alone does not enable held task prompts.
-
-Dialog options include `timeout` in milliseconds when the caller supplied it. The signal aborts when a timeout, cancellation or session shutdown ends a pending request. Stop showing the dialog on abort even if your callback has not returned. A settled host reply does not abort its signal, including when Atomic rejects that reply as invalid.
-
-For custom task views, see [Session-local task prompts](/sdk/reference#session-local-task-prompts).
-
-Return an actual boolean from `confirm`, a supplied choice or `undefined` from `select`, and a string or `undefined` from text dialogs. Atomic preserves empty strings, whitespace and choice order. Malformed replies reject with `InvalidHostInput`; false, cancellation and rejected callbacks never approve an action.
+Pass `extensionBindings.humanInput` implementing all five `HostInput` methods (`confirm`, `select`, `input`, `editor`, `questionnaire`; `QuestionParams` and `QuestionnaireResult` are exported):
 
 ```typescript
 import { createAgentSession, type HostInput } from "@bastani/atomic";
@@ -285,42 +196,25 @@ async function attachApplication(humanInput: HostInput) {
     },
   });
 
-  // Cancel current work and any outstanding ordinary questions.
-  await session.abort();
-  // Withdraw input while keeping the session available for noninteractive work.
-  await session.bindExtensions({ humanInput: null });
-  // Reattach the application's callbacks when it is ready to answer again.
-  await session.bindExtensions({ humanInput });
+  await session.abort();                            // Cancels active work and pending questions
+  await session.bindExtensions({ humanInput: null }); // Withdraws input adapter
+  await session.bindExtensions({ humanInput });       // Reattaches callbacks
   return session;
 }
 ```
 
-#### Binding and withdrawing an input adapter
-
-`humanInput` has different omission rules at creation and during rebinding:
-
-- At creation, omission means no input unless `uiContext` supplies a dialog bridge. Explicit callbacks override that bridge.
-- On later binding, omission keeps the current adapter. `null` withdraws it and cancels pending ordinary questions.
-
-Rebinding does not repeat startup hooks. Abort, reload, and disposal invalidate pending replies, including late successful replies from callbacks that ignore cancellation.
-
-Extension authors should check `ctx.hasHumanInput` before asking questions and `ctx.hasUI` before rendering. Existing `ctx.ui.confirm/select/input/editor` calls use the host adapter; dialog timeouts cancel their requests. Without an adapter, ordinary dialogs reject with `HumanInputUnavailable`. The `ask_user_question` tool retains its compatible `{ answers: [], cancelled: true, error: "no_ui" }` details. `ui.custom` still requires a presentation host and is not part of `HostInput`.
-
-#### Diagnostics and provider state
-
-`onDiagnostic` receives session-attributed operational diagnostics. Existing errors and tool results remain available without a callback. Third-party extensions can still write directly to the console; the callback does not intercept their output.
-
-Rebinding host callbacks preserves pending MCP OAuth ownership. Authorization state and PKCE verifiers stay in memory for that SDK session; restart authorization after disposing it. Durable MCP tokens and client registrations still use server-name credential files. Separate sessions are not separate credential stores.
-
-Web provider configuration caches are session-local. Configuration discovery and environment keys are unchanged; create a new session to pick up changed cached settings. GitHub extraction returns the owned clone path for use with file tools, so callers need not predict its directory.
+- **Routing & abort:** Each call receives `{ requestId, sessionId, signal, timeout? }`. Route prompts by `sessionId` (children inherit explicit `humanInput`; see [Session-local task prompts](/sdk/reference#session-local-task-prompts)) and dismiss UI immediately on `signal` abort. Plain RPC clients and SDK hosts that provide only `uiContext` keep receiving child dialogs through that presentation. Setting `mode: "tui"` alone does not enable held task prompts. Abort, reload, and disposal invalidate pending replies, including late successful replies from callbacks that ignore cancellation.
+- **Return contracts:** `confirm` returns boolean; `select` returns a supplied option or `undefined`; `input`/`editor` return string or `undefined` (preserving whitespace/empty strings). Malformed replies reject with `InvalidHostInput`; `false`, cancellation, or errors never approve.
+- **Omission rules:** Omitting `humanInput` at creation leaves no input (unless `uiContext` supplies dialogs; without either, dialogs reject with `HumanInputUnavailable` and `ask_user_question` returns `{ answers: [], cancelled: true, error: "no_ui" }`). Omitting it on `bindExtensions()` keeps the current adapter; passing `null` withdraws it. `ui.custom` is not part of `HostInput`.
+- **Diagnostics & session-local caches:** `onDiagnostic` captures session-attributed notices (does not intercept third-party `console.*`). MCP OAuth PKCE state and web-provider config caches stay per session, while durable MCP tokens persist by server name.
 
 ### Stored session summaries
 
-`session.sessionSummary` returns the current branch's latest `SessionSummaryEntry`, or `undefined` when none is available. Read `summary` for the generated text and `summarizedThroughId` for the last message it describes. `SessionManager.list()` and `SessionManager.listAll()` expose those same fields on each `SessionInfo`. Stored summaries remain readable when `sessionSummary.enabled` is false; that setting controls generation only. Summaries are generated only for saved sessions; a session on `SessionManager.inMemory()` never generates one.
+Read `session.sessionSummary` (`summary` and `summarizedThroughId`) or inspect `SessionManager.list()` / `listAll()`. Stored summaries stay readable when `sessionSummary.enabled` is `false`; `SessionManager.inMemory()` never generates summaries.
 
 ### Worktree snapshots
 
-A session saved to SQLite or a database adapter records the repository state of each checkout a turn changed. The CLI, TUI and `createAgentSession({ sessionManager })` restore missing or drifted checkouts into fresh worktrees before continuing, and `runtime.rehydrate()` does the same when it wakes a session. When `rehydrate()` wakes a session, each checkout the session worked in on this machine (a worktree this machine restored for it, or a checkout whose repository holds the commit of its latest snapshot) stays as it is, even if it changed since, and only the session's other checkouts are checked against its snapshots and restored when missing or different. Snapshot commits are content-addressed, so a clone where Atomic captured exactly the same state counts as one the session worked in; any other clone at the same path, for example on another machine, is checked first. The session's tools resolve paths under every checkout it recorded into the worktree that checkout was restored into. A session opened during another session’s work, such as a subagent started by a tool call, also follows that session’s restores, and its own restore of a checkout wins; the restores of unrelated sessions never apply. Pass the stored session directly unless you want to choose its working directory explicitly with `cwd` or bind it with `workspace`:
+SQLite and adapter-backed sessions capture checkout state automatically. Passing a reopened `sessionManager` to `createAgentSession({ sessionManager })` (or `runtime.rehydrate()`) restores missing or drifted checkouts into fresh worktrees while leaving local matching checkouts untouched (rejects with `WorkspaceDriftError` if unrebuildable; missing Git fails fast):
 
 ```typescript
 import { createAgentSession, SessionManager } from "@bastani/atomic";
@@ -329,91 +223,54 @@ const sessionManager = await SessionManager.open(store, sessionId);
 const { session } = await createAgentSession({ sessionManager });
 ```
 
-The session is reopened in its restored worktree; restoration rejects with `WorkspaceDriftError` when a checkout cannot be rebuilt. Missing Git fails before restoration with a typed error and remediation hints; a blueprint that fails never does, and is reported as a warning. `createAgentSession` returns once the worktree is restored: its blueprint build goes on behind the first turn, and every tool call of a session working in that worktree waits for it (`await blueprintBuildSettled(session.sessionManager.getSessionId())` waits too), and `onBlueprintBuildFinished(listener)` tells you once it ended, with the warnings a waiting resume would have shown. Set `resume.waitForBlueprint` to `"prompt"` to return only after the build, as before; see [Start the first turn while the build runs](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs). `createAgentSession({ snapshots: { enabled: false } })` turns snapshots off for one session; the other fields (`includeUntracked`, `maxFileBytes`, `maxSnapshotBytes`, `fullEvery`) override `snapshots.*` settings. `captureWorktreeSnapshot()`, `restoreWorktreeSnapshot()`, `verifyWorktree()` and the `WorkspaceBinding` type are exported for hosts and schedulers that move work between machines; `session.sessionManager.getWorktreeRootMappings()` returns the restores a session went through. `latestResumeTimings(session.sessionManager)` returns where the last resume's time went (restore phases, blueprint steps, time to ready) or `undefined`, and `formatResumeTimings()` turns it into the lines `/session snapshot` shows. `session.exportToJsonl()` returns a promise and carries snapshot content inline. See [Resume on any machine](/guides/resume-on-any-machine) for blueprints and [Worktree snapshots](/worktree-snapshots) for the API and error table.
+- By default in the SDK (`resume.waitForBlueprint: "tools"`), `createAgentSession` returns immediately while blueprint setup runs in the background and gates tool calls (`await blueprintBuildSettled(sessionId)` waits explicitly; `onBlueprintBuildFinished(listener)` receives warnings; set `resume.waitForBlueprint: "prompt"` to block startup — [Start the first turn while the build runs](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs)).
+- Override per-session snapshot settings via `createAgentSession({ snapshots: { enabled: false } })`. Exported helpers: `captureWorktreeSnapshot()`, `restoreWorktreeSnapshot()`, `verifyWorktree()`, `session.sessionManager.getWorktreeRootMappings()`, `latestResumeTimings()`, `formatResumeTimings()`, and `session.exportToJsonl()`. See [Worktree snapshots](/worktree-snapshots).
 
 ### Intercom group and reach
 
-A host that runs several sessions in one process can give each one its own [Intercom](/intercom) group and decide which other groups it can reach. Pass `intercom` to `createAgentSession()`:
+Isolate multi-session hosts in one process with broker-enforced `intercom` policies (also accepted by `createAgentSessionFromServices()`):
 
 ```typescript
 const { session } = await createAgentSession({
   intercom: { group: "doc-1842", reachable: ["doc-1907"] },
 });
 
-// Later, while the session runs:
 await session.intercom.setReachable(["doc-1907", "doc-2011"]);
 ```
 
-- `group` is the session's home group. It takes precedence over `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `"group"` and the project group. The session stays an ordinary top-level session.
-- `reachable` lists the other groups the session may reach. Missing or empty means none; up to 1,000 groups.
-- The session can `list`, `send` to and `ask` only sessions in `group`, `reachable`, or a subgroup under `group`. A send or ask to any other session is refused with a reason and is not queued.
-- `groups` shows only `group` and `reachable`, `join` accepts only those names, and `leave` can't remove `group`. A `list` or `status` peek is limited to groups the session reaches, including subgroups under its home.
-- Reach is one way: listing B's group lets the session reach B, not B reach the session. B can still reply to the session's asks.
-- A subagent launched with `group: "x"` is placed in `<group>/x`, which the session can reach. Subagents never get the session's `reachable` groups: each reaches only its own group and the subgroups under it.
-- The Intercom broker holds and enforces the policy, so a client that skips the `intercom` tool cannot get around it. The policy is registered again after a reconnect or a broker restart.
-
-`createAgentSessionFromServices()` accepts the same `intercom` option, so a runtime factory can pass it through. `session.intercom.setReachable(groups)` takes effect from the session's next Intercom call; its promise settles once the broker holds the new set, or at once while the session is not connected, which then registers with the new set. Narrowing it also leaves any group the session joined that is no longer reachable. `session.intercom.group` and `session.intercom.reachable` report the current policy. On a session created without the option, `group` is `undefined` and `setReachable` rejects with `IntercomPolicyError`; such sessions keep the usual Intercom rules. An invalid `intercom` option (an empty or reserved group name such as `auto`, or more than 1,000 reachable groups) makes `createAgentSession()` reject with `IntercomPolicyError` before anything is created.
+- `group` sets the session's home group (beating `ATOMIC_INTERCOM_GROUP`, config, and project groups). `reachable` lists up to 1,000 one-way target groups (targets can reply to asks, not initiate). Subagents with `group: "x"` live under `<group>/x` and never inherit `reachable`.
+- `setReachable()` updates live policy on the broker and leaves newly unreachable groups. Calling it on a session created without `intercom`, or passing an empty/reserved group (`auto`) or >1,000 reachable groups, throws `IntercomPolicyError`.
 
 ### Subagent children
 
-Children inherit the invoking session's model/auth runtime, settings, agent directory, human-input callbacks, and diagnostic sink. Choosing a child model or fallback does not switch to global credentials.
+Children inherit the parent's `ModelRuntime`, settings, `agentDir`, `humanInput`, and diagnostics. Working directory resolves in order: child `workspace` → child `cwd` → child `sessionManager.getCwd()` → parent `cwd`/worktree.
 
-
-The child working directory resolves in this order:
-
-1. The child's own `workspace`, with its explicit `cwd` resolved inside the worktree.
-2. Explicit child `cwd`.
-3. A supplied child `sessionManager.getCwd()`.
-4. The invoking session's directory, which is the parent's worktree when the parent has a workspace.
-
-Child-relative paths use the resolved child directory without changing the process working directory.
-
-Omitted or `undefined` child options retain inherited configuration, including individual builtin flags and host bindings. Use `humanInput: null` to withdraw input explicitly; empty arrays and other explicit values keep their normal meanings, subject to the parent's capability ceiling.
-
-Child tool selections can narrow the parent's selection, not expand it. Disabled builtin packages, excluded tools, empty allowlists and `noTools: "all"` remain suppressed in children and fallback attempts. Enable a needed capability on the parent before launching a child.
-
-Callbacks may be shared, but request and diagnostic `sessionId` values identify the originating child. Group overrides retain the normal Intercom authorization rules. Disabling or excluding Intercom does not create a substitute supervisor grant. Reopening conversation history does not restore child authority.
-
-An explicit child `extensionBindings.humanInput` overrides the inherited host. Setting it to `null` withdraws input for that child.
-
-You may reuse the same adapter object when explicitly rebinding a child, even after the parent switches hosts. That child selection survives reload. An empty binding object does not select a new host or restore inheritance.
-
+- Child tool lists can only narrow—never expand—parent permissions (`builtins`, `excludedTools`, `tools: []`, `noTools: "all"` stay enforced).
+- Pass explicit child `extensionBindings.humanInput` to override (or `null` to withdraw). Shared callbacks distinguish children by `sessionId`.
 
 ### AgentSession
 
-The session manages agent lifecycle, message history, model state, compaction, and event streaming.
+Core session handle for prompting, queueing, model switching, events, compaction, and disposal:
 
 ```typescript
 interface AgentSession {
-  // Send a prompt and wait for completion
   prompt(text: string, options?: PromptOptions): Promise<void>;
-
-  // Queue messages during streaming
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
-
-  // Controlled queue-pause gate
   readonly queuedMessagesPaused: boolean;
   pauseQueuedMessages(): void;
   resumeQueuedMessages(): Promise<boolean>;
 
-  // Subscribe to events (returns unsubscribe function)
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
-  // Subscribe to an event stream; see "Event subscriptions" below
   subscribe(source: EventSource, handler: SessionEventHandler, options?: SessionSubscribeOptions): Subscription;
 
-  // Session info
   sessionFile: string | undefined;
   sessionId: string;
-
-
-  // Model and thinking control
   setModel(model: Model, options?: { persist?: boolean; thinkingLevel?: ThinkingLevel }): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
   cycleModel(): Promise<ModelCycleResult | undefined>;
   cycleThinkingLevel(): ThinkingLevel | undefined;
 
-  // State access
   agent: Agent;
   sessionManager: SessionManager;
   refreshContext(): void;
@@ -422,28 +279,15 @@ interface AgentSession {
   messages: AgentMessage[];
   isStreaming: boolean;
 
-  // In-place tree navigation within the current session file
   navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }>;
-
-  // Compaction: clear the context window, or replace it with a configured compactor's output
-  compact(options?: SessionCompactOptions): Promise<VerbatimCompactionResult>; // { query?: string; compactionModel?: string }
+  compact(options?: SessionCompactOptions): Promise<VerbatimCompactionResult>;
   abortCompaction(): void;
-
-  // Abort current operation; pauseQueuedMessages holds queued messages first
   abort(options?: { pauseQueuedMessages?: boolean }): Promise<void>;
-
-  // Cleanup
   dispose(): Promise<void>;
 }
 ```
 
-Pass `thinkingLevel` to `session.setModel(model, { thinkingLevel: "high" })` to choose a model and its reasoning level together. Unsupported levels are clamped to the model's supported levels. Add `persist: true` to save the model and reasoning preferences to global settings. Project overrides stay in the project settings file and still take precedence when a session starts.
-
-Always `await session.dispose()` in `finally`. Disposal immediately refuses new work, cancels and drains owned operations, settles questions, shuts down extensions and releases session leases. Repeated calls await the same outcome. Disposal takes at most 60 seconds, enough for a session save waiting for a busy database. If a step is still waiting after that, such as on a save to a storage backend that stopped responding, `dispose()` stops waiting and rejects with `ShutdownFailed`, naming that step and how many session operations were still running. The remaining cleanup steps still start, in order, without being waited for.
-
-A `ShutdownFailed` error contains component failures in `errors`; cleanup still attempts the remaining components. Stores opened by the SDK, including stores created from a `sessionStore` selection, are released after session work and shutdown handlers finish. A failed session initialization releases its acquired store too. Caller-supplied `SessionStore` instances, session managers, databases, and model runtimes retain their caller-managed lifetimes. Close a supplied store or database only after its other users are done. Disposing one session does not close another session's store or a shared journal. Use `abort()` to cancel current work without destroying the session.
-
-To stop a session and then dispose it, call `await session.abort({ pauseQueuedMessages: true })` first. This holds queued messages before the abort, as Esc does in the TUI and the RPC `abort` command does. A completion notice that a background command or task queued during the run then stays queued rather than starting a turn, and `dispose()` saves it, so the next session that opens this one shows it once. A plain `abort()` leaves such a notice queued and lets it start its turn once the run stops; disposing before that turn starts rejects with `ShutdownFailed`, because Atomic will not drop input that may still race the run. `prompt()` holds while paused, so call `resumeQueuedMessages()` before prompting a session you keep.
+**Clean stop and disposal:** Always `await session.dispose()` in `finally` (60 s drain limit; rejects with `ShutdownFailed` carrying `errors` if a step stalls). To abort active work before disposing without letting background notices start a new turn, pass `{ pauseQueuedMessages: true }`:
 
 ```typescript
 try {
@@ -454,13 +298,12 @@ try {
 }
 ```
 
-Captured extension APIs also refuse new execution, mutations and registrations as soon as close or reload begins. Already-admitted `pi.exec()` calls remain part of the awaited drain; provide `signal` or `timeout` when invoking subprocesses that might not finish on their own. `abort()` alone does not retire the API. A rejected transactional reload restores the surviving generation's action admission.
-
-Custom messages queued with `persistWhenStreaming: true` survive a successful reload and receive their model turn through the replacement extensions. An explicitly paused queue remains paused; call `resumeQueuedMessages()` before sending the next prompt. A rejected transactional reload retains the notices for the next prompt on the surviving generation.
+- `setModel(model, { thinkingLevel: "high", persist: true })` clamps unsupported thinking levels and optionally saves global defaults (project overrides still win at startup).
+- Extension APIs reject new actions once close or reload begins; give `pi.exec()` calls timeouts or abort signals. Custom messages with `persistWhenStreaming: true` survive reload.
 
 #### Event subscriptions
 
-`session.subscribe(source, handler, options?)` calls `handler(event, child)` for each event of `source` without entering the session's context.
+Subscribe a session to external event streams without polluting main context (`maxConcurrent` default `4`, optional `name` and `maxRate`):
 
 ```typescript
 import { githubReviews } from "@bastani/atomic";
@@ -475,28 +318,18 @@ const subscription = session.subscribe(
 // later: await subscription.close();
 ```
 
-- `child.task({ prompt, model?, thinkingLevel?, tools?, noTools?, excludedTools? })` runs a short-lived in-process child session seeded with your prompt and the event, then disposes it. When the session closes, a running child is aborted and disposed, and `child.task` rejects with the session's `AbortError`. If aborting or disposing the child fails, that failure is on the error's `cleanupCause`; when several children of the subscription fail to clean up, `cleanupCause` is an `AggregateError` of their failures. The child inherits this session's model, tool limits and custom tools, and gets a `report_to_subscriber` tool, which an explicit `tools` allowlist keeps; with `noTools: "all"` the child cannot report, so call `child.report()` instead. The child is named `<name>#<n>/<event id>` (the id is URI-encoded), which is also what the report text and `EventReportDetails.child` show. It resolves `{ text, sessionId }`. A session built without `createAgentSession()` has no child sessions; `child.task` then fails with `SubscriptionChildUnavailableError`.
-- `child.report(text)` delivers one `event_report` custom message into this session and starts a turn when it is idle (steering when it is streaming). A report sent while the session is in a turn is saved in the transcript before `report()` returns, so it survives a crash before the session reads it. Its `details` are `{ subscriptionId, eventId, child }`.
-
-`options` takes `name`, `maxConcurrent` (default 4) and `maxRate`. The session transcript records the subscription and each processed event id as custom entries, which never enter model context, so a session reopened on the same transcript drops events it already handled. Each child session that finishes adds one `event_subscription_child` entry with the child's name, event id, session id, number of reports and the first 500 characters of its answer, so you can see what each event did. Subscribing again in the same session starts a new subscription that handles every event again. If writing the subscription record or a processed-event record fails, `done` rejects with a `SubscriptionRecordError` (the handler itself succeeded, and the event is handled again after a reopen). Disposing the session cancels its subscriptions; their `done` rejects with an `AbortError`, and an event whose handler was still running is not recorded as processed. The returned `Subscription` has `id`, `done`, `stats()` and `close()`; pass `id` to `publishEvent()` to bridge your own webhooks.
+- `child.task({ prompt, model?, thinkingLevel?, tools?, noTools?, excludedTools? })` runs a short-lived in-process child (`<name>#<n>/<eventId>`) with `report_to_subscriber` (call `child.report()` directly if `noTools: "all"`), returning `{ text, sessionId }`. Disposing the session aborts children (`AbortError`, with cleanup errors in `cleanupCause`); sessions not built via `createAgentSession()` fail with `SubscriptionChildUnavailableError`.
+- `child.report(text)` sends an `event_report` custom message (`details: { subscriptionId, eventId, child }`), persisted before returning if streaming.
+- Deduplication uses transcript entries (`event_subscription_child`, up to 500 chars); persistence errors reject `subscription.done` with `SubscriptionRecordError`. Pass `subscription.id` to `publishEvent()` to bridge custom webhooks.
 
 #### Finishing admitted work
 
-Disposal and reload wait for admitted callbacks, resource refreshes, and subprocesses. Ensure callbacks can settle independently of disposal, including work started by cleanup handlers. Give `pi.exec()` calls a timeout or cancellation signal, and await them in the handler so you can inspect failures. Never make cleanup wait for disposal itself.
-
-Register cleanup before acquiring resources or starting asynchronous callbacks. Call the unsubscribe returned by `pi.events.on()` when you no longer need it; it is idempotent. Generation cleanup releases remaining handles and reports failures.
+Disposal and reload drain admitted callbacks, refreshes, and `pi.exec()` subprocesses. Always register cleanup before acquiring resources, pass timeouts/signals to subprocesses, unsubscribe `pi.events.on()` listeners when done, and never await disposal from inside a cleanup handler.
 
 #### Reload failures and resource ownership
 
-Strict transactional reload failure leaves the original generation usable. Ordinary reload failure does not restore the retired generation. Both attempt cleanup of newly acquired resources and report cleanup failures through `ShutdownFailed` without hiding the original error.
-
-Prefer acquiring extension resources in `session_start`. If a factory acquires them earlier, register `session_shutdown` immediately, even if `extensionsOverride` may later omit that factory. Capture cleanup handles when acquiring resources rather than rereading loader getters during cleanup.
-
-Transactional reload dispatches candidate `session_start` before commit. Use `publishExtensionContextEffect(ctx, effect)` to publish shared lifecycle state only after commit and retiring-generation cleanup; rollback discards the effect. Outside a transactional candidate, it runs immediately. Awaiting the helper queues the effect, not its eventual execution, so startup must not depend on the effect's result.
-
-For synchronous identity handoff, use `publishExtensionContextEffect(ctx, effect, "commit")`. This phase runs after the transaction commits and before predecessor authority is revoked or any retirement work is awaited. It must not return a promise or start asynchronous work; asynchronous callbacks are rejected and reported. The default `"start"` phase still runs after retirement, when reporter and task-host startup is safe.
-
-Register generation-owned observer disposal with `registerExtensionContextRetirementEffect(ctx, dispose)` during `session_start`. Disposal is synchronous, runs before authority revocation and before rollback invalidation, and is independent of `session_shutdown` handler order. The returned function unregisters the effect. Keep awaited resource cleanup in `session_shutdown`.
+- **Transactional vs. ordinary reload:** Failed transactional reloads keep the previous generation usable; failed ordinary reloads do not. Both clean up newly acquired resources and report cleanup errors via `ShutdownFailed`.
+- **Lifecycle effects:** Acquire resources in `session_start` (or register `session_shutdown` immediately if acquired earlier). Use `publishExtensionContextEffect(ctx, effect)` (default `"start"` phase after retirement, or synchronous `"commit"` phase before revocation) to publish shared state only on commit, and `registerExtensionContextRetirementEffect(ctx, dispose)` for synchronous pre-revocation cleanup. Never cache `ctx.ui` across reloads.
 
 ```typescript
 import { publishExtensionContextEffect, type ExtensionFactory } from "@bastani/atomic";
@@ -510,47 +343,29 @@ const extension: ExtensionFactory = (pi) => {
 };
 ```
 
-Do not cache dialog functions across reload attempts. Retiring functions refuse new questions; after a rejected transaction, use the surviving session's current `ctx.ui`.
-
-Shared loaders, event buses, settings, and `SessionManager` instances do not share live task ownership. Closing one session leaves another session's commands and borrowed discovery resources alone.
-
 #### Session replacement and deferred cleanup
 
-`await runtime.dispose()` refuses new replacements and waits for pending factories, startup, and cleanup. It also waits up to three seconds, counted from the start of disposal, for an OAuth token exchange still in flight, so a token the provider already rotated is saved before your host exits. No successor is published after closure. Host callbacks must settle independently of disposal. Disposal also cancels or waits for an Intercom broker start the session began, so a host can remove a temporary agent directory once disposal resolves; see [Intercom operations](/intercom/operations#how-it-works). Call `runtime.dispose({ fromSignal: true })` when the host is shutting down because of `SIGTERM` or `SIGHUP`, so `session_shutdown` handlers receive `fromSignal: true` and can tell it from an explicit quit.
+- `await runtime.dispose()` rejects new replacements, drains pending work, waits up to 3 s for in-flight OAuth token refreshes, and cancels/waits for Intercom broker startup. Pass `{ fromSignal: true }` on `SIGTERM`/`SIGHUP` so `session_shutdown` handlers see it.
+- Extension commands awaiting `ctx.newSession()`, `ctx.fork()`, `ctx.switchSession()`, or `session.reload()` keep their generation alive until the command finishes; always switch to the new generation's APIs afterward.
 
-An extension command may await `ctx.newSession()`, `ctx.fork()`, `ctx.switchSession()`, or `session.reload()`. Its old generation remains owned until the command continuation finishes, and final disposal waits for that cleanup. Do not await disposal inside the continuation it must drain. Concurrent replacements are supported, and deferred cleanup failures remain visible.
+<a id="settings-failures-and-operation-ids" />
 
-After replacement or self-reload, use the new generation's APIs. Captured old `pi` and `ctx` actions cannot mutate the successor or acquire its resources. Old shutdown handlers may release captured resources, but cannot authorize successor work.
-
-For replacement initiated outside the retiring session's work, outgoing shutdown finishes before successor creation. If it fails, replacement rejects without creating a successor. Handle creation, reload, replacement, and disposal failures rather than continuing as though cleanup succeeded.
-
-#### Settings failures and operation IDs
-
-Settings writes made through session APIs (for example, `setThinkingLevel(level, { persist: true })`) are attributed to that session. Unrecovered write failures make disposal reject with `ShutdownFailed`, even though the normal `SettingsManager.flush()` resolves and exposes errors through `drainErrors()`. Disposal does not consume that caller-owned error channel or attribute another borrower's writes to an idle sibling. Correct the storage fault and persist again before closing to recover.
-
-Caller-supplied `executeBash()` IDs remain correlation IDs, not unique operation IDs. `abortBash(id)` cancels every active call with that exact ID; disposal cancels every owned call, including duplicates.
+- Unrecovered `persist: true` settings write failures make `dispose()` reject with `ShutdownFailed`. `executeBash()` IDs are correlation IDs—`abortBash(id)` cancels all active calls with that ID.
 
 #### Compaction and tree navigation
 
-`compact()` stops the active run, then clears the context window: after the boundary the model sees the system prompt and one `Context cleared` message that tells the agent where its earlier conversation is in session history and what to recover first. With a compactor model configured, the compactor's output replaces the context instead. It appends a durable `compaction` entry with `details.strategy: "verbatim-lines"` and resolves with a `VerbatimCompactionResult` whose `form` is `cleared` or `compacted`. It rejects with `Nothing to compact` when nothing has entered the context since the last boundary. See [Compaction](/compaction) for behavior and [Session format](/session-format#compactionentry) for persisted fields.
-
-Pass `query` to give compaction instructions: they are added to the boundary message and become a compactor's query. Pass `compactionModel` to choose the compaction model for one call without changing settings. It accepts `auto` or an exact compactor ID, such as `morph/morph-compactor`, like the [`compactionModel` setting](/compaction#compaction-model). A chat, classifier or unknown ID clears the context with a notice instead of failing. A call made while another manual compaction is running joins that run and uses its options. `compression_ratio` and `preserve_recent` are no longer options; they are ignored if passed.
+`session.compact({ query?, compactionModel? })` stops active runs, clears context (or summarizes with an exact compactor model like `morph/morph-compactor`), appends a `verbatim-lines` `compaction` entry, and returns `VerbatimCompactionResult` (`form: "cleared" | "compacted"`). Rejects with `Nothing to compact` when nothing new entered context; concurrent calls coalesce. A chat, classifier or unknown `compactionModel` ID clears the context with a notice instead of failing. `compression_ratio` and `preserve_recent` are no longer options; they are ignored if passed. See [Compaction](/compaction) and [Session format](/session-format#compactionentry).
 
 ```typescript
 const result = await session.compact({ query: "keep the auth decisions" });
 console.log(result.form, result.history?.boundaryEntry);
 ```
 
-`session.navigateTree()` rejects during streaming, compaction, or branch summarization rather than queueing the navigation. The active branch stays unchanged. Wait for the operation to finish before retrying.
-
-Session replacement APIs such as new-session, resume, fork, and import live on `AgentSessionRuntime`, not on `AgentSession`.
+`session.navigateTree()` rejects if streaming, compacting, or summarizing a branch (leaving the branch unchanged).
 
 ### createAgentSessionRuntime() and AgentSessionRuntime
 
-Use the runtime API when you need to replace the active session and rebuild cwd-bound runtime state.
-This is the same layer used by the built-in interactive, print, and RPC modes.
-
-`createAgentSessionRuntime()` takes a runtime factory plus the initial cwd/session target. The factory closes over process-global fixed inputs, recreates cwd-bound services for the effective cwd, resolves session options against those services, and returns a full runtime result.
+Use `AgentSessionRuntime` when your host needs session replacement (`newSession()`, `switchSession()`, `fork()`, clone via `fork(entryId, { position: "at" })`, `importFromJsonl()`) with rebuilt cwd-bound services:
 
 ```typescript
 import {
@@ -565,11 +380,7 @@ import {
 const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
   const services = await createAgentSessionServices({ cwd });
   return {
-    ...(await createAgentSessionFromServices({
-      services,
-      sessionManager,
-      sessionStartEvent,
-    })),
+    ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
     services,
     diagnostics: services.diagnostics,
   };
@@ -582,100 +393,37 @@ const runtime = await createAgentSessionRuntime(createRuntime, {
 });
 ```
 
-`AgentSessionRuntime` owns replacement of the active runtime across:
-
-- `newSession()`
-- `switchSession()`
-- `fork()`
-- clone flows via `fork(entryId, { position: "at" })`
-- `importFromJsonl()`
-
-Important behavior:
-
-- `runtime.session` changes after those operations
-- event subscriptions are attached to a specific `AgentSession`, so re-subscribe after replacement
-- if you use extensions, call `runtime.session.bindExtensions(...)` again for the new session
-- after a `switchSession()`, call `runtime.session.startPendingRecovery("resume")` to recover interrupted work
-- creation returns diagnostics on `runtime.diagnostics`
-- if runtime creation or replacement fails, the method throws and the caller decides how to handle it
-
-```typescript
-let session = runtime.session;
-let unsubscribe = session.subscribe(() => {});
-
-await runtime.newSession();
-
-unsubscribe();
-session = runtime.session;
-unsubscribe = session.subscribe(() => {});
-```
+After any replacement, `runtime.session` points to the new instance—re-subscribe to events, re-call `bindExtensions()`, and call `startPendingRecovery("resume")` after `switchSession()`.
 
 ### Releasing idle sessions
 
-A host that keeps many conversations doesn't need a live `AgentSession` for each one. `session.release()` lets go of everything the session holds in memory (its agent loop, extension instances, tool registry, listeners, timers, MCP connections and Intercom connection) and keeps only its saved history. `runtime.rehydrate(sessionId)` brings it back from storage when there is something for it to do.
+Free in-memory resources (agent loop, extensions, tools, timers, MCP/Intercom connections) for idle conversations with `session.release()`, and restore on demand with `runtime.rehydrate(sessionId)`:
 
 ```typescript
 const released = await session.release(); // { sessionId, cwd, sessionFile? }
-
-// Later, when a message for that conversation arrives:
 const live = await runtime.rehydrate(released.sessionId);
 await live.prompt("Here is the CI result you were waiting for.");
 await live.release();
 ```
 
-- `rehydrate(sessionId)` resumes at the current context window. If you need older entries, iterate `live.sessionManager.readHistory()` or look up a single entry with `await live.sessionManager.readEntry(id)`.
-- `release()` refuses with a retryable `session-busy` error while a run, compaction, shell command, queued message (a steering or follow-up message, or one sent with `deliverAs: "nextTurn"`) or background task is active. Background tasks keep running: wait until they finish (or cancel them) and for `agent_settled`, then call it again. Calling it on a released session returns the same result.
-- Subscribers get a `session_released` event before the session closes. After that, the instance behaves like a disposed session; use `runtime.rehydrate()` for a live one.
-- `runtime.rehydrate(sessionId)` builds the session with the runtime's factory and passes the runtime's `services` to it as `options.services` when the cwd matches, so rehydrated sessions can share one resource loader, model runtime and settings. A factory that ignores `services` still works; it just builds its own. The rehydrated session runs beside `runtime.session` without replacing it. A session that is already live is returned as it is, concurrent calls for one id share one rehydration, and `runtime.dispose()` closes every session it rehydrated.
-- If the runtime is disposed while `rehydrate()` is in flight, it rejects with the runtime's `SessionClosed` error. When closing the new session also failed, that failure is attached as the error's `cleanupCause`, a `release-failed` `AgentRehydrateError`. A rehydrated session that fails to close during `runtime.dispose()` is reported the same way inside its `ShutdownFailed` error.
-- A session this node's storage doesn't hold fails at once with `session-not-found`, before the factory runs. When the node keeps sessions in local storage, the error's `hint` says so and names `atomic storage join <url> --token-file <path>`, after `atomic team leave` on a machine joined with `atomic team join`, which keeps sessions on each machine.
-- A session released over an in-memory session store that your host keeps open, one opened for a `{ kind: "memory" }` selection, leaves process memory too: `release()` moves its history to a file of its own and keeps only its header, and `rehydrate()` reads the file once. What a woken session writes stays in memory until it is released again; the next release writes the session's history whole to a new file, renamed into place once complete, so a write cut short never leaves part of a file under a session's name. Re-releases request a copy-on-write clone (`COPYFILE_FICLONE`); filesystems without reflinks fall back to copying the whole previous history, so repeated small appends can still cost a full history-sized write per release.
-  - **Where:** under the agent directory the store was opened with (`agentDir`; by default `ATOMIC_CODING_AGENT_DIR`, or `~/.atomic/agent`), in `released-history/<host-identity>/<pid>-<start>-<nonce>/`. The random owner nonce keeps process directories distinct even when PID namespaces report identical PIDs and start times are unknown; exit cleanup removes only the owner's registered directories. The host identity hashes the hostname, platform/kernel marker and boot identity, plus Linux's PID-namespace inode. Each store has a directory with a file per session: owner-only 0700/0600 on POSIX; Windows inherits the agent directory's ACL. The agent directory is not a temp directory, so temp cleaners leave the files alone while the process runs.
-  - **Until when:** a session's file is removed with the session, a store's directory when its last handle closes, and the process's directories when the process exits. `process.exit()` counts, including Atomic's signal handlers; Atomic installs no extra signal handler for this. A worker thread removes its own stores when it exits by itself. Opening an in-memory session store on the main thread, or running the startup sweep when resolving any session store there, installs a process-wide worker-directory registry: main-thread exit also removes worker stores, including after `worker.terminate()` and even if main has since closed its store. Importing the SDK alone does not install it. Registration is asynchronous and never delays a release. If only workers open stores, main-thread cleanup is unavailable: close their stores before termination, or let the next matching startup sweep remove the leftovers.
-  - **A killed process:** SIGKILL, fatal errors such as running out of heap, or signals without a handler leave plaintext history on disk. `worker.terminate()` also leaves its files until main-thread exit or a later sweep. A sweep only considers its own hostname, platform/kernel, PID namespace and boot, and removes a directory only when its pid and start-time check prove the owner is gone. Other identities (including old host-only directories) and uncertain lookups are left untouched. Boot/namespace identity lookup happens once; if it fails, sweeping is disabled.
-  - **Failures:** a file that cannot be written keeps that history in memory and is reported once as a process warning (`process.on("warning")`) carrying a `SessionSpillError`. A missing store directory is recreated on a later write; history already deleted cannot be recovered. Length and an incremental FNV-1a checksum detect accidental corruption, including same-length valid JSON edits (not malicious tampering). A missing or corrupt file makes the load fail with a `SessionSpillError`, and a listing leaves that session out and reports it once (see [Storage errors](/storage#storage-errors)).
-  - A custom `SessionStore` can implement `releaseSession(sessionId)` the same way; Atomic calls it after a session is released. Custom stores used with `history://` must also implement `readEntryRange(sessionId, query)`, because `history://` reads and searches page entries by range and refuse stores that only support whole-session `load(sessionId)`.
+- **Auto-release:** Pass `releaseWhenIdle: { afterMs }` (`0`–`2147483647` ms; invalid throws `AgentReleaseConfigError`) to `createAgentSession()` or `createAgentSessionFromServices()`. Driven by the process-wide `agentWakeDispatcher()` (`handle`, `deliver`, `onUnobservedFailure`, `whenIdle`, `stats()`).
+- **Lifecycle:** Emits `session_released` before closing. Rejects with retryable `session-busy` if streaming, compacting, running shells/background tasks, or holding queued messages. `rehydrate()` opens at the current context window (`readHistory()`/`readEntry()` fetch older entries), shares matching-cwd `services`, runs alongside `runtime.session` without replacing it, deduplicates concurrent calls, and closes on `runtime.dispose()`.
+- **In-memory store spilling:** Releasing a session in a host-owned `{ kind: "memory" }` store spills history to private owner-only files (`0700`/`0600`) under `<agentDir>/released-history/<host-identity>/<pid>-<start>-<nonce>/` using copy-on-write reflinks when supported, verified by length + incremental FNV-1a checksum (`SessionSpillError` on missing/corrupt files; see [Storage errors](/storage#storage-errors)). Cleaned on exit (and swept on matching-host restart after crashes; worker-only hosts must close stores before `worker.terminate()`). Custom stores can implement `releaseSession(id)`, `readEntryRange(id, query)`, and `readForkWindow(id, entryId)`.
 
-A custom store can also implement `readForkWindow(sessionId, entryId)` to support compact subagent forks. Read the branch at that exact entry from one committed version, not from the source's latest leaf. Return its `SessionForkWindow` (header, retained entries in branch order, current labels for retained targets, and the source watermark), or `undefined` if the entry is missing. Besides the retained context, include the settings, system messages and extension entries (`pi.appendEntry`) that the branch recorded before the boundary. Keep any referenced tool outputs usable in the copy; if that requires the original branch, return that branch. Without this method, subagents fork by loading the source as before.
-
-To release automatically, pass `releaseWhenIdle`:
-
-```typescript
-const { session } = await createAgentSession({ releaseWhenIdle: { afterMs: 5 * 60_000 } });
-session.subscribe((event) => {
-  if (event.type === "session_released") saveForLater(event.released.sessionId);
-});
-```
-
-The session is released once it has been idle for `afterMs` milliseconds, from 0 to 2147483647 (about 24.8 days). A session that is busy when the time comes, for example with a background task still running, is checked again `afterMs` later. `releaseWhenIdle` is also accepted by `createAgentSessionFromServices()`, so a runtime factory can pass it through. An invalid value throws `AgentReleaseConfigError` before any session, store or timer is created.
-
-Idle sessions wait on one process-wide `AgentWakeDispatcher` (`agentWakeDispatcher()`), not on timers of their own. Hosts can use it to wake their own released agents: register one handler per namespace with `handle(namespace, handler)`, then `deliver("<namespace>:<key>", wake)`. Wakes for one key are handled in the order they arrive, one batch at a time; a wake whose `id` is already queued or running for that key is delivered once.
-
-A wake that fails with nobody waiting on it, such as a timed wake, is counted in `stats().unobservedFailures` and kept as `lastFailure`. Subscribe to these failures with `onUnobservedFailure(listener)`, which returns a function that unsubscribes; the `onUnobservedFailure` constructor option does the same for a dispatcher you create. `whenIdle(wakeKey?)` resolves once that key, or without a key the whole dispatcher, has nothing queued or running; timed wakes that are not due yet don't count.
-
-```typescript
-const dispatcher = agentWakeDispatcher();
-const stop = dispatcher.onUnobservedFailure((error) => console.warn(error.message, error.fields));
-await dispatcher.whenIdle();
-stop();
-```
-
-Release and wake failures reject with `AgentRehydrateError` (or its subclass `AgentReleaseConfigError`). Branch on `code`, or use `isAgentRehydrateError()`, `isAgentReleaseConfigError()` and `isRetryableAgentRehydrateError()`, which also accept copies that crossed a process boundary. `serializeAgentRehydrateError()` and `rehydrateAgentRehydrateError()` carry the error across one with its `code`, `hint`, `fields` and cause chain. A cause that is itself an `AgentRehydrateError`, a `ToolDetachmentError` or a storage error comes back as that class, so `isRetryableAgentRehydrateError()` gives the same answer on both sides; any other cause comes back as an `Error` that keeps its `name`, `code` and `retryable`.
+Release and wake errors throw `AgentRehydrateError` (guards `isAgentRehydrateError`, `isAgentReleaseConfigError`, `isRetryableAgentRehydrateError`; cross-process `serializeAgentRehydrateError` / `rehydrateAgentRehydrateError`):
 
 | Class | `code` | When | Fields | What to do |
 | --- | --- | --- | --- | --- |
-| `AgentReleaseConfigError` | `invalid-release-policy` | `releaseWhenIdle` isn't `{ afterMs }` with `afterMs` a number from 0 to 2147483647. | `source`, `field`, `value` | Fix the option. Nothing was created. |
-| `AgentRehydrateError` | `session-busy` | `release()` while a run, compaction, shell command, queued message or background task is active. `retryable` is `true`. | `sessionId`, `activity` | Wait for `agent_settled`, or for the session's background tasks to finish when `activity` is `background-tasks`, then release again. |
-| `AgentRehydrateError` | `not-reopenable` | `release()`, or `createAgentSession({ releaseWhenIdle })`, on a session whose history lives in a private in-memory store (`SessionManager.inMemory()`): nothing could reopen it after release. It fails before any work. | `sessionId`, `storage` | Create the session over a store that outlives it: SQLite, JSONL, or a `MemorySessionStore` your host keeps and passes as `sessionStore`. |
-| `AgentRehydrateError` | `session-not-found` | `rehydrate()` names a session this node's storage doesn't hold. | `sessionId`, `storage`, `localOnly` | Check the id. On local storage, join shared storage with `atomic storage join <url> --token-file <path>` if the session was saved on another node, after `atomic team leave` on a machine joined with `atomic team join`. |
-| `AgentRehydrateError` | `no-wake-handler` | A wake was delivered to a namespace with no handler. | `wakeKey`, `namespace` | Register a handler for the namespace first. |
-| `AgentRehydrateError` | `wake-handler-conflict` | A second handler was registered for a namespace. | `namespace` | Dispose the first handler before registering another. |
-| `AgentRehydrateError` | `wake-failed` | The handler failed while rehydrating or waking the agent. The `cause` says why. | `wakeKey`, `wakes` | Fix the cause, then deliver the wakes again. |
-| `AgentRehydrateError` | `release-failed` | `release()` could not close the session cleanly, for example because its store was unreachable, or the runtime could not close a session it rehydrated. The `cause` is the close failure. | `sessionId`, `storage` | The session's memory is released either way. Rehydrate it and check its last entries before you continue. |
+| `AgentReleaseConfigError` | `invalid-release-policy` | Invalid `releaseWhenIdle.afterMs` (must be `0`–`2147483647`). | `source`, `field`, `value` | Fix the option. |
+| `AgentRehydrateError` | `session-busy` | `release()` called while active work or queued messages remain (`retryable: true`). | `sessionId`, `activity` | Wait for `agent_settled` or background tasks, then retry. |
+| `AgentRehydrateError` | `not-reopenable` | Session uses private `SessionManager.inMemory()`. | `sessionId`, `storage` | Use SQLite, JSONL, or a host-owned `MemorySessionStore`. |
+| `AgentRehydrateError` | `session-not-found` | Session missing in this node's storage. | `sessionId`, `storage`, `localOnly` | Verify ID, or join shared storage (`atomic storage join`). |
+| `AgentRehydrateError` | `no-wake-handler` | Wake delivered to unregistered namespace. | `wakeKey`, `namespace` | Register handler with `handle()` first. |
+| `AgentRehydrateError` | `wake-handler-conflict` | Duplicate handler for namespace. | `namespace` | Dispose existing handler first. |
+| `AgentRehydrateError` | `wake-failed` | Wake handler failed (`cause` has detail). | `wakeKey`, `wakes` | Fix cause and redeliver. |
+| `AgentRehydrateError` | `release-failed` | Clean close failed during release or runtime dispose (memory still released). | `sessionId`, `storage` | Rehydrate and inspect recent entries before continuing. |
 
 ### Prompting and Message Queueing
-
-`PromptOptions` controls prompt expansion, queueing behavior while streaming, and prompt preflight notifications:
 
 ```typescript
 interface PromptOptions {
@@ -687,172 +435,25 @@ interface PromptOptions {
 }
 ```
 
-`preflightResult` is called once per `prompt()` invocation:
-
-- `true` when the prompt was accepted, queued, or handled immediately. The second argument says which: `"handled"` if an extension command or input handler consumed it, `"queued"` if it was queued during a run, or `"started"` if it started a run
-- `false` when prompt preflight rejected before acceptance
-
-A prompt that arrives while the session compacts is held until compaction ends. Its `preflightResult` reports `"queued"` as soon as the session holds it, and the prompt shows in `getSteeringMessages()`/`getFollowUpMessages()` while it waits. If `clearQueue()` returns the waiting prompt first, nothing is sent. If its turn fails to start once compaction ends, for example because credentials were removed, the message stays queued for the next turn and `prompt()` rejects with the cause.
-
-It fires before `prompt()` resolves. `prompt()` still resolves only after the full accepted run finishes, including retries. Failures after acceptance are reported through the normal event and message stream, not through `preflightResult(false)`.
-
-The `prompt()` method handles prompt templates, extension commands, and message sending:
-
-```typescript
-// Basic prompt (when not streaming)
-await session.prompt("What files are here?");
-
-// With images
-await session.prompt("What's in this image?", {
-  images: [{ type: "image", data: "...", mimeType: "image/png" }]
-});
-
-// During streaming: must specify how to queue the message
-await session.prompt("Stop and do this instead", { streamingBehavior: "steer" });
-await session.prompt("After you're done, also check X", { streamingBehavior: "followUp" });
-```
-
-**Behavior:**
-- **Extension commands** (e.g., `/mycommand`): Execute immediately, even during streaming. They manage their own LLM interaction via `pi.sendMessage()`.
-- **File-based prompt templates** (from `.md` files): Expanded to their content before sending or queueing.
-- **During streaming without `streamingBehavior`**: Throws `AgentSessionBusyError` (`code: "agent_session_busy"`, guard `isAgentSessionBusyError`, both exported by `@bastani/atomic`); nothing is sent. Use `steer()` or `followUp()` directly, or specify the option.
-- **`preflightResult(true)`**: Means the prompt was accepted, queued, or handled immediately.
-- **`preflightResult(false)`**: Means preflight rejected before acceptance.
-
-For explicit queueing during streaming:
-
-```typescript
-// Queue a steering message for delivery after the current assistant turn finishes its tool calls
-await session.steer("New instruction");
-
-// Wait for agent to finish (delivered only when agent stops)
-await session.followUp("After you're done, also do this");
-```
-
-If the session is idle and already has messages when either is called, it starts a turn to deliver the message instead of leaving it queued. On a session with no messages yet, or after a run was stopped with `abort()`, the message stays queued until the next `prompt()`. A `prompt()` call made while that turn runs must pass `streamingBehavior`, or it fails with `AgentSessionBusyError`. Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued). They return `"queued"` if the input was queued (including after an extension transformed it), or `"handled"` if an extension consumed it.
-
-`clearQueue()` removes the queued steering and follow-up messages and returns them. `steering` and `followUp` hold each message as queued, after `input` hooks, skills and prompt templates changed it. `typed` holds the same messages, in the same order, as they were submitted: give the user those to send again, so the hooks and expansions run once more and not twice. `typed` is left out when every message was queued as submitted.
-
-`images` holds each message's images at the same index as its text, with `undefined` for a message sent without images, so a caller that queues the messages again can give each one its own images back. It is left out when no cleared message had images.
-
-`pauseQueuedMessages()` synchronously holds existing raw steering/follow-up entries before an abort boundary. Later context-bearing arrivals also stay queued without starting a provider turn. These include trigger-turn custom messages, batches, interrupts, `sendUserMessage()`, and ordinary `prompt()` calls.
-
-The hold preserves content blocks, optional data, duplicate identities, raw text, message types, and order within each queue kind. Non-trigger custom messages remain history-only and do not start a turn.
-
-`resumeQueuedMessages()` releases the hold exactly once but does **not** start or continue a model turn. Its promise resolves to `true` only when it released raw held steering/follow-up work, or `false` when none existed. The caller must use its explicit resume action, such as interactive chat submission, to drive execution.
-
-`clearQueue()` clears the paused flag when it explicitly removes the final unowned held item. If a protected or interrupt-owned item remains, the gate stays paused.
+- **Basic vs. streaming prompts:** `prompt()` expands file-based prompt templates and executes extension commands immediately even while streaming. Calling `prompt()` while streaming without `streamingBehavior` throws `AgentSessionBusyError` (`code: "agent_session_busy"`, guard `isAgentSessionBusyError`). Prompts arriving during compaction queue automatically.
+- **`preflightResult(success, disposition?)`:** Fires once before `prompt()` settles (`true` with `"handled"`, `"queued"`, or `"started"`; `false` on preflight rejection).
+- **`steer()` & `followUp()`:** Queue during streaming (or start a turn immediately if idle with existing messages; stay queued on empty/aborted sessions), return `"queued"` or `"handled"`, expand templates, and reject extension commands.
+- **Queue control:** `clearQueue()` returns `{ steering, followUp, typed?, images? }` (`typed` keeps pre-hook raw text so re-submitting does not double-run hooks). `pauseQueuedMessages()` holds queues across an abort boundary; `resumeQueuedMessages()` releases the hold once (returning `true` if held work existed) without starting a turn.
 
 ### Agent and AgentState
 
-The `Agent` class (from [`@bastani/atomic-agent-core`](/libraries/agent-core)) handles the core LLM interaction. Access it via `session.agent`.
+Access the underlying [`@bastani/atomic-agent-core`](/libraries/agent-core) `Agent` via `session.agent` (`state.messages`, `model`, `thinkingLevel`, `systemPrompt`, `tools`, `streamingMessage`, `errorMessage`, and `waitForIdle()`).
 
-```typescript
-// Access current state
-const state = session.agent.state;
+`session.sessionManager` is the source of truth for model context—never assign `session.agent.state.messages` to restore history. Instead, initialize `SessionManager.inMemory(cwd, { id }, entries)` before `createAgentSession()`, use `session.navigateTree()`, or call `session.sessionManager.appendMessage()` + `session.refreshContext()`.
 
-// state.messages: AgentMessage[] - conversation history
-// state.model: Model - current model
-// state.thinkingLevel: ThinkingLevel - current thinking level
-// state.systemPrompt: string - system prompt
-// state.tools: AgentTool[] - available tools
-// state.streamingMessage?: AgentMessage - current partial assistant message
-// state.errorMessage?: string - latest assistant error
+<a id="events" />
+<a id="collecting-assistant-output" />
 
-// Model-visible messages are projected from session.sessionManager.
-// agent.state.messages is a refreshed inspection cache; do not assign it for restoration.
+### Events & Transcript Collection
 
-// Replace tools
-session.agent.state.tools = tools; // copies the top-level array
+Subscribe with `session.subscribe((event) => ...)` for `message_start`/`message_update`/`message_end`, `tool_execution_start`/`update`/`end`, `agent_start`/`end`, `turn_start`/`end`, `queue_update`, `compaction_start`/`end`, and retry events. Do not mutate or append deltas onto `message_start`'s live partial object (it updates in place; seed mid-turn subscribers from `session.agent.state.streamingMessage`).
 
-// Wait for agent to finish processing
-await session.agent.waitForIdle();
-```
-
-Provider requests use `session.sessionManager` as the canonical finalized context. Assigning `session.agent.state.messages` does not replace persisted context and may be overwritten at the next request boundary. Restore externally stored history when constructing the session instead:
-
-```typescript
-const restoredManager = await SessionManager.inMemory(process.cwd(), { id: sessionId }, entries);
-const { session } = await createAgentSession({ sessionManager: restoredManager });
-```
-
-For an existing session, use `session.navigateTree(entryId)` to move its active branch. Use `session.sessionManager.appendMessage(...)` plus `session.refreshContext()` only when intentionally appending externally managed entries. A caller-supplied `prepareNextTurnWithContext` replacement context is still honored for exactly the request it prepared.
-
-### Events
-
-Subscribe to events to receive streaming output and lifecycle notifications.
-
-```typescript
-session.subscribe((event) => {
-  switch (event.type) {
-    // Streaming text from assistant
-    case "message_update":
-      if (event.assistantMessageEvent.type === "text_delta") {
-        process.stdout.write(event.assistantMessageEvent.delta);
-      }
-      if (event.assistantMessageEvent.type === "thinking_delta") {
-        // Thinking output (if thinking enabled)
-      }
-      break;
-    
-    // Tool execution
-    case "tool_execution_start":
-      console.log(`Tool: ${event.toolName}`);
-      break;
-    case "tool_execution_update":
-      // Streaming tool output
-      break;
-    case "tool_execution_end":
-      console.log(`Result: ${event.isError ? "error" : "success"}`);
-      break;
-    
-    // Message lifecycle
-    case "message_start":
-      // New message starting
-      break;
-    case "message_end":
-      // Message complete
-      break;
-    
-    // Agent lifecycle
-    case "agent_start":
-      // Agent started processing prompt
-      break;
-    case "agent_end":
-      // Agent finished (event.messages contains new messages)
-      break;
-    
-    // Turn lifecycle (one LLM response + tool calls)
-    case "turn_start":
-      break;
-    case "turn_end":
-      // event.message: assistant response
-      // event.toolResults: tool results from this turn
-      break;
-    
-    // Session events (queue, compaction, retry)
-    case "queue_update":
-      console.log(event.steering, event.followUp);
-      break;
-    case "compaction_start":
-    case "compaction_end":
-    case "auto_retry_start":
-    case "auto_retry_end":
-    case "summarization_retry_scheduled":
-    case "summarization_retry_attempt_start":
-    case "summarization_retry_finished":
-      break;
-  }
-});
-```
-
-To rebuild an assistant message from deltas, accumulate them in your own message object. In-process subscribers receive the provider's live partial in `message_start`, not a snapshot. The provider keeps appending to that object, so appending deltas yourself would duplicate text.
-
-If you subscribe part-way through a turn, seed your object from `session.agent.state.streamingMessage`, if present, to include the deltas you missed.
-
-### Collecting assistant output
-
-`createTranscript()` does that bookkeeping for you. It turns session events into the assistant's output as ordered, JSON-serializable parts:
+Use `createTranscript()` to collect ordered JSON-serializable parts (`text`, `thinking`, `toolCall` with `result`) automatically (pass `toolResult: (name) => "details" | "content"` to choose structured details over text). Redacted thinking is left out. A `toolCall` part's `result` appears once the tool reports progress or finishes; it holds `isError` and `isPartial`, which stays `true` until the tool finishes. If the message is aborted or fails, tool calls without a final result get an error result carrying the error message. Events from tools called inside other tools (those with `parentToolCallId`) are ignored:
 
 ```typescript
 import { createTranscript } from "@bastani/atomic";
@@ -863,104 +464,6 @@ session.subscribe((event) => transcript.apply(event));
 await session.prompt("List the files here");
 console.log(JSON.stringify(transcript.parts()));
 ```
-
-`parts()` returns a fresh copy of the parts of every assistant message seen so far, including one still streaming:
-
-- `{ type: "text", text }`
-- `{ type: "thinking", thinking }`. Redacted thinking is left out.
-- `{ type: "toolCall", id, name, arguments, result? }`. `result` appears once the tool reports progress or finishes. It holds `isError` and `isPartial`, which stays `true` until the tool finishes. If the message is aborted or fails, tool calls without a final result get an error result carrying the error message.
-
-Events from tools called inside other tools (those with `parentToolCallId`) are ignored. By default, `result.content` holds the result's text content. To get a tool's structured `details` instead, pass `toolResult`:
-
-```typescript
-const transcript = createTranscript({
-  toolResult: (toolName) => (toolName === "todo" ? "details" : "content"),
-});
-```
-
-## Options Reference
-
-Moved to [SDK API reference](/sdk/reference#options-reference).
-
-### Directories
-
-Moved to [SDK API reference](/sdk/reference#directories).
-
-### Model
-
-Moved to [SDK API reference](/sdk/reference#model).
-
-#### Model catalog persistence and refresh
-
-Moved to [SDK API reference](/sdk/reference#model-catalog-persistence-and-refresh).
-
-### API Keys and OAuth
-
-Moved to [SDK API reference](/sdk/reference#api-keys-and-oauth).
-
-### System Prompt
-
-Moved to [SDK API reference](/sdk/reference#system-prompt).
-
-### Tools
-
-Moved to [SDK API reference](/sdk/reference#tools).
-
-#### Bash tool behavior
-
-Moved to [SDK API reference](/sdk/reference#bash-tool-behavior).
-
-#### Waiting for existing shell tasks
-
-Moved to [SDK API reference](/sdk/reference#waiting-for-existing-shell-tasks).
-
-#### PowerShell tool behavior
-
-Moved to [SDK API reference](/sdk/reference#powershell-tool-behavior).
-
-#### Tools with Custom cwd
-
-Moved to [SDK API reference](/sdk/reference#tools-with-custom-cwd).
-
-### Custom Tools
-
-Moved to [SDK API reference](/sdk/reference#custom-tools).
-
-#### Structured output final results
-
-Moved to [SDK API reference](/sdk/reference#structured-output-final-results).
-
-### Extensions
-
-Moved to [SDK API reference](/sdk/reference#extensions).
-
-### Skills
-
-Moved to [SDK API reference](/sdk/reference#skills).
-
-### Context Files
-
-Moved to [SDK API reference](/sdk/reference#context-files).
-
-### Slash Commands
-
-Moved to [SDK API reference](/sdk/reference#slash-commands).
-
-### Session Management
-
-Moved to [SDK API reference](/sdk/reference#session-management).
-
-### Settings Management
-
-Moved to [SDK API reference](/sdk/reference#settings-management).
-
-## ResourceLoader
-
-Moved to [SDK API reference](/sdk/reference#resourceloader).
-
-## Return Value
-
-Moved to [SDK API reference](/sdk/reference#return-value).
 
 ## Complete Example
 
@@ -977,15 +480,9 @@ import {
   SettingsManager,
 } from "@bastani/atomic";
 
-// Create a runtime with custom credential storage and no models.json.
 const authStorage = AuthStorage.create("/custom/agent/auth.json");
 const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 
-// Runtime API key override (not persisted). setRuntimeApiKey updates auth state;
-// the scoped refresh updates that provider's catalog. getAuth, getRequestAuth, and
-// stream/complete options also accept `signal`; request-auth setup is cancelled with
-// the caller, uses one 15-second preparation bound per request, and does not keep
-// waiting after the model stream has opened.
 if (process.env.MY_KEY) {
   const providerId = "anthropic";
   const authController = new AbortController();
@@ -993,7 +490,6 @@ if (process.env.MY_KEY) {
   await modelRuntime.refresh({ providers: [providerId], signal: authController.signal });
 }
 
-// Inline tool
 const statusTool = defineTool({
   name: "status",
   label: "Status",
@@ -1008,7 +504,6 @@ const statusTool = defineTool({
 const model = getModel("anthropic", "claude-opus-4-5");
 if (!model) throw new Error("Model not found");
 
-// In-memory settings with overrides
 const settingsManager = SettingsManager.inMemory({
   compaction: { enabled: false },
   retry: { enabled: true, maxRetries: 2 },
@@ -1025,15 +520,12 @@ await loader.reload();
 const { session } = await createAgentSession({
   cwd: process.cwd(),
   agentDir: "/custom/agent",
-
   model,
   thinkingLevel: "off",
   modelRuntime,
-
   tools: ["read", "bash", "status"],
   customTools: [statusTool],
   resourceLoader: loader,
-
   sessionManager: SessionManager.inMemory(),
   settingsManager,
 });
@@ -1044,58 +536,47 @@ session.subscribe((event) => {
   }
 });
 
-await session.prompt("Get status and list files.");
+try {
+  await session.prompt("Get status and list files.");
+} finally {
+  await session.dispose();
+}
 ```
-
-## Run Modes
-
-Moved to [SDK API reference](/sdk/reference#run-modes).
-
-### InteractiveMode
-
-Moved to [SDK API reference](/sdk/reference#interactivemode).
-
-### runPrintMode
-
-Moved to [SDK API reference](/sdk/reference#runprintmode).
-
-### runRpcMode
-
-Moved to [SDK API reference](/sdk/reference#runrpcmode).
 
 ## RPC Mode Alternative
 
-For subprocess-based integration without building with the SDK, use the CLI directly:
+For non-Node languages or process isolation, run `atomic --mode rpc --no-session` over stdin/stdout instead of embedding the SDK. See [RPC](/rpc).
 
-```bash
-atomic --mode rpc --no-session
-```
+<a id="options-reference" />
+<a id="directories" />
+<a id="model" />
+<a id="model-catalog-persistence-and-refresh" />
+<a id="api-keys-and-oauth" />
+<a id="system-prompt" />
+<a id="tools" />
+<a id="bash-tool-behavior" />
+<a id="waiting-for-existing-shell-tasks" />
+<a id="powershell-tool-behavior" />
+<a id="tools-with-custom-cwd" />
+<a id="custom-tools" />
+<a id="structured-output-final-results" />
+<a id="extensions" />
+<a id="skills" />
+<a id="context-files" />
+<a id="slash-commands" />
+<a id="session-management" />
+<a id="settings-management" />
+<a id="resourceloader" />
+<a id="return-value" />
+<a id="run-modes" />
+<a id="interactivemode" />
+<a id="runprintmode" />
+<a id="runrpcmode" />
+<a id="exports" />
+<a id="owner-bound-task-supervisor-s1" />
+<a id="supervised-command-sdk" />
+<a id="task-transcript-references" />
 
-See [RPC documentation](/rpc) for the JSON protocol.
+## API Reference
 
-The SDK is preferred when:
-- You want type safety
-- You're in the same Node.js process
-- You need direct access to agent state
-- You want to customize tools/extensions programmatically
-
-RPC mode is preferred when:
-- You're integrating from another language
-- You want process isolation
-- You're building a language-agnostic client
-
-## Exports
-
-Moved to [SDK API reference](/sdk/reference#exports).
-
-## Owner-bound task supervisor (S1)
-
-Moved to [SDK API reference](/sdk/reference#owner-bound-task-supervisor-s1).
-
-### Supervised command SDK
-
-Moved to [SDK API reference](/sdk/reference#supervised-command-sdk).
-
-### Task transcript references
-
-Moved to [SDK API reference](/sdk/reference#task-transcript-references).
+All factory options, resource loaders, return types, run modes (`InteractiveMode`, `runPrintMode`, `runRpcMode`), exports, and supervised-task APIs are documented in the [SDK API reference](/sdk/reference).
