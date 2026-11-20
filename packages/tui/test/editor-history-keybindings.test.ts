@@ -41,3 +41,85 @@ describe("Editor prompt history keybindings", () => {
 		assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 3 });
 	});
 });
+
+describe("Editor.setHistory", () => {
+	it("replaces what Up and Down walk, and leaves the text and cursor as they are", () => {
+		const editor = new Editor(new TuiMainScreen(new VirtualTerminal()), defaultEditorTheme);
+		editor.addToHistory("main prompt");
+		editor.setText("draft");
+
+		editor.setHistory(["newest of the other agent", "launch task of the other agent"]);
+		assert.deepStrictEqual(editor.getHistory(), ["newest of the other agent", "launch task of the other agent"]);
+		assert.strictEqual(editor.getText(), "draft");
+		assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 5 });
+
+		editor.handleInput("\x1b[A"); // to the start of the draft
+		editor.handleInput("\x1b[A");
+		assert.strictEqual(editor.getText(), "newest of the other agent");
+		editor.handleInput("\x1b[A");
+		assert.strictEqual(editor.getText(), "launch task of the other agent");
+		editor.handleInput("\x1b[A");
+		assert.strictEqual(editor.getText(), "launch task of the other agent");
+		editor.handleInput("\x1b[B");
+		editor.handleInput("\x1b[B");
+		assert.strictEqual(editor.getText(), "draft");
+	});
+
+	it("ends browsing where it is: the shown entry stays as the text and Down no longer brings back the old draft", () => {
+		const editor = new Editor(new TuiMainScreen(new VirtualTerminal()), defaultEditorTheme);
+		editor.addToHistory("older");
+		editor.addToHistory("newer");
+		editor.handleInput("\x1b[A");
+		assert.strictEqual(editor.getText(), "newer");
+
+		editor.setHistory(["other"]);
+		assert.strictEqual(editor.getText(), "newer");
+		editor.handleInput("\x1b[B");
+		assert.strictEqual(editor.getText(), "newer");
+		editor.setText("");
+		editor.handleInput("\x1b[A");
+		assert.strictEqual(editor.getText(), "other");
+	});
+
+	it("keeps entries as addToHistory would: trimmed, without blanks or repeats in a row, at most 100", () => {
+		const editor = new Editor(new TuiMainScreen(new VirtualTerminal()), defaultEditorTheme);
+		editor.setHistory(["  b  ", "b", "", "a", "b"]);
+		assert.deepStrictEqual(editor.getHistory(), ["b", "a", "b"]);
+		editor.setHistory(Array.from({ length: 150 }, (_, index) => `p${149 - index}`));
+		assert.strictEqual(editor.getHistory().length, 100);
+		assert.strictEqual(editor.getHistory()[0], "p149");
+		assert.strictEqual(editor.getHistory().at(-1), "p50");
+		editor.setHistory(editor.getHistory());
+		assert.strictEqual(editor.getHistory().length, 100);
+	});
+});
+
+describe("Editor.appendOlderHistory", () => {
+	it("adds older entries behind the history without ending browsing: the shown entry and the parked draft stay", () => {
+		const editor = new Editor(new TuiMainScreen(new VirtualTerminal()), defaultEditorTheme);
+		editor.addToHistory("newest");
+		editor.setText("draft");
+		editor.handleInput("\x1b[A"); // to the start of the draft
+		editor.handleInput("\x1b[A");
+		assert.strictEqual(editor.getText(), "newest");
+
+		editor.appendOlderHistory(["newest", "older", "oldest"]);
+		assert.deepStrictEqual(editor.getHistory(), ["newest", "older", "oldest"]);
+		assert.strictEqual(editor.getText(), "newest");
+		editor.handleInput("\x1b[A");
+		assert.strictEqual(editor.getText(), "older");
+		editor.handleInput("\x1b[B");
+		editor.handleInput("\x1b[B");
+		assert.strictEqual(editor.getText(), "draft");
+	});
+
+	it("keeps entries as addToHistory would, and only up to 100 in all", () => {
+		const editor = new Editor(new TuiMainScreen(new VirtualTerminal()), defaultEditorTheme);
+		editor.addToHistory("a");
+		editor.appendOlderHistory(["a", " b ", "", "b", "a"]);
+		assert.deepStrictEqual(editor.getHistory(), ["a", "b", "a"]);
+		editor.appendOlderHistory(Array.from({ length: 150 }, (_, index) => `p${index}`));
+		assert.strictEqual(editor.getHistory().length, 100);
+		assert.deepStrictEqual(editor.getHistory().slice(0, 4), ["a", "b", "a", "p0"]);
+	});
+});
