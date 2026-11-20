@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- SDK: a `wrapNodeSqliteDatabase` handle that writes a file while an `openNodeSqliteDatabase` transaction on the same thread holds its write lock no longer stops your event loop for its busy timeout and fails with `SQLITE_BUSY`: the write waits off the event loop and runs once the transaction ends. Reads still run at once; a write still waiting at the handle's busy timeout fails with `SQLITE_BUSY` without running ([#6081](https://github.com/bastani-inc/atomic/issues/6081))
+
 ## [0.10.1] - 2026-11-20
 
 Typing and rendering keep going while Atomic reads and writes its local SQLite files, and the chat screen no longer flashes blank or shifted frames.

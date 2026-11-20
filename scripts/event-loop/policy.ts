@@ -273,6 +273,24 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 			"statements run on the calling thread only for an in-memory database, which has no file to wait for and no lock another connection holds, and for a connection its caller opened and passed to wrapNodeSqliteDatabase, a DatabaseSync that cannot move to another thread; openNodeSqliteDatabase runs every connection to a file on a thread of its own (#5376)",
 	},
 	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.besideHolds" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "planOf" },
+		reason:
+			"prepares and lists the plan of one statement, and reads PRAGMA schema_version, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file: neither runs the statement or waits for the file's write lock (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.besideHolds" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "busyTimeoutOf" },
+		reason:
+			"reads PRAGMA busy_timeout, a setting of the connection that touches no file, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file (#6081)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "sqliteBusyError" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "errorShape" },
+		reason:
+			"opens an in-memory database once per process and fails one statement on it, to read how node:sqlite builds its errors: it has no file, so it never waits for the disk or a lock (#6081)",
+	},
+	{
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openNodeSqliteDatabase" },
 		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openOnCallerThread" },
 		reason:
