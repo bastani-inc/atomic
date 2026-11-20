@@ -14,6 +14,7 @@ import {
 } from "../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
+import type { TaskViewSource } from "../../core/tasks/task-view-source.js";
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
 import { type TaskBoardSource, TaskInspector } from "../interactive/components/task-inspector.js";
 import { taskDisplayText } from "../interactive/components/task-row.js";
@@ -94,7 +95,13 @@ export async function showTaskInspector(
 	ui: TaskInspectorUi,
 	store: OwnerTaskStore,
 	taskId?: string,
-	options: { readonly chat?: boolean; readonly backLabel?: string; readonly board?: TaskBoardSource } = {},
+	options: {
+		readonly chat?: boolean;
+		readonly backLabel?: string;
+		readonly board?: TaskBoardSource;
+		/** The tasks it lists, when not the session's own: a subagent's, through its launched view of `store`. */
+		readonly source?: TaskViewSource;
+	} = {},
 ): Promise<"back" | "closed"> {
 	let requestRender = () => {};
 	let finishView = () => {};
@@ -103,7 +110,7 @@ export async function showTaskInspector(
 	let environment: TaskTranscriptEnvironment | undefined;
 	let pendingChat: TaskId | undefined;
 	const inspector = new TaskInspector(
-		store,
+		options.source ?? store,
 		() => {
 			if (inspector.fullscreen !== fullscreen) finishView();
 			else requestRender();
