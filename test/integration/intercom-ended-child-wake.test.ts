@@ -533,17 +533,21 @@ test(
 );
 
 test(
-	"what was queued for a subagent fails when the session that would resume it disconnects (#5999)",
+	"what was queued for a subagent fails when the session that would resume it ends for good (#5999)",
 	async () => {
 		const { owner, childName } = await endedChild("orphaned");
 		const sender = await connect("orphaned-sender");
 		const sent = await sender.client.send(childName, { text: "hello", wakeEndedRecipient: true });
 		assert.equal(sent.queued, true, sent.reason);
 		await vi.waitFor(() => assert.equal(owner.wakes.length, 1), WAIT);
+		// It says goodbye (not resumable): nobody can resume the subagent any more. One that only went away is waited for.
 		await owner.client.disconnect();
 		await vi.waitFor(() => assert.equal(sender.received.length, 1), WAIT);
 		assert.equal(sender.received[0]!.message.replyTo, sent.id);
-		assert.match(sender.received[0]!.message.replyError ?? "", /disconnected before it was resumed/);
+		assert.match(
+			sender.received[0]!.message.replyError ?? "",
+			/the session that launched it ended before it was resumed/,
+		);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

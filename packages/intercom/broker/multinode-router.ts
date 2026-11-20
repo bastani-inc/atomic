@@ -449,6 +449,15 @@ export class MultiNodeRouter {
 	private readonly home: string | undefined;
 
 	/**
+	 * #5999 durable wake queue: what this broker's rows in the shared database are kept under, the same across its
+	 * restarts on this host and never another host's: its instance key (node, host identity and socket path), or, on a
+	 * host with no reliable identity, its home.
+	 */
+	get durableHome(): string {
+		return this.instanceKey.startsWith(`${this.nodeId}:${this.brokerId}`) ? (this.home ?? this.instanceKey) : this.instanceKey;
+	}
+
+	/**
 	 * #4997: whether a broker that may keep ask routes no other broker has is down: it renewed its membership within
 	 * `ROUTE_HOLDER_DOWN_WINDOW_MS` but has missed its renewals since, and no broker is back under its home.
 	 */
