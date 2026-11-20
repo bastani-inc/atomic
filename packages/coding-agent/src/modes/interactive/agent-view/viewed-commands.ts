@@ -26,9 +26,3 @@ export function installViewedCommandGates(_mode: InteractiveModeBase, _switcher:
 export function runViewedDoubleEscapeAction(mode: InteractiveModeBase, action: "tree" | "fork"): void {
 	void (action === "tree" ? mode.showTreeSelector() : mode.showUserMessageSelector());
 }
-
-/**
- * A gone subagent's draft was moved in front of main's prompt (D6): if the next submit is exactly `promptText` and it
- * is a command that rewrites the main conversation, it asks first. Any edit, or another submit, clears the mark.
- */
-export function markMovedDraft(_mode: InteractiveModeBase, _promptText: string): void {}
