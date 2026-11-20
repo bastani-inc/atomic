@@ -14,7 +14,6 @@ import {
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { type AgentPanelAnswerOptions, promptAnswerOptionsOf } from "../../../core/tasks/agent-panel-source.ts";
 import {
-	firstSubagentAttempt,
 	latestSubagentAttempt,
 	supersededSettledAttempts,
 	waitingReleasedShells,
@@ -447,8 +446,8 @@ export class TaskInspector implements Component {
 		return latestSubagentAttempt(this.store.backgroundTasks, id)?.ref.taskId ?? id;
 	}
 	/**
-	 * Opens a task's chat directly, as Enter on its agent-panel row does: ← on its empty prompt closes the inspector,
-	 * one level back to `backLabel`, instead of showing the task's list or detail page.
+	 * Opens a task's page directly, as Enter on a subagent's shell row in the agent panel opens that shell's output: ←
+	 * closes the inspector, one level back to `backLabel`, instead of showing the task's list or detail page.
 	 */
 	openChat(requested: TaskId, backLabel = "main chat"): void {
 		if (this.boardStale) this.refreshOrder();
@@ -804,10 +803,6 @@ export class TaskInspector implements Component {
 				this.requestRender,
 				(reason) => this.reportLate(reason, environment),
 				{
-					// The header echoes the task the subagent was launched with, the first prompt of its conversation.
-					...(this.chatFrom === "caller"
-						? { echoedPrompt: (firstSubagentAttempt(this.store.tasks, task.ref.taskId) ?? task).title }
-						: {}),
 					// `/hotkeys` in the chat opens the keys `?` opens on its empty prompt.
 					showKeys: () => {
 						this.helpOpen = true;
@@ -1544,12 +1539,6 @@ export class TaskInspector implements Component {
 		if (!result.ok) this.failureNotice = taskDisplayText(result.error.message);
 		this.requestRender();
 	}
-	/** Ctrl+C on an open chat's typed prompt clears it, as in the main chat. Answers whether there was one to clear. */
-	clearTypedPrompt(): boolean {
-		if (this.helpOpen || this.transcript?.clearDraft?.() !== true) return false;
-		this.requestRender();
-		return true;
-	}
 	private configuredTaskKey(data: string): boolean {
 		return (["app.list.open", "app.list.stop", "app.tasks.input"] as const).some((key) =>
 			getKeybindings().matches(data, key),
@@ -1611,28 +1600,17 @@ export class TaskInspector implements Component {
 		}
 		const waitedShell = this.waitedShell;
 		const selected = waitedShell === undefined ? this.selected() : this.waitedShellRecord(waitedShell.taskId);
-		// A resumed subagent's chat shows the attempt that runs now, and echoes the task it was launched with.
+		// A resumed subagent's chat shows the attempt that runs now.
 		const task =
 			selected?.kind === "agent"
 				? (latestSubagentAttempt(this.store.tasks, selected.ref.taskId) ?? selected)
 				: selected;
 		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
-
-		const attachedAgentChat = this.chatFrom === "caller" && task?.kind === "agent";
-		const launch = attachedAgentChat ? (firstSubagentAttempt(this.store.tasks, task.ref.taskId) ?? task) : undefined;
-		const promptEcho = launch === undefined ? "" : taskDisplayText(launch.title || taskLabel(launch));
-		const header = attachedAgentChat
-			? [
-					` ${theme.fg("dim", "› from main")}`,
-					...(promptEcho
-						? [` ${theme.fg("accent", theme.bold("❯"))} ${theme.fg("userMessageText", promptEcho)}`]
-						: []),
-				].map(fitWidth)
-			: [
-					theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
-					task ? taskDetailSummary(task) : "",
-					theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
-				].map(fitWidth);
+		const header = [
+			theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
+			task ? taskDetailSummary(task) : "",
+			theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
+		].map(fitWidth);
 		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
 		const style = themedNavKeyStyle();
 		const questionActive = transcript.takesEscape?.() === true;
@@ -1657,7 +1635,7 @@ export class TaskInspector implements Component {
 		};
 		if (this.helpOpen)
 			return [
-				...(attachedAgentChat ? [] : header),
+				...header,
 				...renderNavKeyOverlay(
 					"keys · task chat",
 					TASK_CHAT_OVERLAY_KEYS.flatMap((entry) => {

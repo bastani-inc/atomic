@@ -2,16 +2,14 @@ import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
-import { setSubagentChatQueueSink } from "../src/modes/interactive/subagent-chat-queue-report.js";
 import { stripAnsi } from "../src/utils/ansi.js";
 import { createGate, createRig, holdTool, type Rig, releaseOpenGates, waitFor } from "./helpers/busy-submission-rig.js";
 import { pressAltEnter } from "./helpers/interactive-submission-host.js";
-import { type SubagentSteeringChat, subagentChat, userTexts } from "./helpers/steering-chats.js";
+import { userTexts } from "./helpers/steering-chats.js";
 
 /**
  * An isolated engine that crashes takes its queue with it. The main chat gives its queued messages back to its editor
- * with a notice; a subagent chat the engine drew went down with it, so the main chat lists its queued messages in full.
- * Nothing is sent twice.
+ * with a notice. (A shown subagent's lost queue is listed in full: viewed-agent-prompt.test.ts.) Nothing is sent twice.
  */
 
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -133,37 +131,4 @@ test("a deliberate engine stop gives nothing back", async () => {
 		rig.host.notices.filter((notice) => notice.includes("Engine restarted")),
 		[],
 	);
-});
-
-test("a subagent chat lost with the engine has its queued messages listed in full in the main chat; none is sent", async () => {
-	const { rig } = await mainChatOnEngine();
-	cleanups.push(
-		setSubagentChatQueueSink((report) =>
-			rig.pair!.engineMessage({
-				type: "engine_subagent_chat_queue",
-				chatId: report.chatId,
-				agent: report.agent,
-				steering: [...report.steering],
-				followUp: [...report.followUp],
-			}),
-		),
-	);
-	const chat: SubagentSteeringChat = await subagentChat();
-	cleanups.push(() => chat.stop());
-	await chat.startBusyTurn();
-	await chat.enter("check the second file");
-	await chat.enter("steer beta");
-	await chat.followUp("follow gamma");
-	await waitFor("the subagent to queue all three", () => chat.queuedRows().length === 4);
-
-	rig.pair!.crash();
-	await waitFor("the notice", () => rig.host.notices.some((notice) => notice.includes(" to worker ")));
-
-	assert.deepEqual(
-		rig.host.notices.filter((notice) => notice.includes(" to worker ")),
-		[
-			"warning: Engine restarted; 3 queued messages to worker weren't sent:\ncheck the second file\nsteer beta\nfollow gamma",
-		],
-	);
-	assert.deepEqual(userTexts(chat.engine), ["first"], "nothing was sent to the subagent");
 });

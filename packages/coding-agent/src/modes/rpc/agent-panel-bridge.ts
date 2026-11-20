@@ -881,7 +881,8 @@ export function bindAgentPanel(
 }
 
 /**
- * Open a panel row's view. Leaving it returns to the focused panel with the row selected.
+ * Open a panel row: a subagent is shown on the screen; a subagent's shell opens its output, and an extension's row its
+ * own view, and leaving either returns to the focused panel with the row selected.
  */
 async function openPanelRow(
 	session: AgentPanelSession & object,
@@ -892,9 +893,11 @@ async function openPanelRow(
 	const store = getOwnerTaskStore(session);
 	const taskId = panelTaskId(item);
 	const bridge = agentViewBridge(session);
-	if (bridge !== undefined && taskId !== undefined && item.kind === "agent") {
-		// The screen shows the subagent where the main chat was; the prompt below now writes to it.
-		bridge.requestView(taskId);
+	if (taskId !== undefined && item.kind === "agent") {
+		// The screen shows the subagent where the main chat was; the prompt below now writes to it. Every interactive
+		// session has a bridge: without one there is no screen to show it on.
+		if (bridge !== undefined) bridge.requestView(taskId);
+		else ui.notify?.(`Could not open ${safeLabel(item.name)}.`, "warning");
 		return;
 	}
 	const shell = bridge === undefined || taskId === undefined ? undefined : store?.taskRecord(taskId);
@@ -907,18 +910,10 @@ async function openPanelRow(
 			await showAgentPanel(session, ui, item.id);
 		return;
 	}
-	// A subagent resumed while its chat was open is the same row: its latest attempt is selected again.
-	const back = () => {
-		const latest = taskId === undefined ? undefined : store && latestSubagentAttempt(store.tasks, taskId);
-		return showAgentPanel(session, ui, latest === undefined ? item.id : `task:${latest.ref.taskId}`);
-	};
-	if (taskId !== undefined && store !== undefined) {
-		if ((await showTaskInspector(ui, store, taskId, { chat: true, backLabel: "main chat" })) === "back") await back();
-		return;
-	}
+	// An extension's row opens its own view; leaving it returns to the panel with the row selected.
 	const opened = openAgentPanelItem(session, item.id, {
 		onReturn: () => {
-			back().catch(report);
+			showAgentPanel(session, ui, item.id).catch(report);
 		},
 	});
 	if (!opened) ui.notify?.(`Could not open ${safeLabel(item.name)}.`, "warning");
