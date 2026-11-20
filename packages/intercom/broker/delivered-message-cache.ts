@@ -698,6 +698,18 @@ export class DeliveredMessageCache {
 		return existing.state === "accepted" ? "match" : "uncertain";
 	}
 
+	/**
+	 * #5999 durable wake queue: what is known of `messageId`, without its payload: a recipient confirmed it (`accepted`),
+	 * or it was handed over and not confirmed (`reserved`). Read-only: a broker taking up queued messages asks this of
+	 * each, and a payload's signature would cost as much as the message is long.
+	 */
+	deliveryStateOf(messageId: string, now = Date.now()): "accepted" | "reserved" | undefined {
+		if (this.storageInvalid) return undefined;
+		const delivered = this.read(messageId);
+		if (delivered === undefined || delivered === "invalid" || now - delivered.deliveredAt > this.ttlMs) return undefined;
+		return delivered.state;
+	}
+
 	private read(messageId: string): DeliveredMessage | undefined | "invalid" {
 		return this.database === undefined ? this.delivered.get(messageId) : this.readDurable(messageId);
 	}

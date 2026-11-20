@@ -165,6 +165,18 @@ function replaceAbandonedLegacy(lockPath: string, holder: string, record: string
   }
 }
 
+/**
+ * The latest generation of the socket lock at `lockPath` (taken, or released by its last holder); undefined before any.
+ * Every broker that starts, of this version or an earlier one, takes the next one and leaves the one after it released.
+ */
+export function latestSocketReplacementGeneration(lockPath: string): number | undefined {
+  try {
+    return generations(lockPath)[0];
+  } catch {
+    return undefined;
+  }
+}
+
 export async function acquireSocketReplacementLock(
   lockPath: string,
   { onWait }: SocketReplacementLockOptions = {},
