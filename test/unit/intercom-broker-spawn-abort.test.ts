@@ -104,6 +104,17 @@ function neverReadyBrokerCommand(markerPath: string): string[] {
 	];
 }
 
+function isBrokerAnswering(): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = net.connect(getBrokerSocketPath());
+		socket.once("connect", () => {
+			socket.destroy();
+			resolve(true);
+		});
+		socket.once("error", () => resolve(false));
+	});
+}
+
 async function waitUntilGone(pid: number): Promise<boolean> {
 	const deadline = Date.now() + BROKER_GONE_WAIT_MS;
 	while (isProcessAlive(pid)) {
@@ -228,14 +239,33 @@ directSpawnTest("a disposed start stops waiting for a broker that never listens,
 	assert.equal(await waitUntilGone(brokerPid), true, "the broker is still running after the start settled");
 });
 
-directSpawnTest(
+/**
+ * A broker command that records its pid, announces itself as a real broker does (so a Windows spawner can stop it), and
+ * never listens. A script file rather than `-e`: on Windows a custom command runs through a launcher's command line.
+ */
+function announcedNeverReadyBrokerCommand(markerPath: string): string[] {
+	const script = join(agentDir, "..", "never-ready-broker.cjs");
+	writeFileSync(
+		script,
+		`const fs = require("node:fs");
+const path = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_PATH;
+const token = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_TOKEN;
+if (path && token) fs.writeFileSync(path, token + " " + process.pid + "\\n");
+fs.writeFileSync(process.argv[2], String(process.pid));
+setInterval(() => {}, 1000);
+`,
+	);
+	return [script, markerPath];
+}
+
+test(
 	"a start waiting for another spawner's broker starts the broker itself when that spawner is cancelled",
 	async () => {
 		const markerPath = join(agentDir, "..", "cancelled-broker.pid");
 		const owner = new AbortController();
 		const first = spawnBrokerIfNeeded(
 			process.execPath,
-			neverReadyBrokerCommand(markerPath),
+			announcedNeverReadyBrokerCommand(markerPath),
 			READY_TIMEOUT_MS,
 			undefined,
 			owner.signal,
@@ -249,7 +279,7 @@ directSpawnTest(
 		await assert.rejects(first);
 
 		await waiting;
-		assert.ok(existsSync(getBrokerSocketPath()) || process.platform === "win32", "no broker answers");
+		assert.equal(await isBrokerAnswering(), true, "no broker answers");
 	},
 	2 * READY_TIMEOUT_MS,
 );

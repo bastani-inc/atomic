@@ -32,7 +32,11 @@ if (!fs.existsSync(marker)) {
 }
 `;
 
-test(
+// On Windows the isolated terminal stops its engine with TerminateProcess, so a quitting session cannot stop the start
+// another session waits for; the takeover itself is covered on every platform by the broker-start unit tests.
+const quitStopsTheStart = process.platform === "win32" ? test.skip : test;
+
+quitStopsTheStart(
 	"a session waiting for the broker another session was starting gets one when that session quits",
 	async () => {
 		const root = makeTempDirectory("intercom-broker-takeover-");
