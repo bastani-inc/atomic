@@ -26,6 +26,7 @@
 - A delayed wake refusal no longer shows `hold-failed` when Intercom confirms that reconnect restored the same released subagent. A child whose hold was dropped still reports the failure, as do older brokers that cannot verify the hold ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
 - Temporary worktree children now report completion, pause, or quit after cleanup rather than while Atomic still has the directory open. The reply explains when a sibling keeps the batch open or cleanup continues in the background; Esc still ends the wait immediately ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 - When an SDK session without a task host batches several subagent calls, each caller now receives only its own children’s answers, even if a child used a fallback model or its parent cancelled it. Previously each caller could receive the whole batch’s text ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+- A subagent's task names the model it runs on after every switch of its session's model, also one no fallback announced, such as an extension's `setModel`, and reports a fallback's model together with its reasoning level, so its `/tasks` row, launch card and completion notice never pair the new model with the level the old one ran at.
 
 ### Changed
 

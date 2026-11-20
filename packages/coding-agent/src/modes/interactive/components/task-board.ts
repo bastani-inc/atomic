@@ -1,11 +1,11 @@
 import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
-import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
+import { type AgentPanelItem, taskPanelModel } from "../../../core/tasks/agent-panel-source.ts";
 import { waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import { shownSpanMs, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
-import { formatPanelElapsed } from "./agent-panel.ts";
+import { AGENT_PANEL_MODEL_MIN_WIDTH, formatPanelElapsed, panelModelText } from "./agent-panel.ts";
 import { WAITING_MARKER } from "./notice-line.ts";
 import { taskDisplayText, taskLabel, taskState } from "./task-row.js";
 
@@ -183,13 +183,47 @@ export function rowMeta(row: TaskBoardRow): string {
 }
 
 const NAME_COLUMN = 14;
+/** The narrowest task a row keeps beside the model column. */
+const MIN_TASK_WIDTH = 8;
 
-export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: number): string {
+function nameColumnFor(width: number): number {
+	return Math.min(NAME_COLUMN, Math.max(6, Math.floor((width - 6) / 3)));
+}
+
+/** A row's model column, as the agent panel shows it: empty for a shell and for a row with no known model. */
+export function rowModel(row: TaskBoardRow): string {
+	if (row.kind === "item") return panelModelText(row.item);
+	return row.task.kind === "agent" ? panelModelText({ kind: "agent", ...taskPanelModel(row.task) }) : "";
+}
+
+/**
+ * The width of the model column `rows` share at `width`, 0 for none. As in the agent panel, rows narrower than 100
+ * columns have none, and neither do rows where it would clip a row's right column or leave a task under 8 cells.
+ */
+export function boardModelColumn(rows: readonly TaskBoardRow[], width: number): number {
+	if (width < AGENT_PANEL_MODEL_MIN_WIDTH) return 0;
+	let column = 0;
+	for (const row of rows) column = Math.max(column, visibleWidth(rowModel(row)));
+	if (column === 0) return 0;
+	const fixed = 2 + 2 + nameColumnFor(width) + column + 2;
+	for (const row of rows) {
+		const meta = visibleWidth(rowMeta(row));
+		const right = meta > 0 ? 2 + meta : 0;
+		if (fixed + right > width || (rowTask(row).length > 0 && width - fixed - right < MIN_TASK_WIDTH)) return 0;
+	}
+	return column;
+}
+
+/** `modelColumn`: the width of the model column every row of the list shares (`boardModelColumn`), 0 for none. */
+export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: number, modelColumn = 0): string {
 	const state = rowState(row);
 	const { glyph, color } = stateGlyph(state, row.kind === "task" ? row.task.kind : row.item.kind);
 	const marker = selected ? theme.fg("accent", "❯ ") : "  ";
 
-	const nameColumn = Math.min(NAME_COLUMN, Math.max(6, Math.floor((width - 6) / 3)));
+	const nameColumn = nameColumnFor(width);
+	const model = modelColumn > 0 ? truncateToWidth(rowModel(row), modelColumn) : "";
+	const modelCell = modelColumn > 0 ? `${model}${" ".repeat(Math.max(0, modelColumn - visibleWidth(model)) + 2)}` : "";
+	const nameWidth = nameColumn + (modelColumn > 0 ? modelColumn + 2 : 0);
 	const name = truncateToWidth(rowName(row), nameColumn - 1);
 	const namePadded = name + " ".repeat(Math.max(1, nameColumn - visibleWidth(name)));
 	const progress =
@@ -205,15 +239,16 @@ export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: numb
 	const title = rowTask(row);
 	const task = [title, progress, reason === title ? "" : reason].filter(Boolean).join(" · ");
 	const fullMeta = rowMeta(row);
-	const meta = 2 + 2 + nameColumn + 2 + visibleWidth(fullMeta) <= width ? fullMeta : "";
-	const fixed = 2 + 2 + nameColumn + (meta ? 2 + visibleWidth(meta) : 0);
+	const meta = 2 + 2 + nameWidth + 2 + visibleWidth(fullMeta) <= width ? fullMeta : "";
+	const fixed = 2 + 2 + nameWidth + (meta ? 2 + visibleWidth(meta) : 0);
 	const taskText = truncateToWidth(task, Math.max(0, width - fixed));
-	const gap = Math.max(meta ? 1 : 0, width - 2 - 2 - nameColumn - visibleWidth(taskText) - visibleWidth(meta));
+	const gap = Math.max(meta ? 1 : 0, width - 2 - 2 - nameWidth - visibleWidth(taskText) - visibleWidth(meta));
 	const finished = stateGroup(state) === "done";
 	const nameText = selected ? theme.bold(namePadded) : finished ? theme.fg("muted", namePadded) : namePadded;
+	const modelText = modelCell ? theme.fg("dim", modelCell) : "";
 	const taskStyled = finished && !selected ? theme.fg("dim", taskText) : theme.fg("muted", taskText);
 	const line = truncateToWidth(
-		`${marker}${theme.fg(color, glyph)} ${nameText}${taskStyled}${" ".repeat(gap)}${theme.fg("dim", meta)}`,
+		`${marker}${theme.fg(color, glyph)} ${nameText}${modelText}${taskStyled}${" ".repeat(gap)}${theme.fg("dim", meta)}`,
 		width,
 		"...",
 		true,

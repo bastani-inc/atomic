@@ -49,6 +49,7 @@ import {
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
 import {
+	boardModelColumn,
 	type PeekContent,
 	renderBoardRow,
 	renderPeekCard,
@@ -1989,7 +1990,9 @@ export class TaskInspector implements Component {
 						selectedLine + 2 < start + room &&
 						questionPrefix !== "" &&
 						shownQuestion.startsWith(questionPrefix);
-					const shownRow = stripVTControlCharacters(renderBoardRow(row, row.id === selected?.id, width - 1));
+					const shownRow = stripVTControlCharacters(
+						renderBoardRow(row, row.id === selected?.id, width - 1, modelColumn),
+					);
 					if (questionInCard || (question !== "" && shownRow.includes(question)))
 						this.paintedPrompts.set(row.id, prompt);
 				}
@@ -2001,6 +2004,10 @@ export class TaskInspector implements Component {
 			}
 		};
 		const slice = body.slice(start, start + room);
+		const modelColumn = boardModelColumn(
+			slice.filter((line): line is TaskBoardRow => typeof line !== "string"),
+			width - 1,
+		);
 		const previousSelectedPrompt = selected !== undefined ? this.paintedPrompts.get(selected.id) : undefined;
 		this.paintedPrompts.clear();
 		const drawnTasks: TaskRecord[] = [];
@@ -2029,7 +2036,7 @@ export class TaskInspector implements Component {
 			clip(
 				typeof line === "string"
 					? line
-					: ` ${renderBoardRow(this.withBoardElapsed(line), line.id === selected?.id, width - 1)}`,
+					: ` ${renderBoardRow(this.withBoardElapsed(line), line.id === selected?.id, width - 1, modelColumn)}`,
 			),
 		);
 		if (shortViewport) {
