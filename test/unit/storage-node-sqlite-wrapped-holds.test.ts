@@ -571,3 +571,18 @@ test("a threaded handle dropped without closing is not kept by its connection's 
 	await collectEverythingTracked(handles);
 	assert.deepEqual(handles.uncollected(), [], "the connection's thread keeps the handle");
 });
+
+test("a wrapped write whose short busy timeout ends before the threaded BEGIN reaches its thread runs on the free lock (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped } = await openWrapped(path, 5);
+	const { go, committed } = await pauseRequest(threaded, "begin");
+	const written = wrapped.run("INSERT INTO items VALUES ('c')");
+	const delayed = sleep(60).then(go);
+	try {
+		assert.deepEqual(await written, { changes: 1 });
+	} finally {
+		await delayed;
+	}
+	await committed;
+	assert.deepEqual(await values(threaded), ["c", "a"]);
+});

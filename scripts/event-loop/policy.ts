@@ -274,15 +274,15 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 	},
 	{
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.besideHolds" },
-		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "planOf" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "readsOnly" },
 		reason:
 			"prepares and lists the plan of one statement, and reads PRAGMA schema_version, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file: neither runs the statement or waits for the file's write lock (#6081)",
 	},
 	{
-		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.besideHolds" },
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "runWhenFree" },
 		to: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "busyTimeoutOf" },
 		reason:
-			"reads PRAGMA busy_timeout, a setting of the connection that touches no file, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only while a threaded transaction of this thread holds its file (#6081)",
+			"reads PRAGMA busy_timeout, a setting of the connection that touches no file, on a connection passed to wrapNodeSqliteDatabase, which runs on the calling thread anyway, only when a call has to wait for a threaded transaction of this thread on its file (#6081)",
 	},
 	{
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite-file-gate.ts", name: "sqliteBusyError" },

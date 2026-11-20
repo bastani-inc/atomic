@@ -5,18 +5,12 @@ import type { DatabaseSync, StatementSync } from "node:sqlite";
 /**
  * A connection on a thread of its own taking or holding a file's write lock: open from the moment it sends
  * `BEGIN IMMEDIATE` until it learns that the attempt was refused or failed, or until its transaction let go of the
- * lock. While one is open, a statement a connection on the calling thread (`wrapNodeSqliteDatabase`) runs on the same
- * file could wait for that lock in SQLite's busy handler, which holds the calling thread, while the transaction needs
- * that thread to go on: it waits off the thread instead (see `waitForHolds`).
- *
- * `phase` is what this thread knows of the lock: `taking` until the answer to `BEGIN IMMEDIATE` arrives, `held` from
- * then until `COMMIT` or `ROLLBACK` is sent, `letting go` until its answer arrives. Only while `held` is the lock
- * known to be taken; in the other phases it may already, or still, be free.
+ * lock. A call made inside its transaction's callback runs in its hold's asynchronous context (`runInHold`), and calls
+ * that waited for the file run when the file's last hold closes (`releaseHold`).
  */
 export interface FileHold {
 	readonly file: string;
 	open: boolean;
-	phase: "taking" | "held" | "letting go";
 }
 
 /** The holds whose transaction callbacks an asynchronous context runs in, innermost first. */
@@ -25,14 +19,36 @@ export interface HoldScope {
 	readonly outer: HoldScope | undefined;
 }
 
+/**
+ * What the process's connections to one file are doing with its write lock, in one `Int32` they all share: `FREE`, a
+ * statement of the calling thread running (`CALLER`), or a connection on a thread of its own taking it (`tag * 4 + 2`)
+ * or holding it (`tag * 4 + 3`), by its `tag`. That thread moves it with compare-and-exchange as SQLite takes and lets
+ * go of the lock: it takes the word before `BEGIN IMMEDIATE`, and gives it back once its transaction ended, before it
+ * answers. A statement of the calling thread runs only while it has the word itself (`runAdmitted`), so neither can
+ * take the lock from under the other.
+ */
+const FREE = 0;
+const CALLER = 1;
+
+/** A threaded connection's share of its file's word: the word, its tag, and how to stop using it. */
+export interface FileLock {
+	readonly buffer: SharedArrayBuffer;
+	readonly tag: number;
+	/** Gives the word back if this connection still takes or holds it, as when its thread exited. */
+	clear(): void;
+	/** This connection no longer uses the word; the file's word goes once no connection does. */
+	release(): void;
+}
+
 interface Waiter {
 	readonly deadline: number;
 	readonly timer: ReturnType<typeof setTimeout>;
-	readonly run: () => void;
+	/** Runs the call if the word is free now; whether it did. */
+	readonly tryRun: () => boolean;
 	readonly fail: () => void;
 }
 
-/** Statements a calling-thread connection prepared to classify its calls while the file is held; see `planOf`. */
+/** Statements a calling-thread connection prepared to classify its calls while the file is held; see `readsOnly`. */
 interface Plans {
 	readonly explained: Map<string, StatementSync>;
 	schemaVersion?: StatementSync;
@@ -40,95 +56,115 @@ interface Plans {
 }
 
 /**
- * One file's open holds, the calls waiting for them to close, and what those calls' connections prepared meanwhile,
- * by the object that owns each connection (not the connection, which its own statements keep alive), so they are
- * kept no longer than it is.
+ * One file's open holds, the calls waiting to run, and what those calls' connections prepared meanwhile, by the
+ * object that owns each connection (not the connection, which its own statements keep alive), so they are kept no
+ * longer than it is.
  */
 export interface FileGate {
 	readonly holds: Set<FileHold>;
 	readonly waiters: Waiter[];
 	readonly plans: WeakMap<object, Plans>;
+	watching: boolean;
 }
 
 interface Registry {
 	readonly files: Map<string, FileGate>;
+	readonly words: Map<string, { readonly state: Int32Array; users: number }>;
 	readonly scopes: AsyncLocalStorage<HoldScope | undefined>;
+	nextTag: number;
 }
 
 // Shared across module copies, as the transaction gates are: a copy that runs a transaction's callback and a copy whose
-// wrapped connection is called from it must see the same holds and the same asynchronous context.
+// wrapped connection is called from it must see the same holds, words and asynchronous context.
 const REGISTRY = Symbol.for("atomic-storage/node-sqlite-file-holds@1");
 const registryBag = globalThis as typeof globalThis & Record<symbol, Registry | undefined>;
-const registry: Registry = registryBag[REGISTRY] ?? { files: new Map(), scopes: new AsyncLocalStorage() };
+const registry: Registry = registryBag[REGISTRY] ?? {
+	files: new Map(),
+	words: new Map(),
+	scopes: new AsyncLocalStorage(),
+	nextTag: 1,
+};
 registryBag[REGISTRY] = registry;
+
+/** A threaded connection to `file` starts using the file's word (see `FREE`). */
+export function useFileLock(file: string): FileLock {
+	let word = registry.words.get(file);
+	if (word === undefined) {
+		word = { state: new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), users: 0 };
+		registry.words.set(file, word);
+	}
+	word.users++;
+	const { state } = word;
+	const tag = registry.nextTag++;
+	let released = false;
+	return {
+		buffer: state.buffer as SharedArrayBuffer,
+		tag,
+		clear: () => {
+			if (
+				Atomics.compareExchange(state, 0, tag * 4 + 3, FREE) === tag * 4 + 3 ||
+				Atomics.compareExchange(state, 0, tag * 4 + 2, FREE) === tag * 4 + 2
+			)
+				Atomics.notify(state, 0);
+		},
+		release: () => {
+			if (released) return;
+			released = true;
+			const current = registry.words.get(file);
+			if (current !== undefined && --current.users === 0) registry.words.delete(file);
+		},
+	};
+}
+
+/**
+ * Runs `call`, a statement of the calling thread, if the file's word is free, holding the word while it runs, which is
+ * synchronous; undefined, running nothing, if a threaded connection takes or holds the lock.
+ */
+function runAdmitted<T>(state: Int32Array, call: () => Promise<T>): Promise<T> | undefined {
+	if (Atomics.compareExchange(state, 0, FREE, CALLER) !== FREE) return undefined;
+	try {
+		return call();
+	} finally {
+		Atomics.store(state, 0, FREE);
+		Atomics.notify(state, 0);
+	}
+}
 
 /** Opens a hold on `file`, identified as `fileIdentity` identifies it. */
 export function holdFile(file: string): FileHold {
 	let gate = registry.files.get(file);
 	if (gate === undefined) {
-		gate = { holds: new Set(), waiters: [], plans: new WeakMap() };
+		gate = { holds: new Set(), waiters: [], plans: new WeakMap(), watching: false };
 		registry.files.set(file, gate);
 	}
-	const hold: FileHold = { file, open: true, phase: "taking" };
+	const hold: FileHold = { file, open: true };
 	gate.holds.add(hold);
 	return hold;
 }
 
-/** The hold's `BEGIN IMMEDIATE` took the lock: calls past their deadline fail now, as the lock is taken. */
-export function holdTaken(hold: FileHold | undefined): void {
-	if (hold === undefined || !hold.open) return;
-	hold.phase = "held";
-	failOverdue(hold.file);
-}
-
-/** The hold's transaction sends `COMMIT` or `ROLLBACK`: calls whose deadline passed while it held the lock fail now. */
-export function holdLettingGo(hold: FileHold | undefined): void {
-	if (hold === undefined || !hold.open || hold.phase !== "held") return;
-	failOverdue(hold.file);
-	hold.phase = "letting go";
-}
-
-/**
- * Fails, with SQLITE_BUSY, the file's calls whose deadline has passed by now, once the event loop handled what it
- * already received: a call that a thread's exit, already reported, let run in the meantime has run.
- */
-function failOverdue(file: string): void {
-	const gate = registry.files.get(file);
-	if (gate === undefined) return;
-	const now = performance.now();
-	const overdue = gate.waiters.filter((waiting) => now >= waiting.deadline);
-	if (overdue.length === 0) return;
-	setImmediate(() => {
-		for (const waiter of overdue) {
-			const index = gate.waiters.indexOf(waiter);
-			if (index === -1) continue;
-			gate.waiters.splice(index, 1);
-			clearTimeout(waiter.timer);
-			waiter.fail();
-		}
-		forgetIfIdle(file, gate);
-	});
-}
-
 /**
  * Closes `hold`, once. When it was the file's last, the calls waiting for the file run now, oldest first, before
- * anything else can take the lock again. A call whose deadline passed while the lock was known to be taken has
- * already failed (see `holdLettingGo`); one whose deadline passed while it may have been free runs, as SQLite's busy
- * handler would then have found it free. A call that opens another hold stops the rest, which wait for it in turn.
+ * anything else can take the lock again; one that finds the word taken (a call before it began a transaction) stops
+ * the rest, which go on waiting.
  */
 export function releaseHold(hold: FileHold | undefined): void {
 	if (hold === undefined || !hold.open) return;
-	holdLettingGo(hold);
 	hold.open = false;
 	const gate = registry.files.get(hold.file);
 	if (gate === undefined) return;
 	gate.holds.delete(hold);
-	while (gate.holds.size === 0 && gate.waiters.length > 0) {
-		const waiter = gate.waiters.shift()!;
-		clearTimeout(waiter.timer);
-		waiter.run();
-	}
+	if (gate.holds.size === 0) runWaiters(gate);
 	forgetIfIdle(hold.file, gate);
+}
+
+/** Runs the gate's waiting calls, oldest first, while the word is free. */
+function runWaiters(gate: FileGate): void {
+	while (gate.waiters.length > 0) {
+		const waiter = gate.waiters[0]!;
+		if (!waiter.tryRun()) return;
+		gate.waiters.shift();
+		clearTimeout(waiter.timer);
+	}
 }
 
 function forgetIfIdle(file: string, gate: FileGate): void {
@@ -150,12 +186,6 @@ export function currentHoldScope(): HoldScope | undefined {
 	return registry.scopes.getStore();
 }
 
-/** Whether a hold of the gate's file is known to have its write lock (see `FileHold`). */
-export function lockTaken(gate: FileGate): boolean {
-	for (const hold of gate.holds) if (hold.phase === "held") return true;
-	return false;
-}
-
 /**
  * The gate of `file` when another context holds it open: some hold is open, and none of the callbacks `scope` runs in
  * belongs to an open hold of it. A call made inside an open hold's own callback cannot wait for it, since the
@@ -171,38 +201,87 @@ export function heldElsewhere(file: string, scope: HoldScope | undefined): FileG
 }
 
 /**
- * Runs `run` once the file's last hold closes, or fails it with `busy()`, without running it, when `timeoutMs` passes
- * while a hold has the lock. Past its deadline while every hold is taking or letting go the lock, it waits for that to
- * resolve: a hold that takes the lock fails it then, one that closes lets it run. Nothing of it runs while it waits.
+ * Runs `run` as soon as the file's word is free: at once if it is, as SQLite's busy handler would find the lock free;
+ * otherwise once a threaded connection gives the word back, or the file's last hold closes. Fails it with `busy()`,
+ * having run nothing, if the word is still taken at the end of the busy timeout of `database`, which `owner` owns
+ * (read only when the call has to wait). When that cannot be read, `run` runs at once, as it always has.
  */
-export function waitForHolds<T>(
+export function runWhenFree<T>(
 	file: string,
 	gate: FileGate,
-	timeoutMs: number,
+	owner: object,
+	database: DatabaseSync,
 	run: () => Promise<T>,
 	busy: () => Error,
 ): Promise<T> {
+	const state = registry.words.get(file)?.state;
+	if (state === undefined) return run();
+	// Calls already waiting go first.
+	runWaiters(gate);
+	const now = gate.waiters.length === 0 ? runAdmitted(state, run) : undefined;
+	if (now !== undefined) return now;
+	const timeoutMs = busyTimeoutOf(gate, owner, database);
+	if (timeoutMs === undefined) return run();
 	return new Promise<T>((resolve, reject) => {
 		const waiter: Waiter = {
 			deadline: performance.now() + timeoutMs,
-			// Decided once the event loop handled what it already received, such as the answer to a COMMIT or the exit
-			// of a connection's thread, which a timer runs ahead of.
+			// Decided once the event loop handled what it already received, such as the exit of a connection's thread,
+			// which a timer runs ahead of.
 			timer: setTimeout(
 				() =>
 					setImmediate(() => {
 						const index = gate.waiters.indexOf(waiter);
-						if (index === -1 || !lockTaken(gate)) return;
+						if (index === -1) return;
 						gate.waiters.splice(index, 1);
+						if (!waiter.tryRun()) waiter.fail();
 						forgetIfIdle(file, gate);
-						reject(busy());
 					}),
 				timeoutMs,
 			),
-			run: () => resolve(run()),
+			tryRun: () => {
+				const ran = runAdmitted(state, run);
+				if (ran === undefined) return false;
+				resolve(ran);
+				return true;
+			},
 			fail: () => reject(busy()),
 		};
 		gate.waiters.push(waiter);
+		watchWord(file, gate, state);
 	});
+}
+
+/**
+ * Wakes the gate's waiting calls whenever the file's word changes, so a call runs the moment a threaded connection
+ * gives the lock back, before its answer reaches this thread. One watch per gate, for as long as calls wait.
+ */
+function watchWord(file: string, gate: FileGate, state: Int32Array): void {
+	for (;;) {
+		if (gate.watching || gate.waiters.length === 0) return;
+		const observed = Atomics.load(state, 0);
+		// Freed since the caller found it taken: run what waits now rather than wait for a change that already came.
+		if (observed === FREE) {
+			runWaiters(gate);
+			forgetIfIdle(file, gate);
+			continue;
+		}
+		// Until the last deadline: each waiter's own timer decides at its deadline, so a watch never runs past it.
+		const untilMs = Math.max(...gate.waiters.map((waiter) => waiter.deadline)) - performance.now();
+		if (untilMs <= 0) return;
+		const result = Atomics.waitAsync(state, 0, observed, untilMs);
+		if (!result.async) {
+			if (result.value === "not-equal") continue;
+			return;
+		}
+		gate.watching = true;
+		void result.value.then(() => {
+			gate.watching = false;
+			runWaiters(gate);
+			forgetIfIdle(file, gate);
+			watchWord(file, gate, state);
+		});
+		return;
+	}
 }
 
 /** Most plans one connection keeps while a file is held. */
@@ -223,7 +302,7 @@ export function forgetPlans(file: string, owner: object): void {
 }
 
 /** The busy timeout `database` waits for a lock now, in milliseconds; undefined when it cannot be read. */
-export function busyTimeoutOf(gate: FileGate, owner: object, database: DatabaseSync): number | undefined {
+function busyTimeoutOf(gate: FileGate, owner: object, database: DatabaseSync): number | undefined {
 	const plans = plansOf(gate, owner);
 	try {
 		plans.busyTimeout ??= database.prepare("PRAGMA busy_timeout");
@@ -234,45 +313,32 @@ export function busyTimeoutOf(gate: FileGate, owner: object, database: DatabaseS
 	}
 }
 
-/** A statement that starts as a read, or as one of the writes whose plan `planOf` reads; no other is prepared. */
+/** A statement whose first keyword reads: anything else is never prepared for its plan. */
 const READ_STATEMENT = /^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*(?:SELECT|VALUES|WITH)\b/i;
-const WRITE_STATEMENT = /^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*(?:INSERT|UPDATE|DELETE|REPLACE|WITH)\b/i;
 /** Steps that run code of the application's or of an extension, or a trigger: functions, aggregates, virtual tables. */
 const CALLS_CODE = /^(?:Function|PureFunc|Agg[A-Z]\w*|V[A-Z]\w*|Program)$/;
 
 /**
- * What one statement does, proven from the plan SQLite makes for it on `database`, never by running it: `reads` when
- * it only reads, so it never waits for the write lock in WAL mode, which both kinds of connection put the file in;
- * `writes` when it takes the file's write lock before anything else and calls no function, virtual table or trigger;
- * `not proven` otherwise. Either proof needs a plan that calls no function, virtual table or trigger (whose code could
- * wait for a lock or write), uses no attached database, and was made for the schema the file has now. A collating
- * sequence an extension registered still runs: it compares values and is not told apart. `writes` is only asked for
- * when `forWrite`.
+ * Whether `sql`, run as one statement on `database`, only reads, so it never waits for the write lock in WAL mode,
+ * which both kinds of connection put the file in. Proven from the plan SQLite makes for it, never by running it: the
+ * plan writes nothing, calls no function, virtual table or trigger (whose code could wait for a lock or write), uses
+ * no attached database, and was made for the schema the file has now. A collating sequence an extension registered
+ * still runs: it compares values and is not told apart.
  *
  * The plan of a text is prepared once while the file is held and run again for later calls: SQLite makes it again when
  * this connection changed its schema since. A kept plan made for an older schema of the file is made afresh, so the
  * answer is always the one a fresh plan gives.
  */
-export function planOf(
-	gate: FileGate,
-	owner: object,
-	database: DatabaseSync,
-	sql: string,
-	forWrite: boolean,
-): "reads" | "writes" | "not proven" {
-	if (!READ_STATEMENT.test(sql) && !(forWrite && WRITE_STATEMENT.test(sql))) return "not proven";
+export function readsOnly(gate: FileGate, owner: object, database: DatabaseSync, sql: string): boolean {
+	if (!READ_STATEMENT.test(sql)) return false;
 	const plans = plansOf(gate, owner);
 	const kept = plans.explained.has(sql);
 	let verdict = planVerdict(plans, database, sql);
 	if (verdict === "older schema" && kept) verdict = planVerdict(plans, database, sql);
-	return verdict === "older schema" ? "not proven" : verdict;
+	return verdict === "reads";
 }
 
-function planVerdict(
-	plans: Plans,
-	database: DatabaseSync,
-	sql: string,
-): "reads" | "writes" | "older schema" | "not proven" {
+function planVerdict(plans: Plans, database: DatabaseSync, sql: string): "reads" | "older schema" | "not proven" {
 	try {
 		let explained = plans.explained.get(sql);
 		if (explained === undefined) {
@@ -281,21 +347,14 @@ function planVerdict(
 			plans.explained.set(sql, explained);
 		}
 		let fileSchema: number | undefined;
-		let writes = false;
 		for (const step of explained.all()) {
 			const opcode = String(step.opcode);
-			if (CALLS_CODE.test(opcode)) return "not proven";
-			if (opcode === "OpenWrite") writes = true;
+			if (opcode === "OpenWrite" || CALLS_CODE.test(opcode)) return "not proven";
 			if (opcode !== "Transaction") continue;
 			// p1: the database (0 the file, 1 temp), p2: a write transaction, p3: the schema version it was made for,
 			// p5: whether it checks that version.
 			const schema = Number(step.p1);
-			if (schema > 1 || (schema === 0 && Number(step.p5) === 0)) return "not proven";
-			if (Number(step.p2) !== 0) {
-				// Only a write of the file itself takes its lock first; one of temp alone does not wait for it.
-				if (schema !== 0) return "not proven";
-				writes = true;
-			}
+			if (Number(step.p2) !== 0 || schema > 1 || (schema === 0 && Number(step.p5) === 0)) return "not proven";
 			if (schema === 1) continue;
 			plans.schemaVersion ??= database.prepare("PRAGMA schema_version");
 			fileSchema ??= Number(plans.schemaVersion.get()?.schema_version);
@@ -304,7 +363,7 @@ function planVerdict(
 				return "older schema";
 			}
 		}
-		return writes ? "writes" : "reads";
+		return "reads";
 	} catch {
 		plans.explained.delete(sql);
 		return "not proven";

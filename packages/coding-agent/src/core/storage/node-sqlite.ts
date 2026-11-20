@@ -61,21 +61,19 @@ import {
 } from "./errors.js";
 import { fileIdentity, fileIdentityAsync } from "./file-identity.js";
 import {
-	busyTimeoutOf,
 	currentHoldScope,
 	type FileHold,
+	type FileLock,
 	forgetPlans,
 	type HoldScope,
 	heldElsewhere,
 	holdFile,
-	holdLettingGo,
-	holdTaken,
-	lockTaken,
-	planOf,
+	readsOnly,
 	releaseHold,
 	runInHold,
+	runWhenFree,
 	sqliteBusyError,
-	waitForHolds,
+	useFileLock,
 } from "./node-sqlite-file-gate.js";
 import {
 	type ConnectionAnswer,
@@ -1322,12 +1320,13 @@ class CallerThreadConnection {
 }
 
 /**
- * Closes `current`'s hold when the connection's thread exits: a thread that is gone holds no lock, whatever the
- * transaction's callback still does. Outside the database's methods, so the listener keeps only the cell, not the
- * database.
+ * Gives back the file's word and closes `current`'s hold when the connection's thread exits: a thread that is gone
+ * holds no lock, whatever the transaction's callback still does. Outside the database's methods, so the listener keeps
+ * only the cell and the word, not the database.
  */
-function releaseOnExit(connection: ThreadConnection, current: { hold?: FileHold }): void {
+function releaseOnExit(connection: ThreadConnection, current: { hold?: FileHold }, lock: FileLock): void {
 	connection.onExit(() => {
+		lock.clear();
 		const hold = current.hold;
 		current.hold = undefined;
 		releaseHold(hold);
@@ -1404,6 +1403,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * own that the thread's exit listener keeps, so the listener does not keep this database.
 	 */
 	private readonly current: { hold?: FileHold } = {};
+	/** This connection's share of its file's lock word, which its thread moves as it takes and lets go of the lock. */
+	private readonly fileLock?: FileLock;
 	/** The ticket of the writer holding the lock, on its way out of the queue while the transaction runs. */
 	private leaving?: { readonly ticket: string; readonly left: Promise<void> };
 	/** What the writers' queue gave up on, once per reason, in the order it first happened. */
@@ -1419,8 +1420,10 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		fileGate?: { readonly file: string; readonly role: "holds" | "waits" },
 	) {
 		this.fileGate = fileGate;
-		// A thread that is gone holds no lock, whatever the transaction's callback still does.
-		if (fileGate?.role === "holds" && connection instanceof ThreadConnection) releaseOnExit(connection, this.current);
+		if (fileGate?.role === "holds" && connection instanceof ThreadConnection) {
+			this.fileLock = useFileLock(fileGate.file);
+			releaseOnExit(connection, this.current, this.fileLock);
+		}
 		this.lockWaitMs = lockWaitMs;
 		this.groupCommitHoldMs = groupCommitHoldMs;
 		this.transactionIdentity = transactionIdentity;
@@ -1500,7 +1503,10 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * between.
 	 */
 	private tryBegin(): undefined | Promise<undefined> {
-		return this.call({ kind: "begin" }) as undefined | Promise<undefined>;
+		const lock = this.fileLock;
+		return this.call(
+			lock === undefined ? { kind: "begin" } : { kind: "begin", lockState: lock.buffer, lockTag: lock.tag },
+		) as undefined | Promise<undefined>;
 	}
 
 	/** Changes whenever another connection commits to the database: the lock is being used, not held idle. */
@@ -1610,13 +1616,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 		if (!(attempt instanceof Promise)) {
 			this.current.hold = hold;
-			holdTaken(hold);
 			return undefined;
 		}
 		return attempt.then(
 			() => {
 				this.current.hold = hold;
-				holdTaken(hold);
 				return undefined;
 			},
 			(error: unknown) => {
@@ -1891,17 +1895,16 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	/**
 	 * Runs `call`, one call of a connection on the calling thread to a file, without holding this thread while another
 	 * connection of this process, on a thread of its own, takes or holds the file's write lock: SQLite's busy handler
-	 * would wait for that lock on this thread, which that connection's transaction needs to go on. While there is none,
-	 * and for every other connection, the call runs at once, as it always has; so does a call made inside that
-	 * transaction's callback (`scope`), which the transaction waits for. Otherwise a single statement (`statement`)
-	 * that is proven to only read runs at once too, as a read in WAL mode never waits for the lock; so does one proven
-	 * to take the write lock before anything else, on a connection whose busy timeout is 0, while the lock is not known
-	 * to be taken: it takes the free lock or fails at once, as SQLite then never waits. Any other call, a script
-	 * (`exec`) included, waits off this thread before anything of it runs, then runs as always once the holds are gone;
-	 * still blocked at the connection's busy timeout, it fails with SQLITE_BUSY as the busy handler would, having run
-	 * nothing. A call on a connection whose busy timeout cannot be read (an authorizer refuses it) runs at once, as it
-	 * always has: how long it may wait is SQLite's alone to know. Parameters `call` refuses (text with a NUL) are
-	 * refused before anything else, as `call` would at once.
+	 * would wait for that lock on this thread, which that connection's transaction needs to go on. While no such
+	 * transaction is starting or open, and for every other connection, the call runs at once, as it always has; so does
+	 * a call made inside that transaction's callback (`scope`), which the transaction waits for, and a single statement
+	 * (`statement`) proven to only read, as a read in WAL mode never waits for the lock. Any other call, a script
+	 * (`exec`) included, runs at once while the file's word says the lock is free, and holds the word while it runs, so
+	 * the transaction cannot take the lock from under it; otherwise it waits off this thread, before anything of it
+	 * runs, until the word is free. Still waiting at the connection's busy timeout, it fails with SQLITE_BUSY as the busy
+	 * handler would, having run nothing. A call on a connection whose busy timeout cannot be read (an authorizer refuses
+	 * it) runs as it always has: how long it may wait is SQLite's alone to know. Parameters `call` refuses (text with a
+	 * NUL) are refused before anything else, as `call` would at once.
 	 */
 	private besideHolds<T>(
 		scope: HoldScope | undefined,
@@ -1916,17 +1919,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		if (params.some((value) => typeof value === "string" && value.includes("\0"))) return call();
 		const owner = this.connection;
 		const database = owner.connection;
-		if (statement !== undefined && planOf(gate, owner, database, statement, false) === "reads") return call();
-		const timeoutMs = busyTimeoutOf(gate, owner, database);
-		if (timeoutMs === undefined) return call();
-		if (
-			timeoutMs === 0 &&
-			statement !== undefined &&
-			!lockTaken(gate) &&
-			planOf(gate, owner, database, statement, true) === "writes"
-		)
-			return call();
-		return waitForHolds(file, gate, timeoutMs, call, () => unavailable(this.descriptor, sqliteBusyError()));
+		if (statement !== undefined && readsOnly(gate, owner, database, statement)) return call();
+		return runWhenFree(file, gate, owner, database, call, () => unavailable(this.descriptor, sqliteBusyError()));
 	}
 
 	/** Idle-only housekeeping: do not join a batch, wait behind an operation on this handle or another handle's
@@ -2077,13 +2071,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				queued.callback(this.createExecutor(() => active)),
 			);
 			active = false;
-			holdLettingGo(this.current.hold);
 			await this.executor.exec("COMMIT");
 			await this.released(true);
 			queued.resolve(value);
 		} catch (cause) {
 			active = false;
-			holdLettingGo(this.current.hold);
 			try {
 				await this.executor.exec("ROLLBACK");
 			} catch (rollbackCause) {
@@ -2130,7 +2122,6 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		const ran = batch.members.splice(0, outcomes.length);
 		let commitCause: unknown;
 		let committed = true;
-		holdLettingGo(this.current.hold);
 		try {
 			await this.executor.exec("COMMIT");
 		} catch (cause) {
@@ -2159,7 +2150,6 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		cause: unknown,
 		rollbackCause: unknown,
 	): Promise<void> {
-		holdLettingGo(this.current.hold);
 		await this.rollbackQuietly();
 		await this.released(false);
 		const failed = outcomes.length;
@@ -2189,6 +2179,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 					await this.holderRecord?.close();
 					await this.call({ kind: "close" });
 				} finally {
+					this.fileLock?.release();
 					await releaseOpenLock(this.openLock);
 				}
 			});
