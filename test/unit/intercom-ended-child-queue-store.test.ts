@@ -444,11 +444,13 @@ test("a small drain with no space to give back costs no transaction beyond its w
 
 /**
  * The longest the event loop may stop while the store waits out another process's lock, beyond what the whole host
- * stood still meanwhile: a fifth of that wait. Waiting for the lock on the event loop stops it for the whole wait, and a
- * store that spins never lets it run again; a loaded host's scheduler stops it for a few hundred milliseconds, and a
- * Windows host can stand still for seconds, every process at once.
+ * stood still meanwhile. Waiting for the lock on the event loop stops it for the whole wait (5 s), and a store that spins
+ * never lets it run again; a Windows host can stand still for seconds, every process at once, which the heartbeat on
+ * another thread measures, and what is left of a loaded host's scheduling stays well under this.
  */
-const LOCK_WAIT_STALL_MAX_MS = ENDED_QUEUE_LOCK_WAIT_MS / 5;
+const STALL_BEYOND_HOST_MAX_MS = 200;
+/** Room for a timer that fires early by the event loop's own lag, on a wait as long as the store's lock wait. */
+const TIMER_LAG_MARGIN_MS = 1_000;
 
 /**
  * The longest the whole host stood still since it started: a heartbeat on another thread, which keeps running while
@@ -500,7 +502,7 @@ test("after a write waits out another process's lock and the next is refused at 
 		}
 		// Writes are refused at once for a lock wait after the first failed; that wait is over once this one is (with room
 		// for a timer that fires early by the event loop's own lag).
-		await sleep(ENDED_QUEUE_LOCK_WAIT_MS + LOCK_WAIT_STALL_MAX_MS);
+		await sleep(ENDED_QUEUE_LOCK_WAIT_MS + TIMER_LAG_MARGIN_MS);
 		// The lock is free and the wait is over: a write now is kept, and a remove goes through.
 		const settled = (write: Promise<unknown>) =>
 			Promise.race([write, sleep(ENDED_QUEUE_LOCK_WAIT_MS).then(() => "still waiting")]);
@@ -512,7 +514,7 @@ test("after a write waits out another process's lock and the next is refused at 
 	}
 	const hostStalled = await host.stop();
 	assert.ok(
-		stalled - hostStalled < LOCK_WAIT_STALL_MAX_MS,
+		stalled - hostStalled < STALL_BEYOND_HOST_MAX_MS,
 		`the event loop stalled for ${stalled.toFixed(1)} ms, the whole host for ${hostStalled.toFixed(1)} ms`,
 	);
 }, 60_000);
