@@ -11,6 +11,7 @@ import {
 } from "@bastani/atomic";
 import { type IntercomEventBus, resolveTopLevelParallelRunningCapacity } from "../../shared/types.js";
 import { deliverLocalCompletionNotification } from "./completion-notification.js";
+import { bindEndedChildWakes } from "./ended-child-wakes.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
 import { type HoldNoticeEpisode, holdNoticeEpisode } from "./released-child-receipts.js";
 import { releasedReplyTimeoutId, releasedReplyToolResult } from "./released-child-replies.js";
@@ -297,6 +298,8 @@ export function bindReleasedChildWakes(
 		resolveTopLevelParallelRunningCapacity(deps.config?.parallel?.runningCapacity),
 	);
 	const unbindResume = bindResumeDispatcher(ownerSessionId, dispatcher);
+	// #5999: a child that ended but can be resumed is resumed here for an Intercom message the broker queued for it.
+	const unbindEndedWakes = bindEndedChildWakes(deps, ctx, events);
 	const report = (error: AgentRehydrateError) => {
 		const wakeKey = error.fields.wakeKey;
 		if (error.code !== "wake-failed" || !wakeKey?.startsWith(`${namespace}:`)) return;
@@ -393,6 +396,7 @@ export function bindReleasedChildWakes(
 	return () => {
 		disposeHandler();
 		unbindResume();
+		unbindEndedWakes();
 		stopReporting();
 		unbindReservationOwner();
 		holdFailuresTold.clear();

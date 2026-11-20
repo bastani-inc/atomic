@@ -65,6 +65,8 @@ export const PROTOCOL_2_FRAME_TYPES: ReadonlySet<BrokerOutboundFrame["type"]> = 
 	"released_child_reply",
 	"released_children_ack",
 	"restoring_recipient_wake",
+	// #5999: written only to an owner that reported ended children with `messages`, which a protocol 1 client never does.
+	"ended_child_wake",
 ]);
 
 /** #4642: frames of protocol 3, written only to a client that registered speaking it. */

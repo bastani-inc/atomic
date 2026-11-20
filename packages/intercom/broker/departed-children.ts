@@ -1,5 +1,24 @@
+import { randomUUID } from "node:crypto";
 import { hasGroup, normalizeGroup } from "../group.js";
 import type { ReleasedChildRefusal } from "../types.js";
+import { intercomMessageBytes } from "../message-size.js";
+import type { Message } from "../types.js";
+import {
+	ENDED_CHILD_OWNER_RETURN_MS,
+	ENDED_CHILD_QUEUE_BYTES_MAX,
+	ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX,
+	ENDED_CHILD_WAKE_ANSWER_MS,
+	ENDED_CHILD_WAKE_START_MAX_MS,
+	type EndedChildWakeBudget,
+	type EndedChildWakeFailure,
+	type EndedChildMessages,
+	type EndedChildWakeRequest,
+	type EndedChildWaker,
+	markQueuedForWake,
+	PAUSED_RECIPIENT_TARGET,
+	RESUMING_RECIPIENT_TARGET,
+	sendWakesEndedRecipient,
+} from "./ended-child-wakes.js";
 import type { JsonWireValue } from "./framing.js";
 import { type HoldSender, holdAdmitsSender } from "./group-membership.js";
 import {
@@ -51,18 +70,53 @@ export interface EndedChildMark {
 	readonly aliases: readonly string[];
 	readonly outcome: SubagentEndedOutcome;
 	readonly childId?: string;
+	/**
+	 * #5999: what its owner does with a send that asks to wake it: resume it (`wake`, for one that finished on its own),
+	 * or keep the message for when it continues it (`hold`, for one stopped on purpose). Absent: refused as before.
+	 */
+	readonly messages?: EndedChildMessages;
 }
 
 /** A held send to refuse, with the typed refusal naming why its subagent is gone. */
 export interface HeldSendRefusal {
 	readonly held: HeldSend;
 	readonly error: IntercomRecipientGoneError;
+	/** #5999: the reason to give instead of the error's message, when it says more. */
+	readonly reason?: string;
 }
 
 export type DepartedChildAdmission =
 	| { readonly kind: "none" }
 	| { readonly kind: "held"; readonly timeoutMs: number }
 	| { readonly kind: "refused"; readonly error: IntercomRecipientGoneError };
+
+/** #5999: what becomes of a send that asks to wake an ended subagent. */
+export type EndedChildWakeAdmission =
+	/** No subagent its owner resumes for a message answers to the target: decided as before. */
+	| { readonly kind: "none" }
+	/**
+	 * Queued for the child; `target` tells the sender why (`resuming subagent` or `paused subagent`). `wake`, when
+	 * present, is the owner's request to resume it, to send now.
+	 */
+	| { readonly kind: "queued"; readonly target: string; readonly wake?: EndedChildWakeRequest }
+	/** A wake bound refused it: the child's ended refusal, and `reason` saying why it was not woken. */
+	| { readonly kind: "refused"; readonly error: IntercomRecipientGoneError; readonly reason: string };
+
+/** The sender of a send that may wake a subagent: who it is, and the departure key it has as a subagent itself. */
+export interface WakeSender extends HoldSender {
+	readonly waker: EndedChildWaker;
+	/** `<supervisor>\0<registration name>` of a sender that is a subagent: a wake it started is found by it. */
+	readonly wakeKey?: string;
+}
+
+/** #5999: what the broker does with the sends of a subagent whose verdict changed, beyond refusing and evicting. */
+export interface DepartedChildrenWakeHooks {
+	/** Queued messages that will not reach their child: each sender is told why. */
+	readonly failed: (failures: readonly EndedChildWakeFailure[]) => void;
+	readonly budget?: EndedChildWakeBudget;
+	/** Whether the owner session is connected here, so it can be asked to wake its child. */
+	readonly ownerLive: (ownerSessionId: string) => boolean;
+}
 
 /** The longest `childId` a mark may carry: a run id and an index. */
 const CHILD_ID_MAX = 256;
@@ -97,6 +151,8 @@ export function validateEndedChildrenFrame(
 		if (item.childId !== undefined && (typeof item.childId !== "string" || item.childId.length > CHILD_ID_MAX))
 			return refuseMark("invalid_frame", item);
 		if (item.group !== undefined && typeof item.group !== "string") return refuseMark("invalid_group", item);
+		if (item.messages !== undefined && item.messages !== "wake" && item.messages !== "hold")
+			return refuseMark("invalid_frame", item);
 		const aliases = item.aliases ?? [];
 		if (!Array.isArray(aliases) || aliases.some((alias) => typeof alias !== "string"))
 			return refuseMark("invalid_alias", item);
@@ -109,14 +165,29 @@ export function validateEndedChildrenFrame(
 			aliases: aliasIds,
 			outcome: item.outcome as SubagentEndedOutcome,
 			childId: item.childId,
+			...(item.messages !== undefined && item.outcome !== "cancelled"
+				? { messages: item.messages as EndedChildMessages }
+				: {}),
 		});
 	}
 	return { ok: true, children: parsed };
 }
 
 type Verdict =
-	| { readonly kind: "ended"; readonly outcome: SubagentEndedOutcome; readonly childId?: string }
+	| {
+			readonly kind: "ended";
+			readonly outcome: SubagentEndedOutcome;
+			readonly childId?: string;
+			readonly messages?: EndedChildMessages;
+	  }
 	| { readonly kind: "disconnected" };
+
+/** #5999: the owner was asked to resume the child for the messages queued for it. */
+interface PendingWake {
+	readonly id: string;
+	readonly depth: number;
+	accepted: boolean;
+}
 
 /** The verdict of a subagent nobody said anything about before its wait ended. */
 const DISCONNECTED: Verdict = { kind: "disconnected" };
@@ -132,10 +203,22 @@ interface Departure {
 	deadline?: number;
 	timer?: ReturnType<typeof setTimeout>;
 	readonly held: HeldSend[];
+	/** #5999: sends answered `queued` that wait for the child's wake, in admission order. */
+	readonly queued: HeldSend[];
+	/** #5999: the bytes of the messages in `queued`. */
+	queuedBytes: number;
+	wake?: PendingWake;
+	/** #5999: when the messages queued for the child fail if it has not registered by then. */
+	queueTimer?: ReturnType<typeof setTimeout>;
 }
 
 const keyOf = (ownerSessionId: string, childName: string): string =>
 	`${ownerSessionId}\0${normalizeReservationTarget(childName)}`;
+
+/** #5999: the key a subagent is known by here, from its owner and name; also what the wake bounds count it under. */
+export function departureKey(ownerSessionId: string, childName: string): string {
+	return keyOf(ownerSessionId, childName);
+}
 
 function targetOf(held: HeldSend): string {
 	return held.clientMessage.to.trim();
@@ -161,13 +244,21 @@ export class DepartedChildren {
 	private readonly orphans = new Map<Departure, string>();
 	private heldTotal = 0;
 	private liveTimers = 0;
+	/** #5999: the bytes of every message queued for a subagent's wake, across the broker. */
+	private queuedBytesTotal = 0;
+	/** #5999: who sent each held send that asks to wake its subagent, for when the owner's verdict lets it. */
+	private readonly wakeSenders = new WeakMap<HeldSend, WakeSender>();
 
-	/** `onExpired` refuses the sends whose wait for a verdict ended without one. */
+	/**
+	 * `onExpired` refuses the sends whose wait for a verdict ended without one. Without `wakes` no subagent is woken
+	 * for a message: every send is decided as before #5999.
+	 */
 	constructor(
 		private readonly onExpired: (refusals: readonly HeldSendRefusal[]) => void,
 		private readonly holdMs = DEPARTED_CHILD_HOLD_MS,
 		private readonly perOwnerMax = DEPARTED_CHILDREN_PER_OWNER_MAX,
 		private readonly orphansMax = DEPARTED_ORPHANS_MAX,
+		private readonly wakes?: DepartedChildrenWakeHooks,
 	) {}
 
 	/** Subagents kept for owners that disconnected. */
@@ -183,6 +274,11 @@ export class DepartedChildren {
 	/** Sends held now. */
 	get heldSendCount(): number {
 		return this.heldTotal;
+	}
+
+	/** #5999: the bytes of the messages queued for subagents that ended, to reach them when they are resumed. */
+	get queuedBytes(): number {
+		return this.queuedBytesTotal;
 	}
 
 	/** What it holds now, index by index; counted by tests, which check that nothing is left behind. */
@@ -228,18 +324,49 @@ export class DepartedChildren {
 	mark(ownerSessionId: string, children: readonly EndedChildMark[]): {
 		readonly refused: HeldSendRefusal[];
 		readonly evicted: HeldSend[];
+		/** #5999: held sends that asked to wake their subagent and are now queued for it; each sender is told why. */
+		readonly queued: Array<{ readonly held: HeldSend; readonly target: string }>;
+		/** #5999: wakes to ask the owner for. */
+		readonly wakes: EndedChildWakeRequest[];
 	} {
 		const refused: HeldSendRefusal[] = [];
 		const evicted: HeldSend[] = [];
+		const queued: Array<{ readonly held: HeldSend; readonly target: string }> = [];
+		const wakes: EndedChildWakeRequest[] = [];
 		for (const child of children) {
 			const entry = this.entry(ownerSessionId, child.childName, child.group, child.aliases);
 			evicted.push(...entry.evicted);
 			const departure = entry.departure;
 			this.disarm(departure);
-			departure.verdict = { kind: "ended", outcome: child.outcome, childId: child.childId };
+			departure.verdict = {
+				kind: "ended",
+				outcome: child.outcome,
+				childId: child.childId,
+				// A child cancelled for good is never resumed, whatever its report says.
+				...(child.messages !== undefined && child.outcome !== "cancelled" && this.wakes !== undefined
+					? { messages: child.messages }
+					: {}),
+			};
+			// #5999: messages queued for a resume its owner no longer offers fail with the new verdict.
+			if (departure.verdict.messages === undefined) this.failQueued(departure, (target) => this.errorFor(departure, departure.verdict as Verdict, target).message);
+			const waiting = departure.held.splice(0);
+			this.heldTotal -= waiting.length;
+			const notWoken: HeldSend[] = [];
+			for (const held of waiting) {
+				const wakeSender = this.wakeSenders.get(held);
+				const admission = wakeSender === undefined ? undefined : this.admitWakeFor(departure, wakeSender, held);
+				if (admission === undefined || admission.kind === "none") notWoken.push(held);
+				else if (admission.kind === "refused") refused.push({ held, error: admission.error, reason: admission.reason });
+				else {
+					queued.push({ held, target: admission.target });
+					if (admission.wake !== undefined) wakes.push(admission.wake);
+				}
+			}
+			departure.held.push(...notWoken);
+			this.heldTotal += notWoken.length;
 			refused.push(...this.refuseHeld(departure, departure.verdict));
 		}
-		return { refused, evicted };
+		return { refused, evicted, queued, wakes };
 	}
 
 	/** Decide a send that found no live recipient. `canHold` is false for a client that cannot wait for a verdict. */
@@ -248,6 +375,8 @@ export class DepartedChildren {
 		sender: HoldSender,
 		held: HeldSend,
 		canHold: boolean,
+		/** #5999: given for a send that asks to wake its subagent, so the owner's verdict can still let it. */
+		wakeSender?: WakeSender,
 	): DepartedChildAdmission {
 		const departure = this.visible(target, sender);
 		if (departure === undefined) return { kind: "none" };
@@ -257,20 +386,82 @@ export class DepartedChildren {
 			return { kind: "refused", error: this.disconnectedError(departure, target) };
 		departure.held.push(held);
 		this.heldTotal += 1;
+		if (wakeSender !== undefined) this.wakeSenders.set(held, wakeSender);
 		return { kind: "held", timeoutMs: Math.max(1, (departure.deadline ?? performance.now()) - performance.now()) };
+	}
+
+	/**
+	 * #5999: a send that asks to wake its subagent, decided before anything else holds it. A subagent whose owner,
+	 * connected here, resumes it for a message or keeps messages for it takes it into its queue; for one that finished
+	 * on its own the first message queued asks the owner to resume it, within the wake bounds. Anything else is `none`:
+	 * decided as it was before.
+	 */
+	admitWake(target: string, sender: WakeSender, held: HeldSend, ownerHolds = false): EndedChildWakeAdmission {
+		if (this.wakes === undefined || !sendWakesEndedRecipient(held.clientMessage)) return { kind: "none" };
+		const departure = this.visible(target, sender);
+		if (departure === undefined) return { kind: "none" };
+		return this.admitWakeFor(departure, sender, held, ownerHolds);
+	}
+
+	/**
+	 * #5999: the owner ended its hold of a subagent it was restoring or resuming: as gone (`gone`, the refusal), or
+	 * because its start failed (`refusal`). What was queued for it fails with that reason, and a gone one is forgotten,
+	 * so later senders get the gone refusal. A hold that ended otherwise (a quit of a paused child) changes nothing.
+	 */
+	holdEnded(ownerSessionId: string, childName: string, outcome: { readonly gone?: string; readonly refusal?: string }): void {
+		const departure = this.byKey.get(keyOf(ownerSessionId, childName));
+		const reason = outcome.gone ?? outcome.refusal;
+		if (departure === undefined || reason === undefined) return;
+		this.failQueued(departure, () => reason);
+		if (outcome.gone !== undefined) this.forget(departure);
+	}
+
+	/**
+	 * #5999: the owner answers a wake. Accepted, the queued messages wait for the child to register, up to
+	 * {@link ENDED_CHILD_WAKE_START_MAX_MS}; declined, they fail with the owner's reason. An answer to another wake is
+	 * ignored. False when no such wake is pending.
+	 */
+	answerWake(ownerSessionId: string, childName: string, wakeId: string, accepted: boolean, reason?: string): boolean {
+		const departure = this.byKey.get(keyOf(ownerSessionId, childName));
+		const wake = departure?.wake;
+		if (departure === undefined || wake === undefined || wake.id !== wakeId) return false;
+		if (!accepted) {
+			const why = reason?.trim() ? reason.trim() : "its launching session did not resume it";
+			this.failQueued(departure, () => notResumedReason(departure.childName, why));
+			return true;
+		}
+		if (wake.accepted) return true;
+		wake.accepted = true;
+		this.armQueueTimer(departure, ENDED_CHILD_WAKE_START_MAX_MS, "it did not start in time");
+		return true;
 	}
 
 	/** The subagent registered again under its owner's authorization: forget it and return its held sends, in order. */
 	registered(childName: string, groups: ReadonlySet<string>, authorizedBy: string): HeldSend[] {
+		// #5999: queued sends come first, each retargeted by the broker to the registered session before it is sent.
 		const departure = this.byKey.get(keyOf(authorizedBy, childName));
 		if (departure === undefined || !hasGroup(groups, departure.group)) return [];
-		return this.forget(departure);
+		// #5999: a child back from a wake is that far down its chain; one its owner resumed starts none.
+		if (departure.wake !== undefined) this.wakes?.budget?.awoke(departure.key, departure.wake.depth);
+		else this.wakes?.budget?.resumedByOwner(departure.key);
+		const queued = this.takeQueued(departure);
+		return [...queued, ...this.forget(departure)];
 	}
 
-	/** The owner now reserves the subagent itself (it was released): forget it and return its held sends, in order. */
-	supersede(ownerSessionId: string, childName: string): HeldSend[] {
+	/**
+	 * The owner now reserves the subagent itself (it was released): forget it and return its held sends, in order.
+	 * #5999: `restoring`: the owner holds sends to it while it restores or resumes it; one it resumes for a message keeps
+	 * its verdict and the messages queued for it, which reach it when it registers.
+	 */
+	supersede(ownerSessionId: string, childName: string, restoring = false): HeldSend[] {
 		const departure = this.byKey.get(keyOf(ownerSessionId, childName));
-		return departure === undefined ? [] : this.forget(departure);
+		if (departure === undefined) return [];
+		if (restoring && departure.verdict?.kind === "ended" && departure.verdict.messages !== undefined) {
+			const held = departure.held.splice(0);
+			this.heldTotal -= held.length;
+			return held;
+		}
+		return this.forget(departure);
 	}
 
 	/**
@@ -278,9 +469,27 @@ export class DepartedChildren {
 	 * session of that host session takes them over ({@link adoptOrphans}), or they
 	 * are forgotten as the oldest beyond {@link DEPARTED_ORPHANS_MAX}. Without one nobody can say why they ended: they
 	 * are forgotten, and their held sends returned for ordinary routing.
+	 *
+	 * #5999: messages queued to resume a subagent fail now: nobody can resume it. Messages kept for a paused subagent
+	 * wait {@link ENDED_CHILD_OWNER_RETURN_MS} for a session of the host session to come back and take it over, which
+	 * keeps them waiting until it continues the subagent; they fail now when the owner `ended` for good or has no host
+	 * session.
 	 */
-	dropOwner(ownerSessionId: string, hostSession?: string): HeldSend[] {
+	dropOwner(ownerSessionId: string, hostSession?: string, ended = false): HeldSend[] {
 		const owned = [...(this.byOwner.get(ownerSessionId)?.values() ?? [])];
+		for (const departure of owned) {
+			const verdict = departure.verdict;
+			const kept = verdict?.kind === "ended" && verdict.messages === "hold" && departure.queued.length > 0;
+			if (kept && hostSession !== undefined && !ended) {
+				this.armQueueTimer(departure, ENDED_CHILD_OWNER_RETURN_MS, pausedOwnerGoneReason(departure.childName, false), true);
+				continue;
+			}
+			this.failQueued(departure, () =>
+				kept
+					? pausedOwnerGoneReason(departure.childName, true)
+					: notResumedReason(departure.childName, "the session that launched it disconnected before it was resumed"),
+			);
+		}
 		if (hostSession === undefined) return owned.flatMap((departure) => this.forget(departure));
 		for (const departure of owned) this.orphans.set(departure, hostSession);
 		return this.trimOrphans();
@@ -295,9 +504,28 @@ export class DepartedChildren {
 		for (const [departure, host] of [...this.orphans]) {
 			if (host !== hostSession) continue;
 			this.orphans.delete(departure);
+			// #5999: its launching session is back: what was kept for the paused subagent waits for it again, untimed.
+			this.disarmQueueTimer(departure);
 			if (departure.ownerSessionId === ownerSessionId) continue;
 			const key = keyOf(ownerSessionId, departure.childName);
-			if (this.byKey.has(key)) {
+			const known = this.byKey.get(key);
+			if (known !== undefined) {
+				// The session already reported it again: the messages kept for it stay queued, in order, ahead of later ones.
+				const kept = this.takeQueued(departure);
+				if (kept.length > 0 && known.verdict?.kind === "ended" && known.verdict.messages !== undefined) {
+					known.queued.unshift(...kept);
+					const bytes = kept.reduce((sum, held) => sum + queuedMessageBytes(held), 0);
+					known.queuedBytes += bytes;
+					this.queuedBytesTotal += bytes;
+					this.heldTotal += kept.length;
+				} else if (kept.length > 0)
+					this.wakes?.failed(
+						kept.map((held) => ({
+							held,
+							childName: departure.childName,
+							reason: notResumedReason(departure.childName, "Intercom stopped keeping it to resume before it was back"),
+						})),
+					);
 				released.push(...this.forget(departure));
 				continue;
 			}
@@ -330,7 +558,117 @@ export class DepartedChildren {
 	}
 
 	clear(): void {
-		for (const departure of [...this.byKey.values()]) this.forget(departure);
+		for (const departure of [...this.byKey.values()]) {
+			this.takeQueued(departure);
+			this.forget(departure);
+		}
+	}
+
+	/**
+	 * `ownerHolds`: the owner already holds sends to the child, restoring, resuming or pausing it: the message is queued
+	 * for its registration without asking the owner for anything.
+	 */
+	private admitWakeFor(
+		departure: Departure,
+		sender: WakeSender,
+		held: HeldSend,
+		ownerHolds = false,
+	): EndedChildWakeAdmission {
+		const hooks = this.wakes;
+		const verdict = departure.verdict;
+		const messages = verdict?.kind === "ended" ? verdict.messages : undefined;
+		if (hooks === undefined || verdict?.kind !== "ended" || messages === undefined) return { kind: "none" };
+		// An owner that is away cannot resume it: the sender gets the answer it got before.
+		if (this.orphans.has(departure) || !hooks.ownerLive(departure.ownerSessionId)) return { kind: "none" };
+		const target = targetOf(held);
+		// Nobody waits on a queued message any more, so the queue is bounded by count and bytes, per child and in all.
+		const bytes = queuedMessageBytes(held);
+		const full =
+			departure.queued.length >= MAX_HELD_SENDS
+				? `${MAX_HELD_SENDS} messages already wait for it`
+				: departure.queuedBytes + bytes > ENDED_CHILD_QUEUE_BYTES_MAX
+					? `${mebibytes(departure.queuedBytes)} of messages already wait for it`
+					: this.queuedBytesTotal + bytes > ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX
+						? `Intercom already keeps ${mebibytes(this.queuedBytesTotal)} of messages for subagents that ended`
+						: undefined;
+		if (full !== undefined) {
+			const error = this.errorFor(departure, verdict, target);
+			return { kind: "refused", error, reason: `${error.message} The message was not queued for it: ${full}.` };
+		}
+		let wake: EndedChildWakeRequest | undefined;
+		// A child stopped on purpose is not woken: the message waits for its owner to continue it.
+		if (messages === "wake" && departure.wake === undefined && !ownerHolds) {
+			const budget = hooks.budget?.check(departure.key, sender.wakeKey) ?? { ok: true as const, depth: 1 };
+			if (!budget.ok) {
+				const error = this.errorFor(departure, verdict, target);
+				return { kind: "refused", error, reason: `${error.message} It was not resumed for this message: ${budget.why}.` };
+			}
+			hooks.budget?.commit(departure.key);
+			const id = randomUUID();
+			departure.wake = { id, depth: budget.depth, accepted: false };
+			this.armQueueTimer(departure, ENDED_CHILD_WAKE_ANSWER_MS, "its launching session did not answer");
+			wake = {
+				ownerSessionId: departure.ownerSessionId,
+				childName: departure.childName,
+				...(verdict.childId === undefined ? {} : { childId: verdict.childId }),
+				wakeId: id,
+				waker: sender.waker,
+				depth: budget.depth,
+			};
+		}
+		// A paused child's messages wait, with no time limit, for its owner to continue it. Those of a child its owner is
+		// already starting again wait for that start, within its bound.
+		if (messages === "wake" && departure.queueTimer === undefined)
+			this.armQueueTimer(departure, ENDED_CHILD_WAKE_START_MAX_MS, "it did not start in time");
+		markQueuedForWake(held, messages);
+		departure.queued.push(held);
+		departure.queuedBytes += bytes;
+		this.queuedBytesTotal += bytes;
+		this.heldTotal += 1;
+		const queue = messages === "wake" ? RESUMING_RECIPIENT_TARGET : PAUSED_RECIPIENT_TARGET;
+		return wake === undefined ? { kind: "queued", target: queue } : { kind: "queued", target: queue, wake };
+	}
+
+	/**
+	 * Fail what is queued for the child, for `why` (the whole reason when `whole`), unless it registers within `ms`;
+	 * replaces any earlier deadline.
+	 */
+	private armQueueTimer(departure: Departure, ms: number, why: string, whole = false): void {
+		this.disarmQueueTimer(departure);
+		const timer = setTimeout(() => {
+			if (departure.queueTimer !== timer) return;
+			this.failQueued(departure, () => (whole ? why : notResumedReason(departure.childName, why)));
+		}, ms);
+		timer.unref();
+		this.liveTimers += 1;
+		departure.queueTimer = timer;
+	}
+
+	private disarmQueueTimer(departure: Departure): void {
+		if (departure.queueTimer === undefined) return;
+		clearTimeout(departure.queueTimer);
+		this.liveTimers -= 1;
+		departure.queueTimer = undefined;
+	}
+
+	/** End the departure's wake and take its queued messages, in order, for delivery or failure. */
+	private takeQueued(departure: Departure): HeldSend[] {
+		this.disarmQueueTimer(departure);
+		departure.wake = undefined;
+		const queued = departure.queued.splice(0);
+		this.heldTotal -= queued.length;
+		this.queuedBytesTotal -= departure.queuedBytes;
+		departure.queuedBytes = 0;
+		return queued;
+	}
+
+	/** #5999: the messages queued for the child fail, each with `reasonFor` its target; the next send may wake it again. */
+	private failQueued(departure: Departure, reasonFor: (target: string) => string): void {
+		const queued = this.takeQueued(departure);
+		if (queued.length === 0) return;
+		this.wakes?.failed(
+			queued.map((held) => ({ held, childName: departure.childName, reason: reasonFor(targetOf(held)) })),
+		);
 	}
 
 	private entry(
@@ -356,6 +694,8 @@ export class DepartedChildren {
 				group,
 				targets: new Set([normalizeReservationTarget(childName)]),
 				held: [],
+				queued: [],
+				queuedBytes: 0,
 			};
 			this.byKey.set(key, departure);
 			if (owned === undefined) {
@@ -436,6 +776,9 @@ export class DepartedChildren {
 	}
 
 	private forget(departure: Departure): HeldSend[] {
+		this.failQueued(departure, () =>
+			notResumedReason(departure.childName, "Intercom stopped keeping it to resume before it was back"),
+		);
 		this.disarm(departure);
 		this.orphans.delete(departure);
 		this.byKey.delete(departure.key);
@@ -453,4 +796,26 @@ export class DepartedChildren {
 		departure.held.length = 0;
 		return held;
 	}
+}
+
+/** #5999: why a message queued for a subagent that was to be resumed for it did not reach it. */
+export function notResumedReason(childName: string, why: string): string {
+	return `Subagent ${JSON.stringify(childName)} was not resumed for this message: ${why}. The message was not delivered.`;
+}
+
+function queuedMessageBytes(held: HeldSend): number {
+	const message = held.clientMessage.message as Message | undefined;
+	return message === undefined ? 0 : intercomMessageBytes(message.content);
+}
+
+function mebibytes(bytes: number): string {
+	return `${Math.ceil(bytes / (1024 * 1024))} MiB`;
+}
+
+/**
+ * #5999: why a message kept for a paused subagent did not reach it: the session that launched it, the only one that can
+ * continue it, ended (`ended`) or disconnected and did not come back in time.
+ */
+function pausedOwnerGoneReason(childName: string, ended: boolean): string {
+	return `Subagent ${JSON.stringify(childName)} is paused and the session that launched it ${ended ? "ended" : "disconnected and did not come back"}, so nothing can continue it now. The message was not delivered; send it again if it is still needed.`;
 }
