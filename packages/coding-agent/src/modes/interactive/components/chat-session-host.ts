@@ -6,7 +6,7 @@ import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
 import type { SessionStore } from "../../../core/storage/session/types.js";
-import { lastAssistantAnswer } from "../../../core/storage/session/window-answer.ts";
+import { lastAssistantAnswer } from "../../../core/storage/session/window-answer.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
