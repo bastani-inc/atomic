@@ -105,6 +105,20 @@ function isDialog(component: unknown): boolean {
 	return component !== undefined && component !== screen?.mode.editor;
 }
 
+/** What the prompt held each time the screen was asked to draw from now on: text put back must be drawn. */
+function promptsDrawn(mode: {
+	readonly ui: { requestRender(force?: boolean): void };
+	readonly editor: { getText(): string };
+}) {
+	const drawn: string[] = [];
+	const requestRender = mode.ui.requestRender.bind(mode.ui);
+	mode.ui.requestRender = (force?: boolean) => {
+		drawn.push(mode.editor.getText());
+		requestRender(force);
+	};
+	return drawn;
+}
+
 async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
 	const started = Date.now();
 	while (!condition()) {
@@ -174,9 +188,11 @@ describe("commands typed while a subagent is shown on the main screen", () => {
 			await screen.submit("/new");
 			assert.match(screen.promptSlotText(), /Run \/new on the main conversation\?/);
 			assert.match(screen.promptSlotText(), /\/new acts on the main conversation, not on worker\./);
+			const drawn = promptsDrawn(mode);
 			answer(ESC);
 			await until(() => screen?.promptSlot() === mode.editor);
 			await until(() => mode.editor.getText() === "/new");
+			await until(() => drawn.includes("/new"));
 			assert.equal(mode.session.sessionId, sessionId);
 			assert.equal(screen.viewed(), "agent");
 			assert.deepEqual(port.calls, []);
@@ -340,9 +356,11 @@ describe("a command typed for a subagent that went away, moved into main's promp
 				screen.promptSlotText(),
 				/\/new was typed for worker, which is gone\. It acts on the main conversation\./,
 			);
+			const drawn = promptsDrawn(mode);
 			answer(ESC);
 			await until(() => screen?.promptSlot() === mode.editor);
 			await until(() => mode.editor.getText() === "/new");
+			await until(() => drawn.includes("/new"));
 			assert.equal(mode.session.sessionId, sessionId);
 			enter();
 			await until(() => isDialog(screen?.promptSlot()));

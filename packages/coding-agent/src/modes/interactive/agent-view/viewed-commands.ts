@@ -61,6 +61,7 @@ export async function routeViewedCommand(
 				} else {
 					// The command comes back in front of what the subagent's prompt holds now, as it was typed.
 					typedIn.setText(mergeRestoredDraft(text, typedIn.getExpandedText()));
+					mode.ui.requestRender();
 				}
 				return "handled";
 			}
@@ -95,6 +96,7 @@ export function gateMovedDraft(mode: InteractiveModeBase, text: string, draft: s
 		const restored = mergeRestoredDraft(draft, prompt.getExpandedText());
 		prompt.setText(restored);
 		markMovedDraft(mode, mark.agentName, restored);
+		mode.ui.requestRender();
 	})();
 }
 
