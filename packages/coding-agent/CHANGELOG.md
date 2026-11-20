@@ -21,6 +21,7 @@
 ### Fixed
 
 - A write outside a transaction no longer fails with `database is locked` while another connection of the same process holds the write lock across an await: it now waits on its own connection's thread until that transaction commits ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+- Building the `history://` search index of a long session no longer pauses typing and rendering while the index is written to a slow disk ([#5666](https://github.com/bastani-inc/atomic/issues/5666))
 
 ## [0.10.0] - 2026-11-20
 
