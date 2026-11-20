@@ -224,20 +224,23 @@ test("a wrapped read during a threaded transaction runs at once and sees the fil
 	await committed;
 });
 
-test("a wrapped read that calls a function of yours waits for the threaded transaction, then runs (#6081)", async () => {
+test("wrapped reads that call SQL functions run at once during a threaded transaction, as before (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
+	await threaded.run("INSERT INTO items VALUES ('Before')");
 	const { raw, wrapped } = await openWrapped(path);
-	// A function of the caller's own can do anything, such as write the file through another connection.
-	const seen: number[] = [];
-	raw.function("seen", (count) => {
-		seen.push(Number(count));
-		return count;
+	const seen: string[] = [];
+	raw.function("seen", (value) => {
+		seen.push(String(value));
+		return value;
 	});
-	const { committed } = await holdLock(threaded);
-	const read = await wrapped.get<{ n: number }>("SELECT seen(count(*)) AS n FROM items");
+	const { committed, settled } = await holdLock(threaded, 4 * HOLD_MS);
+	assert.deepEqual(await wrapped.all("SELECT lower(value) AS v FROM items"), [{ v: "before" }]);
+	assert.deepEqual(await wrapped.get("SELECT max(rowid) AS n FROM items"), { n: 1 });
+	assert.deepEqual(await wrapped.get(`SELECT json_extract('{"a":1}', '$.a') AS a`), { a: 1 });
+	assert.deepEqual(await wrapped.all("SELECT seen(value) AS v FROM items"), [{ v: "Before" }]);
+	assert.equal(settled(), false, "the reads waited for the transaction");
+	assert.deepEqual(seen, ["Before"]);
 	await committed;
-	assert.equal(Number(read?.n), 2);
-	assert.deepEqual(seen, [2]);
 });
 
 test("repeated wrapped reads during a threaded transaction prepare their plan once (#6081)", async () => {
@@ -269,37 +272,15 @@ test("with no threaded transaction open, a wrapped call prepares only its own st
 	assert.deepEqual(prepared, ["SELECT value FROM items ORDER BY rowid", "INSERT INTO items VALUES ('c')"]);
 });
 
-test("a wrapped read whose plan was made for an older schema of the file waits for the transaction (#6081)", async () => {
-	const { path, threaded } = await sharedFile();
-	const { wrapped } = await openWrapped(path);
-	// The wrapped connection reads the schema while `items` is a table; another connection then makes it a view that
-	// calls a function, which the wrapped connection has not seen when the transaction starts.
-	assert.deepEqual(await wrapped.all("SELECT value FROM items ORDER BY value"), []);
-	await threaded.exec("CREATE TABLE stored (value TEXT); DROP TABLE items");
-	await threaded.exec("CREATE VIEW items AS SELECT lower(value) AS value FROM stored");
-	const { committed } = await holdLock(
-		threaded,
-		HOLD_MS,
-		undefined,
-		"INSERT INTO stored VALUES ('A')",
-		"INSERT INTO stored VALUES ('B')",
-	);
-	const read = (await wrapped.all<{ value: string }>("SELECT value FROM items ORDER BY value")).map(
-		(row) => row.value,
-	);
-	await committed;
-	// Rows the transaction committed: the read ran once it let go of the lock, not against the file before it.
-	assert.deepEqual(read, ["a", "b"]);
-});
-
 test("a statement the threaded transaction's callback awaits runs at once, as before (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
 	await threaded.run("INSERT INTO items VALUES ('before')");
 	const { wrapped } = await openWrapped(path);
-	// A read that calls a function cannot be proven to only read, so only the callback it runs in lets it through.
+	// A script is never classified, so only the callback it is made in lets it through at once.
 	let counted: number | undefined;
 	const { committed } = await holdLock(threaded, 0, async () => {
-		counted = Number((await wrapped.get<{ n: number }>("SELECT abs(count(*)) AS n FROM items"))?.n);
+		await wrapped.exec("SELECT 1");
+		counted = Number((await wrapped.get<{ n: number }>("SELECT count(*) AS n FROM items"))?.n);
 	});
 	await committed;
 	assert.equal(counted, 1);
@@ -314,7 +295,12 @@ test("a second copy of the storage module sees the transactions of the first (#6
 	const { wrapped } = await openWrapped(path, WRAPPED_BUSY_TIMEOUT_MS, copy.wrapNodeSqliteDatabase);
 	let counted: number | undefined;
 	const { committed } = await holdLock(threaded, HOLD_MS, async () => {
-		counted = Number((await wrapped.get<{ n: number }>("SELECT abs(count(*)) AS n FROM items"))?.n);
+		// Both made before the write below is queued on the same handle.
+		const [, row] = await Promise.all([
+			wrapped.exec("SELECT 1"),
+			wrapped.get<{ n: number }>("SELECT count(*) AS n FROM items"),
+		]);
+		counted = Number(row?.n);
 	});
 	const { stallMs } = await longestStall(() =>
 		Promise.all([wrapped.run("INSERT INTO items VALUES ('c')"), committed]),
@@ -438,7 +424,7 @@ test("a wrapped call with a NUL in a text parameter is refused at once during a 
 	assert.deepEqual(await values(threaded), ["a", "b"]);
 });
 
-test("with a busy timeout of 0, a wrapped read that calls a function of yours never runs while the threaded transaction may hold the lock (#6081)", async () => {
+test("with a busy timeout of 0, a wrapped read that calls a function of yours runs at once while the threaded BEGIN is answered, as before (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
 	const { raw, wrapped } = await openWrapped(path, 0);
 	let calls = 0;
@@ -448,18 +434,13 @@ test("with a busy timeout of 0, a wrapped read that calls a function of yours ne
 	});
 	// The connection's thread took the lock; the answer saying so is still on its way.
 	const { go, committed } = await pauseRequest(threaded, "begin answer");
-	const read = wrapped.get("SELECT seen() AS n").then(
-		() => undefined,
-		(error: unknown) => error,
-	);
-	await sleep(50);
-	assert.equal(calls, 0);
-	go();
-	const failure = await read;
+	try {
+		assert.deepEqual(await wrapped.get("SELECT seen() AS n"), { n: 42 });
+		assert.equal(calls, 1);
+	} finally {
+		go();
+	}
 	await committed;
-	assert.ok(failure instanceof StorageUnavailableError, `expected SQLITE_BUSY, got ${String(failure)}`);
-	assert.equal((failure.cause as { errcode?: number }).errcode, 5);
-	assert.equal(calls, 0);
 });
 
 test("with a busy timeout of 0, a wrapped write runs at once once the threaded transaction's thread is gone (#6081)", async () => {
@@ -527,7 +508,8 @@ test("a transaction requested inside a threaded transaction's callback keeps tha
 		// Joins the other file's waiting transaction, whose commit then runs this callback.
 		const inner = other.transaction(async (otherTx) => {
 			await otherTx.run("INSERT INTO b VALUES (2)");
-			read = await wrapped.get("SELECT seen() AS n");
+			await wrapped.exec("SELECT seen()");
+			read = { n: 1 };
 		});
 		joined.fire();
 		await inner;

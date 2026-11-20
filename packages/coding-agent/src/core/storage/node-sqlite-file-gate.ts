@@ -54,7 +54,6 @@ interface Waiter {
 /** Statements a calling-thread connection prepared to classify its calls while the file is held; see `readsOnly`. */
 interface Plans {
 	readonly explained: Map<string, StatementSync>;
-	schemaVersion?: StatementSync;
 	busyTimeout?: StatementSync;
 }
 
@@ -428,30 +427,49 @@ function busyTimeoutOf(gate: FileGate, owner: object, database: DatabaseSync): n
 
 /** A statement whose first keyword reads: anything else is never prepared for its plan. */
 const READ_STATEMENT = /^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*(?:SELECT|VALUES|WITH)\b/i;
-/** Steps that run code of the application's or of an extension, or a trigger: functions, aggregates, virtual tables. */
-const CALLS_CODE = /^(?:Function|PureFunc|Agg[A-Z]\w*|V[A-Z]\w*|Program)$/;
+/**
+ * Steps of SQLite's virtual machine that write a database file or change a connection's transaction or schema, as
+ * opposed to the temporary tables and indexes a read sorts and deduplicates in. A write to a table opens it with
+ * `OpenWrite` and starts a write `Transaction`; the rest are the steps of statements that are not reads.
+ */
+const WRITE_STEPS = new Set([
+	"OpenWrite",
+	"VUpdate",
+	"VBegin",
+	"VCreate",
+	"VDestroy",
+	"VRename",
+	"Clear",
+	"Destroy",
+	"CreateBtree",
+	"ParseSchema",
+	"DropTable",
+	"DropIndex",
+	"DropTrigger",
+	"SetCookie",
+	"IncrVacuum",
+	"Vacuum",
+	"Checkpoint",
+	"JournalMode",
+	"AutoCommit",
+	"Savepoint",
+	"SqlExec",
+	"Program",
+]);
 
 /**
  * Whether `sql`, run as one statement on `database`, only reads, so it never waits for the write lock in WAL mode,
- * which both kinds of connection put the file in. Proven from the plan SQLite makes for it, never by running it: the
- * plan writes nothing, calls no function, virtual table or trigger (whose code could wait for a lock or write), uses
- * no attached database, and was made for the schema the file has now. A collating sequence an extension registered
- * still runs: it compares values and is not told apart.
+ * which both kinds of connection put the file in. Proven from the plan SQLite makes for it, never by running it: no
+ * step of it writes (see `WRITE_STEPS`) and no transaction it starts is a write transaction. A read runs at once
+ * whatever functions or virtual tables it calls, as it always has; code of yours that it calls and that writes meets
+ * the lock as it always did.
  *
- * The plan of a text is prepared once while the file is held and run again for later calls: SQLite makes it again when
- * this connection changed its schema since. A kept plan made for an older schema of the file is made afresh, so the
- * answer is always the one a fresh plan gives.
+ * The plan of a text is prepared once while the file is held and run again for later calls; whether a statement writes
+ * does not change with the schema.
  */
 export function readsOnly(gate: FileGate, owner: object, database: DatabaseSync, sql: string): boolean {
 	if (!READ_STATEMENT.test(sql)) return false;
 	const plans = plansOf(gate, owner);
-	const kept = plans.explained.has(sql);
-	let verdict = planVerdict(plans, database, sql);
-	if (verdict === "older schema" && kept) verdict = planVerdict(plans, database, sql);
-	return verdict === "reads";
-}
-
-function planVerdict(plans: Plans, database: DatabaseSync, sql: string): "reads" | "older schema" | "not proven" {
 	try {
 		let explained = plans.explained.get(sql);
 		if (explained === undefined) {
@@ -459,27 +477,15 @@ function planVerdict(plans: Plans, database: DatabaseSync, sql: string): "reads"
 			if (plans.explained.size >= MAX_PLANS) plans.explained.delete(plans.explained.keys().next().value!);
 			plans.explained.set(sql, explained);
 		}
-		let fileSchema: number | undefined;
 		for (const step of explained.all()) {
 			const opcode = String(step.opcode);
-			if (opcode === "OpenWrite" || CALLS_CODE.test(opcode)) return "not proven";
-			if (opcode !== "Transaction") continue;
-			// p1: the database (0 the file, 1 temp), p2: a write transaction, p3: the schema version it was made for,
-			// p5: whether it checks that version.
-			const schema = Number(step.p1);
-			if (Number(step.p2) !== 0 || schema > 1 || (schema === 0 && Number(step.p5) === 0)) return "not proven";
-			if (schema === 1) continue;
-			plans.schemaVersion ??= database.prepare("PRAGMA schema_version");
-			fileSchema ??= Number(plans.schemaVersion.get()?.schema_version);
-			if (Number(step.p3) !== fileSchema) {
-				plans.explained.delete(sql);
-				return "older schema";
-			}
+			// Transaction p2: whether it is a write transaction.
+			if (WRITE_STEPS.has(opcode) || (opcode === "Transaction" && Number(step.p2) !== 0)) return false;
 		}
-		return "reads";
+		return true;
 	} catch {
 		plans.explained.delete(sql);
-		return "not proven";
+		return false;
 	}
 }
 
