@@ -7,6 +7,7 @@ import { afterEach, test, vi } from "vitest";
 import {
 	DepartedChildren,
 	type EndedChildMark,
+	type JournalDeparture,
 	type WakeSender,
 } from "../../packages/intercom/broker/departed-children.js";
 import { DurableEndedQueue } from "../../packages/intercom/broker/durable-ended-queue.js";
@@ -221,11 +222,20 @@ test("a delivered message whose row another process's lock kept from being delet
 	assert.ok(kept <= ENDED_CHILD_QUEUE_BYTES_MAX + MiB, `${kept} bytes kept for one subagent`);
 	assert.ok(second.refusals.length > 0, "the rows of delivered messages still hold the cap");
 	assert.match(second.refusals[0]!, /The message was not queued for it: \d+ MiB of messages already wait for it\./);
-	// The delete is retried once the lock is free: the delivered rows go, and the queue takes messages again.
-	await vi.waitFor(async () => assert.equal(await rowsOnDisk(path, first.queued), 0), {
-		timeout: 30_000,
-		interval: 50,
-	});
+	// The delete is retried once the lock is free: the delivered rows go, and once that committed they no longer count,
+	// so the queue takes messages again.
+	await vi.waitFor(
+		async () => {
+			assert.equal(await rowsOnDisk(path, first.queued), 0);
+			const counted = queue.storedCounts({
+				ownerSessionId: OWNER,
+				ownerHost: HOST,
+				childKey: child,
+			} as JournalDeparture);
+			assert.ok((counted?.child ?? 0) + MiB <= ENDED_CHILD_QUEUE_BYTES_MAX, "the delivered rows no longer count");
+		},
+		{ timeout: 30_000, interval: 50 },
+	);
 	const third = sendMany(departed, child, sender, 1);
 	assert.deepEqual(third.refusals, [], "counted again from what is kept");
 	await Promise.all(third.kept);
