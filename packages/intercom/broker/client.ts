@@ -287,6 +287,12 @@ export interface LostEndedQueuedMessage {
 export class EndedQueueMemory {
 	brokerInstanceId: string | undefined;
 	readonly kept = new Map<string, LostEndedQueuedMessage & { readonly at: number }>();
+	/**
+	 * Durable wake queue: messages this session was told were lost, by the id of what kept them. A broker that keeps them
+	 * there after all (an older broker served in between) is told to drop them, so none is delivered after it was told
+	 * lost. Bounded like `kept`.
+	 */
+	readonly toldLost = new Map<string, string>();
 }
 
 /** A released subagent to keep addressable through its owner, by name (#4326). */
@@ -909,6 +915,7 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.marksEndedChildren !== undefined && brokerMessage.marksEndedChildren !== true)
           || (brokerMessage.wakesEndedChildren !== undefined && brokerMessage.wakesEndedChildren !== true)
           || (brokerMessage.instanceId !== undefined && typeof brokerMessage.instanceId !== "string")
+          || (brokerMessage.dropsEndedQueued !== undefined && brokerMessage.dropsEndedQueued !== true)
           || (brokerMessage.enforcesReach !== undefined && brokerMessage.enforcesReach !== true)
           || (brokerMessage.protocol !== undefined && !isBrokerProtocolRange(brokerMessage.protocol as JsonWireValue))) {
           throw new Error("Invalid registered message");
@@ -949,6 +956,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerMarksEndedChildren = brokerMessage.marksEndedChildren === true;
         this.brokerWakesEndedChildren = this.brokerMarksEndedChildren && brokerMessage.wakesEndedChildren === true;
         this.noteBrokerInstance(typeof brokerMessage.instanceId === "string" ? brokerMessage.instanceId : undefined);
+        if (brokerMessage.dropsEndedQueued === true) this.dropToldLost();
         this.brokerStampsReleasedChildren = brokerMessage.stampsReleasedChildren === true;
         this._brokerProtocol = protocolRangeOf(brokerMessage.protocol as BrokerProtocolRange | undefined);
         void this.syncReach().catch(() => {});
@@ -1837,7 +1845,27 @@ export class IntercomClient extends EventEmitter {
       .filter((kept) => !expiredHere(kept, now))
       .map(({ at: _at, ...message }) => message);
     this.endedQueue.kept.clear();
+    for (const message of lost) {
+      this.endedQueue.toldLost.delete(message.messageId);
+      this.endedQueue.toldLost.set(message.messageId, previous);
+    }
+    while (this.endedQueue.toldLost.size > ENDED_QUEUED_MAX)
+      this.endedQueue.toldLost.delete(this.endedQueue.toldLost.keys().next().value as string);
     if (lost.length > 0) this.emit("ended_queue_lost", lost);
+  }
+
+  /**
+   * Durable wake queue: this registration's broker keeps what an earlier one kept (an older broker served in between,
+   * which kept nothing, and this session was told those messages were lost): it drops the ones this session was told were
+   * lost, so none of them is delivered after all.
+   */
+  private dropToldLost(): void {
+    const keeper = this.endedQueue.brokerInstanceId;
+    if (keeper === undefined || this.socket === null) return;
+    const messageIds = [...this.endedQueue.toldLost].filter(([, keptBy]) => keptBy === keeper).map(([id]) => id);
+    if (messageIds.length === 0) return;
+    for (const id of messageIds) this.endedQueue.toldLost.delete(id);
+    writeMessage(this.socket, { type: "drop_ended_queued", messageIds });
   }
 
   /** #5999: whether the broker of the current registration wakes ended children for a send that asks it. */

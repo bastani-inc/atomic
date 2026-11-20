@@ -65,6 +65,8 @@ export interface EndedQueueRow extends EndedQueueEntry {
 	readonly ownerAwaySince?: number;
 	/** Set once the message failed while its sender was not connected: told when it registers again. */
 	readonly failed?: { readonly reason: string; readonly at: number };
+	/** It was handed to its subagent, which had not confirmed it when the row was last written. */
+	readonly dispatched?: true;
 }
 
 /** One wake the bounds counted, or a child back from a wake (`awake`), in wall-clock milliseconds. */
@@ -96,6 +98,8 @@ export interface EndedChildQueueStore {
 	add(entry: EndedQueueEntry, budget?: EndedWakeBudgetEvent): Promise<"added" | "duplicate">;
 	/** The messages reached their child, or their sender was told they failed. */
 	remove(messageIds: readonly string[]): Promise<void>;
+	/** The messages were handed to their child; they stay until it confirms them. */
+	dispatched(messageIds: readonly string[]): Promise<void>;
 	/** The message failed while its sender was not connected: keep the reason until it is told. */
 	fail(messageId: string, reason: string, at: number): Promise<void>;
 	/** Record the departure's wake (or none) on its rows. */
@@ -126,6 +130,7 @@ type QueueRow = SqliteRow & {
 	owner_away_since: number | bigint | null;
 	failed_reason: string | null;
 	failed_at: number | bigint | null;
+	dispatched: number | bigint;
 };
 
 type BudgetRow = SqliteRow & { child_key: string; kind: string; at: number | bigint; depth: number | bigint };
@@ -146,6 +151,7 @@ function rowOf(row: QueueRow): EndedQueueRow {
 		...(wake === undefined ? {} : { wake }),
 		...(row.owner_away_since === null ? {} : { ownerAwaySince: Number(row.owner_away_since) }),
 		...(row.failed_reason === null ? {} : { failed: { reason: row.failed_reason, at: Number(row.failed_at ?? 0) } }),
+		...(Number(row.dispatched) === 1 ? { dispatched: true as const } : {}),
 	};
 }
 
@@ -236,18 +242,29 @@ export async function openSqlEndedChildQueueStore(
 		home,
 		holder,
 		ownsDatabase = false,
-		retire = false,
+		retire: retiring = false,
 		lockWaitMs = ENDED_QUEUE_LOCK_WAIT_MS,
+		servedSinceLastHolder,
+		pid,
 	}: {
 		readonly home: string;
 		readonly holder: string;
 		readonly ownsDatabase?: boolean;
 		/** How long a write waits for another process's write lock (default {@link ENDED_QUEUE_LOCK_WAIT_MS}). */
 		readonly lockWaitMs?: number;
+		/**
+		 * Whether another broker can have served this home since the store's last holder, which kept nothing and told
+		 * senders their messages were lost: given the last holder's process id (as recorded here), says if this broker
+		 * proved it did not. Unproven, a store with messages is retired. Absent: never retired so.
+		 */
+		readonly servedSinceLastHolder?: (lastHolderPid: string | undefined) => boolean;
+		/** This broker's process id, recorded as the store's holder. */
+		readonly pid?: string;
 		/** A broker that kept the queue in memory told its sessions what this store kept was lost: drop it. */
 		readonly retire?: boolean;
 	},
 ): Promise<EndedChildQueueStore> {
+	let retire = retiring;
 	const valid = validateStoragePrefix(prefix, dialectOf(database).name);
 	const queue = `${valid}intercom_ended_child_queue`;
 	const wakes = `${valid}intercom_ended_child_wakes`;
@@ -272,7 +289,8 @@ export async function openSqlEndedChildQueueStore(
 				wake_json TEXT,
 				owner_away_since ${types.int},
 				failed_reason TEXT,
-				failed_at ${types.int}
+				failed_at ${types.int},
+				dispatched ${types.int} NOT NULL DEFAULT 0
 			);
 			CREATE INDEX IF NOT EXISTS ${queue}_home ON ${queue}(home, seq);
 			CREATE INDEX IF NOT EXISTS ${queue}_departure ON ${queue}(home, owner_host, owner_session_id, child_key);
@@ -286,21 +304,33 @@ export async function openSqlEndedChildQueueStore(
 			CREATE INDEX IF NOT EXISTS ${wakes}_home ON ${wakes}(home, at);
 			CREATE TABLE IF NOT EXISTS ${meta}(
 				home TEXT PRIMARY KEY,
-				store_id TEXT NOT NULL
+				store_id TEXT NOT NULL,
+				holder_pid TEXT
 			);
 		`),
 	);
 	// The identity of a store already set up is read without a write, so a broker's start never waits for another
 	// process's write lock on it (a reader of a write-ahead log is not blocked by a writer). A new one is set up first.
-	const readId = async (): Promise<string | undefined> => {
+	const readMeta = async (): Promise<{ readonly id: string; readonly holderPid?: string } | undefined> => {
 		try {
-			const row = await database.get<SqliteRow & { store_id: string }>(`SELECT store_id FROM ${meta} WHERE home = ?`, home);
-			return row?.store_id;
+			const row = await database.get<SqliteRow & { store_id: string; holder_pid: string | null }>(
+				`SELECT store_id, holder_pid FROM ${meta} WHERE home = ?`,
+				home,
+			);
+			if (row === undefined) return undefined;
+			return { id: row.store_id, ...(row.holder_pid === null ? {} : { holderPid: row.holder_pid }) };
 		} catch {
 			return undefined;
 		}
 	};
-	let id = retire ? undefined : await readId();
+	const known = await readMeta();
+	// Another broker (an earlier version, which keeps no such queue) served this home since the store's last holder: its
+	// sessions were told what the store kept was lost, so it is retired rather than delivered after all.
+	if (!retire && known !== undefined && servedSinceLastHolder?.(known.holderPid) === true) {
+		const kept = await database.get<SqliteRow>(`SELECT 1 AS found FROM ${queue} WHERE home = ? AND keeper = ? LIMIT 1`, home, known.id);
+		if (kept !== undefined) retire = true;
+	}
+	let id = retire ? undefined : known?.id;
 	if (id === undefined) {
 		await createSchema();
 		id = await database.transaction(async (tx) => {
@@ -337,7 +367,7 @@ export async function openSqlEndedChildQueueStore(
 				async (tx) => [
 					await tx.all<QueueRow>(
 						`SELECT seq, message_id, owner_session_id, owner_host, child_key, child_json, sender_json, request_json,
-							bytes, queued_at, wake_json, owner_away_since, failed_reason, failed_at
+							bytes, queued_at, wake_json, owner_away_since, failed_reason, failed_at, dispatched
 						 FROM ${queue} WHERE home = ? AND keeper = ? ORDER BY seq`,
 						home,
 						keeper,
@@ -348,6 +378,7 @@ export async function openSqlEndedChildQueueStore(
 			);
 			void writes
 				.run(async (tx) => {
+					if (pid !== undefined) await tx.run(`UPDATE ${meta} SET holder_pid = ? WHERE home = ?`, pid, home);
 					await tx.run(`DELETE FROM ${queue} WHERE home = ? AND keeper <> ?`, home, keeper);
 					await tx.run(`UPDATE ${queue} SET holder = ? WHERE home = ? AND holder <> ?`, holder, home, holder);
 					await tx.run(`DELETE FROM ${wakes} WHERE home = ? AND at < ?`, home, Date.now() - BUDGET_EVENT_RETENTION_MS);
@@ -403,6 +434,18 @@ export async function openSqlEndedChildQueueStore(
 			return writes.run(async (tx) => {
 				for (const messageId of messageIds)
 					await tx.run(`DELETE FROM ${queue} WHERE message_id = ? AND home = ? AND holder = ?`, messageId, home, holder);
+			});
+		},
+		dispatched(messageIds) {
+			if (messageIds.length === 0) return Promise.resolve();
+			return writes.run(async (tx) => {
+				for (const messageId of messageIds)
+					await tx.run(
+						`UPDATE ${queue} SET dispatched = 1 WHERE message_id = ? AND home = ? AND holder = ?`,
+						messageId,
+						home,
+						holder,
+					);
 			});
 		},
 		fail(messageId, reason, at) {
@@ -473,6 +516,10 @@ export async function openLocalEndedChildQueueStore(
 	path: string,
 	holder: string,
 	retire = false,
+	continuity: {
+		readonly servedSinceLastHolder?: (lastHolderPid: string | undefined) => boolean;
+		readonly pid?: string;
+	} = {},
 ): Promise<EndedChildQueueStore> {
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	const { openNodeSqliteDatabase } = await import("@bastani/atomic/storage");
@@ -485,7 +532,7 @@ export async function openLocalEndedChildQueueStore(
 			for (const file of [path, `${path}-wal`, `${path}-shm`]) if (existsSync(file)) chmodSync(file, 0o600);
 		return await openSqlEndedChildQueueStore(
 			{ database, prefix: "" },
-			{ home: "local", holder, ownsDatabase: true, retire },
+			{ home: "local", holder, ownsDatabase: true, retire, ...continuity },
 		);
 	} catch (error) {
 		await database.close().catch(() => {});

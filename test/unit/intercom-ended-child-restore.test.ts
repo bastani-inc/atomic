@@ -200,7 +200,7 @@ test("an owner that is not back waits for what is left of its 7 days, from when 
 		"a message for it waits with the others",
 	);
 	vi.advanceTimersByTime(ENDED_CHILD_OWNER_AWAY_MAX_MS / 2 - 1);
-	assert.deepEqual(failed, []);
+	assert.equal(failed.length, 0);
 	vi.advanceTimersByTime(1);
 	assert.deepEqual(
 		failed.map((failure) => failure.held.messageId),
@@ -274,4 +274,65 @@ test("after the wall clock stepped back, a wake counts as just now, and is forgo
 	assert.equal(budget.check(key, undefined).ok, false);
 	now += 1;
 	assert.equal(budget.check(key, undefined).ok, true, "never stricter for longer than a window");
+});
+
+const DAY_MS = 24 * 60 * 60_000;
+
+test("with its launching session connected, a paused subagent's message waits past 7 days and reaches it when continued", () => {
+	vi.useFakeTimers();
+	const { departed, failed } = children(() => true);
+	mark(departed, "stopped");
+	assert.deepEqual(departed.admitWake(CHILD, sender(), send("p1")), {
+		kind: "queued",
+		target: PAUSED_RECIPIENT_TARGET,
+	});
+	vi.advanceTimersByTime(ENDED_CHILD_OWNER_AWAY_MAX_MS + 3 * DAY_MS);
+	assert.deepEqual(failed, [], "no time limit while the launching session is here");
+	assert.deepEqual(
+		departed.registered(CHILD, new Set(["default"]), OWNER).map((held) => held.messageId),
+		["p1"],
+	);
+});
+
+test("its launching session away for just under 7 days, a paused subagent's message is still held, and reaches it when continued", () => {
+	vi.useFakeTimers();
+	assert.equal(ENDED_CHILD_OWNER_AWAY_MAX_MS, 7 * DAY_MS);
+	const { departed, failed } = children(() => true);
+	mark(departed, "stopped");
+	departed.admitWake(CHILD, sender(), send("p1"));
+	departed.dropOwner(OWNER, HOST);
+	vi.advanceTimersByTime(7 * DAY_MS - 1);
+	assert.deepEqual(failed, []);
+	assert.deepEqual(departed.adoptOrphans(OWNER, HOST), []);
+	assert.deepEqual(
+		departed.registered(CHILD, new Set(["default"]), OWNER).map((held) => held.messageId),
+		["p1"],
+	);
+});
+
+test("the 7 days count only while the launching session is away without a break; then the message fails once", () => {
+	vi.useFakeTimers();
+	const { departed, failed } = children(() => true);
+	mark(departed, "stopped");
+	departed.admitWake(CHILD, sender(), send("p1"));
+	departed.dropOwner(OWNER, HOST);
+	vi.advanceTimersByTime(6 * DAY_MS);
+	// Back for a while: its count starts again when it next goes away.
+	assert.deepEqual(departed.adoptOrphans(OWNER, HOST), []);
+	vi.advanceTimersByTime(6 * DAY_MS);
+	departed.dropOwner(OWNER, HOST);
+	vi.advanceTimersByTime(6 * DAY_MS);
+	assert.equal(failed.length, 0, "never 7 days away in a row yet");
+	vi.advanceTimersByTime(DAY_MS);
+	assert.deepEqual(
+		failed.map((failure) => [failure.held.messageId, failure.reason]),
+		[
+			[
+				"p1",
+				`Subagent "${CHILD}" was not continued for this message: the session that launched it has not been back for 7 days. The message was not delivered; send it again if it is still needed.`,
+			],
+		],
+	);
+	vi.advanceTimersByTime(ENDED_CHILD_OWNER_AWAY_MAX_MS);
+	assert.equal(failed.length, 1, "once");
 });

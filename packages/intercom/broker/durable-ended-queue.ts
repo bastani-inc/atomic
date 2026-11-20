@@ -8,7 +8,7 @@ import {
 	type RestoredEndedQueue,
 	type WakeSender,
 } from "./departed-children.js";
-import type { EndedChildWakeBudget, EndedChildMessages } from "./ended-child-wakes.js";
+import { type EndedChildMessages, type EndedChildWakeBudget, markMaybeDelivered } from "./ended-child-wakes.js";
 import type { HeldSend } from "./restoring-recipients.js";
 import { type BrokerConnectedSession, detachSend, type SendClientMessage, senderAtReceipt } from "./send-handler.js";
 import { intercomMessageBytes } from "../message-size.js";
@@ -64,8 +64,11 @@ export interface DurableEndedQueueHost {
 	 */
 	readonly retireStore: () => void;
 	readonly budget: EndedChildWakeBudget;
-	/** Whether the delivered-message authority has accepted this message: it reached its recipient. */
-	readonly delivered: (held: HeldSend, sender: BrokerConnectedSession) => boolean;
+	/**
+	 * What the delivered-message authority knows of this message: its recipient confirmed it (`delivered`), or it was
+	 * handed over and not confirmed (`uncertain`), or neither.
+	 */
+	readonly delivered: (held: HeldSend, sender: BrokerConnectedSession) => "delivered" | "uncertain" | "unknown";
 	readonly log: (text: string) => void;
 }
 
@@ -297,6 +300,11 @@ export class DurableEndedQueue {
 		this.write(this.store?.remove(messageIds));
 	}
 
+	/** The messages were handed to their subagent: a restart before it confirms them does not wake it for them. */
+	handedOver(messageIds: readonly string[]): void {
+		this.write(this.store?.dispatched(messageIds));
+	}
+
 	/**
 	 * The message failed while its sender was not connected: kept, with its reason, until a session with the sender's
 	 * return address (or id) registers. False when only memory keeps the queue: the failure has nobody to go to.
@@ -344,10 +352,12 @@ export class DurableEndedQueue {
 				this.keepRestoredFailure(held, row);
 				continue;
 			}
-			if (this.host.delivered(held, sender)) {
+			const known = this.host.delivered(held, sender);
+			if (known === "delivered") {
 				delivered.push({ held, sender });
 				continue;
 			}
+			if (known === "uncertain" || row.dispatched === true) markMaybeDelivered(held);
 			if (row.ownerHost === undefined) {
 				ownerless.push({ held, childName: row.child.childName });
 				continue;

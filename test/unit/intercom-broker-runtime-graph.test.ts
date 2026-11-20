@@ -24,7 +24,12 @@ const spawnModulePath = join(repoRoot, "packages/intercom/broker/spawn.ts");
 const groupModulePath = join(repoRoot, "packages/intercom/group.ts");
 /** Multi-node S5: the shared broker state, loaded lazily only when the settings select a shared `storage`. */
 const openBrokerStatePath = join(repoRoot, "packages/intercom/broker/open-broker-state.ts");
-const lazyMultiNode = new Set([openBrokerStatePath]);
+/**
+ * #5999 durable wake queue: the store of messages for subagents that ended, loaded lazily when a session first registers
+ * (and with the shared state); a broker that cannot load it keeps them in memory.
+ */
+const endedChildQueueStorePath = join(repoRoot, "packages/intercom/broker/sql-ended-child-queue-store.ts");
+const lazyMultiNode = new Set([openBrokerStatePath, endedChildQueueStorePath]);
 
 function describeViolations(violations: readonly GraphViolation[]): string[] {
 	return violations.map((entry) => `${relative(repoRoot, entry.importer)} -> ${entry.description}`);
@@ -73,6 +78,25 @@ describe("intercom broker runtime module graph", () => {
 		const lazy = walkRuntimeGraph(openBrokerStatePath);
 		assert.deepEqual(describeViolations(lazy.unresolved), []);
 		assert.deepEqual(describeViolations(lazy.dynamic), []);
+		assert.deepEqual([...new Set(lazy.externals.map((entry) => entry.description))], ["@bastani/atomic/storage"]);
+	});
+
+	test("the durable wake queue's store is reached only through a lazy import and needs only the host storage module", () => {
+		const walk = walkRuntimeGraph(brokerEntrypoint, lazyMultiNode);
+		const edges = walk.visited
+			.filter((file) => file !== endedChildQueueStorePath)
+			.flatMap((file) => runtimeRequestsOf(file).map((request) => ({ file, request })))
+			.filter(({ request }) => request.specifier?.endsWith("sql-ended-child-queue-store.js") === true);
+		// The broker loads it on its own when a session first registers; the shared state, itself lazy, opens it too.
+		assert.deepEqual(
+			edges.map(({ file, request }) => [file, request.kind]).sort(),
+			[
+				[brokerEntrypoint, "dynamic-import"],
+				[openBrokerStatePath, "import"],
+			].sort(),
+		);
+		const lazy = walkRuntimeGraph(endedChildQueueStorePath);
+		assert.deepEqual(describeViolations(lazy.unresolved), []);
 		assert.deepEqual([...new Set(lazy.externals.map((entry) => entry.description))], ["@bastani/atomic/storage"]);
 	});
 

@@ -19,7 +19,7 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { getBrokerSocketPath, getBrokerEndedChildQueuePath } = await import("../../packages/intercom/broker/paths.js");
 const { IntercomClient, EndedQueueMemory } = await import("../../packages/intercom/broker/client.js");
-const { BROKER_CRASH_AT_ENV, ENDED_QUEUE_KEPT, ENDED_QUEUE_RECEIVED } = await import(
+const { BROKER_CRASH_AT_ENV, ENDED_QUEUE_HANDED_OVER, ENDED_QUEUE_KEPT, ENDED_QUEUE_RECEIVED } = await import(
 	"../../packages/intercom/broker/crash-points.js"
 );
 const { PAUSED_RECIPIENT_TARGET, RESUMING_RECIPIENT_TARGET } = await import(
@@ -231,6 +231,7 @@ async function endedChild(
 	outcome: "completed" | "stopped",
 ): Promise<void> {
 	const child = await connect(host, childName, {
+		returnAddress: childReturnAddress(childName),
 		supervisor: await ownerSession.client.authorizeSupervisorChild(childName),
 	});
 	const id = child.client.sessionId;
@@ -262,9 +263,23 @@ async function owner(host: Host, label: string, existing?: Session): Promise<Ses
 }
 const ownerTokens = new WeakMap<Session, string>();
 
-/** The owner continues or resumes the child: it registers again under the owner's authorization. */
+/** A subagent's own session, the same however often it is resumed: its return address. */
+const childReturnAddresses = new Map<string, string>();
+function childReturnAddress(childName: string): string {
+	let returnAddress = childReturnAddresses.get(childName);
+	if (returnAddress === undefined) {
+		returnAddress = randomUUID();
+		childReturnAddresses.set(childName, returnAddress);
+	}
+	return returnAddress;
+}
+
+/** The owner continues or resumes the child: its session registers again under the owner's authorization. */
 async function resume(host: Host, ownerSession: Session, childName: string): Promise<Session> {
-	return connect(host, childName, { supervisor: await ownerSession.client.authorizeSupervisorChild(childName) });
+	return connect(host, childName, {
+		returnAddress: childReturnAddress(childName),
+		supervisor: await ownerSession.client.authorizeSupervisorChild(childName),
+	});
 }
 
 function texts(session: Session): string[] {
@@ -467,6 +482,57 @@ test(
 );
 
 test(
+	"an ask that waited in the queue is answered when it reaches the subagent, also when its asker is away by then (#5999)",
+	async () => {
+		const host = new Host();
+		await host.start();
+		const ownerSession = await owner(host, "away-asker");
+		await endedChild(host, ownerSession, "subagent-worker-away-asker-1", "completed");
+		const askerBefore = await connect(host, "away-asker");
+		const askId = randomUUID();
+		const asked = await askerBefore.client.send("subagent-worker-away-asker-1", {
+			text: "anything new?",
+			messageId: askId,
+			expectsReply: true,
+			wakeEndedRecipient: true,
+		});
+		assert.equal(asked.queued, true, asked.reason);
+		// The asker's session closes (it can be resumed) before the subagent is resumed and gets the ask.
+		await askerBefore.client.disconnect({ resumable: true });
+		await vi.waitFor(() => assert.equal(ownerSession.wakes.length, 1), WAIT);
+		ownerSession.client.answerEndedChildWake("subagent-worker-away-asker-1", ownerSession.wakes[0]!.wakeId, true);
+		const child = await resume(host, ownerSession, "subagent-worker-away-asker-1");
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(
+					child.received.map(({ message }) => message.id),
+					[askId],
+				),
+			WAIT,
+		);
+		const replied = await child.client.send(child.received[0]!.from.id, {
+			text: "nothing new",
+			replyTo: askId,
+			requirePendingReply: true,
+		});
+		assert.ok(replied.delivered === true || replied.queued === true, replied.reason);
+		// Back, the asker gets the reply.
+		const asker = await again(host, "away-asker", askerBefore);
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(
+					asker.received
+						.filter(({ message }) => message.replyTo === askId)
+						.map(({ message }) => message.content.text),
+					["nothing new"],
+				),
+			WAIT,
+		);
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
 	"a broker killed after keeping a message and before answering it: the retry with its id is answered queued, and it arrives once (#5999)",
 	async () => {
 		const host = new Host();
@@ -546,6 +612,141 @@ test(
 			"it is not told it failed: it was delivered",
 		);
 		assert.equal((await sender.client.brokerStatus())?.queuedBytes, 0);
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a broker killed after handing a message to its subagent and before it confirmed: no wake for it, and it is handed over again when the subagent is back (#5999)",
+	async () => {
+		const host = new Host();
+		await host.start({ [BROKER_CRASH_AT_ENV]: ENDED_QUEUE_HANDED_OVER });
+		const ownerBefore = await owner(host, "handed");
+		await endedChild(host, ownerBefore, "subagent-worker-handed-1", "completed");
+		const senderBefore = await connect(host, "handed-sender");
+		const askId = randomUUID();
+		const queued = await senderBefore.client.send("subagent-worker-handed-1", {
+			text: "did you get this?",
+			messageId: askId,
+			expectsReply: true,
+			wakeEndedRecipient: true,
+		});
+		assert.equal(queued.queued, true, queued.reason);
+		await vi.waitFor(() => assert.equal(ownerBefore.wakes.length, 1), WAIT);
+		ownerBefore.client.answerEndedChildWake("subagent-worker-handed-1", ownerBefore.wakes[0]!.wakeId, true);
+		// The resumed subagent gets it; the broker dies before it hears that the subagent saved it.
+		const childBefore = await resume(host, ownerBefore, "subagent-worker-handed-1");
+		await host.exited();
+		await vi.waitFor(() => assert.deepEqual(texts(childBefore), ["did you get this?"]), WAIT);
+
+		await host.start();
+		const ownerAfter = await owner(host, "handed", ownerBefore);
+		const sender = await again(host, "handed-sender", senderBefore);
+		// Its run ended meanwhile; its owner reports it again. It may have the message: nothing wakes it for it.
+		await markEnded(ownerAfter, "subagent-worker-handed-1", "completed");
+		await sleep(SETTLE_MS * 2);
+		assert.deepEqual(ownerAfter.wakes, [], "no wake for a message it may already have");
+		assert.deepEqual(
+			sender.received.filter(({ message }) => message.replyError !== undefined),
+			[],
+			"nor is the sender told it was not delivered",
+		);
+		// Continued by its owner, it is handed over again (its inbox ignores a copy it saved), and nothing is left.
+		const childAfter = await resume(host, ownerAfter, "subagent-worker-handed-1");
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(
+					childAfter.received.map(({ message }) => message.id),
+					[askId],
+				),
+			WAIT,
+		);
+		await vi.waitFor(async () => assert.equal((await sender.client.brokerStatus())?.queuedBytes, 0), WAIT);
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+/** A paused subagent with one message queued for it, and its sender, on `host`'s running broker. */
+async function heldMessage(host: Host, label: string, memory: Memory) {
+	const ownerSession = await owner(host, label);
+	const childName = `subagent-worker-${label}-1`;
+	await endedChild(host, ownerSession, childName, "stopped");
+	const sender = await connect(host, `${label}-sender`, { memory });
+	const messageId = randomUUID();
+	const queued = await sender.client.send(childName, { text: "kept", messageId, wakeEndedRecipient: true });
+	assert.equal(queued.queued, true, queued.reason);
+	return { ownerSession, childName, sender, messageId };
+}
+
+test(
+	"a broker that exits in order keeps what it queued for the next one, as after a crash (#5999)",
+	async () => {
+		const host = new Host();
+		await host.start();
+		const memory = new EndedQueueMemory();
+		const { ownerSession, childName, sender, messageId } = await heldMessage(host, "orderly", memory);
+		await requestShutdown(host);
+		await host.exited();
+		await host.start();
+		const ownerBack = await owner(host, "orderly", ownerSession);
+		const senderBack = await again(host, "orderly-sender", sender, { memory });
+		await markEnded(ownerBack, childName, "stopped");
+		const continued = await resume(host, ownerBack, childName);
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(
+					continued.received.map(({ message }) => message.id),
+					[messageId],
+				),
+			WAIT,
+		);
+		assert.deepEqual(senderBack.lost, []);
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a store an older broker may have served past drops what it kept and takes a new identity: told lost once, never delivered (#5999)",
+	async () => {
+		const { acquireSocketReplacementLock } = await import(
+			"../../packages/intercom/broker/socket-replacement-lock.js"
+		);
+		const { getBrokerPidPath, getBrokerSocketReplacementLockPath } = await import(
+			"../../packages/intercom/broker/paths.js"
+		);
+		for (const after of ["crashed", "exited"] as const) {
+			const host = new Host();
+			await host.start();
+			const memory = new EndedQueueMemory();
+			const { ownerSession, childName, sender, messageId } = await heldMessage(host, `older-${after}`, memory);
+			if (after === "crashed") {
+				await host.kill();
+				// An older broker served in between and crashed: its pid file names it, not the store's holder.
+				writeFileSync(getBrokerPidPath(host.agentDir), "999999");
+			} else {
+				await requestShutdown(host);
+				await host.exited();
+				// An older broker started (taking the socket lock, as every version does) and exited in order.
+				const lock = await acquireSocketReplacementLock(getBrokerSocketReplacementLockPath(host.agentDir));
+				lock();
+			}
+			await host.start();
+			const senderBack = await again(host, `older-${after}-sender`, sender, { memory });
+			await vi.waitFor(
+				() =>
+					assert.deepEqual(
+						senderBack.lost.map((lost) => lost.messageId),
+						[messageId],
+						after,
+					),
+				WAIT,
+			);
+			const ownerBack = await owner(host, `older-${after}`, ownerSession);
+			await markEnded(ownerBack, childName, "stopped");
+			const continued = await resume(host, ownerBack, childName);
+			await sleep(SETTLE_MS);
+			assert.deepEqual(continued.received, [], `${after}: what its sender was told was lost is never delivered`);
+		}
 	},
 	RESTART_TEST_TIMEOUT_MS,
 );

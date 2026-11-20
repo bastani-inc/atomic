@@ -919,6 +919,8 @@ export interface IntercomBrokerStateStore {
 		readonly home: string;
 		readonly holder: string;
 		readonly retire?: boolean;
+		readonly servedSinceLastHolder?: (lastHolderPid: string | undefined) => boolean;
+		readonly pid?: string;
 	}): Promise<EndedChildQueueStore>;
 	close(): Promise<void>;
 }

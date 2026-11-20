@@ -28,6 +28,11 @@ export const ENDED_QUEUE_KEPT = "ended-queue-kept";
  */
 export const ENDED_QUEUE_RECEIVED = "ended-queue-received";
 
+/**
+ * #5999 durable wake queue: a kept message was just handed to its subagent, which has not confirmed it (it may have it).
+ */
+export const ENDED_QUEUE_HANDED_OVER = "ended-queue-handed-over";
+
 /** Crash here, as a kill would, when a test asked for `point`. */
 export function crashPoint(point: string): void {
 	if (process.env[BROKER_CRASH_AT_ENV] === point) process.kill(process.pid, "SIGKILL");

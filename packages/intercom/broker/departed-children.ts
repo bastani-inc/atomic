@@ -10,6 +10,7 @@ import {
 	ENDED_CHILD_WAKE_ANSWER_MS,
 	ENDED_CHILD_WAKE_START_MAX_MS,
 	type EndedChildWakeBudget,
+	isMaybeDelivered,
 	type EndedChildWakeFailure,
 	type EndedChildMessages,
 	type EndedChildWakeRequest,
@@ -49,6 +50,8 @@ export const DEPARTED_CHILDREN_PER_OWNER_MAX = 1_024;
  * owner's host session comes back for them.
  */
 export const DEPARTED_ORPHANS_MAX = 4_096;
+/** The longest delay one `setTimeout` takes (2^31 - 1 ms, about 24.8 days). */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The most sends held for one subagent; later ones are refused as for a subagent that did not come back. */
 const MAX_HELD_SENDS = 256;
 
@@ -442,7 +445,7 @@ export class DepartedChildren {
 				for (const held of departure.queued) markQueuedForWake(held, messages);
 				if (restored !== undefined && restored.messages !== messages) this.journalAll(departure);
 				if (messages === "wake" && departure.wake === undefined) {
-					const first = this.wakeSenders.get(departure.queued[0] as HeldSend);
+					const first = this.firstWaker(departure);
 					const started = first === undefined ? undefined : this.startWake(departure, first);
 					if (started?.ok === false)
 						this.failQueued(departure, () => notResumedReason(departure.childName, started.why));
@@ -579,7 +582,7 @@ export class DepartedChildren {
 	 *
 	 * #5999 (durable wake queue): an owner that ended for good (`ended`), or has no host session to come back as, can
 	 * continue none of them: what was queued for them fails now. One that only went away (it may come back, as
-	 * `atomic -c` brings it back) is waited for, with no timer, for {@link ENDED_CHILD_OWNER_AWAY_MAX_MS}, as after a
+	 * `atomic -c` brings it back) is waited for, for {@link ENDED_CHILD_OWNER_AWAY_MAX_MS} away without a break, as after a
 	 * broker restart: its subagents' messages stay queued, a pending wake is asked again when it is back, and a resume it
 	 * accepted keeps its start bound.
 	 */
@@ -820,7 +823,14 @@ export class DepartedChildren {
 			if (live !== undefined && live !== restored.ownerSessionId)
 				this.wakes.journal?.rekeyOwner(this.journalDeparture({ ...departure, ownerSessionId: restored.ownerSessionId }), live);
 			const accepted = restored.wake?.acceptedAt;
-			if (departure.wake === undefined && restored.wake !== undefined && accepted !== undefined) {
+			// A resume its owner had accepted is waited for, within what is left of its start bound, unless every message
+			// was already handed over: nothing then waits on that start.
+			if (
+				departure.wake === undefined &&
+				restored.wake !== undefined &&
+				accepted !== undefined &&
+				this.firstWaker(departure) !== undefined
+			) {
 				departure.wake = { id: restored.wake.id, depth: restored.wake.depth, accepted: true };
 				this.armQueueTimer(
 					departure,
@@ -833,7 +843,7 @@ export class DepartedChildren {
 				this.leaveAway(departure, Math.min(restored.awaySince ?? now, now), now);
 				this.wakes.journal?.ownerAway([this.journalDeparture(departure)], departure.awaySince);
 			} else if (departure.verdict?.kind === "ended" && departure.verdict.messages === "wake" && departure.wake === undefined) {
-				const first = this.wakeSenders.get(departure.queued[0] as HeldSend);
+				const first = this.firstWaker(departure);
 				const started = first === undefined ? undefined : this.startWake(departure, first);
 				if (started?.ok === false) this.failQueued(departure, () => notResumedReason(departure.childName, started.why));
 				else if (started !== undefined) wakes.push(started.wake);
@@ -841,6 +851,30 @@ export class DepartedChildren {
 		}
 		this.dispatchEvicted(this.trimOrphans());
 		return wakes;
+	}
+
+	/**
+	 * Who to name as waking the child for its queue: the sender of its first message never handed over to it. Undefined
+	 * when every message may already have reached it (an earlier broker handed them over): those wake nobody.
+	 */
+	private firstWaker(departure: Departure): WakeSender | undefined {
+		const first = departure.queued.find((held) => !isMaybeDelivered(held));
+		return first === undefined ? undefined : this.wakeSenders.get(first);
+	}
+
+	/**
+	 * Durable wake queue: drop the queued messages with these ids that `own` says are their sender's, untold (their sender
+	 * was told they were lost). Returns the ids dropped.
+	 */
+	dropQueued(messageIds: readonly string[], own: (held: HeldSend) => boolean): string[] {
+		const dropped: string[] = [];
+		for (const messageId of messageIds) {
+			const departure = this.queuedIds.get(messageId);
+			const held = departure?.queued.find((queued) => queued.messageId === messageId);
+			if (held === undefined || !own(held) || !this.unqueue(held)) continue;
+			dropped.push(messageId);
+		}
+		return dropped;
 	}
 
 	/** Durable wake queue: whether a message with this id waits in a queue here. */
@@ -883,19 +917,26 @@ export class DepartedChildren {
 	private leaveAway(departure: Departure, since: number, now = Date.now()): void {
 		this.disarmAway(departure);
 		departure.awaySince = since;
-		const timer = setTimeout(
-			() => {
+		// Counted on this process's clock from here: a wall-clock step does not shorten or stretch it.
+		const due = performance.now() + Math.max(1, ENDED_CHILD_OWNER_AWAY_MAX_MS - Math.max(0, now - since));
+		this.liveTimers += 1;
+		// A timer runs at most about 24 days; a longer wait is armed again as each one ends.
+		const arm = (): void => {
+			const timer = setTimeout(() => {
 				if (departure.awayTimer !== timer) return;
+				if (performance.now() < due) {
+					arm();
+					return;
+				}
 				departure.awayTimer = undefined;
 				this.liveTimers -= 1;
 				this.failQueued(departure, () => ownerAwayReason(departure.childName));
 				this.forget(departure);
-			},
-			Math.max(1, ENDED_CHILD_OWNER_AWAY_MAX_MS - Math.max(0, now - since)),
-		);
-		timer.unref();
-		this.liveTimers += 1;
-		departure.awayTimer = timer;
+			}, Math.min(Math.max(1, due - performance.now()), MAX_TIMER_MS));
+			timer.unref();
+			departure.awayTimer = timer;
+		};
+		arm();
 	}
 
 	private disarmAway(departure: Departure): void {
@@ -1130,6 +1171,15 @@ function mebibytes(bytes: number): string {
  */
 function pausedOwnerGoneReason(childName: string): string {
 	return `Subagent ${JSON.stringify(childName)} is paused and the session that launched it ended, so nothing can continue it now. The message was not delivered; send it again if it is still needed.`;
+}
+
+/**
+ * Durable wake queue: the failure of a message an earlier broker had already handed to its subagent, which did not
+ * confirm it before that broker was gone: it may have reached it, so the failure does not say it was not delivered.
+ */
+export function mayHaveReachedReason(childName: string, reason: string): string {
+	const why = reason.replace(/\s*The message was not delivered[^.]*\.?/, "").trim();
+	return `Subagent ${JSON.stringify(childName)} may already have this message: Intercom handed it over before it restarted, and the subagent had not confirmed it. It was not handed over again. ${why}`;
 }
 
 /** Durable wake queue: why a message queued for a subagent failed: its launching session stayed away too long. */

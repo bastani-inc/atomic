@@ -35,10 +35,10 @@ export const ENDED_CHILD_WAKE_START_MAX_MS = 60 * 60_000;
  */
 export const ENDED_CHILD_OWNER_RETURN_MS = RESTORING_RECIPIENT_HOLD_MS;
 /**
- * How long messages queued for subagents wait for the session that launched them to come back once it is away: it
- * disconnected without ending for good, or the broker restarted. The same as the retention of asks kept for an away
- * session (`AWAY_ASK_RETENTION_MS`) and of messages queued for a session on another machine
- * (`KNOWN_SESSION_RETENTION_MS`): 7 days. While the session is connected they wait with no time limit.
+ * How long messages queued for subagents wait for the session that launched them to come back once it is away (it
+ * disconnected without ending for good, or the broker restarted), counted while it is away without a break: 7 days, the
+ * retention of asks kept for an away session (`AWAY_ASK_RETENTION_MS`) and of messages queued for a session on another
+ * machine (`KNOWN_SESSION_RETENTION_MS`). Back, its count starts again; while it is connected they wait with no limit.
  */
 export const ENDED_CHILD_OWNER_AWAY_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 /** The most bytes of messages queued for one subagent that ended; a message beyond it is refused. */
@@ -84,6 +84,21 @@ export interface EndedChildWakeFailure {
 
 const queuedForWake = new WeakSet<HeldSend>();
 const heldWhilePaused = new WeakSet<HeldSend>();
+
+const maybeDelivered = new WeakSet<HeldSend>();
+
+/**
+ * Durable wake queue: a queued message an earlier broker had already handed to its subagent, which did not confirm it
+ * before that broker was gone: the subagent may have it. It is handed over again when the subagent registers (a copy it
+ * saved is ignored), never wakes it on its own, and a failure of it says it may already have reached the subagent.
+ */
+export function markMaybeDelivered(held: HeldSend): void {
+	maybeDelivered.add(held);
+}
+
+export function isMaybeDelivered(held: HeldSend): boolean {
+	return maybeDelivered.has(held);
+}
 
 /** Whether this held send was answered `queued` and waits for its child to be resumed, rather than holding its sender. */
 export function isQueuedForWake(held: HeldSend): boolean {
