@@ -4,9 +4,11 @@ This package is Atomic's fork of `@earendil-works/pi-codemode`. Its history up t
 
 ## [Unreleased]
 
+## [0.10.2-alpha.1] - 2026-11-20
+
 ### Fixed
 
-- Fixed `CodemodeSandbox` failing every script with a sandbox error in a Node process started with `--input-type=module`, for example a script run with `node --input-type=module --eval`. The worker still starts with the process's other flags, such as loaders ([#6079](https://github.com/bastani-inc/atomic/issues/6079))
+- Fixed `CodemodeSandbox` failing every script with a sandbox error in a Node process started with `--input-type=module`, for example a script run with `node --input-type=module --eval`. The worker still starts with the process's other flags, such as loaders ([#6079](https://github.com/bastani-inc/atomic/issues/6079)).
 
 ## [0.10.0] - 2026-11-20
 

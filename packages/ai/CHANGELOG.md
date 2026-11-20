@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.2-alpha.1] - 2026-11-20
+
 ### Added
 
 - `appendSystemMessageUpdates()`, `resolveRequestTranscript()` and `followsToolResults()` build the request transcript for providers without mid-conversation system messages: the system messages that open the conversation fold into the leading prompt, and each later one is sent as a user message at its place in the transcript, so the prompt earlier requests sent never changes. `collapseSystemMessages()` and `resolveTranscript()` keep their behavior ([#6092](https://github.com/bastani-inc/atomic/pull/6092)).
