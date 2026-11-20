@@ -144,9 +144,12 @@ async function sharedProfile() {
 }
 
 describe("an interactive session that never used Intercom is reachable from another session", () => {
+	// An untrusted folder runs in the in-process terminal, where a session joins once its first prompt starts.
 	for (const host of ["isolated", "in-process"] as const) {
 		test(
-			`lists it, sends to it by name, id and prefix, and gets its reply (${host} terminal)`,
+			host === "isolated"
+				? "lists an idle session, sends to it by name, id and prefix, and gets its reply (isolated terminal)"
+				: "lists a session in an untrusted folder after its first prompt, sends to it and gets its reply (in-process terminal)",
 			async () => {
 				const profile = await sharedProfile();
 				const sessionB = startPtyProgram({
@@ -161,6 +164,12 @@ describe("an interactive session that never used Intercom is reachable from anot
 				});
 				try {
 					await sessionB.waitForScreen((s) => s.includes("❯"), CLI_START_TIMEOUT_MS, "session B's prompt");
+					if (host === "in-process") {
+						sessionB.write("hello");
+						await sessionB.waitForScreen((s) => s.includes("❯ hello"), CLI_START_TIMEOUT_MS, "B's first prompt");
+						sessionB.write("\r");
+						await sessionB.waitForScreen((s) => s.includes("B-ACK"), CLI_START_TIMEOUT_MS, "B's first reply");
+					}
 					const sessionA = spawnProcess(
 						[process.execPath, CLI, ...profile.args, "--no-session", "-p", "SESSION-A"],
 						{

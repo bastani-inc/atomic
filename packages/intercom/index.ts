@@ -523,13 +523,16 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
     }
     activateTypedContactSupervisor();
   };
-	type StartupJoin = { lease: IntercomLease; generation: number; timer: ReturnType<typeof setTimeout> | null };
+	type StartupJoin = {
+		lease: IntercomLease;
+		generation: number;
+		timer: ReturnType<typeof setTimeout> | null;
+		waitingForTrust: boolean;
+	};
 	let startupJoin: StartupJoin | null = null;
-	let joinAtFirstTurn: { lease: IntercomLease; generation: number } | null = null;
 	function cancelStartupJoin(): void {
 		if (startupJoin?.timer) clearTimeout(startupJoin.timer);
 		startupJoin = null;
-		joinAtFirstTurn = null;
 	}
 	function projectTrusted(ctx: ExtensionContext): boolean {
 		try {
@@ -550,8 +553,9 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	 * Joins Intercom in the background once the session has started, so neither its first frame nor its first prompt
 	 * waits for the broker. A join that cannot reach the broker stays silent and is retried on the reconnect backoff a
 	 * few times; the session then joins on its next Intercom use. A session whose folder is not trusted, whose trust
-	 * may still be being decided, waits on the same backoff for the folder to be trusted, and otherwise joins when its
-	 * first turn starts. The timers never keep the process alive, and a session that ends or is replaced drops its join.
+	 * may still be being decided, waits on the same backoff for the folder to be trusted, and joins when its first turn
+	 * starts or that wait ends. The timers never keep the process alive, and a session that ends or is replaced drops
+	 * its join.
 	 */
 	function scheduleStartupJoin(
 		ctx: ExtensionContext,
@@ -561,7 +565,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		startupSettled = false,
 	): void {
 		cancelStartupJoin();
-		const join: StartupJoin = { lease, generation, timer: null };
+		const join: StartupJoin = { lease, generation, timer: null, waitingForTrust: false };
 		const current = () =>
 			startupJoin === join && activeLease === lease && !lease.retired && sessionSnapshot?.generation === generation;
 		startupJoin = join;
@@ -569,11 +573,10 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			join.timer = null;
 			if (!current()) return;
 			if (!startupSettled && !projectTrusted(ctx)) {
-				if (attempt < STARTUP_JOIN_RETRIES) scheduleStartupJoin(ctx, lease, generation, attempt + 1);
-				else {
-					startupJoin = null;
-					joinAtFirstTurn = { lease, generation };
-				}
+				if (attempt < STARTUP_JOIN_RETRIES) {
+					scheduleStartupJoin(ctx, lease, generation, attempt + 1);
+					if (startupJoin) startupJoin.waitingForTrust = true;
+				} else scheduleStartupJoin(ctx, lease, generation, 0, true);
 				return;
 			}
 			joinAtStartup(ctx).then(
@@ -668,8 +671,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	});
 	pi.on("agent_start", async (event, ctx) => {
 		if (activeLease.retired) return;
-		const waiting = joinAtFirstTurn;
-		joinAtFirstTurn = null;
+		const waiting = startupJoin?.waitingForTrust === true ? startupJoin : null;
 		if (waiting?.lease === activeLease && sessionSnapshot?.generation === waiting.generation) {
 			scheduleStartupJoin(sessionSnapshot.ctx, waiting.lease, waiting.generation, 0, true);
 		}
