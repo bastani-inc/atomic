@@ -1301,3 +1301,31 @@ test("closing a database the adapter opened closes its connection, which removes
 	await database.close();
 	assert.equal(existsSync(`${path}-wal`), false);
 });
+
+test("idle-only maintenance runs again once no writer waits for the lock, though one waited before, also after a reopen", async () => {
+	const { database, holder, path, writers } = await fixture({ lockWaitMs: 200 });
+	const maintain = database.tryMaintenance!.bind(database);
+	const insert = (value: string) => async (tx: Parameters<Parameters<typeof maintain>[0]>[0]) => {
+		await tx.run("INSERT INTO items VALUES (?)", value);
+	};
+	assert.equal(await maintain(insert("before")), true);
+	// Another process holds the lock: a writer waits for it, in the writers' queue, and gives up.
+	holder.exec("BEGIN IMMEDIATE");
+	await assert.rejects(database.transaction((tx) => tx.run("INSERT INTO items VALUES ('waited')")));
+	assert.equal(await maintain(insert("while held")), false, "not while the lock is held");
+	holder.exec("ROLLBACK");
+	assert.equal(existsSync(writers), true, "the queue's directory stays");
+	assert.deepEqual(readdirSync(writers), [], "with nobody waiting in it");
+	assert.equal(await maintain(insert("after")), true, "nobody waits: maintenance runs");
+	// The next process to open the file finds the queue's directory too.
+	const reopened = await openNodeSqliteDatabase(path, { lockWaitMs: 200 });
+	try {
+		assert.equal(await reopened.tryMaintenance!(insert("reopened")), true, "after a reopen too");
+	} finally {
+		await reopened.close();
+	}
+	// A writer of another process waiting in the queue still keeps it from getting in front.
+	ticket(writers, databaseNow(), process.pid + 1);
+	assert.equal(await maintain(insert("behind a waiter")), false);
+	assert.deepEqual(await values(database), ["before", "after", "reopened"]);
+});

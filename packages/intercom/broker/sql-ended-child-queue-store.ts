@@ -8,6 +8,7 @@ import {
 	type SqliteRow,
 	validateStoragePrefix,
 } from "@bastani/atomic/storage";
+import { ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX, EndedChildQueueFullError } from "./ended-child-wakes.js";
 import type { IntercomBrokerStateOptions } from "./multinode-state-store.js";
 import { ensureBrokerSchema } from "./sql-schema.js";
 
@@ -92,6 +93,16 @@ export interface EndedQueueDepartureKey {
 	readonly childKey: string;
 }
 
+/**
+ * The bytes the caps count of what a store keeps: for one subagent's rows (`child`), and for all of them. While the store
+ * still counts the rows it found when it opened (`counting`), they are what is known so far: the store may keep more.
+ */
+export interface EndedQueueCounted {
+	readonly child: number;
+	readonly total: number;
+	readonly counting: boolean;
+}
+
 export interface EndedChildQueueStore {
 	/** This store's identity: the same across broker restarts while the store keeps its rows. */
 	readonly id: string;
@@ -103,13 +114,32 @@ export interface EndedChildQueueStore {
 	load(page?: (rows: readonly EndedQueueRow[]) => void): Promise<EndedQueueSnapshot>;
 	/** The subagent names and ids the kept messages are for (normalized), read before the messages themselves. */
 	targets(): Promise<string[]>;
-	/** Write one queued message, and a wake the bounds counted for it; `duplicate` when its id is already kept. */
+	/**
+	 * What the caps count of the rows kept for `departure`'s subagent, and of all of them: never less than the store
+	 * holds. A message counts from when it is added (before its row is written) until its row is deleted (once that
+	 * commits), also while a delete that failed waits to be tried again. The rows the store held when it opened are
+	 * counted after it opened, in the background (a read that fails is tried again until one succeeds); until then the
+	 * counts are what is known so far, and `counting` says so.
+	 */
+	counted(departure: EndedQueueDepartureKey): EndedQueueCounted;
+	/** Resolves once the rows the store held when it opened are counted. */
+	whenCounted(): Promise<void>;
+	/**
+	 * Write one queued message, and a wake the bounds counted for it; `duplicate` when its id is already kept. Refused with
+	 * {@link EndedChildQueueFullError} when the store has no room left for it.
+	 */
 	add(entry: EndedQueueEntry, budget?: EndedWakeBudgetEvent): Promise<"added" | "duplicate">;
-	/** The messages reached their child, or their sender was told they failed. */
+	/**
+	 * The messages reached their child, or their sender was told they failed. A delete that fails is tried again, in
+	 * steps that run only while the database is idle; its message counts until it goes.
+	 */
 	remove(messageIds: readonly string[]): Promise<void>;
 	/** The messages were handed to their child; they stay until it confirms them. */
 	dispatched(messageIds: readonly string[]): Promise<void>;
-	/** The message failed while its sender was not connected: keep the reason until it is told. */
+	/**
+	 * The message failed while its sender was not connected: keep the reason until it is told, and only what telling it
+	 * needs (its sender and whom it was for), not the message.
+	 */
 	fail(messageId: string, reason: string, at: number): Promise<void>;
 	/** Record the departure's wake (or none) on its rows. */
 	setWake(departure: EndedQueueDepartureKey, wake: EndedQueueWake | undefined): Promise<void>;
@@ -182,6 +212,64 @@ function rowOf(row: QueueRow): EndedQueueRow {
 export const ENDED_QUEUE_LOCK_WAIT_MS = 5_000;
 
 /**
+ * The most bytes the local file may take: a backstop, should the caps' count of what it keeps ever be wrong. Four times
+ * the per-broker cap and 64 MiB: a row takes about 0.9 KiB besides the bytes the caps count (its subagent, ids,
+ * indexes, page fill), so the smallest messages take up to about 2.8 times their count on disk; the caps keep it below.
+ * A write past it is refused alone ({@link EndedChildQueueFullError}), never lost silently.
+ */
+export const ENDED_QUEUE_FILE_BYTES_MAX = 4 * ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX + 64 * 1024 * 1024;
+
+/** How many rows one page of counting what the store keeps reads before the event loop runs again. */
+const COUNT_PAGE_ROWS = 2_048;
+
+/** How long after a failed delete it is tried again, at first; each failure doubles it, up to the most. */
+const RETRY_DELETE_FIRST_MS = 100;
+const RETRY_DELETE_MAX_MS = 5_000;
+
+/** Whether `error` says the database has no room left: SQLite's SQLITE_FULL (13), Postgres's disk_full, or the disk's. */
+function isStoreFull(error: unknown): boolean {
+	let at: unknown = error;
+	for (let depth = 0; depth < 8 && typeof at === "object" && at !== null; depth++) {
+		if (at instanceof EndedChildQueueFullError) return true;
+		const failure = at as { code?: unknown; errcode?: unknown; message?: unknown; cause?: unknown };
+		if (
+			failure.errcode === 13 ||
+			failure.code === "SQLITE_FULL" ||
+			failure.code === "53100" ||
+			failure.code === "ENOSPC" ||
+			(typeof failure.message === "string" && /database or disk is full/i.test(failure.message))
+		)
+			return true;
+		at = failure.cause;
+	}
+	return false;
+}
+
+/** One write of a batch whose savepoint could not be rolled back: the database rolled the whole transaction back. */
+class BatchAborted extends Error {
+	constructor(
+		readonly index: number,
+		readonly failure: unknown,
+	) {
+		super("a write ended its batch's transaction");
+	}
+}
+
+function batchAbortedIn(error: unknown): BatchAborted | undefined {
+	let at: unknown = error;
+	for (let depth = 0; depth < 8 && typeof at === "object" && at !== null; depth++) {
+		if (at instanceof BatchAborted) return at;
+		at = (at as { cause?: unknown }).cause;
+	}
+	return undefined;
+}
+
+/** A write that failed for want of room is refused as such. */
+function refusalOf(error: unknown): unknown {
+	return isStoreFull(error) && !(error instanceof EndedChildQueueFullError) ? new EndedChildQueueFullError(error) : error;
+}
+
+/**
  * Writes in order, a batch per transaction: writes asked for while one commits go together in the next, so a burst of
  * queued messages costs one commit, and an insert is always committed before a later delete of the same row.
  *
@@ -234,15 +322,21 @@ class OrderedWrites {
 				// Each write in a savepoint of its own: one that fails rolls back alone and fails only its caller.
 				const results = await this.database.transaction(async (tx) => {
 					const outcomes: Array<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: unknown }> = [];
-					for (const item of batch) {
+					for (const [index, item] of batch.entries()) {
 						await tx.exec("SAVEPOINT ended_child_queue_write");
 						try {
 							outcomes.push({ ok: true, value: await item.write(tx) });
 							await tx.exec("RELEASE SAVEPOINT ended_child_queue_write");
 						} catch (error) {
-							await tx.exec("ROLLBACK TO SAVEPOINT ended_child_queue_write");
-							await tx.exec("RELEASE SAVEPOINT ended_child_queue_write");
-							outcomes.push({ ok: false, error });
+							try {
+								await tx.exec("ROLLBACK TO SAVEPOINT ended_child_queue_write");
+								await tx.exec("RELEASE SAVEPOINT ended_child_queue_write");
+							} catch {
+								// SQLite rolled the whole transaction back (SQLITE_FULL does for a one-row write): the writes before
+								// this one are gone too.
+								throw new BatchAborted(index, error);
+							}
+							outcomes.push({ ok: false, error: refusalOf(error) });
 						}
 					}
 					return outcomes;
@@ -253,12 +347,203 @@ class OrderedWrites {
 					else item.reject(outcome.error);
 				});
 			} catch (error) {
+				const aborted = batchAbortedIn(error);
+				if (aborted !== undefined) {
+					// Only the write that ended the transaction fails; the others, none of which committed, go again at once,
+					// ahead of anything asked for since. The lock was taken: nothing to break.
+					const [failed] = batch.splice(aborted.index, 1);
+					failed?.reject(refusalOf(aborted.failure));
+					this.pending.unshift(...batch);
+					continue;
+				}
 				this.brokenUntil = performance.now() + this.lockWaitMs;
 				this.brokenBy = error;
 				for (const item of batch) item.reject(error);
 			}
 		}
 		this.running = undefined;
+	}
+}
+
+/** The key a row counts under for its subagent's cap: its owner's host session (else its session id) and its child. */
+function countedKey(ownerHost: string, ownerSessionId: string, childKey: string): string {
+	return JSON.stringify(ownerHost === "" ? ["session", ownerSessionId, childKey] : ["host", ownerHost, childKey]);
+}
+
+function countedKeyOf(departure: EndedQueueDepartureKey): string {
+	return countedKey(departure.ownerHost ?? "", departure.ownerSessionId, departure.childKey);
+}
+
+/**
+ * - `reserved`: added, its row not written yet (it counts already);
+ * - `stored`: its row is written;
+ * - `deleting`: its delete failed: the row may still be there, and the delete is tried again.
+ */
+type CountedState = "reserved" | "stored" | "deleting";
+
+interface CountedRow {
+	key: string;
+	bytes: number;
+	state: CountedState;
+	/** When it last changed, on the ledger's own clock. */
+	changedAt: number;
+	/** A row of an earlier keeper of this home: it goes when this broker takes the rows over. */
+	earlier?: true;
+}
+
+/**
+ * What the caps count of a store's rows, by message id, so counting one twice or releasing one twice is never
+ * possible: a message counts from when it is added until its row's delete commits.
+ */
+class CountedRows {
+	private readonly rows = new Map<string, CountedRow>();
+	private readonly byKey = new Map<string, number>();
+	private readonly deletingIds = new Set<string>();
+	private totalBytes = 0;
+	private clock = 0;
+	/** While a recount reads the store: the rows released meanwhile, which its read may still show. */
+	private releasedDuringRecount: Set<string> | undefined;
+
+	counted(key: string): Omit<EndedQueueCounted, "counting"> {
+		return { child: this.byKey.get(key) ?? 0, total: this.totalBytes };
+	}
+
+	get(messageId: string): CountedRow | undefined {
+		return this.rows.get(messageId);
+	}
+
+	/** The rows whose delete waits to be tried again. */
+	deleting(): string[] {
+		return [...this.deletingIds];
+	}
+
+	/** Whether any message is counted that is neither gone nor going: the queue has not drained. */
+	holdsMessages(): boolean {
+		return this.rows.size > this.deletingIds.size;
+	}
+
+	/** A row of this keeper, read as `load` takes it up: counted by id, unless it already is. */
+	adopt(messageId: string, key: string, bytes: number): void {
+		if (!this.rows.has(messageId)) this.count(messageId, key, bytes, "stored");
+	}
+
+	/** An earlier keeper's rows are gone: this broker took the rows over. */
+	releaseEarlier(): void {
+		for (const [messageId, row] of [...this.rows]) if (row.earlier === true) this.release(messageId);
+	}
+
+	count(messageId: string, key: string, bytes: number, state: CountedState, earlier = false): void {
+		this.forget(messageId);
+		this.deletingIds.delete(messageId);
+		this.rows.set(messageId, { key, bytes, state, changedAt: ++this.clock, ...(earlier ? { earlier: true as const } : {}) });
+		if (state === "deleting") this.deletingIds.add(messageId);
+		this.add(key, bytes);
+	}
+
+	mark(messageId: string, state: CountedState): void {
+		const row = this.rows.get(messageId);
+		if (row === undefined) return;
+		row.state = state;
+		row.changedAt = ++this.clock;
+		if (state === "deleting") this.deletingIds.add(messageId);
+		else this.deletingIds.delete(messageId);
+	}
+
+	/** Its row is smaller now, or counts under another key: only once that change committed. */
+	change(messageId: string, change: { readonly key?: string; readonly bytes?: number }): void {
+		const row = this.rows.get(messageId);
+		if (row === undefined) return;
+		this.add(row.key, -row.bytes);
+		row.key = change.key ?? row.key;
+		row.bytes = change.bytes ?? row.bytes;
+		row.changedAt = ++this.clock;
+		this.add(row.key, row.bytes);
+	}
+
+	/** The row is gone (its delete committed), or never written (its write rolled back). */
+	release(messageId: string): void {
+		this.releasedDuringRecount?.add(messageId);
+		this.forget(messageId);
+	}
+
+	/** The rows that count under `key`. */
+	under(key: string): string[] {
+		return [...this.rows].filter(([, row]) => row.key === key).map(([messageId]) => messageId);
+	}
+
+	/**
+	 * Recount from what the store holds: `read` returns every row of the home. A row it shows counts, at its size there;
+	 * a counted one it does not show is dropped only if its row was written (or deleting) before the read began, so a
+	 * row added meanwhile, or not written yet, still counts. Never counts less than the store holds.
+	 */
+	async recount(read: () => Promise<ReadonlyMap<string, FoundRow>>): Promise<void> {
+		const readAt = ++this.clock;
+		const released = new Set<string>();
+		this.releasedDuringRecount = released;
+		let found: ReadonlyMap<string, FoundRow>;
+		try {
+			found = await read();
+		} finally {
+			this.releasedDuringRecount = undefined;
+		}
+		for (const [messageId, row] of [...this.rows]) {
+			if (found.has(messageId) || row.state === "reserved" || row.changedAt > readAt) continue;
+			this.forget(messageId);
+		}
+		for (const [messageId, row] of found) {
+			const counted = this.rows.get(messageId);
+			if (counted === undefined) {
+				// Released while the read ran: its delete committed after the read saw it.
+				if (!released.has(messageId)) this.count(messageId, row.key, row.bytes, "stored", row.earlier);
+			} else if (counted.changedAt <= readAt && (counted.key !== row.key || counted.bytes !== row.bytes))
+				this.change(messageId, row);
+		}
+	}
+
+	private forget(messageId: string): void {
+		const row = this.rows.get(messageId);
+		if (row === undefined) return;
+		this.rows.delete(messageId);
+		this.deletingIds.delete(messageId);
+		this.add(row.key, -row.bytes);
+	}
+
+	private add(key: string, bytes: number): void {
+		this.totalBytes += bytes;
+		const next = (this.byKey.get(key) ?? 0) + bytes;
+		if (next === 0) this.byKey.delete(key);
+		else this.byKey.set(key, next);
+	}
+}
+
+/** A row as a count reads it from the store. */
+interface FoundRow {
+	readonly key: string;
+	readonly bytes: number;
+	readonly earlier: boolean;
+}
+
+/** The parts of a failed message its sender's failure needs (whom it was for, and who sent it), not the message. */
+function failureForm(senderJson: string, requestJson: string | null): { readonly senderJson: string; readonly requestJson: string } | undefined {
+	try {
+		const sender = JSON.parse(senderJson) as { info?: { id?: unknown }; registrationReturnAddress?: unknown };
+		const request = (requestJson === null ? {} : JSON.parse(requestJson)) as Record<string, unknown>;
+		if (typeof sender.info?.id !== "string") return undefined;
+		return {
+			senderJson: JSON.stringify({
+				info: { id: sender.info.id },
+				...(typeof sender.registrationReturnAddress === "string"
+					? { registrationReturnAddress: sender.registrationReturnAddress }
+					: {}),
+			}),
+			requestJson: JSON.stringify({
+				type: request.type,
+				to: request.to,
+				...(request.logicalTarget === undefined ? {} : { logicalTarget: request.logicalTarget }),
+			}),
+		};
+	} catch {
+		return undefined;
 	}
 }
 
@@ -474,8 +759,280 @@ export async function openSqlEndedChildQueueStore(
 				await database.exec(`PRAGMA busy_timeout = ${configured}`);
 			}
 		}
+		// The backstop: the file never grows past this, whatever the caps counted (a setting of this connection). Set once
+		// a file from before was converted: it cannot be set below the file's size then.
+		const pageSize = Math.max(512, await pragmaOf(database, "page_size"));
+		await database.exec(`PRAGMA max_page_count = ${Math.ceil(ENDED_QUEUE_FILE_BYTES_MAX / pageSize)}`);
 		compactSoon();
 	}
+	// Every row of the store, read whole a page at a time, for a recount: its key, the size it recorded when it was
+	// written (its sender and its message as written), and whether an earlier keeper wrote it. One statement a page,
+	// outside a transaction (a read never waits for a writer): a page is consistent in itself, and a recount's rules
+	// hold across pages (see `CountedRows.recount`); the event loop runs between pages.
+	const readCounted = async (each: (messageId: string, row: FoundRow) => void): Promise<void> => {
+		for (let after = -1; ; ) {
+			const rows = await database.all<
+				SqliteRow & {
+					seq: number | bigint;
+					message_id: string;
+					owner_host: string;
+					owner_session_id: string;
+					child_key: string;
+					keeper: string;
+					bytes: number | bigint;
+				}
+			>(
+				`SELECT seq, message_id, owner_host, owner_session_id, child_key, keeper, bytes FROM ${queue}
+				 WHERE home = ? AND seq > ? ORDER BY seq LIMIT ${COUNT_PAGE_ROWS}`,
+				home,
+				after,
+			);
+			for (const row of rows)
+				each(row.message_id, {
+					key: countedKey(row.owner_host, row.owner_session_id, row.child_key),
+					bytes: Number(row.bytes),
+					earlier: row.keeper !== keeper,
+				});
+			if (rows.length < COUNT_PAGE_ROWS) return;
+			after = Number(rows[rows.length - 1]!.seq);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		}
+	};
+	// What the caps count of the store, by message id. Opening it reads none of its rows (a broker that opens it waits
+	// for nothing more than the store's own setup), and nothing reads them but what reads them anyway: `load` counts this
+	// keeper's rows as it reads them to take them up again, and an earlier keeper's rows are deleted when this broker
+	// takes the rows over, the first of its writes after `load`. Until both are done (or a recount, by id, succeeded),
+	// `counted` says the count is not known, and nothing is queued that what is known so far does not prove fits (see
+	// `DepartedChildren`). Rows this broker writes meanwhile are counted by id.
+	const ledger = new CountedRows();
+	let counting = true;
+	/** `load` has read, and counted, every row of this keeper. */
+	let loadCounted = false;
+	let countDone: () => void = () => {};
+	const countedAll = new Promise<void>((resolve) => {
+		countDone = resolve;
+	});
+	const finishCounting = (): void => {
+		if (!counting) return;
+		counting = false;
+		countDone();
+	};
+	/** Delete one row this instance holds, its message too; whether there was one. */
+	const deleteRow = async (tx: SqliteExecutor, messageId: string): Promise<boolean> => {
+		const { changes } = await tx.run(
+			`DELETE FROM ${queue} WHERE message_id = ? AND home = ? AND holder = ?`,
+			messageId,
+			home,
+			holder,
+		);
+		if (changes !== 0) await tx.run(`DELETE FROM ${bodies} WHERE message_id = ?`, messageId);
+		return changes !== 0;
+	};
+	/** Take this home's rows over: the first of this broker's writes once it loaded them (see `load`). */
+	const takeOver = async (tx: SqliteExecutor): Promise<void> => {
+		if (pid !== undefined) await tx.run(`UPDATE ${meta} SET holder_pid = ? WHERE home = ?`, pid, home);
+		await tx.run(
+			`DELETE FROM ${bodies} WHERE message_id IN (SELECT message_id FROM ${queue} WHERE home = ? AND keeper <> ?)`,
+			home,
+			keeper,
+		);
+		await tx.run(`DELETE FROM ${queue} WHERE home = ? AND keeper <> ?`, home, keeper);
+		await tx.run(`UPDATE ${queue} SET holder = ? WHERE home = ? AND holder <> ?`, holder, home, holder);
+		await tx.run(`DELETE FROM ${wakes} WHERE home = ? AND at < ?`, home, Date.now() - BUDGET_EVENT_RETENTION_MS);
+	};
+	/** Until the take-over commits: rows from before are not this instance's, and a delete of one finds none. */
+	let takingOver = false;
+	const tookOver = (): void => {
+		takingOver = false;
+		ledger.releaseEarlier();
+		if (loadCounted && !closing) finishCounting();
+	};
+	let recounting: Promise<void> | undefined;
+	let recountAgain = false;
+	/**
+	 * Count again from what the store holds, in a read that never waits for a lock: after a write that failed, and once
+	 * the queue drained. It never counts less than the store holds (see {@link CountedRows.recount}).
+	 */
+	const recountSoon = (): void => {
+		if (closing) return;
+		if (recounting !== undefined) {
+			recountAgain = true;
+			return;
+		}
+		recounting = ledger
+			.recount(async () => {
+				const found = new Map<string, FoundRow>();
+				await readCounted((messageId, row) => found.set(messageId, row));
+				return found;
+			})
+			.then(() => {
+				countRetryDelay = RETRY_DELETE_FIRST_MS;
+				if (!closing) finishCounting();
+			})
+			.catch(() => {
+				// Counted as before; the next failure or drain counts again. One that has never been counted is tried
+				// again, until it is.
+				if (counting) recountLater();
+			})
+			.finally(() => {
+				recounting = undefined;
+				if (recountAgain) {
+					recountAgain = false;
+					recountSoon();
+				}
+			});
+	};
+	let countRetryTimer: ReturnType<typeof setTimeout> | undefined;
+	let countRetryDelay = RETRY_DELETE_FIRST_MS;
+	/** Count again later: a read that failed is tried again, at most {@link RETRY_DELETE_MAX_MS} apart. */
+	const recountLater = (): void => {
+		if (closing || countRetryTimer !== undefined) return;
+		countRetryTimer = setTimeout(() => {
+			countRetryTimer = undefined;
+			recountSoon();
+		}, countRetryDelay);
+		countRetryTimer.unref?.();
+		countRetryDelay = Math.min(countRetryDelay * 2, RETRY_DELETE_MAX_MS);
+	};
+	const drained = (): void => {
+		if (!counting && !ledger.holdsMessages()) recountSoon();
+	};
+	// A step that runs only while the database is idle and its lock free at once; a database that cannot say so runs it
+	// as a transaction of its own, apart from the message writes.
+	const maintain: (callback: (tx: SqliteExecutor) => Promise<void>) => Promise<boolean> =
+		database.tryMaintenance?.bind(database) ??
+		((callback) =>
+			database.transaction(callback).then(
+				() => true,
+				() => false,
+			));
+	let retryTimer: ReturnType<typeof setTimeout> | undefined;
+	let retrying: Promise<void> | undefined;
+	let retryDelay = RETRY_DELETE_FIRST_MS;
+	/**
+	 * Try the deletes that failed again (and the take-over, if it failed), in one idle-only maintenance step: never
+	 * through the message writes, never waiting for another process's lock. While any is left it is tried again, at
+	 * most {@link RETRY_DELETE_MAX_MS} apart.
+	 */
+	const retrySoon = (): void => {
+		if (closing || retryTimer !== undefined || retrying !== undefined) return;
+		if (!takingOver && ledger.deleting().length === 0) return;
+		retryTimer = setTimeout(() => {
+			retryTimer = undefined;
+			retrying = retryDeletes().finally(() => {
+				retrying = undefined;
+				retrySoon();
+			});
+		}, retryDelay);
+		retryTimer.unref?.();
+	};
+	const retryDeletes = async (): Promise<void> => {
+		if (closing) return;
+		const takeOverToo = takingOver;
+		const messageIds = ledger.deleting();
+		const gone: string[] = [];
+		let ran = false;
+		try {
+			ran = await maintain(async (tx) => {
+				gone.length = 0;
+				if (takeOverToo) await takeOver(tx);
+				for (const messageId of messageIds) {
+					// Queued again meanwhile (the same message): its row stays.
+					if (ledger.get(messageId)?.state !== "deleting") continue;
+					await deleteRow(tx, messageId);
+					gone.push(messageId);
+				}
+			});
+		} catch {
+			ran = false;
+		}
+		if (!ran) {
+			retryDelay = Math.min(retryDelay * 2, RETRY_DELETE_MAX_MS);
+			return;
+		}
+		retryDelay = RETRY_DELETE_FIRST_MS;
+		if (takeOverToo) tookOver();
+		for (const messageId of gone) if (ledger.get(messageId)?.state === "deleting") ledger.release(messageId);
+		drained();
+		compactSoon();
+	};
+	/** What `load` reads, counting this keeper's rows by id as it reads them. */
+	const loadRows = async (page?: (rows: readonly EndedQueueRow[]) => void): Promise<EndedQueueSnapshot> => {
+		// Read without a write (never waiting for another process's write lock), a page at a time, then take the rows
+		// over: the first of this broker's ordered writes, so every later one finds them this instance's. An earlier
+		// instance of the same home is gone (its socket and start-up lock are this broker's), and a hung one is fenced out
+		// of every later write by `holder`. Rows of an earlier keeper are dropped: their senders were told they were lost.
+		const sizes = await database.transaction(
+			(tx) =>
+				tx.all<SqliteRow & { seq: number | bigint; bytes: number | bigint }>(
+					`SELECT seq, bytes FROM ${queue} WHERE home = ? AND keeper = ? ORDER BY seq`,
+					home,
+					keeper,
+				),
+			{ readOnly: true },
+		);
+		const pages: Array<readonly [number, number]> = [];
+		let first: number | undefined;
+		let last = 0;
+		let bytes = 0;
+		for (const size of sizes) {
+			const seq = Number(size.seq);
+			if (first !== undefined && bytes + Number(size.bytes) > ENDED_QUEUE_LOAD_PAGE_BYTES) {
+				pages.push([first, last]);
+				first = undefined;
+				bytes = 0;
+			}
+			first ??= seq;
+			last = seq;
+			bytes += Number(size.bytes);
+		}
+		if (first !== undefined) pages.push([first, last]);
+		const rows: EndedQueueRow[] = [];
+		for (const [from, to] of pages) {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			const read = await database.transaction(
+				(tx) =>
+					tx.all<QueueRow>(
+						`SELECT q.seq, q.message_id, q.owner_session_id, q.owner_host, q.child_key, q.child_json, q.sender_json,
+							b.request_json, q.bytes, q.queued_at, q.wake_json, q.owner_away_since, q.failed_reason, q.failed_at,
+							q.dispatched
+						 FROM ${queue} q JOIN ${bodies} b ON b.message_id = q.message_id
+						 WHERE q.home = ? AND q.keeper = ? AND q.seq >= ? AND q.seq <= ? ORDER BY q.seq`,
+						home,
+						keeper,
+						from,
+						to,
+					),
+				{ readOnly: true },
+			);
+			const parsed = read.map(rowOf);
+			// Counted by id as it is read, so its delete releases exactly it.
+			for (const row of parsed) ledger.adopt(row.messageId, countedKey(row.ownerHost ?? "", row.ownerSessionId, row.childKey), row.bytes);
+			rows.push(...parsed);
+			page?.(parsed);
+		}
+		const budget = await database.transaction(
+			(tx) => tx.all<BudgetRow>(`SELECT child_key, kind, at, depth FROM ${wakes} WHERE home = ? ORDER BY at`, home),
+			{ readOnly: true },
+		);
+		loadCounted = true;
+		// Once it commits, an earlier keeper's rows are gone, and the count is done. Should it fail, it is tried again with
+		// the deletes that failed, and a recount counts those rows meanwhile.
+		takingOver = true;
+		void writes.run(takeOver).then(tookOver, () => {
+			recountSoon();
+			retrySoon();
+		});
+		return {
+			rows,
+			budget: budget.map((event) => ({
+				childKey: JSON.parse(event.child_key) as string,
+				kind: event.kind === "awake" ? ("awake" as const) : ("wake" as const),
+				at: Number(event.at),
+				depth: Number(event.depth),
+			})),
+		};
+	};
 	/** Rows of one departure that this instance holds. */
 	const departureWhere = (departure: EndedQueueDepartureKey) =>
 		departure.ownerHost === undefined
@@ -491,94 +1048,30 @@ export async function openSqlEndedChildQueueStore(
 	return {
 		id,
 		async load(page) {
-			// Read without a write (never waiting for another process's write lock), a page at a time, then take the rows
-			// over: the first of this broker's ordered writes, so every later one finds them this instance's. An earlier
-			// instance of the same home is gone (its socket and start-up lock are this broker's), and a hung one is fenced out
-			// of every later write by `holder`. Rows of an earlier keeper are dropped: their senders were told they were lost.
-			const sizes = await database.transaction(
-				(tx) =>
-					tx.all<SqliteRow & { seq: number | bigint; bytes: number | bigint }>(
-						`SELECT seq, bytes FROM ${queue} WHERE home = ? AND keeper = ? ORDER BY seq`,
-						home,
-						keeper,
-					),
-				{ readOnly: true },
-			);
-			const pages: Array<readonly [number, number]> = [];
-			let first: number | undefined;
-			let last = 0;
-			let bytes = 0;
-			for (const size of sizes) {
-				const seq = Number(size.seq);
-				if (first !== undefined && bytes + Number(size.bytes) > ENDED_QUEUE_LOAD_PAGE_BYTES) {
-					pages.push([first, last]);
-					first = undefined;
-					bytes = 0;
-				}
-				first ??= seq;
-				last = seq;
-				bytes += Number(size.bytes);
+			try {
+				return await loadRows(page);
+			} catch (error) {
+				// Counted by a recount instead, tried again until it succeeds.
+				recountSoon();
+				throw error;
 			}
-			if (first !== undefined) pages.push([first, last]);
-			const rows: EndedQueueRow[] = [];
-			for (const [from, to] of pages) {
-				await new Promise<void>((resolve) => setImmediate(resolve));
-				const read = await database.transaction(
-					(tx) =>
-						tx.all<QueueRow>(
-							`SELECT q.seq, q.message_id, q.owner_session_id, q.owner_host, q.child_key, q.child_json, q.sender_json,
-								b.request_json, q.bytes, q.queued_at, q.wake_json, q.owner_away_since, q.failed_reason, q.failed_at,
-								q.dispatched
-							 FROM ${queue} q JOIN ${bodies} b ON b.message_id = q.message_id
-							 WHERE q.home = ? AND q.keeper = ? AND q.seq >= ? AND q.seq <= ? ORDER BY q.seq`,
-							home,
-							keeper,
-							from,
-							to,
-						),
-					{ readOnly: true },
-				);
-				const parsed = read.map(rowOf);
-				rows.push(...parsed);
-				page?.(parsed);
-			}
-			const budget = await database.transaction(
-				(tx) => tx.all<BudgetRow>(`SELECT child_key, kind, at, depth FROM ${wakes} WHERE home = ? ORDER BY at`, home),
-				{ readOnly: true },
-			);
-			void writes
-				.run(async (tx) => {
-					if (pid !== undefined) await tx.run(`UPDATE ${meta} SET holder_pid = ? WHERE home = ?`, pid, home);
-					await tx.run(
-						`DELETE FROM ${bodies} WHERE message_id IN (SELECT message_id FROM ${queue} WHERE home = ? AND keeper <> ?)`,
-						home,
-						keeper,
-					);
-					await tx.run(`DELETE FROM ${queue} WHERE home = ? AND keeper <> ?`, home, keeper);
-					await tx.run(`UPDATE ${queue} SET holder = ? WHERE home = ? AND holder <> ?`, holder, home, holder);
-					await tx.run(`DELETE FROM ${wakes} WHERE home = ? AND at < ?`, home, Date.now() - BUDGET_EVENT_RETENTION_MS);
-				})
-				.catch(() => {});
-			return {
-				rows,
-				budget: budget.map((event) => ({
-					childKey: JSON.parse(event.child_key) as string,
-					kind: event.kind === "awake" ? ("awake" as const) : ("wake" as const),
-					at: Number(event.at),
-					depth: Number(event.depth),
-				})),
-			};
 		},
 		async targets() {
-			const children = await database.transaction(
-				(tx) =>
-					tx.all<SqliteRow & { child_key: string; child_json: string }>(
-						`SELECT DISTINCT child_key, child_json FROM ${queue} WHERE home = ? AND keeper = ?`,
-						home,
-						keeper,
-					),
-				{ readOnly: true },
-			);
+			const children = await database
+				.transaction(
+					(tx) =>
+						tx.all<SqliteRow & { child_key: string; child_json: string }>(
+							`SELECT DISTINCT child_key, child_json FROM ${queue} WHERE home = ? AND keeper = ?`,
+							home,
+							keeper,
+						),
+					{ readOnly: true },
+				)
+				.catch((error: unknown) => {
+					// `load` does not follow: a recount counts the rows instead, tried again until it succeeds.
+					recountSoon();
+					throw error;
+				});
 			const targets = new Set<string>();
 			for (const child of children) {
 				targets.add(child.child_key);
@@ -586,8 +1079,21 @@ export async function openSqlEndedChildQueueStore(
 			}
 			return [...targets];
 		},
+		counted(departure) {
+			return { ...ledger.counted(countedKeyOf(departure)), counting };
+		},
+		whenCounted() {
+			return countedAll;
+		},
 		add(entry, budget) {
-			return writes.run(async (tx) => {
+			const messageId = entry.messageId;
+			// Counted before its row is written. One counted already (a delete before this one may still be going) is held
+			// as added again, so that delete does not release it.
+			const before = ledger.get(messageId)?.state;
+			const known = before !== undefined;
+			if (known) ledger.mark(messageId, "reserved");
+			else ledger.count(messageId, countedKeyOf(entry), entry.bytes, "reserved");
+			const written = writes.run(async (tx) => {
 				const { changes } = await tx.run(
 					`INSERT INTO ${queue}(message_id, home, holder, keeper, owner_session_id, owner_host, child_key, child_json,
 						sender_json, bytes, queued_at, wake_json)
@@ -623,22 +1129,70 @@ export async function openSqlEndedChildQueueStore(
 					);
 				return changes === 0 ? "duplicate" : "added";
 			});
+			return written.then(
+				(result) => {
+					// Its row is there now; one an earlier add of the same message, refused, released counts again.
+					if (ledger.get(messageId) === undefined) ledger.count(messageId, countedKeyOf(entry), entry.bytes, "stored");
+					else ledger.mark(messageId, "stored");
+					// Already kept, or counted from before: what the store holds says what counts.
+					if (known || result === "duplicate") recountSoon();
+					return result;
+				},
+				(error: unknown) => {
+					// Rolled back: never written. One counted from before is as it was, its delete still to be tried again if
+					// that had failed.
+					if (before === undefined) ledger.release(messageId);
+					else if (ledger.get(messageId)?.state === "reserved") ledger.mark(messageId, before);
+					recountSoon();
+					retrySoon();
+					throw error;
+				},
+			);
 		},
 		remove(messageIds) {
 			if (messageIds.length === 0) return Promise.resolve();
 			return writes
 				.run(async (tx) => {
-					for (const messageId of messageIds) {
-						const { changes } = await tx.run(
-							`DELETE FROM ${queue} WHERE message_id = ? AND home = ? AND holder = ?`,
-							messageId,
-							home,
-							holder,
-						);
-						if (changes !== 0) await tx.run(`DELETE FROM ${bodies} WHERE message_id = ?`, messageId);
-					}
+					const deleted = new Set<string>();
+					for (const messageId of messageIds) if (await deleteRow(tx, messageId)) deleted.add(messageId);
+					return deleted;
 				})
-				.then(compactSoon);
+				.then(
+					(deleted) => {
+						let unexpected = false;
+						for (const messageId of messageIds) {
+							const counted = ledger.get(messageId);
+							// Not counted by id: a row the store's sums counted when it opened, before `load` read it, is
+							// released by counting again; one never written needs nothing.
+							if (counted === undefined) {
+								if (deleted.has(messageId)) unexpected = true;
+								continue;
+							}
+							// Added again after this delete was asked for: that add says what counts.
+							if (counted.state === "reserved") continue;
+							if (deleted.has(messageId)) ledger.release(messageId);
+							// A row from before this broker took the rows over: deleted once it has.
+							else if (takingOver) ledger.mark(messageId, "deleting");
+							else {
+								ledger.release(messageId);
+								unexpected = true;
+							}
+						}
+						if (unexpected) recountSoon();
+						retrySoon();
+						drained();
+						compactSoon();
+					},
+					(error: unknown) => {
+						// The rows may still be there: they count until a delete tried again goes through.
+						for (const messageId of messageIds)
+							if (ledger.get(messageId) !== undefined && ledger.get(messageId)?.state !== "reserved")
+								ledger.mark(messageId, "deleting");
+						recountSoon();
+						retrySoon();
+						throw error;
+					},
+				);
 		},
 		dispatched(messageIds) {
 			if (messageIds.length === 0) return Promise.resolve();
@@ -653,16 +1207,54 @@ export async function openSqlEndedChildQueueStore(
 			});
 		},
 		fail(messageId, reason, at) {
-			return writes.run(async (tx) => {
-				await tx.run(
-					`UPDATE ${queue} SET failed_reason = ?, failed_at = ? WHERE message_id = ? AND home = ? AND holder = ?`,
-					reason,
-					at,
-					messageId,
-					home,
-					holder,
+			return writes
+				.run(async (tx) => {
+					const row = await tx.get<SqliteRow & { sender_json: string; request_json: string | null }>(
+						`SELECT q.sender_json, b.request_json FROM ${queue} q LEFT JOIN ${bodies} b ON b.message_id = q.message_id
+						 WHERE q.message_id = ? AND q.home = ? AND q.holder = ?`,
+						messageId,
+						home,
+						holder,
+					);
+					if (row === undefined) return undefined;
+					// The failure keeps only what telling its sender needs: a failure for a sender that never comes back would
+					// otherwise keep the whole message, counted, for good.
+					const kept = failureForm(row.sender_json, row.request_json);
+					if (kept === undefined) {
+						await tx.run(
+							`UPDATE ${queue} SET failed_reason = ?, failed_at = ? WHERE message_id = ? AND home = ? AND holder = ?`,
+							reason,
+							at,
+							messageId,
+							home,
+							holder,
+						);
+						return undefined;
+					}
+					const bytes = Buffer.byteLength(kept.senderJson) + Buffer.byteLength(kept.requestJson);
+					await tx.run(
+						`UPDATE ${queue} SET failed_reason = ?, failed_at = ?, sender_json = ?, bytes = ?
+						 WHERE message_id = ? AND home = ? AND holder = ?`,
+						reason,
+						at,
+						kept.senderJson,
+						bytes,
+						messageId,
+						home,
+						holder,
+					);
+					await tx.run(`UPDATE ${bodies} SET request_json = ? WHERE message_id = ?`, kept.requestJson, messageId);
+					return bytes;
+				})
+				.then(
+					(bytes) => {
+						if (bytes !== undefined && ledger.get(messageId)?.state === "stored") ledger.change(messageId, { bytes });
+					},
+					(error: unknown) => {
+						recountSoon();
+						throw error;
+					},
 				);
-			});
 		},
 		setWake(departure, wake) {
 			const where = departureWhere(departure);
@@ -685,9 +1277,16 @@ export async function openSqlEndedChildQueueStore(
 		},
 		rekeyOwner(departure, ownerSessionId) {
 			const where = departureWhere(departure);
-			return writes.run(async (tx) => {
-				await tx.run(`UPDATE ${queue} SET owner_session_id = ? WHERE ${where.sql}`, ownerSessionId, ...where.params);
-			});
+			return writes
+				.run(async (tx) => {
+					await tx.run(`UPDATE ${queue} SET owner_session_id = ? WHERE ${where.sql}`, ownerSessionId, ...where.params);
+				})
+				.then(() => {
+					// Rows of an owner with no host session count under its session id: they follow it.
+					if (departure.ownerHost !== undefined) return;
+					const to = countedKey("", ownerSessionId, departure.childKey);
+					for (const messageId of ledger.under(countedKeyOf(departure))) ledger.change(messageId, { key: to });
+				});
 		},
 		recordBudget(event) {
 			return writes.run(async (tx) => {
@@ -704,6 +1303,12 @@ export async function openSqlEndedChildQueueStore(
 		close() {
 			closed ??= (async () => {
 				closing = true;
+				clearTimeout(retryTimer);
+				retryTimer = undefined;
+				clearTimeout(countRetryTimer);
+				countRetryTimer = undefined;
+				await retrying;
+				await recounting;
 				await compacting;
 				await writes.idle();
 				if (ownsDatabase) await database.close();

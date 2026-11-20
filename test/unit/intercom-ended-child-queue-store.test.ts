@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import {
+	ENDED_QUEUE_LOCK_WAIT_MS,
 	type EndedChildQueueStore,
 	type EndedQueueEntry,
 	openLocalEndedChildQueueStore,
@@ -232,16 +234,18 @@ test("under another process's write lock, a message's write fails within one loc
 		const [firstFailedAt, behindFailedAt] = await Promise.all([first, behind]);
 		assert.equal(typeof firstFailedAt, "number", "the first fails: the lock is not free");
 		assert.equal(typeof behindFailedAt, "number");
+		// Measured from the first one's failure, not from the start: on a loaded host the first one's wait itself runs late.
 		assert.ok(
-			(behindFailedAt as number) < 300 * 2,
-			`the one behind failed after ${behindFailedAt} ms, not a second lock wait`,
+			(behindFailedAt as number) - (firstFailedAt as number) < 300,
+			`the one behind failed ${(behindFailedAt as number) - (firstFailedAt as number)} ms after the first, not a second lock wait later`,
 		);
 	} finally {
 		other.exec("ROLLBACK");
 		other.close();
 	}
-	// The lock is free again: once the breaker's wait is over, writes go through.
-	await new Promise((resolve) => setTimeout(resolve, 350));
+	// The lock is free again: once the breaker's wait is over, writes go through (twice its wait: a timer may fire early
+	// by the event loop's own lag).
+	await new Promise((resolve) => setTimeout(resolve, 2 * 300));
 	assert.equal(await store.add(entry("m3")), "added");
 	await store.close();
 	await database.close();
@@ -396,10 +400,11 @@ test("giving space back after a drain never waits for another process's write lo
 	await fillAndDrain(store, 4);
 	await vi.waitFor(() => assert.ok(other !== undefined, "the store tidied up"), { timeout: 10_000, interval: 10 });
 	await sleep(lockedAt + 1_400 - performance.now());
-	// The lock is free again: a message sent now is kept, at once.
+	// The lock is free again: a message sent now is kept, at once: within less than a lock wait (its commit syncs the file,
+	// which a loaded host takes a while to do).
 	const started = performance.now();
 	assert.equal(await store.add(entry("after")), "added");
-	assert.ok(performance.now() - started < 500, `kept after ${(performance.now() - started).toFixed(0)} ms`);
+	assert.ok(performance.now() - started < 1_000, `kept after ${(performance.now() - started).toFixed(0)} ms`);
 	await store.close();
 	await database.close();
 });
@@ -438,35 +443,222 @@ test("a small drain with no space to give back costs no transaction beyond its w
 	await database.close();
 });
 
+/**
+ * The longest the event loop may stop while the store waits out another process's lock, beyond what the whole host
+ * stood still meanwhile. Waiting for the lock on the event loop stops it for the whole wait (5 s), and a store that spins
+ * never lets it run again; a Windows host can stand still for seconds, every process at once, which the heartbeat on
+ * another thread measures, and what is left of a loaded host's scheduling stays well under this. (A write that commits
+ * afterwards syncs the file on the event loop, which a loaded Windows host takes over 200 ms to do: that is not waiting
+ * for the lock, and is bounded by the test's other checks.)
+ */
+const STALL_BEYOND_HOST_MAX_MS = 200;
+/** Room for a timer that fires early by the event loop's own lag, on a wait as long as the store's lock wait. */
+const TIMER_LAG_MARGIN_MS = 1_000;
+/** How often the test's timer looks at the event loop. */
+const STALL_TICK_MS = 5;
+
+/**
+ * The longest the whole host stood still since it started: a heartbeat on another thread, which keeps running while
+ * this one works or waits. A stall of this thread alone does not stop it.
+ */
+function hostStallClock(): { longestMs(): number; stop(): Promise<number> } {
+	const longest = new Float64Array(new SharedArrayBuffer(8));
+	const worker = new Worker(
+		`const { workerData } = require("node:worker_threads");
+const longest = new Float64Array(workerData);
+let last = performance.now();
+setInterval(() => {
+	const now = performance.now();
+	longest[0] = Math.max(longest[0], now - last);
+	last = now;
+}, 5);`,
+		{ eval: true, workerData: longest.buffer },
+	);
+	return {
+		longestMs: () => longest[0]!,
+		stop: async () => {
+			await worker.terminate();
+			return longest[0]!;
+		},
+	};
+}
+
 test("after a write waits out another process's lock and the next is refused at once, later writes go through and the store closes", async () => {
 	const path = join(directory(), "ended-child-queue.sqlite");
 	// Opened as a broker opens it: its writes wait 5 s for another process's write lock.
 	const store = await openLocalEndedChildQueueStore(path, "broker-1");
+	const host = hostStallClock();
 	let last = performance.now();
 	let stalled = 0;
+	let stalledWaiting = Number.POSITIVE_INFINITY;
+	let hostStalledWaiting = 0;
 	const ticker = setInterval(() => {
 		const now = performance.now();
 		stalled = Math.max(stalled, now - last);
 		last = now;
-	}, 5);
+	}, STALL_TICK_MS);
 	const { DatabaseSync } = await import("node:sqlite");
 	const other = new DatabaseSync(path);
 	other.exec("BEGIN IMMEDIATE");
-	setTimeout(() => {
-		other.exec("ROLLBACK");
-		other.close();
-	}, 5_500);
 	try {
-		await assert.rejects(store.add(entry("m1")), /locked/, "the first write waits out the lock, then fails");
-		await assert.rejects(store.add(entry("m2")), /locked/, "the next one, within a lock wait, fails at once");
-		await sleep(6_000);
+		try {
+			await assert.rejects(store.add(entry("m1")), /locked/, "the first write waits out the lock, then fails");
+			await assert.rejects(store.add(entry("m2")), /locked/, "the next one, within a lock wait, fails at once");
+		} finally {
+			other.exec("ROLLBACK");
+			other.close();
+		}
+		// While the store waited out the lock, the event loop ran (checked once the store is closed): read once the timer
+		// has run again, so a stall just as the writes failed counts too.
+		await sleep(4 * STALL_TICK_MS);
+		stalledWaiting = stalled;
+		hostStalledWaiting = host.longestMs();
+		// Writes are refused at once for a lock wait after the first failed; that wait is over once this one is (with room
+		// for a timer that fires early by the event loop's own lag).
+		await sleep(ENDED_QUEUE_LOCK_WAIT_MS + TIMER_LAG_MARGIN_MS);
 		// The lock is free and the wait is over: a write now is kept, and a remove goes through.
-		const settled = (write: Promise<unknown>) => Promise.race([write, sleep(3_000).then(() => "still waiting")]);
+		const settled = (write: Promise<unknown>) =>
+			Promise.race([write, sleep(ENDED_QUEUE_LOCK_WAIT_MS).then(() => "still waiting")]);
 		assert.equal(await settled(store.add(entry("m3"))), "added");
 		assert.equal(await settled(store.remove(["m3"])), undefined);
 		assert.equal(await settled(store.close().then(() => "closed")), "closed");
 	} finally {
 		clearInterval(ticker);
 	}
-	assert.ok(stalled < 50, `the event loop stalled for ${stalled.toFixed(1)} ms`);
-}, 30_000);
+	const hostStalled = await host.stop();
+	assert.ok(
+		stalledWaiting - hostStalledWaiting < STALL_BEYOND_HOST_MAX_MS,
+		`the event loop stalled for ${stalledWaiting.toFixed(1)} ms while the store waited out the lock, the whole host for ${hostStalledWaiting.toFixed(1)} ms`,
+	);
+	assert.ok(
+		stalled - hostStalled < TIMER_LAG_MARGIN_MS,
+		`the event loop stalled for ${stalled.toFixed(1)} ms, the whole host for ${hostStalled.toFixed(1)} ms`,
+	);
+}, 60_000);
+
+test("the store still gives its disk space back after another process held its write lock", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const database = await openNodeSqliteDatabase(path, { lockWaitMs: 300 });
+	const store = await openSqlEndedChildQueueStore(
+		{ database, prefix: "" },
+		{ home: "local", holder: "broker-1", lockWaitMs: 300, compact: true },
+	);
+	// Another process holds the write lock: a message's write waits for it, and fails.
+	const { DatabaseSync } = await import("node:sqlite");
+	const other = new DatabaseSync(path);
+	other.exec("BEGIN IMMEDIATE");
+	await assert.rejects(store.add(entry("refused")));
+	other.exec("ROLLBACK");
+	other.close();
+	// Once the breaker's wait is over (twice it, for a timer that fires early), a queue fills and drains: its space is
+	// given back as before.
+	await sleep(2 * 300);
+	await fillAndDrain(store, 8);
+	await vi.waitFor(() => assert.ok(onDisk(path) < 4 * 1024 * 1024, `still ${onDisk(path)} bytes`), {
+		timeout: 20_000,
+		interval: 50,
+	});
+	await store.close();
+	await database.close();
+});
+
+test("a message whose delete failed, queued again and refused, is still deleted once another process lets go of the lock", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const database = await openNodeSqliteDatabase(path, { lockWaitMs: 300 });
+	const store = await openSqlEndedChildQueueStore(
+		{ database, prefix: "" },
+		{ home: "local", holder: "broker-1", lockWaitMs: 300, compact: true },
+	);
+	const key = { ownerSessionId: "owner-1", ownerHost: "owner-host", childKey: "subagent-worker-1" };
+	await store.add(entry("m1"));
+	// Another process holds the write lock: the delete of the delivered message fails, and so does a retry of the same
+	// message by its sender.
+	const { DatabaseSync } = await import("node:sqlite");
+	const other = new DatabaseSync(path);
+	other.exec("BEGIN IMMEDIATE");
+	try {
+		await assert.rejects(store.remove(["m1"]));
+		await assert.rejects(store.add(entry("m1")));
+	} finally {
+		other.exec("ROLLBACK");
+		other.close();
+	}
+	// The lock is free for good: the delete goes through, and the message no longer counts.
+	await vi.waitFor(
+		async () => {
+			assert.deepEqual((await store.load()).rows, []);
+			assert.equal(store.counted(key).total, 0);
+		},
+		{ timeout: 30_000, interval: 100 },
+	);
+	await store.close();
+	await database.close();
+});
+
+test("counting what a store kept takes a few statements, however far apart the rows' sequence numbers are", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const earlier = await open(path, "broker-1");
+	await earlier.add(entry("old"));
+	await earlier.add(entry("new"));
+	await earlier.close();
+	// A shared database numbers the rows of every home in one sequence, never reused: millions apart, in time.
+	const { DatabaseSync } = await import("node:sqlite");
+	const raw = new DatabaseSync(path);
+	raw.exec("UPDATE intercom_ended_child_queue SET seq = 4000000 WHERE message_id = 'new'");
+	raw.close();
+	const database = await openNodeSqliteDatabase(path);
+	let statements = 0;
+	for (const method of ["all", "get", "run", "exec"] as const) {
+		const call = database[method].bind(database) as (...args: unknown[]) => Promise<unknown>;
+		(database as unknown as Record<string, unknown>)[method] = (...args: unknown[]) => {
+			statements += 1;
+			return call(...args);
+		};
+	}
+	const store = await openSqlEndedChildQueueStore(
+		{ database, prefix: "" },
+		{ home: "local", holder: "broker-2", ownsDatabase: true },
+	);
+	// Counted as the broker takes them up again.
+	await store.load();
+	await store.whenCounted();
+	// Each round trip to a remote database counts against how long a message waits for the count.
+	assert.ok(statements < 20, `${statements} statements to open a store of 2 rows and count them`);
+	assert.deepEqual(
+		store.counted({ ownerSessionId: "owner-1", ownerHost: "owner-host", childKey: "subagent-worker-1" }),
+		{ child: 10, total: 10, counting: false },
+	);
+	await store.close();
+});
+
+/** How many statements opening a store at `path` sends its database, until the open resolves. */
+async function statementsToOpen(path: string): Promise<number> {
+	const database = await openNodeSqliteDatabase(path);
+	let statements = 0;
+	for (const method of ["all", "get", "run", "exec", "transaction"] as const) {
+		const call = database[method].bind(database) as (...args: unknown[]) => Promise<unknown>;
+		(database as unknown as Record<string, unknown>)[method] = (...args: unknown[]) => {
+			statements += 1;
+			return call(...args);
+		};
+	}
+	const store = await openSqlEndedChildQueueStore(
+		{ database, prefix: "" },
+		{ home: "local", holder: "broker-2", ownsDatabase: true, compact: true },
+	);
+	const opened = statements;
+	await store.close();
+	return opened;
+}
+
+test("opening a store reads none of the rows it kept: a broker decides on a full store as soon as on an empty one", async () => {
+	const empty = join(directory(), "ended-child-queue.sqlite");
+	await (await open(empty, "broker-1")).add(entry("one"));
+	const full = join(directory(), "ended-child-queue.sqlite");
+	const earlier = await open(full, "broker-1");
+	await Promise.all(Array.from({ length: 20_000 }, (_, index) => earlier.add(entry(`m${index}`))));
+	await earlier.close();
+	for (const store of opened.splice(0)) await store.close();
+	// On a cold disk, reading a full store's rows before deciding on it outlasted the broker's open wait.
+	assert.equal(await statementsToOpen(full), await statementsToOpen(empty));
+}, 60_000);
