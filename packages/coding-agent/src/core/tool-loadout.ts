@@ -1,5 +1,5 @@
 import type { AgentMessage, AgentTool } from "@bastani/atomic-agent-core";
-import { getCurrentTools } from "@bastani/atomic-ai";
+import { declarationsEqual, getCurrentTools } from "@bastani/atomic-ai";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
 import type { ToolLoadout } from "./extensions/tool-types.ts";
@@ -22,9 +22,8 @@ function compareNames(left: string, right: string): number {
  */
 export function applyToolLoadout(session: AgentSession, names: readonly string[]): AgentTool[] {
 	const requested = new Set(names);
-	const transcriptOrder = getCurrentTools(session.agent.state.messages)
-		.map((tool) => tool.name)
-		.filter((name) => requested.has(name));
+	const recordedTools = getCurrentTools(session.agent.state.messages);
+	const transcriptOrder = recordedTools.map((tool) => tool.name).filter((name) => requested.has(name));
 	const inTranscript = new Set(transcriptOrder);
 	const kept = session.getActiveToolNames().filter((name) => requested.has(name) && !inTranscript.has(name));
 	const undeclared = [...new Set([...kept, ...requested])].filter((name) => !inTranscript.has(name));
@@ -67,10 +66,19 @@ export function applyToolLoadout(session: AgentSession, names: readonly string[]
 		}
 	}
 	hiddenDeclarations.set(session, hidden);
-	const declared = tools.map((tool) => {
+	const withDescriptions = tools.map((tool) => {
 		const description = descriptions.get(tool.name);
 		return description === undefined ? tool : { ...tool, description };
 	});
+	// A tool whose declaration changes is declared again after the unchanged ones. Ordering the active tools that way
+	// now keeps the system prompt's tool list from changing order once more on the next request.
+	const byName = new Map(withDescriptions.map((tool) => [tool.name, tool]));
+	const unchanged = recordedTools.flatMap((recorded) => {
+		const tool = byName.get(recorded.name);
+		return tool && declarationsEqual(recorded, tool) ? [tool] : [];
+	});
+	const unchangedNames = new Set(unchanged.map((tool) => tool.name));
+	const declared = [...unchanged, ...withDescriptions.filter((tool) => !unchangedNames.has(tool.name))];
 	session.agent.state.tools = declared;
 	return declared;
 }

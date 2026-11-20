@@ -385,6 +385,29 @@ describe("a resume after an upgrade changes only what follows the cached prefix"
 		);
 	});
 
+	test("a tool change that redeclares other tools changes the prompt's tool list once, not again on the next request", async () => {
+		const installation = await install(FLAT_MODEL);
+		const runtime = await start(installation);
+		await send(runtime, "one");
+		const names = runtime.session.getActiveToolNames();
+		assert.ok(names.includes("codemode"));
+		// Without codemode the other tools' descriptions lose their script notes, so they are declared again.
+		runtime.session.setActiveToolsByName(names.filter((name) => name !== "codemode"));
+		const afterChange = await send(runtime, "two");
+		const activeAfterChange = runtime.session.getActiveToolNames();
+		const next = await send(runtime, "three");
+
+		const toolListUpdates = (request: AnthropicRequestBody) =>
+			JSON.stringify(request.messages).split('Updated system prompt section \\"tools\\"').length - 1;
+		assert.equal(toolListUpdates(afterChange), 1);
+		assert.equal(toolListUpdates(next), 1);
+		assert.deepEqual(runtime.session.getActiveToolNames(), activeAfterChange);
+		assert.equal(
+			JSON.stringify(withoutCacheMarkers(next).tools),
+			JSON.stringify(withoutCacheMarkers(afterChange).tools),
+		);
+	});
+
 	test("tools registered in another order on resume keep the order the session declared", async () => {
 		let order: readonly string[] = ["alpha_tool", "zeta_tool"];
 		const installation = await install(FLAT_MODEL, "install", { tools: () => order });
