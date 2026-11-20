@@ -233,9 +233,10 @@ test("under another process's write lock, a message's write fails within one loc
 		const [firstFailedAt, behindFailedAt] = await Promise.all([first, behind]);
 		assert.equal(typeof firstFailedAt, "number", "the first fails: the lock is not free");
 		assert.equal(typeof behindFailedAt, "number");
+		// Measured from the first one's failure, not from the start: on a loaded host the first one's wait itself runs late.
 		assert.ok(
-			(behindFailedAt as number) < 300 * 2,
-			`the one behind failed after ${behindFailedAt} ms, not a second lock wait`,
+			(behindFailedAt as number) - (firstFailedAt as number) < 300,
+			`the one behind failed ${(behindFailedAt as number) - (firstFailedAt as number)} ms after the first, not a second lock wait later`,
 		);
 	} finally {
 		other.exec("ROLLBACK");
