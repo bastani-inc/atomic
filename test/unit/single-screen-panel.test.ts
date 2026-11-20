@@ -308,6 +308,46 @@ test("Enter on a subagent in /tasks closes /tasks and shows that subagent on the
 	assert.equal(mounts.length, 1, "no subagent page");
 });
 
+test("Enter on a subagent in /tasks asks for it before /tasks closes, keeping the screen until it is shown", async () => {
+	const { session, store, bridge } = panelSession([agent("a1"), agent("a2", "explorer")]);
+	const events: string[] = [];
+	bridge.requestView = (taskId, options) => {
+		events.push(`show ${taskId} keepScreen=${options?.keepScreen === true}`);
+	};
+	const { ui } = hostUi((component) => {
+		component.handleInput(ENTER);
+	});
+	const custom = ui.custom.bind(ui);
+	ui.custom = (factory, options) =>
+		custom(
+			(tui, styles, keybindings, done) =>
+				factory(tui, styles, keybindings, (result) => {
+					events.push("close /tasks");
+					done(result);
+				}),
+			options,
+		);
+	await openTasks(session, store, ui, "a1");
+	assert.deepEqual(events, ["show a1 keepScreen=true", "close /tasks"]);
+
+	// In the engine the request reaches the host ahead of the close, on the same ordered line.
+	const engineSession = { extensionRunner: {} } as never as AgentSession;
+	const engineStore = new FakeOwnerTaskStore([agent("a1")]);
+	bindOwnerTaskStore(engineSession, engineStore);
+	const sent: InteractiveEngineMessage[] = [];
+	disposers.push(
+		installEngineAgentViewBridge({
+			session: engineSession,
+			send: (message: InteractiveEngineMessage) => sent.push(message),
+		} as never),
+	);
+	const engineUi = hostUi((component) => {
+		component.handleInput(ENTER);
+	}).ui;
+	await openTasks(engineSession, engineStore, engineUi, "a1");
+	assert.deepEqual(sent, [{ type: "engine_view_agent", taskId: "a1", keepScreen: true }]);
+});
+
 function asking(task: TaskRecord): TaskRecord {
 	return {
 		...task,

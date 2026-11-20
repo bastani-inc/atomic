@@ -80,7 +80,7 @@ import type {
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
 import { firstRawUserExactText, isChatMessageEntry, syncFirstUserEntry } from "./chat-session-host-utils.ts";
-import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
+import type { ChatTranscriptEntryLike, PaintedViewportWindow } from "./chat-transcript.js";
 import { type ParkedTaskRows, parkedRun } from "./parked-rows.ts";
 import { type RetryWaitEvent, retryWaitFromEvent } from "./retry-status-line.ts";
 import { isSingleLeftClick } from "./single-click.ts";
@@ -692,6 +692,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const body = renderChatSessionBody(this.state, width, budget);
 		this.bodyLayout = { taskView: false, transcriptRows: body.length };
 		return body;
+	}
+
+	/** Where the last `renderBody` drew the transcript's rows, when it drew only the transcript. */
+	bodyWindow(): PaintedViewportWindow | undefined {
+		return this.taskInspector ? undefined : this.state.bodyViewport.paintedWindow();
 	}
 
 	/**
