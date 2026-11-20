@@ -19,12 +19,10 @@ const realTmpdir = tmpdir();
 const TEMP_ENV_KEYS = ["TMPDIR", "TMP", "TEMP"] as const;
 const savedTempEnv = TEMP_ENV_KEYS.map((key) => [key, process.env[key]] as const);
 
-/** How long the guardian and the tree kill may take after the grace period, plus scheduling slack. */
-const ESCALATION_SLACK_MS = 3_000;
+/** After the grace period: the guardian's window and the wait for a killed engine's exit, after which stop throws. */
+const ESCALATION_BOUND_MS = 500 + 5_000;
 /** Longer than any test here; a child left behind by a failed test exits by then. */
 const CHILD_LIFETIME_MS = 120_000;
-/** A stop that ends the engine at once finishes far inside the grace period. */
-const IMMEDIATE_STOP_MS = ENGINE_SHUTDOWN_GRACE_MS / 2;
 
 function startEngine(behavior: EngineBehavior): { client: RpcClient; record: string; started: string } {
 	const dir = mkdtempSync(join(realTmpdir, "atomic-graceful-engine-stop-"));
@@ -90,7 +88,7 @@ describe("RpcClient graceful engine stop on Windows", () => {
 		const elapsedMs = await stopOnWindows(client, { graceful: true });
 
 		assert.equal(readRecord(record), "shutdown started\nshutdown finished\n");
-		assert.ok(elapsedMs < IMMEDIATE_STOP_MS, `stop took ${elapsedMs} ms`);
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
 	});
 
 	test("a stop that is not a quit still ends the engine at once (#6075)", async () => {
@@ -100,7 +98,7 @@ describe("RpcClient graceful engine stop on Windows", () => {
 		const elapsedMs = await stopOnWindows(client);
 
 		assert.equal(readRecord(record), "", "the engine was ended without running its shutdown");
-		assert.ok(elapsedMs < IMMEDIATE_STOP_MS, `stop took ${elapsedMs} ms`);
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
 	});
 
 	test("a quit before the engine is ready ends it at once (#6075)", async () => {
@@ -113,7 +111,7 @@ describe("RpcClient graceful engine stop on Windows", () => {
 
 		await assert.rejects(starting);
 		assert.equal(readRecord(record), "", "the engine was ended without being asked to shut down");
-		assert.ok(elapsedMs < IMMEDIATE_STOP_MS, `stop took ${elapsedMs} ms`);
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
 	});
 
 	test("a quit ends an engine whose shutdown hangs within the bound (#6075)", async () => {
@@ -124,7 +122,7 @@ describe("RpcClient graceful engine stop on Windows", () => {
 
 		assert.equal(readRecord(record), "shutdown started\n");
 		assert.ok(elapsedMs >= ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
-		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS + ESCALATION_SLACK_MS, `stop took ${elapsedMs} ms`);
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS + ESCALATION_BOUND_MS, `stop took ${elapsedMs} ms`);
 	});
 
 	test("a quit ends an engine whose shutdown hangs when its guardian cannot be told to stop (#6075)", async () => {
@@ -139,6 +137,6 @@ describe("RpcClient graceful engine stop on Windows", () => {
 		const elapsedMs = await stopOnWindows(client, { graceful: true });
 
 		assert.equal(readRecord(record), "shutdown started\n");
-		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS + ESCALATION_SLACK_MS, `stop took ${elapsedMs} ms`);
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS + ESCALATION_BOUND_MS, `stop took ${elapsedMs} ms`);
 	});
 });

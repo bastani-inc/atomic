@@ -26,7 +26,7 @@ test(
 		const installed = join(root, "installed");
 		const extension = join(root, "shutdown.ts");
 		const started = join(root, "started");
-		const shutdown = join(root, "shutdown.json");
+		const shutdown = join(root, "shutdown.jsonl");
 		const eventLoopLog = join(root, "event-loop.jsonl");
 		let program: PtyProgram | undefined;
 		try {
@@ -35,13 +35,13 @@ test(
 			mkdirSync(project, { recursive: true });
 			writeFileSync(
 				extension,
-				`import { writeFileSync } from "node:fs";
+				`import { appendFileSync, writeFileSync } from "node:fs";
 export default (pi) => {
 	pi.on("session_start", () => writeFileSync(${JSON.stringify(started)}, String(process.pid)));
 	pi.on("session_shutdown", async (event) => {
 		// Shutdown work that takes a moment, as saving state or stopping a server does.
 		await new Promise((resolve) => setTimeout(resolve, 200));
-		writeFileSync(${JSON.stringify(shutdown)}, JSON.stringify({ pid: process.pid, reason: event.reason, fromSignal: event.fromSignal }));
+		appendFileSync(${JSON.stringify(shutdown)}, JSON.stringify({ pid: process.pid, reason: event.reason, fromSignal: event.fromSignal }) + "\\n");
 	});
 };`,
 			);
@@ -80,8 +80,11 @@ export default (pi) => {
 			const engine = records.find((record) => record.type === "start" && record.role === "engine");
 			assert.ok(engine?.type === "start", "the session ran in an engine process");
 			assert.ok(fileExistsSync(shutdown), "the engine ran the extension's session_shutdown handler");
-			const record = JSON.parse(readTextSync(shutdown, "utf8")) as ShutdownRecord;
-			assert.deepEqual(record, { pid: engine.pid, reason: "quit" });
+			const calls = readTextSync(shutdown, "utf8")
+				.split("\n")
+				.filter((line) => line.length > 0)
+				.map((line) => JSON.parse(line) as ShutdownRecord);
+			assert.deepEqual(calls, [{ pid: engine.pid, reason: "quit" }], "the handler ran once, in the engine");
 			assert.ok(delayOf(records, "engine", "shutdown"), "the engine wrote its shutdown record");
 		} finally {
 			program?.kill();
