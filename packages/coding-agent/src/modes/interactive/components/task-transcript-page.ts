@@ -171,8 +171,6 @@ export interface TaskTranscriptPage {
 	 * front of what is typed, as Alt+Up does. Answers how many came back.
 	 */
 	restoreQueuedToEditor?(taken: QueuedTaskMessages): number;
-	/** Ctrl+C: clear the typed prompt, as the main chat does. Answers whether there was one to clear. */
-	clearDraft?(): boolean;
 	render(width: number, rows: number): string[];
 	/** A single click at row `event.y` of the last frame `render` drew; a result when the page takes it. */
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
@@ -389,7 +387,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly unsubscribePrompts: () => void;
 
 	private readonly reportLate: (reason: string) => void;
-	private readonly echoedPrompt: string | undefined;
 	private readonly showKeys: (() => void) | undefined;
 	/**
 	 * The page draws only the transcript, where the main transcript is on the single chat screen: the screen's own
@@ -411,7 +408,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		env: TaskTranscriptEnvironment,
 		requestRender: () => void,
 		reportLate: (reason: string) => void = (reason) => env.notify?.(reason),
-		options: { readonly echoedPrompt?: string; readonly showKeys?: () => void; readonly view?: boolean } = {},
+		options: { readonly showKeys?: () => void; readonly view?: boolean } = {},
 	) {
 		this.viewMode = options.view === true;
 		this.source = source;
@@ -420,7 +417,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.env = env;
 		this.requestRender = requestRender;
 		this.reportLate = reportLate;
-		this.echoedPrompt = options.echoedPrompt;
 		this.showKeys = options.showKeys;
 		this.chat = env.createChat({
 			style: env.style,
@@ -479,7 +475,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				const session = this.followed ?? this.source.followTaskTranscript(this.taskId)?.session;
 				return session === undefined ? undefined : liveTaskRowOrigin(session, this.taskId, seq);
 			},
-			echoedInitialPrompt: () => (this.cursor === undefined ? this.echoedPrompt : undefined),
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
 			// The inspector takes Esc for this chat: it cancels the retry the subagent waits on, unless a question holds it.
 			canCancelRetry: () => !this.takesEscape() && this.interruptible(),
@@ -1553,13 +1548,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	restoreQueuedToEditor(taken: QueuedTaskMessages): number {
 		return this.chat.restoreTakenQueuedMessages(taken);
-	}
-
-	clearDraft(): boolean {
-		if (this.chat.hasTaskInspector || this.heldPrompt() !== undefined || !this.chat.hasInputText()) return false;
-		this.chat.setInputText("");
-		this.requestRender();
-		return true;
 	}
 
 	/**
