@@ -1,6 +1,7 @@
 import { execFile, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { queryObjects } from "node:v8";
 import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CodemodeResult, CodemodeSandbox } from "../src/index.ts";
@@ -10,7 +11,32 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+/** What a caller gives a run: the session a host's tools and globals belong to, say. */
+class RunOwner {}
+
+/** A worker slot release that holds nothing of the run. */
+function releaseSlot(): void {}
+
+/** A sandbox whose run options hold `owner`, as a host's options hold its session. */
+function sandboxOf(owner: RunOwner): CodemodeSandbox {
+	return new CodemodeSandbox({
+		acquireWorker: () => {
+			if (owner === undefined) throw new Error("no owner");
+			return releaseSlot;
+		},
+	});
+}
+
 describe("worker lifetime", () => {
+	// A stopped run's worker exits later, on its own schedule; until then it must not keep what the run was given.
+	it("a worker still exiting after its run settled keeps nothing the run was given alive", async () => {
+		let sandbox: CodemodeSandbox | undefined = sandboxOf(new RunOwner());
+		const result = await sandbox.execute("return 1");
+		expect(result).toMatchObject({ ok: true, value: 1 });
+		sandbox = undefined;
+		expect(queryObjects(RunOwner, { format: "count" })).toBe(0);
+	});
+
 	// #10748: reject admission before creating a worker, not by terminating an excess worker.
 	it("does not start a worker when admission is denied", async () => {
 		const onWorkerStarted = vi.fn();
