@@ -752,7 +752,14 @@ export class TaskInspector implements Component {
 				environment,
 				this.requestRender,
 				(reason) => this.reportLate(reason, environment),
-				this.chatFrom === "caller" ? { echoedPrompt: task.title } : {},
+				{
+					...(this.chatFrom === "caller" ? { echoedPrompt: task.title } : {}),
+					// `/hotkeys` in the chat opens the keys `?` opens on its empty prompt.
+					showKeys: () => {
+						this.helpOpen = true;
+						this.requestRender();
+					},
+				},
 			);
 		this.requestRender();
 		void this.transcript.load();
