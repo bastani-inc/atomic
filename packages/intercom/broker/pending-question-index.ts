@@ -414,6 +414,24 @@ export class PendingQuestionIndex {
     return true;
   }
 
+  /**
+   * #5999 durable wake queue: an ask that waited in a queue reached its recipient while its asker is away (closed, or
+   * not back since a restart): its route waits for the asker, as the route of an ask whose asker left after it was
+   * delivered does, so a reply is held for it until it is back.
+   */
+  keepForAwayAsker(messageId: string, senderSessionId: string, senderReturnAddress: string): void {
+    const routes = this.questions.get(messageId) ?? [];
+    const away = routes.filter((route) => route.senderSessionId === senderSessionId);
+    if (away.length === 0) return;
+    const remaining = routes.filter((route) => route.senderSessionId !== senderSessionId);
+    if (remaining.length === 0) this.questions.delete(messageId);
+    else this.questions.set(messageId, remaining);
+    for (const route of away) this.replied.delete(PendingQuestionIndex.repliedKey(route));
+    this.keepDormant(away, senderReturnAddress);
+    this.markAwayAsker(senderSessionId, senderReturnAddress);
+    this.forgetLive(away);
+  }
+
   record(senderSessionId: string, targetSessionId: string, messageId: string): void {
     const routes = this.questions.get(messageId) ?? [];
     if (routes.some((route) => route.senderSessionId === senderSessionId && route.targetSessionId === targetSessionId)) return;

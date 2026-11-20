@@ -4,7 +4,7 @@ import "./bounded-stderr-install.js";
 // MUST stay second: it announces the broker's pid before the rest of the module graph loads (see start-announcement.ts).
 import "./announce-on-import.js";
 import net from "net";
-import { chmodSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, statSync } from "fs";
+import { chmodSync, existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
 import { hostname } from "os";
 import { dirname } from "path";
 import { createHash, randomUUID } from "crypto";
@@ -23,12 +23,17 @@ import {
 } from "./socket-writes.js";
 import { BROKER_PROTOCOL, isBrokerProtocolRange, protocolRangeOf } from "./protocol-version.js";
 import { isSocketAnswering } from "./socket-liveness.js";
-import { acquireSocketReplacementLock, type SocketReplacementLock } from "./socket-replacement-lock.js";
+import {
+  acquireSocketReplacementLock,
+  latestSocketReplacementGeneration,
+  type SocketReplacementLock,
+} from "./socket-replacement-lock.js";
 import { type BrokerWatchdog, startBrokerWatchdog } from "./watchdog.js";
 import { retractBrokerStartAnnouncement } from "./start-announcement.js";
 import {
 	getBrokerAwayAsksPath,
 	getBrokerDeliveredMessagesPath,
+	getBrokerEndedChildQueuePath,
 	getBrokerPidPath,
 	getBrokerWatchdogLogPath,
 	chooseBrokerSocketPath,
@@ -65,7 +70,11 @@ type ReleasedAskerReplyRouter,
 	type SendClientMessage,
 	detachSend,
 	messageFrameFor,
+	senderAtReceipt,
 } from "./send-handler.js";
+import { buildMessageSendSignature } from "./send-signature.js";
+import { DurableEndedQueue, type KeptFailure, isRestoredSend, type RestoredEndedQueues } from "./durable-ended-queue.js";
+import type { EndedChildQueueStore } from "./sql-ended-child-queue-store.js";
 import { ReturnPaths } from "./return-paths.js";
 import {
   type BrokerStateOpener,
@@ -92,6 +101,8 @@ import {
 	DepartedChildren,
 	departureKey,
 	type HeldSendRefusal,
+	mayHaveReachedReason,
+	notResumedReason,
 	validateEndedChildrenFrame,
 	type WakeSender,
 } from "./departed-children.js";
@@ -100,7 +111,9 @@ import {
 	type EndedChildWakeFailure,
 	type EndedChildWakeRequest,
 	isHeldWhilePaused,
+	isMaybeDelivered,
 	isQueuedForWake,
+	PAUSED_LIVE_RECIPIENT_TARGET,
 	sendWakesEndedRecipient,
 } from "./ended-child-wakes.js";
 import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } from "./recipient-gone-errors.js";
@@ -123,6 +136,9 @@ import {
   DEPARTURE_ASKS_TAKEN,
   DEPARTURE_ASKS_TO_IT_FAILED,
   DEPARTURE_ASKS_TO_IT_TAKEN,
+  ENDED_QUEUE_HANDED_OVER,
+  ENDED_QUEUE_KEPT,
+  ENDED_QUEUE_RECEIVED,
 } from "./crash-points.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { normalizeGroup, normalizeGroups } from "../group.js";
@@ -383,6 +399,22 @@ class IntercomBroker {
   private restoringRecipients = new RestoringRecipients((held, reason, reasonCode, error) =>
     error === undefined ? this.failHeldSend(held, reason, reasonCode) : this.failHeldSendWith(held, error),
   );
+  /** #5999: the bounds on message wakes; with the durable wake queue, what they count outlives the broker too. */
+  private readonly wakeBudget = new EndedChildWakeBudget();
+  /** #5999 durable wake queue: where messages for subagents that ended are kept, so a broker restart loses none. */
+  private readonly endedQueue = new DurableEndedQueue({
+    openStore: () => this.openEndedQueueStore(),
+    retireStore: () => this.retireEndedQueueStore(),
+    budget: this.wakeBudget,
+    delivered: (held) => this.queuedMessageState(held),
+    log: (text) => console.error(text),
+  });
+  /** #5999 durable wake queue: the broker before this one: the pid it recorded, and the socket lock generation it left. */
+  private predecessor: { readonly pid?: string; readonly generationBefore?: number } = {};
+  /** Multi-node: opens the durable wake queue in the shared database, once routing is on. */
+  private openSharedEndedQueue:
+    | ((owner: { readonly home: string; readonly holder: string; readonly retire?: boolean }) => Promise<EndedChildQueueStore>)
+    | undefined;
   /** #4639: subagents whose session is gone, held for until they return or their owner says why they ended. */
   private departedChildren = new DepartedChildren(
     (refusals) => this.refuseHeldSends(refusals),
@@ -392,8 +424,11 @@ class IntercomBroker {
     {
       // #5999: a subagent that ended but can be resumed is woken for a message through its owner, within these bounds.
       failed: (failures) => this.failQueuedForWake(failures),
-      budget: new EndedChildWakeBudget(),
+      budget: this.wakeBudget,
       ownerLive: (ownerSessionId) => this.sessions.has(ownerSessionId),
+      ownerHost: (ownerSessionId) => this.sessions.get(ownerSessionId)?.registrationReturnAddress,
+      journal: this.endedQueue.journal,
+      evicted: (sends) => this.dispatchHeldSends(sends),
     },
   );
   /** Return paths: who may answer a sender outside its groups that wrote to it. */
@@ -472,6 +507,13 @@ class IntercomBroker {
       exitBecauseLiveBrokerOwnsSocket();
     }
     SOCKET_PATH = chooseBrokerSocketPath();
+    // #5999 durable wake queue: which broker served before this one, as every version leaves it: the pid it recorded
+    // (kept when it crashed), and the socket lock generation before the one this broker took.
+    const taken = latestSocketReplacementGeneration(SOCKET_REPLACEMENT_LOCK_PATH);
+    this.predecessor = {
+      pid: this.readPidRecord(),
+      ...(taken === undefined ? {} : { generationBefore: taken - 1 }),
+    };
     writeFileSync(PID_PATH, String(process.pid));
     this.recordSocketPath();
     this.listen(1);
@@ -822,8 +864,10 @@ class IntercomBroker {
             extendsSaves: true as const,
             marksEndedChildren: true as const,
             wakesEndedChildren: true as const,
-            // #5999: a client that kept messages queued for subagents that ended learns when a new broker lost them.
-            instanceId: this.instanceId,
+            // #5999: a client that kept messages queued for subagents that ended learns when a new broker lost them: this
+            // names what keeps them, the durable wake queue's store (the same across restarts) or this process's memory.
+            instanceId: this.endedQueue.storeId ?? this.instanceId,
+            ...(this.endedQueue.durable ? { dropsEndedQueued: true as const } : {}),
             stampsReleasedChildren: true as const,
             multiNodeRouting: this.multiNodeStatus,
             protocol: { ...BROKER_PROTOCOL },
@@ -897,6 +941,12 @@ class IntercomBroker {
               });
             }
           }
+          // #5999 durable wake queue: a message it queued for a subagent that ended, which failed while it was away, is told
+          // now, once.
+          const registeredSession = this.sessions.get(id);
+          if (registeredSession !== undefined)
+            for (const failure of this.endedQueue.takeFailures(rejoined?.registrationReturnAddress, id))
+              this.tellKeptFailure(registeredSession, failure);
           // #4639: a subagent whose session dropped is back under its owner's authorization; its held sends follow.
           // #5999: what was queued for its wake goes first: it was sent before anything its restart held since.
           const departedSends =
@@ -930,13 +980,18 @@ class IntercomBroker {
                       ...(supervisorId ? { authorizedBy: supervisorId } : {}),
                     },
               );
-        if (presence === undefined) completeRegistration();
+        // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
+        // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS).
+        const keeper = this.endedQueue.decided
+          ? undefined
+          : this.endedQueue.decide((snapshot) => this.restoreEndedQueue(snapshot));
+        if (presence === undefined && keeper === undefined) completeRegistration();
         else {
           holdWrites(socket);
           // #5101: routable now, but its routes are restored only as its registration completes; a reply that only a
           // restored route would authorize waits for that rather than being refused.
           const restoring = this.pendingQuestions.beginRestoring(id);
-          void presence.then(() => {
+          void Promise.all([presence, keeper]).then(() => {
             const held = releaseHeldWrites(socket);
             try {
               if (this.sessions.get(id) === rejoined) completeRegistration(held);
@@ -1354,6 +1409,24 @@ class IntercomBroker {
         break;
       }
 
+      case "drop_ended_queued": {
+        const { messageIds } = clientMessage;
+        if (!Array.isArray(messageIds) || messageIds.length > 1_024 || !messageIds.every((id) => typeof id === "string")) {
+          throw new Error("Invalid drop_ended_queued message");
+        }
+        // Durable wake queue: this session was told these were lost; only its own are dropped, and nobody is told again.
+        const session = currentId === null ? undefined : this.sessions.get(currentId);
+        if (session !== undefined)
+          this.endedQueue.settled(
+            this.departedChildren.dropQueued(messageIds as string[], (held) =>
+              held.senderReturnAddress === undefined
+                ? held.senderId === session.info.id
+                : held.senderReturnAddress === session.registrationReturnAddress,
+            ),
+          );
+        break;
+      }
+
       case "answer_ended_child_wake": {
         const { childName, wakeId, accepted, reason } = clientMessage;
         if (
@@ -1398,7 +1471,7 @@ class IntercomBroker {
         const marked = this.departedChildren.mark(currentId, validation.children);
         this.refuseHeldSends(marked.refused);
         // #5999: sends that waited for this verdict and asked to wake their subagent are queued for it now.
-        for (const { held, target } of marked.queued) this.answerQueuedForWake(held, target);
+        for (const { held, target, kept } of marked.queued) this.answerQueuedForWake(held, target, kept);
         for (const wake of marked.wakes) this.wakeEndedChildOwner(wake);
         this.dispatchHeldSends(marked.evicted);
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
@@ -1633,6 +1706,12 @@ class IntercomBroker {
 
   /** Route one send or ask frame, as received or again after a restoring subagent's hold ends (#3760). */
   private dispatchSend(socket: net.Socket, clientMessage: SendClientMessage, senderId: string | null): void {
+    // Durable wake queue: a send to a subagent an earlier broker kept messages for waits until they are taken up again, so
+    // a sender's later message never overtakes its earlier ones. Sends to other sessions never wait.
+    if (typeof clientMessage.to === "string" && this.endedQueue.holds(clientMessage.to)) {
+      this.endedQueue.whenRestored(() => this.dispatchSend(socket, clientMessage, senderId));
+      return;
+    }
     handleBrokerSend(
       socket,
       clientMessage,
@@ -1890,6 +1969,7 @@ class IntercomBroker {
       for (let attempt = 0; !this.shuttingDown; attempt++) {
         try {
           const opened = await opener.openIntercomBrokerState(source);
+          this.openSharedEndedQueue = opened.state.openEndedChildQueue;
           try {
             this.multiNode = await MultiNodeRouter.start({
               ...opened,
@@ -2037,6 +2117,12 @@ class IntercomBroker {
    * target: the send is decided as before.
    */
   private queueForEndedChildWake(held: HeldSend, target: string, sender: WakeSender): boolean {
+    // Durable wake queue: what an earlier broker kept may be for this target, and this may be a retry of one of them
+    // whose answer the restart cut off: the send waits until it is taken up again (bounded), then is decided anew.
+    if (!this.endedQueue.loaded) {
+      void this.endedQueue.untilLoaded().then(() => this.dispatchSend(held.socket, held.clientMessage, held.senderId));
+      return true;
+    }
     // A child its owner reported gone keeps that answer; one its owner already holds (restoring, resuming or pausing it)
     // takes the message without another wake.
     const reserved = this.restoringRecipients.peek(target, sender);
@@ -2047,24 +2133,270 @@ class IntercomBroker {
       this.refuseHeldSends([{ held, error: admission.error, reason: admission.reason }]);
       return true;
     }
-    this.answerQueuedForWake(held, admission.target);
+    if (admission.duplicate !== true) {
+      // A retry of a message that already reached the subagent (its answer was lost with a broker) is answered so.
+      const from = senderAtReceipt(held.clientMessage as SendClientMessage);
+      if (from !== undefined && this.queuedMessageDelivered(held, from)) {
+        this.departedChildren.unqueue(held);
+        this.endedQueue.takeEarly(held.messageId);
+        this.endedQueue.settled([held.messageId]);
+        writeMessageIfOpen(held.socket, {
+          type: "delivered",
+          messageId: held.messageId,
+          ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
+        });
+        return true;
+      }
+    }
+    this.answerQueuedForWake(held, admission.target, admission.kept);
     if (admission.wake !== undefined) this.wakeEndedChildOwner(admission.wake);
     return true;
+  }
+
+  /**
+   * Durable wake queue: whether the delivered-message authority shows `held` reached its recipient: the recipient
+   * confirmed saving it, possibly through an earlier broker.
+   */
+  private queuedMessageDelivered(held: HeldSend, sender: ConnectedSession): boolean {
+    return this.queuedMessageKnown(held, sender) === "delivered";
+  }
+
+  /** Durable wake queue: what the delivered-message authority knows of a queued message an earlier broker kept. */
+  private queuedMessageState(held: HeldSend): "delivered" | "uncertain" | "unknown" {
+    try {
+      const state = this.deliveredMessages.deliveryStateOf(held.messageId);
+      return state === "accepted" ? "delivered" : state === "reserved" ? "uncertain" : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+
+  /** Durable wake queue: what the delivered-message authority knows of `held`, sent as `sender`. */
+  private queuedMessageKnown(held: HeldSend, sender: ConnectedSession): "delivered" | "uncertain" | "unknown" {
+    const message = held.clientMessage.message;
+    if (!isMessage(message)) return "unknown";
+    const logicalTarget = typeof held.clientMessage.logicalTarget === "string" ? held.clientMessage.logicalTarget : held.clientMessage.to;
+    const signature = buildMessageSendSignature(logicalTarget, message, sender.registrationReturnAddress ?? sender.info.id);
+    try {
+      const known = this.deliveredMessages.lookup(message.id, signature);
+      return known === "match" ? "delivered" : known === "uncertain" ? "uncertain" : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+
+  /**
+   * Durable wake queue: which store keeps the messages for subagents that ended. By default the local file in the
+   * Intercom directory; with a shared `storage`, the shared database once routing is on (memory when it is not).
+   */
+  private async openEndedQueueStore(): Promise<EndedChildQueueStore | undefined> {
+    const marker = this.endedQueueRetiredMarker();
+    const retire = existsSync(marker);
+    const continuity = {
+      servedSinceLastHolder: (storeId: string) => this.servedSinceLastHolder(storeId),
+      pid: String(process.pid),
+    };
+    let store: EndedChildQueueStore | undefined;
+    if (this.sharedStorageSetting === undefined) {
+      const { openLocalEndedChildQueueStore } = await import("./sql-ended-child-queue-store.js");
+      store = await openLocalEndedChildQueueStore(getBrokerEndedChildQueuePath(), this.instanceId, retire, continuity);
+    } else {
+      await this.multiNodeFirstAttempt;
+      const router = this.multiNode;
+      const open = this.openSharedEndedQueue;
+      if (router === undefined || open === undefined) return undefined;
+      store = await open({ home: router.durableHome, holder: router.brokerId, retire, ...continuity });
+    }
+    if (retire) rmSync(marker, { force: true });
+    // This broker holds the store now: recorded at once, without the store's write lock, so the next broker can tell it
+    // replaced this one (a write to the store can wait on another process's lock, or fail).
+    try {
+      writeFileSync(this.endedQueueHolderRecord(), JSON.stringify({ storeId: store.id, pid: String(process.pid) }), {
+        mode: 0o600,
+      });
+    } catch (error) {
+      console.error(
+        `Intercom broker could not record that it holds the store of messages for subagents that ended: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return store;
+  }
+
+  /** Durable wake queue: the store's identity and the pid of the broker holding it, next to the local store. */
+  private endedQueueHolderRecord(): string {
+    return `${getBrokerEndedChildQueuePath()}.holder`;
+  }
+
+  /**
+   * Durable wake queue: whether a broker other than the store's last holder (its holder record names it) may have served
+   * this agent directory since: an earlier version keeps no such queue, and told its sessions their messages were lost.
+   * Proven not when the last holder crashed (the pid file still names it), or exited in order with nothing started since
+   * (its exit record names it and the socket lock generation it left is the one before this broker's).
+   */
+  private servedSinceLastHolder(storeId: string): boolean {
+    let lastHolderPid: string | undefined;
+    try {
+      const holder = JSON.parse(readFileSync(this.endedQueueHolderRecord(), "utf-8")) as { storeId?: unknown; pid?: unknown };
+      if (holder.storeId === storeId && typeof holder.pid === "string") lastHolderPid = holder.pid;
+    } catch {
+      // No record: nothing proves which broker held the store last.
+    }
+    if (lastHolderPid === undefined) return true;
+    const { pid, generationBefore } = this.predecessor;
+    if (pid !== undefined) return pid !== lastHolderPid;
+    try {
+      const exit = JSON.parse(readFileSync(this.endedQueueCleanExitMarker(), "utf-8")) as {
+        readonly pid?: unknown;
+        readonly generation?: unknown;
+      };
+      return !(exit.pid === lastHolderPid && generationBefore !== undefined && exit.generation === generationBefore);
+    } catch {
+      return true;
+    }
+  }
+
+  /** Durable wake queue: written as this broker exits in order: its pid and the socket lock generation it leaves. */
+  private endedQueueCleanExitMarker(): string {
+    return `${getBrokerEndedChildQueuePath()}.exited`;
+  }
+
+  private recordCleanExit(): void {
+    if (!this.endedQueue.durable) return;
+    try {
+      writeFileSync(
+        this.endedQueueCleanExitMarker(),
+        JSON.stringify({ pid: String(process.pid), generation: latestSocketReplacementGeneration(SOCKET_REPLACEMENT_LOCK_PATH) }),
+        { mode: 0o600 },
+      );
+    } catch {
+      // Unrecorded, the next broker cannot prove nothing served in between, and retires what the store kept.
+    }
+  }
+
+  /** Durable wake queue: where a broker that kept the queue in memory says what a store kept is to be dropped. */
+  private endedQueueRetiredMarker(): string {
+    const store = getBrokerEndedChildQueuePath();
+    return this.sharedStorageSetting === undefined ? `${store}.retired` : `${store}.shared.retired`;
+  }
+
+  /**
+   * Durable wake queue: this broker keeps the queue in memory and names itself as what keeps it, so its sessions are
+   * told what an earlier broker's store kept was lost; the next broker that opens the store drops it.
+   */
+  private retireEndedQueueStore(): void {
+    try {
+      writeFileSync(this.endedQueueRetiredMarker(), "retired\n", { mode: 0o600 });
+    } catch (error) {
+      console.error(
+        `Intercom broker could not mark its store of messages for subagents that ended as retired: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Durable wake queue: what an earlier broker kept is taken up again. Messages the delivered-message authority shows
+   * reached their subagent are done; failures waiting for their sender wait on; the rest join their subagent's queue,
+   * in order, under their owner (asked to wake it when it reports it again) or waiting for it to come back.
+   */
+  private restoreEndedQueue(restored: RestoredEndedQueues): void {
+    this.wakeBudget.restore(restored.budget);
+    const { queues, delivered, ownerless } = restored;
+    for (const { held } of delivered) {
+      const sender = this.queuedSenderOf(held);
+      if (sender !== undefined) writeMessageIfOpen(sender.socket, { type: "delivered", messageId: held.messageId });
+    }
+    this.endedQueue.settled(delivered.map(({ held }) => held.messageId));
+    this.failQueuedForWake(
+      ownerless.map(({ held, childName }) => ({
+        held,
+        childName,
+        reason: notResumedReason(childName, "the session that launched it ended before it was resumed"),
+      })),
+    );
+    const liveOwner = (host: string): string | undefined => {
+      for (const session of this.sessions.values())
+        if (session.registrationReturnAddress === host && session.hostedBy === undefined) return session.info.id;
+      return undefined;
+    };
+    for (const wake of this.departedChildren.restore(queues, liveOwner)) this.wakeEndedChildOwner(wake);
+    for (const session of [...this.sessions.values()]) {
+      // A sender connected already is told what failed while it was away.
+      for (const failure of this.endedQueue.takeFailures(session.registrationReturnAddress, session.info.id))
+        this.tellKeptFailure(session, failure);
+      // A subagent registered already takes what was kept for it.
+      if (session.supervisorId === undefined || session.registrationName === undefined) continue;
+      const sends = this.departedChildren.registered(session.registrationName, sessionGroups(session.info), session.supervisorId);
+      for (const send of sends.filter(isQueuedForWake)) this.dispatchQueuedForWake(send, session.registrationName);
+      this.dispatchHeldSends(sends.filter((send) => !isQueuedForWake(send)));
+    }
+  }
+
+  /** Durable wake queue: tell a sender that its queued message failed while it was away. */
+  private tellKeptFailure(sender: ConnectedSession, failure: KeptFailure): void {
+    const from: SessionInfo = {
+      id: failure.target,
+      name: failure.childName,
+      cwd: sender.info.cwd,
+      model: "",
+      pid: 0,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    };
+    writeMessageIfOpen(
+      sender.socket,
+      messageFrameFor(sender, from, {
+        id: `wake-failed:${failure.messageId}`,
+        timestamp: Date.now(),
+        replyTo: failure.messageId,
+        replyError: failure.reason,
+        content: { text: failure.reason },
+      }),
+    );
+    this.endedQueue.settled([failure.messageId]);
   }
 
   /**
    * #5999: tell the sender its message is queued for a subagent being resumed, or paused, and why (`target`); nothing it
    * waits on is held.
    */
-  private answerQueuedForWake(held: HeldSend, target: string): void {
+  private answerQueuedForWake(held: HeldSend, target: string, kept?: Promise<unknown>): void {
     detachSend(held.clientMessage);
-    writeMessageIfOpen(held.socket, {
-      type: "queued",
-      messageId: held.messageId,
-      ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
-      target,
-      position: 1,
-    });
+    const attempt = held.attemptId === undefined ? {} : { attemptId: held.attemptId };
+    const queued = () =>
+      writeMessageIfOpen(held.socket, { type: "queued", messageId: held.messageId, ...attempt, target, position: 1 });
+    if (kept === undefined) {
+      queued();
+      return;
+    }
+    // Durable wake queue: answered once the message is kept; an outcome that came first is its answer instead.
+    const answerEarly = (early: NonNullable<ReturnType<DurableEndedQueue["takeEarly"]>>) =>
+      writeMessageIfOpen(
+        held.socket,
+        early.kind === "delivered"
+          ? { type: "delivered", messageId: held.messageId, ...attempt }
+          : { type: "delivery_failed", messageId: held.messageId, ...attempt, reason: early.reason },
+      );
+    void kept.then(
+      () => {
+        crashPoint(ENDED_QUEUE_KEPT);
+        const early = this.endedQueue.takeEarly(held.messageId);
+        if (early === undefined) queued();
+        else answerEarly(early);
+      },
+      (error: unknown) => {
+        const early = this.endedQueue.takeEarly(held.messageId);
+        if (this.departedChildren.unqueue(held)) {
+          const why = error instanceof Error ? error.message : String(error);
+          writeMessageIfOpen(held.socket, {
+            type: "delivery_failed",
+            messageId: held.messageId,
+            ...attempt,
+            reason: `Intercom could not keep this message for ${held.clientMessage.to.trim()} until it is continued (${why}); it was not queued. Send it again.`,
+          });
+        } else if (early !== undefined) answerEarly(early);
+        // Already on its way to the subagent: its outcome answers it.
+      },
+    );
   }
 
   /** #5999: ask the owner to resume its ended child for the messages now queued for it. */
@@ -2087,9 +2419,28 @@ class IntercomBroker {
    * A sender that is gone has nobody left to tell.
    */
   private failQueuedForWake(failures: readonly EndedChildWakeFailure[]): void {
-    for (const { held, childName, reason } of failures) {
+    for (const failure of failures) {
+      const { held, childName } = failure;
+      // Durable wake queue: one an earlier broker had handed over may have reached the subagent: its failure says so.
+      const reason = isMaybeDelivered(held) ? mayHaveReachedReason(childName, failure.reason) : failure.reason;
+      // Durable wake queue: a sender not answered `queued` yet gets the failure as its answer.
+      if (this.endedQueue.settleEarly(held.messageId, { kind: "failed", reason })) {
+        this.endedQueue.settled([held.messageId]);
+        continue;
+      }
       const sender = this.queuedSenderOf(held);
-      if (sender === undefined) continue;
+      if (sender === undefined) {
+        // One that is away is told when it is back, if the queue outlives this broker.
+        const addressed = held.clientMessage.logicalTarget;
+        this.endedQueue.keepFailure(held, {
+          messageId: held.messageId,
+          reason,
+          target: (typeof addressed === "string" ? addressed : held.clientMessage.to).trim(),
+          childName,
+        });
+        continue;
+      }
+      this.endedQueue.settled([held.messageId]);
       const addressed = held.clientMessage.logicalTarget;
       const from: SessionInfo = {
         id: (typeof addressed === "string" ? addressed : held.clientMessage.to).trim(),
@@ -2120,6 +2471,14 @@ class IntercomBroker {
   private queuedSenderOf(held: HeldSend): ConnectedSession | undefined {
     const sender = this.sessions.get(held.senderId);
     if (sender !== undefined && sender.socket === held.socket) return sender;
+    // Durable wake queue: a send an earlier broker took is its sender's under the same id and return address.
+    if (
+      isRestoredSend(held) &&
+      sender !== undefined &&
+      sender.hostedBy === undefined &&
+      sender.registrationReturnAddress === held.senderReturnAddress
+    )
+      return sender;
     if (held.senderReturnAddress === undefined) return undefined;
     for (const session of this.sessions.values())
       if (session.registrationReturnAddress === held.senderReturnAddress && session.hostedBy === undefined) return session;
@@ -2171,9 +2530,18 @@ class IntercomBroker {
         this.failQueuedForWake([{ held: send, childName, reason: frame.reason }]);
       // The sender stops keeping the message as queued: it reached the subagent.
       if (frame.type === "delivered") {
+        crashPoint(ENDED_QUEUE_RECEIVED);
         const sender = this.queuedSenderOf(send);
-        if (sender !== undefined) writeMessageIfOpen(sender.socket, { type: "delivered", messageId: send.messageId });
+        if (!this.endedQueue.settleEarly(send.messageId, { kind: "delivered" }) && sender !== undefined)
+          writeMessageIfOpen(sender.socket, { type: "delivered", messageId: send.messageId });
+        // An ask that reached its subagent while its asker is away: the reply is held for the asker, as for any ask
+        // whose asker is away.
+        if (sender === undefined && clientMessage.message.expectsReply === true && send.senderReturnAddress !== undefined)
+          this.pendingQuestions.keepForAwayAsker(send.messageId, send.senderId, send.senderReturnAddress);
+        this.endedQueue.settled([send.messageId]);
       }
+      // A subagent whose turn its user paused saved it: it keeps it until it is continued.
+      if (frame.type === "queued" && frame.target === PAUSED_LIVE_RECIPIENT_TARGET) this.endedQueue.settled([send.messageId]);
       return true;
     };
     handleBrokerSend(
@@ -2193,6 +2561,9 @@ class IntercomBroker {
       this.routeReleasedAskerReply,
       this.returnPathAuthority,
     );
+    // Durable wake queue: written to the subagent; a restart before it confirms does not wake it for this message.
+    if (!this.departedChildren.isQueued(send.messageId)) this.endedQueue.handedOver([send.messageId]);
+    crashPoint(ENDED_QUEUE_HANDED_OVER);
   }
 
   /** #4639: refuse held sends with the typed error naming why their subagent is gone; its message is the reason. */
@@ -2630,6 +3001,14 @@ class IntercomBroker {
     }
   }
 
+  private readPidRecord(): string | undefined {
+    try {
+      return readFileSync(PID_PATH, "utf-8").trim();
+    } catch {
+      return undefined;
+    }
+  }
+
   private readPidFile(): number | undefined {
     try {
       const pid = Number.parseInt(readFileSync(PID_PATH, "utf-8").trim(), 10);
@@ -2680,8 +3059,10 @@ class IntercomBroker {
     const watchdogStopped = this.watchdog?.stop() ?? Promise.resolve();
     // Give this broker's leases up so other brokers see its sessions offline at once, within a bound.
     const leasesGivenUp = this.multiNode?.close().catch(() => {}) ?? Promise.resolve();
+    // #5999 durable wake queue: what is being written is written; the rows stay for the next broker.
+    const queueClosed = this.endedQueue.close();
     const bound = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_CLOSE_BOUND_MS).unref());
-    void Promise.race([Promise.all([watchdogStopped, leasesGivenUp]), bound]).finally(() => this.exitAfterShutdown());
+    void Promise.race([Promise.all([watchdogStopped, leasesGivenUp, queueClosed]), bound]).finally(() => this.exitAfterShutdown());
   }
 
   private async exitAfterShutdown(): Promise<never> {
@@ -2689,6 +3070,7 @@ class IntercomBroker {
     if (process.platform === "win32") {
       this.unlinkRuntimeFilesIfOwned();
       this.server.close();
+      this.recordCleanExit();
       process.exit(0);
     }
     // Node unlinks a Unix socket path on server.close() even after a successor rebound that path. The close happens
@@ -2699,6 +3081,7 @@ class IntercomBroker {
     this.unlinkRuntimeFilesIfOwned();
     if (release?.held() === true && ownsRuntime && this.ownsSocketPath()) this.server.close();
     release?.();
+    this.recordCleanExit();
     process.exit(0);
   }
 }
