@@ -246,6 +246,8 @@ export interface SubagentSteeringChat extends SteeringChat {
 	press(data: string): Promise<void>;
 	/** The chat as drawn, without colors. */
 	screen(): string;
+	/** Leave the chat with ← on its empty prompt and open it again, as the agent panel or `/tasks` opens it. */
+	reopen(): Promise<void>;
 }
 
 /** A subagent's chat over the task view of the main chat's own task store, as the agent panel and `/tasks` open it. */
@@ -331,6 +333,12 @@ async function openSubagentChat(
 			await flush();
 		},
 		screen: () => screenLines().join("\n"),
+		async reopen() {
+			inspector.handleInput("\x1b[D");
+			await flush();
+			inspector.openChat(taskId);
+			await flush();
+		},
 		async stop() {
 			toolHold.release.resolve();
 			inspector.dispose();

@@ -192,6 +192,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	onUnplacedWidget?: () => void;
 	editor: EditorComponent | undefined;
 	optimisticUserSignatureCounts = new Map<string, number>();
+	/** What Up recalls, oldest first: the submissions this chat added to its editor's history. */
+	sentPrompts: readonly string[] = [];
 	/**
 	 * Whether an assistant entry still streaming into a sticky-bottom body is
 	 * rendered as its tail alone.
