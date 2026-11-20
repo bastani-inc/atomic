@@ -177,6 +177,11 @@ export interface TaskTranscriptFollow {
 	readonly historyOnly: boolean;
 	/** Latest activity from a worker that publishes task state rather than live session events. */
 	readonly publishedActivity?: PublishedChatActivity;
+	/**
+	 * The last entry the session had when this task started on it: the conversation a forked task inherited, or what
+	 * earlier attempts of a resumed one said. Absent when the task started its session.
+	 */
+	readonly inheritedThroughId?: string;
 }
 
 /** What a chat of an agent task completes, as plain data: its session's cwd and the skill commands it offers. */
@@ -544,7 +549,12 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const task = lease(id);
 			const bound = task.ok ? taskTranscriptSource(task.value) : undefined;
 			if (!bound?.ok) return undefined;
-			return { session: bound.value.session, historyOnly: bound.value.session.subscribe === undefined };
+			const { session, inheritedThroughId } = bound.value;
+			return {
+				session,
+				historyOnly: session.subscribe === undefined,
+				...(inheritedThroughId === undefined ? {} : { inheritedThroughId }),
+			};
 		},
 		extensionStatuses(id) {
 			const task = lease(id);
