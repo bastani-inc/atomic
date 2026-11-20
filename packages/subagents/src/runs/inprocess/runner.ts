@@ -1461,8 +1461,9 @@ function completedTurn(turn: AssistantMessage): boolean {
  * A compaction during the attempt releases from the session's memory everything before its window, the launch leaf
  * among it. The attempt's turns are then the ones held from that window on and, read from the session's store, the
  * ones between its launch and the window, newest first and only as far back as its result depends on: until they
- * hold text and either a turn that completed or a last turn that failed. A store that cannot be read leaves the turns
- * read so far. The result is a promise only when a read is needed.
+ * hold text and either a turn that completed or a last turn that failed. When the store cannot be read, they are the
+ * turns read so far with every one the session holds in memory after the launch, including those a compaction kept
+ * from before its window. The result is a promise only when a read is needed.
  */
 function turnsSinceLaunch(
 	manager: SessionManager,
@@ -1484,7 +1485,7 @@ function turnsSinceLaunch(
 	}
 	const seqOf = (entry: BranchEntry) => manager.getEntrySeq(entry.id) ?? 0;
 	// Entries before the window that a compaction keeps in memory are on the branch too; the store has those.
-	const held = assistantTurns(branch.filter((entry) => seqOf(entry) >= heldFrom));
+	const held = assistantTurns(branch.filter((entry) => seqOf(entry) >= Math.max(heldFrom, leafSeq + 1)));
 	let hasText = outputFor(held) !== "";
 	let decided = held.at(-1)?.stopReason === "error" || held.some(completedTurn);
 	const leaf = branch.at(-1);
@@ -1492,7 +1493,7 @@ function turnsSinceLaunch(
 	const branchLeafSeq = seqOf(leaf);
 	// Runs at once up to its first read: the read covers the session as it is now.
 	return (async () => {
-		const earlier: AssistantMessage[] = [];
+		const earlier: { readonly seq: number; readonly turn: AssistantMessage }[] = [];
 		try {
 			const pages = manager.readHistory({
 				branchLeafSeq,
@@ -1506,16 +1507,22 @@ function turnsSinceLaunch(
 					if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 					const turn = entry.message;
 					if (held.length === 0 && earlier.length === 0 && turn.stopReason === "error") decided = true;
-					earlier.push(turn);
+					earlier.push({ seq: items[index]!.seq, turn });
 					hasText ||= outputFor([turn]) !== "";
 					decided ||= completedTurn(turn);
 					if (hasText && decided) break read;
 				}
 			}
 		} catch {
-			// The turns read so far and the held ones are still the attempt's own.
+			const known = new Map(earlier.map(({ seq, turn }) => [seq, turn]));
+			for (const entry of branch) {
+				const seq = seqOf(entry);
+				if (seq > leafSeq && seq < heldFrom && entry.type === "message" && entry.message.role === "assistant")
+					known.set(seq, entry.message);
+			}
+			return [...[...known].sort(([left], [right]) => left - right).map(([, turn]) => turn), ...held];
 		}
-		return [...earlier.reverse(), ...held];
+		return [...earlier.reverse().map(({ turn }) => turn), ...held];
 	})();
 }
 

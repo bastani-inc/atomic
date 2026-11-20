@@ -86,6 +86,17 @@ function worker(cwd: string): AgentConfig {
 interface FixtureOptions {
 	/** Text an extension compacts the context to, instead of clearing it. */
 	readonly compactedText?: string;
+	/** From this provider request on, the session's saved history cannot be read back (memory sessions only). */
+	readonly historyUnreadableFromRequest?: number;
+}
+
+/** A store whose saved history cannot be read back once `unreadable` is set; appends still succeed. */
+class UnreadableHistoryStore extends MemorySessionStore {
+	unreadable = false;
+	override readBranchSpan(...args: Parameters<MemorySessionStore["readBranchSpan"]>) {
+		if (this.unreadable) return Promise.reject(new Error("EIO: i/o error, read"));
+		return super.readBranchSpan(...args);
+	}
 }
 
 async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: FixtureOptions = {}) {
@@ -102,6 +113,7 @@ async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: Fi
 		allowModelNetwork: false,
 	});
 	const requests: Message[][] = [];
+	const store = new UnreadableHistoryStore();
 	runtime.registerProvider(model.provider, {
 		api: model.api,
 		baseUrl: model.baseUrl,
@@ -109,6 +121,7 @@ async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: Fi
 		models: [model],
 		streamSimple: (requestModel, context) => {
 			requests.push([...context.messages]);
+			if (requests.length === options.historyUnreadableFromRequest) store.unreadable = true;
 			const turn = turns[requests.length - 1] ?? { errorMessage: "fixture ran out of turns" };
 			const stream = createAssistantMessageEventStream();
 			const content: AssistantMessage["content"] = [];
@@ -143,7 +156,10 @@ async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: Fi
 	const newManager = () =>
 		storeKind === "jsonl"
 			? SessionManager.create(cwd, join(cwd, "sessions"))
-			: SessionManager.create(new MemorySessionStore(), cwd);
+			: SessionManager.create(
+					options.historyUnreadableFromRequest === undefined ? new MemorySessionStore() : store,
+					cwd,
+				);
 	const parentManager = await newManager();
 	const { session: parent } = await createAgentSession({
 		cwd,
@@ -367,3 +383,19 @@ for (const storeKind of STORE_KINDS) {
 		REAL_CHILD_SESSION_TIMEOUT_MS,
 	);
 }
+
+test(
+	"a new child whose saved history cannot be read back after a clear still reports the text it holds",
+	async () => {
+		const child = await fixture(
+			"memory",
+			[{ text: PARTIAL_FINDINGS, readPath: "missing-file.txt", contextTokens: NEAR_FULL_CONTEXT }, {}],
+			{ historyUnreadableFromRequest: 2 },
+		);
+		const { result } = await child.runNew();
+
+		assert.equal(result.status, "ok", JSON.stringify(result));
+		assert.equal(result.finalOutput, PARTIAL_FINDINGS);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
