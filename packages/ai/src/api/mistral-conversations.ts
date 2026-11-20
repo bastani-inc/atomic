@@ -27,7 +27,7 @@ import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadli
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
-import { getCurrentTools, resolveTranscript } from "../utils/transcript.ts";
+import { getCurrentTools, resolveRequestTranscript } from "../utils/transcript.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
@@ -134,7 +134,7 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 	options?: MistralOptions,
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
-	const normalizedContext = resolveTranscript(context, model.compat?.supportsMidConvoSystemMessages);
+	const normalizedContext = resolveRequestTranscript(context, model.compat?.supportsMidConvoSystemMessages);
 
 	(async () => {
 		const output = createOutput(model);

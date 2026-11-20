@@ -67,7 +67,7 @@ import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from
 import {
 	getCurrentTools,
 	getInitialSystemMessage,
-	resolveTranscript,
+	resolveRequestTranscript,
 	type TranscriptContext,
 } from "../utils/transcript.ts";
 import { convertAnthropicAssistantContent } from "./anthropic-assistant-content.ts";
@@ -85,9 +85,9 @@ import {
 } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
 import {
-	hasExceededStrictToolLimits,
 	isStrictToolLimitErrorMessage,
 	markStrictToolLimitsExceeded,
+	strictToolLimitsExceeded,
 } from "./strict-tool-limits.ts";
 import { splitErrorToolResultImages, transformMessages } from "./transform-messages.ts";
 
@@ -1018,7 +1018,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
 	const compat = getAnthropicCompat(model);
-	const normalizedContext = resolveTranscript(context, compat.supportsMidConvoSystemMessages);
+	const normalizedContext = resolveRequestTranscript(context, compat.supportsMidConvoSystemMessages);
 	const currentTools = getCurrentTools(normalizedContext.messages);
 
 	(async () => {
@@ -1129,7 +1129,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					},
 					retryTransport,
 				);
-			let disablePreferredStrictTools = hasExceededStrictToolLimits(options?.sessionId);
+			let disablePreferredStrictTools = strictToolLimitsExceeded(options?.sessionId, normalizedContext.messages);
 			let response: Response;
 			let params: MessageCreateParamsStreaming;
 			// The thread request that produced the response; undefined when no `thread` was sent.
@@ -1142,6 +1142,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				});
 				if (built.providerThinkingLevel) output.providerThinkingLevel = built.providerThinkingLevel;
 				params = built.params;
+				if (params.thinking?.type === "enabled") output.thinkingBudgetTokens = params.thinking.budget_tokens;
 				const nextParams = await options?.onPayload?.(params, model);
 				serializedBody = takeAnthropicSerializedBody(params);
 				if (nextParams !== undefined) params = nextParams as MessageCreateParamsStreaming;
@@ -1178,6 +1179,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					});
 				}
 			}
+			if (disablePreferredStrictTools) output.strictToolsDisabled = true;
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 			streamAttempt.respond(response.headers);
@@ -1965,6 +1967,8 @@ function buildParams(
 		params.fallbacks = allowedFallbackModels.map((fallback) => ({ model: fallback.model }));
 	}
 
+	if (converted.checkpointBlock) fitCheckpointInBreakpointLimit(params, converted.checkpointBlock);
+
 	return { params, hasPreferredStrictTools, providerThinkingLevel: effortMessages ? activeEffort : undefined };
 }
 
@@ -2003,6 +2007,14 @@ function convertMessages(
 	const flushPendingSystemMessages = (): void => {
 		params.push(...pendingSystemMessages);
 		pendingSystemMessages.length = 0;
+	};
+	// The input sent up to a message with a `cacheBreakpoint` hint ends with the last user or system message
+	// converted so far once that message is converted. For an assistant message, that is after the held-back system
+	// messages are flushed, where the request it answered ended.
+	let checkpoint: MessageParam | undefined;
+	const markCheckpoint = (): void => {
+		const last = params.at(-1);
+		if (last?.role === "user" || last?.role === "system") checkpoint = last;
 	};
 
 	for (let i = 0; i < transformedMessages.length; i++) {
@@ -2069,19 +2081,25 @@ function convertMessages(
 					}
 					return true;
 				});
-				if (filteredBlocks.length === 0) continue;
-				params.push({
-					role: "user",
-					content: filteredBlocks,
-				});
+				if (filteredBlocks.length > 0) {
+					params.push({
+						role: "user",
+						content: filteredBlocks,
+					});
+				}
 			}
+			if (msg.cacheBreakpoint) markCheckpoint();
 		} else if (msg.role === "assistant") {
 			const blocks = convertAnthropicAssistantContent(msg, {
 				allowEmptySignature,
 				toolName: isOAuthToken ? toClaudeCodeName : undefined,
 			});
-			if (blocks.length === 0) continue;
+			if (blocks.length === 0) {
+				if (msg.cacheBreakpoint) markCheckpoint();
+				continue;
+			}
 			flushPendingSystemMessages();
+			if (msg.cacheBreakpoint) markCheckpoint();
 			const messageIndex = params.length;
 			params.push({
 				role: "assistant",
@@ -2102,6 +2120,7 @@ function convertMessages(
 			// all tool results of the turn, which must come first in the user message (#10794).
 			const errorImages: ContentBlockParam[] = [];
 			let j = i;
+			let breakpoint = false;
 			while (j < transformedMessages.length && transformedMessages[j].role === "toolResult") {
 				const toolMsg = transformedMessages[j] as ToolResultMessage;
 				const split = splitErrorToolResultImages(toolMsg);
@@ -2109,6 +2128,7 @@ function convertMessages(
 				if (split) {
 					errorImages.push({ type: "text", text: split.caption }, ...split.images.map(convertImageBlock));
 				}
+				if (toolMsg.cacheBreakpoint) breakpoint = true;
 				j++;
 			}
 
@@ -2119,45 +2139,85 @@ function convertMessages(
 				role: "user",
 				content: [...toolResults, ...errorImages],
 			});
+			if (breakpoint) markCheckpoint();
 		}
 	}
 
 	flushPendingSystemMessages();
 
 	// Add cache_control to the last user or system message to cache conversation history
-	if (cacheControl && params.length > 0) {
-		const lastMessage = params[params.length - 1];
-		if (lastMessage.role === "user" || lastMessage.role === "system") {
-			if (Array.isArray(lastMessage.content)) {
-				const lastBlock = lastMessage.content[lastMessage.content.length - 1];
-				if (
-					lastBlock &&
-					(lastBlock.type === "text" ||
-						lastBlock.type === "image" ||
-						lastBlock.type === "tool_result" ||
-						lastBlock.type === "tool_addition" ||
-						lastBlock.type === "tool_removal")
-				) {
-					(lastBlock as any).cache_control = cacheControl;
-				}
-			} else if (typeof lastMessage.content === "string") {
-				lastMessage.content = [
-					{
-						type: "text",
-						text: lastMessage.content,
-						cache_control: cacheControl,
-					},
-				] as any;
-			}
-		}
-	}
+	const lastMessage = params.at(-1);
+	if (cacheControl && lastMessage) addCacheControl(lastMessage, cacheControl);
+	const checkpointBlock =
+		cacheControl && checkpoint && checkpoint !== lastMessage ? addCacheControl(checkpoint, cacheControl) : undefined;
 
-	return { messages: params, assistantLevels };
+	return { messages: params, assistantLevels, ...(checkpointBlock ? { checkpointBlock } : {}) };
+}
+
+/** Anthropic rejects a request with more cache breakpoints than this. */
+const MAX_CACHE_BREAKPOINTS = 4;
+
+function hasCacheControl(block: unknown): block is { cache_control: CacheControlEphemeral } {
+	return typeof block === "object" && block !== null && "cache_control" in block && block.cache_control != null;
+}
+
+/**
+ * Keeps a request with a checkpoint breakpoint within Anthropic's breakpoint limit. OAuth requests mark the short
+ * identity block before the system prompt; the breakpoint after the system prompt caches everything it would, so it
+ * gives way first. Otherwise the checkpoint does.
+ */
+function fitCheckpointInBreakpointLimit(
+	params: MessageCreateParamsStreaming,
+	checkpointBlock: { cache_control?: CacheControlEphemeral | null },
+): void {
+	const system = Array.isArray(params.system) ? params.system : [];
+	const blocks = [
+		...system,
+		...(params.tools ?? []),
+		...params.messages.flatMap((message) => (Array.isArray(message.content) ? message.content : [])),
+	];
+	let count = blocks.filter(hasCacheControl).length;
+	if (count <= MAX_CACHE_BREAKPOINTS) return;
+	const identity = system.length > 1 ? system[0] : undefined;
+	if (identity && hasCacheControl(identity)) {
+		delete (identity as { cache_control?: CacheControlEphemeral | null }).cache_control;
+		count--;
+	}
+	if (count > MAX_CACHE_BREAKPOINTS) delete checkpointBlock.cache_control;
+}
+
+/** Puts `cacheControl` on the last block of a user or system message; returns that block, or undefined if it can't take one. */
+function addCacheControl(
+	message: MessageParam,
+	cacheControl: CacheControlEphemeral,
+): { cache_control?: CacheControlEphemeral | null } | undefined {
+	if (message.role !== "user" && message.role !== "system") return undefined;
+	if (typeof message.content === "string") {
+		const block = { type: "text" as const, text: message.content, cache_control: cacheControl };
+		message.content = [block];
+		return block;
+	}
+	const lastBlock = message.content[message.content.length - 1];
+	if (
+		lastBlock &&
+		(lastBlock.type === "text" ||
+			lastBlock.type === "image" ||
+			lastBlock.type === "tool_result" ||
+			lastBlock.type === "tool_addition" ||
+			lastBlock.type === "tool_removal")
+	) {
+		const block = lastBlock as { cache_control?: CacheControlEphemeral | null };
+		block.cache_control = cacheControl;
+		return block;
+	}
+	return undefined;
 }
 
 interface ConvertedAnthropicMessages {
 	messages: MessageParam[];
 	assistantLevels: Map<number, AnthropicEffort>;
+	/** The block that took the breakpoint a `cacheBreakpoint` hint asked for, when it is not the last message. */
+	checkpointBlock?: { cache_control?: CacheControlEphemeral | null };
 }
 
 function isAnthropicEffort(value: string | undefined): value is AnthropicEffort {

@@ -1,5 +1,5 @@
-import type { Context, Message, SystemMessage, Tool, ToolReference, TranscriptContext } from "../types.ts";
-import { contentText, getSystemMessageText } from "./text.ts";
+import type { Context, Message, SystemMessage, TextContent, Tool, ToolReference, TranscriptContext } from "../types.ts";
+import { contentText, getSystemMessageText, renderSystemMessageUpdate } from "./text.ts";
 
 export type { TranscriptContext } from "../types.ts";
 
@@ -119,6 +119,58 @@ export function resolveTranscript(
 	return supportsMidConvoSystemMessages ? context : collapseSystemMessages(context);
 }
 
+/**
+ * Rebuild the transcript for APIs without mid-conversation system messages without changing the
+ * prompt earlier requests sent, so a prompt change after the first reply extends the cached prefix
+ * instead of rewriting it.
+ *
+ * The system messages that open the conversation, from the first one up to the next message, fold
+ * into the leading message, exactly as {@link collapseSystemMessages} folds them, and the leading
+ * message holds the current tools. The first request sends them all, so nothing is rewritten. Each later system message's {@link renderSystemMessageUpdate} text is
+ * sent as a user message of its own at its place in the transcript, after any tool results that
+ * follow it, so where it goes never depends on messages added after it.
+ */
+export function appendSystemMessageUpdates(context: TranscriptContext): TranscriptContext {
+	const messages = context.messages;
+	const firstSystem = messages.findIndex(isSystemMessage);
+	const firstInput =
+		firstSystem === -1 ? -1 : messages.findIndex((message, index) => index > firstSystem && message.role !== "system");
+	const cut = firstInput === -1 ? messages.length : firstInput;
+	const folded = getCurrentSystemMessage(messages.slice(0, cut));
+	const tools = getCurrentTools(messages);
+	const result: Message[] = [];
+	if (folded || tools.length > 0) {
+		const { toolsAdded: _toolsAdded, ...prompt } = folded ?? { role: "system" as const, content: "", timestamp: 0 };
+		result.push({ ...prompt, ...(tools.length > 0 ? { toolsAdded: tools } : {}) });
+	}
+	const updates: Message[] = [];
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index]!;
+		if (message.role === "system") {
+			if (index < cut) continue;
+			const text = renderSystemMessageUpdate(message);
+			if (text.length > 0) updates.push({ role: "user", content: [{ type: "text", text }], timestamp: message.timestamp });
+			continue;
+		}
+		// A tool call's results must directly follow it, so an update waits until after them.
+		if (message.role !== "toolResult") result.push(...updates.splice(0));
+		result.push(message);
+	}
+	result.push(...updates);
+	return { messages: result } as TranscriptContext;
+}
+
+/**
+ * Keep later system messages in place when the model accepts them; otherwise append each prompt
+ * change after the history earlier requests sent ({@link appendSystemMessageUpdates}).
+ */
+export function resolveRequestTranscript(
+	context: TranscriptContext,
+	supportsMidConvoSystemMessages: boolean | undefined,
+): TranscriptContext {
+	return supportsMidConvoSystemMessages ? context : appendSystemMessageUpdates(context);
+}
+
 /** Strip executable and display-only fields from a tool before transcript comparison or persistence. */
 export function toToolDeclaration(tool: Tool): Tool {
 	return {
@@ -129,16 +181,32 @@ export function toToolDeclaration(tool: Tool): Tool {
 	};
 }
 
+/** `value` serialized with every object's keys in code point order; array order is kept. */
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (typeof value !== "object" || value === null) return JSON.stringify(value);
+	const entries = Object.entries(value)
+		.filter(([, item]) => item !== undefined)
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+	return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+}
+
 /**
  * Whether two tools declare the same interface to the model.
  *
  * Both sides go through {@link toToolDeclaration} first: its JSON round-trip drops the
- * schema metadata keys (TypeBox's non-enumerable kind marks) and `undefined` fields that a structural comparison would see, and
- * builds both objects with the same key order, so comparing the serialized declarations
- * is exact. This avoids a deep-equal dependency in a browser-safe package.
+ * schema metadata keys (TypeBox's non-enumerable kind marks) and `undefined` fields that a structural comparison would see.
+ * Object keys are compared in a canonical order, so a schema rebuilt with its keys in another order, as a server may
+ * send it after reconnecting, is not a new definition. Array order counts. This avoids a deep-equal dependency in a
+ * browser-safe package.
  */
 export function declarationsEqual(left: Tool, right: Tool): boolean {
-	return JSON.stringify(toToolDeclaration(left)) === JSON.stringify(toToolDeclaration(right));
+	const leftDeclaration = toToolDeclaration(left);
+	const rightDeclaration = toToolDeclaration(right);
+	return (
+		JSON.stringify(leftDeclaration) === JSON.stringify(rightDeclaration) ||
+		canonicalJson(leftDeclaration) === canonicalJson(rightDeclaration)
+	);
 }
 
 export interface ToolStateChanges {

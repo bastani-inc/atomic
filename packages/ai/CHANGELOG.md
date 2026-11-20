@@ -4,6 +4,18 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Added
+
+- `appendSystemMessageUpdates()` and `resolveRequestTranscript()` build the request transcript for providers without mid-conversation system messages: the system messages that open the conversation fold into the leading prompt, and each later one is sent as a user message at its place in the transcript, so the prompt earlier requests sent never changes. `collapseSystemMessages()` and `resolveTranscript()` keep their behavior.
+- `UserMessage`, `AssistantMessage` and `ToolResultMessage` accept a request-time `cacheBreakpoint` hint. Anthropic, Amazon Bedrock and OpenAI-compatible Claude routes put a prompt-cache breakpoint at the end of the input sent up to that message, within the provider's limit of four breakpoints.
+- Assistant messages record `requestedThinkingBudget` (the budget the thinking level resolved to), `thinkingBudgetTokens` (the budget a budget-based Claude request sent) and `strictToolsDisabled` (the request sent preferred strict tools without strict schemas after an earlier rejection). `thinkingBudgetForLevel()` and `DEFAULT_THINKING_BUDGETS` are exported.
+
+### Fixed
+
+- Fixed providers without mid-conversation system messages (Google Gemini and Vertex, Amazon Bedrock, Anthropic and OpenAI models without that capability, OpenAI-compatible endpoints and Mistral) rewriting the cached system prompt whenever the prompt changed after the first request, such as on a new day or after a project instructions edit, which made the provider bill the whole conversation again. Prompt changes are now sent after the history. A conversation whose earlier requests already merged such changes into the system prompt is rewritten once more, on its first request after updating.
+- Fixed a tool schema rebuilt with its object keys in another order counting as a new tool definition, which rewrote the tool list on providers that send it at the top of the request.
+- Fixed Anthropic and Amazon Bedrock retrying strict tool schemas on the first request of a resumed session after the session's strict tools had been rejected for exceeding Claude's limits. A recorded rejection, or a reply sent without strict schemas for that reason, now keeps them off.
+
 ## [0.10.0] - 2026-11-20
 
 ### Added

@@ -25,7 +25,7 @@ import { type ProviderRetryTransport, retryProviderRequest } from "../utils/prov
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
-import { collapseSystemMessages, withoutInitialSystemMessage } from "../utils/transcript.ts";
+import { appendSystemMessageUpdates, withoutInitialSystemMessage } from "../utils/transcript.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -234,7 +234,7 @@ function supportsMultimodalFunctionResponse(modelId: string): boolean {
  */
 export function convertMessages<T extends GoogleApiType>(model: Model<T>, context: TranscriptContext): Content[] {
 	// Gemini has no mid-conversation system messages; the leading prompt is sent as systemInstruction.
-	const conversation = withoutInitialSystemMessage(collapseSystemMessages(context).messages);
+	const conversation = withoutInitialSystemMessage(appendSystemMessageUpdates(context).messages);
 	const contents: Content[] = [];
 	const normalizeToolCallId = (id: string): string => {
 		if (!requiresToolCallId(model.id)) return id;
