@@ -375,6 +375,7 @@ test("interrupt during async session construction does not dispatch the child pr
 test("launch metadata preserves the canonical fast model ID and effective thinking level", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-thinking-metadata-"));
 	const gate = Promise.withResolvers<void>();
+	const launched = Promise.withResolvers<{ thinking?: string }>();
 	try {
 		const control = new SubagentControlRuntime({ path: "thinking-parent", depth: 0 }, join(root, "sessions"));
 		control.registerAgents([sampleAgent()]);
@@ -382,6 +383,7 @@ test("launch metadata preserves the canonical fast model ID and effective thinki
 			await control.admitChildSession(
 				{
 					...sampleSpec(root),
+					onChildLaunch: (launch) => launched.resolve(launch),
 					testSession: {
 						promptGate: gate.promise,
 						sessionModel: "openai-codex/gpt-5.6-sol-fast",
@@ -400,7 +402,13 @@ test("launch metadata preserves the canonical fast model ID and effective thinki
 		);
 
 		assert.equal(running.currentModel, "openai-codex/gpt-5.6-sol-fast");
-		await vi.waitFor(() => assert.equal(running.currentThinking, "off"));
+		// The child's session decides the effective level once it starts; wait for its launch, not a fixed poll.
+		const launch = await Promise.race([
+			launched.promise,
+			running.promise.then((result) => assert.fail(`the attempt ended before its launch: ${result.status}`)),
+		]);
+		assert.equal(launch.thinking, "off");
+		assert.equal(running.currentThinking, "off");
 		assert.deepEqual(control.getChildMetadata(admitted.identity.path), {
 			model: "openai-codex/gpt-5.6-sol-fast",
 			thinking: "off",

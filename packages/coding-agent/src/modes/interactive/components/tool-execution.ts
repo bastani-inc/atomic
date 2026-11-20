@@ -36,7 +36,14 @@ import {
 	type ToolGroupRole,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
-import { blockRenderTime, type RowRange, rowsFrom, setRendererClickTarget } from "./transcript-block-clicks.ts";
+import { drawsApartFromGroup, type ToolGroupHead } from "./tool-group-tracker.ts";
+import {
+	blockRenderTime,
+	blockRows,
+	type RowRange,
+	rowsFrom,
+	setRendererClickTarget,
+} from "./transcript-block-clicks.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
@@ -105,6 +112,7 @@ export class ToolExecutionComponent extends Container {
 	private args: unknown;
 	private expanded = false;
 	private groupRole: ToolGroupRole = { kind: "standalone" };
+	private groupHead: ToolGroupHead | undefined;
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private outputPad: number;
@@ -306,6 +314,17 @@ export class ToolExecutionComponent extends Container {
 		return this.groupRole;
 	}
 
+	/** The first call of the group this call is folded into, which stands for it while both have one expansion. */
+	setGroupHead(head: ToolGroupHead | undefined): void {
+		if (this.disposed) return;
+		this.groupHead = head;
+	}
+
+	/** Whether this call, folded into a group, is drawn and clicked on its own: see {@link drawsApartFromGroup}. */
+	drawsApart(): boolean {
+		return drawsApartFromGroup(this.groupRole, this.expanded, this.groupHead);
+	}
+
 	/** Every row of the block, below the blank row it leads with. */
 	clickArea(width: number): RowRange | undefined {
 		return rowsFrom(1, this.render(width).length);
@@ -384,10 +403,15 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): string[] {
+		return blockRows(this.renderRows(width));
+	}
+
+	private renderRows(width: number): string[] {
 		if (this.disposed) return [];
 		if (this.argsPending) this.updateDisplay();
 		this.syncWorkingClock();
-		if (this.hideComponent || width < 1 || (!this.expanded && this.groupRole.kind === "hidden")) return [];
+		if (this.hideComponent || width < 1) return [];
+		if (!this.expanded && this.groupRole.kind === "hidden" && !this.drawsApart()) return [];
 		if (!this.expanded && this.groupRole.kind === "head") return this.renderGroupSummary(width, this.groupRole);
 		const content = this.contentContainer.render(width);
 		if (content.length === 0 && this.imageComponents.length === 0) return [];

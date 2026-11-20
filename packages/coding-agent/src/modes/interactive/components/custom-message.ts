@@ -13,7 +13,7 @@ import { declaresHistoryReplayable, disposeRenderer } from "./renderer-disposal.
 import { TaskCompletionMessage, type TaskCompletionMessageOptions } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 import { ToolBlock } from "./tool-block.ts";
-import { type RowRange, rowsFrom, setRendererClickTarget } from "./transcript-block-clicks.ts";
+import { blockRows, type RowRange, rowsFrom, setRendererClickTarget } from "./transcript-block-clicks.ts";
 
 /**
  * Type guard ensuring a value returned by an extension's custom renderer is a
@@ -93,6 +93,11 @@ export class CustomMessageComponent extends Container {
 
 	isExpanded(): boolean {
 		return this._expanded;
+	}
+
+	/** Its rows: an expand hint in them is part of the block, which a click on it expands or collapses. */
+	override render(width: number): string[] {
+		return blockRows(super.render(width));
 	}
 
 	/** Every row of the card, under the blank row this message leads with. */
