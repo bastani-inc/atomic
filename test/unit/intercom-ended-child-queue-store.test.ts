@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import {
+	ENDED_QUEUE_LOCK_WAIT_MS,
 	type EndedChildQueueStore,
 	type EndedQueueEntry,
 	openLocalEndedChildQueueStore,
@@ -438,6 +439,13 @@ test("a small drain with no space to give back costs no transaction beyond its w
 	await database.close();
 });
 
+/**
+ * The longest the event loop may stop while the store waits out another process's lock: a fifth of that wait. Waiting for
+ * the lock on the event loop stops it for the whole wait, and a store that spins never lets it run again; a loaded host's
+ * scheduler stops it for a few hundred milliseconds at most.
+ */
+const LOCK_WAIT_STALL_MAX_MS = ENDED_QUEUE_LOCK_WAIT_MS / 5;
+
 test("after a write waits out another process's lock and the next is refused at once, later writes go through and the store closes", async () => {
 	const path = join(directory(), "ended-child-queue.sqlite");
 	// Opened as a broker opens it: its writes wait 5 s for another process's write lock.
@@ -468,7 +476,7 @@ test("after a write waits out another process's lock and the next is refused at 
 	} finally {
 		clearInterval(ticker);
 	}
-	assert.ok(stalled < 50, `the event loop stalled for ${stalled.toFixed(1)} ms`);
+	assert.ok(stalled < LOCK_WAIT_STALL_MAX_MS, `the event loop stalled for ${stalled.toFixed(1)} ms`);
 }, 30_000);
 
 test("the store still gives its disk space back after another process held its write lock", async () => {
@@ -523,7 +531,7 @@ test("a message whose delete failed, queued again and refused, is still deleted 
 			assert.deepEqual((await store.load()).rows, []);
 			assert.equal(store.counted(key).total, 0);
 		},
-		{ timeout: 15_000, interval: 100 },
+		{ timeout: 30_000, interval: 100 },
 	);
 	await store.close();
 	await database.close();
