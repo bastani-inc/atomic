@@ -211,24 +211,25 @@ export function carriedTransformedPrompt(messages: readonly AgentMessage[]): Tra
 
 /**
  * Which tools a fork that continues a conversation declares: the conversation's own declarations are kept, whatever
- * the fork may call (it refuses a call to a tool it lacks). A removal is declared only where the transport declares
- * changes in place. A tool only the fork has is declared where the transport can add it in place; otherwise it is
- * reached through the conversation's codemode when the fork has codemode too, and declared (changing the top-level
- * tool list) when not.
+ * the fork may call (it refuses a call to a tool it lacks). The removal of a tool the fork cannot call (`callable`
+ * names the tools it can) is declared only where the transport declares changes in place. A tool only the fork has
+ * is declared where the transport can add it in place; otherwise it is reached through the conversation's codemode
+ * when the fork has codemode too, and declared (changing the top-level tool list) when not.
  */
 export function forkToolDeclarations(
 	inherited: readonly Tool[],
 	support: ToolChangeSupport,
-	codemodeReach: boolean,
+	callable: readonly string[],
 ): {
 	readonly keepRemoval: (name: string) => boolean;
 	readonly keepAddition: (tool: Tool) => boolean;
 	readonly throughCodemode: boolean;
 } {
 	const declared = new Set(inherited.map((tool) => tool.name));
-	const throughCodemode = support === "none" && codemodeReach && declared.has("codemode");
+	const own = new Set(callable);
+	const throughCodemode = support === "none" && own.has("codemode") && declared.has("codemode");
 	return {
-		keepRemoval: () => support === "changes",
+		keepRemoval: (name) => support === "changes" && !own.has(name),
 		keepAddition: (tool) => !declared.has(tool.name) && !throughCodemode,
 		throughCodemode,
 	};
@@ -260,7 +261,7 @@ export function projectTransformedPrompt(
 	messages: readonly AgentMessage[],
 	owner: string,
 	toolSupport: ToolChangeSupport,
-	codemodeReach: boolean,
+	callable: readonly string[],
 	isHidden: (name: string) => boolean,
 ): AgentMessage[] | undefined {
 	const index = headIndex(messages, owner);
@@ -271,7 +272,7 @@ export function projectTransformedPrompt(
 		? forkToolDeclarations(
 				getCurrentTools(messages.slice(0, index)).filter((tool) => !inheritedHidden.has(tool.name)),
 				toolSupport,
-				codemodeReach,
+				callable,
 			)
 		: undefined;
 	const shown = (hidden: (name: string) => boolean) => (tool: { readonly name: string }) => !hidden(tool.name);

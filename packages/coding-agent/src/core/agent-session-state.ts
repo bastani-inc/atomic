@@ -405,11 +405,7 @@ function forkOf(
 	const hidden = new Set(fork.hiddenTools ?? []);
 	const inherited = getCurrentTools(messages).filter((tool) => !hidden.has(tool.name));
 	const callable = session.getActiveToolNames();
-	const { throughCodemode } = forkToolDeclarations(
-		inherited,
-		toolChangeSupport(session.model?.compat),
-		callable.includes("codemode"),
-	);
+	const { throughCodemode } = forkToolDeclarations(inherited, toolChangeSupport(session.model?.compat), callable);
 	const declared = new Set(inherited.map((tool) => tool.name));
 	const sections = Object.entries(getCurrentSystemMessage(messages)?.sections ?? {}).flatMap(([name, text]) =>
 		text === null ? [] : [[name, text] as const],

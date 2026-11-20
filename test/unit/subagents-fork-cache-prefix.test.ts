@@ -363,6 +363,7 @@ describe("a forked subagent continues its parent's cached request", () => {
 			const [, parentLast, forkFirst] = requests.map((request) => request.payload);
 			assert.ok(extendsRequest(parentLast, forkFirst), "the fork declares the tools the parent declared");
 			assert.doesNotMatch(added(parentLast, forkFirst), /"name":"bash"/);
+			assert.doesNotMatch(added(parentLast, forkFirst), /tool_removal/, "the fork keeps the codemode it may call");
 		}
 	});
 
@@ -435,17 +436,24 @@ describe("which tools a fork declares", () => {
 
 	test("keeps the parent's tools, declares a removal only where changes are declared in place", () => {
 		for (const support of ["none", "additions", "changes"] as const) {
-			const { keepRemoval, keepAddition } = forkToolDeclarations(inherited, support, false);
+			const { keepRemoval, keepAddition } = forkToolDeclarations(inherited, support, ["read", "codemode"]);
 			assert.equal(keepRemoval("bash"), support === "changes");
+			assert.equal(keepRemoval("codemode"), false, "a tool the fork keeps is never removed");
 			assert.equal(keepAddition(tool("read") as never), false);
 		}
 	});
 
 	test("reaches a tool only the fork has through the parent's codemode where the transport cannot add it", () => {
-		assert.equal(forkToolDeclarations(inherited, "none", true).throughCodemode, true);
-		assert.equal(forkToolDeclarations(inherited, "none", true).keepAddition(tool("todo") as never), false);
-		assert.equal(forkToolDeclarations(inherited, "none", false).keepAddition(tool("todo") as never), true);
-		assert.equal(forkToolDeclarations(inherited, "additions", true).keepAddition(tool("todo") as never), true);
-		assert.equal(forkToolDeclarations([tool("read")], "none", true).throughCodemode, false);
+		assert.equal(forkToolDeclarations(inherited, "none", ["read", "codemode"]).throughCodemode, true);
+		assert.equal(
+			forkToolDeclarations(inherited, "none", ["read", "codemode"]).keepAddition(tool("todo") as never),
+			false,
+		);
+		assert.equal(forkToolDeclarations(inherited, "none", ["read"]).keepAddition(tool("todo") as never), true);
+		assert.equal(
+			forkToolDeclarations(inherited, "additions", ["read", "codemode"]).keepAddition(tool("todo") as never),
+			true,
+		);
+		assert.equal(forkToolDeclarations([tool("read")], "none", ["read", "codemode"]).throughCodemode, false);
 	});
 });

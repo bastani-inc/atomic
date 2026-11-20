@@ -317,7 +317,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 						guarded,
 						transformedPromptOwner(this.sessionManager.getSessionId(), sections.key),
 						toolChangeSupport(this.model?.compat),
-						this.getActiveToolNames().includes("codemode"),
+						this.getActiveToolNames(),
 						(name) => isToolDeclarationHidden(this, name),
 					)
 				: undefined;
