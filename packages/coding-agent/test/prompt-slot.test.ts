@@ -183,3 +183,26 @@ test("without a command, a view mounted with nothing to draw yet keeps the rows 
 	panel.ready();
 	assert.deepEqual(slot.render(40), ["Tasks"]);
 });
+
+test("a prompt drawing a run's working status is not held, and a status that appears during a hold ends it", () => {
+	let runStatus = true;
+	const requestRender = vi.fn();
+	const slot = new PromptSlot({ requestRender }, () => runStatus);
+	let lines = ["── ∀ Working", "❯ /model"];
+	slot.addChild({ render: () => lines, invalidate: () => {} });
+	slot.render(40);
+	lines = ["── ∀ Working", "❯ "];
+	holdPromptSlot(slot);
+	runStatus = false;
+	lines = ["────────────", "❯ "];
+	assert.deepEqual(slot.render(40), ["────────────", "❯ "], "the run ended: its status is gone at once");
+
+	lines = ["────────────", "❯ /model"];
+	slot.render(40);
+	lines = ["────────────", "❯ "];
+	holdPromptSlot(slot);
+	assert.deepEqual(slot.render(40), ["────────────", "❯ /model"]);
+	runStatus = true;
+	lines = ["── ∀ Working", "❯ "];
+	assert.deepEqual(slot.render(40), ["── ∀ Working", "❯ "], "a run started: its status shows as it moves");
+});

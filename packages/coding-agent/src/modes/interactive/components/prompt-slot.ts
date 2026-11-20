@@ -75,6 +75,9 @@ type PromptSlotState =
  *
  * The rows come back live when the view is up and has something to draw, when the command ends without one, on the
  * user's next key, at another width, or after `PROMPT_SLOT_HOLD_MS`.
+ *
+ * A prompt that draws a run's working status in its own rows is never held: the hold would stop that status moving, and
+ * could keep showing it after the run ended.
  */
 export class PromptSlot extends Container {
 	private state: PromptSlotState = { kind: "live" };
@@ -83,10 +86,13 @@ export class PromptSlot extends Container {
 	private drawn: { readonly width: number; readonly rows: readonly string[]; readonly generation: number } | undefined;
 	private showingHeldRows = false;
 	private readonly ui: Pick<TUI, "requestRender">;
+	private readonly showsRunStatus: () => boolean;
 
-	constructor(ui: Pick<TUI, "requestRender">) {
+	/** `showsRunStatus` answers whether the prompt draws a run's working status in its rows now. */
+	constructor(ui: Pick<TUI, "requestRender">, showsRunStatus: () => boolean = () => false) {
 		super();
 		this.ui = ui;
+		this.showsRunStatus = showsRunStatus;
 	}
 
 	override addChild(component: Component): void {
@@ -107,7 +113,7 @@ export class PromptSlot extends Container {
 	/** Keep showing what the slot drew last until the view a command opens is up or the command settles. */
 	hold(): PromptSlotHold {
 		const drawn = this.drawn;
-		if (!drawn) return SETTLED;
+		if (!drawn || this.showsRunStatus()) return SETTLED;
 		const generation = this.generation;
 		const token = this.beginHold(drawn.rows, drawn.width, generation).token;
 		return {
@@ -134,7 +140,8 @@ export class PromptSlot extends Container {
 			this.drawn !== undefined &&
 			this.drawn.width === width &&
 			this.drawn.generation !== this.generation &&
-			this.children.some(awaitsFirstContent)
+			this.children.some(awaitsFirstContent) &&
+			!this.showsRunStatus()
 		) {
 			// A view mounted with nothing to draw yet, as an engine panel before its first frame: the rows stay.
 			rows = this.beginHold(this.drawn.rows, width, this.drawn.generation).rows;
@@ -155,7 +162,7 @@ export class PromptSlot extends Container {
 	}
 
 	private showsHeldRows(state: Extract<PromptSlotState, { kind: "held" }>, width: number): boolean {
-		if (width !== state.width) return false;
+		if (width !== state.width || this.showsRunStatus()) return false;
 		return this.generation === state.generation || this.children.some(awaitsFirstContent);
 	}
 

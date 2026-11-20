@@ -798,7 +798,7 @@ export class InteractiveModeBase {
 		});
 
 		this.editor = this.defaultEditor;
-		this.editorContainer = new PromptSlot(this.ui);
+		this.editorContainer = new PromptSlot(this.ui, () => this.workingIndicatorEmbedded);
 		this.editorContainer.addChild(this.editor as Component);
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(

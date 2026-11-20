@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
+import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
 import { PROMPT_SLOT_HOLD_MS } from "../src/modes/interactive/components/prompt-slot.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { type MainChatTerminal, startMainChat } from "./helpers/main-chat-terminal.js";
@@ -125,6 +126,34 @@ describe.each(["in-process", "isolated"] as const)("a slash command that opens a
 			const chat = await start(host);
 			await finishOneTurn(chat);
 			await expectStraightToView(chat, "/resume", /Sessions \(\d+\)/);
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"a prompt that draws a run's working status in its border never shows it after the run has ended",
+		async () => {
+			const chat = await start(host);
+			chat.mode.setCustomEditorComponent(
+				(tui, theme, keybindings) => new CustomEditor(tui, theme, keybindings, { embedWorkingStatus: true }),
+			);
+			chat.mode.showWorkingLoaderNow();
+			const status = /^── ∀ /m;
+			await chat.settled(status);
+			chat.press("/model");
+			await chat.settled(/❯ \/model/);
+			// Enter, then the run ends in the same turn of the event loop, before the selector mounts.
+			const from = await new Promise<number>((resolve) =>
+				setImmediate(() => {
+					const written = writes.filter((write) => write.terminal === chat.terminal).length;
+					chat.press("\r");
+					chat.mode.stopWorkingLoader();
+					resolve(written);
+				}),
+			);
+			await chat.settled(/Select model/);
+			for (const frame of await screens(chat, from))
+				assert.doesNotMatch(frame.text, status, `a frame shows the ended run's status:\n${frame.text}`);
 		},
 		INTERACTIVE_CASE_TIMEOUT_MS,
 	);
