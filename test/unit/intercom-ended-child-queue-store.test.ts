@@ -192,7 +192,12 @@ test("in a shared database each broker home keeps its own rows and identity, und
 		);
 		assert.deepEqual(
 			tables.map((table) => table.name),
-			["p_intercom_ended_child_meta", "p_intercom_ended_child_queue", "p_intercom_ended_child_wakes"],
+			[
+				"p_intercom_ended_child_bodies",
+				"p_intercom_ended_child_meta",
+				"p_intercom_ended_child_queue",
+				"p_intercom_ended_child_wakes",
+			],
 		);
 		await a.close();
 		await b.close();

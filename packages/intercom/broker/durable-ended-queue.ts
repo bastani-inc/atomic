@@ -374,7 +374,10 @@ export class DurableEndedQueue {
 		readonly add: (rows: readonly EndedQueueRow[]) => void;
 		readonly result: () => Omit<RestoredEndedQueues, "budget">;
 	} {
-		const queues = new Map<string, RestoredEndedQueue & { sends: Array<{ held: HeldSend; sender: WakeSender }> }>();
+		const queues = new Map<
+			string,
+			RestoredEndedQueue & { sends: Array<{ held: HeldSend; sender: WakeSender; bytes: number }> }
+		>();
 		const delivered: Array<{ readonly held: HeldSend; readonly sender: BrokerConnectedSession }> = [];
 		const ownerless: Array<{ readonly held: HeldSend; readonly childName: string }> = [];
 		const add = (rows: readonly EndedQueueRow[]): void => {
@@ -397,6 +400,8 @@ export class DurableEndedQueue {
 				}
 				const key = JSON.stringify([row.ownerHost, row.childKey]);
 				const queue = queues.get(key);
+				const sends = queue?.sends ?? [];
+				sends.push({ held, sender: wakeSenderOfSnapshot(sender), bytes: row.bytes });
 				// The latest row says how the departure stood last.
 				queues.set(key, {
 					ownerSessionId: row.ownerSessionId,
@@ -407,7 +412,7 @@ export class DurableEndedQueue {
 					...(row.child.childId === undefined ? {} : { childId: row.child.childId }),
 					outcome: row.child.outcome as SubagentEndedOutcome,
 					messages: row.child.messages as EndedChildMessages,
-					sends: [...(queue?.sends ?? []), { held, sender: wakeSenderOfSnapshot(sender) }],
+					sends,
 					...(row.wake === undefined ? (queue?.wake === undefined ? {} : { wake: queue.wake }) : { wake: row.wake }),
 					...((queue?.awaySince ?? row.ownerAwaySince) === undefined
 						? {}

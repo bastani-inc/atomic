@@ -408,7 +408,12 @@ test(
 			);
 			assert.deepEqual(
 				tables.map((table) => table.name),
-				["ecq_intercom_ended_child_meta", "ecq_intercom_ended_child_queue", "ecq_intercom_ended_child_wakes"],
+				[
+					"ecq_intercom_ended_child_bodies",
+					"ecq_intercom_ended_child_meta",
+					"ecq_intercom_ended_child_queue",
+					"ecq_intercom_ended_child_wakes",
+				],
 			);
 		} finally {
 			await database.close();

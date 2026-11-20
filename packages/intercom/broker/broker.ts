@@ -406,7 +406,7 @@ class IntercomBroker {
     openStore: () => this.openEndedQueueStore(),
     retireStore: () => this.retireEndedQueueStore(),
     budget: this.wakeBudget,
-    delivered: (held, sender) => this.queuedMessageKnown(held, sender),
+    delivered: (held) => this.queuedMessageState(held),
     log: (text) => console.error(text),
   });
   /** #5999 durable wake queue: the broker before this one: the pid it recorded, and the socket lock generation it left. */
@@ -2159,6 +2159,16 @@ class IntercomBroker {
    */
   private queuedMessageDelivered(held: HeldSend, sender: ConnectedSession): boolean {
     return this.queuedMessageKnown(held, sender) === "delivered";
+  }
+
+  /** Durable wake queue: what the delivered-message authority knows of a queued message an earlier broker kept. */
+  private queuedMessageState(held: HeldSend): "delivered" | "uncertain" | "unknown" {
+    try {
+      const state = this.deliveredMessages.deliveryStateOf(held.messageId);
+      return state === "accepted" ? "delivered" : state === "reserved" ? "uncertain" : "unknown";
+    } catch {
+      return "unknown";
+    }
   }
 
   /** Durable wake queue: what the delivered-message authority knows of `held`, sent as `sender`. */

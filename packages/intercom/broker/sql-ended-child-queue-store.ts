@@ -276,6 +276,9 @@ export async function openSqlEndedChildQueueStore(
 	let retire = retiring;
 	const valid = validateStoragePrefix(prefix, dialectOf(database).name);
 	const queue = `${valid}intercom_ended_child_queue`;
+	// The messages themselves, apart from the rows a broker updates (holder, wake, away, handed over): an update never
+	// rewrites a message.
+	const bodies = `${valid}intercom_ended_child_bodies`;
 	const wakes = `${valid}intercom_ended_child_wakes`;
 	const meta = `${valid}intercom_ended_child_meta`;
 	const { types } = dialectOf(database);
@@ -292,7 +295,6 @@ export async function openSqlEndedChildQueueStore(
 				child_key TEXT NOT NULL,
 				child_json TEXT NOT NULL,
 				sender_json TEXT NOT NULL,
-				request_json TEXT NOT NULL,
 				bytes ${types.int} NOT NULL,
 				queued_at ${types.int} NOT NULL,
 				wake_json TEXT,
@@ -302,6 +304,10 @@ export async function openSqlEndedChildQueueStore(
 				dispatched ${types.int} NOT NULL DEFAULT 0
 			);
 			CREATE INDEX IF NOT EXISTS ${queue}_home ON ${queue}(home, seq);
+			CREATE TABLE IF NOT EXISTS ${bodies}(
+				message_id TEXT PRIMARY KEY,
+				request_json TEXT NOT NULL
+			);
 			CREATE INDEX IF NOT EXISTS ${queue}_departure ON ${queue}(home, owner_host, owner_session_id, child_key);
 			CREATE TABLE IF NOT EXISTS ${wakes}(
 				home TEXT NOT NULL,
@@ -403,9 +409,11 @@ export async function openSqlEndedChildQueueStore(
 				const read = await database.transaction(
 					(tx) =>
 						tx.all<QueueRow>(
-							`SELECT seq, message_id, owner_session_id, owner_host, child_key, child_json, sender_json, request_json,
-								bytes, queued_at, wake_json, owner_away_since, failed_reason, failed_at, dispatched
-							 FROM ${queue} WHERE home = ? AND keeper = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
+							`SELECT q.seq, q.message_id, q.owner_session_id, q.owner_host, q.child_key, q.child_json, q.sender_json,
+								b.request_json, q.bytes, q.queued_at, q.wake_json, q.owner_away_since, q.failed_reason, q.failed_at,
+								q.dispatched
+							 FROM ${queue} q JOIN ${bodies} b ON b.message_id = q.message_id
+							 WHERE q.home = ? AND q.keeper = ? AND q.seq >= ? AND q.seq <= ? ORDER BY q.seq`,
 							home,
 							keeper,
 							from,
@@ -424,6 +432,11 @@ export async function openSqlEndedChildQueueStore(
 			void writes
 				.run(async (tx) => {
 					if (pid !== undefined) await tx.run(`UPDATE ${meta} SET holder_pid = ? WHERE home = ?`, pid, home);
+					await tx.run(
+						`DELETE FROM ${bodies} WHERE message_id IN (SELECT message_id FROM ${queue} WHERE home = ? AND keeper <> ?)`,
+						home,
+						keeper,
+					);
 					await tx.run(`DELETE FROM ${queue} WHERE home = ? AND keeper <> ?`, home, keeper);
 					await tx.run(`UPDATE ${queue} SET holder = ? WHERE home = ? AND holder <> ?`, holder, home, holder);
 					await tx.run(`DELETE FROM ${wakes} WHERE home = ? AND at < ?`, home, Date.now() - BUDGET_EVENT_RETENTION_MS);
@@ -460,8 +473,8 @@ export async function openSqlEndedChildQueueStore(
 			return writes.run(async (tx) => {
 				const { changes } = await tx.run(
 					`INSERT INTO ${queue}(message_id, home, holder, keeper, owner_session_id, owner_host, child_key, child_json,
-						sender_json, request_json, bytes, queued_at, wake_json)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(message_id) DO NOTHING`,
+						sender_json, bytes, queued_at, wake_json)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(message_id) DO NOTHING`,
 					entry.messageId,
 					home,
 					holder,
@@ -471,11 +484,16 @@ export async function openSqlEndedChildQueueStore(
 					entry.childKey,
 					JSON.stringify(entry.child),
 					JSON.stringify(entry.sender),
-					JSON.stringify(entry.request),
 					entry.bytes,
 					entry.queuedAt,
 					entry.wake === undefined ? null : JSON.stringify(entry.wake),
 				);
+				if (changes !== 0)
+					await tx.run(
+						`INSERT INTO ${bodies}(message_id, request_json) VALUES (?, ?) ON CONFLICT(message_id) DO NOTHING`,
+						entry.messageId,
+						JSON.stringify(entry.request),
+					);
 				if (budget !== undefined)
 					await tx.run(
 						`INSERT INTO ${wakes}(home, child_key, kind, at, depth) VALUES (?, ?, ?, ?, ?)`,
@@ -492,8 +510,15 @@ export async function openSqlEndedChildQueueStore(
 		remove(messageIds) {
 			if (messageIds.length === 0) return Promise.resolve();
 			return writes.run(async (tx) => {
-				for (const messageId of messageIds)
-					await tx.run(`DELETE FROM ${queue} WHERE message_id = ? AND home = ? AND holder = ?`, messageId, home, holder);
+				for (const messageId of messageIds) {
+					const { changes } = await tx.run(
+						`DELETE FROM ${queue} WHERE message_id = ? AND home = ? AND holder = ?`,
+						messageId,
+						home,
+						holder,
+					);
+					if (changes !== 0) await tx.run(`DELETE FROM ${bodies} WHERE message_id = ?`, messageId);
+				}
 			});
 		},
 		dispatched(messageIds) {

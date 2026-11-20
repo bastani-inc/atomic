@@ -186,7 +186,8 @@ export interface RestoredEndedQueue {
 	readonly childId?: string;
 	readonly outcome: SubagentEndedOutcome;
 	readonly messages: EndedChildMessages;
-	readonly sends: ReadonlyArray<{ readonly held: HeldSend; readonly sender: WakeSender }>;
+	/** Each message with its sender, and its bytes as the store counted them. */
+	readonly sends: ReadonlyArray<{ readonly held: HeldSend; readonly sender: WakeSender; readonly bytes?: number }>;
 	readonly wake?: JournalWake;
 	/** Wall-clock milliseconds since when its owner has been away, as last written. */
 	readonly awaySince?: number;
@@ -815,8 +816,9 @@ export class DepartedChildren {
 					: restored.messages;
 			const later = departure.queued.splice(0);
 			for (const held of later) this.unqueueCounted(departure, held);
-			for (const { held, sender } of restored.sends) {
+			for (const { held, sender, bytes } of restored.sends) {
 				if (this.queuedIds.has(held.messageId)) continue;
+				if (bytes !== undefined) queuedBytesOf.set(held, bytes);
 				this.enqueue(departure, held, sender, messages);
 			}
 			for (const held of later) this.enqueue(departure, held, this.wakeSenders.get(held) as WakeSender, messages);
@@ -1156,9 +1158,16 @@ export function notResumedReason(childName: string, why: string): string {
 	return `Subagent ${JSON.stringify(childName)} was not resumed for this message: ${why}. The message was not delivered.`;
 }
 
+/** The bytes of each queued message, counted once (a restarted broker takes them from the store). */
+const queuedBytesOf = new WeakMap<HeldSend, number>();
+
 function queuedMessageBytes(held: HeldSend): number {
+	const known = queuedBytesOf.get(held);
+	if (known !== undefined) return known;
 	const message = held.clientMessage.message as Message | undefined;
-	return message === undefined ? 0 : intercomMessageBytes(message.content);
+	const bytes = message === undefined ? 0 : intercomMessageBytes(message.content);
+	queuedBytesOf.set(held, bytes);
+	return bytes;
 }
 
 function mebibytes(bytes: number): string {
