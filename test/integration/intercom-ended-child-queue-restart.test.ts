@@ -26,6 +26,7 @@ const { PAUSED_RECIPIENT_TARGET, RESUMING_RECIPIENT_TARGET } = await import(
 	"../../packages/intercom/broker/ended-child-wakes.js"
 );
 const { queryIntercomBroker } = await import("../../packages/intercom/broker/control.js");
+const { ENDED_QUEUE_OPEN_WAIT_MS } = await import("../../packages/intercom/broker/durable-ended-queue.js");
 /** The shared storage adapter the multi-node suites select: SQLite, through the storage layer's adapter module. */
 const STORAGE_ADAPTER = join(repoRoot, "test/fixtures/storage-adapter.ts");
 const SHARED_PREFIX = "ecq_";
@@ -52,6 +53,11 @@ const BROKER_START_WAIT_MS = 60_000;
 const WAIT = { timeout: 20_000, interval: 25 } as const;
 /** Long enough for a frame that must not come (a second copy, a wake) to have arrived. */
 const SETTLE_MS = 750;
+/**
+ * A slow start: the shared database opens this long after the broker listens, so after the store's own open wait counted
+ * from the first registration (which comes as the broker listens), and well within the broker's wait for routing.
+ */
+const SLOW_SHARED_OPEN_MS = ENDED_QUEUE_OPEN_WAIT_MS + 1_000;
 
 const fixtures: IntercomBrokerFixture[] = [];
 afterEach(async () => {
@@ -87,14 +93,26 @@ class Host {
 	readonly fixture: IntercomBrokerFixture;
 	private broker: ChildProcess | undefined;
 
-	/** `shared`: the broker selects a shared SQLite database at this path, so multi-node routing is on. */
-	constructor(private readonly shared?: string) {
+	/**
+	 * `shared`: the broker selects a shared SQLite database at this path, so multi-node routing is on. `openGate`: the
+	 * file the storage adapter waits on before it opens that database (see {@link startSlowly}).
+	 */
+	constructor(
+		private readonly shared?: string,
+		private readonly openGate?: string,
+	) {
 		this.fixture = new IntercomBrokerFixture(mkdtempSync(join(tmpdir(), "ecq-")));
 		fixtures.push(this.fixture);
 		if (shared !== undefined)
 			writeFileSync(
 				join(this.agentDir, "settings.json"),
-				JSON.stringify({ storage: { adapter: STORAGE_ADAPTER, options: { path: shared }, prefix: SHARED_PREFIX } }),
+				JSON.stringify({
+					storage: {
+						adapter: STORAGE_ADAPTER,
+						options: { path: shared, ...(openGate === undefined ? {} : { openGate }) },
+						prefix: SHARED_PREFIX,
+					},
+				}),
 			);
 	}
 
@@ -124,6 +142,40 @@ class Host {
 		);
 	}
 
+	/**
+	 * Starts the broker with its shared database slow to open, as on a cold start after a reboot (the storage modules
+	 * compile on first use) or with a remote database: it opens `afterMs` after the broker listens, once the broker
+	 * answered a registration (so without it), or once routing's first attempt to open it failed.
+	 */
+	async startSlowly(opening: SharedOpening = { afterMs: SLOW_SHARED_OPEN_MS }): Promise<void> {
+		const gate = this.openGate;
+		assert.ok(gate !== undefined, "a host started slowly has an open gate");
+		writeFileSync(gate, opening === "after a failed attempt" ? "fail" : "closed");
+		const started = this.start();
+		const socketPath = getBrokerSocketPath(process.platform, this.agentDir);
+		if (opening === "after a failed attempt")
+			await vi.waitFor(
+				async () => {
+					const status = await queryIntercomBroker(this.agentDir);
+					assert.ok(
+						status.state === "running" && status.report.multiNode.status === "unavailable",
+						"routing's first attempt failed",
+					);
+				},
+				{ timeout: BROKER_START_WAIT_MS, interval: 25 },
+			);
+		else {
+			await vi.waitFor(async () => assert.ok(await accepts(socketPath), "the broker listens"), {
+				timeout: BROKER_START_WAIT_MS,
+				interval: 10,
+			});
+			if (opening === "once it answered a registration") await registerOnce(socketPath);
+			else await sleep(opening.afterMs);
+		}
+		writeFileSync(gate, "open");
+		await started;
+	}
+
 	/** SIGKILL: the broker's memory is gone, as in a crash or a machine restart. */
 	async kill(): Promise<void> {
 		const broker = this.broker;
@@ -139,6 +191,59 @@ class Host {
 		if (broker === undefined || broker.exitCode !== null || broker.signalCode !== null) return;
 		await new Promise<void>((resolveClosed) => broker.once("close", () => resolveClosed()));
 	}
+}
+
+/** When a slowly started broker's shared database opens (see {@link Host.startSlowly}). */
+type SharedOpening = { readonly afterMs: number } | "once it answered a registration" | "after a failed attempt";
+
+/** Whether a broker accepts connections on `socketPath` now (a killed broker's socket file refuses them). */
+async function accepts(socketPath: string): Promise<boolean> {
+	const net = await import("node:net");
+	return new Promise<boolean>((resolveAccepts) => {
+		const socket = net.connect(socketPath);
+		socket.once("connect", () => {
+			socket.destroy();
+			resolveAccepts(true);
+		});
+		socket.once("error", () => {
+			socket.destroy();
+			resolveAccepts(false);
+		});
+	});
+}
+
+/** A control connection registers with the broker on `socketPath`; resolves once the broker answered it. */
+async function registerOnce(socketPath: string): Promise<void> {
+	const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
+	const net = await import("node:net");
+	await new Promise<void>((resolveRegistered, rejectRegistered) => {
+		const socket = net.connect(socketPath);
+		socket.once("error", rejectRegistered);
+		socket.once("connect", () => {
+			const now = Date.now();
+			writeMessage(socket, {
+				type: "register",
+				session: {
+					cwd: repoRoot,
+					model: "test-model",
+					pid: process.pid,
+					startedAt: now,
+					lastActivity: now,
+					group: "default",
+					recipientPurpose: "control",
+				},
+			});
+		});
+		socket.on(
+			"data",
+			createMessageReader((message) => {
+				if (typeof message !== "object" || message === null || Array.isArray(message)) return;
+				if (message.type !== "registered") return;
+				socket.destroy();
+				resolveRegistered();
+			}, rejectRegistered),
+		);
+	});
 }
 
 interface Session {
@@ -419,6 +524,16 @@ test(
 			await database.close();
 		}
 		assert.equal(existsSync(getBrokerEndedChildQueuePath(host.agentDir)), false);
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
+	"messages for a completed and a paused subagent survive a broker killed with SIGKILL, in a shared database that opens only after the store's own open wait (#5999)",
+	async () => {
+		const directory = mkdtempSync(join(tmpdir(), "ecq-slow-"));
+		const host = new Host(join(directory, "shared.sqlite"), join(directory, "open-gate"));
+		await survivesRestart(host, () => host.startSlowly());
 	},
 	RESTART_TEST_TIMEOUT_MS,
 );
@@ -751,6 +866,42 @@ test(
 			const continued = await resume(host, ownerBack, childName);
 			await sleep(SETTLE_MS);
 			assert.deepEqual(continued.received, [], `${after}: what its sender was told was lost is never delivered`);
+		}
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a shared database that does not open within the broker's wait keeps the queue in memory, and a restart tells each sender once that it was lost (#5999)",
+	async () => {
+		const openings: ReadonlyArray<readonly [string, SharedOpening]> = [
+			["late", "once it answered a registration"],
+			["failed", "after a failed attempt"],
+		];
+		for (const [label, opening] of openings) {
+			const directory = mkdtempSync(join(tmpdir(), "ecq-unopened-"));
+			const host = new Host(join(directory, "shared.sqlite"), join(directory, "open-gate"));
+			await host.startSlowly(opening);
+			const memory = new EndedQueueMemory();
+			const { ownerSession, childName, sender, messageId } = await heldMessage(host, `unopened-${label}`, memory);
+			await host.kill();
+			await host.start();
+			const senderBack = await again(host, `unopened-${label}-sender`, sender, { memory });
+			await vi.waitFor(
+				() =>
+					assert.deepEqual(
+						senderBack.lost.map((lost) => lost.messageId),
+						[messageId],
+						label,
+					),
+				WAIT,
+			);
+			const ownerBack = await owner(host, `unopened-${label}`, ownerSession);
+			await markEnded(ownerBack, childName, "stopped");
+			const continued = await resume(host, ownerBack, childName);
+			await sleep(SETTLE_MS);
+			assert.deepEqual(continued.received, [], `${label}: what its sender was told was lost is never delivered`);
+			assert.equal(senderBack.lost.length, 1, `${label}: told once`);
 		}
 	},
 	RESTART_TEST_TIMEOUT_MS,
