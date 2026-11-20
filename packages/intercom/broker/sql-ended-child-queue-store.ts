@@ -764,9 +764,6 @@ export async function openSqlEndedChildQueueStore(
 	};
 	if (compact) {
 		await database.exec(`PRAGMA journal_size_limit = ${LOCAL_WAL_SIZE_LIMIT}`);
-		// The backstop: the file never grows past this, whatever the caps counted (a setting of this connection).
-		const pageSize = Math.max(512, await pragmaOf(database, "page_size"));
-		await database.exec(`PRAGMA max_page_count = ${Math.ceil(ENDED_QUEUE_FILE_BYTES_MAX / pageSize)}`);
 		// A file that cannot give space back (new, or written before this) is converted while its queue is empty, before
 		// anything else can use it: VACUUM rewrites the live data, none then. It never waits for another process's lock;
 		// a busy file is converted at a later open.
@@ -787,6 +784,10 @@ export async function openSqlEndedChildQueueStore(
 				await database.exec(`PRAGMA busy_timeout = ${configured}`);
 			}
 		}
+		// The backstop: the file never grows past this, whatever the caps counted (a setting of this connection). Set once
+		// a file from before was converted: it cannot be set below the file's size then.
+		const pageSize = Math.max(512, await pragmaOf(database, "page_size"));
+		await database.exec(`PRAGMA max_page_count = ${Math.ceil(ENDED_QUEUE_FILE_BYTES_MAX / pageSize)}`);
 		compactSoon();
 	}
 	// Every row of the store, read whole a page at a time, for a recount: its key, the size it recorded when it was
@@ -826,12 +827,17 @@ export async function openSqlEndedChildQueueStore(
 	// an earlier keeper's too (they stay until this broker takes the rows over). Summed a range of rows at a time, the
 	// event loop running between ranges; `load` then counts this keeper's rows by id as it reads them.
 	const ledger = new CountedRows();
-	const span = await database.get<SqliteRow & { first: number | bigint | null; last: number | bigint | null }>(
-		`SELECT MIN(seq) AS first, MAX(seq) AS last FROM ${queue} WHERE home = ?`,
+	// Two statements: SQLite looks a lone MIN or MAX up in the index, but scans it for both at once.
+	const first = await database.get<SqliteRow & { seq: number | bigint | null }>(
+		`SELECT MIN(seq) AS seq FROM ${queue} WHERE home = ?`,
 		home,
 	);
-	if (span?.first !== null && span?.first !== undefined && span.last !== null) {
-		for (let from = Number(span.first) - 1; from < Number(span.last); from += COUNT_SUM_ROWS) {
+	const last = await database.get<SqliteRow & { seq: number | bigint | null }>(
+		`SELECT MAX(seq) AS seq FROM ${queue} WHERE home = ?`,
+		home,
+	);
+	if (first?.seq !== null && first?.seq !== undefined && last?.seq !== null && last?.seq !== undefined) {
+		for (let from = Number(first.seq) - 1; from < Number(last.seq); from += COUNT_SUM_ROWS) {
 			const sums = await database.all<
 				SqliteRow & {
 					owner_host: string;
