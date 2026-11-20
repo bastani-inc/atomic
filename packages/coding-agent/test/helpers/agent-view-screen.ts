@@ -152,6 +152,7 @@ export async function liveSubagent(lines: number) {
 		fixture,
 		source: ownerTaskViewSource(fixture.store),
 		taskId: fixture.store.tasks[0]!.ref.taskId,
+		sessionId: session.getSessionId(),
 		emit: (event: AgentSessionEvent) => {
 			for (const listener of [...listeners]) listener(event);
 		},

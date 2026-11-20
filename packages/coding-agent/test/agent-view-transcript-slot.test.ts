@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { taskFixture } from "../../../test/helpers/task-projection.ts";
 import { taskTranscriptEnvironment } from "../../../test/helpers/task-transcript-environment.ts";
 import type { AgentSessionEvent } from "../src/core/agent-session.js";
+import { heldPromptInput } from "../src/core/extensions/held-prompts.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import type { TaskId } from "../src/core/tasks/contracts.js";
@@ -179,6 +180,39 @@ describe("the viewed subagent's transcript in the main transcript area", () => {
 			notifyViewed(ui.mode, "back on main", "info");
 			assert.deepEqual(ui.notices.at(-1), "main status: back on main");
 		} finally {
+			uninstall();
+			ui.tui.stop();
+			await sub.fixture.dispose();
+		}
+	});
+
+	test("a question the shown subagent waits on takes the keys in the transcript area until it is answered", async () => {
+		const ui = mainScreen();
+		const sub = await liveSubagent(5);
+		const { switcher } = localSwitcher(ui, sub);
+		const uninstall = ui.bind(switcher);
+		const controller = new AbortController();
+		try {
+			await switcher.view(sub.taskId);
+			const answer = heldPromptInput.select("Deploy where?", ["staging", "production"], {
+				signal: controller.signal,
+				requestId: "deploy-target",
+				sessionId: sub.sessionId,
+			});
+			await flush();
+			const asking = ui.screen();
+			assert.ok(has(asking, /Deploy where\?/) && has(asking, /production/), asking.join("\n"));
+			assert.ok(has(asking, /sub line 5$/), "the transcript keeps its rows above the form");
+			assert.equal(switcher.viewed.kind === "agent" && switcher.viewed.port.status().heldPrompt, true);
+			assert.notEqual(ui.tui.getFocusedComponent(), ui.mode.editor, "the form has the keys");
+			ui.terminal.input("\x1b[B");
+			ui.terminal.input("\r");
+			assert.equal(await answer, "production");
+			await flush();
+			assert.equal(ui.tui.getFocusedComponent(), ui.mode.editor, "the prompt has them back");
+			assert.ok(!has(ui.screen(), /Deploy where\?/));
+		} finally {
+			controller.abort();
 			uninstall();
 			ui.tui.stop();
 			await sub.fixture.dispose();
