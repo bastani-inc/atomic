@@ -24,7 +24,7 @@ Intercom also integrates with delegated subagents: in-process children receive a
 
 ## In One Minute
 
-An interactive session connects to the broker in the background when it starts, so other sessions can list and message it before it uses Intercom; print, JSON, RPC and SDK sessions connect on first use. A bridged child still keeps its own broker connection lazy until it invokes `contact_supervisor`, but Atomic connects the parent Intercom runtime while launching the child to issue a child-bound supervisor capability. The parent retains and restores that capability across broker reconnects, and the broker confirms the supervisor's current session ID when the child registers. Concurrent first-use callers share one import and connection attempt, and broker state is leased to the active session generation and cleaned up on shutdown or replacement.
+An interactive session connects to the broker in the background a few seconds after it starts, so other sessions can list and message it before it uses Intercom; print, JSON, RPC and SDK sessions connect on first use. A bridged child still keeps its own broker connection lazy until it invokes `contact_supervisor`, but Atomic connects the parent Intercom runtime while launching the child to issue a child-bound supervisor capability. The parent retains and restores that capability across broker reconnects, and the broker confirms the supervisor's current session ID when the child registers. Concurrent first-use callers share one import and connection attempt, and broker state is leased to the active session generation and cleaned up on shutdown or replacement.
 
 ## Install
 

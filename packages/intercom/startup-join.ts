@@ -8,6 +8,12 @@ export interface IntercomStartupJoinRequest {
 }
 
 /**
+ * How long after its start a session joins: long enough for its first frame, and a prompt typed as it opens, to be
+ * handled before the join loads Intercom.
+ */
+export const STARTUP_JOIN_DELAY_MS = 3_000;
+
+/**
  * Retries after a startup join that could not reach the broker, on the reconnect backoff. After the last one the
  * session joins on its next Intercom use, as a session that has never joined does.
  */

@@ -169,7 +169,7 @@ describe("an interactive top-level session joins Intercom at startup", () => {
 		try {
 			assert.deepEqual(await session.start(ctx), []);
 			assert.equal(session.registrations.length, 0, "session_start returns before the session joins");
-			await vi.waitFor(() => assert.equal(session.registrations.length, 1), { timeout: 5_000 });
+			await vi.waitFor(() => assert.equal(session.registrations.length, 1), { timeout: 15_000 });
 			assert.equal(session.registrations[0]?.group, "default");
 			assert.deepEqual(notices, []);
 			assert.deepEqual(consoleErrors, []);
@@ -183,7 +183,7 @@ describe("an interactive top-level session joins Intercom at startup", () => {
 		const eagerCtx = sessionContext({ mode: "tui", cwd: "/work/repo" }, []);
 		try {
 			await eager.start(eagerCtx);
-			await vi.waitFor(() => assert.equal(eager.registrations.length, 1), { timeout: 5_000 });
+			await vi.waitFor(() => assert.equal(eager.registrations.length, 1), { timeout: 15_000 });
 		} finally {
 			await eager.shutdown(eagerCtx);
 		}
@@ -221,17 +221,22 @@ describe("an interactive top-level session joins Intercom at startup", () => {
 			],
 			["no intercom tool", { mode: "tui" }, ["read", "bash"]],
 		];
-		for (const [label, fields, activeTools] of lazySessions) {
-			const session = intercomSession(activeTools === undefined ? {} : { activeTools });
-			const ctx = sessionContext(fields, []);
-			try {
-				assert.deepEqual(await session.start(ctx), [], label);
-				await new Promise((resolve) => setTimeout(resolve, 100));
-				assert.equal(session.registrations.length, 0, `${label} must not join at startup`);
-			} finally {
-				await session.shutdown(ctx);
-				vi.restoreAllMocks();
+		useBackoffClock();
+		try {
+			for (const [label, fields, activeTools] of lazySessions) {
+				const session = intercomSession(activeTools === undefined ? {} : { activeTools });
+				const ctx = sessionContext(fields, []);
+				try {
+					assert.deepEqual(await session.start(ctx), [], label);
+					await elapse(10_000);
+					assert.equal(session.registrations.length, 0, `${label} must not join at startup`);
+				} finally {
+					await session.shutdown(ctx);
+					vi.restoreAllMocks();
+				}
 			}
+		} finally {
+			vi.useRealTimers();
 		}
 	});
 });
@@ -255,7 +260,7 @@ describe("what the startup join leaves to the session", () => {
 		const ctx = sessionContext({ mode: "tui" }, []);
 		try {
 			await session.start(ctx);
-			await vi.waitFor(() => assert.equal(session.registrations.length, 1), { timeout: 5_000 });
+			await vi.waitFor(() => assert.equal(session.registrations.length, 1), { timeout: 15_000 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			assert.deepEqual(session.appended, []);
 			await session.useIntercom(ctx);
@@ -267,17 +272,20 @@ describe("what the startup join leaves to the session", () => {
 	});
 
 	test("a session whose folder is not trusted joins once it is trusted", async () => {
+		useBackoffClock();
 		let trusted = false;
 		const session = intercomSession();
 		const ctx = sessionContext({ mode: "tui", isProjectTrusted: () => trusted }, []);
 		try {
 			await session.start(ctx);
-			await new Promise((resolve) => setTimeout(resolve, 300));
+			await elapse(10_000);
 			assert.equal(session.registrations.length, 0, "no join while the folder's trust may still be undecided");
 			trusted = true;
-			await vi.waitFor(() => assert.equal(session.registrations.length, 1), { timeout: 5_000 });
+			await elapse(5_000);
+			assert.equal(session.registrations.length, 1);
 		} finally {
 			await session.shutdown(ctx);
+			vi.useRealTimers();
 		}
 	});
 });
@@ -294,7 +302,7 @@ describe("a session whose folder stays untrusted", () => {
 			await elapse(10_000);
 			assert.equal(prompted.registrations.length, 0, "it waits while the folder's trust may still be decided");
 			await prompted.firstTurn(promptedCtx);
-			await elapse(1_000);
+			await elapse(5_000);
 			assert.equal(prompted.registrations.length, 1);
 		} finally {
 			await prompted.shutdown(promptedCtx);
@@ -315,25 +323,26 @@ describe("a session whose folder stays untrusted", () => {
 });
 
 describe("turning the startup join off", () => {
+	afterEach(() => vi.useRealTimers());
+
 	async function joinsWithin(ms: number): Promise<boolean> {
+		useBackoffClock();
 		const session = intercomSession();
 		const ctx = sessionContext({ mode: "tui" }, []);
 		try {
 			await session.start(ctx);
-			const deadline = Date.now() + ms;
-			while (session.registrations.length === 0 && Date.now() < deadline) {
-				await new Promise((resolve) => setTimeout(resolve, 50));
-			}
+			await elapse(ms);
 			return session.registrations.length > 0;
 		} finally {
 			await session.shutdown(ctx);
 			vi.restoreAllMocks();
+			vi.useRealTimers();
 		}
 	}
 
 	test("ATOMIC_INTERCOM_JOIN_AT_STARTUP=0 keeps an interactive session joining on first use", async () => {
 		process.env[JOIN_ENV] = "0";
-		assert.equal(await joinsWithin(500), false);
+		assert.equal(await joinsWithin(10_000), false);
 		const session = intercomSession();
 		const ctx = sessionContext({ mode: "tui" }, []);
 		try {
@@ -347,9 +356,9 @@ describe("turning the startup join off", () => {
 
 	test("joinAtStartup false in Intercom's config keeps it from joining, and the variable set to 1 overrides the config", async () => {
 		intercomConfig.joinAtStartup = false;
-		assert.equal(await joinsWithin(500), false);
+		assert.equal(await joinsWithin(10_000), false);
 		process.env[JOIN_ENV] = "1";
-		assert.equal(await joinsWithin(5_000), true);
+		assert.equal(await joinsWithin(10_000), true);
 	});
 });
 
@@ -392,10 +401,10 @@ describe("a startup join that cannot reach the broker", () => {
 		const ctx = sessionContext({ mode: "tui" }, []);
 		try {
 			await session.start(ctx);
-			await elapse(1_500);
-			assert.equal(session.registrations.length, 0);
+			await elapse(4_500);
+			assert.equal(session.registrations.length, 0, "the join and its first retry met no broker");
 			brokerDown = false;
-			await elapse(2_000);
+			await elapse(3_000);
 			assert.equal(session.registrations.length, 1);
 		} finally {
 			await session.shutdown(ctx);
@@ -421,7 +430,7 @@ describe("a startup join that cannot reach the broker", () => {
 		});
 		const retryingCtx = sessionContext({ mode: "tui" }, []);
 		await retrying.start(retryingCtx);
-		await elapse(1_500);
+		await elapse(4_500);
 		const before = attempts;
 		await retrying.shutdown(retryingCtx);
 		await elapse(60_000);

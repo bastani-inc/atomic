@@ -15,6 +15,7 @@ import {
 	INTERCOM_STARTUP_JOIN_EVENT,
 	type IntercomStartupJoinRequest,
 	joinsIntercomAtStartup,
+	STARTUP_JOIN_DELAY_MS,
 	STARTUP_JOIN_RETRIES,
 	startupJoinFromEnv,
 } from "./startup-join.js";
@@ -550,8 +551,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		await request.completion;
 	}
 	/**
-	 * Joins Intercom in the background once the session has started, so neither its first frame nor its first prompt
-	 * waits for the broker. A join that cannot reach the broker stays silent and is retried on the reconnect backoff a
+	 * Joins Intercom in the background a few seconds after the session has started, so neither its first frame nor its
+	 * first prompt waits for the broker or competes with loading Intercom. A join that cannot reach the broker stays silent and is retried on the reconnect backoff a
 	 * few times; the session then joins on its next Intercom use. A session whose folder is not trusted, whose trust
 	 * may still be being decided, waits on the same backoff for the folder to be trusted, and joins when its first turn
 	 * starts or that wait ends. The timers never keep the process alive, and a session that ends or is replaced drops
@@ -589,7 +590,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 					else scheduleStartupJoin(ctx, lease, generation, attempt + 1, startupSettled);
 				},
 			);
-		}, attempt === 0 ? 0 : reconnectDelayMs(attempt - 1));
+		}, attempt === 0 ? STARTUP_JOIN_DELAY_MS : reconnectDelayMs(attempt - 1));
 		join.timer.unref?.();
 	}
   pi.on("session_start", async (event, ctx) => {
