@@ -4,9 +4,11 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.10.2-alpha.1] - 2026-11-20
+
 ### Fixed
 
-- Fixed the broker watchdog not starting in a broker run with Node's `--input-type=module`, and a custom broker command's `--import` and `--require` preloads running again in it ([#6079](https://github.com/bastani-inc/atomic/issues/6079))
+- Fixed the broker watchdog not starting in a broker run with Node's `--input-type=module`, and a custom broker command's `--import` and `--require` preloads running again in it ([#6079](https://github.com/bastani-inc/atomic/issues/6079)).
 
 ## [0.10.0] - 2026-11-20
 

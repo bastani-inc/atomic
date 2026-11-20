@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-agent-core`. Its history up
 
 ## [Unreleased]
 
+## [0.10.2-alpha.1] - 2026-11-20
+
 ### Added
 
 - Assistant messages record `requestedThinkingBudget`, the thinking budget in tokens the request's thinking level resolved to with the agent's `thinkingBudgets` ([#6092](https://github.com/bastani-inc/atomic/pull/6092)).
