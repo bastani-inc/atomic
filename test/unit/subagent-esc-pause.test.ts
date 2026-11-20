@@ -92,7 +92,7 @@ async function blockedChild(runId: string) {
 }
 
 test(
-	"Esc pauses a busy subagent: its queued messages come back, and nothing restarts it until the next message, which continues it (EscPausesNotKills, PromptContinues)",
+	"Esc pauses a busy subagent: its queued messages come back, and nothing restarts it until the next message, which continues it",
 	async () => {
 		const child = await blockedChild("esc-pause-typed");
 		try {
