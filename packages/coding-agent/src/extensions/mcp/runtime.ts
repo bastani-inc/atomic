@@ -38,7 +38,7 @@ import {
 	type OAuthChallenge,
 	OAuthTemporarilyUnavailableError,
 } from "./client/oauth/index.js";
-import type { McpServerEntry } from "./config.ts";
+import { type McpServerEntry, mcpRequestTimeoutMs } from "./config.ts";
 import type { McpServerLog } from "./log.ts";
 import {
 	createMcpAuthProvider,
@@ -52,7 +52,6 @@ import type { McpToolCaller } from "./tools.ts";
 export { McpServerLog } from "./log.ts";
 export { McpOAuthCredentialStore, McpSignInCancelledError, signInMcpServer } from "./oauth.ts";
 
-const DEFAULT_TIMEOUT_SECONDS = 60;
 const STDERR_TAIL_CHARS = 2_000;
 /** Delays between attempts to connect to an HTTP server that failed with a transient error. */
 const CONNECT_RETRY_DELAYS_MS = [250, 1_000];
@@ -293,7 +292,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 	}
 
 	get timeoutMs(): number {
-		return (this.entry.config.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
+		return mcpRequestTimeoutMs(this.entry.config);
 	}
 
 	/** Server URL when the server authenticates with OAuth. */
