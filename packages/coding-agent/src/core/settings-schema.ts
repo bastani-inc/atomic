@@ -374,6 +374,7 @@ const PackageSourceSchema = Type.Union(
 			prompts: Type.Optional(Type.Array(Type.String())),
 			themes: Type.Optional(Type.Array(Type.String())),
 			mcpServers: Type.Optional(Type.Array(Type.String())),
+			agents: Type.Optional(Type.Array(Type.String())),
 		}),
 	],
 	{

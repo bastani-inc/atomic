@@ -183,6 +183,8 @@ Older sessions marked **internal** are excluded from `/resume`, `atomic -r`, and
 
 ## Recalling earlier work
 
+In a terminal that uses native scrollback, such as `TERM=dumb`, scroll back to see rows already printed. If an earlier turn predates the restored window and was never printed in this terminal, ask the agent to read it through `history://` or use `/export` to save the conversation.
+
 The agent can look back at this project's earlier sessions, even in a fresh session, through `history://` URLs that `read` and `search` accept. They go through the configured session store, so they work the same for the default SQLite store, JSONL directories, memory and custom stores. Subagents read the same history as the session that started them, with no extra configuration: a subagent lists the project's sessions rather than only its own, and opens its own transcript through its own `history://sessions/<id>` URL.
 
 | URL | Result |

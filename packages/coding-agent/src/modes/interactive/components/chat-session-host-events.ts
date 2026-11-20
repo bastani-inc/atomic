@@ -203,7 +203,7 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 		const firstUser = firstRawUserExactText(messages);
 		state.seenFirstRawUser = firstUser.seenUser;
 		state.firstUserEntryExactText = firstUser.exactText;
-		state.liveChat.replaceMessages(messages, state.extraEntries);
+		state.replaceTranscriptWindow(messages);
 		syncFirstUserEntry(state);
 		const meter = state.getSessionContextMeter?.(messages);
 		if (meter) restoreChatSessionTokens(state, meter);

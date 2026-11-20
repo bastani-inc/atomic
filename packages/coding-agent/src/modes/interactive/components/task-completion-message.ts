@@ -14,6 +14,10 @@ import {
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { reopenedCompletionName } from "../../../core/tasks/reopened-completion.js";
 import type { TaskTranscriptHistory, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import {
+	projectTaskCompletionEntries,
+	type TaskCompletionHistory,
+} from "../../../core/tasks/task-completion-history.js";
 import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
 import { theme } from "../theme/theme.js";
 import { keyHint, keyHintIfBound, keyText } from "./keybinding-hints.js";
@@ -342,21 +346,6 @@ function summarizeToolArgs(name: string, args: Record<string, unknown>): string 
 	return "";
 }
 
-function unwrapPromptText(task: string): string {
-	let text = task;
-	const forkMarker = "\n\nTask:\n";
-	const forkIndex = text.indexOf(forkMarker);
-	if (forkIndex >= 0 && text.startsWith("You are continuing from")) {
-		text = text.slice(forkIndex + forkMarker.length);
-	}
-	text = text.replace(
-		/\n\n---\n(?:Create and maintain progress at:|Update progress at:|Write your findings to:)\s*\S[^\n]*$/g,
-		"",
-	);
-	text = text.replace(/\n\n\[Write to:\s*[^\]\s][^\]\n]*\]\s*$/i, "");
-	return text.trim();
-}
-
 class SectionRecord implements Component {
 	private readonly heading: string;
 	private readonly content: Component;
@@ -417,6 +406,7 @@ interface ExtractedNoticeTranscript {
 }
 
 export type TaskCompletionTranscriptLoadResult =
+	| TaskCompletionHistory
 	| TaskTranscriptHistory
 	| ReturnType<TaskTranscriptSource["getEntries"]>
 	| undefined;
@@ -424,8 +414,10 @@ export type TaskCompletionTranscriptLoadResult =
 export interface TaskCompletionMessageOptions {
 	/** The host's independently witnessed header when the card is painted in another process. */
 	readonly reopenedStopName?: string;
+	/** Read when a card is expanded; `signal` aborts once no expanded card waits for the read. */
 	readonly loadTranscript?: (
 		taskId: TaskId,
+		options?: { readonly signal?: AbortSignal },
 	) => Promise<TaskCompletionTranscriptLoadResult> | TaskCompletionTranscriptLoadResult;
 	readonly hasTranscript?: (taskId: TaskId) => boolean;
 	readonly getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
@@ -433,8 +425,19 @@ export interface TaskCompletionMessageOptions {
 	readonly requestRender?: () => void;
 }
 
+/** A read for an expanded notice, shared by the cards that show it expanded while it runs. */
+interface NoticeLoad {
+	readonly result: Promise<ExtractedNoticeTranscript | null>;
+	readonly controller: AbortController;
+	users: number;
+}
+
 const expandedNoticeCache = new WeakMap<TaskCompletionNotice, ExtractedNoticeTranscript | null>();
-const pendingNoticeLoads = new WeakMap<TaskCompletionNotice, Promise<ExtractedNoticeTranscript | null>>();
+const pendingNoticeLoads = new WeakMap<TaskCompletionNotice, NoticeLoad>();
+
+function isCompletionHistory(loaded: object): loaded is TaskCompletionHistory {
+	return !Array.isArray(loaded) && (loaded as { kind?: unknown }).kind === "task-completion-history";
+}
 
 function formatUnavailableReason(reason: string): string {
 	const cleaned = cleanPreview(reason).trim();
@@ -600,79 +603,26 @@ function extractEntriesExpansion(
 	options?: TaskCompletionMessageOptions,
 ): ExtractedNoticeTranscript | undefined {
 	if (!loaded) return undefined;
-	const entries = Array.isArray(loaded) ? loaded : loaded.entries;
-	const unavailable = Array.isArray(loaded) ? undefined : loaded.unavailable;
-	if ((!entries || entries.length === 0) && !unavailable) return undefined;
-	const messages = (entries ?? []).flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
-	let prompt = "";
-	const resultsById = new Map<
-		string,
-		{
-			readonly content: readonly BuiltinToolBlockContentPart[];
-			readonly details?: unknown;
-			readonly text: string;
-			readonly isError: boolean;
-			readonly durationMs?: number;
-		}
-	>();
-	for (const message of messages) {
-		if (message.role === "user" && !prompt) {
-			if (typeof message.content === "string") prompt = unwrapPromptText(message.content);
-			else if (Array.isArray(message.content)) {
-				const text = message.content
-					.filter(
-						(part): part is { type: "text"; text: string } =>
-							part.type === "text" && typeof part.text === "string",
-					)
-					.map((part) => part.text)
-					.join("\n");
-				prompt = unwrapPromptText(text);
-			}
-		} else if (message.role === "toolResult" && "toolCallId" in message && typeof message.toolCallId === "string") {
-			const content: readonly BuiltinToolBlockContentPart[] = Array.isArray(message.content)
-				? (message.content as readonly BuiltinToolBlockContentPart[])
-				: [];
-			const text = content
-				.filter(
-					(part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string",
-				)
-				.map((part) => part.text)
-				.join("\n");
-			resultsById.set(message.toolCallId, {
-				content,
-				details: "details" in message ? message.details : undefined,
-				text,
-				isError: message.isError === true,
-				durationMs:
-					"durationMs" in message && typeof message.durationMs === "number" ? message.durationMs : undefined,
-			});
-		}
-	}
+	const history = isCompletionHistory(loaded)
+		? loaded
+		: Array.isArray(loaded)
+			? projectTaskCompletionEntries(loaded)
+			: projectTaskCompletionEntries(loaded.entries ?? [], loaded.unavailable);
+	const { prompt, unavailable } = history;
+	// No entries, or none that prompted the task, and no reason why: there is nothing more to show than the preview.
 	if (!prompt && !unavailable) return undefined;
 	const cwd = options?.cwd ?? process.cwd();
-	const toolBlocks: Component[] = [];
-	for (const message of messages) {
-		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const part of message.content) {
-			if (part.type !== "toolCall") continue;
-			const args =
-				typeof part.arguments === "object" && part.arguments !== null && !Array.isArray(part.arguments)
-					? (part.arguments as Record<string, unknown>)
-					: {};
-			const matched = typeof part.id === "string" ? resultsById.get(part.id) : undefined;
-			toolBlocks.push(
-				renderInnerNoticeToolCall({
-					id: typeof part.id === "string" ? part.id : "",
-					name: part.name,
-					args,
-					matched,
-					settledStatus,
-					getToolDefinition: options?.getToolDefinition,
-					cwd,
-				}),
-			);
-		}
-	}
+	const toolBlocks = history.toolCalls.map(({ id, name, args, result }) =>
+		renderInnerNoticeToolCall({
+			id,
+			name,
+			args,
+			matched: result as Parameters<typeof renderInnerNoticeToolCall>[0]["matched"],
+			settledStatus,
+			getToolDefinition: options?.getToolDefinition,
+			cwd,
+		}),
+	);
 	return {
 		prompt,
 		toolBlocks,
@@ -686,9 +636,9 @@ export class TaskCompletionMessage implements Component {
 	private expanded: boolean;
 	private readonly options: TaskCompletionMessageOptions | undefined;
 	private disposed = false;
-	private generation = 0;
 	private readonly loadedByTask = new Map<TaskId, ExtractedNoticeTranscript | null>();
-	private readonly pendingByTask = new Map<TaskId, Promise<void>>();
+	/** Reads this card waits for, while it is expanded. */
+	private readonly pendingByTask = new Map<TaskId, NoticeLoad>();
 	private readonly previewRows = new Map<TaskCompletionNotice, readonly string[]>();
 	private readonly expandedPreviews = new Map<TaskCompletionNotice, ToolBlockMarkdown>();
 	private stoppedName?: string;
@@ -769,22 +719,21 @@ export class TaskCompletionMessage implements Component {
 	setExpanded(expanded: boolean): void {
 		if (this.expanded === expanded) return;
 		this.expanded = expanded;
-		this.generation += 1;
-		if (!expanded) {
-			this.loadedByTask.clear();
-			this.pendingByTask.clear();
-			for (const notice of this.notices) {
-				expandedNoticeCache.delete(notice);
-				pendingNoticeLoads.delete(notice);
-			}
-		}
+		if (!expanded) this.release();
 	}
 
 	dispose(): void {
 		this.disposed = true;
-		this.generation += 1;
+		this.release();
+		this.previewRows.clear();
+	}
+
+	/** Folded or closed: drop what the expanded card showed, and stop reading for it once no other card waits. */
+	private release(): void {
 		this.loadedByTask.clear();
+		for (const load of this.pendingByTask.values()) if (--load.users === 0) load.controller.abort();
 		this.pendingByTask.clear();
+		this.expandedPreviews.clear();
 		for (const notice of this.notices) {
 			expandedNoticeCache.delete(notice);
 			pendingNoticeLoads.delete(notice);
@@ -820,28 +769,34 @@ export class TaskCompletionMessage implements Component {
 		const loader = this.options?.loadTranscript;
 		if (!loader || this.disposed) return undefined;
 		if (!this.pendingByTask.has(taskId)) {
-			const gen = this.generation;
-			let inflight = pendingNoticeLoads.get(notice);
-			if (!inflight) {
-				inflight = Promise.resolve()
-					.then(() => loader(taskId))
+			let load = pendingNoticeLoads.get(notice);
+			if (!load) {
+				const controller = new AbortController();
+				const result = Promise.resolve()
+					.then(() => loader(taskId, { signal: controller.signal }))
 					.then(
 						(loaded) => extractEntriesExpansion(loaded, status, this.options) ?? null,
 						() => null,
 					)
 					.finally(() => {
-						pendingNoticeLoads.delete(notice);
+						if (pendingNoticeLoads.get(notice) === created) pendingNoticeLoads.delete(notice);
 					});
-				pendingNoticeLoads.set(notice, inflight);
+				const created: NoticeLoad = { result, controller, users: 0 };
+				load = created;
+				pendingNoticeLoads.set(notice, created);
 			}
-			const pending = inflight.then((extracted) => {
-				if (this.disposed || !this.expanded || this.generation !== gen) return;
+			const joined = load;
+			joined.users += 1;
+			this.pendingByTask.set(taskId, joined);
+			void joined.result.then((extracted) => {
+				// A fold or close released this read: it never shows, and its rows are not kept.
+				if (this.pendingByTask.get(taskId) !== joined) return;
+				this.pendingByTask.delete(taskId);
+				joined.users -= 1;
 				this.loadedByTask.set(taskId, extracted);
 				expandedNoticeCache.set(notice, extracted);
-				this.pendingByTask.delete(taskId);
 				this.options?.requestRender?.();
 			});
-			this.pendingByTask.set(taskId, pending);
 		}
 		return undefined;
 	}

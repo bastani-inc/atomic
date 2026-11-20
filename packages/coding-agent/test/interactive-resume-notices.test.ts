@@ -46,6 +46,36 @@ test("resume notices stay on screen after the chat rebuild that follows deferred
 	assert.doesNotMatch(screen, /transient status written to the chat/);
 });
 
+test("a non-fullscreen transcript points to older saved rows once without loading them (#5593)", () => {
+	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode;
+	const chat = new Container();
+	let omitted = 0;
+	const manager = {
+		getEntries: () => [],
+		getLeafId: () => null,
+		getOmittedHistoryTotals: () => ({ totalMessages: omitted }),
+	};
+	Object.defineProperties(mode, {
+		sessionManager: { value: manager },
+		settingsManager: { value: { isProjectTrusted: () => true } },
+	});
+	Object.assign(mode, {
+		chatContainer: chat,
+		resourceDisclosureContainer: new Container(),
+		startupNoticesContainer: new Container(),
+		ui: { mode: "regular", requestRender() {} },
+		renderSessionEntries() {},
+	});
+	mode.rebuildChatFromMessages();
+	assert.doesNotMatch(rendered(chat), /\/export/);
+	omitted = 2000;
+	mode.rebuildChatFromMessages();
+	mode.rebuildChatFromMessages();
+	const screen = rendered(chat);
+	assert.match(screen, /history:\/\//);
+	assert.equal(screen.split("/export").length - 1, 1);
+});
+
 test("a startup without resume notices shows none (#4329)", () => {
 	const startupNoticesContainer = new Container();
 	const warnings: string[] = [];

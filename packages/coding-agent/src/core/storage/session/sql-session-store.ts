@@ -19,6 +19,7 @@ import {
 import { tryCleanupForkStaging } from "./fork-staging-maintenance.js";
 import { nativeForkReader, registerForkScope } from "./fork-store-scope.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
+import { registerHistorySnapshot } from "./history-snapshot.js";
 import {
 	branchRanges,
 	childCatalogCut,
@@ -78,6 +79,8 @@ import type {
 	SessionStoredEntry,
 	SessionSummary,
 	SessionTail,
+	SessionTaskReferenceDuplicatePage,
+	SessionTaskReferenceDuplicateQuery,
 	SessionToolUseSelection,
 	SessionTreeOutlineEntry,
 	SessionWriteOptions,
@@ -89,6 +92,8 @@ import {
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_BYTES,
 	SESSION_HISTORY_PAGE_ENTRIES,
+	SESSION_TASK_REFERENCE_CANDIDATES,
+	SESSION_TASK_REFERENCE_DUPLICATES_PAGE,
 } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
@@ -363,6 +368,37 @@ const LISTING_SCOPES = 8;
  */
 const SESSION_TRANSACTION: SqliteTransactionOptions = { retryTransientFailures: true };
 
+/** The largest content index or suffix length a task-reference query binds, an SQL `INTEGER` on every backend. */
+const TASK_REFERENCE_INTEGER = 2 ** 31 - 1;
+
+/**
+ * A task-reference duplicate query's bounds, checked, and its candidates as `[seq, block or -1, suffix or 0]` rows:
+ * integers only, so no entry ID is ever bound.
+ */
+function taskReferenceDuplicateQuery(query: SessionTaskReferenceDuplicateQuery): {
+	readonly candidates: readonly (readonly [number, number, number])[];
+	readonly afterSeq: number;
+	readonly limit: number;
+} {
+	const within = (value: unknown, min: number, max: number) =>
+		Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
+	const { throughSeq, afterSeq = 0, limit = SESSION_TASK_REFERENCE_DUPLICATES_PAGE } = query;
+	const invalid = (what: string) => new RangeError(`Invalid task-reference duplicate query: ${what}`);
+	if (!within(throughSeq, 0, Number.MAX_SAFE_INTEGER)) throw invalid("throughSeq");
+	if (!within(afterSeq, 0, Number.MAX_SAFE_INTEGER)) throw invalid("afterSeq");
+	if (!within(limit, 1, SESSION_TASK_REFERENCE_DUPLICATES_PAGE)) throw invalid("limit");
+	if (query.candidates.length > SESSION_TASK_REFERENCE_CANDIDATES) throw invalid("too many candidates");
+	const candidates = query.candidates.map(({ seq, contentIndex, suffixChars }) => {
+		if (!within(seq, 1, throughSeq)) throw invalid("candidate seq");
+		if (contentIndex !== undefined && !within(contentIndex, 0, TASK_REFERENCE_INTEGER))
+			throw invalid("candidate contentIndex");
+		if (suffixChars !== undefined && !within(suffixChars, 0, TASK_REFERENCE_INTEGER))
+			throw invalid("candidate suffixChars");
+		return [seq, contentIndex ?? -1, contentIndex === undefined ? (suffixChars ?? 0) : 0] as const;
+	});
+	return { candidates, afterSeq, limit };
+}
+
 /** A write revision: 32 random hex digits, the form SQLite's `lower(hex(randomblob(16)))` gave earlier builds. */
 function newRevision(): string {
 	return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -481,6 +517,16 @@ export class SqlSessionStore implements SessionStore {
 		this.blobTable = snapshotBlobs;
 		this.legacyBlobData = legacyBlobData;
 		if (searchIndex !== undefined) this.searchIndex = searchIndex;
+		registerHistorySnapshot(this, (sessionId, project) => {
+			this.assertOpen();
+			validateSessionText("sessionId", sessionId);
+			return this.transaction(async (tx) => {
+				const head = await this.historyHead(tx, sessionId);
+				return project(head.epoch, head.lastSeq, (from, through, backward) =>
+					this.historyPacket(tx, sessionId, head.epoch, from, through, backward),
+				);
+			}, SESSION_TRANSACTION);
+		});
 		this.forkStagingTable = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, prefix).forkStaging;
 	}
 
@@ -2519,6 +2565,57 @@ export class SqlSessionStore implements SessionStore {
 		return { lastSeq: Number(row.last_seq), epoch: row.epoch };
 	}
 
+	/** Size at most one page and return only fitting bodies, in the same snapshot as the header. The first
+	 * oversized row is a chunk reference; its full inline value never crosses the driver boundary. */
+	private async historyPacket(
+		tx: SqliteExecutor,
+		sessionId: string,
+		epoch: string,
+		from: number,
+		through: number,
+		backward: boolean,
+	): Promise<SessionHistoryItem[]> {
+		const edge = backward ? through : from;
+		const rows = await tx.all<SqliteRow & { seq: number; bytes: number | null; chunks: number; body: string | null }>(
+			`WITH sizes AS MATERIALIZED (
+				SELECT e.seq, e.chunks, CASE WHEN e.chunks = 0 THEN ${this.entryByteLength("e.entry_json")} ELSE (e.chunks - 1) * ? +
+					(SELECT length(c.data) FROM ${this.tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq AND c.idx = e.chunks - 1) END AS bytes
+				FROM ${this.tables.entries} e WHERE e.session_id = ? AND e.seq BETWEEN ? AND ?
+			), sized_page AS (
+				SELECT seq, chunks, bytes, sum(bytes) OVER (ORDER BY seq ${backward ? "DESC" : "ASC"}) AS cumulative FROM sizes
+			) SELECT p.seq, p.chunks, p.bytes, CASE WHEN p.chunks = 0 AND p.bytes <= ? THEN e.entry_json END AS body
+			FROM sized_page p JOIN ${this.tables.entries} e ON e.session_id = ? AND e.seq = p.seq
+			WHERE p.bytes IS NULL OR p.cumulative <= ? OR p.seq = ? ORDER BY p.seq`,
+			SESSION_ENTRY_CHUNK_BYTES,
+			sessionId,
+			from,
+			through,
+			SESSION_HISTORY_PAGE_BYTES,
+			sessionId,
+			SESSION_HISTORY_PAGE_BYTES,
+			edge,
+		);
+		const items: SessionHistoryItem[] = [];
+		for (const row of rows) {
+			const seq = Number(row.seq),
+				bytes = Number(row.bytes);
+			if (row.bytes === null)
+				throw new StorageUnavailableError(
+					this.descriptor,
+					new Error(`Missing final chunk of session entry ${seq}`),
+				);
+			if (bytes > SESSION_HISTORY_PAGE_BYTES) items.push({ kind: "oversized", sessionId, epoch, seq, bytes });
+			else
+				items.push({
+					seq,
+					entry: JSON.parse(
+						row.body ?? (await this.readEntryChunks(tx, sessionId, seq, Number(row.chunks))),
+					) as SessionEntry,
+				});
+		}
+		return items;
+	}
+
 	async readChildDisplayCut(sessionId: string, launch: ChildDisplayLaunch) {
 		const { childDisplayCut } = await import("./card-view.js");
 		const { index } = await this.prepareResume(sessionId);
@@ -3011,6 +3108,77 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("entry.id", entryId);
 		if (!(await this.readHeader(sessionId))) throw new SessionNotFoundError(sessionId);
 		return this.seqOfEntry(this.database, sessionId, entryId);
+	}
+
+	/**
+	 * Earlier entries that may save the same task reference as each candidate (#5593), in one statement on the session
+	 * links' entry-ID index: the statement reads each candidate's ID at its sequence itself, so no entry ID is bound or
+	 * returned, and no entry body is read. `undefined` while that index is still being built.
+	 */
+	async findTaskReferenceDuplicateCandidates(
+		sessionId: string,
+		query: SessionTaskReferenceDuplicateQuery,
+	): Promise<SessionTaskReferenceDuplicatePage | undefined> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const { candidates, afterSeq, limit } = taskReferenceDuplicateQuery(query);
+		return this.transaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId);
+			if (head.epoch !== query.epoch || head.lastSeq < query.throughSeq)
+				throw new SessionConflictError(sessionId, query.throughSeq, head.lastSeq);
+			if (candidates.length === 0) return { seqs: [] };
+			const t = snapshotIndexTables(this.prefix);
+			const links = t.sessionLinks;
+			/**
+			 * For each candidate `c`, the links row `s` at its sequence and then, with `earlier`, the rows `e` before it
+			 * under an ID, each found through an index, never by walking the session. Postgres plans a lateral subquery
+			 * behind `OFFSET 0` once per row before it; SQLite keeps a `CROSS JOIN`'s order. `+e.seq` keeps either from
+			 * reading the session's rows by sequence instead of by ID.
+			 */
+			const rowsOf = (earlier?: string) => {
+				const keys: [alias: string, column: string, key: string][] = [
+					["s", "entry_id", "s.session_id = ? AND s.seq = c.seq"],
+				];
+				if (earlier !== undefined)
+					keys.push([
+						"e",
+						"seq",
+						`e.session_id = ? AND e.entry_id = ${earlier} AND +e.seq < c.seq AND +e.seq > ?`,
+					]);
+				if (this.dialect.name !== "postgres")
+					return `c ${keys.map(([alias]) => `CROSS JOIN ${links} ${alias}`).join(" ")} WHERE ${keys.map(([, , key]) => key).join(" AND ")}`;
+				return `c ${keys.map(([alias, column, key]) => `CROSS JOIN LATERAL (SELECT ${alias}.${column} FROM ${links} ${alias} WHERE ${key} OFFSET 0) ${alias}`).join(" ")}`;
+			};
+			// The other ID that names the same reference: `<id>:<block>` for a block, the rest of a `<root>:<digits>` ID.
+			const other = `CASE WHEN c.idx >= 0 THEN s.entry_id || ':' || CAST(c.idx AS TEXT)
+				WHEN c.suffix > 0 AND c.suffix <= length(s.entry_id) AND substr(s.entry_id, length(s.entry_id) - c.suffix + 1, 1) = ':'
+				THEN substr(s.entry_id, 1, length(s.entry_id) - c.suffix) END`;
+			const values = candidates.map(
+				() => `(CAST(? AS ${this.dialect.types.int}), CAST(? AS INTEGER), CAST(? AS INTEGER))`,
+			);
+			const rows = await tx.all<SqliteRow & { kind: number; seq: number | null }>(
+				`WITH c(seq, idx, suffix) AS (VALUES ${values.join(", ")}),
+				hits AS (SELECT e.seq AS seq FROM ${rowsOf("s.entry_id")} UNION SELECT e.seq FROM ${rowsOf(other)})
+				SELECT 0 AS kind, (SELECT CASE WHEN backfilled_through >= watermark THEN 1 ELSE 0 END FROM ${t.sources} WHERE source = 'session-entries') AS seq
+				UNION ALL SELECT 1, count(*) FROM ${rowsOf()}
+				UNION ALL SELECT 2, page.seq FROM (SELECT seq FROM hits ORDER BY seq LIMIT ?) page`,
+				...candidates.flat(),
+				...[sessionId, sessionId, afterSeq, sessionId, sessionId, afterSeq, sessionId, limit + 1],
+			);
+			let indexed = false;
+			let found = 0;
+			const seqs: number[] = [];
+			for (const row of rows) {
+				if (Number(row.kind) === 0) indexed = Number(row.seq) === 1;
+				else if (Number(row.kind) === 1) found = Number(row.seq);
+				else seqs.push(Number(row.seq));
+			}
+			if (!indexed) return undefined;
+			// Every candidate's row is in the epoch the caller read; one that is not is no longer the history it read.
+			if (found !== candidates.length) throw new SessionConflictError(sessionId, query.throughSeq, head.lastSeq);
+			seqs.sort((a, b) => a - b);
+			return seqs.length > limit ? { seqs: seqs.slice(0, limit), nextAfterSeq: seqs[limit - 1]! } : { seqs };
+		}, SESSION_TRANSACTION);
 	}
 	async readForkWindow(sessionId: string, entryId: string, options?: { readonly archivedReceipts: true }) {
 		this.assertOpen();

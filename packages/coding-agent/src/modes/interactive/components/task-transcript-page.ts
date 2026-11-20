@@ -25,22 +25,31 @@ import {
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import { getOwnerTaskSession, isTaskTurnInterrupted, setTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import type { ChatBoxSession, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
-import { observedTaskChatWrite, readTaskChatPage, withTaskChatRows } from "../../../core/tasks/task-chat-records.js";
+import { observedTaskChatWrite, withTaskChatRows } from "../../../core/tasks/task-chat-records.js";
 import {
 	launchedTaskViewSource,
+	liveTaskRowOrigin,
+	readTaskPageForChat,
+	readTaskPageForView,
+	retainTaskWindowReader,
+	savedBoundaryCursor,
 	type TaskTranscriptView,
 	type TaskViewResult,
 	type TaskViewSource,
+	taskCursorsAround,
 } from "../../../core/tasks/task-view-source.js";
+import { noteSavedSeq } from "../../../core/tasks/transcript-origin.js";
 import { createSessionSkillAutocompleteProvider, getSkillCatalogCommands } from "../skill-command-autocomplete.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
-import type { ChatSessionHost } from "./chat-session-host.ts";
+import type { ChatSessionHost, SavedPageHandle } from "./chat-session-host.ts";
+import type { SavedPageNeighbours } from "./chat-session-host-saved-calls.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
-import { ScrollableComponentViewport } from "./chat-transcript.js";
+import { parseWheelReport, ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
 import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
+import type { ParkedTaskRows } from "./parked-rows.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
 import { pagedNotices, TaskTranscriptNotices } from "./task-transcript-notices.ts";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
@@ -218,8 +227,23 @@ function isTyping(data: string): boolean {
 	return [...data].every((ch) => ch >= " " && ch !== "\x7f");
 }
 
-async function settled<T>(read: T | Promise<T>): Promise<T> {
-	return read instanceof Promise ? await read : read;
+interface AdjacentRequest {
+	edge: "older" | "newer";
+	cursor: string;
+	generation: number;
+	controller: AbortController;
+	source?: WeakRef<TaskTranscriptSource>;
+}
+const finishAdjacent = Symbol();
+function deliverAdjacent(
+	weak: WeakRef<TaskAgentTranscriptPage>,
+	request: AdjacentRequest,
+	read: TaskViewResult<TaskTranscriptView> | Promise<TaskViewResult<TaskTranscriptView>>,
+): void {
+	void Promise.resolve(read).then(
+		(page) => weak.deref()?.[finishAdjacent](request, page),
+		(error) => weak.deref()?.[finishAdjacent](request, { ok: false, error: { message: failureText(error) } }),
+	);
 }
 
 /**
@@ -272,15 +296,31 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly requestRender: () => void;
 	private followed?: TaskTranscriptSource;
 	private followedSessionId?: string;
+	private legacyWindow?: ReturnType<typeof retainTaskWindowReader>;
+	private legacyWindowActive = false;
 	private observedWrites?: ObservedChatWrites;
 	private unsubscribe?: () => void;
 	private cursor?: string;
+	private newerCursor?: string;
+	private liveHistoryStart?: string;
+	private olderIntent = false;
+	/** Which way the reader last scrolled: a live chat reads saved pages only that way, never both at once. */
+	private travel: "older" | "newer" | undefined;
+	private goToFirst = false;
+	private windowGeneration = 0;
+	private readonly savedPages: (SavedPageHandle & { older?: string; newer?: string })[] = [];
+	/** Reads of the single saved entries next to the shown window; a new window or a closed view stops them. */
+	private boundaryReads = new AbortController();
 	readonly #notices = new TaskTranscriptNotices();
 	private loading = false;
 	private reloadPending = false;
-	private loadingEarlier = false;
+	private loadingEarlier?: AdjacentRequest;
+	private failedCursor?: string;
+	private latestRead?: AbortController;
 	/** A history-only transcript changed while the reader was away from its end; it is read again when they return. */
 	private behind = false;
+	/** A compaction retired the window while the reader was above its end: the next window keeps what they see. */
+	private parkOnLoad = false;
 	private disposed = false;
 	private shownPromptSessionId?: string;
 	private readonly unsubscribePrompts: () => void;
@@ -355,6 +395,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				(this.followed ?? this.source.followTaskTranscript(this.taskId)?.session)?.getEntries(),
 			requestRender,
 			taskRowsInChat: false,
+			savedTaskPages: true,
+			liveRowOrigin: (seq) => {
+				const session = this.followed ?? this.source.followTaskTranscript(this.taskId)?.session;
+				return session === undefined ? undefined : liveTaskRowOrigin(session, taskId, seq);
+			},
 			echoedInitialPrompt: () => (this.cursor === undefined ? this.echoedPrompt : undefined),
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
 			// The inspector takes Esc for this chat: it cancels the retry the subagent waits on, unless a question holds it.
@@ -362,7 +407,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			workingTokenCount: () => source.tasks.find((task) => task.ref.taskId === taskId)?.metrics?.tokenCount,
 			// A finished subagent's chat stays live, and a message resumes it; one stopped for good is read-only.
 			isDisabled: () => source.sendTaskMessage === undefined || this.readOnlyReason() !== undefined,
-			onNearTop: () => this.loadEarlier(),
+			onNearTop: () => this.loadAdjacent("older"),
+			onNearBottom: () => this.loadAdjacent("newer"),
 			// A subagent's `/tasks` lists the tasks it launched.
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
 			// The completion the subagent's chat offers, from its own cwd and skills.
@@ -428,11 +474,18 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		}
 		if (this.observedWrites?.pending && this.deferArchiveRead(this.source.followTaskTranscript(this.taskId))) return;
 		this.loading = true;
+		const controller = new AbortController();
+		this.latestRead = controller;
 		try {
-			// A synchronous read subscribes in the same turn, so no event queued during the read is missed.
-			const read = readTaskChatPage(this, this.source, this.taskId);
+			// A synchronous read subscribes in the same turn. A pending read never binds old rows to a replacement owner.
+			const before = this.source.followTaskTranscript(this.taskId);
+			const read = readTaskPageForChat(this, this.source, this.taskId, undefined, controller.signal);
 			const page = read instanceof Promise ? await read : read;
 			if (this.disposed) return;
+			if (read instanceof Promise && before?.session !== this.source.followTaskTranscript(this.taskId)?.session) {
+				this.reloadPending = true;
+				return;
+			}
 			this.adoptLatestPage(page);
 		} catch (error) {
 			if (!this.disposed) this.status = error instanceof Error ? error.message : String(error);
@@ -477,7 +530,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (this.deferArchiveRead(follow)) return;
 		if (follow?.session !== undefined && follow.session === this.followed) return;
 		// Reading a history-only transcript again replaces what is shown, so it waits while the reader is above the end.
-		if (follow?.historyOnly === true && this.chat.bodyScrollFromBottom() > 0) {
+		if (follow?.historyOnly === true && (this.newerCursor !== undefined || this.chat.bodyScrollFromBottom() > 0)) {
 			this.behind = true;
 			return;
 		}
@@ -486,7 +539,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	handleInput(data: string): boolean {
 		const handled = this.route(data);
-		if (this.behind && this.chat.bodyScrollFromBottom() === 0) {
+		if (this.behind && this.newerCursor === undefined && this.chat.bodyScrollFromBottom() === 0) {
 			this.behind = false;
 			void this.load();
 		}
@@ -495,11 +548,22 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	private route(data: string): boolean {
 		if (data === TRANSCRIPT_JUMP_TO_END_URL) {
+			if (this.newerCursor !== undefined || this.savedPages.length || this.loadingEarlier)
+				this.goToLatestSavedPage();
 			this.chat.scrollToBottom();
 			this.requestRender();
 			return true;
 		}
 		const keybindings = keybindingsOf(this.env.keybindings);
+		if (
+			this.failedCursor &&
+			(parseWheelReport(data) ||
+				matchesKey(data, "pageUp") ||
+				matchesKey(data, "pageDown") ||
+				keybindings.matches(data, "tui.altScreen.top") ||
+				keybindings.matches(data, "tui.altScreen.bottom"))
+		)
+			this.failedCursor = undefined;
 		if (!this.chat.hasTaskInspector && this.chat.hasTransientModal) {
 			const handled = this.chat.handleInput(data);
 			this.requestRender();
@@ -531,6 +595,45 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			}
 			form.handleInput(data);
 			this.requestRender();
+			return true;
+		}
+		if (!this.chat.hasTaskInspector) {
+			if (keybindings.matches(data, "tui.altScreen.top")) this.goToFirst = true;
+			else if (
+				parseWheelReport(data) ||
+				matchesKey(data, "pageUp") ||
+				matchesKey(data, "pageDown") ||
+				keybindings.matches(data, "tui.altScreen.halfPageUp") ||
+				keybindings.matches(data, "tui.altScreen.halfPageDown") ||
+				keybindings.matches(data, "tui.altScreen.previousPrompt") ||
+				keybindings.matches(data, "tui.altScreen.nextPrompt")
+			)
+				this.goToFirst = false;
+		}
+		if (
+			!this.chat.hasTaskInspector &&
+			(keybindings.matches(data, "tui.altScreen.top") ||
+				keybindings.matches(data, "tui.altScreen.halfPageUp") ||
+				keybindings.matches(data, "tui.altScreen.previousPrompt") ||
+				matchesKey(data, "pageUp") ||
+				parseWheelReport(data)?.direction === -1)
+		) {
+			this.olderIntent = true;
+			this.travel = "older";
+		} else if (
+			!this.chat.hasTaskInspector &&
+			(keybindings.matches(data, "tui.altScreen.halfPageDown") ||
+				keybindings.matches(data, "tui.altScreen.nextPrompt") ||
+				matchesKey(data, "pageDown") ||
+				parseWheelReport(data)?.direction === 1)
+		)
+			this.travel = "newer";
+		if (
+			!this.chat.hasTaskInspector &&
+			(this.newerCursor !== undefined || this.savedPages.length > 0 || this.loadingEarlier) &&
+			keybindings.matches(data, "tui.altScreen.bottom")
+		) {
+			this.goToLatestSavedPage();
 			return true;
 		}
 		// A read-only chat scrolls and keeps its keys, but takes no typing: nothing it sends could reach the task.
@@ -657,6 +760,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
+		this.cancelAdjacent();
+		this.latestRead?.abort();
+		this.boundaryReads.abort();
+		this.savedPages.length = 0;
+		this.legacyWindow = undefined;
 		if (this.observedWrites) this.observedWrites.onIdle = undefined;
 		this.observedWrites = undefined;
 		this.#notices.reset();
@@ -740,6 +848,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			nextSessionId === this.followedSessionId;
 		const sessionChanged =
 			session !== this.followed || (!sameConversation && nextSessionId !== this.followedSessionId);
+		const parked = this.parkOnLoad && !sessionChanged && session ? this.parkedRows(session) : undefined;
+		const parking = this.parkOnLoad;
+		this.parkOnLoad = false;
+		if (parking && !parked && !sessionChanged && this.chat.bodyScrollFromBottom() > 0) {
+			// A row the reader sees cannot be placed among the saved entries: keep the window until they return.
+			this.behind = true;
+			return;
+		}
 		if (sessionChanged) {
 			if (this.observedWrites) {
 				this.observedWrites.onIdle = undefined;
@@ -751,9 +867,47 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.chat.resetFollowedSession({ preserveWorkedRun: sameConversation && session === undefined });
 		}
 		this.followedSessionId = nextSessionId;
+		this.cancelAdjacent();
+		this.windowGeneration++;
+		this.savedPages.length = 0;
+		this.boundaryReads.abort();
+		this.boundaryReads = new AbortController();
+		this.newerCursor = undefined;
+		this.liveHistoryStart = undefined;
 		this.cursor = page.value.nextCursor;
+		this.legacyWindow = undefined;
+		this.legacyWindowActive = false;
+		this.chat.onUnplacedWidget?.(
+			session &&
+				!session.getEntrySeq &&
+				!session.entryReceipt &&
+				session.readHistory &&
+				session.getEarlierCursor &&
+				this.cursor &&
+				!this.cursor.includes(":")
+				? () => {
+						this.legacyWindow = retainTaskWindowReader(session, this.taskId);
+					}
+				: undefined,
+		);
 		const messages = page.value.messages;
-		withTaskChatRows(this.chat, page, () => this.chat.replaceMessages(messages, { preserveUnread: !sessionChanged }));
+		if (page.value.savedWindow && !session) this.attachSavedPage(page.value, "latest", page);
+		else
+			withTaskChatRows(this.chat, page, () =>
+				this.chat.replaceMessages(messages, {
+					preserveUnread: !sessionChanged,
+					parked,
+					before: this.boundaryReader(this.cursor, true, this.boundaryReads.signal),
+				}),
+			);
+		if (session && parked?.rows.length) {
+			// The rows the reader sees of the retired window stay as the saved page they are on; reads continue past it.
+			const around = taskCursorsAround(session, this.taskId, parked.first, parked.last);
+			this.liveHistoryStart = this.cursor;
+			this.savedPages.push({ ...this.chat.keptPage(parked.rows), ...around });
+			this.cursor = around.older;
+			this.newerCursor = around.newer;
+		}
 		this.#notices.adopt(page, messages, this.cursor !== undefined);
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
@@ -779,12 +933,37 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				turnAborted = false;
 				setTaskTurnInterrupted(this.source, this.taskId, true);
 			}
+			if (event.type === "message_end") {
+				// The receipt arrives with the end of the message the row was drawn from as it streamed.
+				const sent = event as { seq?: unknown };
+				const seq =
+					session.entryReceipt?.(event.message)?.seq ?? (typeof sent.seq === "number" ? sent.seq : undefined);
+				if (seq !== undefined) noteSavedSeq(event.message, seq);
+			}
 			const write = chatReceiptWrite(event);
 			if (write) {
 				this.observedWrites ??= new ObservedChatWrites();
 				this.observedWrites.observe(write);
 			}
 			this.chat.applyTaskAgentEvent(event);
+			if (event.type === "compaction_end" && event.result && !event.aborted && session.getEarlierCursor?.()) {
+				// Only a source that can replay the previous context authorizes releasing those rows. Never clear
+				// private SDK rows merely because they arrived before a new boundary.
+				this.cancelAdjacent();
+				this.windowGeneration++;
+				if (!session.getEntrySeq && !session.entryReceipt && this.chat.hasUnplacedWidget()) {
+					// With neither occurrence capability, only the original live transcript can place this stateful
+					// widget. Keep that view, including its new boundary. Never guess by text or display it twice.
+					this.legacyWindowActive = true;
+					this.behind = false;
+					this.parkOnLoad = false;
+				} else if (this.chat.bodyScrollFromBottom() === 0 && this.newerCursor === undefined) void this.load();
+				else if (session.getEntrySeq) {
+					// A reader above the end keeps only the rows they see; the rest of the retired window is released.
+					this.parkOnLoad = true;
+					void this.load();
+				} else this.behind = true;
+			}
 			this.requestRender();
 		});
 	}
@@ -824,33 +1003,166 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.chat.applyAgentEvent({ type: "queue_update", steering: queued.steering, followUp: queued.followUp });
 	}
 
-	private loadEarlier(): void {
-		const cursor = this.cursor;
-		if (cursor === undefined || this.loadingEarlier || this.loading || this.disposed) return;
-		this.loadingEarlier = true;
-		void (async () => {
-			try {
-				const page = await settled(readTaskChatPage(this, this.source, this.taskId, cursor));
-				if (this.disposed || cursor !== this.cursor) return;
-				if (!page.ok) {
-					this.cursor = undefined;
-					this.status = page.error.message;
-					return;
-				}
-				this.cursor = page.value.nextCursor;
-				const messages = page.value.messages;
-				this.#notices.adopt(page, messages, this.cursor !== undefined);
-				withTaskChatRows(this.chat, page, () => this.chat.prependMessages(messages));
-			} catch (error) {
-				if (this.disposed) return;
-				this.cursor = undefined;
-				this.status = error instanceof Error ? error.message : String(error);
-			} finally {
-				if (this.cursor === undefined) this.#notices.finishPaging();
-				this.loadingEarlier = false;
-				this.requestRender();
+	/** The rows the reader sees, at the window the followed session holds now. */
+	private parkedRows(session: TaskTranscriptSource): ParkedTaskRows | undefined {
+		let current = Number.POSITIVE_INFINITY;
+		for (const entry of session.getEntries()) current = Math.min(current, session.getEntrySeq?.(entry.id) ?? current);
+		return Number.isFinite(current) ? this.chat.parkedRows(current) : undefined;
+	}
+
+	private goToLatestSavedPage(): void {
+		this.cancelAdjacent();
+		this.windowGeneration++;
+		this.newerCursor = undefined;
+		this.behind = false;
+		this.olderIntent = false;
+		this.goToFirst = false;
+		this.chat.scrollToBottom();
+		if (this.followed) {
+			for (const page of this.savedPages.splice(0)) page.discard();
+			if (this.liveHistoryStart) this.cursor = this.liveHistoryStart;
+			this.requestRender();
+		} else void this.load();
+	}
+
+	/**
+	 * Reads, one saved entry per step, the entries from `cursor` on: newest first with `calls` (replies reduced to their
+	 * calls), else oldest first. Only saved transcripts read single entries.
+	 */
+	private boundaryReader(
+		cursor: string | undefined,
+		calls: boolean,
+		signal: AbortSignal,
+	): SavedPageNeighbours["before"] | undefined {
+		if (cursor === undefined || !cursor.includes(":")) return undefined;
+		const { source, taskId } = this;
+		return () => {
+			let next: string | undefined = cursor;
+			return {
+				async next() {
+					if (next === undefined || signal.aborted) return { done: true, value: undefined };
+					const page = await readTaskPageForView(source, taskId, savedBoundaryCursor(next, calls), signal);
+					if (!page.ok) throw new Error(page.error.message);
+					next = calls ? page.value.nextCursor : page.value.newerCursor;
+					return { done: false, value: page.value.messages };
+				},
+			};
+		};
+	}
+
+	private attachSavedPage(
+		page: TaskTranscriptView,
+		edge: "latest" | "older" | "newer",
+		result?: TaskViewResult<TaskTranscriptView>,
+	): void {
+		const reads = new AbortController();
+		const windowReads = this.boundaryReads.signal;
+		const signal = AbortSignal.any([reads.signal, windowReads]);
+		const neighbours: SavedPageNeighbours = {
+			before: this.boundaryReader(page.nextCursor, true, signal),
+			after: this.boundaryReader(page.newerCursor, false, signal),
+		};
+		let kept!: SavedPageHandle;
+		const show = () => {
+			kept = this.chat.showSavedPage(
+				page.messages,
+				edge,
+				neighbours,
+				edge === "newer" ? this.savedPages.at(-1)?.lastRow() : undefined,
+			);
+		};
+		// The page's rows carry where its saved lines go.
+		if (result) withTaskChatRows(this.chat, result, show);
+		else show();
+		const shown = {
+			...kept,
+			discard: () => {
+				reads.abort();
+				kept.discard();
+			},
+			older: page.nextCursor,
+			newer: page.newerCursor,
+		};
+		if (edge === "older") this.savedPages.unshift(shown);
+		else this.savedPages.push(shown);
+		// Keep the viewport and an adjacent page. A tall screen can span more: never evict a painted row.
+		while (this.savedPages.length > 2) {
+			const far = edge === "older" ? this.savedPages.at(-1)! : this.savedPages[0]!;
+			if (far.visible()) break;
+			if (edge === "older") this.savedPages.pop();
+			else this.savedPages.shift();
+			far.discard();
+		}
+		this.cursor = this.savedPages[0]?.older;
+		this.newerCursor = this.savedPages.at(-1)?.newer;
+	}
+
+	private cancelAdjacent(): void {
+		this.loadingEarlier?.controller.abort();
+		this.loadingEarlier = undefined;
+		this.failedCursor = undefined;
+	}
+	private loadAdjacent(edge: "older" | "newer"): void {
+		const cursor = edge === "older" ? this.cursor : this.newerCursor;
+		if (!cursor || cursor === this.failedCursor || this.loadingEarlier || this.loading || this.disposed) return;
+		if (edge === "older" && this.followed && cursor.includes(":") && !this.olderIntent) return;
+		// Saved pages on both sides of a live reader (pages kept through a compaction): read on the way they scroll.
+		if (this.followed && this.savedPages.length > 0 && this.travel !== edge) return;
+		const src = this.source.followTaskTranscript(this.taskId)?.session;
+		const request: AdjacentRequest = {
+			edge,
+			cursor,
+			generation: this.windowGeneration,
+			controller: new AbortController(),
+			source: src && new WeakRef(src),
+		};
+		this.loadingEarlier = request;
+		try {
+			deliverAdjacent(
+				new WeakRef(this),
+				request,
+				this.legacyWindowActive && this.legacyWindow && !cursor.includes(":")
+					? this.legacyWindow(cursor)
+					: readTaskPageForChat(this, this.source, this.taskId, cursor, request.controller.signal),
+			);
+		} catch (error) {
+			this[finishAdjacent](request, { ok: false, error: { message: failureText(error) } });
+		}
+	}
+	[finishAdjacent](request: AdjacentRequest, page: TaskViewResult<TaskTranscriptView>): void {
+		const { edge, cursor } = request;
+		if (this.disposed || this.loadingEarlier !== request) return;
+		this.loadingEarlier = undefined;
+		if (
+			request.generation !== this.windowGeneration ||
+			cursor !== (edge === "older" ? this.cursor : this.newerCursor) ||
+			request.source?.deref() !== this.source.followTaskTranscript(this.taskId)?.session
+		)
+			return;
+		try {
+			if (!page.ok) {
+				this.failedCursor = cursor;
+				this.status = page.error.message;
+				return;
 			}
-		})();
+			if (page.value.savedWindow && (this.savedPages.length || this.followed)) {
+				if (this.followed && this.liveHistoryStart === undefined) this.liveHistoryStart = cursor;
+				if (edge === "older") this.#notices.adopt(page, page.value.messages, page.value.nextCursor !== undefined);
+				this.attachSavedPage(page.value, edge, page);
+				if (edge === "older" && this.goToFirst) this.chat.scrollBodyTo(0);
+			} else {
+				this.cursor = page.value.nextCursor;
+				this.#notices.adopt(page, page.value.messages, this.cursor !== undefined);
+				withTaskChatRows(this.chat, page, () => this.chat.prependMessages(page.value.messages));
+			}
+			this.status = "";
+		} catch (error) {
+			this.failedCursor = cursor;
+			this.status = failureText(error);
+		} finally {
+			if (!this.cursor) this.#notices.finishPaging();
+			this.requestRender();
+		}
 	}
 
 	private async send(text: string): Promise<void> {

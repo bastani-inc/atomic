@@ -11,8 +11,13 @@ import {
 import type { AgentConfig } from "../agents/agents.js";
 
 type Theme = ExtensionContext["ui"]["theme"];
-const sources = ["project", "user", "builtin"] as const;
-const sourceLabels = { project: "Project agents", user: "User agents", builtin: "Built-in agents" };
+const sources = ["project", "user", "builtin", "package"] as const;
+const sourceLabels = {
+	project: "Project agents",
+	user: "User agents",
+	builtin: "Built-in agents",
+	package: "Package agents",
+};
 const clean = (text: string) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 
 /** Read-only catalog. Browsing a definition never launches or changes an agent. */
@@ -45,7 +50,9 @@ export class AgentBrowser implements Component, Focusable {
 	private matches(): AgentConfig[] {
 		const query = this.search.getValue().toLowerCase().trim();
 		return this.agents.filter((agent) =>
-			`${agent.name} ${agent.description} ${agent.source}`.toLowerCase().includes(query),
+			`${agent.name} ${agent.description} ${agent.source}${agent.packageOrigin ? ` ${agent.packageOrigin.source}` : ""}`
+				.toLowerCase()
+				.includes(query),
 		);
 	}
 	handleInput(data: string): boolean {
@@ -96,7 +103,12 @@ export class AgentBrowser implements Component, Focusable {
 			const section = (label: string, value: string) => {
 				body.push("", theme.fg("muted", theme.bold(label)), ...wrapTextWithAnsi(clean(value), inner));
 			};
-			body.push(theme.fg("dim", `${sourceLabels[agent.source]} · ${agent.defaultContext ?? "fresh"} context`));
+			body.push(
+				theme.fg(
+					"dim",
+					`${sourceLabels[agent.source]}${agent.packageOrigin ? ` · ${agent.packageOrigin.source}` : ""} · ${agent.defaultContext ?? "fresh"} context`,
+				),
+			);
 			section("Description", agent.description || "No description provided.");
 			section("Model", agent.model ?? "Inherits the current model");
 			if (agent.fallbackModels?.length) section("Fallbacks", agent.fallbackModels.join(" → "));

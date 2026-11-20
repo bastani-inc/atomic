@@ -3,6 +3,7 @@ import { type AnsiTheme, type MermaidArt, render, toAnsi } from "lovely-mermaid"
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import type { MermaidRenderingMode } from "../../../core/settings-manager.ts";
 import type { Theme, ThemeColor } from "../theme/theme.js";
+import { replayableMarkdownTransform } from "./markdown-transform.ts";
 
 const markdownParser = new Marked();
 
@@ -71,7 +72,7 @@ function themedLines(art: MermaidArt, theme: MermaidTheme): string[] {
 
 /** Create a transformer that replaces top-level Mermaid code blocks with Unicode terminal diagrams. */
 export function createMermaidMarkdownTransformer(options: MermaidTransformerOptions): MarkdownTransformer {
-	return (markdown, context) => {
+	return replayableMarkdownTransform((markdown, context) => {
 		const mode = options.getMode();
 		// Diagrams render in user and assistant text and in model-written summaries, not in thinking or other surfaces.
 		if (
@@ -104,5 +105,5 @@ export function createMermaidMarkdownTransformer(options: MermaidTransformerOpti
 				return `${lines.map(codeSpan).join("  \n")}\n`;
 			})
 			.join("");
-	};
+	});
 }

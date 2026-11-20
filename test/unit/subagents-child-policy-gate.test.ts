@@ -24,7 +24,7 @@ interface MinimalAgentConfig {
 	inheritProjectContext: boolean;
 	inheritSkills: boolean;
 	systemPrompt: string;
-	source: "builtin" | "user" | "project";
+	source: "builtin" | "user" | "project" | "package";
 	filePath: string;
 }
 

@@ -43,6 +43,8 @@ export interface ResolvedPaths {
 /** The host also discovers read-only recipe candidates. Never load these as extensions or other resources. */
 export interface PackageDiscovery extends ResolvedPaths {
 	legacyWorkflowFiles: ResolvedResource[];
+	/** Subagent definitions from package manifests' `agents` field, read by the subagent extension. */
+	agents: ResolvedResource[];
 }
 
 /** A configured package that could not be installed while resolving resources. */
@@ -192,14 +194,19 @@ export interface PiManifest {
 	mcpServers?: string | Record<string, McpServerConfig>;
 	/** Storage adapter modules, relative to the package root, that `storage.adapter` can select by package name. */
 	storageAdapters?: string[];
+	/** Subagent definition files or directories of `.md` files, relative to the package root. */
+	agents?: string[];
 }
 
 export type ResourceType = "extensions" | "skills" | "prompts" | "themes";
 
 export const RESOURCE_TYPES: ResourceType[] = ["extensions", "skills", "prompts", "themes"];
 
-/** File discovery is also shared by the read-only migration catalog. */
-export const FILE_KINDS = [...RESOURCE_TYPES, "legacyWorkflowFiles"] as const;
+/**
+ * File discovery is also shared by the read-only migration catalog and by package subagent definitions, which come
+ * only from a manifest's `agents` field.
+ */
+export const FILE_KINDS = [...RESOURCE_TYPES, "legacyWorkflowFiles", "agents"] as const;
 export type FileKind = (typeof FILE_KINDS)[number];
 
 export const FILE_PATTERNS: Record<FileKind, RegExp> = {
@@ -208,6 +215,7 @@ export const FILE_PATTERNS: Record<FileKind, RegExp> = {
 	prompts: /\.md$/,
 	themes: /\.json$/,
 	legacyWorkflowFiles: new RegExp("\\.(?:ts|js|mjs|cjs)$", process.platform === "win32" ? "i" : ""),
+	agents: /\.md$/,
 };
 
 export type ResourceEntry = { metadata: PathMetadata; enabled: boolean };
@@ -219,6 +227,7 @@ export interface ResourceAccumulator {
 	prompts: ResourceMap;
 	themes: ResourceMap;
 	legacyWorkflowFiles: ResourceMap;
+	agents: ResourceMap;
 	/** Keyed by declaring file and server name; the first resolution of a package wins. */
 	mcpServers: Map<string, ResolvedMcpServer>;
 }
@@ -230,6 +239,7 @@ export interface PackageFilter {
 	prompts?: string[];
 	themes?: string[];
 	mcpServers?: string[];
+	agents?: string[];
 }
 
 export interface ResolveExtensionSourcesOptions {

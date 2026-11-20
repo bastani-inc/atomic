@@ -29,6 +29,8 @@ import type {
 	SessionStore,
 	SessionSummary,
 	SessionTail,
+	SessionTaskReferenceDuplicatePage,
+	SessionTaskReferenceDuplicateQuery,
 	SessionWriteOptions,
 	SessionWriteResult,
 	StorageDescriptor,
@@ -293,6 +295,24 @@ export class LegacySessionStore implements SessionStore {
 		if (this.inner.findEntrySeq) return this.inner.findEntrySeq(sessionId, entryId);
 		const index = (await this.inner.load(sessionId)).entries.findLastIndex((entry) => entry.id === entryId);
 		return index < 0 ? undefined : index + 1;
+	}
+
+	/**
+	 * The wrapped store's answer, or `undefined` when it has no entry-ID index or the session is still only a legacy
+	 * file: a legacy session is never converted, nor its history loaded, for this query.
+	 */
+	async findTaskReferenceDuplicateCandidates(
+		sessionId: string,
+		query: SessionTaskReferenceDuplicateQuery,
+	): Promise<SessionTaskReferenceDuplicatePage | undefined> {
+		if (this.inner.findTaskReferenceDuplicateCandidates === undefined) return undefined;
+		try {
+			return await this.inner.findTaskReferenceDuplicateCandidates(sessionId, query);
+		} catch (error) {
+			if (error instanceof SessionNotFoundError && (await this.findLegacy(sessionId)) !== undefined)
+				return undefined;
+			throw error;
+		}
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {

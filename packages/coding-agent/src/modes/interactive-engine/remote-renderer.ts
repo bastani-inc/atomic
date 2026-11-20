@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
+import { savedReadLines } from "../../core/storage/session/saved-read-summary.js";
 import { reopenedCompletionName } from "../../core/tasks/reopened-completion.js";
 import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
@@ -85,7 +86,26 @@ function jsonValue(value: unknown): JsonValue {
 	return encoded === undefined ? null : (JSON.parse(encoded) as JsonValue);
 }
 
+const remoteRows = new WeakSet<Component>();
+/** Identify our renderer without walking an opaque extension widget's prototype chain. */
+export function remoteHistoryRow(component: Component): RemoteRenderer | undefined {
+	return remoteRows.has(component) ? (component as RemoteRenderer) : undefined;
+}
 abstract class RemoteRenderer implements Component {
+	readonly selectionTextMayChangeOnReplay = true;
+	private inspectHistoryReplay = false;
+	private canReplay = false;
+	private releaseIfRetired?: () => void;
+	get historyReplayable(): boolean {
+		this.inspectHistoryReplay = true;
+		return this.canReplay;
+	}
+	onReplayabilityChange(release: () => void): void {
+		this.releaseIfRetired = release;
+	}
+	get unrendered(): boolean {
+		return this.requestId === 0;
+	}
 	protected readonly componentId = `remote_renderer_${++nextRemoteRendererId}`;
 	private lines = NOT_RENDERED_YET;
 	private width = 0;
@@ -115,6 +135,7 @@ abstract class RemoteRenderer implements Component {
 	constructor(runtime: IsolatedInteractiveRuntime, requestRender: () => void) {
 		this.runtime = runtime;
 		this.requestRender = requestRender;
+		remoteRows.add(this);
 		this.routes = rendererRoutes(runtime);
 		this.routes.rows.set(this.componentId, this);
 	}
@@ -164,7 +185,9 @@ abstract class RemoteRenderer implements Component {
 			rememberFrame(identity, message.lines);
 			if (scope !== runtimeFrameScope(this.runtime)) return;
 			this.appliedRequestId = message.requestId;
+			this.canReplay = message.historyReplayable === true;
 			this.lines = message.lines;
+			if (this.canReplay) this.releaseIfRetired?.();
 			this.requestRender();
 		} else if (message.type === "engine_custom_invalidate") {
 			this.changed();
@@ -191,7 +214,10 @@ abstract class RemoteRenderer implements Component {
 			if (this.lines === NOT_RENDERED_YET) this.lines = recentFrames.get(identity) ?? NOT_RENDERED_YET;
 			this.requestIdentities.set(++this.requestId, identity);
 			this.requestScopes.set(this.requestId, scope);
-			this.runtime.sendEngineCommand(this.command(this.requestId, width));
+			const request = this.command(this.requestId, width);
+			this.runtime.sendEngineCommand(
+				this.inspectHistoryReplay ? { ...request, inspectHistoryReplay: true } : request,
+			);
 		}
 		// The engine child re-renders asynchronously; until the fresh frame
 		// arrives, the previous frame may be wrapped for an older terminal
@@ -207,6 +233,7 @@ abstract class RemoteRenderer implements Component {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.releaseIfRetired = undefined;
 		if (this.routes.rows.get(this.componentId) === this) this.routes.rows.delete(this.componentId);
 		this.requestIdentities.clear();
 		this.requestScopes.clear();
@@ -357,8 +384,10 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	}
 
 	protected command(requestId: number, width: number): RemoteRenderCommand {
+		const lines = savedReadLines(this.result?.content);
 		return {
 			type: "engine_tool_render",
+			...(lines === undefined ? {} : { savedReadLines: lines }),
 			componentId: this.componentId,
 			requestId,
 			width,

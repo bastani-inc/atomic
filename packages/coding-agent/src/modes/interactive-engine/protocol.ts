@@ -131,6 +131,8 @@ export type InteractiveEngineMessage =
 			lines: string[];
 			/** For a row's click check, whether changing only its expansion changes these rows. */
 			expansionChangesRows?: boolean;
+			/** Only sent in response to a historical row asking whether its renderer can be recreated. */
+			historyReplayable?: true;
 			scrollRequest?: WidgetScrollRequest;
 			/** The frame's number, counting the component's frames from 1; a click names the frame it landed on. */
 			frame?: number;
@@ -268,9 +270,12 @@ export type InteractiveEngineCommand =
 			toolName: string;
 			toolCallId: string;
 			compareExpansion?: true;
+			inspectHistoryReplay?: true;
 			rendererTaskId?: string;
 			args: JsonValue;
 			result?: JsonObject;
+			/** Display-only summary for a saved read whose body was too large for its page. */
+			savedReadLines?: number | null;
 			executionStarted: boolean;
 			executionStartedAt?: number;
 			argsComplete: boolean;
@@ -290,6 +295,7 @@ export type InteractiveEngineCommand =
 			reopenedStopName?: string;
 			expanded: boolean;
 			compareExpansion?: true;
+			inspectHistoryReplay?: true;
 			outputPad: number;
 	  }
 	| { type: "engine_render_dispose"; componentId: string }
@@ -625,6 +631,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						componentId: value.componentId,
 						requestId: value.requestId,
 						lines: value.lines,
+						...(value.historyReplayable === true ? { historyReplayable: true } : {}),
 						...(typeof value.expansionChangesRows === "boolean"
 							? { expansionChangesRows: value.expansionChangesRows }
 							: {}),
@@ -883,11 +890,18 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			requestId: value.requestId,
 			width: value.width,
 			toolName: value.toolName,
+			...(value.inspectHistoryReplay === true ? { inspectHistoryReplay: true } : {}),
 			...(value.compareExpansion === true ? { compareExpansion: true } : {}),
 			...(value.rendererTaskId === undefined ? {} : { rendererTaskId: value.rendererTaskId }),
 			toolCallId: value.toolCallId,
 			args: value.args,
 			result: isJsonObject(value.result) ? value.result : undefined,
+			...(value.savedReadLines === null ||
+			(typeof value.savedReadLines === "number" &&
+				Number.isSafeInteger(value.savedReadLines) &&
+				value.savedReadLines >= 0)
+				? { savedReadLines: value.savedReadLines }
+				: {}),
 			executionStarted: value.executionStarted,
 			argsComplete: value.argsComplete,
 			isPartial: value.isPartial,
@@ -916,6 +930,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			requestId: value.requestId,
 			width: value.width,
 			message: value.message,
+			...(value.inspectHistoryReplay === true ? { inspectHistoryReplay: true } : {}),
 			...(typeof value.reopenedStopName === "string" ? { reopenedStopName: value.reopenedStopName } : {}),
 			...(value.compareExpansion === true ? { compareExpansion: true } : {}),
 			expanded: value.expanded,
