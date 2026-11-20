@@ -112,6 +112,12 @@ export interface RuntimeBuildOptions {
 	powerShellAvailable: boolean;
 }
 
+/** The settlement of the run a `pauseTurn` ended. Spelled out, as published declarations may predate `PromiseWithResolvers`. */
+export interface TurnPause {
+	readonly promise: Promise<void>;
+	resolve(): void;
+}
+
 export interface AgentSessionQueuePauseControl {
 	readonly queuedMessagesPaused: boolean;
 	/** Whether Esc in the session's chat paused it (`pauseTurn`): its queue is held until the user continues it. */
@@ -616,8 +622,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_undeliveredAgentStarts: number;
 	/** A child whose turn the user interrupted waits here: the next message it receives starts its next turn. */
 	_awaitingMessageAfterInterrupt: boolean;
-	/** A `pauseTurn` holds the queue: settles once its run did, and the next message releases the hold. */
-	_turnPause: PromiseWithResolvers<void> | undefined;
+	/** A `pauseTurn` holds the queue: settles once its run did, and the user's continue releases the hold. */
+	_turnPause: TurnPause | undefined;
 	/** The release of a `pauseTurn` hold under way, which every next message waits for. */
 	_turnPauseRelease: Promise<void> | undefined;
 	_pendingInterruptDeliveries: number;
