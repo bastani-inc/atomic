@@ -176,6 +176,7 @@ export interface InProcessChildPromptBehavior {
 		readonly transform: (sections: Record<string, string>) => Record<string, string>;
 		readonly fork?: {
 			readonly sessionId: string;
+			readonly hiddenTools?: readonly string[];
 			readonly note: (tools: {
 				readonly tools: readonly string[];
 				readonly throughCodemode: readonly string[];
@@ -256,7 +257,7 @@ export function forkedChildNote(tools: {
 export function createInProcessChildPromptBehavior(
 	policy: ChildPromptPolicy,
 	explicitSkillInjection = "",
-	fork?: { readonly parentSessionId: string },
+	fork?: { readonly parentSessionId: string; readonly parentHiddenTools?: readonly string[] },
 ): InProcessChildPromptBehavior {
 	const systemPromptSections = {
 		key: JSON.stringify([policy.inheritProjectContext, policy.inheritSkills, policy.fanoutAuthorized]),
@@ -268,7 +269,11 @@ export function createInProcessChildPromptBehavior(
 			systemPromptTransform,
 			systemPromptSections: {
 				...systemPromptSections,
-				fork: { sessionId: fork.parentSessionId, note: forkedChildNote },
+				fork: {
+					sessionId: fork.parentSessionId,
+					...(fork.parentHiddenTools?.length ? { hiddenTools: fork.parentHiddenTools } : {}),
+					note: forkedChildNote,
+				},
 			},
 		};
 	const project = (messages: AgentMessage[]) => stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized);

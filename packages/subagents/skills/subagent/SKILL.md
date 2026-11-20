@@ -442,7 +442,7 @@ A strong pattern is one writer plus advisory/research/review specialists around 
 
 ### Use fork for branched writer threads
 
-Forked runs are useful when a writer should reason in a separate thread while still inheriting the parent's accumulated context. A fork on the parent's model and thinking level reads the parent's conversation from the prompt cache, so forking a long conversation costs little input; a fork on another model, provider or thinking level reads nothing from it. For adversarial review, prefer fresh-context specialists that inspect the repo and diff directly unless the user explicitly requests forked context.
+Forked runs are useful when a writer should reason in a separate thread while still inheriting the parent's accumulated context. A fork on the parent's model and thinking level reads the parent's conversation from the prompt cache, so forking a long conversation costs little input; a fork on another model or provider reads nothing from it, and one on another thinking level may read only part of it, depending on the model. For adversarial review, prefer fresh-context specialists that inspect the repo and diff directly unless the user explicitly requests forked context.
 
 ### Prefer narrow tasks
 

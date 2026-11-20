@@ -13,6 +13,7 @@ import {
 	type Model,
 } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
+import type { AgentSessionInternalSurface } from "../../packages/coding-agent/src/core/agent-session-methods.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
@@ -23,6 +24,8 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import type { Skill } from "../../packages/coding-agent/src/core/skills.js";
 import { createSyntheticSourceInfo } from "../../packages/coding-agent/src/core/source-info.js";
 import { forkToolDeclarations } from "../../packages/coding-agent/src/core/transformed-system-prompt.js";
+import { createCodemodeExtension } from "../../packages/coding-agent/src/extensions/codemode/index.js";
+import { createTestExtensionsResult } from "../../packages/coding-agent/test/utilities.js";
 import { createInProcessChildPromptBehavior } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import { wrapForkTask } from "../../packages/subagents/src/shared/types-runtime.js";
@@ -66,9 +69,12 @@ function skill(name: string, description: string): Skill {
 	};
 }
 
-function resourceLoader(systemPrompt: string | undefined): ResourceLoader {
+function resourceLoader(
+	systemPrompt: string | undefined,
+	extensions?: Awaited<ReturnType<typeof createTestExtensionsResult>>,
+): ResourceLoader {
 	return {
-		getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+		getExtensions: () => extensions ?? { extensions: [], errors: [], runtime: createExtensionRuntime() },
 		getSkills: () => ({
 			skills: [skill("parent-skill", "PARENT_SKILL_SENTINEL"), skill("subagent", "Delegate work to subagents.")],
 			diagnostics: [],
@@ -161,18 +167,31 @@ async function recordingRuntime(compat: object, reply: Reply = textReply) {
 	return { runtime, parentModel, otherModel, requests };
 }
 
-async function openParent(manager: SessionManager, runtime: ModelRuntime, model: Model<"anthropic-messages">) {
+async function codemodeOnly() {
+	return createTestExtensionsResult([
+		{ path: "builtin:codemode", factory: createCodemodeExtension({ mode: "only" }) },
+	]);
+}
+
+async function openParent(
+	manager: SessionManager,
+	runtime: ModelRuntime,
+	model: Model<"anthropic-messages">,
+	options: { tools?: string[]; codemodeOnly?: boolean } = {},
+) {
 	const cwd = manager.getCwd();
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir: cwd,
 		model,
+		// Scripted replies carry no thinking blocks, so requests do not enable thinking.
+		thinkingLevel: "off",
 		modelRuntime: runtime,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager: manager,
-		resourceLoader: resourceLoader(undefined),
+		resourceLoader: resourceLoader(undefined, options.codemodeOnly ? await codemodeOnly() : undefined),
 		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
-		tools: ["read", "bash", "edit"],
+		tools: options.tools ?? ["read", "bash", "edit"],
 	});
 	cleanups.push(() => session.dispose());
 	return session;
@@ -183,7 +202,12 @@ async function openFork(
 	manager: SessionManager,
 	runtime: ModelRuntime,
 	model: Model<"anthropic-messages">,
-	options: { tools?: string[]; policy?: typeof narrow } = {},
+	options: {
+		tools?: string[];
+		policy?: typeof narrow;
+		codemodeOnly?: boolean;
+		parentHiddenTools?: readonly string[];
+	} = {},
 ) {
 	const cwd = manager.getCwd();
 	const policy = options.policy ?? narrow;
@@ -191,15 +215,18 @@ async function openFork(
 	assert.ok(parentSessionId, "a fork's session names its parent");
 	const behavior = createInProcessChildPromptBehavior(policy, '<skill name="checks">\nRun the checks.\n</skill>', {
 		parentSessionId,
+		parentHiddenTools: options.parentHiddenTools,
 	});
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir: cwd,
 		model,
+		// Scripted replies carry no thinking blocks, so requests do not enable thinking.
+		thinkingLevel: "off",
 		modelRuntime: runtime,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager: manager,
-		resourceLoader: resourceLoader("You review changes."),
+		resourceLoader: resourceLoader("You review changes.", options.codemodeOnly ? await codemodeOnly() : undefined),
 		subagentPolicy: { ...policy, managementActions: "restricted", depth: 1 },
 		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: options.tools ?? ["read"],
@@ -243,17 +270,19 @@ function added(before: AnthropicPayload, after: AnthropicPayload): string {
 	return cachedPrefix(after).slice(cachedPrefix(before).length).join("\n");
 }
 
-async function parentAndFork(compat: object, reply?: Reply) {
+async function parentAndFork(compat: object, reply?: Reply, parentOptions?: Parameters<typeof openParent>[3]) {
 	const dir = makeTempDirectory("atomic-fork-cache-");
 	cleanups.push(() => removeTempDirectory(dir));
 	const recorded = await recordingRuntime(compat, reply);
 	const parentManager = SessionManager.inMemory(dir);
-	const parent = await openParent(parentManager, recorded.runtime, recorded.parentModel);
+	const parent = await openParent(parentManager, recorded.runtime, recorded.parentModel, parentOptions);
 	await parent.prompt("first parent task");
 	await parent.prompt("second parent task");
 	const forkManager = await createForkContextResolver(parentManager, "fork").sessionManagerForIndex(0);
 	assert.ok(forkManager);
-	return { ...recorded, parentManager, forkManager };
+	// What the runner reads from the parent when it starts the child.
+	const childOptions = (parent as unknown as AgentSessionInternalSurface)._childSessionOptions?.({});
+	return { ...recorded, parentManager, forkManager, parentHiddenTools: childOptions?.parentHiddenTools };
 }
 
 describe("a forked subagent continues its parent's cached request", () => {
@@ -311,6 +340,30 @@ describe("a forked subagent continues its parent's cached request", () => {
 		assert.ok(extendsRequest(parentLast, forkFirst));
 		assert.match(JSON.stringify(forkFirst.system), /PROJECT_CONTEXT_SENTINEL[\s\S]*PARENT_SKILL_SENTINEL/);
 		assert.doesNotMatch(added(parentLast, forkFirst), /section \\"(project_context|skills)\\"/);
+	});
+
+	test("sends the parent's tool list as the parent did when the parent's codemode hides its other tools", async () => {
+		for (const compat of [NATIVE, FLAT_TOOLS]) {
+			const { runtime, parentModel, requests, forkManager, parentHiddenTools } = await parentAndFork(
+				compat,
+				undefined,
+				{
+					tools: ["read", "bash", "codemode"],
+					codemodeOnly: true,
+				},
+			);
+			assert.deepEqual([...(parentHiddenTools ?? [])].sort(), ["bash", "read"]);
+			const child = await openFork(forkManager, runtime, parentModel, {
+				tools: ["read", "codemode"],
+				codemodeOnly: true,
+				parentHiddenTools,
+			});
+			await child.prompt(wrapForkTask("child task"));
+
+			const [, parentLast, forkFirst] = requests.map((request) => request.payload);
+			assert.ok(extendsRequest(parentLast, forkFirst), "the fork declares the tools the parent declared");
+			assert.doesNotMatch(added(parentLast, forkFirst), /"name":"bash"/);
+		}
 	});
 
 	test("refuses a call to a parent tool outside its policy", async () => {

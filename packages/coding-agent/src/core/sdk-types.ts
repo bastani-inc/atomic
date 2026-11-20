@@ -154,6 +154,11 @@ export interface CreateAgentSessionOptions {
 	 */
 	parentUsageSink?: (usage: import("@bastani/atomic-ai/compat").Usage) => void;
 	/**
+	 * Internal: in options from `getChildSessionOptions()`, the tools the parent's requests declare but hide (codemode
+	 * reaches them), so a fork of its conversation sends that conversation as the parent did.
+	 */
+	parentHiddenTools?: readonly string[];
+	/**
 	 * Internal: called with `true` when this session starts waiting for its resource-admission permit and `false` when
 	 * the wait ends, so an in-process subagent's start budget can tell that wait from the rest of its setup.
 	 */
@@ -192,6 +197,8 @@ export interface SystemPromptSectionsTransform {
 	 */
 	readonly fork?: {
 		readonly sessionId: string;
+		/** The tools the other session's requests declared but hid; see `parentHiddenTools`. */
+		readonly hiddenTools?: readonly string[];
 		/** The note that opens what the fork adds: the tools it may call, and those it reaches through codemode. */
 		readonly note: (tools: {
 			readonly tools: readonly string[];

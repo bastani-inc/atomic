@@ -21,7 +21,7 @@ import {
 	holdToolsUntilBuilt,
 } from "./resume/blueprint/barrier.ts";
 import { sessionBlobOutput } from "./session-tool-output.ts";
-import { projectToolLoadout } from "./tool-loadout.js";
+import { isToolDeclarationHidden, projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 import { projectTransformedPrompt, toolChangeSupport, transformedPromptOwner } from "./transformed-system-prompt.ts";
 import { workspaceSandboxDenial } from "./workspace/session.ts";
@@ -318,9 +318,10 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 						transformedPromptOwner(this.sessionManager.getSessionId(), sections.key),
 						toolChangeSupport(this.model?.compat),
 						this.getActiveToolNames().includes("codemode"),
+						(name) => isToolDeclarationHidden(this, name),
 					)
 				: undefined;
-		if (recorded) return projectToolLoadout(this, recorded);
+		if (recorded) return recorded;
 		const current = getCurrentSystemMessage(guarded);
 		const head: SystemMessage = {
 			role: "system",

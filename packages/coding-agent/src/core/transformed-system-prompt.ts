@@ -25,8 +25,11 @@ import type { SystemPromptSections } from "./system-prompt.ts";
 export interface TransformedPromptHead {
 	/** The exact text the session leads with. */
 	readonly content?: string;
-	/** A fork: the conversation before this row is sent as it was, and `note` opens what the fork adds. */
-	readonly fork?: { readonly note: string };
+	/**
+	 * A fork: the conversation before this row is sent as it was, with the tools its requests hid (`hidden`) left
+	 * out, and `note` opens what the fork adds.
+	 */
+	readonly fork?: { readonly note: string; readonly hidden?: readonly string[] };
 	/** A digest of each section the model is told at this row, before its `sections` changes. */
 	readonly digests: Record<string, string>;
 	readonly owner: string;
@@ -53,6 +56,8 @@ export interface TransformedPromptFork {
 	/** The sections of the conversation's prompt it continues, as the model was told them. */
 	readonly sections: SystemPromptSections;
 	readonly note: string;
+	/** The tools the conversation's requests declared but hid. */
+	readonly hidden?: readonly string[];
 }
 
 /** Which tool changes the transport can declare after the first message; see `TranscriptToolSupport`. */
@@ -179,7 +184,8 @@ export function nextTransformedPromptRecord(
 	if (fork !== undefined && latestHeadIndex(messages) < 0) {
 		const digests = digestsOf(fork.sections);
 		const sections = changedSections(new Map(Object.entries(digests)), forkOwnSections(desired), () => false);
-		return { head: { fork: { note: fork.note }, digests, owner }, ...(sections ? { sections } : {}) };
+		const forked = { note: fork.note, ...(fork.hidden?.length ? { hidden: [...fork.hidden] } : {}) };
+		return { head: { fork: forked, digests, owner }, ...(sections ? { sections } : {}) };
 	}
 	const digests = digestsOf(prompt.sections);
 	const sections = changedSections(new Map(Object.entries(digests)), desired, () => true);
@@ -228,28 +234,50 @@ export function forkToolDeclarations(
 	};
 }
 
+/** A system message as a request that hides `hidden` declarations sends it (as `projectToolLoadout` does). */
+function withoutHidden(message: SystemMessage, hidden: (name: string) => boolean): SystemMessage {
+	if (!message.toolsAdded && !message.toolsRemoved) return message;
+	const { toolsAdded, toolsRemoved, ...rest } = message;
+	const added = toolsAdded?.filter((tool) => !hidden(tool.name)) ?? [];
+	const removed = toolsRemoved?.filter((tool) => !hidden(tool.name)) ?? [];
+	if (added.length === (toolsAdded?.length ?? 0) && removed.length === (toolsRemoved?.length ?? 0)) return message;
+	return {
+		...rest,
+		...(added.length ? { toolsAdded: added } : {}),
+		...(removed.length ? { toolsRemoved: removed } : {}),
+	};
+}
+
 /**
  * The request projection of a transcript whose transformed prompt `owner` recorded, or undefined when `owner` has
  * none to lead with. A recorded text leads with the tools declared up to its row, and earlier system messages fold
  * into it. A fork sends the conversation before its row as it was, then its note. After the head, a system message
  * carries its tool changes and its transformed section changes in place; the untransformed sections are never sent.
+ * `isHidden` names the session's own tools whose declarations its requests leave out; a fork leaves out the tools
+ * the conversation it continues hid before its row.
  */
 export function projectTransformedPrompt(
 	messages: readonly AgentMessage[],
 	owner: string,
 	toolSupport: ToolChangeSupport,
 	codemodeReach: boolean,
+	isHidden: (name: string) => boolean,
 ): AgentMessage[] | undefined {
 	const index = headIndex(messages, owner);
 	const head = index < 0 ? undefined : transformedPromptOf(messages[index])?.head;
 	if (head === undefined) return undefined;
-	const forked = head.fork !== undefined;
-	const declarations = forked
-		? forkToolDeclarations(getCurrentTools(messages.slice(0, index)), toolSupport, codemodeReach)
+	const inheritedHidden = new Set(head.fork?.hidden ?? []);
+	const declarations = head.fork
+		? forkToolDeclarations(
+				getCurrentTools(messages.slice(0, index)).filter((tool) => !inheritedHidden.has(tool.name)),
+				toolSupport,
+				codemodeReach,
+			)
 		: undefined;
+	const shown = (hidden: (name: string) => boolean) => (tool: { readonly name: string }) => !hidden(tool.name);
 	const projected: AgentMessage[] = [];
-	if (!forked) {
-		const tools = getCurrentTools(messages.slice(0, index + 1));
+	if (!head.fork) {
+		const tools = getCurrentTools(messages.slice(0, index + 1)).filter(shown(isHidden));
 		projected.push({
 			role: "system",
 			content: head.content ?? "",
@@ -263,16 +291,21 @@ export function projectTransformedPrompt(
 			continue;
 		}
 		if (position < index) {
-			if (forked) projected.push(message);
+			if (head.fork) projected.push(withoutHidden(message, (name) => inheritedHidden.has(name)));
 			continue;
 		}
 		const sections = transformedPromptOf(message)?.sections;
 		const content = position === index ? (head.fork?.note ?? "") : "";
-		let toolsAdded: Tool[] | undefined = position === index && !forked ? undefined : message.toolsAdded;
-		let toolsRemoved: ToolReference[] | undefined = position === index && !forked ? undefined : message.toolsRemoved;
+		const ownHead = position === index && !head.fork;
+		let toolsAdded: Tool[] | undefined = ownHead ? undefined : message.toolsAdded?.filter(shown(isHidden));
+		let toolsRemoved: ToolReference[] | undefined = ownHead
+			? undefined
+			: message.toolsRemoved?.filter(shown(isHidden));
 		if (declarations) {
 			toolsAdded = toolsAdded?.filter(declarations.keepAddition);
-			toolsRemoved = toolsRemoved?.filter((tool) => declarations.keepRemoval(tool.name));
+			toolsRemoved = toolsRemoved?.filter(
+				(tool) => declarations.keepRemoval(tool.name) && !inheritedHidden.has(tool.name),
+			);
 		}
 		if (!content && !sections && !toolsAdded?.length && !toolsRemoved?.length) continue;
 		projected.push({

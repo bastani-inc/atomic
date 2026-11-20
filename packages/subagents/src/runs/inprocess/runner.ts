@@ -2443,7 +2443,9 @@ export class SubagentControlRuntime {
 				const promptBehavior = createInProcessChildPromptBehavior(
 					admitted.policy,
 					skillInjection,
-					parentSessionId === undefined ? undefined : { parentSessionId },
+					parentSessionId === undefined
+						? undefined
+						: { parentSessionId, parentHiddenTools: inherited.parentHiddenTools },
 				);
 				startBudget.enter("creating-session");
 				created = await beforeStartDeadline(

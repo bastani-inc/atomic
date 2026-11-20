@@ -99,6 +99,7 @@ import type { SessionStore } from "./storage/session/types.js";
 import { assertTeamAdapterInstalled } from "./storage/team.js";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
+import { isToolDeclarationHidden } from "./tool-loadout.js";
 import { createToolNameMatcher } from "./tool-selection.ts";
 import { refreshConfig as refreshAskUserQuestionConfig } from "./tools/ask-user-question/config.ts";
 import type { ProjectHistory } from "./tools/history-protocol.ts";
@@ -1024,8 +1025,8 @@ async function constructAgentSession(
 							"snapshots",
 							settingsManager.getWorktreeSnapshotSettings(),
 						),
-			childSessionOptions: (child) =>
-				inheritChildSessionOptionsWithDefaults(
+			childSessionOptions: (child) => ({
+				...inheritChildSessionOptionsWithDefaults(
 					{
 						cwd,
 						agentDir,
@@ -1052,6 +1053,10 @@ async function constructAgentSession(
 					session.getAllTools().map((tool) => tool.name),
 					builtinDefaultToolNames,
 				),
+				parentHiddenTools: session
+					.getActiveToolNames()
+					.filter((name) => isToolDeclarationHidden(session as unknown as AgentSessionInternalSurface, name)),
+			}),
 			scopedModels: options.scopedModels,
 			// Undefined follows the settings' current `fallbackModels`, also once a project is trusted later.
 			fallbackModels: options.fallbackModels,

@@ -402,7 +402,8 @@ function forkOf(
 	messages: readonly AgentMessage[],
 	fork: NonNullable<SystemPromptSectionsTransform["fork"]>,
 ): TransformedPromptFork {
-	const inherited = getCurrentTools(messages);
+	const hidden = new Set(fork.hiddenTools ?? []);
+	const inherited = getCurrentTools(messages).filter((tool) => !hidden.has(tool.name));
 	const callable = session.getActiveToolNames();
 	const { throughCodemode } = forkToolDeclarations(
 		inherited,
@@ -415,6 +416,7 @@ function forkOf(
 	);
 	return {
 		sections: Object.fromEntries(sections),
+		...(fork.hiddenTools?.length ? { hidden: fork.hiddenTools } : {}),
 		note: fork.note({
 			tools: callable,
 			throughCodemode: throughCodemode ? callable.filter((name) => !declared.has(name)) : [],
