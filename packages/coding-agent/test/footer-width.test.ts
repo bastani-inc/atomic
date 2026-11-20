@@ -182,8 +182,8 @@ describe("UsageMeterComponent context color", () => {
 		);
 
 		const [line] = usageMeter.render(120);
-		expect(line).toContain(theme.fg("warning", "101.2%/200k (auto)"));
-		expect(line).not.toContain(theme.fg("error", "101.2%/200k (auto)"));
+		expect(line).toContain(theme.fg("warning", "101.2%/200.0k (auto)"));
+		expect(line).not.toContain(theme.fg("error", "101.2%/200.0k (auto)"));
 	});
 
 	it("renders near-limit auto-compacted context usage as a warning", () => {
@@ -192,8 +192,8 @@ describe("UsageMeterComponent context color", () => {
 		);
 
 		const [line] = usageMeter.render(120);
-		expect(line).toContain(theme.fg("warning", "95.4%/200k (auto)"));
-		expect(line).not.toContain(theme.fg("error", "95.4%/200k (auto)"));
+		expect(line).toContain(theme.fg("warning", "95.4%/200.0k (auto)"));
+		expect(line).not.toContain(theme.fg("error", "95.4%/200.0k (auto)"));
 	});
 
 	it("keeps over-limit context usage red when auto-compaction is disabled", () => {
@@ -203,8 +203,60 @@ describe("UsageMeterComponent context color", () => {
 		usageMeter.setAutoCompactEnabled(false);
 
 		const [line] = usageMeter.render(120);
-		expect(line).toContain(theme.fg("error", "101.2%/200k"));
-		expect(line).not.toContain(theme.fg("warning", "101.2%/200k"));
+		expect(line).toContain(theme.fg("error", "101.2%/200.0k"));
+		expect(line).not.toContain(theme.fg("warning", "101.2%/200.0k"));
+	});
+});
+
+describe("UsageMeterComponent on a narrow terminal", () => {
+	beforeAll(() => {
+		initTheme(undefined, false);
+	});
+
+	const meter = () =>
+		new UsageMeterComponent(
+			createSession({
+				sessionName: "",
+				contextPercent: 45.2,
+				contextWindow: 200_000,
+				usage: {
+					input: 1_234_567,
+					output: 45_678,
+					cacheRead: 12_345_678,
+					cacheWrite: 234_567,
+					cost: { total: 12.345 },
+				},
+			}),
+		);
+	const line = (width: number) => stripAnsi(meter().render(width)[0] ?? "").trim();
+
+	it("writes every token count with one decimal and its unit", () => {
+		assert.equal(line(100), "↑1.2M • ↓45.7k • R12.3M • W234.6k • CH89.4% • $12.345 • 45.2%/200.0k (auto)");
+	});
+
+	it("drops cache write, cache read, hit rate, cost, input and output before it cuts the context usage", () => {
+		const shown = [
+			"↑1.2M • ↓45.7k • R12.3M • W234.6k • CH89.4% • $12.345 • 45.2%/200.0k (auto)",
+			"↑1.2M • ↓45.7k • R12.3M • CH89.4% • $12.345 • 45.2%/200.0k (auto)",
+			"↑1.2M • ↓45.7k • CH89.4% • $12.345 • 45.2%/200.0k (auto)",
+			"↑1.2M • ↓45.7k • $12.345 • 45.2%/200.0k (auto)",
+			"↑1.2M • ↓45.7k • 45.2%/200.0k (auto)",
+			"↓45.7k • 45.2%/200.0k (auto)",
+			"45.2%/200.0k (auto)",
+		];
+		for (const expected of shown) assert.equal(line(visibleWidth(expected)), expected);
+		for (const [index, expected] of shown.slice(1).entries())
+			assert.equal(line(visibleWidth(shown[index]!) - 1), expected, `one column narrower than ${shown[index]}`);
+	});
+
+	it("keeps the context usage whole at every width it fits in, and its percentage down to the cut", () => {
+		const context = "45.2%/200.0k (auto)";
+		for (let width = visibleWidth(context); width <= 120; width++) {
+			assert.ok(line(width).endsWith(context), `${width}: ${line(width)}`);
+			assert.ok(visibleWidth(meter().render(width)[0] ?? "") <= width, `${width}`);
+		}
+		for (let width = visibleWidth("45.2%..."); width < visibleWidth(context); width++)
+			assert.ok(line(width).startsWith("45.2%"), `${width}: ${line(width)}`);
 	});
 });
 describe("FooterComponent model label", () => {

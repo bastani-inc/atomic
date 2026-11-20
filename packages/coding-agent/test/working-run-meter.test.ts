@@ -6,7 +6,6 @@ import { ChatSessionHost, type ChatSessionHostStyle } from "../src/modes/interac
 import {
 	formatWorkingElapsed,
 	formatWorkingMeta,
-	formatWorkingTokens,
 	WorkingRunMeter,
 } from "../src/modes/interactive/components/working-run-meter.ts";
 import "../src/modes/interactive/interactive-agent-events.ts";
@@ -14,6 +13,7 @@ import "../src/modes/interactive/interactive-extension-runtime.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { ProgramStatusReporter } from "../src/modes/interactive/program-status-reporter.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { formatTokenCount } from "../src/utils/token-count.ts";
 
 beforeAll(() => {
 	initTheme("dark");
@@ -27,26 +27,24 @@ describe("working line time and tokens (#5224)", () => {
 		assert.equal(formatWorkingElapsed(3_900_000), "1h 5m");
 	});
 
-	test("tokens read as a count, then thousands and millions", () => {
-		assert.equal(formatWorkingTokens(950), "950");
-		assert.equal(formatWorkingTokens(18_400), "18.4k");
-		assert.equal(formatWorkingTokens(99_949), "99.9k");
-		assert.equal(formatWorkingTokens(99_950), "100k");
-		assert.equal(formatWorkingTokens(240_000), "240k");
-		assert.equal(formatWorkingTokens(999_499), "999k");
-		assert.equal(formatWorkingTokens(999_500), "1.0M");
-		assert.equal(formatWorkingTokens(1_200_000), "1.2M");
-		assert.equal(formatWorkingTokens(99_949_999), "99.9M");
-		assert.equal(formatWorkingTokens(99_950_000), "100M");
-		assert.equal(formatWorkingTokens(999_499_999), "999M");
+	test("tokens read as a count, then thousands and millions with one decimal", () => {
+		assert.equal(formatTokenCount(950), "950");
+		assert.equal(formatTokenCount(18_400), "18.4k");
+		assert.equal(formatTokenCount(99_949), "99.9k");
+		assert.equal(formatTokenCount(99_950), "100.0k");
+		assert.equal(formatTokenCount(240_000), "240.0k");
+		assert.equal(formatTokenCount(999_499), "999.5k");
+		assert.equal(formatTokenCount(999_950), "1.0M");
+		assert.equal(formatTokenCount(1_200_000), "1.2M");
+		assert.equal(formatTokenCount(99_949_999), "99.9M");
+		assert.equal(formatTokenCount(99_950_000), "100.0M");
+		assert.equal(formatTokenCount(999_499_999), "999.5M");
 	});
 
-	test("formatWorkingTokens switches from M to B at 999,500,000 without overflowing to 1000M (#5243)", () => {
-		assert.equal(formatWorkingTokens(999_499_999), "999M");
-		assert.equal(formatWorkingTokens(999_500_000), "1.0B");
-		assert.equal(formatWorkingTokens(999_949_999), "1.0B");
-		assert.equal(formatWorkingTokens(999_950_000), "1.0B");
-		assert.equal(formatWorkingTokens(1_000_000_000), "1.0B");
+	test("token counts switch from M to B at 999,950,000 without overflowing to 1000.0M (#5243)", () => {
+		assert.equal(formatTokenCount(999_949_999), "999.9M");
+		assert.equal(formatTokenCount(999_950_000), "1.0B");
+		assert.equal(formatTokenCount(1_000_000_000), "1.0B");
 	});
 
 	test("the meta shows only the time until a token arrives", () => {
@@ -60,7 +58,7 @@ describe("working line time and tokens (#5224)", () => {
 		assert.equal(formatWorkingMeta({ elapsedMs: 243_000, tokens: 1_200_000 }), "4m 3s · ↓ 1.2M tokens");
 		assert.equal(
 			formatWorkingMeta({ elapsedMs: 3_900_000, tokens: 1_000_000_000, requesting: true }),
-			"1h 5m · ↑ 1B tokens",
+			"1h 5m · ↑ 1.0B tokens",
 		);
 	});
 

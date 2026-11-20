@@ -1,3 +1,4 @@
+import { formatTokenCount } from "@bastani/atomic";
 import type {
 	ActivityState,
 	ControlConfig,
@@ -174,7 +175,7 @@ function formatLongRunningFacts(event: ControlEvent): string | undefined {
 	const facts: string[] = [];
 	if (event.elapsedMs !== undefined) facts.push(`elapsed ${Math.floor(Math.max(0, event.elapsedMs) / 1000)}s`);
 	if (event.turns !== undefined) facts.push(`${event.turns} turns`);
-	if (event.tokens !== undefined) facts.push(`${event.tokens} tokens`);
+	if (event.tokens !== undefined) facts.push(`${formatTokenCount(event.tokens)} tokens`);
 	if (event.toolCount !== undefined) facts.push(`${event.toolCount} tools`);
 	if (event.currentTool)
 		facts.push(

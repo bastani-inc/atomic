@@ -53,16 +53,18 @@ describe("--list-models", () => {
 		assert.equal(parsed.thinkingLevel, "low");
 	});
 
-	it("writes thousands of tokens with a lowercase k and millions with an uppercase M", async () => {
+	it("writes token limits with one decimal, a lowercase k for thousands and an uppercase M and B above", async () => {
 		const limits = [
 			[999, "999"],
-			[1_000, "1k"],
-			[200_000, "200k"],
-			[999_499, "999.5k"],
-			[999_500, "999.5k"],
-			[1_000_000, "1M"],
+			[1_000, "1.0k"],
+			[99_949, "99.9k"],
+			[99_950, "100.0k"],
+			[200_000, "200.0k"],
+			[999_949, "999.9k"],
+			[999_950, "1.0M"],
+			[1_000_000, "1.0M"],
 			[9_999_999, "10.0M"],
-			[1_000_000_000, "1000M"],
+			[1_000_000_000, "1.0B"],
 		] as const;
 		harness = await createHarness({
 			models: limits.map(([tokens], index) => ({

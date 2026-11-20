@@ -333,7 +333,7 @@ test("taskDuration, taskMetricsText, taskDetailSummary and TaskRow use panel ela
 		execution: { kind: "settled", result: { kind: "completed", output: taskRecord("hour-six").output } },
 		metrics: { elapsedMs: 4_000_000 },
 	};
-	assert.equal(taskMetricsText(threeMinTask), "3m · 1,200 tokens · 2 tools");
+	assert.equal(taskMetricsText(threeMinTask), "3m · 1.2k tokens · 2 tools");
 	assert.match(taskDetailSummary(threeMinTask), /\b3m\b/);
 	assert.doesNotMatch(taskDetailSummary(threeMinTask), /3m 12s/);
 	assert.equal(taskMetricsText(hourTask), "1h 6m");

@@ -1,6 +1,6 @@
-import { sliceHead } from "@bastani/atomic";
+import { formatTokenCount, sliceHead } from "@bastani/atomic";
 import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
-import { formatDuration, formatTokens, formatToolCall } from "../shared/formatters.js";
+import { formatDuration, formatToolCall } from "../shared/formatters.js";
 import { formatActivityLabel } from "../shared/status-format.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getDisplayItems } from "../shared/utils.js";
@@ -90,7 +90,7 @@ export function statJoin(theme: Theme, parts: string[]): string {
 }
 
 export function formatTokenStat(tokens: number): string {
-	return `${formatTokens(tokens)} token`;
+	return `${formatTokenCount(tokens)} token${tokens === 1 ? "" : "s"}`;
 }
 
 export function formatToolUseStat(count: number): string {

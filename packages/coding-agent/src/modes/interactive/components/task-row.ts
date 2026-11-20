@@ -12,6 +12,7 @@ import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { taskClockRunning, taskElapsedMs } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted, type TaskActivity } from "../../../core/tasks/owner-store.js";
 import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
+import { formatTokenCount } from "../../../utils/token-count.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
@@ -110,7 +111,7 @@ export function taskMetricsText(task: TaskRecord): string {
 	const elapsedMs = metrics?.elapsedMs === undefined ? undefined : taskElapsedMs(task, running);
 	return [
 		elapsedMs === undefined ? "" : formatPanelElapsed(elapsedMs),
-		metrics?.tokenCount === undefined ? "" : `${metrics.tokenCount.toLocaleString("en-US")} tokens`,
+		metrics?.tokenCount === undefined ? "" : `${formatTokenCount(metrics.tokenCount)} tokens`,
 		metrics?.toolCount === undefined ? "" : `${metrics.toolCount} ${metrics.toolCount === 1 ? "tool" : "tools"}`,
 	]
 		.filter(Boolean)

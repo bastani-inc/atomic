@@ -315,13 +315,6 @@ export function formatWorkingElapsed(ms: number): string {
 	return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-export function formatWorkingTokens(tokens: number): string {
-	if (tokens < 1000) return `${tokens}`;
-	if (tokens < 999_500) return `${(tokens / 1000).toFixed(tokens < 99_950 ? 1 : 0)}k`;
-	if (tokens < 999_500_000) return `${(tokens / 1_000_000).toFixed(tokens < 99_950_000 ? 1 : 0)}M`;
-	return `${(tokens / 1_000_000_000).toFixed(tokens < 99_950_000_000 ? 1 : 0)}B`;
-}
-
 export function formatWorkingMeta(input: WorkingRunMetaInput): string {
 	const snapshot = normalizeWorkingRunSnapshot(input);
 	if (snapshot.elapsedMs < 1000 && snapshot.tokens <= 0 && !snapshot.note) return "";

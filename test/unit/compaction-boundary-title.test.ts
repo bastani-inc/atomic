@@ -32,7 +32,7 @@ function lines(component: CompactionBoundaryMessageComponent): string[] {
 test("a cleared boundary is one line: the mark, Context cleared and the tokens before", () => {
 	const rendered = lines(new CompactionBoundaryMessageComponent({ text: "Context cleared.", form: "cleared", stats }));
 	assert.ok(
-		rendered.some((line) => line.includes("⚛ Context cleared · 984k tokens")),
+		rendered.some((line) => line.includes("⚛ Context cleared · 984.0k tokens")),
 		rendered.join("\n"),
 	);
 	assert.ok(!rendered.join("\n").includes("degraded"));
@@ -48,7 +48,7 @@ test("a compacted boundary names the compactor model and the tokens before and a
 		}),
 	);
 	assert.ok(
-		rendered.some((line) => line.includes("⚛ Context compacted · morph/morph-compactor · 984k → 2.1k tokens")),
+		rendered.some((line) => line.includes("⚛ Context compacted · morph/morph-compactor · 984.0k → 2.1k tokens")),
 		rendered.join("\n"),
 	);
 });
@@ -62,7 +62,7 @@ test("a compactor fallback adds one line naming the reason", () => {
 			fallbackReason: "morph/morph-compactor failed: timed out after 120000 ms",
 		}),
 	).join("\n");
-	assert.ok(rendered.includes("⚛ Context cleared · 984k tokens"));
+	assert.ok(rendered.includes("⚛ Context cleared · 984.0k tokens"));
 	assert.ok(
 		rendered.includes(
 			"Compaction model not used (morph/morph-compactor failed: timed out after 120000 ms); context cleared instead",
@@ -89,6 +89,6 @@ test("a boundary from an older release still renders without a degraded state", 
 		rung: "fresh",
 	});
 	const rendered = lines(compactionBoundaryFromMessage(message, false)).join("\n");
-	assert.ok(rendered.includes("⚛ Context cleared · 984k tokens"), rendered);
+	assert.ok(rendered.includes("⚛ Context cleared · 984.0k tokens"), rendered);
 	assert.ok(!rendered.includes("degraded"));
 });

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Subagent result rows, progress stats, usage lines and long-running notices write token counts with one decimal and the word `tokens`, as in `12.3k tokens` instead of `12k tok`, like the rest of Atomic. Progress stats no longer say `token` for many tokens ([#6096](https://github.com/bastani-inc/atomic/pull/6096)).
+
 ## [0.10.1] - 2026-11-20
 
 ### Fixed

@@ -10,10 +10,10 @@ import {
 	SUMMARY_COMPACTION_PREFIX,
 	stripVerbatimCompactionPrefix,
 } from "../../../core/messages.ts";
+import { formatTokenCount } from "../../../utils/token-count.ts";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound } from "./keybinding-hints.js";
 import { blockRows, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
-import { formatWorkingTokens } from "./working-run-meter.ts";
 
 /** The mark every compaction boundary line starts with. */
 export const COMPACTION_BOUNDARY_MARK = "⚛";
@@ -39,13 +39,13 @@ export function compactionBoundaryTitle(
 	view: Pick<BoundaryView, "form" | "stats" | "source" | "tokensBefore">,
 ): string {
 	if (view.form === "cleared") {
-		return `${COMPACTION_BOUNDARY_MARK} Context cleared · ${formatWorkingTokens(view.tokensBefore ?? view.stats.tokensBefore)} tokens`;
+		return `${COMPACTION_BOUNDARY_MARK} Context cleared · ${formatTokenCount(view.tokensBefore ?? view.stats.tokensBefore)} tokens`;
 	}
 	// Both sides come from the same estimate, so the reduction compares like with like (#5243).
 	return [
 		`${COMPACTION_BOUNDARY_MARK} Context compacted`,
 		...(view.source ? [view.source] : []),
-		`${formatWorkingTokens(view.stats.tokensBefore)} → ${formatWorkingTokens(view.stats.tokensAfter)} tokens`,
+		`${formatTokenCount(view.stats.tokensBefore)} → ${formatTokenCount(view.stats.tokensAfter)} tokens`,
 	].join(" · ");
 }
 
