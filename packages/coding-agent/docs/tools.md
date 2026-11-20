@@ -235,6 +235,8 @@ When `ask_user_question` (or an equivalent question tool) is active, route every
 }
 ```
 
+In a real confirmation, identify the target PRs in the question or immediately preceding context. This example explains question routing; it does not authorize merging any PRs.
+
 A cancelled or unanswered question is not approval. If no question tool is active, proceed using stated evidence-backed assumptions while respecting safety and approval gates.
 
 ## Persisted tool output
