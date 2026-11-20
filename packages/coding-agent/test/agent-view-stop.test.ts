@@ -141,6 +141,8 @@ test(
 			);
 			const engine = engineStandIn(base, cwd, agentDir);
 			const mode = new InteractiveMode(engine.runtime, { terminal: new QuietTerminal() });
+			// Without `fd` on PATH, startup's tool check reports after stop and draws; that is not the agent view's.
+			mode.ensureManagedToolsReady = async () => {};
 			await mode.init();
 
 			mode.stop();
