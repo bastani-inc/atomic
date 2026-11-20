@@ -4,6 +4,7 @@ import { waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import { shownSpanMs, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
+import { formatTokenCount } from "../../../utils/token-count.ts";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_MODEL_MIN_WIDTH, formatPanelElapsed, panelModelText } from "./agent-panel.ts";
 import type { ModelCellReport } from "./model-column.ts";
@@ -128,13 +129,6 @@ export function stateGlyph(state: TaskBoardState, kind?: TaskBoardItem["kind"] |
 	}
 }
 
-export function compactTokens(tokens: number): string {
-	if (tokens < 1000) return String(tokens);
-	if (tokens < 999_950) return `${(tokens / 1000).toFixed(1)}k`;
-	if (tokens < 999_950_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-	return `${(tokens / 1_000_000_000).toFixed(1)}B`;
-}
-
 function rowElapsed(row: TaskBoardRow): number | undefined {
 	const span = row.kind === "task" ? row.task.elapsedSpan : row.item.elapsedSpan;
 	if (span) {
@@ -180,7 +174,7 @@ export function rowMeta(row: TaskBoardRow): string {
 		return [`waiting on ${taskDisplayText(rowWaitingOn(row) ?? "a tool call")}`, time].filter(Boolean).join(" · ");
 	if (state === "stopping") return ["stopping", time].filter(Boolean).join(" · ");
 	if (state === "done") return ["done", time].filter(Boolean).join(" · ");
-	return [time, validMetric(tokens) ? `↓ ${compactTokens(tokens)}` : ""].filter(Boolean).join(" · ");
+	return [time, validMetric(tokens) ? `↓ ${formatTokenCount(tokens)}` : ""].filter(Boolean).join(" · ");
 }
 
 const NAME_COLUMN = 14;

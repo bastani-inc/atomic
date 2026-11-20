@@ -19,7 +19,6 @@ import {
 	type AgentPanelStyle,
 	agentPanelKeys,
 	formatPanelElapsed,
-	formatPanelTokens,
 	renderAgentPanelHint,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
@@ -37,6 +36,7 @@ import {
 	bindAgentPanel,
 	themedAgentPanelStyle,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import { formatTokenCount } from "../../packages/coding-agent/src/utils/token-count.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 import { makeTestTui } from "../support/fake-tui.js";
@@ -578,19 +578,19 @@ test("rows whose name, task or stage label starts with combining marks stay with
 });
 
 test("token units roll over after rounding (#5224, #5239)", () => {
-	assert.equal(formatPanelTokens(999_949), "999.9k");
-	assert.equal(formatPanelTokens(999_950), "1.0M");
-	assert.equal(formatPanelTokens(999_999), "1.0M");
-	assert.equal(formatPanelTokens(999_950_000), "1.0B");
-	assert.equal(formatPanelTokens(Number.MAX_SAFE_INTEGER), "9.0Q");
+	assert.equal(formatTokenCount(999_949), "999.9k");
+	assert.equal(formatTokenCount(999_950), "1.0M");
+	assert.equal(formatTokenCount(999_999), "1.0M");
+	assert.equal(formatTokenCount(999_950_000), "1.0B");
+	assert.equal(formatTokenCount(Number.MAX_SAFE_INTEGER), "9.0Q");
 });
 
-test("formatPanelTokens rounds fractional values and rejects malformed counts (#5224, #5239)", () => {
-	assert.equal(formatPanelTokens(0.1 + 0.2), "0");
-	assert.equal(formatPanelTokens(1e-7), "0");
-	assert.equal(formatPanelTokens(999.9), "1.0k");
+test("token counts round fractional values and reject malformed counts (#5224, #5239)", () => {
+	assert.equal(formatTokenCount(0.1 + 0.2), "0");
+	assert.equal(formatTokenCount(1e-7), "0");
+	assert.equal(formatTokenCount(999.9), "1.0k");
 	for (const value of [NaN, Infinity, -1, "\x1b[2J", Symbol("tokens"), Object.create(null)]) {
-		assert.equal(formatPanelTokens(value as number), "0");
+		assert.equal(formatTokenCount(value as number), "0");
 	}
 });
 
@@ -598,9 +598,9 @@ test("panel time and token formats (#5224)", () => {
 	assert.equal(formatPanelElapsed(9_000), "9s");
 	assert.equal(formatPanelElapsed(41 * 60_000), "41m");
 	assert.equal(formatPanelElapsed(91 * 60_000), "1h 31m");
-	assert.equal(formatPanelTokens(812), "812");
-	assert.equal(formatPanelTokens(96_100), "96.1k");
-	assert.equal(formatPanelTokens(1_250_000), "1.3M");
+	assert.equal(formatTokenCount(812), "812");
+	assert.equal(formatTokenCount(96_100), "96.1k");
+	assert.equal(formatTokenCount(1_250_000), "1.3M");
 });
 
 test("the panel lists a session's extension items and background tasks together, newest first (#5224)", async () => {

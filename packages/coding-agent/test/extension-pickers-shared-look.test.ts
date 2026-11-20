@@ -280,7 +280,11 @@ describe("llama.cpp pickers share the picker look (#5224)", () => {
 		});
 		const rendered80 = lines(view, 80);
 		const loadedRow = rendered80.find((line) => line.includes("❯ ")) ?? "";
-		assert.ok(loadedRow.includes("loaded · 33k context"), rendered80.join("\n"));
+		assert.match(
+			loadedRow,
+			/❯ bartowski\/Meta-Llama-3\.1-70B-Instruct-GGUF:Meta-L\.\.\. {2}loaded · 32\.8k context *$/,
+			rendered80.join("\n"),
+		);
 		const downloadRow = rendered80.find((line) => line.includes("Download model…")) ?? "";
 		assert.ok(downloadRow.includes("Hugging Face"), rendered80.join("\n"));
 	});

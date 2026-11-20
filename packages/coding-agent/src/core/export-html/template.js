@@ -887,11 +887,21 @@
       // MESSAGE RENDERING
       // ============================================================
 
+      // Token counts read as in the terminal: the whole count below 1,000, then one decimal and a unit (1.0k, 1.2M).
       function formatTokens(count) {
-        if (count < 1000) return count.toString();
-        if (count < 10000) return (count / 1000).toFixed(1) + 'k';
-        if (count < 1000000) return Math.round(count / 1000) + 'k';
-        return (count / 1000000).toFixed(1) + 'M';
+        const units = ['k', 'M', 'B', 'T', 'Q'];
+        const value = typeof count === 'number' || typeof count === 'string' ? Number(count) : NaN;
+        const tokens = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+        if (tokens < 1000) return String(tokens);
+        let unit = 0;
+        let tenthStep = 100;
+        let tenths = Math.round(tokens / tenthStep);
+        while (tenths >= 10000 && unit < units.length - 1) {
+          unit++;
+          tenthStep *= 1000;
+          tenths = Math.round(tokens / tenthStep);
+        }
+        return Math.floor(tenths / 10) + '.' + (tenths % 10) + units[unit];
       }
 
       function formatTimestamp(ts) {

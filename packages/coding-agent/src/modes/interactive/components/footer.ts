@@ -16,6 +16,7 @@ import {
 	createUsageTotals,
 	type UsageTotals,
 } from "../../../core/usage-totals.ts";
+import { formatTokenCount } from "../../../utils/token-count.ts";
 import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.js";
 import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
@@ -73,20 +74,18 @@ export function renderExtensionStatusRow(
 	);
 }
 
-/**
- * Format token counts (similar to web-ui)
- */
-function formatTokens(count: number): string {
-	if (count < 1000) return count.toString();
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1000000) return `${Math.round(count / 1000)}k`;
-	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-	return `${Math.round(count / 1000000)}M`;
-}
-
 function replaceHome(input: string): string {
 	return formatCwdForFooter(input, process.env.HOME || process.env.USERPROFILE);
 }
+
+/** A usage meter segment and its place in the order segments leave a meter too wide for the terminal. */
+interface UsageSegment {
+	readonly text: string;
+	readonly drop: number;
+}
+
+/** Cache write leaves first, then cache read, the cache hit rate, the cost, input and output. */
+const USAGE_DROP_ORDER = { cacheWrite: 0, cacheRead: 1, cacheHitRate: 2, cost: 3, input: 4, output: 5 } as const;
 
 function rightAlign(line: string, width: number): string {
 	const lineWidth = visibleWidth(line);
@@ -188,14 +187,20 @@ function getUsageLine(session: ChatBoxSession, autoCompactEnabled: boolean, widt
 	const contextPercentValue = contextUsage?.percent ?? 0;
 	const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
 
-	const usageParts = [];
-	if (totals.input) usageParts.push(`${theme.fg("dim", "↑")}${theme.fg("muted", formatTokens(totals.input))}`);
-	if (totals.output) usageParts.push(`${theme.fg("dim", "↓")}${theme.fg("muted", formatTokens(totals.output))}`);
-	if (totals.cacheRead) usageParts.push(`${theme.fg("dim", "R")}${theme.fg("muted", formatTokens(totals.cacheRead))}`);
-	if (totals.cacheWrite)
-		usageParts.push(`${theme.fg("dim", "W")}${theme.fg("muted", formatTokens(totals.cacheWrite))}`);
+	const usageParts: UsageSegment[] = [];
+	const tokenSegment = (label: string, count: number, drop: number): UsageSegment => ({
+		text: `${theme.fg("dim", label)}${theme.fg("muted", formatTokenCount(count))}`,
+		drop,
+	});
+	if (totals.input) usageParts.push(tokenSegment("↑", totals.input, USAGE_DROP_ORDER.input));
+	if (totals.output) usageParts.push(tokenSegment("↓", totals.output, USAGE_DROP_ORDER.output));
+	if (totals.cacheRead) usageParts.push(tokenSegment("R", totals.cacheRead, USAGE_DROP_ORDER.cacheRead));
+	if (totals.cacheWrite) usageParts.push(tokenSegment("W", totals.cacheWrite, USAGE_DROP_ORDER.cacheWrite));
 	if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && latestCacheHitRate !== undefined) {
-		usageParts.push(`${theme.fg("dim", "CH")}${theme.fg("muted", `${latestCacheHitRate.toFixed(1)}%`)}`);
+		usageParts.push({
+			text: `${theme.fg("dim", "CH")}${theme.fg("muted", `${latestCacheHitRate.toFixed(1)}%`)}`,
+			drop: USAGE_DROP_ORDER.cacheHitRate,
+		});
 	}
 
 	// Kimi Coding is subscription-backed despite using API-key authentication.
@@ -204,29 +209,37 @@ function getUsageLine(session: ChatBoxSession, autoCompactEnabled: boolean, widt
 			session.modelRuntime.isUsingOAuth(state.model.provider, { refresh: false })
 		: false;
 	if (totals.cost || usingSubscription) {
-		usageParts.push(
-			`${theme.fg("muted", `$${totals.cost.toFixed(3)}`)}${usingSubscription ? ` ${theme.fg("dim", "(sub)")}` : ""}`,
-		);
+		usageParts.push({
+			text: `${theme.fg("muted", `$${totals.cost.toFixed(3)}`)}${usingSubscription ? ` ${theme.fg("dim", "(sub)")}` : ""}`,
+			drop: USAGE_DROP_ORDER.cost,
+		});
 	}
 
 	const autoIndicator = autoCompactEnabled ? " (auto)" : "";
 	const contextPercentDisplay =
 		contextPercent === "?"
-			? `?/${formatTokens(contextWindow)}${autoIndicator}`
-			: `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
+			? `?/${formatTokenCount(contextWindow)}${autoIndicator}`
+			: `${contextPercent}%/${formatTokenCount(contextWindow)}${autoIndicator}`;
+	const context = (text: string): UsageSegment => ({ text, drop: Number.POSITIVE_INFINITY });
 	if (autoCompactEnabled && contextPercentValue > 70) {
-		usageParts.push(theme.fg("warning", contextPercentDisplay));
+		usageParts.push(context(theme.fg("warning", contextPercentDisplay)));
 	} else if (contextPercentValue > 90) {
-		usageParts.push(theme.fg("error", contextPercentDisplay));
+		usageParts.push(context(theme.fg("error", contextPercentDisplay)));
 	} else if (contextPercentValue > 70) {
-		usageParts.push(theme.fg("warning", contextPercentDisplay));
+		usageParts.push(context(theme.fg("warning", contextPercentDisplay)));
 	} else {
-		usageParts.push(theme.fg("muted", contextPercentDisplay));
+		usageParts.push(context(theme.fg("muted", contextPercentDisplay)));
 	}
 
+	// A meter too wide for the terminal drops whole segments before it is cut, so the context usage at its end stays.
 	const separator = theme.fg("dim", " • ");
-	const usageText = usageParts.length > 0 ? usageParts.join(separator) : theme.fg("muted", contextPercentDisplay);
-	return rightAlign(usageText, width);
+	const meterWidth = () => visibleWidth(usageParts.map((part) => part.text).join(separator));
+	while (meterWidth() > width) {
+		const dropped = usageParts.reduce((lowest, part) => (part.drop < lowest.drop ? part : lowest));
+		if (dropped.drop === Number.POSITIVE_INFINITY) break;
+		usageParts.splice(usageParts.indexOf(dropped), 1);
+	}
+	return rightAlign(usageParts.map((part) => part.text).join(separator), width);
 }
 
 export function formatCwdForFooter(cwd: string, home: string | undefined): string {

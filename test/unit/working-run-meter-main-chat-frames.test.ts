@@ -158,7 +158,7 @@ test("two main-chat frames after toolcall_end while a second call streams do not
 			tui.invalidate();
 			tui.requestRender();
 			tui.renderNow();
-			assert.match(tui.getScreenLines().join("\n"), /2s · ↓ 1k tokens/);
+			assert.match(tui.getScreenLines().join("\n"), /2s · ↓ 1\.0k tokens/);
 			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === completedArgs).length, 1);
 
 			stringifySpy.mockClear();
@@ -166,7 +166,7 @@ test("two main-chat frames after toolcall_end while a second call streams do not
 			tui.invalidate();
 			tui.requestRender();
 			tui.renderNow();
-			assert.match(tui.getScreenLines().join("\n"), /3s · ↓ 1k tokens/);
+			assert.match(tui.getScreenLines().join("\n"), /3s · ↓ 1\.0k tokens/);
 			assert.equal(stringifySpy.mock.calls.length, 0);
 
 			await mode.handleEvent({
@@ -182,7 +182,7 @@ test("two main-chat frames after toolcall_end while a second call streams do not
 			tui.invalidate();
 			tui.requestRender();
 			tui.renderNow();
-			assert.match(tui.getScreenLines().join("\n"), /4s · ↓ 1k tokens/);
+			assert.match(tui.getScreenLines().join("\n"), /4s · ↓ 1\.0k tokens/);
 			assert.equal(stringifySpy.mock.calls.length, 0);
 		} finally {
 			stringifySpy.mockRestore();

@@ -2,6 +2,7 @@ import { formatModelLabel } from "../../../core/model-label.ts";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
 import { formatReadLineRange } from "../../../core/tools/render-utils.ts";
 import { shortenHomePath } from "../../../utils/paths.ts";
+import { formatTokenCount } from "../../../utils/token-count.ts";
 import { type ThemeColor, theme } from "../theme/theme.js";
 import type { ToolCallInfo } from "./tree-selector-types.ts";
 
@@ -128,8 +129,7 @@ export function getEntryDisplayText(
 			break;
 		}
 		case "compaction": {
-			const tokens = Math.round(entry.tokensBefore / 1000);
-			result = theme.fg("borderAccent", `[compaction: ${tokens}k tokens]`);
+			result = theme.fg("borderAccent", `[compaction: ${formatTokenCount(entry.tokensBefore)} tokens]`);
 			break;
 		}
 		case "branch_summary":

@@ -417,7 +417,7 @@ test("parallel task-backed launches render one canonical ToolBlock per child wit
 	assert.equal(isToolBlock(group), true);
 	assert.deepEqual(text(group, 100).split("\n"), [
 		" ∀ Agent(debugger · #5220 spawn lock)",
-		"   ⎿  Running · 1m · ↓ 12k tokens · ↓ to manage",
+		"   ⎿  Running · 1m · ↓ 12.0k tokens · ↓ to manage",
 		"",
 		" ✗ Agent(worker · Fix shipping batches.)",
 		"   ⎿  Failed · 15s · Batch check failed",
@@ -615,7 +615,7 @@ test("task-backed launch block dynamically refreshes elapsed time, fresh task to
 		};
 		assert.deepEqual(text(block, 80).split("\n"), [
 			" ● Agent(debugger · #5220 spawn lock)",
-			"   ⎿  Done · 25s · ↓ 50k tokens",
+			"   ⎿  Done · 25s · ↓ 50.0k tokens",
 		]);
 		assert.equal(block.isWorking?.(), false);
 	} finally {
@@ -645,7 +645,10 @@ test("Agent block header prefers TaskRecord.title over raw identity.task while e
 		},
 	];
 	const collapsed = text(renderSubagentToolResult(result, { expanded: false, isPartial: false }, theme, context), 100);
-	assert.deepEqual(collapsed.split("\n"), [" ● Agent(debugger · #5220 spawn lock)", "   ⎿  Done · 10s · ↓ 4k tokens"]);
+	assert.deepEqual(collapsed.split("\n"), [
+		" ● Agent(debugger · #5220 spawn lock)",
+		"   ⎿  Done · 10s · ↓ 4.0k tokens",
+	]);
 	const expanded = text(renderSubagentToolResult(result, { expanded: true, isPartial: false }, theme, context), 100);
 	assert.equal(expanded.split("\n")[0], " ● Agent(debugger · #5220 spawn lock)");
 	assert.match(expanded, /⎿ {2}Prompt[\s\S]*Investigate the failing CI step in detail\./);

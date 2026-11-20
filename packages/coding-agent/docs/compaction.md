@@ -125,8 +125,8 @@ The tags change nothing automatically: no text is protected or kept in context. 
 The main chat and subagent views in `/tasks` show one line for each boundary:
 
 ```text
-⚛ Context cleared · 182k tokens
-⚛ Context compacted · morph/morph-compactor · 182k → 21.4k tokens
+⚛ Context cleared · 182.0k tokens
+⚛ Context compacted · morph/morph-compactor · 182.0k → 21.4k tokens
 ```
 
 A boundary written from an extension's replacement text names `extension` as its source. When a configured compactor was not used, the `Compaction model not used (<reason>); context cleared instead` notice follows the line. Press Ctrl+O (`app.tools.expand`) or click the boundary to show the whole boundary message: the recovery instructions and any compacted text.

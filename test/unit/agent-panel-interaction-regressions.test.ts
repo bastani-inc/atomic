@@ -11,7 +11,6 @@ import {
 	AgentPanelFocus,
 	type AgentPanelRow,
 	type AgentPanelStyle,
-	formatPanelTokens,
 	renderAgentPanelHint,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.ts";
@@ -22,6 +21,7 @@ import {
 	setAgentPanelVisible,
 	showAgentPanel,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
+import { formatTokenCount } from "../../packages/coding-agent/src/utils/token-count.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
@@ -37,11 +37,11 @@ const plain: AgentPanelStyle = {
 	warning: (text) => text,
 };
 
-test("formatPanelTokens promotes rounded millions to billions at 999,950,000 (#5224)", () => {
-	assert.equal(formatPanelTokens(999_949_999), "999.9M");
-	assert.equal(formatPanelTokens(999_950_000), "1.0B");
-	assert.equal(formatPanelTokens(999_999_999), "1.0B");
-	assert.equal(formatPanelTokens(1_500_000_000), "1.5B");
+test("token counts promote rounded millions to billions at 999,950,000 (#5224)", () => {
+	assert.equal(formatTokenCount(999_949_999), "999.9M");
+	assert.equal(formatTokenCount(999_950_000), "1.0B");
+	assert.equal(formatTokenCount(999_999_999), "1.0B");
+	assert.equal(formatTokenCount(1_500_000_000), "1.5B");
 });
 
 test("focused panel scrolled into a long list shows ↑ N more above and only the rows below (#5224)", () => {

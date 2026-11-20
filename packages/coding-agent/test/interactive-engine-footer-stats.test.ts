@@ -102,7 +102,7 @@ const P1 = stats({
 	contextTokens: 20_860,
 	latestAssistantUsage: usage(10, 102, 19_900, 90),
 });
-const P1_LINE = "↑10 • ↓102 • R20k • W21k • CH99.5% • $0.172 • 2.1%/1.0M (auto)";
+const P1_LINE = "↑10 • ↓102 • R19.9k • W21.0k • CH99.5% • $0.172 • 2.1%/1.0M (auto)";
 
 const P2 = stats({
 	tokens: { input: 12, output: 300, cacheRead: 49_800, cacheWrite: 30_000 },
@@ -110,7 +110,7 @@ const P2 = stats({
 	contextTokens: 30_045,
 	latestAssistantUsage: usage(12, 198, 29_880, 108),
 });
-const P2_LINE = "↑12 • ↓300 • R50k • W30k • CH99.6% • $0.266 • 3.0%/1.0M (auto)";
+const P2_LINE = "↑12 • ↓300 • R49.8k • W30.0k • CH99.6% • $0.266 • 3.0%/1.0M (auto)";
 
 function servicesFor(harness: Harness) {
 	return {
@@ -731,7 +731,7 @@ test("a model change moves the footer to the new context window (#3328)", async 
 		);
 
 		await vi.waitFor(() => {
-			assert.match(usageLine(runtime), /%\/200k \(auto\)$/);
+			assert.match(usageLine(runtime), /%\/200\.0k \(auto\)$/);
 		});
 	} finally {
 		await harness.cleanup();

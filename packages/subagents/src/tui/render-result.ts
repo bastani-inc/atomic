@@ -1,8 +1,8 @@
-import { getMarkdownTheme, keyHintIfBound } from "@bastani/atomic";
+import { formatTokenCount, getMarkdownTheme, keyHintIfBound } from "@bastani/atomic";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { type Component, Container, Markdown, Spacer, Text } from "@bastani/atomic-tui";
 import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
-import { formatDuration, formatTokens, formatUsage, shortenPath } from "../shared/formatters.js";
+import { formatDuration, formatUsage, shortenPath } from "../shared/formatters.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getSingleResultOutput } from "../shared/utils.js";
 import { modelThinkingBadge } from "./render-event-formatting.js";
@@ -122,9 +122,9 @@ export function renderSubagentResult(
 
 		const progressInfo =
 			isRunning && r.progress
-				? ` | ${r.progress.toolCount} tools, ${formatTokens(r.progress.tokens)} tok, ${formatDuration(displayProgressDurationMs(r.progress, options.now))}`
+				? ` | ${r.progress.toolCount} tools, ${formatTokenCount(r.progress.tokens)} tokens, ${formatDuration(displayProgressDurationMs(r.progress, options.now))}`
 				: r.progressSummary
-					? ` | ${r.progressSummary.toolCount} tools, ${formatTokens(r.progressSummary.tokens)} tok, ${formatDuration(r.progressSummary.durationMs)}`
+					? ` | ${r.progressSummary.toolCount} tools, ${formatTokenCount(r.progressSummary.tokens)} tokens, ${formatDuration(r.progressSummary.durationMs)}`
 					: "";
 
 		const w = getTermWidth() - 4;
@@ -255,7 +255,7 @@ export function renderSubagentResult(
 
 	const summaryStr =
 		totalSummary.toolCount || totalSummary.tokens
-			? ` | ${totalSummary.toolCount} tools, ${formatTokens(totalSummary.tokens)} tok, ${formatDuration(totalSummary.durationMs)}`
+			? ` | ${totalSummary.toolCount} tools, ${formatTokenCount(totalSummary.tokens)} tokens, ${formatDuration(totalSummary.durationMs)}`
 			: "";
 
 	const modeLabel = d.mode;

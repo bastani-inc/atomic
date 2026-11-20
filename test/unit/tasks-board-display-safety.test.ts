@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { test } from "vitest";
 import {
-	compactTokens,
 	renderBoardRow,
 	type TaskBoardRow,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
 import { taskDisplayText } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { formatTokenCount } from "../../packages/coding-agent/src/utils/token-count.js";
 
 test("task text removes terminal strings and direction overrides before display (#5224)", () => {
 	assert.equal(taskDisplayText("Ship\x1b]0;hidden title\x07 it\u202e?\nNow"), "Ship it? Now");
@@ -37,7 +37,7 @@ test("failed task rows sanitize the failure reason before truncation (#5224)", (
 });
 
 test("token rounding promotes millions to billions at the display boundary (#5224)", () => {
-	assert.equal(compactTokens(999_949_999), "999.9M");
-	assert.equal(compactTokens(999_950_000), "1.0B");
-	assert.equal(compactTokens(1_500_000_000), "1.5B");
+	assert.equal(formatTokenCount(999_949_999), "999.9M");
+	assert.equal(formatTokenCount(999_950_000), "1.0B");
+	assert.equal(formatTokenCount(1_500_000_000), "1.5B");
 });

@@ -463,7 +463,7 @@ describe("a live subagent's chat box (#4640)", () => {
 		const label = rows.indexOf(labelRows(rows)[0] ?? "");
 		const usage = rows.findIndex((row) => row.includes("↑1.2k"));
 		assert.ok(usage >= 0 && usage === label - 1, "the usage meter sits right above the prompt's top rule");
-		assert.match(rows[usage] ?? "", /↓340 • \$0\.012 • 0\.8%\/200k \(auto\)$/);
+		assert.match(rows[usage] ?? "", /↓340 • \$0\.012 • 0\.8%\/200\.0k \(auto\)$/);
 		assert.equal(rows[label + 3], `worker-model  low • ${LIVE_FOOTER_CWD} (feature)`);
 		assert.equal(taskRows(rows.slice(label + 4)).length, 2);
 		page.dispose();
@@ -706,7 +706,7 @@ describe("a live subagent's chat box (#4640)", () => {
 				},
 			} as unknown as AgentSessionEvent);
 		}
-		assert.match(working().trimEnd(), / · ↓ 12k tokens\)$/);
+		assert.match(working().trimEnd(), / · ↓ 12\.0k tokens\)$/);
 		page.dispose();
 	});
 
