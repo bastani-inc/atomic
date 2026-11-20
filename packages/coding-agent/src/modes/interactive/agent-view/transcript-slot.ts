@@ -339,16 +339,16 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 	};
 	let detach: (() => void) | undefined;
 
-	const endDockHold = (held: DockState, byKey = false) => {
+	const endDockHold = (held: DockState, key?: string) => {
 		if (dock !== held || held.kind !== "held") return;
 		clearTimeout(held.timer);
 		held.offRenderer();
 		dock = { kind: "live" };
 		held.ended();
 		applyLayout();
-		// The key that ends it is handled next, against the screen as laid out now: a scroll key moves the transcript
-		// it shows. Laid out only at the next paint, the key would find no layout to act on.
-		if (byKey) mode.ui.renderNow();
+		// A scroll key that ends it is handled next by the screen, against its layout: laid out only at the next paint,
+		// it would find none to move. Any other key draws its own frame once it is handled.
+		if (key !== undefined && isFullscreenViewportAction(key, mode.keybindings)) mode.ui.renderNow();
 		else mode.ui.requestRender();
 	};
 	// The screen's hold, which also ends a held dock on the user's key press (the startup input listeners call it before
@@ -377,8 +377,8 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 			)
 				return undefined;
 			const hold = ++holds;
-			const end = (byKey?: boolean) => {
-				if (dock.kind === "held" && dock.hold === hold) endDockHold(dock, byKey);
+			const end = (key?: string) => {
+				if (dock.kind === "held" && dock.hold === hold) endDockHold(dock, key);
 			};
 			const timer = setTimeout(end, timeoutMs);
 			timer.unref?.();

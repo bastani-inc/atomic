@@ -13,7 +13,7 @@ import {
 } from "../src/modes/interactive/components/prompt-slot.ts";
 import { screenHoldOf } from "../src/modes/interactive/screen-hold.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { liveSubagent, mainScreen, PAGE_UP } from "./helpers/agent-view-screen.ts";
+import { flush, liveSubagent, mainScreen, PAGE_UP } from "./helpers/agent-view-screen.ts";
 
 /**
  * The prompt's slot held while `/tasks` opens, and the dock held while a subagent opened from `/tasks` is on its way,
@@ -81,6 +81,14 @@ async function tasksOpening() {
 			slot.clear();
 			slot.addChild(editor);
 		},
+		/** The prompt takes the keys typed into it. */
+		typeIntoPrompt() {
+			Object.assign(ui.mode.editor, {
+				handleInput: (data: string) => {
+					prompt = `❯ ${data}`;
+				},
+			});
+		},
 	};
 }
 
@@ -138,4 +146,23 @@ test("a key the transcript scrolls with shows a held dock live too", async () =>
 	ui.terminal.input("\x1b[1;5H");
 	ui.screen();
 	assert.equal(ui.scroll.scrollTop, 0, "Ctrl+Home goes to the top as before");
+});
+
+test("a key typed while the dock is held reaches the prompt in one frame, with no bare prompt drawn first", async () => {
+	const tasks = await tasksOpening();
+	const { ui } = tasks;
+	tasks.submit();
+	tasks.frame();
+	ui.screen();
+	tasks.switcher.requestView(tasks.agent.taskId, { keepScreen: true });
+	tasks.closeTasks();
+	ui.screen();
+	assert.equal(screenHoldOf(ui.mode).region, "dock");
+	tasks.typeIntoPrompt();
+	const from = ui.terminal.writes.length;
+	ui.terminal.input("x");
+	await flush();
+	const frames = ui.terminal.writes.slice(from).filter((write) => write.includes("\x1b[?2026h"));
+	assert.equal(frames.length, 1, "one frame shows the key");
+	assert.equal(ui.screen().at(-2), "❯ x");
 });

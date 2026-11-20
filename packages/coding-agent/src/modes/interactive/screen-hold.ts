@@ -22,8 +22,8 @@ export function isKeyPress(data: string): boolean {
 	);
 }
 
-/** Shows a held part live again; `byKey` when the user's key ends it, which the screen handles right after. */
-export type EndScreenHold = (byKey?: boolean) => void;
+/** Shows a held part live again; `key` is the user's key that ends it, which the screen handles right after. */
+export type EndScreenHold = (key?: string) => void;
 
 type ScreenHoldState =
 	| { readonly kind: "live" }
@@ -84,7 +84,7 @@ export class ScreenHold {
 
 	/** Input on its way to the screen, before any handler sees it: a key press shows the screen live. */
 	noteInput(data: string): void {
-		if (this.state.kind === "held" && isKeyPress(data)) this.state.end(true);
+		if (this.state.kind === "held" && isKeyPress(data)) this.state.end(data);
 	}
 }
 
