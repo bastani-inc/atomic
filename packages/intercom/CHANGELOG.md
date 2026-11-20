@@ -18,7 +18,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Changed
 
-- An interactive session now joins Intercom in the background as soon as it starts, so any other session in its group can list it and `send` or `ask` it before it has used Intercom itself. Before, a session that had never used Intercom was missing from `intercom list` and a send to it returned `Session not found`. Its first screen and first prompt do not wait for the join, and it registers under the same name and group as before. If the broker cannot be reached or started, it tries again silently after 1, 2, 5, 10 and 30 seconds, then joins on its next Intercom use. Print (`-p`), JSON, RPC and SDK sessions, subagents, and interactive sessions whose tool selection leaves out `intercom` still join on first use. Sessions of earlier versions reach these sessions without updating.
+- An interactive session now joins Intercom in the background as soon as it starts, so any other session in its group can list it and `send` or `ask` it before it has used Intercom itself. Before, a session that had never used Intercom was missing from `intercom list` and a send to it returned `Session not found`. Its first screen and first prompt do not wait for the join, and it registers under the same name and group as before. If the broker cannot be reached or started, it tries again silently after 1, 2, 5, 10 and 30 seconds, then joins on its next Intercom use. Print (`-p`), JSON, RPC and SDK sessions, subagents, and interactive sessions whose tool selection leaves out `intercom` still join on first use. Sessions of earlier versions reach these sessions without updating ([#6037](https://github.com/bastani-inc/atomic/pull/6037)).
 
 ### Fixed
 
