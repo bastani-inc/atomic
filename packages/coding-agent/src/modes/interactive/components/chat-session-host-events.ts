@@ -225,6 +225,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	if (type === "message_start") {
 		const message = (event as { message?: unknown }).message;
 		if (isUserMessageLike(message)) {
+			state.userMessagesShown++;
 			if (!state.seenFirstRawUser) {
 				state.seenFirstRawUser = true;
 				state.firstUserEntryExactText = exactTextOnlyUserPrompt(message);

@@ -156,6 +156,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	 * the queue the chat restores, clears and counts is `pending*`, as the agent lists it.
 	 */
 	deliveringQueuedMessages: QueueUpdateDeliveries | undefined = undefined;
+	/** How many user messages reached this chat's transcript (`message_start`), so far. */
+	userMessagesShown = 0;
 
 	/** The texts of `lane` the chat draws as queued ahead of its queue while the agent delivers them. */
 	deliveringTexts(lane: "steer" | "followUp"): string[] {

@@ -26,6 +26,7 @@ import {
 import { RemoteComponentController } from "../src/modes/interactive-engine/remote-component.ts";
 import { bindEngineAgentView, handleAgentViewCommand } from "../src/modes/rpc/agent-view-rpc.ts";
 import type { AgentViewRpcCommandBody } from "../src/modes/rpc/agent-view-rpc-types.ts";
+import { engineAgentViews } from "../src/modes/rpc/agent-view-rpc-view.ts";
 import { flush, mainScreen } from "./helpers/agent-view-screen.ts";
 import { createGate, type Gate, holdTool, releaseOpenGates, waitFor } from "./helpers/busy-submission-rig.js";
 import { busyTurnResponses, childTranscript } from "./helpers/steering-chats.js";
@@ -74,8 +75,12 @@ async function isolatedSubagent(child: Harness) {
 	const ui = mainScreen();
 	const hostListeners = new Set<(message: InteractiveEngineMessage) => void>();
 	const states: HostState[] = [];
+	/** What the engine did, in order: drew the view's transcript, or sent the view's status. */
+	const engineSteps: string[] = [];
 	let port: RemoteAgentViewPort | undefined;
 	const deliver = (message: InteractiveEngineMessage) => {
+		if (message.type === "engine_agent_view_status")
+			engineSteps.push(`status ${[...message.status.queued.steering, ...message.status.queued.followUp].join(",")}`);
 		for (const listener of [...hostListeners]) listener(message);
 		if (port === undefined) return;
 		// The rows the host draws above its prompt: the messages being delivered, then the queue.
@@ -142,10 +147,19 @@ async function isolatedSubagent(child: Harness) {
 	const viewed = switcher.viewed;
 	assert.equal(viewed.kind, "agent");
 	port = viewed.kind === "agent" ? (viewed.port as RemoteAgentViewPort) : undefined;
+	const enginePort = port === undefined ? undefined : engineAgentViews(session).port(port.viewId);
+	if (enginePort !== undefined) {
+		const draw = enginePort.transcript.render.bind(enginePort.transcript);
+		enginePort.transcript.render = (width) => {
+			engineSteps.push("draw transcript");
+			return draw(width);
+		};
+	}
 	ui.screen();
 	return {
 		ui,
 		states,
+		engineSteps,
 		dispose: async () => {
 			uninstall();
 			unbind();
@@ -203,4 +217,31 @@ describe("a queued message the isolated engine's subagent takes", () => {
 			}
 		});
 	}
+
+	test("a queue taken back without a delivery sends its status before the transcript is drawn again, as before (S9)", async () => {
+		const toolHold = createGate();
+		const child = await createHarness({ tools: [holdTool(toolHold)] });
+		child.setResponses(busyTurnResponses());
+		const view = await isolatedSubagent(child);
+		try {
+			const turn = child.session.prompt("first").catch(() => {});
+			await toolHold.entered.promise;
+			await child.session.prompt("later one", { streamingBehavior: "steer" });
+			await waitFor("the queued row on the host", () => view.states.at(-1)?.queued.includes("later one") === true);
+			await flush();
+			view.engineSteps.length = 0;
+
+			// Alt+Up takes the queue back: nothing reaches the transcript, so nothing is drawn ahead of the status.
+			child.session.clearQueue();
+			await waitFor("the cleared status", () => view.engineSteps.includes("status "));
+			assert.equal(view.engineSteps[0], "status ", view.engineSteps.join("\n"));
+
+			toolHold.release.resolve();
+			await turn;
+		} finally {
+			toolHold.release.resolve();
+			await view.dispose();
+			await child.cleanup();
+		}
+	});
 });

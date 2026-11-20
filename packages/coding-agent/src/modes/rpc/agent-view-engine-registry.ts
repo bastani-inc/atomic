@@ -120,6 +120,7 @@ class EngineAgentViewRegistry implements EngineAgentViews {
 		});
 		let scheduled = false;
 		let sentRows = queuedRowTexts(port.status());
+		let sentShown = port.userMessagesShown();
 		const unsubscribe = port.subscribe(() => {
 			if (scheduled) return;
 			scheduled = true;
@@ -128,10 +129,13 @@ class EngineAgentViewRegistry implements EngineAgentViews {
 				if (this.views.get(viewId)?.port !== port) return;
 				const status = port.status();
 				const rows = queuedRowTexts(status);
-				// A queued row the host takes away goes with the transcript that may now show its message: that frame,
-				// if one is due, is sent first, so no frame the host paints shows the message in neither place.
-				if (removesRow(sentRows, rows)) mount.paintPendingFrame();
+				const shown = port.userMessagesShown();
+				// A queued row the host takes away because its message reached the transcript goes after that
+				// transcript: its frame, if one is due, is sent first, so no frame the host paints shows the message in
+				// neither place. A row taken back without a delivery (Alt+Up, Esc) goes at once.
+				if (shown !== sentShown && removesRow(sentRows, rows)) mount.paintPendingFrame();
 				sentRows = rows;
+				sentShown = shown;
 				send({ type: "engine_agent_view_status", viewId, status });
 			});
 		});

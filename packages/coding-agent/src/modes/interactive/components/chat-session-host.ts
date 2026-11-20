@@ -1120,6 +1120,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return { steering: this.state.deliveringTexts("steer"), followUp: this.state.deliveringTexts("followUp") };
 	}
 
+	/** How many user messages reached the transcript so far: it grows when a delivered message shows. */
+	userMessagesShown(): number {
+		return this.state.userMessagesShown;
+	}
+
 	/** The text of the last answer the agent finished in this chat, as `/copy` copies it. */
 	lastAgentMessageText(): string | undefined {
 		const messages = this.state.transcript.flatMap((entry) =>
