@@ -1,4 +1,14 @@
-import type { Component, Container, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
+import {
+	type Component,
+	type Container,
+	getKeybindings,
+	hasHintMarkers,
+	type KeyId,
+	keyInputData,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	withoutKeyHints,
+} from "@bastani/atomic-tui";
 import { isSingleLeftClick } from "./single-click.ts";
 import type { ToolGroupRole } from "./tool-block.ts";
 
@@ -42,6 +52,11 @@ export interface ClickExpandableBlock extends Component {
 	/** The block's place in a group of finished calls; blocks that never group omit it. */
 	getGroupRole?(): ToolGroupRole;
 	/**
+	 * Whether a call folded into a group is drawn, and toggled by a click, on its own: a click left it at another
+	 * expansion than the group's first call. Blocks that never group omit it.
+	 */
+	drawsApart?(): boolean;
+	/**
 	 * Sets the expansion a click asked for on a block whose rows are drawn elsewhere and arrive later, such as one the
 	 * isolated engine renders. It calls `changed` once the new rows differ from the old ones, and otherwise goes back
 	 * to the expansion it had. Blocks drawn in place omit it: they are drawn in both states at once instead.
@@ -53,6 +68,21 @@ export function isClickExpandableBlock(component: Component | undefined): compon
 	return component !== undefined && (component as Partial<ClickExpandableBlock>).expandsOnClick === true;
 }
 
+/** Whether a hint names a key that expands or collapses every block. */
+function expandsEveryBlock(key: KeyId): boolean {
+	const data = keyInputData(key);
+	return data !== undefined && getKeybindings().matches(data, "app.tools.expand");
+}
+
+/**
+ * `lines` as a block a click expands draws them. A hint in them for the key that expands every block, such as
+ * `(ctrl+o to expand)`, is drawn as the block's own text: a click on it expands or collapses that block, as a click on
+ * any other row of it does, rather than pressing the key, which sets every block in the chat and each block after them.
+ */
+export function blockRows(lines: string[]): string[] {
+	return lines.some(hasHintMarkers) ? lines.map((line) => withoutKeyHints(line, expandsEveryBlock)) : lines;
+}
+
 /** Every row of a block that renders `rendered` rows from row `start` on, or undefined when it draws none there. */
 export function rowsFrom(start: number, rendered: number): RowRange | undefined {
 	return rendered > start ? { start, end: rendered } : undefined;
@@ -62,14 +92,20 @@ function roleOf(block: ClickExpandableBlock): ToolGroupRole["kind"] {
 	return block.getGroupRole?.().kind ?? "standalone";
 }
 
+function drawnApart(block: ClickExpandableBlock): boolean {
+	return block.drawsApart?.() === true;
+}
+
 /**
  * The blocks a click on `siblings[index]` acts on: a group's summary block with the calls folded into it, or the
  * block alone. Folded calls follow their summary block; rows between them that are not blocks, such as an empty
- * assistant turn, are skipped.
+ * assistant turn, are skipped. A call of the group drawn apart from it is a block of its own: a click on it toggles it
+ * alone, and a click on the group leaves it as it is.
  */
 export function clickUnit(siblings: readonly Component[], index: number): readonly ClickExpandableBlock[] | undefined {
 	const clicked = siblings[index];
 	if (!isClickExpandableBlock(clicked)) return undefined;
+	if (drawnApart(clicked)) return [clicked];
 	let headIndex = index;
 	if (roleOf(clicked) === "hidden") {
 		headIndex = -1;
@@ -90,7 +126,7 @@ export function clickUnit(siblings: readonly Component[], index: number): readon
 		const sibling = siblings[at];
 		if (!isClickExpandableBlock(sibling)) continue;
 		if (roleOf(sibling) !== "hidden") break;
-		blocks.push(sibling);
+		if (!drawnApart(sibling)) blocks.push(sibling);
 	}
 	return blocks;
 }

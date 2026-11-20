@@ -179,3 +179,24 @@ test("a rebuilt isolated row never repaints a frame drawn for a different group 
 		standalone.dispose();
 	}
 });
+
+test("an isolated folded row is drawn on its own, collapsed, while a click has left its group's first row expanded", async () => {
+	const { runtime, sent } = isolatedEngine();
+	const [head, folded] = ["a", "b"].map((id) => readRow(runtime, id));
+	if (!head || !folded) throw new Error("rows");
+	head.setGroupRole({ kind: "head", clauses: [{ family: "read", count: 2 }] });
+	folded.setGroupRole({ kind: "hidden" });
+	folded.setGroupHead({ isExpanded: () => head.isExpanded() });
+	assert.deepEqual(folded.render(80), []);
+
+	head.setExpanded(true);
+	await frame(folded, 80, /Read\(b\.ts\)/);
+	const request = sent.filter((command) => command.type === "engine_tool_render" && command.toolCallId === "b").at(-1);
+	assert.equal(request?.type === "engine_tool_render" ? request.groupRole : "missing", undefined);
+	assert.equal(request?.type === "engine_tool_render" ? request.expanded : "missing", false);
+	assert.equal(folded.drawsApart(), true);
+
+	head.setExpanded(false);
+	assert.deepEqual(folded.render(80), [], "folded into the summary again");
+	assert.equal(folded.drawsApart(), false);
+});
