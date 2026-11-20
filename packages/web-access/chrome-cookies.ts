@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createDecipheriv, pbkdf2 } from "node:crypto";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { isBuiltin } from "node:module";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -321,6 +322,9 @@ function buildHostWhereClause(hosts: string[]): string {
 }
 
 function readCookieDatabase(dbPath: string, hosts: string[]): Promise<CookieDatabaseResult> {
+	// Asked on this thread, without loading the module: the worker starts without the process's flags, so a
+	// `--no-experimental-sqlite` given to the process would not reach it.
+	if (!isBuiltin("node:sqlite")) return Promise.resolve({ metaVersion: 0, rows: null });
 	const where = buildHostWhereClause(hosts);
 	return new Promise((resolve) => {
 		let settled = false;
@@ -332,6 +336,10 @@ function readCookieDatabase(dbPath: string, hosts: string[]): Promise<CookieData
 		try {
 			const worker = new Worker(COOKIE_SQLITE_WORKER_SOURCE, {
 				eval: true,
+				// None of the process's flags: an `--input-type=module` would make this CommonJS source a module, and the
+				// process's preloads would run again in the worker. Under Node's permission model a worker is restricted
+				// only by the flags it starts with, so there it keeps them.
+				execArgv: process.permission === undefined ? [] : undefined,
 				workerData: { dbPath, where },
 			});
 			worker.once("message", (msg: unknown) => {
