@@ -4,7 +4,7 @@ import {
 	clearInteractiveEngineQueue,
 	getInteractiveEngineRemoteCommands,
 } from "../interactive-engine/extension-ui-bridge.ts";
-import { IsolatedInteractiveRuntime, type LostSubagentChatQueue } from "../interactive-engine/isolated-runtime.js";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
 import { viewedSteering } from "./agent-view/viewed-submit.ts";
@@ -453,8 +453,15 @@ export function engineLossRestoredNotice(count: number): string {
 	return `Engine restarted; ${queuedMessagesPhrase(count)} ${count === 1 ? "wasn't" : "weren't"} sent and ${count === 1 ? "is" : "are"} back in the editor`;
 }
 
-/** The notice listing, in full and in order, what a subagent chat had queued when the engine was lost. */
-export function engineLossSubagentNotice(queue: LostSubagentChatQueue): string | undefined {
+/** What a subagent had queued, or had on its way, when the engine that runs it was lost. */
+export interface LostSubagentQueue {
+	readonly agent: string;
+	readonly steering: readonly string[];
+	readonly followUp: readonly string[];
+}
+
+/** The notice listing, in full and in order, what a subagent had queued when the engine was lost. */
+export function engineLossSubagentNotice(queue: LostSubagentQueue): string | undefined {
 	const messages = [...queue.steering, ...queue.followUp];
 	if (messages.length === 0) return undefined;
 	const verb = messages.length === 1 ? "wasn't" : "weren't";
@@ -497,8 +504,8 @@ function withoutEach(after: readonly string[], before: readonly string[]): strin
 /**
  * An isolated engine that is lost and replaced takes its queue with it. The messages the main chat showed as queued
  * come back to its editor, as Alt+Up would restore them, with a notice, unless the replacement's history shows the
- * lost engine delivered them; those of the engine's own subagent chats, which went down with it, are shown in full in
- * a notice per chat. Nothing is sent again. A deliberate replacement or stop changes nothing.
+ * lost engine delivered them. (What a shown subagent had queued is listed by `attachLostAgentQueueNotices`.) Nothing is
+ * sent again. A deliberate replacement or stop changes nothing.
  */
 InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: InteractiveModeBase): () => void {
 	const runtime = this.runtimeHost;
@@ -506,16 +513,11 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 	/** The user messages the chat knew when the engine was lost, while its replacement is pending. */
 	let knownAtLoss: string[] | undefined;
 	const stopEnded = runtime.onGenerationEnded((event) => {
-		const subagentQueues = runtime.takeSubagentChatQueues();
 		if (event.expected) return;
 		mainSteering(this).loseTarget();
 		runtime.discardLostQueue();
 		knownAtLoss ??= userMessageTexts(this.session.messages);
 		this.updatePendingMessagesDisplay();
-		for (const queue of subagentQueues) {
-			const notice = engineLossSubagentNotice(queue);
-			if (notice !== undefined) this.showWarning(notice);
-		}
 		this.ui.requestRender();
 	});
 	const stopRecovered = runtime.onEngineRecovered((replaced) => {

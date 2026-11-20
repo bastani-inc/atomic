@@ -100,18 +100,6 @@ export type InteractiveEngineMessage =
 	 * `once`, the notice's identity, once across starts.
 	 */
 	| { type: "engine_deprecation_warning"; message: string; once?: string }
-	/**
-	 * What a subagent chat the engine draws lists as queued, each lane in order: messages typed into it that its subagent
-	 * has not taken yet. Empty lists once it has none or is closed. The host keeps the latest per chat, so a lost engine's
-	 * queued messages can still be shown to the user.
-	 */
-	| {
-			type: "engine_subagent_chat_queue";
-			chatId: string;
-			agent: string;
-			steering: string[];
-			followUp: string[];
-	  }
 	/** The status of a subagent the host shows on its main screen (view `viewId`), on every change. */
 	| { type: "engine_agent_view_status"; viewId: string; status: AgentViewStatus }
 	/** The engine's agent panel or `/tasks` asks the host to show a subagent, or main when `taskId` is null. */
@@ -542,19 +530,6 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		case "engine_deprecation_warning":
 			return typeof value.message === "string" && (value.once === undefined || typeof value.once === "string")
 				? { type: value.type, message: value.message, ...(value.once === undefined ? {} : { once: value.once }) }
-				: undefined;
-		case "engine_subagent_chat_queue":
-			return typeof value.chatId === "string" &&
-				typeof value.agent === "string" &&
-				isStringList(value.steering) &&
-				isStringList(value.followUp)
-				? {
-						type: value.type,
-						chatId: value.chatId,
-						agent: value.agent,
-						steering: [...value.steering],
-						followUp: [...value.followUp],
-					}
 				: undefined;
 		case "engine_agent_view_status": {
 			const status = parseAgentViewStatus(value.status);

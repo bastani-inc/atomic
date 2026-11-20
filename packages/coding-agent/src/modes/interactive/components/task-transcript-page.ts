@@ -60,7 +60,6 @@ import {
 	getSkillCatalogCommands,
 } from "../skill-command-autocomplete.ts";
 import { subagentChatCommand, subagentChatUnavailableNotice } from "../subagent-chat-commands.ts";
-import { reportSubagentChatQueue } from "../subagent-chat-queue-report.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import type { ChatSessionHost, SavedPageHandle } from "./chat-session-host.ts";
@@ -130,7 +129,6 @@ function observeChatWrite(write: Promise<void>, view: WeakRef<ObservedChatWrites
 }
 
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
-let chatCount = 0;
 /** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
 const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
 /** What Up recalled in a task's chat when the reader left it, oldest first, for when they come back. */
@@ -388,15 +386,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	private readonly reportLate: (reason: string) => void;
 	private readonly showKeys: (() => void) | undefined;
-	/**
-	 * The page draws only the transcript, where the main transcript is on the single chat screen: the screen's own
-	 * prompt writes to the subagent, so this page's composer, footer and queue report stay unused.
-	 */
-	private readonly viewMode: boolean;
-	/** This chat among the chats open in this process, as its queue reports name it. */
-	private readonly chatId = `subagent-chat-${++chatCount}`;
-	/** The queue this chat last reported, so an unchanged one is not reported again. */
-	private reportedQueue = "";
 
 	/**
 	 * `reportLate` shows the reason a message failed after the reader left this transcript; `showKeys` opens the chat's
@@ -408,9 +397,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		env: TaskTranscriptEnvironment,
 		requestRender: () => void,
 		reportLate: (reason: string) => void = (reason) => env.notify?.(reason),
-		options: { readonly showKeys?: () => void; readonly view?: boolean } = {},
+		options: { readonly showKeys?: () => void } = {},
 	) {
-		this.viewMode = options.view === true;
 		this.source = source;
 		this.elapsedClocks = taskClocksFor(source);
 		this.taskId = latestSubagentAttempt(source.tasks, taskId)?.ref.taskId ?? taskId;
@@ -888,7 +876,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	render(width: number, rows: number): string[] {
 		const viewport = Math.max(1, rows);
 		this.bodyRows = 0;
-		this.reportQueue();
 		if (this.chat.hasTaskInspector) {
 			const footer = this.chat.taskInspectorFullscreen ? [] : this.chat.renderFooter(width);
 			const shownFooter = footer.slice(0, viewport - 1);
@@ -1028,7 +1015,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptPromptHistories.set(this.source, kept);
 		}
 		this.disposed = true;
-		this.reportQueue();
 		this.cancelAdjacent();
 		this.latestRead?.abort();
 		this.boundaryReads.abort();
@@ -1242,7 +1228,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				this.observedWrites.observe(write);
 			}
 			this.chat.applyTaskAgentEvent(event);
-			if (event.type === "queue_update") this.reportQueue();
 			if (event.type === "compaction_end" && event.result && !event.aborted && session.getEarlierCursor?.()) {
 				// Only a source that can replay the previous context authorizes releasing those rows. Never clear
 				// private SDK rows merely because they arrived before a new boundary.
@@ -1490,27 +1475,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	/** Every message waiting in the subagent's queue, taken back in its own answer. */
 	private takeQueue(): Promise<QueuedTaskMessages> {
 		return takeAgentQueue(this.source, this.liveTaskId());
-	}
-
-	/**
-	 * Report what the chat lists as queued, as it shows it, for the process that keeps it beyond this one; a closed chat
-	 * lists nothing. Only a change is reported.
-	 */
-	private reportQueue(): void {
-		// On the single chat screen the screen's prompt reports what it queued for the subagent.
-		if (this.viewMode) return;
-		const queued = this.disposed ? { steering: [], followUp: [] } : this.chat.queuedMessages();
-		const signature = JSON.stringify([queued.steering, queued.followUp]);
-		if (signature === this.reportedQueue) return;
-		this.reportedQueue = signature;
-		const agent = taskDisplayText(this.liveAgentName());
-		reportSubagentChatQueue({ chatId: this.chatId, agent, steering: queued.steering, followUp: queued.followUp });
-	}
-
-	/** The subagent's name as its chat shows it. */
-	private liveAgentName(): string {
-		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
-		return task?.agentName ?? this.sessionName() ?? "subagent";
 	}
 
 	restoreQueuedToEditor(taken: QueuedTaskMessages): number {

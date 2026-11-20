@@ -150,13 +150,6 @@ export function engineAgentPanelCounts(
 const COMPACTION_VIEW_HOLD_MS = 3_000;
 type HeldHostEvent = { event: JsonAgentSessionEvent; audience: number };
 
-/** The messages one of the engine's subagent chats listed as queued when the engine was lost. */
-export interface LostSubagentChatQueue {
-	readonly agent: string;
-	readonly steering: readonly string[];
-	readonly followUp: readonly string[];
-}
-
 function userMessageText(content: string | readonly { readonly type: string; readonly text?: string }[]): string {
 	if (typeof content === "string") return content;
 	return content
@@ -211,10 +204,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
-	/** What each subagent chat the engine draws lists as queued, by chat, as the engine last reported it. */
-	private readonly subagentChatQueues = new Map<string, LostSubagentChatQueue>();
-	/** What the last ended generation's subagent chats listed as queued, until taken. */
-	private lostSubagentChatQueues: LostSubagentChatQueue[] = [];
 	private readonly recoveryListeners = new Set<(replaced: boolean) => void>();
 	/** Bumped by every authoritative queue_update. */
 	private queueUpdateGeneration = 0;
@@ -345,9 +334,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		);
 		this.initialStart?.catch(() => {});
 		this.client.onGenerationEnded((event) => {
-			// The ended generation's subagent chats went with it: keep what they listed for whoever shows the loss.
-			this.lostSubagentChatQueues = [...this.subagentChatQueues.values()];
-			this.subagentChatQueues.clear();
 			if (this.compactionHold?.generation === event.generation) this.discardHeldHostEvents();
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
@@ -384,17 +370,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			}
 			if (message.type === "engine_agent_panel_state") {
 				this.panelCounts = engineAgentPanelCounts(message);
-				return;
-			}
-			if (message.type === "engine_subagent_chat_queue") {
-				if (message.steering.length === 0 && message.followUp.length === 0)
-					this.subagentChatQueues.delete(message.chatId);
-				else
-					this.subagentChatQueues.set(message.chatId, {
-						agent: message.agent,
-						steering: message.steering,
-						followUp: message.followUp,
-					});
 				return;
 			}
 			if (message.type === "engine_extension_ui_reset") {
@@ -860,13 +835,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.steeringMessages = [];
 		this.followUpMessages = [];
 		this.pendingQueueClear = undefined;
-	}
-
-	/** Take what the last ended engine's subagent chats listed as queued when it ended, and forget them. */
-	takeSubagentChatQueues(): LostSubagentChatQueue[] {
-		const queues = this.lostSubagentChatQueues;
-		this.lostSubagentChatQueues = [];
-		return queues;
 	}
 
 	/** The user messages in the engine's own context now, as the engine reports them. */

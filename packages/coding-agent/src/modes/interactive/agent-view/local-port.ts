@@ -107,7 +107,7 @@ export class AgentTranscriptView implements AgentTranscriptComponent {
 	}
 }
 
-/** One subagent of `source`, shown through its own transcript page in view mode. */
+/** One subagent of `source`, shown through its own transcript page, which draws only its transcript here. */
 export class LocalAgentViewPort implements AgentViewPort {
 	readonly agentKey: string;
 	readonly transcript: AgentTranscriptView;
@@ -142,7 +142,6 @@ export class LocalAgentViewPort implements AgentViewPort {
 			env,
 			requestRender,
 			options.reportLate ?? ((reason) => env.notify?.(reason)),
-			{ view: true },
 		);
 		this.transcript = new AgentTranscriptView(this.page, env, options.rows ?? (() => 24));
 		this.current = this.readStatus();
