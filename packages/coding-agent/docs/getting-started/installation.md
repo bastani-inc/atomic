@@ -115,7 +115,7 @@ Atomic requires Git 2.30.0 or newer for worktrees, git packages, and the footer 
 - **Supported platforms:** macOS (x64, arm64), Linux with glibc 2.34+ (x64, arm64, armv7), and Windows (x64, arm64, x86).
 - **Agent shells:** If no `git` is on `PATH`, the `bash` tool prepends portable Git so agents can run `git`. If an older system `git` is on `PATH`, your shells keep it while Atomic uses portable Git internally.
 - **Offline mode:** `ATOMIC_OFFLINE=1` prevents downloads; an already-cached portable Git still works.
-- **Cache cleanup:** Close running Atomic sessions before deleting `~/.atomic/agent/bin/git/`.
+- **Cache cleanup:** Older portable releases stay cached while existing commands may use them. Close running Atomic sessions before deleting `~/.atomic/agent/bin/git/`. The next online startup downloads git again; until then, offline use needs a system git.
 
 If no suitable Git is found and portable download is unavailable, install Git for your platform (shown in the error and `/tools`):
 

@@ -252,9 +252,9 @@ See [docs/settings.md](docs/settings.md) for every option and default.
 Atomic runs two independent startup network checks:
 
 - **Update check:** Checks for a newer Atomic release. Disable with `ATOMIC_SKIP_VERSION_CHECK=1` (legacy `PI_SKIP_VERSION_CHECK=1`).
-- **Version-adoption telemetry:** Sends one bodyless `GET` request to `https://atomic-version-adoption.bastani-atomic.workers.dev/v1/version-adoption?version=<version>` with the standard `atomic/<version> (<platform>; <runtime>; <arch>)` User-Agent (no UUID, cookie, auth header, or user data).
+- **Version-adoption telemetry:** Measures whether releases reach real interactive launches and which versions stay in use. The metric is version-adoption pings / first-interactive-launch pings, not installs, users, MAU, or retention. Repeated eligible launches on several machines overcount. Opt-outs, offline mode, and dropped best-effort requests undercount. Sends one bodyless `GET` request to `https://atomic-version-adoption.bastani-atomic.workers.dev/v1/version-adoption?version=<version>` with the standard `atomic/<version> (<platform>; <runtime>; <arch>)` User-Agent (no UUID, cookie, auth header, or user data).
   - **When it fires:** Interactive mode only, and only on the first launch with fresh settings or the first launch after upgrading to a version with changelog entries. Never on every launch, npm install, reinstall keeping settings, or `-p`/RPC modes.
-  - **What is stored:** UTC date, version, and aggregate count (Cloudflare processes standard transient IP/TLS metadata to serve the request).
+  - **What is stored:** Atomic stores only UTC date, version, and an aggregate count, retained as aggregates. Cloudflare, the hosting provider, necessarily processes transient connection metadata (IP, TLS) to serve the request. That is not a promise of platform-wide zero logging.
   - **Opt out:** Set `"enableInstallTelemetry": false` in `settings.json` or `ATOMIC_TELEMETRY=0` (`PI_TELEMETRY=0`). Set `ATOMIC_TELEMETRY=1`/`true`/`yes` to force on. Does not affect update checks.
 
 Pass `--offline` or set `ATOMIC_OFFLINE=1` (`PI_OFFLINE=1`) to disable all startup network calls (update checks, package update checks, and version-adoption telemetry).
@@ -358,7 +358,7 @@ Place custom themes in `~/.atomic/agent/themes/`, `.atomic/themes/` (legacy `.pi
 
 Share extensions, skills, prompts, themes, subagent definitions, MCP servers, and storage adapters via npm or git. Browse packages on [npmjs.com](https://www.npmjs.com/search?q=keywords%3Aatomic-package) or [Discord](https://discord.com/channels/1456806362351669492/1457744485428629628).
 
-> **Security:** Atomic packages run with full system access. Review source code before installing third-party packages.
+> **Security:** Atomic packages run with full system access. Extensions execute arbitrary code, and skills can instruct the model to perform any action including running executables. Review source code before installing third-party packages.
 
 ```bash
 atomic install npm:@foo/atomic-tools

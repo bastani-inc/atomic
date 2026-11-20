@@ -5,6 +5,8 @@ description: "Embed Atomic in a Node.js application."
 
 # SDK
 
+<a id="on-this-page-and-its-reference" />
+
 Embed Atomic in Node.js apps to build custom UIs, integrate agent sessions into backend services, or drive automated pipelines programmatically. Working examples live in [examples/sdk/](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/sdk).
 
 - **Full options & exports:** [SDK API reference](/sdk/reference) (also covers [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor-s1), [Supervised command SDK](/sdk/reference#supervised-command-sdk), and [Task transcript references](/sdk/reference#task-transcript-references)).
@@ -60,6 +62,9 @@ import { createAgentSession, type HostInput } from "@bastani/atomic";
 ```
 
 ### Migrating an existing Node host
+
+<a id="migrating-from-the-experimental-client" />
+<a id="experimental-harness-factory" />
 
 - **Builtins are automatic:** Remove manual registration of shipped builtin extensions; disable selectively with `builtins` and restrict tools with `tools` / `excludedTools` (`tools: []` also excludes Intercom).
 - **Host input:** Supply all five `HostInput` methods (`confirm`, `select`, `input`, `editor`, `questionnaire`) on `extensionBindings.humanInput`, honoring abort signals and returning literal `true` only on explicit approval (missing adapter rejects with `HumanInputUnavailable`).
@@ -173,6 +178,9 @@ try {
 
 ### Human input without a terminal
 
+<a id="binding-and-withdrawing-an-input-adapter" />
+<a id="diagnostics-and-provider-state" />
+
 Pass `extensionBindings.humanInput` implementing all five `HostInput` methods (`confirm`, `select`, `input`, `editor`, `questionnaire`; `QuestionParams` and `QuestionnaireResult` are exported):
 
 ```typescript
@@ -195,7 +203,7 @@ async function attachApplication(humanInput: HostInput) {
 }
 ```
 
-- **Routing & abort:** Each call receives `{ requestId, sessionId, signal, timeout? }`. Route prompts by `sessionId` (children inherit explicit `humanInput`; see [Session-local task prompts](/sdk/reference#session-local-task-prompts)) and dismiss UI immediately on `signal` abort.
+- **Routing & abort:** Each call receives `{ requestId, sessionId, signal, timeout? }`. Route prompts by `sessionId` (children inherit explicit `humanInput`; see [Session-local task prompts](/sdk/reference#session-local-task-prompts)) and dismiss UI immediately on `signal` abort. Plain RPC clients and SDK hosts that provide only `uiContext` keep receiving child dialogs through that presentation. Setting `mode: "tui"` alone does not enable held task prompts. Abort, reload, and disposal invalidate pending replies, including late successful replies from callbacks that ignore cancellation.
 - **Return contracts:** `confirm` returns boolean; `select` returns a supplied option or `undefined`; `input`/`editor` return string or `undefined` (preserving whitespace/empty strings). Malformed replies reject with `InvalidHostInput`; `false`, cancellation, or errors never approve.
 - **Omission rules:** Omitting `humanInput` at creation leaves no input (unless `uiContext` supplies dialogs; without either, dialogs reject with `HumanInputUnavailable` and `ask_user_question` returns `{ answers: [], cancelled: true, error: "no_ui" }`). Omitting it on `bindExtensions()` keeps the current adapter; passing `null` withdraws it. `ui.custom` is not part of `HostInput`.
 - **Diagnostics & session-local caches:** `onDiagnostic` captures session-attributed notices (does not intercept third-party `console.*`). MCP OAuth PKCE state and web-provider config caches stay per session, while durable MCP tokens persist by server name.
@@ -339,11 +347,14 @@ const extension: ExtensionFactory = (pi) => {
 
 - `await runtime.dispose()` rejects new replacements, drains pending work, waits up to 3 s for in-flight OAuth token refreshes, and cancels/waits for Intercom broker startup. Pass `{ fromSignal: true }` on `SIGTERM`/`SIGHUP` so `session_shutdown` handlers see it.
 - Extension commands awaiting `ctx.newSession()`, `ctx.fork()`, `ctx.switchSession()`, or `session.reload()` keep their generation alive until the command finishes; always switch to the new generation's APIs afterward.
+
+<a id="settings-failures-and-operation-ids" />
+
 - Unrecovered `persist: true` settings write failures make `dispose()` reject with `ShutdownFailed`. `executeBash()` IDs are correlation IDs—`abortBash(id)` cancels all active calls with that ID.
 
 #### Compaction and tree navigation
 
-`session.compact({ query?, compactionModel? })` stops active runs, clears context (or summarizes with an exact compactor model like `morph/morph-compactor`), appends a `verbatim-lines` `compaction` entry, and returns `VerbatimCompactionResult` (`form: "cleared" | "compacted"`). Rejects with `Nothing to compact` when nothing new entered context; concurrent calls coalesce. See [Compaction](/compaction) and [Session format](/session-format#compactionentry).
+`session.compact({ query?, compactionModel? })` stops active runs, clears context (or summarizes with an exact compactor model like `morph/morph-compactor`), appends a `verbatim-lines` `compaction` entry, and returns `VerbatimCompactionResult` (`form: "cleared" | "compacted"`). Rejects with `Nothing to compact` when nothing new entered context; concurrent calls coalesce. A chat, classifier or unknown `compactionModel` ID clears the context with a notice instead of failing. `compression_ratio` and `preserve_recent` are no longer options; they are ignored if passed. See [Compaction](/compaction) and [Session format](/session-format#compactionentry).
 
 ```typescript
 const result = await session.compact({ query: "keep the auth decisions" });
@@ -435,11 +446,14 @@ Access the underlying [`@bastani/atomic-agent-core`](/libraries/agent-core) `Age
 
 `session.sessionManager` is the source of truth for model context—never assign `session.agent.state.messages` to restore history. Instead, initialize `SessionManager.inMemory(cwd, { id }, entries)` before `createAgentSession()`, use `session.navigateTree()`, or call `session.sessionManager.appendMessage()` + `session.refreshContext()`.
 
+<a id="events" />
+<a id="collecting-assistant-output" />
+
 ### Events & Transcript Collection
 
 Subscribe with `session.subscribe((event) => ...)` for `message_start`/`message_update`/`message_end`, `tool_execution_start`/`update`/`end`, `agent_start`/`end`, `turn_start`/`end`, `queue_update`, `compaction_start`/`end`, and retry events. Do not mutate or append deltas onto `message_start`'s live partial object (it updates in place; seed mid-turn subscribers from `session.agent.state.streamingMessage`).
 
-Use `createTranscript()` to collect ordered JSON-serializable parts (`text`, `thinking`, `toolCall` with `result`) automatically (pass `toolResult: (name) => "details" | "content"` to choose structured details over text):
+Use `createTranscript()` to collect ordered JSON-serializable parts (`text`, `thinking`, `toolCall` with `result`) automatically (pass `toolResult: (name) => "details" | "content"` to choose structured details over text). Redacted thinking is left out. A `toolCall` part's `result` appears once the tool reports progress or finishes; it holds `isError` and `isPartial`, which stays `true` until the tool finishes. If the message is aborted or fails, tool calls without a final result get an error result carrying the error message. Events from tools called inside other tools (those with `parentToolCallId`) are ignored:
 
 ```typescript
 import { createTranscript } from "@bastani/atomic";

@@ -1,5 +1,7 @@
 # Sessions
 
+<a id="on-this-page" />
+
 Atomic persists conversations as append-only trees so you can resume work, jump to earlier turns, and branch without losing history. For branch summarization and context clearing, see [Compaction](/compaction#branch-summarization).
 
 ## Session Storage

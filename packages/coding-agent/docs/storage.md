@@ -78,7 +78,7 @@ In this release:
 
 ### Set up the database
 
-Atomic keeps its tables, indexes, trigger functions and sequences in a schema of its own, `atomic` (the `schema` option), never in `public`. It uses two roles, as Temporal, Airflow and pg-boss do:
+Atomic keeps its tables, indexes, trigger functions and sequences in a schema of its own, `atomic` (the `schema` option), never in `public`. It uses two roles:
 
 - An **owner role** that owns the database and the `atomic` schema. It creates and upgrades Atomic's tables with `atomic storage migrate`, after the first join and after each Atomic upgrade.
 - A **runtime role** for sessions and Intercom brokers. It reads and writes rows and runs no DDL, so it needs no ownership and no `CREATE`.
