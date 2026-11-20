@@ -20,10 +20,10 @@ import { notifyViewed } from "./viewed-notices.ts";
  * back; Esc pauses it and its queued messages come back to its prompt; the next message continues it.
  */
 
-/** `!` commands run in the main chat's shell; a subagent's view refuses them (D2). */
+/** `!` commands run in the main chat's shell; a subagent's view refuses them. */
 export const VIEWED_BASH_REFUSED = "`!` commands run in the main chat. Switch to main to run them.";
 
-/** The notice when text meant for a subagent that is gone comes back in front of main's prompt (D6). */
+/** The notice when text meant for a subagent that is gone comes back in front of main's prompt. */
 export function goneAgentNotice(name: string): string {
 	return `${name} is gone; your message to it is in the prompt.`;
 }
@@ -134,7 +134,7 @@ export function liveAgentSteering(
 
 /**
  * Text that belongs to `port`'s subagent comes back to its prompt, in front of what it holds. Once the subagent is
- * gone, it comes back in front of main's prompt instead, with the notice (D6).
+ * gone, it comes back in front of main's prompt instead, with the notice.
  */
 function giveBack(
 	mode: InteractiveModeBase,
@@ -249,7 +249,7 @@ function pausable(mode: InteractiveModeBase, port: AgentViewPort): boolean {
 }
 
 /**
- * Esc while a subagent is shown (D8): pause it when it works, waits to retry or has messages queued, and stay. On an
+ * Esc while a subagent is shown: pause it when it works, waits to retry or has messages queued, and stay. On an
  * empty prompt while it does not work, Esc shows main; that Esc is not the first press of main's double-Esc. With text
  * typed it does nothing. Answers false while main is shown, which keeps the main chat's Esc.
  */

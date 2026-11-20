@@ -147,8 +147,8 @@ On Windows, pressing the secondary mouse button in fullscreen pastes text from t
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.interrupt` | `escape` | Abort active or queued work and restore still-queued steering/follow-up messages to the editor; the session remains paused until an ordinary submission. A message the agent already picked up is answered instead of restored. While viewing a subagent, pauses that subagent (never main) and returns its queued messages to the prompt; sending a message continues it |
-| `app.clear` | `ctrl+c` | Clear the editor when it has text; otherwise interrupt active or queued work (or pause the viewed subagent's running work, never main's), or terminate an unresponsive interactive engine; on an empty, idle editor, the first press shows "Press Ctrl+C again to exit" and a second press within 0.8 s exits |
+| `app.interrupt` | `escape` | Abort active or queued work and restore still-queued steering/follow-up messages to the editor; the session remains paused until an ordinary submission. A message the agent already picked up is answered instead of restored. While viewing a subagent, pauses that subagent (never main) and returns its queued messages to the prompt; sending a message continues it. On an empty prompt with the viewed subagent not working, shows `main` (without counting toward main's double-Esc) |
+| `app.clear` | `ctrl+c` | Clear the editor when it has text; otherwise interrupt active or queued work, or terminate an unresponsive interactive engine; on an empty, idle editor, the first press shows "Press Ctrl+C again to exit" and a second press within 0.8 s exits. While viewing a subagent, an empty prompt's Ctrl+C pauses its running work (never main's) and shows `main` in one press, and never offers to exit |
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (`alt+z` on Windows) | Suspend to background; on Windows, open a PowerShell subshell |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
@@ -196,7 +196,7 @@ Ctrl+C is the host's escape hatch whenever an engine-owned `ctx.ui.custom()` com
 | `app.session.delete` | `ctrl+d` | Delete session |
 | `app.session.deleteNoninvasive` | `ctrl+backspace` | Delete session when query is empty |
 
-While viewing a subagent, `app.session.new`, `app.session.tree`, `app.session.fork`, `app.session.resume`, and the double-Esc action on an idle empty prompt ask to confirm before switching to `main` and acting on the main conversation.
+While viewing a subagent, `app.session.new`, `app.session.tree` and `app.session.fork` ask first (**Cancel** is listed first and selected) and then act on the main conversation; the subagent stays shown unless the key starts or forks a new main session. `app.session.resume` opens its picker in place.
 
 ### Models and Thinking
 
@@ -226,7 +226,7 @@ The message queue keys work the same whether you are viewing the main chat or a 
 Atomic uses one chat screen for the main chat and its subagents, with the agent panel below the prompt:
 
 - **Switching agents:** Press **↓** (`app.agents.focus`) on an empty prompt to focus the agent panel. Select a subagent row and press **Enter** or **→** (or click it) to swap the transcript to that subagent and point the same prompt at it; the panel marks the viewed agent with `●` and returns focus to the prompt. Select `main` and press **Enter** (or click `main`) to switch back to the main chat.
-- **Esc** interrupts the main chat's turn when viewing `main`, pauses the viewed subagent when viewing a subagent (returning its queued messages to the prompt), cancels a pending switch, closes a dialog, or deselects the panel. It never switches which agent is on screen.
+- **Esc** interrupts the main chat's turn when viewing `main`, pauses the viewed subagent when it works (returning its queued messages to the prompt), cancels a pending switch, closes a dialog, or deselects the panel. On an empty prompt while the viewed subagent is not working, Esc shows `main`; that press never counts as the first of main's double-Esc. **Ctrl+C** on an empty prompt while viewing a subagent pauses it if it works and shows `main`.
 - **Lists (`/tasks` and the focused agent panel):** **↑↓** select, **Enter** or **→** switches the chat screen to a subagent (or opens a shell's output page), **Space** peeks at a task's detail card in `/tasks` (or switches to a subagent waiting on input), **x** stops the selected subagent or nested shell (press it again within 3 seconds to confirm; on a finished item one press dismisses the row), and **Esc** or **←** closes the list or returns focus to the prompt. If an item finishes between the two presses of `x`, the stop is called off and the list says `<name> finished · x to acknowledge`; that press acknowledges the change, and a later `x` dismisses the row after its finished state is painted.
 - **← (`app.nav.back`)** goes back one level inside `/tasks` (from a detail or shell output page to the list, or from a nested shell output back to the focused agent panel) and from a shell's empty input prompt back to the list.
 - **Ctrl+X Ctrl+K** stops every running background subagent and shell of the session, from any view except a dialog that uses Ctrl+X itself (OAuth sign-in, the scoped-model selector). Press it twice within 3 seconds; the first press says what it will do, and any other key calls it off. Stopped subagents stay resumable: viewing one shows `Stopped · send to resume`, and sending a message resumes it.
@@ -251,7 +251,7 @@ Atomic uses one chat screen for the main chat and its subagents, with the agent 
 
 On macOS, Alt+W reaches Atomic only when the terminal sends Option as Meta: turn on **Use Option as Meta key** (Terminal.app), set **Left/Right Option key** to **Esc+** (iTerm2), or set `macos-option-as-alt` (Ghostty) or `macos_option_as_alt both` (kitty, then restart it). Otherwise Option+W types `œ`; remap `app.tasks.openWaited` to another key instead. If you bound Alt+W to another action yourself, such as moving the cursor a word forward, the two collide: while viewing a waiting subagent and on its `/tasks` row, Alt+W opens the shell instead. Give one of them a different key.
 
-**Migrating from earlier versions:** `app.tasks.inspect` is now `app.list.open` and `app.tasks.cancel` is now `app.list.stop`; existing `keybindings.json` entries are migrated on startup. Focus the agent panel (`↓`) and press `Enter` on `main` to return from a viewed subagent to the main chat; `Esc` pauses the viewed subagent. Stopping a task asked for `y`; press `x` a second time instead.
+**Migrating from earlier versions:** `app.tasks.inspect` is now `app.list.open` and `app.tasks.cancel` is now `app.list.stop`; existing `keybindings.json` entries are migrated on startup. Focus the agent panel (`↓`) and press `Enter` on `main` to return from a viewed subagent to the main chat, or press `Esc` on an empty prompt while it is not working; `Esc` pauses a working subagent. Stopping a task asked for `y`; press `x` a second time instead.
 
 Mounted human-input prompts and the composer retain priority. Escape leaves stdin
 or task detail before leaving task focus. Unbound actions have no key hint.

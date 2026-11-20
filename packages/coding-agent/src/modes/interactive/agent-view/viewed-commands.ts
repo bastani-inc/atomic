@@ -74,7 +74,7 @@ export async function routeViewedCommand(
 }
 
 /**
- * Main's prompt submitted holding, unedited, the text a gone subagent's prompt moved there (D6): one Enter never runs a
+ * Main's prompt submitted holding, unedited, the text a gone subagent's prompt moved there: one Enter never runs a
  * command typed for a subagent that would replace, rewrite or switch the main conversation, or set its model or
  * thinking level. It asks first, as from the subagent's view; No or Esc puts main's prompt back as it was, still
  * marked. Answers undefined, synchronously, for any other submission, which main's path runs as before.

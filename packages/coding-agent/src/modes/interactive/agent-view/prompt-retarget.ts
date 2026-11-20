@@ -26,7 +26,7 @@ import { notifyViewed } from "./viewed-notices.ts";
 import { forgetIfIdle, goneAgentNotice, liveAgentSteering } from "./viewed-submit.ts";
 
 /**
- * Retarget the main prompt to the agent the screen shows (S-B). While main is shown nothing here changes what the
+ * Retarget the main prompt to the agent the screen shows. While main is shown nothing here changes what the
  * main chat does or draws. While a subagent is shown, the same prompt writes to it: its own prompt (draft, cursor,
  * pastes, undo, Up history) is in the editor, the placeholder reads `Message @<name>…` and the top rule its title, the
  * rows above the prompt are its queue, the working line and the footer's stop key are its own, and what was typed
@@ -108,7 +108,7 @@ function retargetOnSwitch(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 	};
 }
 
-/** D6: what was typed for a subagent that is gone goes in front of main's prompt, with the notice. */
+/** What was typed for a subagent that is gone goes in front of main's prompt, with the notice. */
 function moveGoneDraftToMain(mode: InteractiveModeBase, port: AgentViewPort): void {
 	const text = takePromptText(mode, { kind: "agent", agentKey: port.agentKey });
 	if (!text.trim()) return;
@@ -188,7 +188,7 @@ function drawViewedWorkingLine(mode: InteractiveModeBase): () => void {
 }
 
 /**
- * `!` makes the main prompt a shell prompt; a subagent's refuses `!` commands, so its prompt never becomes one (D2).
+ * `!` makes the main prompt a shell prompt; a subagent's refuses `!` commands, so its prompt never becomes one.
  */
 function keepBashModeMain(mode: InteractiveModeBase): () => void {
 	const editor = mode.defaultEditor;
@@ -343,7 +343,7 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 }
 
 /**
- * D7: the isolated engine was lost, and the subagents' sessions with it. What each shown or still-answering
+ * The isolated engine was lost, and the subagents' sessions with it. What each shown or still-answering
  * subagent's prompt had queued or on its way is listed in full in a warning per subagent, as origin's subagent chats
  * reported theirs; nothing is sent again. A deliberate replacement changes nothing.
  */
@@ -353,7 +353,7 @@ function reportLostAgentQueues(mode: InteractiveModeBase): () => void {
 	return attachLostAgentQueueNotices(mode, runtime);
 }
 
-/** Show D7's notices when `runtime`'s engine generation ends unexpectedly. Answers the detach. */
+/** Show these notices when `runtime`'s engine generation ends unexpectedly. Answers the detach. */
 export function attachLostAgentQueueNotices(
 	mode: InteractiveModeBase,
 	runtime: Pick<IsolatedInteractiveRuntime, "onGenerationEnded">,

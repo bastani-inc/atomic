@@ -1,5 +1,5 @@
 /**
- * The single chat screen's transcript area (S-A): the viewed subagent's transcript is drawn where the main transcript
+ * The single chat screen's transcript area: the viewed subagent's transcript is drawn where the main transcript
  * is, on Atomic's fullscreen renderer over a recording terminal, with the production input route. Main's own layout
  * root comes back as it was.
  */

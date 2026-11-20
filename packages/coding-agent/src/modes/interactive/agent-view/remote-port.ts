@@ -72,7 +72,7 @@ export class RemoteAgentTranscript implements AgentTranscriptComponent {
 	}
 }
 
-/** View `viewId` of the engine: its status as last reported, its transcript, and the steering S-B builds. */
+/** View `viewId` of the engine: its status as last reported, its transcript, and its steering. */
 export class RemoteAgentViewPort implements AgentViewPort {
 	readonly agentKey: string;
 	readonly viewId: string;

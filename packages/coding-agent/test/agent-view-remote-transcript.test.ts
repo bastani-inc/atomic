@@ -1,5 +1,5 @@
 /**
- * The single chat screen on the isolated engine's host (S-A): the engine opens a view of its subagent, mounts the
+ * The single chat screen on the isolated engine's host: the engine opens a view of its subagent, mounts the
  * transcript as a remote component with `placement: "transcript"`, and the host draws it where its main transcript is.
  * The engine side and the host side talk through the real engine protocol lines.
  */

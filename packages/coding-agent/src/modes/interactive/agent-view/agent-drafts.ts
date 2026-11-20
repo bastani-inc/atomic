@@ -3,7 +3,7 @@ import { addMainPromptHistory } from "../components/agent-prompt-history.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 
 /**
- * The one prompt writes to the agent the screen shows. Each agent keeps its own prompt while another is shown (D1):
+ * The one prompt writes to the agent the screen shows. Each agent keeps its own prompt while another is shown:
  * leaving an agent takes its whole prompt state (text, cursor, paste registry, undo, kill ring, Up-history browsing)
  * and arriving puts the arriving agent's back, so main's prompt is exactly as origin's main editor, which the separate
  * subagent page never touched, would be. Late writes (a refused send, a restore answered after a switch, an engine
@@ -237,7 +237,7 @@ export function appendPromptText(mode: InteractiveModeBase, owner: PromptOwner, 
 }
 
 /**
- * Text typed for a subagent that is gone, which D6 moved into main's prompt, while main's prompt still holds exactly
+ * Text typed for a subagent that is gone, which was moved into main's prompt, while main's prompt still holds exactly
  * what the move left: one Enter must not run a command that rewrites main from it without asking (supervisor ruling).
  */
 export interface MovedDraftMark {
