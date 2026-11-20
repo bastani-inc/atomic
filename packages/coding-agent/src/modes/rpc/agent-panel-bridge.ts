@@ -1,6 +1,12 @@
 import { matchesKey, type TuiMouseEvent, type TuiMouseEventResult, truncateToWidth } from "@bastani/atomic-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
-import { countPanelRow, isRestingPanelRow, NO_PANEL_ROWS, panelRowListed } from "../../core/tasks/agent-panel-rules.ts";
+import {
+	countPanelRow,
+	isRestingPanelRow,
+	NO_PANEL_ROWS,
+	nestedShellListed,
+	panelRowListed,
+} from "../../core/tasks/agent-panel-rules.ts";
 import {
 	type AgentPanelItem,
 	type AgentPanelSession,
@@ -11,6 +17,7 @@ import {
 	dismissedAgentPanelItems,
 	lazyTaskPanelItem,
 	materializePanelItem,
+	notifyAgentPanelChanged,
 	openAgentPanelItem,
 	sampleAgentPanelSources,
 	sourceError,
@@ -22,10 +29,11 @@ import {
 	taskRunGeneration,
 } from "../../core/tasks/agent-panel-source.ts";
 import { latestSubagentAttempt, supersededSettledAttempts } from "../../core/tasks/completion.js";
-import type { TaskId } from "../../core/tasks/contracts.js";
+import type { TaskId, TaskRecord } from "../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
-import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
+import { launchedTaskViewSource, ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
+import { type AgentViewBridge, agentViewBridge } from "../interactive/agent-view/agent-view-bridge.ts";
 import {
 	AGENT_PANEL_FOCUSED_ROWS,
 	AGENT_PANEL_IDLE_ROWS,
@@ -73,16 +81,60 @@ type PanelRankCache = PanelRanking & {
 	readonly hub: AgentPanelSourceHub | undefined;
 	readonly generation: number;
 	readonly dismissed: ReadonlySet<string>;
+	readonly bridge: AgentViewBridge | undefined;
+	/** What the bridge said the screen shows when this was ranked. */
+	readonly requested: TaskId | undefined;
 };
 
 interface PanelRanking {
 	readonly rows: AgentPanelRow[];
 	readonly counts: AgentPanelCounts;
 	readonly main: boolean;
+	/** The row of the subagent the screen shows; undefined while it shows main. */
+	readonly viewed?: string;
 }
 
 function rankingOf(cache: PanelRankCache, rows: AgentPanelRow[] = cache.rows): PanelRanking {
-	return { rows, counts: cache.counts, main: cache.main };
+	return {
+		rows,
+		counts: cache.counts,
+		main: cache.main,
+		...(cache.viewed === undefined ? {} : { viewed: cache.viewed }),
+	};
+}
+
+/**
+ * The row id of the subagent the screen shows, as the panel lists it: a resumed subagent is its latest attempt, so the
+ * mark follows it. Undefined while the screen shows main, or shows nothing this session lists.
+ */
+function viewedRowId(requested: TaskId | undefined, tasks: readonly TaskRecord[]): string | undefined {
+	if (requested === undefined) return undefined;
+	const latest = latestSubagentAttempt(tasks, requested);
+	return latest?.kind === "agent" ? `task:${latest.ref.taskId}` : undefined;
+}
+
+/**
+ * The shells each subagent in `tasks` launched that still run, by the row id of the subagent's listed attempt, oldest
+ * first: they are listed under it. A shell names the attempt that launched it, so a resumed subagent keeps the shells
+ * its earlier attempts started.
+ */
+function nestedShells(
+	tasks: readonly TaskRecord[],
+	ownerTasks: readonly TaskRecord[],
+): ReadonlyMap<string, readonly TaskRecord[]> {
+	const nested = new Map<string, TaskRecord[]>();
+	for (const task of ownerTasks) {
+		if (task.parentTaskId === undefined || taskPanelRole(task) !== "shell") continue;
+		if (!nestedShellListed(taskPanelState(task))) continue;
+		const parent = latestSubagentAttempt(tasks, task.parentTaskId);
+		if (parent?.kind !== "agent") continue;
+		const rowId = `task:${parent.ref.taskId}`;
+		const shells = nested.get(rowId);
+		if (shells === undefined) nested.set(rowId, [task]);
+		else shells.push(task);
+	}
+	for (const shells of nested.values()) shells.sort((a, b) => a.launchOrdinal - b.launchOrdinal);
+	return nested;
 }
 
 interface PanelState {
@@ -194,6 +246,8 @@ function rankPanelSession(
 	const start = Math.max(0, options.start ?? 0);
 	const limit = Math.max(0, options.limit ?? Number.POSITIVE_INFINITY);
 	const materialize = (row: AgentPanelRow): AgentPanelRow => currentPanelItem(store, row);
+	const bridge = agentViewBridge(session);
+	const requested = bridge?.viewedTaskId();
 	const cached =
 		state.rankCaches?.get(cap) ??
 		(limit === 0
@@ -206,6 +260,8 @@ function rankPanelSession(
 		cached.finishedRevision === state.model.finishedRevision &&
 		cached.hub === hub &&
 		cached.generation === generation &&
+		cached.bridge === bridge &&
+		cached.requested === requested &&
 		sameIds(cached.dismissed, dismissed)
 	) {
 		const end = Math.min(cached.rows.length, start + limit);
@@ -232,6 +288,11 @@ function rankPanelSession(
 	const tasks = source?.backgroundTasks ?? [];
 	// A resumed or woken subagent is listed as its latest attempt only.
 	const superseded = tasks.length === 0 ? new Set<TaskId>() : supersededSettledAttempts(tasks);
+	// The subagent the screen shows stays listed while it is shown, finished or not; its own shells are listed under it.
+	const viewed = viewedRowId(requested, tasks);
+	let viewedRow: (() => AgentPanelRow) | undefined;
+	const shellsOf =
+		bridge === undefined || store === undefined ? undefined : nestedShells(tasks, store.ownerBackgroundTasks);
 	// Resting rows, such as a stopped subagent, stay listed only while something is active: a
 	// row, or a running shell, which is not one.
 	let active = false;
@@ -278,7 +339,8 @@ function rankPanelSession(
 	): boolean => {
 		const retired = isRestingPanelRow(kind, rowState) && state.model.retireResting(rowId, active, pass, run);
 		if (!panelRowListed(kind, rowState, finished, { active, retired, kept })) return false;
-		if (finished) state.model.keepFinished(fadeKey, true, now, pass, native);
+		// A shown subagent that finished is kept, not faded: it leaves once the screen shows something else.
+		if (finished && !kept) state.model.keepFinished(fadeKey, true, now, pass, native);
 		counts = countPanelRow(counts, kind, rowState);
 		return true;
 	};
@@ -330,9 +392,14 @@ function rankPanelSession(
 				continue;
 			}
 			// Every native task here is a subagent row: a stopped or interrupted one rests, a finished one leaves.
-			if (!listed(`task:${id}`, "agent", rowState, finishedState, false, id, true, taskRunGeneration(task)))
+			const shown = viewed === `task:${id}`;
+			if (!listed(`task:${id}`, "agent", rowState, finishedState, shown, id, true, taskRunGeneration(task)))
 				continue;
-			place(rowState, finishedState, () => lazyTaskPanelItem(task, sourceClocks));
+			const row = () => lazyTaskPanelItem(task, sourceClocks);
+			if (shown) viewedRow = row;
+			place(rowState, finishedState, row);
+			for (const shell of shellsOf?.get(`task:${id}`) ?? [])
+				counts = countPanelRow(counts, "shell", taskPanelState(shell));
 		}
 	}
 
@@ -345,8 +412,26 @@ function rankPanelSession(
 	// The main row leads the panel whenever it lists a subagent.
 	const main = counts.agents > 0;
 	state.model.endPass(pass);
-	const ordered = inputRows.concat(runningRows, otherRows, finishedRows);
-	const rows = Number.isFinite(cap) ? ordered.slice(0, cap) : ordered;
+	const ranked = inputRows.concat(runningRows, otherRows, finishedRows);
+	const ordered = shellsOf === undefined || shellsOf.size === 0 ? ranked : withNestedShells(ranked, shellsOf, store);
+	let rows = Number.isFinite(cap) ? ordered.slice(0, cap) : ordered;
+	// The panel below the prompt always draws the shown subagent's row and its shells: they take the last places when
+	// they are further down.
+	if (viewedRow !== undefined && viewed !== undefined && Number.isFinite(cap) && cap > 0) {
+		const shells = shellsOf?.get(viewed) ?? [];
+		const at = ordered.findIndex((row) => row.id === viewed);
+		// Ranked past the cap, the shown row was never placed: it and its shells are made here.
+		const group = (
+			at < 0
+				? [viewedRow(), ...shells.map((shell) => taskPanelItem(shell, source && taskClockOf(source)))]
+				: ordered.slice(at, at + 1 + shells.length)
+		).slice(0, cap);
+		if (at < 0 || at + group.length > cap)
+			rows = ordered
+				.filter((row) => !group.includes(row))
+				.slice(0, cap - group.length)
+				.concat(group);
+	}
 	const end = Math.min(rows.length, start + limit);
 	for (let index = start; index < end; index++) rows[index] = state.model.withElapsed(materialize(rows[index]!), now);
 	state.rankCaches ??= new Map();
@@ -357,11 +442,29 @@ function rankPanelSession(
 		hub,
 		generation,
 		dismissed: new Set(dismissed),
+		bridge,
+		requested,
 		rows,
 		counts: panelCounts,
 		main,
+		...(viewed === undefined ? {} : { viewed }),
 	});
-	return { rows, counts: panelCounts, main };
+	return { rows, counts: panelCounts, main, ...(viewed === undefined ? {} : { viewed }) };
+}
+
+/** `ranked` with each subagent's own running shells right after its row. */
+function withNestedShells(
+	ranked: readonly AgentPanelRow[],
+	shellsOf: ReadonlyMap<string, readonly TaskRecord[]>,
+	store: OwnerTaskStore | undefined,
+): AgentPanelRow[] {
+	const clocks = store === undefined ? undefined : taskClockOf(ownerTaskViewSource(store));
+	const rows: AgentPanelRow[] = [];
+	for (const row of ranked) {
+		rows.push(row);
+		for (const shell of shellsOf.get(row.id) ?? []) rows.push(taskPanelItem(shell, clocks));
+	}
+	return rows;
 }
 
 export function agentPanelRows(
@@ -457,6 +560,7 @@ export function bindAgentPanel(
 	let dirty = false;
 	let currentHiddenBelow = 0;
 	let currentMain = false;
+	let currentViewed: string | undefined;
 	let lastCounts: AgentPanelCounts | undefined;
 	let scheduled = false;
 	let windowStart = Number.NEGATIVE_INFINITY;
@@ -470,6 +574,7 @@ export function bindAgentPanel(
 	let cachedFaded = -1;
 	let cachedHiddenBelow = -1;
 	let cachedMain = false;
+	let cachedViewed: string | undefined;
 	/** The rows the widget last drew, which a click is resolved against. */
 	let painted: { rows: readonly AgentPanelRow[]; hiddenBelow: number; main: boolean } | undefined;
 	let cachedLines: string[] = [];
@@ -503,6 +608,7 @@ export function bindAgentPanel(
 		currentRows = [];
 		currentHiddenBelow = 0;
 		currentMain = false;
+		currentViewed = undefined;
 		cachedRows = undefined;
 		cachedHiddenBelow = -1;
 		cachedLines = [];
@@ -542,7 +648,8 @@ export function bindAgentPanel(
 			unmount(false);
 			return;
 		}
-		const { rows, counts, main } = idleRows();
+		syncBridge();
+		const { rows, counts, main, viewed } = idleRows();
 		// The prompt's hints still update when there are no rows to mount.
 		const changed = publishCounts(counts);
 		if (rows.length === 0) {
@@ -552,6 +659,7 @@ export function bindAgentPanel(
 		}
 		currentHiddenBelow = Math.max(0, counts.total - rows.length);
 		currentMain = main;
+		currentViewed = viewed;
 		if (!mounted || !sameUnfocusedRows(currentRows, rows, state.model)) {
 			currentRows = rows;
 		}
@@ -584,8 +692,12 @@ export function bindAgentPanel(
 							event.y,
 						);
 						if (id === undefined) return undefined;
-						// The main row is the chat the reader is already in.
-						if (id === AGENT_PANEL_MAIN_ID) return { handled: true };
+						if (id === AGENT_PANEL_MAIN_ID) {
+							// The main row is the chat the reader is in, unless the screen shows a subagent: then it shows main.
+							const bridge = agentViewBridge(session);
+							if (bridge?.viewedTaskId() !== undefined) bridge.requestView(undefined);
+							return { handled: true };
+						}
 						const row = painted.rows.find((candidate) => candidate.id === id);
 						if (row === undefined) return undefined;
 						openPanelRow(session, inspector, materializePanelItem(row), report).catch(report);
@@ -606,10 +718,11 @@ export function bindAgentPanel(
 									dirty = false;
 									refreshes++;
 									try {
-										const { rows, counts, main } = idleRows();
+										const { rows, counts, main, viewed } = idleRows();
 										publishCounts(counts);
 										currentHiddenBelow = Math.max(0, counts.total - rows.length);
 										currentMain = main;
+										currentViewed = viewed;
 										if (!sameUnfocusedRows(currentRows, rows, state.model)) {
 											currentRows = rows;
 										}
@@ -629,6 +742,7 @@ export function bindAgentPanel(
 									faded,
 									hiddenBelow: currentHiddenBelow,
 									showMain: currentMain,
+									...idleMarks(),
 								});
 							}
 							const frame = atomicWorkingFrame();
@@ -639,7 +753,8 @@ export function bindAgentPanel(
 								cachedFrame === frame &&
 								cachedFaded === fadedMask &&
 								cachedHiddenBelow === currentHiddenBelow &&
-								cachedMain === currentMain
+								cachedMain === currentMain &&
+								cachedViewed === currentViewed
 							) {
 								return cachedLines;
 							}
@@ -649,6 +764,7 @@ export function bindAgentPanel(
 								faded,
 								hiddenBelow: currentHiddenBelow,
 								showMain: currentMain,
+								...idleMarks(),
 							});
 							spent += Math.max(0, performance.now() - renderStart);
 							cachedRows = currentRows;
@@ -657,6 +773,7 @@ export function bindAgentPanel(
 							cachedFaded = fadedMask;
 							cachedHiddenBelow = currentHiddenBelow;
 							cachedMain = currentMain;
+							cachedViewed = currentViewed;
 							cachedLines = lines;
 							return lines;
 						} catch (error) {
@@ -675,6 +792,21 @@ export function bindAgentPanel(
 		ui.requestRender();
 	};
 	const rowsChangeWithTime = (rows: readonly AgentPanelRow[]): boolean => panelRowsNeedClock(rows, state);
+	/** The viewed mark and nesting, only while the screen can show a subagent: without a bridge, today's rows. */
+	const idleMarks = () =>
+		watchedBridge === undefined
+			? {}
+			: { nestShells: true, ...(currentViewed === undefined ? {} : { viewedId: currentViewed }) };
+	/** What the screen shows changes the mark and keeps its row: the panel follows the session's bridge. */
+	let watchedBridge: AgentViewBridge | undefined;
+	let unwatchBridge = () => {};
+	const syncBridge = () => {
+		const bridge = agentViewBridge(session);
+		if (bridge === watchedBridge) return;
+		unwatchBridge();
+		watchedBridge = bridge;
+		unwatchBridge = bridge?.subscribe(scheduleUpdate) ?? (() => {});
+	};
 	const scheduleUpdate = () => {
 		if (disposed) return;
 		dirty = true;
@@ -725,6 +857,7 @@ export function bindAgentPanel(
 	return () => {
 		disposed = true;
 		boundSessions.delete(session);
+		unwatchBridge();
 		clearDeferred();
 		state.setVisible = undefined;
 		if (state.onSourceError === reportSource) state.onSourceError = undefined;
@@ -746,6 +879,22 @@ async function openPanelRow(
 ): Promise<void> {
 	const store = getOwnerTaskStore(session);
 	const taskId = panelTaskId(item);
+	const bridge = agentViewBridge(session);
+	if (bridge !== undefined && taskId !== undefined && item.kind === "agent") {
+		// The screen shows the subagent where the main chat was; the prompt below now writes to it.
+		bridge.requestView(taskId);
+		return;
+	}
+	const shell = bridge === undefined || taskId === undefined ? undefined : store?.taskRecord(taskId);
+	if (store !== undefined && shell?.kind === "command" && shell.parentTaskId !== undefined) {
+		// A subagent's own shell opens its output in that subagent's task list; back returns to its row.
+		const source = launchedTaskViewSource(ownerTaskViewSource(store), shell.parentTaskId);
+		if (
+			(await showTaskInspector(ui, store, shell.ref.taskId, { chat: true, backLabel: "agents", source })) === "back"
+		)
+			await showAgentPanel(session, ui, item.id);
+		return;
+	}
 	// A subagent resumed while its chat was open is the same row: its latest attempt is selected again.
 	const back = () => {
 		const latest = taskId === undefined ? undefined : store && latestSubagentAttempt(store.tasks, taskId);
@@ -788,8 +937,17 @@ export async function showAgentPanel(
 	let currentRows: AgentPanelRow[] = [];
 	let next: (() => Promise<void>) | undefined;
 	let hidden = false;
-	const focusedRows = (scroll: number) =>
-		agentPanelRows(session, { start: Math.max(0, scroll), limit: AGENT_PANEL_FOCUSED_ROWS });
+	const bridge = agentViewBridge(session);
+	/** The shown subagent's row, as the last ranking found it. */
+	let focusViewed: string | undefined;
+	const focusedRows = (scroll: number) => {
+		const ranking = rankPanelSession(session, { start: Math.max(0, scroll), limit: AGENT_PANEL_FOCUSED_ROWS });
+		focusViewed = ranking.viewed;
+		return ranking.rows;
+	};
+	/** The viewed mark and nesting, only while the screen can show a subagent: without a bridge, today's rows. */
+	const focusMarks = () =>
+		bridge === undefined ? {} : { nestShells: true, ...(focusViewed === undefined ? {} : { viewedId: focusViewed }) };
 	state.open = true;
 	try {
 		currentRows = focusedRows(0);
@@ -810,6 +968,7 @@ export async function showAgentPanel(
 				let cachedSelectedId: string | undefined;
 				let cachedScroll = -1;
 				let cachedMain = false;
+				let cachedViewed: string | undefined;
 				/** The rows and view the focused panel last drew, which a click is resolved against. */
 				let paintedFocus:
 					| { rows: readonly AgentPanelRow[]; selectedId: string; scroll: number; showMain: boolean }
@@ -828,6 +987,15 @@ export async function showAgentPanel(
 					open(row) {
 						const item = materializePanelItem(row);
 						next = () => openPanelRow(session, ui, item, report);
+						finish();
+					},
+					openMain() {
+						// While a subagent is shown, the main row shows main again; otherwise it returns to the prompt.
+						const bridge = agentViewBridge(session);
+						if (bridge?.viewedTaskId() !== undefined)
+							next = async () => {
+								bridge.requestView(undefined);
+							};
 						finish();
 					},
 					stop(row) {
@@ -854,6 +1022,8 @@ export async function showAgentPanel(
 						const taskId = panelTaskId(row);
 						if (taskId !== undefined && store !== undefined)
 							dismissedTasks(ownerTaskViewSource(store)).add(taskId);
+						// The screen shows it: its watchers learn it is gone, and the screen shows main.
+						if (row.id === focusViewed) notifyAgentPanelChanged(session);
 						try {
 							dirty = false;
 							currentRows = focusedRows(focus.scroll);
@@ -911,7 +1081,12 @@ export async function showAgentPanel(
 						if (dirty) refreshFocus();
 					});
 				};
-				const unsubscribe = subscribeAgentPanel(session, scheduleRefresh);
+				const unsubscribePanel = subscribeAgentPanel(session, scheduleRefresh);
+				const unwatchBridge = bridge?.subscribe(scheduleRefresh);
+				const unsubscribe = () => {
+					unsubscribePanel();
+					unwatchBridge?.();
+				};
 				syncTick();
 				return {
 					invalidate() {
@@ -967,6 +1142,7 @@ export async function showAgentPanel(
 									faded,
 									scroll: focus.scroll,
 									showMain: focus.showMain,
+									...focusMarks(),
 								});
 							} else {
 								const frame = atomicWorkingFrame();
@@ -982,6 +1158,7 @@ export async function showAgentPanel(
 									cachedSelectedId === focus.selectedId &&
 									cachedScroll === focus.scroll &&
 									cachedMain === focus.showMain &&
+									cachedViewed === focusViewed &&
 									cachedFrame === frame &&
 									cachedFaded === fadedMask
 								) {
@@ -993,12 +1170,14 @@ export async function showAgentPanel(
 										faded,
 										scroll: focus.scroll,
 										showMain: focus.showMain,
+										...focusMarks(),
 									});
 									cachedRows = currentRows;
 									cachedWidth = w;
 									cachedSelectedId = focus.selectedId;
 									cachedScroll = focus.scroll;
 									cachedMain = focus.showMain;
+									cachedViewed = focusViewed;
 									cachedFrame = frame;
 									cachedFaded = fadedMask;
 									cachedRowLines = rowLines;

@@ -139,7 +139,8 @@ export type RpcCommand =
 	| { id?: string; type: "get_state" }
 	| { id?: string; type: "get_session_summary" }
 	| { id?: string; type: "list_sessions" }
-	| { id?: string; type: "open_task_inspector"; taskId?: string }
+	/** `waitedShellOf`: open at the output of the newest shell that subagent waits on, as its waited-shell key does. */
+	| { id?: string; type: "open_task_inspector"; taskId?: string; waitedShellOf?: string }
 	| { id?: string; type: "stop_all_background" }
 	| { id?: string; type: "set_stop_all_notice"; text?: string }
 	| { id?: string; type: "open_agent_panel" }
