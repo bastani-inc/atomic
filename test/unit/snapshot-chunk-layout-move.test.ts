@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.ts";
 import type { SerializedWorkspaceError } from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
+import { removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 
 /**
  * The free space the file system of a database file reports to the move, when a test sets it (#5694); otherwise what the
@@ -113,7 +114,9 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	resetSnapshotCollectionScheduleForTesting();
 	while (closers.length > 0) await closers.pop()?.();
-	rmSync(directory, { recursive: true, force: true });
+	// A closed libSQL connection can keep its file open until its statements are collected: Windows then refuses to
+	// delete the file for a moment.
+	await removeLibsqlDirectory(directory);
 });
 
 /** Calls `afterCommit` after each transaction `database` commits, and waits for it. */

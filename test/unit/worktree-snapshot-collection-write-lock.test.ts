@@ -25,6 +25,16 @@ import {
 	textBlob,
 } from "../helpers/snapshot-reference-index.js";
 
+/**
+ * The most CPU time this thread may spend between two turns of the event loop while a collection runs. Measured as
+ * this thread's CPU, not wall time: a loaded runner keeps the thread waiting for a core longer than this (CI: 328 ms;
+ * under a 300 ms burst of other work, 371 ms, of which 323 ms waiting to run and 48 ms running), and what the
+ * collection controls is how long it runs before the next turn. Waiting for the write lock on this thread would use no
+ * CPU, but here it never ends while the collection holds the lock: the other connection's write fails once its busy
+ * timeout passes, which the check of failed writes catches.
+ */
+const TURN_CPU_LIMIT_MS = MAIN_THREAD_LAG_LIMIT_MS;
+
 let directory: string;
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "snapshot-collection-write-lock-"));
@@ -86,11 +96,19 @@ test.each(["node-sqlite", "libsql"] as const)(
 					.finally(() => setImmediate(write));
 			};
 			let longestTurnMs = 0;
+			let busiestTurnCpuMs = 0;
 			let last = performance.now();
+			let lastCpu = process.threadCpuUsage();
 			const tick = () => {
 				const now = performance.now();
+				const cpu = process.threadCpuUsage();
 				longestTurnMs = Math.max(longestTurnMs, now - last);
+				busiestTurnCpuMs = Math.max(
+					busiestTurnCpuMs,
+					(cpu.user - lastCpu.user + cpu.system - lastCpu.system) / 1000,
+				);
 				last = now;
+				lastCpu = cpu;
 				if (collecting) setTimeout(tick, 1);
 			};
 			setTimeout(tick, 1);
@@ -102,8 +120,8 @@ test.each(["node-sqlite", "libsql"] as const)(
 			assert.deepEqual(failures, [], "writes of the other connection that failed");
 			assert.ok(writes > 0);
 			assert.ok(
-				longestTurnMs < MAIN_THREAD_LAG_LIMIT_MS,
-				`the event loop stopped for ${Math.round(longestTurnMs)} ms while the other connection wrote`,
+				busiestTurnCpuMs < TURN_CPU_LIMIT_MS,
+				`the event loop ran ${Math.round(busiestTurnCpuMs)} ms of CPU without a turn while the other connection wrote (longest wait ${Math.round(longestTurnMs)} ms)`,
 			);
 		} finally {
 			await other.close();
