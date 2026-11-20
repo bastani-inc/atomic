@@ -1520,6 +1520,12 @@ export class TaskInspector implements Component {
 		if (!result.ok) this.failureNotice = taskDisplayText(result.error.message);
 		this.requestRender();
 	}
+	/** Ctrl+C on an open chat's typed prompt clears it, as in the main chat. Answers whether there was one to clear. */
+	clearTypedPrompt(): boolean {
+		if (this.helpOpen || this.transcript?.clearDraft?.() !== true) return false;
+		this.requestRender();
+		return true;
+	}
 	private configuredTaskKey(data: string): boolean {
 		return (["app.list.open", "app.list.stop", "app.tasks.input"] as const).some((key) =>
 			getKeybindings().matches(data, key),

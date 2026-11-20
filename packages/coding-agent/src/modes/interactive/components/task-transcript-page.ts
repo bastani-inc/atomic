@@ -159,6 +159,8 @@ export interface TaskTranscriptPage {
 	 * front of what is typed, as Alt+Up does. Answers how many came back.
 	 */
 	restoreQueuedToEditor?(taken: QueuedTaskMessages): number;
+	/** Ctrl+C: clear the typed prompt, as the main chat does. Answers whether there was one to clear. */
+	clearDraft?(): boolean;
 	render(width: number, rows: number): string[];
 	/** A single click at row `event.y` of the last frame `render` drew; a result when the page takes it. */
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
@@ -1272,6 +1274,13 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	restoreQueuedToEditor(taken: QueuedTaskMessages): number {
 		return this.chat.restoreTakenQueuedMessages(taken);
+	}
+
+	clearDraft(): boolean {
+		if (this.chat.hasTaskInspector || this.heldPrompt() !== undefined || !this.chat.hasInputText()) return false;
+		this.chat.setInputText("");
+		this.requestRender();
+		return true;
 	}
 
 	/**
