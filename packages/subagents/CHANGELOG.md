@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-20
+
+### Fixed
+
+- An interrupted `wait-for-text.sh` (bundled tmux skill) no longer waits for a stalled pane capture to finish or for its timeout. With bash 5.2 or older, an interrupt that arrived just as the helper began waiting for its worker was only acted on once the worker wrote again; it now stops within a second ([#5566](https://github.com/bastani-inc/atomic/issues/5566)).
+
 ## [0.10.1-alpha.1] - 2026-11-20
 
 ### Fixed
