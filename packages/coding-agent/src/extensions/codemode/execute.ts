@@ -717,7 +717,7 @@ export async function executeCodemode(
 			})),
 			globals: [
 				...discoveryGlobals(callable, samples, options),
-				...(options.models && ctx
+				...(options.models && ctx && ctx.subagentPolicy?.codemodeRoutingOnly !== true
 					? modelGlobals(
 							ctx,
 							id,

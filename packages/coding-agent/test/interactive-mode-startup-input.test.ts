@@ -18,7 +18,10 @@ type SubmitContext = {
 		isStreaming: boolean;
 		isBashRunning: boolean;
 		prompt: (text: string, options?: unknown) => Promise<void>;
+		scopedModels: never[];
+		modelRuntime: { getAvailableSnapshot: () => never[] };
 	};
+	isExtensionCommand: (text: string) => boolean;
 	deferredStartupPending: boolean;
 	deferredStartupPromise?: Promise<void>;
 	flushPendingBashComponents: () => void;
@@ -75,7 +78,12 @@ function createSubmitContext(): SubmitContext {
 			isStreaming: false,
 			isBashRunning: false,
 			prompt: vi.fn(async () => {}),
+			// `/model <name>` looks the name up among the models already known before it runs.
+			scopedModels: [],
+			modelRuntime: { getAvailableSnapshot: () => [] },
 		},
+		// No extension has registered a command yet.
+		isExtensionCommand: vi.fn(() => false),
 		options: {},
 		inputHandlerReadyRecorded: true,
 		deferredStartupPending: false,

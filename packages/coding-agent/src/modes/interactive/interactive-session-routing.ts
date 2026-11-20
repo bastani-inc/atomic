@@ -32,6 +32,7 @@ import { clearChatForRerender } from "./interactive-render-chat.ts";
 import { onPreliminaryCatalogWithdrawn } from "./interactive-startup-trust.ts";
 import { setSummaryCancellable } from "./interactive-summarization-retry-events.ts";
 import { resolveResumeTarget } from "./resume-catalog.ts";
+import { screenHoldOf } from "./screen-hold.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function (this: InteractiveModeBase): Promise<void> {
@@ -119,6 +120,11 @@ InteractiveModeBase.prototype.showTrustSelector = async function (this: Interact
 						},
 						handleMouse: (event) => selector?.handleMouse(event),
 					};
+					// Until the saved decision is read the view draws nothing: the prompt's slot keeps its rows meanwhile. A key
+					// pressed since the view opened shows it live, as a key does with any held part of the screen.
+					const screen = screenHoldOf(this);
+					const keysAtOpen = screen.keyPresses;
+					awaitFirstContent(view, () => selector === undefined && screen.keyPresses === keysAtOpen);
 					trustData.then(
 						([savedDecision, trustPath]) => {
 							if (closed) return;

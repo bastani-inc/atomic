@@ -3,6 +3,7 @@ import { taskPromptHost } from "../../core/extensions/held-prompts.ts";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
 import { openLocalHostInputForm } from "./components/host-input-form-mount.ts";
 import { openLocalHostSessionPicker } from "./components/host-session-picker.ts";
+import { extensionChangedScreen } from "./extension-command-hold.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type ExtensionUIContext,
@@ -191,17 +192,23 @@ InteractiveModeBase.prototype.createProjectTrustContext = function (
 };
 
 InteractiveModeBase.prototype.createExtensionUIContext = function (this: InteractiveModeBase): ExtensionUIContext {
+	// What the call shows is on the screen: an extension command's held prompt shows live with it
+	// (extension-command-hold.ts). A custom view does so once it is mounted (showExtensionCustom).
+	const shown = <T>(result: T): T => {
+		extensionChangedScreen(this);
+		return result;
+	};
 	return taskPromptHost({
-		select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
-		confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
-		input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
-		notify: (message, type) => this.showExtensionNotify(message, type),
+		select: (title, options, opts) => shown(this.showExtensionSelector(title, options, opts)),
+		confirm: (title, message, opts) => shown(this.showExtensionConfirm(title, message, opts)),
+		input: (title, placeholder, opts) => shown(this.showExtensionInput(title, placeholder, opts)),
+		notify: (message, type) => shown(this.showExtensionNotify(message, type)),
 		requestRender: () => this.ui.requestRender(),
 		getHostCustomUiState: () => this.getHostCustomUiState(),
 		onHostCustomUiStateChange: (listener) => this.onHostCustomUiStateChange(listener),
 		focusHostInlineCustomUi: () => this.focusHostInlineCustomUi(),
 		onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
-		setStatus: (key, text) => this.setExtensionStatus(key, text),
+		setStatus: (key, text) => shown(this.setExtensionStatus(key, text)),
 		setWorkingMessage: (message) => {
 			this.workingMessage = message;
 			this.lastWorkingMessage = message;
@@ -212,10 +219,10 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 		setWorkingVisible: (visible) => this.setWorkingVisible(visible),
 		setWorkingIndicator: (options) => this.setWorkingIndicator(options),
 		setHiddenThinkingLabel: (label) => this.setHiddenThinkingLabel(label),
-		setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
-		setFooter: (factory) => this.setExtensionFooter(factory),
+		setWidget: (key, content, options) => shown(this.setExtensionWidget(key, content, options)),
+		setFooter: (factory) => shown(this.setExtensionFooter(factory)),
 		onWidgetRelease: (key, listener) => this.onExtensionWidgetRelease(key, listener),
-		setHeader: (factory) => this.setExtensionHeader(factory),
+		setHeader: (factory) => shown(this.setExtensionHeader(factory)),
 		setTitle: (title) => this.ui.terminal.setTitle(replaceControlCharacters(title)),
 		custom: (factory, options) => this.showExtensionCustom(factory, options),
 		// In-process host session picker: extensions already run in the terminal
@@ -243,10 +250,11 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 			const prompt = promptHandle(this, "main");
 			if (prompt.isShown()) this.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
 			else prompt.setText(prompt.getExpandedText() + text);
+			shown(undefined);
 		},
-		setEditorText: (text) => promptHandle(this, "main").setText(text),
+		setEditorText: (text) => shown(promptHandle(this, "main").setText(text)),
 		getEditorText: () => promptHandle(this, "main").getExpandedText(),
-		editor: (title, prefill, opts) => this.showExtensionEditor(title, prefill, opts),
+		editor: (title, prefill, opts) => shown(this.showExtensionEditor(title, prefill, opts)),
 		addAutocompleteProvider: (factory) => {
 			this.autocompleteProviderWrappers.push(factory);
 			this.setupAutocompleteProvider();

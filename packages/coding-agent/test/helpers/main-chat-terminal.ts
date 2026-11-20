@@ -138,6 +138,8 @@ export async function startMainChat(
 		readonly settings?: Partial<Settings>;
 		/** On the isolated host, whether the engine tells the host which queued messages it is delivering (default). */
 		readonly queuedDeliveries?: boolean;
+		/** On the isolated host, the engine's extensions show their UI on the host, as a real engine's do. */
+		readonly extensionUi?: boolean;
 	} = {},
 ): Promise<MainChatTerminal> {
 	const stops: Array<() => Promise<void> | void> = [];
@@ -152,6 +154,7 @@ export async function startMainChat(
 			tools,
 			engineUi: options.engineUi,
 			engineExtensions: options.extensions,
+			extensionUi: options.extensionUi,
 			settings: options.settings,
 			queuedDeliveries: options.queuedDeliveries,
 		});

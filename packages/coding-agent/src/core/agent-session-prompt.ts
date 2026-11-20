@@ -962,6 +962,8 @@ export async function _runAgentContinue(this: AgentSession): Promise<void> {
 	if (this._agentRunAbortRequested || sessionGenerationClosing.has(this) || sessionLifetime(this).aborted) return;
 	// Nothing continues past a detached call that has no result yet; the hand-back continues the turn (#4580).
 	if (holdsTurnsForDetachedResults(this)) return;
+	const recording = this._recordTransformedPromptHead();
+	if (recording) await recording;
 	await this._continueAgentAfterCompactionCheck();
 	await this.waitForRetry();
 	await this._continueQueuedAgentMessages();
@@ -994,6 +996,8 @@ export async function _runAgentContinuation(
 			await beforeContinue();
 			if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 				throw sessionClosedForDetachedTurn(this);
+			const recording = this._recordTransformedPromptHead();
+			if (recording) await recording;
 			if (mode === "recovery") await this._continueQueuedAgentMessages();
 			else if (mode === "continue") await this._continueAgentAfterCompactionCheck();
 			await this.waitForRetry();
@@ -1281,6 +1285,11 @@ async function runQueuedInput(session: AgentSession): Promise<void> {
 	if (!canStartQueuedInputRun(session)) return;
 	const cleared = await session._compactBeforeContinuation();
 	if (!canStartQueuedInputRun(session)) return;
+	const recording = session._recordTransformedPromptHead();
+	if (recording) {
+		await recording;
+		if (!canStartQueuedInputRun(session)) return;
+	}
 	// After a clear the context ends with the boundary message, so the queued input is the next request's prompt.
 	const run = cleared ? session.agent.promptQueuedMessages().then(() => {}) : session.agent.continue();
 	if (!session.agent.state.isStreaming) return run;

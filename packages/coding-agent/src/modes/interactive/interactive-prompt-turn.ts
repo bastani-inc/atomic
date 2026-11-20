@@ -2,6 +2,7 @@ import type { AgentSessionInternalSurface } from "../../core/agent-session-metho
 import { tryExecuteSessionSlashCommand } from "../../core/agent-session-prompt.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
+import { takeSubmittedExtensionCommandHold } from "./extension-command-hold.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { followStartedRunEcho, type StartedRunEchoFollower } from "./interactive-render-chat.ts";
@@ -12,6 +13,8 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	input: InteractiveSubmission | string,
 ): Promise<void> {
 	const { text: userInput, draft } = toInteractiveSubmission(input);
+	// An extension command's hold of the prompt's slot ends with the turn at the latest.
+	const extensionCommandHold = typeof input === "string" ? undefined : takeSubmittedExtensionCommandHold(input);
 	const turn = this.promptTurn ?? { dispatched: false };
 	this.promptTurn = turn;
 	const settleDispatch = (): void => {
@@ -93,6 +96,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 			this.showError(error instanceof Error ? error.message : "Unknown error occurred");
 		}
 	} finally {
+		extensionCommandHold?.settle();
 		unsubscribeTurnStart();
 		echo?.close();
 		if (this.promptTurn === turn) this.promptTurn = undefined;

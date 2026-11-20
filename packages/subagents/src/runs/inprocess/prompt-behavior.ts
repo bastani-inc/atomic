@@ -1,3 +1,4 @@
+import { hasRecordedTransformedPrompt, startedAsFork } from "@bastani/atomic";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
@@ -171,8 +172,21 @@ const forkReplayFilter = Symbol.for("atomic.subagents/fork-replay-filter@1");
 
 export interface InProcessChildPromptBehavior {
 	readonly systemPromptTransform: (prompt: string) => string;
-	readonly initialContextTransform: (messages: AgentMessage[]) => AgentMessage[];
-	readonly [forkReplayFilter]: {
+	readonly systemPromptSections: {
+		readonly key: string;
+		readonly transform: (sections: Record<string, string>) => Record<string, string>;
+		readonly fork?: {
+			readonly sessionId: string;
+			readonly hiddenTools?: readonly string[];
+			readonly note: (tools: {
+				readonly tools: readonly string[];
+				readonly throughCodemode: readonly string[];
+			}) => string;
+		};
+	};
+	/** Absent in a fork, which keeps its parent's conversation as it was sent. */
+	readonly initialContextTransform?: (messages: AgentMessage[]) => AgentMessage[];
+	readonly [forkReplayFilter]?: {
 		project: (messages: AgentMessage[]) => AgentMessage[];
 		boundary: (message: AgentMessage) => "visible" | "hidden" | undefined;
 	};
@@ -192,11 +206,117 @@ export function createInProcessChildSystemPromptTransform(
 	};
 }
 
-/** Build the construction-time transforms for one admitted in-process child. */
-export function createInProcessChildPromptBehavior(policy: ChildPromptPolicy): InProcessChildPromptBehavior {
+/**
+ * The child's view of each section of the prompt `createInProcessChildSystemPromptTransform` rewrites: the same
+ * rewrites applied section by section, sections left empty dropped, the boundary instructions first and the
+ * explicitly selected skills last. A resumed child keeps the prompt it was first sent and is told later changes to
+ * these sections as updates.
+ */
+export function createInProcessChildSystemPromptSectionsTransform(
+	policy: ChildPromptPolicy,
+	explicitSkillInjection = "",
+): (sections: Record<string, string>) => Record<string, string> {
+	return (sections) => {
+		const child: Record<string, string> = {
+			subagent_boundary: policy.fanoutAuthorized
+				? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS
+				: CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
+		};
+		for (const [name, text] of Object.entries(sections)) {
+			let rewritten = text;
+			if (!policy.inheritProjectContext) rewritten = stripProjectContext(rewritten);
+			if (!policy.inheritSkills) rewritten = stripInheritedSkills(rewritten);
+			rewritten = stripChildBoundaryInstructions(stripSubagentOrchestrationSkill(rewritten));
+			if (rewritten.trim()) child[name] = rewritten;
+		}
+		if (explicitSkillInjection) child.subagent_skills = explicitSkillInjection;
+		return child;
+	};
+}
+
+/**
+ * The tools a forked child runs with: its own, plus codemode when its parent's requests declare codemode and its own
+ * tools do not include it. That codemode (`codemodeRoutingOnly`) is a routing channel: its scripts reach exactly the
+ * child's own tools, with no models, so it grants nothing a fresh child of the same agent could not do. It lets the
+ * child call codemode as its parent's conversation declares it, and reach the tools only the child has where the
+ * provider cannot add them to the parent's tool list.
+ */
+export function forkedChildTools(
+	tools: readonly string[] | undefined,
+	parentToolNames: readonly string[] | undefined,
+): { readonly tools: string[] | undefined; readonly codemodeRoutingOnly: boolean } {
+	if (tools === undefined || tools.includes("codemode") || !parentToolNames?.includes("codemode"))
+		return { tools: tools && [...tools], codemodeRoutingOnly: false };
+	return { tools: [...tools, "codemode"], codemodeRoutingOnly: true };
+}
+
+/**
+ * The parent whose conversation a child's session continues as a fork, or undefined. A fork continues that
+ * conversation from its first request, and its recorded prompt says so for every reopen after. A fork session that
+ * already holds the child's own turns without a recorded prompt (an earlier version ran it) is reopened as the child
+ * it was, under its own prompt, and stays that child.
+ */
+export function forkedParentSessionId(session: {
+	getHeader(): { readonly parentSessionId?: string; readonly createdAt: string } | null;
+	buildSessionContext(): { readonly messages: readonly AgentMessage[] };
+}): string | undefined {
+	const header = session.getHeader();
+	if (header?.parentSessionId === undefined) return undefined;
+	const { messages } = session.buildSessionContext();
+	if (startedAsFork(messages)) return header.parentSessionId;
+	if (hasRecordedTransformedPrompt(messages)) return undefined;
+	const forkedAt = Date.parse(header.createdAt);
+	const ownTurns = messages.some((message) => message.role === "assistant" && message.timestamp >= forkedAt);
+	return ownTurns ? undefined : header.parentSessionId;
+}
+
+/** The note that opens what a forked child adds after its parent's conversation. */
+export function forkedChildNote(tools: {
+	readonly tools: readonly string[];
+	readonly throughCodemode: readonly string[];
+}): string {
+	return [
+		"You are now a subagent started from the conversation above. That conversation is your parent's context: its tool calls are history, and their sessions and processes are not yours. Follow your own role and task below, and report your result to your parent.",
+		`The tools you may call: ${tools.tools.join(", ") || "none"}. A call to any other tool declared above fails.`,
+		...(tools.throughCodemode.length > 0
+			? [
+					`Call ${tools.throughCodemode.join(", ")} through codemode as \`tools.<name>(args)\`; codemode's tool search and descriptions show their arguments.`,
+				]
+			: []),
+	].join("\n");
+}
+
+/**
+ * Build the construction-time transforms for one admitted in-process child. A forked child (`fork`: its session
+ * continues its parent's) keeps the parent's conversation exactly as the parent sent it, so its first request is read
+ * from the parent's prompt cache, and adds its own role and task after it.
+ */
+export function createInProcessChildPromptBehavior(
+	policy: ChildPromptPolicy,
+	explicitSkillInjection = "",
+	fork?: { readonly parentSessionId: string; readonly parentHiddenTools?: readonly string[] },
+): InProcessChildPromptBehavior {
+	const systemPromptSections = {
+		key: JSON.stringify([policy.inheritProjectContext, policy.inheritSkills, policy.fanoutAuthorized]),
+		transform: createInProcessChildSystemPromptSectionsTransform(policy, explicitSkillInjection),
+	};
+	const systemPromptTransform = createInProcessChildSystemPromptTransform(policy, explicitSkillInjection);
+	if (fork)
+		return {
+			systemPromptTransform,
+			systemPromptSections: {
+				...systemPromptSections,
+				fork: {
+					sessionId: fork.parentSessionId,
+					...(fork.parentHiddenTools?.length ? { hiddenTools: fork.parentHiddenTools } : {}),
+					note: forkedChildNote,
+				},
+			},
+		};
 	const project = (messages: AgentMessage[]) => stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized);
 	return {
-		systemPromptTransform: createInProcessChildSystemPromptTransform(policy),
+		systemPromptTransform,
+		systemPromptSections,
 		initialContextTransform: project,
 		[forkReplayFilter]: {
 			project,

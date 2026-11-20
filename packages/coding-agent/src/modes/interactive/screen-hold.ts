@@ -37,6 +37,12 @@ type ScreenHoldState =
 export class ScreenHold {
 	private state: ScreenHoldState = { kind: "live" };
 	private statusChanges = 0;
+	private keys = 0;
+
+	/** Counts the user's key presses (`isKeyPress`), seen before any handler acts on them. */
+	get keyPresses(): number {
+		return this.keys;
+	}
 
 	/** Counts the changes of a run's working status: a dock painted before the latest change shows one that is gone. */
 	get statusEpoch(): number {
@@ -84,7 +90,9 @@ export class ScreenHold {
 
 	/** Input on its way to the screen, before any handler sees it: a key press shows the screen live. */
 	noteInput(data: string): void {
-		if (this.state.kind === "held" && isKeyPress(data)) this.state.end(data);
+		if (!isKeyPress(data)) return;
+		this.keys++;
+		if (this.state.kind === "held") this.state.end(data);
 	}
 }
 
