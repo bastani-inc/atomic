@@ -1429,13 +1429,15 @@ test.each([
 		const store = mode.sessionManager.chatRecordScope()!.store;
 		const held = Promise.withResolvers<void>();
 		let reads = 0;
+		// Each held read, settled once it has returned, whatever it returned.
+		const heldReads: Promise<unknown>[] = [];
 		const read = store.read.bind(store);
 		store.read = async (owner, anchors) => {
-			if (anchors.includes(answer)) {
-				reads++;
-				await held.promise;
-			}
-			return read(owner, anchors);
+			if (!anchors.includes(answer)) return read(owner, anchors);
+			reads++;
+			const result = held.promise.then(() => read(owner, anchors));
+			heldReads.push(result.catch(() => undefined));
+			return result;
 		};
 		try {
 			mode.renderInitialMessages();
@@ -1460,6 +1462,8 @@ test.each([
 				"the reader keeps the reply",
 			);
 			held.resolve();
+			// However long the store takes, the line is drawn once its read returns.
+			await Promise.all(heldReads);
 			screen = await settle(tui, (rows) => rows.some((row) => row.includes("SAVED-AFTER-95")));
 			const document = mode.documentContainer.render(COLUMNS).map((row) => stripTerminalSequences(row));
 			const at = (text: string) => document.findIndex((row) => row.includes(text));
