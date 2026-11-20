@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import {
@@ -442,16 +443,43 @@ test("a small drain with no space to give back costs no transaction beyond its w
 });
 
 /**
- * The longest the event loop may stop while the store waits out another process's lock: a fifth of that wait. Waiting for
- * the lock on the event loop stops it for the whole wait, and a store that spins never lets it run again; a loaded host's
- * scheduler stops it for a few hundred milliseconds at most.
+ * The longest the event loop may stop while the store waits out another process's lock, beyond what the whole host
+ * stood still meanwhile: a fifth of that wait. Waiting for the lock on the event loop stops it for the whole wait, and a
+ * store that spins never lets it run again; a loaded host's scheduler stops it for a few hundred milliseconds, and a
+ * Windows host can stand still for seconds, every process at once.
  */
 const LOCK_WAIT_STALL_MAX_MS = ENDED_QUEUE_LOCK_WAIT_MS / 5;
+
+/**
+ * The longest the whole host stood still since it started: a heartbeat on another thread, which keeps running while
+ * this one works or waits. A stall of this thread alone does not stop it.
+ */
+function hostStallClock(): { stop(): Promise<number> } {
+	const longest = new Float64Array(new SharedArrayBuffer(8));
+	const worker = new Worker(
+		`const { workerData } = require("node:worker_threads");
+const longest = new Float64Array(workerData);
+let last = performance.now();
+setInterval(() => {
+	const now = performance.now();
+	longest[0] = Math.max(longest[0], now - last);
+	last = now;
+}, 5);`,
+		{ eval: true, workerData: longest.buffer },
+	);
+	return {
+		stop: async () => {
+			await worker.terminate();
+			return longest[0]!;
+		},
+	};
+}
 
 test("after a write waits out another process's lock and the next is refused at once, later writes go through and the store closes", async () => {
 	const path = join(directory(), "ended-child-queue.sqlite");
 	// Opened as a broker opens it: its writes wait 5 s for another process's write lock.
 	const store = await openLocalEndedChildQueueStore(path, "broker-1");
+	const host = hostStallClock();
 	let last = performance.now();
 	let stalled = 0;
 	const ticker = setInterval(() => {
@@ -482,7 +510,11 @@ test("after a write waits out another process's lock and the next is refused at 
 	} finally {
 		clearInterval(ticker);
 	}
-	assert.ok(stalled < LOCK_WAIT_STALL_MAX_MS, `the event loop stalled for ${stalled.toFixed(1)} ms`);
+	const hostStalled = await host.stop();
+	assert.ok(
+		stalled - hostStalled < LOCK_WAIT_STALL_MAX_MS,
+		`the event loop stalled for ${stalled.toFixed(1)} ms, the whole host for ${hostStalled.toFixed(1)} ms`,
+	);
 }, 60_000);
 
 test("the store still gives its disk space back after another process held its write lock", async () => {
