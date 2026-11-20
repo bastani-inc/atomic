@@ -59,6 +59,7 @@ import {
 } from "./chat-session-host-rendering.ts";
 import {
 	disposeChatSession,
+	endHeldChatSessionWorkingLifecycle,
 	isChatSessionBashRunning,
 	isChatSessionStreaming,
 	notifyChatSessionStatus,
@@ -80,7 +81,7 @@ import type {
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
 import { firstRawUserExactText, isChatMessageEntry, syncFirstUserEntry } from "./chat-session-host-utils.ts";
-import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
+import type { ChatTranscriptEntryLike, PaintedViewportWindow } from "./chat-transcript.js";
 import { type ParkedTaskRows, parkedRun } from "./parked-rows.ts";
 import { type RetryWaitEvent, retryWaitFromEvent } from "./retry-status-line.ts";
 import { isSingleLeftClick } from "./single-click.ts";
@@ -468,6 +469,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		}
 		this.state.liveChat.clearPendingTools();
 		this.state.newMessages.reset();
+		this.state.countedTokensShown = undefined;
 		stopChatSessionWorkingLifecycle(this.state);
 		syncChatSessionAnimationTick(this.state);
 	}
@@ -692,6 +694,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const body = renderChatSessionBody(this.state, width, budget);
 		this.bodyLayout = { taskView: false, transcriptRows: body.length };
 		return body;
+	}
+
+	/** Where the last `renderBody` drew the transcript's rows, when it drew only the transcript. */
+	bodyWindow(): PaintedViewportWindow | undefined {
+		return this.taskInspector ? undefined : this.state.bodyViewport.paintedWindow();
 	}
 
 	/**
@@ -1026,7 +1033,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		requestSide?: boolean,
 	): void {
 		if (this.state.disposed) return;
-		if (!this.state.workingLifecycleActive) startChatSessionWorkingLifecycle(this.state);
+		endHeldChatSessionWorkingLifecycle(this.state);
+		if (this.state.workingLifecycle.kind === "off") startChatSessionWorkingLifecycle(this.state);
 		if (this.state.workingRunMeter.snapshot() === undefined) {
 			const run = runInProgress(messages, streaming);
 			this.state.workingRunMeter.resume(

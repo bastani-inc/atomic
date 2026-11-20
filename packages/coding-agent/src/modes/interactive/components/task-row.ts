@@ -17,7 +17,7 @@ import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
 import { slashCommandHint } from "./nav-keys.ts";
 import { WAITING_MARKER } from "./notice-line.ts";
-import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { blockRows, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 const EMOJI_OR_IGNORABLE_PATTERN = String.raw`(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}`;
 const EMOJI_OR_IGNORABLE = new RegExp(EMOJI_OR_IGNORABLE_PATTERN, "gv");
@@ -302,6 +302,13 @@ export class TaskRow implements Component {
 			if (hint) rendered.push(theme.fg("dim", hint));
 		}
 		return rendered.map((line) => truncateToWidth(line, width));
+	}
+}
+
+/** A task row drawn in a transcript: a click on it, its expand hint included, shows or hides its details. */
+export class TranscriptTaskRow extends TaskRow {
+	override render(width: number): string[] {
+		return blockRows(super.render(width));
 	}
 }
 

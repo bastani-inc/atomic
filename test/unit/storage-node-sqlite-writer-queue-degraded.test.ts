@@ -13,7 +13,6 @@ import {
 	isStorageWriterQueueUnusableError,
 	type StorageWriterQueueDegradedError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
-import { databaseNow, freezeDatabaseClock } from "../helpers/database-clock.js";
 import { areaRecords, withDebugLog } from "../helpers/debug-mode.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -66,6 +65,8 @@ const { getWriterQueueDegradation, getWriterQueueStats, openNodeSqliteDatabase, 
 // The adapter loads debug output at its first degradation. Load it now, in the same module graph, so each test's
 // degradations are reported while that test runs rather than when a slow first load finishes.
 const { flushDebugLog } = await import("../../packages/coding-agent/src/core/debug.js");
+// In the same module graph too: a frozen clock reaches the copy's connection threads (#5376).
+const { databaseNow, freezeDatabaseClock } = await import("../helpers/database-clock.js");
 
 /** Debug records follow a degradation asynchronously; on a loaded machine they can take far longer than a turn. */
 const DEBUG_RECORD_WAIT_MS = 10_000;

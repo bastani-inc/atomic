@@ -21,6 +21,7 @@ import { retryCancelHint, retryWaitFromEvent, retryWaitMessage } from "./compone
 import { toolResultGroupState } from "./components/tool-group-tracker.ts";
 import { compactionMeta, runInProgress, type WorkingRunSnapshot } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
+import { endHeldWorkingRow, holdWorkingRowBetweenTurns } from "./interactive-extension-runtime.ts";
 import { type EventStartup, eventStartupScope } from "./interactive-initial-session-binding.ts";
 import { InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import {
@@ -345,6 +346,8 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			this.workingRunMeter.requestStarted();
 			this.workingMessage = pickWhimsicalWorkingMessage();
 			this.lastWorkingMessage = this.workingMessage;
+			// A compaction's status owns the area through this turn's start, as it did with no row held.
+			if (this.autoCompactionLoader) endHeldWorkingRow(this);
 			if (this.loadingAnimation) {
 				if ("resetForTurn" in this.loadingAnimation) this.loadingAnimation.resetForTurn(this.workingMessage);
 				else this.loadingAnimation.setMessage(this.workingMessage);
@@ -361,8 +364,11 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 
 		case "turn_end": {
 			this.workingMessage = undefined;
-			this.stopWorkingLoader();
-			this.ui.requestRender();
+			// The run goes on to its next turn or to its end: the row stays, held still, until one of them replaces it.
+			if (!holdWorkingRowBetweenTurns(this)) {
+				this.stopWorkingLoader();
+				this.ui.requestRender();
+			}
 			break;
 		}
 
@@ -601,6 +607,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 		}
 
 		case "agent_end": {
+			endHeldWorkingRow(this);
 			const workedSnapshot = this.workingRunMeter.snapshot();
 			this.workingRunMeter.stop();
 			this.workingMessage = undefined;

@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, type TestContext } from "node:test";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import {
@@ -28,6 +28,7 @@ import {
 import { type Component, CURSOR_MARKER, renderFakeCursor, type TuiMouseEvent } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
 import { stripTerminalSequences, visibleWidth } from "../src/utils.ts";
+import { presentedScreens } from "./presented-screens.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -3002,5 +3003,244 @@ describe("TuiAltScreen", () => {
 		await terminal.waitForRender();
 		assert.ok(tui.viewportTop < topWithoutMenu);
 		tui.stop();
+	});
+});
+
+describe("TuiAltScreen fullscreen entry", () => {
+	// What a shell shows when the user has just started the program: the cursor waits on the next line.
+	const SHELL = "$ ls\r\nnotes.txt\r\n$ atomic\r\n";
+	const SHELL_SCREEN = ["$ ls", "notes.txt", "$ atomic", ""];
+	const BLANK_SCREEN = ["", "", "", ""];
+	const FRAME_SCREEN = ["first frame", "", "", ""];
+
+	function writesOf(terminal: RecordingTerminal): string[] {
+		return terminal.events.flatMap((event) => (event.type === "write" ? [event.data] : []));
+	}
+
+	// Which terminal the renderer runs in decides whether entering fullscreen holds an update.
+	const TERMINAL_ENV = ["TERM", "TERM_PROGRAM", "ALACRITTY_WINDOW_ID"] as const;
+	type TerminalEnv = Partial<Record<(typeof TERMINAL_ENV)[number], string>>;
+	let savedTerminalEnv: TerminalEnv = {};
+
+	function setTerminalEnv(env: TerminalEnv): void {
+		for (const key of TERMINAL_ENV) {
+			const value = env[key];
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+
+	beforeEach(() => {
+		savedTerminalEnv = Object.fromEntries(TERMINAL_ENV.map((key) => [key, process.env[key]]));
+		setTerminalEnv({ TERM: "xterm-256color" });
+	});
+
+	afterEach(() => {
+		setTerminalEnv(savedTerminalEnv);
+	});
+
+	/** Stop `performance.now()` at a time the test moves forward itself. */
+	function controlClock(t: TestContext): { advance(ms: number): void } {
+		let now = 1_000;
+		t.mock.method(performance, "now", () => now);
+		return {
+			advance(ms: number) {
+				now += ms;
+			},
+		};
+	}
+
+	async function startFullscreen(t: TestContext, firstFrameAfterMs: number) {
+		const clock = controlClock(t);
+		const terminal = new RecordingTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal);
+		tui.addChild(new Text("first frame", 0, 0));
+		tui.start();
+		clock.advance(firstFrameAfterMs);
+		await terminal.waitForRender();
+		return { clock, terminal, tui };
+	}
+
+	it("keeps the shell on screen until the first frame replaces it", async (t) => {
+		const { terminal, tui } = await startFullscreen(t, 30);
+		const presented = await presentedScreens(writesOf(terminal), 20, 4, SHELL);
+		tui.stop({ preserveScreen: true });
+
+		assert.deepStrictEqual(presented.screens, [SHELL_SCREEN, FRAME_SCREEN]);
+		assert.strictEqual(presented.held, false);
+	});
+
+	it("draws a late first frame in an update of its own after the cleared screen", async (t) => {
+		// A terminal ends an update held open too long, and may not restart its clock when one begins again.
+		const { terminal, tui } = await startFullscreen(t, 60);
+		const writes = writesOf(terminal);
+		const presented = await presentedScreens(writes, 20, 4, SHELL);
+		tui.stop({ preserveScreen: true });
+
+		assert.deepStrictEqual(presented.screens, [SHELL_SCREEN, BLANK_SCREEN, FRAME_SCREEN]);
+		assert.strictEqual(presented.held, false);
+		const frame = writes.find((write) => write.includes("first frame"));
+		assert.ok(frame?.startsWith("\x1b[?2026l\x1b[?2026h"), JSON.stringify(frame));
+		assert.ok(frame.endsWith("\x1b[?2026l"), JSON.stringify(frame));
+	});
+
+	it("ends the entry update before a first frame that took longer than the bound to compose", async (t) => {
+		const clock = controlClock(t);
+		const terminal = new RecordingTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal);
+		let renders = 0;
+		tui.addChild({
+			render: () => {
+				// The first layout is slow, as when a large transcript is laid out for the first time.
+				if (renders++ === 0) clock.advance(150);
+				return ["first frame"];
+			},
+			invalidate() {},
+		});
+		tui.start();
+		await terminal.waitForRender();
+		const writes = writesOf(terminal);
+		const presented = await presentedScreens(writes, 20, 4, SHELL);
+		tui.stop({ preserveScreen: true });
+
+		assert.deepStrictEqual(presented.screens, [SHELL_SCREEN, BLANK_SCREEN, FRAME_SCREEN]);
+		const frame = writes.find((write) => write.includes("first frame"));
+		assert.ok(frame?.startsWith("\x1b[?2026l\x1b[?2026h"), JSON.stringify(frame));
+	});
+
+	it("shows the cleared screen and then the first frame on a terminal without synchronized output", async (t) => {
+		for (const firstFrameAfterMs of [30, 150]) {
+			const { terminal, tui } = await startFullscreen(t, firstFrameAfterMs);
+			const presented = await presentedScreens(writesOf(terminal), 20, 4, SHELL, { synchronizedOutput: false });
+			tui.stop({ preserveScreen: true });
+
+			assert.deepStrictEqual(
+				presented.screens,
+				[SHELL_SCREEN, BLANK_SCREEN, FRAME_SCREEN],
+				`${firstFrameAfterMs} ms`,
+			);
+		}
+	});
+
+	it("keeps the shell on screen each time fullscreen is entered again", async (t) => {
+		const { clock, terminal, tui } = await startFullscreen(t, 30);
+		tui.stop({ preserveScreen: true });
+		// Time spent in an external editor or a subshell does not count against the next entry.
+		clock.advance(60_000);
+		tui.start();
+		clock.advance(30);
+		await terminal.waitForRender();
+		const presented = await presentedScreens(writesOf(terminal), 20, 4, SHELL);
+		tui.stop({ preserveScreen: true });
+
+		assert.deepStrictEqual(presented.screens, [SHELL_SCREEN, FRAME_SCREEN, SHELL_SCREEN, FRAME_SCREEN]);
+		assert.strictEqual(presented.held, false);
+	});
+
+	it("holds the entry update on a terminal that answers queries while an update is open", async (t) => {
+		setTerminalEnv({ TERM: "xterm-256color", TERM_PROGRAM: "other-terminal" });
+		const { terminal, tui } = await startFullscreen(t, 30);
+		const writes = writesOf(terminal);
+		tui.stop({ preserveScreen: true });
+
+		assert.ok(writes[0]?.startsWith("\x1b[?2026h\x1b[?1049h"), JSON.stringify(writes[0]));
+	});
+
+	for (const [terminalName, env] of [
+		["WezTerm", { TERM: "xterm-256color", TERM_PROGRAM: "WezTerm" }],
+		["Alacritty", { TERM: "xterm-256color", ALACRITTY_WINDOW_ID: "94371" }],
+		["TERM=alacritty", { TERM: "alacritty" }],
+		["TERM=alacritty-direct", { TERM: "alacritty-direct" }],
+	] as const) {
+		it(`enters fullscreen as before on ${terminalName}, which answers queries only once an update ends`, async (t) => {
+			setTerminalEnv(env);
+			const { terminal, tui } = await startFullscreen(t, 30);
+			const writes = writesOf(terminal);
+			const presented = await presentedScreens(writes, 20, 4, SHELL);
+			tui.stop({ preserveScreen: true });
+
+			assert.ok(writes[0]?.startsWith("\x1b[?1049h"), JSON.stringify(writes[0]));
+			assert.deepStrictEqual(presented.screens, [SHELL_SCREEN, BLANK_SCREEN, FRAME_SCREEN]);
+			const frame = writes.find((write) => write.includes("first frame"));
+			assert.ok(frame?.startsWith("\x1b[?2026h"), JSON.stringify(frame));
+
+			// Stopping before the first frame leaves through the cleared screen, as before.
+			const stoppedEarly = new RecordingTerminal(20, 4);
+			const early = new TuiAltScreen(stoppedEarly);
+			early.addChild(new Text("first frame", 0, 0));
+			early.start();
+			early.stop({ preserveScreen: true });
+			const presentedEarly = await presentedScreens(writesOf(stoppedEarly), 20, 4, SHELL);
+			assert.deepStrictEqual(presentedEarly.screens, [SHELL_SCREEN, BLANK_SCREEN, SHELL_SCREEN]);
+			assert.strictEqual(presentedEarly.held, false);
+		});
+	}
+
+	it("returns to the shell without a blank screen when stopped before the first frame", async () => {
+		const terminal = new RecordingTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal);
+		tui.addChild(new Text("first frame", 0, 0));
+		tui.start();
+		tui.stop({ preserveScreen: true });
+		const presented = await presentedScreens(writesOf(terminal), 20, 4, SHELL);
+
+		assert.deepStrictEqual(presented.screens, [SHELL_SCREEN]);
+		assert.strictEqual(presented.held, false);
+	});
+
+	it("prints the transcript under the shell without a blank screen when stopped before the first frame", async () => {
+		const terminal = new RecordingTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal);
+		tui.addChild(new Text("first frame", 0, 0));
+		tui.start();
+		tui.stop();
+		const presented = await presentedScreens(writesOf(terminal), 20, 4, SHELL);
+
+		assert.deepStrictEqual(presented.screens, [SHELL_SCREEN, ["notes.txt", "$ atomic", "first frame", ""]]);
+		assert.strictEqual(presented.held, false);
+	});
+
+	it("ends the entry update when the transcript cannot be drawn on a stop before the first frame", async () => {
+		const terminal = new RecordingTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal);
+		tui.addChild({
+			render: () => {
+				throw new Error("render failed");
+			},
+			invalidate() {},
+		});
+		tui.start();
+		assert.throws(() => tui.stop(), /render failed/);
+		const presented = await presentedScreens(writesOf(terminal), 20, 4, SHELL);
+
+		assert.strictEqual(presented.held, false);
+	});
+
+	it("draws every frame, the first one too, as one synchronized update", async (t) => {
+		const { terminal, tui } = await startFullscreen(t, 30);
+		const text = tui.children[0];
+		assert.ok(text instanceof Text);
+		text.setText("second frame");
+		tui.requestRender();
+		await terminal.waitForRender();
+		const frames = writesOf(terminal).filter((write) => write.includes("frame"));
+		tui.stop({ preserveScreen: true });
+
+		assert.strictEqual(frames.length, 2);
+		for (const frame of frames) {
+			assert.ok(frame.startsWith("\x1b[?2026h"), JSON.stringify(frame));
+			assert.ok(frame.endsWith("\x1b[?2026l"), JSON.stringify(frame));
+		}
+	});
+
+	it("resets terminal modes as one synchronized update when stopped after a frame", async (t) => {
+		const { terminal, tui } = await startFullscreen(t, 30);
+		const writesBeforeStop = writesOf(terminal).length;
+		tui.stop({ preserveScreen: true });
+		const reset = writesOf(terminal)
+			.slice(writesBeforeStop)
+			.find((write) => write.includes("\x1b[?1006l"));
+
+		assert.ok(reset?.startsWith("\x1b[?2026h") && reset.endsWith("\x1b[?7h\x1b[?2026l"), JSON.stringify(reset));
 	});
 });

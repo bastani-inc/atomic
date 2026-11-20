@@ -18,6 +18,8 @@ import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
 	renderHostedChatEntry,
+	type ToolChatEntry,
+	toolEntryGroupHead,
 } from "./chat-message-renderer.ts";
 import {
 	hasChatSessionTransientModal,
@@ -31,6 +33,7 @@ import {
 	CHAT_SESSION_RETRYING_STATUS,
 	CHAT_SESSION_SWITCHING_MODEL_STATUS,
 	type ChatSessionHostState,
+	type ChatSessionWorkingRowDrawn,
 	isChatSessionBusyStatus,
 	isChatSessionRetryStatus,
 } from "./chat-session-host-state.ts";
@@ -43,7 +46,7 @@ import { clickableKeyTextHint } from "./nav-keys.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import { retrySecondsLeft, retryWaitMessage } from "./retry-status-line.ts";
 import { taskDisplayText } from "./task-row.js";
-import { toolGroupRoleKey } from "./tool-group-tracker.ts";
+import { drawsApartFromGroup, type ToolGroupHead, toolGroupRoleKey } from "./tool-group-tracker.ts";
 import { isClickExpandableBlock, sameRows, withBlockRenderTime } from "./transcript-block-clicks.ts";
 import {
 	AgentTokenMeter,
@@ -202,8 +205,26 @@ export function chatSessionTokenCount<TExtraEntry extends ChatTranscriptEntryLik
 ): number {
 	const { settledTokens, streamingTokens } = readTranscriptTokens(state);
 	const counted = state.workingTokenCount?.();
-	if (counted !== undefined && counted > 0) return counted + streamingTokens;
+	if (counted !== undefined && counted > 0) return countedTokensShown(state, counted, counted + streamingTokens);
+	// A total that went away and comes back is a new total.
+	state.countedTokensShown = undefined;
 	return settledTokens + streamingTokens;
+}
+
+/**
+ * The count shown from a task's counted total and the answer streaming now never goes back while that total is
+ * unchanged: an answer that settles leaves the streaming part before its task counts it. A changed total, smaller after
+ * a compaction, is shown as it is.
+ */
+function countedTokensShown<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	counted: number,
+	count: number,
+): number {
+	const shown = state.countedTokensShown;
+	const next = shown !== undefined && shown.counted === counted ? Math.max(shown.count, count) : count;
+	state.countedTokensShown = { counted, count: next };
+	return next;
 }
 
 export function chatSessionWorkingMeta<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -211,6 +232,20 @@ export function chatSessionWorkingMeta<TExtraEntry extends ChatTranscriptEntryLi
 ): WorkingRunSnapshot | undefined {
 	const snapshot = state.workingRunMeter.snapshot();
 	return snapshot === undefined ? undefined : { ...snapshot, tokens: chatSessionTokenCount(state) };
+}
+
+/** What the working row draws: during a turn its phase and run meta now; held between turns, what it last drew. */
+function workingRowDrawn<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): ChatSessionWorkingRowDrawn {
+	const lifecycle = state.workingLifecycle;
+	if (lifecycle.kind === "held") {
+		const drawn = lifecycle.drawn ?? { frame: state.workingFrame, meta: chatSessionWorkingMeta(state) };
+		state.workingLifecycle = { kind: "held", drawn };
+		return drawn;
+	}
+	state.workingRowDrawn = { frame: state.workingFrame, meta: chatSessionWorkingMeta(state) };
+	return state.workingRowDrawn;
 }
 
 const publishedWorkingMessages = {
@@ -259,7 +294,7 @@ export function chatSessionWorkingLine<TExtraEntry extends ChatTranscriptEntryLi
 		return { kind: "busy", message: chatSessionBusyMessage(state, published, width) };
 	if (!isChatSessionStreaming(state)) {
 		const worked = state.workedRun;
-		if (worked === undefined || state.workingLifecycleActive || state.compacting) return undefined;
+		if (worked === undefined || state.workingLifecycle.kind !== "off" || state.compacting) return undefined;
 		return {
 			kind: "worked",
 			message: worked.message ?? "",
@@ -278,8 +313,8 @@ export function chatSessionWorkingLine<TExtraEntry extends ChatTranscriptEntryLi
 			...(startedAt === undefined ? {} : { elapsedMs: wholeSeconds(Date.now() - startedAt) }),
 		};
 	}
-	if (!state.workingLifecycleActive) return undefined;
-	const meta = chatSessionWorkingMeta(state);
+	if (state.workingLifecycle.kind === "off") return undefined;
+	const meta = workingRowDrawn(state).meta;
 	return {
 		kind: "working",
 		message: state.workingMessage ?? DEFAULT_WORKING_MESSAGE,
@@ -311,7 +346,7 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	if (!isChatSessionStreaming(state)) {
 		// A notice or an error follows the transcript, so the ended turn's row stays beside it, as in the main chat.
 		const worked = state.workedRun;
-		if (worked === undefined || state.workingLifecycleActive || state.compacting) return [];
+		if (worked === undefined || state.workingLifecycle.kind !== "off" || state.compacting) return [];
 		return new AtomicWorkedStatusComponent({
 			message: worked.message,
 			snapshot: worked.snapshot,
@@ -336,11 +371,12 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 			messageColor: (text) => state.style.textMuted(text),
 		}).render(width);
 	}
-	if (!state.workingLifecycleActive) return [];
+	if (state.workingLifecycle.kind === "off") return [];
+	const drawn = workingRowDrawn(state);
 	return new WorkingStatusComponent({
-		frame: state.workingFrame,
+		frame: drawn.frame,
 		message: state.workingMessage ?? DEFAULT_WORKING_MESSAGE,
-		meta: chatSessionWorkingMeta(state),
+		meta: drawn.meta,
 		palette,
 		spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 		spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
@@ -493,6 +529,44 @@ export function transcriptEntryName<TExtraEntry extends ChatTranscriptEntryLike>
 	return expansionKey(entry) ?? `entry:${renderIdentityKey(state, entry)}`;
 }
 
+/** Whether `entry` is drawn expanded: as a click last set it, or else as the chat's setting last drew it. */
+function drawnExpanded<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ChatSessionHostEntry<TExtraEntry>,
+): boolean {
+	return (
+		expandedOverride(state, entry) ??
+		state.expandedOverridesFor ??
+		state.getChatRenderSettings?.()?.toolOutputExpanded === true
+	);
+}
+
+/**
+ * The first call of the group the call `entry` is folded into, as the call's drawing needs it. Until a click sets a
+ * call's expansion, every call has the chat's, and a group stands for each of its calls without one.
+ */
+function groupHeadOf<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ToolChatEntry,
+): ToolGroupHead | undefined {
+	if (state.expandedOverrides.size === 0) return undefined;
+	const head = toolEntryGroupHead(entry);
+	return head && { isExpanded: () => drawnExpanded(state, head as ChatSessionHostEntry<TExtraEntry>) };
+}
+
+/** Whether the call `entry` is drawn, and clicked, apart from the group it is folded into. */
+function drawnApart<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ToolChatEntry,
+): boolean {
+	if (entry.groupRole?.kind !== "hidden") return false;
+	const head = groupHeadOf(state, entry);
+	return (
+		head !== undefined &&
+		drawsApartFromGroup(entry.groupRole, drawnExpanded(state, entry as ChatSessionHostEntry<TExtraEntry>), head)
+	);
+}
+
 export function setExpandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	entry: ChatSessionHostEntry<TExtraEntry>,
@@ -526,6 +600,11 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,
 			state.assistantCard,
 		);
+		if (entry.kind === "tool") {
+			(component as Partial<{ setGroupHead(head: ToolGroupHead | undefined): void }>).setGroupHead?.(
+				groupHeadOf(state, entry),
+			);
+		}
 		const echoed = resolveEchoedInitialPrompt(state);
 		if (
 			entry.kind === "user" &&
@@ -566,6 +645,7 @@ export function transcriptCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 		streaming,
 		streaming && state.bodyViewport.getScrollFromBottom() === 0,
 		...(message === undefined ? [] : inPlaceKeyParts(message)),
+		message?.kind === "tool" && drawnApart(state, message),
 	];
 }
 

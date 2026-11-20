@@ -28,7 +28,12 @@ export function installEngineAgentViewBridge(context: EngineAgentViewContext): (
 	const listeners = new Set<() => void>();
 	const bridge: EngineAgentViewBridge = {
 		viewedTaskId: () => viewed,
-		requestView: (taskId) => context.send({ type: "engine_view_agent", taskId: taskId ?? null }),
+		requestView: (taskId, options) =>
+			context.send({
+				type: "engine_view_agent",
+				taskId: taskId ?? null,
+				...(options?.keepScreen === true ? { keepScreen: true as const } : {}),
+			}),
 		subscribe(listener) {
 			listeners.add(listener);
 			return () => {

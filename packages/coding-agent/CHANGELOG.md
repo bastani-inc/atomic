@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A click on the `(ctrl+o to expand)` hint of a tool block, a grouped-call summary or another block that Ctrl+O expands now opens or folds that block alone, like a click anywhere else on it. It used to press Ctrl+O, which expanded every block in the chat, so every tool block that streamed in afterwards also opened expanded. Ctrl+O and the `ctrl+o expand` hint under the prompt still expand every block.
+- Tool calls that join a group after a click opened one of its calls now appear as their own folded blocks, and a click opens each one on its own. They used to be hidden until the group was folded again. Ctrl+O draws the whole group as one summary again.
+- A subagent shown on the chat screen no longer jumps when the prompt, autocomplete list or panel below it changes height: the rows already on screen stay where they are while its transcript redraws for the new size, and its notes and question form stay at the bottom.
+- Enter on a subagent in `/tasks` no longer shows the main chat's prompt for a moment before the subagent appears: the prompt, footer and panel stay as painted until the subagent is shown (or cannot be), while the transcript above keeps updating. A key press shows the screen as it is at once.
+- The working row under the prompt no longer disappears for a moment between two turns of a run (after a tool call, before the next request), so the chat above it no longer jumps down and back up; it stays still until the next turn starts. Subagent chats keep theirs the same way, and a subagent's working line no longer shows a smaller token count for a moment when an answer settles
+- A sent message and the working row under it no longer vanish and reappear for a moment when the engine answers that it started the run before the run's first events arrive, which happened on most first prompts of a session and on some later ones
+- Starting Atomic in fullscreen, or returning to it from an external editor, a subshell or a suspended session, no longer blanks the terminal before the first frame: the previous screen stays until the full interface replaces it in one screen update. WezTerm and Alacritty keep the previous behavior, because they hold back their answers to Atomic's startup terminal queries until that update ends ([#6056](https://github.com/bastani-inc/atomic/pull/6056)).
+- On Windows, the startup trace (`ATOMIC_STARTUP_TRACE`) keeps the engine's last lines, such as `engine-resources-ready`, when you quit soon after they are recorded. Windows ends the engine as soon as the host has its quit acknowledgement, without running exit handlers, so the engine now writes any waiting lines before it acknowledges, as the event-loop diagnostic already does. This also holds in the standalone binary. The [event-loop diagnostic's docs](docs/development.md#finding-what-freezes-the-ui) now say which engine records Windows does not get.
+- A new subagent's row in `/tasks` and the agent panel no longer shifts its task twice as its model and then its reasoning level arrive. The row shows its model together with its level, or alone if no level arrives within a second, and a model without reasoning levels at once. While `/tasks` or the panel stays open, the model column no longer narrows while it still fits, so rows do not move when the subagent with the longest model falls back or leaves.
+### Changed
+
+- Local SQLite storage runs each connection to a file on a worker thread of its own, so opening a session store, waiting for another process's write lock and synced commits no longer freeze typing, rendering, streamed output or clicks in `/tasks`. Loading a long session no longer holds the interface for its whole read. In-memory databases and connections passed to `wrapNodeSqliteDatabase` still run on the calling thread ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+- SDK: in one process, a `DatabaseSync` of your own or a `wrapNodeSqliteDatabase` handle that writes a file while an `openNodeSqliteDatabase` transaction on it is open can now wait for its busy timeout on your thread and fail with `SQLITE_BUSY`, where before the write usually ran after the transaction. Open every handle that writes a shared file with `openNodeSqliteDatabase` ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+
+### Fixed
+
+- A write outside a transaction no longer fails with `database is locked` while another connection of the same process holds the write lock across an await: it now waits on its own connection's thread until that transaction commits ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+- Building the `history://` search index of a long session no longer pauses typing and rendering while the index is written to a slow disk ([#5666](https://github.com/bastani-inc/atomic/issues/5666))
 ### Changed
 
 - The standalone `atomic` binaries are now built with Bun 1.4.5, which includes upstream security fixes for TLS, HTTP and DNS in the embedded runtime. They now check custom CA certificates, such as those in `NODE_EXTRA_CA_CERTS` or a PostgreSQL `sslrootcert`, the way Node.js and the npm-installed `atomic` already do: a root certificate that is not marked as a CA, or that is limited to client authentication, is refused with `INVALID_PURPOSE`

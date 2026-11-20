@@ -7,6 +7,7 @@
 import { firstSubagentAttempt, latestSubagentAttempt } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import type { TranscriptFrameLayout } from "../../interactive-engine/transcript-frame-layout.ts";
 import type { TaskTranscriptEnvironment } from "../components/task-transcript-page.ts";
 import { TaskAgentTranscriptPage } from "../components/task-transcript-page.ts";
 import { localAgentCommands } from "./agent-commands.ts";
@@ -100,6 +101,11 @@ export class AgentTranscriptView implements AgentTranscriptComponent {
 
 	paintedRowKey(row: number): string | undefined {
 		return this.page.paintedRowKey(row);
+	}
+
+	/** How the frame rendered last laid out its rows, which the engine sends with it. */
+	transcriptLayout(): TranscriptFrameLayout | undefined {
+		return this.page.viewFrameLayout();
 	}
 
 	invalidate(): void {

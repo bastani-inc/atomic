@@ -184,6 +184,38 @@ function guardConstructor(sqlite: { DatabaseSync: GuardedDatabaseSync }): GuardS
 		get: (target, key, receiver) => (key === GUARD ? guard : Reflect.get(target, key, receiver)),
 	});
 	sqlite.DatabaseSync = guarded;
+	guardConnectionThreads(guard, violations.record);
 	syncBuiltinESMExports();
 	return guard;
+}
+
+/**
+ * The node-sqlite adapter opens a connection to a file on a worker thread of its own (#5376), which loads
+ * `node:sqlite` there, out of reach of the constructor replaced above. Such a thread is refused the same way when the
+ * path it is sent to open is under a protected root, before it opens it.
+ */
+function guardConnectionThreads(
+	guard: GuardState,
+	record: (error: RealHomeStorageOpenError) => RealHomeStorageOpenError,
+): void {
+	const threads = createRequire(import.meta.url)("node:worker_threads") as {
+		Worker: typeof import("node:worker_threads").Worker;
+	};
+	threads.Worker = new Proxy(threads.Worker, {
+		construct(target, args: ConstructorParameters<typeof import("node:worker_threads").Worker>, newTarget) {
+			const [source, options] = args;
+			const worker = Reflect.construct(target, args, newTarget) as import("node:worker_threads").Worker;
+			if (options?.eval !== true || !String(source).includes('require("node:sqlite")')) return worker;
+			const post = worker.postMessage.bind(worker);
+			worker.postMessage = (message: unknown, transfer?: Parameters<typeof post>[1]) => {
+				const open = message as { kind?: unknown; path?: unknown } | undefined;
+				if (open?.kind === "open" && typeof open.path === "string") {
+					const root = protectedRootOf(open.path, guard.roots);
+					if (root !== undefined) throw record(new RealHomeStorageOpenError(sqliteLocationPath(open.path)!, root));
+				}
+				post(message, transfer);
+			};
+			return worker;
+		},
+	});
 }

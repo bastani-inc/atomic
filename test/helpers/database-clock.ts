@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { sqliteDialect } from "../../packages/coding-agent/src/core/storage/dialect.js";
+import { interceptConnectionRequests } from "./sqlite-connection-requests.js";
 
 /**
  * Now on the database clock, in milliseconds: the system clock SQLite reads, which the node-sqlite writers' queue
@@ -32,12 +33,17 @@ export function freezeDatabaseClock(nowMs: number): FrozenDatabaseClock {
 	DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
 		return prepare.call(this, sql === `SELECT ${sqliteDialect.nowMs} AS now` ? `SELECT ${current} AS now` : sql);
 	} as typeof prepare;
+	// A connection on a thread of its own reads the clock there for its waiting writer.
+	const threads = interceptConnectionRequests((request, send) =>
+		request.kind === "now" ? Promise.resolve(current) : send(request),
+	);
 	return {
 		set: (next) => {
 			current = next;
 		},
 		restore: () => {
 			DatabaseSync.prototype.prepare = prepare;
+			threads.restore();
 		},
 	};
 }

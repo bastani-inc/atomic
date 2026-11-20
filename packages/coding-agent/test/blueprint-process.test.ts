@@ -282,58 +282,54 @@ describe("running a logged process (#4588)", () => {
 		async () => {
 			const log = await openStepLog(path("boundary.log"));
 			const spawn = childProcess.spawn;
-			const sleeper = new Int32Array(new SharedArrayBuffer(4));
-			try {
-				// Neither clock is mocked. Retry the placement only if the host misses the target millisecond.
-				for (let placement = 0; placement < 5; placement++) {
-					const held = heldNode();
-					const run = held.run('console.log("started")');
-					let release: NodeJS.Timeout | undefined;
-					let wallStart = 0;
-					let monoStart = 0;
-					let decisionMs: number | undefined;
-					const options = {
-						get timeoutMs() {
-							decisionMs ??= Date.now() - wallStart;
-							return 2_000;
-						},
-					};
-					const os = vi.spyOn(childProcess, "spawn").mockImplementationOnce((...args) => {
-						try {
-							return spawn(...args);
-						} catch (error) {
-							assert.equal((error as NodeJS.ErrnoException).code, "ETXTBSY");
-							// Deliver the real refusal partway through millisecond 450. Release during the backoff.
-							Atomics.wait(sleeper, 0, 0, Math.max(0, monoStart + 448 - performance.now()));
-							while (performance.now() - monoStart < 450.25) {
-								/* wait for the fractional boundary */
-							}
-							release = setTimeout(held.release, 25);
-							throw error;
-						}
-					});
-					syncBuiltinESMExports();
-					try {
-						const tick = Date.now();
-						while (Date.now() === tick) {
-							/* align the run with the start of a wall millisecond */
-						}
-						wallStart = Date.now();
-						monoStart = performance.now();
-						const exit = await runLoggedProcess(run, log, options);
-						if (decisionMs !== 450) continue;
-						assert.equal(exit.spawnError, undefined);
-						assert.equal(exit.exitStatus, 0);
-						return;
-					} finally {
-						os.mockRestore();
-						syncBuiltinESMExports();
-						clearTimeout(release);
-						held.release();
+			const held = heldNode();
+			const run = held.run('console.log("started")');
+			let release: NodeJS.Timeout | undefined;
+			// Both clocks read millisecond 450 when the step checks the real refusal. They are held still only from its
+			// start to that check, which runs without a turn of the event loop, so a loaded host cannot move the check to
+			// another millisecond. The retry and the started process then run on the real clocks.
+			const wallStart = Date.now();
+			const monoStart = performance.now();
+			const wall = vi.spyOn(Date, "now").mockReturnValue(wallStart);
+			const monotonic = vi.spyOn(performance, "now").mockReturnValue(monoStart);
+			const realClocks = () => {
+				wall.mockRestore();
+				monotonic.mockRestore();
+			};
+			let decisionMs: number | undefined;
+			const options = {
+				get timeoutMs() {
+					if (decisionMs === undefined) {
+						decisionMs = Date.now() - wallStart;
+						realClocks();
 					}
+					return 2_000;
+				},
+			};
+			const os = vi.spyOn(childProcess, "spawn").mockImplementationOnce((...args) => {
+				try {
+					return spawn(...args);
+				} catch (error) {
+					assert.equal((error as NodeJS.ErrnoException).code, "ETXTBSY");
+					// The real refusal, partway through millisecond 450. Release the file during the backoff.
+					wall.mockReturnValue(wallStart + 450);
+					monotonic.mockReturnValue(monoStart + 450.25);
+					release = setTimeout(held.release, 25);
+					throw error;
 				}
-				assert.fail("the refusal check never landed in millisecond 450");
+			});
+			syncBuiltinESMExports();
+			try {
+				const exit = await runLoggedProcess(run, log, options);
+				assert.equal(decisionMs, 450);
+				assert.equal(exit.spawnError, undefined);
+				assert.equal(exit.exitStatus, 0);
 			} finally {
+				realClocks();
+				os.mockRestore();
+				syncBuiltinESMExports();
+				clearTimeout(release);
+				held.release();
 				await log.close();
 			}
 		},
