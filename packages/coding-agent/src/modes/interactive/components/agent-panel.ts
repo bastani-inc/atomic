@@ -7,6 +7,7 @@ import {
 	agentPanelTaskId,
 	isInterruptedPanelTask,
 	markInterruptedPanelTask,
+	modelHasReasoning,
 } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import {
@@ -18,6 +19,7 @@ import {
 } from "../../../core/tasks/live-elapsed.js";
 import { getGlobalTheme } from "../theme/global-theme.ts";
 import { ATOMIC_WORKING_FRAMES, atomicWorkingGlyph } from "./atomic-working-status.ts";
+import type { ModelCellReport, ModelColumn } from "./model-column.ts";
 import {
 	clickableKeyTextHint,
 	type NavKey,
@@ -435,6 +437,20 @@ export interface AgentPanelRenderOptions {
 	readonly viewedId?: string;
 	/** Shell rows are a subagent's own shells, listed right under it: they are indented one step. */
 	readonly nestShells?: boolean;
+	/**
+	 * The open panel's model column: a row whose model became known while shown waits for its reasoning level, and the
+	 * column does not narrow while it fits. Without it, each row shows its model as soon as it is known.
+	 */
+	readonly modelColumn?: ModelColumn;
+}
+
+/** What a panel row reports to its view's `ModelColumn`, given its model column text `label`. */
+function panelModelReport(row: AgentPanelRow, label: string): ModelCellReport {
+	return {
+		model: label.length > 0 && typeof row.model === "string" ? row.model : undefined,
+		settled: Boolean(row.thinking) || isFinishedPanelRow(row),
+		levelless: () => typeof row.model === "string" && modelHasReasoning(taskClockOf(row) ?? row, row.model) === false,
+	};
 }
 
 /** The cells a nested shell row is indented by. */
@@ -472,24 +488,41 @@ export function renderAgentPanelRows(
 		// A nested row's name starts after its indent, and ends in the same column as the others.
 		const span = nested(raw) ? w + NESTED_INDENT : w;
 		if (span > nameWidth) nameWidth = span < 14 ? span : 14;
-		const model = width >= AGENT_PANEL_MODEL_MIN_WIDTH ? panelModelText(raw) : "";
-		models[i] = model;
-		if (model.length > 0) modelWidth = Math.max(modelWidth, cellWidth(model));
+		models[i] = width >= AGENT_PANEL_MODEL_MIN_WIDTH ? panelModelText(raw) : "";
 		tasks[i] = panelText(raw.task);
 		rights[i] = rightColumn(raw, width);
 		queues[i] = Number.isSafeInteger(raw.queued) && (raw.queued ?? 0) > 0 ? ` · ${raw.queued} queued` : undefined;
 	}
+	const modelColumn = options.modelColumn;
+	// The widest label as the rows report it: a label still waiting for its level counts for whether any column fits.
+	let widest = 0;
+	for (const model of models) if (model.length > 0) widest = Math.max(widest, cellWidth(model));
+	// Too narrow for the column: the rows are seen afresh once it is wide enough again, as on a first paint.
+	if (modelColumn !== undefined && !(width >= AGENT_PANEL_MODEL_MIN_WIDTH)) modelColumn.forget();
+	else if (modelColumn !== undefined) {
+		const showing = modelColumn.paint(
+			shown.map((row, i) => [row.id, panelModelReport(row, models[i]!)] as const),
+			rows,
+		);
+		for (let i = 0; i < count; i++) if (!showing.has(shown[i]!.id)) models[i] = "";
+	}
+	for (const model of models) if (model.length > 0) modelWidth = Math.max(modelWidth, cellWidth(model));
 	// The model column shows only while every row keeps its whole right column and some of its task beside it. A nested
 	// row's indent is inside the name column, so `nameWidth` spans it.
-	if (modelWidth > 0) {
-		const fixed = 6 + nameWidth + modelWidth + 2;
-		for (let i = 0; i < count && modelWidth > 0; i++) {
+	const modelFits = (column: number) => {
+		const fixed = 6 + nameWidth + column + 2;
+		for (let i = 0; i < count; i++) {
 			const queued = queues[i];
 			const rightWidth = cellWidth(queued === undefined ? rights[i]! : rights[i]! + queued);
 			const taskRoom = width - fixed - rightWidth - 2;
-			if (fixed + rightWidth + 1 > width || (tasks[i]!.length > 0 && taskRoom < MIN_TASK_WIDTH)) modelWidth = 0;
+			if (fixed + rightWidth + 1 > width || (tasks[i]!.length > 0 && taskRoom < MIN_TASK_WIDTH)) return false;
 		}
-	}
+		return true;
+	};
+	// An open panel's column does not narrow while it fits (`ModelColumn.column`).
+	const fits = (column: number) => width >= AGENT_PANEL_MODEL_MIN_WIDTH && modelFits(column);
+	if (modelColumn !== undefined) modelWidth = modelColumn.column(width, modelWidth, fits, widest);
+	else if (modelWidth > 0 && !fits(modelWidth)) modelWidth = 0;
 	const viewing = options.viewedId !== undefined;
 	const lines: string[] = [];
 	const line = (

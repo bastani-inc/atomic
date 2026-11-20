@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { DiagnosticWriter } from "../src/core/diagnostic-writer.ts";
 import {
 	installLifecycleTimingSink,
 	installLifecycleTraceFromEnv,
@@ -11,9 +12,13 @@ import {
 	lifecycleTraceWritten,
 	markLifecycleTiming,
 } from "../src/core/lifecycle-timings.ts";
+import { EngineQuitIntent } from "../src/modes/interactive-engine/engine-quit-intent.ts";
+import { serializeInteractiveEngineFrame } from "../src/modes/interactive-engine/protocol.ts";
 
 /** Microtask turns a mark's handoff gets; acknowledging a write takes a message from the writer's thread. */
 const MICROTASK_TURNS = 20;
+/** A write that keeps the diagnostic writer's thread busy for many milliseconds, far longer than handling a line. */
+const BUSY_WRITER_BYTES = 32 * 1024 * 1024;
 
 describe("lifecycle timing seams", () => {
 	it("does not read the monotonic clock when no diagnostic sink is installed", () => {
@@ -103,6 +108,71 @@ describe("lifecycle timing seams", () => {
 			expect(labels).toEqual(["process-start", "engine-ready"]);
 		} finally {
 			restore?.();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("an engine's trace holds its marks once it acknowledges the host's quit, before the host may end it (#5544)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-startup-trace-"));
+		const file = join(directory, "trace.jsonl");
+		const restore = installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: file });
+		const busy = new DiagnosticWriter(() => {});
+		try {
+			await lifecycleTraceWritten();
+			// Windows ends the engine as soon as the host has its acknowledgement, without running exit handlers. Keep
+			// the writer's thread busy so the mark is still waiting for it when the quit arrives.
+			const busyWrite = busy.append(join(directory, "busy.bin"), "x".repeat(BUSY_WRITER_BYTES));
+			markLifecycleTiming("engine-resources-ready");
+			let labelsAtAck: string[] | undefined;
+			const quit = new EngineQuitIntent(() => {
+				labelsAtAck = readFileSync(file, "utf8")
+					.trim()
+					.split("\n")
+					.map((line) => (JSON.parse(line) as LifecycleTraceLine).label);
+			});
+			expect(quit.handleLine(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" }))).toBe(true);
+			expect(labelsAtAck).toEqual(["process-start", "engine-resources-ready"]);
+			await busyWrite;
+			await lifecycleTraceWritten();
+			// Written once, not again by the writer's thread.
+			expect(readFileSync(file, "utf8").trim().split("\n")).toHaveLength(2);
+		} finally {
+			restore?.();
+			await busy.written();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("writes the trace at the quit when another copy of this module installed it, as the compiled binary's loader does (#5544)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-startup-trace-"));
+		const file = join(directory, "trace.jsonl");
+		// The compiled binary's loader and its app are bundled separately: the loader installs the trace with its copy
+		// of this module, and the app, which handles the quit, has its own.
+		const restore = installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: file });
+		const busy = new DiagnosticWriter(() => {});
+		vi.resetModules();
+		try {
+			const app = await import("../src/core/lifecycle-timings.ts");
+			const { EngineQuitIntent: AppQuitIntent } = await import(
+				"../src/modes/interactive-engine/engine-quit-intent.ts"
+			);
+			expect(app.installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: file })).toBeUndefined();
+			await lifecycleTraceWritten();
+			const busyWrite = busy.append(join(directory, "busy.bin"), "x".repeat(BUSY_WRITER_BYTES));
+			app.markLifecycleTiming("engine-resources-ready");
+			let labelsAtAck: string[] | undefined;
+			const quit = new AppQuitIntent(() => {
+				labelsAtAck = readFileSync(file, "utf8")
+					.trim()
+					.split("\n")
+					.map((line) => (JSON.parse(line) as LifecycleTraceLine).label);
+			});
+			expect(quit.handleLine(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" }))).toBe(true);
+			expect(labelsAtAck).toEqual(["process-start", "engine-resources-ready"]);
+			await busyWrite;
+		} finally {
+			restore?.();
+			await busy.written();
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});

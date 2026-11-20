@@ -120,15 +120,45 @@ InteractiveModeBase.prototype.clearWorkingLoader = function (this: InteractiveMo
 	this.statusContainer.clear();
 };
 
-InteractiveModeBase.prototype.stopWorkingLoader = function (this: InteractiveModeBase): void {
-	const hadLoader = this.loadingAnimation !== undefined;
-	const wasEmbedded = this.workingIndicatorEmbedded;
-	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
+function stopLoader(mode: InteractiveModeBase): void {
+	const hadLoader = mode.loadingAnimation !== undefined;
+	const wasEmbedded = mode.workingIndicatorEmbedded;
+	InteractiveModeBase.prototype.clearWorkingLoader.call(mode);
 	if (hadLoader && !wasEmbedded)
-		mountIdleStatus(this.statusContainer, this.settingsManager?.getClearOnShrink?.() ?? false);
+		mountIdleStatus(mode.statusContainer, mode.settingsManager?.getClearOnShrink?.() ?? false);
+}
+
+/**
+ * At a turn's end, keep its working row on screen, held still, while the run goes on: the next turn restarts the same
+ * row in place, so no frame between two turns shows the status area without it and the chat above does not jump.
+ * Only a row that is all the status area shows is held. Returns whether it was held.
+ */
+export function holdWorkingRowBetweenTurns(mode: InteractiveModeBase): boolean {
+	const loader = mode.loadingAnimation;
+	if (!(loader instanceof AtomicWorkingLoader) || loader.betweenTurns) return false;
+	const shown = mode.statusContainer.children;
+	const alone = mode.workingIndicatorEmbedded ? shown.length === 0 : shown.length === 1 && shown[0] === loader;
+	if (!alone) return false;
+	loader.holdBetweenTurns();
+	return true;
+}
+
+/**
+ * End a row held between turns as the turn's end used to end it. Everything but the next turn's start does this first,
+ * so what it then does to the status area starts from the same state as before rows were held.
+ */
+export function endHeldWorkingRow(mode: InteractiveModeBase): void {
+	const loader = mode.loadingAnimation;
+	if (loader instanceof AtomicWorkingLoader && loader.betweenTurns) stopLoader(mode);
+}
+
+InteractiveModeBase.prototype.stopWorkingLoader = function (this: InteractiveModeBase): void {
+	endHeldWorkingRow(this);
+	stopLoader(this);
 };
 
 InteractiveModeBase.prototype.showWorkingLoaderNow = function (this: InteractiveModeBase): void {
+	endHeldWorkingRow(this);
 	// Mount the working spinner immediately, regardless of streaming state, so
 	// there is no visible gap between submitting a prompt and the agent turn
 	// actually starting. Prompt preflight (extension input hooks, template/skill
@@ -157,6 +187,7 @@ function remountCompactionIndicator(mode: InteractiveModeBase): void {
 }
 
 InteractiveModeBase.prototype.setWorkingVisible = function (this: InteractiveModeBase, visible: boolean): void {
+	endHeldWorkingRow(this);
 	this.workingVisible = visible;
 	if (!visible) {
 		this.stopWorkingLoader();
@@ -179,6 +210,7 @@ InteractiveModeBase.prototype.setWorkingIndicator = function (
 	this: InteractiveModeBase,
 	options?: LoaderIndicatorOptions,
 ): void {
+	endHeldWorkingRow(this);
 	this.workingIndicatorOptions = options;
 	this.loadingAnimation?.setIndicator(options);
 	this.ui.requestRender();

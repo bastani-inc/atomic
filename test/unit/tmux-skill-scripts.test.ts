@@ -373,6 +373,48 @@ trap interrupt DEBUG
 		assert.ok(result.elapsedMs < 6_000, `capture still held the pipes for ${Math.round(result.elapsedMs)} ms`);
 	});
 
+	test("wait-for-text stops a running capture when the stop request is noted just as it waits for the capture (#5566)", () => {
+		const bashEnv = join(dir, "interrupt-before-read");
+		// Bash 5.2 can take a signal just as `read` starts to wait and run its trap only after the next line. Note the
+		// stop request as that trap does, without its handler running, once the capture is under way and the helper
+		// starts to wait for the worker's next line. The capture holds that line back for 8 s.
+		writeFileSync(
+			bashEnv,
+			`
+tmux() { exec /bin/sleep 8; }
+note_stop() {
+  if [[ $BASHPID == "$$" && -n \${capture_pid:-} && -n \${reader_pid:-} && $BASH_COMMAND == 'IFS= read -r '*'<&3' && ! -f "$HOME/noted" ]]; then
+    touch "$HOME/noted"; cancelled=TERM
+  fi
+}
+set -T
+trap note_stop DEBUG
+`,
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "missing", "-T", "8"], { BASH_ENV: bashEnv });
+		assert.ok(existsSync(join(dir, "noted")));
+		assert.equal(result.signalCode, "SIGTERM");
+		assert.ok(result.elapsedMs < 6_000, `capture still held the pipes for ${Math.round(result.elapsedMs)} ms`);
+	});
+
+	test("wait-for-text keeps a worker line that arrives in two parts, one read slice apart (#5566)", () => {
+		const bashEnv = join(dir, "split-status");
+		// The worker writes its status line in two writes, with a pause longer than one wait for a line between them.
+		writeFileSync(
+			bashEnv,
+			`printf() {
+  if [[ $1 == 'status %s\\n' ]]; then builtin printf 'sta'; /bin/sleep 1.5; builtin printf 'tus %s\\n' "$2"; else builtin printf "$@"; fi
+}
+`,
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-F", "-p", "DONE", "-T", "8"], {
+			STUB_PANE: "build DONE",
+			BASH_ENV: bashEnv,
+		});
+		assert.equal(result.exitCode, 0, result.stderr);
+		assert.ok(result.elapsedMs >= 1_500, `the status line arrived after ${Math.round(result.elapsedMs)} ms`);
+	});
+
 	test("wait-for-text does not poll after cancellation races worker startup (#5566)", () => {
 		const bashEnv = join(dir, "interrupt-launch");
 		// Hold the worker at startup until it has been asked to stop: it must not poll after that.

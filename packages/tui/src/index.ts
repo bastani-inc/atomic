@@ -30,6 +30,7 @@ export {
 	runAsHintActivation,
 	slashCommandHint,
 	stripHintMarkers,
+	withoutKeyHints,
 } from "./clickable-hints.ts";
 // Colors and styling
 export {

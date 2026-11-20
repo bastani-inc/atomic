@@ -22,6 +22,9 @@ import {
 import {
 	afterChatSessionEvent,
 	decrementOptimisticUserSignature,
+	endHeldChatSessionWorkingLifecycle,
+	holdChatSessionWorkingLifecycle,
+	isChatSessionStreaming,
 	startChatSessionWorkingLifecycle,
 	stopChatSessionWorkingLifecycle,
 } from "./chat-session-host-runtime.ts";
@@ -215,6 +218,25 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 	if (boundary) state.liveChat.appendMessages([boundary]);
 }
 
+/**
+ * Events that change the working row other than by starting the next turn. A row held between turns ends first, as the
+ * turn's end used to end it, so each of them starts from the state it always did.
+ */
+const ENDS_HELD_WORKING_ROW: ReadonlySet<string> = new Set([
+	"agent_start",
+	"agent_end",
+	"compaction_start",
+	"compaction_end",
+	"summarization_retry_scheduled",
+	"summarization_retry_attempt_start",
+	"summarization_retry_finished",
+	"auto_retry_start",
+	"auto_retry_end",
+	"model_fallback_start",
+	"model_fallback_end",
+	"agent_continue_error",
+]);
+
 export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	event: AgentSessionEvent,
@@ -257,6 +279,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		return changed || changedByToolCall;
 	}
 	let changed = false;
+	if (ENDS_HELD_WORKING_ROW.has(type)) endHeldChatSessionWorkingLifecycle(state);
 	switch (type) {
 		case "agent_start": {
 			// The attempt after a retry's wait or a model fallback continues its turn, and its time and tokens with it.
@@ -322,8 +345,17 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		case "turn_end":
 			state.compacting = state.manualCompactionTakeoverPending;
 			if (!state.manualCompactionTakeoverPending) state.compactionStartedAt = undefined;
-			state.workingMessage = undefined;
-			stopChatSessionWorkingLifecycle(state);
+			// The run goes on to its next turn or to its end: a working row the chat shows stays, held still, until
+			// one of them replaces it.
+			if (
+				state.compacting ||
+				state.statusMessage !== "" ||
+				!isChatSessionStreaming(state) ||
+				!holdChatSessionWorkingLifecycle(state)
+			) {
+				state.workingMessage = undefined;
+				stopChatSessionWorkingLifecycle(state);
+			}
 			changed = true;
 			break;
 		case "queue_update": {
@@ -386,7 +418,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			if (compaction.midTurn !== true || compaction.aborted || compaction.errorMessage) {
 				state.workingMessage = undefined;
 				stopChatSessionWorkingLifecycle(state);
-			} else if (!state.workingLifecycleActive) {
+			} else if (state.workingLifecycle.kind === "off") {
 				// A successful no-op ends before the next turn_start, so nothing else
 				// would restart ordinary Working for the continuing stream.
 				startChatSessionWorkingLifecycle(state);

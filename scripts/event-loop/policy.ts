@@ -238,6 +238,12 @@ export const EXIT_ONLY: readonly ReviewedSelector[] = [
 			"the opt-in event-loop diagnostic's last records, written once the quit has begun or at exit; Windows ends the engine as soon as its host quits, before an asynchronous write could land",
 	},
 	{
+		file: "packages/coding-agent/src/core/lifecycle-timings.ts",
+		name: "flushLifecycleTraceAtQuit",
+		reason:
+			"the opt-in startup trace's lines still waiting for the writer's thread, written once the engine's quit has begun; Windows ends the engine as soon as its host has the quit acknowledgement, before an asynchronous write could land",
+	},
+	{
 		file: "packages/tui/src/tui-main-screen.ts",
 		name: "writeRenderCrashLog",
 		reason:

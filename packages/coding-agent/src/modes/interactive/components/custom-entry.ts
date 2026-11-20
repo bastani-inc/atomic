@@ -5,7 +5,7 @@ import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { declaresHistoryReplayable } from "./renderer-disposal.js";
-import { type RowRange, rowsFrom, setRendererClickTarget } from "./transcript-block-clicks.ts";
+import { blockRows, type RowRange, rowsFrom, setRendererClickTarget } from "./transcript-block-clicks.ts";
 
 /** Renders an extension-owned persistent session entry. */
 export class CustomEntryComponent extends Container {
@@ -40,6 +40,11 @@ export class CustomEntryComponent extends Container {
 
 	isExpanded(): boolean {
 		return this.expanded;
+	}
+
+	/** Its rows: an expand hint in them is part of the block, which a click on it expands or collapses. */
+	override render(width: number): string[] {
+		return blockRows(super.render(width));
 	}
 
 	/** Every row of the entry, under the blank row it leads with. */
