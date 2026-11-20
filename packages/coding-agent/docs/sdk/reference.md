@@ -779,7 +779,7 @@ await runtime.fork("entry-id");
 await runtime.fork("entry-id", { position: "at" });
 ```
 
-`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window. `getEntries()` and `getTree()` describe the entries held by that manager. Instead of opening with `history: "full"`, iterate pages with `for await (const page of sessionManager.readHistory({ fromSeq, toSeq, signal }))`. Inspect `page.items` for entries or oversized references. For an oversized reference, `sessionManager.readHistoryChunks(reference)` yields the original bytes. Bounds are inclusive and optional. A read stops at the last stored sequence when iteration began; entries appended later are not mixed into it.
+`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window. `getEntries()` and `getTree()` describe the entries held by that manager. Instead of opening with `history: "full"`, iterate pages with `for await (const page of sessionManager.readHistory({ fromSeq, toSeq, signal }))`. Inspect `page.items` for entries or oversized references. For an oversized reference, `sessionManager.readHistoryChunks(reference)` yields the original bytes. Bounds are inclusive and optional. A read stops at the last stored sequence when iteration began; entries appended later are not mixed into it. By default the pages are in recording order and include messages on branches you left. Pass `branchLeafSeq` to read only that saved sequence's ancestry. A custom task transcript source with only `getEntries()` can show only the rows it supplies. To let a reader visit older or off-branch messages, supply the records themselves or expose a paged history source (`readHistory` and `getEarlierCursor` for a live window).
 
 `SessionManager.create()`, `open()`, `continueRecent()`, `forkFrom()`, and mutations are asynchronous. `SessionManager.inMemory()` returns an empty private memory-backed manager synchronously. When supplying entries, use `await SessionManager.inMemory(cwd, options, entries)` and keep them stable until the call resolves. Await a mutation before reading its result or starting dependent work. A resolved write is committed; a failed write rejects with the store's typed error and leaves the failed entry unpublished. New persistent sessions store their header during creation and commit setup entries immediately. There is no `flush` method. Reads remain synchronous.
 
@@ -793,7 +793,7 @@ const currentProjectSessions = await SessionManager.list(process.cwd());
 const allSessions = await SessionManager.listAll(process.cwd());
 
 // Tree traversal
-const entries = sm.getEntries();        // All entries (excludes header); only the held ones after a { history: "tail" } open
+const entries = sm.getEntries();        // Entries in the current window, without the header
 const tree = sm.getTree();              // Full tree structure
 const path = sm.getPath();              // Path from root to current leaf
 const leaf = sm.getLeafEntry();         // Current leaf entry
@@ -1434,7 +1434,11 @@ Only Atomic's interactive hosts with a task inspector hold child prompts automat
 
 ### Task transcript references
 
+Custom live transcript sources should implement `getEntrySeq(id)` and `entryReceipt(message)` for bounded paging across compaction. If a source provides neither and the chat holds a stateful card with no saved occurrence, the chat keeps the original live transcript rather than discarding that card or matching it to a lookalike.
+
 Task inspectors show references to the bound child conversation: prompts, responses, provider errors, thinking blocks, tool calls and results, shell commands and their output, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and entries a chat does not render are left out. An unbound or empty history reports `Transcript unavailable`. Saved history is not authority to restart or control a task.
+
+`readTaskTranscript(task, cursor?)` returns the same task-scoped item references and continuation cursors for saved and live tasks. The first occurrence of a repeated public item ID wins. An indexed store checks candidate records by sequence. With an archive that lacks this index, an explicit reference lookup can scan earlier metadata in bounded pages; the work is proportional to the history before the requested window. The chat's ordinary scroll and repaint do not run that scan. Reference pages contain at most 100 items and normally at most 1 MiB of identifiers. For compatibility, if a requested item has an identifier larger than this, it is returned whole, by itself: `source.entryId` remains the real string, not a placeholder. Its unrelated message text, arguments and results are not assembled.
 
 `TaskViewSource.sendTaskMessage(id, text)` sends text typed into an agent task's transcript to that task through its Intercom target and resolves once Intercom confirms delivery. A task view that cannot message tasks omits the method. A failure rejects with a `TaskMessageError`:
 

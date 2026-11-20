@@ -25,6 +25,7 @@ import {
 	type SessionHistoryReadOptions,
 	type SessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { countingDatabase } from "../helpers/counting-database.ts";
 
 const createdAt = "2026-11-16T00:00:00.000Z";
 const header = { id: "session", version: 4 as const, createdAt, cwd: "/project" };
@@ -65,6 +66,7 @@ function branched(): { entries: SessionEntry[]; leaf: number } {
 
 const directories: string[] = [];
 const closers: (() => Promise<void>)[] = [];
+const sqlReads = new WeakMap<SessionStore, () => number>();
 afterEach(async () => {
 	while (closers.length > 0) await closers.pop()?.();
 	while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true, maxRetries: 10 });
@@ -92,7 +94,9 @@ async function openStore(kind: "memory" | "jsonl" | "sqlite" | "legacy"): Promis
 		return store;
 	}
 	const database = await openNodeSqliteDatabase(join(directory, "sessions.sqlite"));
-	const store = await SqlSessionStore.open(database);
+	const db = countingDatabase(database);
+	const store = await SqlSessionStore.open(db.wrapped);
+	sqlReads.set(store, () => db.statements.length);
 	closers.push(async () => {
 		await store.close();
 		await database.close();
@@ -114,7 +118,11 @@ async function countReads<T>(store: SessionStore, read: () => Promise<T>): Promi
 		};
 	}
 	try {
-		return [await read(), counts];
+		const sql = sqlReads.get(store),
+			before = sql?.();
+		const result = await read();
+		if (sql && before !== undefined) counts.statements = sql() - before;
+		return [result, counts];
 	} finally {
 		for (const name of names) delete own[name];
 	}
@@ -163,8 +171,21 @@ describe.each(["memory", "jsonl", "sqlite", "legacy"] as const)("a scan of a %s 
 				`${label}: a scanned page holds no more than a page's bytes`,
 			);
 			assert.ok(scanned.length <= pages.length, label);
-			assert.ok((scanReads.readEntrySizes ?? 0) <= (defaultReads.readEntrySizes ?? 0), label);
-			assert.ok((scanReads.readRange ?? 0) + (scanReads.readScanPage ?? 0) <= (defaultReads.readRange ?? 0), label);
+			if (defaultReads.statements !== undefined) {
+				// Default SQL pages size and read inside a single database snapshot, without calling readRange.
+				// Count the actual database work so both routes include the reads they really performed.
+				assert.ok(
+					scanReads.statements! <= defaultReads.statements,
+					`${label}: scan ${scanReads.statements}, ordinary ${defaultReads.statements} SQL statements`,
+				);
+			}
+			if (defaultReads.readEntrySizes !== undefined || defaultReads.statements === undefined) {
+				assert.ok((scanReads.readEntrySizes ?? 0) <= (defaultReads.readEntrySizes ?? 0), label);
+				assert.ok(
+					(scanReads.readRange ?? 0) + (scanReads.readScanPage ?? 0) <= (defaultReads.readRange ?? 0),
+					label,
+				);
+			}
 		}
 		const [whole, wholeReads] = await countReads(store, () =>
 			pagesOf(store, { pageEntries: SESSION_HISTORY_SCAN_ENTRIES }),

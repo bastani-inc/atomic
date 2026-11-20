@@ -77,6 +77,8 @@ interface TranscriptRowLayout {
 	readonly starts: number[];
 	readonly prompts: number[];
 	segments: readonly RowWindowSegment[];
+	/** The index in `segments` of each block's first segment: a spaced block has two. */
+	readonly firstSegments: number[];
 	rowCount: number;
 }
 
@@ -173,12 +175,21 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	onVisibleEntry?: (entry: TEntry) => void;
 
 	private readonly cacheKey: ChatTranscriptCacheKey<TEntry> | undefined;
+	private readonly release: (component: Component | undefined) => void;
 	private blockCache: Array<CachedChatTranscriptBlock<TEntry> | undefined> = [];
 	private measuredRows: MeasuredRowWindow | undefined;
 	/** The blocks and their first rows as last drawn, which a click is resolved against. */
 	private paintedLayout: CachedTranscriptPaint<TEntry> | undefined;
-	private readonly layout: TranscriptRowLayout = { starts: [], prompts: [], segments: [], rowCount: 0 };
+	private readonly layout: TranscriptRowLayout = {
+		starts: [],
+		prompts: [],
+		segments: [],
+		firstSegments: [],
+		rowCount: 0,
+	};
 	private dirtyEntries = new WeakSet<TEntry>();
+	/** Retired blocks were dropped without their rows: lay every block out again at the next measure. */
+	private relayout = false;
 	private staticComponents: readonly Component[] = [];
 	/** Per-entry heights recorded by the most recent `renderAllRows`. */
 	private staticSegments: readonly RowWindowSegment[] = [];
@@ -189,7 +200,9 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		entries: readonly TEntry[],
 		renderEntry: ChatTranscriptRenderer<TEntry>,
 		cacheKey?: ChatTranscriptCacheKey<TEntry>,
+		release = disposeComponent,
 	) {
+		this.release = release;
 		this.entries = entries;
 		this.renderEntry = renderEntry;
 		this.cacheKey = cacheKey;
@@ -239,7 +252,11 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	 * only moved (a prepend, a splice) keep their rendered rows.
 	 */
 	measureRows(width: number): MeasuredRowWindow {
-		const firstChanged = this.ensureBlockCache(width);
+		const firstChanged = this.relayout ? 0 : this.ensureBlockCache(width);
+		if (this.relayout) {
+			this.relayout = false;
+			this.ensureBlockCache(width);
+		}
 		if (this.measuredRows !== undefined && firstChanged === UNCHANGED) return this.measuredRows;
 		this.refreshLayout(Math.min(firstChanged, this.blockCache.length));
 		const { starts, prompts, segments, rowCount } = this.layout;
@@ -339,11 +356,48 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		this.measuredRows = undefined;
 	}
 
+	/**
+	 * Release the blocks of entries a replacement removed, now, also while nothing draws the transcript. A surviving
+	 * entry keeps its component and rows; its position is settled at the next measure.
+	 */
+	releaseRetired(retained: ReadonlySet<TEntry>): void {
+		if (!this.supportsRowWindow) {
+			this.invalidate();
+			return;
+		}
+		const kept = new Set<Component>();
+		const survivors: Array<CachedChatTranscriptBlock<TEntry>> = [];
+		for (const block of this.blockCache) {
+			if (block === undefined || !retained.has(block.entry)) continue;
+			survivors.push(block);
+			kept.add(block.component);
+		}
+		for (const block of this.blockCache) {
+			if (block !== undefined && !kept.has(block.component)) this.release(block.component);
+		}
+		this.blockCache = survivors;
+		this.layout.segments = [];
+		this.layout.starts.length = 0;
+		this.layout.firstSegments.length = 0;
+		this.layout.prompts.length = 0;
+		this.layout.rowCount = 0;
+		this.relayout = true;
+		this.measuredRows = undefined;
+		this.paintedLayout = undefined;
+	}
+
 	invalidate(): void {
-		for (const block of this.blockCache) disposeComponent(block?.component);
-		for (const component of new Set(this.staticComponents)) disposeComponent(component);
+		for (const block of this.blockCache) this.release(block?.component);
+		for (const component of new Set(this.staticComponents)) this.release(component);
 		this.blockCache = [];
 		this.staticComponents = [];
+		this.staticSegments = [];
+		this.staticSegmentsWidth = undefined;
+		this.layout.segments = [];
+		this.layout.starts.length = 0;
+		this.layout.firstSegments.length = 0;
+		this.layout.prompts.length = 0;
+		this.layout.rowCount = 0;
 		this.dirtyEntries = new WeakSet<TEntry>();
 		this.measuredRows = undefined;
 		this.paintedLayout = undefined;
@@ -362,7 +416,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 				const cached = previous[index];
 				const block = this.currentBlock(entries[index], index, width, cached);
 				if (block === cached) continue;
-				if (cached !== undefined && cached.component !== block?.component) disposeComponent(cached.component);
+				if (cached !== undefined && cached.component !== block?.component) this.release(cached.component);
 				previous[index] = block;
 				firstChanged = Math.min(firstChanged, index);
 			}
@@ -382,7 +436,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 			if (block !== previous[index]) firstChanged = Math.min(firstChanged, index);
 		}
 		for (const block of previous) {
-			if (block !== undefined && !kept.has(block.component)) disposeComponent(block.component);
+			if (block !== undefined && !kept.has(block.component)) this.release(block.component);
 		}
 		this.blockCache = next;
 		return firstChanged;
@@ -428,13 +482,18 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		let row = from === 0 ? 0 : (layout.starts[from - 1] ?? 0) + (blocks[from - 1]?.lines.length ?? 0);
 		layout.starts.length = blocks.length;
 		layout.prompts.length = indexAtOrBefore(layout.prompts, row - 1) + 1;
-		const segments = layout.segments.slice(0, from);
+		const segments = layout.segments.slice(0, layout.firstSegments[from] ?? layout.segments.length);
+		layout.firstSegments.length = blocks.length;
 		for (let index = from; index < blocks.length; index++) {
 			const block = blocks[index];
 			layout.starts[index] = row;
+			layout.firstSegments[index] = segments.length;
 			const rows = block?.lines.length ?? 0;
 			if (block !== undefined) {
-				segments.push({ id: block.entry, rows });
+				// The spacer a block's position adds is a segment of its own: a reader on the entry's rows stays on
+				// them when the block becomes the first and loses it, or gains it under a page read above.
+				if (block.spaced) segments.push({ id: spacerSegmentId(block.entry), rows: 1 });
+				segments.push({ id: block.entry, rows: block.spaced ? rows - 1 : rows });
 				for (const promptRow of block.promptRows) layout.prompts.push(row + promptRow);
 			}
 			row += rows;
@@ -469,7 +528,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		} finally {
 			const retained = new Set(nextComponents);
 			for (const component of new Set(this.staticComponents)) {
-				if (!retained.has(component)) disposeComponent(component);
+				if (!retained.has(component)) this.release(component);
 			}
 			this.staticComponents = nextComponents;
 		}
@@ -486,6 +545,15 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		for (const line of rendered) lines.push(line);
 		return lines;
 	}
+}
+
+const spacerSegments = new WeakMap<object, object>();
+function spacerSegmentId(entry: object): object {
+	const known = spacerSegments.get(entry);
+	if (known !== undefined) return known;
+	const id = {};
+	spacerSegments.set(entry, id);
+	return id;
 }
 
 function indexAtOrBefore(sorted: readonly number[], target: number): number {
@@ -557,6 +625,7 @@ export interface ScrollableComponentViewportOptions {
 	readonly requestRender?: () => void;
 	/** Called after a render whose first row lies within one viewport of the top. */
 	readonly onNearTop?: () => void;
+	readonly onNearBottom?: () => void;
 	/** Milliseconds, for wheel velocity and the `"auto"` scrollbar. Default `performance.now()`. */
 	readonly now?: () => number;
 	/** Whether `"auto"` wheel scrolling accelerates; by default only where the terminal does not already. */
@@ -612,6 +681,61 @@ export class ScrollableComponentViewport implements Component {
 
 	setComponents(components: readonly Component[]): void {
 		this.components = components;
+	}
+
+	/** Keep offsets for surviving anchors, without owning entries a replacement removed. Runs of discarded
+	 * segments become one height, so even a hidden viewport releases the old page immediately. */
+	retainSegmentAnchors(component: Component, retained: ReadonlySet<unknown>): void {
+		const index = this.components.indexOf(component);
+		const before = this.lastComponentSegments[index];
+		if (!before) return;
+		const segments: RowWindowSegment[] = [];
+		let gap = 0;
+		for (const segment of before) {
+			if (!retained.has(segment.id)) {
+				gap += segment.rows;
+				continue;
+			}
+			if (gap) segments.push({ id: Symbol(), rows: gap });
+			gap = 0;
+			segments.push(segment);
+		}
+		if (gap) segments.push({ id: Symbol(), rows: gap });
+		this.lastComponentSegments = this.lastComponentSegments.map((original, i) => (i === index ? segments : original));
+	}
+
+	/** Whether any of these segments belonged to the last painted body. Do not evict an on-screen page. */
+	paintsSegments(component: Component, ids: ReadonlySet<unknown>): boolean {
+		if (!this.lastPaint) return true;
+		const index = this.components.indexOf(component);
+		const ranges = this.lastComponentSegments[index];
+		if (!ranges) return false;
+		let top = this.lastComponentRowCounts.slice(0, index).reduce((a, b) => a + b, 0);
+		const { start, contentRows } = this.lastPaint;
+		for (const seg of ranges) {
+			const end = top + seg.rows;
+			if (top >= start + contentRows) break;
+			if (end > start && ids.has(seg.id)) return true;
+			top = end;
+		}
+		return false;
+	}
+
+	/** The segments of `component` the last frame painted, in order; empty before a frame was painted. */
+	paintedSegments(component: Component): unknown[] {
+		if (!this.lastPaint) return [];
+		const index = this.components.indexOf(component);
+		const ranges = this.lastComponentSegments[index] ?? [];
+		let top = this.lastComponentRowCounts.slice(0, index).reduce((a, b) => a + b, 0);
+		const { start, contentRows } = this.lastPaint;
+		const painted: unknown[] = [];
+		for (const seg of ranges) {
+			const end = top + seg.rows;
+			if (top >= start + contentRows) break;
+			if (end > start) painted.push(seg.id);
+			top = end;
+		}
+		return painted;
 	}
 
 	setVisibleRows(rows: number): void {
@@ -823,6 +947,7 @@ export class ScrollableComponentViewport implements Component {
 		while (visible.length < contentRows + pin.length) visible.push(" ".repeat(contentWidth));
 		const painted = this.paintScrollbar(visible, width, scrollbar, { lineCount, start, maxScroll });
 		if (start < this.visibleRows) this.options.onNearTop?.();
+		if (!this.pinnedToTop && maxScroll - start < this.visibleRows) this.options.onNearBottom?.();
 		return [...painted, ...indicator];
 	}
 
@@ -858,8 +983,12 @@ export class ScrollableComponentViewport implements Component {
 		return this.lastPaint?.start;
 	}
 
-	/** Stops the timer that hides an `"auto"` scrollbar. */
+	/** Stop the scrollbar timer and release the last frame's hit-test and anchor state. */
 	dispose(): void {
+		this.lastPaint = undefined;
+		this.lastComponentSegments = [];
+		this.lastComponentRowCounts = [];
+		this.components = [];
 		clearTimeout(this.scrollbarHideTimer);
 		this.scrollbarHideTimer = undefined;
 	}

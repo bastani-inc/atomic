@@ -227,6 +227,9 @@ class BuiltinResourceLoader implements ResourceLoader {
 	getLegacyWorkflowFiles() {
 		return this.delegate.getLegacyWorkflowFiles?.();
 	}
+	getPackageAgents() {
+		return this.delegate.getPackageAgents?.() ?? [];
+	}
 	getAgentsFiles() {
 		return this.delegate.getAgentsFiles();
 	}

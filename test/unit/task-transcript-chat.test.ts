@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, renameSync } from "node:fs";
 import { stripVTControlCharacters } from "node:util";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test } from "vitest";
@@ -25,6 +26,7 @@ import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/mes
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import {
 	ownerTaskViewSource,
+	readTaskPageForView,
 	type TaskViewSource,
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
@@ -52,6 +54,7 @@ const flush = async () => {
 const CTRL_HOME = "\x1b[1;5H";
 const CTRL_END = "\x1b[1;5F";
 const PAGE_UP = "\x1b[5~";
+const PAGE_DOWN = "\x1b[6~";
 /** The editor's cursor marker; it is not printable text. */
 const APPLICATION_COMMAND = /\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
@@ -205,6 +208,947 @@ test("PageUp is a plain scroll and earlier history loads near the top under the 
 		await host.dispose();
 	}
 });
+
+test.each(["message renderer", "external component factory"] as const)(
+	"a saved task chat revisits the same stateful %s instance after its page is evicted (#5593)",
+	async (kind) => {
+		const session = SessionManager.inMemory();
+		await session.appendCustomMessageEntry("stateful-card", "raw", true);
+		for (let i = 0; i < 320; i++) await session.appendMessage({ role: "user", content: `saved-${i}`, timestamp: i });
+		let built = 0;
+		const widget = () => {
+			const identity = ++built;
+			return { render: () => [`widget incarnation ${identity}`], invalidate() {} };
+		};
+		const host = await openTranscript(
+			{
+				getSessionId: () => session.getSessionId(),
+				getEntries: () => [],
+				readHistory: session.readHistory.bind(session),
+				loadHistory: async () => {
+					throw new Error("whole archive loaded");
+				},
+			},
+			{
+				environment: {
+					getChatRenderSettings: () =>
+						kind === "external component factory"
+							? { createCustomMessageComponent: widget }
+							: { getCustomMessageRenderer: (name) => (name === "stateful-card" ? widget : undefined) },
+				},
+			},
+		);
+		const visit = async () => {
+			host.inspector.handleInput(CTRL_HOME);
+			for (let i = 0; i < 45; i++) {
+				const value = /widget incarnation (\d+)/.exec(host.text())?.[1];
+				if (value) return value;
+				await flush();
+			}
+			throw new Error("widget not in view");
+		};
+		try {
+			host.frame();
+			const first = await visit();
+			host.inspector.handleInput(CTRL_END);
+			await flush();
+			assert.match(host.text(), /saved-319/);
+			assert.equal(await visit(), first);
+		} finally {
+			await host.dispose();
+			await session.getSessionStore().close();
+		}
+	},
+);
+
+test("a new scroll request does not wait for an obsolete task page after jumping to the tail (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 200; i++)
+		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
+	const old = Promise.withResolvers<void>();
+	let reads = 0;
+	const host = await openTranscript(
+		{
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [],
+			readHistory: session.readHistory.bind(session),
+			loadHistory: async () => {
+				throw new Error("whole archive loaded");
+			},
+		},
+		{
+			source: (owner) =>
+				Object.assign(Object.create(owner) as TaskViewSource, {
+					async readTaskTranscript(id: TaskId, cursor?: string) {
+						if (cursor && ++reads === 1) await old.promise;
+						return owner.readTaskTranscript(id, cursor);
+					},
+				}),
+		},
+	);
+	try {
+		host.frame();
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.equal(reads, 1);
+		host.inspector.handleInput(CTRL_END);
+		await flush();
+		host.frame();
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 12 && !host.text().includes("M-000"); i++) await flush();
+		assert.match(host.text(), /M-000/);
+		old.resolve();
+		await flush();
+		assert.match(host.text(), /M-000/);
+	} finally {
+		old.resolve();
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test("a live task chat mounted before a clear releases its previous context and can page back to it (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 80; i++)
+		await session.appendMessage({ role: "user", content: `retired live ${i}`, timestamp: i });
+	let event: ((e: AgentSessionEvent) => void) | undefined, chat: ChatSessionHost | undefined;
+	const source: TaskTranscriptSource = {
+		getSessionId: () => session.getSessionId(),
+		getEntries: () => session.getTaskTranscriptEntries(),
+		getEarlierCursor: () => session.getEarlierCursor(),
+		readHistory: session.readHistory.bind(session),
+		subscribe(cb) {
+			event = cb;
+			return () => {
+				event = undefined;
+			};
+		},
+	};
+	const host = await openTranscript(source, {
+		environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) },
+	});
+	try {
+		assert.match(host.text(), /retired live 79/);
+		await session.appendCompaction("new context", null, 100, verbatimDetails);
+		event?.({
+			type: "compaction_end",
+			reason: "manual",
+			aborted: false,
+			willRetry: false,
+			result: {
+				compactedText: "new context",
+				firstKeptEntryId: null,
+				tokensBefore: 100,
+				parameters: verbatimDetails.parameters,
+				stats: verbatimDetails.stats,
+				promptVersion: verbatimDetails.promptVersion,
+				form: "cleared",
+			},
+		});
+		await flush();
+		assert.ok(chat);
+		host.frame();
+		assert.doesNotMatch(chat.renderBodyRows(80, 0, chat.bodyRowCount(80)).join("\n"), /retired live 0/);
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 25 && !host.text().includes("retired live 0"); i++) await flush();
+		assert.match(host.text(), /retired live 0/);
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test("a live subagent chat reads across a clear without missing output that arrives while its history is pending (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 130; i++)
+		await session.appendMessage({ role: "user", content: `archived prompt ${i}`, timestamp: i });
+	await session.appendCompaction("fresh context", null, 100, verbatimDetails);
+	await session.appendMessage({ role: "user", content: "current context prompt", timestamp: 131 });
+	const read = Promise.withResolvers<void>();
+	let event: ((ev: AgentSessionEvent) => void) | undefined;
+	let started = false;
+	const host = await openTranscript({
+		getSessionId: () => session.getSessionId(),
+		getEntries: () => session.getEntries(),
+		getEarlierCursor: () => session.getEarlierCursor(),
+		readHistory: async function* (options) {
+			started = true;
+			await read.promise;
+			yield* session.readHistory(options);
+		},
+		subscribe(listener) {
+			event = listener;
+			return () => {
+				event = undefined;
+			};
+		},
+	});
+	try {
+		assert.match(host.text(), /current context prompt/);
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.equal(started, true, "the clear must not strand earlier saved messages");
+		const message = { role: "user" as const, content: "live arrival", timestamp: 132 };
+		event?.({ type: "message_start", message });
+		event?.({ type: "message_end", message });
+		host.inspector.handleInput(CTRL_END);
+		read.resolve();
+		await flush();
+		assert.match(host.text(), /live arrival/);
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		for (let i = 0; i < 15 && !host.text().includes("archived prompt 0"); i++) await flush();
+		assert.match(host.text(), /archived prompt 0/);
+	} finally {
+		read.resolve();
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test.each([
+	[false, true],
+	[true, true],
+	[false, false],
+	[true, false],
+])(
+	"a live task chat keeps a stateful card's instance across a compaction and when the card is read again (keep %s, receipts %s, #5593)",
+	async (keep, withReceipts) => {
+		const session = SessionManager.inMemory();
+		const turns = withReceipts ? 60 : 400;
+		for (let i = 0; i < turns; i++) await session.appendMessage({ role: "user", content: `turn ${i}`, timestamp: i });
+		let event: ((e: AgentSessionEvent) => void) | undefined;
+		// What a session's save receipt reports: the stored sequence of the entry each emitted message became.
+		const receipts = new WeakMap<object, number>();
+		const source: TaskTranscriptSource = {
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => session.getTaskTranscriptEntries(),
+			getEarlierCursor: () => session.getEarlierCursor(),
+			...(withReceipts
+				? {
+						getEntrySeq: (id: string) => session.getEntrySeq(id),
+						entryReceipt: (message: AgentMessage) => {
+							const seq = receipts.get(message);
+							return seq === undefined ? undefined : { seq };
+						},
+					}
+				: {}),
+			readHistory: session.readHistory.bind(session),
+			subscribe(listener) {
+				event = listener;
+				return () => {
+					event = undefined;
+				};
+			},
+		};
+		let built = 0,
+			liveChat: ChatSessionHost | undefined;
+		const host = await openTranscript(source, {
+			height: 30,
+			environment: {
+				createChat: (opts) => (liveChat = new ChatSessionHost(opts)),
+				getChatRenderSettings: () => ({
+					getCustomMessageRenderer: (name) =>
+						name === "stateful-card"
+							? () => {
+									const identity = ++built;
+									return { render: () => [`widget incarnation ${identity}`], invalidate() {} };
+								}
+							: undefined,
+				}),
+			},
+		});
+		// A non-paging source follows the original live transcript path: compare every row, including its boundary.
+		let controlEvent: ((e: AgentSessionEvent) => void) | undefined;
+		const control = withReceipts
+			? undefined
+			: await openTranscript(
+					{
+						...source,
+						getEarlierCursor: undefined,
+						readHistory: undefined,
+						subscribe(listener) {
+							controlEvent = listener;
+							return () => {
+								controlEvent = undefined;
+							};
+						},
+					},
+					{
+						height: 30,
+						environment: {
+							getChatRenderSettings: () => ({
+								getCustomMessageRenderer: (name) =>
+									name === "stateful-card"
+										? () => ({ render: () => ["widget incarnation 1"], invalidate() {} })
+										: undefined,
+							}),
+						},
+					},
+				);
+		const send = (e: AgentSessionEvent) => {
+			event?.(e);
+			controlEvent?.(e);
+		};
+		const shown = () => /widget incarnation (\d+)/.exec(host.text())?.[1];
+		const emit = async (message: AgentMessage, save: () => Promise<string>) => {
+			send({ type: "message_start", message } as AgentSessionEvent);
+			receipts.set(message, session.getEntrySeq(await save())!);
+			send({ type: "message_end", message } as AgentSessionEvent);
+			await flush();
+		};
+		try {
+			const card = { role: "custom", customType: "stateful-card", content: "card", display: true, timestamp: 61 };
+			await emit(card as AgentMessage, () => session.appendCustomMessageEntry("stateful-card", "card", true));
+			const cardId = session.getEntries().at(-1)!.id;
+			for (let i = 0; i < 3; i++) {
+				const message = { role: "user" as const, content: `after card ${i}`, timestamp: 70 + i };
+				await emit(message, () => session.appendMessage(message));
+			}
+			assert.equal(shown(), "1");
+			if (control) assert.deepEqual(host.frame(), control.frame());
+			await session.appendCompaction("new context", keep ? cardId : null, 100, verbatimDetails);
+			send({
+				type: "compaction_end",
+				reason: "manual",
+				aborted: false,
+				willRetry: false,
+				result: {
+					compactedText: "new context",
+					firstKeptEntryId: keep ? cardId : null,
+					tokensBefore: 100,
+					parameters: verbatimDetails.parameters,
+					stats: verbatimDetails.stats,
+					promptVersion: verbatimDetails.promptVersion,
+					form: "cleared",
+				},
+			});
+			await flush();
+			if (control)
+				assert.deepEqual(
+					host.frame(),
+					control.frame(),
+					"a source without occurrence receipts preserves the original live screen",
+				);
+			if (keep) assert.equal(shown(), "1", "the card kept in the new context is the instance that was shown");
+			const readBack = async () => {
+				for (let i = 0; i < 60 && shown() === undefined; i++) {
+					host.inspector.handleInput(PAGE_UP);
+					host.frame();
+					await flush();
+				}
+				return shown();
+			};
+			assert.equal(await readBack(), "1", "the saved card is the instance the live chat showed");
+			host.inspector.handleInput(CTRL_END);
+			for (let i = 0; i < 5; i++) {
+				host.frame();
+				await flush();
+			}
+			assert.equal(await readBack(), "1", "reading the card again does not create another instance");
+			assert.equal(built, 1);
+			if (!withReceipts) {
+				host.inspector.handleInput(CTRL_HOME);
+				for (let i = 0; i < 80 && !host.text().includes("turn 0"); i++) {
+					await flush();
+					host.frame();
+				}
+				assert.ok(liveChat);
+				const labels = liveChat
+					.renderBodyRows(80, 0, liveChat.bodyRowCount(80))
+					.map(
+						(row) => /\b(turn \d+|after card \d+|widget incarnation)\b/.exec(stripVTControlCharacters(row))?.[1],
+					)
+					.filter((x) => x !== undefined);
+				assert.deepEqual(
+					labels,
+					[
+						...Array.from({ length: turns }, (_, i) => `turn ${i}`),
+						"widget incarnation",
+						"after card 0",
+						"after card 1",
+						"after card 2",
+					],
+					"older navigation visits the original live window without holes or repeated rows",
+				);
+			}
+		} finally {
+			await control?.dispose();
+			await host.dispose();
+			await session.getSessionStore().close();
+		}
+	},
+);
+
+test("a live task chat compacted while its reader is above the end keeps only their rows and pages on around them (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 150; i++)
+		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
+	let event: ((e: AgentSessionEvent) => void) | undefined;
+	let chat: ChatSessionHost | undefined;
+	const source: TaskTranscriptSource = {
+		getSessionId: () => session.getSessionId(),
+		getEntries: () => session.getTaskTranscriptEntries(),
+		getEarlierCursor: () => session.getEarlierCursor(),
+		getEntrySeq: (id) => session.getEntrySeq(id),
+		readHistory: session.readHistory.bind(session),
+		subscribe(listener) {
+			event = listener;
+			return () => {
+				event = undefined;
+			};
+		},
+	};
+	const host = await openTranscript(source, {
+		environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) },
+	});
+	const held = () =>
+		(
+			chat!
+				.renderBodyRows(80, 0, chat!.bodyRowCount(80))
+				.join("\n")
+				.match(/M-\d{3}/g) ?? []
+		).map((m) => Number(m.slice(2)));
+	const body = () => host.frame().slice(0, 12);
+	try {
+		assert.ok(chat);
+		for (let i = 0; i < 3; i++) {
+			host.frame();
+			host.inspector.handleInput(PAGE_UP);
+		}
+		const parked = body();
+		assert.match(parked.join("\n"), /M-1[0-4]\d/);
+		await session.appendCompaction("new context", null, 100, verbatimDetails);
+		event?.({
+			type: "compaction_end",
+			reason: "manual",
+			aborted: false,
+			willRetry: false,
+			result: {
+				compactedText: "new context",
+				firstKeptEntryId: null,
+				tokensBefore: 100,
+				parameters: verbatimDetails.parameters,
+				stats: verbatimDetails.stats,
+				promptVersion: verbatimDetails.promptVersion,
+				form: "cleared",
+			},
+		});
+		await flush();
+		assert.deepEqual(body(), parked, "the reader keeps the rows they were reading");
+		const shown = host.text();
+		for (const row of held())
+			assert.match(shown, new RegExp(`M-${String(row).padStart(3, "0")}`), `M-${row} is held off screen`);
+		for (let i = 0; i < 30 && !held().includes(60); i++) {
+			host.inspector.handleInput(PAGE_UP);
+			host.frame();
+			await flush();
+		}
+		const above = held();
+		assert.ok(above.includes(60), `older saved pages load above the kept rows: ${above}`);
+		assert.deepEqual(
+			above,
+			Array.from({ length: above.length }, (_, i) => above[0]! + i),
+			`in order, once: ${above}`,
+		);
+		for (let i = 0; i < 60 && !held().includes(149); i++) {
+			host.inspector.handleInput("\x1b[6~");
+			host.frame();
+			await flush();
+		}
+		const below = held();
+		assert.ok(below.includes(149), `newer saved pages reach the new context: ${below}`);
+		assert.deepEqual(
+			below,
+			Array.from({ length: below.length }, (_, i) => below[0]! + i),
+			`in order, once: ${below}`,
+		);
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test("a saved task chat evicts pages outside the screen and can scroll back to the latest messages (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 512; i++)
+		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
+	let chat: ChatSessionHost | undefined;
+	const host = await openTranscript(
+		{
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [],
+			readHistory: session.readHistory.bind(session),
+			loadHistory: async () => {
+				throw new Error("whole transcript loaded");
+			},
+		},
+		{ environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) } },
+	);
+	try {
+		assert.ok(chat);
+		assert.match(host.text(), /M-511/);
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 20 && !host.text().includes("M-000"); i++) await flush();
+		assert.match(host.text(), /M-000/);
+		const held = chat.renderBodyRows(80, 0, chat.bodyRowCount(80)).join("\n");
+		assert.doesNotMatch(
+			held,
+			/M-511/,
+			"the invisible latest page is still held after scrolling through eight saved pages",
+		);
+		host.inspector.handleInput(CTRL_END);
+		for (let i = 0; i < 20 && !host.text().includes("M-511"); i++) await flush();
+		assert.match(host.text(), /M-511/);
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+/** A saved session of `prompts` prompts with one reply of `calls` inserted after prompt `at`: its results follow it. */
+async function sessionWithCalls(
+	prompts: number,
+	at: number,
+	calls: readonly { id: string; name: string; args: Record<string, string>; result?: string }[],
+): Promise<SessionManager> {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < prompts; i++) {
+		await session.appendMessage({ role: "user", content: `P-${String(i).padStart(3, "0")}`, timestamp: i });
+		if (i !== at) continue;
+		await session.appendMessage(
+			assistant(
+				[
+					{ type: "text", text: "Working on it." },
+					...calls.map((call) => ({
+						type: "toolCall" as const,
+						id: call.id,
+						name: call.name,
+						arguments: call.args,
+					})),
+				],
+				"toolUse",
+			),
+		);
+		for (const call of calls) {
+			if (call.result === undefined) continue;
+			await session.appendMessage({
+				role: "toolResult",
+				toolCallId: call.id,
+				toolName: call.name,
+				content: [{ type: "text", text: call.result }],
+				isError: false,
+				timestamp: i,
+			});
+		}
+	}
+	return session;
+}
+
+async function openSavedTranscript(session: SessionManager) {
+	let chat: ChatSessionHost | undefined;
+	/**
+	 * Reads of one saved entry next to a shown page, and of whole pages after the first. Once a page with a prompt
+	 * matching `holdAfter` is read, later page reads wait for `release`.
+	 */
+	const gate = Promise.withResolvers<void>();
+	const reads: {
+		entries: number;
+		pages: number;
+		/** Bytes of saved rows too large for a page, read in chunks. */
+		streamed: number;
+		holdAfter?: RegExp;
+		held?: Promise<void>;
+		release(): void;
+	} = {
+		entries: 0,
+		pages: 0,
+		streamed: 0,
+		release: () => gate.resolve(),
+	};
+	const chunks = session.readHistoryChunks.bind(session);
+	const host = await openTranscript(
+		{
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [],
+			readHistory: session.readHistory.bind(session),
+			readHistoryChunks: (reference, options) =>
+				(async function* () {
+					for await (const chunk of chunks(reference, options)) {
+						reads.streamed += chunk.length;
+						yield chunk;
+					}
+				})(),
+			loadHistory: async () => {
+				throw new Error("whole transcript loaded");
+			},
+		},
+		{
+			environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) },
+			source: (owner) =>
+				Object.assign(Object.create(owner) as TaskViewSource, {
+					async readTaskTranscript(id: TaskId, cursor?: string, signal?: AbortSignal) {
+						if (cursor !== undefined && /![c1]$/.test(cursor)) reads.entries++;
+						else if (cursor !== undefined) {
+							reads.pages++;
+							await reads.held;
+						}
+						const page = await readTaskPageForView(owner, id, cursor, signal ?? new AbortController().signal);
+						const hold = reads.holdAfter;
+						if (
+							hold &&
+							page.ok &&
+							page.value.messages.some((m) => m.role === "user" && hold.test(String(m.content)))
+						)
+							reads.held = gate.promise;
+						return page;
+					},
+				}),
+		},
+	);
+	assert.ok(chat);
+	const shown = chat;
+	/** Every row the chat holds now, on screen or not. */
+	const held = () => {
+		host.frame();
+		return shown
+			.renderBodyRows(80, 0, shown.bodyRowCount(80))
+			.map((row) => stripVTControlCharacters(row).trimEnd())
+			.join("\n");
+	};
+	return { host, held, reads };
+}
+
+/** The rows of the card whose header matches `header`, up to the next prompt, without blank rows. */
+function cardRows(text: string, header: RegExp): string[] {
+	const rows = text.split("\n");
+	const at = rows.findIndex((row) => header.test(row));
+	assert.notEqual(at, -1, `no card ${header}:\n${text}`);
+	const end = rows.findIndex((row, index) => index > at && /P-\d{3}/.test(row));
+	return rows.slice(at, end < 0 ? undefined : end).filter((row) => row.trim() !== "");
+}
+
+const lines = (label: string) => Array.from({ length: 30 }, (_, i) => `${label} line ${i + 1}`).join("\n");
+
+test("a saved task chat draws calls whose results start the next page once each, finished and with their arguments (#5593)", async () => {
+	// 70 entries: the latest page holds the last 64, so the reply's results start it and its calls end the page before.
+	const session = await sessionWithCalls(67, 4, [
+		{ id: "call-a", name: "read", args: { path: "alpha.txt" }, result: lines("alpha") },
+		{ id: "call-b", name: "write", args: { path: "beta.txt", content: "new beta" }, result: "wrote" },
+	]);
+	const { host, held } = await openSavedTranscript(session);
+	try {
+		assert.match(held(), /P-066/);
+		assert.doesNotMatch(held(), /P-000/, "the call's page is not read before the reader nears it");
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 20 && !host.text().includes("P-000"); i++) await flush();
+		const rows = held();
+		assert.match(rows, /P-000/);
+		assert.equal(rows.match(/Read\(alpha\.txt\)/g)?.length, 1, rows);
+		assert.equal(rows.match(/Write\(beta\.txt\)/g)?.length, 1, rows);
+		assert.doesNotMatch(rows, /Read\(\)|Write\(\)/, "a result's card shows its call's arguments");
+		assert.doesNotMatch(rows, /∀/, "a call whose result is saved is not drawn as still running");
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test("a call early in a long saved reply and its result after the reply's last block are one finished card (#5593)", async () => {
+	// Pages also cut inside one reply of many blocks: here the call is in the earlier part, the result after the later.
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "P-000", timestamp: 0 });
+	await session.appendMessage(
+		assistant(
+			[
+				{ type: "toolCall", id: "call-a", name: "read", arguments: { path: "alpha.txt" } },
+				...Array.from({ length: 120 }, (_, i) => ({ type: "text" as const, text: `part-${i}` })),
+			],
+			"toolUse",
+		),
+	);
+	await session.appendMessage({
+		role: "toolResult",
+		toolCallId: "call-a",
+		toolName: "read",
+		content: [{ type: "text", text: lines("alpha") }],
+		isError: false,
+		timestamp: 2,
+	});
+	await session.appendMessage({ role: "user", content: "P-001", timestamp: 3 });
+	const { host, held } = await openSavedTranscript(session);
+	try {
+		assert.doesNotMatch(held(), /part-0\b/, "the reply's earlier part is on an earlier page");
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 20 && !host.text().includes("P-000"); i++) await flush();
+		const rows = held();
+		assert.match(rows, /part-0\b/);
+		assert.equal(rows.match(/Read\(alpha\.txt\)/g)?.length, 1, rows);
+		assert.doesNotMatch(rows, /Read\(\)/, "the result's card shows its call's arguments");
+		assert.doesNotMatch(rows, /∀/, "a call whose result is saved is not drawn as still running");
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test("a saved task chat's first result card shows its call's arguments, reading only the saved reply before it (#5593)", async () => {
+	// 70 entries: the latest page holds the last 64, so the reply's results start it and its calls end the page before.
+	const session = await sessionWithCalls(67, 4, [
+		{ id: "call-a", name: "read", args: { path: "alpha.txt" }, result: lines("alpha") },
+		{ id: "call-b", name: "write", args: { path: "beta.txt", content: "new beta" }, result: "wrote" },
+	]);
+	const { host, held, reads } = await openSavedTranscript(session);
+	try {
+		for (let i = 0; i < 20 && !/Write\(beta\.txt\)/.test(held()); i++) await flush();
+		const alone = held();
+		assert.doesNotMatch(alone, /P-000/, "the page before is not read");
+		assert.match(alone, /Read\(alpha\.txt\)/, "a result's card shows its call's arguments");
+		assert.match(alone, /Write\(beta\.txt\)/, "a result's card shows its call's arguments");
+		assert.deepEqual([reads.entries, reads.pages], [1, 0], "one saved entry is read for the cards");
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 20 && !host.text().includes("P-000"); i++) await flush();
+		const joined = held();
+		for (const header of [/Read\(alpha\.txt\)/, /Write\(beta\.txt\)/])
+			assert.deepEqual(cardRows(alone, header), cardRows(joined, header), "the card as its call's page shows it");
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test.each([
+	["its result starts the next page", "alpha line 1"],
+	["no result was saved before the next prompt", undefined],
+])(
+	"a saved task page that ends with a call reads one saved entry to finish its card when %s (#5593)",
+	async (_case, body) => {
+		// Read back from entry 301, pages cut at 173|174: read on again after the start, the page 110..173 is shown
+		// alone at the bottom before the page from 174.
+		const session = await sessionWithCalls(body ? 299 : 300, 171, [
+			{ id: "call-a", name: "read", args: { path: "alpha.txt" }, ...(body ? { result: lines("alpha") } : {}) },
+		]);
+		const { host, held, reads } = await openSavedTranscript(session);
+		try {
+			host.inspector.handleInput(CTRL_HOME);
+			for (let i = 0; i < 30 && !host.text().includes("P-000"); i++) await flush();
+			assert.doesNotMatch(held(), /Read\(alpha\.txt\)/, "the call's page is released at the start");
+			reads.entries = 0;
+			// The page after the call's page is not read while the card settles.
+			reads.holdAfter = /P-171/;
+			for (let i = 0; i < 80 && !/P-171/.test(held()); i++) {
+				host.inspector.handleInput(PAGE_DOWN);
+				await flush();
+			}
+			for (let i = 0; i < 20 && !/Read\(alpha\.txt\)/.test(held()); i++) await flush();
+			const alone = held();
+			assert.doesNotMatch(alone, /P-17[2-9]/, "the page after is not shown");
+			assert.equal(alone.match(/Read\(alpha\.txt\)/g)?.length, 1, alone);
+			if (body) {
+				assert.doesNotMatch(alone, /∀/, "a call whose result is saved is not drawn as still running");
+				assert.match(alone, /Read 30 lines/);
+			} else assert.match(alone, /∀ Read\(alpha\.txt\)/, "the call shows as a whole transcript shows it");
+			assert.equal(reads.entries, 1, "one saved entry is read for the card");
+			reads.holdAfter = undefined;
+			reads.release();
+			for (let i = 0; i < 80 && !/P-180/.test(held()); i++) {
+				host.inspector.handleInput(PAGE_DOWN);
+				await flush();
+			}
+			const joined = held();
+			assert.equal(joined.match(/Read\(alpha\.txt\)/g)?.length, 1, joined);
+			assert.deepEqual(cardRows(alone, /Read\(alpha\.txt\)/), cardRows(joined, /Read\(alpha\.txt\)/));
+		} finally {
+			await host.dispose();
+			await session.getSessionStore().close();
+		}
+	},
+);
+
+/** A 2 MiB tool output: twice what a history page holds, so its saved row is read in chunks, not decoded. */
+const twoMiB = Array.from({ length: 66_000 }, (_, i) => `big line ${String(i).padStart(22, "0")}`).join("\n");
+
+/** Runs `run` counting what it decodes with JSON.parse: the largest text. */
+async function largestParse(run: () => Promise<void>): Promise<number> {
+	const parse = JSON.parse;
+	let largest = 0;
+	JSON.parse = ((text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+		largest = Math.max(largest, text.length);
+		return parse(text, reviver);
+	}) as typeof JSON.parse;
+	try {
+		await run();
+		return largest;
+	} finally {
+		JSON.parse = parse;
+	}
+}
+
+test("a saved task chat shows a call whose result is too large for a page finished, as a whole read does, without decoding it (#5593)", async () => {
+	assert.ok(twoMiB.length >= 2 * 1024 * 1024);
+	// The whole transcript, read in memory as before paging: the card shows its call finished.
+	const whole = SessionManager.inMemory();
+	await whole.appendMessage({ role: "user", content: "P-000", timestamp: 0 });
+	await whole.appendMessage(
+		assistant([{ type: "toolCall", id: "call-big", name: "read", arguments: { path: "big.txt" } }], "toolUse"),
+	);
+	await whole.appendMessage({
+		role: "toolResult",
+		toolCallId: "call-big",
+		toolName: "read",
+		content: [{ type: "text", text: twoMiB }],
+		isError: false,
+		timestamp: 2,
+	});
+	await whole.appendMessage({ role: "user", content: "P-001", timestamp: 3 });
+	const main = await openTranscript({
+		getSessionId: () => whole.getSessionId(),
+		getEntries: () => whole.getEntries(),
+	});
+	let header: string | undefined;
+	try {
+		for (let i = 0; i < 20 && !/Read\(big\.txt\)/.test(main.text()); i++) await flush();
+		header = main.frame().find((row) => /Read\(big\.txt\)/.test(row));
+		assert.match(header ?? "", /● Read\(big\.txt\)/, "a whole read shows the call finished");
+	} finally {
+		await main.dispose();
+	}
+
+	// Read back from entry 301, the result at 174 is a page of its own and 110..173 ends with its call: read on again
+	// after the start, the call's page is shown at the bottom before the result's.
+	const session = await sessionWithCalls(299, 171, [
+		{ id: "call-big", name: "read", args: { path: "big.txt" }, result: twoMiB },
+	]);
+	const { host, held, reads } = await openSavedTranscript(session);
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 40 && !host.text().includes("P-000"); i++) await flush();
+		assert.match(held(), /P-000/);
+		reads.entries = 0;
+		reads.streamed = 0;
+		reads.holdAfter = /P-171/;
+		const largest = await largestParse(async () => {
+			for (let i = 0; i < 80 && !/P-171/.test(held()); i++) {
+				host.inspector.handleInput(PAGE_DOWN);
+				await flush();
+			}
+			for (let i = 0; i < 40 && !/Read\(big\.txt\)/.test(held()); i++) await flush();
+		});
+		const rows = held();
+		assert.doesNotMatch(rows, /P-172/, "the result's page is not shown");
+		assert.equal(rows.match(/Read\(big\.txt\)/g)?.length, 1, rows);
+		assert.doesNotMatch(rows, /∀/, "the call is not drawn as still running");
+		assert.equal(
+			rows.split("\n").find((row) => /Read\(big\.txt\)/.test(row)),
+			header,
+			"the card shows the call finished as a whole read does",
+		);
+		assert.equal(reads.entries, 1, "one saved entry is read for the card");
+		assert.ok(largest < 64 * 1024, `the saved result is not decoded whole (largest parse ${largest})`);
+		assert.ok(
+			reads.streamed >= twoMiB.length && reads.streamed < 3 * 1024 * 1024,
+			`its bytes are streamed once (${reads.streamed})`,
+		);
+
+		// Its own page shows the same finished card, and the call's page none of its own.
+		reads.holdAfter = undefined;
+		reads.release();
+		for (let i = 0; i < 80 && !/P-180/.test(held()); i++) {
+			host.inspector.handleInput(PAGE_DOWN);
+			await flush();
+		}
+		const joined = held();
+		assert.equal(joined.match(/Read\(big\.txt\)/g)?.length, 1, joined);
+		assert.equal(
+			joined.split("\n").find((row) => /Read\(big\.txt\)/.test(row)),
+			header,
+		);
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test.each([
+	["at the end of the saved history", 69],
+	["before the next prompt", 5],
+])("a saved task chat still shows a call that never got a result %s (#5593)", async (_where, at) => {
+	const session = await sessionWithCalls(70, at, [{ id: "call-g", name: "read", args: { path: "gamma.txt" } }]);
+	const { host, held } = await openSavedTranscript(session);
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 20 && !host.text().includes("P-000"); i++) await flush();
+		assert.match(held(), /P-000/);
+		assert.equal(held().match(/Read\(gamma\.txt\)/g)?.length, 1, held());
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test.each([
+	// The latest page starts at the result (entry 238); pages read forward from the start hold call and result together.
+	["whose call ends the page before", 235],
+	["on one page", 240],
+])(
+	"a click's expansion of a saved task card %s survives its page being released and read again (#5593)",
+	async (_where, at) => {
+		const session = await sessionWithCalls(299, at, [
+			{ id: "call-a", name: "read", args: { path: "alpha.txt" }, result: lines("alpha") },
+		]);
+		const { host, held } = await openSavedTranscript(session);
+		const width = 80;
+		const height = 24;
+		const screen = () => host.frame(width, height);
+		const scrollTo = async (pattern: RegExp, key: string) => {
+			for (let i = 0; i < 80; i++) {
+				if (screen().some((row) => pattern.test(row))) return;
+				host.inspector.handleInput(key);
+				await flush();
+			}
+			throw new Error(`${pattern} never scrolled into view:\n${screen().join("\n")}`);
+		};
+		try {
+			await scrollTo(/Read 30 lines/, PAGE_UP);
+			const row = screen().findIndex((line) => /Read 30 lines/.test(line));
+			const result = host.inspector.handleMouse({
+				type: "click",
+				button: "left",
+				x: screen()[row]!.indexOf("Read"),
+				y: row,
+				screenX: 0,
+				screenY: row,
+				width,
+				height,
+				shift: false,
+				alt: false,
+				ctrl: false,
+				clickCount: 1,
+			});
+			result?.whenSingleClick?.();
+			assert.match(held(), /alpha line 30/, "the click expands the card");
+
+			host.inspector.handleInput(CTRL_HOME);
+			for (let i = 0; i < 30 && !host.text().includes("P-000"); i++) await flush();
+			assert.doesNotMatch(held(), /alpha line/, "the card's page is released at the start");
+			for (let i = 0; i < 80 && !/Read\(alpha\.txt\)/.test(held()); i++) {
+				host.inspector.handleInput(PAGE_DOWN);
+				await flush();
+			}
+			assert.match(held(), /Read\(alpha\.txt\)/);
+			assert.match(held(), /alpha line 30/, "the card read again with its call keeps the click's expansion");
+
+			host.inspector.handleInput(CTRL_END);
+			for (let i = 0; i < 30 && !host.text().includes("P-298"); i++) await flush();
+			assert.match(held(), /alpha line 30/, "the latest page read again keeps the click's expansion");
+		} finally {
+			await host.dispose();
+			await session.getSessionStore().close();
+		}
+	},
+);
 
 test("paging a long failed reply in the local transcript shows its error only after the last block (#5651)", async () => {
 	const session = SessionManager.inMemory();
@@ -532,7 +1476,7 @@ test.each(savedHistoryCases)(
 				calls.map((cursor) => cursor !== undefined),
 				[false, true],
 			);
-			if (shared) assert.deepEqual(storeReads, [1, 1], "one store load per page");
+			if (shared) assert.deepEqual(storeReads, [0, 0], "neither fragment may load the complete session");
 			if (database) assert.deepEqual(queries, [3, 3], "the header, entries batch and chunked answer per page");
 			assert.equal(body.match(/Error: provider outage/g)?.length, replace ? 2 : 1);
 		} finally {
@@ -545,6 +1489,72 @@ test.each(savedHistoryCases)(
 		}
 	},
 );
+
+test("a settled child's file pages do not accumulate, and a replacement file belonging to a different session is refused (#5593)", async () => {
+	const root = makeTempDirectory("task-window-file-");
+	let host: Awaited<ReturnType<typeof openTranscript>> | undefined;
+	try {
+		let source: TaskTranscriptSource | undefined;
+		let cleanup: Promise<Cleanup> | undefined;
+		const child = await runSingleInProcess(root, agent, "file transcript", {
+			cwd: root,
+			sessionDir: root,
+			runId: "saved-file-window",
+			testSession: { output: "done" },
+			taskExecution: {
+				signal: new AbortController().signal,
+				reportActivity() {},
+				bindTranscript(s) {
+					source = s;
+				},
+				onExecution(run) {
+					cleanup = run.cleanup;
+				},
+			},
+		});
+		await cleanup;
+		assert.ok(source && child.sessionFile);
+		const manager = await SessionManager.open(child.sessionFile);
+		for (let i = 0; i < 320; i++)
+			await manager.appendMessage({
+				role: "user",
+				content: `file-turn-${String(i).padStart(3, "0")}`,
+				timestamp: i,
+			});
+		await manager.getSessionStore().close();
+		let chat: ChatSessionHost | undefined;
+		host = await openTranscript(source, {
+			environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) },
+		});
+		for (let i = 0; i < 100 && !host.text().includes("file-turn-319"); i++)
+			await new Promise((r) => setTimeout(r, 5));
+		assert.match(host.text(), /file-turn-319/);
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		for (let i = 0; i < 100 && !host.text().includes("file-turn-000"); i++)
+			await new Promise((r) => setTimeout(r, 5));
+		assert.match(host.text(), /file-turn-000/);
+		assert.ok(chat && chat.entries().length <= 200, "a file-backed chat retained every visited page");
+		const file = child.sessionFile;
+		execFileSync(process.execPath, [
+			"-e",
+			"const fs=require('node:fs');const file=process.argv[1];const [header,...rest]=fs.readFileSync(file,'utf8').split('\\n');fs.writeFileSync(file,[JSON.stringify({...JSON.parse(header),id:'unrelated-session'}),...rest].join('\\n').replaceAll('file-turn-','wrong-session-'))",
+			file,
+		]);
+		host.inspector.handleInput(CTRL_END);
+		for (let i = 0; i < 40; i++) {
+			host.frame();
+			await new Promise((r) => setTimeout(r, 5));
+			if (host.text().includes("another session")) break;
+		}
+		assert.doesNotMatch(host.text(), /wrong-session-/);
+		assert.match(host.text(), /another session/);
+	} finally {
+		await host?.dispose();
+		clearSubagentControls();
+		removeTempDirectory(root);
+	}
+});
 
 test("a draft snapshot's text never stands in for the settled reply's tool card (#5651)", async () => {
 	const session = SessionManager.inMemory();

@@ -14,6 +14,11 @@ import { normalizeContext } from "../src/utils/transcript.ts";
  *
  * 1M context, 128K max output, $10 input, $50 output, $12.50 5m cache write, $0.25 cache read,
  * always-on adaptive thinking, no temperature, and server-side fallback to Opus 4.8 / Opus 5.
+ *
+ * Amazon Bedrock prices its inference profiles itself, and models.dev reprices them on its own
+ * schedule, so the Bedrock prices below are checked as relations within the generated catalog.
+ * `generate-models-fable-5-1.test.ts` pins the exact Bedrock prices the generator produces from a
+ * fixed models.dev payload.
  */
 
 interface AnthropicFallbackPayload {
@@ -85,26 +90,35 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 		expect(getModel("anthropic", "claude-fable-5").cost.cacheRead).toBe(1);
 	});
 
+	// Asserted as relations, not amounts: on 2026-11-19 models.dev moved the in-region
+	// `anthropic.claude-fable-5-1` profile from the global rates to the US-only rates, and a
+	// catalog refresh like that must not fail the build.
 	it("carries provider-specific Bedrock pricing rather than mirrored Anthropic prices", () => {
-		expect(getModel("amazon-bedrock", "anthropic.claude-fable-5-1").cost).toEqual({
-			input: 10,
-			output: 50,
-			cacheRead: 0.25,
-			cacheWrite: 12.5,
-		});
-		expect(getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1").cost).toEqual({
-			input: 10,
-			output: 50,
-			cacheRead: 0.25,
-			cacheWrite: 12.5,
-		});
-		// US-only inference carries a documented 1.1x premium on every rate.
-		expect(getModel("amazon-bedrock", "us.anthropic.claude-fable-5-1").cost).toEqual({
-			input: 11,
-			output: 55,
-			cacheRead: 0.275,
-			cacheWrite: 13.75,
-		});
+		const rates = ["input", "output", "cacheRead", "cacheWrite"] as const;
+		const anthropic = getModel("anthropic", "claude-fable-5-1").cost;
+
+		// Every profile keeps Fable 5.1's rate card: Anthropic's rates scaled by one factor per
+		// profile. A rate mirrored from Claude Fable 5 or another model, or a zeroed one, breaks it.
+		for (const id of [
+			"anthropic.claude-fable-5-1",
+			"global.anthropic.claude-fable-5-1",
+			"us.anthropic.claude-fable-5-1",
+		] as const) {
+			const cost = getModel("amazon-bedrock", id).cost;
+			const factor = cost.input / anthropic.input;
+			expect(factor, id).toBeGreaterThan(0);
+			for (const rate of rates) {
+				expect(cost[rate], `${id} ${rate}`).toBeCloseTo(anthropic[rate] * factor, 10);
+			}
+		}
+
+		// US-only inference carries a documented 1.1x premium on every rate over global inference,
+		// which mirrored prices cannot satisfy.
+		const global = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1").cost;
+		const us = getModel("amazon-bedrock", "us.anthropic.claude-fable-5-1").cost;
+		for (const rate of rates) {
+			expect(us[rate], rate).toBeCloseTo(global[rate] * 1.1, 10);
+		}
 	});
 
 	// Sweeps every Fable entry rather than only IDs matching `claude-fable-5-1`, because a

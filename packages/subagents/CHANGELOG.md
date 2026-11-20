@@ -9,6 +9,7 @@
 
 ### Added
 
+- Agents shipped by installed packages run as `<namespace>.<name>`, where the namespace is the package name with an npm scope as a dotted prefix: `name: reviewer` in `@acme/review-kit` runs as `acme.review-kit.reviewer`. A user or project agent with the same full name overrides it. `subagent` list and get name the source package, `/agents` lists them under Package agents, and update and delete refuse to change them. `/skill:workflow-files` turns a stage's pinned model, fallback models, tools and MCP servers into a named agent, and adds it to a package's `agents` when you ask it to update a package you maintain ([#5991](https://github.com/bastani-inc/atomic/issues/5991)).
 - Codemode scripts can launch single or parallel subagents, get task IDs immediately, observe or control their session's children, and resume a child from its saved session. Scripts can inspect agent definitions and the configured model catalog; creating or changing definitions still requires a direct call.
 - `/skill:workflow-files` uses `skill-creator` to convert an earlier workflow into a reusable skill, with its checks in `scripts/` and its dependencies and approvals in `SKILL.md`. It leaves the old file unchanged and never overwrites an existing skill.
 

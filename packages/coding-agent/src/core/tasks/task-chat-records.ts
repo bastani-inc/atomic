@@ -6,8 +6,6 @@ import type { ChatPosition } from "../storage/session/chat-records.js";
 import { type ChatRecordOwner, chatEpoch, type SessionChatRecords } from "../storage/session/chat-records.js";
 import { discoverChatFile, readFileChatRecords } from "../storage/session/jsonl-chat-records.js";
 import type { SessionSnapshot, SessionStore } from "../storage/session/types.js";
-import type { TaskId } from "./contracts.js";
-import type { TaskTranscriptView, TaskViewResult, TaskViewSource } from "./task-view-source.js";
 
 type Scope = { store: SessionChatRecords; owner: ChatRecordOwner };
 export interface TaskChatPage {
@@ -47,16 +45,6 @@ const inspectedFiles = new WeakMap<object, { file: string; id: string; present: 
 /** Only a genuinely observed display write invalidates a file lookup that might have preceded it. */
 export function observedTaskChatWrite(view: object): void {
 	inspectedFiles.delete(view);
-}
-/** The two ordinary task transcript APIs keep their synchronous/rejection behavior and their data. Only a mounted
- * task chat asks the native projection to remember where its displayed records came from. */
-export function readTaskChatPage(
-	view: object,
-	source: TaskViewSource,
-	id: TaskId,
-	cursor?: string,
-): TaskViewResult<TaskTranscriptView> | Promise<TaskViewResult<TaskTranscriptView>> {
-	return chatPageRequest.run({ view: new WeakRef(view) }, () => source.readTaskTranscript(id, cursor));
 }
 export function captureChatSnapshot(store: SessionStore, snapshot: SessionSnapshot): void {
 	const capture = chatPageRequest.getStore();

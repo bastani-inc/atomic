@@ -3,6 +3,7 @@ import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import { rowSource, savedRowKey, savedSeqOf, savedTaskRowKey } from "../../../core/tasks/transcript-origin.js";
 import { theme } from "../theme/theme.js";
 import { atomicWorkingFrame } from "./atomic-working-status.ts";
 import { type ChatMessageEntry, LiveChatEntriesController } from "./chat-message-renderer.ts";
@@ -23,7 +24,10 @@ import {
 import type { FooterComponent } from "./footer.ts";
 import { NewMessageCounter, pinnedPromptLine } from "./jump-to-latest.ts";
 import { keyText } from "./keybinding-hints.js";
+import type { ParkedTaskRows } from "./parked-rows.ts";
+import { disposeRenderer } from "./renderer-disposal.js";
 import type { RetryWait } from "./retry-status-line.ts";
+import { SavedRendererInstances } from "./saved-renderer-instances.js";
 import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 import { WorkingRunMeter, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
@@ -162,6 +166,11 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly replacedEntryKeys = new Map<number, readonly unknown[]>();
 	nextRenderIdentityId = 1;
 	liveChat: LiveChatEntriesController;
+	readonly savedRenderers?: SavedRendererInstances;
+	readonly liveRowOrigin: ((seq: number) => string | undefined) | undefined;
+	/** The component each row drew, for keeping a stateful one when its row is retired. Weak: rows own nothing. */
+	private readonly renderedRows = new WeakMap<object, Component>();
+	onUnplacedWidget?: () => void;
 	editor: EditorComponent | undefined;
 	optimisticUserSignatureCounts = new Map<string, number>();
 	/**
@@ -172,6 +181,66 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	 * above the cursor cost layout work nobody is reading.
 	 */
 	streamingTailWindowEnabled = true;
+
+	replaceTranscriptWindow(
+		messages: Parameters<LiveChatEntriesController["replaceMessages"]>[0],
+		parked?: ParkedTaskRows,
+	): ReadonlyMap<object, object> | undefined {
+		const previous = [...this.transcript];
+		this.liveChat.replaceMessages(messages, this.extraEntries);
+		const adopted = parked ? this.liveChat.keepParkedEntries(parked.rows, parked.adopted, savedRowKey) : undefined;
+		this.keepRetiredRenderers(previous);
+		this.releaseRetiredRows();
+		return adopted;
+	}
+
+	/** The saved-page key of a row: its page's origin, or a live row's from its save receipt. */
+	rowKey(entry: object): string | undefined {
+		const saved = savedTaskRowKey(entry);
+		if (saved !== undefined || this.liveRowOrigin === undefined) return saved;
+		const source = rowSource(entry);
+		const seq = savedSeqOf(source?.message);
+		const origin = seq === undefined ? undefined : this.liveRowOrigin(seq);
+		return origin === undefined ? undefined : `${origin}:0:${source!.part}`;
+	}
+
+	/** A legacy live source cannot retire an unplaced widget: no identifier tells its saved lookalikes apart. */
+	hasUnplacedWidget(): boolean {
+		return this.transcript.some((entry) => {
+			const widget = this.renderedRows.get(entry);
+			return !!widget && this.rowKey(entry) === undefined && this.savedRenderers?.needsOriginal(widget) === true;
+		});
+	}
+
+	/** A retired row's stateful renderer stays the instance its saved row shows when it is read again. */
+	keepRetiredRenderers(previous: readonly object[]): void {
+		const store = this.savedRenderers;
+		if (!store) return;
+		const current = new Set<object>(this.transcript);
+		for (const entry of previous) {
+			if (current.has(entry)) continue;
+			const component = this.renderedRows.get(entry);
+			const key = component && this.rowKey(entry);
+			if (key && !store.get(key)?.includes(component)) store.remember(key, [component]);
+		}
+	}
+
+	releaseRetiredRows(): void {
+		const retained = new Set(this.transcript);
+		this.bodyViewport.retainSegmentAnchors(this.transcriptComponent, retained);
+		this.transcriptComponent.releaseRetired(retained);
+		this.replacedEntryKeys.clear();
+		if (this.expandedOverrides.size) {
+			const tools = new Set(
+				this.transcript.flatMap((entry) =>
+					"kind" in entry && entry.kind === "tool" && "toolCallId" in entry ? [`tool:${entry.toolCallId}`] : [],
+				),
+			);
+			// A click on a saved row stays chosen for when its page is read again, until Ctrl+O or the chat closes.
+			for (const key of this.expandedOverrides.keys())
+				if (key.startsWith("tool:") && !tools.has(key)) this.expandedOverrides.delete(key);
+		}
+	}
 
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>, callbacks: ChatSessionHostStateCallbacks<TExtraEntry>) {
 		this.style = opts.style;
@@ -189,6 +258,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 			pinnedPrompt: pinnedPromptLine,
 			requestRender: () => this.requestRender?.(),
 			onNearTop: () => opts.onNearTop?.(),
+			onNearBottom: () => opts.onNearBottom?.(),
 		});
 		this.requestRender = opts.requestRender;
 		this.getAgentSession = opts.getAgentSession;
@@ -217,10 +287,34 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.countsAsMessage = opts.countsAsMessage;
 		this.tui = opts.tui;
 		this.liveChat = new LiveChatEntriesController(this.transcript);
+		const store = opts.savedTaskPages ? new SavedRendererInstances() : undefined;
+		this.savedRenderers = store;
+		this.liveRowOrigin = store ? opts.liveRowOrigin : undefined;
 		this.transcriptComponent = new ChatTranscriptComponent(
 			this.transcript,
-			(entry) => callbacks.renderEntry(this, entry),
+			(entry) => {
+				const key = store && this.rowKey(entry);
+				const kept = key && store?.get(key)?.[0];
+				if (kept) {
+					this.renderedRows.set(entry, kept);
+					return kept;
+				}
+				const component = callbacks.renderEntry(this, entry);
+				if (store) this.renderedRows.set(entry, component);
+				if (key) store?.remember(key, [component]);
+				else if (this.onUnplacedWidget && store?.needsOriginal(component)) {
+					const preserve = this.onUnplacedWidget;
+					this.onUnplacedWidget = undefined;
+					preserve();
+				}
+				return component;
+			},
 			(entry, index) => callbacks.transcriptCacheKey(this, entry, index),
+			store
+				? (component) => {
+						if (component && !store.protect(component)) disposeRenderer(component);
+					}
+				: undefined,
 		);
 	}
 }

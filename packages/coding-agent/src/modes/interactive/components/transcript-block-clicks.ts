@@ -166,18 +166,32 @@ export function toggleClickedBlocks(
 ): void {
 	const [head] = unit;
 	if (head === undefined) return;
+	const chosen = (expanded: boolean): void => {
+		for (const block of unit) clickExpansionObservers.get(block)?.(expanded);
+		changed(expanded);
+	};
 	// Read when the click settles, not when it landed: another click on the block may have settled in between.
 	const expanded = !head.isExpanded();
 	if (isClickedGroup(unit)) {
 		for (const block of unit) block.setExpanded(expanded);
-		changed(expanded);
+		chosen(expanded);
 		return;
 	}
 	if (head.expandByClick) {
-		head.expandByClick(expanded, () => changed(expanded), width, signal);
+		head.expandByClick(expanded, () => chosen(expanded), width, signal);
 		return;
 	}
-	if (expandIfItChangesRows(head, width, expanded)) changed(expanded);
+	if (expandIfItChangesRows(head, width, expanded)) chosen(expanded);
+}
+
+const clickExpansionObservers = new WeakMap<Component, (expanded: boolean) => void>();
+
+/**
+ * Tells `observer` each expansion a click sets on `block`, for a view that releases the block and draws its row again
+ * later, such as a saved page of the main chat.
+ */
+export function observeClickExpansion(block: Component, observer: (expanded: boolean) => void): void {
+	clickExpansionObservers.set(block, observer);
 }
 
 /**
