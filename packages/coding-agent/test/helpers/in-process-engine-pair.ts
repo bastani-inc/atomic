@@ -1,6 +1,12 @@
 import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../src/core/keybindings.ts";
+import {
+	type QueuedDeliveryChange,
+	QueuedDeliveryRelay,
+	takeQueuedDeliveryChange,
+	withQueuedDeliveryChange,
+} from "../../src/core/queued-message-delivery.ts";
 import type { SessionManager } from "../../src/core/session-manager.js";
 import { serializeSessionMutation } from "../../src/core/session-mutation-queue.ts";
 import { EngineCustomUiService } from "../../src/modes/interactive-engine/engine-custom-ui.ts";
@@ -21,9 +27,15 @@ import { toJsonEvent } from "../../src/modes/json-event.ts";
 import { RpcClientApi, type RpcCommandBody } from "../../src/modes/rpc/rpc-client-api.ts";
 import { createRpcCommandHandler } from "../../src/modes/rpc/rpc-command-handler.ts";
 import { assertRpcSuccess } from "../../src/modes/rpc/rpc-error-decoding.ts";
+import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "../../src/modes/rpc/rpc-extension-ui.ts";
 import { createRpcErrorResponse } from "../../src/modes/rpc/rpc-responses.ts";
 import { asAcceptedRequestFailure, rpcTransportError } from "../../src/modes/rpc/rpc-transport-error.ts";
-import type { RpcCommand, RpcResponse } from "../../src/modes/rpc/rpc-types.ts";
+import type {
+	RpcCommand,
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
+	RpcResponse,
+} from "../../src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness, type HarnessOptions } from "../suite/harness.ts";
 
 type EventListener = (event: JsonAgentSessionEvent) => void;
@@ -110,6 +122,9 @@ class LaggedPipe<T> {
 class InProcessEngineClient extends RpcClientApi {
 	private readonly pending = new Map<string, PendingRequest>();
 	private readonly listeners = new Set<EventListener>();
+	private readonly queuedDeliveryListeners = new Set<
+		(change: QueuedDeliveryChange, event: JsonAgentSessionEvent) => void
+	>();
 	private nextId = 0;
 	private readonly toEngine: LaggedPipe<RpcCommand>;
 	private readonly toHost: LaggedPipe<HostRecord>;
@@ -121,6 +136,8 @@ class InProcessEngineClient extends RpcClientApi {
 	private lost = false;
 	private readonly generationEndedListeners = new Set<InteractiveEngineGenerationEndedListener>();
 	private readonly engineMessageListeners = new Set<(message: InteractiveEngineMessage) => void>();
+	private readonly extensionUiListeners = new Set<(request: RpcExtensionUIRequest) => void>();
+	private answerExtensionUi: ((response: RpcExtensionUIResponse) => void) | undefined;
 	readonly commandsReceived: RpcCommand[] = [];
 	private handle: (command: RpcCommand) => Promise<RpcResponse | undefined> = async () => undefined;
 
@@ -179,8 +196,17 @@ class InProcessEngineClient extends RpcClientApi {
 		return (line) => this.toHost.write(new EngineUiLine(line));
 	}
 
+	/** The engine's extensions ask the host for UI, and the host's answers reach `answer`, as over a real engine's pipes. */
+	attachExtensionUi(answer: (response: RpcExtensionUIResponse) => void): void {
+		this.answerExtensionUi = answer;
+	}
+
 	private receive(record: HostRecord): void {
 		if (this.lost) return;
+		if (!(record instanceof EngineUiLine) && (record as { type: string }).type === "extension_ui_request") {
+			for (const listener of [...this.extensionUiListeners]) listener(record as unknown as RpcExtensionUIRequest);
+			return;
+		}
 		if (record instanceof EngineUiLine) {
 			const parsed = parseInteractiveEngineMessage(record.line.trim());
 			if (parsed !== undefined) for (const listener of [...this.engineMessageListeners]) listener(parsed);
@@ -195,6 +221,9 @@ class InProcessEngineClient extends RpcClientApi {
 			}
 			return;
 		}
+		// As the host's client reads an engine's event line: what the engine says it is delivering, then the event.
+		const change = takeQueuedDeliveryChange(record);
+		if (change !== undefined) for (const listener of [...this.queuedDeliveryListeners]) listener(change, record);
 		for (const listener of [...this.listeners]) listener(record);
 	}
 
@@ -265,6 +294,11 @@ class InProcessEngineClient extends RpcClientApi {
 		return () => this.listeners.delete(listener);
 	}
 
+	onQueuedDeliveryChange(listener: (change: QueuedDeliveryChange, event: JsonAgentSessionEvent) => void): () => void {
+		this.queuedDeliveryListeners.add(listener);
+		return () => this.queuedDeliveryListeners.delete(listener);
+	}
+
 	onGenerationEnded(listener: InteractiveEngineGenerationEndedListener): () => void {
 		this.generationEndedListeners.add(listener);
 		return () => this.generationEndedListeners.delete(listener);
@@ -283,8 +317,15 @@ class InProcessEngineClient extends RpcClientApi {
 		return () => {};
 	}
 
-	onExtensionUIRequest(): () => void {
-		return () => {};
+	onExtensionUIRequest(listener: (request: RpcExtensionUIRequest) => void): () => void {
+		this.extensionUiListeners.add(listener);
+		return () => this.extensionUiListeners.delete(listener);
+	}
+
+	async respondExtensionUI(response: RpcExtensionUIResponse): Promise<void> {
+		const answer = this.answerExtensionUi;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		if (!this.lost) answer?.(response);
 	}
 
 	sendInteractiveEngineCommand(command: InteractiveEngineCommand): void {
@@ -354,6 +395,13 @@ export async function createEngineHostPair(
 		serializeEngineCommands?: boolean;
 		/** The engine draws its own UI, such as `/tasks`, which the host shows as an interactive engine's. */
 		engineUi?: boolean;
+		/** The engine's extensions show their UI on the host, as a real engine's do: dialogs, notices, custom views. */
+		extensionUi?: boolean;
+		/**
+		 * Whether the engine tells the host which queued messages it is delivering, as it does for a host that asks.
+		 * Default true; false is an engine of an earlier version, or a host that did not ask.
+		 */
+		queuedDeliveries?: boolean;
 	},
 ): Promise<EngineHostPair> {
 	const lag = { toEngineMs: 0, toHostMs: 0 };
@@ -403,7 +451,31 @@ export async function createEngineHostPair(
 			? (command) => serializeSessionMutation(engineRuntimeHost, () => handle(command))
 			: handle,
 	);
-	const unsubscribe = engine.session.subscribe((event) => client.engineOutput(toJsonEvent(event)));
+	if (options.extensionUi) {
+		const pendingExtensionRequests: RpcPendingExtensionRequests = new Map();
+		await engine.session.bindExtensions({
+			uiContext: createRpcExtensionUIContext({
+				output: (record) => client.engineOutput(record as RpcResponse),
+				pendingExtensionRequests,
+				customUi,
+			}),
+			mode: customUi ? "tui" : "rpc",
+		});
+		client.attachExtensionUi((response) => {
+			const pending = pendingExtensionRequests.get(response.id);
+			if (pending === undefined) return;
+			pendingExtensionRequests.delete(response.id);
+			pending.resolve(response);
+		});
+	}
+	// A replacement engine starts telling the host afresh.
+	const newRelay = () => (options.queuedDeliveries === false ? undefined : new QueuedDeliveryRelay());
+	let relay = newRelay();
+	const unsubscribe = engine.session.subscribe((event) =>
+		client.engineOutput(
+			withQueuedDeliveryChange(toJsonEvent(event), relay?.note(engine.session, event)) as JsonAgentSessionEvent,
+		),
+	);
 	const local = new AgentSessionRuntime(
 		hostHarness.session,
 		{ cwd: hostHarness.tempDir, agentDir: hostHarness.tempDir } as never,
@@ -430,9 +502,14 @@ export async function createEngineHostPair(
 			// What the lost process held in memory is gone: its queue, and the turn it was running.
 			engine.session.clearQueue();
 			void engine.session.abort();
+			// Its replacement tells the host afresh.
+			relay = newRelay();
 		},
 		engineMessage: (message) => client.engineMessage(message),
-		endGeneration: ({ expected }) => client.endGeneration(expected),
+		endGeneration: ({ expected }) => {
+			client.endGeneration(expected);
+			relay = newRelay();
+		},
 		commandsReceived: client.commandsReceived,
 		holdHostTrafficFrom: (matches) => client.holdHostTrafficFrom(matches),
 		releaseHostTraffic: () => client.releaseHostTraffic(),

@@ -26,6 +26,8 @@ export interface InteractiveEngineStartupEnv {
 	/** Trust decisions of this host session, handed to an engine started to replace one that stopped. */
 	readonly trustDecisions?: SessionTrustDecisions;
 	readonly projectResourceWithdrawals?: true;
+	/** The host draws the queued messages the main session is delivering (see `QueuedDeliveryRelay`). */
+	readonly queuedDeliveries?: true;
 }
 
 let snapshot: InteractiveEngineStartupEnv | undefined;
@@ -65,6 +67,7 @@ export function captureInteractiveEngineStartupEnv(
 					apiKey: bootstrap.apiKey,
 					...(bootstrap.trustDecisions ? { trustDecisions: bootstrap.trustDecisions } : {}),
 					...(bootstrap.projectResourceWithdrawals ? { projectResourceWithdrawals: true as const } : {}),
+					...(bootstrap.queuedDeliveries ? { queuedDeliveries: true as const } : {}),
 				}
 			: {
 					child: process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD,

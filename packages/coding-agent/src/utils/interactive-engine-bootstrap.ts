@@ -42,6 +42,8 @@ export interface InteractiveEngineBootstrap {
 	trustDecisions?: SessionTrustDecisions;
 	/** The host accepts a pending withdrawal, distinct from a settled trust decision. */
 	projectResourceWithdrawals?: true;
+	/** The host draws the queued messages the main session is delivering, from changes on the engine's event lines. */
+	queuedDeliveries?: true;
 }
 
 /**
@@ -168,6 +170,7 @@ export function readInteractiveEngineBootstrap(path: string): InteractiveEngineB
 			...(typeof parsed.apiKey === "string" ? { apiKey: parsed.apiKey } : {}),
 			...(trustDecisions ? { trustDecisions } : {}),
 			...(parsed.projectResourceWithdrawals === true ? { projectResourceWithdrawals: true } : {}),
+			...(parsed.queuedDeliveries === true ? { queuedDeliveries: true } : {}),
 		};
 	} catch {
 		return undefined;

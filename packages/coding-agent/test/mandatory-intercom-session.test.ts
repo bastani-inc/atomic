@@ -291,7 +291,7 @@ describe("trusted ordinary Intercom sessions", () => {
 				expect(session.getToolDefinition("intercom")?.parameters).toHaveProperty("properties.action");
 				expect(session.systemPrompt).toContain("- intercom:");
 				expect(session.systemPrompt).not.toContain("Spoofed Intercom metadata");
-				expect(session.getActiveToolNames()).toEqual(["project_tool", "intercom"]);
+				expect(session.getActiveToolNames()).toEqual(["intercom", "project_tool"]);
 				expect(session.getToolDefinition("project_tool")).toBeDefined();
 				expect(session.getToolDefinition("bash")).toBeUndefined();
 				expect(session.getToolDefinition("contact_supervisor")).toBeUndefined();

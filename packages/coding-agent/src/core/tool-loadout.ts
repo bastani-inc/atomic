@@ -1,4 +1,5 @@
 import type { AgentMessage, AgentTool } from "@bastani/atomic-agent-core";
+import { declarationsEqual, getCurrentTools } from "@bastani/atomic-ai";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
 import type { ToolLoadout } from "./extensions/tool-types.ts";
@@ -8,14 +9,27 @@ const hiddenDeclarations = new WeakMap<AgentSession, ReadonlySet<string>>();
 export function isToolDeclarationHidden(session: AgentSession, name: string): boolean {
 	return hiddenDeclarations.get(session)?.has(name) ?? false;
 }
+/** Code point order, the same on every host and locale. */
+function compareNames(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0;
+}
+
 /**
- * The active tools are a set: tools that stay active keep their current order and newly active ones are
- * appended, so reordering the same names does not change the prompt (#11495).
+ * The active tools are a set, ordered so that the same set always gives the same order (#11495). Tools the
+ * transcript already declares keep their declared order and come first. The others follow in a canonical order,
+ * built-in tools in their requested order and then extension and MCP tools by name, so the order in which
+ * extensions or MCP servers registered or connected never changes the tool declarations a request sends.
  */
 export function applyToolLoadout(session: AgentSession, names: readonly string[]): AgentTool[] {
 	const requested = new Set(names);
-	const kept = session.getActiveToolNames().filter((name) => requested.has(name));
-	const tools = [...new Set([...kept, ...requested])].flatMap((name) => {
+	const recordedTools = getCurrentTools(session.agent.state.messages);
+	const transcriptOrder = recordedTools.map((tool) => tool.name).filter((name) => requested.has(name));
+	const inTranscript = new Set(transcriptOrder);
+	const kept = session.getActiveToolNames().filter((name) => requested.has(name) && !inTranscript.has(name));
+	const undeclared = [...new Set([...kept, ...requested])].filter((name) => !inTranscript.has(name));
+	const builtIn = undeclared.filter((name) => session._baseToolDefinitions.has(name));
+	const others = undeclared.filter((name) => !session._baseToolDefinitions.has(name)).sort(compareNames);
+	const tools = [...transcriptOrder, ...builtIn, ...others].flatMap((name) => {
 		const tool = session._toolRegistry.get(name);
 		const exposure = session.getToolDefinition(name)?.exposure ?? "direct";
 		return tool &&
@@ -52,10 +66,19 @@ export function applyToolLoadout(session: AgentSession, names: readonly string[]
 		}
 	}
 	hiddenDeclarations.set(session, hidden);
-	const declared = tools.map((tool) => {
+	const withDescriptions = tools.map((tool) => {
 		const description = descriptions.get(tool.name);
 		return description === undefined ? tool : { ...tool, description };
 	});
+	// A tool whose declaration changes is declared again after the unchanged ones. Ordering the active tools that way
+	// now keeps the system prompt's tool list from changing order once more on the next request.
+	const byName = new Map(withDescriptions.map((tool) => [tool.name, tool]));
+	const unchanged = recordedTools.flatMap((recorded) => {
+		const tool = byName.get(recorded.name);
+		return tool && declarationsEqual(recorded, tool) ? [tool] : [];
+	});
+	const unchangedNames = new Set(unchanged.map((tool) => tool.name));
+	const declared = [...unchanged, ...withDescriptions.filter((tool) => !unchangedNames.has(tool.name))];
 	session.agent.state.tools = declared;
 	return declared;
 }

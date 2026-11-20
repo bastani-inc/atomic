@@ -127,7 +127,7 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("model attribution", () => {
-		test("includes selected model name and reasoning level before date and working directory", () => {
+		test("includes selected model name and reasoning level before working directory and date", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: [],
 				contextFiles: [],
@@ -146,8 +146,8 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain(modelLine);
 			expect(prompt).toContain(reasoningLine);
 			expect(prompt.indexOf(modelLine)).toBeLessThan(prompt.indexOf(reasoningLine));
-			expect(prompt.indexOf(reasoningLine)).toBeLessThan(prompt.indexOf("Current date:"));
-			expect(prompt.indexOf("Current date:")).toBeLessThan(prompt.indexOf("Current working directory:"));
+			expect(prompt.indexOf(reasoningLine)).toBeLessThan(prompt.indexOf("Current working directory:"));
+			expect(prompt.indexOf("Current working directory:")).toBeLessThan(prompt.indexOf("Current date:"));
 		});
 
 		test("falls back to selected model id when no display name is available", () => {

@@ -91,7 +91,7 @@ Installed [packages](/packages/authoring#mcp-servers) and extensions can contrib
 
 Command completion suggests actions and eligible server names. When a server name is omitted, Atomic selects an eligible server when the choice is unambiguous; otherwise it asks you to choose. Session login requires an interactive UI. Shell login opens the browser without starting a session; authenticate before unattended work.
 
-Enabled servers connect in the background when a session starts. The first prompt waits up to 10 seconds for servers with `direct` tools. Codemode, tool search, and resource calls wait for the servers they need. A dropped connection reconnects on the next call. Changes announced by a server update the available tools; withdrawn tools become unreachable.
+Enabled servers connect in the background when a session starts. The first prompt waits up to 10 seconds for servers with `direct` tools. Codemode, tool search, and resource calls wait for the servers they need. A dropped connection reconnects on the next call. Changes announced by a server update the available tools; withdrawn tools become unreachable. When you resume a session, the MCP tools it was using stay available while their servers reconnect: a call to one waits for its server and runs only if the server still offers the same tool. Tools of a server that does not reconnect, needs a sign-in, or changed them are removed or updated with the next request.
 
 ### Shell commands
 
