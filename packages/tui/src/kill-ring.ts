@@ -43,4 +43,11 @@ export class KillRing {
 	get length(): number {
 		return this.ring.length;
 	}
+
+	/** A detached copy: later kills and rotations on either ring leave the other unchanged. */
+	clone(): KillRing {
+		const copy = new KillRing();
+		copy.ring = [...this.ring];
+		return copy;
+	}
 }

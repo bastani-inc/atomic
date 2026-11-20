@@ -428,7 +428,17 @@ export interface AgentPanelRenderOptions {
 	readonly hiddenBelow?: number;
 	/** The main-chat row above the list. Defaults to shown only while focused. */
 	readonly showMain?: boolean;
+	/**
+	 * The row of the subagent the screen shows, marked by an accent `●` before it; the main row's `●` is muted then.
+	 * Undefined while the screen shows main: the main row carries the mark, as it always did.
+	 */
+	readonly viewedId?: string;
+	/** Shell rows are a subagent's own shells, listed right under it: they are indented one step. */
+	readonly nestShells?: boolean;
 }
+
+/** The cells a nested shell row is indented by. */
+const NESTED_INDENT = 2;
 
 /** The main-chat row leads the panel whenever it lists a subagent. */
 export function panelShowsMain(rows: readonly Pick<AgentPanelRow, "kind">[]): boolean {
@@ -452,13 +462,16 @@ export function renderAgentPanelRows(
 	const queues = new Array<string | undefined>(count);
 	let nameWidth = 4;
 	let modelWidth = 0;
+	const nested = (row: AgentPanelRow) => options.nestShells === true && row.kind === "shell";
 	for (let i = 0; i < count; i++) {
 		const raw = shown[i]!;
 		const cleanName = panelText(raw.name);
 		const w = cellWidth(cleanName);
 		names[i] = cleanName;
 		nameWidths[i] = w;
-		if (w > nameWidth) nameWidth = w < 14 ? w : 14;
+		// A nested row's name starts after its indent, and ends in the same column as the others.
+		const span = nested(raw) ? w + NESTED_INDENT : w;
+		if (span > nameWidth) nameWidth = span < 14 ? span : 14;
 		const model = width >= AGENT_PANEL_MODEL_MIN_WIDTH ? panelModelText(raw) : "";
 		models[i] = model;
 		if (model.length > 0) modelWidth = Math.max(modelWidth, cellWidth(model));
@@ -466,7 +479,8 @@ export function renderAgentPanelRows(
 		rights[i] = rightColumn(raw, width);
 		queues[i] = Number.isSafeInteger(raw.queued) && (raw.queued ?? 0) > 0 ? ` · ${raw.queued} queued` : undefined;
 	}
-	// The model column shows only while every row keeps its whole right column and some of its task beside it.
+	// The model column shows only while every row keeps its whole right column and some of its task beside it. A nested
+	// row's indent is inside the name column, so `nameWidth` spans it.
 	if (modelWidth > 0) {
 		const fixed = 6 + nameWidth + modelWidth + 2;
 		for (let i = 0; i < count && modelWidth > 0; i++) {
@@ -476,6 +490,7 @@ export function renderAgentPanelRows(
 			if (fixed + rightWidth + 1 > width || (tasks[i]!.length > 0 && taskRoom < MIN_TASK_WIDTH)) modelWidth = 0;
 		}
 	}
+	const viewing = options.viewedId !== undefined;
 	const lines: string[] = [];
 	const line = (
 		id: string,
@@ -487,22 +502,23 @@ export function renderAgentPanelRows(
 		dim: boolean,
 		queued?: string,
 		model?: string,
+		indent = 0,
 	) => {
 		const selected = options.selectedId === id;
-		const cursor = selected ? style.accent(style.bold("❯ ")) : "  ";
+		const viewed = viewing && options.viewedId === id;
+		const cursor = selected ? style.accent(style.bold("❯ ")) : viewed ? `${style.accent("●")} ` : "  ";
+		const lead = indent > 0 ? `${cursor}${" ".repeat(indent)}` : cursor;
 		const paint = (text: string) => (dim ? style.dim(text) : selected ? style.text(text) : style.muted(text));
 		if (width < 40) {
-			const shortName = fitToWidth(name, Math.max(1, width - 5)).text;
-			const short = `${cursor}${glyphText} ${paint(shortName)}`;
+			const shortName = fitToWidth(name, Math.max(1, width - 5 - indent)).text;
+			const short = `${lead}${glyphText} ${viewed ? style.accent(shortName) : paint(shortName)}`;
 			return lines.push(clampLine(short, width));
 		}
-		const fittedName =
-			knownNameWidth <= nameWidth ? { text: name, width: knownNameWidth } : fitToWidth(name, nameWidth);
+		const room = nameWidth - indent;
+		const fittedName = knownNameWidth <= room ? { text: name, width: knownNameWidth } : fitToWidth(name, room);
 		const head =
-			fittedName.width < nameWidth
-				? `${fittedName.text}${" ".repeat(nameWidth - fittedName.width)}`
-				: fittedName.text;
-		const headWidth = fittedName.width < nameWidth ? nameWidth : fittedName.width;
+			fittedName.width < room ? `${fittedName.text}${" ".repeat(room - fittedName.width)}` : fittedName.text;
+		const headWidth = indent + (fittedName.width < room ? room : fittedName.width);
 		const modelCell =
 			model === undefined || modelWidth === 0
 				? ""
@@ -519,14 +535,16 @@ export function renderAgentPanelRows(
 		const taskRoom = Math.max(0, width - fixed - rightWidth - 2);
 		const fittedTask = taskRoom >= 8 && task.length > 0 ? fitToWidth(task, taskRoom) : { text: "", width: 0 };
 		const pad = Math.max(1, width - fixed - fittedTask.width - rightWidth);
-		const nameText = selected ? style.bold(style.text(head)) : paint(head);
+		const nameText = viewed ? style.bold(style.accent(head)) : selected ? style.bold(style.text(head)) : paint(head);
 		const rightText = paint(shownRight) + (shownQueued === undefined ? "" : style.warning(shownQueued));
-		const full = `${cursor}${glyphText} ${nameText}  ${modelCell}${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
+		const full = `${lead}${glyphText} ${nameText}  ${modelCell}${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
 		lines.push(clampLine(full, width));
 	};
 	if (showMain) {
 		const selected = options.selectedId === AGENT_PANEL_MAIN_ID;
-		line(AGENT_PANEL_MAIN_ID, selected ? style.accent("●") : style.text("●"), "main", 4, "", "", false);
+		// While a subagent is shown, main is not where the reader is: its mark is muted, as its name is.
+		const mark = selected ? style.accent("●") : viewing ? style.muted("●") : style.text("●");
+		line(AGENT_PANEL_MAIN_ID, mark, "main", 4, "", "", false);
 	}
 	if (hiddenAbove > 0) lines.push(style.dim(truncateToWidth(`  ↑ ${hiddenAbove} more`, width)));
 	for (let i = 0; i < count; i++) {
@@ -542,6 +560,7 @@ export function renderAgentPanelRows(
 			dim,
 			queues[i],
 			models[i],
+			nested(raw) ? NESTED_INDENT : 0,
 		);
 	}
 	if (hiddenBelow > 0) lines.push(style.dim(truncateToWidth(`  +${hiddenBelow} more`, width)));
@@ -602,6 +621,8 @@ export function agentPanelRowIdAtLine(
 
 export interface AgentPanelActions {
 	open(row: AgentPanelRow): void;
+	/** Enter or a click on the main row; without it, that returns to the prompt as Esc does. */
+	openMain?(): void;
 	stop(row: AgentPanelRow): void;
 	dismiss(row: AgentPanelRow): void;
 	close(): void;
@@ -717,7 +738,7 @@ export class AgentPanelFocus {
 		this.finishedWhileArmed = undefined;
 		this.selectionMovedUnseen = false;
 		if (id === AGENT_PANEL_MAIN_ID) {
-			this.actions.close();
+			this.openMain();
 			return;
 		}
 		const row = this.rows.find((candidate) => candidate.id === id);
@@ -731,6 +752,10 @@ export class AgentPanelFocus {
 			? (selectId as string)
 			: (this.rows[0]?.id ?? AGENT_PANEL_MAIN_ID);
 		this.keepInView();
+	}
+	private openMain(): void {
+		if (this.actions.openMain === undefined) this.actions.close();
+		else this.actions.openMain();
 	}
 	selected(): AgentPanelRow | undefined {
 		return this.rows.find((row) => row.id === this.selectedId);
@@ -823,7 +848,7 @@ export class AgentPanelFocus {
 			return true;
 		}
 		if (openKey) {
-			if (row === undefined) this.actions.close();
+			if (row === undefined) this.openMain();
 			else this.actions.open(row);
 			return true;
 		}

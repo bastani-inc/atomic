@@ -9,6 +9,6 @@ Give Atomic a goal, a way to tell whether it's done, and any limits on edits, co
 
 > Review the installation guide for Linux and Windows. Give each platform to a separate read-only agent. Check disputed commands against the CLI, then report discrepancies by platform. Don't edit files.
 
-The parent chat launches the reviews, then continues when each child reports back. Open `/tasks` to see which reviews are queued, running, or finished. You can message a child from its chat without interrupting the others. If you close Atomic, reopen the same parent session to recover its children and their results.
+The parent chat launches the reviews, then continues when each child reports back. Open `/tasks` or use the agent panel below the prompt to see which reviews are queued, running, or finished. You can select a child to view its transcript and message it on the same chat screen without interrupting the others. If you close Atomic, reopen the same parent session to recover its children and their results.
 
 To repeat the procedure later, ask Atomic to write it as a [skill](/skills#skills-as-workflows). If you already have a workflow file from an earlier Atomic, [ask the parent to convert it into a skill](/orchestration/migrating-workflows). See [Orchestration](/orchestration) for the actual script and [Patterns](/orchestration/patterns) for other ways to split a task.

@@ -18,6 +18,18 @@ const CONCURRENT_COMMANDS: ReadonlySet<string> = new Set([
 	"refresh_models",
 	"start_pending_recovery",
 	"stop_all_background",
+	// A subagent shown on the host's screen: each command is about that subagent alone, and one waiting on it (a
+	// message it has not taken yet, a pause until its turn ends) must not hold the host's panel or /tasks.
+	"agent_view_open",
+	"agent_view_close",
+	"agent_view_prompt",
+	"agent_view_resume",
+	"agent_view_clear_queue",
+	"agent_view_pause",
+	"agent_view_commands",
+	"agent_view_last_message",
+	"get_task_prompts",
+	"set_viewed_agent",
 ]);
 
 export function isRpcInterruptCommand(type: string): boolean {

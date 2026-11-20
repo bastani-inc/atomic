@@ -46,7 +46,7 @@ test("shell output hints and help omit unavailable tool expansion and interrupti
 	}
 });
 
-test("Down in an attached subagent's empty prompt opens its own tasks without leaving the chat (#5224)", async () => {
+test("Down in a subagent chat's empty prompt opens its own tasks without leaving the chat (#5224)", async () => {
 	initTheme("dark");
 	const previous = getKeybindings();
 	const keys = new KeybindingsManager();
@@ -81,7 +81,9 @@ test("Down in an attached subagent's empty prompt opens its own tasks without le
 	);
 	const paint = () => stripVTControlCharacters(inspector.renderViewport(160, 30).join("\n"));
 	try {
-		inspector.openChat(parent.ref.taskId, "main chat");
+		// Enter on the subagent's row of /tasks opens its chat (a host without the single screen).
+		inspector.open(parent.ref.taskId);
+		inspector.handleInput("\r");
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.match(paint(), /↓ agents/);
 		inspector.handleInput("\x1b[B");
@@ -97,7 +99,7 @@ test("Down in an attached subagent's empty prompt opens its own tasks without le
 		inspector.handleInput("\x1b[D");
 		assert.equal(closed, 0);
 		assert.doesNotMatch(paint(), /Tasks {2}1 working/);
-		assert.match(paint(), /← main chat/);
+		assert.match(paint(), /← tasks/);
 	} finally {
 		inspector.dispose();
 		await fixture.dispose();

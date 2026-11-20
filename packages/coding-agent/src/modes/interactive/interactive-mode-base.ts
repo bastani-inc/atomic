@@ -19,6 +19,7 @@ import { readClipboardText } from "../../utils/clipboard.js";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
+import type { AgentViewSwitcher } from "./agent-view/agent-view-switcher.ts";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import { type AtomicWorkingLoader, DEFAULT_WORKING_MESSAGE } from "./components/atomic-working-status.ts";
 import { mainComposerFooterHints } from "./components/main-composer-keys.ts";
@@ -246,6 +247,13 @@ export class InteractiveModeBase {
 		focusedIsOverlay: boolean,
 		focusedIsViewportSearch: boolean,
 	): boolean => {
+		// A shown subagent's transcript takes the scroll keys (agent-view/transcript-slot.ts); main has no scroll view then.
+		if (
+			this.agentView?.viewed.kind === "agent" &&
+			!isMouseInput &&
+			isFullscreenViewportAction(data, this.keybindings)
+		)
+			return false;
 		return shouldHandleFullscreenViewportInput(
 			this.renderer.getFocusedComponent(),
 			this.editor,
@@ -287,6 +295,12 @@ export class InteractiveModeBase {
 	transcriptScrollView: ScrollView | undefined;
 
 	fullscreenLayoutRoot: Component | undefined;
+	/** The fullscreen layout's bottom chrome: the prompt, its rows and the footer. The agent view's layout shares it. */
+	fullscreenDock: Component | undefined;
+	/** What the single chat screen shows, main or a subagent; set up by `installAgentView`. */
+	agentView: AgentViewSwitcher | undefined;
+	/** Takes the single chat screen down when the mode stops: main is shown, and every listener it added is removed. */
+	disposeAgentView: (() => void) | undefined;
 
 	resourceDisclosureContainer: Container;
 	startupNoticesContainer: Container;

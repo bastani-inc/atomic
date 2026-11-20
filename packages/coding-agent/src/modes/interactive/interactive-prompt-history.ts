@@ -1,3 +1,4 @@
+import { viewedAgentPromptHistory } from "./components/agent-prompt-history.ts";
 import {
 	PromptHistorySelectorComponent,
 	promptHistoryEntries,
@@ -6,9 +7,21 @@ import {
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 
 InteractiveModeBase.prototype.showPromptHistorySearch = function (this: InteractiveModeBase): void {
-	const entries = promptHistoryEntries(sessionPromptsFromEntries(this.session.sessionManager.getEntries()));
+	// While the prompt writes to a viewed agent, the search is over what Up recalls for it, never main's prompts.
+	const viewed = viewedAgentPromptHistory(this.defaultEditor);
+	const entries = promptHistoryEntries(
+		viewed === undefined
+			? sessionPromptsFromEntries(this.session.sessionManager.getEntries())
+			: [...viewed].reverse().map((text) => ({ text })),
+	);
 	this.showSelector((done) => {
 		let settled = false;
+		const cancel = () => {
+			if (settled) return;
+			settled = true;
+			done();
+			this.ui.requestRender();
+		};
 		const selector = new PromptHistorySelectorComponent(entries, {
 			onSelect: (text) => {
 				if (settled) return;
@@ -17,13 +30,10 @@ InteractiveModeBase.prototype.showPromptHistorySearch = function (this: Interact
 				this.editor.setText(text);
 				this.ui.requestRender();
 			},
-			onCancel: () => {
-				if (settled) return;
-				settled = true;
-				done();
-				this.ui.requestRender();
-			},
+			onCancel: cancel,
 		});
-		return { component: selector, focus: selector };
+		// The search is over one agent's prompts: when the screen shows another agent, it closes.
+		const unwatch = this.agentView?.onChange(cancel);
+		return { component: selector, focus: selector, ...(unwatch === undefined ? {} : { dispose: unwatch }) };
 	});
 };
