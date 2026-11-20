@@ -797,7 +797,7 @@ async function submitToMainChat(
 		}
 		prompt.addToHistory(text);
 		// The turn that runs an extension command, which starts after this, ends its hold of the prompt's slot.
-		if (this.isExtensionCommand(text)) holdSubmittedExtensionCommand(this, submission);
+		if (text.startsWith("/") && this.isExtensionCommand(text)) holdSubmittedExtensionCommand(this, submission);
 	} catch (error) {
 		// Direct dispatch branches above hand text straight to the engine and
 		// never reach runUserPromptTurn(), so this is the only place their send
