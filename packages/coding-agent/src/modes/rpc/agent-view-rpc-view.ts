@@ -1,44 +1,46 @@
-// S-A (view) owns this module. C0 stub: the engine has no views yet.
-import type { AgentViewPort } from "../interactive/agent-view/contracts.ts";
+import type { TaskId } from "../../core/tasks/contracts.js";
 import type { EngineAgentViewContext } from "./agent-view-rpc.ts";
-import type { AgentViewRpcCommand } from "./agent-view-rpc-types.ts";
-import { createRpcErrorResponse } from "./rpc-responses.ts";
+import type { AgentViewOpenData, AgentViewRpcCommand } from "./agent-view-rpc-types.ts";
+import { engineAgentViewRegistry } from "./agent-view-engine-registry.ts";
+import { createRpcErrorResponse, createRpcSuccessResponse } from "./rpc-responses.ts";
 import type { RpcResponse } from "./rpc-types.ts";
+
+export { bindEngineAgentViews, type EngineAgentViews, engineAgentViews } from "./agent-view-engine-registry.ts";
 
 type Command<T extends AgentViewRpcCommand["type"]> = Extract<AgentViewRpcCommand, { type: T }>;
 
-/** The views the host opened on this engine, by view id. */
-export interface EngineAgentViews {
-	port(viewId: string): AgentViewPort | undefined;
-}
-
-const NO_VIEWS: EngineAgentViews = { port: () => undefined };
-
-export function engineAgentViews(_session: object): EngineAgentViews {
-	return NO_VIEWS;
-}
-
-export function bindEngineAgentViews(_context: EngineAgentViewContext): () => void {
-	return () => {};
-}
-
+/** Open a view of the subagent `taskId` is an attempt of: its status, and its transcript as a remote component. */
 export async function handleAgentViewOpen(
 	command: Command<"agent_view_open">,
-	_context: EngineAgentViewContext,
+	context: EngineAgentViewContext,
 ): Promise<RpcResponse> {
-	return createRpcErrorResponse(command.id, command.type, "Viewing a subagent is not available yet");
+	const registry = engineAgentViewRegistry(context.session);
+	if (registry === undefined)
+		return createRpcErrorResponse(command.id, command.type, "Viewing a subagent requires an interactive host");
+	const opened = await registry.open(command.taskId as TaskId);
+	if (opened === undefined) return createRpcErrorResponse(command.id, command.type, "That subagent is not listed.");
+	const data: AgentViewOpenData = {
+		viewId: opened.viewId,
+		componentId: opened.view.componentId,
+		status: opened.view.port.status(),
+	};
+	return createRpcSuccessResponse(command.id, command.type, data);
 }
 
 export async function handleAgentViewClose(
 	command: Command<"agent_view_close">,
-	_context: EngineAgentViewContext,
+	context: EngineAgentViewContext,
 ): Promise<RpcResponse> {
-	return createRpcErrorResponse(command.id, command.type, "Viewing a subagent is not available yet");
+	engineAgentViewRegistry(context.session)?.close(command.viewId);
+	return createRpcSuccessResponse(command.id, command.type);
 }
 
 export async function handleAgentViewLastMessage(
 	command: Command<"agent_view_last_message">,
-	_context: EngineAgentViewContext,
+	context: EngineAgentViewContext,
 ): Promise<RpcResponse> {
-	return createRpcErrorResponse(command.id, command.type, "Viewing a subagent is not available yet");
+	const port = engineAgentViewRegistry(context.session)?.port(command.viewId);
+	if (port === undefined) return createRpcErrorResponse(command.id, command.type, "That view is closed.");
+	const text = await port.lastAgentMessageText();
+	return createRpcSuccessResponse(command.id, command.type, text === undefined ? {} : { text });
 }
