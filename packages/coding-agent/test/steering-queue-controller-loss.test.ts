@@ -105,9 +105,29 @@ test("a lost agent's queue comes back in Alt+Up order: listed, accepted but unli
 	assert.equal(agent.controller.recoverTarget([]), undefined, "a recovery gives back once");
 });
 
-test("a message the agent started its next turn with is not given back by a later loss: it was delivered", async () => {
+test("a message the agent started its next turn with is not given back by a loss once the agent saved it", async () => {
 	const agent = agentInAnotherProcess();
 	const started = agent.controller.submit("started a turn", "steer", { route: "queue" });
+	agent.pending[0]!.accept("started");
+	assert.deepEqual(await started, { kind: "started" });
+	agent.controller.noteSaved(["started a turn"]);
+	agent.controller.loseTarget();
+	assert.equal(agent.controller.recoverTarget([]), undefined);
+});
+
+test("a message the agent started its next turn with comes back from a loss before the agent saved it", async () => {
+	const agent = agentInAnotherProcess();
+	const started = agent.controller.submit("started a turn", "steer", { route: "queue" });
+	agent.pending[0]!.accept("started");
+	assert.deepEqual(await started, { kind: "started" });
+	agent.controller.loseTarget();
+	assert.deepEqual(agent.controller.recoverTarget([]), ["started a turn"]);
+});
+
+test("a saved message the agent reported before answering that it started a turn with is not kept", async () => {
+	const agent = agentInAnotherProcess();
+	const started = agent.controller.submit("rewritten later", "steer", { route: "queue" });
+	agent.controller.noteSaved(["rewritten by a hook", "rewritten later"]);
 	agent.pending[0]!.accept("started");
 	assert.deepEqual(await started, { kind: "started" });
 	agent.controller.loseTarget();

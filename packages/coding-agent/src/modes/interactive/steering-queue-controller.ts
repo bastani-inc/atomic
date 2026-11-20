@@ -132,6 +132,14 @@ export class SteeringQueueController {
 	 * next listing does. A target whose process is lost meanwhile loses them with its queue.
 	 */
 	private acceptedUnlisted: SteeringQueuedMessage[] = [];
+	/**
+	 * Of {@link acceptedUnlisted}, the submissions the target started its next turn with: delivered once the target saved
+	 * them, which it reports with the user message's `message_end` ({@link noteSaved}). Until then a lost target may
+	 * not have saved them.
+	 */
+	private readonly startedUnsaved = new WeakSet<SteeringQueuedMessage>();
+	/** In-flight submissions whose saved user message the target reported before its answer. */
+	private readonly savedBeforeAnswer = new WeakSet<SteeringQueuedMessage>();
 	/** The target's queue as the last listing showed it, so the next one shows which messages it added. */
 	private lastListed: SteeringQueueLists = { steering: [], followUp: [] };
 	/** Messages a lost target took with it, per lane, from {@link loseTarget} until {@link recoverTarget}. */
@@ -264,6 +272,26 @@ export class SteeringQueueController {
 		return messages.length > 0 ? messages : undefined;
 	}
 
+	/**
+	 * The target saved a user message (its `message_end`), whose text is one of `texts` (as sent, and as typed when an
+	 * `input` hook rewrote it). A submission it started its next turn with is delivered from here on, so a lost target
+	 * does not take it with it: the oldest one awaiting its save goes, by its text or, failing that, as the first user
+	 * message saved after it was started. Heard before the answer, it marks the in-flight submission instead.
+	 */
+	noteSaved(texts: readonly string[]): void {
+		const awaiting = this.acceptedUnlisted.filter((message) => this.startedUnsaved.has(message));
+		const saved = awaiting.find((message) => texts.includes(message.text)) ?? awaiting[0];
+		if (saved !== undefined) {
+			this.startedUnsaved.delete(saved);
+			this.acceptedUnlisted = this.acceptedUnlisted.filter((message) => message !== saved);
+			return;
+		}
+		const inFlight = this.unconfirmed.find(
+			(message) => texts.includes(message.text) && !this.savedBeforeAnswer.has(message),
+		);
+		if (inFlight !== undefined) this.savedBeforeAnswer.add(inFlight);
+	}
+
 	/** How a submission is sent while the target is in its current state. */
 	route(): SteeringRoute {
 		if (this.target.busy && !this.target.paused) return "queue";
@@ -294,13 +322,25 @@ export class SteeringQueueController {
 			queueLane !== undefined && options.showAsQueued !== false
 				? this.showAsQueued({ text, mode: queueLane })
 				: undefined;
-		/** Stop showing the copy; one the target took into its queue unlisted is remembered until a listing shows it. */
-		const settle = (inTargetQueue = false) => {
-			if (!shown || !this.settle(shown)) return;
+		/**
+		 * Stop showing the copy. One the target took into its queue unlisted is remembered until a listing shows it; one
+		 * it started its next turn with, until it saved it. A lost target may have neither.
+		 */
+		const settle = (kept?: "queued" | "started") => {
+			if (!shown) return;
+			const savedEarly = this.savedBeforeAnswer.has(shown);
+			if (!this.settle(shown)) return;
 			this.editor.requestRender();
-			if (!inTargetQueue) return;
+			if (kept === undefined) return;
+			if (kept === "started" && savedEarly) {
+				this.inFlightAtLoss.delete(shown);
+				return;
+			}
 			if (this.inFlightAtLoss.delete(shown)) this.addLost(shown);
-			else if (this.target.canBeLost === true) this.acceptedUnlisted.push(shown);
+			else if (this.target.canBeLost === true) {
+				if (kept === "started") this.startedUnsaved.add(shown);
+				this.acceptedUnlisted.push(shown);
+			}
 		};
 		const lostOnTheWay = () => {
 			if (shown && this.inFlightAtLoss.delete(shown)) this.addLost(shown);
@@ -313,7 +353,7 @@ export class SteeringQueueController {
 				preflightResult: (success, answered) => {
 					accepted = success;
 					disposition = answered;
-					settle(success && queuedByTarget(answered));
+					settle(success ? keptByTarget(answered) : undefined);
 					options.onAnswered?.(success, answered);
 				},
 			});
@@ -330,7 +370,7 @@ export class SteeringQueueController {
 			return { kind: "refused", error };
 		}
 		if (shown && this.givenBackByRecovery.has(shown)) return { kind: "queued" };
-		settle(queuedByTarget(disposition));
+		settle(keptByTarget(disposition));
 		return { kind: disposition ?? (queueLane !== undefined ? "queued" : "started") };
 	}
 
@@ -384,11 +424,13 @@ export class SteeringQueueController {
 }
 
 /**
- * Whether an accepted submission waits in the target's queue: answered `queued`, or by a target that does not say. One
- * the target `started` its next turn with was delivered, and one it `handled` ran at once; neither is queued.
+ * What a lost target may take with it of an accepted submission: one answered `queued` (or by a target that does not
+ * say) waits in its queue, and one it `started` its next turn with is not saved yet when the answer comes. One it
+ * `handled` ran at once.
  */
-function queuedByTarget(disposition: PromptDisposition | undefined): boolean {
-	return disposition === undefined || disposition === "queued";
+function keptByTarget(disposition: PromptDisposition | undefined): "queued" | "started" | undefined {
+	if (disposition === undefined || disposition === "queued") return "queued";
+	return disposition === "started" ? "started" : undefined;
 }
 
 /**
