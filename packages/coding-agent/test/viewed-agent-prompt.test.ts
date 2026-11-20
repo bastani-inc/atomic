@@ -651,4 +651,19 @@ describe("the main prompt while a subagent is shown", () => {
 		},
 		HOST_TIMEOUT_MS,
 	);
+
+	test(
+		"a read-only subagent can be shown but takes no typing, and its empty prompt says why",
+		async () => {
+			screen = await mainScreen();
+			const port = worker({ readOnlyReason: "This subagent has finished; its chat is read-only." });
+			await view(WORKER);
+			assert.match(screen.prompt().join("\n"), /its chat is read-only/);
+			await screen.type("hello");
+			await screen.press(ENTER);
+			assert.equal(screen.mode.editor.getText(), "");
+			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
 });
