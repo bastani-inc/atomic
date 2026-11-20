@@ -369,7 +369,8 @@ for (const [hostName, mount] of [
 				await tasks.row(/∀ modeler +faux-panel-model\/primary high {2}Read the template/);
 				gates.primary.resolve();
 				await vi.waitFor(() => assert.deepEqual(childRequests, ["primary", "backup"]), WAIT);
-				await tasks.row(/∀ modeler +faux-panel-model\/backup low {2}Read the template/);
+				// The open list keeps its model column as wide as it was, so the task does not move under the reader.
+				await tasks.row(/∀ modeler +faux-panel-model\/backup low {4}Read the template/);
 			} finally {
 				await tasks.close();
 			}

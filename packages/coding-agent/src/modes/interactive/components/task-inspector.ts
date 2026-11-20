@@ -38,6 +38,7 @@ import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_MODEL_MIN_WIDTH } from "./agent-panel.ts";
 import { parseWheelReport } from "./chat-transcript.js";
 import { renderExtensionStatusRow } from "./footer.ts";
+import { ModelColumn } from "./model-column.ts";
 import {
 	clickableKeyTextHint,
 	isNavHelpKey,
@@ -49,13 +50,16 @@ import {
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
 import {
-	boardModelColumn,
+	type BoardRowModel,
+	boardModelFits,
+	NO_MODEL,
 	type PeekContent,
 	renderBoardRow,
 	renderPeekCard,
 	rowFinished,
 	rowMatches,
 	rowModel,
+	rowModelReport,
 	rowName,
 	rowState,
 	rowTask,
@@ -307,6 +311,8 @@ export class TaskInspector implements Component {
 		readonly groups: ReturnType<typeof taskBoardGroups>;
 	};
 	private readonly elapsedClocks: TaskElapsedClocks;
+	/** The board's model column: which rows show their model yet, and how wide it stays while the board is open. */
+	private readonly modelColumn = new ModelColumn(() => this.requestRender());
 	private boardStale = false;
 	private navigationOrder: string[] = [];
 	private boardBudget = 24;
@@ -706,6 +712,7 @@ export class TaskInspector implements Component {
 		this.releaseStatusWatch();
 		this.closeTranscript();
 		this.unsubscribe();
+		this.modelColumn.dispose();
 	}
 	invalidate(): void {
 		this.transcript?.invalidate();
@@ -2011,11 +2018,26 @@ export class TaskInspector implements Component {
 		// The rows as they are painted, with their live elapsed times: the model column is decided on those, once.
 		const painted = slice.map((line) => (typeof line === "string" ? line : this.withBoardElapsed(line)));
 		const paintedRows = painted.filter((line): line is TaskBoardRow => typeof line !== "string");
-		const models =
-			width - 1 >= AGENT_PANEL_MODEL_MIN_WIDTH
-				? new Map(paintedRows.map((row) => [row.id, rowModel(row, this.store)]))
-				: undefined;
-		const modelColumn = models === undefined ? 0 : boardModelColumn(paintedRows, [...models.values()], width - 1);
+		// A row whose model became known while the board shows it waits for its reasoning level, so its task moves once.
+		let models: Map<string, BoardRowModel> | undefined;
+		// The widest label as the rows report it: a label still waiting for its level counts for whether any column fits.
+		let widest = 0;
+		if (width - 1 >= AGENT_PANEL_MODEL_MIN_WIDTH) {
+			const reported = new Map(paintedRows.map((row) => [row.id, rowModel(row, this.store)] as const));
+			for (const model of reported.values()) widest = Math.max(widest, model.width);
+			const shown = this.modelColumn.paint(
+				paintedRows.map(
+					(row) => [row.id, rowModelReport(row, reported.get(row.id) ?? NO_MODEL, this.store)] as const,
+				),
+				all,
+			);
+			models = new Map(
+				paintedRows.map((row) => [row.id, shown.has(row.id) ? (reported.get(row.id) ?? NO_MODEL) : NO_MODEL]),
+			);
+		} else this.modelColumn.forget();
+		let measured = 0;
+		for (const model of models?.values() ?? []) measured = Math.max(measured, model.width);
+		const modelColumn = this.modelColumn.column(width - 1, measured, boardModelFits(paintedRows, width - 1), widest);
 		const modelOf = (row: TaskBoardRow) =>
 			modelColumn === 0
 				? undefined
