@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- On Windows, the startup trace (`ATOMIC_STARTUP_TRACE`) keeps the engine's last lines, such as `engine-resources-ready`, when you quit soon after they are recorded. Windows ends the engine as soon as the host has its quit acknowledgement, without running exit handlers, so the engine now writes any waiting lines before it acknowledges, as the event-loop diagnostic already does. The [event-loop diagnostic's docs](docs/development.md#finding-what-freezes-the-ui) now say which engine records Windows does not get.
+- On Windows, the startup trace (`ATOMIC_STARTUP_TRACE`) keeps the engine's last lines, such as `engine-resources-ready`, when you quit soon after they are recorded. Windows ends the engine as soon as the host has its quit acknowledgement, without running exit handlers, so the engine now writes any waiting lines before it acknowledges, as the event-loop diagnostic already does. This also holds in the standalone binary. The [event-loop diagnostic's docs](docs/development.md#finding-what-freezes-the-ui) now say which engine records Windows does not get.
 
 ## [0.10.0] - 2026-11-20
 

@@ -142,4 +142,38 @@ describe("lifecycle timing seams", () => {
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
+
+	it("writes the trace at the quit when another copy of this module installed it, as the compiled binary's loader does (#5544)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-startup-trace-"));
+		const file = join(directory, "trace.jsonl");
+		// The compiled binary's loader and its app are bundled separately: the loader installs the trace with its copy
+		// of this module, and the app, which handles the quit, has its own.
+		const restore = installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: file });
+		const busy = new DiagnosticWriter(() => {});
+		vi.resetModules();
+		try {
+			const app = await import("../src/core/lifecycle-timings.ts");
+			const { EngineQuitIntent: AppQuitIntent } = await import(
+				"../src/modes/interactive-engine/engine-quit-intent.ts"
+			);
+			expect(app.installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: file })).toBeUndefined();
+			await lifecycleTraceWritten();
+			const busyWrite = busy.append(join(directory, "busy.bin"), "x".repeat(BUSY_WRITER_BYTES));
+			app.markLifecycleTiming("engine-resources-ready");
+			let labelsAtAck: string[] | undefined;
+			const quit = new AppQuitIntent(() => {
+				labelsAtAck = readFileSync(file, "utf8")
+					.trim()
+					.split("\n")
+					.map((line) => (JSON.parse(line) as LifecycleTraceLine).label);
+			});
+			expect(quit.handleLine(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" }))).toBe(true);
+			expect(labelsAtAck).toEqual(["process-start", "engine-resources-ready"]);
+			await busyWrite;
+		} finally {
+			restore?.();
+			await busy.written();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
 });

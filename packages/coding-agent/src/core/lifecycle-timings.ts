@@ -31,6 +31,11 @@ interface LifecycleTimingState {
 	sink: LifecycleTimingSink | undefined;
 	clock: () => bigint;
 	readonly recorded: Set<LifecycleTimingLabel>;
+	/**
+	 * Writes the installed trace's waiting lines. Kept here, not in this module, because the compiled binary's loader
+	 * installs the trace with its own copy of this module and the app it loads handles the quit with another.
+	 */
+	flushTrace?: () => void;
 }
 
 const STATE_KEY = Symbol.for("@bastani/atomic/lifecycle-timings");
@@ -119,7 +124,7 @@ export function lifecycleTraceWritten(): Promise<void> {
  * be lost. Does nothing when no trace is installed.
  */
 export function flushLifecycleTraceAtQuit(): void {
-	traceWriter?.flushSync();
+	getState().flushTrace?.();
 }
 
 /**
@@ -140,6 +145,8 @@ export function installLifecycleTraceFromEnv(env: NodeJS.ProcessEnv = process.en
 	};
 	const writeRemainingAtExit = (): void => writer.flushSync();
 	process.once("exit", writeRemainingAtExit);
+	const state = getState();
+	state.flushTrace = writeRemainingAtExit;
 	write("process-start", performance.timeOrigin);
 	const uninstallSink = installLifecycleTimingSink((record) =>
 		write(record.label, performance.timeOrigin + performance.now()),
@@ -148,5 +155,6 @@ export function installLifecycleTraceFromEnv(env: NodeJS.ProcessEnv = process.en
 		uninstallSink();
 		process.removeListener("exit", writeRemainingAtExit);
 		if (traceWriter === writer) traceWriter = undefined;
+		if (state.flushTrace === writeRemainingAtExit) state.flushTrace = undefined;
 	};
 }
