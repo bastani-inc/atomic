@@ -23,6 +23,9 @@ const setupFiles = [
  *
  * `global-setup-test-directory` creates the per-run directory where workers keep isolated agent homes.
  *
+ * `global-setup-intercom-startup-join` keeps interactive test sessions from joining Intercom at startup, so they
+ * start no broker unless the test uses Intercom.
+ *
  * `global-setup-natives` builds `@bastani/atomic-natives` only when no
  * compiled binding exists, because a missing binding no longer degrades
  * gracefully: `packages/subagents` imports the Rust control plane statically,
@@ -37,6 +40,7 @@ const providerCredentialSetup = "./test/global-setup-provider-credential-isolati
 const debugSetup = "./test/global-setup-debug-isolation.ts";
 const directorySetup = "./test/global-setup-test-directory.ts";
 const nativeSetup = "./test/global-setup-natives.ts";
+const intercomStartupJoinSetup = "./test/global-setup-intercom-startup-join.ts";
 
 const project = (
 	name: string,
@@ -59,7 +63,15 @@ const project = (
 		exclude: ["**/node_modules/**", ...(options.exclude ?? [])],
 		sequence: { groupOrder: options.groupOrder ?? 0 },
 		setupFiles,
-		globalSetup: [lostWorkersSetup, herdrSetup, providerCredentialSetup, debugSetup, directorySetup, nativeSetup],
+		globalSetup: [
+			lostWorkersSetup,
+			herdrSetup,
+			providerCredentialSetup,
+			debugSetup,
+			intercomStartupJoinSetup,
+			directorySetup,
+			nativeSetup,
+		],
 		testTimeout: TEST_TIMEOUT_MS,
 		hookTimeout: TEST_TIMEOUT_MS,
 	},

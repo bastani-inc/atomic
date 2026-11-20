@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "vitest";
+import { describe, test } from "vitest";
 import {
 	DELIVERED_MESSAGE_MAX_ENTRIES,
 	DeliveredMessageCache,
@@ -311,6 +320,34 @@ test("missing or malformed authority pairs fail closed without recreating lost s
 			rmSync(dir, { recursive: true, force: true });
 		}
 	}
+});
+
+// A dangling link makes creating the database fail after the key is written, as a start stopped there would; Windows
+// needs privileges to create links.
+describe.skipIf(process.platform === "win32")("a first start stopped while it creates the authority pair", () => {
+	test("does not keep later brokers from keeping delivered messages", () => {
+		const dir = mkdtempSync(join(tmpdir(), "intercom-delivered-interrupted-"));
+		const path = join(dir, "accepted.sqlite");
+		const keyPath = join(dir, "accepted.key");
+		try {
+			symlinkSync(join(dir, "missing", "target"), path);
+			const interrupted = new DeliveredMessageCache(100, 3, path);
+			assert.equal(interrupted.record("first", "signature", 1), "invalid");
+			interrupted.close();
+			assert.equal(existsSync(keyPath), true, "the key was written before the start stopped");
+			rmSync(path);
+
+			const next = new DeliveredMessageCache(100, 3, path);
+			assert.equal(next.record("new", "signature", 1), "recorded");
+			assert.equal(next.lookup("new", "signature", 2), "match");
+			next.close();
+			const reopened = new DeliveredMessageCache(100, 3, path);
+			assert.equal(reopened.lookup("new", "signature", 3), "match");
+			reopened.close();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
 
 test("corrupt durable acceptance storage fails closed instead of starting empty", () => {

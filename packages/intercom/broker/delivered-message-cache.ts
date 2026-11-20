@@ -6,6 +6,8 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
+	rmSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -117,25 +119,38 @@ function restrictExistingAuthorityArtifacts(storagePath: string, keyPath: string
 	}
 }
 
+/** Present only while a broker creates the pair, so a pair whose creation was cut short is known to hold nothing. */
+function getDeliveredMessageAuthorityCreatingPath(storagePath: string): string {
+	return `${getDeliveredMessageAuthorityKeyPath(storagePath)}.creating`;
+}
+
 /**
  * Prepare a paired database and key. A missing half of an existing pair is not
  * recreated: accepted authority may have been lost, so startup must fail closed.
+ * A pair whose creation was cut short, by a broker stopped while it started, never
+ * held anything, so it is created afresh.
  */
 function prepareDurableAuthority(storagePath: string): Buffer | undefined {
 	const directory = dirname(storagePath);
 	const keyPath = getDeliveredMessageAuthorityKeyPath(storagePath);
+	const creatingPath = getDeliveredMessageAuthorityCreatingPath(storagePath);
 	mkdirSync(directory, { recursive: true, mode: 0o700 });
 	restrictMode(directory, 0o700);
+	if (existsSync(creatingPath)) {
+		for (const path of [keyPath, storagePath, `${storagePath}-wal`, `${storagePath}-shm`]) rmSync(path, { force: true });
+	}
 	restrictExistingAuthorityArtifacts(storagePath, keyPath);
 	const databaseExists = existsSync(storagePath);
 	const keyExists = existsSync(keyPath);
 	if (databaseExists !== keyExists) return undefined;
 	if (!databaseExists) {
+		writeFileSync(creatingPath, "", { mode: 0o600 });
 		const key = randomBytes(AUTHORITY_KEY_BYTES);
 		writeFileSync(keyPath, key, { flag: "wx", mode: 0o600 });
 		const databaseDescriptor = openSync(storagePath, "wx", 0o600);
 		closeSync(databaseDescriptor);
 		restrictExistingAuthorityArtifacts(storagePath, keyPath);
+		unlinkSync(creatingPath);
 		return key;
 	}
 	const key = readFileSync(keyPath);

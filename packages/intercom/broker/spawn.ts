@@ -118,8 +118,17 @@ type BrokerLaunchSpec =
     launcherCommandLine: string;
   };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 function getCurrentBrokerRuntime(): BrokerRuntime {
@@ -470,9 +479,9 @@ function toError(error: unknown): Error {
 /**
  * Start the broker unless one answers. #4727: `signal` cancels the start until the broker process exists: nothing is
  * written into the agent directory once it aborts, and waiting for another spawner's broker stops at once. A broker
- * this call already launched is waited for until it listens, and stopped if it does not within the startup timeout, so
- * the call never returns while that broker is still writing its start-up files. An aborted call rejects with
- * `signal.reason`.
+ * this call already launched is waited for until it listens; when `signal` aborts first, or the broker does not listen
+ * within the startup timeout, it is stopped, so the call never returns while that broker is still writing its start-up
+ * files. An aborted call rejects with `signal.reason`.
  */
 export async function spawnBrokerIfNeeded(
   brokerCommand: string,
@@ -491,10 +500,38 @@ export async function spawnBrokerIfNeeded(
   signal?.throwIfAborted();
   const lockOwner = await acquireSpawnLockAsync();
   if (lockOwner === undefined) {
-    await waitForBroker(readyTimeoutMs, undefined, signal);
+    await waitForBrokerOrTakeOver(brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, signal);
     return;
   }
   await spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, true, signal);
+}
+
+/**
+ * Wait for the broker another spawner is starting. When that spawner lets go of the spawn lock before a broker answers
+ * (it was cancelled and stopped its broker, or it gave up) or its lock goes stale, start the broker here instead of
+ * waiting out the startup timeout for a broker nobody is starting any more.
+ */
+async function waitForBrokerOrTakeOver(
+  brokerCommand: string,
+  brokerArgs: string[],
+  readyTimeoutMs: number,
+  extensionDir: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const start = Date.now();
+  let interval = BROKER_POLL_INITIAL_INTERVAL_MS;
+  while (Date.now() - start < readyTimeoutMs) {
+    signal?.throwIfAborted();
+    if (await checkSocketConnectable()) return;
+    const lockOwner = await acquireSpawnLockAsync();
+    if (lockOwner !== undefined) {
+      await spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, true, signal);
+      return;
+    }
+    await sleep(interval, signal);
+    interval = Math.min(interval * 2, BROKER_POLL_MAX_INTERVAL_MS);
+  }
+  throw await brokerStartTimeoutError(readyTimeoutMs);
 }
 
 /**
@@ -600,9 +637,12 @@ async function spawnBrokerHoldingLock(
 
       child.once("error", onError);
       child.once("exit", onExit);
+      // A disposed session stops waiting at once; the broker it launched is then stopped below, so the call still never
+      // returns while that broker is writing its start-up files.
       waitForBroker(
         readyTimeoutMs,
         announcement === undefined ? undefined : () => readBrokerStartAnnouncementAsync(announcement),
+        cancelSignal,
       ).then(() => {
         cleanup();
         resolve();
@@ -642,6 +682,8 @@ async function spawnBrokerHoldingLock(
 
 /** Bound on waiting for a killed, still-starting broker to be gone; a kill that has not taken by then never will. */
 const STARTING_BROKER_KILL_WAIT_MS = 5_000;
+/** A killed process is gone within milliseconds, and a session that is closing waits for it. */
+const STARTING_BROKER_KILL_POLL_MS = 10;
 
 /**
  * Kill a broker that has not started listening, with every process it started, and wait until they are gone. A custom
@@ -657,7 +699,7 @@ async function stopStartingBroker(pid: number): Promise<void> {
       taskkill.once("error", () => resolve());
       taskkill.once("exit", () => resolve());
     });
-    while (isProcessAlive(pid) && Date.now() < deadline) await sleep(BROKER_POLL_MAX_INTERVAL_MS);
+    while (isProcessAlive(pid) && Date.now() < deadline) await sleep(STARTING_BROKER_KILL_POLL_MS);
     return;
   }
   try {
@@ -665,7 +707,7 @@ async function stopStartingBroker(pid: number): Promise<void> {
   } catch {
     return;
   }
-  while (isProcessAlive(-pid) && Date.now() < deadline) await sleep(BROKER_POLL_MAX_INTERVAL_MS);
+  while (isProcessAlive(-pid) && Date.now() < deadline) await sleep(STARTING_BROKER_KILL_POLL_MS);
 }
 
 /** How often a session waiting to upgrade the broker checks whether the spawn lock is free. */
@@ -1144,10 +1186,14 @@ export async function waitForBroker(
       if (await checkSocketConnectable()) return;
       throw new Error(`Intercom broker exited before startup (pid ${pid})\n${await describeBrokerLogAsync()}`);
     }
-    await sleep(interval);
+    await sleep(interval, signal);
     interval = Math.min(interval * 2, BROKER_POLL_MAX_INTERVAL_MS);
   }
-  throw new Error(
+  throw await brokerStartTimeoutError(timeoutMs);
+}
+
+async function brokerStartTimeoutError(timeoutMs: number): Promise<Error> {
+  return new Error(
     `Broker failed to start within timeout (${timeoutMs} ms)\n`
       + "The broker did not answer on its socket in time; it may still be starting, which a busy machine or an empty jiti "
       + "cache slows. Try again, or raise `brokerStartupTimeoutMs` in the Intercom config.json (default "

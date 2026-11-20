@@ -146,6 +146,7 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			"ask-wait.ts",
 			"codemode-access.ts",
 			"reach-errors.ts",
+			"startup-join.ts",
 		])
 			writeFileSync(join(tempDir, file), readFileSync(resolve(repoRoot, "packages/intercom", file), "utf-8"));
 		mkdirSync(join(tempDir, "broker"), { recursive: true });

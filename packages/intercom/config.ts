@@ -30,6 +30,9 @@ export interface IntercomConfig {
 
   /** Default intercom home group for this session (overridden by env/orchestrator). */
   group?: string;
+
+  /** Interactive sessions join the broker at startup (default: true; `ATOMIC_INTERCOM_JOIN_AT_STARTUP` overrides). */
+  joinAtStartup: boolean;
 }
 
 const CONFIG_PATHS = getAgentConfigPaths("intercom", "config.json");
@@ -44,6 +47,7 @@ const defaults: IntercomConfig = {
   confirmSend: false,
   maxPendingAsks: DEFAULT_MAX_PENDING_REPLY_WAITS,
   replyHint: true,
+  joinAtStartup: true,
 };
 
 export function defaultConfig(): IntercomConfig {
@@ -113,6 +117,13 @@ function parseConfig(raw: string): IntercomConfig {
       throw new Error(`"replyHint" must be a boolean`);
     }
     config.replyHint = parsedConfig.replyHint;
+  }
+
+  if (Object.hasOwn(parsedConfig, "joinAtStartup")) {
+    if (typeof parsedConfig.joinAtStartup !== "boolean") {
+      throw new Error(`"joinAtStartup" must be a boolean`);
+    }
+    config.joinAtStartup = parsedConfig.joinAtStartup;
   }
 
   if (Object.hasOwn(parsedConfig, "status")) {
