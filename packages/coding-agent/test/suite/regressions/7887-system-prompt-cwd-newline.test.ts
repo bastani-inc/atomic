@@ -2,22 +2,25 @@ import { describe, expect, it } from "vitest";
 import { buildSystemPrompt } from "../../../src/core/system-prompt.ts";
 
 /**
- * The working directory is the last structured prompt section. Without a trailing
- * newline the next block a provider concatenates lands on the same line as the
- * closing cwd tag.
+ * The date is the last structured prompt section, after the working directory. Without
+ * a trailing newline the next block a provider concatenates lands on the same line as
+ * the closing tag.
  */
-describe("regression #7887: the system prompt ends with a newline after the cwd", () => {
+describe("regression #7887: the system prompt ends with a newline after its last section", () => {
 	const cwd = process.cwd();
 	const promptCwd = cwd.replace(/\\/g, "/");
+	const lastSections = new RegExp(
+		`\\n<cwd>\\nCurrent working directory: ${promptCwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n</cwd>\\n\\n<date>\\nCurrent date: \\d{4}-\\d{2}-\\d{2}\\n</date>$`,
+	);
 
-	it("terminates the default prompt after the working directory", () => {
+	it("terminates the default prompt after the working directory and the date", () => {
 		const prompt = buildSystemPrompt({ selectedTools: [], contextFiles: [], skills: [], cwd });
 
 		expect(prompt).toContain(`Current working directory: ${promptCwd}`);
-		expect(prompt.endsWith(`\n<cwd>\nCurrent working directory: ${promptCwd}\n</cwd>`)).toBe(true);
+		expect(prompt).toMatch(lastSections);
 	});
 
-	it("terminates a custom prompt after the working directory", () => {
+	it("terminates a custom prompt after the working directory and the date", () => {
 		const prompt = buildSystemPrompt({
 			customPrompt: "You are a custom assistant.",
 			contextFiles: [],
@@ -26,7 +29,7 @@ describe("regression #7887: the system prompt ends with a newline after the cwd"
 		});
 
 		expect(prompt).toContain("You are a custom assistant.");
-		expect(prompt.endsWith(`\n<cwd>\nCurrent working directory: ${promptCwd}\n</cwd>`)).toBe(true);
+		expect(prompt).toMatch(lastSections);
 	});
 
 	it("keeps exactly one trailing newline", () => {

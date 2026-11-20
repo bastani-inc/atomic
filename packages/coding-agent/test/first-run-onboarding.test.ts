@@ -450,6 +450,8 @@ describe("first-run onboarding", () => {
 			pendingUserInputs: [],
 			session: { isBashRunning: false, isCompacting: false, isStreaming: false, prompt: vi.fn() },
 			renderDeferredUserInput: vi.fn(),
+			// No extension has registered `/chat`.
+			isExtensionCommand: vi.fn(() => false),
 		};
 		const submit = installSubmitHandler(host);
 

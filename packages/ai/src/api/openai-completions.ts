@@ -65,11 +65,12 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { DoneEventWatch } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
+import { TOOL_RESULTS_BRIDGE_TEXT } from "../utils/tool-results-bridge.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { recordLowestThinkingOffFallback, recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import {
 	getDeclaredTools,
-	resolveTranscript,
+	resolveRequestTranscript,
 	resolveTranscriptTools,
 	type TranscriptContext,
 } from "../utils/transcript.ts";
@@ -373,7 +374,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 	options?: OpenAICompletionsOptions,
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
-	const normalizedContext = resolveTranscript(context, getCompat(model).supportsMidConvoSystemMessages);
+	const normalizedContext = resolveRequestTranscript(context, getCompat(model).supportsMidConvoSystemMessages);
 
 	(async () => {
 		const output: AssistantMessage = {
@@ -1320,6 +1321,9 @@ function applyAnthropicCacheControl(
 	addCacheControlToSystemPrompt(messages, cacheControl);
 	addCacheControlToLastTool(tools, cacheControl);
 	addCacheControlToLastConversationMessage(messages, cacheControl);
+	// The fourth and last breakpoint Claude allows.
+	const checkpoint = cacheCheckpoints.get(messages);
+	if (checkpoint && checkpoint !== messages.at(-1)) addCacheControlToMessage(checkpoint, cacheControl);
 }
 
 function addCacheControlToSystemPrompt(
@@ -1422,7 +1426,7 @@ export function convertMessages(
 	compat: ResolvedOpenAICompletionsCompat,
 	options?: ConvertCompletionsMessagesOptions,
 ): ChatCompletionMessageParam[] {
-	const normalizedContext = resolveTranscript(context, compat.supportsMidConvoSystemMessages);
+	const normalizedContext = resolveRequestTranscript(context, compat.supportsMidConvoSystemMessages);
 	const params: ChatCompletionMessageParam[] = [];
 
 	const normalizeToolCallId = (id: string): string => {
@@ -1462,15 +1466,22 @@ export function convertMessages(
 
 	let lastRole: string | null = null;
 	let systemIndex = 0;
+	// The input sent up to a message with a `cacheBreakpoint` hint ends with the last user or tool message so far.
+	let checkpoint: ChatCompletionMessageParam | undefined;
+	const markCheckpoint = (): void => {
+		const last = params.at(-1);
+		if (last?.role === "user" || last?.role === "tool") checkpoint = last;
+	};
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const msg = transformedMessages[i];
+		if (msg.role === "assistant" && msg.cacheBreakpoint) markCheckpoint();
 		// Some providers don't allow user messages directly after tool results
 		// Insert a synthetic assistant message to bridge the gap
 		if (compat.requiresAssistantAfterToolResult && lastRole === "toolResult" && msg.role === "user") {
 			params.push({
 				role: "assistant",
-				content: "I have processed the tool results.",
+				content: TOOL_RESULTS_BRIDGE_TEXT,
 			});
 		}
 
@@ -1512,12 +1523,15 @@ export function convertMessages(
 							} satisfies ChatCompletionContentPartImage;
 						}
 					});
-				if (content.length === 0) continue;
-				params.push({
-					role: "user",
-					content,
-				});
+				if (content.length > 0) {
+					params.push({
+						role: "user",
+						content,
+					});
+				}
 			}
+			if (msg.cacheBreakpoint) markCheckpoint();
+			if (params.at(-1)?.role !== "user") continue;
 		} else if (msg.role === "assistant") {
 			// Some providers don't accept null content, use empty string instead
 			const assistantMsg: ChatCompletionAssistantMessageParamWithReasoning = {
@@ -1679,13 +1693,15 @@ export function convertMessages(
 				}
 			}
 
+			if (transformedMessages.slice(i, j).some((message) => message.role === "toolResult" && message.cacheBreakpoint))
+				markCheckpoint();
 			i = j - 1;
 
 			if (imageBlocks.length > 0) {
 				if (compat.requiresAssistantAfterToolResult) {
 					params.push({
 						role: "assistant",
-						content: "I have processed the tool results.",
+						content: TOOL_RESULTS_BRIDGE_TEXT,
 					});
 				}
 
@@ -1710,8 +1726,12 @@ export function convertMessages(
 		lastRole = msg.role;
 	}
 
+	if (checkpoint) cacheCheckpoints.set(params, checkpoint);
 	return params;
 }
+
+/** The message a `cacheBreakpoint` hint asked a breakpoint for, by the message list `convertMessages` returned. */
+const cacheCheckpoints = new WeakMap<ChatCompletionMessageParam[], ChatCompletionMessageParam>();
 
 function convertTools(
 	tools: Tool[],

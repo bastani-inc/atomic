@@ -94,10 +94,10 @@ beforeEach(async () => {
 				);
 				return;
 			}
-			// Answer with the model line of the system prompt this model was sent.
-			const system = body.messages.find((message) => message.role === "system" || message.role === "developer");
-			const text = typeof system?.content === "string" ? system.content : JSON.stringify(system?.content ?? "");
-			const line = text.match(/Model name[^\n"]*/)?.[0] ?? "no model line";
+			// Answer with the latest model line this model was sent: the system prompt's, or a later prompt update's,
+			// which an endpoint without mid-conversation system messages receives after the history.
+			const lines = JSON.stringify(body.messages).match(/Model name[^\\"]*/g);
+			const line = lines?.at(-1) ?? "no model line";
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			response.end(
 				`${chunk(body.model, { role: "assistant", content: `${body.model} was told: ${line}` })}${chunk(body.model, {}, "stop")}data: [DONE]\n\n`,

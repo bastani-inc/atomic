@@ -739,7 +739,8 @@ test.each<{
 	{
 		name: "unknown exclusions ignored",
 		options: { tools: ["intercom", "read"], excludedTools: ["unknown"] },
-		expected: ["intercom", "read"],
+		// Built-in tools come first: the order never depends on when an extension registered its tools.
+		expected: ["read", "intercom"],
 	},
 ])(
 	"tool selection: $name",

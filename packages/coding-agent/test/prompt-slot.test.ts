@@ -276,3 +276,18 @@ test("a run's working status changing shows a held dock live", () => {
 	screen.statusChanged();
 	assert.equal(ended, 1);
 });
+
+test("a hold that reached its bound before any frame is not begun again from the same rows (#6077)", () => {
+	vi.useFakeTimers();
+	const { slot, screen } = slotWithPrompt();
+	holdPromptSlot(slot);
+	// The view mounts with nothing to draw yet, and no frame is drawn before the bound.
+	const panel = pendingView("Tasks", "  No background work.");
+	mountView(slot, panel.view);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS + 1);
+	assert.equal(screen.region, undefined);
+	assert.deepEqual(slot.render(40), [], "the view shows as it is, with nothing to draw yet");
+	assert.equal(screen.region, undefined);
+	panel.ready();
+	assert.deepEqual(slot.render(40), ["Tasks", "  No background work."]);
+});
