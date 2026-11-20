@@ -495,3 +495,36 @@ test("the store still gives its disk space back after another process held its w
 	await store.close();
 	await database.close();
 });
+
+test("a message whose delete failed, queued again and refused, is still deleted once another process lets go of the lock", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const database = await openNodeSqliteDatabase(path, { lockWaitMs: 300 });
+	const store = await openSqlEndedChildQueueStore(
+		{ database, prefix: "" },
+		{ home: "local", holder: "broker-1", lockWaitMs: 300, compact: true },
+	);
+	const key = { ownerSessionId: "owner-1", ownerHost: "owner-host", childKey: "subagent-worker-1" };
+	await store.add(entry("m1"));
+	// Another process holds the write lock: the delete of the delivered message fails, and so does a retry of the same
+	// message by its sender.
+	const { DatabaseSync } = await import("node:sqlite");
+	const other = new DatabaseSync(path);
+	other.exec("BEGIN IMMEDIATE");
+	try {
+		await assert.rejects(store.remove(["m1"]));
+		await assert.rejects(store.add(entry("m1")));
+	} finally {
+		other.exec("ROLLBACK");
+		other.close();
+	}
+	// The lock is free for good: the delete goes through, and the message no longer counts.
+	await vi.waitFor(
+		async () => {
+			assert.deepEqual((await store.load()).rows, []);
+			assert.equal(store.counted(key).total, 0);
+		},
+		{ timeout: 15_000, interval: 100 },
+	);
+	await store.close();
+	await database.close();
+});

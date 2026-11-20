@@ -1017,7 +1017,8 @@ export async function openSqlEndedChildQueueStore(
 			const messageId = entry.messageId;
 			// Counted before its row is written. One counted already (a delete before this one may still be going) is held
 			// as added again, so that delete does not release it.
-			const known = ledger.get(messageId) !== undefined;
+			const before = ledger.get(messageId)?.state;
+			const known = before !== undefined;
 			if (known) ledger.mark(messageId, "reserved");
 			else ledger.count(messageId, countedKeyOf(entry), entry.bytes, "reserved");
 			const written = writes.run(async (tx) => {
@@ -1058,16 +1059,20 @@ export async function openSqlEndedChildQueueStore(
 			});
 			return written.then(
 				(result) => {
-					ledger.mark(messageId, "stored");
+					// Its row is there now; one an earlier add of the same message, refused, released counts again.
+					if (ledger.get(messageId) === undefined) ledger.count(messageId, countedKeyOf(entry), entry.bytes, "stored");
+					else ledger.mark(messageId, "stored");
 					// Already kept, or counted from before: what the store holds says what counts.
 					if (known || result === "duplicate") recountSoon();
 					return result;
 				},
 				(error: unknown) => {
-					// Rolled back: never written. One counted from before may or may not still be there.
-					if (known) ledger.mark(messageId, "stored");
-					else ledger.release(messageId);
+					// Rolled back: never written. One counted from before is as it was, its delete still to be tried again if
+					// that had failed.
+					if (before === undefined) ledger.release(messageId);
+					else if (ledger.get(messageId)?.state === "reserved") ledger.mark(messageId, before);
 					recountSoon();
+					retrySoon();
 					throw error;
 				},
 			);
