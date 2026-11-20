@@ -47,6 +47,7 @@ import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import type { QuestionAnswer, QuestionParams } from "../../core/tools/ask-user-question/tool/types.js";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
+import type { AgentViewRpcCommand, AgentViewRpcResponse } from "./agent-view-rpc-types.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -142,6 +143,8 @@ export type RpcCommand =
 	| { id?: string; type: "stop_all_background" }
 	| { id?: string; type: "set_stop_all_notice"; text?: string }
 	| { id?: string; type: "open_agent_panel" }
+	// A subagent shown on the interactive host's main screen
+	| AgentViewRpcCommand
 
 	// Model
 	| {
@@ -370,6 +373,7 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "list_sessions"; success: true; data: { sessions: RpcSessionInfo[] } }
 	| { id?: string; type: "response"; command: "open_task_inspector"; success: true }
 	| { id?: string; type: "response"; command: "open_agent_panel"; success: true }
+	| AgentViewRpcResponse
 	| { id?: string; type: "response"; command: "set_stop_all_notice"; success: true }
 	| {
 			id?: string;

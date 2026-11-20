@@ -18,6 +18,7 @@ import {
 	onInteractiveEngineSessionStatsChanged,
 	waitForInteractiveEngineBound,
 } from "../interactive-engine/extension-ui-bridge.ts";
+import { installAgentView } from "./agent-view/install.ts";
 import {
 	atomicWordmark,
 	renderAtomicAssemblyBanner,
@@ -256,6 +257,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		// Keep widgetContainerBelow after the footer for #1109's stable dock order.
 		{ component: this.widgetContainerBelow, shrink: 1, minSize: 0 },
 	]);
+	this.fullscreenDock = dock;
 	this.fullscreenLayoutRoot = new VStack([
 		{ component: this.transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 		{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
@@ -274,6 +276,8 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 
 	this.setupKeyHandlers();
 	this.setupEditorSubmitHandler();
+	// The single chat screen: a subagent's transcript and the retargeted prompt, set up after the main screen's keys.
+	installAgentView(this);
 	// Rebuild autocomplete whenever the engine child's command catalog arrives or
 	// changes (initial bind, engine restart, reload, new/resume/fork). Subscribed
 	// before bind so the first async catalog fetch can never be missed. No-op when

@@ -12,6 +12,7 @@ import type {
 import { parseHostSessionPickerRows } from "../../core/host-session-picker-rows.js";
 import type { KeyId } from "../../core/keybindings.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
+import type { AgentViewState, AgentViewStatus } from "../interactive/agent-view/contracts.ts";
 import type { ToolGroupFamily, ToolGroupRole } from "../interactive/components/tool-block.ts";
 
 /**
@@ -111,6 +112,10 @@ export type InteractiveEngineMessage =
 			steering: string[];
 			followUp: string[];
 	  }
+	/** The status of a subagent the host shows on its main screen (view `viewId`), on every change. */
+	| { type: "engine_agent_view_status"; viewId: string; status: AgentViewStatus }
+	/** The engine's agent panel or `/tasks` asks the host to show a subagent, or main when `taskId` is null. */
+	| { type: "engine_view_agent"; taskId: string | null }
 	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
 	 * The child took ownership of a correlated RPC request: it has parsed the
@@ -134,6 +139,9 @@ export type InteractiveEngineMessage =
 			widgetKey?: string;
 			widgetPlacement?: "aboveEditor" | "belowEditor";
 			widgetScroll?: { maxHeight: number; maxHeightFraction?: number };
+			/** A viewed subagent's transcript, which the host draws in its transcript area for view `viewId`. */
+			placement?: "transcript";
+			viewId?: string;
 	  }
 	| { type: "engine_custom_close"; componentId: string }
 	| {
@@ -548,6 +556,16 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						followUp: [...value.followUp],
 					}
 				: undefined;
+		case "engine_agent_view_status": {
+			const status = parseAgentViewStatus(value.status);
+			return typeof value.viewId === "string" && status !== undefined
+				? { type: value.type, viewId: value.viewId, status }
+				: undefined;
+		}
+		case "engine_view_agent":
+			return typeof value.taskId === "string" || value.taskId === null
+				? { type: value.type, taskId: value.taskId }
+				: undefined;
 		case "engine_activity_started":
 			return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
 		case "engine_activity_finished":
@@ -640,6 +658,9 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 								: value.widgetPlacement === "aboveEditor"
 									? "aboveEditor"
 									: undefined,
+						...(value.placement === "transcript" && typeof value.viewId === "string"
+							? { placement: "transcript" as const, viewId: value.viewId }
+							: {}),
 					}
 				: undefined;
 		case "engine_custom_close":
@@ -975,4 +996,42 @@ export const serializeInteractiveEngineMessage = serializeInteractiveEngineFrame
 
 function isStringList(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+const AGENT_VIEW_STATES: ReadonlySet<string> = new Set<AgentViewState>([
+	"running",
+	"queued",
+	"input",
+	"paused",
+	"stopping",
+	"waiting",
+	"done",
+	"failed",
+	"stopped",
+]);
+
+/** `value` as a viewed subagent's status, or undefined when it is not one. */
+function parseAgentViewStatus(value: JsonValue | undefined): AgentViewStatus | undefined {
+	if (value === undefined || !isJsonObject(value)) return undefined;
+	const queued = value.queued;
+	const valid =
+		typeof value.taskId === "string" &&
+		typeof value.agentKey === "string" &&
+		typeof value.name === "string" &&
+		typeof value.ruleLabel === "string" &&
+		typeof value.placeholder === "string" &&
+		typeof value.state === "string" &&
+		AGENT_VIEW_STATES.has(value.state) &&
+		typeof value.busy === "boolean" &&
+		typeof value.paused === "boolean" &&
+		typeof value.retrying === "boolean" &&
+		typeof value.heldPrompt === "boolean" &&
+		typeof value.gone === "boolean" &&
+		(value.readOnlyReason === undefined || typeof value.readOnlyReason === "string") &&
+		(value.working === undefined || (value.working !== null && isJsonObject(value.working))) &&
+		queued !== undefined &&
+		isJsonObject(queued) &&
+		isStringList(queued.steering) &&
+		isStringList(queued.followUp);
+	return valid ? (value as unknown as AgentViewStatus) : undefined;
 }
