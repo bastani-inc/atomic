@@ -2,6 +2,9 @@ import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { AgentViewBridge } from "./agent-view-bridge.ts";
 import { type AgentViewChange, type AgentViewPort, VIEWING_MAIN, type ViewedTarget } from "./contracts.ts";
 
+/** Why the screen still shows what it showed after a request for a subagent. */
+export const NOT_SHOWN = "That subagent can no longer be shown.";
+
 /** Opens the port of the subagent `taskId` is an attempt of; undefined when there is no such subagent to show. */
 export type OpenAgentViewPort = (taskId: TaskId) => Promise<AgentViewPort | undefined>;
 
@@ -82,7 +85,10 @@ export class AgentViewSwitcher implements AgentViewBridge {
 				this.notify(error instanceof Error ? error.message : String(error));
 			return false;
 		}
-		if (port === undefined) return false;
+		if (port === undefined) {
+			if (request === this.request && !this.disposed) this.notify(NOT_SHOWN);
+			return false;
+		}
 		if (request !== this.request || this.disposed) {
 			// Superseded: the port was never shown. Retaining and releasing it once disposes it.
 			port.retain()();
@@ -95,6 +101,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		}
 		if (port.status().gone) {
 			port.retain()();
+			this.notify(NOT_SHOWN);
 			return false;
 		}
 		this.show({ kind: "agent", port });
@@ -157,11 +164,9 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		if (to.kind === "agent") {
 			this.releaseCurrent = to.port.retain();
 			this.unwatchCurrent = to.port.subscribe(() => {
-				// A shown subagent that is gone gives the screen back to main in the same tick.
-				if (this.current === to && to.port.status().gone) {
-					this.request++;
-					this.show(VIEWING_MAIN);
-				}
+				// A shown subagent that is gone gives the screen back to main in the same tick. A newer request, still
+				// opening, is the reader's and still lands.
+				if (this.current === to && to.port.status().gone) this.show(VIEWING_MAIN);
 			});
 		}
 		const change: AgentViewChange = { from, to };
