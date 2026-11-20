@@ -40,6 +40,14 @@ export function holdPromptSlot(slot: Container): PromptSlotHold {
 	return slot instanceof PromptSlot ? slot.hold() : SETTLED;
 }
 
+/** The opening and closing sequences of an OSC 8 hyperlink; the text between them is kept. */
+const HYPERLINK = /\x1b\]8;[^;\x07\x1b]*;[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+/** `row` as it looks, with nothing on it that a click could run: no key hints and no links. */
+function inertRow(row: string): string {
+	return stripHintMarkers(row).replace(HYPERLINK, "");
+}
+
 /** A key the user pressed: not the release of one, nor a mouse or focus report. */
 function isKeyPress(data: string): boolean {
 	return !isKeyRelease(data) && !data.startsWith("\x1b[<") && data !== "\x1b[I" && data !== "\x1b[O";
@@ -51,7 +59,7 @@ type PromptSlotState =
 			readonly kind: "held";
 			/** Which hold this is. */
 			readonly token: object;
-			/** The rows the slot drew last, at `width`, with their key hints made plain text: they run nothing. */
+			/** The rows the slot drew last, at `width`, with their key hints and links made plain text: they run nothing. */
 			readonly rows: readonly string[];
 			readonly width: number;
 			/** The slot's children as they were when the hold began, counted by `generation`. */
@@ -173,7 +181,7 @@ export class PromptSlot extends Container {
 		const held = {
 			kind: "held",
 			token: {},
-			rows: rows.map(stripHintMarkers),
+			rows: rows.map(inertRow),
 			width,
 			generation,
 			end,

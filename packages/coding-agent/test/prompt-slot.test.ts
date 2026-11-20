@@ -123,10 +123,10 @@ test("the hold ends after its bound and asks for a frame", () => {
 	assert.deepEqual(slot.render(40), []);
 });
 
-test("held rows run nothing: their key hints are plain text and a click on them reaches no child", () => {
+test("held rows run nothing: their key hints and links are plain text and a click on them reaches no child", () => {
 	const requestRender = vi.fn();
 	const slot = new PromptSlot({ requestRender });
-	const hinted = `  ${clickableHint("esc close", keyHintAction("escape"))}`;
+	const hinted = `  ${clickableHint("esc close", keyHintAction("escape"))} \x1b]8;;https://example.invalid/task\x07view\x1b]8;;\x07`;
 	const clicks: TuiMouseEvent[] = [];
 	const editor: Component = {
 		render: () => ["❯ /tasks", hinted],
@@ -139,7 +139,7 @@ test("held rows run nothing: their key hints are plain text and a click on them 
 	slot.addChild(editor);
 	slot.render(40);
 	holdPromptSlot(slot);
-	assert.deepEqual(slot.render(40), ["❯ /tasks", "  esc close"]);
+	assert.deepEqual(slot.render(40), ["❯ /tasks", "  esc close view"]);
 	const click: TuiMouseEvent = { type: "press", button: "left", x: 3, y: 1, width: 40, height: 2 } as TuiMouseEvent;
 	assert.equal(slot.handleMouse(click), undefined);
 	assert.equal(clicks.length, 0);
