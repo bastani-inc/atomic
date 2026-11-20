@@ -1,5 +1,6 @@
-import { hasRecordedTransformedPrompt, startedAsFork } from "@bastani/atomic";
+import { hasRecordedTransformedPrompt, type SessionEntry, startedAsFork } from "@bastani/atomic";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { subagentForkStartIndex } from "../../shared/fork-context.js";
 
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 	"You are a child subagent, not the parent orchestrator.",
@@ -254,10 +255,12 @@ export function forkedChildTools(
  * The parent whose conversation a child's session continues as a fork, or undefined. A fork continues that
  * conversation from its first request, and its recorded prompt says so for every reopen after. A fork session that
  * already holds the child's own turns without a recorded prompt (an earlier version ran it) is reopened as the child
- * it was, under its own prompt, and stays that child.
+ * it was, under its own prompt, and stays that child. The child's own turns are those after the fork's start entry;
+ * a fork an earlier version made has none, and only there a reply stamped after the fork was made counts as its own.
  */
 export function forkedParentSessionId(session: {
-	getHeader(): { readonly parentSessionId?: string; readonly createdAt: string } | null;
+	getHeader(): { readonly id: string; readonly parentSessionId?: string; readonly createdAt: string } | null;
+	getBranch(): readonly SessionEntry[];
 	buildSessionContext(): { readonly messages: readonly AgentMessage[] };
 }): string | undefined {
 	const header = session.getHeader();
@@ -265,8 +268,12 @@ export function forkedParentSessionId(session: {
 	const { messages } = session.buildSessionContext();
 	if (startedAsFork(messages)) return header.parentSessionId;
 	if (hasRecordedTransformedPrompt(messages)) return undefined;
-	const forkedAt = Date.parse(header.createdAt);
-	const ownTurns = messages.some((message) => message.role === "assistant" && message.timestamp >= forkedAt);
+	const branch = session.getBranch();
+	const forkStart = subagentForkStartIndex(branch, header.id);
+	const ownTurns =
+		forkStart === -1
+			? messages.some((message) => message.role === "assistant" && message.timestamp > Date.parse(header.createdAt))
+			: branch.slice(forkStart + 1).some((entry) => entry.type === "message" && entry.message.role === "assistant");
 	return ownTurns ? undefined : header.parentSessionId;
 }
 

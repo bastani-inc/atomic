@@ -7,6 +7,22 @@ type ForkableSessionManager = Pick<
 >;
 type BranchEntry = ReturnType<SessionManager["getBranch"]>[number];
 
+/**
+ * The entry a subagent fork appends right after the parent history it copied, naming its own session: on a reopen,
+ * what comes after it is the child's own.
+ */
+const SUBAGENT_FORK_START_TYPE = "subagent-fork-start";
+
+/** Where the parent history copied into session `sessionId` ends on `branch`, or -1 when no fork start of its own says. */
+export function subagentForkStartIndex(branch: readonly BranchEntry[], sessionId: string): number {
+	return branch.findLastIndex(
+		(entry) =>
+			entry.type === "custom" &&
+			entry.customType === SUBAGENT_FORK_START_TYPE &&
+			(entry.data as { readonly sessionId?: string } | undefined)?.sessionId === sessionId,
+	);
+}
+
 export class SubagentForkContextError extends Error {
 	constructor(
 		readonly parentSessionId: string,
@@ -78,6 +94,9 @@ export function createForkContextResolver(
 			const child = (async () => {
 				try {
 					const manager = saved ? await SessionManager.open(store, saved.id, cwd) : await openFork();
+					if (!saved) {
+						await manager.appendCustomEntry(SUBAGENT_FORK_START_TYPE, { sessionId: manager.getSessionId() });
+					}
 					children.set(index, { id: manager.getSessionId(), manager: new WeakRef(manager) });
 					return manager;
 				} catch (cause) {
