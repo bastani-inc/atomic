@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A click on the `(ctrl+o to expand)` hint of a tool block, a grouped-call summary or another block that Ctrl+O expands now opens or folds that block alone, like a click anywhere else on it. It used to press Ctrl+O, which expanded every block in the chat, so every tool block that streamed in afterwards also opened expanded. Ctrl+O and the `ctrl+o expand` hint under the prompt still expand every block.
+- Tool calls that join a group after a click opened one of its calls now appear as their own folded blocks, and a click opens each one on its own. They used to be hidden until the group was folded again. Ctrl+O draws the whole group as one summary again.
+
 ## [0.10.0] - 2026-11-20
 
 Codemode and subagents replace workflows, subagents share the main chat screen with its steering and can be resumed by a message, and long sessions keep only their current context in memory.

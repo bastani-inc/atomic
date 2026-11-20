@@ -29,6 +29,7 @@ import type { TaskCompletionEnvelope } from "../src/core/tasks/completion.js";
 import { taskCompletionMessage } from "../src/core/tasks/completion-message.js";
 import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.js";
 import { CustomEntryComponent } from "../src/modes/interactive/components/custom-entry.js";
+import { keyHint } from "../src/modes/interactive/components/keybinding-hints.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import {
 	type ClickExpandableBlock,
@@ -296,6 +297,29 @@ async function mountChat(
 		transcriptText,
 		expanded,
 	};
+}
+
+/** The prompt's binding for the expand key, as the editor has it: the key expands or collapses every block. */
+function bindExpandKey(chat: Awaited<ReturnType<typeof mountChat>>): { presses(): number; stop(): void } {
+	let presses = 0;
+	const stop = chat.tui.addInputListener((data) => {
+		if (!getKeybindings().matches(data, "app.tools.expand")) return undefined;
+		presses += 1;
+		chat.mode.toggleToolOutputExpansion();
+		return { consume: true };
+	});
+	return { presses: () => presses, stop };
+}
+
+/** One turn of the agent per path, each reading that path, which holds `<path> body`. */
+async function readTurns(mode: Mode, ...paths: string[]): Promise<void> {
+	for (const path of paths) {
+		await toolTurn(
+			mode,
+			fauxAssistantMessage([fauxToolCall("read", { path }, { id: path })], { stopReason: "toolUse" }),
+			() => `${path} body`,
+		);
+	}
 }
 
 for (const kind of ["message", "entry", "tool"] as const) {
@@ -575,24 +599,118 @@ describe("clicking transcript blocks in the main chat", () => {
 		}
 	});
 
-	test("a click on a key hint inside a tool block runs the hint's key once and does not also toggle the block", async () => {
+	for (const key of ["ctrl+o", "f7"] as const) {
+		test(`a click on ${key} in a tool block's expand hint expands that block alone, and tool blocks streamed after it start collapsed`, async () => {
+			const previousKeys = getKeybindings();
+			setKeybindings(new KeybindingsManager(key === "f7" ? { "app.tools.expand": "f7" } : {}));
+			const chat = await mountChat(100, 60);
+			const expandKey = bindExpandKey(chat);
+			try {
+				const header = chat.rowOf(/Bash\(first-command\)/);
+				const hint = chat.screen().findIndex((line, row) => row > header && /earlier lines/.test(line));
+				assert.match(chat.screen()[hint] ?? "", new RegExp(key.replace("+", "\\+")), chat.screen().join("\n"));
+				chat.click(chat.columnOf(hint, key), hint);
+				assert.ok(chat.expanded("first"), chat.transcriptText().join("\n"));
+				assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
+				assert.equal(expandKey.presses(), 0, "the hint is the block's own toggle, not a press of the key");
+				assert.equal(mode(chat).toolOutputExpanded, false);
+
+				await toolTurn(
+					mode(chat),
+					fauxAssistantMessage([fauxToolCall("bash", { command: "third-command" }, { id: "third" })], {
+						stopReason: "toolUse",
+					}),
+					() => lines(20, "third output"),
+				);
+				chat.tui.renderNow();
+				assert.ok(!chat.expanded("third"), chat.transcriptText().join("\n"));
+				assert.ok(chat.expanded("first"), chat.transcriptText().join("\n"));
+
+				const again = chat.screen().findIndex((line) => /first output 3$/.test(line));
+				assert.notEqual(again, -1, chat.screen().join("\n"));
+				chat.click(chat.columnOf(again, "output"), again);
+				assert.ok(!chat.expanded("first"), "a click on the expanded block collapses it again");
+			} finally {
+				expandKey.stop();
+				chat.tui.stop();
+				setKeybindings(previousKeys);
+			}
+		});
+	}
+
+	test("a click on the expand hint of a grouped-call summary shows that group's calls alone", async () => {
 		const previousKeys = getKeybindings();
 		setKeybindings(new KeybindingsManager());
 		const chat = await mountChat(100, 60);
+		const expandKey = bindExpandKey(chat);
+		try {
+			const summary = chat.rowOf(/Read 2 files.*ctrl\+o/);
+			chat.click(chat.columnOf(summary, "ctrl+o"), summary);
+			const text = chat.transcriptText();
+			assert.ok(
+				text.some((line) => line.includes("Read(alpha.ts)")),
+				text.join("\n"),
+			);
+			assert.ok(!chat.expanded("first"), text.join("\n"));
+			assert.ok(!chat.expanded("second"), text.join("\n"));
+			assert.equal(expandKey.presses(), 0);
+			assert.equal(mode(chat).toolOutputExpanded, false);
+		} finally {
+			expandKey.stop();
+			chat.tui.stop();
+			setKeybindings(previousKeys);
+		}
+	});
+
+	test("a click on a hint for another key inside a block presses that key once and leaves the block as it was", async () => {
+		const previousKeys = getKeybindings();
+		setKeybindings(new KeybindingsManager());
+		const chat = await mountChat(100, 60, {
+			messageRenderers: {
+				notice: (_message, { expanded }) =>
+					new Text(
+						[
+							`Notice ${keyHint("app.thinking.toggle", "thinking")} ${keyHint("app.tools.expand", "to expand")}`,
+							...(expanded ? ["Notice details"] : []),
+						].join("\n"),
+						0,
+						0,
+					),
+			},
+		});
+		const expandKey = bindExpandKey(chat);
 		const keys: string[] = [];
 		const stopListening = chat.tui.addInputListener((data) => {
 			keys.push(data);
 			return undefined;
 		});
 		try {
-			const header = chat.rowOf(/Bash\(first-command\)/);
-			const hidden = chat.screen().findIndex((line, row) => row > header && /earlier lines.*ctrl\+o/.test(line));
-			assert.notEqual(hidden, -1, chat.screen().join("\n"));
-			chat.click(chat.columnOf(hidden, "ctrl+o"), hidden);
-			assert.equal(keys.filter((data) => matchesKey(data, "ctrl+o")).length, 1, "the hint presses ctrl+o once");
-			assert.ok(!chat.expanded("first"), "the block's own click does not also toggle it");
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "notice",
+				content: "n",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/Notice ctrl\+t thinking ctrl\+o to expand/);
+			chat.click(chat.columnOf(row, "ctrl+t"), row);
+			assert.equal(keys.filter((data) => matchesKey(data, "ctrl+t")).length, 1, "the hint presses its key once");
+			assert.ok(
+				!chat.screen().some((line) => line.includes("Notice details")),
+				"and does not also toggle the block",
+			);
+
+			chat.click(chat.columnOf(row, "ctrl+o"), row);
+			assert.ok(
+				chat.screen().some((line) => line.includes("Notice details")),
+				chat.screen().join("\n"),
+			);
+			assert.equal(expandKey.presses(), 0, "the expand hint toggles the card it is drawn in");
+			assert.ok(!chat.expanded("first"));
 		} finally {
 			stopListening();
+			expandKey.stop();
 			chat.tui.stop();
 			setKeybindings(previousKeys);
 		}
@@ -775,6 +893,64 @@ describe("clicking transcript blocks in the main chat", () => {
 				text.join("\n"),
 			);
 			assert.ok(!text.some((line) => line.includes("Read(beta.ts)")), text.join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("calls that join a group after a click expanded its first call are drawn on their own, collapsed, and a click toggles each alone", async () => {
+		const chat = await mountChat(100, 80);
+		const has = (text: string) => chat.transcriptText().some((line) => line.includes(text));
+		try {
+			await readTurns(mode(chat), "gamma.ts");
+			chat.tui.renderNow();
+			const gamma = chat.rowOf(/Read\(gamma\.ts\)/);
+			chat.click(chat.columnOf(gamma, "gamma"), gamma);
+			assert.ok(has("gamma.ts body"), chat.transcriptText().join("\n"));
+
+			await readTurns(mode(chat), "delta.ts", "epsilon.ts");
+			chat.tui.renderNow();
+			for (const call of ["Read(delta.ts)", "Read(epsilon.ts)", "gamma.ts body"])
+				assert.ok(has(call), `${call} is not drawn:\n${chat.transcriptText().join("\n")}`);
+			assert.ok(!has("delta.ts body") && !has("epsilon.ts body"), chat.transcriptText().join("\n"));
+
+			const delta = chat.rowOf(/Read\(delta\.ts\)/);
+			chat.click(chat.columnOf(delta, "delta"), delta);
+			assert.ok(has("delta.ts body"), chat.transcriptText().join("\n"));
+			assert.ok(has("Read(epsilon.ts)") && !has("epsilon.ts body"), chat.transcriptText().join("\n"));
+			assert.ok(has("gamma.ts body"), chat.transcriptText().join("\n"));
+
+			// Ctrl+O sets every call again, which draws the group as one summary.
+			mode(chat).toggleToolOutputExpansion();
+			mode(chat).toggleToolOutputExpansion();
+			chat.tui.renderNow();
+			assert.ok(has("Read 3 files"), chat.transcriptText().join("\n"));
+			assert.ok(!has("Read(gamma.ts)") && !has("Read(epsilon.ts)"), chat.transcriptText().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a call that joins a group after a click showed the group's calls is drawn on its own, collapsed", async () => {
+		const chat = await mountChat(100, 80);
+		const has = (text: string) => chat.transcriptText().some((line) => line.includes(text));
+		try {
+			await readTurns(mode(chat), "gamma.ts", "delta.ts", "eta.ts");
+			chat.tui.renderNow();
+			const summary = chat.rowOf(/Read 3 files/);
+			chat.click(chat.columnOf(summary, "Read 3 files"), summary);
+			for (const body of ["gamma.ts body", "delta.ts body", "eta.ts body"]) assert.ok(has(body), body);
+
+			await readTurns(mode(chat), "epsilon.ts");
+			chat.tui.renderNow();
+			assert.ok(has("Read(epsilon.ts)"), chat.transcriptText().join("\n"));
+			assert.ok(!has("epsilon.ts body"), chat.transcriptText().join("\n"));
+			for (const body of ["gamma.ts body", "delta.ts body", "eta.ts body"]) assert.ok(has(body), body);
+
+			const gamma = chat.rowOf(/Read\(gamma\.ts\)/);
+			chat.click(chat.columnOf(gamma, "gamma"), gamma);
+			assert.ok(has("Read 4 files"), "folding the group folds the call drawn on its own back into it");
+			assert.ok(!has("Read(epsilon.ts)"), chat.transcriptText().join("\n"));
 		} finally {
 			chat.tui.stop();
 		}

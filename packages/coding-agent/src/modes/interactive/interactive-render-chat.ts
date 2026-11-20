@@ -57,7 +57,14 @@ import { createMarkdownTransform } from "./components/markdown-transform.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ThemedText } from "./components/themed-text.js";
 import type { ToolGroupRole } from "./components/tool-block.ts";
-import { assistantCallBreaks, type ToolGroupMemberState, ToolGroupTracker } from "./components/tool-group-tracker.ts";
+import {
+	assistantCallBreaks,
+	type ToolGroupHead,
+	type ToolGroupMemberState,
+	type ToolGroupRoleSink,
+	ToolGroupTracker,
+} from "./components/tool-group-tracker.ts";
+import { isClickExpandableBlock } from "./components/transcript-block-clicks.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { countChatMessages, InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import {
@@ -210,6 +217,26 @@ const echoReadEpochs = new WeakMap<Component[], number>();
 
 interface GroupedToolComponent {
 	setGroupRole(role: ToolGroupRole): void;
+	setGroupHead?(head: ToolGroupHead | undefined): void;
+}
+
+/**
+ * Gives `component`, and `entry` when the row draws one, its place in a group of calls. A call folded into a group is
+ * told the group's first row too, without keeping it alive, so that it is drawn on its own while a click has left
+ * the two at different expansions.
+ */
+function groupedRowSink(component: GroupedToolComponent, entry?: { groupRole?: ToolGroupRole }): ToolGroupRoleSink {
+	return (role, head) => {
+		if (entry) entry.groupRole = role;
+		component.setGroupRole(role);
+		const headRow = head as Component | undefined;
+		if (role.kind !== "hidden" || !isClickExpandableBlock(headRow)) {
+			component.setGroupHead?.(undefined);
+			return;
+		}
+		const row = new WeakRef(headRow);
+		component.setGroupHead?.({ isExpanded: () => row.deref()?.isExpanded() });
+	};
 }
 interface MainToolGrouping {
 	readonly tracker: ToolGroupTracker;
@@ -291,7 +318,7 @@ export function trackMainToolComponent(
 		(grouping.lastMember !== undefined && hasRowsSinceLastMember(mode.chatContainer, grouping.lastMember, component))
 	)
 		grouping.tracker.break();
-	grouping.tracker.append(toolCallId, toolName, "pending", (role) => component.setGroupRole(role));
+	grouping.tracker.append(toolCallId, toolName, "pending", groupedRowSink(component), component);
 	grouping.lastMember = component;
 }
 
@@ -328,10 +355,7 @@ function renderGroupedChatEntries(
 		else if (entry.kind !== "tool") grouping.carriedBreak = false;
 		const component = mode.addRenderedChatEntry(entry);
 		if (entry.kind === "tool" && isGroupedToolComponent(component)) {
-			grouping.tracker.bind(entry.toolCallId, (role) => {
-				entry.groupRole = role;
-				component.setGroupRole(role);
-			});
+			grouping.tracker.bind(entry.toolCallId, groupedRowSink(component, entry), component);
 			grouping.lastMember = component;
 		}
 		onEntry(entry, component);
@@ -1142,10 +1166,7 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 	const component = adopted ?? kept ?? mode.addRenderedChatEntry(entry);
 	if (!saved && entry.kind === "tool" && isGroupedToolComponent(component)) {
 		const grouping = mainToolGrouping(mode);
-		grouping.tracker.bind(entry.toolCallId, (role) => {
-			entry.groupRole = role;
-			component.setGroupRole(role);
-		});
+		grouping.tracker.bind(entry.toolCallId, groupedRowSink(component, entry), component);
 		if (latest) grouping.lastMember = component;
 	}
 	if (entry.kind === "assistant" && !adopted) addServiceTierWarnings(mode, entry.message);
