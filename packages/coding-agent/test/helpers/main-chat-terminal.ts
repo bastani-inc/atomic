@@ -177,7 +177,7 @@ export async function startMainChat(
 	// The working line's verb is the one random part of a frame; the glyph's animation the one that moves by itself.
 	const random = vi.spyOn(Math, "random").mockReturnValue(0);
 	stops.push(() => random.mockRestore());
-	// Offline: no tool download (fd) notices land in the chat while it starts.
+	// Offline: nothing is fetched while the chat starts.
 	for (const [name, value] of [
 		["ATOMIC_REDUCED_MOTION", "1"],
 		["ATOMIC_OFFLINE", "1"],
@@ -192,6 +192,8 @@ export async function startMainChat(
 	const terminal = new VirtualTerminal(COLUMNS, ROWS);
 	const mode = new InteractiveMode(runtime, { terminal });
 	stops.push(() => mode.stop());
+	// Whether fd and rg are installed on the machine would add a notice to the chat (a download, or "not found").
+	mode.ensureManagedToolsReady = async () => {};
 	await options.beforeRun?.(mode);
 	void mode.run().catch(() => {});
 	await vi.waitFor(
