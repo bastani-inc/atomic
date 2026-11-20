@@ -11,6 +11,7 @@ import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runti
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { bindAgentPanel } from "../rpc/agent-panel-bridge.ts";
+import { bindAgentViewSession } from "./agent-view/install.ts";
 import { chatLineDrawnLive, noteLiveChatRows } from "./chat-reader-layout.js";
 import { chatRecordsChanged } from "./chat-reader-records.js";
 import { hasAssistantVisibleContent, interruptedNotice } from "./components/assistant-message.ts";
@@ -241,8 +242,11 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 					setToolsExpanded: panelUi.setToolsExpanded,
 					notify: panelUi.notify,
 				});
+	// The panel and `/tasks` of this session show its subagents on the single chat screen.
+	const unbindAgentView = bindAgentViewSession(this, session);
 	this.unsubscribe = () => {
 		unsubscribe();
+		unbindAgentView();
 		if (this.retryLoader && this.retryEscapeHandler) {
 			this.statusContainer.removeChild(this.retryLoader);
 			this.retryLoader.stop();

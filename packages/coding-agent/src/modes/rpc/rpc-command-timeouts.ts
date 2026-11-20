@@ -42,6 +42,10 @@ export const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
 	"navigate_tree",
 	"invoke_shortcut",
 	"start_pending_recovery",
+	// A message to a subagent shown on the host's screen waits, as `prompt` does, for its session to take it.
+	"agent_view_prompt",
+	"agent_view_resume",
+	"agent_view_pause",
 ]);
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
