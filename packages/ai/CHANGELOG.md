@@ -4,6 +4,16 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-20
+
+### Added
+
+- Provider requests and `retryAssistantCall()` accept `retryDeadline`, an absolute `performance.now()` timestamp. An Atomic-managed backoff retry that reaches the deadline is not sent, even if the caller's abort timer has not fired. Omitting it keeps the original retry timing ([#5627](https://github.com/bastani-inc/atomic/issues/5627)).
+
+### Fixed
+
+- Fixed GitHub Copilot turns on Chat Completions, seen with Gemini models, failing with `stream-ended-early` when the response stream ended normally but reported no finish reason. GitHub Copilot sometimes ends a response stream normally without reporting a finish reason. For every GitHub Copilot model on Chat Completions, Atomic now tells such a response from a cut-off stream by the stream's final `[DONE]` event: a response whose tool calls are all complete ends with `toolUse`, a response with text and no tool call ends with `stop`, and a response with neither is the retryable `empty-response` error. A tool call that may be incomplete, or a stream that ends without `[DONE]`, is still a retryable `stream-ended-early`. An inferred stop reason is noted in the message's diagnostics as `github_copilot_inferred_stop_reason` (`GITHUB_COPILOT_INFERRED_STOP_REASON_DIAGNOSTIC`), so `/debug` output and session exports show it. Streams that report a finish reason, and other providers, are unchanged ([#6028](https://github.com/bastani-inc/atomic/pull/6028)).
+
 ## [0.10.0-alpha.1] - 2026-11-20
 
 ### Added
