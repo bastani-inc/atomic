@@ -42,17 +42,17 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-function runNode(flags: readonly string[], script: string): SpawnSyncReturns<string> {
+function runNode(flags: readonly string[], script: string, cwd = dir): SpawnSyncReturns<string> {
 	return spawnSync(process.execPath, [...flags, "--import", dataUrl(RESOLVE_TS_SOURCES), "--eval", script], {
-		cwd: dir,
+		cwd,
 		encoding: "utf-8",
 		env: { ...process.env, ATOMIC_TEST_PRELOAD_LOG: preloadLog },
 	});
 }
 
 /** A host started with `--input-type=module` and a counting `--import` preload. */
-function runModuleHost(script: string): SpawnSyncReturns<string> {
-	return runNode(["--import", dataUrl(COUNTING_PRELOAD), "--input-type=module"], script);
+function runModuleHost(script: string, cwd = dir): SpawnSyncReturns<string> {
+	return runNode(["--import", dataUrl(COUNTING_PRELOAD), "--input-type=module"], script, cwd);
 }
 
 function preloadRuns(): number {
@@ -141,14 +141,19 @@ test("under Node's permission model, diagnostic and settings-lock workers keep t
 
 test("the parent-process guardian starts without the process's flags (#6079)", () => {
 	const stopFile = join(dir, "stop");
-	const result = runModuleHost(`
+	const result = runModuleHost(
+		`
 		import { startParentProcessGuardian } from ${sourceUrl("utils/shell.ts")};
 		import { writeFileSync } from "node:fs";
 		startParentProcessGuardian(process.pid, ${JSON.stringify(stopFile)});
 		writeFileSync(${JSON.stringify(stopFile)}, "");
 		// The guardian ends this process once it sees the stop file; outliving it means the guardian never ran.
 		setTimeout(() => process.stdout.write("survived"), 15_000);
-	`);
+	`,
+		// On Windows the guardian ends the process with a detached taskkill, which can outlive it in the process's
+		// working directory; outside the test's directory, that directory can still be removed.
+		tmpdir(),
+	);
 	assert.equal(result.stdout, "");
 	assert.doesNotMatch(result.stderr, /Error/);
 	if (process.platform !== "win32") assert.equal(result.signal, "SIGKILL");
