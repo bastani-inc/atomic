@@ -24,6 +24,7 @@ import {
 	getSkillCatalog,
 	isPathInside,
 	isSessionStartTimeoutError,
+	type QueuedTaskMessages,
 	type SessionEntry,
 	type SessionHeader,
 	SessionManager,
@@ -860,6 +861,16 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			aborted = true;
 			settlePromptAbort?.();
 			await activeTurn;
+		},
+		// As a real session's: the queued messages come back, then the turn ends as an interrupt ends it.
+		pauseTurn: async () => {
+			const taken = { steering: steering.splice(0), followUp: followUps.splice(0) };
+			if (streaming) {
+				aborted = true;
+				settlePromptAbort?.();
+				await activeTurn;
+			}
+			return taken;
 		},
 		subscribe(listener: AgentSessionEventListener) {
 			listeners.add(listener);
@@ -2431,9 +2442,8 @@ export class SubagentControlRuntime {
 			const transcriptSession = session;
 			let refreshElapsed: (() => void) | undefined;
 			let interruptGeneration = 0;
-			const interruptTurn = async (): Promise<void> => {
-				// A turn is interrupted while it streams, and between two attempts of a retry, where nothing streams.
-				if ((!transcriptSession.isStreaming && !transcriptSession.isRetrying) || termination !== undefined) return;
+			/** Ends the current turn with `end` and waits for the next one, keeping the child's elapsed span in step. */
+			const endTurn = async <T>(end: () => Promise<T>): Promise<T> => {
 				const generation = ++interruptGeneration;
 				let resumed = false;
 				interruptedTurnSettlement = nextTurnSettled(
@@ -2461,12 +2471,33 @@ export class SubagentControlRuntime {
 								}),
 					},
 				);
-				await transcriptSession.interruptTurn();
+				const ended = await end();
 				if (!resumed && generation === interruptGeneration) {
 					elapsedSpan.endedAt ??= Date.now();
 					admitted.spec.onElapsedSpanChanged?.();
 					refreshElapsed?.();
 				}
+				return ended;
+			};
+			const interruptTurn = async (): Promise<void> => {
+				// A turn is interrupted while it streams, and between two attempts of a retry, where nothing streams.
+				if ((!transcriptSession.isStreaming && !transcriptSession.isRetrying) || termination !== undefined) return;
+				await endTurn(() => transcriptSession.interruptTurn());
+			};
+			/**
+			 * Esc in the child's chat: the typed messages still queued come back for the chat's editor, and an open run ends
+			 * as an interrupt ends it; the child waits, paused, for its next message.
+			 */
+			const pauseTurn = async (): Promise<QueuedTaskMessages> => {
+				if (termination !== undefined) return { steering: [], followUp: [] };
+				const open =
+					transcriptSession.isStreaming ||
+					transcriptSession.isRetrying ||
+					(transcriptSession._activePromptCount ?? 0) > 0;
+				const taken = open
+					? await endTurn(() => transcriptSession.pauseTurn())
+					: await transcriptSession.pauseTurn();
+				return taken.typed ?? taken;
 			};
 			const settleInterruptedTurns = async (): Promise<void> => {
 				while (interruptedTurnSettlement !== undefined && termination === undefined) {
@@ -2505,6 +2536,7 @@ export class SubagentControlRuntime {
 				commands: () => sessionCommands(transcriptSession, sessionManager.getCwd()),
 				isRunning: () => transcriptSession.isStreaming,
 				interruptTurn,
+				pauseTurn,
 				getQueuedMessages: () => ({
 					steering: transcriptSession.getSteeringMessages(),
 					followUp: transcriptSession.getFollowUpMessages(),

@@ -194,6 +194,8 @@ class AgentSessionBase {
 	protected _awaitingStartAfterInterrupt = false;
 	readonly _undeliveredAgentStarts: number = 0;
 	protected _awaitingMessageAfterInterrupt = false;
+	protected _turnPause: PromiseWithResolvers<void> | undefined = undefined;
+	protected _turnPauseRelease: Promise<void> | undefined = undefined;
 	protected _disposed = false;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
 	/** Settles after the currently active branch-summary navigation finishes cleanup. */

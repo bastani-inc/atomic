@@ -13,6 +13,7 @@ import {
 } from "./agent-session-persistent-custom-messages.ts";
 import { deliverQueuedInputIfIdle } from "./agent-session-prompt.ts";
 import { abortTurnRetries } from "./agent-session-retry.ts";
+import { releaseTurnPause } from "./agent-session-turn-pause.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 
@@ -118,6 +119,12 @@ function startTurnIfPauseReleasedDuringAdmission(session: AgentSession, starter:
  * its next turn instead of only queueing for a task prompt that has already ended.
  */
 function startTurnAfterInterrupt(session: AgentSession, starter: CustomMessage): void {
+	// Another agent's message continues a child Esc paused, as it continues an interrupted one (#5224).
+	const pauseRelease = releaseTurnPause(session);
+	if (pauseRelease !== undefined) {
+		void pauseRelease.then(() => startTurnAfterInterrupt(session, starter));
+		return;
+	}
 	if (!session._awaitingMessageAfterInterrupt || session._queuedMessagesPaused) return;
 	if (session.isStreaming || session._isPreparingRun || session._activePromptCount > 0) return;
 	session._awaitingMessageAfterInterrupt = false;
