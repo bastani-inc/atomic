@@ -1,5 +1,10 @@
-import { computeCacheWaste, createCacheMissModelSource, formatCacheWaste } from "../../core/cache-stats.ts";
+import { createCacheMissModelSource, formatCacheWaste } from "../../core/cache-stats.ts";
 import { formatResumeTimings, latestResumeTimings } from "../../core/resume/timings.ts";
+import {
+	readSessionUsageDetails,
+	type SessionUsageDetails,
+	sessionUsageDetails,
+} from "../../core/session-usage-details.ts";
 import {
 	compareWorktreeSnapshot,
 	currentWorktreeSnapshots,
@@ -12,7 +17,6 @@ import {
 } from "../../core/session-worktree-snapshots.ts";
 import { parseSlashCommand } from "../../core/slash-commands.js";
 import { formatToolStatus, type ToolStatusReport } from "../../core/tool-status.js";
-import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { isGitUnavailableError, isWorkspaceError } from "../../core/worktree-snapshot/errors.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { getEngineSessionStats } from "../interactive-engine/engine-session-stats.js";
@@ -469,6 +473,13 @@ InteractiveModeBase.prototype.handleSessionCommand = function (this: Interactive
 	showSessionInfo.call(this);
 };
 
+const NO_USAGE_DETAILS: SessionUsageDetails = {
+	breakdown: [],
+	promptTokens: 0,
+	cacheRead: 0,
+	cacheWaste: { missedTokens: 0, missedCost: 0, missCount: 0, unpricedCount: 0 },
+};
+
 function showSessionInfo(this: InteractiveModeBase): void {
 	const engineStats = getEngineSessionStats(this.session);
 	const stats = engineStats ?? this.session.getSessionStats();
@@ -508,43 +519,58 @@ function showSessionInfo(this: InteractiveModeBase): void {
 		mirrorStats.tokens.output === stats.tokens.output &&
 		mirrorStats.tokens.cacheRead === stats.tokens.cacheRead &&
 		mirrorStats.tokens.cacheWrite === stats.tokens.cacheWrite;
-	const entries =
-		engineStats && (this.session.isStreaming || !mirrorMatchesEngine) ? [] : this.sessionManager.getEntries();
-	const assistantEntries = entries.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
-	const promptTokens = engineStats
-		? engineStats.tokens.input + engineStats.tokens.cacheRead + engineStats.tokens.cacheWrite
-		: assistantEntries.reduce(
-				(sum, entry) =>
-					sum +
-					(entry.type === "message" && entry.message.role === "assistant"
-						? entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite
-						: 0),
-				0,
-			);
-	const cacheRead = engineStats
-		? engineStats.tokens.cacheRead
-		: assistantEntries.reduce(
-				(sum, entry) =>
-					sum +
-					(entry.type === "message" && entry.message.role === "assistant" ? entry.message.usage.cacheRead : 0),
-				0,
-			);
-	if (promptTokens > 0)
-		info += `${theme.fg("dim", "Cache Hit Rate:")} ${((cacheRead / promptTokens) * 100).toFixed(1)}%\n`;
-	const waste = computeCacheWaste(entries, createCacheMissModelSource(this.session.modelRuntime));
-	if (waste.missCount > 0) info += `${theme.fg("dim", "Wasted Cache Cost:")} ${formatCacheWaste(waste)}\n`;
+	const head = info;
+	const block = new Text("", 1, 0);
+	/** Fill the block; without `details`, only with the lines that do not need them, and `note` when there is one. */
+	const show = (details: SessionUsageDetails | undefined, note?: string) => {
+		let text = head;
+		const promptTokens = engineStats
+			? engineStats.tokens.input + engineStats.tokens.cacheRead + engineStats.tokens.cacheWrite
+			: (details?.promptTokens ?? 0);
+		const cacheRead = engineStats ? engineStats.tokens.cacheRead : (details?.cacheRead ?? 0);
+		if (promptTokens > 0)
+			text += `${theme.fg("dim", "Cache Hit Rate:")} ${((cacheRead / promptTokens) * 100).toFixed(1)}%\n`;
+		if (details && details.cacheWaste.missCount > 0)
+			text += `${theme.fg("dim", "Wasted Cache Cost:")} ${formatCacheWaste(details.cacheWaste)}\n`;
 
-	if (stats.cost > 0) {
-		info += `\n${theme.bold("Cost")}\n`;
-		info += `${theme.fg("dim", "Total:")} ${stats.cost.toFixed(4)}`;
-		for (const item of getUsageCostBreakdown(entries)) {
-			info += `\n${theme.fg("dim", `${item.key}:`)} $${item.cost.toFixed(4)}`;
+		if (stats.cost > 0) {
+			text += `\n${theme.bold("Cost")}\n`;
+			text += `${theme.fg("dim", "Total:")} ${stats.cost.toFixed(4)}`;
+			for (const item of details?.breakdown ?? []) {
+				text += `\n${theme.fg("dim", `${item.key}:`)} $${item.cost.toFixed(4)}`;
+			}
 		}
-	}
+		if (note) text += `\n${theme.fg("warning", note)}`;
+		block.setText(text);
+	};
+	const manager = this.sessionManager;
+	const models = createCacheMissModelSource(this.session.modelRuntime);
+	// An isolated host's mirror that is behind its engine lists nothing it would have to guess.
+	const mirrorBehind = engineStats !== undefined && (this.session.isStreaming || !mirrorMatchesEngine);
+	const paged = !mirrorBehind && manager.hasFullHistory?.() === false;
+	if (mirrorBehind) show(NO_USAGE_DETAILS);
+	else if (!paged) show(sessionUsageDetails(manager.getEntries(), models));
+	else show(undefined);
 
 	this.chatContainer.addChild(new Spacer(1));
-	this.chatContainer.addChild(new Text(info, 1, 0));
+	this.chatContainer.addChild(block);
 	this.ui.requestRender();
+	if (!paged) return;
+	// The per-model cost and cache lines cover the whole session (#5554). A manager holding only its window reads the
+	// rest a page at a time and keeps none of it; the block is shown at once and those lines appear when the read ends.
+	void readSessionUsageDetails(manager, models).then(
+		(details) => {
+			show(details);
+			this.ui.requestRender();
+		},
+		(error: unknown) => {
+			show(
+				undefined,
+				`Could not read the earlier history for the per-model cost and cache lines: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			this.ui.requestRender();
+		},
+	);
 }
 
 InteractiveModeBase.prototype.handleChangelogCommand = async function (this: InteractiveModeBase): Promise<void> {

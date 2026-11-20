@@ -61,7 +61,7 @@ ctx.sessionManager.getBranch()        // Current branch
 ctx.sessionManager.getLeafId()        // Current leaf entry ID
 ```
 
-Starting an extension does not load older conversation entries. To look up one entry, use `await ctx.sessionManager.readEntry(id)`. To visit a range in append order, use `for await (const page of ctx.sessionManager.readHistory({ fromSeq, toSeq }))`. Each item in `page.items` is either `{ seq, entry }` or an oversized reference with `kind: "oversized"`, `seq` and `bytes`. Read that reference with `for await (const bytes of ctx.sessionManager.readHistoryChunks(item))`. Break either loop when you have what you need; the manager does not retain pages you have read.
+Starting an extension does not load older conversation entries. The entries your extension saved with `pi.appendEntry()` on the current branch stay in `getBranch()` and `getEntries()`, so restoring its state in `session_start` works as before. To look up one entry, use `await ctx.sessionManager.readEntry(id)`. To visit a range in append order, use `for await (const page of ctx.sessionManager.readHistory({ fromSeq, toSeq }))`. Each item in `page.items` is either `{ seq, entry }` or an oversized reference with `kind: "oversized"`, `seq` and `bytes`. Read that reference with `for await (const bytes of ctx.sessionManager.readHistoryChunks(item))`. Break either loop when you have what you need; the manager does not retain pages you have read. `await ctx.sessionManager.loadFullHistory()` still loads every stored entry into the session's manager, but the whole session then stays in memory; prefer the paged reads.
 
 ### ctx.modelRegistry / ctx.model / ctx.scopedModels
 

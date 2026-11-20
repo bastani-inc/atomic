@@ -46,6 +46,7 @@
 - `SessionManager.getEntries()` returns the current window, not the complete recorded conversation. A custom task transcript source that needs off-branch rows must supply those rows or a pager for them ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 - A fork into a store that Atomic can tell is a different store, such as with `manager.forkTo(cwd, otherStore)`, copies the current context and keeps the parent session ID; it no longer transfers the parent's private history. Forks within one store, including `atomic --fork` and **Fork** for a session whose working directory is missing, still copy the whole session, every branch included, and so does a fork between stores Atomic cannot tell apart. `/fork` and `/clone` still copy the complete selected path. For a complete independent copy, use `atomic storage export` and `atomic storage import` ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
 - An SDK adapter that exposes only a partial child session and has no exact sequence lookup or paged history still captures a subagent launch by `leafId`, but the optional `leafSeq` is omitted instead of loading the whole session ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
+- An imported session (`SessionManager.importFromJsonl()`, `runtime.importFromJsonl()`, `/import`, RPC `import_session` and `atomic --import`) continues from its current context window, as a resumed one does. What it shows, its context and its export are unchanged, but `getEntries()`, `getBranch()` and `getTree()`, and RPC `get_entries` and `get_tree`, now describe that window after an import. Read older entries with `readHistory()` ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 
 ### Added
 
@@ -64,6 +65,16 @@
 - Codemode is now active in the default tool set. It adds its tool description to the model's prompt, and `codemode.inlineBudget` bounds the inline declarations in it (default: 3000 estimated tokens). It also adds a one-line note to each direct tool that scripts can call, naming what `tools.<name>(args)` returns, plus one tool line and one guideline to the system prompt; the budget does not bound these. To opt out, set `"defaultTools": ["-codemode"]` or pass `atomic --tools -codemode`. Explicit tool lists must name `codemode` to select it. An explicit `-codemode` also prevents MCP from turning it back on ([#5939](https://github.com/bastani-inc/atomic/pull/5939)).
 - A finished subagent's completion notice now names the call that continues it, such as `Resume it with subagent({ action: "resume", id: "a760c0ec:0", message: "…" }) to continue it with a follow-up.`, together with its Intercom name when known. It still says not to restart the subagent only to retrieve its result. Expanding the notice line shows the same `resume id`, and `/tasks` shows it in the expanded row and the detail page of a completed, failed, paused or quit subagent. Collapsed notice lines and notices saved by earlier versions look the same as before ([#5968](https://github.com/bastani-inc/atomic/pull/5968)).
 - Fullscreen main chats, subagent chats and saved task transcripts read older turns in bounded pages as you scroll. Each page shows the retry, compaction and checkout notices saved with its turns where the whole chat shows them, also when copied. Ctrl+End returns to live output and releases the historical pages. Native scrollback shows where to read or export older messages the terminal never printed ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+- Atomic's own code reads older session entries a page at a time with `sessionManager.readHistory()` and `readEntry(id)`, and never loads a whole saved session into a live manager. Use `readHistory()` in extensions and SDK code too. `loadFullHistory()` and the `{ history: "full" }` option of `SessionManager.open()`, `openSessionById()`, `continueRecent()`, `runtime.switchSession()` and `runtime.rehydrate()` still work, but they load every entry of the session into memory; use them only when every entry must stay resident ([#5554](https://github.com/bastani-inc/atomic/issues/5554)):
+
+  ```ts
+  for await (const page of sessionManager.readHistory()) {
+    for (const item of page.items) if ("entry" in item) visit(item.entry);
+  }
+  const entry = await sessionManager.readEntry(entryId);
+  ```
+
+- `/session` no longer loads the whole session into memory to list the cost of each model, the cache hit rate and the wasted cache cost. It shows the rest of the summary at once, reads the earlier history a page at a time without keeping it, and adds those lines, which still cover the whole session, when the read ends ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 
 ### Fixed
 
