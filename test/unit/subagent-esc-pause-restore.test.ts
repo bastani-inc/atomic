@@ -291,3 +291,80 @@ test(
 	},
 	LIVE_RESTORE_TIMEOUT_MS,
 );
+
+test(
+	"a pause recorded by a build that names no leaf entry is still restored paused: nothing prompts the subagent",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-leafless-restart" })], {
+				stopReason: "toolUse",
+			}),
+		]);
+		const parent = parentSession(env.root);
+		const runId = "esc-pause-leafless";
+		const childId = `${runId}:0`;
+		const liveOptions = env.options(runId);
+		const launchOptions = (options: RunSyncOptions): RunSyncOptions => ({
+			...options,
+			testSession: false,
+			getChildSessionOptions: liveOptions.getChildSessionOptions,
+		});
+
+		// Its records are written as a build that recorded pauses without their leaf entry wrote them.
+		const before = taskHost("before-leafless-restart");
+		const sink = createSubagentChildRecordSink(parent.pi, parent.ctx(before));
+		const launched = await runAgentTask({
+			host: before,
+			cwd: env.root,
+			agents: [agent],
+			agent: "worker",
+			task: "run until paused",
+			options: { ...liveOptions, index: 0, sessionDir: join(env.root, "children", runId) },
+			recordChild: {
+				...sink,
+				record: (record) => {
+					const { pausedAtLeafId: _pausedAtLeafId, ...leafless } = record;
+					return sink.record(leafless);
+				},
+			},
+			runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+		});
+		assert.equal(launched.kind, "admitted");
+		const firstTask = launched.kind === "admitted" ? launched.observation.taskId : "";
+		await until(() => env.blockStarted() && transcriptOf(before, firstTask) !== undefined, LIVE_CHILD_START_WAIT_MS);
+		await transcriptOf(before, firstTask)!.pauseTurn!();
+		await until(() => parent.latest(childId)?.pausedByUser === true);
+		await before.close("session-close");
+		await until(() => parent.latest(childId)?.state === "running");
+		assert.equal(parent.latest(childId)?.pausedAtLeafId, undefined, "the record names no leaf entry");
+		const requestsBeforeRestart = env.faux.state.callCount;
+
+		const after = taskHost("after-leafless-restart");
+		try {
+			const deps: SubagentChildRestoreDeps = {
+				pi: parent.pi,
+				config: {},
+				discoverAgents: () => ({ agents: [agent] }),
+				runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+			};
+			const [outcome] = await restoreSubagentChildren(deps, parent.ctx(after));
+			assert.equal(outcome?.kind, "restored");
+			const restoredTask = outcome?.kind === "restored" ? outcome.taskId : "";
+			await until(() => transcriptOf(after, restoredTask)?.turnPaused?.() === true);
+			await pause(RESTART_WINDOW_MS);
+			assert.equal(env.faux.state.callCount, requestsBeforeRestart, "nothing prompted the restored subagent");
+			assert.equal(
+				JSON.stringify(transcriptOf(after, restoredTask)!.getEntries()).includes(
+					SUBAGENT_RESUME_CONTINUATION_PROMPT,
+				),
+				false,
+				"it is not told to continue on its own",
+			);
+			assert.equal(parent.latest(childId)?.pausedByUser, true);
+		} finally {
+			await after.close("session-close");
+		}
+	},
+	LIVE_RESTORE_TIMEOUT_MS,
+);

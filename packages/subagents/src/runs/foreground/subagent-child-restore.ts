@@ -331,13 +331,15 @@ async function entriesAfterLaunch(
  * Whether the pause a record names still holds in the child's saved session: the session still holds the entry the
  * pause was taken at, and no user message reached the child after it. What its interrupted turn left (its answer, the
  * results of its stopped calls) and what a restore notes are not messages to it. A version that does not record pauses
- * leaves the record's pause behind when it continues the child; the message it continues it with ends the pause.
+ * leaves the record's pause behind when it continues the child; the message it continues it with ends the pause. A
+ * pause recorded without its entry, as builds before `pausedAtLeafId` recorded it, holds as those builds held it.
  */
 function pauseStillHolds(
 	branch: ReturnType<SessionManager["getBranch"]> | undefined,
 	pausedAtLeafId: string | null | undefined,
 ): boolean {
-	if (branch === undefined || pausedAtLeafId === undefined) return false;
+	if (branch === undefined) return false;
+	if (pausedAtLeafId === undefined) return true;
 	const pausedAt = pausedAtLeafId === null ? -1 : branch.findIndex((entry) => entry.id === pausedAtLeafId);
 	if (pausedAtLeafId !== null && pausedAt === -1) return false;
 	return branch.slice(pausedAt + 1).every((entry) => !(entry.type === "message" && entry.message.role === "user"));

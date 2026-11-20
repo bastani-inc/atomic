@@ -162,7 +162,8 @@ export interface SubagentChildRecord {
 	/**
 	 * The leaf entry of the child's own session when the user paused it (`null` for an empty session). The pause holds
 	 * only while no user message reached that session since: records merge field by field, so a version that does not
-	 * record pauses leaves `pausedByUser` as it was when it continues the child. Absent where `pausedByUser` is.
+	 * record pauses leaves `pausedByUser` as it was when it continues the child. Absent in records without
+	 * `pausedByUser`, and in records written before Atomic recorded the entry, whose pause holds as it did then.
 	 */
 	readonly pausedAtLeafId?: string | null;
 	/**
