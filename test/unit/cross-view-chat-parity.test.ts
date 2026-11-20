@@ -181,7 +181,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 				);
 				assert.equal(
 					rows.at(-1),
-					"  ← main chat · esc to interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys",
+					"  ← main chat · esc to pause · pgup/pgdn scroll · ctrl+o expand · ? keys",
 					`width ${width}: running hint lists ← main chat and live keys`,
 				);
 			}
@@ -198,7 +198,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 			assert.equal(inspector.handleInput(ESC), true);
 			assert.equal(interrupted, 0, "closing ? overlay with Esc does not interrupt the subagent");
 
-			// Esc on the chat interrupts the turn and updates the hint line (no esc to interrupt once idle)
+			// Esc on the chat pauses the subagent and updates the hint line (no esc to pause once idle)
 			assert.equal(inspector.handleInput(ESC), true);
 			await flush();
 			assert.equal(interrupted, 1);
@@ -581,7 +581,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 
 			const subRunningHint = subLines.at(-1) ?? "";
 
-			assert.equal(subRunningHint, "  ← main chat · esc to interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys");
+			assert.equal(subRunningHint, "  ← main chat · esc to pause · pgup/pgdn scroll · ctrl+o expand · ? keys");
 
 			// 3. ? on an empty prompt opens the shared key overlay in all three views
 			const mainOverlay = new MainComposerKeyOverlay(
@@ -631,17 +631,17 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 
 			assert.equal(subNotice, mainNotice, "subagent view renders the same shared interruption notice");
 
-			// Hint line after interrupt drops esc to interrupt in both stage and subagent views
+			// Hint line after Esc drops the esc hint in both stage and subagent views
 
 			assert.equal(subAfterAbort.at(-1), "  ← main chat · pgup/pgdn scroll · ctrl+o expand · ? keys");
 
-			// ? overlay when idle omits esc to interrupt in both stage chat and subagent view
+			// ? overlay when idle omits the esc row in both stage chat and subagent view
 
 			assert.equal(subInspector.handleInput("?"), true);
 
 			const idleSubOverlay = plain(subInspector.renderViewport(100, 28)).join("\n");
 
-			assert.doesNotMatch(idleSubOverlay, /interrupt the agent's turn/);
+			assert.doesNotMatch(idleSubOverlay, /pause the agent's turn/);
 
 			assert.equal(subInspector.handleInput(ESC), true);
 			assert.equal(
@@ -773,7 +773,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 
 			assert.equal(
 				subRunningHint,
-				"  ← main chat · esc to interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys",
+				"  ← main chat · esc to pause · pgup/pgdn scroll · ctrl+o expand · ? keys",
 				"subagent hint strips dead esc from remapped non-interrupt actions",
 			);
 
