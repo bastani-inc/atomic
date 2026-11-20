@@ -241,6 +241,7 @@ const ATOMIC_CUSTOM_TYPES = new Set([
 	"intercom_session_memberships",
 	"resume_timings",
 	"subagent-child",
+	"subagent-fork-start",
 	"subagent-slash-final-snapshot",
 	"web-search-results",
 	"workflow-stage-parked-tasks",
