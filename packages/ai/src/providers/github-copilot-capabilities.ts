@@ -40,7 +40,10 @@ export interface GitHubCopilotModelCapabilities {
 		readonly emptyArguments: "empty-object";
 	};
 	readonly completion: {
-		/** The event that ends a complete turn; a stream without it fails as `stream-ended-early`. */
+		/**
+		 * The event that ends a complete turn; a stream without it fails as `stream-ended-early`, except a Chat Completions
+		 * stream that delivered its final `[DONE]` and whose content is complete.
+		 */
 		readonly finishSignal: "finish-reason" | "terminal-response-event" | "message-stop";
 		/** A Chat or Responses turn with no text and no tool call fails as `empty-response`. */
 		readonly emptyTurn: "empty-response-error" | "accepted";

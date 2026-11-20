@@ -81,3 +81,49 @@ export class ServerSentEventDecoder {
 		this.raw = [];
 	}
 }
+
+/**
+ * Watches streamed responses for the `data: [DONE]` event that ends a complete Chat Completions stream, which the
+ * OpenAI SDK consumes without passing on. A stream that is cut off never delivers it. Bodies pass through unchanged.
+ */
+export class DoneEventWatch {
+	#received = false;
+
+	/** Whether the body of the latest response delivered `[DONE]`. */
+	get received(): boolean {
+		return this.#received;
+	}
+
+	/** `send`, with the body of each successful response watched. Each request starts with nothing received. */
+	watch(send: typeof globalThis.fetch): typeof globalThis.fetch {
+		return Object.assign(async (...args: Parameters<typeof globalThis.fetch>) => {
+			this.#received = false;
+			return this.#watchBody(await send(...args));
+		}, send);
+	}
+
+	#watchBody(response: Response): Response {
+		if (!response.ok || !response.body) return response;
+		const decoder = new ServerSentEventDecoder();
+		const see = (events: readonly ServerSentEvent[]): void => {
+			if (events.some((event) => event.data === "[DONE]")) this.#received = true;
+		};
+		const body = response.body.pipeThrough(
+			new TransformStream<Uint8Array, Uint8Array>({
+				transform: (chunk, controller) => {
+					if (!this.#received) see(decoder.decode(chunk));
+					controller.enqueue(chunk);
+				},
+				// Like the SDK, an event the stream ends without its blank line still counts.
+				flush: () => {
+					if (!this.#received) see(decoder.end());
+				},
+			}),
+		);
+		return new Response(body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: response.headers,
+		});
+	}
+}
