@@ -170,6 +170,7 @@ export function useWrappedFile(file: string, owner: object): { release(): void }
 			const count = (registry.wrapped.get(file) ?? 1) - 1;
 			if (count > 0) registry.wrapped.set(file, count);
 			else registry.wrapped.delete(file);
+			leaveScopesIfUnused();
 		},
 	};
 	registry.collected.register(owner, use, use);
@@ -200,6 +201,16 @@ function scopedHoldOpen(gate: FileGate): boolean {
 }
 
 /**
+ * Leaves the asynchronous context once no wrapped connection is open and no scoped hold is: nothing reads it then, and
+ * on Node 22 an entered context keeps promise hooks on for every later await. It is entered again when needed.
+ */
+function leaveScopesIfUnused(): void {
+	if (registry.wrapped.size > 0) return;
+	for (const gate of registry.files.values()) if (scopedHoldOpen(gate)) return;
+	registry.scopes.disable();
+}
+
+/**
  * Closes `hold`, once. When it was the file's last, the oldest call waiting for the file runs now, if the word is free
  * and no call ran in this turn; the others follow one per turn (see `runNextWaiter`).
  */
@@ -211,6 +222,7 @@ export function releaseHold(hold: FileHold | undefined): void {
 	gate.holds.delete(hold);
 	if (!scopedHoldOpen(gate)) runNextWaiter(hold.file, gate);
 	forgetIfIdle(hold.file, gate);
+	if (hold.scoped) leaveScopesIfUnused();
 }
 
 /**
@@ -431,6 +443,8 @@ const LEAD = String.raw`^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*`;
 const READ_STATEMENT = new RegExp(`${LEAD}(?:SELECT|VALUES|WITH)\\b`, "i");
 /** A PRAGMA, which SQLite may carry out while it prepares it: never prepared for its plan. */
 const PRAGMA_STATEMENT = new RegExp(`${LEAD}PRAGMA\\b`, "i");
+/** A statement that only lists a plan: it runs nothing, whatever it explains. */
+const EXPLAIN_STATEMENT = new RegExp(`${LEAD}EXPLAIN\\b`, "i");
 /**
  * Steps of SQLite's virtual machine that write a database file or change a connection's transaction or schema, as
  * opposed to the temporary tables and indexes a read sorts and deduplicates in. A write to a table opens it with
@@ -464,19 +478,19 @@ const WRITE_STEPS = new Set([
 /**
  * What a wrapped call is, decided from the plan SQLite makes for its text on `database`, never by running it:
  *
- * - `invalid`: SQLite cannot prepare it (a missing table, a syntax error). It runs at once and fails with its own
- *   error, as it always has: a statement that cannot be prepared runs nothing and takes no lock.
- * - `read`: a single statement (`single`) whose plan has no step that writes (see `WRITE_STEPS`) and starts no write
- *   transaction, whatever functions or virtual tables it calls. It runs at once: in WAL mode, which both kinds of
- *   connection put the file in, a read never waits for the write lock, and code of yours that writes from inside it
- *   meets the lock as it always did.
+ * - `invalid`: a single statement (`single`) SQLite cannot prepare now (a missing table, a syntax error), prepared as
+ *   the call itself prepares it. It runs at once and fails with its own error, as it always has: a statement that
+ *   cannot be prepared runs nothing and takes no lock.
+ * - `read`: a single statement whose plan has no step that writes (see `WRITE_STEPS`) and starts no write
+ *   transaction, whatever functions or virtual tables it calls, or one that only lists a plan (`EXPLAIN`). It runs at
+ *   once: in WAL mode, which both kinds of connection put the file in, a read never waits for the write lock, and code
+ *   of yours that writes from inside it meets the lock as it always did.
  * - `write`: any other single statement, a PRAGMA included, which SQLite may carry out while it prepares it and so
  *   is never prepared for its plan. It waits for the lock (see `runWhenFree`).
- * - `script`: a call that may be several statements (`exec`). It waits like a write unless its first statement cannot
- *   be prepared (`invalid`).
+ * - `script`: a call that may be several statements (`exec`), never prepared: it waits like a write.
  *
- * The plan of a text is prepared once while the file is held and run again for later calls; whether a statement writes
- * does not change with the schema.
+ * The plan of a statement that prepares is made once while the file is held and listed again for later calls; whether a
+ * statement writes does not change with the schema.
  */
 export function classify(
 	gate: FileGate,
@@ -485,30 +499,53 @@ export function classify(
 	sql: string,
 	single: boolean,
 ): "read" | "write" | "script" | "invalid" {
-	const otherwise = single ? "write" : "script";
-	if (PRAGMA_STATEMENT.test(sql)) return otherwise;
+	if (!single) return "script";
+	if (PRAGMA_STATEMENT.test(sql)) return "write";
+	// Prepared first, as the call itself prepares it: if that fails now, the call fails at once with its own error.
+	try {
+		database.prepare(sql);
+	} catch {
+		return "invalid";
+	}
+	if (EXPLAIN_STATEMENT.test(sql)) return "read";
+	const steps = planSteps(gate, owner, database, sql);
+	if (steps === undefined || !READ_STATEMENT.test(sql)) return "write";
+	for (const step of steps) {
+		const opcode = String(step.opcode);
+		// Transaction p2: whether it is a write transaction.
+		if (WRITE_STEPS.has(opcode) || (opcode === "Transaction" && Number(step.p2) !== 0)) return "write";
+	}
+	return "read";
+}
+
+/**
+ * The steps of the plan of `sql`, listed now from the plan kept for it (SQLite prepares a kept plan again when this
+ * connection changed its schema since, and fails it if the statement no longer prepares), or from a new one; undefined
+ * when SQLite cannot make one.
+ */
+function planSteps(
+	gate: FileGate,
+	owner: object,
+	database: DatabaseSync,
+	sql: string,
+): ReturnType<StatementSync["all"]> | undefined {
 	const plans = plansOf(gate, owner);
-	let explained = plans.explained.get(sql);
-	if (explained === undefined) {
+	const kept = plans.explained.get(sql);
+	if (kept !== undefined) {
 		try {
-			explained = database.prepare(`EXPLAIN ${sql}`);
+			return kept.all();
 		} catch {
-			return "invalid";
+			plans.explained.delete(sql);
 		}
+	}
+	try {
+		const explained = database.prepare(`EXPLAIN ${sql}`);
+		const steps = explained.all();
 		if (plans.explained.size >= MAX_PLANS) plans.explained.delete(plans.explained.keys().next().value!);
 		plans.explained.set(sql, explained);
-	}
-	if (!single || !READ_STATEMENT.test(sql)) return otherwise;
-	try {
-		for (const step of explained.all()) {
-			const opcode = String(step.opcode);
-			// Transaction p2: whether it is a write transaction.
-			if (WRITE_STEPS.has(opcode) || (opcode === "Transaction" && Number(step.p2) !== 0)) return "write";
-		}
-		return "read";
+		return steps;
 	} catch {
-		plans.explained.delete(sql);
-		return "write";
+		return undefined;
 	}
 }
 

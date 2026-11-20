@@ -1934,12 +1934,9 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		if (params.some((value) => typeof value === "string" && value.includes("\0"))) return call();
 		const owner = this.connection;
 		const database = owner.connection;
-		// While no transaction is open the file's calls only take their turn: nothing is explained for it. A text SQLite
-		// cannot prepare fails at once with its own error, before any wait.
-		if (gate.holds.size > 0) {
-			const kind = classify(gate, owner, database, sql, single);
-			if (kind === "read" || kind === "invalid") return call();
-		}
+		// A read never waits, nor does a text SQLite cannot prepare, which fails at once with its own error.
+		const kind = classify(gate, owner, database, sql, single);
+		if (kind === "read" || kind === "invalid") return call();
 		return runWhenFree(file, gate, owner, database, call, () => unavailable(this.descriptor, sqliteBusyError()));
 	}
 

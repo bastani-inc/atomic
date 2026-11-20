@@ -255,9 +255,10 @@ test("repeated wrapped reads during a threaded transaction prepare their plan on
 		prepared.filter((sql) => sql.startsWith("EXPLAIN")),
 		[`EXPLAIN ${read}`],
 	);
+	// Each call prepares its statement first, as the call itself does, then runs it.
 	assert.deepEqual(
 		prepared.filter((sql) => sql === read),
-		[read, read],
+		[read, read, read, read],
 	);
 });
 
@@ -607,19 +608,27 @@ function holdScopes(): AsyncLocalStorage<object | undefined> {
 test("a threaded transaction enters no asynchronous context unless a wrapped connection to its file is open (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
 	const enters = vi.spyOn(holdScopes(), "run");
-	cleanups.push(() => enters.mockRestore());
+	const leaves = vi.spyOn(holdScopes(), "disable");
+	cleanups.push(() => {
+		enters.mockRestore();
+		leaves.mockRestore();
+	});
 	const write = (value: string) =>
 		threaded.transaction(async (tx) => {
 			await tx.run("INSERT INTO items VALUES (?)", value);
 		});
 	// A wrapped connection to another file does not count.
-	await openWrapped(databasePath());
+	const { wrapped: elsewhere } = await openWrapped(databasePath());
 	await write("unwrapped");
 	assert.equal(enters.mock.calls.length, 0);
 	const { wrapped } = await openWrapped(path);
 	await write("wrapped");
 	assert.equal(enters.mock.calls.length, 1);
+	leaves.mockClear();
 	await wrapped.close();
+	await elsewhere.close();
+	// Once no wrapped connection is open the context is left, so it no longer costs every later await.
+	assert.ok(leaves.mock.calls.length >= 1, "the context was not left once the last wrapped connection closed");
 	enters.mockClear();
 	await write("closed");
 	assert.equal(enters.mock.calls.length, 0);
@@ -686,10 +695,6 @@ test("a wrapped call SQLite cannot prepare fails at once with its own error duri
 		["SELECT * FROM nosuch", (database) => database.all("SELECT * FROM nosuch")],
 		["SELEC 1", (database) => database.get("SELEC 1")],
 		["INSERT INTO nosuch VALUES (1)", (database) => database.run("INSERT INTO nosuch VALUES (1)")],
-		[
-			"INSERT INTO nosuch VALUES (1); INSERT INTO items VALUES ('c')",
-			(database) => database.exec("INSERT INTO nosuch VALUES (1); INSERT INTO items VALUES ('c')"),
-		],
 	];
 	const { committed, settled } = await holdLock(threaded, 600);
 	for (const [sql, call] of calls) {
@@ -714,4 +719,80 @@ test("a wrapped call SQLite cannot prepare fails at once with its own error duri
 	}
 	await committed;
 	assert.deepEqual(await values(threaded), ["a", "b"]);
+});
+
+test("a read or a call SQLite cannot prepare does not wait behind calls still queued after a threaded transaction (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped: writer } = await openWrapped(path);
+	const { wrapped: other } = await openWrapped(path);
+	const { committed } = await holdLock(threaded);
+	let written = 0;
+	const writes = Array.from({ length: 10 }, (_, index) =>
+		writer.run("INSERT INTO items VALUES (?)", `w${index}`).then(() => {
+			written++;
+		}),
+	);
+	await committed;
+	// The queued writes now run one per turn; calls made meanwhile that need no lock do not wait for them.
+	const read = await other.get<{ n: number }>("SELECT count(*) AS n FROM items");
+	const failure = await other.all("SELECT * FROM nosuch").then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	const writtenMeanwhile = written;
+	await Promise.all(writes);
+	assert.ok(writtenMeanwhile < 10, "the read and the failing call waited for the queued writes");
+	assert.ok(Number(read?.n) >= 2 && Number(read?.n) <= 2 + writtenMeanwhile, `it read ${read?.n} rows`);
+	assert.ok(failure instanceof StorageUnavailableError);
+	assert.match((failure.cause as Error).message, /no such table: nosuch/);
+});
+
+test("a wrapped script, or a statement that only lists a plan, during a threaded transaction runs as before (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped } = await openWrapped(path, 150);
+	const { committed, settled } = await holdLock(threaded, 600);
+	// A statement that only lists a plan runs at once.
+	assert.ok((await wrapped.all("EXPLAIN SELECT 1")).length > 0);
+	assert.equal(settled(), false);
+	// Scripts SQLite reads past a leading empty statement or a leading EXPLAIN are never prepared ahead: they wait, and
+	// fail with SQLITE_BUSY at the busy timeout having run nothing.
+	for (const script of ["; INSERT INTO items VALUES ('c')", "EXPLAIN SELECT 1; INSERT INTO items VALUES ('d')"]) {
+		const failure = await wrapped.exec(script).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		assert.ok(failure instanceof StorageUnavailableError, `${script}: expected SQLITE_BUSY, got ${String(failure)}`);
+		assert.equal((failure.cause as { errcode?: number }).errcode, 5);
+	}
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b"]);
+});
+
+test("a wrapped call whose statement no longer prepares fails at once with its own error, also after it was planned (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { raw, wrapped } = await openWrapped(path, 150);
+	raw.exec("CREATE TEMP TABLE scratch (x)");
+	const { committed, settled } = await holdLock(threaded, 1_200);
+	// Planned while the file is held: a read runs at once, a write waits and fails with SQLITE_BUSY.
+	assert.deepEqual(await wrapped.all("SELECT x FROM scratch"), []);
+	const busy = await wrapped.run("INSERT INTO scratch VALUES (1)").then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(((busy as StorageUnavailableError).cause as { errcode?: number }).errcode, 5);
+	raw.exec("DROP TABLE temp.scratch");
+	for (const call of [
+		() => wrapped.all("SELECT x FROM scratch"),
+		() => wrapped.run("INSERT INTO scratch VALUES (1)"),
+	]) {
+		const failure = await call().then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		assert.ok(failure instanceof StorageUnavailableError, `expected a storage failure, got ${String(failure)}`);
+		assert.match((failure.cause as Error).message, /no such table: scratch/);
+		assert.equal((failure.cause as { errcode?: number }).errcode, 1);
+	}
+	assert.equal(settled(), false, "a call waited for the transaction");
+	await committed;
 });
