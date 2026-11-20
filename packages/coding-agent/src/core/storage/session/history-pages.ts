@@ -11,8 +11,9 @@ import {
 	type SessionEntrySizes,
 	type SessionHistoryPage,
 	type SessionHistoryReadOptions,
+	type SessionScanOptions,
+	type SessionScanPage,
 	type SessionStore,
-	type SessionToolUseSelection,
 	yieldSessionTurn as yieldToEventLoop,
 } from "./types.js";
 
@@ -248,27 +249,29 @@ export async function findInSessionHistory(
 }
 
 /**
- * The entries of generation `epoch` through `watermark` that `select` selects, in pages of one read each: a reader that
- * needs only those does not receive the others at all (#5571).
+ * The entries of generation `epoch` through `watermark` read as `options` say, in pages of one read each: a reader that
+ * consumes every page at once, such as an export, receives only the entries it selects, and each oversized one at the
+ * end of the run before it with its first bytes when it asks (#5571).
  */
 export async function* selectedHistoryPages(
 	store: Required<Pick<SessionStore, "readScanPage">>,
 	sessionId: string,
 	epoch: string,
 	watermark: number,
-	select: SessionToolUseSelection,
-): AsyncGenerator<SessionHistoryPage, void> {
+	options: SessionScanOptions,
+): AsyncGenerator<SessionHistoryPage & Pick<SessionScanPage, "prefixes">, void> {
 	let start = 1;
 	let limit = SESSION_HISTORY_SCAN_ENTRIES;
 	while (start <= watermark) {
-		const read = await store.readScanPage(sessionId, start, watermark, epoch, limit, select);
+		const read = await store.readScanPage(sessionId, start, watermark, epoch, limit, options);
 		if (read.lastSeq < watermark) throw new SessionConflictError(sessionId, watermark, read.lastSeq);
 		const { items } = read;
 		if (read.throughSeq < (items.at(-1)?.seq ?? start) || (items[0]?.seq ?? start) < start)
 			throw new Error(`Missing session history at entry ${start}`);
-		if (items.length) yield { items };
+		if (items.length) yield { items, ...(read.prefixes ? { prefixes: read.prefixes } : {}) };
+		// Bytes cut a page that ends with an entry before the end; one that ends with a reference ended at that entry.
 		if (items.length === limit) limit = Math.min(SESSION_HISTORY_SCAN_ENTRIES, limit * 2);
-		else if (items.length && read.throughSeq < watermark && "entry" in items[0]!)
+		else if (read.throughSeq < watermark && items.length && "entry" in items[0]! && "entry" in items.at(-1)!)
 			limit = Math.min(SESSION_HISTORY_SCAN_ENTRIES, Math.ceil(items.length * 1.25) + 16);
 		start = read.throughSeq + 1;
 		if (start <= watermark) await yieldToEventLoop();

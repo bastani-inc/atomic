@@ -63,12 +63,14 @@ import type {
 	SessionEntrySizes,
 	SessionForkSeed,
 	SessionForkStream,
+	SessionHistoryItem,
 	SessionListQuery,
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
 	SessionOpenMarkerStore,
 	SessionRecordHeader,
 	SessionResume,
+	SessionScanOptions,
 	SessionScanPage,
 	SessionSnapshot,
 	SessionSnapshotCut,
@@ -2742,18 +2744,19 @@ export class SqlSessionStore implements SessionStore {
 		sessionId: string,
 		startSeq: number,
 		endSeq: number,
-		epoch: string,
+		epoch: string | undefined,
 		limit: number,
-		select?: SessionToolUseSelection,
+		options: SessionScanOptions = {},
 	): Promise<SessionScanPage> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
+		const { select, trailingReference, referencePrefix } = options;
 		const generation = this.generation(sessionId);
 		const count = entrySizeLimit(limit);
 		const bytes = (row: string) =>
 			`CASE WHEN ${row}.chunks = 0 THEN ${this.entryByteLength(`${row}.entry_json`)} ELSE (${row}.chunks - 1) * ? + (SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id = ${row}.session_id AND c.seq = ${row}.seq AND c.idx = ${row}.chunks - 1) END`;
-		const head = `SELECT 0 AS seq, NULL AS bytes, NULL AS chunks, NULL AS entry_json, last_seq, revision, ${generation.sql} AS epoch,
-				(SELECT schema_version FROM ${this.tables.meta} LIMIT 1) AS schema_version`;
+		const head = `SELECT 0 AS seq, NULL AS bytes, NULL AS chunks, header_json AS entry_json, last_seq, revision,
+				${generation.sql} AS epoch, (SELECT schema_version FROM ${this.tables.meta} LIMIT 1) AS schema_version`;
 		type Row = SqliteRow & {
 			seq: number;
 			bytes: number | null;
@@ -2765,12 +2768,16 @@ export class SqlSessionStore implements SessionStore {
 			schema_version: number | null;
 			sized?: number | null;
 			sized_last?: number | null;
+			prefix?: Uint8Array | null;
 		};
-		const filter = (row: string) => this.selected(row, select!);
+		const filter = (row: string) => (select ? ` AND ${this.selected(row, select)}` : "");
 		const selectParams = select === undefined ? [] : this.selectedParams(select);
-		const rows = !select
-			? await this.database.all<Row>(
-					`${head} FROM ${this.tables.sessions} WHERE id = ?
+		const json = this.dialect.name === "sqlite" ? "CAST(entry_json AS BLOB)" : "convert_to(entry_json, 'UTF8')";
+		const prefixLength = Math.max(1, Math.trunc(referencePrefix ?? 1) || 1);
+		const rows =
+			!select && !trailingReference && referencePrefix === undefined
+				? await this.database.all<Row>(
+						`${head} FROM ${this.tables.sessions} WHERE id = ?
 					UNION ALL
 					SELECT seq, bytes, chunks, CASE WHEN bytes <= ? AND chunks = 0 THEN entry_json END, NULL, NULL, NULL, NULL FROM (
 						SELECT e.seq, e.chunks, e.entry_json, ${bytes("e")} AS bytes FROM ${this.tables.entries} e
@@ -2784,55 +2791,72 @@ export class SqlSessionStore implements SessionStore {
 						)
 					) AS page
 					ORDER BY seq`,
-					...generation.params,
-					sessionId,
-					SESSION_HISTORY_PAGE_BYTES,
-					SESSION_ENTRY_CHUNK_BYTES,
-					sessionId,
-					startSeq,
-					endSeq,
-					startSeq,
-					SESSION_ENTRY_CHUNK_BYTES,
-					sessionId,
-					startSeq,
-					endSeq,
-					count,
-					SESSION_HISTORY_PAGE_BYTES,
-				)
-			: // The matching entries are found once: their sizes are kept for the cut and the coverage.
-				await this.database.all<Row>(
-					`WITH sized AS MATERIALIZED (
+						...generation.params,
+						sessionId,
+						SESSION_HISTORY_PAGE_BYTES,
+						SESSION_ENTRY_CHUNK_BYTES,
+						sessionId,
+						startSeq,
+						endSeq,
+						startSeq,
+						SESSION_ENTRY_CHUNK_BYTES,
+						sessionId,
+						startSeq,
+						endSeq,
+						count,
+						SESSION_HISTORY_PAGE_BYTES,
+					)
+				: // The entries the page may hold are sized once: the cut, the coverage and the reference after the run use them.
+					await this.database.all<Row>(
+						`WITH sized AS MATERIALIZED (
 						SELECT s.seq, ${bytes("s")} AS bytes FROM ${this.tables.entries} s
-						WHERE s.session_id = ? AND s.seq BETWEEN ? AND ? AND ${filter("s")} ORDER BY s.seq LIMIT ?
+						WHERE s.session_id = ? AND s.seq BETWEEN ? AND ?${filter("s")} ORDER BY s.seq LIMIT ?
 					), cut AS (
 						SELECT COALESCE(
 							(SELECT max(seq) FROM (SELECT seq, sum(bytes) OVER (ORDER BY seq) AS total FROM sized) AS run WHERE total <= ?),
 							(SELECT min(seq) FROM sized)
 						) AS seq
+					), tail AS (
+						SELECT seq FROM sized
+						WHERE ${trailingReference ? "" : "1 = 0 AND "}seq = (SELECT min(seq) FROM sized WHERE seq > (SELECT seq FROM cut))
+							AND bytes > ? AND (SELECT bytes FROM sized WHERE seq = (SELECT seq FROM cut)) <= ?
 					)
-					${head}, (SELECT count(*) FROM sized) AS sized, (SELECT max(seq) FROM sized) AS sized_last
+					${head}, (SELECT count(*) FROM sized) AS sized, (SELECT max(seq) FROM sized) AS sized_last, NULL AS prefix
 					FROM ${this.tables.sessions} WHERE id = ?
 					UNION ALL
-					SELECT seq, bytes, chunks, CASE WHEN bytes <= ? AND chunks = 0 THEN entry_json END, NULL, NULL, NULL, NULL, NULL, NULL FROM (
+					SELECT seq, bytes, chunks, CASE WHEN bytes <= ? AND chunks = 0 THEN entry_json END, NULL, NULL, NULL, NULL, NULL, NULL,
+						${
+							referencePrefix === undefined
+								? "NULL"
+								: `CASE WHEN bytes > ? THEN CASE WHEN chunks > 0
+									THEN (SELECT substr(c.data, 1, CAST(? AS INTEGER)) FROM ${this.tables.entryChunks} c WHERE c.session_id = ? AND c.seq = page.seq AND c.idx = 0)
+									ELSE substr(${json}, 1, CAST(? AS INTEGER)) END END`
+						}
+					FROM (
 						SELECT e.seq, e.chunks, e.entry_json, ${bytes("e")} AS bytes FROM ${this.tables.entries} e
-						WHERE e.session_id = ? AND e.seq BETWEEN ? AND (SELECT seq FROM cut) AND ${filter("e")}
+						WHERE e.session_id = ? AND (e.seq BETWEEN ? AND (SELECT seq FROM cut)${filter("e")} OR e.seq = (SELECT seq FROM tail))
 					) AS page
 					ORDER BY seq`,
-					SESSION_ENTRY_CHUNK_BYTES,
-					sessionId,
-					startSeq,
-					endSeq,
-					...selectParams,
-					count,
-					SESSION_HISTORY_PAGE_BYTES,
-					...generation.params,
-					sessionId,
-					SESSION_HISTORY_PAGE_BYTES,
-					SESSION_ENTRY_CHUNK_BYTES,
-					sessionId,
-					startSeq,
-					...selectParams,
-				);
+						SESSION_ENTRY_CHUNK_BYTES,
+						sessionId,
+						startSeq,
+						endSeq,
+						...selectParams,
+						count,
+						SESSION_HISTORY_PAGE_BYTES,
+						SESSION_HISTORY_PAGE_BYTES,
+						SESSION_HISTORY_PAGE_BYTES,
+						...generation.params,
+						sessionId,
+						SESSION_HISTORY_PAGE_BYTES,
+						...(referencePrefix === undefined
+							? []
+							: [SESSION_HISTORY_PAGE_BYTES, prefixLength, sessionId, prefixLength]),
+						SESSION_ENTRY_CHUNK_BYTES,
+						sessionId,
+						startSeq,
+						...selectParams,
+					);
 		const first = rows[0];
 		if (first === undefined || Number(first.seq) !== 0) throw new SessionNotFoundError(sessionId);
 		assertStorageSchemaVersion(
@@ -2843,7 +2867,12 @@ export class SqlSessionStore implements SessionStore {
 		);
 		const lastSeq = Number(first.last_seq);
 		this.noteGeneration(sessionId, first.revision!, lastSeq, first.epoch!);
-		if (first.epoch !== epoch) throw new SessionConflictError(sessionId, endSeq, lastSeq);
+		if (epoch !== undefined && first.epoch !== epoch) throw new SessionConflictError(sessionId, endSeq, lastSeq);
+		const read = {
+			header: JSON.parse(first.entry_json!) as SessionRecordHeader,
+			epoch: first.epoch!,
+			lastSeq,
+		};
 		const page = rows.slice(1);
 		for (const row of page)
 			if (row.bytes === null)
@@ -2852,32 +2881,44 @@ export class SqlSessionStore implements SessionStore {
 					new Error(`Missing final chunk of session entry ${row.seq}`),
 				);
 		const top = page.at(-1);
-		if (top === undefined) return { lastSeq, throughSeq: endSeq, items: [] };
+		if (top === undefined) return { ...read, throughSeq: endSeq, items: [] };
 		// The page accounts for the range through its last entry, or through the end when every entry it sized fit.
 		const throughSeq =
-			select && Number(first.sized) < count && Number(first.sized_last) <= Number(top.seq)
+			first.sized !== undefined && Number(first.sized) < count && Number(first.sized_last) <= Number(top.seq)
 				? endSeq
 				: Number(top.seq);
-		if (Number(page[0]!.bytes) > SESSION_HISTORY_PAGE_BYTES)
-			return {
-				lastSeq,
-				throughSeq,
-				items: [{ kind: "oversized", sessionId, epoch, seq: Number(page[0]!.seq), bytes: Number(page[0]!.bytes) }],
-			};
+		const prefixes = new Map<number, Uint8Array>();
+		const reference = (row: Row): SessionHistoryItem => {
+			if (row.prefix) prefixes.set(Number(row.seq), row.prefix);
+			return { kind: "oversized", sessionId, epoch: read.epoch, seq: Number(row.seq), bytes: Number(row.bytes) };
+		};
+		const oversized = (row: Row) => Number(row.bytes) > SESSION_HISTORY_PAGE_BYTES;
+		const run = page.filter((row) => !oversized(row));
+		const references = page.filter(oversized).map(reference);
+		const withPrefixes = { ...read, throughSeq, ...(prefixes.size ? { prefixes } : {}) };
+		if (!run.length) return { ...withPrefixes, items: references };
 		// Only an entry larger than a stored chunk is chunked, and so larger than a page; one that is not is read with its
 		// chunks in a snapshot of its own all the same.
-		if (page.some((row) => Number(row.chunks) > 0)) {
-			const range = await this.readRange(sessionId, Number(page[0]!.seq), Number(top.seq), epoch);
+		if (run.some((row) => Number(row.chunks) > 0)) {
+			const range = await this.readRange(sessionId, Number(run[0]!.seq), Number(run.at(-1)!.seq), read.epoch);
+			const seqs = new Set(run.map((row) => Number(row.seq)));
 			return {
+				...withPrefixes,
 				lastSeq: range.lastSeq,
-				throughSeq,
-				items: range.entries.map((entry, i) => ({ seq: range.seqs![i]!, entry })),
+				items: [
+					...range.entries
+						.map((entry, i) => ({ seq: range.seqs![i]!, entry }))
+						.filter((item) => seqs.has(item.seq)),
+					...references,
+				],
 			};
 		}
 		return {
-			lastSeq,
-			throughSeq,
-			items: page.map((row) => ({ seq: Number(row.seq), entry: JSON.parse(row.entry_json!) as SessionEntry })),
+			...withPrefixes,
+			items: [
+				...run.map((row) => ({ seq: Number(row.seq), entry: JSON.parse(row.entry_json!) as SessionEntry })),
+				...references,
+			],
 		};
 	}
 

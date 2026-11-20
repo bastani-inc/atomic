@@ -7,12 +7,14 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { ToolHtmlRenderer } from "../../packages/coding-agent/src/core/export-html/index.js";
+import { neverRenderInput } from "../../packages/coding-agent/src/core/export-html/oversized-render-inputs.js";
 import {
 	RENDER_INPUT_SELECTION,
 	renderHtmlInputs,
 } from "../../packages/coding-agent/src/core/export-html/render-inputs.js";
 import type { captureHtmlHistory } from "../../packages/coding-agent/src/core/export-html/session-data.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager.js";
+import { messageHeadIn } from "../../packages/coding-agent/src/core/storage/session/chunked-resume-projection.js";
 import { selectedHistoryPages } from "../../packages/coding-agent/src/core/storage/session/history-pages.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { storageBackends } from "../helpers/storage-backends.js";
@@ -123,9 +125,9 @@ async function rendered(entries: readonly SessionEntry[]): Promise<string[]> {
 	return calls;
 }
 
-/** The kinds the pass reads, each after every tool call that can precede it. */
-async function readKinds(entries: readonly SessionEntry[]): Promise<Set<number>> {
-	const before: SessionEntry[][] = [
+/** What can precede an entry: nothing, or an assistant's call of each tool with the entry's call ID. */
+function priorCalls(): SessionEntry[][] {
+	return [
 		[],
 		...TOOLS.map(
 			(name) =>
@@ -140,13 +142,20 @@ async function readKinds(entries: readonly SessionEntry[]): Promise<Set<number>>
 				] as unknown as SessionEntry[],
 		),
 	];
+}
+
+/** Whether the pass reads `entry` after `prefix`: the renderer is called for more, or its row given inputs to restore. */
+async function readsAfter(prefix: readonly SessionEntry[], entry: SessionEntry): Promise<boolean> {
+	const without = await rendered(prefix);
+	const withEntry = await rendered([...prefix, entry]);
+	return withEntry.length !== without.length || withEntry.some((value, i) => value !== without[i]);
+}
+
+/** The kinds the pass reads, each after every tool call that can precede it. */
+async function readKinds(entries: readonly SessionEntry[]): Promise<Set<number>> {
 	const read = new Set<number>();
 	for (const [index, entry] of entries.entries())
-		for (const prefix of before) {
-			const without = await rendered(prefix);
-			const withEntry = await rendered([...prefix, entry]);
-			if (withEntry.length !== without.length || withEntry.some((value, i) => value !== without[i])) read.add(index);
-		}
+		for (const prefix of priorCalls()) if (await readsAfter(prefix, entry)) read.add(index);
 	return read;
 }
 
@@ -169,7 +178,7 @@ for (const backend of storageBackends) {
 					"kinds",
 					created.epoch!,
 					entries.length,
-					RENDER_INPUT_SELECTION,
+					{ select: RENDER_INPUT_SELECTION, trailingReference: true },
 				))
 					for (const item of items) selected.add(item.seq - 1);
 				const missed = [...read].filter((index) => !selected.has(index));
@@ -188,3 +197,40 @@ for (const backend of storageBackends) {
 		300_000,
 	);
 }
+
+test("an oversized entry the renderer inputs pass skips from its prefix is one it never reads (#5571)", async () => {
+	const builtins = new Set(["bash", "read", "write", "edit", "ls"]);
+	// The kinds above, and the same messages with their discriminating fields first, as the agent writes them.
+	const entries = kinds().flatMap((entry) => {
+		if (entry.type !== "message") return [entry];
+		const { role, toolCallId, toolName, ...rest } = entry.message as unknown as Record<string, unknown>;
+		const head = {
+			role,
+			...(toolCallId === undefined ? {} : { toolCallId }),
+			...(toolName === undefined ? {} : { toolName }),
+		};
+		return [entry, { ...entry, message: { ...head, ...rest } } as unknown as SessionEntry];
+	});
+	let skipped = 0;
+	for (const entry of entries) {
+		const json = Buffer.from(JSON.stringify(entry));
+		for (const prefix of priorCalls()) {
+			const call =
+				prefix[0]?.type === "message"
+					? (prefix[0].message as unknown as { content: { name?: unknown }[] }).content[0]
+					: undefined;
+			const hasCall = (id: string) => call !== undefined && id === "call" && !builtins.has(call.name as string);
+			for (const length of [8, 24, 48, 80, 120, 200, json.length]) {
+				if (!neverRenderInput(messageHeadIn(json.subarray(0, length)), builtins, hasCall)) continue;
+				skipped++;
+				assert.equal(
+					await readsAfter(prefix, entry),
+					false,
+					`skipped from ${length} bytes but read: ${JSON.stringify(entry)} after ${JSON.stringify(prefix)}`,
+				);
+			}
+		}
+	}
+	// Not vacuous: other entries, other roles and template results are skipped from a prefix.
+	assert.ok(skipped > 10_000, `${skipped} skipped`);
+}, 300_000);

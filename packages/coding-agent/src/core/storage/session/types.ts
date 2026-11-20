@@ -192,12 +192,26 @@ export interface SessionToolUseSelection {
 	readonly exceptCalls: readonly string[];
 }
 
-/** A page of a forward scan and the session's watermark, from one read of the generation the scan started on. */
+/** How a scan reads its pages, for a reader that consumes every page at once, such as an export (#5571). */
+export interface SessionScanOptions {
+	/** Only the entries it selects count, besides every entry larger than a page. */
+	readonly select?: SessionToolUseSelection;
+	/** A run of entries also ends with the entry larger than a page that follows it, as a reference. */
+	readonly trailingReference?: boolean;
+	/** The first this many bytes of each referenced entry's JSON, in `SessionScanPage.prefixes`. */
+	readonly referencePrefix?: number;
+}
+
+/** A page of a forward scan with the session's header, generation and watermark, all from one read. */
 export interface SessionScanPage {
+	readonly header: SessionRecordHeader;
+	readonly epoch: string;
 	readonly lastSeq: number;
 	/** The last sequence the page accounts for: its last entry, or a later one when no entry after it up to there was asked for. */
 	readonly throughSeq: number;
 	readonly items: readonly SessionHistoryItem[];
+	/** With `referencePrefix`, the first bytes of each oversized item's JSON, by sequence. */
+	readonly prefixes?: ReadonlyMap<number, Uint8Array>;
 }
 
 export interface SessionStateEntry extends SessionStoredEntry {
@@ -566,12 +580,13 @@ export interface SessionStore {
 	 */
 	readEntrySizes?(sessionId: string, startSeq: number, endSeq: number, limit?: number): Promise<SessionEntrySizes>;
 	/**
-	 * One page of a forward scan of generation `epoch` in a single read, which is its own snapshot: the longest run of
+	 * One page of a forward scan of generation `epoch` (of the current one when it is undefined, so an empty range reads
+	 * the session's head) in a single read, which is its own snapshot: the longest run of
 	 * entries from `startSeq` through at most `endSeq` of at most `limit` entries (at most `SESSION_HISTORY_SCAN_ENTRIES`)
 	 * and `SESSION_HISTORY_PAGE_BYTES` bytes, or the entry at `startSeq` alone as an oversized reference when it is
 	 * larger, with the session's watermark. Rejects with `SessionConflictError` when the session is of another generation.
-	 * With `select`, only the entries it selects count: a reader that needs only those skips the others without
-	 * receiving them. A store whose reads are round
+	 * `options` select entries, end a run with the reference that follows it, or return each reference's first bytes, so
+	 * a reader that consumes every page at once makes fewer reads and receives only what it uses. A store whose reads are round
 	 * trips implements it so a scan costs one read a page, not a size read and a range read in transactions of their own
 	 * (#5571).
 	 */
@@ -579,9 +594,9 @@ export interface SessionStore {
 		sessionId: string,
 		startSeq: number,
 		endSeq: number,
-		epoch: string,
+		epoch: string | undefined,
 		limit: number,
-		select?: SessionToolUseSelection,
+		options?: SessionScanOptions,
 	): Promise<SessionScanPage>;
 	/**
 	 * Read at most `bytes` (`SESSION_HISTORY_CHUNK_BYTES` when absent, at most `SESSION_HISTORY_PAGE_BYTES`; a store may
