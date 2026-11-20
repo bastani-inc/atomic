@@ -26,6 +26,32 @@ test("restores the fullscreen terminal modes when the process exits without stop
 		for (const sequence of ["\x1b[?1006l", "\x1b[?1004l", "\x1b[?1003l", "\x1b[?1000l"]) {
 			assert.ok(before.includes(sequence), `missing ${JSON.stringify(sequence)}`);
 		}
+		// No frame was drawn yet, so the update opened on entering fullscreen ends once the main screen is back.
+		assert.ok(!before.includes("\x1b[?2026l"));
+		assert.ok(after.endsWith("\x1b[?1049l\x1b[?25h\x1b[?2026l"));
+	} finally {
+		tui.stop();
+	}
+	assert.ok(!process.listeners("exit").includes(added[0]!));
+});
+
+test("restores the fullscreen terminal modes when the process exits without stop() after a frame (#11170)", () => {
+	const terminal = new ExitRestoreTerminal();
+	const tui = createFullscreenTui({ showHardwareCursor: false, logDirectory: "/tmp", terminal });
+	const listenersBefore = new Set(process.listeners("exit"));
+	tui.start();
+	tui.renderNow();
+	const added = process.listeners("exit").filter((listener) => !listenersBefore.has(listener));
+	try {
+		assert.equal(added.length, 1);
+		added[0]?.(0);
+
+		assert.equal(terminal.restores.length, 1);
+		const { before, after } = terminal.restores[0]!;
+		assert.ok(before.startsWith("\x1b[?2026l"));
+		for (const sequence of ["\x1b[?1006l", "\x1b[?1004l", "\x1b[?1003l", "\x1b[?1000l"]) {
+			assert.ok(before.includes(sequence), `missing ${JSON.stringify(sequence)}`);
+		}
 		assert.ok(after.endsWith("\x1b[?1049l\x1b[?25h"));
 	} finally {
 		tui.stop();
