@@ -6,7 +6,7 @@ import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { SessionHeader } from "../session-manager-types.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
-import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
+import type { SkillCatalogCommand } from "../skill-catalog.ts";
 import {
 	type ChatPosition,
 	type ChatRecordOwner,
@@ -587,49 +587,70 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			if (resumer === undefined) return "This subagent has finished; its chat is read-only.";
 			return resumer.readOnlyReason(id);
 		},
-		async sendTaskMessage(id, text) {
-			const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
-			const resumer = taskResumer(store.supervisor);
-			// A finished subagent continues in its own session with the message, as `subagent resume` continues it.
-			if (record?.kind === "agent" && record.execution.kind === "settled" && resumer !== undefined) {
-				const reason = resumer.readOnlyReason(id);
-				if (reason !== undefined) throw new TaskMessageError("delivery-refused", { taskId: id, detail: reason });
-				const resumed = await resumer.resume(id, text);
-				if (!resumed.ok) throw new TaskMessageError("delivery-refused", { taskId: id, detail: resumed.reason });
-				return;
-			}
-			const task = lease(id);
-			if (!task.ok) throw new TaskMessageError("task-unavailable", { taskId: id });
-			const bound = taskTranscriptSource(task.value);
-			const session = bound.ok ? bound.value.session : undefined;
-			const target = session?.completionSource?.intercomTarget;
-			if (session?.sendMessage === undefined || target === undefined)
-				throw new TaskMessageError("messages-unsupported", { taskId: id });
-			// The message reaches the task as Intercom text, which its session does not expand, so a skill command is
-			// expanded here from the task's own skills, as its session would expand it. A selector naming none is sent as typed.
-			const skills = session.commands?.().skills;
-			let delivery: TaskMessageDelivery;
-			try {
-				delivery = await session.sendMessage(skills === undefined ? text : await expandSkillCommand(skills, text));
-			} catch (cause) {
-				throw new TaskMessageError("delivery-unconfirmed", { taskId: id, target }, { cause });
-			}
-			if (delivery.delivered) {
-				store.setTurnInterrupted(id, false);
-				return;
-			}
-			if (delivery.reason === "unconfirmed")
-				throw new TaskMessageTimeoutError({
-					taskId: id,
-					target,
-					timeoutMs: delivery.timeoutMs,
-					elapsedMs: delivery.elapsedMs,
+		async sendTaskMessage(id, text, lane = "steer") {
+			// The message goes to the subagent's own session: queued on its lane while the subagent runs, and the first
+			// message of its next turn once it has finished and resumes, as `subagent resume` continues it. The two can
+			// trade places while the message is on its way: a running subagent can end before it takes the message, and
+			// a wake can resume a finished one first. The message then goes the other way, once.
+			for (let attempt = 0; ; attempt++) {
+				const mayRetry = attempt === 0;
+				const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
+				const resumer = taskResumer(store.supervisor);
+				if (record?.kind === "agent" && record.execution.kind === "settled" && resumer !== undefined) {
+					const reason = resumer.readOnlyReason(id);
+					if (reason !== undefined) throw new TaskMessageError("delivery-refused", { taskId: id, detail: reason });
+					const resumed = await resumer.resume(id, text);
+					if (resumed.ok) return;
+					// Resumed meanwhile: it runs again, and the message joins it.
+					store.drain();
+					if (mayRetry && agentTaskRunning(store, id)) continue;
+					throw new TaskMessageError("delivery-refused", { taskId: id, detail: resumed.reason });
+				}
+				const task = lease(id);
+				if (!task.ok) throw new TaskMessageError("task-unavailable", { taskId: id });
+				const bound = taskTranscriptSource(task.value);
+				const session = bound.ok ? bound.value.session : undefined;
+				// Never an Intercom message: its model would receive the text wrapped as another agent's.
+				if (session?.queueMessage === undefined) throw new TaskMessageError("messages-unsupported", { taskId: id });
+				const target = session.completionSource?.intercomTarget;
+				const named = { taskId: id, ...(target === undefined ? {} : { target }) };
+				let delivery: TaskMessageDelivery;
+				try {
+					delivery = await session.queueMessage(text, lane);
+				} catch (cause) {
+					throw new TaskMessageError("delivery-unconfirmed", named, { cause });
+				}
+				if (delivery.delivered) {
+					store.setTurnInterrupted(id, false);
+					return;
+				}
+				if (delivery.reason === "ended" && mayRetry && resumer !== undefined && (await agentTaskSettles(store, id)))
+					continue;
+				if (delivery.reason === "unconfirmed")
+					throw new TaskMessageTimeoutError({
+						...named,
+						target: target ?? id,
+						timeoutMs: delivery.timeoutMs,
+						elapsedMs: delivery.elapsedMs,
+					});
+				throw new TaskMessageError(delivery.reason === "lost" ? "delivery-unconfirmed" : "delivery-refused", {
+					...named,
+					...(delivery.detail === undefined ? {} : { detail: delivery.detail }),
 				});
-			throw new TaskMessageError(delivery.reason === "lost" ? "delivery-unconfirmed" : "delivery-refused", {
-				taskId: id,
-				target,
-				...(delivery.detail === undefined ? {} : { detail: delivery.detail }),
-			});
+			}
+		},
+		async clearTaskQueue(id) {
+			const task = lease(id);
+			if (!task.ok) return { ok: false, error: { message: task.error.message } };
+			const bound = taskTranscriptSource(task.value);
+			const clear = bound.ok ? bound.value.session.clearQueue : undefined;
+			// A session that keeps no queue, as a finished task's, has nothing queued.
+			if (!bound.ok || clear === undefined) return { ok: true, value: { steering: [], followUp: [] } };
+			try {
+				return { ok: true, value: await clear.call(bound.value.session) };
+			} catch (error) {
+				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
+			}
 		},
 	};
 	cancellablePages.add(source.readTaskTranscript);
@@ -637,6 +658,36 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 	sources.set(store, source);
 	bindTaskClockSource(source, store);
 	return source;
+}
+
+/** How long a message that a subagent refused as its execution ended waits for its task to finish, to resume it. */
+const ENDED_TASK_SETTLE_WAIT_MS = 10_000;
+
+function agentTaskRunning(store: OwnerTaskStore, id: TaskId): boolean {
+	const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
+	return record?.kind === "agent" && record.execution.kind === "running";
+}
+
+/** Whether the agent task finishes within {@link ENDED_TASK_SETTLE_WAIT_MS}, once its execution has ended. */
+function agentTaskSettles(store: OwnerTaskStore, id: TaskId): Promise<boolean> {
+	const settled = () => {
+		const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
+		return record?.kind === "agent" && record.execution.kind === "settled";
+	};
+	store.drain();
+	if (settled()) return Promise.resolve(true);
+	return new Promise((resolve) => {
+		const finish = (value: boolean) => {
+			clearTimeout(timer);
+			unsubscribe();
+			resolve(value);
+		};
+		const unsubscribe = store.subscribe(() => {
+			if (settled()) finish(true);
+		});
+		const timer = setTimeout(() => finish(false), ENDED_TASK_SETTLE_WAIT_MS);
+		timer.unref?.();
+	});
 }
 
 function taskTranscriptSourceLoads(task: Parameters<typeof taskTranscriptSource>[0]): boolean {

@@ -909,8 +909,11 @@ function subagentExecutionEnded(session: AgentSession): boolean {
 	);
 }
 
+/** `code` lets a caller tell this refusal, which a finished subagent's resume can answer, from any other. */
 function subagentExecutionEndedError(): Error {
-	return new Error("Subagent execution is terminal and cannot accept messages");
+	return Object.assign(new Error("Subagent execution is terminal and cannot accept messages"), {
+		code: "SubagentExecutionEnded",
+	});
 }
 
 function awaitsSubagentAnswer(

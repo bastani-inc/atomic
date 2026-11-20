@@ -960,6 +960,12 @@ type TranscriptCommands = ReturnType<NonNullable<TranscriptSource["commands"]>>;
 
 type TranscriptQueueMethods = Required<Pick<TranscriptSource, "queueMessage" | "clearQueue">>;
 
+/** Whether a session refused a prompt because the child's execution had ended or its session closed. */
+function executionEnded(error: unknown): boolean {
+	const code = typeof error === "object" && error !== null ? (error as { readonly code?: unknown }).code : undefined;
+	return code === "SubagentExecutionEnded" || code === "SessionClosed";
+}
+
 /**
  * A chat of the child gives typed text to the child's own session, as the main chat gives typed text to its session:
  * a prompt on the lane, which the session queues while it works (listed by a `queue_update`, delivered raw at the
@@ -983,7 +989,7 @@ function chatMessageQueue(session: AgentSession): TranscriptQueueMethods {
 					.then(accepted, (error: unknown) =>
 						resolve({
 							delivered: false,
-							reason: "refused",
+							reason: executionEnded(error) ? "ended" : "refused",
 							detail: error instanceof Error ? error.message : String(error),
 						}),
 					);
