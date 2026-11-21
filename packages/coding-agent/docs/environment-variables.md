@@ -77,7 +77,7 @@ Atomic sets `AI_AGENT=atomic` for itself and every subprocess it launches, repla
 
 ## TLS certificates
 
-`NODE_EXTRA_CA_CERTS` names a PEM file of CA certificates Atomic trusts in addition to the built-in ones, for model providers, an `https://` proxy and the PostgreSQL store. Set it when a provider endpoint, or a proxy that inspects TLS traffic, uses a certificate from a private or corporate CA, and restart Atomic: it is read when Atomic starts. Both the npm-installed `atomic` and the standalone binary read it. A request refused for its certificate fails at once, naming the host and the reason, and is not retried.
+`NODE_EXTRA_CA_CERTS` names a PEM file of CA certificates Atomic trusts in addition to the built-in ones, for model providers, an `https://` proxy and the PostgreSQL store. Set it when a provider endpoint, or a proxy that inspects TLS traffic, uses a certificate from a private or corporate CA, and restart Atomic: it is read when Atomic starts. Both the npm-installed `atomic` and the standalone binary read it. A request refused for its certificate fails at once, naming the host and the reason, and is not retried. When the refused certificate is the `https://` proxy's own, the error names the proxy's host instead of the endpoint's; in the standalone binary only Amazon Bedrock requests can tell the two apart, and other requests name the endpoint for either.
 
 ## Provider credentials
 
