@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "vitest";
+import { ENGINE_SHUTDOWN_GRACE_MS } from "../../packages/coding-agent/src/modes/rpc/rpc-client-process.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { startPtyProgram } from "../helpers/pty-program.js";
 import {
@@ -16,8 +17,12 @@ import { startScriptedChatServer } from "../helpers/scripted-chat-server.js";
 
 const CLI = join(moduleDir(import.meta.url), "../../packages/coding-agent/dist/cli.js");
 const CLI_START_TIMEOUT_MS = 60_000;
-/** Quitting a session whose Intercom has not started yet takes about 0.2 s; a waited-for broker start takes seconds. */
-const EXIT_BOUND_MS = 3_000;
+/**
+ * A quit's shutdown handlers get ENGINE_SHUTDOWN_GRACE_MS. A quit that waited for the broker start would be cut there and
+ * leave the broker running; one that stops the start as the quit begins ends well within it (under 1 s on an idle
+ * machine, a few seconds on a loaded Windows one).
+ */
+const EXIT_BOUND_MS = ENGINE_SHUTDOWN_GRACE_MS;
 const BROKER_GONE_BOUND_MS = 2_000;
 
 /** A broker that starts, announces itself as a real one does (with when it was created, when asked), and never listens. */
@@ -187,7 +192,10 @@ describe("quitting a session whose startup join is waiting for a broker that nev
 					session.write("\r");
 					assert.equal((await session.exited).exitCode, 0);
 					const exitMs = performance.now() - quitAt;
-					assert.ok(exitMs < EXIT_BOUND_MS, `quitting waited ${Math.round(exitMs)} ms for the broker start`);
+					assert.ok(
+						exitMs < EXIT_BOUND_MS,
+						`quitting took ${Math.round(exitMs)} ms, as long as its shutdown bound`,
+					);
 					assert.equal(
 						await waitUntilGone(broker, BROKER_GONE_BOUND_MS, 50),
 						true,

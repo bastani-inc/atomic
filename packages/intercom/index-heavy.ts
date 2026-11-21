@@ -226,6 +226,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    * agent directory; renewed when the next session starts. Each connect reads the current one.
    */
   let connectAbort = new AbortController();
+  let stopBrokerStartsOnSessionEnd: (() => void) | undefined;
   /** #4727: the broker starts in flight, settled either way; the cleanup waits for them. */
   const brokerStarts = new Set<Promise<void>>();
   function trackBrokerStart<T>(begin: () => Promise<T>): Promise<T> {
@@ -1638,6 +1639,20 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     },
     setRuntimeContext: async (value) => {
       if (value !== null && connectAbort.signal.aborted) connectAbort = new AbortController();
+      stopBrokerStartsOnSessionEnd?.();
+      stopBrokerStartsOnSessionEnd = undefined;
+      if (value !== null) {
+        // A session that starts to quit or reload stops the broker starts it waits for at once, before its shutdown
+        // handlers run: a quit cut short at its shutdown bound must not leave a broker that never listens running.
+        const sessionEnds = value.getCurrentSessionSignal?.() ?? value.sessionSignal;
+        const starts = connectAbort;
+        const stop = () => starts.abort(new IntercomRuntimeInactiveError());
+        if (sessionEnds.aborted) stop();
+        else {
+          sessionEnds.addEventListener("abort", stop, { once: true });
+          stopBrokerStartsOnSessionEnd = () => sessionEnds.removeEventListener("abort", stop);
+        }
+      }
       stopApplyingReach?.();
       stopApplyingReach = undefined;
       intercomPolicy = value === null ? undefined : readIntercomPolicy(value);
