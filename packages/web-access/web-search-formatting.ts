@@ -2,6 +2,7 @@ import type { ExtractedContent } from "./extract.js";
 import type { SearchResult } from "./perplexity.js";
 import type { QueryResultData } from "./storage.js";
 import type { SummaryMeta } from "./summary-review.js";
+import type { SearchReturnPayload } from "./web-search-return.js";
 
 export const MAX_INLINE_CONTENT = 30000;
 
@@ -73,7 +74,7 @@ export function normalizeSummaryMeta(meta: SummaryMeta | undefined, summaryText:
 	};
 }
 
-export function buildCurationCancelledReturn(reason: "user" | "stale") {
+export function buildCurationCancelledReturn(reason: "user" | "stale"): SearchReturnPayload {
 	const message = `Search curation cancelled (${reason}).`;
 	return {
 		content: [{ type: "text", text: message }],
