@@ -24,7 +24,9 @@ import { QueuedDeliveryRelay } from "../../core/queued-message-delivery.ts";
 import { onBlueprintBuildFinished, onBlueprintBuildWaiting } from "../../core/resume/blueprint/barrier.ts";
 import { startedWithHangupIgnored } from "../../utils/inherited-hangup.js";
 import { interactiveEngineStartupEnv, isInteractiveEngineChild } from "../../utils/interactive-engine-env.ts";
+import { exitWithStatus } from "../../utils/process-exit-status.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import { CONSOLE_CLOSED_EXIT_CODE, CONSOLE_CLOSED_SHUTDOWN_MS } from "../../utils/windows-console-close.js";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
@@ -114,6 +116,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	let shuttingDown = false;
 	// SIGTERM/SIGHUP received so far. Only a repeated signal forces exit during shutdown.
 	let signalCount = 0;
+	// Set once this interactive engine's Windows console was closed.
+	let consoleClosed = false;
 	let inputReady = false;
 	let activeCommands = 0;
 	// Count detached prompt work as well as input handling so responses precede shutdown.
@@ -230,8 +234,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
-		// An engine stopped by a signal, as when its host was, records its shutdown as an explicit quit does.
-		if (interactiveEngineChild && cause === "signal") markEventLoopShutdown();
+		// An engine stopped by a signal or the end of its input, as when its host was signalled or, on Windows, its
+		// console was closed, records its shutdown as an explicit quit does.
+		if (interactiveEngineChild && cause !== "request") markEventLoopShutdown();
 		detachInput();
 		process.stdin.pause();
 		await handleCommand.disposeActiveBash();
@@ -258,13 +263,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 			await flushRawStdout();
 		}
 		// On Windows the interactive host closes an engine child's stdin to quit, then waits for it to exit; tell it
-		// once the shutdown has run, so it does not also wait for the runtime's own exit work.
-		if (interactiveEngineChild && cause === "input-end" && process.platform === "win32")
+		// once the shutdown has run, so it does not also wait for the runtime's own exit work. A host whose console
+		// was closed waits for that exit too.
+		if (interactiveEngineChild && (cause === "input-end" || consoleClosed) && process.platform === "win32")
 			reportShutdownCompleteAtExit();
 		// SIGHUP is the hangup of the host this engine serves, which asks with it when it was itself signalled: the
 		// engine has no terminal of its own. It then ends its process group, as a hangup ends a terminal's job.
 		if (interactiveEngineChild && signal === "SIGHUP" && endsProcessOnly(cause)) endProcessGroupAtExit();
-		process.exit(exitCode);
+		exitWithStatus(exitCode);
 	}
 
 	// Startup, command completion and agent settlement all retry an extension request.
@@ -303,6 +309,20 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 					// during shutdown is not a request to skip cleanup; a repeated one is.
 					process.exit(exitCode);
 				}
+			});
+		}
+		if (interactiveEngineChild && process.platform === "win32") {
+			// Windows reports a closed console as SIGHUP, and nothing else. The engine shares its host's console, and
+			// Windows tells the newest of the processes on it first: the engine before its host, which hears of it only
+			// once the engine is gone. The engine tells its host at once, then shuts down as on SIGHUP elsewhere, within
+			// a bound that ends before Windows would end it.
+			process.on("SIGHUP", () => {
+				if (consoleClosed) return;
+				consoleClosed = true;
+				writeRawStdout(serializeInteractiveEngineMessage({ type: "engine_console_closed" }));
+				killTrackedDetachedChildren();
+				setTimeout(() => process.exit(CONSOLE_CLOSED_EXIT_CODE), CONSOLE_CLOSED_SHUTDOWN_MS);
+				void shutdown(CONSOLE_CLOSED_EXIT_CODE, "SIGHUP", "signal");
 			});
 		}
 	};
