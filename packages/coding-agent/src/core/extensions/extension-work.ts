@@ -3,6 +3,7 @@ import { withBuiltinDiagnostics } from "../builtin-diagnostics.ts";
 import {
 	drainSessionWork,
 	hasCallingSessionWork,
+	onSessionQuit,
 	sessionLifetime,
 	trackSessionWork,
 } from "../session-lifecycle-work.ts";
@@ -20,6 +21,8 @@ interface WorkBinding {
 	run<T>(operation: () => Promise<T>): Promise<T>;
 	drain(): Promise<void>;
 	signal(): AbortSignal;
+	/** Absent on a binding made by an earlier version of this module. */
+	onQuit?(stop: () => void): () => void;
 }
 type OwnedRuntime = ExtensionRuntime & { [workBinding]?: WorkBinding };
 
@@ -30,7 +33,23 @@ export function bindExtensionWork(runtime: ExtensionRuntime, owner: object): voi
 		run: (operation) => trackSessionWork(owner, () => trackSessionWork(runtime, operation)),
 		drain: () => drainSessionWork(runtime),
 		signal: () => sessionLifetime(owner),
+		onQuit: (stop) => onSessionQuit(owner, stop),
 	};
+}
+
+/**
+ * Runs `stop` once the session that owns this runtime's work starts to quit; returns the unregistration. A binding an
+ * earlier version made cannot tell, and `stop` then never runs.
+ */
+export function onExtensionSessionQuit(runtime: ExtensionRuntime, stop: () => void): () => void {
+	const binding = (runtime as OwnedRuntime)[workBinding];
+	if (!binding) return onSessionQuit(runtime, stop);
+	return binding.onQuit?.(stop) ?? (() => {});
+}
+
+/** Whether the caller runs inside this runtime's shutdown handlers (`session_shutdown`). */
+export function inExtensionCleanup(runtime: ExtensionRuntime): boolean {
+	return (runtime as OwnedRuntime)[workBinding]?.cleanup.getStore()?.active === true;
 }
 
 export function extensionSessionSignal(runtime: ExtensionRuntime): AbortSignal {

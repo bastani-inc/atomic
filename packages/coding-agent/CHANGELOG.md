@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
+
 ### Fixed
 
 - After a restart, a long session no longer replays an Intercom message, reply or ask that it had already taken in a turn, or an ask it had already answered, once a compaction had left the entry that recorded this out of the reopened session. Such a message came back as a new turn when its sender was still connected, and as history otherwise, after every restart ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
@@ -17,6 +21,18 @@
 - Fixed the interactive engine and headless runs on Node not getting their larger heap when `NODE_OPTIONS` names `--max-old-space-size` where Node does not apply it: after a tab, which Node does not treat as a separator, or after a word that ends Node's reading of `NODE_OPTIONS`. A heap size that Node applies still takes precedence ([#6170](https://github.com/bastani-inc/atomic/pull/6170))
 - Fixed Atomic ending on an unrelated unhandled promise rejection after an agent panel source failed, although `NODE_OPTIONS` sets `--unhandled-rejections` to `warn` or `none` in quotes or as `--unhandled_rejections` ([#6170](https://github.com/bastani-inc/atomic/pull/6170))
 - On Windows, a command stopped or failing while the machine is heavily loaded is no longer reported as exiting with status 0.
+- An extension's `pi.exec` command still running when you quit no longer keeps the extensions' `session_shutdown` handlers from running: Atomic ends the command, with the processes it started, first (`SIGTERM`, then `SIGKILL` after one second). Commands the handlers run themselves are not ended ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
+- Quitting or `SIGTERM` ends within about five seconds when a `session_shutdown` handler never finishes, also when the session runs in Atomic's own process, as in a project left untrusted; there a second `SIGTERM` now ends Atomic at once too. Atomic's own saving after the handlers still completes ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
+- A `SIGHUP` or `SIGTERM` that arrives after `/quit` cleared the screen no longer ends Atomic at once, cutting the extensions' shutdown short; the quit finishes as it started ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
+- The standalone binary started with `SIGHUP` ignored, as `nohup atomic -p ...` starts it, keeps running when its terminal closes ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
+- Opening or closing `/tasks` or the focused agent panel no longer draws a frame without the agent panel, the footer's hints, or both. This includes Esc, Enter on the subagent already shown, and opening `/tasks` from a subagent's chat. The screen now changes from the prompt to the view and back in one frame.
+- While viewing a subagent, a narrow footer keeps `← main chat` and `↓ N agents` longer than `? keys` and the working status. Before, `↓ 1 agent` was dropped below 47 columns.
+- ↓ on the empty prompt of an extension's editor built on Atomic's editor (`ctx.ui.setEditorComponent`) now focuses the agent panel, as it does on the default prompt, unless the editor uses the key itself.
+- A task stopped by its execution timeout shows the stopped mark (a red `◯`) in its completion notice, as the agent panel and `/tasks` show it, instead of `!`. Saved sessions keep their notices unchanged.
+- An extension installed while Atomic starts no longer decides the trust of a folder whose saved **Trust** startup already applied: the folder is decided with the extensions Atomic found when it started, and the new extension loads after the decision ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- Resuming another folder's session from a folder whose own settings choose its session store loads the bundled extensions once, and shuts down the extensions that decided the first folder before the session's own load; a shutdown that does not finish within about five seconds no longer holds the session back and is named in a warning ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- When a folder is approved after the chat is on screen, an open menu of command names in which you have not chosen a row shows the approved commands, with an exact match selected; a completion provider that fails or never answers leaves the menu as it was ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- The resource list at the top of the chat shows an approval as soon as a selection, click, drag or search that held it ends, instead of checking again every 250 ms ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
 - `session.dispose()` now resolves only after the extension transpile cache has finished storing what the session's extensions started, such as the transform of a module an extension imported after it started. An SDK host that removes the agent directory once `dispose()` resolves could fail with `ENOTEMPTY`, or find a file written into it afterwards ([#6190](https://github.com/bastani-inc/atomic/pull/6190))
 
 ## [0.10.3] - 2026-11-21

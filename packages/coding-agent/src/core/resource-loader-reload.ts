@@ -31,9 +31,11 @@ import {
 	mergeExtensionWarnings,
 } from "./resource-loader-extension-warnings.ts";
 import {
+	bundledInlineFactories,
 	loadExtensionFactories,
 	loadExtensionPaths,
 	loadFinalExtensionSet,
+	omitInlineFactories,
 	resolveInheritedExtensionOverlaps,
 } from "./resource-loader-extensions.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
@@ -150,12 +152,16 @@ async function resolvePromptInputs(inputs: readonly string[]): Promise<string[]>
 	return resolved;
 }
 
-export async function loadProjectTrustExtensions(loader: DefaultResourceLoader): Promise<LoadExtensionsResult> {
+export async function loadProjectTrustExtensions(
+	loader: DefaultResourceLoader,
+	only?: ResourceLoaderReloadOptions["preTrustExtensions"],
+): Promise<LoadExtensionsResult> {
 	const state = resourceInternals(loader);
 	await state.settingsManager.setProjectTrustedAsync(false);
 	await state.settingsManager.reload();
 	const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await resolvePackageResourcePaths(loader, {
 		includeCliProjectLocalResources: false,
+		...(only === "bundled" ? { withoutConfigured: true as const } : {}),
 	});
 	const metadataByPath = new Map<string, PathMetadata>();
 	const cliEnabledExtensions = getEnabledPaths(cliExtensionPaths.extensions, metadataByPath);
@@ -163,7 +169,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	const builtinEnabledExtensions = getBuiltinExtensionPaths(
 		builtinPackagePaths.extensions,
 		metadataByPath,
-		state.noExtensions,
+		state.noExtensions || only === "voters",
 	);
 	state.mcpServerContributions = collectMcpServerContributions(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
 	const packageMcpServerSource = createPackageMcpServerSource(loader);
@@ -192,14 +198,17 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 		inheritanceSnapshotProvider,
 	);
 	mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
+	const omitted = only === "voters" ? bundledInlineFactories(loader) : undefined;
 	const inlineExtensions = await loadExtensionFactories(
 		loader,
 		extensionsResult.runtime,
 		packageMcpServerSource,
 		inheritanceSnapshotProvider,
+		omitted && { except: omitted },
 	);
 	extensionsResult.extensions.push(...inlineExtensions.extensions);
 	extensionsResult.errors.push(...inlineExtensions.errors);
+	if (omitted) omitInlineFactories(extensionsResult, omitted);
 	const mandatoryPaths = new Set(getMandatoryBuiltinExtensionPaths().map((path) => resolvePath(path, state.cwd)));
 	for (const extension of extensionsResult.extensions) {
 		if (mandatoryPaths.has(extension.resolvedPath)) markTrustedMandatoryRuntimeExtension(extension);
@@ -231,7 +240,7 @@ export async function prepareDefaultResourceLoaderReload(
 	let preTrustExtensions: LoadExtensionsResult | undefined;
 	const initialProjectTrusted = state.settingsManager.isProjectTrusted();
 	if (options?.resolveProjectTrust || options?.resolveBorrowedProjectTrust) {
-		preTrustExtensions = await loadProjectTrustExtensions(loader);
+		preTrustExtensions = await loadProjectTrustExtensions(loader, options.preTrustExtensions);
 	}
 	const resolveTrust = async () => {
 		if (options?.resolveProjectTrust && preTrustExtensions) {

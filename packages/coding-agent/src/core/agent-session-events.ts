@@ -76,6 +76,7 @@ import {
 	sessionGenerationClosing,
 	sessionLifetime,
 	shutdownDeadline,
+	untilShutdownHandlerDeadline,
 } from "./session-lifecycle-work.ts";
 import { physicalForkHeader } from "./session-manager-core.ts";
 import { retryStatusUpdate } from "./session-retry-status.js";
@@ -893,9 +894,13 @@ export function closeAgentSession(
 			const failures = shutdownEventFailures.get(session);
 			if (failures?.length) throw new AggregateError(failures, "Session event callbacks failed");
 		});
-		await attempt("extensions", async () => {
-			await emitSessionShutdownEvent(session._extensionRunner, event);
-		});
+		await attempt("extensions", () =>
+			untilShutdownHandlerDeadline(
+				session,
+				event.reason === "quit",
+				emitSessionShutdownEvent(session._extensionRunner, event),
+			),
+		);
 		await attempt("directory checks", () => drainWindowsDirectorySecurityReads(sessionLifetime(session)));
 		await attempt("messages", () => prepareProtectedStreamingCustomMessagesForDisposal(session));
 		await attempt("shell persistence", async () => await session._flushPendingBashMessages());
