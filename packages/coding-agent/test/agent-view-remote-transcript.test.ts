@@ -157,6 +157,13 @@ function enginePair(ui: ReturnType<typeof mainScreen>, sub: Awaited<ReturnType<t
 		},
 		/** The engine closes the agent panel's widget. */
 		closePanel: () => child.setWidget(AGENT_PANEL_WIDGET_KEY, undefined),
+		/** Messages the host reads from the engine in one read, one after the other. */
+		toHost: (...messages: InteractiveEngineMessage[]) => {
+			for (const message of messages) {
+				engineMessages.push(message);
+				for (const listener of [...hostListeners]) listener(message);
+			}
+		},
 		/** The host's agent panel, drawn as a paint of the dock draws it; undefined while none is mounted. */
 		panelRows: () => widgets.get(AGENT_PANEL_WIDGET_KEY)?.render(ui.terminal.columns),
 		/** The id of the panel widget the host mounted last. */
@@ -694,6 +701,47 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 			assert.equal(view.engine.switcher.viewed.kind, "agent", "shown without the panel once its bound passed");
 		} finally {
 			vi.useRealTimers();
+			await view.dispose();
+		}
+	});
+	test("a panel closed and opened again in one read while the subagent waits for it is waited for in turn (#6123)", async () => {
+		const view = await tasksOpen();
+		try {
+			view.engine.holdCommands();
+			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true, panel: true });
+			view.closeTasks();
+			view.engine.openPanel(["◯ main", "◯ worker"]);
+			await vi.waitFor(() => assert.ok(view.engine.panelId() !== undefined), FRAME_WAIT);
+			const first = view.engine.panelId();
+			// The transcript draws; the panel has not drawn yet.
+			view.engine.releaseCommands(
+				(command) => command.type !== "engine_custom_render" || command.componentId !== first,
+			);
+			await vi.waitFor(() => assert.ok(view.engine.transcriptFramed()), FRAME_WAIT);
+			await flush();
+			assert.equal(view.engine.switcher.viewed.kind, "main");
+			// The engine closes that panel and opens another, read by the host together.
+			view.engine.toHost(
+				{ type: "engine_custom_close", componentId: first ?? "" },
+				{
+					type: "engine_custom_open",
+					componentId: "remote_widget_again",
+					overlay: false,
+					widgetKey: AGENT_PANEL_WIDGET_KEY,
+					widgetPlacement: "belowEditor",
+				},
+			);
+			await flush();
+			assert.equal(view.engine.switcher.viewed.kind, "main", "the panel opened again is waited for");
+			view.engine.toHost({
+				type: "engine_custom_frame",
+				componentId: "remote_widget_again",
+				requestId: 1,
+				lines: ["◯ main", "● worker"],
+			});
+			await vi.waitFor(() => assert.equal(view.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
+			view.engine.releaseCommands();
+		} finally {
 			await view.dispose();
 		}
 	});
