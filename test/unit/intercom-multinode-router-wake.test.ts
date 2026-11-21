@@ -10,6 +10,7 @@ import {
 	MultiNodeRouter,
 	type MultiNodeRouterOptions,
 	PRESENCE_REGISTRATION_BOUND_MS,
+	RESERVED_ID_HOLD_MS,
 	type ReservationOptions,
 	SESSION_ID_CLAIM_BOUND_MS,
 	SESSION_ID_OWNER_SAFE_MS,
@@ -2876,6 +2877,97 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			assert.equal(outcomeOf(sent)?.type, "delivery_failed");
 		});
 		assert.deepEqual(answers(), []);
+	});
+
+	test("a hand-over presented after its hold lapsed takes the id as any registration does, and the fresh id back as an alias (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const handoff = here.handoffs[0]!.handoff;
+		// The session comes back only after its hold lapsed and its ids were given back.
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+		const claimed = here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claim = await claimed;
+		assert.ok(claim.status === "granted", JSON.stringify(claim));
+		assert.equal(claim.grant.sessionId, live.info.id);
+		assert.equal(claim.grant.alias, fresh.info.id);
+		const back: BrokerConnectedSession = {
+			...fresh,
+			socket: fakeSocket(),
+			info: { ...fresh.info, id: live.info.id },
+		};
+		const again = registeredOn(here, back, claim.grant);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await again;
+		assert.equal(here.router.aliasTarget(fresh.info.id), back, "the id its asks were sent to still reaches it");
+	});
+
+	test("a hand-over presented after its hold lapsed does not take the fresh id from a registration that took it once it went stale (#5607)", async () => {
+		const { shared, here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const handoff = here.handoffs[0]!.handoff;
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+		const elsewhere = await startNode(shared);
+		const taken = elsewhere.router.claimSessionId(fresh.info.id, fresh.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal((await taken).status, "granted", "nobody renewed the fresh id after the hold lapsed");
+
+		const claimed = here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claim = await claimed;
+		assert.ok(claim.status === "granted", JSON.stringify(claim));
+		const back: BrokerConnectedSession = {
+			...fresh,
+			socket: fakeSocket(),
+			info: { ...fresh.info, id: live.info.id },
+		};
+		const again = registeredOn(here, back, claim.grant);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await again;
+		assert.equal(here.router.localAliasTarget(fresh.info.id), undefined, "the other registration keeps it");
+	});
+
+	test("a reply only the shared database could authorize is refused as retryable when it fails, from a session holding an alias (#5607)", async () => {
+		const { here, fresh, back } = await backWithAsksToItsFreshId();
+		const near = session("near");
+		await registeredOn(here, near);
+		const ask = randomUUID();
+		await here.state.pendingAsks.record({
+			senderSessionId: near.info.id,
+			targetSessionId: fresh.info.id,
+			messageId: ask,
+		});
+		vi.spyOn(here.state.pendingAsks, "matchesReply").mockRejectedValue(new Error("the database failed"));
+		const send = localSend(back, near);
+		const message = { ...send.request.message, replyTo: ask };
+		let notFound = 0;
+		here.router.routeSend({
+			...send.request,
+			message,
+			clientMessage: { ...send.request.clientMessage, message },
+			requirePendingReply: true,
+			expectedRecipientId: near.info.id,
+			notFound: () => void notFound++,
+		});
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			const outcome = framesOf(back).find(
+				(frame) => frame.type === "delivery_failed" && frame.messageId === message.id,
+			);
+			assert.ok(outcome?.type === "delivery_failed" && outcome.routeUnavailable === true, JSON.stringify(outcome));
+		});
+		assert.equal(notFound, 0, "not refused for good by the local path");
 	});
 
 	for (const where of ["another broker", "the same broker"] as const)

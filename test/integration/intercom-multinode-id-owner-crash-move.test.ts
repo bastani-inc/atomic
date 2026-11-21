@@ -50,6 +50,41 @@ function textsOf(client: TwoBrokerClient): string[] {
 	});
 }
 
+/**
+ * `from` answers `to`'s ask `replyTo` as the reply tool does, with one message id, sent again while it is refused as
+ * retryable (as while its route cannot be read yet). Returns that message id.
+ */
+async function answerOnce(
+	from: TwoBrokerClient,
+	to: TwoBrokerClient,
+	replyTo: string,
+	text: string,
+	messageId: string = randomUUID(),
+): Promise<string> {
+	const deadline = performance.now() + WAIT.timeout;
+	for (;;) {
+		const result = await from.client.send(to.sessionId, {
+			messageId,
+			text,
+			replyTo,
+			requirePendingReply: true,
+			expectedRecipientId: to.sessionId,
+			logicalTarget: to.sessionId,
+		});
+		if (result.delivered) return messageId;
+		assert.equal(result.reasonCode, "route_unavailable", JSON.stringify(result));
+		assert.ok(performance.now() < deadline, `still refused as retryable: ${JSON.stringify(result)}`);
+		await sleep(250);
+	}
+}
+
+/** The answers `asker` got to its ask `question`: who each came from and what it said. */
+function answersTo(asker: TwoBrokerClient, question: string): unknown[][] {
+	return asker.received
+		.filter((frame) => frame.message.replyTo === question)
+		.map((frame) => [frame.from.id, frame.message.id, (frame.message.content as { text?: unknown }).text]);
+}
+
 function disconnectedOnce(client: TwoBrokerClient): Promise<void> {
 	return new Promise((resolve) => client.client.once("disconnected", () => resolve()));
 }
@@ -103,13 +138,27 @@ test.skipIf(process.platform === "win32")(
 		const fresh = moved.sessionId;
 		assert.notEqual(fresh, moving.id);
 		const awaited = moved.client.awaitedSessionId;
-		const handedOver = new Promise<IntercomIdHandoff>((resolve) => moved.client.once("id_handoff", resolve));
+		// It registers again with the hand-over as soon as it is given it, as its client does.
+		let idHandoff: IntercomIdHandoff | undefined;
+		const registeredBack = new Promise<TwoBrokerClient>((resolve, reject) =>
+			moved.client.once("id_handoff", (handoff: IntercomIdHandoff) => {
+				idHandoff = handoff;
+				harness
+					.connect("b", moving.name, {
+						returnAddress: moving.returnAddress,
+						connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+						takesIdHandoff: true,
+						idHandoff: handoff,
+					})
+					.then(resolve, reject);
+			}),
+		);
 		const switched = disconnectedOnce(moved);
 
 		await sleep(Math.max(0, stoppedAt + 5_000 - performance.now()));
-		// A peer on another broker and one on its own ask the session under its fresh id.
+		// A peer on another broker and one on its own ask the session under its fresh id; the one on its own asks twice.
 		const nearby = await harness.connect("b", unique("nearby"));
-		const askers = [sender, nearby];
+		const askers = [sender, nearby, nearby];
 		const questions = askers.map(() => randomUUID());
 		const asked = askers.map((asker, index) =>
 			asker.client.send(fresh, {
@@ -119,7 +168,7 @@ test.skipIf(process.platform === "win32")(
 			}),
 		);
 		await vi.waitFor(
-			() => assert.equal(textsOf(moved).filter((text) => text.endsWith("to the fresh id")).length, 2),
+			() => assert.equal(textsOf(moved).filter((text) => text.endsWith("to the fresh id")).length, 3),
 			WAIT,
 		);
 		for (const result of await Promise.all(asked)) assert.notEqual(result.reason, "Session not found");
@@ -132,36 +181,21 @@ test.skipIf(process.platform === "win32")(
 		// Once the hold lapses, "b" takes the id back for the session and has it register again under it.
 		await within(switched, AFTER_THE_HOLD_LAPSES_MS, "the move back to the id");
 		assert.equal(awaited, moving.id, "it was told which id it awaited, so it asks for that one again");
-		const idHandoff = await handedOver;
-		assert.equal(idHandoff.sessionId, moving.id);
-		const back = await harness.connect("b", moving.name, {
-			returnAddress: moving.returnAddress,
-			connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
-			takesIdHandoff: true,
-			idHandoff,
-		});
+		const back = await registeredBack;
+		assert.equal(idHandoff?.sessionId, moving.id);
 		assert.equal(back.sessionId, moving.id);
 
 		// Back under its id, it answers the asks it got under the fresh one: each asker gets its answer once, from the id
 		// it asked. A reply to an ask it never got is still refused.
-		for (const [index, asker] of askers.entries()) {
-			const answer = await back.client.send(asker.sessionId, {
-				text: `answer ${index} from the id`,
-				replyTo: questions[index],
-				requirePendingReply: true,
-				expectedRecipientId: asker.sessionId,
-				logicalTarget: asker.sessionId,
-			});
-			assert.equal(answer.delivered, true, JSON.stringify(answer));
+		for (const index of [0, 1]) {
+			const asker = askers[index]!;
+			const answer = await answerOnce(back, asker, questions[index]!, `answer ${index} from the id`);
+			await vi.waitFor(
+				() =>
+					assert.deepEqual(answersTo(asker, questions[index]!), [[fresh, answer, `answer ${index} from the id`]]),
+				WAIT,
+			);
 		}
-		for (const [index, asker] of askers.entries())
-			await vi.waitFor(() => {
-				const answers = asker.received.filter((frame) => frame.message.replyTo === questions[index]);
-				assert.deepEqual(
-					answers.map((frame) => [frame.from.id, (frame.message.content as { text?: unknown }).text]),
-					[[fresh, `answer ${index} from the id`]],
-				);
-			}, WAIT);
 		const unrelated = await back.client.send(sender.sessionId, {
 			text: "a reply to no ask",
 			replyTo: randomUUID(),
@@ -200,6 +234,9 @@ test.skipIf(process.platform === "win32")(
 
 		// Its broker loses the shared storage for longer than its ids' safe window: a session on that broker still reaches
 		// it by its id and by the fresh one, once each, as sends between sessions of one broker do.
+		// An answer to the ask it got under the fresh id, whose route only the shared storage keeps, is refused as retryable
+		// meanwhile, and sent again with the same message id once the storage is back, it arrives once.
+		const pendingAnswer = randomUUID();
 		harness.setStorageOutage("b", true);
 		try {
 			await sleep(OUTAGE_MS);
@@ -207,9 +244,24 @@ test.skipIf(process.platform === "win32")(
 				[moving.id, fresh].map((to, index) => local.client.send(to, { text: `during the outage ${index}` })),
 			);
 			for (const result of during) assert.equal(result.delivered, true, JSON.stringify(result));
+			const refused = await back.client.send(nearby.sessionId, {
+				messageId: pendingAnswer,
+				text: "answer 2 from the id",
+				replyTo: questions[2],
+				requirePendingReply: true,
+				expectedRecipientId: nearby.sessionId,
+				logicalTarget: nearby.sessionId,
+			});
+			assert.equal(refused.delivered, false, JSON.stringify(refused));
+			assert.equal(refused.reasonCode, "route_unavailable", JSON.stringify(refused));
 		} finally {
 			harness.setStorageOutage("b", false);
 		}
+		await answerOnce(back, nearby, questions[2]!, "answer 2 from the id", pendingAnswer);
+		await vi.waitFor(
+			() => assert.deepEqual(answersTo(nearby, questions[2]!), [[fresh, pendingAnswer, "answer 2 from the id"]]),
+			WAIT,
+		);
 		await vi.waitFor(
 			() =>
 				assert.deepEqual(

@@ -162,7 +162,13 @@ const SESSION_ID_OWNER_RETRY_MS = [50, 100, 200, 400, 800] as const;
  * with the hand-over it was given: no longer than the client's own wait for a registration. Its client reconnects
  * within a second or two; past this the id is given back unused, for any registration to claim as usual.
  */
-const RESERVED_ID_HOLD_MS = 10_000;
+export const RESERVED_ID_HOLD_MS = 10_000;
+/**
+ * #5607: how long a hand-over presented after its hold lapsed still takes back the id the session had meanwhile, as an
+ * alias, when no other registration took that id: as long as the id's binding to the session is kept, so a client or a
+ * host paused or stalled past the hold keeps the id its asks were sent to. Only a session that never comes back loses it.
+ */
+const LAPSED_HANDOFF_KEEP_MS = KNOWN_SESSION_RETENTION_MS;
 /**
  * #5607: how long after the last write that confirmed it (counted from just before that write was sent) a registration's
  * id is taken as still its own without asking the shared database again. Another registration may take an id only once
@@ -869,6 +875,21 @@ export class MultiNodeRouter {
 	private readonly aliases = new Map<string, BrokerConnectedSession>();
 	/** #5607: ids taken back for sessions that awaited them, by the session's delivery identity. */
 	private readonly reservedIds = new Map<string, ReservedId>();
+	/**
+	 * #5607: by delivery identity, hand-overs whose hold lapsed before the session registered again: the hand-over, the id
+	 * it was for (given back), the id the session had meanwhile with the token it is still written with (no longer
+	 * renewed, so another registration may take it once it goes stale), and when the hold lapsed.
+	 */
+	private readonly lapsedHandoffs = new Map<
+		string,
+		{
+			readonly handoff: string;
+			readonly id: string;
+			readonly alias: string;
+			readonly aliasToken?: string;
+			readonly lapsedAt: ClockMark;
+		}
+	>();
 	/** #5607: tokens of held ids that a registration coming back is taking, until it is registered here. */
 	private readonly consumingTokens = new Set<string>();
 	/** #5607: when the shared store last answered one of this broker's statements. */
@@ -966,7 +987,24 @@ export class MultiNodeRouter {
 		// registration that presents the hand-over the session was given, of the same delivery identity, only.
 		const reserved =
 			identity === undefined || handoff === undefined ? undefined : this.takeReservedId(asked, identity, handoff);
+		// #5607: one presented after its hold lapsed takes the id as any registration does, and the id the session had
+		// meanwhile back as an alias with a conditional write of its own, unless another registration took it.
+		const lapsed =
+			reserved !== undefined || identity === undefined || handoff === undefined
+				? undefined
+				: this.takeLapsedHandoff(asked, identity, handoff);
 		const sessionId = reserved?.id ?? asked;
+		const handedAlias: { readonly alias?: string; readonly aliasToken?: string } =
+			reserved !== undefined
+				? reserved.alias === sessionId
+					? {}
+					: {
+							alias: reserved.alias,
+							...(reserved.aliasToken === undefined ? {} : { aliasToken: reserved.aliasToken }),
+						}
+				: lapsed === undefined || lapsed.alias === sessionId
+					? {}
+					: { alias: lapsed.alias, ...(lapsed.aliasToken === undefined ? {} : { aliasToken: lapsed.aliasToken }) };
 		const owner = this.newOwner(reserved?.token);
 		if (reserved !== undefined) this.consumingTokens.add(reserved.token);
 		const deadline = performance.now() + SESSION_ID_CLAIM_BOUND_MS;
@@ -985,17 +1023,7 @@ export class MultiNodeRouter {
 				if (result.status === "bound")
 					return {
 						status: "granted",
-						grant: {
-							token: owner.token,
-							confirmed,
-							sessionId,
-							...(reserved === undefined || reserved.alias === sessionId
-								? {}
-								: {
-										alias: reserved.alias,
-										...(reserved.aliasToken === undefined ? {} : { aliasToken: reserved.aliasToken }),
-									}),
-						},
+						grant: { token: owner.token, confirmed, sessionId, ...handedAlias },
 					};
 				if (result.status !== "held") return { status: "refused" };
 				// An owner whose broker on this host is known to have exited is no live registration: at once, not after the
@@ -1022,17 +1050,7 @@ export class MultiNodeRouter {
 						() =>
 							resolve({
 								status: "unanswered",
-								unanswered: {
-									sessionId,
-									claim,
-									token: owner.token,
-									...(reserved === undefined || reserved.alias === sessionId
-										? {}
-										: {
-												alias: reserved.alias,
-												...(reserved.aliasToken === undefined ? {} : { aliasToken: reserved.aliasToken }),
-											}),
-								},
+								unanswered: { sessionId, claim, token: owner.token, ...handedAlias },
 							}),
 						SESSION_ID_CLAIM_BOUND_MS,
 					);
@@ -1518,14 +1536,57 @@ export class MultiNodeRouter {
 		const reserved = this.reservedIds.get(identity);
 		if (reserved === undefined || reserved.handoff !== handoff || sessionId !== reserved.id) return undefined;
 		this.reservedIds.delete(identity);
-		// A hand-over presented too late takes nothing: the id is given back, for any registration to claim as usual.
+		// A hand-over presented too late takes no held id: the ids are given back, for any registration to claim as usual.
 		if (elapsedSince(reserved.handedAt) >= RESERVED_ID_HOLD_MS) {
-			void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
-			if (reserved.aliasToken !== undefined)
-				void this.releaseOwner({ intercomSessionId: reserved.alias, token: reserved.aliasToken });
+			this.lapse(identity, reserved);
 			return undefined;
 		}
 		return reserved;
+	}
+
+	/**
+	 * #5607: `reserved`'s hold lapsed: its id is given back (unless a registration here took its token meanwhile), and its
+	 * hand-over is kept with the alias's token, no longer renewed: presented later, it takes the alias back with that
+	 * token unless another registration took the alias once it went stale (`takeLapsedHandoff`).
+	 */
+	private lapse(identity: string, reserved: ReservedId): void {
+		if (!this.tokenInUse(reserved.token)) void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
+		const earlier = this.lapsedHandoffs.get(identity);
+		if (reserved.alias === reserved.id) {
+			if (reserved.aliasToken !== undefined && !this.tokenInUse(reserved.aliasToken))
+				void this.releaseOwner({ intercomSessionId: reserved.alias, token: reserved.aliasToken });
+		} else
+			this.lapsedHandoffs.set(identity, {
+				handoff: reserved.handoff,
+				id: reserved.id,
+				alias: reserved.alias,
+				...(reserved.aliasToken === undefined ? {} : { aliasToken: reserved.aliasToken }),
+				lapsedAt: clockMark(),
+			});
+		if (earlier !== undefined) this.giveBackLapsed(earlier);
+	}
+
+	/** #5607: a lapsed hand-over nobody presented: the alias's token, written but no longer renewed, is given back. */
+	private giveBackLapsed(lapsed: { readonly alias: string; readonly aliasToken?: string }): void {
+		if (lapsed.aliasToken !== undefined && !this.tokenInUse(lapsed.aliasToken))
+			void this.releaseOwner({ intercomSessionId: lapsed.alias, token: lapsed.aliasToken });
+	}
+
+	/**
+	 * #5607: the alias (and its token) of a hand-over whose hold lapsed, for the registration of its identity that
+	 * presents it, once, within `LAPSED_HANDOFF_KEEP_MS`.
+	 */
+	private takeLapsedHandoff(
+		sessionId: string,
+		identity: string,
+		handoff: string,
+	): { readonly alias: string; readonly aliasToken?: string } | undefined {
+		const lapsed = this.lapsedHandoffs.get(identity);
+		if (lapsed === undefined || lapsed.handoff !== handoff || lapsed.id !== sessionId) return undefined;
+		this.lapsedHandoffs.delete(identity);
+		if (elapsedSince(lapsed.lapsedAt) < LAPSED_HANDOFF_KEEP_MS) return lapsed;
+		this.giveBackLapsed(lapsed);
+		return undefined;
 	}
 
 	/** #5607: `reserved` is held for the session of `identity` again, unless another hold took its place meanwhile. */
@@ -1541,11 +1602,12 @@ export class MultiNodeRouter {
 		for (const [identity, reserved] of [...this.reservedIds]) {
 			if (elapsedSince(reserved.handedAt) < RESERVED_ID_HOLD_MS) continue;
 			this.reservedIds.delete(identity);
-			// A token a registration here took meanwhile is that registration's, not given back.
-			if (!this.tokenInUse(reserved.token))
-				void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
-			if (reserved.aliasToken !== undefined && !this.tokenInUse(reserved.aliasToken))
-				void this.releaseOwner({ intercomSessionId: reserved.alias, token: reserved.aliasToken });
+			this.lapse(identity, reserved);
+		}
+		for (const [identity, lapsed] of [...this.lapsedHandoffs]) {
+			if (elapsedSince(lapsed.lapsedAt) < LAPSED_HANDOFF_KEEP_MS) continue;
+			this.lapsedHandoffs.delete(identity);
+			this.giveBackLapsed(lapsed);
 		}
 	}
 
@@ -1558,6 +1620,7 @@ export class MultiNodeRouter {
 		if (this.consumingTokens.has(token)) return true;
 		for (const reserved of this.reservedIds.values())
 			if (reserved.token === token || reserved.aliasToken === token) return true;
+		for (const lapsed of this.lapsedHandoffs.values()) if (lapsed.aliasToken === token) return true;
 		for (const entry of this.presence.values())
 			if (entry.owner?.token === token || entry.alias?.token === token || entry.awaits?.token === token) return true;
 		return false;
@@ -2854,16 +2917,23 @@ export class MultiNodeRouter {
 		const replyTo = request.message.replyTo;
 		const alias = this.replyAlias(request);
 		const pending = this.host.pendingQuestions;
-		if (
-			replyTo === undefined ||
-			alias === undefined ||
-			pending.matchesReply(request.from.info.id, target.info.id, replyTo) ||
-			!pending.matchesReply(alias.id, target.info.id, replyTo)
-		)
+		if (replyTo === undefined || alias === undefined || pending.matchesReply(request.from.info.id, target.info.id, replyTo))
 			return request.notFound();
+		// Only the database that failed could show an ask to the alias that no route here names: a reply that must answer
+		// an open ask is refused as retryable, not for good.
+		if (!pending.matchesReply(alias.id, target.info.id, replyTo))
+			return request.requirePendingReply ? this.refuseRouteUnavailable(request) : request.notFound();
 		const sending = this.answeringAsHeld(request, alias);
 		if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
 		(sending ?? request).notFound();
+	}
+
+	/** Whether this broker's own routes authorize `request`'s reply to `target`. */
+	private routedHere(request: RemoteSendRequest, target: BrokerConnectedSession): boolean {
+		const replyTo = request.message.replyTo;
+		return (
+			replyTo !== undefined && this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, replyTo)
+		);
 	}
 
 	/**
@@ -3065,6 +3135,10 @@ export class MultiNodeRouter {
 			adopted.catch((error: Error) => this.report(error));
 		} catch (error) {
 			this.report(error);
+			// #5607: a reply from a session holding an alias may answer an ask to that alias, which only the database
+			// that failed could show: it is refused as retryable, not for good.
+			if (request.requirePendingReply && this.replyAlias(request) !== undefined && !this.routedHere(request, target))
+				return UNCERTAIN_ALIAS;
 		} finally {
 			clearTimeout(bound);
 		}
