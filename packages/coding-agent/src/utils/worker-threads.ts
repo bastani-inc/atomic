@@ -1,4 +1,5 @@
 import { Worker, type WorkerOptions } from "node:worker_threads";
+import { startedWithInputType } from "@bastani/atomic-codemode/node-options";
 
 /**
  * The `execArgv` for a worker thread that evaluates Atomic's own source (`new Worker(source, { eval: true })`).
@@ -19,13 +20,6 @@ export function evalWorkerExecArgv(): string[] | undefined {
  */
 export const EVAL_WORKER_BUILTIN =
 	'const builtin = typeof require === "function" ? require : (id) => process.getBuiltinModule(id);';
-
-/** Whether the process was started with `--input-type`, on its command line or in `NODE_OPTIONS`. */
-function startedWithInputType(): boolean {
-	return [...process.execArgv, ...(process.env.NODE_OPTIONS ?? "").split(/\s+/)].some(
-		(flag) => flag === "--input-type" || flag.startsWith("--input-type="),
-	);
-}
 
 /**
  * Starts a worker thread that runs Atomic's own ES module at `url` with the process's flags, which can include the
