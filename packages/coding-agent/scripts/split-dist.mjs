@@ -76,17 +76,21 @@ const writtenBySplit = (entry) => {
 };
 /** Whether `source` is a split's output rather than compiled code. */
 const splitOutput = (source) => source.includes(`/${SHARED_DIRECTORY}/`);
+/** The error for `dist/<path>` holding an earlier split's output when the compiled code it came from is gone. */
+const staleSplit = (path) =>
+	new Error(
+		`split-dist: dist/${path} is an earlier split's output, and the compiled code it was split from is gone, as after a fresh \`npm ci\`; run \`npm run build\` to compile and split again`,
+	);
 /** `dist/<path>` as compiled, also where an earlier split overwrote it. */
 const compiledSource = (path) => {
 	const entry = path.replace(/\.js$/, "");
 	if (!writtenBySplit(entry)) {
 		const source = readFileSync(join(dist, path), "utf8");
-		if (splitOutput(source)) throw new Error(`split-dist: ${path} is an earlier split's output; rebuild from clean`);
+		if (splitOutput(source)) throw staleSplit(path);
 		return source;
 	}
 	const saved = join(COMPILED_ENTRIES, path);
-	if (!existsSync(saved))
-		throw new Error(`split-dist: ${path} is an earlier split's output and its compiled copy is gone; rebuild from clean`);
+	if (!existsSync(saved)) throw staleSplit(path);
 	return readFileSync(saved, "utf8");
 };
 
@@ -146,14 +150,13 @@ for (const entry of SPLIT_ENTRIES) {
 	const saved = join(COMPILED_ENTRIES, `${entry}.js`);
 	if (!writtenBySplit(entry)) {
 		const compiled = readFileSync(file);
-		if (splitOutput(compiled.toString("utf8")))
-			throw new Error(`split-dist: ${entry}.js is an earlier split's output; rebuild from clean`);
+		if (splitOutput(compiled.toString("utf8"))) throw staleSplit(`${entry}.js`);
 		mkdirSync(dirname(saved), { recursive: true });
 		writeFileSync(saved, compiled);
 		if (existsSync(`${file}.map`)) writeFileSync(`${saved}.map`, readFileSync(`${file}.map`));
 		else rmSync(`${saved}.map`, { force: true });
 	} else if (!existsSync(saved)) {
-		throw new Error(`split-dist: ${entry}.js is an earlier split's output and its compiled copy is gone; rebuild from clean`);
+		throw staleSplit(`${entry}.js`);
 	}
 	compiledEntries.set(file, inlineSourceMap(readFileSync(saved, "utf8"), `${saved}.map`));
 }
@@ -181,7 +184,7 @@ const result = await build({
 	packages: "external",
 	keepNames: true,
 	sourcemap: "linked",
-	sourcesContent: true,
+	sourcesContent: false,
 	chunkNames: `${SHARED_DIRECTORY}/[name]-[hash]`,
 	metafile: true,
 	logLevel: "warning",
@@ -214,8 +217,9 @@ const result = await build({
 						sourcemap: "inline",
 						define: { [META_URL]: META_URL_SYMBOL },
 					};
-					// Token-aware: a mention in a comment is not a use. Any meta property but `url` stops the build.
-					const probe = (await transform(withMap, { ...options, sourcemap: false })).code;
+					// Token-aware: a mention in a comment is not a use (minifying whitespace drops every comment, which a plain
+					// transform keeps inside an object literal). Any meta property but `url` stops the build.
+					const probe = (await transform(withMap, { ...options, sourcemap: false, minifyWhitespace: true })).code;
 					if (probe.includes("import.meta")) throw new Error(`split-dist: ${relative(dist, path)} uses import.meta beyond import.meta.url`);
 					if (!probe.includes(META_URL_SYMBOL)) return entry === undefined ? undefined : { contents: entry, loader: "js" };
 					const url = relative(dist, path).split(sep).map(encodeURIComponent).join("/");
