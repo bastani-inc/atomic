@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { type Component, truncateToWidth } from "@bastani/atomic-tui";
 import { formatModelLabel } from "../../../core/model-label.ts";
+import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
 import {
 	isResumableStop,
@@ -17,7 +18,7 @@ import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
 import { slashCommandHint } from "./nav-keys.ts";
-import { DONE_TASK_MARKER, RUNNING_TASK_MARKER, STOPPED_TASK_MARKER, WAITING_MARKER } from "./notice-line.ts";
+import { type TaskMark, taskMark } from "./task-marks.ts";
 import { blockRows, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 const EMOJI_OR_IGNORABLE_PATTERN = String.raw`(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}`;
@@ -68,41 +69,63 @@ export function taskDuration(milliseconds: number): string {
 	return formatPanelElapsed(milliseconds);
 }
 
-/** One semantic status palette for inline rows, lists and detail headers. */
+/** How the agent panel and `/tasks` read a task's state. */
+export type TaskBoardState = AgentPanelItem["state"];
+
+/**
+ * Each state a task reads as (`taskState`): its words in rows, lists and detail headers, and how the agent panel and
+ * `/tasks` read it. One entry per state, so a row's words and its mark always describe the same state.
+ */
+type TaskStatus = { readonly label: string | ((task: TaskRecord) => string); readonly state: TaskBoardState };
+
+const TASK_STATUS: ReadonlyMap<string, TaskStatus> = new Map<string, TaskStatus>([
+	["input-needed", { label: "Input needed", state: "input" }],
+	["queued", { label: "Queued", state: "queued" }],
+	["cancelling", { label: "Stopping", state: "stopping" }],
+	["completed", { label: "Completed", state: "done" }],
+	["failed", { label: "Failed", state: "failed" }],
+	// Paused or quit until it is resumed: stopped.
+	["paused", { label: "Paused · awaiting resume", state: "stopped" }],
+	["killed", { label: "Killed (non-resumable)", state: "stopped" }],
+	["cancelled", { label: "Stopped", state: "stopped" }],
+	// It is not working: a still mark, not the running circle.
+	["released", { label: (task) => `Waiting on ${waitingReleasedTools(task) ?? "a tool call"}`, state: "waiting" }],
+	["running", { label: "Running", state: "running" }],
+]);
+
+/** Esc in its chat paused its turn: it is still running, and a message continues it. */
+const TURN_PAUSED = { label: "Paused · send to continue", state: "paused" } as const;
+
+function taskStatus(task: TaskRecord): TaskStatus {
+	if (isTaskTurnInterrupted(task)) return TURN_PAUSED;
+	return (
+		TASK_STATUS.get(taskState(task)) ?? {
+			label: "Running",
+			state: task.execution.kind === "settled" ? "done" : "running",
+		}
+	);
+}
+
+export function taskBoardState(task: TaskRecord): TaskBoardState {
+	return taskStatus(task).state;
+}
+
+/**
+ * One semantic status palette for inline rows, lists and detail headers: its own words, and the mark the agent panel
+ * and `/tasks` show the task with.
+ */
 export function taskStatusAppearance(task: TaskRecord): {
 	label: string;
 	icon: string;
-	color: "accent" | "success" | "error" | "warning" | "muted" | "dim";
+	color: TaskMark["color"];
 } {
-	// Esc in its chat paused its turn: it is still running, and a message continues it.
-	if (isTaskTurnInterrupted(task)) return { label: "Paused · send to continue", icon: "‖", color: "muted" };
-	switch (taskState(task)) {
-		case "completed":
-			return { label: "Completed", icon: DONE_TASK_MARKER.glyph, color: DONE_TASK_MARKER.color };
-		case "failed":
-			return { label: "Failed", icon: "✗", color: "error" };
-		case "killed":
-			return { label: "Killed (non-resumable)", icon: "■", color: "warning" };
-		case "paused":
-			return { label: "Paused · awaiting resume", icon: "‖", color: "warning" };
-		case "released":
-			// It is not working: a still mark, not the running circle, as its /tasks row and the agent panel show it.
-			return {
-				label: `Waiting on ${waitingReleasedTools(task) ?? "a tool call"}`,
-				icon: WAITING_MARKER.glyph,
-				color: WAITING_MARKER.color,
-			};
-		case "cancelled":
-			return { label: "Stopped", icon: STOPPED_TASK_MARKER.glyph, color: STOPPED_TASK_MARKER.color };
-		case "cancelling":
-			return { label: "Stopping", icon: "!", color: "warning" };
-		case "input-needed":
-			return { label: "Input needed", icon: "?", color: "warning" };
-		case "queued":
-			return { label: "Queued", icon: "○", color: "muted" };
-		default:
-			return { label: "Running", icon: RUNNING_TASK_MARKER.glyph, color: RUNNING_TASK_MARKER.color };
-	}
+	const status = taskStatus(task);
+	const mark = taskMark(status.state, task.kind === "command");
+	return {
+		label: typeof status.label === "string" ? status.label : status.label(task),
+		icon: mark.glyph,
+		color: mark.color,
+	};
 }
 
 export function taskMetricsText(task: TaskRecord): string {

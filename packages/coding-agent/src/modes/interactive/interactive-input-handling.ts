@@ -26,6 +26,7 @@ import {
 } from "../rpc/task-ui-bridge.js";
 import { type PromptHandle, promptHandle } from "./agent-view/agent-drafts.ts";
 import { gateMovedDraft } from "./agent-view/viewed-commands.ts";
+import { viewedAgentBackKeyList } from "./agent-view/viewed-keys.ts";
 import { escapeViewedAgent, submitToViewedAgent } from "./agent-view/viewed-submit.ts";
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
@@ -276,10 +277,18 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			(_tui, _theme, keybindings, done) =>
 				new MainComposerKeyOverlay(
 					keybindings,
-					() => ({
-						agentRows: mainComposerPanelCounts(this).total,
-						working: isChatSessionWorking(this.session),
-					}),
+					() => {
+						const agentRows = mainComposerPanelCounts(this).total;
+						const viewed = this.agentView?.viewed;
+						// While a subagent is shown, the keys are its prompt's: ← leads back to main, Esc pauses it.
+						return viewed?.kind === "agent"
+							? {
+									agentRows,
+									working: viewed.port.status().busy,
+									viewedAgent: { backKeys: viewedAgentBackKeyList(this) },
+								}
+							: { agentRows, working: isChatSessionWorking(this.session) };
+					},
 					() => done(),
 				),
 		);

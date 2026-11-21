@@ -446,6 +446,49 @@ export function remoteTranscriptMount(runtime: object, viewId: string): RemoteTr
 	return transcriptMounts.get(runtime)?.get(viewId);
 }
 
+/** A watch over the widgets an engine opens under `widgetKey`, from when it began. */
+interface WidgetFrameWatch {
+	readonly widgetKey: string;
+	/** A widget opened under the key since the watch began. */
+	opened: boolean;
+	/** Waiting for those widgets to draw (`drawn`). */
+	readonly waiters: Array<() => void>;
+}
+
+const widgetFrameWatches = new WeakMap<object, Set<WidgetFrameWatch>>();
+const controllers = new WeakMap<object, RemoteComponentController>();
+
+/**
+ * Watch the widgets the engine of `runtime` opens under `widgetKey` from now on. `drawn` resolves once such a widget
+ * has opened and no widget under the key is without its first frame now: one that closed leaves nothing to wait for,
+ * one that replaced it is waited for in turn. A widget open before the watch began does not count as opened.
+ */
+export function watchWidgetFrames(runtime: object, widgetKey: string): { drawn(): Promise<void>; stop(): void } {
+	let watches = widgetFrameWatches.get(runtime);
+	if (watches === undefined) {
+		watches = new Set();
+		widgetFrameWatches.set(runtime, watches);
+	}
+	const all = watches;
+	const watch: WidgetFrameWatch = { widgetKey, opened: false, waiters: [] };
+	all.add(watch);
+	let stopped = false;
+	return {
+		drawn: async () => {
+			while (!stopped) {
+				if (watch.opened && controllers.get(runtime)?.widgetWithoutFrame(widgetKey) !== true) return;
+				await new Promise<void>((resolve) => watch.waiters.push(resolve));
+				// One read can close a widget and open its replacement: what is open once that read is handled decides.
+			}
+		},
+		stop: () => {
+			stopped = true;
+			all.delete(watch);
+			for (const resolve of watch.waiters.splice(0)) resolve();
+		},
+	};
+}
+
 function renderSettingsCacheKey(renderSettings: EngineHostRenderSettings | undefined): string {
 	return renderSettings === undefined
 		? ""
@@ -500,6 +543,7 @@ export class RemoteComponentController {
 			this.terminalModes.rebindTui(),
 		);
 		this.unsubscribe = runtime.onEngineMessage((message) => this.handleMessage(message));
+		controllers.set(runtime, this);
 		// Teardown is driven by engine death rather than the NEXT generation's
 		// `engine_ready`, so a crash with no restart, or a hung/failed restart,
 		// still releases the host editor, focus, and inline-custom-UI depth.
@@ -507,6 +551,7 @@ export class RemoteComponentController {
 	}
 
 	dispose(): void {
+		if (controllers.get(this.runtime) === this) controllers.delete(this.runtime);
 		this.unsubscribeTuiRendererReplaced();
 		this.unsubscribe();
 		this.unsubscribeGenerationEnded();
@@ -574,6 +619,24 @@ export class RemoteComponentController {
 			record.unsubscribeWidgetRelease = undefined;
 			this.terminalModes.onUnmount(componentId);
 		}
+		this.checkWidgetFrames();
+	}
+
+	/** Whether a widget open under `widgetKey` has not drawn its first frame yet. */
+	widgetWithoutFrame(widgetKey: string): boolean {
+		for (const record of this.mounted.values())
+			if (record.widgetKey === widgetKey && record.component.awaitingFirstContent()) return true;
+		return false;
+	}
+
+	/** Answer the waits for widgets to draw (`watchWidgetFrames`) that nothing keeps waiting now. */
+	private checkWidgetFrames(): void {
+		const watches = widgetFrameWatches.get(this.runtime);
+		if (watches === undefined || watches.size === 0) return;
+		for (const watch of watches) {
+			if (watch.waiters.length === 0 || !watch.opened || this.widgetWithoutFrame(watch.widgetKey)) continue;
+			for (const resolve of watch.waiters.splice(0)) resolve();
+		}
 	}
 	/**
 	 * Close every mounted component.
@@ -605,6 +668,7 @@ export class RemoteComponentController {
 			else if (reason === "generation-lost") record.done(undefined);
 		}
 		this.terminalModes.resetAll();
+		this.checkWidgetFrames();
 		if (reason === "generation-lost" && records.length > 0) this.ui.requestRender();
 	}
 
@@ -637,18 +701,19 @@ export class RemoteComponentController {
 			case "engine_custom_close":
 				this.close(message.componentId);
 				break;
-			case "engine_custom_frame":
-				this.mounted
-					.get(message.componentId)
-					?.component.applyFrame(
-						message.requestId,
-						message.lines,
-						message.scrollRequest,
-						message.frame,
-						message.rowKeys,
-						message.layout,
-					);
+			case "engine_custom_frame": {
+				const record = this.mounted.get(message.componentId);
+				record?.component.applyFrame(
+					message.requestId,
+					message.lines,
+					message.scrollRequest,
+					message.frame,
+					message.rowKeys,
+					message.layout,
+				);
+				if (record?.widgetKey !== undefined) this.checkWidgetFrames();
 				break;
+			}
 			case "engine_custom_input_result":
 				this.mounted.get(message.componentId)?.component.resolveInput(message.requestId, message.handled);
 				break;
@@ -732,6 +797,8 @@ export class RemoteComponentController {
 				widgetKey,
 				unsubscribeWidgetRelease,
 			});
+			for (const watch of widgetFrameWatches.get(this.runtime) ?? [])
+				if (watch.widgetKey === widgetKey) watch.opened = true;
 			this.ui.setWidget(
 				widgetKey,
 				(tui) => {
@@ -801,6 +868,7 @@ export class RemoteComponentController {
 		if (record.transcript) this.closeTranscript(record.transcript);
 		else if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
 		record.component.dispose();
+		if (record.widgetKey !== undefined) this.checkWidgetFrames();
 	}
 
 	/**

@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { type ChildProcess, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
@@ -10,6 +9,7 @@ import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
 import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
 import { pathExists } from "../../utils/path-exists.ts";
+import { asyncScope } from "../async-scope.ts";
 import { redactUrlCredentials } from "../error-contract.ts";
 import { containProcessTree, type ProcessTreeContainment } from "../process-tree-containment.ts";
 import {
@@ -37,7 +37,7 @@ const provisionedGit: GitExecutableResolver = async (signal) => {
 let resolveExecutable: GitExecutableResolver = provisionedGit;
 
 /** The Git every snapshot command of one scope runs instead of the resolver's, such as one restore's. */
-const scopedExecutable = new AsyncLocalStorage<GitExecutable>();
+const scopedExecutable = asyncScope<GitExecutable>();
 
 /**
  * Runs `action` with every snapshot Git command it starts on `executable`, which no resolver is asked for; other

@@ -26,7 +26,9 @@ const { PAUSED_RECIPIENT_TARGET, RESUMING_RECIPIENT_TARGET } = await import(
 	"../../packages/intercom/broker/ended-child-wakes.js"
 );
 const { queryIntercomBroker } = await import("../../packages/intercom/broker/control.js");
-const { ENDED_QUEUE_OPEN_WAIT_MS } = await import("../../packages/intercom/broker/durable-ended-queue.js");
+const { ENDED_QUEUE_OPEN_WAIT_ENV, ENDED_QUEUE_OPEN_WAIT_MS } = await import(
+	"../../packages/intercom/broker/durable-ended-queue.js"
+);
 /** The shared storage adapter the multi-node suites select: SQLite, through the storage layer's adapter module. */
 const STORAGE_ADAPTER = join(repoRoot, "test/fixtures/storage-adapter.ts");
 const SHARED_PREFIX = "ecq_";
@@ -50,6 +52,11 @@ interface Received {
 /** Real broker processes, killed and started again: their start, registration and restore are the structural cost. */
 const RESTART_TEST_TIMEOUT_MS = 120_000;
 const BROKER_START_WAIT_MS = 60_000;
+/**
+ * How long a broker started here waits for its store at the first registration, unless the test is about that wait:
+ * on a loaded machine opening the store can take longer than its 2 s, and the broker then keeps the queue in memory.
+ */
+const STORE_OPEN_WAIT_MS = BROKER_START_WAIT_MS;
 const WAIT = { timeout: 20_000, interval: 25 } as const;
 /** Long enough for a frame that must not come (a second copy, a wake) to have arrived. */
 const SETTLE_MS = 750;
@@ -58,6 +65,9 @@ const SETTLE_MS = 750;
  * from the first registration (which comes as the broker listens), and well within the broker's wait for routing.
  */
 const SLOW_SHARED_OPEN_MS = ENDED_QUEUE_OPEN_WAIT_MS + 1_000;
+/** How long loading the store's code takes in a broker standing in for a busy machine: longer than its usual wait. */
+const SLOW_STORE_LOAD_MS = ENDED_QUEUE_OPEN_WAIT_MS + 1_000;
+const SLOW_MODULE_LOAD_PRELOAD = join(repoRoot, "test/fixtures/intercom-slow-module-load-preload.cjs");
 
 const fixtures: IntercomBrokerFixture[] = [];
 afterEach(async () => {
@@ -120,10 +130,17 @@ class Host {
 		return this.fixture.agentDir;
 	}
 
-	async start(env: Readonly<Record<string, string>> = {}): Promise<void> {
+	/** `preload`: a module the broker's Node loads first (`--require`), as a test's stand-in for a busy machine. */
+	async start(env: Readonly<Record<string, string>> = {}, preload?: string): Promise<void> {
 		const extensionDir = join(repoRoot, "packages/intercom");
-		const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
-			env: { ...process.env, ...env, ATOMIC_CODING_AGENT_DIR: this.agentDir },
+		const args = [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")];
+		const broker = spawn(process.execPath, preload === undefined ? args : ["--require", preload, ...args], {
+			env: {
+				...process.env,
+				[ENDED_QUEUE_OPEN_WAIT_ENV]: String(STORE_OPEN_WAIT_MS),
+				...env,
+				ATOMIC_CODING_AGENT_DIR: this.agentDir,
+			},
 			stdio: "ignore",
 		});
 		this.broker = broker;
@@ -151,7 +168,8 @@ class Host {
 		const gate = this.openGate;
 		assert.ok(gate !== undefined, "a host started slowly has an open gate");
 		writeFileSync(gate, opening === "after a failed attempt" ? "fail" : "closed");
-		const started = this.start();
+		// These starts are about the broker's own wait for its store.
+		const started = this.start({ [ENDED_QUEUE_OPEN_WAIT_ENV]: String(ENDED_QUEUE_OPEN_WAIT_MS) });
 		const socketPath = getBrokerSocketPath(process.platform, this.agentDir);
 		if (opening === "after a failed attempt")
 			await vi.waitFor(
@@ -903,6 +921,40 @@ test(
 			assert.deepEqual(continued.received, [], `${label}: what its sender was told was lost is never delivered`);
 			assert.equal(senderBack.lost.length, 1, `${label}: told once`);
 		}
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a broker restarted on a busy machine still takes up what the earlier broker kept when loading its store takes longer than its wait (#6126)",
+	async () => {
+		const host = new Host();
+		await host.start();
+		const memory = new EndedQueueMemory();
+		const { ownerSession, childName, sender, messageId } = await heldMessage(host, "slow-load", memory);
+		await host.kill();
+		// The next broker waits the usual time for its store, and loading the store's code takes longer than that.
+		await host.start(
+			{
+				[ENDED_QUEUE_OPEN_WAIT_ENV]: String(ENDED_QUEUE_OPEN_WAIT_MS),
+				ATOMIC_TEST_SLOW_MODULE: "broker/sql-ended-child-queue-store.ts",
+				ATOMIC_TEST_SLOW_MODULE_MS: String(SLOW_STORE_LOAD_MS),
+			},
+			SLOW_MODULE_LOAD_PRELOAD,
+		);
+		const ownerBack = await owner(host, "slow-load", ownerSession);
+		const senderBack = await again(host, "slow-load-sender", sender, { memory });
+		await markEnded(ownerBack, childName, "stopped");
+		const continued = await resume(host, ownerBack, childName);
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(
+					continued.received.map(({ message }) => message.id),
+					[messageId],
+				),
+			WAIT,
+		);
+		assert.deepEqual(senderBack.lost, [], "nothing was lost");
 	},
 	RESTART_TEST_TIMEOUT_MS,
 );

@@ -148,14 +148,15 @@ test("a released subagent wears the same waiting mark in its notice, /tasks, the
 	assert.match(surfaces["completion notice"].text, /^\s*◌ worker is waiting on bash \(toolu_1\) · 16m 16s$/);
 });
 
-test("a paused or quit subagent keeps the pause mark on its notice (#5489)", () => {
+test("a paused or quit subagent's notice shows the stopped mark the agent panel and /tasks show it with (#5489, #6122)", () => {
 	for (const [cause, outcome] of [
 		["pause", "paused · awaiting resume"],
 		["quit", "quit · awaiting resume"],
 	] as const) {
 		const result: TaskResult = { kind: "cancelled", cause };
 		const row = markedRow(cause, noticeRows(agentTask(result), result), /worker/);
-		assert.equal(row.mark, STATUS_MARKERS.paused.glyph, row.text);
+		assert.equal(row.mark, STATUS_MARKERS["task-stopped"].glyph, row.text);
+		assert.notEqual(row.mark, STATUS_MARKERS.waiting.glyph, row.text);
 		assert.match(row.text, new RegExp(`worker ${outcome}`));
 	}
 });
@@ -181,13 +182,13 @@ test.each([
 );
 
 test.each([
-	[savedNotices.pauseOrRelease086, "⏸ worker paused · awaiting resume"],
-	[savedNotices.quit087, "⏸ worker quit · awaiting resume"],
-	[savedNotices.pause088, "⏸ worker paused · awaiting resume"],
-	[savedNotices.quit088, "⏸ agent quit · awaiting resume"],
-	[savedNotices.pause089, "⏸ worker paused · awaiting resume · 16m 16s"],
-	[savedNotices.quit089, "⏸ worker quit · awaiting resume · 16m 16s"],
-	[savedNotices.stopped088, "◼ worker stopped"],
+	[savedNotices.pauseOrRelease086, "◯ worker paused · awaiting resume"],
+	[savedNotices.quit087, "◯ worker quit · awaiting resume"],
+	[savedNotices.pause088, "◯ worker paused · awaiting resume"],
+	[savedNotices.quit088, "◯ agent quit · awaiting resume"],
+	[savedNotices.pause089, "◯ worker paused · awaiting resume · 16m 16s"],
+	[savedNotices.quit089, "◯ worker quit · awaiting resume · 16m 16s"],
+	[savedNotices.stopped088, "◯ worker stopped"],
 ] as const)("reopening '$title' preserves the recorded stop (#5563)", (notification, expected) => {
 	const saved = completionNoticeFromDetails({ notification });
 	assert.ok(saved);
@@ -204,13 +205,13 @@ test.each(["sweep_worker ops", "sweep_worker docs", "sweep_worker:qa", "sweep_wo
 			await expectReopenedNotice(
 				title,
 				{ notification: { ...fields, title } },
-				`⏸ ${name} killed (non-resumable): paused · awaiting resume`,
+				`◯ ${name} killed (non-resumable): paused · awaiting resume`,
 			);
 		}
 		await expectReopenedNotice(
 			title,
 			{ notification: { ...savedNotices.stopped088, title, agentName: name } },
-			`◼ ${name} stopped`,
+			`◯ ${name} stopped`,
 		);
 	},
 );
@@ -220,8 +221,8 @@ test("a reopened nameless subagent notice uses its own settlement, not another t
 	const taskId = savedNotices.stopped088.taskId;
 	const intent = { taskId, ownerId: "owner-1-0", terminalSequence: "7", taskKind: "agent", display: false };
 	for (const [cause, expected] of [
-		["user", "◼ docs worker stopped"],
-		["pause", "⏸ docs worker killed (non-resumable): paused · awaiting resume"],
+		["user", "◯ docs worker stopped"],
+		["pause", "◯ docs worker killed (non-resumable): paused · awaiting resume"],
 	] as const) {
 		await expectReopenedNotice(
 			title,
@@ -252,7 +253,7 @@ test("a reopened card neither borrows a sibling branch's intent nor invents an a
 		await expectReopenedNotice(
 			title,
 			{ notification: { ...savedNotices.stopped088, title } },
-			sibling ? "⏸ docs worker killed (non-resumable): paused · awaiting resume" : "◼ Subagent stopped",
+			sibling ? "◯ docs worker killed (non-resumable): paused · awaiting resume" : "◯ Subagent stopped",
 			undefined,
 			async (session) => {
 				const root = await session.appendMessage({ role: "user", content: "Check the queue", timestamp: 1 });
@@ -295,7 +296,7 @@ test("a surviving pause result takes precedence over a previously reopened heade
 	assert.ok(card);
 	assert.equal(
 		stripVTControlCharacters(card.render(120)[0]!).trim(),
-		"⏸ docs worker killed (non-resumable): paused · awaiting resume",
+		"◯ docs worker killed (non-resumable): paused · awaiting resume",
 	);
 });
 
@@ -374,7 +375,7 @@ test("a compacted chat shows its earlier stop without carrying that evidence int
 	await expectReopenedNotice(
 		title,
 		{ notification: { ...savedNotices.stopped088, title } },
-		"◼ docs worker stopped",
+		"◯ docs worker stopped",
 		undefined,
 		async (session) => {
 			await session.appendCustomEntry("task-completion-intent", {
@@ -401,7 +402,7 @@ test("a compacted chat shows its earlier stop without carrying that evidence int
 			assert.ok(card);
 			assert.equal(
 				stripVTControlCharacters(card.render(120)[0]!).trim(),
-				"⏸ docs worker timed out: quit · awaiting resume",
+				"◯ docs worker timed out: quit · awaiting resume",
 			);
 			card.dispose();
 		},
@@ -419,7 +420,7 @@ test("a separately saved name identifies a stopped child even when its task star
 			await expectReopenedNotice(
 				title,
 				{ notification: { ...savedNotices.stopped088, agentName: "worker", title } },
-				"◼ worker stopped",
+				"◯ worker stopped",
 			);
 		}
 	}
@@ -433,7 +434,7 @@ test("a separately saved name identifies a stopped child even when its task star
 		assert.ok(named);
 		assert.equal(
 			stripVTControlCharacters(new TaskCompletionMessage(named, false).render(120)[0]!).trim(),
-			`⏸ ${name} paused · awaiting resume`,
+			`◯ ${name} paused · awaiting resume`,
 		);
 	}
 });
@@ -442,7 +443,7 @@ test.each([
 	...["triage timed out:", "triage stopped (session closed):", "worker killed (non-resumable):"].map((name) => ({
 		notification: savedNotices.pauseOrRelease086,
 		title: `Subagent ${name} paused · awaiting resume: check the queue`,
-		expected: `⏸ ${name} paused · awaiting resume`,
+		expected: `◯ ${name} paused · awaiting resume`,
 	})),
 	{
 		title: "Subagent triage timed out after 1 second: released while waiting on bash (ci): Review docs",
@@ -451,7 +452,7 @@ test.each([
 	{
 		notification: savedNotices.quit087,
 		title: "Subagent triage interrupted by a restart: paused · awaiting resume: Review docs",
-		expected: "⏸ triage interrupted by a restart: paused · awaiting resume",
+		expected: "◯ triage interrupted by a restart: paused · awaiting resume",
 	},
 	{
 		title: "Subagent triage interrupted by a restart: released while waiting on bash (ci): Review docs",
@@ -459,7 +460,7 @@ test.each([
 	},
 	{
 		title: "Subagent triage stopped (QA): paused · awaiting resume: Review docs",
-		expected: "⏸ triage stopped (QA): paused · awaiting resume",
+		expected: "◯ triage stopped (QA): paused · awaiting resume",
 	},
 	{
 		title: `Subagent triage stopped: released while waiting on bash (ci): ${"x".repeat(240)}`,
@@ -468,7 +469,7 @@ test.each([
 	{
 		title: "Subagent triage stopped: paused · awaiting resume: Review docs",
 		agentName: "triage\tstopped:",
-		expected: "⏸ triage stopped: paused · awaiting resume",
+		expected: "◯ triage stopped: paused · awaiting resume",
 	},
 ])("main chats reopen '$expected' from the saved title (#5690)", (entry) => {
 	const { title, expected } = entry;
@@ -531,7 +532,7 @@ test("the visible preview preserves a named release even when the message body i
 test("even a separately saved name does not override a surviving body or preview (#5690)", async () => {
 	const title = "Subagent triage killed (non-resumable): paused · awaiting resume: A";
 	const fields = { ...savedNotices.stopped088, agentName: "triage", title };
-	const original = "⏸ triage killed (non-resumable): paused · awaiting resume";
+	const original = "◯ triage killed (non-resumable): paused · awaiting resume";
 	await expectReopenedNotice(`${title}\nRetained text`, { notification: fields }, original);
 	await expectReopenedNotice([{ type: "text", text: title }], { notification: fields }, original);
 	await expectReopenedNotice(
@@ -563,7 +564,7 @@ test("opening and refreshing a saved pause does not scan its hidden text blocks 
 		await expectReopenedNotice(
 			body,
 			{ notification, result: { kind: "cancelled", cause: "pause" } },
-			"⏸ worker paused · awaiting resume · 16m 16s",
+			"◯ worker paused · awaiting resume · 16m 16s",
 		);
 	} finally {
 		String.prototype.startsWith = startsWith;
@@ -614,7 +615,7 @@ async function expectReopenedNotice(
 			try {
 				assert.equal(await main.loadSession(reader, sessionId), true);
 				const notice = (rows: string[]) =>
-					rows.map((row) => stripVTControlCharacters(row).trim()).find((row) => /^[◼⏸◌●!] /u.test(row));
+					rows.map((row) => stripVTControlCharacters(row).trim()).find((row) => /^[◯◌●!] /u.test(row));
 				assert.equal(notice(main.renderBody(120, 25)), expected, backend);
 				if (preview)
 					for (const rows of [main.renderBody(120, 25)])
@@ -640,7 +641,7 @@ test("the saved result distinguishes a release from punctuation and release word
 	);
 	assert.match(
 		stripVTControlCharacters(new TaskCompletionMessage(stopped, false).render(120)[0]!),
-		/^\s*◼ .* stopped$/,
+		/^\s*◯ .* stopped$/,
 	);
 });
 

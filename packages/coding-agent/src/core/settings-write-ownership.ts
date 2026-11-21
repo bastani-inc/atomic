@@ -1,8 +1,8 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { asyncScope } from "./async-scope.ts";
 import type { SettingsScope } from "./settings-types.ts";
 
 // Internal write receipts: do not drain the manager's caller-owned error channel.
-export const settingsWriteOwner = new AsyncLocalStorage<object>();
+export const settingsWriteOwner = asyncScope<object>();
 export const ownedSettingsManagers = new WeakMap<object, object>();
 const failures = new WeakMap<object, Map<SettingsScope, unknown>>();
 export function recordSettingsWrite(owner: object | undefined, scope: SettingsScope, error?: unknown): void {

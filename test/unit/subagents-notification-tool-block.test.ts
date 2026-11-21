@@ -39,13 +39,13 @@ test("completion notifications render as status-colored tool blocks without losi
 	assert.ok(!interrupted.raw.includes("\u001b[48;"), "interrupted notification has no background shading");
 	assert.ok(completed.raw.includes(theme.fg("success", "●")), "completed notification uses success glyph");
 	assert.ok(failed.raw.includes(theme.fg("error", "✗")), "failed notification uses error glyph");
-	assert.ok(interrupted.raw.includes(theme.fg("muted", "◼")), "interrupted notification uses stopped glyph");
+	assert.ok(interrupted.raw.includes(theme.fg("error", "◯")), "interrupted notification uses the stopped mark");
 	assert.match(completed.plain, /● debugger completed · task 1\/2 · 1m 5s/);
 	assert.match(completed.plain, /⎿ {2}summary line/);
 	assert.match(completed.plain, /ctrl\+o full notification/);
 	assert.match(completed.plain, /session file: \/tmp\/sessions\/child\.jsonl/);
 	assert.match(failed.plain, /✗ debugger failed/);
-	assert.match(interrupted.plain, /◼ debugger interrupted/);
+	assert.match(interrupted.plain, /◯ debugger interrupted/);
 });
 
 test("tool-block rendering preserves collapsed and expanded preview behavior", () => {

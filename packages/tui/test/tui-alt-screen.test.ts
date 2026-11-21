@@ -1641,6 +1641,32 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
+	it("is pointer-idle only while no selection, press or drag depends on where rows are (#5693)", async () => {
+		const terminal = new RecordingTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copyOnSelect: false,
+			copySelection: async () => true,
+		});
+		tui.addChild(new Text("alpha\nbeta\ngamma\ndelta", 0, 0));
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			assert.strictEqual(tui.isPointerIdle(), true);
+			terminal.sendInput("\x1b[<0;1;1M");
+			assert.strictEqual(tui.isPointerIdle(), false, "a press that can start a selection");
+			terminal.sendInput("\x1b[<32;4;2M");
+			assert.strictEqual(tui.isPointerIdle(), false, "a drag");
+			terminal.sendInput("\x1b[<0;4;2m");
+			await terminal.waitForRender();
+			assert.strictEqual(tui.hasActiveSelection(), true);
+			assert.strictEqual(tui.isPointerIdle(), false, "a released selection that can still be copied");
+			tui.resetTextSelection();
+			assert.strictEqual(tui.isPointerIdle(), true);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("checks multi-page selection endpoints without reading the selected transcript before copy (#5593)", async () => {
 		const terminal = new RecordingTerminal(30, 4);
 		const rows = Array.from({ length: 300 }, (_, i) => `界-${i}-e\u0301`);
