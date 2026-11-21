@@ -42,6 +42,9 @@ import { shared } from "./a.ts";
 import { viaB } from "./b.ts";
 export default function (pi) {
 	Format.Set("atomic-bun-format", (value) => value.startsWith("ok-"));
+	const meta = import.meta;
+	const key = "dir";
+	const { dir: destructuredDir, require: destructuredRequire } = import.meta;
 	pi.events.emit("bun-extension", {
 		Format,
 		schema: Type.Object({ value: Type.String({ format: "atomic-bun-format" }) }),
@@ -57,6 +60,13 @@ export default function (pi) {
 			dirnameGlobal: __dirname,
 			filenameGlobal: __filename,
 			required: require.resolve("./a.ts"),
+			aliasedDir: meta.dir,
+			computedDir: import.meta[key],
+			destructuredDir,
+			resolved: import.meta.resolve("./a.ts"),
+			aliasedResolved: meta.resolve("./a.ts"),
+			metaRequired: import.meta.require.resolve("./a.ts"),
+			destructuredRequired: destructuredRequire.resolve("./a.ts"),
 		},
 		asset: readFileSync(join(import.meta.dir, "asset.txt"), "utf8"),
 	});
@@ -97,6 +107,13 @@ export default function (pi) {
 					dirnameGlobal: extensionDir,
 					filenameGlobal: entry,
 					required: path.join(extensionDir, "a.ts"),
+					aliasedDir: extensionDir,
+					computedDir: extensionDir,
+					destructuredDir: extensionDir,
+					resolved: `file://${path.join(extensionDir, "a.ts")}`,
+					aliasedResolved: `file://${path.join(extensionDir, "a.ts")}`,
+					metaRequired: path.join(extensionDir, "a.ts"),
+					destructuredRequired: path.join(extensionDir, "a.ts"),
 				},
 				load,
 			);

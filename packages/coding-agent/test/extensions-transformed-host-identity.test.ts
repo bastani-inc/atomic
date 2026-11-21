@@ -181,10 +181,16 @@ it(
 		fs.writeFileSync(
 			entry,
 			`export default function (pi) {
+	const meta = import.meta;
+	const { filename } = import.meta;
 	pi.events.emit("meta-probe", {
 		url: import.meta.url,
 		filename: import.meta.filename,
 		dirname: import.meta.dirname,
+		aliasedDirname: meta.dirname,
+		destructuredFilename: filename,
+		resolved: meta.resolve("./extension.ts"),
+		bunDir: meta.dir,
 		dirnameGlobal: __dirname,
 	});
 }
@@ -206,6 +212,11 @@ it(
 					url: pathToFileURL(entry).href,
 					filename: entry,
 					dirname: root,
+					aliasedDirname: root,
+					destructuredFilename: entry,
+					resolved: pathToFileURL(entry).href,
+					// Node's `import.meta` has no Bun properties.
+					bunDir: undefined,
 					dirnameGlobal: root,
 				});
 			}
