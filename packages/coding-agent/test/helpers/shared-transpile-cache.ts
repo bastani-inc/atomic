@@ -30,7 +30,7 @@ let shared: string | undefined;
  * starts with an empty one: its first transformed load compiles the whole builtin graph, 11-15 s on an idle machine and
  * past the 30 s budget under a full shard. Entries are keyed by source content and resolved siblings and are written by
  * rename, so tests and workers can share them. Only the cache is shared: the agent directory stays the test's own, and
- * its `cache/jiti/<version>` directory becomes a link (a junction on Windows) to the shared one, which removing the
+ * its `cache/transpile/<version>` directory becomes a link (a junction on Windows) to the shared one, which removing the
  * agent directory unlinks without touching. Creates the agent directory if needed; call it before anything loads
  * extensions under it. Returns false where the link cannot be made (no symlink rights, another volume): the test then
  * keeps a private cache under its agent directory, as without this helper.

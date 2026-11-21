@@ -227,7 +227,7 @@ runTest(
 				assert.ok(tools.includes(builtinTool), `builtin tool ${builtinTool} missing from ${tools.join(",")}`);
 			}
 			// The builtins ship prebundled and load natively, so a first start has nothing to transpile.
-			assert.deepEqual(filesBelow(join(agentDir, "cache", "jiti")), []);
+			assert.deepEqual(filesBelow(join(agentDir, "cache", "transpile")), []);
 		} finally {
 			await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
 		}

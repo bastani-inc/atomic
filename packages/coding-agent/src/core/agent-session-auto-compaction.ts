@@ -8,6 +8,7 @@ import type {
 	AutoCompactionRunOutcome,
 	AutoCompactionUrgency as CompactionUrgency,
 } from "./agent-session-methods.ts";
+import type { AgentQueueAccess } from "./agent-session-types.js";
 import {
 	calculateContextTokens,
 	estimateContextTokens,
@@ -15,7 +16,7 @@ import {
 	shouldCompact,
 } from "./compaction/index.ts";
 import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
-import { clearsForResumedBudget } from "./resume-cache-checkpoint.ts";
+import { clearsForResumedBudget, isAddedByResume } from "./resume-cache-checkpoint.ts";
 import { type ContextEditEntry, getLatestCompactionBoundaryEntry } from "./session-manager.ts";
 
 /**
@@ -670,8 +671,16 @@ export async function _runAutoCompaction(
  * Clear the context just before a continuation sends its next request, when it is over the automatic trigger. A turn
  * that ended over the trigger left its answer in context for its readers; this is where that clear happens for queued
  * messages and for a detached tool's result, as the prompt check does for a new prompt. Resolves whether it cleared.
+ *
+ * Below the trigger, the first request after a resume is checked as a prompt is ({@link _compactBeforeResumedPrompt}),
+ * with `input`, the messages the continuation starts with (by default the queued ones its first request takes). That
+ * clear keeps what the resume added as the context's last messages, so the continuation goes on as it would have and
+ * this resolves false.
  */
-export async function _compactBeforeContinuation(this: AgentSession): Promise<boolean> {
+export async function _compactBeforeContinuation(
+	this: AgentSession,
+	input?: readonly AgentMessage[],
+): Promise<boolean> {
 	const model = this.model;
 	if (!model) return false;
 	const settings = this.settingsManager.getCompactionSettings(model);
@@ -682,16 +691,29 @@ export async function _compactBeforeContinuation(this: AgentSession): Promise<bo
 		this._autoCompactionAbortController !== undefined
 	)
 		return false;
-	if (!shouldCompact(estimateContextTokens(this.agent.state.messages).tokens, model.contextWindow, settings))
-		return false;
-	return (await this._runAutoCompaction("threshold", false)) === "compacted";
+	if (shouldCompact(estimateContextTokens(this.agent.state.messages).tokens, model.contextWindow, settings))
+		return (await this._runAutoCompaction("threshold", false)) === "compacted";
+	if (this._resumeBudgetCheckpoint)
+		await this._compactBeforeResumedPrompt(undefined, input ?? continuationInput(this));
+	return false;
 }
 
 /**
- * Clear the context before the first prompt after a resume when what only the resume added (blueprint context,
- * notices, the prompt `update` the resume brings) would otherwise lower the thinking budget the restored history was
- * sent with ({@link clearsForResumedBudget}). Runs once per resume, once the prompt's `input` and `update` are final,
- * through the automatic compaction, whose boundary covers the restored history only. Resolves whether it cleared.
+ * The queued messages a continuation's first request takes: after a reply, the next queued steering or follow-up
+ * input (`promptQueuedMessages()`); after other input, only steering, which the continued turn polls first.
+ */
+function continuationInput(session: AgentSession): AgentMessage[] {
+	if (session.agent.state.messages.at(-1)?.role === "assistant") return session.agent.peekQueuedMessages();
+	return (session.agent as unknown as AgentQueueAccess).steeringQueue?.peek() ?? [];
+}
+
+/**
+ * Clear the context before the first request after a resume when what only the resume added (blueprint context,
+ * recovery notices, the prompt `update` the resume brings) would otherwise lower the thinking budget the restored
+ * history was sent with ({@link clearsForResumedBudget}). Runs once per resume, once the request's `input` and `update`
+ * are final, through the automatic compaction, whose boundary covers the restored history only. What was added after
+ * the session opened counts with the input: a session that kept running would have sent it too. Resolves whether it
+ * cleared.
  */
 export async function _compactBeforeResumedPrompt(
 	this: AgentSession,
@@ -721,7 +743,8 @@ export async function _compactBeforeResumedPrompt(
 	const unsent = messages.slice(at + 1);
 	// The boundary records the prompt and tools as they are; a later prompt change would then count twice.
 	if (unsent.some((message) => message.role === "system")) return false;
-	const added = update ? [...unsent, update] : unsent;
+	const resumeOnly = unsent.filter(isAddedByResume);
+	const added = update ? [...resumeOnly, update] : resumeOnly;
 	const head = getCurrentSystemMessage(history);
 	const boundary: AgentMessage = { role: "user", content: automaticBoundaryText(this), timestamp: 0 };
 	const clears = clearsForResumedBudget({
@@ -731,7 +754,7 @@ export async function _compactBeforeResumedPrompt(
 		blockImages: this.settingsManager.getBlockImages(),
 		history,
 		resumeOnly: added,
-		prompt: input,
+		prompt: [...unsent.filter((message) => !isAddedByResume(message)), ...input],
 		cleared: [...(head ? [head] : []), boundary, ...added],
 	});
 	// The boundary covers the restored history only, so what the resume added stays in the context as it was.
