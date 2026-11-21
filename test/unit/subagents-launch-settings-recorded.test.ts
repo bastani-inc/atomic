@@ -3,12 +3,18 @@ import { getEventListeners } from "node:events";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ExtensionContext } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { SessionWriteOptions } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
+import { subagentChildRecordOf } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
+import {
+	createSubagentChildRecordSink,
+	readSubagentChildRecords,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import { type ChildSpec, SubagentControlRuntime } from "../../packages/subagents/src/runs/inprocess/runner.ts";
 
@@ -226,5 +232,54 @@ test("an attempt that recorded its launch's model leaves nothing listening on si
 			getEventListeners(child.interrupt.signal, "abort").length,
 		],
 		[0, 0],
+	);
+});
+
+test("a later launch that does not know its leaf's position or level keeps none of an earlier launch's in the record", async () => {
+	const owner = SessionManager.inMemory("/repo");
+	const ctx = { sessionManager: owner } as unknown as ExtensionContext;
+	const sink = createSubagentChildRecordSink(
+		{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
+		ctx,
+	);
+	const child = { runId: "relaunched", index: 0, agent: "worker", state: "running" as const, cwd: "/repo" };
+	sink.record({
+		...child,
+		childSessionId: "first-session",
+		launchModel: "anthropic/first-model",
+		launchThinkingLevel: "high",
+		launchLeafId: "first-leaf",
+		launchLeafSeq: 20,
+	});
+	// A later launch, through a session that cannot tell its entries' positions, on a model with no thinking level.
+	sink.record({
+		...child,
+		childSessionId: "second-session",
+		launchModel: "openai/second-model",
+		launchLeafId: "second-leaf",
+	});
+	await sink.flushed?.();
+
+	const launchOf = (record: Record<string, unknown> | undefined) => ({
+		model: record?.launchModel,
+		thinkingLevel: record?.launchThinkingLevel,
+		leafId: record?.launchLeafId,
+		leafSeq: record?.launchLeafSeq,
+	});
+	const expected = {
+		model: "openai/second-model",
+		thinkingLevel: undefined,
+		leafId: "second-leaf",
+		leafSeq: undefined,
+	};
+	assert.deepEqual(
+		launchOf({ ...subagentChildRecordOf(owner.getSessionId(), "relaunched:0") }),
+		expected,
+		"in memory",
+	);
+	assert.deepEqual(
+		launchOf({ ...readSubagentChildRecords(owner.getEntries()).get("relaunched:0") }),
+		expected,
+		"saved",
 	);
 });

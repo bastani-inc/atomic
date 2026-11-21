@@ -453,18 +453,22 @@ function recordedSettings(sessionManager: SessionManager): { model?: string; thi
 }
 
 /**
- * Write the model and thinking level `session` starts on into its own session, as `/model` does, where the session
- * records others. A new session recorded them as it started, and one that already runs on them needs nothing.
+ * What writes the model and thinking level `session` starts on into its own session, as `/model` does, where the
+ * session records others; undefined when there is nothing to write. A new session recorded them as it started, and
+ * one that already runs on them needs nothing.
  */
-async function recordLaunchSettings(sessionManager: SessionManager, session: AgentSession): Promise<void> {
+function launchSettingsWrite(sessionManager: SessionManager, session: AgentSession): (() => Promise<void>) | undefined {
 	const model = session.model;
 	const thinking = thinkingLevelForSession(session);
-	if (model === undefined && thinking === undefined) return;
+	if (model === undefined && thinking === undefined) return undefined;
 	const recorded = recordedSettings(sessionManager);
-	if (model !== undefined && recorded.model !== `${model.provider}/${model.id}`)
-		await sessionManager.appendModelChange(model.provider, model.id);
-	if (thinking !== undefined && recorded.thinking !== thinking)
-		await sessionManager.appendThinkingLevelChange(thinking);
+	const writeModel = model !== undefined && recorded.model !== `${model.provider}/${model.id}`;
+	const writeThinking = thinking !== undefined && recorded.thinking !== thinking;
+	if (!writeModel && !writeThinking) return undefined;
+	return async () => {
+		if (writeModel) await sessionManager.appendModelChange(model.provider, model.id);
+		if (writeThinking) await sessionManager.appendThinkingLevelChange(thinking);
+	};
 }
 
 function initialThinkingForAttempt(
@@ -2814,12 +2818,15 @@ export class SubagentControlRuntime {
 			// A restart restores the child on the model and thinking level its own session records. Those a launch applies
 			// without an entry (a fork's or a relaunch's own model, a resumed session's other effort) are recorded now,
 			// before its first request, so a restart finds them whatever its record in its owner's session says yet.
-			// A stop does not wait for that write: the attempt stops before it runs, as below.
-			const stop = attemptStopped(signals);
-			try {
-				await beforeStartDeadline(Promise.race([recordLaunchSettings(sessionManager, session), stop.stopped]));
-			} finally {
-				stop.dispose();
+			const writeLaunchSettings = launchSettingsWrite(sessionManager, session);
+			if (writeLaunchSettings !== undefined) {
+				// A stop does not wait for that write: the attempt stops before it runs, as below.
+				const stop = attemptStopped(signals);
+				try {
+					await beforeStartDeadline(Promise.race([writeLaunchSettings(), stop.stopped]));
+				} finally {
+					stop.dispose();
+				}
 			}
 			const currentLeafId = sessionManager.getLeafId();
 			const childLaunch = {
