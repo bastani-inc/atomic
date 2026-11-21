@@ -2129,7 +2129,7 @@ export async function openResumedSession(
 			: sessionManager;
 	// A session manager of an earlier Atomic version has none to hand over.
 	if (opened !== sessionManager && typeof sessionManager.handOverStartedSession === "function")
-		sessionManager.handOverStartedSession(opened);
+		await sessionManager.handOverStartedSession(opened);
 	const restoredHere = new Set(restored.map((mapping) => mapping.to));
 	const leftHere = new Set(unrestored.map((record) => `${record.snapshotId}\0${record.at}`));
 	return {

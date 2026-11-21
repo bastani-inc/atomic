@@ -13,6 +13,7 @@ import { openResumedSession } from "../src/core/session-worktree-snapshots.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
+import { collectSnapshotGarbage } from "../src/core/worktree-snapshot/garbage.ts";
 import { type PoolSlotRecord, pooledWorktreeHolder } from "../src/core/worktree-snapshot/pool.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import { formatWorktreeRestoreNotice, isWorkspaceConfigError, openSessionInWorktree } from "../src/index.ts";
@@ -174,6 +175,38 @@ describe("resuming through the SDK (#4245)", () => {
 		assert.equal(resumed.session.sessionManager.getCwd(), mapping.to);
 		assert.equal(readFileSync(join(mapping.to, "a.txt"), "utf8"), "recorded\n");
 		assert.equal(readFileSync(join(clone, "a.txt"), "utf8"), "drifted\n");
+	});
+
+	test("a resumed session in a database keeps recording, and restoring it after a collection brings back every file", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const first = await fauxSession({ cwd: clone, settings: { snapshots: { enabled: true } } });
+		await writeTurn(first, join(clone, "a.txt"), "first run\n");
+		const sessionId = first.session.sessionManager.getSessionId();
+		await first.session.dispose();
+		const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+		const store = await SqlSessionStore.open(database);
+		cleanups.push(async () => {
+			await store.close();
+			await database.close();
+		});
+
+		const resumed = await fauxSession({ cwd: clone, sessionManager: await SessionManager.open(store, sessionId) });
+		await writeTurn(resumed, join(clone, "b.txt"), "written after the resume\n");
+		await writeTurn(resumed, join(clone, "a.txt"), "changed after the resume\n");
+		assert.deepEqual(recordedRoots(resumed.session), [clone, clone, clone], "one snapshot for each turn that writes");
+		await resumed.session.dispose();
+
+		assert.ok(store.snapshotBlobs);
+		await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 });
+		await renameWithRetry(clone, sandbox.path("moved-away"));
+		const { sessionManager } = await openSessionInWorktree(await SessionManager.open(store, sessionId), {
+			settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			storeDir: sandbox.path("host"),
+		});
+		const [mapping] = sessionManager.getWorktreeRootMappings();
+		assert.ok(mapping, "the session is restored into a fresh worktree");
+		assert.equal(readFileSync(join(mapping.to, "a.txt"), "utf8"), "changed after the resume\n");
+		assert.equal(readFileSync(join(mapping.to, "b.txt"), "utf8"), "written after the resume\n");
 	});
 
 	test("createAgentSession holds the pooled worktree it restores until the session closes, then records its last snapshot (#4748)", async () => {

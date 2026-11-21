@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isProxy } from "node:util/types";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
@@ -5,7 +6,6 @@ import { recordsStrictToolLimits } from "@bastani/atomic-ai/api/strict-tool-limi
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
-
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import { forkContextPath, includeNamedForkOutputs } from "./fork-context-path.js";
@@ -1020,15 +1020,28 @@ export class SessionManager {
 
 	/**
 	 * @internal Moves {@link startedSession} to `replacement`, a manager of this same session record opened to continue it
-	 * in place of this one, as a resume does in the directory it continues in.
+	 * in place of this one, as a resume does in the directory it continues in. A session file is the same record however
+	 * its path is spelled; a session kept without one is the same record in the same store.
 	 */
-	handOverStartedSession(replacement: SessionManager): void {
-		const sameRecord =
-			this.sessionFile !== undefined
-				? replacement.sessionFile === this.sessionFile
-				: replacement.sessionFile === undefined && replacement.store === this.store;
-		if (replacement !== this && replacement.sessionId === this.sessionId && sameRecord && this.takeStartedSession())
-			replacement.markSessionStarted();
+	async handOverStartedSession(replacement: SessionManager): Promise<void> {
+		const sessionId = this.sessionId;
+		if (replacement === this || replacement.sessionId !== sessionId || !this.startedSession()) return;
+		const [own, theirs] = [this.sessionFile, replacement.sessionFile];
+		if (own === undefined || theirs === undefined) {
+			if (own !== theirs || replacement.store !== this.store) return;
+		} else if (own !== theirs) {
+			// The file's own spelling, case included, as the filesystem resolves it; a path that cannot be resolved
+			// proves nothing.
+			const [ownPath, theirPath] = await Promise.all([
+				realpath(own).catch(() => undefined),
+				realpath(theirs).catch(() => undefined),
+			]);
+			if (ownPath === undefined || ownPath !== theirPath) return;
+			// Either manager may have moved to another session while the paths were resolved.
+			if (this.sessionId !== sessionId || this.sessionFile !== own) return;
+			if (replacement.sessionId !== sessionId || replacement.sessionFile !== theirs) return;
+		}
+		if (this.takeStartedSession()) replacement.markSessionStarted();
 	}
 
 	getCwd(): string {

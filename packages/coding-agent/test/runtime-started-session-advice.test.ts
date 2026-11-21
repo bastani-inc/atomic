@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
@@ -22,13 +22,19 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-/** A runtime on an opened session kept in files, which cannot hold snapshots, and a fork of it the host made. */
-async function runtimeWithFork() {
+/**
+ * A runtime on an opened session kept in files, which cannot hold snapshots, and a fork of it the host made. With
+ * `linked`, both are made through a link to the session directory, so the switch names the fork's file another way.
+ */
+async function runtimeWithFork(options: { readonly linked?: boolean } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "runtime-started-session-"));
 	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 	const cwd = join(dir, "project");
 	const sessionDir = join(dir, "sessions");
 	mkdirSync(cwd, { recursive: true });
+	mkdirSync(sessionDir, { recursive: true });
+	const madeIn = options.linked ? join(dir, "linked-sessions") : sessionDir;
+	if (options.linked) symlinkSync(sessionDir, madeIn, "junction");
 	const faux = registerFauxProvider();
 	cleanups.push(() => faux.unregister());
 	const authStorage = AuthStorage.inMemory();
@@ -53,13 +59,13 @@ async function runtimeWithFork() {
 		});
 		return { ...created, services, diagnostics: services.diagnostics };
 	};
-	const original = await SessionManager.create(cwd, sessionDir);
+	const original = await SessionManager.create(cwd, madeIn);
 	await original.appendMessage({ role: "user", content: "earlier work", timestamp: 1 });
-	const fork = await original.forkTo(cwd, sessionDir);
+	const fork = await original.forkTo(cwd, madeIn);
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd,
 		agentDir: dir,
-		sessionManager: await SessionManager.open(original.getSessionFile()!, sessionDir),
+		sessionManager: await SessionManager.open(join(sessionDir, basename(original.getSessionFile()!)), sessionDir),
 	});
 	cleanups.push(() => runtime.dispose());
 	let writes = 0;
@@ -100,4 +106,11 @@ test("a switch to a fork the host just made reports its store once; switching ba
 	await runtime.switchSession(original.getSessionId(), { sessionDirectory: sessionDir });
 	await runtime.switchSession(fork.getSessionId(), { sessionDirectory: sessionDir });
 	assert.deepEqual(await advice(), [], "switching back by ID reports nothing");
+});
+
+test("a fork made through a link to its session directory reports its store once when the switch names it the direct way", async () => {
+	const { runtime, fork, sessionDir, advice } = await runtimeWithFork({ linked: true });
+	assert.notEqual(join(sessionDir, basename(fork.getSessionFile()!)), fork.getSessionFile());
+	await runtime.switchSession(fork.getSessionId(), { sessionDirectory: sessionDir, startedSession: fork });
+	assert.deepEqual(await advice(), ["blob-store-unsupported"]);
 });

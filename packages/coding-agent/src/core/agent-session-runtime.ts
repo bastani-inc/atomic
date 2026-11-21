@@ -750,7 +750,7 @@ export class AgentSessionRuntime {
 			);
 			if (options?.startedSession === HOST_STARTED_SESSION) opened.markSessionStarted();
 			else if (options?.startedSession instanceof SessionManager)
-				options.startedSession.handOverStartedSession(opened);
+				await options.startedSession.handOverStartedSession(opened);
 			const { sessionManager, unrecorded } = await this.resumeWorktree(opened, options?.sessionDirectory);
 			const missingCwd = await findMissingSessionCwdIssueAsync(sessionManager, this.cwd);
 			if (missingCwd !== undefined) throw new MissingSessionCwdError(missingCwd);
