@@ -2,13 +2,15 @@
  * The compile-cache helper of an interactive session whose cache was cold (see `compile-cache.ts`). It owns no
  * session, settings or terminal: it loads the modules an interactive session and its engine load, writes Node's compile
  * cache for them and then marks the cache warm for this Atomic build. Its host starts it with `--no-addons`, so it maps
- * no native module, and outside the installation, so an upgrade or an uninstall never finds a file of it in use.
+ * no native module, and outside the installation. While it imports the installation's modules it holds each file open
+ * only briefly, but a rename of the installation's directory by another tool can fail meanwhile; npm and Bun upgrades
+ * and uninstalls succeed, and the helper stands down once it sees one start (below).
  *
  * Only one helper warms a build at a time: it holds the build's lock file open in exclusive sharing mode while it
  * runs, and the system closes that handle when the helper ends, however it ends. It does not stop with its session;
  * it ends when it is done, starting the next helper of its plan first, and after five minutes at most, without writing
  * anything more. It stands down at once, leaving no marker, when its installation starts to change (an install, an
- * upgrade or an uninstall; see `compile-cache-installation.ts`), so it never keeps an installer waiting.
+ * upgrade or an uninstall; see `compile-cache-installation.ts`).
  *
  * Arguments: the build id and the plan (`compile-cache-warmup-host.ts`).
  */
