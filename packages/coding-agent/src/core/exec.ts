@@ -7,6 +7,7 @@ import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
 import { spawnHostProcess } from "../utils/host-spawn.ts";
+import { killProcessTree } from "../utils/shell.ts";
 
 const DEFAULT_EXEC_MAX_BUFFER = Math.min(256 * 1024 * 1024, bufferConstants.MAX_STRING_LENGTH);
 const FORCE_KILL_DELAY_MS = 5000;
@@ -15,6 +16,16 @@ const FORCE_KILL_DELAY_MS = 5000;
  * session's shutdown handlers still have most of the quit's grace period once every such command has ended.
  */
 const QUIT_FORCE_KILL_DELAY_MS = 1000;
+
+let quitEndedRunningCommand = false;
+
+/**
+ * Whether a quit ended a command that was still running. Processes such a command started are left in this process's
+ * group on Linux and macOS, where only the command itself is signalled.
+ */
+export function quitEndedACommand(): boolean {
+	return quitEndedRunningCommand;
+}
 
 /**
  * Options for executing shell commands.
@@ -52,9 +63,9 @@ export interface ExecResult {
  * Supports timeout, abort signal, and an output cap (`maxBuffer`).
  *
  * `onQuit` registers a stop to run when the command's session starts to quit, and returns its unregistration. The stop
- * ends a command still running so that it cannot hold the session's shutdown: it gets SIGTERM, and after
- * {@link QUIT_FORCE_KILL_DELAY_MS} SIGKILL, and output its descendants still hold open is then no longer waited for. A
- * command that already exited is left as it is.
+ * ends a command still running so that it cannot hold the session's shutdown: it gets SIGTERM (on Windows its process
+ * tree is ended), and after {@link QUIT_FORCE_KILL_DELAY_MS} SIGKILL, and output its descendants still hold open is then
+ * no longer waited for. A command that already exited is left as it is.
  */
 export async function execCommand(
 	command: string,
@@ -110,7 +121,12 @@ export async function execCommand(
 		// A command that never started has nothing to end; its start failure settles it. One that already exited keeps
 		// its result, and the output its descendants still write is waited for as before.
 		if (proc.pid === undefined || exited() || quitCutId !== undefined) return;
-		killProcess();
+		quitEndedRunningCommand = true;
+		if (process.platform === "win32") {
+			// Ending the command at once would leave the processes it started: end its tree while it still runs.
+			killed = true;
+			killProcessTree(proc.pid);
+		} else killProcess();
 		// The command has a short window to end; then it gets SIGKILL, also when its caller already stopped it, and
 		// output its descendants still hold open is no longer waited for.
 		quitCutId = setTimeout(() => {

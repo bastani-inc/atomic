@@ -68,6 +68,8 @@ interface EndedSession {
 
 interface SessionOptions {
 	readonly groupChild?: boolean;
+	/** The extension runs a `pi.exec` command that starts a process of its own and then runs until it is ended. */
+	readonly execGrandchild?: boolean;
 	/** Run the session in the host process, as for a project left untrusted. */
 	readonly inProcess?: boolean;
 	/** The handler works until the test calls `release()` rather than for a time. */
@@ -111,6 +113,10 @@ export default (pi) => {
 			const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
 			child.unref();
 			writeFileSync(${JSON.stringify(groupChild)}, String(child.pid));
+		}
+		if (${options.execGrandchild === true}) {
+			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
+			void pi.exec(process.execPath, ["-e", command, ${JSON.stringify(groupChild)}]);
 		}
 		writeFileSync(${JSON.stringify(started)}, String(process.pid));
 	});
@@ -165,7 +171,9 @@ export default (pi) => {
 		else assert.ok(engine?.type === "start", "the session ran in an engine process");
 		const sessionPid = engine?.type === "start" ? engine.pid : host.pid;
 
-		if (options.groupChild) {
+		if (options.groupChild || options.execGrandchild) {
+			while (!(fileExistsSync(groupChild) && readTextSync(groupChild, "utf8") !== "") && Date.now() < deadline)
+				await sleep(RECORD_POLL_MS);
 			// The engine, and so its process group, is running: the pid names the extension's process.
 			groupChildProcess = await recordProcess(Number(readTextSync(groupChild, "utf8")));
 			assert.ok(await stillRuns(groupChildProcess), "the extension started its process");
@@ -411,3 +419,27 @@ describe.skipIf(process.platform === "win32")("a SIGHUP after a quit stopped the
 		);
 	}
 });
+
+test(
+	"a process that an extension's running pi.exec command started ends when you quit",
+	async () => {
+		const ended = await endSession(({ program }) => program.write("/quit\r"), HANDLER_WORK_MS, {
+			execGrandchild: true,
+		});
+
+		const child = ended.groupChild;
+		assert.ok(child !== undefined);
+		try {
+			assert.equal(ended.exit.timedOut, false, ended.screen);
+			assert.equal(ended.calls.length, 2, "the engine ran its extension's shutdown");
+			assert.equal(
+				await waitUntilGone(child, GROUP_CHILD_GONE_MS),
+				true,
+				"the process the command started outlived the quit",
+			);
+		} finally {
+			await signalRecordedProcess(child);
+		}
+	},
+	CLI_TIMEOUT_MS + 10_000,
+);
