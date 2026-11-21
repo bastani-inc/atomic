@@ -53,6 +53,8 @@ export interface OwnerlessChildLaunch {
 	/** Stands in for the host's task id in the child's records. */
 	readonly launchId: string;
 	readonly result: Promise<SingleResult>;
+	/** Settles once the launch ended, also when it was stopped before it started, which `result` reports only later. */
+	readonly ended: Promise<void>;
 }
 
 /** How a child that pause or quit stopped before it was dispatched starts later, on its original launch. */
@@ -388,7 +390,7 @@ export function runOwnerlessChild(input: {
 		},
 		execute,
 	);
-	return { launchId, result };
+	return { launchId, result, ended: settled.promise };
 }
 
 /** Children launched without a task host that are live or stopped while queued; counted by tests and the benchmark. */

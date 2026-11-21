@@ -1,7 +1,15 @@
-import { type ChildProcess, spawn } from "node:child_process";
-import { join } from "node:path";
+import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
+import { open, realpath } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 import crossSpawn from "cross-spawn";
+import {
+	findHelperExecutableAsync,
+	type HelperExecutableOptions,
+	type HelperLaunch,
+	helperLaunchAsync,
+	missingHelperOptions,
+} from "../../../../utils/helper-command.ts";
 import { type JsonRpcMessage, McpConnectionClosedError } from "../protocol/jsonrpc.js";
 import { JsonRpcLineReader } from "./lines.js";
 import { type McpTransport, TransportEvents } from "./transport.js";
@@ -56,10 +64,126 @@ function installExitHook(): void {
 	});
 }
 
+/**
+ * The server's environment: `configured` over `inherited`. Windows reads a variable's name in any letter case, so there a
+ * configured variable replaces the inherited one however either is spelled, for the program's lookup and the program.
+ */
+function serverEnvironment(inherited: NodeJS.ProcessEnv, configured: Record<string, string> = {}): NodeJS.ProcessEnv {
+	if (process.platform !== "win32") return { ...inherited, ...configured };
+	const replaced = new Set(Object.keys(configured).map((name) => name.toUpperCase()));
+	const kept = Object.entries(inherited).filter(([name]) => !replaced.has(name.toUpperCase()));
+	return { ...Object.fromEntries(kept), ...configured };
+}
+
+/** How much of a script's start its interpreter line may take, as cross-spawn reads it. */
+const SHEBANG_BYTES = 150;
+
+/** What Windows starts itself, whose first bytes are no interpreter line. */
+const DIRECT_EXTENSIONS = new Set([".com", ".exe"]);
+
+/**
+ * Windows: how `command` starts when its program is a script whose first line names an interpreter (`#!/usr/bin/env
+ * node`), which cross-spawn starts by that interpreter, but with the interpreter looked up as the program is, never in
+ * the project folder, and in a working directory configured outside it first, as for a program given by name. The
+ * script is the program `launch` found or names, or, when nothing was found under a name
+ * without an extension, a file of that very name in PATH's absolute directories, as cross-spawn also tries. Undefined
+ * for a program that is no such script; a missing interpreter fails as a missing program does.
+ */
+async function interpretedLaunch(
+	command: string,
+	launch: HelperLaunch,
+	cwd: string,
+	search: HelperExecutableOptions,
+	interpreterSearch: () => Promise<HelperExecutableOptions>,
+): Promise<{ readonly launch: HelperLaunch; readonly args: readonly string[] } | undefined> {
+	const script =
+		launch.missing === undefined
+			? resolve(cwd, launch.file)
+			: extname(command) === ""
+				? await findHelperExecutableAsync(command, { ...search, asIs: true })
+				: undefined;
+	if (script === undefined || DIRECT_EXTENSIONS.has(extname(script).toLowerCase())) return undefined;
+	const interpreter = await readInterpreter(script);
+	if (interpreter === undefined) return undefined;
+	const [program, ...interpreterArgs] = interpreter;
+	return {
+		launch: await helperLaunchAsync(program, { ...(await interpreterSearch()), shellScripts: true }),
+		args: [...interpreterArgs, script],
+	};
+}
+
+/**
+ * The interpreter and its argument a script's first line names, read as cross-spawn reads it: `#!/usr/bin/env node`
+ * names `node`, `#!/bin/sh -e` names `sh` with `-e`. Undefined for a file without one, or one that cannot be read.
+ */
+async function readInterpreter(script: string): Promise<readonly [string, ...string[]] | undefined> {
+	let start: string;
+	try {
+		const file = await open(script, "r");
+		try {
+			const buffer = Buffer.alloc(SHEBANG_BYTES);
+			const { bytesRead } = await file.read(buffer, 0, SHEBANG_BYTES, 0);
+			start = buffer.toString("utf8", 0, bytesRead);
+		} finally {
+			await file.close();
+		}
+	} catch {
+		return undefined;
+	}
+	const line = /^#!(.*)/u.exec(start)?.[1];
+	if (line === undefined) return undefined;
+	const [path = "", argument] = line.replace(/^ /u, "").split(" ");
+	const binary = path.split("/").pop() ?? "";
+	if (binary === "env") return argument ? [argument] : undefined;
+	if (binary === "") return undefined;
+	return argument ? [binary, argument] : [binary];
+}
+
+/** `work`'s result, or `signal`'s reason as soon as it aborts, whatever `work` still waits for. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		work.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+/**
+ * Whether `directory` is certainly outside the project folder, with links and other spellings of either resolved: only
+ * there may a program be looked up by name. Not when either cannot be read.
+ */
+async function outsideProject(directory: string, projectCwd: string): Promise<boolean> {
+	try {
+		const [real, project] = await Promise.all([realpath(directory), realpath(projectCwd)]);
+		const fromProject = relative(project, real);
+		return fromProject === ".." || fromProject.startsWith(`..${sep}`) || isAbsolute(fromProject);
+	} catch {
+		return false;
+	}
+}
+
 export interface StdioTransportOptions {
+	/**
+	 * The server's program: a path is started as it is; a name only from PATH's absolute directories, never through an
+	 * implicit search of the project folder (`projectCwd`) or Atomic's working directory. On Windows a name is also
+	 * looked up in a `cwd` outside the project folder, as Windows looks in a program's working directory first, and may
+	 * name a script without an extension, started by the interpreter its first line names.
+	 */
 	command: string;
 	args?: readonly string[];
 	cwd?: string;
+	/** The folder of the session the server serves; default `cwd`. */
+	projectCwd?: string;
 	env?: Record<string, string>;
 	inheritEnv?: boolean;
 	stderr?: "pipe" | "inherit";
@@ -76,6 +200,8 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 	private readonly lines: JsonRpcLineReader;
 	private started = false;
 	private closed = false;
+	/** Ends a lookup of the server's program that `close()` cuts short. */
+	private readonly lookup = new AbortController();
 
 	constructor(options: StdioTransportOptions) {
 		super();
@@ -101,15 +227,61 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		if (this.started) throw new Error("MCP stdio transport already started");
 		if (this.closed) throw new McpConnectionClosedError();
 		this.started = true;
-		const env = this.options.inheritEnv === false ? { ...this.options.env } : { ...process.env, ...this.options.env };
-		const child = crossSpawn(this.options.command, this.options.args ?? [], {
+		const env = serverEnvironment(this.options.inheritEnv === false ? {} : process.env, this.options.env);
+		const projectCwd = this.options.projectCwd ?? this.options.cwd;
+		const { cwd } = this.options;
+		let launch: HelperLaunch;
+		/** What the program's command line starts with before the server's arguments: a script's interpreter's. */
+		let leading: readonly string[] = [];
+		try {
+			// Windows looks in a program's working directory first: one configured outside the project folder.
+			const firstFolder = async (): Promise<string | undefined> =>
+				process.platform === "win32" &&
+				cwd !== undefined &&
+				projectCwd !== undefined &&
+				cwd !== projectCwd &&
+				(await untilAborted(outsideProject(cwd, projectCwd), this.lookup.signal))
+					? cwd
+					: undefined;
+			const searchFrom = (searchFirst: string | undefined): HelperExecutableOptions => ({
+				env,
+				...(projectCwd === undefined ? {} : { cwd: projectCwd }),
+				...(searchFirst === undefined ? {} : { searchFirst }),
+				signal: this.lookup.signal,
+			});
+			// A program given by its path needs no search, unless it is a script whose interpreter is looked up.
+			const named = !/[\\/:]/.test(this.options.command);
+			const search = searchFrom(named ? await firstFolder() : undefined);
+			// cross-spawn runs `.cmd` and `.bat` shims through cmd.exe.
+			launch = await helperLaunchAsync(this.options.command, { ...search, shellScripts: true });
+			if (process.platform === "win32") {
+				const interpreted = await untilAborted(
+					interpretedLaunch(this.options.command, launch, cwd ?? process.cwd(), search, async () =>
+						named ? search : searchFrom(await firstFolder()),
+					),
+					this.lookup.signal,
+				);
+				if (interpreted !== undefined) ({ launch, args: leading } = interpreted);
+			}
+		} catch (error) {
+			if (this.closed) throw new McpConnectionClosedError();
+			throw error;
+		}
+		// Closed while the program was looked up: nothing starts.
+		if (this.closed) throw new McpConnectionClosedError();
+		const options: SpawnOptions = {
 			cwd: this.options.cwd,
 			env,
 			stdio: ["pipe", "pipe", this.options.stderr === "inherit" ? "inherit" : "pipe"],
 			windowsHide: true,
 			// Own process group, so closing the transport can terminate the server's children too.
 			detached: USE_PROCESS_GROUPS,
-		});
+		};
+		// A program found nowhere fails as a missing one does; cross-spawn would look in the working directory.
+		const child =
+			launch.missing === undefined
+				? crossSpawn(launch.file, [...leading, ...(this.options.args ?? [])], options)
+				: spawn(launch.file, this.options.args ?? [], { ...options, ...missingHelperOptions(launch) });
 		this.child = child;
 		const pid = child.pid;
 		if (USE_PROCESS_GROUPS && pid !== undefined) {
@@ -160,6 +332,7 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
+		this.lookup.abort();
 		const child = this.child;
 		if (!child) {
 			this.emitClose();

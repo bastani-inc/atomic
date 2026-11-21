@@ -1587,7 +1587,14 @@ export class SessionManager {
 				this.leafId,
 				coveredThroughEntryId,
 			);
-			const projected = this.buildSessionProjection().messages;
+			// A boundary that covers the history only through an earlier entry of the current branch carries the prompt as
+			// of that entry; the entries after it, prompt changes among them, replay after the boundary. Any other boundary
+			// carries the prompt as it is now.
+			const covered =
+				coveredThroughEntryId !== undefined && this.getBranch().some((entry) => entry.id === coveredThroughEntryId)
+					? coveredThroughEntryId
+					: this.leafId;
+			const projected = this.buildSessionProjection("model", covered).messages;
 			const systemMessage = getCurrentSystemMessage(projected);
 			const transformedPrompt = carriedTransformedPrompt(projected);
 			if (systemMessage) {

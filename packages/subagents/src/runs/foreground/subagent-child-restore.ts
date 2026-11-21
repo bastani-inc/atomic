@@ -50,7 +50,7 @@ import {
 	pendingToolCalls,
 	planReleasedChildWake,
 	SUBAGENT_OWNER_GENERATION,
-	savedToolResultIds,
+	savedToolResultIdsInHistory,
 } from "./released-children.js";
 import type { SubagentResumeNote } from "./resume-note.js";
 import { boundedWorktreeReply, resumeRunWorktree, WORKTREE_REPLY_WAIT_MS } from "./run-worktrees.js";
@@ -803,10 +803,14 @@ async function relaunchChild(
 		);
 	// Read again: the owner's wakes may have held them first, after `record` was read. `record` when it cannot be read.
 	const latest = readableSubagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
-	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012).
+	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012). Also
+	// when a compaction since took it out of the transcript's context.
 	const saved =
 		sessionManager && !fresh
-			? savedToolResultIds(sessionManager, [...(latest.heldToolResults ?? []), ...(resume?.toolResults ?? [])])
+			? await savedToolResultIdsInHistory(sessionManager, [
+					...(latest.heldToolResults ?? []),
+					...(resume?.toolResults ?? []),
+				])
 			: [];
 	await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
 	const unsaved = (results: readonly DetachedToolResult[]) =>
@@ -1065,6 +1069,9 @@ async function relaunchChild(
 			// senders still held why when its start failed.
 			void hold?.release(startFailureRefusal(record.intercomTarget, child));
 		},
+		// However it ends, also failed or stopped before it started: the restoration is over. A stopped one keeps its hold,
+		// so what is sent to it meanwhile waits for it to start.
+		onEnded: release,
 	});
 	const outcome = await relaunched(
 		deps,
@@ -1127,6 +1134,7 @@ async function startQueuedChild(
 			release();
 			void hold?.release();
 		},
+		onEnded: release,
 	});
 	return relaunched(deps, record, response, recordChild, release, supervisorAuthorization, intercomGroup);
 }
@@ -1162,11 +1170,19 @@ async function ownerlessRelaunched(
 			},
 			() => {},
 		)
-		.finally(() => {
-			release();
-			// Normally the child consumed the hold when it registered; one that never did must not keep it.
-			void hold?.release();
-		});
+		// A report that fails ends nothing else.
+		.catch(() => {})
+		// Normally the child consumed the hold when it registered; one that never did must not keep it.
+		.finally(() => void hold?.release());
+	// The restoration is over once the launch ended, however it ends, also stopped before it started, which its result
+	// reports only once its run's slot frees. A result handed off while the launch still runs is no end of it.
+	void Promise.race([
+		launched.ended,
+		launched.result.then(
+			(child) => (child.detached ? launched.ended : undefined),
+			() => undefined,
+		),
+	]).then(release);
 	// Pause or quit right after this returns must find the child under its new launch id.
 	await recordChild.flushed?.();
 	const intercomLive =
