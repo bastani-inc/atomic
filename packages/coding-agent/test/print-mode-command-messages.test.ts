@@ -373,10 +373,11 @@ test("a command that answers nothing still reports an earlier reply cut at the o
 
 test("a timer a command leaves running does not keep the run going (#6113)", async () => {
 	// Each tick's turn outlasts the tick interval, and saving the command's confirmation takes a moment, so ticks keep
-	// arriving while the run waits for that confirmation.
+	// arriving while the run waits for that confirmation. The model answers every tick for far longer than the test may
+	// run: a run that waited for the ticks would never end.
 	const harness = await sessionWithEarlierReply(
 		fauxAssistantMessage("earlier answer"),
-		...Array.from({ length: 40 }, () => async () => {
+		...Array.from({ length: 2000 }, () => async () => {
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			return fauxAssistantMessage("tock");
 		}),
