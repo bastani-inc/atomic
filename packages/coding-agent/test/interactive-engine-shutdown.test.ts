@@ -283,7 +283,10 @@ describe("isolated interactive startup shutdown", () => {
 	test("a host signal keeps the stop that ends the engine at once on Windows (#6075)", async () => {
 		const { stops } = await disposeAndObserve({ fromSignal: true });
 
-		assert.deepEqual(stops, [{ graceful: false }, { graceful: false }]);
+		assert.deepEqual(stops, [
+			{ graceful: false, hostSignaled: true },
+			{ graceful: false, hostSignaled: true },
+		]);
 	});
 
 	async function herdrReleasesAfterQuit(acknowledged: boolean): Promise<string[][]> {

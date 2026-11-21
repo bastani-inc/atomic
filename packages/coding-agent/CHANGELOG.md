@@ -35,6 +35,8 @@
 - A resumed Claude session no longer sends strict tools once more after compactions removed every reply that recorded their rejection: the compaction keeps the record ([#6119](https://github.com/bastani-inc/atomic/issues/6119)).
 - A tool whose schema lists its `required` parameters in another order, as an MCP server may after reconnecting, no longer counts as a changed tool: its declaration and the cached prompt stay the same, and a resumed session runs a call to it instead of refusing it as changed ([#6130](https://github.com/bastani-inc/atomic/issues/6130)).
 - Building the history search index on Node 22 no longer keeps a little memory for every page it writes until the build ends ([#6106](https://github.com/bastani-inc/atomic/issues/6106))
+- Closing the terminal, or sending Atomic `SIGTERM` or `SIGHUP`, gives extensions' `session_shutdown` handlers the same few seconds to finish as quitting does, with `fromSignal: true`, also when the session runs in the interactive engine, and the engine writes its last diagnostics records. A second `SIGTERM` ends the session at once; the several `SIGHUP` signals a closing terminal sends do not. On Windows, closing the console window still ends Atomic at once ([#6104](https://github.com/bastani-inc/atomic/issues/6104)).
+- Quitting no longer waits on writing the interactive engine's stop file, so a stalled temporary directory cannot hold it up, and a write that fails no longer leaves the engine running after Atomic has exited ([#6115](https://github.com/bastani-inc/atomic/issues/6115)).
 
 ## [0.10.2] - 2026-11-20
 
