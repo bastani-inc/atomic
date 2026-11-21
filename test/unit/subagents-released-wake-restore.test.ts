@@ -619,6 +619,21 @@ test("messages held after an earlier version's held wake prompt are all read, an
 	);
 });
 
+test("a child resumed with a message is labelled with that message, as a woken one is not", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "resume-label");
+
+	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, {
+		prompt: "Carry on with the template",
+		message: "Carry on with the template",
+	});
+
+	assert.ok(outcome.kind === "restored");
+	await settled(h, outcome.taskId);
+	const title = h.host.taskRecords().find((candidate) => candidate.ref.taskId === outcome.taskId)?.title;
+	assert.equal(title, "Carry on with the template");
+});
+
 async function endedOnPendingCall(h: Harness, runId: string): Promise<SubagentChildRecord> {
 	const record = await releasedChild(h, runId);
 	await endSessionOnPendingCall(record);

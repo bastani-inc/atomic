@@ -937,11 +937,14 @@ async function relaunchChild(
 		agents: [agent],
 		agent: agent.name,
 		task: prompts.task,
+		// A wake keeps the child's label: its prompt is no task the user gave it. A resume shows the message it brings.
 		...(fresh
 			? fresh.intentTask === undefined
 				? {}
 				: { intentTask: fresh.intentTask }
-			: { intentTask: resumedTaskLabel(record) }),
+			: resume?.wakeFallback === true
+				? { intentTask: resumedTaskLabel(record) }
+				: {}),
 		...(resume || fresh ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
 		options,
 		runtime,
@@ -979,9 +982,9 @@ function wakePrompts(base: ResumePrompts, lateMessages: readonly string[], promp
 }
 
 /**
- * What a resumed or woken child's task is labelled with: its launch's task, never the message, wake prompt or result
- * it continues with. Its launch's label as the record keeps it; a record written before Atomic kept that has the
- * task's one-line summary; failing both, its agent's name.
+ * What a woken child's task is labelled with: its launch's task, never the wake prompt or result it continues with.
+ * Its launch's label as the record keeps it; a record written before Atomic kept that has the task's one-line
+ * summary; failing both, its agent's name.
  */
 function resumedTaskLabel(record: SubagentChildRecord): string {
 	return record.title || record.launch?.intentTask || record.launch?.task || record.task || record.agent;
