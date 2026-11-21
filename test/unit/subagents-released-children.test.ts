@@ -8,6 +8,7 @@ import {
 	type DetachedToolResult,
 	type ExtensionContext,
 } from "@bastani/atomic";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
@@ -719,14 +720,34 @@ test("a held result counts as saved once the transcript holds it as its call's r
 test("a late result the child read before a compaction took it out of its context still counts as saved, in every form (#5012)", async () => {
 	const late = result("ci-1", "tests green");
 	const noticed = result("ci-2", "lint clean");
+	const unread = result("ci-3", "deployed");
 	const store = new MemorySessionStore();
 	const child = await SessionManager.create(store, "/repo");
+	const calls = (ids: readonly string[]) =>
+		child.appendMessage({
+			...fauxAssistantMessage(
+				ids.map((id) => fauxToolCall("wait_for_ci", { run: id }, { id })),
+				{ stopReason: "toolUse" },
+			),
+		});
+	const stillRunning = (toolCallId: string) =>
+		child.appendMessage({
+			role: "toolResult",
+			toolCallId,
+			toolName: "wait_for_ci",
+			content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }],
+			isError: false,
+			timestamp: 2,
+		});
 	await child.appendMessage({ role: "user", content: "watch CI", timestamp: 1 });
+	await calls(["ci-1", "ci-2"]);
+	await stillRunning("ci-1");
+	await stillRunning("ci-2");
 	// What an earlier build delivered as a message, and what this one delivers as a notice.
-	await child.appendMessage({ role: "user", content: legacyLateToolResultMessage(late), timestamp: 2 });
+	await child.appendMessage({ role: "user", content: legacyLateToolResultMessage(late), timestamp: 3 });
 	const notice = lateToolResultNotice([noticed]);
 	await child.appendCustomMessageEntry(notice.customType, notice.content, notice.display, notice.details);
-	await child.appendMessage({ role: "user", content: "ok", timestamp: 3 });
+	await child.appendMessage({ role: "user", content: "ok", timestamp: 4 });
 	await child.appendCompaction("summary", null, 100, {
 		strategy: "verbatim-lines",
 		promptVersion: 7,
@@ -742,7 +763,9 @@ test("a late result the child read before a compaction took it out of its contex
 		},
 		form: "cleared",
 	});
-	await child.appendMessage({ role: "user", content: "after compaction", timestamp: 4 });
+	await child.appendMessage({ role: "user", content: "after compaction", timestamp: 5 });
+	await calls(["ci-3"]);
+	await stillRunning("ci-3");
 	const reopened = await SessionManager.open(store, child.getSessionId(), "/repo", { history: "tail" });
 	assert.equal(reopened.hasFullHistory(), false, "the reopened session holds only its window");
 
@@ -750,5 +773,19 @@ test("a late result the child read before a compaction took it out of its contex
 		assert.deepEqual(savedToolResultIds(manager, [late, noticed]), [], "its context no longer holds them");
 		assert.deepEqual(await savedToolResultIdsInHistory(manager, [late, noticed]), ["ci-1", "ci-2"]);
 	}
-	assert.deepEqual(await savedToolResultIdsInHistory(reopened, [result("ci-3")]), [], "one it never read is not");
+	// One it never read is not: the branch is read back only as far as its call, which came after the compaction.
+	const pages: number[] = [];
+	const readHistory = reopened.readHistory.bind(reopened);
+	vi.spyOn(reopened, "readHistory").mockImplementation((options) => {
+		const read = readHistory(options);
+		return (async function* () {
+			for await (const page of read) {
+				pages.push(page.items.length);
+				yield page;
+			}
+		})();
+	});
+	assert.deepEqual(await savedToolResultIdsInHistory(reopened, [unread]), []);
+	assert.deepEqual(await savedToolResultIdsInHistory(child, [unread]), []);
+	assert.ok(pages.length <= 1, `read back only as far as its call: ${pages.join(", ")}`);
 });

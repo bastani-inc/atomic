@@ -777,11 +777,10 @@ async function relaunchChild(
 	// when a compaction since took it out of the transcript's context.
 	const saved =
 		sessionManager && !fresh
-			? await savedToolResultIdsInHistory(
-					sessionManager,
-					[...(latest.heldToolResults ?? []), ...(resume?.toolResults ?? [])],
-					latest.launchLeafSeq,
-				)
+			? await savedToolResultIdsInHistory(sessionManager, [
+					...(latest.heldToolResults ?? []),
+					...(resume?.toolResults ?? []),
+				])
 			: [];
 	await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
 	const unsaved = (results: readonly DetachedToolResult[]) =>

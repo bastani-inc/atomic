@@ -1885,6 +1885,12 @@ test("a late result the child read before a compaction took it out of its contex
 		form: "cleared",
 	});
 	await session.appendMessage({ role: "user", content: "after compaction", timestamp: Date.now() });
+	// A later run of the child launched after it read the result.
+	const leaf = session.getLeafId();
+	assert.ok(leaf);
+	const relaunched = { ...record, launchLeafId: leaf, launchLeafSeq: session.getEntrySeq(leaf) };
+	await appendRecord(h, relaunched);
+	observeSubagentChildRecord(relaunched);
 	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
 
 	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });

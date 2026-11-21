@@ -356,10 +356,19 @@ function savedMessageOf(entry: SessionEntry): SavedMessage | undefined {
 	return undefined;
 }
 
+/** The ids of the tool calls an assistant message issued. */
+function issuedCallIds(message: SavedMessage): string[] {
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return [];
+	return (message.content as ReadonlyArray<{ readonly type: string; readonly id?: unknown }>).flatMap((part) =>
+		part.type === "toolCall" && typeof part.id === "string" ? [part.id] : [],
+	);
+}
+
 /**
  * {@link savedToolResultIds}, also reading the part of the child's branch a compaction took out of its context: the
- * entries the manager holds and, for a manager holding only its window, the stored branch from `fromSeq` (the child's
- * launch). History is read only for results the context does not hold, and only until all of them are found.
+ * entries the manager holds and, for a manager holding only its window, the stored branch read back from its newest
+ * entry a page at a time. A result can only have been read after its call was issued, so the branch is read back only
+ * as far as the call of each result not found read yet, and not at all for results its context shows as read.
  */
 export async function savedToolResultIdsInHistory(
 	sessionManager: Pick<
@@ -367,31 +376,45 @@ export async function savedToolResultIdsInHistory(
 		"buildSessionProjection" | "getBranch" | "hasFullHistory" | "readHistory" | "getLeafId" | "getEntrySeq"
 	>,
 	results: readonly DetachedToolResult[],
-	fromSeq?: number,
 ): Promise<string[]> {
 	const saved = new Set(savedToolResultIds(sessionManager, results));
-	const missing = () => results.filter((result) => !saved.has(result.toolCallId));
-	if (missing().length === 0) return [...saved];
-	const held = sessionManager.getBranch().flatMap((entry) => {
-		const message = savedMessageOf(entry);
-		return message === undefined ? [] : [message];
-	});
-	for (const id of savedIn(held, missing())) saved.add(id);
-	if (missing().length === 0 || typeof sessionManager.hasFullHistory !== "function" || sessionManager.hasFullHistory())
-		return [...saved];
+	// Results neither found read nor known unread: their call was not reached yet, reading back from the newest entry.
+	const open = new Set(results.flatMap((result) => (saved.has(result.toolCallId) ? [] : [result.toolCallId])));
+	/**
+	 * Read `messages`, newest last, as the part of the branch back from its newest entry, or a next older part of it.
+	 * A call issued there was answered, if at all, after it: what is still open of it was never read.
+	 */
+	const readBack = (messages: readonly SavedMessage[], contiguous: boolean) => {
+		const pending = results.filter((result) => open.has(result.toolCallId));
+		for (const id of savedIn(messages, pending)) {
+			saved.add(id);
+			open.delete(id);
+		}
+		if (contiguous) for (const message of messages) for (const id of issuedCallIds(message)) open.delete(id);
+	};
+	if (open.size === 0) return [...saved];
+	// A manager holding its whole history holds the whole branch; one holding only its window may hold some of it.
+	const whole = typeof sessionManager.hasFullHistory !== "function" || sessionManager.hasFullHistory();
+	readBack(
+		sessionManager.getBranch().flatMap((entry) => {
+			const message = savedMessageOf(entry);
+			return message === undefined ? [] : [message];
+		}),
+		whole,
+	);
+	if (open.size === 0 || whole) return [...saved];
 	const leaf = sessionManager.getLeafId();
 	const branchLeafSeq = leaf === null ? undefined : sessionManager.getEntrySeq(leaf);
 	if (branchLeafSeq === undefined) return [...saved];
-	for await (const page of sessionManager.readHistory({
-		branchLeafSeq,
-		...(fromSeq === undefined ? {} : { fromSeq }),
-	})) {
-		const messages = page.items.flatMap((item) => {
-			const message = "entry" in item ? savedMessageOf(item.entry) : undefined;
-			return message === undefined ? [] : [message];
-		});
-		for (const id of savedIn(messages, missing())) saved.add(id);
-		if (missing().length === 0) break;
+	for await (const page of sessionManager.readHistory({ branchLeafSeq, direction: "backward" })) {
+		readBack(
+			page.items.flatMap((item) => {
+				const message = "entry" in item ? savedMessageOf(item.entry) : undefined;
+				return message === undefined ? [] : [message];
+			}),
+			true,
+		);
+		if (open.size === 0) break;
 	}
 	return [...saved];
 }
