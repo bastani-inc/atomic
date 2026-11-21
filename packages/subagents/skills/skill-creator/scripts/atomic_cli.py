@@ -21,6 +21,7 @@ scripts' console reach only the scripts, which then end the job.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -49,8 +50,8 @@ ISOLATED_RUN = ["--no-session", "--no-extensions", "--no-mcp", "--no-prompt-temp
 WINDOWS_INTERRUPTED_STATUS = -1073741510
 # Characters cmd.exe interprets in a batch file's arguments.
 _BATCH_UNSAFE = frozenset('"%!^&|<>()\r\n')
-# How Atomic's error for a model it has no credentials for begins.
-_MISSING_CREDENTIALS = "No API key found"
+# Atomic's error for a model it has no credentials for: a line of its own, which may start with "Error: ".
+_MISSING_CREDENTIALS = re.compile(r"^(?:Error: )?No API key found for ", re.MULTILINE)
 # Printed last, on Windows, by a script run as a command when a query's Atomic failed for missing credentials.
 WINDOWS_CREDENTIALS_NOTE = (
     "Note: Atomic found no credentials for the model. On Windows a query cannot answer a credential command "
@@ -342,7 +343,7 @@ class AtomicProcess:
         with open(self._stderr_path, "rb") as stderr:
             stderr.seek(max(0, stderr.seek(0, os.SEEK_END) - limit))
             tail = stderr.read(limit).decode("utf-8", errors="replace").strip()
-        if _MISSING_CREDENTIALS in tail:
+        if _MISSING_CREDENTIALS.search(tail):
             _missing_credentials = True
         return tail
 
