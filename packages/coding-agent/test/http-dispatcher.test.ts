@@ -563,6 +563,7 @@ describe("the standalone binary's fetch (Bun)", () => {
 					[
 						`configureHttpDispatcher(30_000);`,
 						`let reads = 0;`,
+						`let optionReads = 0;`,
 						`const options = { method: "POST", headers: { "x-fixture": "ok" }, body: "hello" };`,
 						`const inits = {`,
 						`	inherited: Object.create(options),`,
@@ -570,19 +571,23 @@ describe("the standalone binary's fetch (Bun)", () => {
 						`	frozen: Object.freeze({ ...options }),`,
 						`	frozenWithoutTimeout: Object.freeze({ ...options, timeout: undefined, proxy: undefined }),`,
 						`	unreadGetter: { ...options, get traceMetadata() { reads++; throw new Error("read"); } },`,
+						`	ownTimeoutAndProxy: { ...options, get timeout() { optionReads++; return false; }, get proxy() { optionReads++; return false; } },`,
 						`};`,
 						`const results = {};`,
 						`for (const [name, init] of Object.entries(inits)) results[name] = await outcome(fetch(${JSON.stringify(url)}, init));`,
 						`results.request = await outcome(fetch(new Request(${JSON.stringify(url)}, options)));`,
-						`console.log(JSON.stringify({ results, reads }));`,
+						`console.log(JSON.stringify({ results, reads, optionReads }));`,
 					].join("\n"),
 					{},
 				);
-				const { results, reads } = JSON.parse(printed) as {
+				const { results, reads, optionReads } = JSON.parse(printed) as {
 					results: Record<string, { text?: string }>;
 					reads: number;
+					optionReads: number;
 				};
 				expect(reads).toBe(0);
+				// Bun reads a request's own `timeout` and `proxy` once each; so does the binary's fetch, through to Bun.
+				expect(optionReads).toBe(2);
 				for (const [name, result] of Object.entries(results))
 					expect(JSON.parse(result.text ?? "{}"), name).toEqual({ method: "POST", marker: "ok", body: "hello" });
 			} finally {

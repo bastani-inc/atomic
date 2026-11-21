@@ -34,9 +34,6 @@ function installUndiciGlobals(): void {
 	});
 }
 
-/** Bun's own options for one `fetch()`: its socket idle timeout, and the proxy to use. */
-type BunFetchInit = RequestInit & { timeout?: number | boolean; proxy?: string | URL | false | object };
-
 /** The idle timeout the standalone binary's fetch gives Bun for each request; see `createBunFetch`. */
 let bunIdleTimeoutMs: number = DEFAULT_HTTP_IDLE_TIMEOUT_MS;
 
@@ -54,24 +51,28 @@ function requestUrl(input: Parameters<typeof globalThis.fetch>[0]): string | URL
  */
 function createBunFetch(fetch: typeof globalThis.fetch): typeof globalThis.fetch {
 	return Object.assign((input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
-		const given = init as BunFetchInit | undefined;
-		const timeout = given?.timeout === undefined ? (bunIdleTimeoutMs === 0 ? false : bunIdleTimeoutMs) : undefined;
-		const proxy = given?.proxy === undefined ? resolveHttpsFallbackProxyUrl(requestUrl(input))?.href : undefined;
-		if (timeout === undefined && proxy === undefined) return fetch(input, init);
-		const added: BunFetchInit = {
-			...(timeout === undefined ? {} : { timeout }),
-			...(proxy === undefined ? {} : { proxy }),
+		const own: RequestInit = init ?? {};
+		let fallback: { readonly proxy: string | undefined } | undefined;
+		const fallbackProxy = () => {
+			fallback ??= { proxy: resolveHttpsFallbackProxyUrl(requestUrl(input))?.href };
+			return fallback.proxy;
 		};
-		if (init === undefined || init === null) return fetch(input, added);
-		// The request's own options are read from `init` itself, as Bun reads them: inherited or not enumerable,
-		// getters with `init` as their receiver, and only the ones Bun asks for. Only Bun's two are added, on a separate
-		// object, so a frozen `init` that sets either to undefined is never asked to report another value.
+		// Every option is read from the request's own `init` when Bun asks for it, once per time it asks, as Bun reads
+		// it: inherited or not enumerable, with `init` as a getter's receiver, never one Bun does not ask for. Only when
+		// the request leaves `timeout` or `proxy` unset does Bun get Atomic's. The proxy wraps an object of its own, so a
+		// frozen `init` is never asked to report another value.
 		const options = new Proxy<RequestInit>(
 			{},
 			{
-				get: (_holder, key) =>
-					Object.hasOwn(added, key) ? added[key as keyof BunFetchInit] : Reflect.get(init, key, init),
-				has: (_holder, key) => Object.hasOwn(added, key) || Reflect.has(init, key),
+				get: (_holder, key) => {
+					const value = Reflect.get(own, key, own);
+					if (value !== undefined) return value;
+					if (key === "timeout") return bunIdleTimeoutMs === 0 ? false : bunIdleTimeoutMs;
+					if (key === "proxy") return fallbackProxy();
+					return value;
+				},
+				has: (_holder, key) =>
+					key === "timeout" || Reflect.has(own, key) || (key === "proxy" && fallbackProxy() !== undefined),
 			},
 		);
 		return fetch(input, options);
