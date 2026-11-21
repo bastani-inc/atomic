@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Changed
+
+- The package no longer includes declaration maps (`.d.ts.map`). They pointed at TypeScript sources that the package does not include, so editors could not follow them. The declarations themselves are unchanged.
+
 ### Fixed
 
 - Fixed the first request after resuming a session whose last request got no reply missing the prompt cache of the last answered request on Anthropic, Amazon Bedrock and OpenAI-compatible Claude routes, when that request's end is 20 or more positions before the hinted one. That end now gets a breakpoint too; when only one is left, it keeps it if the same model answered it. A reply that sent nothing still counts as answering its request, and on OpenAI-compatible routes a hint on a message with only images goes where that request put its newest breakpoint.

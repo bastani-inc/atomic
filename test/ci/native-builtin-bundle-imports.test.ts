@@ -73,6 +73,15 @@ function collectImportSpecifiers(source: string): Set<string> {
 	return specifiers;
 }
 
+function bundledPackageNames(bundle: string): Set<string> {
+	const names = new Set<string>();
+	for (const match of bundle.matchAll(/^\/\/ \S*node_modules\/((?:@[^/\s]+\/)?[^/\s]+)\/\S*$/gm)) {
+		const name = match[1];
+		if (name !== undefined) names.add(name);
+	}
+	return names;
+}
+
 test("specifier permits Node builtins, registered host imports, and relative imports only", () => {
 	const emptyHostSpecifiers = new Set<string>();
 
@@ -118,6 +127,18 @@ test(
 					}
 				}
 			}
+
+			// Bun marks each inlined module with its path; every package one comes from has its licence shipped.
+			const unlicensed: string[] = [];
+			for (const [dirName, entry] of Object.entries(INSTALLED_EXTENSION_ENTRIES)) {
+				const bundled = bundledPackageNames(readFileSync(join(builtinRoot, dirName, entry), "utf8"));
+				if (bundled.size === 0) continue;
+				const thirdPartyNotices = readFileSync(join(builtinRoot, dirName, "THIRD_PARTY_NOTICES.txt"), "utf8");
+				for (const name of bundled) {
+					if (!thirdPartyNotices.includes(`== ${name}@`)) unlicensed.push(`${dirName}: ${name}`);
+				}
+			}
+			assert.deepEqual(unlicensed, []);
 
 			const notices = join(builtinRoot, "mcp", "native-client-licenses");
 			assert.match(readFileSync(join(notices, "NOTICE"), "utf8"), /MIT License/);

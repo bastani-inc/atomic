@@ -20,6 +20,7 @@
 	"sideEffects": false,
 	"files": [
 		"dist",
+		"!dist/**/*.d.ts.map",
 		"README.md",
 		"CHANGELOG.md",
 		"THIRD_PARTY_NOTICES",

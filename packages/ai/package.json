@@ -65,6 +65,7 @@
 	},
 	"files": [
 		"dist",
+		"!dist/**/*.d.ts.map",
 		"README.md",
 		"LICENSE",
 		"NOTICE.md",

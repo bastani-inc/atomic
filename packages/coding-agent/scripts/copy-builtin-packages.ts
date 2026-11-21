@@ -19,6 +19,7 @@ import {
 	INSTALLED_IMPORT_CLOSURE_ROOTS,
 	shouldSkipBuiltinCopyEntry,
 } from "./derive-import-closure.js";
+import { thirdPartyNotices } from "./third-party-notices.js";
 
 const require = createRequire(import.meta.url);
 const linkedomWorkerEntry = join(dirname(require.resolve("linkedom/package.json")), "worker.js");
@@ -87,12 +88,17 @@ const WORKSPACE_BUILTINS = [
 	{ packageName: "@bastani/intercom", workspaceDirName: "intercom" },
 ] as const;
 
+// Bundles inline their third-party dependencies, which are not installed beside them, so each
+// builtin carries the licence and notice files of the packages its bundle includes.
+const THIRD_PARTY_NOTICES_FILE = "THIRD_PARTY_NOTICES.txt";
+
 const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> = {
 	subagents: [
 		"package.json",
 		"README.md",
 		"CHANGELOG.md",
 		"LICENSE",
+		THIRD_PARTY_NOTICES_FILE,
 		INSTALLED_EXTENSION_ENTRIES.subagents,
 		"agents/",
 		"skills/",
@@ -103,6 +109,7 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		"OAUTH.md",
 		"CHANGELOG.md",
 		"LICENSE",
+		THIRD_PARTY_NOTICES_FILE,
 		INSTALLED_EXTENSION_ENTRIES.mcp,
 		"native-client-licenses/",
 	],
@@ -111,6 +118,7 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		"README.md",
 		"CHANGELOG.md",
 		"LICENSE",
+		THIRD_PARTY_NOTICES_FILE,
 		INSTALLED_EXTENSION_ENTRIES["web-access"],
 	],
 	intercom: [
@@ -118,6 +126,7 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		"README.md",
 		"CHANGELOG.md",
 		"LICENSE",
+		THIRD_PARTY_NOTICES_FILE,
 		INSTALLED_EXTENSION_ENTRIES.intercom,
 		"broker/",
 		"skills/",
@@ -179,7 +188,12 @@ function getCopyPlan(): BuiltinCopy[] {
 	});
 }
 
-async function bundleEntrypoint(entry: string, outfile: string, label: string): Promise<void> {
+async function bundleEntrypoint(
+	entry: string,
+	outfile: string,
+	label: string,
+	noticesDir: string,
+): Promise<void> {
 	if (!existsSync(entry)) {
 		throw new Error(`Missing ${label} bundle entry: ${entry}`);
 	}
@@ -190,6 +204,7 @@ async function bundleEntrypoint(entry: string, outfile: string, label: string): 
 		external: HOST_PROVIDED_EXTERNALS,
 		define: RUNTIME_ENV_DEFINES,
 		plugins: SELF_CONTAINED_BUILTIN_PLUGINS,
+		metafile: true,
 	});
 	const output = result.outputs[0];
 	if (!result.success || output === undefined) {
@@ -197,6 +212,10 @@ async function bundleEntrypoint(entry: string, outfile: string, label: string): 
 	}
 	mkdirSync(join(outfile, ".."), { recursive: true });
 	writeFileSync(outfile, await output.text(), "utf-8");
+	// Metafile input paths are relative to the working directory of the build.
+	const inputs = Object.keys(result.metafile?.inputs ?? {}).map((input) => resolve(input));
+	const notices = thirdPartyNotices(relative(noticesDir, outfile).split("\\").join("/"), inputs);
+	if (notices !== undefined) writeFileSync(join(noticesDir, THIRD_PARTY_NOTICES_FILE), notices, "utf-8");
 	console.log(`Bundled ${label} -> ${relative(distDir, outfile)}`);
 }
 
@@ -281,21 +300,25 @@ await bundleEntrypoint(
 	join(distBuiltinDir, "subagents", "src", "extension", "index.ts"),
 	join(distBuiltinDir, "subagents", INSTALLED_EXTENSION_ENTRIES.subagents),
 	"@bastani/subagents extension",
+	join(distBuiltinDir, "subagents"),
 );
 await bundleEntrypoint(
 	join(distBuiltinDir, "mcp", "index.ts"),
 	join(distBuiltinDir, "mcp", INSTALLED_EXTENSION_ENTRIES.mcp),
 	"@bastani/mcp extension",
+	join(distBuiltinDir, "mcp"),
 );
 await bundleEntrypoint(
 	join(distBuiltinDir, "web-access", "index.ts"),
 	join(distBuiltinDir, "web-access", INSTALLED_EXTENSION_ENTRIES["web-access"]),
 	"@bastani/web-access extension",
+	join(distBuiltinDir, "web-access"),
 );
 await bundleEntrypoint(
 	join(distBuiltinDir, "intercom", "index.ts"),
 	join(distBuiltinDir, "intercom", INSTALLED_EXTENSION_ENTRIES.intercom),
 	"@bastani/intercom extension",
+	join(distBuiltinDir, "intercom"),
 );
 
 for (const { workspaceDirName: dirName } of WORKSPACE_BUILTINS) {
