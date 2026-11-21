@@ -136,7 +136,7 @@ export function runOwnerlessChild(input: {
 	const signal = AbortSignal.any(
 		[input.options.signal, input.ownerSignal, stopper.signal].filter((candidate) => candidate !== undefined),
 	);
-	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
+	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile" | "worktreeCapturedAt"> = {};
 	let childLaunch: Pick<
 		SubagentChildRecordInput,
 		"launchModel" | "launchThinkingLevel" | "launchLeafId" | "launchLeafSeq"
@@ -238,6 +238,9 @@ export function runOwnerlessChild(input: {
 		child: SingleResult,
 		onBackground?: (result: SingleResult) => void,
 	): Promise<SingleResult> => {
+		// The records this run writes from now on say when its session last recorded a snapshot of a checkout.
+		if (child.worktreeCapturedAt !== undefined)
+			childSession = { ...childSession, worktreeCapturedAt: child.worktreeCapturedAt };
 		const stopped = takeSubagentChildStop(launchId);
 		const stoppedByControl = stopped !== undefined && child.status === "interrupted";
 		const ownerClosed = !stoppedByControl && child.status === "interrupted" && input.ownerSignal?.aborted === true;
@@ -313,6 +316,9 @@ export function runOwnerlessChild(input: {
 					childSession = {
 						childSessionId: session.sessionId,
 						...(session.sessionFile ? { childSessionFile: session.sessionFile } : {}),
+						...(childSession.childSessionId === session.sessionId && childSession.worktreeCapturedAt !== undefined
+							? { worktreeCapturedAt: childSession.worktreeCapturedAt }
+							: {}),
 					};
 					record("running");
 				},
