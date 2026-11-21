@@ -8,11 +8,12 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import JSZip from "jszip";
 import { afterAll, test, vi } from "vitest";
 import { prepareAgentDir } from "../helpers/event-loop-guard-fixture.js";
 import { type PtyProgram, startPtyProgram } from "../helpers/pty-program.js";
-import { moduleDir } from "../helpers/runtime.js";
+import { bunExecutable, moduleDir } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 const repoRoot = resolve(moduleDir(import.meta.url), "../..");
@@ -181,7 +182,12 @@ test(
 		const missing: string[] = [];
 		for (const path of paths) {
 			if (!/^dist\/.*\.m?js$/.test(path) || path.startsWith("dist/builtin/")) continue;
-			const source = fs.readFileSync(join(packageDir, path), "utf8");
+			// Comment lines are not code: a bundled dependency's documentation may name an import.
+			const source = fs
+				.readFileSync(join(packageDir, path), "utf8")
+				.split("\n")
+				.filter((line) => !/^\s*(?:\*|\/\/|\/\*)/.test(line))
+				.join("\n");
 			for (const match of source.matchAll(
 				/(?:^|\n)\s*(?:import|export)\b[^;]*?\bfrom\s*["'](\.{1,2}\/[^"']+)["']|(?:^|\n)\s*import\s*["'](\.{1,2}\/[^"']+)["']|\bimport\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/g,
 			)) {
@@ -283,6 +289,180 @@ test(
 		const [line] = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
 		// The keyword the registered grammar finds is colored on its own.
 		assert.match(line ?? "", /probekw\u001b\[39m plain/, JSON.stringify(line));
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+/** A one-page PDF whose page says `text`, written by hand: PDF needs no library to write. */
+function onePagePdf(text: string): string {
+	const stream = `BT /F1 18 Tf 20 100 Td (${text}) Tj ET`;
+	const objects = [
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+		`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+	];
+	let pdf = "%PDF-1.4\n";
+	const offsets = objects.map((object, index) => {
+		const offset = pdf.length;
+		pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+		return offset;
+	});
+	const xref = pdf.length;
+	pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+	for (const offset of offsets) pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+	return `${pdf}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+}
+
+test(
+	"documents convert with the document converter bundled into the shared files, loading only mupdf from node_modules",
+	async () => {
+		const { atomic } = installedLayout();
+		const documents = fs.mkdtempSync(join(layoutRoot ?? os.tmpdir(), "documents "));
+		const zip = new JSZip();
+		zip.file(
+			"[Content_Types].xml",
+			`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+		);
+		zip.file(
+			"_rels/.rels",
+			`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+		);
+		zip.file(
+			"word/document.xml",
+			`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello DOCX</w:t></w:r></w:p></w:body></w:document>`,
+		);
+		fs.writeFileSync(join(documents, "sample.docx"), await zip.generateAsync({ type: "uint8array" }));
+		fs.writeFileSync(join(documents, "sample.pdf"), onePagePdf("Hello PDF"));
+		const probe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { registerHooks } from "node:module";
+				const packages = new Set();
+				registerHooks({ load(url, context, next) {
+					const match = /\\/node_modules\\/((?:@[^/]+\\/)?[^/]+)\\//.exec(decodeURIComponent(url).replaceAll("\\\\", "/"));
+					if (match) packages.add(match[1]);
+					return next(url, context);
+				} });
+				const { createReadToolDefinition } = await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "index.js")).href)});
+				const before = new Set(packages);
+				const read = createReadToolDefinition(${JSON.stringify(documents)});
+				const text = [];
+				for (const path of ["sample.docx", "sample.pdf"]) {
+					const result = await read.execute("read", { path }, undefined, undefined, {});
+					text.push(result.content.map((item) => item.text ?? "").join("\\n"));
+				}
+				console.log(JSON.stringify({ text, loaded: [...packages].filter((name) => !before.has(name)) }));`,
+			],
+			{ encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS },
+		);
+		assert.equal(probe.status, 0, probe.stderr);
+		const { text, loaded } = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "{}") as {
+			text: string[];
+			loaded: string[];
+		};
+		assert.match(text[0] ?? "", /Hello DOCX/);
+		assert.match(text[1] ?? "", /Hello PDF/);
+		assert.deepEqual(loaded, ["mupdf"]);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"a session whose document converter an update removed while it ran asks for a restart when it reads a document",
+	() => {
+		const { atomic } = installedLayout("updated under a running session");
+		const shared = join(atomic, "dist", "_shared");
+		const converter = fs
+			.readdirSync(shared)
+			.filter((name) => name.endsWith(".js"))
+			.filter((name) =>
+				(JSON.parse(fs.readFileSync(join(shared, `${name}.map`), "utf8")) as { sources: string[] }).sources.some(
+					(source) => source.endsWith("/markit-ai/dist/markit.js"),
+				),
+			);
+		assert.equal(converter.length, 1, converter.join(", "));
+		const converterFile = join(shared, converter[0] as string);
+		const manifestFile = join(atomic, "package.json");
+		const manifest = fs.readFileSync(manifestFile, "utf8");
+		const documents = fs.mkdtempSync(join(layoutRoot ?? os.tmpdir(), "documents "));
+		fs.writeFileSync(join(documents, "sample.pdf"), onePagePdf("Hello PDF"));
+		fs.writeFileSync(join(documents, "notes.txt"), "plain text still reads");
+		// What an in-place update does to a running session: the session has loaded Atomic, then the package's files are
+		// replaced, the converter's file is not among them, and the package names a new version; or, without the update,
+		// only the file is gone.
+		const probe = (updated: boolean) => `import { renameSync, writeFileSync } from "node:fs";
+			const { createReadToolDefinition } = await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "index.js")).href)});
+			const read = createReadToolDefinition(${JSON.stringify(documents)});
+			renameSync(${JSON.stringify(converterFile)}, ${JSON.stringify(`${converterFile}.gone`)});
+			${updated ? `writeFileSync(${JSON.stringify(manifestFile)}, ${JSON.stringify(manifest.replace(/"version": "[^"]+"/, '"version": "0.0.1"'))});` : ""}
+			const text = [];
+			try {
+				for (const path of ["sample.pdf", "sample.pdf", "notes.txt"]) {
+					const result = await read.execute("read", { path }, undefined, undefined, {});
+					text.push(result.content.map((item) => item.text ?? "").join("\\n"));
+				}
+			} finally {
+				renameSync(${JSON.stringify(`${converterFile}.gone`)}, ${JSON.stringify(converterFile)});
+				writeFileSync(${JSON.stringify(manifestFile)}, ${JSON.stringify(manifest)});
+			}
+			console.log(JSON.stringify(text));`;
+		const restart =
+			"atomic was updated to 0.0.1 while this session was running; restart it to keep using document conversion.";
+		for (const updated of [true, false]) {
+			const probeFile = join(documents, `probe-${updated ? "updated" : "unchanged"}.mjs`);
+			fs.writeFileSync(probeFile, probe(updated));
+			for (const runtime of [process.execPath, bunExecutable()]) {
+				const result = spawnSync(runtime, [probeFile], { encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS });
+				assert.equal(result.status, 0, `${runtime}: ${result.stderr}`);
+				const [first, second, plain] = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
+				for (const text of [first, second]) {
+					if (updated) assert.ok(text?.includes(restart), `${runtime}: ${text}`);
+					else assert.ok(!text?.includes("restart"), `${runtime}: ${text}`);
+				}
+				assert.match(plain ?? "", /plain text still reads/, runtime);
+			}
+		}
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"starting Atomic loads none of the document converter's modules",
+	() => {
+		const { atomic } = installedLayout();
+		const probe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { registerHooks } from "node:module";
+				const shared = new Set();
+				registerHooks({ load(url, context, next) { if (url.includes("/_shared/")) shared.add(url); return next(url, context); } });
+				await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "main.js")).href)});
+				console.log(JSON.stringify([...shared]));`,
+			],
+			{ encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS },
+		);
+		assert.equal(probe.status, 0, probe.stderr);
+		const loaded = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
+		assert.ok(loaded.length > 0, "the CLI's modules load from shared files");
+		for (const url of loaded) {
+			const file = fileURLToPath(url);
+			const map = JSON.parse(fs.readFileSync(`${file}.map`, "utf8")) as { sources: string[] };
+			assert.deepEqual(
+				map.sources.filter((source) => source.includes("/markit-ai/")),
+				[],
+				`${relative(atomic, file)} holds the document converter`,
+			);
+		}
+		const notices = fs.readFileSync(join(atomic, "dist", "THIRD_PARTY_NOTICES.md"), "utf8");
+		assert.match(notices, /^## markit-ai \S+$/m);
+		// isarray states its license only in its README.
+		assert.match(notices, /^## isarray \S+\n\n[\s\S]*?Permission is hereby granted/m);
 	},
 	LAYOUT_TIMEOUT_MS,
 );
