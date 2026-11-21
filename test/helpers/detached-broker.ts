@@ -66,6 +66,20 @@ async function answeringBrokerPid(agentDir: string, timeoutMs: number): Promise<
 	return typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 }
 
+/** What `read` resolves to, or undefined when `leftMs` runs out first; a later result is dropped. */
+async function withinWindow<T>(read: Promise<T>, leftMs: number): Promise<T | undefined> {
+	if (leftMs <= 0) return undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const spent = new Promise<undefined>((resolve) => {
+		timer = setTimeout(() => resolve(undefined), leftMs);
+	});
+	try {
+		return await Promise.race([read, spent]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 const systemProbe: DetachedBrokerProbe = { record: recordProcess, stillRuns, isGone, answeringPid: answeringBrokerPid };
 
 export interface StopDetachedBrokerOptions {
@@ -88,15 +102,17 @@ export async function stopDetachedBroker(
 		probe = systemProbe,
 	}: StopDetachedBrokerOptions = {},
 ): Promise<boolean> {
+	// One window on a monotonic clock, for every read and request until the broker answers: nothing that comes after it
+	// is waited for or taken.
+	const answerBy = performance.now() + answerWindowMs;
+	const left = () => answerBy - performance.now();
 	const pid = readRecordedPid(agentDir);
 	if (pid === undefined) return false;
 	// Read before the broker answers: a process that started after its answer cannot be taken for it.
-	const recorded = await probe.record(pid);
-	// One window on a monotonic clock, for every request and read in it: an answer that comes after it is not taken.
-	const answerBy = performance.now() + answerWindowMs;
-	const left = () => answerBy - performance.now();
+	const recorded = await withinWindow(probe.record(pid), left());
+	if (recorded === undefined) return false;
 	for (;;) {
-		if (!(await probe.stillRuns(recorded)) || left() <= 0) return false;
+		if ((await withinWindow(probe.stillRuns(recorded), left())) !== true || left() <= 0) return false;
 		const answered = await probe.answeringPid(agentDir, Math.ceil(left()));
 		if (left() < 0) return false;
 		if (answered === pid) break;

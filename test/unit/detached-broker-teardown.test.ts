@@ -129,6 +129,30 @@ test("stopDetachedBroker takes no answer that comes after its answer window, tho
 	}
 });
 
+test("stopDetachedBroker gives up when reading the process's start outlasts its answer window (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-slow-read-");
+	const agentDir = join(root, "agent");
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	writeTextSync(join(agentDir, "intercom", "broker.pid"), "123456");
+	const never = new Promise<never>(() => {});
+	const kill = vi.spyOn(process, "kill").mockImplementation(() => assert.fail("a process was signalled"));
+	try {
+		for (const stalled of ["record", "stillRuns"] as const) {
+			const probe: DetachedBrokerProbe = {
+				record: stalled === "record" ? () => never : async (pid) => ({ pid, started: "now" }),
+				stillRuns: stalled === "stillRuns" ? () => never : async () => true,
+				isGone: async () => true,
+				answeringPid: async () => 123456,
+			};
+			assert.equal(await stopDetachedBroker(agentDir, { answerWindowMs: 200, probe }), false, stalled);
+		}
+		assert.equal(kill.mock.calls.length, 0);
+	} finally {
+		kill.mockRestore();
+		removePathSync(root, { recursive: true, force: true });
+	}
+});
+
 test("stopDetachedBroker never signals a process a leftover broker.pid names when no broker answers there (#6125)", async () => {
 	const root = makeTempDirectory("atomic-broker-teardown-reused-");
 	const agentDir = join(root, "agent");
