@@ -315,12 +315,15 @@ mod tests {
 		let dir =
 			std::env::temp_dir().join(format!("atomic-process-tree-{}-{nanos}", std::process::id()));
 		std::fs::create_dir(&dir).expect("a directory of the test's own");
-		let (gate, finish, ack) = (dir.join("gate"), dir.join("finish"), dir.join("ack"));
-		// What the root leaves running: it waits for the finish gate, says so, and ends by itself, or after a minute.
+		let (gate, finish, ready, ack) =
+			(dir.join("gate"), dir.join("finish"), dir.join("ready"), dir.join("ack"));
+		// What the root leaves running: it says it started, waits for the finish gate, says it still runs, and ends by
+		// itself, or after a minute.
 		let leftover = dir.join("leftover.ps1");
 		std::fs::write(
 			&leftover,
-			"$end = (Get-Date).AddSeconds(60)\r\n\
+			"Set-Content -Path $env:LEFTOVER_READY -Value 'ready'\r\n\
+			 $end = (Get-Date).AddSeconds(60)\r\n\
 			 while (-not (Test-Path $env:FINISH_GATE) -and (Get-Date) -lt $end) { Start-Sleep -Milliseconds 50 }\r\n\
 			 if (Test-Path $env:FINISH_GATE) { Set-Content -Path $env:LEFTOVER_ACK -Value 'alive' }\r\n",
 		)
@@ -342,14 +345,18 @@ mod tests {
 			.env("LEFTOVER_SCRIPT", &leftover)
 			.env("ROOT_GATE", &gate)
 			.env("FINISH_GATE", &finish)
+			.env("LEFTOVER_READY", &ready)
 			.env("LEFTOVER_ACK", &ack)
 			.spawn()
 			.expect("PowerShell starts");
 		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
 		let mut held = None;
+		// Held only once the leftover runs, so that the held processes include it.
 		while held.is_none() && std::time::Instant::now() < deadline {
 			std::thread::sleep(std::time::Duration::from_millis(100));
-			held = super::hold_process_descendants(root.id()).filter(|held| held.count() > 0);
+			if ready.exists() {
+				held = super::hold_process_descendants(root.id()).filter(|held| held.count() > 0);
+			}
 		}
 		let Some(mut held) = held else {
 			std::fs::write(&gate, "").ok();
