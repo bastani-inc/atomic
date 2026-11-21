@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { resolveHttpsFallbackProxyUrl } from "@bastani/atomic-ai/utils/node-http-proxy";
 import * as undici from "undici";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
@@ -9,11 +10,9 @@ const originalGlobalFetch = globalThis.fetch;
 let installedGlobalFetch: typeof globalThis.fetch | undefined;
 
 /**
- * Install the npm Undici web globals in both Node and Bun.
- *
- * Bun's ESM interop exposes Undici's individual exports but omits the CommonJS
- * `install` helper. Optional-calling that helper therefore left Bun's native
- * fetch active even though the configured dispatcher belonged to npm Undici.
+ * Install the Undici web globals: npm Undici's on Node. Bun resolves `undici` to its own stand-in, which has no
+ * `install` helper and whose fetch and WebSocket are Bun's; `configureHttpDispatcher` gives that fetch the dispatcher's
+ * settings itself.
  */
 function installUndiciGlobals(): void {
 	if (typeof undici.install === "function") {
@@ -32,6 +31,36 @@ function installUndiciGlobals(): void {
 		MessageEvent: undici.MessageEvent,
 		EventSource: undici.EventSource,
 	});
+}
+
+/** Bun's own options for one `fetch()`: its socket idle timeout, and the proxy to use. */
+type BunFetchInit = RequestInit & { timeout?: number | boolean; proxy?: string | URL | false | object };
+
+/** The idle timeout the standalone binary's fetch gives Bun for each request; see `createBunFetch`. */
+let bunIdleTimeoutMs: number = DEFAULT_HTTP_IDLE_TIMEOUT_MS;
+
+/** The URL a fetch call asks for. */
+function requestUrl(input: Parameters<typeof globalThis.fetch>[0]): string | URL {
+	return typeof input === "string" || input instanceof URL ? input : input.url;
+}
+
+/**
+ * The fetch of the standalone binary. There `undici` is Bun's own stand-in, which ignores the dispatcher and its options,
+ * and fetch is Bun's. For each request that does not set them itself, this fetch gives Bun what the dispatcher does on
+ * Node.js: `httpIdleTimeoutMs` as Bun's socket idle timeout (none when it is disabled), and, for an `https:` request with
+ * no https proxy set, the http proxy, which Node.js uses and Bun on its own does not. Bun still exempts the hosts
+ * `NO_PROXY` names. The timeout is read at each request, so a fetch kept from before the setting changed follows it.
+ */
+function createBunFetch(fetch: typeof globalThis.fetch): typeof globalThis.fetch {
+	return Object.assign((input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+		const options: BunFetchInit = { ...init };
+		if (options.timeout === undefined) options.timeout = bunIdleTimeoutMs === 0 ? false : bunIdleTimeoutMs;
+		if (options.proxy === undefined) {
+			const proxy = resolveHttpsFallbackProxyUrl(requestUrl(input));
+			if (proxy !== undefined) options.proxy = proxy.href;
+		}
+		return fetch(input, options);
+	}, fetch);
 }
 
 const DURATION_STRING_PATTERN = /^(\d+)(ms|s|m|h)$/i;
@@ -149,6 +178,7 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 		new undici.EnvHttpProxyAgent(createHttpDispatcherOptions(normalizedTimeoutMs)),
 	);
 	undici.setGlobalDispatcher(dispatcher);
+	bunIdleTimeoutMs = normalizedTimeoutMs;
 
 	// Keep fetch and the dispatcher on the same undici implementation. Some Node
 	// releases use a bundled fetch that can ignore the npm undici dispatcher or
@@ -161,6 +191,8 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 			: globalThis.fetch === installedGlobalFetch;
 	if (shouldInstallGlobals) {
 		installUndiciGlobals();
+		// Bun's `undici` stand-in ignores the dispatcher just configured: its fetch is given the same settings itself.
+		if (typeof process.versions.bun === "string") globalThis.fetch = createBunFetch(globalThis.fetch);
 		installedGlobalFetch = globalThis.fetch;
 		// Undici replaces the WebSocket constructor pi-ai caches on first use.
 		// The wrapper only rewrites a shared Codex request carrying Atomic's
