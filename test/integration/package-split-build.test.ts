@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { dirname, join, posix, resolve } from "node:path";
+import { dirname, join, posix, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, test, vi } from "vitest";
 import { prepareAgentDir } from "../helpers/event-loop-guard-fixture.js";
@@ -19,6 +19,17 @@ const packageDir = join(repoRoot, "packages", "coding-agent");
 const dist = join(packageDir, "dist");
 /** The package's public entry files and `main.js`, which the CLI imports. */
 const ENTRIES = ["cli", "main", "index", "rpc-entry", "core/storage/index", "core/storage/testing"];
+/**
+ * The modules that run by path in a thread or process of their own: the extension source transform worker and the
+ * siblings it imports by a computed path, the image resize worker, and the compile-cache helper.
+ */
+const RUN_BY_PATH = [
+	"core/extensions/ts-transform-worker",
+	"core/extensions/transform-graph",
+	"core/extensions/ts-source-specifiers",
+	"utils/image-resize-worker",
+	"utils/compile-cache-warmup",
+];
 // Copying the package and starting it in a terminal is structural work.
 const LAYOUT_TIMEOUT_MS = 120_000;
 const SESSION_TIMEOUT_MS = 120_000;
@@ -90,19 +101,27 @@ function installedLayout(name = "install"): { readonly nodeModules: string; read
 	return { nodeModules, atomic };
 }
 
+let packed: Set<string> | undefined;
+/** The paths `npm pack` puts in the package. */
+function packedPaths(): Set<string> {
+	if (packed !== undefined) return packed;
+	const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+	const result = spawnSync(npm, ["pack", "--dry-run", "--json", "--ignore-scripts", packageDir], {
+		cwd: repoRoot,
+		encoding: "utf8",
+		shell: process.platform === "win32",
+		maxBuffer: 64 * 1024 * 1024,
+	});
+	assert.equal(result.status, 0, result.stderr);
+	const [{ files }] = JSON.parse(result.stdout) as [{ files: { path: string }[] }];
+	packed = new Set(files.map((file) => file.path));
+	return packed;
+}
+
 test(
 	"the packed package holds its entries, every shared file they load and none of the build's own state",
 	() => {
-		const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-		const packed = spawnSync(npm, ["pack", "--dry-run", "--json", "--ignore-scripts", packageDir], {
-			cwd: repoRoot,
-			encoding: "utf8",
-			shell: process.platform === "win32",
-			maxBuffer: 64 * 1024 * 1024,
-		});
-		assert.equal(packed.status, 0, packed.stderr);
-		const [{ files }] = JSON.parse(packed.stdout) as [{ files: { path: string }[] }];
-		const paths = new Set(files.map((file) => file.path));
+		const paths = packedPaths();
 		for (const file of loadedFrom(ENTRIES)) assert.ok(paths.has(`dist/${file}`), `dist/${file} is not packed`);
 		for (const entry of ENTRIES) assert.ok(paths.has(`dist/${entry}.js.map`), `dist/${entry}.js.map is not packed`);
 		assert.ok(
@@ -118,6 +137,25 @@ test(
 			...Object.values(manifest.bin),
 		])
 			assert.ok(paths.has(posix.normalize(target)), `${target} is not packed`);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"the packed package holds each bundled module once, and every file that runs by path with what it loads",
+	() => {
+		const paths = packedPaths();
+		for (const file of loadedFrom(RUN_BY_PATH)) assert.ok(paths.has(`dist/${file}`), `dist/${file} is not packed`);
+		// Classes the SDK entry exports from its bundle: no compiled copy a deep path could load as a second class.
+		for (const module of [
+			"core/agent-session",
+			"core/session-manager",
+			"core/settings-manager",
+			"core/extensions/loader",
+		]) {
+			assert.equal(paths.has(`dist/${module}.js`), false, `dist/${module}.js is packed beside the bundle`);
+			assert.ok(paths.has(`dist/${module}.d.ts`), `dist/${module}.d.ts is not packed`);
+		}
 	},
 	LAYOUT_TIMEOUT_MS,
 );
@@ -316,8 +354,9 @@ for (const host of ["in-process", "isolated"] as const) {
 }
 
 /**
- * The package as `tsc` compiled it, before the split: the entries as compiled, which the split saves in the package's
- * build cache before overwriting them, and every other compiled file, which stays in `dist`.
+ * The package as `tsc` compiled it, before the split: the entries as compiled and the bundled modules' compiled files,
+ * which the split saves in the package's build cache before overwriting or removing them, and every other compiled
+ * file, which stays in `dist`.
  */
 function compiledPackage(target: string): void {
 	fs.mkdirSync(target, { recursive: true });
@@ -332,6 +371,11 @@ function compiledPackage(target: string): void {
 	for (const entry of bundled)
 		for (const suffix of [".js", ".js.map"])
 			fs.copyFileSync(join(state, "compiled", `${entry}${suffix}`), join(target, "dist", `${entry}${suffix}`));
+	const saved = join(state, "compiled");
+	copyTree(saved, join(target, "dist"), (source) => {
+		const path = join(target, "dist", relative(saved, source));
+		return fs.statSync(source).isDirectory() || !fs.existsSync(path);
+	});
 }
 
 const RELEASES = ["changes StorageError's constructor", "adds a module StorageError's module imports"] as const;

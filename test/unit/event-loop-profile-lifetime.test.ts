@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { test } from "vitest";
+import { NODE_TS_SOURCE_ARGS } from "../helpers/node-ts-sources.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
@@ -14,7 +15,7 @@ test("long-running diagnostics release completed profiles instead of retaining a
 	const root = makeTempDirectory("event-loop-profile-lifetime-");
 	try {
 		const result = spawnSyncCollect(
-			[process.execPath, "--expose-gc", "--require", PRELOAD, FIXTURE, String(OBSERVE_MS)],
+			[process.execPath, "--expose-gc", "--require", PRELOAD, ...NODE_TS_SOURCE_ARGS, FIXTURE, String(OBSERVE_MS)],
 			{
 				cwd: ROOT,
 				timeout: PROFILE_LIFETIME_CHILD_TIMEOUT_MS,
