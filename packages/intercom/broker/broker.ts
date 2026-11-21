@@ -18,6 +18,7 @@ import {
   holdWrites,
   isHoldingWrites,
   recordClientProtocol,
+  recordClientTakesIdHandoff,
   releaseHeldWrites,
   writeMessageIfOpen,
   writeMessageWithOutcome,
@@ -1207,6 +1208,8 @@ class IntercomBroker {
           socket,
           protocolRangeOf(isBrokerProtocolRange(clientMessage.protocol) ? clientMessage.protocol : undefined),
         );
+        // #5607: an id hand-over is written only to a client that said it takes ids back.
+        recordClientTakesIdHandoff(socket, clientMessage.takesIdHandoff === true);
 
         let supervisorId: string | undefined;
         if (clientMessage.supervisor !== undefined) {
