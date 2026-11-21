@@ -1,11 +1,12 @@
 /**
  * Where a helper program Atomic starts by name lives: the first match in the absolute directories of PATH, never in the
- * working directory.
+ * working directory unless PATH names it.
  *
  * Starting a program by its bare name searches more than PATH. On Windows the search looks in the working directory
  * first, and on every platform an empty or relative PATH entry names the working directory, which may be a project
  * nobody has trusted yet. Atomic therefore resolves the programs it starts for its own work to an absolute path first,
- * and starts that path. A program found only where these searches differ is not found.
+ * and starts that path. A program found only where these searches differ is not found. An absolute PATH entry is
+ * searched wherever it points, the working directory included: someone chose it.
  */
 import { randomUUID } from "node:crypto";
 import { accessSync, constants, lstatSync, statSync } from "node:fs";
@@ -17,13 +18,14 @@ export interface HelperExecutableOptions {
 	/** The environment of the process that starts the helper: its PATH, and PATHEXT on Windows. Default `process.env`. */
 	readonly env?: NodeJS.ProcessEnv;
 	/**
-	 * The working directory the helper starts in, when it is not this process's: never searched, as this process's own
-	 * working directory never is.
+	 * The working directory the helper starts in, when it is not this process's: never searched for it, as this process's
+	 * own working directory never is, unless an absolute PATH entry names it.
 	 */
 	readonly cwd?: string;
 	/**
 	 * Windows: also files run through a shell, such as `.cmd` and `.bat`, in PATHEXT's order. Without it only the files
-	 * Windows starts directly, `.com` and `.exe`, as starting a program without a shell does.
+	 * Windows starts directly, `.com` and `.exe`, as starting a program without a shell does. Those two are tried in
+	 * PATHEXT's order, and after the extensions it names when it names neither, as a start without a shell tries them.
 	 */
 	readonly shellScripts?: boolean;
 	/** Whose rules to search by; by default this operating system's. */
@@ -60,7 +62,19 @@ interface Search {
 	readonly windows: boolean;
 }
 
-const currentDirectory = (): string => process.cwd();
+/**
+ * A Windows PATH directory as Windows reads it when it starts a program from there: resolved, with the period a
+ * segment ends in removed (`C:\tools.` is `C:\tools`). Node's file access reads such a name literally instead.
+ */
+function windowsDirectory(entry: string): string {
+	const resolved = win32.resolve(entry);
+	const root = win32.parse(resolved).root;
+	const segments = resolved
+		.slice(root.length)
+		.split("\\")
+		.map((segment) => (segment.endsWith(".") && !segment.endsWith("..") ? segment.slice(0, -1) : segment));
+	return root + segments.join("\\");
+}
 
 /** The directories to search, in order, and the file names to try in each; undefined for a name that is a path. */
 function searchFor(name: string, options: HelperExecutableOptions): Search | undefined {
@@ -70,16 +84,6 @@ function searchFor(name: string, options: HelperExecutableOptions): Search | und
 	// A name with a separator in either style is a path its caller chose, whichever platform reads it.
 	if (name === "" || /[\\/]/.test(name) || (windows && name.includes(":"))) return undefined;
 	const env = options.env ?? process.env;
-	const workingDirectories: string[] = [];
-	for (const directory of [currentDirectory, () => options.cwd]) {
-		// A working directory that was removed cannot be read, and holds nothing to exclude.
-		try {
-			const named = directory();
-			if (named !== undefined) workingDirectories.push(path.resolve(named));
-		} catch {}
-	}
-	const sameDirectory = (directory: string) =>
-		workingDirectories.some((cwd) => (windows ? directory.toLowerCase() === cwd.toLowerCase() : directory === cwd));
 	const directories: string[] = [];
 	// Without PATH, a start by name searches the system's default directories, and on Windows this process's PATH,
 	// which the start gives the program.
@@ -87,17 +91,17 @@ function searchFor(name: string, options: HelperExecutableOptions): Search | und
 		envValue(env, "PATH", windows) ?? (windows ? (envValue(process.env, "PATH", true) ?? "") : DEFAULT_POSIX_PATH);
 	for (const raw of searched.split(path.delimiter)) {
 		const entry = windows ? raw.replace(/^"(.*)"$/, "$1") : raw;
-		// Empty and relative entries name the working directory, or a directory under it.
+		// Empty and relative entries name the working directory, or a directory under it. Only those are skipped.
 		if (entry === "" || !path.isAbsolute(entry)) continue;
-		const directory = path.resolve(entry);
-		if (sameDirectory(directory) || directories.includes(directory)) continue;
-		directories.push(directory);
+		const directory = windows ? windowsDirectory(entry) : path.resolve(entry);
+		if (!directories.includes(directory)) directories.push(directory);
 	}
 	if (!windows) return { directories, names: [name], windows };
-	const extensions = (envValue(env, "PATHEXT", true) || DEFAULT_PATHEXT)
+	const named = (envValue(env, "PATHEXT", true) || DEFAULT_PATHEXT)
 		.split(";")
 		.map((extension) => extension.trim().toLowerCase())
 		.filter((extension) => extension.startsWith(".") && (options.shellScripts || DIRECT_EXTENSIONS.has(extension)));
+	const extensions = [...named, ...[...DIRECT_EXTENSIONS].filter((extension) => !named.includes(extension))];
 	const names = [
 		...(win32.extname(name) !== "" ? [name] : []),
 		...extensions.map((extension) => `${name}${extension}`),

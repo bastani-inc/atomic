@@ -49,13 +49,27 @@ describe("findHelperExecutable", () => {
 		assert.equal(await findHelperExecutableAsync("tool", { env, cwd }), expected);
 	});
 
-	test("never finds a program in the working directory, through an empty, relative or absolute PATH entry", async () => {
+	test("never finds a program in the working directory through an empty or relative PATH entry", async () => {
 		program(cwd, exe("tool"));
 		mkdirSync(join(cwd, "bin"));
 		program(join(cwd, "bin"), exe("tool"));
-		for (const path of ["", delimiter, ".", "bin", cwd, `.${delimiter}bin${delimiter}${cwd}`]) {
+		for (const path of ["", delimiter, ".", "bin", `.${delimiter}bin`]) {
 			assert.equal(findHelperExecutable("tool", { env: { PATH: path }, cwd }), undefined, `PATH=${path}`);
 			assert.equal(await findHelperExecutableAsync("tool", { env: { PATH: path }, cwd }), undefined, `PATH=${path}`);
+		}
+	});
+
+	test("finds a program in the working directory through an absolute PATH entry naming it, as a start by name does", async () => {
+		const expected = program(cwd, exe("tool"));
+		const env = { PATH: `.${delimiter}${cwd}` };
+		assert.equal(findHelperExecutable("tool", { env, cwd }), expected);
+		assert.equal(await findHelperExecutableAsync("tool", { env, cwd }), expected);
+		const previous = process.cwd();
+		process.chdir(cwd);
+		try {
+			assert.equal(findHelperExecutable("tool", { env }), expected);
+		} finally {
+			process.chdir(previous);
 		}
 	});
 
@@ -65,7 +79,7 @@ describe("findHelperExecutable", () => {
 		const previous = process.cwd();
 		process.chdir(own);
 		try {
-			assert.equal(findHelperExecutable("tool", { env: { PATH: own }, cwd }), undefined);
+			assert.equal(findHelperExecutable("tool", { env: { PATH: `.${delimiter}` }, cwd }), undefined);
 		} finally {
 			process.chdir(previous);
 		}
@@ -155,10 +169,28 @@ describe.skipIf(!windows)("findHelperExecutable on Windows", () => {
 		assert.equal(findHelperExecutable("tool.exe", { env: { pAtH: bin }, cwd }), asIs);
 	});
 
-	test("never finds a program in the working directory under another letter case or in quotes", () => {
-		program(cwd, "tool.exe");
-		for (const path of [cwd.toUpperCase(), `"${cwd}"`, `${cwd}\\`]) {
-			assert.equal(findHelperExecutable("tool", { env: { PATH: path }, cwd }), undefined, `PATH=${path}`);
+	test("reads an absolute PATH entry in another letter case, in quotes, with a trailing separator or period", () => {
+		const expected = program(cwd, "tool.exe");
+		for (const path of [cwd.toUpperCase(), `"${cwd}"`, `${cwd}\\`, `${cwd}.`]) {
+			assert.equal(
+				findHelperExecutable("tool", { env: { PATH: path }, cwd })?.toLowerCase(),
+				expected.toLowerCase(),
+				`PATH=${path}`,
+			);
+		}
+	});
+
+	test("finds the programs of System32 when Atomic runs in it, as an administrator's terminal starts there", () => {
+		const system32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+		const previous = process.cwd();
+		process.chdir(system32);
+		try {
+			assert.equal(
+				findHelperExecutable("cmd", { env: process.env })?.toLowerCase(),
+				join(system32, "cmd.exe").toLowerCase(),
+			);
+		} finally {
+			process.chdir(previous);
 		}
 	});
 });
@@ -166,7 +198,7 @@ describe.skipIf(!windows)("findHelperExecutable on Windows", () => {
 describe("helperLaunch", () => {
 	test("starting a helper that was not found fails as starting a program that is not installed does", async () => {
 		program(cwd, exe("atomic-missing-helper"));
-		const env = { ...process.env, PATH: `${delimiter}${cwd}` };
+		const env = { ...process.env, PATH: `${delimiter}.` };
 		const launch = helperLaunch("atomic-missing-helper", { env, cwd });
 		assert.equal(launch.file, "atomic-missing-helper");
 		const error = await new Promise<ExecFileException | null>((resolve) =>

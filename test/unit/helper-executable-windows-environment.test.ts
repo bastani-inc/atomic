@@ -103,6 +103,35 @@ describe("helper programs by Windows' rules", () => {
 		assert.equal(findHelperExecutable("tool", { ...options, env: { PATH: "" } }), undefined);
 	});
 
+	test("reads a PATH entry whose last segment ends in a period as Windows does, without it", async () => {
+		files.programs.add(`${BIN}\\tool.exe`);
+		const env = { PATH: `${BIN}.` };
+
+		assert.equal(findHelperExecutable("tool", { ...options, env }), `${BIN}\\tool.exe`);
+		assert.equal(await findHelperExecutableAsync("tool", { ...options, env }), `${BIN}\\tool.exe`);
+	});
+
+	test("tries .com and .exe after PATHEXT's extensions when PATHEXT names neither, as a start without a shell does", () => {
+		files.programs.add(`${BIN}\\tool.exe`);
+		files.programs.add(`${BIN}\\script.cmd`);
+		const env = { PATH: BIN, PATHEXT: ".BAT;.CMD" };
+
+		assert.equal(findHelperExecutable("tool", { ...options, env }), `${BIN}\\tool.exe`);
+		assert.equal(findHelperExecutable("script", { ...options, env }), undefined);
+		assert.equal(findHelperExecutable("script", { ...options, env, shellScripts: true }), `${BIN}\\script.cmd`);
+	});
+
+	test("tries .com and .exe in PATHEXT's order, as cmd.exe does", () => {
+		files.programs.add(`${BIN}\\tool.com`);
+		files.programs.add(`${BIN}\\tool.exe`);
+
+		assert.equal(
+			findHelperExecutable("tool", { ...options, env: { PATH: BIN, PATHEXT: ".EXE;.COM" } }),
+			`${BIN}\\tool.exe`,
+		);
+		assert.equal(findHelperExecutable("tool", { ...options, env: { PATH: BIN } }), `${BIN}\\tool.com`);
+	});
+
 	test("finds an app execution alias, which only an existence check can read", async () => {
 		files.aliases.add(`${ALIASES}\\winget.exe`);
 		const env = { PATH: ALIASES };
