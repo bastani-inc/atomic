@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- When Atomic's own handling of the engine's output fails the same way on every streamed update, the chat shows one error row with a count, such as `(42 times)`, instead of one row per update. A different failure, or one after other output, gets its own row.
+- An error while Atomic reports a malformed engine line, the engine's stderr output or a failed write to the engine no longer ends Atomic; a malformed line still restarts the engine.
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.
