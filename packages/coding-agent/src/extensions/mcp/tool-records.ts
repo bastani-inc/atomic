@@ -229,11 +229,13 @@ export function readToolRecords(branch: readonly SessionEntry[]): McpToolRecords
 	let serverLines: McpServerLineRecord[] | undefined;
 	for (const entry of branch) {
 		// Input that can start a request with a newly laid out section, after the lines were recorded, may be of a
-		// request whose record was not written. Replies and tool results continue the request the record is of.
+		// request whose record was not written. Replies and tool results continue the request the record is of. A
+		// compaction may cover such input, and a resume that reads only the history after it does not see it.
 		if (
 			(entry.type === "message" && entry.message.role !== "assistant" && entry.message.role !== "toolResult") ||
 			entry.type === "custom_message" ||
-			entry.type === "branch_summary"
+			entry.type === "branch_summary" ||
+			entry.type === "compaction"
 		)
 			serverLines = undefined;
 		if (entry.type !== "custom" || entry.customType !== MCP_TOOL_RECORD_ENTRY_TYPE || !isRecord(entry.data)) continue;
