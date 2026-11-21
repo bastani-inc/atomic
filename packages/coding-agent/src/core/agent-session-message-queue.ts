@@ -123,9 +123,18 @@ export function queueWaitsAfterFailedStart(session: AgentSession): boolean {
 	return stalledQueues.has(session);
 }
 
+/** Runs each session started, counted: a prompt that only starts a turn tells whether one started meanwhile. */
+const runsStarted = new WeakMap<AgentSession, number>();
+
 /** A run starts: its queue is continued again as usual once it ends. */
 export function queueRunStarted(session: AgentSession): void {
 	stalledQueues.delete(session);
+	runsStarted.set(session, (runsStarted.get(session) ?? 0) + 1);
+}
+
+/** How many runs the session started so far. */
+export function sessionRunsStarted(session: AgentSession): number {
+	return runsStarted.get(session) ?? 0;
 }
 
 /** Queue `text` in `lane`: listed, then queued for the agent, and only then announced (#4257: listeners may act on it). */

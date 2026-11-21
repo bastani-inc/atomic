@@ -17,6 +17,7 @@ import type { CustomMessage } from "../../../core/messages.ts";
 import { sessionWaitsToRetry } from "../../../core/session-retry-status.js";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import {
+	childOfAttempt,
 	latestSubagentAttempt,
 	releasedWaitingOn,
 	waitingReleasedShells,
@@ -132,8 +133,8 @@ function observeChatWrite(write: Promise<void>, view: WeakRef<ObservedChatWrites
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
 /** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
 const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
-/** The page open on each task's chat, per source: where messages that come back after its last page closed go. */
-const openPages = new WeakMap<TaskViewSource, Map<TaskId, TaskAgentTranscriptPage>>();
+/** The page open on each subagent's chat, by the subagent across its attempts, per source: where messages that come back after an earlier page closed go. */
+const openPages = new WeakMap<TaskViewSource, Map<string, TaskAgentTranscriptPage>>();
 /** What Up recalled in a task's chat when the reader left it, oldest first, for when they come back. */
 const keptPromptHistories = new WeakMap<TaskViewSource, Map<TaskId, readonly string[]>>();
 
@@ -498,8 +499,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.chat.seedPromptHistory(keptPromptHistories.get(source)?.get(taskId) ?? []);
 		this.restoreDraft();
 		this.restoreUndelivered();
-		const open = openPages.get(source) ?? new Map<TaskId, TaskAgentTranscriptPage>();
-		open.set(taskId, this);
+		const open = openPages.get(source) ?? new Map<string, TaskAgentTranscriptPage>();
+		open.set(this.subagentKey(), this);
 		openPages.set(source, open);
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
 			if (sessionId === this.childSessionId() || sessionId === this.shownPromptSessionId) this.requestRender();
@@ -545,6 +546,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return this.liveTask()?.ref.taskId ?? this.taskId;
 	}
 
+	/** The subagent this chat is of, the same for every attempt of it: its launch operation, else its task. */
+	private subagentKey(): string {
+		const task = this.liveTask();
+		return task?.kind === "agent" && typeof task.launchOperationId === "string" ? childOfAttempt(task) : this.taskId;
+	}
+
 	/**
 	 * The attempt the page reads: the live one, once there is a session to follow. A resumed attempt is listed before
 	 * its session is bound, and until then the page keeps the conversation it shows rather than read nothing.
@@ -565,7 +572,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private keepForReturn(messages: readonly string[]): void {
 		if (messages.length === 0) return;
 		const id = this.liveTaskId();
-		const open = openPages.get(this.source)?.get(id);
+		const open = openPages.get(this.source)?.get(this.subagentKey());
 		if (open !== undefined && open !== this && !open.disposed) {
 			open.chat.setInputText(combineQueuedMessagesForEditor(messages, open.chat.inputText()));
 			open.requestRender();

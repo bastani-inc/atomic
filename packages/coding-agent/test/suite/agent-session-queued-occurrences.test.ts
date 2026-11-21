@@ -228,39 +228,52 @@ describe("queued messages", () => {
 		assert.deepEqual(getUserTexts(h), ["same"], "only the prompt is sent");
 	});
 
-	it("a prompt that only starts a turn sends and queues nothing when another turn starts while it is prepared", async () => {
-		const entered = Promise.withResolvers<void>();
-		const release = Promise.withResolvers<void>();
-		const h = await harness([], {
-			extensionFactories: [
-				(pi) => {
-					pi.on("input", async (event) => {
-						if (event.text === "only if idle") {
-							entered.resolve();
-							await release.promise;
-						}
-						return { action: "continue" };
-					});
+	for (const other of ["still runs", "has finished"] as const) {
+		it(`a prompt that only starts a turn sends and queues nothing when another turn started while it was prepared and ${other}`, async () => {
+			const entered = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const h = await harness([], {
+				extensionFactories: [
+					(pi) => {
+						pi.on("input", async (event) => {
+							if (event.text === "only if idle") {
+								entered.resolve();
+								await release.promise;
+							}
+							return { action: "continue" };
+						});
+					},
+				],
+			});
+			const answered = Promise.withResolvers<void>();
+			h.setResponses([
+				async () => {
+					await answered.promise;
+					return fauxAssistantMessage("answered");
 				},
-			],
-		});
-		const answered = Promise.withResolvers<void>();
-		h.setResponses([
-			async () => {
-				await answered.promise;
-				return fauxAssistantMessage("answered");
-			},
-		]);
-		const onlyIfIdle = h.session.prompt("only if idle", { startTurnOnly: true, expandPromptTemplates: false });
-		await entered.promise;
-		const other = h.session.prompt("another message first");
-		while (!h.session.isStreaming) await new Promise((resolve) => setTimeout(resolve, 5));
-		release.resolve();
-		await onlyIfIdle;
+				fauxAssistantMessage("never asked"),
+			]);
+			const onlyIfIdle = h.session.prompt("only if idle", { startTurnOnly: true, expandPromptTemplates: false });
+			await entered.promise;
+			const another = h.session.prompt("another message first");
+			while (!h.session.isStreaming) await new Promise((resolve) => setTimeout(resolve, 5));
+			if (other === "has finished") {
+				answered.resolve();
+				await another;
+			}
+			release.resolve();
+			await onlyIfIdle;
 
-		assert.deepEqual([...h.session.getSteeringMessages(), ...h.session.getFollowUpMessages()], [], "nothing queued");
-		answered.resolve();
-		await other;
-		assert.deepEqual(getUserTexts(h), ["another message first"], "nothing else sent");
-	});
+			assert.deepEqual(
+				[...h.session.getSteeringMessages(), ...h.session.getFollowUpMessages()],
+				[],
+				"nothing queued",
+			);
+			answered.resolve();
+			await another;
+			await h.session.agent.waitForIdle();
+			assert.deepEqual(getUserTexts(h), ["another message first"], "nothing else sent");
+			assert.equal(h.getPendingResponseCount(), 1, "one request");
+		});
+	}
 });
