@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, test } from "vitest";
 import type { SendOptions, SendResult } from "../../packages/intercom/broker/client.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
+import { BROKER_READY_TIMEOUT_MS } from "../../packages/intercom/broker/startup-timeout.js";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
@@ -46,6 +47,13 @@ type Tool = {
 
 const liveClients: Client[] = [];
 let broker: ChildProcess | undefined;
+
+/**
+ * Structural: a broker start compiles the broker's TypeScript through jiti, which on a loaded machine with a cold cache
+ * takes as long as Atomic's own wait for a broker allows. A hook or test that starts one gets that wait on top of its
+ * own budget.
+ */
+const BROKER_START_BUDGET_MS = BROKER_READY_TIMEOUT_MS + 30_000;
 
 const session = {
 	cwd: "/tmp/retry-real-test",
@@ -88,8 +96,9 @@ async function waitForSessionDeparture(observer: Client, sessionId: string): Pro
 	}
 }
 
+/** Waits for the broker to answer on its socket for as long as Atomic waits for a broker it started. */
 async function waitForBroker(): Promise<void> {
-	const deadline = Date.now() + 10_000;
+	const deadline = Date.now() + BROKER_READY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		const connected = await new Promise<boolean>((resolveConnected) => {
 			const probe = net.createConnection(socketPath);
@@ -192,7 +201,7 @@ async function stopBroker(signal: NodeJS.Signals): Promise<void> {
 	});
 }
 
-beforeAll(startBroker);
+beforeAll(startBroker, BROKER_START_BUDGET_MS);
 
 afterEach(async () => {
 	for (const client of liveClients.splice(0)) {
@@ -203,7 +212,7 @@ afterEach(async () => {
 		}
 	}
 	if (broker === undefined || broker.exitCode !== null) await startBroker();
-});
+}, BROKER_START_BUDGET_MS);
 
 afterAll(async () => {
 	await stopBroker("SIGTERM");
@@ -707,84 +716,88 @@ test("a raw name and its exact resolved ID remain distinct intentional tool call
 	assert.equal(received.length, 2);
 });
 
-test("one accepted ask invocation survives reordered attachment members and broker replacement and remains replyable", async () => {
-	const tracker = new ReplyTracker();
-	const questions: Array<{ from: SessionInfo; message: Message }> = [];
-	const recipient = await createClient("recipient");
-	recipient.on("message", (from: SessionInfo, incoming: Message) => {
-		questions.push({ from, message: incoming });
-		tracker.recordIncomingMessage(from, incoming);
-	});
-	const originalRecipientId = recipient.sessionId;
-	assert.ok(originalRecipientId);
-	const sender = await createClient("sender");
-	const reconnectReady = Promise.withResolvers<void>();
-	const senderTool = registerTool(sender, { beforeReconnect: () => reconnectReady.promise });
-	const recipientTool = registerTool(recipient, { connectionName: "recipient", replyTracker: tracker });
-	const senderSocket = (sender as unknown as { socket: net.Socket }).socket;
-	const rawSend = sender.send.bind(sender);
-	const successfulSends: SendResult[] = [];
-	let loseFirstAcknowledgement = true;
-	sender.send = async (...args: Parameters<Client["send"]>) => {
-		if (loseFirstAcknowledgement) {
-			loseFirstAcknowledgement = false;
-			senderSocket.pause();
-		} else args[1] = { ...args[1], attachments: retryAttachments };
-		const result = await rawSend(...args);
-		successfulSends.push(result);
-		return result;
-	};
-	const firstAttachments = attachmentsInDeclaredOrder();
-	const retryAttachments = attachmentsInReorderedMemberOrder();
-	const firstParams = {
-		action: "ask",
-		to: "recipient",
-		message: "survive broker replacement",
-		attachments: firstAttachments,
-	};
-	const retryController = new AbortController();
-	const firstAttempt = senderTool.execute("single-ask", firstParams, retryController.signal, undefined, context);
-	await waitUntil(() => questions.length === 1, "the old broker forwards the accepted ask");
-	const questionId = questions[0]?.message.id;
-	assert.ok(questionId);
-	const senderDisconnected = once(sender, "disconnected");
-	const recipientDisconnected = once(recipient, "disconnected");
-	try {
-		await stopBroker("SIGKILL");
-		senderSocket.destroy();
-		await Promise.all([senderDisconnected, recipientDisconnected]);
-		await startBroker();
-		await connect(recipient, "recipient");
-		assert.notEqual(recipient.sessionId, originalRecipientId);
-	} finally {
-		reconnectReady.resolve();
-	}
-	await waitUntil(() => successfulSends.length === 1, "the replacement broker proves the accepted ask");
-	if (questions.length !== 1) retryController.abort();
-	assert.equal(successfulSends[0]?.id, questionId);
-	assert.equal(questions.length, 1, "replacement broker authority suppresses a duplicate delivery");
-	assert.deepEqual(Object.keys(questions[0]?.message.content.attachments?.[0] ?? {}), [
-		"type",
-		"name",
-		"content",
-		"language",
-	]);
-	assert.deepEqual(Object.keys(retryAttachments[0] ?? {}), ["language", "content", "name", "type"]);
-	const reply = await recipientTool.execute(
-		"reply-after-broker-restart",
-		{ action: "reply", message: "durable answer" },
-		undefined,
-		undefined,
-		context,
-	);
-	if (reply.isError) retryController.abort();
-	assert.equal(reply.isError, false, reply.content[0]?.text);
-	assert.deepEqual(tracker.listPending(), []);
-	const result = await firstAttempt;
-	assertNoRetryToken(result);
-	assert.equal(result.isError, false, result.content[0]?.text);
-	assert.match(result.content[0]?.text ?? "", /durable answer/);
-});
+test(
+	"one accepted ask invocation survives reordered attachment members and broker replacement and remains replyable",
+	async () => {
+		const tracker = new ReplyTracker();
+		const questions: Array<{ from: SessionInfo; message: Message }> = [];
+		const recipient = await createClient("recipient");
+		recipient.on("message", (from: SessionInfo, incoming: Message) => {
+			questions.push({ from, message: incoming });
+			tracker.recordIncomingMessage(from, incoming);
+		});
+		const originalRecipientId = recipient.sessionId;
+		assert.ok(originalRecipientId);
+		const sender = await createClient("sender");
+		const reconnectReady = Promise.withResolvers<void>();
+		const senderTool = registerTool(sender, { beforeReconnect: () => reconnectReady.promise });
+		const recipientTool = registerTool(recipient, { connectionName: "recipient", replyTracker: tracker });
+		const senderSocket = (sender as unknown as { socket: net.Socket }).socket;
+		const rawSend = sender.send.bind(sender);
+		const successfulSends: SendResult[] = [];
+		let loseFirstAcknowledgement = true;
+		sender.send = async (...args: Parameters<Client["send"]>) => {
+			if (loseFirstAcknowledgement) {
+				loseFirstAcknowledgement = false;
+				senderSocket.pause();
+			} else args[1] = { ...args[1], attachments: retryAttachments };
+			const result = await rawSend(...args);
+			successfulSends.push(result);
+			return result;
+		};
+		const firstAttachments = attachmentsInDeclaredOrder();
+		const retryAttachments = attachmentsInReorderedMemberOrder();
+		const firstParams = {
+			action: "ask",
+			to: "recipient",
+			message: "survive broker replacement",
+			attachments: firstAttachments,
+		};
+		const retryController = new AbortController();
+		const firstAttempt = senderTool.execute("single-ask", firstParams, retryController.signal, undefined, context);
+		await waitUntil(() => questions.length === 1, "the old broker forwards the accepted ask");
+		const questionId = questions[0]?.message.id;
+		assert.ok(questionId);
+		const senderDisconnected = once(sender, "disconnected");
+		const recipientDisconnected = once(recipient, "disconnected");
+		try {
+			await stopBroker("SIGKILL");
+			senderSocket.destroy();
+			await Promise.all([senderDisconnected, recipientDisconnected]);
+			await startBroker();
+			await connect(recipient, "recipient");
+			assert.notEqual(recipient.sessionId, originalRecipientId);
+		} finally {
+			reconnectReady.resolve();
+		}
+		await waitUntil(() => successfulSends.length === 1, "the replacement broker proves the accepted ask");
+		if (questions.length !== 1) retryController.abort();
+		assert.equal(successfulSends[0]?.id, questionId);
+		assert.equal(questions.length, 1, "replacement broker authority suppresses a duplicate delivery");
+		assert.deepEqual(Object.keys(questions[0]?.message.content.attachments?.[0] ?? {}), [
+			"type",
+			"name",
+			"content",
+			"language",
+		]);
+		assert.deepEqual(Object.keys(retryAttachments[0] ?? {}), ["language", "content", "name", "type"]);
+		const reply = await recipientTool.execute(
+			"reply-after-broker-restart",
+			{ action: "reply", message: "durable answer" },
+			undefined,
+			undefined,
+			context,
+		);
+		if (reply.isError) retryController.abort();
+		assert.equal(reply.isError, false, reply.content[0]?.text);
+		assert.deepEqual(tracker.listPending(), []);
+		const result = await firstAttempt;
+		assertNoRetryToken(result);
+		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.match(result.content[0]?.text ?? "", /durable answer/);
+	},
+	BROKER_START_BUDGET_MS,
+);
 
 test("two concurrent accepted operations survive acknowledgement loss without a third delivery", async () => {
 	const received: Message[] = [];
