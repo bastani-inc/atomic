@@ -68,6 +68,7 @@ import { applyToolModifiers } from "./settings-merge.js";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import { ChildTaskWaits } from "./tasks/child-command-owner.js";
 import { createToolNameMatcher } from "./tool-selection.ts";
+import type { ToolStatusReport } from "./tool-status.ts";
 import { defaultToolSelectionFor } from "./tools/index.js";
 import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
@@ -520,6 +521,8 @@ class AgentSessionBase {
 
 export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {
 	_sealMessageAdmissionIfDrained(): boolean;
+	/** The tool status without its Git section, which only running git can fill: the startup notice reads `missing`. */
+	_getToolStatusWithoutGit(): ToolStatusReport;
 }
 
 export const AgentSession = AgentSessionBase as unknown as {

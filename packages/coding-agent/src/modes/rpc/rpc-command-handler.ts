@@ -663,7 +663,11 @@ export function createRpcCommandHandler({
 			}
 
 			case "get_tools": {
-				return createRpcSuccessResponse(id, "get_tools", await session.getToolStatusAsync());
+				return createRpcSuccessResponse(
+					id,
+					"get_tools",
+					command.withoutGit === true ? session._getToolStatusWithoutGit() : await session.getToolStatusAsync(),
+				);
 			}
 
 			case "export_html": {

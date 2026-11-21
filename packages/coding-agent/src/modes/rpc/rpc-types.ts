@@ -220,7 +220,15 @@ export type RpcCommand =
 
 	// Session
 	| { id?: string; type: "get_session_stats" }
-	| { id?: string; type: "get_tools" }
+	| {
+			id?: string;
+			type: "get_tools";
+			/**
+			 * Internal to the interactive engine: its host's startup notice reads only `missing`, so it asks for the status
+			 * without the Git section, which only running git can fill.
+			 */
+			withoutGit?: boolean;
+	  }
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| {
 			id?: string;
