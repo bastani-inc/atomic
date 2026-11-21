@@ -14,6 +14,7 @@ import { spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const codingAgent = new URL("../../packages/coding-agent/", import.meta.url);
 const prefetchModule = new URL("dist/utils/startup-prefetch.js", codingAgent).href;
+const readerModule = new URL("dist/utils/startup-prefetch-reader.js", codingAgent).href;
 /** One child process start: generous, since the child is only waited on. */
 const CHILD_TIMEOUT_MS = 20_000;
 /** How long a reader that outlived its parent may take to be ended. */
@@ -182,11 +183,40 @@ test("the built list names files that this build loads, and the reader finds eve
 	assert.deepEqual(missing, []);
 });
 
+test("files missing at the end of the list say nothing about a warm start: the reader reads every file there is", async () => {
+	const atomic = join(dir, "app", "node_modules", "@bastani", "atomic");
+	const files: [number, string][] = [];
+	for (let index = 0; index < 64; index++) {
+		// The last 16, which the reader times first, are gone, as after an upgrade that dropped them.
+		if (index < 48) file(join(atomic, "dist", `module-${index}.js`));
+		files.push([0, `dist/module-${index}.js`]);
+	}
+	const list = file(
+		join(atomic, "dist", "startup-files.json"),
+		JSON.stringify({ version: 2, self: "@bastani/atomic", packages: [["@bastani/atomic", -1]], files }),
+	);
+	// One read at a time beside the timed ones, as on a machine with one CPU: the reader must not stop early.
+	const result = spawnSyncCollect(
+		[
+			process.execPath,
+			"--input-type=module",
+			"-e",
+			`const { readStartupFiles } = await import(${JSON.stringify(readerModule)});
+process.stdout.write(String(await readStartupFiles(${JSON.stringify(list)}, ${JSON.stringify(atomic)})));`,
+		],
+		{ env: { ...process.env, UV_THREADPOOL_SIZE: "1", NODE_OPTIONS: "" }, timeout: CHILD_TIMEOUT_MS },
+	);
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	assert.equal(result.stdout.toString(), "48");
+});
+
 test("reads that found their files in memory tell a warm start from a first one, by their median", () => {
-	assert.equal(readsFoundFilesInMemory([0.1, 0.3, 0.2, 0.4]), true);
-	assert.equal(readsFoundFilesInMemory([0.2, 1.5, 40, 0.9, 0.1]), true);
+	assert.equal(readsFoundFilesInMemory([0.1, 0.3, 0.2, 0.4, 0.2, 0.3, 0.1, 0.2]), true);
+	assert.equal(readsFoundFilesInMemory([0.2, 1.5, 40, 0.9, 0.1, 0.3, 0.2, 0.4, 0.5]), true);
 	// After a restart, the disk and the antivirus scan make most of the first reads slow.
-	assert.equal(readsFoundFilesInMemory([0.2, 12, 40, 9, 0.1]), false);
+	assert.equal(readsFoundFilesInMemory([0.2, 12, 40, 9, 0.1, 15, 11, 30, 7]), false);
+	// Too few reads tell nothing (files that are missing are no reads).
+	assert.equal(readsFoundFilesInMemory([0.1, 0.2, 0.1]), false);
 	assert.equal(readsFoundFilesInMemory([]), false);
 });
 

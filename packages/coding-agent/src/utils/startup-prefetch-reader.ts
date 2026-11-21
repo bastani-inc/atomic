@@ -163,14 +163,18 @@ const WARM_PROBE_FILES = 16;
 /**
  * A median read faster than this found its files in memory: a warm start, where reading the rest ahead of the module
  * loader gains nothing and only takes CPU and memory from Atomic's own start. Measured one at a time, a read of a
- * file in memory takes well under 1 ms (0.45-1 ms even on a heavily loaded machine), and a first read after a restart
- * on Windows waits for the antivirus to scan the file: about 12 ms on average there, up to 190 ms.
+ * startup file in memory takes about 0.2 ms on Windows (median; at most about 1.2 ms), and 0.45-1 ms on a heavily
+ * loaded Linux machine; a first read after a restart on Windows waits for the antivirus to scan the file: about 12 ms
+ * on average there, up to 190 ms.
  */
 const WARM_READ_MS = 3;
 
+/** The fewest timed reads that can tell a warm start: a file missing or skipped is no read and tells nothing. */
+const WARM_PROBE_MIN_READS = 8;
+
 /** Whether reads that took these times (ms) found their files already in memory, by their median. */
 export function readsFoundFilesInMemory(timesMs: readonly number[]): boolean {
-	if (timesMs.length === 0) return false;
+	if (timesMs.length < WARM_PROBE_MIN_READS) return false;
 	const sorted = [...timesMs].sort((a, b) => a - b);
 	return sorted[Math.floor((sorted.length - 1) / 2)]! < WARM_READ_MS;
 }
@@ -197,20 +201,25 @@ export async function readStartupFiles(listPath: string, packageDir: string): Pr
 	const paths = [...modules, ...binaries];
 	let read = 0;
 	let warm = false;
+	const probed = new Set(modules.length > 2 * WARM_PROBE_FILES ? modules.slice(-WARM_PROBE_FILES) : []);
 	const probe = async () => {
-		if (modules.length <= 2 * WARM_PROBE_FILES) return;
 		const times: number[] = [];
-		// One at a time: a read's own time, not its wait behind the others.
-		for (const path of modules.slice(-WARM_PROBE_FILES)) {
+		// One at a time: a read's own time, not its wait behind the others. Only files actually read count.
+		for (const path of probed) {
 			const started = performance.now();
-			if (await readOne(path)) read++;
-			times.push(performance.now() - started);
+			if (await readOne(path)) {
+				read++;
+				times.push(performance.now() - started);
+			}
 		}
 		warm = readsFoundFilesInMemory(times);
 	};
 	let next = 0;
 	const reader = async () => {
-		while (!warm && next < paths.length) if (await readOne(paths[next++]!)) read++;
+		while (!warm && next < paths.length) {
+			const path = paths[next++]!;
+			if (!probed.has(path) && (await readOne(path))) read++;
+		}
 	};
 	await Promise.all([probe(), ...Array.from({ length: READ_CONCURRENCY }, reader)]);
 	return read;
