@@ -10,6 +10,12 @@ export function withoutSqliteExperimentalWarning(stderr) {
 	return stderr.replace(/^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time\r?\n(?:\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n)?/gm, "");
 }
 
+// The broker retires 5 s after its last session leaves (about 5 s after the
+// fixture's disposal on a loaded Windows machine), then closes and exits. On a
+// machine running a whole suite that exit can take seconds more. A broker that
+// never retires still fails this wait.
+const BROKER_RETIREMENT_WAIT_MS = 30_000;
+
 // The fixture owns its disposable agentDir, but a persisted PID is not a
 // process handle. Never signal it: it could have been reused. After disposal,
 // the broker retires naturally after its five-second idle grace period.
@@ -18,7 +24,7 @@ export async function awaitFixtureBrokerExit(agentDir) {
 	if (!existsSync(pidPath)) return;
 	const pid = Number(readFileSync(pidPath, "utf8").trim());
 	assert.ok(Number.isInteger(pid) && pid > 0);
-	const deadline = Date.now() + 10_000;
+	const deadline = Date.now() + BROKER_RETIREMENT_WAIT_MS;
 	for (;;) {
 		try { process.kill(pid, 0); }
 		catch (error) { if (error.code !== "ESRCH") throw error; return; }

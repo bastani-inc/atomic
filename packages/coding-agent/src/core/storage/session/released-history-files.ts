@@ -5,6 +5,7 @@ import { copyFile, mkdir, open, opendir, readdir, readFile, readlink, rename, rm
 import { hostname, release } from "node:os";
 import { join } from "node:path";
 import { BroadcastChannel, isMainThread, receiveMessageOnPort } from "node:worker_threads";
+import { helperLaunchAsync, missingHelperOptions } from "../../../utils/helper-command.ts";
 import { nativeProcessCreationTime } from "../../process-start-token.js";
 import { getErrnoCode } from "../../tools/errno.ts";
 import {
@@ -193,21 +194,25 @@ function probeWorkingDirectory(): string {
 }
 
 /** Runs a short command; `ran` is false when it could not be started or did not finish in time. */
-function run(
+async function run(
 	command: string,
 	args: readonly string[],
 	env?: NodeJS.ProcessEnv,
 ): Promise<{ readonly ran: boolean; readonly exitCode: number; readonly stdout: string }> {
+	const childEnv = env === undefined ? process.env : { ...process.env, ...env };
+	const cwd = probeWorkingDirectory();
+	const launch = await helperLaunchAsync(command, { env: childEnv, cwd });
 	return new Promise((resolve) => {
 		execFile(
-			command,
+			launch.file,
 			args,
 			{
-				cwd: probeWorkingDirectory(),
+				cwd,
 				encoding: "utf8",
 				timeout: START_TIME_TIMEOUT_MS,
 				windowsHide: true,
-				...(env === undefined ? {} : { env: { ...process.env, ...env } }),
+				...(env === undefined ? {} : { env: childEnv }),
+				...missingHelperOptions(launch),
 			},
 			(error, stdout) => {
 				const exitCode = (error as { readonly code?: unknown } | null)?.code;

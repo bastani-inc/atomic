@@ -26,6 +26,15 @@ import { isPathInside } from "../src/utils/path-inside.js";
 import { getPiUserAgent } from "../src/utils/pi-user-agent.js";
 import type { ToolStatus } from "../src/utils/tools-manager.js";
 
+// The simulated platform's programs are the mocked child processes, so every helper is found under its own name.
+vi.mock("../src/utils/helper-command.ts", () => ({
+	findHelperExecutable: (name: string) => name,
+	findHelperExecutableAsync: async (name: string) => name,
+	helperLaunch: (name: string) => ({ file: name }),
+	helperLaunchAsync: async (name: string) => ({ file: name }),
+	missingHelperOptions: () => ({}),
+}));
+
 type GitErrors = typeof import("../src/utils/git-errors.js");
 
 type ToolsManager = typeof import("../src/utils/tools-manager.js");

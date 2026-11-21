@@ -7,6 +7,12 @@
 	},
 	{
 		"type": "index",
+		"name": "intercom_known_sessions_alias_id",
+		"tbl_name": "intercom_known_sessions",
+		"sql": "CREATE INDEX intercom_known_sessions_alias_id ON intercom_known_sessions(alias_id)"
+	},
+	{
+		"type": "index",
 		"name": "intercom_known_sessions_atomic_id",
 		"tbl_name": "intercom_known_sessions",
 		"sql": "CREATE INDEX intercom_known_sessions_atomic_id ON intercom_known_sessions(atomic_session_id)"
@@ -100,6 +106,12 @@
 		"name": "team_intercom_held_sends_reservation",
 		"tbl_name": "team_intercom_held_sends",
 		"sql": "CREATE INDEX team_intercom_held_sends_reservation ON team_intercom_held_sends(reservation_key, \"order\")"
+	},
+	{
+		"type": "index",
+		"name": "team_intercom_known_sessions_alias_id",
+		"tbl_name": "team_intercom_known_sessions",
+		"sql": "CREATE INDEX team_intercom_known_sessions_alias_id ON team_intercom_known_sessions(alias_id)"
 	},
 	{
 		"type": "index",
@@ -201,7 +213,7 @@
 		"type": "table",
 		"name": "intercom_known_sessions",
 		"tbl_name": "intercom_known_sessions",
-		"sql": "CREATE TABLE intercom_known_sessions(\n\t\t\t\trecord_order INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\ttarget_identity TEXT NOT NULL UNIQUE,\n\t\t\t\tintercom_session_id TEXT NOT NULL,\n\t\t\t\tname_json TEXT,\n\t\t\t\tname_key TEXT,\n\t\t\t\tatomic_session_id TEXT,\n\t\t\t\tgroup_name TEXT NOT NULL,\n\t\t\t\tgroups_json TEXT NOT NULL,\n\t\t\t\trecipient_purpose TEXT,\n\t\t\t\treply_capability TEXT,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, lost_at INTEGER)"
+		"sql": "CREATE TABLE intercom_known_sessions(\n\t\t\t\trecord_order INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\ttarget_identity TEXT NOT NULL UNIQUE,\n\t\t\t\tintercom_session_id TEXT NOT NULL,\n\t\t\t\tname_json TEXT,\n\t\t\t\tname_key TEXT,\n\t\t\t\tatomic_session_id TEXT,\n\t\t\t\tgroup_name TEXT NOT NULL,\n\t\t\t\tgroups_json TEXT NOT NULL,\n\t\t\t\trecipient_purpose TEXT,\n\t\t\t\treply_capability TEXT,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, lost_at INTEGER, alias_id TEXT)"
 	},
 	{
 		"type": "table",
@@ -255,7 +267,7 @@
 		"type": "table",
 		"name": "intercom_session_bindings",
 		"tbl_name": "intercom_session_bindings",
-		"sql": "CREATE TABLE intercom_session_bindings(\n\t\t\t\tintercom_session_id TEXT NOT NULL PRIMARY KEY,\n\t\t\t\treturn_address TEXT NOT NULL,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, latest_claim TEXT)"
+		"sql": "CREATE TABLE intercom_session_bindings(\n\t\t\t\tintercom_session_id TEXT NOT NULL PRIMARY KEY,\n\t\t\t\treturn_address TEXT NOT NULL,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, latest_claim TEXT, owner_token TEXT, owner_broker TEXT, owner_renewed_at INTEGER)"
 	},
 	{
 		"type": "table",
@@ -279,7 +291,7 @@
 		"type": "table",
 		"name": "team_intercom_known_sessions",
 		"tbl_name": "team_intercom_known_sessions",
-		"sql": "CREATE TABLE team_intercom_known_sessions(\n\t\t\t\trecord_order INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\ttarget_identity TEXT NOT NULL UNIQUE,\n\t\t\t\tintercom_session_id TEXT NOT NULL,\n\t\t\t\tname_json TEXT,\n\t\t\t\tname_key TEXT,\n\t\t\t\tatomic_session_id TEXT,\n\t\t\t\tgroup_name TEXT NOT NULL,\n\t\t\t\tgroups_json TEXT NOT NULL,\n\t\t\t\trecipient_purpose TEXT,\n\t\t\t\treply_capability TEXT,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, lost_at INTEGER)"
+		"sql": "CREATE TABLE team_intercom_known_sessions(\n\t\t\t\trecord_order INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\ttarget_identity TEXT NOT NULL UNIQUE,\n\t\t\t\tintercom_session_id TEXT NOT NULL,\n\t\t\t\tname_json TEXT,\n\t\t\t\tname_key TEXT,\n\t\t\t\tatomic_session_id TEXT,\n\t\t\t\tgroup_name TEXT NOT NULL,\n\t\t\t\tgroups_json TEXT NOT NULL,\n\t\t\t\trecipient_purpose TEXT,\n\t\t\t\treply_capability TEXT,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, lost_at INTEGER, alias_id TEXT)"
 	},
 	{
 		"type": "table",
@@ -333,7 +345,7 @@
 		"type": "table",
 		"name": "team_intercom_session_bindings",
 		"tbl_name": "team_intercom_session_bindings",
-		"sql": "CREATE TABLE team_intercom_session_bindings(\n\t\t\t\tintercom_session_id TEXT NOT NULL PRIMARY KEY,\n\t\t\t\treturn_address TEXT NOT NULL,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, latest_claim TEXT)"
+		"sql": "CREATE TABLE team_intercom_session_bindings(\n\t\t\t\tintercom_session_id TEXT NOT NULL PRIMARY KEY,\n\t\t\t\treturn_address TEXT NOT NULL,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, latest_claim TEXT, owner_token TEXT, owner_broker TEXT, owner_renewed_at INTEGER)"
 	},
 	{
 		"type": "table",
