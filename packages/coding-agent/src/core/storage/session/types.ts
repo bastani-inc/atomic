@@ -293,6 +293,16 @@ export interface SessionRecoveryState {
 	readonly admissionDigests: string;
 	readonly intercomDeliveredIds: readonly string[];
 	readonly deliveryOpIds?: readonly string[];
+	/*
+	 * #6168: a resumed window can hold an entry for another reason without the entry that took it. Each list names only
+	 * entries the window holds, and is absent when there are none or the store does not report it.
+	 */
+	/** Entry ids of the window's protected cards that the active branch already reconciled. */
+	readonly reconciledCardIds?: readonly string[];
+	/** Ids of the window's saved Intercom arrivals that the active branch already took: shown, received or handled. */
+	readonly intercomTakenIds?: readonly string[];
+	/** Ids of the window's Intercom asks to this session that the active branch already answered or closed. */
+	readonly answeredInboundIds?: readonly string[];
 }
 
 export interface SessionForkWindow {

@@ -17,11 +17,13 @@ function sibling(name: string): string {
 }
 
 async function prepare({ cacheDir, template, targets, visited }: TransformPreparation): Promise<void> {
-	const [{ readModuleSourceSync, resolveFrom, walkStaticImports }, { createTypeScriptSourceSpecifierTransform }] =
-		await Promise.all([
-			import(sibling("transform-graph")) as Promise<typeof import("./transform-graph.js")>,
-			import(sibling("ts-source-specifiers")) as Promise<typeof import("./ts-source-specifiers.js")>,
-		]);
+	const [
+		{ moduleTransformOptions, readModuleSourceSync, resolveFrom, walkStaticImports },
+		{ createTypeScriptSourceSpecifierTransform },
+	] = await Promise.all([
+		import(sibling("transform-graph")) as Promise<typeof import("./transform-graph.js")>,
+		import(sibling("ts-source-specifiers")) as Promise<typeof import("./ts-source-specifiers.js")>,
+	]);
 	const transform = createTypeScriptSourceSpecifierTransform(createJiti, import.meta.url, () => cacheDir);
 	await walkStaticImports(
 		targets,
@@ -30,7 +32,7 @@ async function prepare({ cacheDir, template, targets, visited }: TransformPrepar
 			const source = readModuleSourceSync(filename);
 			if (source === undefined) return undefined;
 			try {
-				return transform({ ...template, filename, source, async: true, ts: true }).code;
+				return transform.module(moduleTransformOptions(template, filename, source));
 			} catch {
 				return undefined;
 			}

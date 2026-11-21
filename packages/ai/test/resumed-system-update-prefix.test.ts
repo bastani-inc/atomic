@@ -25,6 +25,7 @@ import {
 	declarationsEqual,
 	followsToolResults,
 	getToolStateChanges,
+	jsonSchemasEqual,
 } from "../src/utils/transcript.ts";
 
 /**
@@ -578,6 +579,53 @@ describe("tool declarations", () => {
 		const relisted = withSchema(object(["a", "b"]), ["list", "query"]);
 		expect(declarationsEqual(declared, relisted)).toBe(true);
 		expect(getToolStateChanges([declared], [relisted])).toEqual({ toolsAdded: [], toolsRemoved: [] });
+	});
+
+	test("a schema that lists its types or dependent property names in another order is the same declaration", () => {
+		const object = (types: string[], dependents: string[]) => ({
+			type: types,
+			properties: { a: { type: types }, b: { type: "number" }, c: { type: "string" } },
+			dependentRequired: { a: dependents },
+			dependencies: { b: dependents, c: { type: types, required: dependents } },
+		});
+		const declared = withSchema(object(["object", "null"], ["b", "c"]));
+		const relisted = withSchema(object(["null", "object"], ["c", "b"]));
+		expect(declarationsEqual(declared, relisted)).toBe(true);
+		expect(getToolStateChanges([declared], [relisted])).toEqual({ toolsAdded: [], toolsRemoved: [] });
+		expect(jsonSchemasEqual(object(["object", "null"], ["b", "c"]), object(["null", "object"], ["c", "b"]))).toBe(
+			true,
+		);
+	});
+
+	test("types or dependent property names that differ, and the same names as values, still change a declaration", () => {
+		const declared = withSchema({ type: ["object", "null"], dependentRequired: { a: ["b", "c"] } });
+		const changed = [
+			{ type: ["object"], dependentRequired: { a: ["b", "c"] } },
+			{ type: ["object", "null", "null"], dependentRequired: { a: ["b", "c"] } },
+			{ type: ["object", "string"], dependentRequired: { a: ["b", "c"] } },
+			{ type: ["object", "null"], dependentRequired: { a: ["b"] } },
+			{ type: ["object", "null"], dependentRequired: { a: ["b", "d"] } },
+			{ type: ["object", "null"], dependentRequired: { d: ["b", "c"] } },
+		];
+		for (const schema of changed) {
+			expect(declarationsEqual(declared, withSchema(schema)), JSON.stringify(schema)).toBe(false);
+		}
+		// Lists of the same words in data, and a property that is named `type`, keep their order.
+		const ordered = (first: string, second: string) => [
+			{ enum: [[first, second]] },
+			{ const: { type: [first, second] } },
+			{ default: { dependentRequired: { a: [first, second] } } },
+			{ examples: [{ dependencies: { a: [first, second] } }] },
+			{ type: "object", properties: { type: { enum: [first, second] } } },
+			{ type: "object", properties: { dependencies: { const: [first, second] } } },
+			{ dependentRequired: { a: [first === "string" ? 1 : 2, first === "string" ? 2 : 1] } },
+			{ type: [first === "string" ? 1 : 2, first === "string" ? 2 : 1] },
+		];
+		const before = ordered("string", "null");
+		const after = ordered("null", "string");
+		for (const [index, schema] of before.entries()) {
+			expect(declarationsEqual(withSchema(schema), withSchema(after[index]!)), JSON.stringify(schema)).toBe(false);
+		}
 	});
 
 	test("required names that differ, and values whose order counts, still change a declaration (#6130)", () => {

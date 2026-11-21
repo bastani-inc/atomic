@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { startedWithInputType } from "../node-options.ts";
 import type { CodemodeSandboxOptions } from "../types.ts";
 import { type CodemodeWasmModule, loadQuickJSWasm } from "../wasm.ts";
 import { CodemodeSandboxBase, errorMessage, type VmLauncher } from "./execution.ts";
@@ -7,13 +8,6 @@ import type { WorkerData } from "./protocol.ts";
 function defaultWorkerUrl(): URL {
 	// `.ts` when running from source (tests, tsx), `.js` from the published dist.
 	return new URL(import.meta.url.endsWith(".ts") ? "./worker.ts" : "./worker.js", import.meta.url);
-}
-
-/** Whether the process was started with `--input-type`, on its command line or in `NODE_OPTIONS`. */
-function startedWithInputType(): boolean {
-	return [...process.execArgv, ...(process.env.NODE_OPTIONS ?? "").split(/\s+/)].some(
-		(flag) => flag === "--input-type" || flag.startsWith("--input-type="),
-	);
 }
 
 /**

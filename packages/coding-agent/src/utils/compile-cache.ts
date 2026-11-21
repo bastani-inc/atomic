@@ -24,7 +24,7 @@ import nodeModule from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cachedDataVersionTag } from "node:v8";
-import { splitNodeOptions } from "../modes/interactive-engine/engine-heap.ts";
+import { splitNodeOptions } from "@bastani/atomic-codemode/node-options";
 
 interface CompileCacheApi {
 	enableCompileCache?: () => unknown;
@@ -96,15 +96,18 @@ function keptFlags(flags: readonly string[]): string[] | undefined {
 /**
  * The runtime a helper repeats: this process's heap size, without the preloads (`--require`, `--import`, loaders)
  * that would run user code a second time. Anything else on the command line or in `NODE_OPTIONS` (an inspector, a
- * profiler, coverage, other V8 flags that would give the helper a different cache) leaves the cache as it always was.
+ * profiler, coverage, other V8 flags that would give the helper a different cache), and a `NODE_OPTIONS` value Node
+ * refuses, with which a helper would not start, leaves the cache as it always was.
  */
 export function compileCacheHelperRuntime(
 	execArgv: readonly string[],
 	env: NodeJS.ProcessEnv,
 ): CompileCacheHelperRuntime | undefined {
 	if (env.NODE_V8_COVERAGE !== undefined) return undefined;
+	const words = splitNodeOptions(env.NODE_OPTIONS ?? "");
+	if (!words) return undefined;
 	const command = keptFlags(execArgv);
-	const options = keptFlags(splitNodeOptions(env.NODE_OPTIONS ?? ""));
+	const options = keptFlags(words);
 	if (!command || !options) return undefined;
 	return { execArgv: command, nodeOptions: options.join(" ") };
 }
