@@ -11,12 +11,19 @@ import {
 	type StdioPipe,
 } from "node:child_process";
 import { constants as osConstants } from "node:os";
-import { basename } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import type { Readable } from "node:stream";
 import crossSpawn from "cross-spawn";
 import { applyDebugSettingToChildEnvironment } from "../core/debug-setting.ts";
 import { HOST_STORAGE_ADAPTERS_ENV, hostStorageAdaptersEnvironment } from "../core/storage/host-adapters.ts";
 import { ATOMIC_AI_AGENT } from "./agent-attribution.ts";
+import {
+	type HelperExecutableOptions,
+	type HelperLaunch,
+	helperLaunch,
+	helperLaunchAsync,
+	missingHelperOptions,
+} from "./helper-command.ts";
 import type { HostChildProcess } from "./host-spawn.ts";
 
 const EXIT_STDIO_IDLE_GRACE_MS = 100;
@@ -59,6 +66,34 @@ export function shouldUseWindowsShell(command: string): boolean {
 	return commandName.endsWith(".cmd") || commandName.endsWith(".bat") || WINDOWS_SHELL_COMMANDS.has(commandName);
 }
 
+/**
+ * How {@link spawnProcess} and {@link spawnProcessSync} start `command` from `cwd` with `env`: a bare name becomes its
+ * absolute path in PATH's absolute directories, never the working directory. On Windows `.cmd` and `.bat` shims count,
+ * as these functions run them through cmd.exe.
+ */
+export function processLaunch(command: string, options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): HelperLaunch {
+	return helperLaunch(command, { ...launchSearch(options), shellScripts: process.platform === "win32" });
+}
+
+/** {@link processLaunch} without blocking the event loop. */
+export function processLaunchAsync(
+	command: string,
+	options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<HelperLaunch> {
+	return helperLaunchAsync(command, { ...launchSearch(options), shellScripts: process.platform === "win32" });
+}
+
+function launchSearch(options: { cwd?: string; env?: NodeJS.ProcessEnv }): HelperExecutableOptions {
+	return {
+		env: options.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
+		...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+	};
+}
+
+/**
+ * Start `command` as {@link processLaunch} finds it: a bare name only from PATH's absolute directories, never from the
+ * working directory. A name no such directory holds fails as a program that is not installed does (`ENOENT`).
+ */
 export function spawnProcess(
 	command: string,
 	args: string[],
@@ -66,27 +101,83 @@ export function spawnProcess(
 ): ChildProcessByStdio<null, Readable, Readable>;
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess;
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess {
-	const childOptions = {
-		...options,
-		env: options.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
-	};
-	return process.platform === "win32"
-		? crossSpawn(command, args, childOptions)
-		: nodeSpawn(command, args, childOptions);
+	// Through a shell `command` is a command line the shell reads, as it always was.
+	if (options.shell) return spawnChild(command, args, options);
+	const cwd = typeof options.cwd === "string" ? options.cwd : options.cwd?.pathname;
+	return spawnLaunchedProcess(processLaunch(command, { cwd, env: options.env }), args, options);
 }
 
+/** The synchronous {@link spawnProcess}. */
 export function spawnProcessSync(
 	command: string,
 	args: string[],
 	options: SpawnSyncOptionsWithStringEncoding,
 ): SpawnSyncReturns<string> {
-	const childOptions = {
+	if (options.shell) return spawnChildSync(command, args, options);
+	const cwd = typeof options.cwd === "string" ? options.cwd : options.cwd?.pathname;
+	return spawnLaunchedProcessSync(processLaunch(command, { cwd, env: options.env }), args, options);
+}
+
+/**
+ * A shell reads the program of a command line up to the first space: a program looked up to a path with spaces runs
+ * through one only quoted.
+ */
+function shellReadable(launch: HelperLaunch, shell: SpawnOptions["shell"]): HelperLaunch {
+	if (!shell || launch.missing !== undefined || !isAbsolute(launch.file)) return launch;
+	return {
+		file: process.platform === "win32" ? `"${launch.file}"` : `'${launch.file.replaceAll("'", `'\\''`)}'`,
+	};
+}
+
+/** {@link spawnProcess} for a command its caller has looked up with {@link processLaunch} or {@link processLaunchAsync}. */
+export function spawnLaunchedProcess(
+	launch: HelperLaunch,
+	args: string[],
+	options: SpawnOptionsWithStdioTuple<StdioNull, StdioPipe, StdioPipe>,
+): ChildProcessByStdio<null, Readable, Readable>;
+export function spawnLaunchedProcess(launch: HelperLaunch, args: string[], options: SpawnOptions): ChildProcess;
+export function spawnLaunchedProcess(launch: HelperLaunch, args: string[], options: SpawnOptions): ChildProcess {
+	// A program no allowed directory holds fails as a missing one does; cross-spawn would look in the working directory.
+	if (launch.missing !== undefined) {
+		return nodeSpawn(launch.file, args, { ...childEnvironment(options), ...missingHelperOptions(launch) });
+	}
+	return spawnChild(shellReadable(launch, options.shell).file, args, options);
+}
+
+/** `file` with Atomic's child environment, through cross-spawn on Windows. */
+function spawnChild(file: string, args: string[], options: SpawnOptions): ChildProcess {
+	const childOptions = childEnvironment(options);
+	return process.platform === "win32" ? crossSpawn(file, args, childOptions) : nodeSpawn(file, args, childOptions);
+}
+
+function childEnvironment<T extends { env?: NodeJS.ProcessEnv }>(options: T): T {
+	return {
 		...options,
 		env: options.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
 	};
+}
+
+/** The synchronous {@link spawnLaunchedProcess}. */
+export function spawnLaunchedProcessSync(
+	launch: HelperLaunch,
+	args: string[],
+	options: SpawnSyncOptionsWithStringEncoding,
+): SpawnSyncReturns<string> {
+	if (launch.missing !== undefined) {
+		return nodeSpawnSync(launch.file, args, { ...childEnvironment(options), ...missingHelperOptions(launch) });
+	}
+	return spawnChildSync(shellReadable(launch, options.shell).file, args, options);
+}
+
+function spawnChildSync(
+	file: string,
+	args: string[],
+	options: SpawnSyncOptionsWithStringEncoding,
+): SpawnSyncReturns<string> {
+	const childOptions = childEnvironment(options);
 	return process.platform === "win32"
-		? crossSpawn.sync(command, args, childOptions)
-		: nodeSpawnSync(command, args, childOptions);
+		? crossSpawn.sync(file, args, childOptions)
+		: nodeSpawnSync(file, args, childOptions);
 }
 
 export function isWindowsProcessAlive(pid: number): boolean {

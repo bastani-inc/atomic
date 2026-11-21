@@ -31,6 +31,13 @@ const boundary = vi.hoisted(() => ({
 	api: {} as Record<string, string>,
 }));
 
+// The faked `gh` and `git` are found under their own names, as programs on PATH would be.
+vi.mock("@bastani/atomic-tui", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@bastani/atomic-tui")>()),
+	findHelperExecutableAsync: async (name: string) => name,
+	helperLaunchAsync: async (name: string) => ({ file: name }),
+}));
+
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	const execFile = (_command: string, args: string[], _options: object, callback: Callback) => {

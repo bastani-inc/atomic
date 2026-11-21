@@ -203,6 +203,7 @@ type CreationTimeQuery = {
 };
 
 const POWERSHELL_QUERY: CreationTimeQuery = {
+	// Started in Windows' own directory, which the search for it looks in first, so never one the project folder holds.
 	file: "powershell.exe",
 	args: (pid) => [
 		"-NoProfile",
