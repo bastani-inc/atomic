@@ -41,6 +41,7 @@ try {
 		{ signal: controller.signal, timeoutMs: how === "timeout" ? TIMEOUT_MS : Number.POSITIVE_INFINITY },
 	);
 	if (how === "timeout") stoppedAt = executedAt + TIMEOUT_MS;
+	const settledMs = stoppedAt === undefined ? Number.NaN : performance.now() - stoppedAt;
 	if (result.ok) throw new Error("The script completed instead of being cancelled");
 	await sandbox.close();
 	console.log(
@@ -48,7 +49,7 @@ try {
 			type: "result",
 			kind: result.error.kind,
 			elapsedMs: performance.now() - started,
-			settledMs: stoppedAt === undefined ? Number.NaN : performance.now() - stoppedAt,
+			settledMs,
 			workerExited,
 		}),
 	);
