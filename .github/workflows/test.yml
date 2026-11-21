@@ -763,9 +763,10 @@ jobs:
         run: npm run build:offline --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
         run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
+      # The release binaries bundle the compiled modules, as scripts/build-binaries.sh builds them, not the npm split.
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
-        run: npm run build
+        run: npm run build:tsc && npm run build:assets
       # `bun build --compile --target=...` embeds that target's Bun runtime and, when it
       # is missing from the install cache, fetches it from the npm registry on one
       # connection. That fetch has run at ~45 KB/s here and outlasted this job's cap,
