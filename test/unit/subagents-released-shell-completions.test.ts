@@ -51,7 +51,12 @@ async function recorded(
 }
 
 function completion(text: string, completionId: string): TaskCompletionMessage {
-	return { customType: "task_completion", content: text, details: { completionId }, display: true };
+	return { customType: "task-completion", content: text, details: { completionId }, display: true };
+}
+
+/** A completion as the child's record holds it: the notice itself, delivered as one. */
+function notice(text: string, completionId: string) {
+	return { customType: "task-completion", content: text, details: { completionId } };
 }
 
 function wakeLog(dispatcher: AgentWakeDispatcher, ownerSessionId: string): AgentWake[] {
@@ -68,20 +73,19 @@ test("a released child holds each completion of a shell task it launched, in ord
 	await recorded(current, "terminal", SUBAGENT_CHILD_RELEASED_STATUS);
 	const dispatcher = new AgentWakeDispatcher();
 	const wakes = wakeLog(dispatcher, ownerSessionId);
-	const holdMessages = sink.holdMessages;
-	assert.ok(holdMessages);
-	const route = releasedChildShellRoute(holdMessages, ownerSessionId, childId, dispatcher);
+	const holdNotices = sink.holdNotices;
+	assert.ok(holdNotices);
+	const route = releasedChildShellRoute(holdNotices, ownerSessionId, childId, dispatcher);
 
 	await route.deliver(completion("build finished", "c-1"));
 	await route.deliver(completion("tests finished", "c-2"));
 	await dispatcher.whenIdle(subagentWakeKey(ownerSessionId, childId));
 
-	assert.deepEqual(subagentChildRecordOf(ownerSessionId, childId)?.heldMessages, {
-		taskId: "task-1",
-		messages: ["build finished", "tests finished"],
-		taskExpands: false,
-		withoutWakePrompt: true,
-	});
+	assert.deepEqual(subagentChildRecordOf(ownerSessionId, childId)?.heldNotices, [
+		notice("build finished", "c-1"),
+		notice("tests finished", "c-2"),
+	]);
+	assert.equal(subagentChildRecordOf(ownerSessionId, childId)?.heldMessages, undefined, "never as a message");
 	assert.deepEqual(
 		wakes.map((wake) => [wake.id, wake.kind]),
 		[
@@ -98,13 +102,13 @@ test("a paused child holds the completion for its resume without being woken (#4
 	await recorded(current, "terminal", "paused");
 	const dispatcher = new AgentWakeDispatcher();
 	const wakes = wakeLog(dispatcher, ownerSessionId);
-	const holdMessages = sink.holdMessages;
-	assert.ok(holdMessages);
+	const holdNotices = sink.holdNotices;
+	assert.ok(holdNotices);
 
-	await releasedChildShellRoute(holdMessages, ownerSessionId, childId, dispatcher).deliver(completion("done", "c-1"));
+	await releasedChildShellRoute(holdNotices, ownerSessionId, childId, dispatcher).deliver(completion("done", "c-1"));
 	await dispatcher.whenIdle();
 
-	assert.deepEqual(subagentChildRecordOf(ownerSessionId, childId)?.heldMessages?.messages, ["done"]);
+	assert.deepEqual(subagentChildRecordOf(ownerSessionId, childId)?.heldNotices, [notice("done", "c-1")]);
 	assert.deepEqual(wakes, []);
 });
 
@@ -118,15 +122,15 @@ test("a child that runs again or has ended takes no completion: the route refuse
 		await recorded(current, state, status);
 		const dispatcher = new AgentWakeDispatcher();
 		const wakes = wakeLog(dispatcher, ownerSessionId);
-		const holdMessages = sink.holdMessages;
-		assert.ok(holdMessages);
+		const holdNotices = sink.holdNotices;
+		assert.ok(holdNotices);
 
 		await assert.rejects(
-			releasedChildShellRoute(holdMessages, ownerSessionId, childId, dispatcher).deliver(completion("done", "c-1")),
+			releasedChildShellRoute(holdNotices, ownerSessionId, childId, dispatcher).deliver(completion("done", "c-1")),
 			(error: Error) => isReleasedChildError(error) && (error as { code?: string }).code === "completion-not-held",
 		);
 		await subagentChildRecordsAppended(ownerSessionId);
-		assert.equal(subagentChildRecordOf(ownerSessionId, childId)?.heldMessages, undefined);
+		assert.equal(subagentChildRecordOf(ownerSessionId, childId)?.heldNotices, undefined);
 		assert.deepEqual(wakes, []);
 	}
 });
@@ -135,10 +139,10 @@ test("a refused completion's hint says it waits for the child's next run, never 
 	const current = owner();
 	const { sink, ownerSessionId, childId } = current;
 	await recorded(current, "terminal", "ok");
-	const holdMessages = sink.holdMessages;
-	assert.ok(holdMessages);
+	const holdNotices = sink.holdNotices;
+	assert.ok(holdNotices);
 
-	const refusal = await releasedChildShellRoute(holdMessages, ownerSessionId, childId, new AgentWakeDispatcher())
+	const refusal = await releasedChildShellRoute(holdNotices, ownerSessionId, childId, new AgentWakeDispatcher())
 		.deliver(completion("done", "c-1"))
 		.then(
 			() => assert.fail("a child that has ended takes no completion"),
@@ -157,15 +161,15 @@ test("routing a released child's shell completions hands its runner the child's 
 	await recorded(current, "terminal", SUBAGENT_CHILD_RELEASED_STATUS);
 	const dispatcher = new AgentWakeDispatcher();
 	const wakes = wakeLog(dispatcher, ownerSessionId);
-	const holdMessages = sink.holdMessages;
-	assert.ok(holdMessages);
+	const holdNotices = sink.holdNotices;
+	assert.ok(holdNotices);
 	const routes: Array<
 		Parameters<NonNullable<Parameters<typeof routeReleasedChildShellCompletions>[0]["routeShellCompletions"]>>[0]
 	> = [];
 
 	routeReleasedChildShellCompletions(
 		{ routeShellCompletions: (route) => routes.push(route) > 0 },
-		holdMessages,
+		holdNotices,
 		ownerSessionId,
 		childId,
 		dispatcher,
@@ -179,7 +183,7 @@ test("routing a released child's shell completions hands its runner the child's 
 				throw new Error("the parent's task owner is closed");
 			},
 		},
-		holdMessages,
+		holdNotices,
 		ownerSessionId,
 		childId,
 		dispatcher,
