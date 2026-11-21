@@ -463,6 +463,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     # The output usually goes to a pipe or a file that an agent reads, in the ANSI code page on Windows:
-    # write UTF-8, one line at a time, so the URL can be read as soon as the server is up.
-    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
+    # write UTF-8, one line at a time, so the URL can be read as soon as the server is up. There is no
+    # output to set up under pythonw or with standard output closed; print() then writes nothing.
+    if sys.stdout is not None:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
     main()
