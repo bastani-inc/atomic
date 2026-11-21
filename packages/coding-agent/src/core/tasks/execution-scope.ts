@@ -1,10 +1,10 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { asyncScope } from "../async-scope.ts";
 import type { AgentTaskHost } from "./agent-adapter.js";
 import type { TaskId } from "./contracts.js";
 
 export type AdmittedAgentTask = { host: AgentTaskHost; taskId: TaskId };
 type TaskScope = { signal: AbortSignal; tasks: AdmittedAgentTask[] };
-const executionScope = new AsyncLocalStorage<TaskScope>();
+const executionScope = asyncScope<TaskScope>();
 
 /** Internal durable callback boundary; admission still belongs to the actual host. */
 export async function collectAgentTasks<T>(
