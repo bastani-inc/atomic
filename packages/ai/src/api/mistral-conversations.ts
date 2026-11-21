@@ -15,6 +15,7 @@ import type {
 } from "../types.ts";
 import { combineAbortSignals } from "../utils/abort-signals.ts";
 import { appendProviderResponseFailureDiagnostic, truncateErrorText } from "../utils/error-body.ts";
+import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
@@ -189,6 +190,7 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatMistralError(error);
 			appendProviderResponseFailureDiagnostic(output, error);
+			recordTlsCertificateRefusal(output, error, model.baseUrl);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();

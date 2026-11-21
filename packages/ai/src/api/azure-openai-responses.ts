@@ -7,6 +7,7 @@ import {
 	formatProviderError,
 	normalizeProviderError,
 } from "../utils/error-body.ts";
+import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
@@ -41,6 +42,15 @@ const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 
 function formatAzureOpenAIError(error: unknown): string {
 	return formatProviderError(normalizeProviderError(error), "Azure OpenAI API error");
+}
+
+/** The endpoint a request went to, or undefined when none is configured (the request then failed before it was sent). */
+function azureBaseUrl(model: Model<"azure-openai-responses">, options?: AzureEndpointOptions): string | undefined {
+	try {
+		return resolveAzureConfig(model, options).baseUrl;
+	} catch {
+		return undefined;
+	}
 }
 
 // Azure OpenAI Responses-specific options
@@ -157,6 +167,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatAzureOpenAIError(error);
 			appendProviderResponseFailureDiagnostic(output, error);
+			recordTlsCertificateRefusal(output, error, azureBaseUrl(model, options));
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();

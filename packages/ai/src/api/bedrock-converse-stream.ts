@@ -55,6 +55,7 @@ import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { type InlineImageMimeType, inlineImageMimeType, unsupportedImagePlaceholder } from "../utils/inline-images.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
+import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
@@ -422,6 +423,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				typeof error === "object" && error !== null ? getProviderRetryAfterMs(error) : undefined;
 			if (output.stopReason === "error") {
 				appendBedrockFailureDiagnostic(output, error, responseRequestId);
+				recordTlsCertificateRefusal(output, error, model.baseUrl);
 			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { join } from "node:path";
+import { Duplex } from "node:stream";
 import { inspect } from "node:util";
 import { afterEach, describe, test, vi } from "vitest";
-import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
+import { postgresSkipReason, postgresTestUrl, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
@@ -40,8 +42,8 @@ async function adapterWithAzureIdentity(issue: () => string) {
 		},
 	}));
 	vi.resetModules();
-	const { default: adapter } = await import("../../packages/storage-postgres/postgres.js");
-	return { adapter, requested: () => requested };
+	const module = await import("../../packages/storage-postgres/postgres.js");
+	return { adapter: module.default, openPostgresDatabase: module.openPostgresDatabase, requested: () => requested };
 }
 
 afterEach(() => {
@@ -112,6 +114,66 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres cloud IAM auth (#479
 					});
 					assert.deepEqual(await database.get("SELECT current_user AS who"), { who: role });
 					assert.equal(requested(), 2, "one fresh token after the refusal");
+				} finally {
+					await database.close();
+				}
+			} finally {
+				await admin.run("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = ?", role);
+				await admin.exec(`REVOKE ALL ON DATABASE ${name} FROM ${role}`).catch(() => {});
+				await admin.exec(`DROP ROLE IF EXISTS ${role}`).catch(() => {});
+			}
+		});
+	});
+
+	test("the reconnect after a refused token fails at once on a refused certificate, as the first connection does (#6112)", async () => {
+		await withPostgresDatabase(async ({ admin, url, name }) => {
+			const role = `${name}_tls`;
+			let token = "first-entra-token-fixture";
+			const { openPostgresDatabase } = await adapterWithAzureIdentity(() => token);
+			const server = new URL(postgresTestUrl!);
+			let connections = 0;
+			let refuseFrom = Number.POSITIVE_INFINITY;
+			try {
+				await admin.exec(`CREATE ROLE ${role} LOGIN PASSWORD '${token}'`);
+				await admin.exec(`GRANT CONNECT ON DATABASE ${name} TO ${role}`);
+				const roleUrl = new URL(url);
+				roleUrl.username = role;
+				const database = await openPostgresDatabase({
+					url: roleUrl.href,
+					auth: "azure-entra",
+					maxConnections: 1,
+					// Connections from `refuseFrom` on fail as a refused certificate fails them.
+					socket: () => {
+						connections++;
+						if (connections < refuseFrom) return connect(Number(server.port || 5432), server.hostname);
+						return new Duplex({
+							read() {},
+							write(_chunk, _encoding, callback) {
+								callback();
+								this.destroy(Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" }));
+							},
+						});
+					},
+				});
+				try {
+					assert.deepEqual(await database.get("SELECT current_user AS who"), { who: role });
+					// The cached token stops working, so the next connection is refused it and the adapter reconnects with a
+					// fresh one; that reconnect meets a refused certificate.
+					token = "second-entra-token-fixture";
+					await admin.exec(`ALTER ROLE ${role} PASSWORD '${token}'`);
+					await admin.run("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = ?", role);
+					await database.get("SELECT 1 AS one").catch((error: Error) => {
+						assert.equal((error as Error & { code?: string }).code, "connection-lost", inspect(error));
+					});
+					const refusedToken = connections + 1;
+					refuseFrom = refusedToken + 1;
+					const error = await database.get("SELECT current_user AS who").then(
+						() => assert.fail("the reconnect succeeded"),
+						(caught: Error) => caught,
+					);
+					const shown = inspect(error, { depth: null });
+					assert.ok(shown.includes("The server's TLS certificate was not accepted (CERT_HAS_EXPIRED: "), shown);
+					assert.equal(connections, refuseFrom, "the refused certificate was asked for again");
 				} finally {
 					await database.close();
 				}

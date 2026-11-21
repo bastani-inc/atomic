@@ -22,6 +22,18 @@ export const PROXY_ANSWER_TIMEOUT_MS: 8000;
 export const TLS_VERIFICATION_CODES: ReadonlySet<string>;
 
 /**
+ * The reasons, lowercase, OpenSSL and BoringSSL give for a refused certificate that Node and Bun report as
+ * `UNSPECIFIED`, a verification result outside their table.
+ */
+export const UNSPECIFIED_CERTIFICATE_REASONS: readonly string[];
+
+/**
+ * Whether TLS verification refused a certificate with `code`, whose message is `reason`: a code in
+ * `TLS_VERIFICATION_CODES`, or `UNSPECIFIED` with a reason in `UNSPECIFIED_CERTIFICATE_REASONS`.
+ */
+export function isRefusedCertificate(code: string, reason: string): boolean;
+
+/**
  * Whether a `NO_PROXY` value exempts `host` on `port`, as Atomic's HTTPS clients decide it: entries separated by commas
  * or white space; a host matches itself and its subdomains, `*.name` only subdomains, `*` every host; an entry with a
  * port matches that port only.

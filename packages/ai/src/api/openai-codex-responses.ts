@@ -27,6 +27,7 @@ import {
 	formatProviderError,
 	normalizeProviderError,
 } from "../utils/error-body.ts";
+import { findTlsCertificateRefusal, recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
@@ -393,6 +394,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							if (aborted || (isCodexNonTransportError(error) && !connectionLimitBeforeStart)) {
 								throw error;
 							}
+							// The SSE endpoint shows the same certificate: neither falls back nor remembers a fallback (#6114).
+							if (findTlsCertificateRefusal(error) !== undefined) throw error;
 							appendAssistantMessageDiagnostic(
 								output,
 								createAssistantMessageDiagnostic("provider_transport_failure", error, {
@@ -497,11 +500,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							}
 						}
 						lastError = error instanceof Error ? error : new Error(String(error));
-						// Network errors are retryable
+						// Network errors are retryable; a refused certificate is refused again (#6114).
 						if (
 							attempt < maxRetries &&
 							!(lastError instanceof RetryDelayExceededError) &&
-							!lastError.message.includes("usage limit")
+							!lastError.message.includes("usage limit") &&
+							findTlsCertificateRefusal(lastError) === undefined
 						) {
 							const delayMs = BASE_DELAY_MS * 2 ** attempt;
 							await sleep(delayMs, options?.signal);
@@ -581,6 +585,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			appendProviderResponseFailureDiagnostic(output, error);
+			recordTlsCertificateRefusal(output, error, model.baseUrl);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -1338,12 +1343,15 @@ async function acquireWebSocket(
 
 function extractWebSocketError(event: unknown): Error {
 	if (event && typeof event === "object") {
+		const nestedError = "error" in event ? (event as { error?: unknown }).error : undefined;
+		// Bun's event carries the refused certificate's code on its error only (#6114).
+		if (nestedError instanceof Error && findTlsCertificateRefusal(nestedError) !== undefined) return nestedError;
+
 		const message = "message" in event ? (event as { message?: unknown }).message : undefined;
 		if (typeof message === "string" && message.length > 0) {
 			return new Error(message);
 		}
 
-		const nestedError = "error" in event ? (event as { error?: unknown }).error : undefined;
 		if (nestedError instanceof Error && nestedError.message.length > 0) {
 			return nestedError;
 		}
