@@ -3210,9 +3210,15 @@ export class MultiNodeRouter {
 	/**
 	 * #4997: a reply to a session here that no route authorizes, here or in the shared state, while a broker that may
 	 * keep its ask's route is down, is refused as retryable rather than by the local path's final refusal. True when
-	 * the reply was answered.
+	 * the reply was answered. #5607: `decisionStartedAt` is when the lookup of its ask's route in the shared state
+	 * began (`adoptSharedRouteWithin`); both lookups together end within `PRESENCE_REGISTRATION_BOUND_MS` of it, so the
+	 * reply, and the next reply its sender queued behind it, are answered before the sender stops waiting.
 	 */
-	private async routeUnreachable(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<boolean> {
+	private async routeUnreachable(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+		decisionStartedAt: number,
+	): Promise<boolean> {
 		const replyTo = request.message.replyTo;
 		if (!request.requirePendingReply || replyTo === undefined) return false;
 		if (this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, replyTo)) return false;
@@ -3223,9 +3229,10 @@ export class MultiNodeRouter {
 		const elsewhere = this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false);
 		// A shared database that stops answering leaves the reply undecided: it is refused as retryable, once, within the
 		// bound, so neither it nor the sender's later replies wait on that database for good. It authorizes nothing.
+		const remainingMs = Math.max(0, decisionStartedAt + PRESENCE_REGISTRATION_BOUND_MS - performance.now());
 		let bound: ReturnType<typeof setTimeout> | undefined;
 		const expired = new Promise<"expired">((resolve) => {
-			bound = setTimeout(() => resolve("expired"), PRESENCE_REGISTRATION_BOUND_MS);
+			bound = setTimeout(() => resolve("expired"), remainingMs);
 			bound.unref?.();
 		});
 		try {
@@ -3627,11 +3634,12 @@ export class MultiNodeRouter {
 			const existing = await Promise.race([lookup, expired]);
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
+				const decisionStartedAt = performance.now();
 				const sending = await this.adoptSharedRouteWithin(request, target);
 				if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
 				// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
 				// the local path's final refusal just because the outbox lookup was slow.
-				if (await this.routeUnreachable(sending, target)) return;
+				if (await this.routeUnreachable(sending, target, decisionStartedAt)) return;
 				sending.notFound();
 				return;
 			}
@@ -3643,9 +3651,10 @@ export class MultiNodeRouter {
 			}
 			const moved = await Promise.race([released, expired]);
 			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
+			const decisionStartedAt = performance.now();
 			const sending = await this.adoptSharedRouteWithin(request, target);
 			if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
-			if (await this.routeUnreachable(sending, target)) return;
+			if (await this.routeUnreachable(sending, target, decisionStartedAt)) return;
 			sending.notFound();
 		} finally {
 			clearTimeout(bound);

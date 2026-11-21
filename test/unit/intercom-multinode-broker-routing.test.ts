@@ -1100,6 +1100,61 @@ test(
 	LOCAL_RETRY_LOOKUP_BOUND_MS + 2 * PRESENCE_REGISTRATION_BOUND_MS + 10_000,
 );
 
+test("a reply the shared database never decides is refused as retryable within one bound, before its sender stops waiting (#5607)", async () => {
+	vi.useFakeTimers({
+		toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"],
+	});
+	try {
+		const [a] = await cluster(1);
+		const asker = await a!.connect("asker");
+		const replier = await a!.connect("replier");
+		const { outbox, pendingAsks } = a!.opened.state;
+		// Whether the reply is a retry, its ask's route in the shared state, and whether that ask was answered: no
+		// answer until the end of the test, when they answer, late.
+		const stalled: Array<() => void> = [];
+		const stall =
+			<A extends unknown[], R>(read: (...args: A) => Promise<R>) =>
+			(...args: A) =>
+				new Promise<R>((resolve, reject) => stalled.push(() => read(...args).then(resolve, reject)));
+		const reads = {
+			outbox: { read: outbox.read.bind(outbox) },
+			pendingAsks: {
+				matchesReply: pendingAsks.matchesReply.bind(pendingAsks),
+				isSettled: pendingAsks.isSettled.bind(pendingAsks),
+			},
+		};
+		Object.assign(outbox, { read: stall(reads.outbox.read) });
+		Object.assign(pendingAsks, {
+			matchesReply: stall(reads.pendingAsks.matchesReply),
+			isSettled: stall(reads.pendingAsks.isSettled),
+		});
+		cleanups.push(async () => {
+			Object.assign(outbox, reads.outbox);
+			Object.assign(pendingAsks, reads.pendingAsks);
+			for (const answer of stalled.splice(0)) answer();
+		});
+
+		const reply = message({ replyTo: randomUUID(), content: { text: "answer" } });
+		a!.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+		const stepMs = 100;
+		const refused = await advanceUntil(() => outcomeOf(replier, reply.id), SEND_RESPONSE_TIMEOUT_MS, stepMs);
+		assert.ok(refused !== undefined, "the reply was answered only after its sender stopped waiting");
+		assert.equal(
+			refused.value.type === "delivery_failed" && refused.value.routeUnavailable,
+			true,
+			reasonOf(refused.value),
+		);
+		// The retry lookup's bound, then one bound for both lookups of the ask's route.
+		assert.ok(
+			refused.elapsedMs <= LOCAL_RETRY_LOOKUP_BOUND_MS + PRESENCE_REGISTRATION_BOUND_MS + stepMs,
+			`answered ${refused.elapsedMs} ms after it was sent`,
+		);
+		assert.deepEqual(messageFrames(asker, reply.id), []);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 test("a same-id retry of a message delivered locally is not delivered again after its recipient moves to another broker", async () => {
 	const [a, b] = await cluster();
 	const sender = await a!.connect("sender");
