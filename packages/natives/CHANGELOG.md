@@ -6,6 +6,7 @@
 
 - `signalIgnored(signal)`: whether this process ignores a signal, as a process started under `nohup` ignores `SIGHUP`; `null` on Windows ([#6178](https://github.com/bastani-inc/atomic/pull/6178)).
 - `watchSessionEnd(onEnd)`: on Windows, a hidden top-level window that hears the end of the user's session (sign-out, restart or shutdown), calls `onEnd` with how many milliseconds ago Windows said so, and keeps Windows waiting while the process shuts down: until `onEnd` returns false, the process exits, or 4.5 seconds have passed. Elsewhere it does nothing ([#6187](https://github.com/bastani-inc/atomic/pull/6187)).
+- `startHostProcess` takes `endWithParent`: the process gets `SIGKILL` when the process that started it ends, however it ends; not the processes it starts.
 - `terminateProcessCreatedAt(pid, created, descendants)`: on Windows, ends the running process `pid` only if it was created at `created`, as `processCreationTime` reads it, and with `descendants` what it started, each through a handle checked before anything is ended; `null` when `pid` names no such process, and off Windows.
 
 ## [0.10.1] - 2026-11-20

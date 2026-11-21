@@ -322,6 +322,8 @@ interface AutocompleteRequestOptions {
 	force: boolean;
 	explicitTab: boolean;
 	catalogRetry?: boolean;
+	/** An edit continues a menu not shown yet (its answer was held for the render): the menu goes on while this runs. */
+	continued?: boolean;
 }
 
 interface LayoutLine {
@@ -357,6 +359,22 @@ const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 };
 
 const ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS = 20;
+/**
+ * How long a lookup waits for the provider call of the lookup it replaced to end. A provider that ignores the abort
+ * signal holds the next lookup no longer than this.
+ */
+const REPLACED_LOOKUP_GRACE_MS = 100;
+/** The keys that act on an open completion menu, or on its absence (Enter submits, Up and Down browse history). */
+const MENU_KEYS: readonly Keybinding[] = [
+	"tui.select.cancel",
+	"tui.select.up",
+	"tui.select.down",
+	"tui.select.pageUp",
+	"tui.select.pageDown",
+	"tui.select.confirm",
+	"tui.input.tab",
+	"tui.input.submit",
+];
 const DEFAULT_AUTOCOMPLETE_TRIGGER_CHARACTERS = ["@", "#"];
 // Unquoted completions end at whitespace or CJK punctuation; quoted paths may contain either.
 const unquotedAutocompleteSuffixRegex = new RegExp(`(?:(?!${autocompleteSeparatorRegex.source}).)*`, "u");
@@ -400,19 +418,63 @@ function createScrollBorder(direction: "↑" | "↓", hiddenLineCount: number, w
 	return sliceByColumn(indicator, 0, indicatorWidth, true) + ellipsis;
 }
 
-/** A lookup that offers an open command menu the commands of a provider that replaced the one it came from. */
-interface CommandMenuRefresh {
+/** The text and cursor a lookup asked about. */
+interface LookupQuery {
+	readonly text: string;
+	readonly line: number;
+	readonly col: number;
+}
+
+/**
+ * A lookup's answer, held until the editor next renders. Until then the keys act on the menu as it was drawn while that
+ * menu answers the text and cursor; a key that would act on a menu drawn for other text takes this answer first.
+ */
+interface HeldAnswer {
+	readonly query: LookupQuery;
+	readonly provider: AutocompleteProvider;
+	readonly force: boolean;
+	/** Its menu, built when it came, or undefined when it found nothing (or failed): the menu closes. */
+	readonly menu: PreparedMenu | undefined;
+	readonly options: AutocompleteRequestOptions;
+}
+
+/** A menu built from a lookup's rows, its first match selected, ready to show. */
+interface PreparedMenu {
+	readonly list: SelectList;
+	readonly prefix: string;
+	readonly completeOnConfirm: boolean;
+}
+
+/** A provider call that a later lookup waits for: until it ends, or for the grace period after the first wait. */
+interface ProviderCall {
+	ended: boolean;
+	readonly end: Promise<void>;
+	free?: Promise<void>;
+}
+
+function freeOf(call: ProviderCall): Promise<void> {
+	if (call.free === undefined) {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const grace = new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, REPLACED_LOOKUP_GRACE_MS);
+			timer.unref?.();
+		});
+		call.free = Promise.race([call.end, grace]).finally(() => clearTimeout(timer));
+	}
+	return call.free;
+}
+
+/**
+ * A lookup the editor starts on its own when the provider is replaced: for an open menu nothing was chosen in, or for
+ * text whose lookup found nothing. It runs beside the editor's own lookups and never delays them.
+ */
+interface MenuRefresh {
 	readonly abort: AbortController;
 	/** What the provider's promise reaches the editor through; let go when the lookup is. */
 	readonly route: CommandMenuRoute;
 	readonly provider: AutocompleteProvider;
-	/** The menu, text and cursor the lookup is for. */
-	readonly list: SelectList;
-	readonly text: string;
-	readonly line: number;
-	readonly col: number;
-	/** Its answer, shown when the editor next renders, if the menu is still the one it is for then. */
-	staged?: AutocompleteSuggestions;
+	readonly query: LookupQuery;
+	readonly options: AutocompleteRequestOptions;
 }
 
 /**
@@ -452,6 +514,13 @@ function plainSuggestions(suggestions: AutocompleteSuggestions | null): Autocomp
 	}
 }
 
+/** A lookup's rows, read once when it answers, or undefined when it has none. */
+function rowsOf(suggestions: AutocompleteSuggestions | null): AutocompleteSuggestions | undefined {
+	if (!suggestions || !Array.isArray(suggestions.items) || suggestions.items.length === 0) return undefined;
+	const { prefix, completeOnConfirm } = suggestions;
+	return { items: [...suggestions.items], prefix, ...(completeOnConfirm === undefined ? {} : { completeOnConfirm }) };
+}
+
 /** Holds the editor only weakly, and not at all once the lookup is let go: a promise that never settles keeps nothing. */
 interface CommandMenuRoute {
 	editor?: WeakRef<Editor>;
@@ -469,7 +538,7 @@ export class Editor implements Component, Focusable {
 
 	/** The open autocomplete menu receives fullscreen viewport keys, such as PageUp/PageDown. */
 	get capturesViewportInput(): boolean {
-		return this.autocompleteState !== null;
+		return this.isShowingAutocomplete();
 	}
 
 	protected tui: TUI;
@@ -505,12 +574,23 @@ export class Editor implements Component, Focusable {
 	/** The user chose the open menu's selected row (keys, wheel or pointer), rather than taking its first match. */
 	private autocompleteSelectionChosen = false;
 	private menuProvider?: AutocompleteProvider;
-	/** A lookup that offers an open command menu a replaced provider's commands (see setAutocompleteProvider). */
-	private menuRefresh?: CommandMenuRefresh;
+	/** The text and cursor the open menu's rows answer. */
+	private menuQuery?: LookupQuery;
+	/** A lookup that offers an open menu a replaced provider's rows (see setAutocompleteProvider). */
+	private menuRefresh?: MenuRefresh;
+	/** The latest answer, shown at the next render. */
+	private heldAnswer?: HeldAnswer;
+	/** The menu the last render drew, which a pointer press or click acts on. */
+	private paintedList?: SelectList;
+	/** The menu a press chose in, or "declined" when the press chose nothing: its click does the same. */
+	private pressedList?: SelectList | "declined";
+	/** While a key is handled, the menu an edit continues (see menuForEdit), fixed before the edit changes the text. */
+	private editMenuState?: "regular" | "force" | null;
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
-	private autocompleteRequestTask: Promise<void> = Promise.resolve();
+	/** The latest provider call of the editor's own lookups, until it ends. */
+	private providerCall?: ProviderCall;
 	private pendingAutocomplete?: AutocompleteRequestOptions;
 	private emptyAutocomplete?: { text: string; line: number; col: number; options: AutocompleteRequestOptions };
 	private autocompleteStartToken: number = 0;
@@ -602,33 +682,32 @@ export class Editor implements Component, Focusable {
 		options?: {
 			preserveSelection?: boolean;
 			/**
-			 * With `preserveSelection`: an open menu of command names whose first match is still selected asks `provider` for
-			 * the same text and shows its answer. A choice made in the menu, an answer that fails or comes too late, keeps the
-			 * menu as it was.
+			 * With `preserveSelection`: an open menu in which nothing was chosen asks `provider` for the same text and shows its
+			 * answer. A choice made in the menu, an answer that fails, finds nothing or comes too late, keeps the menu as it
+			 * was.
 			 */
-			refreshCommandMenu?: boolean;
+			refreshMenu?: boolean;
 		},
 	): void {
-		// A painted menu owns its rows and the provider that offered them. If no menu has opened yet, a still-current
-		// lookup (including an empty result) can open one using the newly available commands and the original Tab intent.
 		this.cancelMenuRefresh();
-		if (options?.preserveSelection && options.refreshCommandMenu && provider !== this.autocompleteProvider)
-			this.refreshCommandMenu(provider);
-		const empty = this.emptyAutocomplete;
-		const retry =
-			options?.preserveSelection &&
-			!this.autocompleteState &&
-			(this.pendingAutocomplete ??
-				(empty &&
-				empty.line === this.state.cursorLine &&
-				empty.col === this.state.cursorCol &&
-				empty.text === this.getText()
-					? empty.options
-					: undefined));
-		if (!options?.preserveSelection) this.cancelAutocomplete();
+		if (!options?.preserveSelection) {
+			this.cancelAutocomplete();
+			this.autocompleteProvider = provider;
+			this.setAutocompleteTriggerCharacters(provider.triggerCharacters ?? []);
+			return;
+		}
+		// A lookup still waiting is asked again of `provider`, keeping the original Tab intent. Otherwise an open menu keeps
+		// its rows and the provider that offered them, and asks `provider` for the same text; with no menu open, text whose
+		// lookup found nothing is asked about again.
+		// The menu the keys would act on now is the one the new provider is asked about.
+		this.settleForKeys();
+		const pending = this.pendingAutocomplete;
+		const missed = pending || this.autocompleteState ? undefined : this.currentMiss();
+		if (!pending && !missed && options.refreshMenu) this.refreshOpenMenu(provider);
 		this.autocompleteProvider = provider;
 		this.setAutocompleteTriggerCharacters(provider.triggerCharacters ?? []);
-		if (retry) this.requestAutocomplete({ ...retry, catalogRetry: true });
+		if (pending) this.requestAutocomplete({ ...pending, catalogRetry: true });
+		else if (missed) this.startMenuRefresh(provider, { ...missed, catalogRetry: true });
 	}
 
 	private renderAutocompleteHint(width: number): string | undefined {
@@ -834,7 +913,9 @@ export class Editor implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
-		this.showMenuRefresh();
+		this.showHeldAnswer();
+		if (this.menuForKeys() === "close") this.clearAutocompleteUi();
+		this.paintedList = this.autocompleteState ? this.autocompleteList : undefined;
 		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
 		const paddingX = Math.min(this.paddingX, maxPadding);
 		const contentWidth = Math.max(1, width - paddingX * 2);
@@ -957,10 +1038,30 @@ export class Editor implements Component, Focusable {
 			event.y >= autocompleteStartRow &&
 			event.y < autocompleteStartRow + this.renderedAutocompleteHeight
 		) {
+			const choosing = event.button === "left" && (event.type === "press" || event.type === "click");
+			if (choosing) {
+				// A press acts on the rows drawn under the pointer, and its click on the rows it pressed: never on rows that
+				// took their place since, nor on drawn rows the text typed since has newer rows for.
+				const list = this.autocompleteList;
+				const pressed = this.pressedList;
+				if (event.type === "click") this.pressedList = undefined;
+				if (
+					list !== this.paintedList ||
+					this.menuForKeys() !== "screen" ||
+					(event.type === "click" && pressed !== undefined && pressed !== list)
+				) {
+					if (event.type === "press") this.pressedList = "declined";
+					return { handled: true, focus: true };
+				}
+			} else if (event.type === "wheel" && this.menuForKeys() !== "screen") {
+				this.settleForKeys();
+				if (!this.autocompleteState || !this.autocompleteList) return { handled: true, focus: true };
+			}
+			const list = this.autocompleteList;
 			const maxPadding = Math.max(0, Math.floor((event.width - 1) / 2));
 			const paddingX = Math.min(this.paddingX, maxPadding);
 			const contentWidth = Math.max(1, event.width - paddingX * 2);
-			const result = this.autocompleteList.handleMouse?.({
+			const result = list.handleMouse?.({
 				...event,
 				x: event.x - paddingX,
 				y: event.y - autocompleteStartRow,
@@ -968,6 +1069,7 @@ export class Editor implements Component, Focusable {
 				height: this.renderedAutocompleteHeight,
 			});
 			if (result?.handled) this.autocompleteSelectionChosen = true;
+			if (choosing && event.type === "press") this.pressedList = result?.handled ? list : undefined;
 			return result ? { ...result, focus: true } : undefined;
 		}
 
@@ -1015,7 +1117,19 @@ export class Editor implements Component, Focusable {
 
 	handleInput(data: string): void {
 		const kb = getKeybindings();
+		// A menu key acts on the menu as it was drawn while that menu answers the prompt's text, and otherwise on what the
+		// prompt's text has now (see menuForKeys). An edit continues the menu the keys would act on, without showing it.
+		if (MENU_KEYS.some((key) => kb.matches(data, key))) this.settleForKeys();
+		const outer = this.editMenuState;
+		this.editMenuState = this.menuForEdits();
+		try {
+			this.handleKey(data, kb);
+		} finally {
+			this.editMenuState = outer;
+		}
+	}
 
+	private handleKey(data: string, kb: ReturnType<typeof getKeybindings>): void {
 		if (!this.autocompleteState && kb.matches(data, "tui.select.cancel")) this.dismissEmptyAutocomplete();
 
 		// Handle character jump mode (awaiting next character to jump to)
@@ -1581,7 +1695,7 @@ export class Editor implements Component, Focusable {
 		}
 
 		// Check if we should trigger or update autocomplete
-		if (!this.autocompleteState) {
+		if (!this.menuForEdit()) {
 			// Auto-trigger for "/" at the start of a line (slash commands)
 			if (char === "/" && this.isAtStartOfMessage()) {
 				this.tryTriggerAutocomplete();
@@ -1781,7 +1895,7 @@ export class Editor implements Component, Focusable {
 		}
 
 		// Update or re-trigger autocomplete after backspace
-		if (this.autocompleteState) {
+		if (this.menuForEdit()) {
 			this.updateAutocomplete();
 		} else {
 			// If autocomplete was cancelled (no matches), re-trigger if we're in a completable context
@@ -2146,7 +2260,7 @@ export class Editor implements Component, Focusable {
 		}
 
 		// Update or re-trigger autocomplete after forward delete
-		if (this.autocompleteState) {
+		if (this.menuForEdit()) {
 			this.updateAutocomplete();
 		} else {
 			const currentLine = this.state.lines[this.state.cursorLine] || "";
@@ -2291,7 +2405,7 @@ export class Editor implements Component, Focusable {
 		// left from `/cmd ` back into the command name leaves the argument
 		// picker showing against a `/cmd` prefix (and a Tab there would
 		// concatenate the stale suggestion onto the partial command name).
-		if (this.autocompleteState) {
+		if (this.menuForEdit()) {
 			this.updateAutocomplete();
 		}
 	}
@@ -2660,39 +2774,38 @@ export class Editor implements Component, Focusable {
 		options: AutocompleteRequestOptions,
 		provider: AutocompleteProvider,
 	): Promise<void> {
-		const previousTask = this.autocompleteRequestTask;
-		this.autocompleteRequestTask = (async () => {
-			await previousTask;
-			if (startToken !== this.autocompleteStartToken || !this.autocompleteProvider) {
-				return;
-			}
+		// The provider call of a lookup this one replaced was asked to stop: wait for it to end, but never long for one
+		// that ignores the request. A lookup replaced in turn while it waits never calls its provider.
+		const previous = this.providerCall;
+		await (previous && !previous.ended ? freeOf(previous) : undefined);
+		if (startToken !== this.autocompleteStartToken || !this.autocompleteProvider) {
+			return;
+		}
 
-			const controller = new AbortController();
-			this.autocompleteAbort = controller;
-			const requestId = ++this.autocompleteRequestId;
-			const snapshotText = this.getText();
-			const snapshotLine = this.state.cursorLine;
-			const snapshotCol = this.state.cursorCol;
+		const controller = new AbortController();
+		this.autocompleteAbort = controller;
+		const requestId = ++this.autocompleteRequestId;
+		const snapshotText = this.getText();
+		const snapshotLine = this.state.cursorLine;
+		const snapshotCol = this.state.cursorCol;
 
-			try {
-				await this.runAutocompleteRequest(
-					requestId,
-					controller,
-					snapshotText,
-					snapshotLine,
-					snapshotCol,
-					options,
-					provider,
-				);
-			} catch (error) {
-				// A lookup the replacement of a provider started on its own leaves the prompt as it was when it fails, and
-				// the lookups after it still run.
-				if (!options.catalogRetry) throw error;
-			} finally {
-				if (startToken === this.autocompleteStartToken) this.pendingAutocomplete = undefined;
-			}
-		})();
-		await this.autocompleteRequestTask;
+		try {
+			await this.runAutocompleteRequest(
+				requestId,
+				controller,
+				snapshotText,
+				snapshotLine,
+				snapshotCol,
+				options,
+				provider,
+			);
+		} catch (error) {
+			// A lookup the replacement of a provider started on its own leaves the prompt as it was when applying its answer
+			// fails, and the lookups after it still run.
+			if (!options.catalogRetry) throw error;
+		} finally {
+			if (startToken === this.autocompleteStartToken) this.pendingAutocomplete = undefined;
+		}
 	}
 
 	private setAutocompleteTriggerCharacters(triggerCharacters: string[]): void {
@@ -2727,45 +2840,87 @@ export class Editor implements Component, Focusable {
 		options: AutocompleteRequestOptions,
 		provider: AutocompleteProvider,
 	): Promise<void> {
-		const suggestions = await provider.getSuggestions(this.state.lines, this.state.cursorLine, this.state.cursorCol, {
-			signal: controller.signal,
-			force: options.force,
-		});
+		let lookup: Promise<AutocompleteSuggestions | null>;
+		try {
+			lookup = Promise.resolve(
+				provider.getSuggestions(this.state.lines, this.state.cursorLine, this.state.cursorCol, {
+					signal: controller.signal,
+					force: options.force,
+				}),
+			);
+		} catch (error) {
+			lookup = Promise.reject(error);
+		}
+		const call: ProviderCall = {
+			ended: false,
+			end: lookup.then(
+				() => {
+					call.ended = true;
+				},
+				() => {
+					call.ended = true;
+				},
+			),
+		};
+		this.providerCall = call;
+		// A lookup that fails finds nothing.
+		let answer: AutocompleteSuggestions | null;
+		try {
+			answer = await lookup;
+		} catch {
+			answer = null;
+		}
 
 		if (!this.isAutocompleteRequestCurrent(requestId, controller, snapshotText, snapshotLine, snapshotCol)) {
 			return;
 		}
 
 		this.autocompleteAbort = undefined;
-
-		if (!suggestions || !Array.isArray(suggestions.items) || suggestions.items.length === 0) {
-			this.cancelAutocomplete();
-			this.emptyAutocomplete = { text: snapshotText, line: snapshotLine, col: snapshotCol, options };
-			this.tui.requestRender();
-			return;
+		let suggestions: AutocompleteSuggestions | undefined;
+		let menu: PreparedMenu | undefined;
+		try {
+			suggestions = rowsOf(answer);
+		} catch {
+			suggestions = undefined;
 		}
 
-		if (options.force && options.explicitTab && suggestions.items.length === 1) {
-			const item = suggestions.items[0]!;
-			this.pushUndoSnapshot();
-			this.lastAction = null;
-			const result = provider.applyCompletion(
-				this.state.lines,
-				this.state.cursorLine,
-				this.state.cursorCol,
-				item,
-				suggestions.prefix,
-			);
-			this.state.lines = result.lines;
-			this.state.cursorLine = result.cursorLine;
-			this.setCursorCol(result.cursorCol);
-			if (this.onChange) this.onChange(this.getText());
-			this.tui.requestRender();
+		if (suggestions && options.force && options.explicitTab && suggestions.items.length === 1) {
+			this.applyOnlyRow(provider, suggestions);
 			return;
 		}
+		// The rows are read now, while the provider's data is current; a row that cannot be read is a failed lookup.
+		try {
+			menu = suggestions && this.prepareMenu(suggestions);
+		} catch {
+			menu = undefined;
+		}
 
-		this.menuProvider = provider;
-		this.applyAutocompleteSuggestions(suggestions, options);
+		this.heldAnswer = {
+			query: { text: snapshotText, line: snapshotLine, col: snapshotCol },
+			provider,
+			force: options.force,
+			menu,
+			options,
+		};
+		this.tui.requestRender();
+	}
+
+	/** Inserts an explicit Tab's only match. */
+	private applyOnlyRow(provider: AutocompleteProvider, suggestions: AutocompleteSuggestions): void {
+		const item = suggestions.items[0]!;
+		this.pushUndoSnapshot();
+		this.lastAction = null;
+		const result = provider.applyCompletion(
+			this.state.lines,
+			this.state.cursorLine,
+			this.state.cursorCol,
+			item,
+			suggestions.prefix,
+		);
+		this.state.lines = result.lines;
+		this.state.cursorLine = result.cursorLine;
+		this.setCursorCol(result.cursorCol);
+		if (this.onChange) this.onChange(this.getText());
 		this.tui.requestRender();
 	}
 
@@ -2785,59 +2940,122 @@ export class Editor implements Component, Focusable {
 		);
 	}
 
-	private applyAutocompleteSuggestions(
-		suggestions: AutocompleteSuggestions,
-		options: AutocompleteRequestOptions,
-	): void {
-		this.autocompletePrefix = suggestions.prefix;
-		this.autocompleteCompleteOnConfirm = suggestions.completeOnConfirm !== false;
+	/** Builds the menu for a lookup's rows with its first match selected. */
+	private prepareMenu(suggestions: AutocompleteSuggestions): PreparedMenu {
+		const list = this.createAutocompleteList(suggestions.prefix, suggestions.items);
+		const bestMatchIndex = this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
+		if (bestMatchIndex >= 0) list.setSelectedIndex(bestMatchIndex);
+		return { list, prefix: suggestions.prefix, completeOnConfirm: suggestions.completeOnConfirm !== false };
+	}
+
+	private showMenu(menu: PreparedMenu, force: boolean, query: LookupQuery): void {
+		this.autocompletePrefix = menu.prefix;
+		this.autocompleteCompleteOnConfirm = menu.completeOnConfirm;
 		this.autocompleteSelectionMoved = false;
 		this.autocompleteSelectionChosen = false;
-		this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
-		const bestMatchIndex = this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
-		if (bestMatchIndex >= 0) this.autocompleteList.setSelectedIndex(bestMatchIndex);
+		this.autocompleteList = menu.list;
+		this.menuQuery = query;
+		this.emptyAutocomplete = undefined;
 
-		this.autocompleteState = options.force ? "force" : "regular";
+		this.autocompleteState = force ? "force" : "regular";
 	}
 
 	protected dismissEmptyAutocomplete(): void {
 		this.emptyAutocomplete = undefined;
-		if (this.pendingAutocomplete?.catalogRetry && !this.autocompleteState) this.cancelAutocompleteRequest();
+		this.heldAnswer = undefined;
+		this.cancelMenuRefresh();
+		// Esc stops a lookup the editor started on its own, or one that continues a menu not shown yet (as it closes that
+		// menu when answers show the moment they come).
+		const pending = this.pendingAutocomplete;
+		if ((pending?.catalogRetry || pending?.continued) && !this.autocompleteState) this.cancelAutocompleteRequest();
+	}
+
+	private isCurrentQuery(query: LookupQuery): boolean {
+		return (
+			this.getText() === query.text && this.state.cursorLine === query.line && this.state.cursorCol === query.col
+		);
+	}
+
+	/** The text whose lookup found nothing, while the prompt still holds it. */
+	private currentMiss(): AutocompleteRequestOptions | undefined {
+		const empty = this.emptyAutocomplete;
+		return empty && this.isCurrentQuery(empty) ? empty.options : undefined;
+	}
+
+	/** Whether the menu as it stands (open, or closed after a lookup that found nothing) answers the prompt's text. */
+	private menuAnswersPrompt(): boolean {
+		if (this.autocompleteState) return this.menuQuery !== undefined && this.isCurrentQuery(this.menuQuery);
+		return this.currentMiss() !== undefined;
 	}
 
 	/**
-	 * Asks `provider` for the open command menu's text, off the queue of the editor's own lookups so that a slow answer
-	 * holds none of them. Only a list of commands for unchanged text is kept; any other answer, a thrown error or a
-	 * rejection leaves the menu as it is.
+	 * What the menu keys act on now. While the menu as it stands answers the prompt's text, the menu as it was drawn
+	 * ("screen"), and an answer that came since waits for the render. Otherwise an answer for the prompt's text that came
+	 * ("held"), or, when an open menu answers other text and no lookup will answer the prompt's text, no menu ("close"),
+	 * as when answers showed the moment they came. While a lookup is under way the menu as drawn stays ("screen").
 	 */
-	private refreshCommandMenu(provider: AutocompleteProvider): void {
-		const list = this.autocompleteList;
-		const line = this.state.cursorLine;
-		const col = this.state.cursorCol;
-		const beforeCursor = (this.state.lines[line] ?? "").slice(0, col);
-		if (
-			this.autocompleteState !== "regular" ||
-			!list ||
-			this.autocompleteSelectionChosen ||
-			!this.autocompletePrefix.startsWith("/") ||
-			!this.isInSlashCommandContext(beforeCursor) ||
-			/\s/.test(beforeCursor.trimStart())
-		)
+	private menuForKeys(): "screen" | "held" | "close" {
+		if (this.menuAnswersPrompt()) return "screen";
+		const held = this.heldAnswer;
+		if (held && this.isCurrentQuery(held.query)) return "held";
+		if (this.autocompleteState && !this.pendingAutocomplete) return "close";
+		return "screen";
+	}
+
+	/** Shows what the menu keys act on now (see menuForKeys). */
+	private settleForKeys(): void {
+		const menu = this.menuForKeys();
+		if (menu === "held") this.showHeldAnswer();
+		else if (menu === "close") this.clearAutocompleteUi();
+	}
+
+	/**
+	 * Shows the held answer: the rows it found, re-ranked, or no menu when it found nothing. An answer for text the prompt
+	 * no longer holds is dropped, as is one for the text of an open menu in which a row was chosen: the choice keeps the
+	 * menu and the provider that offered it.
+	 */
+	private showHeldAnswer(): void {
+		const held = this.heldAnswer;
+		if (!held) return;
+		this.heldAnswer = undefined;
+		if (!this.isCurrentQuery(held.query)) return;
+		if (this.autocompleteState && this.autocompleteSelectionChosen && this.menuAnswersPrompt()) return;
+		if (!held.menu) {
+			this.cancelAutocomplete();
+			this.emptyAutocomplete = { ...held.query, options: held.options };
 			return;
-		const refresh: CommandMenuRefresh = {
+		}
+		this.menuProvider = held.provider;
+		this.showMenu(held.menu, held.force, held.query);
+	}
+
+	/**
+	 * Asks `provider` for the open menu's text, off the queue of the editor's own lookups so that a slow answer holds none
+	 * of them. Only rows for unchanged text are kept; any other answer, a thrown error or a rejection leaves the menu as it
+	 * is.
+	 */
+	private refreshOpenMenu(provider: AutocompleteProvider): void {
+		if (!this.autocompleteState || !this.autocompleteList || this.autocompleteSelectionChosen) return;
+		this.startMenuRefresh(provider, { force: this.autocompleteState === "force", explicitTab: false });
+	}
+
+	private startMenuRefresh(provider: AutocompleteProvider, options: AutocompleteRequestOptions): void {
+		const query = { text: this.getText(), line: this.state.cursorLine, col: this.state.cursorCol };
+		const refresh: MenuRefresh = {
 			abort: new AbortController(),
 			route: { editor: new WeakRef(this) },
 			provider,
-			list,
-			text: this.getText(),
-			line,
-			col,
+			query,
+			options,
 		};
 		this.menuRefresh = refresh;
 		let lookup: Promise<AutocompleteSuggestions | null>;
 		try {
 			lookup = Promise.resolve(
-				provider.getSuggestions(this.state.lines, line, col, { signal: refresh.abort.signal, force: false }),
+				provider.getSuggestions(this.state.lines, query.line, query.col, {
+					signal: refresh.abort.signal,
+					force: options.force,
+				}),
 			);
 		} catch {
 			this.cancelMenuRefresh();
@@ -2858,38 +3076,22 @@ export class Editor implements Component, Focusable {
 		const refresh = this.menuRefresh;
 		if (refresh?.route !== route) return;
 		route.editor = undefined;
-		const answer = this.isMenuRefreshCurrent(refresh) ? plainSuggestions(suggestions) : undefined;
-		if (!answer) {
-			this.menuRefresh = undefined;
+		this.menuRefresh = undefined;
+		const answer = this.isCurrentQuery(refresh.query) ? plainSuggestions(suggestions) : undefined;
+		if (!answer) return;
+		const { options } = refresh;
+		if (!this.autocompleteState && options.force && options.explicitTab && answer.items.length === 1) {
+			this.applyOnlyRow(refresh.provider, answer);
 			return;
 		}
-		refresh.staged = answer;
+		this.heldAnswer = {
+			query: refresh.query,
+			provider: refresh.provider,
+			force: options.force,
+			menu: this.prepareMenu(answer),
+			options,
+		};
 		this.tui.requestRender();
-	}
-
-	/** Whether the menu, its text and its cursor are as they were when `refresh` began, with nothing chosen in it. */
-	private isMenuRefreshCurrent(refresh: CommandMenuRefresh): boolean {
-		return (
-			this.menuRefresh === refresh &&
-			this.autocompleteState === "regular" &&
-			this.autocompleteList === refresh.list &&
-			!this.autocompleteSelectionChosen &&
-			this.getText() === refresh.text &&
-			this.state.cursorLine === refresh.line &&
-			this.state.cursorCol === refresh.col
-		);
-	}
-
-	/** Shows a staged command menu refresh while its menu is still the one painted and nothing in it was chosen. */
-	private showMenuRefresh(): void {
-		const refresh = this.menuRefresh;
-		const staged = refresh?.staged;
-		if (!refresh || !staged) return;
-		const current = this.isMenuRefreshCurrent(refresh);
-		this.menuRefresh = undefined;
-		if (!current) return;
-		this.menuProvider = refresh.provider;
-		this.applyAutocompleteSuggestions(staged, { force: false, explicitTab: false });
 	}
 
 	private cancelMenuRefresh(): void {
@@ -2900,9 +3102,10 @@ export class Editor implements Component, Focusable {
 		refresh.abort.abort();
 	}
 
+	/** Stops the lookups under way. A lookup that found nothing stays recorded: it tells what the menu shows. */
 	private cancelAutocompleteRequest(): void {
 		this.cancelMenuRefresh();
-		this.emptyAutocomplete = undefined;
+		this.heldAnswer = undefined;
 		this.pendingAutocomplete = undefined;
 		this.autocompleteStartToken += 1;
 		if (this.autocompleteDebounceTimer) {
@@ -2920,19 +3123,53 @@ export class Editor implements Component, Focusable {
 		this.autocompleteCompleteOnConfirm = true;
 		this.autocompleteSelectionMoved = false;
 		this.menuProvider = undefined;
+		this.menuQuery = undefined;
 	}
 
 	private cancelAutocomplete(): void {
 		this.cancelAutocompleteRequest();
+		this.emptyAutocomplete = undefined;
 		this.clearAutocompleteUi();
 	}
 
+	/** Whether the next menu key acts on an open menu (see menuForKeys). */
 	public isShowingAutocomplete(): boolean {
-		return this.autocompleteState !== null;
+		switch (this.menuForKeys()) {
+			case "held":
+				return this.heldAnswer?.menu !== undefined;
+			case "close":
+				return false;
+			default:
+				return this.autocompleteState !== null;
+		}
 	}
 
 	private updateAutocomplete(): void {
-		if (!this.autocompleteState || !this.autocompleteProvider) return;
-		this.requestAutocomplete({ force: this.autocompleteState === "force", explicitTab: false });
+		const menu = this.menuForEdit();
+		if (!menu || !this.autocompleteProvider) return;
+		this.requestAutocomplete({
+			force: menu === "force",
+			explicitTab: false,
+			...(this.autocompleteState ? {} : { continued: true }),
+		});
+	}
+
+	/** The menu an edit continues: the one the menu keys act on (see menuForKeys), as when answers showed at once. */
+	private menuForEdit(): "regular" | "force" | null {
+		return this.editMenuState !== undefined ? this.editMenuState : this.autocompleteState;
+	}
+
+	/**
+	 * The menu an edit continues, as when answers showed the moment they came: the answer that came for the text before
+	 * the edit, else no menu where an open one answers other text and nothing is coming, else the open menu, else one
+	 * an earlier edit continued while its lookup runs.
+	 */
+	private menuForEdits(): "regular" | "force" | null {
+		const held = this.heldAnswer;
+		if (held && this.isCurrentQuery(held.query)) return held.menu ? (held.force ? "force" : "regular") : null;
+		if (this.menuForKeys() === "close") return null;
+		if (this.autocompleteState) return this.autocompleteState;
+		const pending = this.pendingAutocomplete;
+		return pending?.continued ? (pending.force ? "force" : "regular") : null;
 	}
 }
