@@ -62,10 +62,9 @@ export default (pi) => {
 			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild], fixture.execTimeoutMs === undefined ? {} : { timeout: fixture.execTimeoutMs });
 		}
 		if (fixture.execTree) {
-			// PowerShell starts a program that Node did not start, which so is in no job of Node's. It has no console, so that
-			// one left running never holds the terminal open.
+			// PowerShell starts a program that Node did not start, which so is in no job of Node's.
 			const file = fixture.files.execChild.replace(/'/g, "''");
-			const script = "$i = New-Object System.Diagnostics.ProcessStartInfo 'ping', '-n " + fixture.fixtureSeconds + " 127.0.0.1'; $i.UseShellExecute = $false; $i.CreateNoWindow = $true; $p = [System.Diagnostics.Process]::Start($i); Set-Content -NoNewline -Path '" + file + ".root' -Value $PID; Set-Content -NoNewline -Path '" + file + "' -Value $p.Id; Start-Sleep " + fixture.fixtureSeconds;
+			const script = "$p = Start-Process -WindowStyle Hidden ping -ArgumentList '-n','" + fixture.fixtureSeconds + "','127.0.0.1' -PassThru; Set-Content -NoNewline -Path '" + file + ".root' -Value $PID; Set-Content -NoNewline -Path '" + file + "' -Value $p.Id; Start-Sleep " + fixture.fixtureSeconds;
 			void pi.exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
 		}
 		if (fixture.execLeftover) {
@@ -124,7 +123,7 @@ interface SessionOptions {
 	readonly groupChild?: boolean;
 	/** The extension runs a `pi.exec` command that starts a process of its own and then runs until it is ended. */
 	readonly execGrandchild?: boolean;
-	/** As `execGrandchild`, on Windows: the command is PowerShell, and the process it starts a ping. */
+	/** As `execGrandchild`, on Windows: the command is PowerShell, and the process it starts with `Start-Process` a ping. */
 	readonly execTree?: boolean;
 	/** The `timeout` the extension gives that `pi.exec` command. */
 	readonly execTimeoutMs?: number;
