@@ -14,6 +14,7 @@ import {
 	unparkRunWorktree,
 } from "./run-worktrees.js";
 import {
+	latestRecordSaved,
 	pendingMessagesOfResult,
 	requestSubagentChildStop,
 	type SubagentChildLaunch,
@@ -314,7 +315,7 @@ export function runOwnerlessChild(input: {
 					};
 					record("running");
 				},
-				onChildLaunch: (started) => {
+				recordChildLaunch: (started) => {
 					childLaunch = {
 						...(started.model ? { launchModel: started.model } : {}),
 						...(started.thinking ? { launchThinkingLevel: started.thinking } : {}),
@@ -322,6 +323,8 @@ export function runOwnerlessChild(input: {
 						...(started.leafSeq === undefined ? {} : { launchLeafSeq: started.leafSeq }),
 					};
 					record("running");
+					// The attempt runs once this record is saved: a restart restores the child from it.
+					return latestRecordSaved(input.recordChild);
 				},
 			});
 			if (isExecutionTicket(input.schedule)) input.schedule.onEntered();

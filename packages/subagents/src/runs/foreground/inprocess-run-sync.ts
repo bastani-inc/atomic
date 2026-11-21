@@ -436,6 +436,7 @@ async function launchSingleInProcess(
 		...(options.redispatchDetachedCalls ? { redispatchDetachedCalls: true } : {}),
 		...(options.onChildSession ? { onChildSession: options.onChildSession } : {}),
 		...(options.onChildLaunch ? { onChildLaunch: options.onChildLaunch } : {}),
+		...(options.recordChildLaunch ? { recordChildLaunch: options.recordChildLaunch } : {}),
 		...(options.progressPath ? { progressPath: options.progressPath } : {}),
 		...(options.progressArtifactPath
 			? { progressArtifactPath: options.progressArtifactPath }

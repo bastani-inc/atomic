@@ -67,6 +67,7 @@ import {
 } from "./run-worktrees.js";
 import { readableSubagentChildRecordOf, subagentChildCardRecord } from "./subagent-child-card-state.js";
 import {
+	latestRecordSaved,
 	observeChildRecordFailure,
 	pendingMessagesOfResult,
 	SUBAGENT_CHILD_RELEASED_STATUS,
@@ -966,6 +967,8 @@ export async function runAgentTask(input: {
 										...(launch.leafSeq === undefined ? {} : { launchLeafSeq: launch.leafSeq }),
 									};
 									recordChild("running");
+									// The attempt runs once this record is saved: a restart restores the child from it.
+									return latestRecordSaved(input.recordChild);
 								},
 								// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
 								toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),

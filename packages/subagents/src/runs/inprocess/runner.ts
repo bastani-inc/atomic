@@ -84,6 +84,7 @@ import {
 	type ArtifactPaths,
 	DEFAULT_MAX_OUTPUT,
 	type MaxOutputConfig,
+	type RunSyncOptions,
 	type TaskExecutionHooks,
 	type TestSessionQueue,
 	truncateOutput,
@@ -202,7 +203,9 @@ export interface ChildSpec {
 	readonly resumeTaskLiteral?: boolean;
 	/** Told the child's own session, and the model it started on, for a launch no task host records. */
 	readonly onChildSession?: TaskExecutionHooks["bindChildSession"];
-	readonly onChildLaunch?: TaskExecutionHooks["bindChildLaunch"];
+	readonly onChildLaunch?: RunSyncOptions["onChildLaunch"];
+	/** Records the launch, as a task host's `bindChildLaunch` does: nothing runs until it is saved. */
+	readonly recordChildLaunch?: RunSyncOptions["recordChildLaunch"];
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly artifactJsonlPath?: string;
 	/**
@@ -1433,6 +1436,11 @@ function statsFor(session: AgentSession | undefined, fallbackSessionId: string):
 
 type BranchEntry = ReturnType<SessionManager["getBranch"]>[number];
 type TranscriptMessage = Extract<BranchEntry, { type: "message" }>["message"];
+
+/** Why an attempt whose launch record could not be saved ended before it ran, with the store's reason. */
+function launchNotSavedMessage(reason: string): string {
+	return `Subagent did not start: its launch could not be saved in this session: ${reason.replace(/\.+$/, "")}. Nothing was run.`;
+}
 
 /** Where an attempt began: its session's leaf when it launched, and that leaf's position in the session. */
 interface AttemptLaunch {
@@ -2770,8 +2778,18 @@ export class SubagentControlRuntime {
 							? sessionManager.getEntrySeq(currentLeafId)
 							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId, startBudget.signal)),
 			};
-			taskHooks?.bindChildLaunch?.(childLaunch);
+			// A restart restores the child from the launch its record names. Nothing of this attempt runs until that record
+			// is saved, so a restart never finds this attempt's turns behind an earlier launch, on a model that launch does
+			// not name. One that could not be saved runs nothing, as a chat message that could not be saved starts no turn.
+			const taskLaunchSave = taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);
+			const launchSaves = [taskLaunchSave, admitted.spec.recordChildLaunch?.(childLaunch)].filter(
+				(save) => save !== undefined,
+			);
+			if (launchSaves.length > 0) {
+				for (const failure of await beforeStartDeadline(Promise.all(launchSaves)))
+					if (failure !== undefined) throw new Error(launchNotSavedMessage(failure));
+			}
 			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
 			else startBudget.enter("dispatching-task");
 			const progressState: AgentProgress = {

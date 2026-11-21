@@ -390,9 +390,21 @@ export interface SubagentChildRecordSink {
 	flushed?(): Promise<void>;
 	/** Settles once the latest record this sink was given is appended: `false` when it could not be. */
 	saved?(): Promise<boolean>;
+	/** Settles once the latest record this sink was given is appended: `undefined`, or why it could not be. */
+	saveFailure?(): Promise<string | undefined>;
 	clearHeldToolResults?(childId: string, toolCallIds: readonly string[]): Promise<void>;
 	/** Keep messages for a released or stopped child, for its next wake or resume; see {@link holdSubagentChildMessages}. */
 	holdMessages?(childId: string, messages: readonly string[]): Promise<HeldMessagesOutcome>;
+}
+
+/**
+ * Settles once the latest record `sink` was given is appended: `undefined`, or why it could not be. A sink that only
+ * answers whether it saved gives no reason of its own; one that answers nothing about its saves leaves nothing to wait
+ * for (`undefined`). Call it right after `record`, before anything else is recorded.
+ */
+export function latestRecordSaved(sink: SubagentChildRecordSink | undefined): Promise<string | undefined> | undefined {
+	if (sink?.saveFailure) return sink.saveFailure();
+	return sink?.saved?.().then((saved) => (saved ? undefined : "the session store did not save it"));
 }
 
 /** Session recovery restores children that had not settled. */
@@ -526,15 +538,22 @@ async function appendObserved(pi: Pick<ExtensionAPI, "appendEntry">, record: Sub
  * it records merged over its latest one, so the index points at one entry (#4395). A failed append is counted, not
  * lost.
  */
-/** Settles once `record` is appended: `true`, or `false` when appending it failed, which is reported as a failure. */
-function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<boolean> {
+/**
+ * Settles once `record` is appended: `undefined`, or, when appending it failed, which is reported as a failure, the
+ * store's reason as text. Only the text is kept: the error can reach the session that failed to append (#5570).
+ */
+function appendInOrder(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	record: SubagentChildRecord,
+): Promise<string | undefined> {
 	const full = observeSubagentChildRecord(record);
 	pendingSubagentChildWrites.add(full);
 	return inOrder(full.owner.sessionId, () => appendObserved(pi, full)).then(
-		() => true,
+		() => undefined,
 		(error: Error) => {
-			observeChildRecordFailure(full.owner.sessionId, asRecordFailure(full, error));
-			return false;
+			const failure = asRecordFailure(full, error);
+			observeChildRecordFailure(full.owner.sessionId, failure);
+			return failure.cause instanceof Error ? failure.cause.message : failure.message;
 		},
 	);
 }
@@ -576,7 +595,7 @@ export function createSubagentChildRecordSink(
 	pi = subagentChildOwnerWriter(pi, ctx.sessionManager);
 	registerSubagentChildRecordReader(ctx.sessionManager);
 	const worktreeRootMappings = currentWorktreeRootMappings();
-	let appended: Promise<boolean> = Promise.resolve(true);
+	let appended: Promise<string | undefined> = Promise.resolve(undefined);
 	return {
 		ownerSessionId: owner.sessionId,
 		record(input) {
@@ -590,7 +609,8 @@ export function createSubagentChildRecordSink(
 			appended = appendInOrder(pi, record);
 		},
 		flushed: () => appended.then(() => undefined),
-		saved: () => appended,
+		saved: () => appended.then((failure) => failure === undefined),
+		saveFailure: () => appended,
 		clearHeldToolResults: (childId, toolCallIds) =>
 			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds),
 		holdMessages: (childId, messages) => holdSubagentChildMessages(pi, owner.sessionId, childId, messages),
