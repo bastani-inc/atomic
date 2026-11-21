@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants, rmdirSync, rmSync } from "node:fs";
-import { copyFile, mkdir, open, opendir, readdir, readFile, readlink, rename, rm, rmdir } from "node:fs/promises";
+import { copyFile, mkdir, open, opendir, readdir, readFile, readlink, rename, rm, rmdir, stat } from "node:fs/promises";
 import { hostname, release } from "node:os";
 import { join } from "node:path";
 import { BroadcastChannel, isMainThread, receiveMessageOnPort } from "node:worker_threads";
@@ -97,13 +97,22 @@ async function hostDirectory(agentDir: string): Promise<string> {
 const PREFLIGHT_ENTRY_LIMIT = 32;
 
 /**
- * Whether a sweep could find anything under `agentDir`: false only when the released-history directory is absent, or
- * holds a single directory with this host's name and that one is empty. More than one such directory (one is left per
+ * Whether a sweep could find anything under `agentDir`: false only when the released-history directory is absent, or,
+ * under Node, holds a single directory with this host's name and that one is empty. More than one such directory (one is left per
  * boot), more than {@link PREFLIGHT_ENTRY_LIMIT} entries, or anything unreadable counts as something to sweep. Telling
  * this needs no boot or namespace identity, whose lookup starts a process on macOS and Windows.
  */
 async function mayHoldReleasedHistory(agentDir: string): Promise<boolean> {
 	const parent = releasedHistoryDirectory(agentDir);
+	// Bun's `Dir.read()` lists the whole directory on its first call, so under Bun only an absent directory skips.
+	if (process.versions.bun !== undefined) {
+		try {
+			await stat(parent);
+			return true;
+		} catch (error) {
+			return getErrnoCode(error) !== "ENOENT";
+		}
+	}
 	// Case-insensitive file systems (Windows, macOS by default) name one directory with names that differ only by case.
 	const prefix = hostDirectoryPrefix(hostname()).toLowerCase();
 	let host: string | undefined;

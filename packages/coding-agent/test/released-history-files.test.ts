@@ -640,3 +640,30 @@ test("the startup check reads a bounded part of a large shared released-history 
 		Object.defineProperty(process, "platform", platform);
 	}
 });
+
+test("under Bun only an absent released-history directory skips the boot lookup", async () => {
+	const caseRoot = join(root, "bun-runtime");
+	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+	Object.defineProperty(process, "platform", { value: "win32" });
+	// Bun's Dir lists a whole directory on its first read, so the bounded listing is Node's alone.
+	Object.defineProperty(process.versions, "bun", { value: "1.4.5", configurable: true, enumerable: true });
+	vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+		const callback = args.at(-1) as (error: unknown, stdout: string, stderr: string) => void;
+		callback(null, "123456789", "");
+		return {} as childProcess.ChildProcess;
+	});
+	try {
+		vi.resetModules();
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(null);
+		const module = await import("../src/core/storage/session/released-history-files.js");
+		await module.sweepReleasedHistory(caseRoot);
+		assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 0, "no released-history directory");
+		fs.mkdirSync(join(caseRoot, "released-history"), { recursive: true });
+		await module.sweepReleasedHistory(caseRoot);
+		assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 1, "an existing one is swept as before");
+		assert.equal(vi.mocked(fsPromises.opendir).mock.calls.length, 0, "and never listed by the check");
+	} finally {
+		delete (process.versions as { bun?: string }).bun;
+		Object.defineProperty(process, "platform", platform);
+	}
+});

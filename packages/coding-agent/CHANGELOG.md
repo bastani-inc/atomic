@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Starting Atomic on Windows no longer runs PowerShell to look for session history that a killed Atomic process left behind when there is none, which is always the case unless you select memory session storage (`{ "memory": true }`). Each start ran it once, or twice with the default isolated engine, for 0.25–0.5 s and up to 0.45 s of CPU each, and the first frame now appears about 50 ms sooner on an 8-core machine. When there is history to check, process start times are read without PowerShell. macOS skips the matching `sysctl` lookup too.
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.
