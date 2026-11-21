@@ -167,18 +167,20 @@ test.runIf(process.platform === "win32")(
 test.runIf(process.platform === "win32").each(["Node", "Bun"])(
 	"a live %s probe has the runtime's creation permissions (#5605)",
 	async (runtime) => {
+		// Each probe is observed while its reading still holds it open, before the reading removes it, rather than
+		// through a directory watcher whose late events find it already gone.
 		const script = `
 		import assert from 'node:assert/strict';
-		import { closeSync, openSync, statSync, watch } from 'node:fs';
+		import { closeSync, openSync, statSync } from 'node:fs';
 		import { createRequire } from 'node:module'; import { join } from 'node:path';
-		createRequire(import.meta.url)('@bastani/atomic-natives');
+		const natives=createRequire(import.meta.url)('@bastani/atomic-natives');
 		const {sharedClockOffset}=await import(${JSON.stringify(clock)});
 		const dir=process.env.POOL_STORE, seen=[]; process.umask(0o222);
 		const c=join(dir,'control');closeSync(openSync(c,'wx'));const mode=statSync(c).mode;
-		const observer=watch(dir,(_event,name)=>{if(!name?.startsWith('.clock-'))return;try{seen.push(statSync(join(dir,name)).mode)}catch{}});
-		try { for(let i=0;i<60 && seen.length<3;i++) await sharedClockOffset(dir); }
-		finally { observer.close(); }
-		assert.ok(seen.length,'no in-flight probe observed'); for(const observed of seen)assert.equal(observed,mode);
+		const read=natives.readWindowsClockProbe;
+		natives.readWindowsClockProbe=async(path)=>{const reading=await read(path);if(reading?.pending)seen.push(statSync(path).mode);return reading;};
+		try { await sharedClockOffset(dir); } finally { natives.readWindowsClockProbe=read; }
+		assert.equal(seen.length,1,'one probe observed while it was held'); assert.equal(seen[0],mode);
 	`;
 		await run(runtime === "Node" ? process.execPath : bunExecutable(), ["--input-type=module", "-e", script], {
 			env: { ...process.env, POOL_STORE: root },
