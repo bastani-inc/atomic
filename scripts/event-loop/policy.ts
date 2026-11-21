@@ -210,6 +210,24 @@ export const SYNCHRONOUS_LOADER_HOOKS: readonly ReviewedSelector[] = [
 	},
 	{
 		file: "packages/coding-agent/src/core/extensions/reloadable-scripts.ts",
+		name: "readJson",
+		reason:
+			"reads a JSON file an extension module requires or imports by path while jiti evaluates it synchronously, as the runtime's require it replaces did",
+	},
+	{
+		file: "packages/coding-agent/src/core/extensions/reloadable-scripts.ts",
+		name: "ownJson",
+		reason:
+			"finds the real path of a JSON file an extension module requires or imports while jiti evaluates it synchronously, so each file has one value per load",
+	},
+	{
+		file: "packages/coding-agent/src/core/extensions/reloadable-scripts.ts",
+		name: "jsonPackageOf",
+		reason:
+			"finds, once per load, the extension's package from the package.json nearest its entry when a module jiti evaluates synchronously first loads a JSON file",
+	},
+	{
+		file: "packages/coding-agent/src/core/extensions/reloadable-scripts.ts",
 		name: "packageTypeOf",
 		reason: "decides CommonJS or ESM for a module jiti is requiring synchronously from its nearest package.json",
 	},
