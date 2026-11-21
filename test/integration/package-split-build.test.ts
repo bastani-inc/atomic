@@ -4,9 +4,10 @@
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { dirname, join, posix, resolve } from "node:path";
+import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, test, vi } from "vitest";
 import { prepareAgentDir } from "../helpers/event-loop-guard-fixture.js";
@@ -19,6 +20,17 @@ const packageDir = join(repoRoot, "packages", "coding-agent");
 const dist = join(packageDir, "dist");
 /** The package's public entry files and `main.js`, which the CLI imports. */
 const ENTRIES = ["cli", "main", "index", "rpc-entry", "core/storage/index", "core/storage/testing"];
+/**
+ * The modules that run by path in a thread or process of their own: the extension source transform worker and the
+ * siblings it imports by a computed path, the image resize worker, and the compile-cache helper.
+ */
+const RUN_BY_PATH = [
+	"core/extensions/ts-transform-worker",
+	"core/extensions/transform-graph",
+	"core/extensions/ts-source-specifiers",
+	"utils/image-resize-worker",
+	"utils/compile-cache-warmup",
+];
 // Copying the package and starting it in a terminal is structural work.
 const LAYOUT_TIMEOUT_MS = 120_000;
 const SESSION_TIMEOUT_MS = 120_000;
@@ -95,19 +107,27 @@ function installedLayout(name = "install"): { readonly nodeModules: string; read
 	return { nodeModules, atomic };
 }
 
+let packed: Set<string> | undefined;
+/** The paths `npm pack` puts in the package. */
+function packedPaths(): Set<string> {
+	if (packed !== undefined) return packed;
+	const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+	const result = spawnSync(npm, ["pack", "--dry-run", "--json", "--ignore-scripts", packageDir], {
+		cwd: repoRoot,
+		encoding: "utf8",
+		shell: process.platform === "win32",
+		maxBuffer: 64 * 1024 * 1024,
+	});
+	assert.equal(result.status, 0, result.stderr);
+	const [{ files }] = JSON.parse(result.stdout) as [{ files: { path: string }[] }];
+	packed = new Set(files.map((file) => file.path));
+	return packed;
+}
+
 test(
 	"the packed package holds its entries, every shared file they load and none of the build's own state",
 	() => {
-		const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-		const packed = spawnSync(npm, ["pack", "--dry-run", "--json", "--ignore-scripts", packageDir], {
-			cwd: repoRoot,
-			encoding: "utf8",
-			shell: process.platform === "win32",
-			maxBuffer: 64 * 1024 * 1024,
-		});
-		assert.equal(packed.status, 0, packed.stderr);
-		const [{ files }] = JSON.parse(packed.stdout) as [{ files: { path: string }[] }];
-		const paths = new Set(files.map((file) => file.path));
+		const paths = packedPaths();
 		for (const file of loadedFrom(ENTRIES)) assert.ok(paths.has(`dist/${file}`), `dist/${file} is not packed`);
 		for (const entry of ENTRIES) assert.ok(paths.has(`dist/${entry}.js.map`), `dist/${entry}.js.map is not packed`);
 		assert.ok(
@@ -123,6 +143,55 @@ test(
 			...Object.values(manifest.bin),
 		])
 			assert.ok(paths.has(posix.normalize(target)), `${target} is not packed`);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"the packed package holds each bundled module once, and every file that runs by path with what it loads",
+	() => {
+		const paths = packedPaths();
+		for (const file of loadedFrom(RUN_BY_PATH)) assert.ok(paths.has(`dist/${file}`), `dist/${file} is not packed`);
+		const state = join(packageDir, "node_modules", ".cache", "atomic-split-dist", "state.json");
+		const splitEntries = (JSON.parse(fs.readFileSync(state, "utf8")) as { entries: Record<string, string> }).entries;
+		// Classes the SDK entry exports from its bundle: no compiled copy a deep path could load as a second class. A
+		// module kept at its path as an entry, because the package imports it lazily, holds the bundle's code there.
+		for (const module of [
+			"core/agent-session",
+			"core/session-manager",
+			"core/settings-manager",
+			"core/extensions/loader",
+		]) {
+			if (paths.has(`dist/${module}.js`)) {
+				const digest = createHash("sha256")
+					.update(fs.readFileSync(join(dist, `${module}.js`)))
+					.digest("hex");
+				assert.equal(digest, splitEntries[module], `dist/${module}.js is a compiled copy beside the bundle`);
+			}
+			assert.ok(paths.has(`dist/${module}.d.ts`), `dist/${module}.d.ts is not packed`);
+		}
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"every module the package ships finds the files it imports in the package",
+	() => {
+		const paths = packedPaths();
+		const missing: string[] = [];
+		for (const path of paths) {
+			if (!/^dist\/.*\.m?js$/.test(path) || path.startsWith("dist/builtin/")) continue;
+			const source = fs.readFileSync(join(packageDir, path), "utf8");
+			for (const match of source.matchAll(
+				/(?:^|\n)\s*(?:import|export)\b[^;]*?\bfrom\s*["'](\.{1,2}\/[^"']+)["']|(?:^|\n)\s*import\s*["'](\.{1,2}\/[^"']+)["']|\bimport\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/g,
+			)) {
+				const target = posix.normalize(
+					posix.join(posix.dirname(path), (match[1] ?? match[2] ?? match[3]) as string),
+				);
+				if (!paths.has(target)) missing.push(`${path} -> ${target}`);
+			}
+		}
+		assert.deepEqual(missing, []);
 	},
 	LAYOUT_TIMEOUT_MS,
 );
@@ -400,14 +469,16 @@ for (const host of ["in-process", "isolated"] as const) {
 }
 
 /**
- * The package as `tsc` compiled it, before the split: the entries as compiled, which the split saves in the package's
- * build cache before overwriting them, and every other compiled file, which stays in `dist`.
+ * The package as `tsc` compiled it, before the split: the entries as compiled and the bundled modules' compiled files,
+ * which the split saves in the package's build cache before overwriting or removing them, and every other compiled
+ * file, which stays in `dist`.
  */
 function compiledPackage(target: string): void {
 	fs.mkdirSync(target, { recursive: true });
 	fs.copyFileSync(join(packageDir, "package.json"), join(target, "package.json"));
 	fs.mkdirSync(join(target, "scripts"), { recursive: true });
-	fs.copyFileSync(join(packageDir, "scripts", "split-dist.mjs"), join(target, "scripts", "split-dist.mjs"));
+	for (const script of ["split-dist.mjs", "split-dist-names.mjs"])
+		fs.copyFileSync(join(packageDir, "scripts", script), join(target, "scripts", script));
 	copyTree(dist, join(target, "dist"), (source) => !source.includes(join("dist", "_shared")));
 	const state = join(packageDir, "node_modules", ".cache", "atomic-split-dist");
 	const bundled = Object.keys(
@@ -416,7 +487,54 @@ function compiledPackage(target: string): void {
 	for (const entry of bundled)
 		for (const suffix of [".js", ".js.map"])
 			fs.copyFileSync(join(state, "compiled", `${entry}${suffix}`), join(target, "dist", `${entry}${suffix}`));
+	const saved = join(state, "compiled");
+	copyTree(saved, join(target, "dist"), (source) => {
+		const path = join(target, "dist", relative(saved, source));
+		return fs.statSync(source).isDirectory() || !fs.existsSync(path);
+	});
 }
+
+test(
+	"a split after a fresh compile bundles the compiled code, not the copy an earlier split saved",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "recompiled");
+		compiledPackage(build);
+		const split = () => {
+			const result = spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr);
+		};
+		const module = join(build, "dist", "core", "agent-session.js");
+		const compiled = fs.readFileSync(module, "utf8");
+		split();
+		assert.equal(fs.existsSync(module), false, "the split removes the compiled file of a bundled module");
+
+		// The next compile emits the module again, changed, with its map.
+		const marker = 'globalThis.atomicSplitRevision = "recompiled";';
+		const recompiled = compiled.replace(/^\/\/# sourceMappingURL=.*$/m, `${marker}\n$&`);
+		assert.notEqual(recompiled, compiled);
+		fs.writeFileSync(module, recompiled);
+		const saved = join(
+			build,
+			"node_modules",
+			".cache",
+			"atomic-split-dist",
+			"compiled",
+			"core",
+			"agent-session.js.map",
+		);
+		fs.copyFileSync(saved, `${module}.map`);
+		split();
+		assert.equal(fs.existsSync(module), false, "the split removes it again");
+		const shared = join(build, "dist", "_shared");
+		const bundled = fs
+			.readdirSync(shared)
+			.filter((file) => file.endsWith(".js"))
+			.some((file) => fs.readFileSync(join(shared, file), "utf8").includes(marker));
+		assert.ok(bundled, "the bundle holds the recompiled module");
+	},
+	LAYOUT_TIMEOUT_MS,
+);
 
 test(
 	"a split build whose build state is gone, as after a fresh npm ci, is refused with the file and the command that rebuilds it",
@@ -451,6 +569,30 @@ test(
 		fs.writeFileSync(module, commented);
 		const result = spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
 		assert.equal(result.status, 0, result.stderr);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"a module the compiled package imported lazily still has a file at its path, for a process of an earlier version",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "lazy-paths");
+		compiledPackage(build);
+		const compiledDist = join(build, "dist");
+		const lazy = new Set<string>();
+		for (const file of fs.readdirSync(compiledDist, { recursive: true }) as string[]) {
+			const path = file.split(sep).join("/");
+			if (!path.endsWith(".js") || path.startsWith("builtin/")) continue;
+			const source = fs.readFileSync(join(compiledDist, file), "utf8");
+			for (const match of source.matchAll(/\bimport\(\s*"(\.{1,2}\/[^"]+)"\s*\)/g))
+				lazy.add(posix.normalize(posix.join(posix.dirname(path), match[1] as string)));
+		}
+		assert.ok(lazy.size > 10, "the compiled package imports modules lazily");
+		const result = spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		assert.equal(result.status, 0, result.stderr);
+		const missing = [...lazy].filter((path) => !fs.existsSync(join(compiledDist, path)));
+		assert.deepEqual(missing, [], "lazily imported modules without a file after the split");
 	},
 	LAYOUT_TIMEOUT_MS,
 );

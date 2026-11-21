@@ -158,9 +158,93 @@ describe.skipIf(process.platform === "win32")("ending the commands at once when 
 });
 
 describe("whether the engine's host is gone", () => {
+	/** A parent that is `hostPid` for the first `checks` reads, then another process. */
+	function parentChangingAfter(hostPid: number, checks: number): () => number {
+		let read = 0;
+		return () => (read++ < checks ? hostPid : 1);
+	}
+	/** A clock that moves only as far as the waits paused, with the pauses it saw. */
+	function pausedClock(): { now: () => number; pause: (ms: number) => void; pauses: number[] } {
+		let time = 1_000;
+		const pauses: number[] = [];
+		return {
+			now: () => time,
+			pause: (ms) => {
+				pauses.push(ms);
+				time += ms;
+			},
+			pauses,
+		};
+	}
+
 	test("once the engine's parent is no longer the host, unless the host announced its quit", () => {
-		assert.equal(hostIsGone(4242, 4242, false), false, "the host is still the engine's parent");
-		assert.equal(hostIsGone(4242, 1, false), true, "the engine was given to another parent");
-		assert.equal(hostIsGone(4242, 1, true), false, "a host that announced its quit is not gone");
+		const { now, pause } = pausedClock();
+		assert.equal(
+			hostIsGone(4242, false, false, () => 4242, pause, now),
+			false,
+			"the host is still the engine's parent",
+		);
+		assert.equal(
+			hostIsGone(4242, false, false, () => 1, pause, now),
+			true,
+			"the engine was given to another parent",
+		);
+		assert.equal(
+			hostIsGone(4242, true, false, () => 1, pause, now),
+			false,
+			"a host that announced its quit is not gone",
+		);
+	});
+
+	test("not, and without waiting, while the host is still the engine's parent and the channel to it is open", () => {
+		const clock = pausedClock();
+		assert.equal(
+			hostIsGone(4242, false, false, () => 4242, clock.pause, clock.now),
+			false,
+		);
+		assert.deepEqual(clock.pauses, [], "an engine whose host lives and still reads it waited at its exit");
+	});
+
+	test("once the channel to the host closed and the engine is given another parent soon after, as while a killed host exits", () => {
+		// The system closes a killed host's pipes before it gives the host's children another parent, and the engine can
+		// get to its exit in between.
+		const { now, pause } = pausedClock();
+		assert.equal(hostIsGone(4242, false, true, parentChangingAfter(4242, 3), pause, now), true);
+	});
+
+	test("not when the channel to the host closed but the host stays the engine's parent, within a bounded wait", () => {
+		const clock = pausedClock();
+		const gone = hostIsGone(4242, false, true, () => 4242, clock.pause, clock.now, 100);
+		assert.equal(gone, false, "a host that lives is not gone");
+		assert.equal(
+			clock.pauses.reduce((total, ms) => total + ms, 0),
+			100,
+			"the wait ends once 100 ms have passed",
+		);
+		const quit = pausedClock();
+		assert.equal(
+			hostIsGone(4242, true, true, parentChangingAfter(4242, 3), quit.pause, quit.now),
+			false,
+			"the host quit",
+		);
+		assert.deepEqual(quit.pauses, [], "a host that quit is not waited for");
+	});
+
+	test("a wait that took longer than asked, as under load, still reads the parent once more at its end", () => {
+		let time = 0;
+		let reads = 0;
+		// One pause overshoots the whole bound; the parent changed meanwhile.
+		const gone = hostIsGone(
+			4242,
+			false,
+			true,
+			() => (reads++ < 2 ? 4242 : 1),
+			() => {
+				time += 5_000;
+			},
+			() => time,
+			1_000,
+		);
+		assert.equal(gone, true);
 	});
 });

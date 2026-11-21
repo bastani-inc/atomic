@@ -26,6 +26,7 @@ import { createMessageReader, writeMessage } from "../../packages/intercom/broke
 import { getBrokerPidPath, getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
+import { reconnectDelayMs } from "../../packages/intercom/reconnect-backoff.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { BrokerMultiNodeStatus } from "../../packages/intercom/types.js";
@@ -39,10 +40,17 @@ import { recordProcess, signalRecordedProcess, stillRuns } from "../helpers/reco
  * multi-node line to `broker.log` either way.
  */
 
-/** A broker start, readiness, shutdown and multi-node opening on a local SQLite file; far above a healthy run. */
-const BROKER_WAIT_MS = 15_000;
-/** Each scenario starts and stops real broker processes. */
-const BROKER_SCENARIO_TIMEOUT_MS = 60_000;
+/**
+ * A broker start, readiness, shutdown and multi-node opening on a local SQLite file; far above a healthy run (1-3 s). A
+ * start compiles the broker from source, which has taken about 25 s on a Windows machine running the Intercom suite twice
+ * at once.
+ */
+const BROKER_WAIT_MS = 60_000;
+/**
+ * Each scenario starts and stops real broker processes, up to two starts and a stop in one, and on Windows keeping a pid
+ * starts PowerShell, which can take about 20 s on a loaded machine.
+ */
+const BROKER_SCENARIO_TIMEOUT_MS = 180_000;
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
@@ -108,6 +116,30 @@ async function startBroker(fixture: IntercomBrokerFixture): Promise<ChildProcess
 		{ timeout: BROKER_WAIT_MS, interval: 20 },
 	);
 	return broker;
+}
+
+/**
+ * Start a stand-in for a broker that predates `broker_status`: it drops a connection whose first frame is not `register`
+ * and shuts down on SIGTERM. It names itself in broker.pid before it listens, so once it answers, the pid is there.
+ */
+function startLegacyBroker(fixture: IntercomBrokerFixture): ChildProcess {
+	const legacy = spawn(
+		process.execPath,
+		[
+			"-e",
+			`const net = require("node:net");
+			const fs = require("node:fs");
+			fs.writeFileSync(process.argv[2], String(process.pid));
+			const server = net.createServer((socket) => socket.on("data", () => socket.destroy()));
+			server.listen(process.argv[1]);
+			process.on("SIGTERM", () => server.close(() => process.exit(0)));`,
+			getBrokerSocketPath(process.platform, fixture.agentDir),
+			getBrokerPidPath(fixture.agentDir),
+		],
+		{ stdio: "ignore" },
+	);
+	fixture.trackBroker(legacy);
+	return legacy;
 }
 
 /** A registered session over the raw protocol; it keeps an idle broker from retiring until it closes. */
@@ -305,7 +337,22 @@ test(
 		const fixture = fixtureFor(agentDirectory("idle"));
 		const broker = await startBroker(fixture);
 		assert.ok(broker.pid !== undefined);
+		// A broker without sessions retires a few seconds after its last connection, and keeping its pid can take longer
+		// than that on a loaded Windows machine: a session keeps it running meanwhile.
+		const keeper = await connectSession(fixture.agentDir, "keeper");
+		fixture.onCleanup(() => {
+			keeper.destroy();
+		});
 		onTestFinished(await keepProcessPid(broker));
+		keeper.destroy();
+		// Each query is a new connection, so the last one, which finds no session, starts the broker's idle time again.
+		await vi.waitFor(
+			async () => {
+				const query = await queryIntercomBroker(fixture.agentDir);
+				assert.ok(query.state === "running" && query.report.sessions === 0, JSON.stringify(query));
+			},
+			{ timeout: BROKER_WAIT_MS, interval: 20 },
+		);
 		const outcome = await restartIntercomBroker(fixture.agentDir);
 		assert.deepEqual(outcome, { status: "stopped", previous: { pid: broker.pid, sessions: 0 } });
 		await exited(broker);
@@ -322,15 +369,20 @@ test(
 		const fixture = fixtureFor(agentDirectory("restart"));
 		const before = await startBroker(fixture);
 		assert.ok(before.pid !== undefined);
-		onTestFinished(await keepProcessPid(before));
+		// Connected first, so the broker does not retire for want of a session while its pid is being kept.
 		const session = await connectSession(fixture.agentDir, "reconnecting");
+		onTestFinished(await keepProcessPid(before));
 		// A real session reconnects through `spawnBrokerIfNeeded` once its broker is gone; this one starts the broker itself.
 		let after: Promise<ChildProcess> | undefined;
 		session.once("close", () => {
 			after = exited(before).then(() => startBroker(fixture));
 		});
 		const progress: string[] = [];
-		const outcome = await restartIntercomBroker(fixture.agentDir, { onProgress: (line) => progress.push(line) });
+		// The new broker starts as this test's own do, which can take longer than a session's reconnect is waited for.
+		const outcome = await restartIntercomBroker(fixture.agentDir, {
+			onProgress: (line) => progress.push(line),
+			reconnectTimeoutMs: BROKER_WAIT_MS,
+		});
 		const replacement = await after;
 		assert.ok(replacement?.pid !== undefined);
 		assert.equal(outcome.status, "restarted");
@@ -340,6 +392,34 @@ test(
 		assert.equal(outcome.current.report.pid, replacement.pid);
 		assert.equal(outcome.current.report.multiNode.status, "off");
 		assert.match(progress[0] ?? "", /Stopping the Intercom broker \(pid \d+, 1 session connected\)/);
+	},
+	BROKER_SCENARIO_TIMEOUT_MS,
+);
+
+test(
+	"restart waits its default time for a session to start a new broker (#3857)",
+	async () => {
+		const fixture = fixtureFor(agentDirectory("restart-default"));
+		const before = await startBroker(fixture);
+		assert.ok(before.pid !== undefined);
+		const session = await connectSession(fixture.agentDir, "reconnecting");
+		onTestFinished(await keepProcessPid(before));
+		// A stand-in that starts in a moment once a real session would first reconnect, so the restart's own default wait
+		// decides, not the time a broker start takes.
+		let after: Promise<ChildProcess> | undefined;
+		session.once("close", () => {
+			after = exited(before)
+				.then(() => new Promise((resolveDelay) => setTimeout(resolveDelay, reconnectDelayMs(0))))
+				.then(() => startLegacyBroker(fixture));
+		});
+		const outcome = await restartIntercomBroker(fixture.agentDir);
+		const replacement = await after;
+		assert.ok(replacement?.pid !== undefined);
+		assert.deepEqual(outcome, {
+			status: "restarted",
+			previous: { pid: before.pid, sessions: 1 },
+			current: { state: "legacy", pid: replacement.pid },
+		});
 	},
 	BROKER_SCENARIO_TIMEOUT_MS,
 );
@@ -364,24 +444,8 @@ test(
 	"restart stops a broker that predates broker_status with SIGTERM (#3857)",
 	async () => {
 		const agentDir = agentDirectory("legacy");
-		const socketPath = getBrokerSocketPath(process.platform, agentDir);
-		// An older broker drops a connection whose first frame is not `register`, and shuts down on SIGTERM.
-		const legacy = spawn(
-			process.execPath,
-			[
-				"-e",
-				`const net = require("node:net");
-				const fs = require("node:fs");
-				const server = net.createServer((socket) => socket.on("data", () => socket.destroy()));
-				server.listen(process.argv[1], () => fs.writeFileSync(process.argv[2], String(process.pid)));
-				process.on("SIGTERM", () => server.close(() => process.exit(0)));`,
-				socketPath,
-				getBrokerPidPath(agentDir),
-			],
-			{ stdio: "ignore" },
-		);
 		const fixture = fixtureFor(agentDir);
-		fixture.trackBroker(legacy);
+		const legacy = startLegacyBroker(fixture);
 		assert.ok(legacy.pid !== undefined);
 		onTestFinished(await keepProcessPid(legacy));
 		await vi.waitFor(
