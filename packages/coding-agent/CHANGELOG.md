@@ -6,6 +6,7 @@
 
 - The same message sent twice in quick succession, which an `input` extension rewrites, no longer leaves a copy of the typed text in the chat
 - A queued message that two runs in a row took and failed before sending comes back to the editor, as typed and in the order it was queued, with a notice, instead of disappearing
+- `atomic -p` with an extension command prints the command's own answer, or fails on its failed reply, even when another message is saved after it, and waits for a reply the command asks for while an earlier run is still finishing
 
 ## [0.10.3] - 2026-11-21
 

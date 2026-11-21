@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { asyncScope } from "./async-scope.ts";
 
 /** How the messages an extension command queued ended (#6113). */
@@ -7,6 +8,13 @@ export interface CommandDeliveryOutcome {
 	 * ended. Their answer is then the newest thing in the session, even when it is not a model reply.
 	 */
 	answered: boolean;
+	/**
+	 * The latest message the commands' own deliveries saved: a message of theirs, or a message of a turn one of them
+	 * started. A message something else saved after it, such as another sender's notice, is not their answer.
+	 */
+	answer: AgentMessage | undefined;
+	/** The latest model reply of a turn one of their messages started. */
+	reply: AgentMessage | undefined;
 	/** A message of theirs could not be delivered, or a turn one started failed, and nothing of theirs answered. */
 	lost: boolean;
 	/** Failures of the turns those messages started that no sender saw, so nothing has reported them yet. */
@@ -28,6 +36,8 @@ export class CommandDeliveries {
 	private readonly turnErrors: unknown[] = [];
 	private failed = false;
 	private answered = false;
+	private answer: AgentMessage | undefined;
+	private reply: AgentMessage | undefined;
 
 	/** Whether a command of this prompt runs in `session` (or was handed it after a switch). */
 	owns(session: object): boolean {
@@ -60,6 +70,13 @@ export class CommandDeliveries {
 		if (this.sessions !== undefined) this.answered = true;
 	}
 
+	/** A delivery of the commands, or a turn it started, saved `message`. */
+	noteMessage(message: AgentMessage): void {
+		if (this.sessions === undefined) return;
+		this.answer = message;
+		if (message.role === "assistant") this.reply = message;
+	}
+
 	/**
 	 * Wait until every delivery joined so far, and every turn those deliveries started, has ended, then close: a timer
 	 * or task the command left running afterwards joins nothing more.
@@ -68,6 +85,8 @@ export class CommandDeliveries {
 		while (this.pending.size > 0) await Promise.allSettled([...this.pending]);
 		const outcome = {
 			answered: this.answered,
+			answer: this.answer,
+			reply: this.reply,
 			// A command that caught a failed send and answered with another one answered.
 			lost: this.failed && !this.answered,
 			// A turn that failed before its message was admitted fails that send with the same error, already reported.
@@ -80,6 +99,8 @@ export class CommandDeliveries {
 	/** Joins nothing more and lets go of what was joined: a late callback of the command keeps none of it. */
 	close(): void {
 		this.sessions = undefined;
+		this.answer = undefined;
+		this.reply = undefined;
 		this.pending.clear();
 		this.sendErrors.clear();
 		this.turnErrors.length = 0;
@@ -158,9 +179,47 @@ function joinable(session: object): CommandDeliveries | undefined {
 	return context.deliveries.owns(session) ? context.deliveries : undefined;
 }
 
-/** Notes that a command's message was saved to `session`: the command answered. */
-export function noteCommandAnswer(session: object): void {
-	joinable(session)?.noteAnswer();
+/** Notes that a command's message, `message`, was saved to `session`: the command answered. */
+export function noteCommandAnswer(session: object, message: AgentMessage): void {
+	const deliveries = joinable(session);
+	deliveries?.noteAnswer();
+	deliveries?.noteMessage(message);
+}
+
+/** Notes that `session` saved `message` in a turn a command's message started: the latest of its answer. */
+export function noteCommandTurnMessage(session: object, message: AgentMessage): void {
+	joinable(session)?.noteMessage(message);
+}
+
+/** Settles the ticket of a deferred turn that never ran, by the action that would have started it. */
+const deferredTickets = new WeakMap<() => Promise<void>, (reason: unknown) => void>();
+
+/**
+ * `action` starts a turn of `session` once the run it is settling has settled. Requested by a command's message (in a
+ * print-mode prompt), the turn is joined now, before its run settles, so print mode waits for it, and it starts in the
+ * command's context, so what it leads to is the command's too. Answers the action to defer in place of `action`.
+ */
+export function deferCommandTurn(session: object, action: () => Promise<void>): () => Promise<void> {
+	const deliveries = joinable(session);
+	if (deliveries === undefined) return action;
+	const context = commandScope.getStore();
+	const ticket = Promise.withResolvers<void>();
+	deliveries.join(ticket.promise, "turn");
+	const deferred = (): Promise<void> => {
+		deferredTickets.delete(deferred);
+		const turn = commandScope.run(context, action);
+		turn.then(ticket.resolve, ticket.reject);
+		return turn;
+	};
+	deferredTickets.set(deferred, ticket.reject);
+	return deferred;
+}
+
+/** `action`, a deferred turn, never runs: the settling run stopped on `reason` before it. What waits for it ends. */
+export function dropDeferredCommandTurn(action: () => Promise<void>, reason: unknown): void {
+	const drop = deferredTickets.get(action);
+	deferredTickets.delete(action);
+	drop?.(reason);
 }
 
 /** Joins a turn of `session` that a command's message started and that its delivery does not wait for. */

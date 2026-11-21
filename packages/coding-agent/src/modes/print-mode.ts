@@ -162,6 +162,12 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	let activePromptHadCommandError = false;
 	/** Whether the last prompt's extension commands answered with messages they queued (#6113). */
 	let commandAnswered = false;
+	/**
+	 * The latest message of the last prompt's extension commands' own answer, and their latest model reply: what the run
+	 * prints, whatever another sender saved after them.
+	 */
+	let commandAnswer: AgentMessage | undefined;
+	let commandReply: AgentMessage | undefined;
 	/** Whether a model reply ended during this run: the session's last reply is then possibly this run's own. */
 	let repliedThisRun = false;
 	let session = runtimeHost.session;
@@ -238,6 +244,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			const queued = await deliveries.settle();
 			for (const error of queued.unreported) console.error(error instanceof Error ? error.message : String(error));
 			commandAnswered = queued.answered;
+			commandAnswer = queued.answered ? queued.answer : undefined;
+			commandReply = queued.answered ? queued.reply : undefined;
 			if (queued.lost) {
 				// The command's answer was lost: an earlier reply must not stand in for it, so text output prints nothing
 				// and fails. Its sender reported why. The JSON event stream never printed a reply in its place and keeps
@@ -356,10 +364,12 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		const state = session.state;
 		const finalMessages = messagesBeforeTrailingBoundary(session);
-		const lastMessage = finalMessages[finalMessages.length - 1];
-		const lastAssistantMessage = [...finalMessages].reverse().find((message) => message.role === "assistant") as
-			| AssistantMessage
-			| undefined;
+		// A command's own answer is what its messages and their turns saved, not a message another sender saved after.
+		const ownAnswer = commandAnswer !== undefined;
+		const lastMessage = commandAnswer ?? finalMessages[finalMessages.length - 1];
+		const lastAssistantMessage = (
+			ownAnswer ? commandReply : [...finalMessages].reverse().find((message) => message.role === "assistant")
+		) as AssistantMessage | undefined;
 		const runAnswer =
 			fellBack && session === runSession
 				? ([...state.messages.slice(runStart)].reverse().find((message) => message.role === "assistant") as
@@ -379,7 +389,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		if (ranOn && mode === "text" && !suppressFinalOutput) console.error(ranOn);
 		// A command that answered with a message, in a run where no model replied, is not cut by an earlier run's reply
 		// that reached the output limit.
-		const answeredByCommand = commandAnswered && !repliedThisRun && lastMessage?.role !== "assistant";
+		const answeredByCommand = !ownAnswer && commandAnswered && !repliedThisRun && lastMessage?.role !== "assistant";
 		if (
 			!answeredByCommand &&
 			lastAssistantMessage?.stopReason === "length" &&

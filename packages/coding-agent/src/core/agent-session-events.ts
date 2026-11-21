@@ -37,6 +37,7 @@ import { recordPromptOrder } from "./chat-admission-order.js";
 import { bindChatReceipt } from "./chat-receipts.js";
 import { chatRecordSavesSettled, trackChatRecordSave } from "./chat-record-saves.ts";
 import { formatCodexProviderError } from "./codex-errors.ts";
+import { noteCommandTurnMessage } from "./command-deliveries.ts";
 import { assignMissingToolCallIds } from "./context-tool-pairing.js";
 import {
 	cancelSessionSubscriptions,
@@ -420,6 +421,8 @@ export async function _processAgentEvent(
 
 	// Handle session persistence
 	if (event.type === "message_end") {
+		// #6113: in a turn an extension command's message started, this is the latest of the command's answer.
+		if (event.message.role !== "user" && event.message.role !== "system") noteCommandTurnMessage(this, event.message);
 		let entryId: string | undefined;
 		try {
 			// Check if this is a custom message from extensions

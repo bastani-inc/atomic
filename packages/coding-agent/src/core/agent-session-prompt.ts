@@ -28,7 +28,13 @@ import type {
 } from "./agent-session-types.js";
 import { formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
-import { joinCommandSend, joinCommandTurn, runCommandHandler } from "./command-deliveries.ts";
+import {
+	deferCommandTurn,
+	dropDeferredCommandTurn,
+	joinCommandSend,
+	joinCommandTurn,
+	runCommandHandler,
+} from "./command-deliveries.ts";
 import type { CustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import {
@@ -171,7 +177,8 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
  */
 function deferSettledAction(session: AgentSession, action: () => Promise<void>): void {
 	const admission = currentResourceAdmission();
-	session._deferredSettledActions.push(() => withOwnResourceAdmission(admission, action));
+	// #6113: print mode waits for a turn an extension command's message defers here, from now on.
+	session._deferredSettledActions.push(deferCommandTurn(session, () => withOwnResourceAdmission(admission, action)));
 }
 
 function queuesDuringAgentSettled(session: AgentSession, options: PromptOptions | undefined): boolean {
@@ -874,12 +881,21 @@ async function finishAgentRun(session: AgentSession, keepMessageAdmissionOpen = 
 		// Guarded because prompt-handshake suites drive this function on a synthetic session.
 		const deferred = session._deferredSettledActions?.splice(0) ?? [];
 		const releaseMessageAdmission = deferred.length > 0 ? holdSubagentMessageAdmission(session) : () => {};
+		let started = 0;
+		let failure: { readonly error: unknown } | undefined;
 		try {
 			for (const [index, action] of deferred.entries()) {
 				if (index === deferred.length - 1) releaseMessageAdmission();
-				await action();
+				started = index + 1;
+				await action().catch((error: unknown) => {
+					failure = { error };
+					throw error;
+				});
 			}
 		} finally {
+			// The deferred turns after a failed one never run: nothing waits for them any more.
+			if (failure !== undefined)
+				for (const skipped of deferred.slice(started)) dropDeferredCommandTurn(skipped, failure.error);
 			releaseMessageAdmission();
 			if (session._activePromptCount === 0) session._subagentPolicy?.onTurnDrained?.();
 		}

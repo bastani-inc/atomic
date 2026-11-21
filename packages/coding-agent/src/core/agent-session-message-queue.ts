@@ -563,7 +563,7 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 	markCustomMessageDisplayed(this, entryId);
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });
-	noteCommandAnswer(this);
+	noteCommandAnswer(this, message);
 }
 
 const pendingCustomMessageDrains = new WeakMap<AgentSession, Promise<void>>();
