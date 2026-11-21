@@ -35,6 +35,50 @@ export function containProcessTree(pid: number): ProcessTreeContainment | undefi
 	}
 }
 
+/** A running process and the processes below it, each held through a handle of its own. */
+export interface HeldProcessDescendants {
+	/** How many processes below it it holds. */
+	readonly count: number;
+	/**
+	 * Ends the process they are below, and then them, only if it ended that process: one that exited by itself first
+	 * leaves them running. Lets go of all of them; returns whether it ended that process.
+	 */
+	endAll(): boolean;
+	/** Lets go of the processes it holds without ending them. */
+	release(): void;
+}
+
+type HoldProcessDescendants = (pid: number) => HeldProcessDescendants | null;
+
+let nativeHoldDescendants: HoldProcessDescendants | null | undefined;
+
+/**
+ * On Windows, holds running child process `pid` and the processes it started, and those they started, each through a
+ * handle of its own: a process is taken only once it is open, and only when it is still the child of its parent and
+ * started after it (by the kernel's order of process starts, not by a clock), so a process given an id that one of them
+ * had is never held. `undefined` once `pid` has exited, off Windows, and without the native module. `pid` must be a
+ * child whose exit this process has not seen yet, so that it still holds its handle and the id names it. A process
+ * whose parent already ended is not found.
+ */
+export function holdProcessDescendants(pid: number): HeldProcessDescendants | undefined {
+	if (process.platform !== "win32") return undefined;
+	if (nativeHoldDescendants === undefined) {
+		try {
+			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
+				holdProcessDescendants?: HoldProcessDescendants;
+			};
+			nativeHoldDescendants = binding.holdProcessDescendants ?? null;
+		} catch {
+			nativeHoldDescendants = null;
+		}
+	}
+	try {
+		return nativeHoldDescendants?.(pid) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function processTreeEnded(tree: ProcessTreeContainment, timeoutMs: number): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {

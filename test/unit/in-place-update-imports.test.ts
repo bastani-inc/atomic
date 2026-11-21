@@ -149,8 +149,15 @@ test("builtin extensions name only host exports a 0.10.3 process has", () => {
 	assert.deepEqual(missing, []);
 });
 
-/** A module's `file:` URL as the process loads it: the real path, through the workspace's package links. */
-function releasedModule(path: string): [url: string, names: string[]] {
+/** Where the package build keeps the compiled code of the modules it bundles and no longer ships as files. */
+const COMPILED = join(PACKAGE, "node_modules/.cache/atomic-split-dist/compiled");
+
+/**
+ * A module's `file:` URL as the process loads it (the real path, through the workspace's package links), its 0.10.3
+ * exports, and whether this build ships a file there. A module the package now bundles has no file of its own: the
+ * process still holds the copy it loaded, and nothing in this build imports it from that path.
+ */
+function releasedModule(path: string): [url: string, entry: { names: string[]; shipped: boolean }] {
 	const names = RELEASED.modules[path] ?? RELEASED.entry[path];
 	assert.ok(names, `no recorded 0.10.3 exports for ${path}`);
 	const file = path.startsWith("@bastani/atomic-ai/utils/")
@@ -158,8 +165,9 @@ function releasedModule(path: string): [url: string, names: string[]] {
 		: path === "@bastani/atomic-tui"
 			? join(ROOT, "packages/tui/dist/index.js")
 			: join(PACKAGE, path);
-	assert.ok(existsSync(file), file);
-	return [pathToFileURL(file).href, names];
+	const shipped = existsSync(file);
+	assert.ok(shipped || existsSync(join(COMPILED, relative(DIST, file))), file);
+	return [pathToFileURL(file).href, { names, shipped }];
 }
 
 /**
@@ -176,12 +184,17 @@ function loadAfterUpdate(cached: string[], lazy: string): { exitCode: number | n
 const released = new Map(${JSON.stringify(cached.map((path) => releasedModule(path)))});
 let updated = false;
 registerHooks({
+	resolve(specifier, context, nextResolve) {
+		const module = updated ? undefined : released.get(specifier);
+		return module && !module.shipped ? { url: specifier, shortCircuit: true } : nextResolve(specifier, context);
+	},
 	load(url, context, nextLoad) {
-		const names = updated ? undefined : released.get(url);
-		if (!names) return nextLoad(url, context);
+		const module = updated ? undefined : released.get(url);
+		if (!module) return nextLoad(url, context);
+		// A module this build no longer ships as a file keeps its 0.10.3 names; nothing here reads their values.
 		const current = JSON.stringify(url + "?atomic-0.10.3");
-		const source = [\`import * as current from \${current};\`];
-		for (const name of names) source.push(name === "default" ? "export default current.default;" : \`export const \${name} = current.\${name};\`);
+		const source = module.shipped ? [\`import * as current from \${current};\`] : ["const current = {};"];
+		for (const name of module.names) source.push(name === "default" ? "export default current.default;" : \`export const \${name} = current.\${name};\`);
 		return { format: "module", source: source.join("\\n"), shortCircuit: true };
 	},
 });
@@ -207,8 +220,9 @@ for (const { lazy, cached, path } of [
 		cached: ["dist/utils/compile-cache.js", "dist/utils/interactive-engine-bootstrap.js"],
 	},
 	{
+		// The package bundles interactive startup; a process reaches it through main.js, which the CLI imports lazily.
 		path: "interactive startup",
-		lazy: "modes/interactive/interactive-startup.js",
+		lazy: "main.js",
 		cached: ["dist/utils/compile-cache.js", "dist/utils/interactive-engine-bootstrap.js"],
 	},
 	{

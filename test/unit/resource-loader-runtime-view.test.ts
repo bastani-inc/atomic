@@ -7,17 +7,21 @@ import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import type { ExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
+import { NODE_TS_SOURCE_ARGS } from "../helpers/node-ts-sources.js";
 import { bunExecutable } from "../helpers/runtime.js";
 
 const commandSignalFixture = fileURLToPath(new URL("../fixtures/startup-command-signal.mjs", import.meta.url));
-for (const [runtime, executable] of [
-	["Node", process.execPath],
-	["Bun", bunExecutable()],
+for (const [runtime, executable, args] of [
+	["Node", process.execPath, NODE_TS_SOURCE_ARGS],
+	["Bun", bunExecutable(), []],
 ] as const) {
 	test.each(["revoked", "metered", "aborted"])(
 		`discovery continues after a command's signal is %s (${runtime}, #5639)`,
 		(scenario) => {
-			const result = spawnSync(executable, [commandSignalFixture, scenario], { encoding: "utf8", timeout: 60_000 });
+			const result = spawnSync(executable, [...args, commandSignalFixture, scenario], {
+				encoding: "utf8",
+				timeout: 60_000,
+			});
 			assert.ifError(result.error);
 			assert.equal(result.status, 0, result.stderr);
 		},

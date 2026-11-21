@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "vitest";
-import { ENGINE_SHUTDOWN_GRACE_MS } from "../../packages/coding-agent/src/modes/rpc/rpc-client-process.js";
+import { BROKER_READY_TIMEOUT_MS } from "../../packages/intercom/broker/startup-timeout.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { startPtyProgram } from "../helpers/pty-program.js";
 import {
@@ -18,14 +18,17 @@ import { startScriptedChatServer } from "../helpers/scripted-chat-server.js";
 const CLI = join(moduleDir(import.meta.url), "../../packages/coding-agent/dist/cli.js");
 const CLI_START_TIMEOUT_MS = 60_000;
 /**
- * How long each host's quit may take. Its shutdown handlers get ENGINE_SHUTDOWN_GRACE_MS: a quit that waited for the
- * broker start is cut there and leaves the broker running, which the broker check catches on both hosts. In the
- * in-process terminal the quit stops the start as it begins and ends well within the grace (under 0.3 s on an idle
- * Linux machine, under 4 s on a loaded Windows one). An isolated terminal's quit also ends its engine and then exits
- * the host, which on a loaded Windows machine can take past the grace on its own, with or without a broker; this test
- * does not bound that, and holds it only to the CLI's step bound, so a quit that hangs still fails.
+ * How long each host's quit may take. Its shutdown handlers get 5 s (ENGINE_SHUTDOWN_GRACE_MS): a quit that waited for
+ * the broker start is cut there and leaves the broker running, which the broker check catches on both hosts. In the
+ * in-process terminal the quit stops the start as it begins: under 0.3 s on an idle Linux machine, and up to 5.4 s on
+ * a loaded Windows one, past the grace itself. Its bound is half the time a broker start is waited for: a quit that
+ * waited for the start without being cut at the grace would take nearly that whole wait (BROKER_READY_TIMEOUT_MS). An
+ * isolated terminal's quit also ends its engine and then exits the host, which on a loaded Windows machine can take
+ * past the grace on its own, with or without a broker; this test does not bound that, and holds it only to the CLI's
+ * step bound, so a quit that hangs still fails.
  */
-const EXIT_BOUND_MS = { "in-process": ENGINE_SHUTDOWN_GRACE_MS, isolated: CLI_START_TIMEOUT_MS } as const;
+const IN_PROCESS_EXIT_BOUND_MS = BROKER_READY_TIMEOUT_MS / 2;
+const EXIT_BOUND_MS = { "in-process": IN_PROCESS_EXIT_BOUND_MS, isolated: CLI_START_TIMEOUT_MS } as const;
 const BROKER_GONE_BOUND_MS = 2_000;
 
 /** A broker that starts, announces itself as a real one does (with when it was created, when asked), and never listens. */

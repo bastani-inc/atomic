@@ -18,6 +18,22 @@ export declare class AdvisoryLock {
   release(): void
 }
 
+/**
+ * A running process and the processes below it, each held through a handle of its own, as `holdProcessDescendants`
+ * found them: while held, none of their ids can be given to another process.
+ */
+export declare class HeldProcessDescendants {
+  /** How many processes below it it holds. */
+  get count(): number
+  /**
+   * Ends the process they are below, and then them, only if it ended that process: one that exited by itself first
+   * leaves them running. Lets go of all of them; returns whether it ended that process.
+   */
+  endAll(): boolean
+  /** Lets go of the processes it holds without ending them. */
+  release(): void
+}
+
 /** A process the host started with [`start_host_process`]. */
 export declare class HostProcess {
   get pid(): number
@@ -549,6 +565,15 @@ export interface GrepResult {
  * True if any match exists; false on no match.
  */
 export declare function hasMatch(content: string | Uint8Array, pattern: string | Uint8Array, ignoreCase?: boolean | undefined | null, multiline?: boolean | undefined | null): boolean
+
+/**
+ * Holds running process `pid` and the processes it started, and those they started, each through a handle, so that
+ * the caller can end `pid` and then them, only if it ended `pid` (`endAll`). `null` once `pid` has exited, off
+ * Windows, and where Windows does not give the order in which processes started. The caller must hold `pid`'s own
+ * handle (a child whose exit it has not seen), so that `pid` names that process. A process whose parent ended before
+ * the call is not found.
+ */
+export declare function holdProcessDescendants(pid: number): HeldProcessDescendants | null
 
 export type HostObservation =
   | { kind: 'foreground'; waitId: string }
