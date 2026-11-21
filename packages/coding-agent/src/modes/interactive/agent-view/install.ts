@@ -37,6 +37,24 @@ export function agentViewSwitcher(
  * hotkey gates follow what the switcher shows, in that order. On the isolated host the engine's panel and `/tasks`
  * reach the switcher through `engine_view_agent`, and learn what it shows through `set_viewed_agent`.
  */
+/**
+ * Tells the engine what the screen shows, with `tell`: when it changes, and when a request ends without showing what
+ * it asked for, since the engine lists the subagent it asked to show while the screen is kept for it.
+ */
+export function tellEngineViewed(
+	switcher: Pick<AgentViewSwitcher, "onChange" | "onPending" | "viewedTaskId">,
+	tell: (taskId: TaskId | undefined) => void,
+): () => void {
+	const stopChange = switcher.onChange(({ to }) => tell(to.kind === "agent" ? to.port.status().taskId : undefined));
+	const stopPending = switcher.onPending((pending, settled) => {
+		if (pending === undefined && settled !== undefined && settled.outcome !== "shown") tell(switcher.viewedTaskId());
+	});
+	return () => {
+		stopChange();
+		stopPending();
+	};
+}
+
 export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 	const switcher = agentViewSwitcher(mode);
 	const undo: (() => void)[] = [
@@ -55,8 +73,7 @@ export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 				});
 			}),
 			runtime.onGenerationEnded(() => switcher.reset("generation-lost")),
-			switcher.onChange(({ to }) => {
-				const taskId = to.kind === "agent" ? to.port.status().taskId : undefined;
+			tellEngineViewed(switcher, (taskId) => {
 				void runtime
 					.requestAgentView({ type: "set_viewed_agent", ...(taskId === undefined ? {} : { taskId }) })
 					.catch(() => {

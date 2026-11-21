@@ -3,6 +3,7 @@ import { describe, test } from "vitest";
 import type { TaskId } from "../src/core/tasks/contracts.js";
 import { AgentViewSwitcher, NOT_SHOWN } from "../src/modes/interactive/agent-view/agent-view-switcher.ts";
 import type { AgentViewChange, AgentViewPort } from "../src/modes/interactive/agent-view/contracts.ts";
+import { tellEngineViewed } from "../src/modes/interactive/agent-view/install.ts";
 import { FakeAgentViewPort } from "./helpers/fake-agent-view-port.ts";
 
 const id = (value: string) => value as TaskId;
@@ -38,6 +39,21 @@ describe("the single chat screen's switcher", () => {
 		assert.equal(shownName(switcher), "second");
 		assert.equal(first.disposed, true);
 		assert.equal(second.disposed, false);
+	});
+
+	test("tells the engine what the screen shows when it changes and when a request ends without showing it", async () => {
+		const port = new FakeAgentViewPort({ taskId: id("b") });
+		const switcher = new AgentViewSwitcher(
+			async (taskId) => (taskId === id("a") ? undefined : port),
+			() => {},
+		);
+		const told: Array<string | undefined> = [];
+		tellEngineViewed(switcher, (taskId) => told.push(taskId));
+		// The engine listed a while the screen was kept for it: it learns the screen still shows main.
+		assert.equal(await switcher.view(id("a"), { keepScreen: true }), false);
+		assert.deepEqual(told, [undefined]);
+		assert.equal(await switcher.view(id("b"), { keepScreen: true }), true);
+		assert.deepEqual(told, [undefined, "b"]);
 	});
 
 	test("gives the screen back to main in the same tick when the shown subagent is gone", async () => {
