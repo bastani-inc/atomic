@@ -282,6 +282,46 @@ function copyInstallation(target: string): string {
 	return join(target, "dist", "utils", "compile-cache-warmup.js");
 }
 
+/** A copied installation and a helper that loads the whole module graph from it. */
+const HELPER_RUN_TIMEOUT_MS = 180_000;
+
+test(
+	"a helper that cannot load the session's modules leaves the cache unmarked (#6132)",
+	async () => {
+		const root = makeTempDirectory("atomic-compile-cache-partial-");
+		const installation = join(root, "installation");
+		const temp = join(root, "temp");
+		mkdirSync(temp, { recursive: true });
+		let helper: ChildProcess | undefined;
+		try {
+			const script = copyInstallation(installation);
+			// An installation an upgrade is replacing: part of it is already gone.
+			rmSync(join(installation, "dist", "index.js"));
+			const launch = compileCacheHelperLaunch({ execArgv: [], nodeOptions: "" }, "partial-test", script, {
+				...process.env,
+				TEMP: temp,
+				TMP: temp,
+				TMPDIR: temp,
+				NODE_COMPILE_CACHE: "",
+			});
+			helper = spawn(launch.command, [...launch.args], {
+				cwd: launch.cwd,
+				env: launch.env,
+				stdio: ["pipe", "ignore", "ignore"],
+			});
+			const code = await new Promise<number | null>((resolve) => helper!.once("exit", resolve));
+			assert.notEqual(code, 0);
+			const cacheBase = join(temp, "node-compile-cache");
+			const markers = [...cacheFiles(cacheBase).keys()].filter((path) => /atomic-warm-/.test(path));
+			assert.deepEqual(markers, []);
+		} finally {
+			if (helper && helper.exitCode === null) helper.kill();
+			rmSync(root, { recursive: true, force: true, maxRetries: 10 });
+		}
+	},
+	HELPER_RUN_TIMEOUT_MS,
+);
+
 /** An upgrade replaces a few hundred files; the helper loads the module graph from them meanwhile. */
 const UPGRADE_DURING_WARMUP_TIMEOUT_MS = 180_000;
 

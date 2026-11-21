@@ -25,16 +25,34 @@ import {
 /** A helper that has not finished by then stops; the next session tries again. */
 export const COMPILE_CACHE_WARMUP_TIME_LIMIT_MS = 5 * 60 * 1000;
 
-/** Modules an interactive session and its engine load at startup, relative to this file; each brings its imports. */
+/**
+ * Modules an interactive session and its engine load at startup, relative to this file; each brings its imports. The
+ * cache is marked warm only when every one of these loaded: one that is missing means the installation changed under
+ * the helper.
+ */
 const SESSION_MODULES = [
 	"../main.js",
 	"../core/http-dispatcher.js",
 	"../cli/settings-startup.js",
 	"../modes/interactive-engine/engine-prewarm.js",
 	"../index.js",
+];
+/** Modules a session loads later; one that cannot load without native modules is compiled by the session instead. */
+const LATER_MODULES = [
 	"highlight.js/lib/index.js",
 	...BUILTIN_PACKAGE_DIR_NAMES.map((name) => `../builtin/${name}/${INSTALLED_EXTENSION_ENTRIES[name]}`),
 ];
+
+async function load(specifier: string): Promise<boolean> {
+	try {
+		await import(specifier.startsWith(".") ? new URL(specifier, import.meta.url).href : specifier);
+		return true;
+	} catch {
+		return false;
+	} finally {
+		nodeModule.flushCompileCache();
+	}
+}
 
 /** End at once: a normal exit would write whatever the cache still holds. */
 function stop(): never {
@@ -72,13 +90,9 @@ async function warm(buildId: string): Promise<number> {
 	const status = (nodeModule.enableCompileCache() as { status?: number }).status;
 	if (status !== nodeModule.constants.compileCacheStatus.ENABLED) return 1;
 	for (const specifier of SESSION_MODULES) {
-		try {
-			await import(specifier.startsWith(".") ? new URL(specifier, import.meta.url).href : specifier);
-		} catch {
-			// A module that cannot load here is compiled by the session that needs it.
-		}
-		nodeModule.flushCompileCache();
+		if (!(await load(specifier))) return 1;
 	}
+	for (const specifier of LATER_MODULES) await load(specifier);
 	mkdirSync(dirname(marker), { recursive: true });
 	closeSync(openSync(marker, "w"));
 	return COMPILE_CACHE_WARMUP_DONE;
