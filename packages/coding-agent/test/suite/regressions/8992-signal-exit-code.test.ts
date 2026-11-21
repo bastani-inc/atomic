@@ -28,7 +28,7 @@ function createSyntheticChildProcess(): ChildProcess {
 }
 // Windows does not expose Unix signal exit-status semantics.
 test.skipIf(process.platform === "win32")("maps a signal-killed child to a non-zero exit code", async () => {
-	const child = spawnProcess("/bin/sh", ["-c", "kill -9 $$"], { stdio: "ignore" });
+	const child = spawnProcess("kill -9 $$", [], { stdio: "ignore", shell: "/bin/sh" });
 
 	const exitCode = await waitForChildProcess(child);
 
