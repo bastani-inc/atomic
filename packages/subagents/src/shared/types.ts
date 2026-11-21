@@ -42,6 +42,8 @@ export interface TaskExecutionHooks {
 		leafSeq?: number;
 	}): void;
 	toolResultsSaved?(toolCallIds: readonly string[]): void;
+	/** The child's session saved the notices of these finished background tasks held for it. */
+	noticesSaved?(completionIds: readonly string[]): void;
 	/**
 	 * The user paused the child from its chat (Esc), or its next turn started after that: recorded so a restart restores
 	 * it as it was. A pause reports the leaf entry of the child's session it was taken at (`null` for an empty session),

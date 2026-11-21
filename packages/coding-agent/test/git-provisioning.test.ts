@@ -24,6 +24,7 @@ import { keptExitedPid } from "../../../test/helpers/exited-process.js";
 import { ENV_AGENT_DIR, ENV_OFFLINE, VERSION } from "../src/config.js";
 import { isPathInside } from "../src/utils/path-inside.js";
 import { getPiUserAgent } from "../src/utils/pi-user-agent.js";
+import type { ToolStatus } from "../src/utils/tools-manager.js";
 
 type GitErrors = typeof import("../src/utils/git-errors.js");
 
@@ -313,6 +314,25 @@ function serveArchive(bytes: Buffer) {
 			return new Response(new Uint8Array(bytes));
 		return new Response("unexpected", { status: 404 });
 	});
+}
+
+/**
+ * Serves the fake release's download once `release` is called, so a test can act while the download is under way:
+ * `requested` settles when the download starts, after its callers were told it is downloading.
+ */
+function holdDownload(bytes: Buffer) {
+	const requested = Promise.withResolvers<void>();
+	const released = Promise.withResolvers<void>();
+	const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+		requested.resolve();
+		await released.promise;
+		return new Response(new Uint8Array(bytes));
+	});
+	return {
+		requested: requested.promise,
+		release: () => released.resolve(),
+		calls: () => fetchMock.mock.calls.length,
+	};
 }
 
 function listLinuxLibraryDirectories(listing: Readonly<Record<string, readonly string[]>>): void {
@@ -1824,6 +1844,8 @@ describe("git resolution details (#4322)", () => {
 
 describe.skipIf(isWindows)("git installation details (#4322)", () => {
 	const healthy = () => releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
+	/** What a caller of a download of the fake release is told while it runs, with no git on the PATH. */
+	const DOWNLOADING = "git not found. Downloading portable git 2.56.0...";
 	const provision = (overrides: Parameters<ToolsManager["withGitProvisionSettingsForTest"]>[0], options = {}) =>
 		tools.withGitProvisionSettingsForTest(overrides, () => tools.resolveGit(options));
 	const failure = (promise: Promise<unknown>) =>
@@ -1872,21 +1894,123 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 
 	it("streams one download's progress to every concurrent caller", async () => {
 		const fake = healthy();
-		const fetchMock = serveArchive(fake.bytes);
+		const download = holdDownload(fake.bytes);
 		const first: string[] = [];
 		const second: string[] = [];
-		await tools.withGitProvisionSettingsForTest({ release: fake.release }, () =>
-			Promise.all([
-				tools.resolveGit({ onStatus: (status) => first.push(status.message) }),
-				tools.resolveGit({ onStatus: (status) => second.push(status.message) }),
-			]),
-		);
-		assert.deepEqual(first, [
-			"git not found. Downloading portable git 2.56.0...",
-			`git 2.56.0 installed to ${installDir}`,
-		]);
+		const toldDownloading = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+		const record = (statuses: string[], told: PromiseWithResolvers<void>) => (status: ToolStatus) => {
+			statuses.push(status.message);
+			if (status.message === DOWNLOADING) told.resolve();
+		};
+		await tools.withGitProvisionSettingsForTest({ release: fake.release }, async () => {
+			const both = Promise.all([
+				tools.resolveGit({ onStatus: record(first, toldDownloading[0]) }),
+				tools.resolveGit({ onStatus: record(second, toldDownloading[1]) }),
+			]);
+			// However long either caller takes to get to the download, it joins it before the download can finish.
+			await Promise.all(toldDownloading.map((told) => told.promise));
+			download.release();
+			await both;
+		});
+		assert.deepEqual(first, [DOWNLOADING, `git 2.56.0 installed to ${installDir}`]);
 		assert.deepEqual(second, first);
-		assert.equal(fetchMock.mock.calls.length, 1);
+		assert.equal(download.calls(), 1);
+	});
+
+	it("tells a caller that joins a download already under way that git is downloading, then its progress", async () => {
+		const fake = healthy();
+		const download = holdDownload(fake.bytes);
+		const first: string[] = [];
+		const second: string[] = [];
+		await tools.withGitProvisionSettingsForTest({ release: fake.release }, async () => {
+			const started = tools.resolveGit({ onStatus: (status) => first.push(status.message) });
+			await download.requested;
+			assert.deepEqual(first, [DOWNLOADING]);
+			const joined = tools.resolveGit({ onStatus: (status) => second.push(status.message) });
+			download.release();
+			await Promise.all([started, joined]);
+		});
+		assert.deepEqual(first, [DOWNLOADING, `git 2.56.0 installed to ${installDir}`]);
+		assert.deepEqual(second, first);
+		assert.equal(download.calls(), 1);
+	});
+
+	it("tells a caller that joins while the download waits for another process's install that it is waiting", async () => {
+		const fake = healthy();
+		serveArchive(fake.bytes);
+		const binDir = join(agentDir, "bin");
+		mkdirSync(binDir, { recursive: true });
+		const releaseLock = await lockfile.lock(binDir, {
+			lockfilePath: join(binDir, "git.install.lock"),
+			realpath: false,
+		});
+		const waiting = "Another Atomic process is installing git. Waiting for it to finish...";
+		const toldWaiting = Promise.withResolvers<void>();
+		const first: string[] = [];
+		const second: string[] = [];
+		await tools.withGitProvisionSettingsForTest({ release: fake.release, lockPollMs: 20 }, async () => {
+			const started = tools.resolveGit({
+				onStatus: (status) => {
+					first.push(status.message);
+					if (status.message === waiting) toldWaiting.resolve();
+				},
+			});
+			await toldWaiting.promise;
+			const joined = tools.resolveGit({ onStatus: (status) => second.push(status.message) });
+			await releaseLock();
+			await Promise.all([started, joined]);
+		});
+		assert.deepEqual(first, [waiting, DOWNLOADING, `git 2.56.0 installed to ${installDir}`]);
+		assert.deepEqual(second, first);
+	});
+
+	it("tells one callback each status of a shared download once, however many of its calls join it", async () => {
+		const fake = healthy();
+		const download = holdDownload(fake.bytes);
+		const statuses: string[] = [];
+		const onStatus = (status: ToolStatus) => statuses.push(status.message);
+		await tools.withGitProvisionSettingsForTest({ release: fake.release }, async () => {
+			const started = tools.resolveGit({ onStatus });
+			await download.requested;
+			const joined = tools.resolveGit({ onStatus });
+			download.release();
+			await Promise.all([started, joined]);
+		});
+		assert.deepEqual(statuses, [DOWNLOADING, `git 2.56.0 installed to ${installDir}`]);
+	});
+
+	it("tells a caller that joins from inside a status callback each status once", async () => {
+		const fake = healthy();
+		serveArchive(fake.bytes);
+		const second: string[] = [];
+		let joined: Promise<unknown> | undefined;
+		const onStatus = (status: ToolStatus) => {
+			if (status.message === DOWNLOADING)
+				joined ??= tools.resolveGit({ onStatus: (late) => second.push(late.message) });
+		};
+		await tools.withGitProvisionSettingsForTest({ release: fake.release }, async () => {
+			await tools.resolveGit({ onStatus });
+			await joined;
+		});
+		assert.deepEqual(second, [DOWNLOADING, `git 2.56.0 installed to ${installDir}`]);
+	});
+
+	it("tells a caller that joins once git is installed nothing about the download it missed", async () => {
+		const fake = healthy();
+		serveArchive(fake.bytes);
+		const second: string[] = [];
+		let joined: Promise<unknown> | undefined;
+		const onStatus = (status: ToolStatus) => {
+			if (status.message.startsWith("git 2.56.0 installed to"))
+				queueMicrotask(() => {
+					joined = tools.resolveGit({ onStatus: (late) => second.push(late.message) });
+				});
+		};
+		await tools.withGitProvisionSettingsForTest({ release: fake.release }, async () => {
+			await tools.resolveGit({ onStatus });
+			assert.equal((await joined!).source, "provisioned");
+		});
+		assert.deepEqual(second, []);
 	});
 
 	it("stops reporting to a caller that cancelled while the others continue", async () => {
