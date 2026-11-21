@@ -6,11 +6,11 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ### Added
 
-- `findTlsCertificateRefusal()`, `getTlsCertificateRefusal()`, `isRefusedCertificate()` and `recordTlsCertificateRefusal()` tell a request refused for its TLS certificate from other connection failures, from the failure's cause chain or a failed assistant message's `provider_tls_certificate_refused` diagnostic ([#6114](https://github.com/bastani-inc/atomic/issues/6114))
+- `findTlsCertificateRefusal()`, `getTlsCertificateRefusal()`, `isRefusedCertificate()`, `isTlsVerificationError()` and `recordTlsCertificateRefusal()` tell a request refused for its TLS certificate from other failures, from the failure's cause chain or a failed assistant message's `provider_tls_certificate_refused` diagnostic. `transportFetch()` and `transportFailure()` report a request's own connection failures, the only ones that count ([#6114](https://github.com/bastani-inc/atomic/issues/6114))
 
 ### Fixed
 
-- A request refused for its endpoint's TLS certificate, such as a self-signed certificate or one from a corporate TLS-inspecting proxy without `NODE_EXTRA_CA_CERTS`, is no longer retried as a network error by the provider SDK retries, the OpenAI Codex SSE retries or `retryAssistantCall()`, and OpenAI Codex no longer falls back from WebSocket to SSE for it. The failed message now names the host, the code and the runtime's reason, and how to trust a private CA, instead of `Connection error.` or `fetch failed`, on every chat adapter. A connection reset during the handshake, and a response whose body quotes a certificate code, are still retried ([#6114](https://github.com/bastani-inc/atomic/issues/6114))
+- A request refused for its endpoint's TLS certificate, such as a self-signed certificate or one from a corporate TLS-inspecting proxy without `NODE_EXTRA_CA_CERTS`, is no longer retried as a network error by the provider SDK retries, the OpenAI Codex SSE retries or `retryAssistantCall()`, and OpenAI Codex no longer falls back from WebSocket to SSE for it. The failed message now names the host, the code and the runtime's reason, and how to trust a private CA, instead of `Connection error.` or `fetch failed`, on every chat adapter. Only a refusal the request's own connection reports counts: a connection reset during the handshake, a response or stream error event whose body names a certificate code, and a failure of a hook such as `onPayload` are still retried as before ([#6114](https://github.com/bastani-inc/atomic/issues/6114))
 
 ## [0.10.2] - 2026-11-20
 

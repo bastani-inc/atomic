@@ -32,7 +32,7 @@ import { getRetryAfterMs } from "../utils/retry-hints.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
-import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
+import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { ownedSlice } from "../utils/text.ts";
 
 export interface PiMessagesOptions extends StreamOptions {
@@ -365,7 +365,7 @@ function createErrorEvent(model: Model<"pi-messages">, error: unknown, aborted: 
 			createAssistantMessageDiagnostic("pi_messages_response_failure", error, error.diagnosticDetails),
 		);
 	}
-	recordTlsCertificateRefusal(assistantMessage, error, model.baseUrl);
+	recordTlsCertificateRefusal(assistantMessage, error);
 
 	return { type: "error", reason, error: assistantMessage };
 }
@@ -416,7 +416,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 				payload = nextPayload;
 			}
 
-			const response = await (options?.fetch ?? globalThis.fetch)(url, {
+			const response = await transportFetch(options?.fetch)(url, {
 				method: "POST",
 				headers: providerHeadersToRecord(
 					getIdentityHeaders(model, options?.identity),

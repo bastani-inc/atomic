@@ -37,7 +37,13 @@ import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
-import { findTlsCertificateRefusal, recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
+import {
+	findTlsCertificateRefusal,
+	isTlsVerificationError,
+	recordTlsCertificateRefusal,
+	transportFailure,
+	transportFetch,
+} from "../utils/tls-certificate.ts";
 import {
 	getDeclaredTools,
 	getInitialSystemMessage,
@@ -438,7 +444,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 					if (attempt > 0 && retryDeadlineReached(options?.retryDeadline))
 						throw new RetryDeadlineError("Request was aborted");
 					try {
-						const fetch = await admitFetch(options?.fetch, streamDeadline.signal);
+						const fetch = transportFetch(await admitFetch(options?.fetch, streamDeadline.signal));
 						if (attempt > 0 && retryDeadlineReached(options?.retryDeadline))
 							throw new RetryDeadlineError("Request was aborted");
 						const headerTimeoutSignal =
@@ -586,7 +592,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			appendProviderResponseFailureDiagnostic(output, error);
 			// Codex's own error events, protocol errors and stream event callbacks are not the connection's TLS (#6114).
-			if (!isCodexNonTransportError(error)) recordTlsCertificateRefusal(output, error, model.baseUrl);
+			if (!isCodexNonTransportError(error)) recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -1220,7 +1226,8 @@ async function connectWebSocket(
 			resolve(socket);
 		};
 		const onError: WebSocketListener = (event) => {
-			fail(extractWebSocketError(event));
+			// The connection to this URL failed before it opened: its own transport failure (#6114).
+			fail(transportFailure(extractWebSocketError(event), url) as Error);
 		};
 		const onClose: WebSocketListener = (event) => {
 			fail(extractWebSocketCloseError(event));
@@ -1346,16 +1353,17 @@ async function acquireWebSocket(
  * How Bun's WebSocket reports a handshake its TLS refused: the runtime's reason after its own prefix, with the
  * certificate's code on the event's error (#6114).
  */
-const WEBSOCKET_TLS_HANDSHAKE_FAILURE = /^WebSocket connection to '[^']*' failed: TLS handshake failed: (.+)$/s;
+// The URL may hold any character, an apostrophe included: the reason follows the last such phrase.
+const WEBSOCKET_TLS_HANDSHAKE_FAILURE = /^WebSocket connection to '.*' failed: TLS handshake failed: (.+)$/s;
 
 /** The certificate a WebSocket's own error event says its TLS refused, as an error with the runtime's reason. */
 function webSocketCertificateRefusal(error: Error): Error | undefined {
-	if (findTlsCertificateRefusal(error) !== undefined) return error;
+	if (isTlsVerificationError(error)) return error;
 	const reason = WEBSOCKET_TLS_HANDSHAKE_FAILURE.exec(error.message)?.[1];
 	const code = (error as { code?: unknown }).code;
 	if (reason === undefined || typeof code !== "string") return undefined;
 	const refusal = Object.assign(new Error(reason, { cause: error }), { code });
-	return findTlsCertificateRefusal(refusal) === undefined ? undefined : refusal;
+	return isTlsVerificationError(refusal) ? refusal : undefined;
 }
 
 function extractWebSocketError(event: unknown): Error {

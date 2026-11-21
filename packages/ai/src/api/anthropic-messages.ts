@@ -42,7 +42,7 @@ import { raceWithAbortSignal } from "../utils/abort.js";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { appendProviderResponseFailureDiagnostic, withCauseDetail } from "../utils/error-body.ts";
-import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
+import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
@@ -838,7 +838,8 @@ class AtomicAnthropic extends Anthropic {
 		};
 		super({
 			...options,
-			fetch: admission?.fetch ?? options.fetch,
+			// Only this client's own requests can be refused a certificate (#6114).
+			fetch: transportFetch(admission?.fetch ?? options.fetch),
 			middleware: admission ? [tokenAdmission, ...(options.middleware ?? [])] : options.middleware,
 		});
 		this.admission = admission;
@@ -1453,7 +1454,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? withCauseDetail(error) : JSON.stringify(error);
 			appendProviderResponseFailureDiagnostic(output, error);
-			recordTlsCertificateRefusal(output, error, model.baseUrl);
+			recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamAttempt.snapshot());
 			stream.push({ type: "error", reason: output.stopReason, error: output });

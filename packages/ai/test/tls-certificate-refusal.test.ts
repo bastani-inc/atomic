@@ -18,6 +18,7 @@ import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
 import { getModel } from "../src/compat.ts";
 import type { Api, AssistantMessage, Model } from "../src/types.ts";
 import { retryProviderRequest } from "../src/utils/provider-retry.ts";
+import { transportFailure } from "../src/utils/tls-certificate.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -46,42 +47,61 @@ function createModel<TApi extends Api>(api: TApi, baseUrl: string): Model<TApi> 
 	};
 }
 
-type Turn = (baseUrl: string) => Promise<AssistantMessage>;
+/** A caller's hook on the request, as the SDK and extensions pass one. */
+interface Hooks {
+	readonly onPayload?: () => Promise<undefined>;
+}
+type Turn = (baseUrl: string, hooks?: Hooks) => Promise<AssistantMessage>;
 const options = { apiKey: "test-key", maxRetries: SDK_RETRIES };
 
 const TURNS: Readonly<Record<string, Turn>> = {
-	Anthropic: (baseUrl) => streamAnthropic(createModel("anthropic-messages", baseUrl), context, options).result(),
-	"OpenAI Completions": (baseUrl) =>
-		streamOpenAICompletions(createModel("openai-completions", `${baseUrl}/v1`), context, options).result(),
-	"OpenAI Responses": (baseUrl) =>
-		streamOpenAIResponses(createModel("openai-responses", `${baseUrl}/v1`), context, options).result(),
-	"OpenAI Codex": (baseUrl) =>
+	Anthropic: (baseUrl, hooks) =>
+		streamAnthropic(createModel("anthropic-messages", baseUrl), context, { ...options, ...hooks }).result(),
+	"OpenAI Completions": (baseUrl, hooks) =>
+		streamOpenAICompletions(createModel("openai-completions", `${baseUrl}/v1`), context, {
+			...options,
+			...hooks,
+		}).result(),
+	"OpenAI Responses": (baseUrl, hooks) =>
+		streamOpenAIResponses(createModel("openai-responses", `${baseUrl}/v1`), context, {
+			...options,
+			...hooks,
+		}).result(),
+	"OpenAI Codex": (baseUrl, hooks) =>
 		streamOpenAICodexResponses(createModel("openai-codex-responses", baseUrl), context, {
 			...options,
+			...hooks,
 			apiKey: CODEX_TOKEN,
 			transport: "sse",
 		}).result(),
-	"Azure OpenAI Responses": (baseUrl) =>
-		streamAzureOpenAIResponses(
-			createModel("azure-openai-responses", `${baseUrl}/openai/v1`),
-			context,
-			options,
-		).result(),
-	"Google Gemini": (baseUrl) =>
-		streamGoogleGenerativeAI(createModel("google-generative-ai", baseUrl), context, options).result(),
-	"Google Vertex": (baseUrl) =>
+	"Azure OpenAI Responses": (baseUrl, hooks) =>
+		streamAzureOpenAIResponses(createModel("azure-openai-responses", `${baseUrl}/openai/v1`), context, {
+			...options,
+			...hooks,
+		}).result(),
+	"Google Gemini": (baseUrl, hooks) =>
+		streamGoogleGenerativeAI(createModel("google-generative-ai", baseUrl), context, {
+			...options,
+			...hooks,
+		}).result(),
+	"Google Vertex": (baseUrl, hooks) =>
 		streamGoogleVertex(createModel("google-vertex", baseUrl), context, {
 			...options,
+			...hooks,
 			project: "test-project",
 			location: "us-central1",
 		}).result(),
-	Mistral: (baseUrl) => streamMistral(createModel("mistral-conversations", baseUrl), context, options).result(),
-	"Amazon Bedrock": (baseUrl) => {
+	Mistral: (baseUrl, hooks) =>
+		streamMistral(createModel("mistral-conversations", baseUrl), context, { ...options, ...hooks }).result(),
+	"pi-messages": (baseUrl, hooks) =>
+		streamPiMessages(createModel("pi-messages", baseUrl), context, { ...options, ...hooks }).result(),
+	"Amazon Bedrock": (baseUrl, hooks) => {
 		const model = getModel(
 			"amazon-bedrock",
 			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
 		) as Model<"bedrock-converse-stream">;
 		return streamBedrock({ ...model, baseUrl }, context, {
+			...hooks,
 			cacheRetention: "none",
 			maxRetries: SDK_RETRIES,
 			env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
@@ -123,7 +143,8 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 		"%s sends it once and names the certificate, its host and NODE_EXTRA_CA_CERTS (#6114)",
 		async (adapter) => {
 			const endpoint = await selfSignedEndpoint();
-			const message = await TURNS[adapter](endpoint.baseUrl);
+			// A hook that succeeds leaves the request's own connection to decide.
+			const message = await TURNS[adapter](endpoint.baseUrl, { onPayload: async () => undefined });
 
 			assert.equal(message.stopReason, "error");
 			assert.equal(endpoint.connections(), 1, `${adapter} asked again: ${message.errorMessage}`);
@@ -144,9 +165,10 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 	);
 
 	it("OpenAI Codex over WebSocket does not fall back to SSE for a certificate the WebSocket refused (#6114)", async () => {
-		// Bun's WebSocket error event: the runtime's reason after its own prefix, and the code on the event's error.
+		// Bun's WebSocket error event: the runtime's reason after its own prefix, and the code on the event's error. The
+		// endpoint's path holds an apostrophe, as a URL may.
 		const failure =
-			"WebSocket connection to 'wss://chatgpt.test/backend-api/codex/responses' failed: TLS handshake failed: self signed certificate";
+			"WebSocket connection to 'wss://chatgpt.test/o'hara/backend-api/codex/responses' failed: TLS handshake failed: self signed certificate";
 		class RefusedWebSocket extends EventTarget {
 			constructor() {
 				super();
@@ -166,7 +188,7 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 		vi.stubGlobal("WebSocket", RefusedWebSocket);
 
 		const message = await streamOpenAICodexResponses(
-			createModel("openai-codex-responses", "https://chatgpt.test/backend-api"),
+			createModel("openai-codex-responses", "https://chatgpt.test/o'hara/backend-api"),
 			context,
 			{ apiKey: CODEX_TOKEN, transport: "auto", fetch },
 		).result();
@@ -219,6 +241,60 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 			assert.equal(fetch.mock.calls.length, 1, error.message);
 			assert.deepEqual(tlsDiagnostics(message), [], message.errorMessage);
 		}
+	});
+
+	it.each(Object.keys(TURNS))(
+		"%s does not blame its endpoint for a certificate a hook's own request was refused (#6114)",
+		async (adapter) => {
+			// The hook asks another host, whose certificate is self-signed; the model's endpoint is never reached.
+			const elsewhere = await selfSignedEndpoint();
+			let connections = 0;
+			const endpoint = createHttpServer((request, response) => {
+				connections++;
+				request.resume();
+				response.end();
+			});
+			servers.push(endpoint);
+			await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
+			const address = endpoint.address();
+			assert.ok(address !== null && typeof address === "object");
+
+			const message = await TURNS[adapter](`http://127.0.0.1:${address.port}`, {
+				onPayload: async () => {
+					await fetch(elsewhere.baseUrl);
+					return undefined;
+				},
+			});
+
+			assert.equal(message.stopReason, "error");
+			assert.equal(connections, 0);
+			assert.deepEqual(tlsDiagnostics(message), [], message.errorMessage);
+			assert.equal(message.errorMessage?.includes("NODE_EXTRA_CA_CERTS"), false, message.errorMessage);
+		},
+	);
+
+	it("a fetch that rejects every request with one shared error names each request's own host, and a hook that throws that error is not a refusal (#6114)", async () => {
+		// As a fetch with a circuit breaker does: the first failure, kept and thrown again for every request.
+		const shared = new TypeError("fetch failed", {
+			cause: Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" }),
+		});
+		const failing: typeof fetch = Object.assign(async () => {
+			throw shared;
+		}, globalThis.fetch);
+		const turn = (baseUrl: string, hooks?: Hooks) =>
+			streamPiMessages(createModel("pi-messages", baseUrl), context, { apiKey: "test-key", fetch: failing, ...hooks }).result();
+
+		const [first, second] = await Promise.all([turn("https://first.test"), turn("https://second.test")]);
+		assert.ok(first.errorMessage?.startsWith("The TLS certificate for first.test was not accepted"), first.errorMessage);
+		assert.ok(second.errorMessage?.startsWith("The TLS certificate for second.test was not accepted"), second.errorMessage);
+
+		const hooked = await turn("https://third.test", {
+			onPayload: async () => {
+				throw shared;
+			},
+		});
+		assert.equal(hooked.stopReason, "error");
+		assert.deepEqual(tlsDiagnostics(hooked), [], hooked.errorMessage);
 	});
 
 	it("a failed assistant message read back from JSON is still not retried (#6114)", async () => {
@@ -382,10 +458,13 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 	});
 
 	it("a certificate code on an error that also carries a response's status, at any depth, is not a refusal (#6114)", async () => {
-		// The runtime's own wording, but over an answer with a status.
-		const answered = Object.assign(
-			new Error("certificate has expired", { cause: Object.assign(new Error("502"), { status: 502 }) }),
-			{ code: "CERT_HAS_EXPIRED" },
+		// The runtime's own wording on the request's own rejection, but over an answer with a status.
+		const answered = transportFailure(
+			Object.assign(
+				new Error("certificate has expired", { cause: Object.assign(new Error("502"), { status: 502 }) }),
+				{ code: "CERT_HAS_EXPIRED" },
+			),
+			"https://llm.test/v1",
 		);
 		let requests = 0;
 		await retryProviderRequest(
@@ -462,15 +541,13 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 			await retryProviderRequest(
 				async () => {
 					count++;
-					// As the OpenAI and Anthropic SDKs report a connection failure: no status or headers, the reason in the
+					// As the OpenAI and Anthropic SDKs report their fetch's rejection: no status or headers, the reason in the
 					// causes.
-					throw Object.assign(
-						new Error("Connection error.", { cause: new TypeError("fetch failed", { cause }) }),
-						{
-							status: undefined,
-							headers: undefined,
-						},
-					);
+					const rejection = transportFailure(new TypeError("fetch failed", { cause }), "https://llm.test/v1");
+					throw Object.assign(new Error("Connection error.", { cause: rejection }), {
+						status: undefined,
+						headers: undefined,
+					});
 				},
 				{ maxRetries: 1 },
 			).catch(() => {});

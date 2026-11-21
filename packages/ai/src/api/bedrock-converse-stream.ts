@@ -55,7 +55,7 @@ import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { type InlineImageMimeType, inlineImageMimeType, unsupportedImagePlaceholder } from "../utils/inline-images.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
-import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
+import { recordTlsCertificateRefusal, transportFailure } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
@@ -278,6 +278,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		try {
 			const supportsStrictMode = model.compat?.supportsStrictMode ?? false;
 			const client = new BedrockRuntimeClient(config);
+			addTransportFailureMiddleware(client);
 			let observedRawResponse = false;
 			if (options.onResponse) {
 				addResponseHeadersMiddleware(client, options.onResponse, model, () => {
@@ -423,7 +424,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				typeof error === "object" && error !== null ? getProviderRetryAfterMs(error) : undefined;
 			if (output.stopReason === "error") {
 				appendBedrockFailureDiagnostic(output, error, responseRequestId);
-				recordTlsCertificateRefusal(output, error, model.baseUrl);
+				recordTlsCertificateRefusal(output, error);
 			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -560,6 +561,26 @@ function bedrockUserAgent(identity: ClientIdentity | undefined): string | [strin
  * SigV4 / auth headers (`x-amz-*`, `authorization`, `host`) are silently skipped;
  * all other caller headers override any existing same-named header on the request.
  */
+/**
+ * Reports what the HTTP handler rejects with, below every response, as the request's own transport failure for its
+ * host, so only a refused certificate on that connection is read as one (#6114).
+ */
+function addTransportFailureMiddleware(client: BedrockRuntimeClient): void {
+	const middleware: DeserializeMiddleware<object, MetadataBearer> = (next) => async (args) => {
+		try {
+			return await next(args);
+		} catch (error) {
+			const request = args.request as Partial<{ protocol: string; hostname: string; port: number }> | undefined;
+			if (!request?.hostname) throw error;
+			throw transportFailure(
+				error,
+				`${request.protocol ?? "https:"}//${request.hostname}${request.port ? `:${request.port}` : ""}`,
+			);
+		}
+	};
+	client.middlewareStack.add(middleware, { step: "deserialize", name: "atomic-transport-failure", priority: "low" });
+}
+
 function addCustomHeadersMiddleware(client: BedrockRuntimeClient, headers: Record<string, string>): void {
 	const middleware: BuildMiddleware<object, MetadataBearer> = (next) => async (args) => {
 		const request = args.request;

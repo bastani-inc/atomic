@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:https";
+import { transportFailure } from "@bastani/atomic-ai";
 import { stream as streamOpenAICompletions } from "@bastani/atomic-ai/api/openai-completions";
 import type { AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { normalizeContext } from "@bastani/atomic-ai/compat";
@@ -76,13 +77,25 @@ test("a model request refused for its TLS certificate is not retried on the same
 	}
 });
 
-test("a thrown failure whose causes carry a refused certificate is classified the same way (#6114)", () => {
+test("a thrown failure of the request's own connection whose causes carry a refused certificate is classified the same way (#6114)", () => {
 	const refusal = Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" });
-	const thrown = new Error("Connection error.", { cause: new TypeError("fetch failed", { cause: refusal }) });
+	const rejection = transportFailure(
+		new TypeError("fetch failed", { cause: refusal }),
+		"https://llm.internal.test/v1",
+	);
+	const thrown = new Error("Connection error.", { cause: rejection });
 
 	assert.equal(normalizeModelFailureSignal(thrown).kind, "certificate_refused");
 	assert.equal(isRetryableSameModelFailure(thrown), false);
 	assert.equal(isRetryableModelFailure(thrown), true);
+});
+
+test("the same failure thrown by anything but the request's own connection is classified as before (#6114)", () => {
+	const refusal = Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" });
+	const thrown = new Error("Connection error.", { cause: new TypeError("fetch failed", { cause: refusal }) });
+
+	assert.notEqual(normalizeModelFailureSignal(thrown).kind, "certificate_refused");
+	assert.equal(isRetryableSameModelFailure(thrown), true);
 });
 
 test("a connection reset, and a 502 whose body quotes a certificate code, keep their same-model retries (#6114)", () => {

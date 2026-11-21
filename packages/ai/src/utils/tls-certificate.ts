@@ -124,10 +124,14 @@ export function isRefusedCertificate(code: string, reason: string): boolean {
 	return UNSPECIFIED_CERTIFICATE_REASONS.some((known) => text.startsWith(known));
 }
 
-/** A certificate TLS verification refused: its code, and the runtime's reason for it ("" when it names none). */
+/**
+ * A certificate TLS verification refused: its code, the runtime's reason for it ("" when it names none), and the host
+ * the request's connection was for, when known.
+ */
 export interface TlsCertificateRefusal {
 	readonly code: string;
 	readonly reason: string;
+	readonly host?: string;
 }
 
 /** The diagnostic a failed assistant message carries for a refused certificate, so retries decide on it. */
@@ -187,6 +191,17 @@ function isVerificationMessage(code: string, message: string): boolean {
 }
 
 /**
+ * Whether `error` is itself what the runtime's TLS reports for a certificate it refused: a certificate code with the
+ * runtime's own reason for it. Says nothing about which connection it was; see `findTlsCertificateRefusal`.
+ */
+export function isTlsVerificationError(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) return false;
+	const { code, message } = error as { code?: unknown; message?: unknown };
+	const text = typeof message === "string" ? message.trim() : "";
+	return typeof code === "string" && isRefusedCertificate(code, text) && isVerificationMessage(code, text);
+}
+
+/**
  * Whether `value` came from a response: an HTTP status as SDK errors carry it, including pi-messages' recorded one, or
  * the response headers an SDK error for an error event inside a successful response keeps.
  */
@@ -210,27 +225,97 @@ function isResponseError(value: object): boolean {
 }
 
 /**
- * The refused certificate a failed request's error carries along its cause chain, as Node's fetch (`fetch failed`),
- * Bun's fetch and the provider SDKs (`Connection error.`) wrap it; undefined for any other failure. It takes an error's
- * own code with the runtime's own reason for it, and a failure that got a response is never one: a 502, or an error
- * event in a stream, whose body names a certificate code is the provider's answer.
+ * The errors a request's own transport (its fetch, WebSocket or HTTP handler) was refused a certificate with, each a
+ * wrapper made for that one rejection, with the host it was for. Errors the transport rejected with are never marked
+ * themselves: a fetch may share one error object between requests, and a hook may throw it again.
+ */
+const transportRefusals = new WeakMap<Error, string>();
+
+/** The `host[:port]` of `url`, without credentials, path or query; undefined when it is not a URL. */
+function hostOf(url: string | URL | undefined): string | undefined {
+	if (url === undefined || (typeof url === "string" && url.trim() === "")) return undefined;
+	try {
+		return new URL(url).host || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Whether `error`'s cause chain carries the runtime's TLS verification error, and nothing from a response. */
+function carriesVerificationError(error: unknown): boolean {
+	let found = false;
+	let current = error;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		if (isResponseError(current)) return false;
+		found ||= isTlsVerificationError(current);
+		current = (current as { cause?: unknown }).cause;
+	}
+	return found;
+}
+
+/**
+ * What a request's own connection to `url` failed with, before any response, as the request should throw it (#6114):
+ * when the runtime's TLS refused a certificate, a new error made for this rejection alone, with `error` as its cause and
+ * its message, which `findTlsCertificateRefusal` reads as a refused certificate for `url`'s host; otherwise `error`
+ * itself. A hook, a callback or another request that fails the same way never goes through here.
+ */
+export function transportFailure(error: unknown, url: string | URL | undefined): unknown {
+	const host = hostOf(url);
+	if (host === undefined || !carriesVerificationError(error)) return error;
+	const message = error instanceof Error ? error.message : String(error);
+	const refusal = error instanceof TypeError ? new TypeError(message, { cause: error }) : new Error(message, { cause: error });
+	transportRefusals.set(refusal, host);
+	return refusal;
+}
+
+/** The URL a fetch call asks for. */
+function requestUrl(input: Parameters<typeof globalThis.fetch>[0]): string | URL {
+	return typeof input === "string" || input instanceof URL ? input : input.url;
+}
+
+/**
+ * `fetch` (the global one when undefined, read at each call), whose rejections are the request's own transport failures
+ * for their URL (see `transportFailure`). Responses, and the errors of reading them, are untouched.
+ */
+export function transportFetch(fetch: typeof globalThis.fetch | undefined): typeof globalThis.fetch {
+	return Object.assign(
+		async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+			try {
+				return await (fetch ?? globalThis.fetch)(input, init);
+			} catch (error) {
+				throw transportFailure(error, requestUrl(input));
+			}
+		},
+		fetch ?? globalThis.fetch,
+	);
+}
+
+/**
+ * The refused certificate a failed request's error carries: a rejection of the request's own transport (see
+ * `transportFailure`), wrapped or not by an SDK (`Connection error.`), whose cause chain carries a certificate code
+ * with the runtime's own reason for it (Node's fetch: `fetch failed` over the TLS error; Bun's fetch: the code on its
+ * own error). Undefined for any other failure: a response or any link from one, a body or stream event that relays a
+ * code, a hook's or callback's failure, another request's.
  */
 export function findTlsCertificateRefusal(error: unknown): TlsCertificateRefusal | undefined {
+	let host: string | undefined;
 	let refusal: TlsCertificateRefusal | undefined;
 	let current = error;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
 		// Any link from a response, above or below the code, means the request got an answer.
 		if (isResponseError(current)) return undefined;
+		if (current instanceof Error) host ??= transportRefusals.get(current);
 		const { code, message } = current as { code?: unknown; message?: unknown };
 		const text = typeof message === "string" ? message.trim() : "";
 		if (
+			host !== undefined &&
 			refusal === undefined &&
 			typeof code === "string" &&
 			isRefusedCertificate(code, text) &&
 			isVerificationMessage(code, text)
 		) {
 			// Bun's fetch names the code and the URL instead of a reason; the URL can carry credentials.
-			refusal = { code, reason: text.startsWith(code) || text.includes("://") ? "" : text };
+			refusal = { code, reason: text.startsWith(code) || text.includes("://") ? "" : text, host };
 		}
 		current = (current as { cause?: unknown }).cause;
 	}
@@ -239,38 +324,28 @@ export function findTlsCertificateRefusal(error: unknown): TlsCertificateRefusal
 
 const NAME_MISMATCH_CODES: ReadonlySet<string> = new Set(["ERR_TLS_CERT_ALTNAME_INVALID", "HOSTNAME_MISMATCH"]);
 
-/** The `host[:port]` of `url`, without credentials, path or query; undefined when it is not a URL. */
-function hostOf(url: string | undefined): string | undefined {
-	if (url === undefined || url.trim() === "") return undefined;
-	try {
-		return new URL(url).host || undefined;
-	} catch {
-		return undefined;
-	}
-}
-
 /**
- * What to tell the user about a refused certificate: the host it was shown for, when known, the code and the runtime's
- * reason, and how to have it accepted.
+ * What to tell the user about a refused certificate: the host the connection was for, when known, the code and the
+ * runtime's reason, and how to have it accepted.
  */
-export function describeTlsCertificateRefusal(refusal: TlsCertificateRefusal, host?: string): string {
+export function describeTlsCertificateRefusal(refusal: TlsCertificateRefusal): string {
 	const what = refusal.reason === "" ? refusal.code : `${refusal.code}: ${refusal.reason}`;
 	const fix = NAME_MISMATCH_CODES.has(refusal.code)
 		? "Use a base URL whose host name the certificate names"
 		: "If the endpoint, or a proxy on the way to it, uses a certificate from a private or corporate CA, set NODE_EXTRA_CA_CERTS to a PEM file with that CA and restart";
-	const whose = host === undefined ? "" : ` for ${host}`;
+	const whose = refusal.host === undefined ? "" : ` for ${refusal.host}`;
 	return `The TLS certificate${whose} was not accepted (${what}). ${fix}. The request is not retried`;
 }
 
 /**
- * When `error`, a failed request to `url`, is a refused certificate: names it in `output`'s message and records it as
- * a `provider_tls_certificate_refused` diagnostic, so no retry sends the request again. Returns whether it was one.
+ * When `error` is a refused certificate on the request's own connection: names it in `output`'s message and records it
+ * as a `provider_tls_certificate_refused` diagnostic, so no retry sends the request again. Returns whether it was one.
  */
-export function recordTlsCertificateRefusal(output: AssistantMessage, error: unknown, url?: string): boolean {
+export function recordTlsCertificateRefusal(output: AssistantMessage, error: unknown): boolean {
 	if (output.stopReason !== "error") return false;
 	const refusal = findTlsCertificateRefusal(error);
 	if (refusal === undefined) return false;
-	output.errorMessage = describeTlsCertificateRefusal(refusal, hostOf(url));
+	output.errorMessage = describeTlsCertificateRefusal(refusal);
 	appendAssistantMessageDiagnostic(output, {
 		type: TLS_CERTIFICATE_REFUSED_DIAGNOSTIC,
 		timestamp: Date.now(),
