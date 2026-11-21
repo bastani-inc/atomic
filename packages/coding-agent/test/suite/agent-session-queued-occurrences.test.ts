@@ -153,18 +153,19 @@ describe("queued messages", () => {
 		assert.deepEqual(getUserTexts(h), ["first", "taken"], "sent once");
 	});
 
-	it("a message a turn took is queued again, first, when the run ends before it starts, and waits for the next message", async () => {
+	it("a message a turn took is queued again, first, when the run ends before it starts, and the queue goes on", async () => {
 		const waiting = waitingTool();
 		const h = await harness([waiting.tool]);
 		h.setResponses([
 			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("answered next"),
-			fauxAssistantMessage("answered taken"),
+			fauxAssistantMessage("answered the steer"),
+			fauxAssistantMessage("answered the follow-up"),
 		]);
 		const held = holdNextTurnPreparation(h, true);
 		const run = h.session.prompt("first");
 		await waiting.started;
 		await h.session.steer("taken");
+		await h.session.followUp("later");
 		waiting.release();
 		await held.entered;
 		const queueUpdates: string[][] = [];
@@ -173,20 +174,53 @@ describe("queued messages", () => {
 		});
 		held.release();
 		await run.catch(() => {});
+		await h.session.agent.waitForIdle();
 		unsubscribe();
 
-		// Never lost: listed again, and queued, until it is sent or taken back. The run that failed before starting it
-		// made no progress, so the queue is not continued on its own after it: the next message sends it.
-		assert.deepEqual(getUserTexts(h), ["first"]);
-		assert.deepEqual(h.session.getSteeringMessages(), ["taken"], "listed again");
+		// Never lost: listed again, first, and sent once as the queue goes on after the failed run, as it does for the
+		// messages the run had not taken.
 		assert.ok(
 			queueUpdates.some((steering) => steering.includes("taken")),
-			"the chat is told",
+			"listed again",
 		);
-		await h.session.prompt("next");
-		assert.equal(getUserTexts(h).filter((text) => text === "taken").length, 1, "sent once");
+		assert.deepEqual(getUserTexts(h), ["first", "taken", "later"]);
 		assert.deepEqual(h.session.getSteeringMessages(), []);
+		assert.deepEqual(h.session.getFollowUpMessages(), []);
 		assert.deepEqual(queuedMessagesUnderWay(h.session).steering, []);
+	});
+
+	it("a queued message whose run fails before it starts a second time is dropped, not tried again", async () => {
+		const waiting = waitingTool();
+		const h = await harness([waiting.tool]);
+		h.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("never asked"),
+		]);
+		const held = holdNextTurnPreparation(h, true);
+		// From the failed preparation on, every run fails as it starts, before its messages do.
+		let refusing = false;
+		let refusals = 0;
+		h.session.agent.subscribe((event) => {
+			if (event.type === "agent_start" && refusing) {
+				refusals++;
+				throw new Error("refused at start");
+			}
+		});
+		const run = h.session.prompt("first");
+		await waiting.started;
+		await h.session.followUp("again");
+		waiting.release();
+		await held.entered;
+		refusing = true;
+		held.release();
+		await run.catch(() => {});
+		await h.session.agent.waitForIdle();
+
+		// The run after the failed one takes it and fails before starting it: queued again. The next takes it and fails
+		// the same way: dropped. No run takes it a third time.
+		assert.equal(refusals, 2, "taken twice, then dropped: no run repeats it");
+		assert.deepEqual(h.session.getFollowUpMessages(), [], "not left listed");
+		assert.deepEqual(getUserTexts(h), ["first"]);
 	});
 
 	it("a prompt with the text of a queued message leaves that message queued: both are sent, each once", async () => {
