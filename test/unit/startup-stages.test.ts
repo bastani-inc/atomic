@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "vitest";
+import { markerPlace, readModule } from "../../packages/coding-agent/scripts/startup-stages-source.mjs";
 import {
 	bunExecutable,
 	makeTempDirectory,
@@ -122,4 +123,40 @@ process.exit(0);
 		},
 		WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
 	);
+});
+
+describe("how the stages build reads a module", () => {
+	test("anything that awaits while the module runs counts as a top-level await", () => {
+		for (const source of [
+			"await gate;",
+			"const value = await gate;",
+			"for await (const item of items) {}",
+			"await using resource = open();",
+			"class Child extends (await gate) {}",
+			"class Child { [await gate]() {} }",
+			"class Child { [await gate] = 1; }",
+			"export default class extends (await gate) {}",
+			"label: { await gate; }",
+		])
+			assert.equal(readModule(source).topLevelAwait, true, source);
+	});
+
+	test("an await that runs later, in a function or a method, does not", () => {
+		for (const source of [
+			"async function load() { await gate; }",
+			"const load = async () => await gate;",
+			"class Child { async load() { await gate; } }",
+			"class Child { static { const value = 1; } static field = 1; }",
+			"export const value = 1;",
+		])
+			assert.equal(readModule(source).topLevelAwait, false, source);
+	});
+
+	test("the trace's marker goes after a CommonJS module's directives, which then still apply", () => {
+		const strict = "'use strict'\nmodule.exports = 1;";
+		const { at, before } = markerPlace(strict, "commonjs");
+		assert.equal(`${strict.slice(0, at)}${before}MARK${strict.slice(at)}`, "'use strict';MARK\nmodule.exports = 1;");
+		assert.deepEqual(markerPlace("#!/usr/bin/env node\nexport {};", "module"), { at: 20, before: "" });
+		assert.deepEqual(markerPlace("module.exports = 1;", "commonjs"), { at: 0, before: "" });
+	});
 });

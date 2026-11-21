@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parse } from "acorn";
+import { markerPlace, readModule } from "./startup-stages-source.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(packageRoot, "dist");
@@ -87,8 +87,8 @@ async function trace(outFile) {
 			marked.push(url);
 			const source = typeof result.source === "string" ? result.source : Buffer.from(result.source).toString("utf8");
 			const marker = `globalThis.__atomicStartupStagesTrace.push(${JSON.stringify(url)});`;
-			const lineEnd = source.startsWith("#!") ? source.indexOf("\n") + 1 : 0;
-			return { ...result, source: `${source.slice(0, lineEnd)}${marker}${source.slice(lineEnd)}` };
+			const { at, before } = markerPlace(source, result.format);
+			return { ...result, source: `${source.slice(0, at)}${before}${marker}${source.slice(at)}` };
 		},
 	});
 	// What `cli.js` itself imports, then the early editor's graph.
@@ -100,27 +100,6 @@ async function trace(outFile) {
 	beforeEntries = false;
 	await Promise.all(ENTRIES.map((path) => import(new URL(path, distUrl).href)));
 	writeFileSync(outFile, JSON.stringify({ order: ran, resolutions, formats, loadedBefore, marked }));
-}
-
-/** An ES module's static import specifiers in source order (`import`, `export … from`), and whether it awaits at its top level. */
-function readModule(source) {
-	const program = parse(source, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
-	const specifiers = [];
-	for (const node of program.body) {
-		if (
-			(node.type === "ImportDeclaration" || node.type === "ExportAllDeclaration" || node.type === "ExportNamedDeclaration") &&
-			node.source
-		)
-			specifiers.push(node.source.value);
-	}
-	const awaits = (node) => {
-		if (!node || typeof node.type !== "string" || /Function|Class/.test(node.type)) return false;
-		if (node.type === "AwaitExpression" || (node.type === "ForOfStatement" && node.await)) return true;
-		return Object.entries(node).some(([key, value]) =>
-			key === "loc" ? false : Array.isArray(value) ? value.some(awaits) : value !== null && typeof value === "object" && awaits(value),
-		);
-	};
-	return { specifiers, topLevelAwait: program.body.some(awaits) };
 }
 
 function planStages(order, resolutions, formats, ranBefore, marked) {
