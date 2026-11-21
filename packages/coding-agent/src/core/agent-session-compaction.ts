@@ -98,6 +98,8 @@ export interface PlannedVerbatimCompaction {
 	readonly systemTokens: number;
 	readonly usage?: Usage;
 	readonly fromExtension: boolean;
+	/** Last entry the boundary covers, when entries after it stay in the context. */
+	readonly coveredThroughEntryId?: string;
 }
 
 /** Whether the agent can search and read its own history with its own tools. */
@@ -264,6 +266,19 @@ function contextAfterBoundary(
 	return { tokens, trigger: model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens };
 }
 
+/** The boundary message text an automatic clear writes when nothing replaces the earlier conversation. */
+export function automaticBoundaryText(session: AgentSession): string {
+	return buildBoundaryText(
+		{
+			sessionId: session.sessionManager.getSessionId(),
+			tokensBefore: 0,
+			entriesBefore: 0,
+			access: historyAccess(session),
+		},
+		0,
+	);
+}
+
 /** Whether the system prompt plus the boundary message stays below the automatic compaction trigger. */
 function fitsBelowTrigger(
 	session: AgentSession,
@@ -309,6 +324,7 @@ export async function planVerbatimCompaction(
 		...(instructions ? { instructions } : {}),
 		access: historyAccess(this),
 		systemTokens: systemMessage ? estimateTokens(systemMessage) : 0,
+		...(options.coveredThroughEntryId ? { coveredThroughEntryId: options.coveredThroughEntryId } : {}),
 	} satisfies Partial<PlannedVerbatimCompaction>;
 	// An automatic clear that cannot bring the context below the trigger would only destroy context and fire again.
 	if (options.reason !== "manual" && !fitsBelowTrigger(this, base)) return undefined;
@@ -435,7 +451,7 @@ export async function appendVerbatimBoundary(
 		planned.tokensBefore,
 		buildPlannedBoundary(planned, sessionId, 0).details,
 		planned.usage,
-		undefined,
+		planned.coveredThroughEntryId,
 		signal
 			? () => {
 					if (signal.aborted) throw new Error("Compaction cancelled");
@@ -504,7 +520,11 @@ export async function _applyVerbatimCompaction(
 		if (options.reason === "manual") throw new Error(PENDING_TOOL_CALL_MESSAGE);
 		return undefined;
 	}
-	const planned = await planVerbatimCompaction.call(this, options, branch);
+	const covered = options.coveredThroughEntryId
+		? branch.findIndex((entry) => entry.id === options.coveredThroughEntryId)
+		: branch.length - 1;
+	if (covered === -1) return undefined;
+	const planned = await planVerbatimCompaction.call(this, options, branch.slice(0, covered + 1));
 	if (!planned) return undefined;
 	const appended = await appendVerbatimBoundary.call(this, planned, {
 		backupLabel: options.backupLabel,

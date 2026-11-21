@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Worker } from "node:worker_threads";
-import { evalWorkerExecArgv } from "../utils/worker-threads.js";
+import { EVAL_WORKER_BUILTIN, evalWorkerExecArgv } from "../utils/worker-threads.js";
 
 const QUEUED = 0;
 const WRITING = 1;
@@ -10,9 +10,10 @@ const CLAIMED = 3;
 const FAILED = 4;
 
 const SOURCE = `
-const { parentPort } = require("node:worker_threads");
-const { appendFileSync, mkdirSync } = require("node:fs");
-const { dirname } = require("node:path");
+${EVAL_WORKER_BUILTIN}
+const { parentPort } = builtin("node:worker_threads");
+const { appendFileSync, mkdirSync } = builtin("node:fs");
+const { dirname } = builtin("node:path");
 parentPort.on("message", ({ id, path, chunk, state: buffer, createDirectory }) => {
 	const state = new Int32Array(buffer);
 	if (Atomics.compareExchange(state, 0, ${QUEUED}, ${WRITING}) !== ${QUEUED}) {

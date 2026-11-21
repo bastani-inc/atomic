@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { asyncScope } from "../../core/async-scope.ts";
 import { type InitialBind, initialBindScope } from "../../core/extension-startup-close.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
@@ -9,7 +9,7 @@ export interface EventStartup {
 	strict: boolean;
 	open?: WeakRef<object>;
 }
-export const eventStartupScope = new AsyncLocalStorage<EventStartup>();
+export const eventStartupScope = asyncScope<EventStartup>();
 
 /** Bind the eager startup session without letting the reusable runtime path append its disclosure. */
 export async function bindInitialEagerSession(mode: InteractiveModeBase): Promise<void> {
