@@ -7,6 +7,7 @@ import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import {
 	TWO_BROKER_STORAGE_PREFIX,
+	type TwoBrokerClient,
 	TwoBrokerHarness,
 	type TwoBrokerHarnessOptions,
 	twoBrokerHarnessStartTimeoutMs,
@@ -41,6 +42,21 @@ afterAll(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 
 const unique = (label: string): string => `${label}-${randomUUID().slice(0, 8)}`;
 
+/**
+ * `original` leaves as a session that will return, and this resolves once its broker has finished its departure (its
+ * presence is gone from `observer`'s list), so the registration that brings it back does not queue behind that work.
+ */
+async function leaveAway(original: TwoBrokerClient, observer: TwoBrokerClient): Promise<string> {
+	const id = original.sessionId;
+	await original.client.disconnect({ resumable: true });
+	original.disconnected = true;
+	await vi.waitFor(
+		async () => assert.ok(!(await observer.client.listSessions()).some((session) => session.id === id)),
+		{ timeout: 15_000 },
+	);
+	return id;
+}
+
 test(
 	"a returning session whose broker stalls while the database's answer is held keeps the id the database wrote for it, before its client gives up (#5607)",
 	async ({ annotate }) => {
@@ -48,10 +64,9 @@ test(
 			await annotate("multi-node routing not advertised: no id is claimed through the shared database");
 			return;
 		}
+		const observer = await harness.connect("b", unique("observer"));
 		const original = await harness.connect("a", unique("returning"));
-		const id = original.sessionId;
-		await original.client.disconnect({ resumable: true });
-		original.disconnected = true;
+		const id = await leaveAway(original, observer);
 		harness.stallIdClaim(original.returnAddress, BROKER_STALL_MS);
 
 		// The client waits as long as a real session's does.
@@ -71,10 +86,9 @@ test(
 	"a returning session keeps its id when its broker stalls past the claim deadline after the database answered (#5607)",
 	async () => {
 		assert.equal(harness.multiNodeRouting, true);
+		const observer = await harness.connect("b", unique("observer"));
 		const original = await harness.connect("a", unique("returning"));
-		const id = original.sessionId;
-		await original.client.disconnect({ resumable: true });
-		original.disconnected = true;
+		const id = await leaveAway(original, observer);
 		// The database binds the id at once; its answer is read only after the broker runs again, past the deadline.
 		harness.stallIdClaim(original.returnAddress, 3_500, undefined, undefined, "serial bindings");
 
@@ -145,10 +159,9 @@ test(
 	"a returning session keeps the id the database wrote for it when another overdue callback stalls the broker after the id deadline (#5607)",
 	async () => {
 		assert.equal(harness.multiNodeRouting, true);
+		const observer = await harness.connect("b", unique("observer"));
 		const original = await harness.connect("a", unique("returning"));
-		const id = original.sessionId;
-		await original.client.disconnect({ resumable: true });
-		original.disconnected = true;
+		const id = await leaveAway(original, observer);
 
 		harness.stallIdClaim(original.returnAddress, 2_800, 3_200);
 		harness.holdRegistration(original.name);
@@ -253,10 +266,9 @@ test(
 	"a returning session keeps the id the database wrote for it when its broker accepts late, stalls during the id check and waits for presence (#5607)",
 	async () => {
 		assert.equal(harness.multiNodeRouting, true);
+		const observer = await harness.connect("b", unique("observer"));
 		const original = await harness.connect("a", unique("returning"));
-		const id = original.sessionId;
-		await original.client.disconnect({ resumable: true });
-		original.disconnected = true;
+		const id = await leaveAway(original, observer);
 
 		// The client starts its 10 s wait while the broker is busy with an unrelated registration.
 		const other = randomUUID();
