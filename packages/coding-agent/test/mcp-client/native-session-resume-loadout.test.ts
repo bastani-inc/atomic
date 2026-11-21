@@ -856,6 +856,81 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(currentSection(resumed)).toBe(section);
 	});
 
+	it("keeps the mcp_servers section in the turns of an interrupt's run after a tool call", async () => {
+		const fixture = await createFixture();
+		let interrupt = (): Promise<void> => Promise.resolve();
+		const interrupting: ExtensionFactory = (pi) => {
+			interrupt = () =>
+				pi.sendMessage(
+					{ customType: "ping", content: "Interrupting.", display: true },
+					{ deliverAs: "interrupt", triggerTurn: true },
+				);
+		};
+		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
+		const live = await startSession(fixture, manager, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+			exposure: "codemode",
+			extensions: [interrupting],
+		});
+		await settled(live);
+		await promptReply(fixture, live, "first");
+		const section = currentSection(live);
+		expect(serverLines(section)).toEqual([docsLine("Search and fetch the product docs.")]);
+
+		// The mcp_servers section each request of the interrupt's run sends: a tool call, then the turn after its result.
+		const sent: (string | null | undefined)[] = [];
+		const recorded =
+			(respond: (context: Context) => ReturnType<typeof fauxAssistantMessage>) => (context: Context) => {
+				sent.push(getCurrentSystemMessage(context.messages)?.sections?.[MCP_SERVERS_SECTION]);
+				return respond(context);
+			};
+		const before = live.messages.length;
+		fixture.faux.setResponses([recorded(fixture.callTool("no_such_tool", {})), recorded(fixture.reply("done"))]);
+		await interrupt();
+		await vi.waitFor(() => {
+			expect(sent).toHaveLength(2);
+			expect(live.isStreaming).toBe(false);
+		});
+		expect(sent).toEqual([section, section]);
+		expect(sectionUpdates(live, before)).toEqual([]);
+		expect(currentSection(live)).toBe(section);
+	});
+
+	it("follows the prompt's own options again in an interrupt's run after a reload replaced the extensions", async () => {
+		const fixture = await createFixture();
+		let interrupt = (): Promise<void> => Promise.resolve();
+		const interrupting: ExtensionFactory = (pi) => {
+			interrupt = () =>
+				pi.sendMessage(
+					{ customType: "ping", content: "Interrupting.", display: true },
+					{ deliverAs: "interrupt", triggerTurn: true },
+				);
+		};
+		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
+		const live = await startSession(fixture, manager, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+			exposure: "codemode",
+			extensions: [interrupting],
+		});
+		await settled(live);
+		await promptReply(fixture, live, "first");
+		const section = currentSection(live);
+		expect(serverLines(section)).toEqual([docsLine("Search and fetch the product docs.")]);
+		// The sections the prompt's handlers set belong to the extensions it ran with, which a reload replaces.
+		await live.reload();
+		fixture.restoreFauxApi();
+
+		const before = live.messages.length;
+		fixture.faux.setResponses([fixture.callTool("no_such_tool", {}), fixture.reply("done")]);
+		await interrupt();
+		await vi.waitFor(() => {
+			expect(fixture.faux.getPendingResponseCount()).toBe(0);
+			expect(live.isStreaming).toBe(false);
+		});
+		// As before this change: the turn after the tool call no longer keeps the replaced extensions' section.
+		expect(sectionUpdates(live, before)).toEqual([null]);
+	});
+
 	it("keeps the summaries of servers whose instructions hold other line separators", async () => {
 		const fixture = await createFixture();
 		const servers = (ready?: Promise<void>) => ({
