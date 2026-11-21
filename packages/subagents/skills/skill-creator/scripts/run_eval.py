@@ -199,15 +199,17 @@ def run_single_query(
                     try:
                         for line in atomic.lines(deadline_ns):
                             if decision.feed(line) is not None:
+                                # A decision read after the deadline is a timeout.
+                                check_deadline()
                                 return decision.result
                     except TimeoutError:
                         check_deadline()
                         raise
-                    # Output ended without a decision: not triggered, unless Atomic failed.
-                    status = atomic.wait_for_exit(deadline_ns, polls=5)
+                    # Output ended in time without a decision: not triggered, unless Atomic failed.
+                    check_deadline()
+                    status = atomic.wait_for_exit(polls=5)
                     if status:
                         raise RuntimeError(f"atomic -p exited {status}: {atomic.stderr_tail()}")
-                check_deadline()
                 return False
             finally:
                 stderr_path.unlink(missing_ok=True)
