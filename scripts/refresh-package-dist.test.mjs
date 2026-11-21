@@ -19,10 +19,11 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { moveChangedFiles } from "./refresh-package-dist.mjs";
 
 const script = fileURLToPath(new URL("./refresh-package-dist.mjs", import.meta.url));
+const bundler = fileURLToPath(new URL("./bundle-package-dist.mjs", import.meta.url));
 const typescript = createRequire(import.meta.url).resolve("typescript/package.json");
 const tsc = join(dirname(typescript), JSON.parse(readFileSync(typescript, "utf8")).bin.tsc);
 
@@ -180,4 +181,39 @@ test("a replaced file keeps its permissions, outputs whose source was removed st
 	assert.equal(readFileSync(join(dist, "removed-source.js"), "utf8"), "stale output");
 	assert.equal(readFileSync(join(dist, "data", "added.json"), "utf8"), '{"added":true}');
 	assert.equal(existsSync(join(dist, "data", "dropped.json")), false);
+});
+
+test("a package that ships bundled is bundled before its files move, so its dist ends with the bundled files", (t) => {
+	const directory = workspace(t);
+	writePackage(directory, 'import { helper } from "./helper.js";\nexport const answer: number = helper();\n');
+	writeFileSync(join(directory, "src", "helper.ts"), "export function helper(): number {\n\treturn 42;\n}\n");
+	writeFileSync(
+		join(directory, "package.json"),
+		JSON.stringify({
+			name: "fixture",
+			type: "module",
+			main: "./dist/index.js",
+			scripts: { "build:bundle": `node ${JSON.stringify(bundler)}` },
+		}),
+	);
+	refresh(directory);
+	const dist = join(directory, "dist");
+	const shared = readdirSync(dist).filter((name) => /^_main-[A-Z2-7]{8}\.js$/.test(name));
+	assert.equal(shared.length, 1, readdirSync(dist).join(", "));
+	assert.match(readFileSync(join(dist, "index.js"), "utf8"), new RegExp(`from "\\./${shared[0]}"`));
+	assert.equal(existsSync(join(dist, "index.js.map")), false, "a re-exporting file has no map");
+	const imported = spawnSync(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`const m = await import(${JSON.stringify(pathToFileURL(join(dist, "index.js")).href)}); process.stdout.write(String(m.answer));`,
+		],
+		{ encoding: "utf8" },
+	);
+	assert.equal(imported.stdout, "42", imported.stderr);
+	// The next refresh bundles the same files again, so it writes nothing.
+	const before = fileStates(dist);
+	assert.match(refresh(directory), /: 0 of \d+ files changed/);
+	assert.deepEqual(fileStates(dist), before);
 });
