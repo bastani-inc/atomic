@@ -14,28 +14,42 @@ export interface ContainmentOptions {
 	readonly allowBreakaway?: boolean;
 }
 
-type ContainProcessTree = (pid: number, options?: ContainmentOptions) => ProcessTreeContainment | null;
+type ContainProcessTree = (pid: number) => ProcessTreeContainment | null;
 
-let nativeContain: ContainProcessTree | null | undefined;
+/** The native module's containment functions, as far as the loaded version has them. */
+export interface NativeContainment {
+	readonly containProcessTree?: ContainProcessTree;
+	readonly containProcessTreeAllowingBreakaway?: ContainProcessTree;
+}
 
-function containFunction(): ContainProcessTree | null {
-	if (nativeContain === undefined) {
+let nativeBinding: NativeContainment | null | undefined;
+
+function containmentBinding(): NativeContainment | null {
+	if (nativeBinding === undefined) {
 		try {
-			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
-				containProcessTree?: ContainProcessTree;
-			};
-			nativeContain = binding.containProcessTree ?? null;
+			nativeBinding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as NativeContainment;
 		} catch {
-			nativeContain = null;
+			nativeBinding = null;
 		}
 	}
-	return nativeContain;
+	return nativeBinding;
+}
+
+/**
+ * The native function that contains a tree as `options` ask. A native module without one that lets a process leave the
+ * job gives none for that, rather than a job that would make such a start fail.
+ */
+export function containmentFunction(
+	binding: NativeContainment | null,
+	options?: ContainmentOptions,
+): ContainProcessTree | undefined {
+	return options?.allowBreakaway === true ? binding?.containProcessTreeAllowingBreakaway : binding?.containProcessTree;
 }
 
 export function containProcessTree(pid: number, options?: ContainmentOptions): ProcessTreeContainment | undefined {
 	if (process.platform !== "win32") return undefined;
 	try {
-		return containFunction()?.(pid, options) ?? undefined;
+		return containmentFunction(containmentBinding(), options)?.(pid) ?? undefined;
 	} catch {
 		return undefined;
 	}

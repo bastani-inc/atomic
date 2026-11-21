@@ -326,15 +326,14 @@ export type CommandTerminal =
   | { kind: 'pipe' }
   | { kind: 'pty'; columns: number; rows: number }
 
-export interface ContainmentOptions {
-  /**
-   * Lets a process in the tree start a child outside it, which `CREATE_BREAKAWAY_FROM_JOB` asks for; without it such
-   * a start fails. Released, the job keeps allowing it.
-   */
-  allowBreakaway?: boolean
-}
+/** Ends process `pid` and the processes it starts later with this process, and with `terminate`, in a job of its own. */
+export declare function containProcessTree(pid: number): ProcessTreeContainment | null
 
-export declare function containProcessTree(pid: number, options?: ContainmentOptions | undefined | null): ProcessTreeContainment | null
+/**
+ * As `containProcessTree`, but a process in the tree may still start a child outside it, which
+ * `CREATE_BREAKAWAY_FROM_JOB` asks for and which fails otherwise. Released, the job keeps allowing it.
+ */
+export declare function containProcessTreeAllowingBreakaway(pid: number): ProcessTreeContainment | null
 
 /** A context line (before or after a match). */
 export interface ContextLine {

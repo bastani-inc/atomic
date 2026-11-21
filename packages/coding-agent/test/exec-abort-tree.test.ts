@@ -11,6 +11,7 @@ import {
 	waitUntilGone,
 } from "../../../test/helpers/recorded-process.js";
 import { execCommand } from "../src/core/exec.ts";
+import { containmentFunction } from "../src/core/process-tree-containment.ts";
 
 /** Longer than a killed process takes to be gone, however loaded the machine. */
 const GONE_MS = 5_000;
@@ -153,6 +154,23 @@ describe("a pi.exec command ended by Atomic ends with the processes it started",
 			assert.equal(await waitUntilGone(detached, KILL_SEEN_MS), false, "a program that detached itself was ended");
 		},
 	);
+});
+
+test("a native module from before the breakaway job gives a pi.exec command no job, rather than a stricter one", () => {
+	const strict = () => null;
+	const allowingBreakaway = () => null;
+	assert.equal(containmentFunction({ containProcessTree: strict }, { allowBreakaway: true }), undefined);
+	assert.equal(
+		containmentFunction(
+			{ containProcessTree: strict, containProcessTreeAllowingBreakaway: allowingBreakaway },
+			{
+				allowBreakaway: true,
+			},
+		),
+		allowingBreakaway,
+	);
+	assert.equal(containmentFunction({ containProcessTree: strict }), strict, "other callers keep their job");
+	assert.equal(containmentFunction(null, { allowBreakaway: true }), undefined);
 });
 
 /** The Windows processes whose command line holds `marker`, other than this test's own queries. */
