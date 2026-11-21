@@ -1021,8 +1021,14 @@ function subagentCaptureHints(sessionManager: SessionManager): Map<string, Subag
 		if (known === undefined || at > known.at)
 			hints.set(record.childSessionId, { sessionId: record.childSessionId, cwd: record.cwd, at });
 	};
-	// Only records on the active branch count: a record a compaction moved out of the window is no longer shown on its
-	// branch, and one on another branch belongs to a conversation the session left.
+	// Only records on the active branch count, also those a compaction moved out of the window, while the window they
+	// preceded is still on it; a record on another branch belongs to a conversation the session left.
+	const archived = sessionManager.getArchivedSubagentCaptures?.();
+	if (archived?.anchor !== undefined && archived.captures.length > 0) {
+		const anchor = archived.anchor;
+		if (sessionManager.getBranch().some((entry) => entry.id === anchor))
+			for (const capture of archived.captures) note(capture);
+	}
 	// Most sessions launched no subagent that captured anything: one pass over the entries says so without the branch.
 	const recorded = sessionManager
 		.getEntries()

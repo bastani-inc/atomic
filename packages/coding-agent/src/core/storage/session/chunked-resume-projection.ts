@@ -778,6 +778,7 @@ export async function chunkedChildHeading(chunks: AsyncIterable<Uint8Array>): Pr
 					taskId: "string",
 					childSessionId: "string",
 					childSessionFile: "string",
+					worktreeCapturedAt: "string",
 					intercomTarget: "string",
 					intercomGroup: "string",
 					releasedIntercomId: "string",

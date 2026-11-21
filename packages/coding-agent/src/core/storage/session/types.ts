@@ -261,6 +261,17 @@ export interface SessionCompactionPoint {
 
 /** Body-free child state for launch cards and explicit action lookup. Full launch, held messages and results
  * are fetched from the saved observation only if the child is explicitly opened or continued. */
+/**
+ * A finished subagent's capture its record names, read from a record on the session's active branch before its window:
+ * its own session and when that session last captured a checkout, as the record itself says.
+ */
+export interface ArchivedSubagentCapture {
+	readonly ownerSessionId: string;
+	readonly childSessionId: string;
+	readonly cwd: string;
+	readonly worktreeCapturedAt: string;
+}
+
 export interface ArchivedChildCatalogEntry {
 	readonly firstSeq: number;
 	readonly entryId: string;
