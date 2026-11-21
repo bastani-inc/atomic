@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "vitest";
-import { markerPlace, readModule } from "../../packages/coding-agent/scripts/startup-stages-source.mjs";
+import { cliImports, markerPlace, readModule } from "../../packages/coding-agent/scripts/startup-stages-source.mjs";
 import {
 	bunExecutable,
 	makeTempDirectory,
@@ -29,7 +29,7 @@ afterEach(() => {
 const CHILD = `
 import { registerHooks } from "node:module";
 import { writeFileSync } from "node:fs";
-const [dist, staged, reportFile] = [process.argv[2], process.argv[3] === "staged", process.argv[4]];
+const [imports, staged, reportFile] = [JSON.parse(process.argv[2]), process.argv[3] === "staged", process.argv[4]];
 const ran = [];
 globalThis.__startupStagesTest = ran;
 registerHooks({
@@ -42,14 +42,13 @@ registerHooks({
 		return { ...result, source: source.slice(0, lineEnd) + marker + source.slice(lineEnd) };
 	},
 });
-const at = (path) => new URL(path, dist).href;
-for (const path of ["config.js", "core/lifecycle-timings.js", "utils/agent-attribution.js", "utils/compile-cache.js", "utils/heap-relaunch.js", "utils/inherited-hangup.js", "utils/interactive-engine-bootstrap.js", "utils/interactive-invocation.js", "modes/interactive-engine/engine-prewarm.js", "modes/interactive/startup-shell-eligibility.js", "modes/interactive/startup-shell.js"]) await import(at(path));
-const { loadStartupStages } = await import(at("utils/startup-stages.js"));
+for (const url of imports.before) await import(url);
+const { loadStartupStages } = await import(imports.loader);
 ran.length = 0;
 let ranWhenTimerFired;
 setTimeout(() => { ranWhenTimerFired = ran.length; }, 0);
 if (staged) await loadStartupStages();
-await Promise.all([import(at("core/http-dispatcher.js")), import(at("main.js")), import(at("cli/settings-startup.js"))]);
+await Promise.all(imports.entries.map((url) => import(url)));
 await new Promise((resolve) => setTimeout(resolve, 0));
 const order = ran.filter((url) => !url.includes("/startup-stages/"));
 writeFileSync(reportFile, JSON.stringify({ order, ranWhenTimerFired, total: ran.length }));
@@ -62,16 +61,19 @@ interface ChildReport {
 	readonly total: number;
 }
 
-function runChild(mode: "staged" | "natural", nodeOptions = ""): ChildReport {
+function runChild(mode: "staged" | "natural", nodeOptions = "", nodeFlags: readonly string[] = []): ChildReport {
 	const dir = makeTempDirectory("atomic-startup-stages-");
 	dirs.push(dir);
 	const script = join(dir, "child.mjs");
 	writeFileSync(script, CHILD);
 	const report = join(dir, "report.json");
-	const result = spawnSyncCollect([process.execPath, script, pathToFileURL(`${DIST}/`).href, mode, report], {
-		env: { ...process.env, NODE_OPTIONS: nodeOptions },
-		timeout: WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
-	});
+	const result = spawnSyncCollect(
+		[process.execPath, ...nodeFlags, script, JSON.stringify(cliImports(DIST)), mode, report],
+		{
+			env: { ...process.env, NODE_OPTIONS: nodeOptions },
+			timeout: WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
+		},
+	);
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	return JSON.parse(readFileSync(report, "utf8")) as ChildReport;
 }
@@ -121,9 +123,18 @@ describe("startup stages", () => {
 			const dir = makeTempDirectory("atomic-startup-stages-await-");
 			dirs.push(dir);
 			const dist = join(dir, "dist");
-			mkdirSync(join(dist, "utils"), { recursive: true });
-			mkdirSync(join(dist, "startup-stages"));
-			copyFileSync(join(DIST, "utils", "startup-stages.js"), join(dist, "utils", "startup-stages.js"));
+			mkdirSync(join(dist, "startup-stages"), { recursive: true });
+			// The build's stage loader, with the modules of this build it imports, at the same places under `dist`.
+			const loader = fileURLToPath(cliImports(DIST).loader);
+			const copy = (path: string) => {
+				const target = join(dist, relative(DIST, path));
+				if (existsSync(target)) return;
+				mkdirSync(dirname(target), { recursive: true });
+				copyFileSync(path, target);
+				for (const specifier of readModule(readFileSync(path, "utf8")).specifiers)
+					if (specifier.startsWith(".")) copy(join(dirname(path), specifier));
+			};
+			copy(loader);
 			symlinkSync(join(DIST, "..", "..", "..", "node_modules"), join(dir, "node_modules"), "junction");
 			writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
 			writeFileSync(
@@ -140,7 +151,7 @@ describe("startup stages", () => {
 				script,
 				`globalThis.ran = [];
 globalThis.released = new Promise((resolve) => { globalThis.release = resolve; });
-const { loadStartupStages } = await import(${JSON.stringify(pathToFileURL(join(dist, "utils", "startup-stages.js")).href)});
+const { loadStartupStages } = await import(${JSON.stringify(pathToFileURL(join(dist, relative(DIST, loader))).href)});
 await loadStartupStages();
 const afterStages = [...globalThis.ran];
 // What the session's own imports then do: they reach the second stage's module, which releases the first.
@@ -164,6 +175,19 @@ process.exit(0);
 	);
 
 	test(
+		"no stages load with a Node configuration file, which can hold a preload or conditions",
+		() => {
+			const dir = makeTempDirectory("atomic-startup-stages-config-");
+			dirs.push(dir);
+			const config = join(dir, "node.config.json");
+			writeFileSync(config, JSON.stringify({ nodeOptions: {} }));
+			const staged = runChild("staged", "", [`--experimental-config-file=${config}`]);
+			assert.equal(staged.ranWhenTimerFired, staged.total, "no turn of the event loop while the modules loaded");
+		},
+		WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
+	);
+
+	test(
 		"no stages load with custom package conditions, which can choose other files for the same names",
 		() => {
 			const staged = runChild("staged", "--conditions=atomic-test-condition");
@@ -180,12 +204,12 @@ process.exit(0);
 			const script = join(dir, "child.mjs");
 			writeFileSync(
 				script,
-				`const dist = ${JSON.stringify(pathToFileURL(`${DIST}/`).href)};
-const { loadStartupStages } = await import(new URL("utils/startup-stages.js", dist).href);
+				`const imports = ${JSON.stringify(cliImports(DIST))};
+const { loadStartupStages } = await import(imports.loader);
 await loadStartupStages();
 const stagesLoaded = Object.keys(require.cache).some((path) => /[\\/]startup-stages[\\/]/.test(path));
-const [, main] = await Promise.all([import(new URL("core/http-dispatcher.js", dist).href), import(new URL("main.js", dist).href), import(new URL("cli/settings-startup.js", dist).href)]);
-process.stdout.write(JSON.stringify({ stagesLoaded, main: typeof main.main }));
+const loaded = await Promise.all(imports.entries.map((url) => import(url)));
+process.stdout.write(JSON.stringify({ stagesLoaded, main: typeof loaded.find((entry) => typeof entry.main === "function")?.main }));
 process.exit(0);
 `,
 			);

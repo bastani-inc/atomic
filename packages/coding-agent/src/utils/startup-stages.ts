@@ -34,6 +34,10 @@ const RESOLUTION_OPTIONS = new Set([
 	"--conditions",
 	"-C",
 	"--no-addons",
+	// A configuration file can hold any of these, which then show nowhere in the process's own options.
+	"--experimental-config-file",
+	"--experimental-default-config-file",
+	"--config-file",
 ]);
 
 /** Where this build's stages are: beside its own modules, found as this module's own imports are. */

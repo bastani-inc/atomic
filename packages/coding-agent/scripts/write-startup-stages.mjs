@@ -17,21 +17,13 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { markerPlace, readModule } from "./startup-stages-source.mjs";
+import { cliImports, markerPlace, readModule } from "./startup-stages-source.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(packageRoot, "dist");
 const distUrl = pathToFileURL(`${dist}/`).href;
 const stagesDir = join(dist, "startup-stages");
 
-/** What the early editor and `cli.js` have loaded when the stages start: their graphs run before, in this order. */
-const PREFIX = [
-	"modes/interactive-engine/engine-prewarm.js",
-	"modes/interactive/startup-shell-eligibility.js",
-	"modes/interactive/startup-shell.js",
-];
-/** What `cli.js` imports once the stages are loaded, at the same time (`Promise.all`). */
-const ENTRIES = ["core/http-dispatcher.js", "main.js", "cli/settings-startup.js"];
 /** About how much module source one stage loads: a turn of the event loop between stages, ~25 stages in all. */
 const STAGE_BYTES = 512 * 1024;
 
@@ -48,9 +40,16 @@ const traced = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--t
 	env: { ...process.env, NODE_OPTIONS: "" },
 });
 if (traced.status !== 0) throw new Error(`Tracing the startup modules failed with status ${traced.status}`);
-const { order, resolutions, formats, loadedBefore, marked } = JSON.parse(readFileSync(traceFile, "utf8"));
+const { order, resolutions, formats, loadedBefore, marked, entryUrls } = JSON.parse(readFileSync(traceFile, "utf8"));
 rmSync(traceFile);
-const stages = planStages(order, new Map(resolutions), new Map(formats), new Set(loadedBefore), new Set(marked));
+const stages = planStages(
+	order,
+	new Map(resolutions),
+	new Map(formats),
+	new Set(loadedBefore),
+	new Set(marked),
+	entryUrls,
+);
 rmSync(stagesDir, { recursive: true, force: true });
 mkdirSync(stagesDir, { recursive: true });
 for (const [index, stage] of stages.entries())
@@ -91,19 +90,16 @@ async function trace(outFile) {
 			return { ...result, source: `${source.slice(0, at)}${before}${marker}${source.slice(at)}` };
 		},
 	});
-	// What `cli.js` itself imports, then the early editor's graph.
-	const cli = pathToFileURL(join(dist, "cli.js")).href;
-	for (const specifier of readModule(readFileSync(join(dist, "cli.js"), "utf8")).specifiers)
-		// A bare name resolves from this script as from cli.js: both are inside this package.
-		await import(specifier.startsWith(".") ? new URL(specifier, cli).href : specifier);
-	for (const path of PREFIX) await import(new URL(path, distUrl).href);
+	// What `cli.js` imports before the stages, then the entries as it imports them.
+	const { before, entries } = cliImports(dist);
+	for (const url of before) await import(url);
 	ran.length = 0;
 	beforeEntries = false;
-	await Promise.all(ENTRIES.map((path) => import(new URL(path, distUrl).href)));
-	writeFileSync(outFile, JSON.stringify({ order: ran, resolutions, formats, loadedBefore, marked }));
+	const entryUrls = await Promise.all(entries.map(async (url) => (await import(url), import.meta.resolve(url))));
+	writeFileSync(outFile, JSON.stringify({ order: ran, resolutions, formats, loadedBefore, marked, entryUrls }));
 }
 
-function planStages(order, resolutions, formats, ranBefore, marked) {
+function planStages(order, resolutions, formats, ranBefore, marked, entryUrls) {
 	const isOwn = (url) => url.startsWith(distUrl) && url.endsWith(".js");
 	const modules = new Map();
 	const moduleOf = (url) => {
@@ -133,7 +129,7 @@ function planStages(order, resolutions, formats, ranBefore, marked) {
 
 	// The runtime runs each entry's graph depth first, a module after the modules it imports. The entries run in the
 	// order the trace saw them finish in.
-	const entries = ENTRIES.map((path) => new URL(path, distUrl).href).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+	const entries = [...entryUrls].sort((a, b) => order.indexOf(a) - order.indexOf(b));
 	const ranOrder = [];
 	const firstOfOwnGraph = new Map(); // where in ranOrder a module's newly run graph begins
 	const position = new Map();
