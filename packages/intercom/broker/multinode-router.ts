@@ -986,9 +986,13 @@ export class MultiNodeRouter {
 				expired = true;
 				attempts.catch(() => {});
 			}
+			// #5607: a hand-over that did not take the id leaves it held for the session, for its next registration.
+			if (reserved !== undefined && (claimed.status === "held" || claimed.status === "refused"))
+				this.holdAgain(identity, reserved);
 			return claimed;
 		} catch (error) {
 			this.report(error);
+			if (reserved !== undefined) this.holdAgain(identity, reserved);
 			return { status: "refused" };
 		} finally {
 			clearTimeout(bound);
@@ -1404,6 +1408,11 @@ export class MultiNodeRouter {
 		return reserved;
 	}
 
+	/** #5607: `reserved` is held for the session of `identity` again, unless another hold took its place meanwhile. */
+	private holdAgain(identity: string | undefined, reserved: ReservedId): void {
+		if (identity !== undefined && !this.reservedIds.has(identity)) this.reservedIds.set(identity, reserved);
+	}
+
 	/**
 	 * #5607: ids held for sessions that did not register again in time are given back. They stop being held at once; their
 	 * release runs on its own, so a release the store is slow to answer holds up no renewal.
@@ -1413,8 +1422,10 @@ export class MultiNodeRouter {
 		for (const [identity, reserved] of [...this.reservedIds]) {
 			if (reserved.until > now) continue;
 			this.reservedIds.delete(identity);
-			void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
-			if (reserved.aliasToken !== undefined)
+			// A token a registration here took meanwhile is that registration's, not given back.
+			if (!this.tokenInUse(reserved.token))
+				void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
+			if (reserved.aliasToken !== undefined && !this.tokenInUse(reserved.aliasToken))
 				void this.releaseOwner({ intercomSessionId: reserved.alias, token: reserved.aliasToken });
 		}
 	}
