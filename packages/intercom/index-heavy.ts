@@ -1644,11 +1644,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (value !== null) {
         // A session that starts to quit or reload stops the broker starts it waits for at once, before its shutdown
         // handlers run: a quit cut short at its shutdown bound must not leave a broker that never listens running.
-        const sessionEnds = value.getCurrentSessionSignal?.() ?? value.sessionSignal;
+        // A context a host built without the session's lifetime leaves this to the shutdown handler, as before.
+        const sessionEnds: AbortSignal | undefined = value.getCurrentSessionSignal?.() ?? value.sessionSignal;
         const starts = connectAbort;
         const stop = () => starts.abort(new IntercomRuntimeInactiveError());
-        if (sessionEnds.aborted) stop();
-        else {
+        if (sessionEnds?.aborted) stop();
+        else if (sessionEnds !== undefined) {
           sessionEnds.addEventListener("abort", stop, { once: true });
           stopBrokerStartsOnSessionEnd = () => sessionEnds.removeEventListener("abort", stop);
         }
