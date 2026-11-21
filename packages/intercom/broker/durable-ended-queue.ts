@@ -42,11 +42,12 @@ export function endedQueueOpenWaitMs(env: NodeJS.ProcessEnv = process.env): numb
 	return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= MAX_TIMER_MS ? parsed : ENDED_QUEUE_OPEN_WAIT_MS;
 }
 /**
- * With a shared `storage`, the longest that wait lasts in all, multi-node routing's start included (on a cold start its
- * storage modules compile, and a remote database takes its time to answer): as long as a registration waits for its
- * presence lease in that database.
+ * The longest that wait lasts in all, as long as a registration waits for its presence lease in a shared database. It
+ * includes what comes before the store can open: with a shared `storage`, multi-node routing's start (on a cold start
+ * its storage modules compile, and a remote database takes its time to answer); with the local store, loading the
+ * store's code, which on a busy machine can take longer than the open wait itself (#6126).
  */
-export const ENDED_QUEUE_ROUTING_WAIT_MS = PRESENCE_REGISTRATION_BOUND_MS;
+export const ENDED_QUEUE_TOTAL_WAIT_MS = PRESENCE_REGISTRATION_BOUND_MS;
 /** How long a send that may join a restored queue waits for the restored rows, at most. */
 export const ENDED_QUEUE_LOAD_WAIT_MS = 5_000;
 
@@ -97,6 +98,11 @@ export interface DurableEndedQueueHost {
 	readonly openStore: () => Promise<EndedChildQueueStore | undefined>;
 	/** With a shared `storage`: settles once multi-node routing's first attempt did, after which the store opens. */
 	readonly routingStarted: () => Promise<void> | undefined;
+	/**
+	 * With the local store: settles once the store's code has loaded (or failed to), which it does as the store opens or
+	 * earlier, as the broker warms it. The open wait counts from then.
+	 */
+	readonly storeCodeLoaded?: () => Promise<unknown> | undefined;
 	/**
 	 * This broker keeps the queue in memory although a store may hold messages: its sessions are told those were lost, so
 	 * the next broker that opens the store must drop them rather than deliver them.
@@ -188,8 +194,9 @@ export class DurableEndedQueue {
 	}
 
 	/**
-	 * Decide, once, which store keeps the queue; resolves when decided, within {@link ENDED_QUEUE_OPEN_WAIT_MS} (with a
-	 * shared `storage`, of routing's start, and within {@link ENDED_QUEUE_ROUTING_WAIT_MS} in all). `restore`
+	 * Decide, once, which store keeps the queue; resolves when decided, within {@link ENDED_QUEUE_OPEN_WAIT_MS} of what
+	 * the store needs before it can open (routing's start with a shared `storage`, the store's code with the local one),
+	 * and within {@link ENDED_QUEUE_TOTAL_WAIT_MS} in all. `restore`
 	 * receives what an earlier broker kept, once the store is open: read a page at a time, the event loop running between
 	 * pages. Until then, sends to the subagents it kept messages for wait ({@link holds}), so none overtakes them.
 	 */
@@ -217,13 +224,14 @@ export class DurableEndedQueue {
 			timers.push(timer);
 		};
 		const openWaitMs = endedQueueOpenWaitMs();
-		const routing = this.host.routingStarted();
-		if (routing === undefined) wait(openWaitMs);
+		const waitToOpen = () => {
+			if (!this.decidedNow) wait(openWaitMs);
+		};
+		const before = this.host.routingStarted() ?? this.host.storeCodeLoaded?.();
+		if (before === undefined) wait(openWaitMs);
 		else {
-			wait(ENDED_QUEUE_ROUTING_WAIT_MS);
-			void routing.then(() => {
-				if (!this.decidedNow) wait(openWaitMs);
-			});
+			wait(ENDED_QUEUE_TOTAL_WAIT_MS);
+			void before.then(waitToOpen, waitToOpen);
 		}
 		let finishLoad: () => void = () => {};
 		this.loading = new Promise<void>((resolve) => {
