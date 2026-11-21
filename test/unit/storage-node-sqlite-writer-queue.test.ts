@@ -128,14 +128,12 @@ async function untilWaiting(): Promise<void> {
 }
 
 /**
- * Waits until the fixture's writer is quiet, waiting for its recheck timer with no request on the connection's thread,
- * or until its transaction settled. The connection's thread runs a request whenever the system schedules it, also
- * between two statements a raw holder runs in one `exec`, so a holder that commits and takes the lock again would race
- * an attempt still on its way; and a fake-time step taken while the writer is still attempting fires nothing, so the
- * recheck it arms afterwards never fires.
+ * Waits until none of the fixture's requests is on the connection's thread, or the transaction settled. That thread
+ * runs a request whenever the system schedules it, also between two statements a raw holder runs in one `exec`: a
+ * lock attempt on its way there would find the lock free between the holder's `COMMIT` and its `BEGIN IMMEDIATE`.
  */
-async function untilQuiet(counts: Counts, write: { readonly settled: boolean }): Promise<void> {
-	while (!write.settled && (vi.getTimerCount() === 0 || counts.inFlight > 0)) await turn();
+async function untilNoRequestInFlight(counts: Counts, write: { readonly settled: boolean }): Promise<void> {
+	while (!write.settled && counts.inFlight > 0) await turn();
 }
 
 /** Freezes the database clock every connection reads at `nowMs` until the test ends; see `freezeDatabaseClock`. */
@@ -840,18 +838,22 @@ test("commits by other connections keep a waiting writer from giving up, however
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('patient through progress')"));
 	const write$ = settledFlag(write);
-	// The holder commits and takes the lock again between the writer's looks at it, every 200 ms.
+	await untilWaiting();
 	for (let round = 1; round <= 6; round++) {
-		await untilQuiet(counts, write$);
 		await vi.advanceTimersByTimeAsync(200);
-		await untilQuiet(counts, write$);
+		await untilNoRequestInFlight(counts, write$);
 		holder.exec(`COMMIT; BEGIN IMMEDIATE; INSERT INTO other VALUES (${round})`);
 	}
 	await vi.advanceTimersByTimeAsync(200);
-	await untilQuiet(counts, write$);
 	assert.equal(write$.settled, false, "still waiting after 1400 ms of a busy lock with a 300 ms lock wait");
+	await untilNoRequestInFlight(counts, write$);
 	holder.exec("COMMIT");
-	await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+	// A writer still attempting takes the free lock; one waiting for its recheck needs the timer to fire, armed now or
+	// once its attempts end, so fake time moves only while the recheck is armed.
+	while (!write$.settled) {
+		if (vi.getTimerCount() > 0 && counts.inFlight === 0) await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+		else await turn();
+	}
 	await write;
 	assert.deepEqual(await values(database), ["patient through progress"]);
 });
