@@ -1,0 +1,5 @@
+{
+	"extends": "../../../scripts/event-loop/tsconfig.analysis.json",
+	"include": ["src/**/*.ts"],
+	"exclude": []
+}
