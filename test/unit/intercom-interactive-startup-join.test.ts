@@ -490,12 +490,19 @@ describe("a startup join that cannot reach the broker", () => {
 	test("joins when the broker comes back during the retries", async () => {
 		useBackoffClock();
 		let brokerDown = true;
-		const session = intercomSession({ refuse: () => brokerDown });
+		let refused = 0;
+		const session = intercomSession({
+			refuse: () => {
+				if (brokerDown) refused += 1;
+				return brokerDown;
+			},
+		});
 		const ctx = sessionContext({ mode: "tui" }, []);
 		try {
 			await session.start(ctx);
-			await elapse(4_500);
-			assert.equal(session.registrations.length, 0, "the join and its first retry met no broker");
+			await elapseAttempts(4_500, () => false);
+			assert.equal(refused, 2, "the join and its first retry met no broker");
+			assert.equal(session.registrations.length, 0);
 			brokerDown = false;
 			await elapse(3_000);
 			await untilRegistered(session.registrations, 1);
