@@ -67,7 +67,7 @@ describe("extensions discovery", () => {
 		let pendingWrites = 0;
 		const CACHE_WRITE_LATENCY_MS = 100;
 		const write = vi.spyOn(fs.promises, "writeFile").mockImplementation(async (...args) => {
-			if (typeof args[0] !== "string" || !args[0].includes(`${path.sep}cache${path.sep}jiti${path.sep}`))
+			if (typeof args[0] !== "string" || !args[0].includes(`${path.sep}cache${path.sep}transpile${path.sep}`))
 				return writeFile(...args);
 			pendingWrites++;
 			const writing = (async () => {

@@ -31,6 +31,11 @@
 			"types": "./dist/cloudflare.d.ts",
 			"import": "./dist/cloudflare.js"
 		},
+		"./node-options": {
+			"source": "./src/node-options.ts",
+			"types": "./dist/node-options.d.ts",
+			"import": "./dist/node-options.js"
+		},
 		"./worker": {
 			"source": "./src/runtime/worker.ts",
 			"types": "./dist/runtime/worker.d.ts",
