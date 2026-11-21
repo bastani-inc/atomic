@@ -3,7 +3,7 @@
  * a module that cannot link or is gone says to restart, naming the feature, instead of failing with the runtime's error.
  */
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, test } from "vitest";
@@ -27,34 +27,37 @@ interface Outcome {
 }
 
 /**
- * A process of version 0.10.90 (its installation is `ATOMIC_PACKAGE_DIR`) loads `module` for `feature`. With `update`,
- * an update to 0.10.91 has replaced the installation's package.json first; with `remove`, the installation is gone.
+ * A process of version 0.10.90 (its installation is `ATOMIC_PACKAGE_DIR`) loads `module` for a feature: a module of
+ * the installation, or with `owner` "user" one outside it, as a user's extension is. With `update`, an update to
+ * 0.10.91 has replaced the installation's package.json first; with `remove`, the installation is gone.
  */
 function load(
-	module: "lacks-export" | "missing-file" | "throws" | "loads",
+	module: "lacks-export" | "missing-file" | "missing-package" | "throws" | "loads",
 	change: "none" | "update" | "remove",
-	via: "helper" | "tool" = "helper",
+	options: { via?: "helper" | "tool"; owner?: "installation" | "user" } = {},
 ): Outcome {
 	const dir = makeTempDirectory("atomic-load-on-demand-");
 	dirs.push(dir);
 	const installation = join(dir, "installation");
+	const modules = options.owner === "user" ? join(dir, "user") : join(installation, "dist");
+	mkdirSync(modules, { recursive: true });
 	const sources: Record<string, string> = {
 		"earlier.mjs": "export const kept = 1;\n",
 		"lacks-export.mjs": 'import { added } from "./earlier.mjs";\nexport const value = added;\n',
+		"missing-package.mjs": 'import { pad } from "left-pad-not-installed-atomic";\nexport const value = pad;\n',
 		"throws.mjs": 'throw new Error("evaluation failed");\n',
 		"loads.mjs": 'import { kept } from "./earlier.mjs";\nexport const value = kept;\n',
 	};
-	for (const [name, source] of Object.entries(sources)) writeFileSync(join(dir, name), source);
+	for (const [name, source] of Object.entries(sources)) writeFileSync(join(modules, name), source);
 	const script = join(dir, "session.mjs");
 	writeFileSync(
 		script,
-		`import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+		`import { rmSync, writeFileSync } from "node:fs";
 const installation = ${JSON.stringify(installation)};
-mkdirSync(installation);
 writeFileSync(installation + "/package.json", JSON.stringify({ name: "@bastani/atomic", version: "0.10.90" }));
 const { loadOnDemand } = await import(${JSON.stringify(pathToFileURL(join(DIST, "utils/updated-install.js")).href)});
 const { wrapToolDefinition } = await import(${JSON.stringify(pathToFileURL(join(DIST, "core/tools/tool-definition-wrapper.js")).href)});
-await import(${JSON.stringify(pathToFileURL(join(dir, "earlier.mjs")).href)});
+await import(${JSON.stringify(pathToFileURL(join(modules, "earlier.mjs")).href)});
 ${
 	change === "update"
 		? 'writeFileSync(installation + "/package.json", JSON.stringify({ name: "@bastani/atomic", version: "0.10.91" }));'
@@ -62,9 +65,9 @@ ${
 			? "rmSync(installation, { recursive: true });"
 			: ""
 }
-const url = ${JSON.stringify(pathToFileURL(join(dir, `${module === "missing-file" ? "removed" : module}.mjs`)).href)};
+const url = ${JSON.stringify(pathToFileURL(join(modules, `${module === "missing-file" ? "removed" : module}.mjs`)).href)};
 const run = ${
-			via === "tool"
+			options.via === "tool"
 				? `() => wrapToolDefinition({ name: "probe", label: "probe", description: "", parameters: {}, execute: async () => { await import(url); return { content: [], details: undefined }; } }).execute("call-1", {}, undefined, undefined)`
 				: `() => loadOnDemand("the probe", () => import(url))`
 		};
@@ -151,12 +154,35 @@ test(
 test(
 	"a tool whose code no longer links after an update fails with the restart message",
 	() => {
-		assert.deepEqual(load("lacks-export", "update", "tool"), {
+		assert.deepEqual(load("lacks-export", "update", { via: "tool" }), {
 			name: "UpdatedInstallError",
 			message:
 				"atomic was updated to 0.10.91 while this session was running; restart it to keep using the probe tool.",
 			cause: "SyntaxError",
 		});
+	},
+	CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a module outside the installation keeps its own error after an update",
+	() => {
+		const missing = load("missing-package", "update", { owner: "user" });
+		assert.equal(missing.name, "Error");
+		assert.match(missing.message ?? "", /Cannot find package 'left-pad-not-installed-atomic'/);
+		const unlinked = load("lacks-export", "update", { owner: "user" });
+		assert.equal(unlinked.name, "SyntaxError");
+		assert.match(unlinked.message ?? "", /does not provide an export named 'added'/);
+	},
+	CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a tool whose own dependency is missing keeps that error after an update",
+	() => {
+		const outcome = load("missing-package", "update", { via: "tool", owner: "user" });
+		assert.equal(outcome.name, "Error");
+		assert.match(outcome.message ?? "", /Cannot find package 'left-pad-not-installed-atomic'/);
 	},
 	CHILD_TIMEOUT_MS,
 );
