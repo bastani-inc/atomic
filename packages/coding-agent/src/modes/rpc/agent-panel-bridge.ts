@@ -1266,21 +1266,11 @@ export async function showAgentPanel(
 
 /**
  * Whether the idle panel of `session` opens again once the one view hiding it now closes: a panel is bound to the
- * session, that view is its only hider, and the panel has rows to show, now or once the screen shows `shown`: the
- * subagent the screen shows is always listed, unless it was dismissed.
+ * session, that view is its only hider, and the panel has rows to show.
  */
-export function agentPanelReturnsOnShow(session: AgentPanelSession & object, shown?: TaskId): boolean {
+export function agentPanelReturnsOnShow(session: AgentPanelSession & object): boolean {
 	const state = panelState(session);
-	if (state.hideCount !== 1 || state.setVisible === undefined) return false;
-	return agentPanelHasRows(session) || (shown !== undefined && agentPanelListsWhenShown(session, shown));
-}
-
-/** Whether the panel lists `taskId` once the screen shows it: a subagent of this session not dismissed. */
-function agentPanelListsWhenShown(session: AgentPanelSession & object, taskId: TaskId): boolean {
-	const store = getOwnerTaskStore(session);
-	if (store === undefined) return false;
-	const rowId = viewedRowId(taskId, ownerTaskViewSource(store).backgroundTasks);
-	return rowId !== undefined && !dismissedAgentPanelItems(session).has(rowId);
+	return state.hideCount === 1 && state.setVisible !== undefined && agentPanelHasRows(session);
 }
 
 /**
