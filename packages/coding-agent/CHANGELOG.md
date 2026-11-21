@@ -34,6 +34,7 @@
 - In print mode, `atomic -p "/curator off"`, `/google-account` and other extension commands that answer with a message they send now print that message, or the reply of the turn it starts, instead of the session's earlier reply, and that turn is no longer cut off and saved as aborted. A later `-p` message waits for the turn instead of being refused, and an earlier reply that reached the output limit no longer marks the command's answer as truncated. With text output, a command whose only answer could not be saved now prints nothing and exits 1 instead of printing an earlier reply ([#6113](https://github.com/bastani-inc/atomic/issues/6113)).
 - A resumed Claude session no longer sends strict tools once more after compactions removed every reply that recorded their rejection: the compaction keeps the record ([#6119](https://github.com/bastani-inc/atomic/issues/6119)).
 - A tool whose schema lists its `required` parameters in another order, as an MCP server may after reconnecting, no longer counts as a changed tool: its declaration and the cached prompt stay the same, and a resumed session runs a call to it instead of refusing it as changed ([#6130](https://github.com/bastani-inc/atomic/issues/6130)).
+- Building the history search index on Node 22 no longer keeps a little memory for every page it writes until the build ends ([#6106](https://github.com/bastani-inc/atomic/issues/6106))
 
 ## [0.10.2] - 2026-11-20
 
