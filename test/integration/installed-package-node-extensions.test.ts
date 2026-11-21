@@ -716,11 +716,17 @@ console.log(JSON.stringify({ ...outcome, stderr: written.join("") }));
 				const lines = program
 					.screen()
 					.split("\n")
+					.map((line) => line.trimEnd())
 					.filter(
-						(line) =>
-							line.trim() !== "" && !line.includes("ExperimentalWarning") && !line.includes("--trace-warnings"),
+						(line) => line !== "" && !line.includes("ExperimentalWarning") && !line.includes("--trace-warnings"),
 					);
-				assert.deepEqual(lines, [`Error: ${expected}`], trust);
+				// The early editor may have painted its empty frame before the session started; nothing else is shown.
+				assert.deepEqual(
+					lines.filter((line) => !/^(?:─+|❯)$/.test(line)),
+					[`Error: ${expected}`],
+					`${trust}:\n${program.screen()}`,
+				);
+				assert.equal(lines.at(-1), `Error: ${expected}`, trust);
 			} finally {
 				program.kill();
 			}
