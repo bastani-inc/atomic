@@ -11,6 +11,7 @@
 - `skill-creator`'s `run_loop.py --holdout 0` finishes and writes its report, instead of failing after its first iteration when a report is written (the default).
 - `skill-creator`'s review viewer prints its URL as soon as it serves when its output goes to a pipe or a file, and on Windows no longer fails before serving when that output is not the console. `SKILL.md` now starts the viewer as a background shell that keeps serving after the call that started it, and reads the URL from its output.
 - `skill-creator`'s scripts write `feedback.json`, `benchmark.json`, `benchmark.md` and the improvement transcripts as UTF-8, and read grading, timing and eval metadata files and `SKILL.md` as UTF-8, falling back to the system's encoding for files saved in it. On Windows, `aggregate_benchmark.py` no longer fails or garbles non-ASCII text.
+- The `git` that prepares and checks a subagent's worktree runs only from the absolute directories in your PATH, never from the working directory.
 
 ## [0.10.3] - 2026-11-21
 

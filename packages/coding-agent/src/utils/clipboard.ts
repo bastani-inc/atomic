@@ -7,6 +7,7 @@ import { ENV_CLIPBOARD_OSC52, getEnvNames } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { isWaylandSession } from "./clipboard-image.ts";
 import { type ClipboardModule, clipboard } from "./clipboard-native.ts";
+import { findHelperExecutableAsync, helperLaunchAsync, missingHelperOptions } from "./helper-command.ts";
 import { windowsPowerShellEnvironment } from "./windows-powershell.ts";
 import { isWSL } from "./wsl.ts";
 
@@ -26,14 +27,20 @@ type NativeClipboardExecOptions = {
  */
 const CLIPBOARD_CWD = "/";
 
-function runClipboardCommand(command: string, args: string[], options: NativeClipboardExecOptions): Promise<void> {
+async function runClipboardCommand(
+	command: string,
+	args: string[],
+	options: NativeClipboardExecOptions,
+): Promise<void> {
+	const launch = await helperLaunchAsync(command, { env: options.env, cwd: options.cwd });
 	return new Promise((resolve, reject) => {
-		const proc = spawn(command, args, {
+		const proc = spawn(launch.file, args, {
 			timeout: options.timeout,
 			stdio: options.stdio,
 			env: options.env,
 			detached: options.detached,
 			cwd: options.cwd,
+			...missingHelperOptions(launch),
 		});
 		let settled = false;
 		const finish = (error?: Error) => {
@@ -84,13 +91,14 @@ function emitOsc52(text: string): boolean {
 	return true;
 }
 
-function runClipboardExecFile(
+async function runClipboardExecFile(
 	file: string,
 	args: string[],
 	options: { timeout: number; env: NodeJS.ProcessEnv; cwd: string },
 ): Promise<string> {
+	const launch = await helperLaunchAsync(file, { env: options.env, cwd: options.cwd });
 	return new Promise((resolve, reject) => {
-		execFile(file, args, options, (error, stdout) => {
+		execFile(launch.file, args, { ...options, ...missingHelperOptions(launch) }, (error, stdout) => {
 			if (error) reject(error);
 			else resolve(typeof stdout === "string" ? stdout : Buffer.from(stdout ?? "").toString("utf8"));
 		});
@@ -133,11 +141,12 @@ async function copyViaWindowsClipboard(text: string): Promise<boolean> {
 	}
 }
 
-function readTermuxClipboardText(): Promise<string | undefined> {
+async function readTermuxClipboardText(): Promise<string | undefined> {
+	const env = createChildProcessEnvironment();
+	const file = await findHelperExecutableAsync("termux-clipboard-get", { env });
+	if (file === undefined) return undefined;
 	return new Promise((resolve) => {
-		execFile("termux-clipboard-get", [], { timeout: 5000, env: createChildProcessEnvironment() }, (error, stdout) =>
-			resolve(error ? undefined : stdout),
-		);
+		execFile(file, [], { timeout: 5000, env }, (error, stdout) => resolve(error ? undefined : stdout));
 	});
 }
 
@@ -179,11 +188,13 @@ export async function readClipboardFilePaths(
 	currentPlatform: NodeJS.Platform = process.platform,
 ): Promise<string[] | null> {
 	if (currentPlatform !== "darwin" || !source?.availableFormats?.().includes(FILE_URL_PASTEBOARD_TYPE)) return null;
+	const env = createChildProcessEnvironment();
+	const launch = await helperLaunchAsync("osascript", { env });
 	const stdout = await new Promise<string>((resolve, reject) => {
 		execFile(
-			"osascript",
+			launch.file,
 			["-l", "JavaScript", "-e", READ_FILE_URLS_SCRIPT],
-			{ timeout: 5000, env: createChildProcessEnvironment() },
+			{ timeout: 5000, env, ...missingHelperOptions(launch) },
 			(error, output, stderr) => {
 				if (error) {
 					// The default error message repeats the whole script; report what osascript printed instead.

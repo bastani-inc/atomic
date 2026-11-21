@@ -7,6 +7,7 @@ import { consumeStartupInput } from "../../main-early-input.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { compileCacheDeferral } from "../../utils/compile-cache.ts";
 import { setDeprecationWarningSink } from "../../utils/deprecation.js";
+import { findHelperExecutableAsync } from "../../utils/helper-command.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
 import { shortenHomePath } from "../../utils/paths.ts";
@@ -648,13 +649,14 @@ InteractiveModeBase.prototype.checkTmuxKeyboardSetup = async function (
 	this: InteractiveModeBase,
 ): Promise<string | undefined> {
 	if (!process.env.TMUX) return undefined;
+	const env = createChildProcessEnvironment();
+	const tmux = await findHelperExecutableAsync("tmux", { env });
+	// If tmux cannot be found, don't warn
+	if (tmux === undefined) return undefined;
 
 	const runTmuxShow = (option: string): Promise<string | undefined> => {
 		return new Promise((resolve) => {
-			const proc = spawn("tmux", ["show", "-gv", option], {
-				stdio: ["ignore", "pipe", "ignore"],
-				env: createChildProcessEnvironment(),
-			});
+			const proc = spawn(tmux, ["show", "-gv", option], { stdio: ["ignore", "pipe", "ignore"], env });
 			let stdout = "";
 			const timer = setTimeout(() => {
 				proc.kill();
