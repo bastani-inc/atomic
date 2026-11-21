@@ -62,6 +62,13 @@ if (heapArgs.length > 0) {
 	const interactiveHost = !prewarmedEngine && terminal.stdinIsTTY && terminal.stdoutIsTTY;
 	const prewarm =
 		prewarmedEngine || interactiveHost ? import("./modes/interactive-engine/engine-prewarm.ts") : undefined;
+	// An interactive session's database opens on a thread of its own: start that thread now, while the modules load.
+	// `--no-session` keeps the session in memory and opens no database.
+	if ((prewarmedEngine || isPlainInteractiveSessionInvocation(args, terminal)) && !args.includes("--no-session"))
+		void import("./core/storage/node-sqlite-thread.js").then(
+			({ ThreadConnection }) => ThreadConnection.startSpare(),
+			() => {},
+		);
 	const started = interactiveHost
 		? prewarm!.then(({ prewarmInteractiveEngine }) => prewarmInteractiveEngine(args)).catch(() => {})
 		: Promise.resolve();

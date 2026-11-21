@@ -6,6 +6,7 @@
 
 - Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
 - Starting Atomic on Windows no longer runs PowerShell to look for session history that a killed Atomic process left behind when there is none, which is always the case unless a session uses the memory session store (`--no-session`, `ATOMIC_STORAGE=memory` or `{ "memory": true }`). Each start ran it once, or twice with the default isolated engine, for 0.25–0.5 s and up to 0.45 s of CPU each, and the first frame now appears about 50 ms sooner on an 8-core machine. When there is history to check, process start times are read without PowerShell. macOS skips the matching `sysctl` lookup too.
+- Interactive sessions reach the editor sooner: the thread that opens the session database starts while Atomic loads instead of after it, the native clipboard module loads the first time you copy or paste instead of at every start, and the `models.json` checker is built only when a `models.json` exists. With `--no-mcp`, the interactive window no longer loads the subagent and web tools that only its engine runs.
 
 ### Fixed
 
