@@ -32,6 +32,12 @@ try {
 	fs.writeFileSync(path.join(extensionDir, "a.ts"), 'export { shared } from "./shared.ts";\n');
 	fs.writeFileSync(path.join(extensionDir, "b.ts"), 'import { shared } from "./shared.ts";\nexport const viaB = shared;\n');
 	fs.writeFileSync(path.join(extensionDir, "asset.txt"), "extension asset\n");
+	fs.writeFileSync(path.join(extensionDir, "value.json"), '"a JSON string"\n');
+	// The extension's own `process`, declared after what the loader adds to the module.
+	fs.writeFileSync(
+		path.join(extensionDir, "own-process.ts"),
+		'const process = { label: "mine" };\nexport const ownProcess = () => [process.label, __dirname, import.meta.dir];\n',
+	);
 	const entry = path.join(extensionDir, "extension.ts");
 	fs.writeFileSync(
 		entry,
@@ -41,6 +47,7 @@ import { Format } from "typebox/format";
 import { Type } from "typebox";
 import { shared } from "./a.ts";
 import { viaB } from "./b.ts";
+import { ownProcess } from "./own-process.ts";
 export default function (pi) {
 	Format.Set("atomic-bun-format", (value) => value.startsWith("ok-"));
 	const meta = import.meta;
@@ -60,15 +67,16 @@ export default function (pi) {
 			main: import.meta.main,
 			dirnameGlobal: __dirname,
 			filenameGlobal: __filename,
-			// jiti's require names paths with forward slashes on Windows.
-			required: join(require.resolve("./a.ts")),
+			required: require.resolve("./a.ts"),
 			aliasedDir: meta.dir,
 			computedDir: import.meta[key],
 			destructuredDir,
 			resolved: import.meta.resolve("./a.ts"),
 			aliasedResolved: meta.resolve("./a.ts"),
-			metaRequired: join(import.meta.require.resolve("./a.ts")),
-			destructuredRequired: join(destructuredRequire.resolve("./a.ts")),
+			metaRequired: import.meta.require.resolve("./a.ts"),
+			destructuredRequired: destructuredRequire.resolve("./a.ts"),
+			requiredJson: import.meta.require("./value.json"),
+			ownProcess: ownProcess(),
 		},
 		asset: readFileSync(join(import.meta.dir, "asset.txt"), "utf8"),
 	});
@@ -116,6 +124,8 @@ export default function (pi) {
 					aliasedResolved: pathToFileURL(path.join(extensionDir, "a.ts")).href,
 					metaRequired: path.join(extensionDir, "a.ts"),
 					destructuredRequired: path.join(extensionDir, "a.ts"),
+					requiredJson: "a JSON string",
+					ownProcess: ["mine", extensionDir, extensionDir],
 				},
 				load,
 			);

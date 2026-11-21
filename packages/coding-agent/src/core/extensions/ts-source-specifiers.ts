@@ -9,8 +9,9 @@ type JitiTransform = NonNullable<NonNullable<Parameters<CreateJiti>[1]>["transfo
 type JitiTransformOptions = Parameters<JitiTransform>[0];
 
 // 2: a stored transform starts with a line listing the module's static imports.
-// 3: `import.meta` is an object of the module's own file (see `moduleImportMetaPlugin`).
-const TRANSFORM_CACHE_FORMAT = 3;
+// 4: `import.meta` is an object of the module's own file, and every path the module reads is written as the platform
+// writes it (see `moduleImportMetaPlugin`).
+const TRANSFORM_CACHE_FORMAT = 4;
 const RELATIVE_SCRIPT_SPECIFIER = /["'](\.\.?\/[^"'\r\n]*?\.[cm]?jsx?)["']/g;
 const SCRIPT_EXTENSION = /\.[cm]?jsx?$/;
 const TYPESCRIPT_EXTENSION_FOR: Readonly<Record<string, string>> = {
@@ -121,37 +122,55 @@ function typeScriptSourceSpecifierPlugin(_babel: object, options: PluginOptions)
 	};
 }
 
+interface ScopeLike {
+	hasBinding(name: string): boolean;
+	hasOwnBinding(name: string): boolean;
+	rename(name: string): void;
+	generateUidIdentifier(name: string): { name: string };
+}
+
 interface MetaPropertyPath {
 	node: { meta?: { name?: string }; property?: { name?: string } };
 	replaceWith(node: object): void;
 }
 
 interface IdentifierPath {
-	node: { name?: string };
-	scope: { hasBinding(name: string): boolean };
+	node: object & { name?: string };
+	parent: { type: string; callee?: object };
+	scope: ScopeLike;
 	isReferencedIdentifier(): boolean;
 }
 
 interface ProgramPath {
-	scope: { hasBinding(name: string): boolean };
+	scope: ScopeLike;
+	traverse(visitor: {
+		Scopable?(nodePath: { scope: ScopeLike }): void;
+		MetaProperty?(nodePath: MetaPropertyPath): void;
+	}): void;
 	unshiftContainer(key: "body", node: object): void;
 }
 
+/** The names jiti's module wrapper gives the functions its transform calls for `import()` and `import.meta.resolve`. */
+const JITI_FUNCTION_NAMES = ["jitiImport", "jitiESMResolve"];
+
 interface BabelApi {
-	types: { identifier(name: string): object };
+	types: { identifier(name: string): object; callExpression(callee: object, args: object[]): object };
 	template: { statement: { ast(code: string): object } };
 }
 
-/** The name the transformed module gives its `import.meta` object. */
-const IMPORT_META = "__atomicImportMeta";
-
 /**
- * jiti replaces a module's `import.meta.url` and `import.meta.resolve`, and leaves the rest of `import.meta` to the code
- * it evaluates: under Node that names no file at all, under Bun a `data:` module. This gives each module an
- * `import.meta` object of its own file instead, the one a natively imported module has: `url`, `filename`, `dirname`
- * and `resolve`, under Bun also `path`, `dir`, `file`, `main` and `require`, and `env`, as jiti gave it before. Every
- * use of `import.meta` reads that object, whether it names a property directly, keeps the object in a variable, or
- * destructures it.
+ * jiti replaces a module's `import.meta.url`, `filename`, `dirname` and `resolve` where the code names them directly,
+ * with paths written with forward slashes on Windows too, and leaves the rest of `import.meta` to the code it evaluates:
+ * under Node that names no file at all, under Bun a `data:` module. This gives each module an `import.meta` object of
+ * its own file instead, the one a natively imported module has: `url`, `filename`, `dirname` and `resolve`, under Bun
+ * also `path`, `dir`, `file`, `main` and a `require` of the file, and `env`, as jiti gave it before. Every use of
+ * `import.meta` reads that object, whether it names a property directly, keeps the object in a variable, or
+ * destructures it. Every path it names, and `__filename`, `__dirname` and `require.resolve`'s, is written as the
+ * platform writes it, as for a module Node or Bun loads itself.
+ *
+ * The code this adds never reads the module's own bindings: the function that returns the object has a name no other
+ * binding in the module has, and reads Node's globals through `globalThis`, so a module's own `process` or `require`
+ * never stands in for them. It is a hoisted function, so code an import cycle runs before the module's own can call it.
  */
 function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) {
 	// The file's path as the platform writes it: jiti names it with forward slashes on Windows too.
@@ -159,45 +178,82 @@ function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) 
 	const url = pathToFileURL(filename).href;
 	const dirname = path.dirname(filename);
 	const file = path.basename(filename);
-	type State = { usesImportMeta?: boolean; usesFileGlobals?: boolean };
+	const fileGlobals: Readonly<Record<string, string>> = { __filename: filename, __dirname: dirname };
+	type State = { importMeta?: string; fileGlobals?: Set<string>; resolvesPaths?: boolean };
+	const literal = JSON.stringify;
 	return {
 		name: "atomic-module-import-meta",
+		pre(this: State, file: { path: ProgramPath }) {
+			// This runs before any plugin's visitors: jiti's own rewrites the module's direct reads of its URL, dirname
+			// and filename as soon as it enters the program.
+			const program = file.path;
+			// A binding of the module's own with a name jiti's wrapper gives its functions would stand in for them.
+			const renameJitiNames = (scope: ScopeLike) => {
+				for (const name of JITI_FUNCTION_NAMES) if (scope.hasOwnBinding(name)) scope.rename(name);
+			};
+			renameJitiNames(program.scope);
+			program.traverse({ Scopable: (nodePath) => renameJitiNames(nodePath.scope) });
+			program.traverse({
+				MetaProperty: (nodePath) => {
+					if (nodePath.node.meta?.name !== "import" || nodePath.node.property?.name !== "meta") return;
+					this.importMeta ??= program.scope.generateUidIdentifier("importMeta").name;
+					nodePath.replaceWith(babel.types.callExpression(babel.types.identifier(this.importMeta), []));
+				},
+			});
+		},
 		visitor: {
-			MetaProperty(nodePath: MetaPropertyPath, state: State) {
-				if (nodePath.node.meta?.name !== "import" || nodePath.node.property?.name !== "meta") return;
-				nodePath.replaceWith(babel.types.identifier(IMPORT_META));
-				state.usesImportMeta = true;
-			},
 			Identifier(nodePath: IdentifierPath, state: State) {
 				const name = nodePath.node.name;
-				if ((name === "__filename" || name === "__dirname") && nodePath.isReferencedIdentifier()) {
-					if (!nodePath.scope.hasBinding(name)) state.usesFileGlobals = true;
+				if (name === undefined || !nodePath.isReferencedIdentifier() || nodePath.scope.hasBinding(name)) return;
+				if (name in fileGlobals) {
+					state.fileGlobals ??= new Set();
+					state.fileGlobals.add(name);
 				}
+				// jiti's `require`, other than to call it: `require.resolve` names a path.
+				if (
+					name === "require" &&
+					!(nodePath.parent.type === "CallExpression" && nodePath.parent.callee === nodePath.node)
+				)
+					state.resolvesPaths = true;
 			},
 			Program: {
 				exit(nodePath: ProgramPath, state: State) {
-					if (
-						state.usesFileGlobals &&
-						!nodePath.scope.hasBinding("__filename") &&
-						!nodePath.scope.hasBinding("__dirname")
-					) {
-						// Under Bun, as a natively imported module has them; jiti's stay under Node, as before.
+					const assignments = [...(state.fileGlobals ?? [])]
+						.filter((name) => !nodePath.scope.hasBinding(name))
+						.map((name) => `${name} = ${literal(fileGlobals[name])};`);
+					// jiti's `__filename` and `__dirname` name the file with forward slashes on Windows too.
+					for (const assignment of assignments)
+						nodePath.unshiftContainer("body", babel.template.statement.ast(assignment));
+					if (state.resolvesPaths && !nodePath.scope.hasBinding("require")) {
 						nodePath.unshiftContainer(
 							"body",
 							babel.template.statement.ast(
-								`if (process.versions.bun !== undefined) { __filename = ${JSON.stringify(filename)}; __dirname = ${JSON.stringify(dirname)}; }`,
+								`if (globalThis.process.platform === "win32") {
+									const { resolve } = require;
+									const { win32 } = globalThis.process.getBuiltinModule("node:path");
+									require.resolve = (id, options) => {
+										const resolved = resolve(id, options);
+										return win32.isAbsolute(resolved) ? win32.normalize(resolved) : resolved;
+									};
+									require.resolve.paths = resolve.paths;
+								}`,
 							),
 						);
 					}
-					if (!state.usesImportMeta) return;
-					// jiti's `require` for the module, unless the module declares its own at the top level.
-					const require = nodePath.scope.hasBinding("require") ? "" : ", require";
-					const bun = `path: ${JSON.stringify(filename)}, dir: ${JSON.stringify(dirname)}, file: ${JSON.stringify(file)}, main: false${require}`;
-					// `env` as jiti gave `import.meta.env` before, under Node too.
+					const importMeta = state.importMeta;
+					if (importMeta === undefined) return;
 					nodePath.unshiftContainer(
 						"body",
 						babel.template.statement.ast(
-							`const ${IMPORT_META} = { url: ${JSON.stringify(url)}, filename: ${JSON.stringify(filename)}, dirname: ${JSON.stringify(dirname)}, resolve: jitiESMResolve, env: process.env, ...(process.versions.bun === undefined ? {} : { ${bun} }) };`,
+							`function ${importMeta}() {
+								${importMeta}.meta ??= ((nodeProcess, resolve) => {
+									const meta = { url: ${literal(url)}, filename: ${literal(filename)}, dirname: ${literal(dirname)}, resolve, env: nodeProcess.env };
+									if (nodeProcess.versions.bun === undefined) return meta;
+									const require = nodeProcess.getBuiltinModule("node:module").createRequire(${literal(filename)});
+									return { ...meta, path: ${literal(filename)}, dir: ${literal(dirname)}, file: ${literal(file)}, main: false, require };
+								})(globalThis.process, jitiESMResolve);
+								return ${importMeta}.meta;
+							}`,
 						),
 					);
 				},
