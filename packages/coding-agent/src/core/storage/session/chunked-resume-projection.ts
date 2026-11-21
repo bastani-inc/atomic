@@ -68,7 +68,7 @@ const customFields: Fields = {
 	intercom_inbox_handled: { messageId: true },
 	intercom_ask: { askId: true },
 	intercom_ask_closed: { messageId: true },
-	intercom_ask_settled: { askId: true },
+	intercom_ask_settled: { askId: true, askIds: true, state: "short" },
 	intercom_sent: { message: protocolMessage },
 	intercom_reply_wait: { toolCallId: true },
 	"workflow.run.start": { runId: "string", name: "stringPresent", ts: "number" },

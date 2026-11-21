@@ -20,6 +20,7 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
+import { releaseSessionSnapshotRefs } from "../src/core/worktree-snapshot/session-refs.js";
 
 useTemporaryAgentDir();
 
@@ -392,6 +393,23 @@ test("a subagent's capture a compaction archived stops counting once the same se
 	const prepared = await prepareSessionResume(parent, { ...options, blueprints: "skip" });
 	assert.ok(prepared.status === "ready");
 	assert.equal(content(prepared.sessionManager.getCwd(), "work.txt"), "second\n");
+});
+
+test("a checkout the session took from its subagent stays its own after the subagent's refs are gone and Git pruned unreferenced commits", async () => {
+	const { clone, store, parent } = await project();
+	const { child, finished } = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "child\n");
+	await finished(await capture(child, store, clone));
+	// Nothing but the session's own ref keeps the commit once it took the capture.
+	await releaseSessionSnapshotRefs(child.getSessionId(), [clone]);
+	const first = await resume(store, parent, clone, false);
+	assert.equal(first.getCwd(), clone);
+
+	sandbox.write(join(clone, "work.txt"), "yours\n");
+	await sandbox.git(clone, "gc", "-q", "--prune=now");
+	const second = await resume(store, parent, clone, false);
+	assert.equal(second.getCwd(), clone, "the session continues in the checkout it worked in");
+	assert.equal(content(clone, "work.txt"), "yours\n");
 });
 
 test("a subagent's named worktree stays its own: the session's resume does not take it", async () => {

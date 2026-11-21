@@ -28,7 +28,6 @@ import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import {
 	childOfAttempt,
 	latestSubagentAttempt,
-	releasedWaitingOn,
 	waitingReleasedShells,
 	waitingReleasedTools,
 } from "../../../core/tasks/completion.js";
@@ -80,8 +79,10 @@ import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-h
 import { parseWheelReport, ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
+import type { KeptTaskAction } from "./kept-task.ts";
 import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import type { ParkedTaskRows } from "./parked-rows.ts";
+import { ReleasedWaitCard, releasedWaitLine } from "./released-wait-card.ts";
 import { dismissedTasks } from "./task-dismissal.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
 import { pagedNotices, TaskTranscriptNotices } from "./task-transcript-notices.ts";
@@ -404,19 +405,18 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
 	get status(): string {
-		return [this.loadStatus, this.releasedNote() ?? "", this.readOnlyReason() ?? ""].filter(Boolean).join(" · ");
+		return [this.loadStatus, this.readOnlyReason() ?? ""].filter(Boolean).join(" · ");
 	}
 	/**
-	 * What a subagent released while it waits waits on, that it wakes by itself, and the shells it launched that still
-	 * run, with the key that opens the newest one's output. Its transcript is its saved session, read without waking it.
+	 * A subagent released while it waits, after its transcript as a block of its own: the main chat's notice line of the
+	 * release, then that it wakes by itself and the shells it launched that still run, with the key that opens the newest
+	 * one's output. Its transcript is its saved session, read without waking it.
 	 */
-	private releasedNote(): string | undefined {
+	private releasedCard(): ReleasedWaitCard | undefined {
 		const task = this.liveTask();
-		const waitingOn =
-			task?.execution.kind === "settled" && waitingReleasedTools(task) !== undefined
-				? releasedWaitingOn(task.execution.result)
-				: undefined;
-		if (task === undefined || waitingOn === undefined) return undefined;
+		if (task === undefined || waitingReleasedTools(task) === undefined) return undefined;
+		const line = releasedWaitLine(task);
+		if (line === undefined) return undefined;
 		const shells = waitingReleasedShells(task, this.source.ownerTasks ?? this.source.tasks);
 		const openKey = navActionText(getKeybindings(), "app.tasks.openWaited");
 		const opens = openKey ? clickableKeyTextHint(openKey, " opens") : "/tasks opens";
@@ -426,10 +426,33 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				: shells.length === 1
 					? ` · its shell ${taskDisplayText(shortTaskTitle(shells[0]!.title || "shell"))} is running · ${opens} it`
 					: ` · ${shells.length} of its shells are running · ${opens} ${openKey ? "the newest" : "them"}`;
-		return `Waiting on ${taskDisplayText(waitingOn)} · wakes by itself when it finishes${shellNote}`;
+		return new ReleasedWaitCard(line, `Wakes by itself when it finishes${shellNote}`);
 	}
 	set status(value: string) {
 		this.loadStatus = value;
+	}
+	/** What this chat offers for the task `taskId` one of its calls left running, if anything. */
+	private keptTaskAction(taskId: TaskId): KeptTaskAction | undefined {
+		if (this.keptTasks === "openWaited") return taskId === this.waitedShell ? "openWaited" : undefined;
+		// `/tasks` runs only where the chat takes what is typed.
+		if (!this.takesTyping) return undefined;
+		return this.chat.listsTask(taskId) ? "ownTasks" : undefined;
+	}
+	/**
+	 * Notes once per frame what the chat's blocks offer depends on, so each block only compares its task with it: where
+	 * the waited-shell key opens a shell, the newest shell the released subagent waits on; elsewhere, whether the chat
+	 * takes what is typed, so its own `/tasks` runs.
+	 */
+	private noteKeptTaskFacts(): void {
+		if (this.keptTasks !== "openWaited") {
+			this.takesTyping = this.source.sendTaskMessage !== undefined && this.readOnlyReason() === undefined;
+			return;
+		}
+		const task = this.liveTask();
+		this.waitedShell =
+			task === undefined
+				? undefined
+				: waitingReleasedShells(task, this.source.ownerTasks ?? this.source.tasks).at(-1)?.ref.taskId;
 	}
 	/** Why messages cannot reach this task any more, or `undefined` while they can. */
 	readOnlyReason(): string | undefined {
@@ -476,6 +499,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	private readonly reportLate: (reason: string) => void;
 	private readonly showKeys: (() => void) | undefined;
+	private readonly keptTasks: "ownTasks" | "openWaited";
+	private waitedShell: TaskId | undefined;
+	private takesTyping = false;
 
 	/**
 	 * `reportLate` shows the reason a message failed after the reader left this transcript; `showKeys` opens the chat's
@@ -487,7 +513,15 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		env: TaskTranscriptEnvironment,
 		requestRender: () => void,
 		reportLate: (reason: string) => void = (reason) => env.notify?.(reason),
-		options: { readonly showKeys?: () => void } = {},
+		options: {
+			readonly showKeys?: () => void;
+			/**
+			 * How the chat offers a task one of its calls left running: through its own `/tasks`, which lists the tasks the
+			 * subagent launched (the default), or, on a screen where `/tasks` opens the main chat's list, by the key that
+			 * opens the newest shell a released subagent waits on.
+			 */
+			readonly keptTasks?: "ownTasks" | "openWaited";
+		} = {},
 	) {
 		this.source = source;
 		this.elapsedClocks = taskClocksFor(source);
@@ -496,6 +530,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.requestRender = requestRender;
 		this.reportLate = reportLate;
 		this.showKeys = options.showKeys;
+		this.keptTasks = options.keptTasks ?? "ownTasks";
 		this.chat = env.createChat({
 			style: env.style,
 			tui: env.tui,
@@ -563,6 +598,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			onNearBottom: () => this.loadAdjacent("newer"),
 			// A subagent's `/tasks` lists the tasks it launched.
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
+			transcriptEndBlock: () => this.releasedCard(),
+			keptTaskAction: (keptTaskId) => this.keptTaskAction(keptTaskId),
 			// The completion the subagent's chat offers, from its own cwd and skills.
 			autocompleteProvider: createSessionSkillAutocompleteProvider(async () => {
 				const commands = await source.taskCommands?.(this.liveTaskId());
@@ -921,10 +958,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	/**
 	 * The transcript alone, `rows` rows tall, as the single chat screen draws it where the main transcript is: the body,
-	 * then the page's notes (loading, read failures, what a released subagent waits on, why it is read-only) in dim
-	 * rows, then the question form a held prompt opens, which keeps its rows first.
+	 * then the page's notes (loading, read failures, why it is read-only) in dim rows, then the question form a held
+	 * prompt opens, which keeps its rows first.
 	 */
 	renderView(width: number, rows: number): string[] {
+		this.noteKeptTaskFacts();
 		let remaining = Math.max(0, rows);
 		this.bodyRows = 0;
 		this.viewLayout = undefined;
@@ -1034,6 +1072,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	/** The chat box of a subagent's chat: the transcript, then pending, working, usage, the named editor and the footer. */
 	render(width: number, rows: number): string[] {
+		this.noteKeptTaskFacts();
 		const viewport = Math.max(1, rows);
 		this.bodyRows = 0;
 		if (this.chat.hasTaskInspector) {

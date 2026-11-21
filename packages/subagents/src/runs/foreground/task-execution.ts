@@ -842,8 +842,6 @@ export async function runAgentTask(input: {
 					);
 				const childId = subagentChildId(runId, index);
 				const wokenWith = input.options.wakeToolResultIds ?? [];
-				// Results answering no pending call reach it as follow-ups, which a stop keeps as its pending messages.
-				const answeredByTurn = new Set((input.options.resumeToolResults ?? []).map((result) => result.toolCallId));
 				const clearDelivered = (toolCallIds: readonly string[]) => {
 					const delivered = toolCallIds.filter((toolCallId) => wokenWith.includes(toolCallId));
 					return delivered.length === 0
@@ -974,6 +972,8 @@ export async function runAgentTask(input: {
 								},
 								// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
 								toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
+								noticesSaved: (completionIds) =>
+									void input.recordChild?.clearHeldNotices?.(childId, completionIds),
 								reportTurnPaused: (paused, leafId) => {
 									turnPaused = paused;
 									if (paused) pausedAtLeafId = leafId;
@@ -1078,19 +1078,18 @@ export async function runAgentTask(input: {
 								true,
 								context.ref.taskId,
 							);
-							const holdMessages = input.recordChild?.holdMessages;
-							if (ownerSessionId !== undefined && holdMessages !== undefined)
+							const holdNotices = input.recordChild?.holdNotices;
+							if (ownerSessionId !== undefined && holdNotices !== undefined)
 								routeReleasedChildShellCompletions(
 									child.released,
-									holdMessages,
+									holdNotices,
 									ownerSessionId,
 									childId,
 									input.wakeDispatcher ?? agentWakeDispatcher(),
 								);
 						}
+						// A stop keeps what its session did not save, a late result's notice included, for its resume (#5012).
 						if (settled && (released || child.status === "ok")) void clearDelivered(wokenWith);
-						else if (settled && stoppedByControl)
-							void clearDelivered(wokenWith.filter((toolCallId) => !answeredByTurn.has(toolCallId)));
 						input.onTerminal?.(child);
 						if (ownerSessionId !== undefined && settled && !stoppedByControl && child.status !== "killed")
 							wakeForResultsHeldDuringRun(

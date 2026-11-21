@@ -2,7 +2,8 @@
  * The processes a running process started, and theirs, each told apart from a later process given its pid by when it
  * started, so that ending them later never signals another process.
  */
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 
 /**
@@ -26,16 +27,29 @@ const PS_TIMEOUT_MS = 2_000;
 /** How many `/proc` entries are read at once. */
 const PROC_READS_AT_ONCE = 32;
 
+/** A process's row and state (`R`, `S`, ..., `Z` once it ended and is not reaped yet), from its `/proc/<pid>/stat`. */
+function linuxProcessRow(stat: string): (ProcessRow & { readonly state: string }) | undefined {
+	// After the command name, which may hold spaces and parentheses: state, parent, process group, ..., the start
+	// time (22nd field).
+	const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+	const started = fields[19];
+	if (started === undefined || !/^\d+$/.test(started)) return undefined;
+	return { state: fields[0] ?? "", parent: Number(fields[1]), group: Number(fields[2]), started };
+}
+
 /** Parent, process group and start time of process `pid`, from one read of its `/proc` entry; undefined once gone. */
 async function linuxProcess(pid: number): Promise<ProcessRow | undefined> {
 	try {
-		const stat = await readFile(`/proc/${pid}/stat`, "utf8");
-		// After the command name, which may hold spaces and parentheses: state, parent, process group, ..., the start
-		// time (22nd field).
-		const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-		const started = fields[19];
-		if (started === undefined || !/^\d+$/.test(started)) return undefined;
-		return { parent: Number(fields[1]), group: Number(fields[2]), started };
+		return linuxProcessRow(await readFile(`/proc/${pid}/stat`, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+/** {@link linuxProcess}, read at once, with the process's state. */
+function linuxProcessNow(pid: number): (ProcessRow & { readonly state: string }) | undefined {
+	try {
+		return linuxProcessRow(readFileSync(`/proc/${pid}/stat`, "utf8"));
 	} catch {
 		return undefined;
 	}
@@ -140,10 +154,10 @@ function words(line: string): string[] {
 	return line.split(" ").filter((word) => word !== "");
 }
 
-/** On macOS, every process's parent, process group and start time, from one `ps` call. */
-async function macProcesses(): Promise<Map<number, ProcessRow> | undefined> {
-	const lines = await psLines(["-A", "-o", "pid=,ppid=,pgid=,lstart="]);
-	if (lines === undefined) return undefined;
+const PS_TABLE_ARGS = ["-A", "-o", "pid=,ppid=,pgid=,lstart="];
+
+/** The process table in the lines of `ps` with {@link PS_TABLE_ARGS}. */
+function psTable(lines: readonly string[]): Map<number, ProcessRow> {
 	const processes = new Map<number, ProcessRow>();
 	for (const line of lines) {
 		const [pid, parent, group, ...started] = words(line);
@@ -151,6 +165,12 @@ async function macProcesses(): Promise<Map<number, ProcessRow> | undefined> {
 		processes.set(Number(pid), { parent: Number(parent), group: Number(group), started: started.join(" ") });
 	}
 	return processes;
+}
+
+/** On macOS, every process's parent, process group and start time, from one `ps` call. */
+async function macProcesses(): Promise<Map<number, ProcessRow> | undefined> {
+	const lines = await psLines(PS_TABLE_ARGS);
+	return lines === undefined ? undefined : psTable(lines);
 }
 
 /**
@@ -200,7 +220,11 @@ export async function descendantsOf(root: number): Promise<IdentifiedProcess[]> 
 		if (found !== undefined) return found;
 	}
 	const processes = await processTable();
-	if (processes === undefined) return [];
+	return processes === undefined ? [] : descendantsInTable(root, processes);
+}
+
+/** {@link descendants} with this system's start times. */
+function descendantsInTable(root: number, processes: Map<number, ProcessRow>): IdentifiedProcess[] {
 	return process.platform === "linux"
 		? descendants(root, processes, (child, parent) => BigInt(child) >= BigInt(parent))
 		: descendants(root, processes, (child, parent) => Date.parse(`${child} UTC`) >= Date.parse(`${parent} UTC`));
@@ -227,6 +251,107 @@ export async function signalIfSame(processes: readonly IdentifiedProcess[], sign
 		const starts = new Map<number, string>();
 		for (const line of (await psLines(["-o", "pid=,lstart=", "-p", processes.map(({ pid }) => pid).join(",")])) ??
 			[]) {
+			const [pid, ...started] = words(line);
+			if (pid !== undefined && started.length > 0) starts.set(Number(pid), started.join(" "));
+		}
+		for (const recorded of processes)
+			if (starts.get(recorded.pid) === recorded.started) signal(recorded.pid, signalName);
+	}
+}
+
+// Reading at once, for a process that is about to exit and can no longer wait for anything.
+
+/** {@link linuxChildren}, read at once. */
+function linuxChildrenNow(pid: number): number[] | undefined {
+	let threads: string[];
+	try {
+		threads = readdirSync(`/proc/${pid}/task`);
+	} catch {
+		return undefined;
+	}
+	const children: number[] = [];
+	for (const thread of threads) {
+		try {
+			children.push(...words(readFileSync(`/proc/${pid}/task/${thread}/children`, "utf8")).map(Number));
+		} catch {
+			return undefined;
+		}
+	}
+	return children;
+}
+
+/** {@link linuxDescendants}, read at once. */
+function linuxDescendantsNow(root: number): IdentifiedProcess[] | undefined {
+	const rootRow = linuxProcessNow(root);
+	if (rootRow === undefined) return [];
+	if (linuxChildrenNow(root) === undefined) return undefined;
+	const found = new Map<number, IdentifiedProcess>();
+	const pending: IdentifiedProcess[] = [{ pid: root, started: rootRow.started }];
+	while (pending.length > 0) {
+		const parent = pending.pop()!;
+		for (const child of linuxChildrenNow(parent.pid) ?? []) {
+			if (found.has(child)) continue;
+			const row = linuxProcessNow(child);
+			if (row === undefined || row.parent !== parent.pid || row.group !== rootRow.group) continue;
+			if (BigInt(row.started) < BigInt(parent.started)) continue;
+			const identified = { pid: child, started: row.started };
+			found.set(child, identified);
+			pending.push(identified);
+		}
+	}
+	return [...found.values()];
+}
+
+/** {@link linuxProcesses}, read at once. */
+function linuxProcessesNow(): Map<number, ProcessRow> | undefined {
+	let entries: string[];
+	try {
+		entries = readdirSync("/proc");
+	} catch {
+		return undefined;
+	}
+	const processes = new Map<number, ProcessRow>();
+	for (const entry of entries) {
+		if (!/^[0-9]+$/.test(entry)) continue;
+		const row = linuxProcessNow(Number(entry));
+		if (row !== undefined) processes.set(Number(entry), row);
+	}
+	return processes;
+}
+
+/** {@link psLines}, at once. */
+function psLinesNow(args: readonly string[]): string[] | undefined {
+	const result = spawnSync("/bin/ps", [...args], {
+		encoding: "utf8",
+		timeout: PS_TIMEOUT_MS,
+		env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+	});
+	// A `ps` that could not start, or was stopped at the time limit, read nothing that can be trusted.
+	if (result.error !== undefined || result.signal !== null) return undefined;
+	return result.stdout.split("\n");
+}
+
+/** {@link descendantsOf}, read at once. */
+export function descendantsOfNow(root: number): IdentifiedProcess[] {
+	if (process.platform !== "linux" && process.platform !== "darwin") return [];
+	if (process.platform === "linux") {
+		const found = linuxDescendantsNow(root);
+		if (found !== undefined) return found;
+	}
+	const lines = process.platform === "darwin" ? psLinesNow(PS_TABLE_ARGS) : undefined;
+	const processes = process.platform === "linux" ? linuxProcessesNow() : lines && psTable(lines);
+	return processes === undefined ? [] : descendantsInTable(root, processes);
+}
+
+/** {@link signalIfSame}, at once. */
+export function signalIfSameNow(processes: readonly IdentifiedProcess[], signalName: NodeJS.Signals): void {
+	if (process.platform === "linux") {
+		for (const recorded of processes) {
+			if (linuxProcessNow(recorded.pid)?.started === recorded.started) signal(recorded.pid, signalName);
+		}
+	} else if (process.platform === "darwin" && processes.length > 0) {
+		const starts = new Map<number, string>();
+		for (const line of psLinesNow(["-o", "pid=,lstart=", "-p", processes.map(({ pid }) => pid).join(",")]) ?? []) {
 			const [pid, ...started] = words(line);
 			if (pid !== undefined && started.length > 0) starts.set(Number(pid), started.join(" "));
 		}
