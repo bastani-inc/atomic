@@ -58,6 +58,8 @@ function execOnWindows(...call: Parameters<typeof execCommand>): Promise<ExecRes
 	}
 }
 
+/** How long the PATH directory takes to answer while the caller changes its arguments. */
+const SLOW_ARGUMENTS_LOOKUP_MS = 200;
 /** How long the PATH directory takes to answer in the timeout budget test. */
 const SLOW_LOOKUP_MS = 2_000;
 /** The command's timeout there: longer than the lookup, so the command starts. */
@@ -82,6 +84,26 @@ describe.skipIf(process.platform === "win32")("a pi.exec command whose lookup to
 		assert.equal(result.code, 143);
 		// A second whole timeout after the lookup would end it after SLOW_LOOKUP_MS + BUDGET_MS.
 		assert.ok(elapsed < SLOW_LOOKUP_MS + BUDGET_MS - 500, `ended after ${Math.round(elapsed)} ms`);
+	});
+});
+
+describe.skipIf(process.platform === "win32")("a pi.exec command whose arguments change while it is looked up", () => {
+	test("runs with the arguments it was called with", async () => {
+		const bin = join(root, "bin");
+		held.delete(bin);
+		slow.set(bin, SLOW_ARGUMENTS_LOOKUP_MS);
+		writeFileSync(
+			join(bin, "atomic-test-program"),
+			`#!/bin/sh\nexec '${process.execPath}' -e 'process.stdout.write(process.argv.slice(1).join(" "))' "$@"\n`,
+			{ mode: 0o755 },
+		);
+		const args = ["first"];
+
+		const result = execOnWindows("atomic-test-program", args, root);
+		args[0] = "second";
+		args.push("third");
+
+		assert.equal((await result).stdout, "first");
 	});
 });
 

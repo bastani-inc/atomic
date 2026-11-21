@@ -99,6 +99,8 @@ export async function execCommand(
 	// Atomic's child attribution in the same explicit environment.
 	const env = createChildProcessEnvironment();
 	const startedAt = performance.now();
+	// The arguments as they are now: a caller may reuse its array while the program is looked up.
+	const argv = [...args];
 	let launch: HelperLaunch = { file: command };
 	if (process.platform === "win32") {
 		// Windows looks for a program named without a path in the working directory before PATH: look it up in PATH's
@@ -120,7 +122,7 @@ export async function execCommand(
 		}
 	}
 	// Without fork where that costs the host time in proportion to its memory (#5345).
-	const proc = spawnHostProcess(launch.file, args, {
+	const proc = spawnHostProcess(launch.file, argv, {
 		cwd,
 		env,
 		stdio: ["ignore", "pipe", "pipe"],
