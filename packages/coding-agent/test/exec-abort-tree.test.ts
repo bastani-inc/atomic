@@ -328,23 +328,24 @@ public static class Breakaway {
 
 		// Git Bash, as Cygwin does, starts its processes outside a job that lets them leave, as the job of a pi.exec command
 		// does so that such a start still works.
-		test("a background job of Git Bash leaves the command's job and keeps running, as before", async () => {
-			const marker = uniqueMarker();
+		test("a program a Git Bash background job started leaves the command's job and keeps running, as before", async () => {
+			const file = pidFile();
+			// The program records its own Windows process ID, and ends by itself after the fixture's bound.
+			const program = `require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, ${WINDOWS_FIXTURE_SECONDS * 1000});`;
 			const controller = new AbortController();
 			const running = execCommand(
 				"bash",
-				["-c", `sleep ${WINDOWS_FIXTURE_SECONDS}.${marker} & wait`],
+				["-c", '"$0" -e "$1" "$2" & wait', process.execPath.replace(/\\/g, "/"), program, file],
 				process.cwd(),
 				{ signal: controller.signal },
 				quitStop,
 			);
-			const started = await windowsProcessesStarted("sleep.exe", marker);
-			assert.ok(started.length > 0, "the command started nothing");
+			const started = await recordedFrom(file);
 
 			controller.abort();
 			assert.equal((await running).code, 143);
 
-			assert.equal(await noneGone(started), true);
+			assert.equal(await noneGone([started]), true, "the program Git Bash started was ended");
 		});
 
 		test("an abort after the command ended signals nothing, so a process given its number is left alone", async () => {
