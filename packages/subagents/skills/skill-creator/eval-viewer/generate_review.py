@@ -497,8 +497,18 @@ def write_replacing(path: Path, content: bytes) -> None:
                 os.replace(temporary, target)
                 break
             except PermissionError:
-                # On Windows a program reading the file can hold it for a moment.
-                if os.name != "nt" or attempt == 19:
+                if os.name != "nt":
+                    raise
+                # On Windows a program that has the file open, as Python and Node open files there, lets it be
+                # written but not replaced: it is written in place, as before.
+                if target.is_file():
+                    try:
+                        target.write_bytes(content)
+                        break
+                    except PermissionError:
+                        pass
+                # Or something holds it for a moment, such as a scanner.
+                if attempt == 19:
                     raise
                 time.sleep(0.05)
     except OSError as error:

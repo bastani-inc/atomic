@@ -14,8 +14,10 @@ import errno
 import fnmatch
 import os
 import secrets
+import shutil
 import stat
 import sys
+import time
 import zipfile
 from pathlib import Path
 from scripts.atomic_cli import remove_file
@@ -64,6 +66,32 @@ def create_temporary(target: Path) -> tuple[Path, int]:
         except FileExistsError:
             continue
     raise FileExistsError(f"no free temporary name next to {target}")
+
+
+def replace(temporary: Path, target: Path) -> None:
+    """Give the complete archive the .skill file's name.
+
+    On Windows a program that has the .skill file open, as Python and Node open files there, lets it be
+    written but not replaced: it is then written in place, as before. Something holding it for a moment,
+    such as a scanner, is waited for a bounded time.
+    """
+    for attempt in range(20):
+        try:
+            os.replace(temporary, target)
+            return
+        except PermissionError:
+            if os.name != "nt":
+                raise
+            if target.is_file():
+                try:
+                    with open(temporary, "rb") as source, open(target, "wb") as destination:
+                        shutil.copyfileobj(source, destination)
+                    return
+                except PermissionError:
+                    pass
+            if attempt == 19:
+                raise
+            time.sleep(0.05)
 
 
 def package_skill(skill_path, output_dir=None):
@@ -150,7 +178,7 @@ def package_skill(skill_path, output_dir=None):
             if target.exists():
                 # A .skill file it replaces keeps exactly its permissions, as when it was written over before.
                 os.chmod(temporary, creation_mode(target))
-            os.replace(temporary, target)
+            replace(temporary, target)
             temporary = None
         print(f"\n✅ Successfully packaged skill to: {skill_filename}")
         return skill_filename
