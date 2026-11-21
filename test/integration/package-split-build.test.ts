@@ -270,16 +270,22 @@ async function identitySession(
 	fs.writeFileSync(join(project, "native.cjs"), "exports.load = (name) => import(name);\n");
 	fs.writeFileSync(join(project, "revision.ts"), 'export const revision = "first";\n');
 	const extension = join(project, "extension.ts");
+	// What the extension needs to know, beside it: where it records, where native imports resolve from, and the pairs.
+	fs.writeFileSync(
+		join(project, "fixture.json"),
+		JSON.stringify({ record, requireFrom: join(project, "index.cjs"), pairs: SHARED_EXPORTS }),
+	);
 	fs.writeFileSync(
 		extension,
 		[
-			'import { appendFileSync } from "node:fs";',
+			'import { appendFileSync, readFileSync } from "node:fs";',
 			'import { createRequire } from "node:module";',
 			'import { revision } from "./revision.ts";',
 			...SHARED_EXPORTS.map(([alias], index) => `import * as shared${index} from ${JSON.stringify(alias)};`),
-			`const native = createRequire(${JSON.stringify(join(project, "index.cjs"))})("./native.cjs");`,
-			`const log = (type, data = {}) => appendFileSync(${JSON.stringify(record)}, JSON.stringify({ type, revision, ...data }) + "\\n");`,
-			`const pairs = ${JSON.stringify(SHARED_EXPORTS)};`,
+			'const fixture = JSON.parse(readFileSync(new URL("./fixture.json", import.meta.url), "utf8"));',
+			'const native = createRequire(fixture.requireFrom)("./native.cjs");',
+			'const log = (type, data = {}) => appendFileSync(fixture.record, JSON.stringify({ type, revision, ...data }) + "\\n");',
+			"const pairs = fixture.pairs;",
 			`const viaLoader = [${SHARED_EXPORTS.map((_, index) => `shared${index}`).join(", ")}];`,
 			"export default function (pi) {",
 			'	pi.on("session_start", async (_event, ctx) => {',

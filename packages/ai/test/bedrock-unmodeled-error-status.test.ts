@@ -38,14 +38,22 @@ function answering(status: number, body: string, headers: Record<string, string>
 	);
 }
 
-/** A proxy that forwards each plain-HTTP request to where its URL says, as an HTTP proxy does. */
-function forwardingProxy(): Promise<string> {
+/**
+ * A proxy in front of `upstream`, the one server it relays to: each plain-HTTP request goes there, at the path and query
+ * its URL names, as an HTTP proxy does.
+ */
+function forwardingProxy(upstream: string): Promise<string> {
+	const { hostname, port } = new URL(upstream);
 	return listen(
 		createHttpServer((request, response) => {
-			const forwarded = httpRequest(request.url ?? "", { method: request.method, headers: request.headers }, (answer) => {
-				response.writeHead(answer.statusCode ?? 502, answer.headers);
-				answer.pipe(response);
-			});
+			const { pathname, search } = new URL(request.url ?? "/", upstream);
+			const forwarded = httpRequest(
+				{ hostname, port, path: `${pathname}${search}`, method: request.method, headers: request.headers },
+				(answer) => {
+					response.writeHead(answer.statusCode ?? 502, answer.headers);
+					answer.pipe(response);
+				},
+			);
 			forwarded.on("error", () => response.destroy());
 			request.pipe(forwarded);
 		}),
@@ -111,7 +119,7 @@ describe("an Amazon Bedrock answer the SDK has no Bedrock exception for", () => 
 
 	it("is retried when a healthy proxy relays a 503", async () => {
 		const endpoint = await answering(503, '{"message":"unavailable"}');
-		const proxy = await forwardingProxy();
+		const proxy = await forwardingProxy(endpoint);
 		const message = await bedrockTurn(endpoint, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, NO_PROXY: "none.invalid" });
 
 		assert.equal(message.errorMessage, "Unknown: 503: unavailable");
