@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
-import { createEventBus } from "../../packages/coding-agent/dist/core/event-bus.js";
+import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
 import {
 	createExtensionRuntime,
 	loadExtensionFromFactory,
-} from "../../packages/coding-agent/dist/core/extensions/loader.js";
-import llamaExtension from "../../packages/coding-agent/dist/extensions/llama/index.js";
+} from "../../packages/coding-agent/src/core/extensions/loader.ts";
+import llamaExtension from "../../packages/coding-agent/src/extensions/llama/index.ts";
 
 const independent = process.argv[2] === "independent";
 const providerError = new Error("bad provider metadata");

@@ -4,14 +4,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/atomic-ai/compat";
-import { prepareAgentSessionServices } from "../../packages/coding-agent/dist/core/agent-session-services.js";
-import { isSessionQuitting } from "../../packages/coding-agent/dist/core/agent-session-events.js";
+import { prepareAgentSessionServices } from "../../packages/coding-agent/src/core/agent-session-services.ts";
+import { isSessionQuitting } from "../../packages/coding-agent/src/core/agent-session-events.ts";
 import {
 	AuthStorage,
 	createAgentSessionFromServices,
 	ModelRuntime,
 	SessionManager,
-} from "../../packages/coding-agent/dist/index.js";
+} from "../../packages/coding-agent/src/index.ts";
 
 const scenario = process.argv[2];
 const cwd = mkdtempSync(join(tmpdir(), "atomic-command-scope-"));

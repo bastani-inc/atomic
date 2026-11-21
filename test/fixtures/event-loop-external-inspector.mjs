@@ -2,7 +2,7 @@ import { access } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   startEventLoopMonitor, waitForEventLoopMonitorReady, markEventLoopShutdown,
-} from '../../packages/coding-agent/dist/core/event-loop-monitor.js';
+} from '../../packages/coding-agent/src/core/event-loop-monitor.ts';
 
 startEventLoopMonitor('engine');
 await waitForEventLoopMonitorReady();
