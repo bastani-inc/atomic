@@ -1,4 +1,5 @@
 import { showStartupInput, showStartupSelector } from "../../cli/startup-ui.ts";
+import { navBackForwarder } from "./agent-view/viewed-keys.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { isTrustDecision, safeTrustChoiceIndex, TrustDecisionSelector } from "./components/trust-decision-selector.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -228,7 +229,14 @@ InteractiveModeBase.prototype.setCustomEditorComponent = function (
 				customEditor.onPasteImage = () => this.defaultEditor.onPasteImage?.();
 			}
 			if (!customEditor.onExtensionShortcut) {
-				customEditor.onExtensionShortcut = (data: string) => this.defaultEditor.onExtensionShortcut?.(data);
+				customEditor.onExtensionShortcut = Object.assign(
+					(data: string) => this.defaultEditor.onExtensionShortcut?.(data),
+					{ takes: (data: string) => this.defaultEditor.onExtensionShortcut?.takes?.(data) === true },
+				);
+			}
+			// While a subagent is shown, ← on its empty prompt leads back to main here too.
+			if (!customEditor.onNavBack) {
+				customEditor.onNavBack = navBackForwarder(this);
 			}
 			// Copy action handlers (clear, suspend, model switching, etc.)
 			for (const [action, handler] of this.defaultEditor.actionHandlers) {
