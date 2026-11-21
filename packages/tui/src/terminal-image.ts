@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { TerminalColorMode } from "./colors.ts";
 import { getTuiEnvValue } from "./env.ts";
+import { findHelperExecutableAsync } from "./executable-path.ts";
 
 export type ImageProtocol = "kitty" | "iterm2" | null;
 
@@ -60,18 +61,29 @@ function probeTmuxHyperlinks(): boolean {
 	if (tmuxForwardsHyperlinks !== undefined) return tmuxForwardsHyperlinks;
 	if (!tmuxHyperlinksAsked) {
 		tmuxHyperlinksAsked = true;
-		execFile(
-			"tmux",
-			["display-message", "-p", "#{client_termfeatures}"],
-			{ encoding: "utf8", timeout: 250 },
-			(error, termfeatures) => {
-				tmuxForwardsHyperlinks =
-					!error &&
-					termfeatures
-						.split(",")
-						.map((feature) => feature.trim())
-						.includes("hyperlinks");
-				if (tmuxForwardsHyperlinks && cachedCapabilitiesDetected) cachedCapabilities = null;
+		findHelperExecutableAsync("tmux").then(
+			(tmux) => {
+				if (tmux === undefined) {
+					tmuxForwardsHyperlinks = false;
+					return;
+				}
+				execFile(
+					tmux,
+					["display-message", "-p", "#{client_termfeatures}"],
+					{ encoding: "utf8", timeout: 250 },
+					(error, termfeatures) => {
+						tmuxForwardsHyperlinks =
+							!error &&
+							termfeatures
+								.split(",")
+								.map((feature) => feature.trim())
+								.includes("hyperlinks");
+						if (tmuxForwardsHyperlinks && cachedCapabilitiesDetected) cachedCapabilities = null;
+					},
+				);
+			},
+			() => {
+				tmuxForwardsHyperlinks = false;
 			},
 		);
 	}

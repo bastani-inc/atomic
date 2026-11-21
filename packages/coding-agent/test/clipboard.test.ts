@@ -6,6 +6,15 @@ import { platform } from "os";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { copyToClipboard, readClipboardText } from "../src/utils/clipboard.js";
 
+// The simulated platform's programs are the mocked child processes, so every helper is found under its own name.
+vi.mock("../src/utils/helper-command.ts", () => ({
+	findHelperExecutable: (name: string) => name,
+	findHelperExecutableAsync: async (name: string) => name,
+	helperLaunch: (name: string) => ({ file: name }),
+	helperLaunchAsync: async (name: string) => ({ file: name }),
+	missingHelperOptions: () => ({}),
+}));
+
 const mocks = vi.hoisted(() => {
 	return {
 		clipboard: {
@@ -20,7 +29,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("../src/utils/clipboard-native.js", () => {
 	return {
-		clipboard: mocks.clipboard,
+		getNativeClipboard: () => mocks.clipboard,
 	};
 });
 

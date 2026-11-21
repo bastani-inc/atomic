@@ -124,6 +124,12 @@ export type InteractiveEngineMessage =
 			 * subagent once that panel has drawn too.
 			 */
 			panel?: true;
+			/**
+			 * With `keepScreen`: `/tasks` hid the agent panel, and it lists the subagent once the screen shows it, though it
+			 * may list nothing now. A host that tells the engine (`set_viewed_agent`) what it is about to show before it
+			 * waits shows the subagent once that panel has drawn; an older host ignores it.
+			 */
+			panelOnView?: true;
 	  }
 	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
@@ -584,6 +590,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						taskId: value.taskId,
 						...(value.keepScreen === true ? { keepScreen: true } : {}),
 						...(value.panel === true ? { panel: true } : {}),
+						...(value.panelOnView === true ? { panelOnView: true } : {}),
 					}
 				: undefined;
 		case "engine_activity_started":

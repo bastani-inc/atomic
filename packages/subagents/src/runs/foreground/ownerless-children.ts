@@ -30,7 +30,7 @@ import {
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import { runUnboundParallelTask } from "./subagent-executor-parallel-task.js";
-import { forgetRunMembership, rememberSubagentChildSchedule } from "./task-execution.js";
+import { forgetRunMembership, queuedResumeStart, rememberSubagentChildSchedule } from "./task-execution.js";
 
 /**
  * Children a session without a task host (an SDK session) launched directly, recorded like task-host launches so
@@ -210,9 +210,9 @@ export function runOwnerlessChild(input: {
 						? { schedule: isExecutionTicket(input.schedule) ? input.schedule.scheduler : input.schedule }
 						: {}),
 					forked,
-					task: resumed.message ? `${input.task}\n\n${resumed.message}` : input.task,
+					...queuedResumeStart(input.task, input.options, resumed.message),
 					options: {
-						...input.options,
+						...queuedResumeStart(input.task, input.options, resumed.message).options,
 						cwdVerdict: undefined,
 						signal: undefined,
 						supervisorAuthorization: resumed.supervisorAuthorization,

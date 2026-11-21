@@ -36,6 +36,8 @@ import {
 	KNOWN_SESSION_RETENTION_MS,
 	type KnownSession,
 	type KnownSessionBindResult,
+	type KnownSessionOwner,
+	type KnownSessionOwnership,
 	type KnownSessionState,
 	type Lease,
 	type LeaseState,
@@ -83,6 +85,7 @@ import {
 	unrestoredReasonCode,
 } from "./restoring-recipients.js";
 import {
+	answerAs,
 	type BrokerConnectedSession,
 	deliveryTargetIdentity,
 	messageFrameFor,
@@ -149,6 +152,32 @@ export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
  */
 export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
 /**
+ * #5607: waits between a returning registration's attempts at an id that another registration of the same session
+ * still owns, as when its broker is still releasing it after that session moved here. Tried while within the claim's
+ * bound; still owned after that, the session gets a fresh id.
+ */
+const SESSION_ID_OWNER_RETRY_MS = [50, 100, 200, 400, 800] as const;
+/**
+ * #5607: how long an id taken back for a session that awaited it is held for that session to register again under it,
+ * with the hand-over it was given: no longer than the client's own wait for a registration. Its client reconnects
+ * within a second or two; past this the id is given back unused, for any registration to claim as usual.
+ */
+export const RESERVED_ID_HOLD_MS = 10_000;
+/**
+ * #5607: how long a hand-over presented after its hold lapsed still takes back the id the session had meanwhile, as an
+ * alias, when no other registration took that id: as long as the id's binding to the session is kept, so a client or a
+ * host paused or stalled past the hold keeps the id its asks were sent to. Only a session that never comes back loses it.
+ */
+const LAPSED_HANDOFF_KEEP_MS = KNOWN_SESSION_RETENTION_MS;
+/**
+ * #5607: how long after the last write that confirmed it (counted from just before that write was sent) a registration's
+ * id is taken as still its own without asking the shared database again. Another registration may take an id only once
+ * its owner went unrenewed for `BROKER_LEASE_STALE_AFTER_MS`, so this leaves a third of that as margin; it spans two
+ * renewals, so a broker that renews on time never asks. Past it (the broker was paused, or its renewals failed), one
+ * conditional renewal is made before a send to or from the session, a list or a delivery is handled for it.
+ */
+export const SESSION_ID_OWNER_SAFE_MS = 2 * BROKER_LEASE_RENEW_INTERVAL_MS;
+/**
  * The longest a send to a local recipient waits for the shared outbox to say whether it is a retry of a cross-node
  * send. Local delivery does not depend on the shared database (spec §8): past this bound the send is delivered
  * locally, with the local accepted-delivery cache as its duplicate protection.
@@ -172,15 +201,77 @@ const TARGET_GROUP_REFUSAL = "Target session is in a different intercom group";
 
 /** How a registration's claim of its preferred id ended (`MultiNodeRouter.claimSessionId`). */
 export type SessionIdClaim =
-	| { readonly status: "granted" }
+	| { readonly status: "granted"; readonly grant: SessionIdGrant }
 	| { readonly status: "refused" }
+	/**
+	 * #5607: another registration of the same session owned the id throughout the claim's bound (it may be live, or its
+	 * broker crashed or paused and its ownership has not gone stale yet). The session gets a fresh id, and takes this one
+	 * as an alias once its owner gives it up or goes stale (`sessionRegistered`'s `awaits`).
+	 */
+	| {
+			readonly status: "held";
+			/**
+			 * #5607: the claim presented a hand-over whose hold lapsed: the session awaits the id with it, and the next move
+			 * back carries the alias that hand-over kept (`sessionRegistered`'s `recovery`).
+			 */
+			readonly recovery?: string;
+	  }
 	/** #5607: the shared database did not answer in time; see `SessionIdReclaimRequest`. */
 	| { readonly status: "unanswered"; readonly unanswered: UnansweredSessionIdClaim };
 
-/** #5607: a claim the shared database did not answer in time: the id it asked for, and the value it wrote with it. */
+/**
+ * #5607: a moment read from both clocks. The monotonic clock does not advance while some hosts sleep; the wall clock can
+ * be set back. Time since it is the larger of the two, so neither hides a pause.
+ */
+export interface ClockMark {
+	readonly monotonic: number;
+	readonly wall: number;
+}
+
+export function clockMark(): ClockMark {
+	return { monotonic: performance.now(), wall: Date.now() };
+}
+
+export function elapsedSince(mark: ClockMark): number {
+	return Math.max(performance.now() - mark.monotonic, Date.now() - mark.wall);
+}
+
+/**
+ * #5607: how a claim took its id: the owner token its registration holds it with, and the moment just before the write
+ * that granted it was sent.
+ */
+export interface SessionIdGrant {
+	readonly token: string;
+	readonly confirmed: ClockMark;
+	/**
+	 * The id granted: the one asked for, or one held here for this session since it awaited it, when it asked for the id
+	 * it had meanwhile.
+	 */
+	readonly sessionId: string;
+	/** The id it had meanwhile, which stays an alias of it: plain sends to it reach the session. */
+	readonly alias?: string;
+	/** The token that kept owning `alias` through the move. */
+	readonly aliasToken?: string;
+	/** #5607: `alias` is the one a lapsed hand-over kept, given for that hand-over, which the claim presented. */
+	readonly recovery?: string;
+}
+
+/**
+ * #5607: a claim the shared database did not answer in time: the id it asked for, the value it wrote with it, and the
+ * owner token its writes carry.
+ */
 export interface UnansweredSessionIdClaim {
 	readonly sessionId: string;
 	readonly claim: string;
+	readonly token: string;
+	/**
+	 * #5607: with a hand-over it presented, the id it had meanwhile, still owned by `aliasToken`: kept as its alias when
+	 * its binding write keeps `sessionId`, and given back otherwise.
+	 */
+	readonly alias?: string;
+	readonly aliasToken?: string;
+	/** #5607: as `SessionIdGrant.recovery`. */
+	readonly recovery?: string;
 }
 
 /**
@@ -263,6 +354,15 @@ export interface MultiNodeHost {
 	 * released-child key): false once it was released, taken by its child, or replaced by a newer reservation of the child.
 	 */
 	holdsReservation(capability: string, ownerSessionId: string): boolean;
+	/**
+	 * #5607: another live registration of the same session owns this session's id: disconnect it here, leaving what is
+	 * shared under the id alone, so it reconnects and gets a fresh id.
+	 */
+	fence(
+		session: BrokerConnectedSession,
+		reason?: "lost" | "reclaimed",
+		handoff?: { readonly sessionId: string; readonly handoff: string },
+	): void;
 }
 
 export interface MultiNodeRouterOptions {
@@ -366,6 +466,228 @@ interface PresenceEntry {
 	 * id across nodes, and its departure leaves that session's shared state alone.
 	 */
 	unbound?: true;
+	/** #5607: the id this registration owns in the shared store, renewed while it is live and released as it leaves. */
+	owner?: OwnedSessionId;
+	/**
+	 * #5607: a session registered while routing was still opening, until it has taken its id: the owner token it takes
+	 * the id with, and the write doing so, while in flight. Nothing confirms its id is its own before then.
+	 */
+	adoption?: Adoption;
+	/**
+	 * #5607: another live registration owns its id: it was disconnected here to reconnect for a fresh id, and its
+	 * departure leaves what is shared under the id to that registration.
+	 */
+	fenced?: true;
+	/**
+	 * #5607: it asked for this id and got a fresh one only because another registration of the same session owned it
+	 * (live, or on a broker that crashed or paused before its ownership went stale): it takes the id as an alias once
+	 * the owner gives it up or goes stale. Its known-session record names this id meanwhile.
+	 */
+	awaits?: { readonly id: string; readonly token: string; inFlight?: number[]; readonly recovery?: string };
+	/** #5607: an id it holds as an alias: plain sends to it reach this session. */
+	alias?: OwnedSessionId;
+	/**
+	 * #5607: the alias its grant carried, when its registration's binding write failed: taken once that registration's
+	 * id is taken at a later check (`adopt`).
+	 */
+	pendingAlias?: { readonly alias: string; readonly aliasToken?: string; readonly recovery?: string; taking?: boolean };
+	/** #5607: it is being moved back to the id it awaited: its own id stays owned, by the same token, for its next registration. */
+	handsOver?: true;
+}
+
+/**
+ * #5607: a session registered while routing was opening (or whose first binding write failed), until it has taken its
+ * id: the owner token it takes the id with, the write doing so while in flight, and the decision any of its writes
+ * reaches, whichever write that is.
+ */
+interface Adoption {
+	readonly token: string;
+	readonly decided: PromiseWithResolvers<OwnerVerdict>;
+	checking?: OwnerCheck;
+	attempts?: number;
+	inFlight?: number[];
+}
+
+function adoption(token: string): Adoption {
+	return { token, decided: Promise.withResolvers<OwnerVerdict>() };
+}
+
+/** #5607: an id taken back for a session that awaited it, held here until that session registers again under it. */
+interface ReservedId {
+	readonly id: string;
+	readonly token: string;
+	/** The one-use value given to the session only, which its next registration presents to take the id. */
+	readonly handoff: string;
+	/** The id the session had meanwhile, which stays an alias of it, and the token that keeps owning it meanwhile. */
+	readonly alias: string;
+	readonly aliasToken?: string;
+	confirmed: ClockMark;
+	/** When the hand-over was given (both clocks, so a sleep counts): past `RESERVED_ID_HOLD_MS` the id is given back. */
+	handedAt: ClockMark;
+	/** It was handed over again, once, after a registration presenting it could not take it. */
+	handedAgain?: true;
+	/**
+	 * Given only to a registration that presented `handoff` and could not take the id: what alone has the id handed over
+	 * to it again, and carries the alias over once the hold lapsed. A registration of the same identity without it never
+	 * does.
+	 */
+	readonly recovery: string;
+}
+
+/**
+ * #5607: a hand-over whose hold lapsed before its session registered again: the hand-over, the id it was for (given
+ * back), the id the session had meanwhile with the token it is still written with (no longer renewed, so another
+ * registration may take it once it goes stale), and when the hold lapsed.
+ */
+interface LapsedHandoff {
+	readonly handoff: string;
+	readonly id: string;
+	readonly alias: string;
+	readonly aliasToken?: string;
+	readonly lapsedAt: ClockMark;
+	/**
+	 * Given only to a claim that presents `handoff`, and carried by the registration it starts: what alone takes the alias
+	 * back. A registration that owns the id without it never does.
+	 */
+	readonly recovery: string;
+}
+
+/** #5607: what a check of a registration's id found: still its own, another registration's, or no answer. */
+type OwnerVerdict = "own" | "lost" | "unknown";
+
+/** #5607: the checks of a send's sender and local recipient, and what they found. */
+interface SendOwnerChecks {
+	readonly sender?: OwnerCheck;
+	readonly target?: OwnerCheck;
+	/** #5607: the alias a local send reached its recipient through. */
+	readonly alias?: OwnerCheck;
+}
+interface SendOwnerVerdicts {
+	readonly sender: OwnerVerdict;
+	readonly target: OwnerVerdict;
+	readonly alias: OwnerVerdict;
+}
+
+/** #5607: the id a registration owns in the shared store. */
+interface OwnedSessionId extends KnownSessionOwnership {
+	/** Just before the last write that found the id this registration's was sent. */
+	confirmed: ClockMark;
+	/** The one conditional renewal of this id alone that routing for it waits for, while it is in flight. */
+	checking?: OwnerCheck;
+	/** When `checking` was sent. */
+	checkingSince?: ClockMark;
+	/** When the checks of this id still in flight were sent. */
+	inFlight?: number[];
+}
+
+/**
+ * #5607: a check of a registration's id: the write in flight, and its verdict once the store answers it. Whoever routes
+ * waits with a bound of its own and is let go at that bound, so a write the store never answers holds on to nobody.
+ */
+class OwnerCheck {
+	private verdict: OwnerVerdict | undefined;
+	private readonly waiters = new Set<(verdict: OwnerVerdict) => void>();
+
+	constructor(written: Promise<OwnerVerdict>) {
+		void written.then(
+			(verdict) => this.settle(verdict),
+			() => this.settle("unknown"),
+		);
+	}
+
+	static settled(verdict: OwnerVerdict): OwnerCheck {
+		return new OwnerCheck(Promise.resolve(verdict));
+	}
+
+	private settle(verdict: OwnerVerdict): void {
+		this.verdict = verdict;
+		for (const waiter of this.waiters) waiter(verdict);
+		this.waiters.clear();
+	}
+
+	/** The verdict, or `fallback` once `boundMs` passed first. */
+	within<F>(boundMs: number, fallback: F): Promise<OwnerVerdict | F> {
+		const { verdict } = this;
+		if (verdict !== undefined) return Promise.resolve(verdict);
+		return new Promise((resolve) => {
+			const waiter = (answered: OwnerVerdict): void => {
+				clearTimeout(bound);
+				resolve(answered);
+			};
+			const bound = setTimeout(() => {
+				this.waiters.delete(waiter);
+				resolve(fallback);
+			}, boundMs);
+			bound.unref?.();
+			this.waiters.add(waiter);
+		});
+	}
+
+	/** The verdict, whenever the store answers. */
+	answered(): Promise<OwnerVerdict> {
+		const { verdict } = this;
+		if (verdict !== undefined) return Promise.resolve(verdict);
+		return new Promise((resolve) => this.waiters.add(resolve));
+	}
+}
+
+/**
+ * #5607: a send that only names its recipient: no reply, no expected recipient, no supervisor route. Only such a send
+ * reaches a session through an id it holds as an alias.
+ */
+export function isPlainSend(request: {
+	readonly message: { readonly replyTo?: string };
+	readonly requirePendingReply?: boolean;
+	readonly expectedRecipientId?: string;
+	readonly supervisorSend?: boolean;
+}): boolean {
+	return (
+		request.message.replyTo === undefined &&
+		request.requirePendingReply !== true &&
+		request.expectedRecipientId === undefined &&
+		request.supervisorSend !== true
+	);
+}
+
+/**
+ * #5607: a reply only an ask to its sender's alias authorizes, while that alias is not confirmed its sender's now (its
+ * renewals went unanswered): refused as retryable, as a reply whose route may be unreachable is, never for good.
+ */
+const UNCERTAIN_ALIAS = "uncertain-alias";
+
+/** #5607: an id a session holds as an alias, by the token it owns it with, and whether it is confirmed its own now. */
+interface HeldAlias {
+	readonly id: string;
+	readonly token: string;
+	readonly confirmed: boolean;
+}
+
+/**
+ * #5607: what a presence lease publishes of the owner token an alias is held with: its digest, which tells the
+ * registration holding the id apart from any other, on any broker, without copying the token itself.
+ */
+function ownerWitness(token: string): string {
+	return createHash("sha256").update(token).digest("hex");
+}
+
+/** #5607: whether `lease`, a session's presence, publishes `alias` as held by `owner`, the store's owner of that id now. */
+function publishesOwnedAlias(
+	lease: LeaseState,
+	alias: string,
+	owner: { readonly token: string; readonly brokerId: string },
+): boolean {
+	if (lease.subject.kind !== "presence" || lease.holderId !== owner.brokerId) return false;
+	const witness = ownerWitness(owner.token);
+	return lease.subject.aliases?.some((held) => held.id === alias && held.owner === witness) === true;
+}
+
+/** #5607: the later of two marks. Both are this process's, so the monotonic clock orders them. */
+function laterMark(earlier: ClockMark | undefined, later: ClockMark): ClockMark {
+	return earlier !== undefined && earlier.monotonic > later.monotonic ? earlier : later;
+}
+
+function ownershipKey({ intercomSessionId, token }: KnownSessionOwnership): string {
+	return JSON.stringify([intercomSessionId, token]);
 }
 
 interface UnfinishedRegistration {
@@ -585,6 +907,28 @@ export class MultiNodeRouter {
 	private readonly scanning = new Map<string, { rescan: boolean }>();
 	private readonly serials = new Map<string, Promise<void>>();
 	private readonly settling = new Set<Promise<void>>();
+	/** #5607: sessions registered before routing turned on, until `sessionRegistered` takes them up. */
+	private readonly adopting = new WeakSet<BrokerConnectedSession>();
+	/** #5607: when the renewals of owned ids still in flight were sent. */
+	private readonly ownerRenewals: number[] = [];
+	/** #5607: the local sessions holding an id as an alias, by that id. */
+	private readonly aliases = new Map<string, BrokerConnectedSession>();
+	/** #5607: ids taken back for sessions that awaited them, by the session's delivery identity. */
+	private readonly reservedIds = new Map<string, ReservedId>();
+	/**
+	 * #5607: by delivery identity, hand-overs whose hold lapsed before the session registered again: the hand-over, the id
+	 * it was for (given back), the id the session had meanwhile with the token it is still written with (no longer
+	 * renewed, so another registration may take it once it goes stale), and when the hold lapsed.
+	 */
+	private readonly lapsedHandoffs = new Map<string, LapsedHandoff>();
+	/** #5607: tokens of held ids that a registration coming back is taking, until it is registered here. */
+	private readonly consumingTokens = new Set<string>();
+	/** #5607: tokens of unanswered claims whose registration's binding write has not decided yet. */
+	private readonly decidingTokens = new Set<string>();
+	/** #5607: when the shared store last answered one of this broker's statements. */
+	private storeAnsweredAt = Number.NEGATIVE_INFINITY;
+	/** #5607: what the instance key of every broker on this host starts with, when this host can be told apart. */
+	private readonly hostKey: string | undefined;
 	private readonly timers: ReturnType<typeof setInterval>[] = [];
 	private checkingOutcomes: { again: boolean } | undefined;
 	private closed = false;
@@ -603,6 +947,7 @@ export class MultiNodeRouter {
 			hostIdentity == null || options.instanceKey === undefined
 				? `${this.nodeId}:${this.brokerId}`
 				: `${this.nodeId}:${hostIdentity}:${options.instanceKey}`;
+		this.hostKey = hostIdentity == null ? undefined : `${this.nodeId}:${hostIdentity}:`;
 		this.pid = options.pid ?? process.pid;
 		this.isProcessAlive = options.isProcessAlive ?? isProcessAlive;
 		this.processStartedAt = options.processStartedAt ?? ((pid) => processStartedAt(pid));
@@ -633,7 +978,21 @@ export class MultiNodeRouter {
 			.then(() => router.sweepLostRecipients())
 			.catch((error: Error) => router.report(error));
 		router.every(MULTI_NODE_OUTCOME_POLL_INTERVAL_MS, () => router.outcomePoll());
-		for (const session of options.host.sessions.values()) void router.sessionRegistered(session);
+		// #5607: renewed apart from the leases, so neither waits for the other's statements, and each renewal on its own:
+		// one the store never answers does not hold up the next.
+		const ownerRenewals = setInterval(() => {
+			if (router.closed) return;
+			router.retryAdoptions();
+			router.claimAwaitedIds();
+			if (router.mayWrite(router.ownerRenewals))
+				void router.tracked(router.ownerRenewals, () => router.renewOwners()).catch((error: Error) => router.report(error));
+		}, BROKER_LEASE_RENEW_INTERVAL_MS);
+		ownerRenewals.unref?.();
+		router.timers.push(ownerRenewals);
+		for (const session of options.host.sessions.values()) {
+			router.adopting.add(session);
+			void router.sessionRegistered(session);
+		}
 		return router;
 	}
 
@@ -641,54 +1000,187 @@ export class MultiNodeRouter {
 	// Session lifecycle
 
 	/**
-	 * Whether a registration with `returnAddress` may take the Intercom id `sessionId`, binding the id to it when free.
+	 * Whether a registration with `returnAddress` may take the Intercom id `asked`, binding the id to it when free.
 	 * In multi-node mode an id carries authority (shared ask routes and known sessions name sessions by id), so only the
-	 * session that registered it gets it back. `unanswered` when the shared store does not answer in time: the session
-	 * registers under a fresh id, and its registration's binding write tries once more to keep this one (#5607).
+	 * session that registered it gets it back, and (#5607) only while no other live registration of that session owns
+	 * it: an owned id is tried again while within the claim's bound, then refused. `unanswered` when the shared store
+	 * does not answer in time: the session registers under a fresh id, and its registration's binding write tries once
+	 * more to keep this one (#5607).
 	 */
-	async claimSessionId(sessionId: string, returnAddress: string): Promise<SessionIdClaim> {
+	async claimSessionId(
+		asked: string,
+		returnAddress: string,
+		identity?: string,
+		handoff?: string,
+	): Promise<SessionIdClaim> {
 		if (this.closed) return { status: "refused" };
 		// #5607: written with the binding, so a later write can tell whether the binding is still this claim's.
 		const claim = randomUUID();
+		// #5607: an id held here for this session since it awaited it is taken with the token that holds it, by the
+		// registration that presents the hand-over the session was given, of the same delivery identity, only.
+		const reserved =
+			identity === undefined || handoff === undefined ? undefined : this.takeReservedId(asked, identity, handoff);
+		// #5607: one presented after its hold lapsed takes the id as any registration does, and with it the alias the
+		// hand-over kept, as its own. One that cannot take the id leaves the session awaiting it, as one presented in time
+		// does, and the move back carries that alias.
+		const lapsed =
+			reserved !== undefined || identity === undefined || handoff === undefined
+				? undefined
+				: this.lapsedHandoffFor(asked, identity, handoff);
+		const sessionId = reserved?.id ?? asked;
+		const handedAlias: { readonly alias?: string; readonly aliasToken?: string; readonly recovery?: string } =
+			reserved !== undefined
+				? reserved.alias === sessionId
+					? {}
+					: {
+							alias: reserved.alias,
+							...(reserved.aliasToken === undefined ? {} : { aliasToken: reserved.aliasToken }),
+							recovery: reserved.recovery,
+						}
+				: lapsed === undefined
+					? {}
+					: {
+							alias: lapsed.alias,
+							...(lapsed.aliasToken === undefined ? {} : { aliasToken: lapsed.aliasToken }),
+							recovery: lapsed.recovery,
+						};
+		const owner = this.newOwner(reserved?.token);
+		if (reserved !== undefined) this.consumingTokens.add(reserved.token);
+		const deadline = performance.now() + SESSION_ID_CLAIM_BOUND_MS;
+		let expired = false;
+		const attempts = (async (): Promise<SessionIdClaim> => {
+			let retired = false;
+			for (let attempt = 0; ; attempt++) {
+				const confirmed = clockMark();
+				const result = await this.state.knownSessions.bind(
+					sessionId,
+					returnAddress,
+					KNOWN_SESSION_RETENTION_MS,
+					claim,
+					owner,
+				);
+				if (result.status === "bound")
+					return {
+						status: "granted",
+						grant: { token: owner.token, confirmed, sessionId, ...handedAlias },
+					};
+				if (result.status !== "held") return { status: "refused" };
+				// An owner whose broker on this host is known to have exited is no live registration: at once, not after the
+				// stale age.
+				if (!retired && !expired && (await this.retireIfExitedHere(result.ownerBroker))) {
+					retired = true;
+					// A broker that stalled through the check does not try again past the claim's bound.
+					if (expired || performance.now() >= deadline) return { status: "held" };
+					continue;
+				}
+				const wait = SESSION_ID_OWNER_RETRY_MS[Math.min(attempt, SESSION_ID_OWNER_RETRY_MS.length - 1)]!;
+				if (expired || performance.now() + wait >= deadline) return { status: "held" };
+				await new Promise<void>((resolve) => setTimeout(resolve, wait).unref());
+				// A broker that stalled through the wait does not try again past the claim's bound.
+				if (expired || performance.now() >= deadline) return { status: "held" };
+			}
+		})();
 		let bound: ReturnType<typeof setTimeout> | undefined;
 		try {
-			return await Promise.race<SessionIdClaim>([
-				this.state.knownSessions
-					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS, claim)
-					.then((result) => ({ status: result.status === "bound" ? "granted" : "refused" })),
+			const claimed = await Promise.race<SessionIdClaim>([
+				attempts,
 				new Promise<SessionIdClaim>((resolve) => {
 					bound = setTimeout(
-						() => resolve({ status: "unanswered", unanswered: { sessionId, claim } }),
+						() =>
+							resolve({
+								status: "unanswered",
+								unanswered: { sessionId, claim, token: owner.token, ...handedAlias },
+							}),
 						SESSION_ID_CLAIM_BOUND_MS,
 					);
 					bound.unref?.();
 				}),
 			]);
+			// An attempt in flight decides nothing more: the registration's binding write does (`reclaimOrBind`).
+			if (claimed.status === "unanswered") {
+				expired = true;
+				attempts.catch(() => {});
+				// #5607: held for the session until that write decides: kept, it is the registration's; not kept, the session
+				// awaits it with the hand-over's recovery, and is handed it again (`claimAwaitedIds`).
+				if (reserved !== undefined) this.holdAgain(identity, reserved);
+			}
+			// #5607: a hand-over that did not take the id leaves it held for the session, which awaits it still and is
+			// handed it again: the registration gets a fresh id meanwhile.
+			if (reserved !== undefined && (claimed.status === "held" || claimed.status === "refused")) {
+				this.holdAgain(identity, reserved);
+				return { status: "held", recovery: reserved.recovery };
+			}
+			if (lapsed !== undefined && (claimed.status === "held" || claimed.status === "refused"))
+				return { status: "held", recovery: lapsed.recovery };
+			return claimed;
 		} catch (error) {
 			this.report(error);
-			return { status: "refused" };
+			if (reserved !== undefined) {
+				this.holdAgain(identity, reserved);
+				return { status: "held", recovery: reserved.recovery };
+			}
+			return lapsed === undefined ? { status: "refused" } : { status: "held", recovery: lapsed.recovery };
 		} finally {
 			clearTimeout(bound);
+			// A held token stays in use until the registration that took it is registered here, which its broker does as
+			// it reads this answer.
+			if (reserved !== undefined) setImmediate(() => this.consumingTokens.delete(reserved.token));
 		}
 	}
 
 	/**
+	 * #5607: whether the broker `brokerId`, which owns an id, ran on this host (same node, boot and process namespace) and
+	 * no process has its pid any more: its ids are then given up at once, as its own restart would. A broker elsewhere,
+	 * or one whose pid names a process (itself, or a later one the host gave the pid to), keeps them until they go stale.
+	 */
+	private async retireIfExitedHere(brokerId: string | undefined): Promise<boolean> {
+		const owners = this.state.knownSessions.owners;
+		if (brokerId === undefined || brokerId === this.brokerId || this.hostKey === undefined || owners === undefined)
+			return false;
+		const membership = await this.state.leases.read({ kind: "broker", brokerId });
+		if (membership.status !== "found") return false;
+		const { instanceKey, pid } = membership.lease.subject as Partial<BrokerMembershipSubject>;
+		if (instanceKey === undefined || !instanceKey.startsWith(this.hostKey) || pid === undefined) return false;
+		if (this.isProcessAlive(pid)) return false;
+		await owners.retireBroker(brokerId);
+		return true;
+	}
+
+	/** #5607: a registration's owner token, unique to it, on this broker. */
+	private newOwner(token: string = randomUUID()): KnownSessionOwner {
+		return { token, brokerId: this.brokerId, staleAfterMs: BROKER_LEASE_STALE_AFTER_MS };
+	}
+
+	/**
+	 * #5607: give an owned id back; a store without owners has nothing to give back. A failure is reported: the id is free
+	 * again once its owner is no longer renewed.
+	 */
+	async releaseOwner(ownership: KnownSessionOwnership): Promise<void> {
+		await this.state.knownSessions.owners?.release(ownership).catch((error: Error) => this.report(error));
+	}
+
+	/**
 	 * #5607: the binding write of a registration whose claim of its preferred id went unanswered, in the slot today's
-	 * fresh-id binding takes. One write keeps the preferred id when the binding is still the one that claim wrote and no
-	 * other broker presents a session of its return address, in any group; otherwise it binds the fresh id. The session is then registered
-	 * here under the id the write chose, or under the fresh id when the claimed one can no longer be given (its
-	 * registration was answered meanwhile, or a session here holds it), which is then bound as today.
+	 * fresh-id binding takes. One write keeps the preferred id when the binding is still the one that claim wrote, no
+	 * other broker presents a session of its return address, in any group, and no other live registration owns it;
+	 * otherwise it binds the fresh id. The session is then registered here under the id the write chose, or under the
+	 * fresh id when the claimed one can no longer be given (its registration was answered meanwhile, or a session here
+	 * holds it), which is then bound as today.
 	 */
 	private async reclaimOrBind(
 		session: BrokerConnectedSession,
 		reclaim: SessionIdReclaimRequest,
+		owner: KnownSessionOwner,
 	): Promise<KnownSessionBindResult> {
 		const { knownSessions } = this.state;
 		const returnAddress = session.registrationReturnAddress ?? "";
 		const freshId = session.info.id;
-		const bindFresh = () => {
+		const bindFresh = async () => {
 			reclaim.settle(false);
-			return knownSessions.bind(freshId, returnAddress, KNOWN_SESSION_RETENTION_MS);
+			// A grant its claim's own write made, which this registration does not use, is given back. A hand-over's hold
+			// that loses its id this way lapses at the next renewal, keeping its alias (`renewOwners`).
+			await this.releaseOwner({ intercomSessionId: reclaim.sessionId, token: owner.token });
+			return knownSessions.bind(freshId, returnAddress, KNOWN_SESSION_RETENTION_MS, undefined, owner);
 		};
 		if (knownSessions.reclaim === undefined || !reclaim.unsettled()) return bindFresh();
 		let reclaimed: SessionIdReclaimResult;
@@ -701,6 +1193,7 @@ export class MultiNodeRouter {
 				brokerId: this.brokerId,
 				presenceStaleAfterMs: BROKER_LEASE_STALE_AFTER_MS,
 				freshId,
+				owner,
 			});
 		} catch (error) {
 			reclaim.settle(false);
@@ -712,6 +1205,698 @@ export class MultiNodeRouter {
 		}
 		if (reclaimed.status === "kept" && reclaim.settle(true)) return { status: "bound" };
 		return bindFresh();
+	}
+
+	/**
+	 * #5607: whether routing for `session` as the owner of its id must wait for the shared store: undefined when it need
+	 * not (its id was confirmed within `SESSION_ID_OWNER_SAFE_MS`, or the store keeps no owners), so a broker that renews
+	 * on time waits for nothing. Otherwise the verdict of the one conditional renewal of its id alone, in flight until the
+	 * store answers it (or the first binding write of a session registered while routing was opening). On `lost` the
+	 * session has been disconnected here.
+	 */
+	private ownerCheck(session: BrokerConnectedSession): OwnerCheck | undefined {
+		const entry = this.presence.get(session);
+		if (entry === undefined) return undefined;
+		if (entry.fenced === true) return OwnerCheck.settled("lost");
+		if (entry.adoption !== undefined) return this.adoptionCheck(session, entry);
+		const owned = entry.owner;
+		return owned === undefined ? undefined : this.recheck(owned, () => this.checkOwner(session, entry, owned));
+	}
+
+	/**
+	 * #5607: as `ownerCheck`, for the id `session` holds as an alias: a lost alias is revoked alone, and the session keeps
+	 * its own id. Undefined when it holds none, or confirmed it within `SESSION_ID_OWNER_SAFE_MS`.
+	 */
+	private aliasCheck(session: BrokerConnectedSession): OwnerCheck | undefined {
+		const entry = this.presence.get(session);
+		const alias = entry?.alias;
+		if (entry === undefined || alias === undefined) return undefined;
+		if (entry.fenced === true) return OwnerCheck.settled("lost");
+		return this.recheck(alias, () => this.checkAlias(session, entry, alias));
+	}
+
+	/**
+	 * #5607: the check routing for `owned` waits for: undefined while it was confirmed within `SESSION_ID_OWNER_SAFE_MS`,
+	 * otherwise the one `check` in flight (a new one once the last went unanswered for a renewal interval), or `unknown`
+	 * while two the store has not answered are in flight.
+	 */
+	private recheck(owned: OwnedSessionId, check: () => Promise<OwnerVerdict>): OwnerCheck | undefined {
+		if (elapsedSince(owned.confirmed) < SESSION_ID_OWNER_SAFE_MS) return undefined;
+		// A check still unanswered after a renewal interval is followed by a new one, should the store answer anything else
+		// meanwhile; either may act on a lost id.
+		const inFlight = (owned.inFlight ??= []);
+		const followed =
+			owned.checking !== undefined &&
+			elapsedSince(owned.checkingSince ?? owned.confirmed) >= BROKER_LEASE_RENEW_INTERVAL_MS &&
+			this.mayWrite(inFlight);
+		if ((owned.checking === undefined && inFlight.length < 2) || followed) {
+			owned.checkingSince = clockMark();
+			const written = this.tracked(inFlight, check);
+			const checking = new OwnerCheck(written);
+			owned.checking = checking;
+			void written.finally(() => {
+				if (owned.checking === checking) delete owned.checking;
+			});
+		}
+		// Two checks in flight that the store has not answered: nothing is known until it does.
+		return owned.checking ?? OwnerCheck.settled("unknown");
+	}
+
+	/** #5607: renew the alias `session` holds, conditionally on its token; `lost` once the store says it is not its own. */
+	private async checkAlias(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		alias: OwnedSessionId,
+	): Promise<OwnerVerdict> {
+		const owners = this.state.knownSessions.owners;
+		if (owners === undefined) return "unknown";
+		const confirmed = clockMark();
+		let renewed: KnownSessionOwnership[];
+		try {
+			renewed = await owners.renew([{ intercomSessionId: alias.intercomSessionId, token: alias.token }]);
+			this.storeAnswered();
+		} catch (error) {
+			this.report(error);
+			return "unknown";
+		}
+		if (this.presence.get(session) !== entry || entry.alias !== alias) return "unknown";
+		const key = ownershipKey(alias);
+		const still = renewed.some((ownership) => ownershipKey(ownership) === key);
+		this.settleAlias(session, entry, alias, still, confirmed);
+		return still ? "own" : "lost";
+	}
+
+	/**
+	 * #5607: renew the id `session` owns, conditionally on its own token: never a write that would take the id again. A
+	 * check that does not answer keeps running; whenever it answers, a lost id is acted on then.
+	 */
+	private async checkOwner(session: BrokerConnectedSession, entry: PresenceEntry, owned: OwnedSessionId): Promise<OwnerVerdict> {
+		const owners = this.state.knownSessions.owners;
+		if (owners === undefined) return "unknown";
+		const confirmed = clockMark();
+		let renewed: KnownSessionOwnership[];
+		try {
+			renewed = await owners.renew([{ intercomSessionId: owned.intercomSessionId, token: owned.token }]);
+			this.storeAnswered();
+		} catch (error) {
+			this.report(error);
+			return "unknown";
+		}
+		const key = ownershipKey(owned);
+		return this.settleOwned(session, entry, owned, renewed.some((ownership) => ownershipKey(ownership) === key), confirmed);
+	}
+
+	/**
+	 * #5607: the store answered a renewal of `owned` sent at `confirmed`: still this registration's, or another's (or
+	 * none's) now, which is final: this registration never takes an id again. An answer for a registration that left, or
+	 * whose owned id changed meanwhile, decides nothing.
+	 */
+	private settleOwned(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		owned: OwnedSessionId,
+		still: boolean,
+		confirmed: ClockMark,
+	): OwnerVerdict {
+		if (entry.fenced === true) return "lost";
+		if (this.presence.get(session) !== entry || entry.owner !== owned) return "unknown";
+		if (still) {
+			owned.confirmed = laterMark(owned.confirmed, confirmed);
+			return "own";
+		}
+		this.lostSessionId(session, entry);
+		return "lost";
+	}
+
+	/**
+	 * #5607: a session registered while routing was opening takes its id, in one conditional write that names its own
+	 * token: it owns the id from then on, or the id is another registration's (or bound to another session), and it is
+	 * disconnected to reconnect for a fresh id. A write that fails leaves the adoption to the next check.
+	 */
+	private adoptionCheck(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		again = false,
+	): OwnerCheck {
+		const adoption = entry.adoption;
+		if (adoption === undefined) return OwnerCheck.settled(entry.fenced === true ? "lost" : "own");
+		// `again` (at a renewal): a write still unanswered is followed by a new one, should the store answer anything else
+		// meanwhile; the earlier one's answer, should it come, decides nothing.
+		const inFlight = (adoption.inFlight ??= []);
+		if (
+			(adoption.checking === undefined && inFlight.length < 2) ||
+			(again && adoption.checking !== undefined && this.mayWrite(inFlight))
+		) {
+			const attempt = (adoption.attempts ?? 0) + 1;
+			adoption.attempts = attempt;
+			const written = this.tracked(inFlight, () => this.adopt(session, entry, adoption, attempt));
+			const checking = new OwnerCheck(written);
+			adoption.checking = checking;
+			void written.finally(() => {
+				if (adoption.checking === checking) delete adoption.checking;
+			});
+		}
+		// Two writes in flight that the store has not answered: nothing is known until it does.
+		return adoption.checking ?? OwnerCheck.settled("unknown");
+	}
+
+	private async adopt(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		adoption: NonNullable<PresenceEntry["adoption"]>,
+		attempt: number,
+		retryIfRetired = true,
+	): Promise<OwnerVerdict> {
+		const confirmed = clockMark();
+		let binding: KnownSessionBindResult;
+		try {
+			binding = await this.state.knownSessions.bind(
+				session.info.id,
+				session.registrationReturnAddress ?? "",
+				KNOWN_SESSION_RETENTION_MS,
+				undefined,
+				this.newOwner(adoption.token),
+			);
+			this.storeAnswered();
+		} catch (error) {
+			this.report(error);
+			return "unknown";
+		}
+		// The session left, or was disconnected, while the write was on its way: an id the write took is given back.
+		if (entry.fenced === true || this.presence.get(session) !== entry) {
+			if (binding.status === "bound")
+				await this.releaseOwner({ intercomSessionId: session.info.id, token: adoption.token });
+			return entry.fenced === true ? "lost" : "unknown";
+		}
+		if (entry.adoption !== adoption) return "unknown";
+		// Superseded by a later write: that one's answer is the verdict.
+		if (adoption.attempts !== attempt) return adoption.checking?.answered() ?? "unknown";
+		if (binding.status === "bound") {
+			delete entry.adoption;
+			entry.owner = { intercomSessionId: session.info.id, token: adoption.token, confirmed };
+			adoption.decided.resolve("own");
+			// #5607: the alias its grant carried is taken now.
+			void this.takePendingAlias(session, entry);
+			return "own";
+		}
+		if (
+			binding.status === "held" &&
+			retryIfRetired &&
+			(await this.retireIfExitedHere(binding.ownerBroker)) &&
+			this.presence.get(session) === entry &&
+			entry.adoption === adoption &&
+			adoption.attempts === attempt
+		)
+			return this.adopt(session, entry, adoption, attempt, false);
+		if (binding.status === "held" || binding.status === "refused") {
+			this.lostSessionId(session, entry);
+			adoption.decided.resolve("lost");
+			return "lost";
+		}
+		return "unknown";
+	}
+
+	/** #5607: every owned id renewed in one write per batch; one the store no longer names for its registration is lost. */
+	private async renewOwners(): Promise<void> {
+		const owners = this.state.knownSessions.owners;
+		if (owners === undefined) return;
+		this.releaseExpiredReservations();
+		const reserved = [...this.reservedIds.entries()];
+		const held = [...this.presence].flatMap(([session, entry]) =>
+			entry.fenced === true
+				? []
+				: [
+						...(entry.owner === undefined ? [] : [{ session, entry, owned: entry.owner, alias: false }]),
+						...(entry.alias === undefined ? [] : [{ session, entry, owned: entry.alias, alias: true }]),
+					],
+		);
+		if (held.length === 0 && reserved.length === 0) return;
+		const confirmed = clockMark();
+		const renewed = await owners.renew([
+			...held.map(({ owned }) => ({ intercomSessionId: owned.intercomSessionId, token: owned.token })),
+			...reserved.flatMap(([, { id, token, alias, aliasToken }]) => [
+				{ intercomSessionId: id, token },
+				...(aliasToken === undefined ? [] : [{ intercomSessionId: alias, token: aliasToken }]),
+			]),
+		]);
+		this.storeAnswered();
+		const still = new Set(renewed.map(ownershipKey));
+		for (const [identity, held] of reserved) {
+			if (this.reservedIds.get(identity) !== held) continue;
+			if (still.has(ownershipKey({ intercomSessionId: held.id, token: held.token })))
+				held.confirmed = laterMark(held.confirmed, confirmed);
+			else {
+				// The id is no longer held with its token (an unanswered claim's write gave it back, or it went stale and
+				// another registration took it): the hold ends as a lapsed one, keeping the alias for its hand-over.
+				this.reservedIds.delete(identity);
+				this.lapse(identity, held);
+			}
+		}
+		for (const { session, entry, owned, alias } of held) {
+			if (alias) this.settleAlias(session, entry, owned, still.has(ownershipKey(owned)), confirmed);
+			else this.settleOwned(session, entry, owned, still.has(ownershipKey(owned)), confirmed);
+		}
+	}
+
+	/**
+	 * #5607: a session registered while routing was opening whose id is still to be taken tries again at each renewal,
+	 * with a new write even when an earlier one never answered (should the store answer anything else meanwhile).
+	 */
+	private retryAdoptions(): void {
+		if (this.state.knownSessions.owners === undefined) return;
+		for (const [session, entry] of this.presence) {
+			if (entry.fenced === true) continue;
+			if (entry.adoption !== undefined) void this.adoptionCheck(session, entry, true);
+			// #5607: an alias whose write failed is tried again, once its own id is taken.
+			else if (entry.pendingAlias !== undefined && entry.owner !== undefined) void this.takePendingAlias(session, entry);
+		}
+	}
+
+	/**
+	 * #5607: `entry`'s pending alias (one its grant, or its binding write, gave it) taken, in one conditional write; kept
+	 * pending, to try again at the next renewal, while that write fails.
+	 */
+	private async takePendingAlias(session: BrokerConnectedSession, entry: PresenceEntry): Promise<void> {
+		const pending = entry.pendingAlias;
+		if (pending === undefined || pending.taking === true) return;
+		pending.taking = true;
+		try {
+			await this.takeAlias(session, entry, pending.alias, this.newOwner(pending.aliasToken ?? entry.owner?.token));
+			if (entry.pendingAlias === pending) delete entry.pendingAlias;
+			this.consumeLapsed(session, pending.recovery);
+		} catch (error) {
+			this.report(error);
+		} finally {
+			pending.taking = false;
+		}
+	}
+
+	/** #5607: the shared store answered a statement of this broker's. */
+	private storeAnswered(): void {
+		this.storeAnsweredAt = performance.now();
+	}
+
+	/**
+	 * #5607: whether another owner write may be sent for a purpose whose writes `inFlight` were sent at: always when none
+	 * is in flight; otherwise at most two in flight, and the second only once the store answered something after the
+	 * first was sent. A store that answers nothing never piles up writes, and one that lost a write while it answers
+	 * others still gets a new one.
+	 */
+	private mayWrite(inFlight: readonly number[]): boolean {
+		if (inFlight.length === 0) return true;
+		return inFlight.length < 2 && this.storeAnsweredAt > Math.min(...inFlight);
+	}
+
+	/** #5607: `write`, counted in `inFlight` until it settles. */
+	private tracked<T>(inFlight: number[], write: () => Promise<T>): Promise<T> {
+		const sentAt = performance.now();
+		inFlight.push(sentAt);
+		return write().finally(() => {
+			const at = inFlight.indexOf(sentAt);
+			if (at !== -1) inFlight.splice(at, 1);
+		});
+	}
+
+	/**
+	 * #5607: each session that awaits the id it asked for tries once per renewal to take it, in one conditional write:
+	 * only once no other registration owns it, or its owner went stale. The id is then held here for that session, which
+	 * is disconnected to register again under it; the id it has now stays an alias of it.
+	 */
+	private claimAwaitedIds(): void {
+		if (this.state.knownSessions.owners === undefined) return;
+		for (const [session, entry] of this.presence) {
+			const { awaits } = entry;
+			if (awaits === undefined || entry.fenced === true) continue;
+			// What is queued for the id it awaits is queued for its identity, but woken on the broker still holding the id.
+			const identity = deliveryTargetIdentity(session);
+			this.scanIdentity(identity);
+			// Already held for it, by a hand-over its last registration presented but could not use: it is handed over once
+			// more, with a new hold of its own. Another registration of the same identity awaiting the id is not.
+			const held = this.reservedIds.get(identity);
+			if (
+				held !== undefined &&
+				held.id === awaits.id &&
+				held.handedAgain !== true &&
+				awaits.recovery === held.recovery
+			) {
+				delete entry.awaits;
+				held.handedAgain = true;
+				held.handedAt = clockMark();
+				this.host.fence(session, "reclaimed", { sessionId: held.id, handoff: held.handoff });
+				continue;
+			}
+			const inFlight = (awaits.inFlight ??= []);
+			if (!this.mayWrite(inFlight)) continue;
+			void this.tracked(inFlight, () => this.reclaimAwaited(session, entry, awaits)).catch((error: Error) =>
+				this.report(error),
+			);
+		}
+	}
+
+	private async reclaimAwaited(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		awaits: NonNullable<PresenceEntry["awaits"]>,
+	): Promise<void> {
+		// One token for every attempt of this registration at this id: a grant whose answer was lost is its own next time.
+		const owner = this.newOwner(awaits.token);
+		const confirmed = clockMark();
+		const returnAddress = session.registrationReturnAddress ?? "";
+		const binding = await this.state.knownSessions.bind(
+			awaits.id,
+			returnAddress,
+			KNOWN_SESSION_RETENTION_MS,
+			undefined,
+			owner,
+		);
+		this.storeAnswered();
+		const current =
+			this.presence.get(session) === entry &&
+			entry.fenced !== true &&
+			entry.awaits === awaits &&
+			this.host.sessions.get(session.info.id) === session;
+		if (binding.status === "bound") {
+			// A session that left, or no longer awaits the id, while the write was on its way gives the id back, unless an
+			// earlier attempt of the same registration already holds it for that session.
+			if (!current) {
+				if (!this.tokenInUse(owner.token)) await this.releaseOwner({ intercomSessionId: awaits.id, token: owner.token });
+				return;
+			}
+			delete entry.awaits;
+			const identity = deliveryTargetIdentity(session);
+			const earlier = this.reservedIds.get(identity);
+			// An alias a lapsed hand-over kept for this id, which this registration presented, is the one carried over: the
+			// asks it got went there. The id the session had since then is given back once it moved.
+			const lapsed = this.lapsedHandoffs.get(identity);
+			const kept =
+				lapsed !== undefined && lapsed.id === awaits.id && awaits.recovery === lapsed.recovery ? lapsed : undefined;
+			if (kept !== undefined) this.lapsedHandoffs.delete(identity);
+			// Otherwise its own id stays owned through the move, for the registration that comes back to keep as an alias.
+			entry.handsOver = true;
+			const handoff = randomUUID();
+			const alias =
+				kept === undefined
+					? { alias: session.info.id, ...(entry.owner === undefined ? {} : { aliasToken: entry.owner.token }) }
+					: { alias: kept.alias, ...(kept.aliasToken === undefined ? {} : { aliasToken: kept.aliasToken }) };
+			this.reservedIds.set(identity, {
+				id: awaits.id,
+				token: owner.token,
+				handoff,
+				...alias,
+				confirmed,
+				handedAt: clockMark(),
+				recovery: randomUUID(),
+			});
+			this.host.fence(session, "reclaimed", { sessionId: awaits.id, handoff });
+			if (kept !== undefined && entry.owner !== undefined && !this.tokenInUse(entry.owner.token))
+				await this.releaseOwner({ intercomSessionId: session.info.id, token: entry.owner.token });
+			if (earlier !== undefined) await this.releaseOwner({ intercomSessionId: earlier.id, token: earlier.token });
+			return;
+		}
+		// Bound to another session: it is not this one's to await.
+		if (binding.status === "refused" && current) {
+			delete entry.awaits;
+			this.serial(deliveryTargetIdentity(session), () => this.recordKnown(session, entry));
+		}
+	}
+
+	/**
+	 * #5607: the id held here for the session of delivery identity `identity` that registers again asking for it with the
+	 * hand-over it was given: taken once, and only before the hold ends.
+	 */
+	private takeReservedId(sessionId: string, identity: string, handoff: string): ReservedId | undefined {
+		const reserved = this.reservedIds.get(identity);
+		if (reserved === undefined || reserved.handoff !== handoff || sessionId !== reserved.id) return undefined;
+		this.reservedIds.delete(identity);
+		// A hand-over presented too late takes no held id: the ids are given back, for any registration to claim as usual.
+		if (elapsedSince(reserved.handedAt) >= RESERVED_ID_HOLD_MS) {
+			this.lapse(identity, reserved);
+			return undefined;
+		}
+		return reserved;
+	}
+
+	/**
+	 * #5607: `reserved`'s hold lapsed: its id is given back (unless a registration here took its token meanwhile), and its
+	 * hand-over is kept with the alias's token, no longer renewed: presented later, it takes the alias back with that
+	 * token unless another registration took the alias once it went stale (`claimSessionId` gives it to the registration
+	 * that presents the hand-over, and the move back of a session that awaits the id with its `recovery` carries it).
+	 */
+	private lapse(identity: string, reserved: ReservedId): void {
+		if (!this.tokenInUse(reserved.token)) void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
+		const earlier = this.lapsedHandoffs.get(identity);
+		if (reserved.alias === reserved.id) {
+			if (reserved.aliasToken !== undefined && !this.tokenInUse(reserved.aliasToken))
+				void this.releaseOwner({ intercomSessionId: reserved.alias, token: reserved.aliasToken });
+		} else
+			this.lapsedHandoffs.set(identity, {
+				handoff: reserved.handoff,
+				id: reserved.id,
+				alias: reserved.alias,
+				...(reserved.aliasToken === undefined ? {} : { aliasToken: reserved.aliasToken }),
+				lapsedAt: clockMark(),
+				recovery: reserved.recovery,
+			});
+		if (earlier !== undefined) this.giveBackLapsed(earlier);
+	}
+
+	/** #5607: a lapsed hand-over nobody presented: the alias's token, written but no longer renewed, is given back. */
+	private giveBackLapsed(lapsed: { readonly alias: string; readonly aliasToken?: string }): void {
+		if (lapsed.aliasToken !== undefined && !this.tokenInUse(lapsed.aliasToken))
+			void this.releaseOwner({ intercomSessionId: lapsed.alias, token: lapsed.aliasToken });
+	}
+
+	/** #5607: the hand-over of identity `identity` whose hold lapsed, when `handoff` is it and was for `sessionId`. */
+	private lapsedHandoffFor(sessionId: string, identity: string, handoff: string): LapsedHandoff | undefined {
+		const lapsed = this.lapsedHandoffs.get(identity);
+		return lapsed !== undefined && lapsed.handoff === handoff && lapsed.id === sessionId ? lapsed : undefined;
+	}
+
+	/**
+	 * #5607: the lapsed hand-over of `session`'s identity that `recovery` was given for, taken: its alias went to the
+	 * registration that presented it (or to another registration that took it once it went unrenewed).
+	 */
+	private consumeLapsed(session: BrokerConnectedSession, recovery: string | undefined): void {
+		const identity = deliveryTargetIdentity(session);
+		if (recovery === undefined) return;
+		if (this.lapsedHandoffs.get(identity)?.recovery === recovery) this.lapsedHandoffs.delete(identity);
+		// A hold kept through an unanswered claim that its registration's binding write then kept is that registration's.
+		if (this.reservedIds.get(identity)?.recovery === recovery) this.reservedIds.delete(identity);
+	}
+
+	/** #5607: `reserved` is held for the session of `identity` again, unless another hold took its place meanwhile. */
+	private holdAgain(identity: string | undefined, reserved: ReservedId): void {
+		if (identity !== undefined && !this.reservedIds.has(identity)) this.reservedIds.set(identity, reserved);
+	}
+
+	/**
+	 * #5607: ids held for sessions that did not register again in time are given back. They stop being held at once; their
+	 * release runs on its own, so a release the store is slow to answer holds up no renewal.
+	 */
+	private releaseExpiredReservations(): void {
+		for (const [identity, reserved] of [...this.reservedIds]) {
+			if (elapsedSince(reserved.handedAt) < RESERVED_ID_HOLD_MS) continue;
+			this.reservedIds.delete(identity);
+			this.lapse(identity, reserved);
+		}
+		for (const [identity, lapsed] of [...this.lapsedHandoffs]) {
+			if (elapsedSince(lapsed.lapsedAt) < LAPSED_HANDOFF_KEEP_MS) continue;
+			this.lapsedHandoffs.delete(identity);
+			this.giveBackLapsed(lapsed);
+		}
+	}
+
+	/**
+	 * #5607: whether an owner token still serves a registration here: one held for a session that awaited its id, one a
+	 * registration that comes back is taking, or one a live registration owns its id or an alias with. A late answer of an
+	 * earlier write never gives such a token's id back.
+	 */
+	private tokenInUse(token: string): boolean {
+		if (this.consumingTokens.has(token) || this.decidingTokens.has(token)) return true;
+		for (const reserved of this.reservedIds.values())
+			if (reserved.token === token || reserved.aliasToken === token) return true;
+		for (const lapsed of this.lapsedHandoffs.values()) if (lapsed.aliasToken === token) return true;
+		for (const entry of this.presence.values())
+			if (
+				entry.owner?.token === token ||
+				entry.alias?.token === token ||
+				entry.awaits?.token === token ||
+				entry.pendingAlias?.aliasToken === token
+			)
+				return true;
+		return false;
+	}
+
+	/** #5607: `session` takes `alias` too, in one conditional write; an alias it cannot take is left alone. */
+	private async takeAlias(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		alias: string,
+		owner: KnownSessionOwner,
+	): Promise<void> {
+		const confirmed = clockMark();
+		const binding = await this.state.knownSessions.bind(
+			alias,
+			session.registrationReturnAddress ?? "",
+			KNOWN_SESSION_RETENTION_MS,
+			undefined,
+			owner,
+		);
+		this.storeAnswered();
+		if (binding.status !== "bound") return;
+		if (this.presence.get(session) !== entry || entry.fenced === true) {
+			await this.releaseOwner({ intercomSessionId: alias, token: owner.token });
+			return;
+		}
+		entry.alias = { intercomSessionId: alias, token: owner.token, confirmed };
+		this.aliases.set(alias, session);
+	}
+
+	/** #5607: a renewal of an alias answered: kept, or another registration's now, when the alias alone ends. */
+	private settleAlias(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		alias: OwnedSessionId,
+		still: boolean,
+		confirmed: ClockMark,
+	): void {
+		if (this.presence.get(session) !== entry || entry.alias !== alias) return;
+		if (still) {
+			alias.confirmed = laterMark(alias.confirmed, confirmed);
+			return;
+		}
+		this.dropAlias(entry);
+		this.publishPresence(session, entry);
+		this.serial(deliveryTargetIdentity(session), () => this.recordKnown(session, entry));
+	}
+
+	private dropAlias(entry: PresenceEntry): void {
+		const alias = entry.alias;
+		if (alias === undefined) return;
+		delete entry.alias;
+		const holder = this.aliases.get(alias.intercomSessionId);
+		if (holder !== undefined && this.presence.get(holder) === entry) this.aliases.delete(alias.intercomSessionId);
+	}
+
+	/** #5607: other brokers see a changed alias at once, not only at the next renewal of the presence lease. */
+	private publishPresence(session: BrokerConnectedSession, entry: PresenceEntry): void {
+		this.serial(deliveryTargetIdentity(session), async () => {
+			if (this.presence.get(session) !== entry || entry.lease === undefined) return;
+			const renewed = await this.state.leases.renew(entry.lease, this.presenceSubject(session));
+			if (renewed.status !== "renewed") entry.lease = undefined;
+		});
+	}
+
+	/**
+	 * #5607: whether `known` is the record of a session here that answers to `target`, asked for exactly, as an id it
+	 * awaits or one it holds as a confirmed alias.
+	 */
+	private awaitedHere(known: KnownSessionState, target: string): boolean {
+		if (known.aliasSessionId !== target) return false;
+		for (const [session, entry] of this.presence) {
+			if (deliveryTargetIdentity(session) !== known.targetIdentity) continue;
+			if (entry.awaits?.id === target || this.aliasTarget(target) === session) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * #5607: whether the session of the record `known` still answers to its other id `alias`: no registration owns that
+	 * id with a live renewal, or the one that does is the registration whose live presence publishes it.
+	 */
+	private async aliasStillAnswers(known: KnownSessionState, alias: string): Promise<boolean> {
+		const owner = await this.state.knownSessions.owners?.ownerOf(alias);
+		if (owner === undefined || owner.ageMs > BROKER_LEASE_STALE_AFTER_MS) return true;
+		const presence = await this.state.leases.read({ kind: "presence", targetIdentity: known.targetIdentity });
+		return (
+			presence.status === "found" &&
+			presence.lease.ageMs <= BROKER_LEASE_STALE_AFTER_MS &&
+			publishesOwnedAlias(presence.lease, alias, owner)
+		);
+	}
+
+	/**
+	 * #5607: the live presence of another broker's session that holds `target` as an alias, while its registration owns
+	 * the id by the shared store's word (the same owner token, renewed within the stale age): an alias it lost meanwhile,
+	 * to a registration on any broker, its own included, is not routed to, however long its presence still names it.
+	 */
+	private async aliasHolder(live: readonly LeaseState[], target: string): Promise<LeaseState | undefined> {
+		const holder = live.find(
+			(lease) => (lease.subject as RecipientPresenceSubject).aliases?.some((alias) => alias.id === target) === true,
+		);
+		if (holder === undefined) return undefined;
+		const owner = await this.state.knownSessions.owners?.ownerOf(target);
+		return owner !== undefined && owner.ageMs <= BROKER_LEASE_STALE_AFTER_MS && publishesOwnedAlias(holder, target, owner)
+			? holder
+			: undefined;
+	}
+
+	/**
+	 * #5607: the session here that holds `sessionId` as an alias, confirmed its own within `SESSION_ID_OWNER_SAFE_MS`:
+	 * what answers for the alias without a check, as a known-session record or a reply from it does. Undefined otherwise.
+	 */
+	aliasTarget(sessionId: string): BrokerConnectedSession | undefined {
+		const session = this.localAliasTarget(sessionId);
+		const alias = session === undefined ? undefined : this.presence.get(session)?.alias;
+		return alias !== undefined && elapsedSince(alias.confirmed) < SESSION_ID_OWNER_SAFE_MS ? session : undefined;
+	}
+
+	/**
+	 * #5607: the session here that holds `sessionId` as an alias, confirmed recently or not, for a plain send from a
+	 * session on this broker: as a send to its own id, that send waits for one check of the alias within the local
+	 * bound (`sendOwnerChecks`), is delivered here while the shared store does not answer it, and takes the shared
+	 * route once the store says the alias is no longer this session's.
+	 */
+	localAliasTarget(sessionId: string): BrokerConnectedSession | undefined {
+		const session = this.aliases.get(sessionId);
+		if (session === undefined) return undefined;
+		const entry = this.presence.get(session);
+		if (entry?.alias?.intercomSessionId !== sessionId || entry.fenced === true) return undefined;
+		return this.host.sessions.get(session.info.id) === session ? session : undefined;
+	}
+
+	/** #5607: another registration owns `session`'s id: it is disconnected here, once, to reconnect for a fresh id. */
+	private lostSessionId(session: BrokerConnectedSession, entry: PresenceEntry): void {
+		if (this.presence.get(session) !== entry || entry.fenced === true) return;
+		entry.fenced = true;
+		entry.adoption?.decided.resolve("lost");
+		// An alias it holds stops routing to it now; its departure gives it back.
+		const alias = entry.alias;
+		if (alias !== undefined && this.aliases.get(alias.intercomSessionId) === session)
+			this.aliases.delete(alias.intercomSessionId);
+		this.host.fence(session);
+	}
+
+	/**
+	 * #5607: the checks a send waits for: its sender's and its local recipient's ids, and the alias it was sent to when it
+	 * reached its local recipient through one, where any needs one. Undefined on the healthy path.
+	 */
+	private sendOwnerChecks(request: RemoteSendRequest): SendOwnerChecks | undefined {
+		const sender = this.ownerCheck(request.from);
+		const local = request.localTarget;
+		const target = local === undefined ? undefined : this.ownerCheck(local);
+		const alias =
+			local !== undefined && request.target !== local.info.id && this.localAliasTarget(request.target) === local
+				? this.aliasCheck(local)
+				: undefined;
+		if (sender === undefined && target === undefined && alias === undefined) return undefined;
+		return {
+			...(sender === undefined ? {} : { sender }),
+			...(target === undefined ? {} : { target }),
+			...(alias === undefined ? {} : { alias }),
+		};
+	}
+
+	/** #5607: what a send's checks found within `boundMs`; one not answered by then is `unknown`. */
+	private async sendVerdicts(checks: SendOwnerChecks, boundMs: number): Promise<SendOwnerVerdicts> {
+		const own: OwnerVerdict = "own";
+		const unknown: OwnerVerdict = "unknown";
+		const [sender, target, alias] = await Promise.all([
+			checks.sender?.within(boundMs, unknown) ?? own,
+			checks.target?.within(boundMs, unknown) ?? own,
+			checks.alias?.within(boundMs, unknown) ?? own,
+		]);
+		return { sender, target, alias };
 	}
 
 	private holdsSessionId(sessionId: string, returnAddress: string | undefined): Promise<boolean> {
@@ -727,9 +1912,29 @@ export class MultiNodeRouter {
 		session: BrokerConnectedSession,
 		consumed?: ConsumedReservation,
 		reclaim?: SessionIdReclaimRequest,
+		grant?: SessionIdGrant,
+		awaits?: string,
+		recovery?: string,
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = {};
+		// An unanswered claim's registration awaits the id only once its binding write did not keep it (below).
+		if (
+			awaits !== undefined &&
+			reclaim === undefined &&
+			awaits !== session.info.id &&
+			this.state.knownSessions.owners !== undefined
+		)
+			entry.awaits = { id: awaits, token: randomUUID(), ...(recovery === undefined ? {} : { recovery }) };
+		// #5607: the token its claim took the id with, or one of its own for an id given here. A granted id is its own as
+		// of its claim's write.
+		const owner = this.newOwner(grant?.token ?? reclaim?.token);
+		if (grant !== undefined && this.state.knownSessions.owners !== undefined)
+			entry.owner = { intercomSessionId: session.info.id, token: owner.token, confirmed: grant.confirmed };
+		// #5607: a session registered while routing was still opening got its id with nothing shared to check it against:
+		// it has yet to take the id, and nothing is routed for it as the id's owner until it has.
+		if (this.adopting.delete(session) && this.state.knownSessions.owners !== undefined)
+			entry.adoption = adoption(owner.token);
 		this.presence.set(session, entry);
 		const identity = deliveryTargetIdentity(session);
 		// #4488: read as the registration begins, so a reservation a release of the child makes from here on is newer.
@@ -740,18 +1945,86 @@ export class MultiNodeRouter {
 			bound.unref?.();
 			this.serial(identity, async () => {
 				try {
-					// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
-					const binding =
-						reclaim === undefined
-							? await this.state.knownSessions.bind(
-									session.info.id,
-									session.registrationReturnAddress ?? "",
-									KNOWN_SESSION_RETENTION_MS,
-								)
-							: await this.reclaimOrBind(session, reclaim);
-					if (binding.status === "refused") {
-						entry.unbound = true;
-						return;
+					// #5607: a session registered while routing was opening takes its id now, or reconnects for a fresh one. A
+					// write that fails leaves it to take the id at the next check (`renewOwners`).
+					if (entry.adoption !== undefined) {
+						// Decided by whichever write answers first with the id taken or lost; the first write failing leaves it to
+						// the next renewal.
+						const pending = entry.adoption;
+						const first = this.adoptionCheck(session, entry).answered();
+						if ((await Promise.race([pending.decided.promise, first])) !== "own") return;
+					} else {
+						// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
+						const confirmed = clockMark();
+						let binding: KnownSessionBindResult;
+						if (reclaim !== undefined) this.decidingTokens.add(reclaim.token);
+						try {
+							binding =
+								reclaim === undefined
+									? await this.state.knownSessions.bind(
+											session.info.id,
+											session.registrationReturnAddress ?? "",
+											KNOWN_SESSION_RETENTION_MS,
+											undefined,
+											owner,
+										)
+									: await this.reclaimOrBind(session, reclaim, owner);
+						} catch (error) {
+							// #5607: the id this session was given (and answered under) is not confirmed its own: it takes it at the
+							// next check, as a session registered while routing was opening does.
+							if (this.state.knownSessions.owners !== undefined && this.presence.get(session) === entry) {
+								entry.adoption = adoption(owner.token);
+								if (grant?.alias !== undefined)
+									entry.pendingAlias = {
+										alias: grant.alias,
+										...(grant.aliasToken === undefined ? {} : { aliasToken: grant.aliasToken }),
+										...(grant.recovery === undefined ? {} : { recovery: grant.recovery }),
+									};
+								// A lapsed hand-over whose id its binding write did not keep leaves it awaiting that id all the same.
+								if (reclaim?.recovery !== undefined && session.info.id !== reclaim.sessionId)
+									entry.awaits = { id: reclaim.sessionId, token: randomUUID(), recovery: reclaim.recovery };
+							}
+							throw error;
+						} finally {
+							if (reclaim !== undefined) this.decidingTokens.delete(reclaim.token);
+						}
+						if (binding.status === "refused") {
+							entry.unbound = true;
+							return;
+						}
+						// #5607: another live registration of the same session owns the id (it took it once this registration's
+						// went unrenewed): that registration keeps it, and this one reconnects for a fresh id.
+						if (binding.status === "held") {
+							this.lostSessionId(session, entry);
+							return;
+						}
+						if (binding.status === "bound" && this.state.knownSessions.owners !== undefined) {
+							entry.owner = {
+								intercomSessionId: session.info.id,
+								token: owner.token,
+								confirmed: laterMark(entry.owner?.confirmed, confirmed),
+							};
+							// #5607: the id it had while it awaited this one stays an alias of it, owned the same way.
+							const alias = grant?.alias ?? reclaim?.alias;
+							const aliasToken = grant?.alias === undefined ? reclaim?.aliasToken : grant.aliasToken;
+							if (alias !== undefined && (reclaim === undefined || session.info.id === reclaim.sessionId)) {
+								const recovery = grant?.alias === undefined ? reclaim?.recovery : grant.recovery;
+								entry.pendingAlias = {
+									alias,
+									...(aliasToken === undefined ? {} : { aliasToken }),
+									...(recovery === undefined ? {} : { recovery }),
+								};
+								await this.takePendingAlias(session, entry);
+							}
+						}
+						// #5607: a hand-over whose id its binding write did not keep gives its alias back too, unless a lapsed
+						// hand-over still keeps it: the session then awaits the id with it, as one whose claim was held does.
+						if (reclaim !== undefined && session.info.id !== reclaim.sessionId) {
+							if (reclaim.recovery !== undefined && this.state.knownSessions.owners !== undefined)
+								entry.awaits = { id: reclaim.sessionId, token: randomUUID(), recovery: reclaim.recovery };
+							else if (reclaim.alias !== undefined && reclaim.aliasToken !== undefined)
+								await this.releaseOwner({ intercomSessionId: reclaim.alias, token: reclaim.aliasToken });
+						}
 					}
 					await this.recordKnown(session, entry);
 					for (let attempt = 0; ; attempt++) {
@@ -1170,6 +2443,11 @@ export class MultiNodeRouter {
 		const entry = this.presence.get(session);
 		if (this.closed || entry === undefined) return;
 		this.presence.delete(session);
+		// #5607: a registration still taking its id that leaves decides nothing more; an alias it holds is given back.
+		entry.adoption?.decided.resolve("unknown");
+		const alias = entry.alias;
+		if (alias !== undefined && this.aliases.get(alias.intercomSessionId) === session)
+			this.aliases.delete(alias.intercomSessionId);
 		// Its id names another session across nodes: that session's asks and records are not this one's to end.
 		const unbound = entry.unbound === true;
 		const identity = deliveryTargetIdentity(session);
@@ -1189,6 +2467,22 @@ export class MultiNodeRouter {
 		const sessionId = session.info.id;
 		this.serial(identity, async () => {
 			if (unbound) return;
+			// #5607: another registration owns its id now, and what is shared under the id is that registration's: only what
+			// this registration held itself is given back.
+			if (alias !== undefined) await this.releaseOwner(alias);
+			if (entry.fenced === true) {
+				for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
+				const stillHere = [...this.presence.keys()].some((other) => deliveryTargetIdentity(other) === identity);
+				if (entry.lease !== undefined && !stillHere) {
+					await this.state.leases.release(entry.lease);
+					await this.wakeWaitingOrigins(identity);
+				}
+				for (const hold of holds) await this.state.heldSends.drop(hold.messageId);
+				await this.releaseMirrorsOf(sessionId);
+				return;
+			}
+			// #5607: first, so the session is free to take its id again on any broker while the rest of its departure runs.
+			if (entry.owner !== undefined && entry.handsOver !== true) await this.releaseOwner(entry.owner);
 			// #4751: a top-level session that is only away keeps its asks: a reply to it is queued in the outbox like any
 			// send to an offline session, and its own recipient may still answer once it is back.
 			const away = session.supervisorId === undefined && !ended;
@@ -1244,13 +2538,18 @@ export class MultiNodeRouter {
 			// Its owner's broker may have looked for sends waiting for it before then, as it made the child wakeable.
 			this.wakeIfWaitedFor(session);
 			for (const hold of holds) await this.state.heldSends.drop(hold.messageId);
-			for (const [key, mirror] of [...this.mirrored]) {
-				if (mirror.lease.ownerSessionId !== sessionId) continue;
-				this.mirrored.delete(key);
-				await this.state.reservations.release(mirror.lease);
-				await this.wakeHeldOrigins(key);
-			}
+			await this.releaseMirrorsOf(sessionId);
 		});
+	}
+
+	/** The reservations this broker mirrors for the owner `ownerSessionId`, released as it leaves. */
+	private async releaseMirrorsOf(ownerSessionId: string): Promise<void> {
+		for (const [key, mirror] of [...this.mirrored]) {
+			if (mirror.lease.ownerSessionId !== ownerSessionId) continue;
+			this.mirrored.delete(key);
+			await this.state.reservations.release(mirror.lease);
+			await this.wakeHeldOrigins(key);
+		}
 	}
 
 	/** #4488: behind any reserve of it still checking, look again whether sends wait for a released child that left. */
@@ -1336,6 +2635,23 @@ export class MultiNodeRouter {
 	remoteSessions(): Promise<Map<string, { readonly info: SessionInfo }>> {
 		const remote = new Map<string, { readonly info: SessionInfo }>();
 		if (this.closed) return Promise.resolve(remote);
+		// #5607: the local sessions whose ids need checking are checked within the same bound, so one that lost its id is
+		// disconnected before the list is answered. Without an answer it is listed, as the local list never depends on the
+		// shared database.
+		const owners = [...this.host.sessions.values()].flatMap((session) => this.ownerCheck(session) ?? []);
+		const checked =
+			owners.length === 0
+				? undefined
+				: Promise.all(owners.map((owner) => owner.within(REMOTE_SESSIONS_BOUND_MS, "unknown" as const)));
+		return Promise.all([checked, this.listRemoteSessions(remote)]).then(([, listed]) => {
+			for (const id of [...listed.keys()]) if (this.host.sessions.has(id)) listed.delete(id);
+			return listed;
+		});
+	}
+
+	private listRemoteSessions(
+		remote: Map<string, { readonly info: SessionInfo }>,
+	): Promise<Map<string, { readonly info: SessionInfo }>> {
 		return new Promise((resolve) => {
 			const bound = setTimeout(() => resolve(new Map()), REMOTE_SESSIONS_BOUND_MS);
 			bound.unref?.();
@@ -1345,7 +2661,7 @@ export class MultiNodeRouter {
 					for (const lease of live) {
 						if (lease.subject.kind !== "presence" || lease.holderId === this.brokerId) continue;
 						const info = lease.subject.session;
-						if (!this.host.sessions.has(info.id) && !remote.has(info.id)) remote.set(info.id, { info });
+						if (!remote.has(info.id)) remote.set(info.id, { info });
 					}
 					resolve(remote);
 				},
@@ -1708,15 +3024,58 @@ export class MultiNodeRouter {
 	}
 
 	private async routeSendSafely(request: RemoteSendRequest): Promise<void> {
+		// #5607: a sender or local recipient whose id may have passed to another registration is checked first.
+		const owners = this.sendOwnerChecks(request);
 		try {
-			if (request.localTarget !== undefined) await this.answerLocalRetry(request, request.localTarget);
-			else await this.route(request);
+			if (request.localTarget !== undefined) await this.answerLocalRetry(request, request.localTarget, owners);
+			else if (owners === undefined || (await this.senderOwns(request, owners))) await this.route(request);
 		} catch (error) {
 			this.report(error);
 			// Local delivery does not depend on the shared database (spec §8).
-			if (request.localTarget !== undefined) return request.notFound();
+			if (request.localTarget !== undefined) return this.deliverLocally(request, request.localTarget);
 			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
 		}
+	}
+
+	/**
+	 * A send to a session here that the shared database failed for is delivered locally. #5607: a reply that this
+	 * broker's own routes say answers an ask to its sender's alias goes out as from that alias while the alias is
+	 * confirmed its own, and is refused as retryable while it is not: the database that could confirm it failed.
+	 */
+	private deliverLocally(request: RemoteSendRequest, target: BrokerConnectedSession): void {
+		const replyTo = request.message.replyTo;
+		const alias = this.replyAlias(request);
+		const pending = this.host.pendingQuestions;
+		if (replyTo === undefined || alias === undefined || pending.matchesReply(request.from.info.id, target.info.id, replyTo))
+			return request.notFound();
+		// Only the database that failed could show an ask to the alias that no route here names: a reply that must answer
+		// an open ask is refused as retryable, not for good.
+		if (!pending.matchesReply(alias.id, target.info.id, replyTo))
+			return request.requirePendingReply ? this.refuseRouteUnavailable(request) : request.notFound();
+		const sending = this.answeringAsHeld(request, alias);
+		if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+		(sending ?? request).notFound();
+	}
+
+	/** Whether this broker's own routes authorize `request`'s reply to `target`. */
+	private routedHere(request: RemoteSendRequest, target: BrokerConnectedSession): boolean {
+		const replyTo = request.message.replyTo;
+		return (
+			replyTo !== undefined && this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, replyTo)
+		);
+	}
+
+	/**
+	 * #5607: a send through the shared state goes out under its sender's id only once the store confirms the id is still
+	 * the sender's; it needs the store anyway. A store that does not answer within `SESSION_ID_CLAIM_BOUND_MS` fails it as
+	 * an unreachable store does; a sender that lost its id was disconnected here, and nothing goes out for it.
+	 */
+	private async senderOwns(request: RemoteSendRequest, owners: SendOwnerChecks): Promise<boolean> {
+		const verdict = (await this.sendVerdicts(owners, SESSION_ID_CLAIM_BOUND_MS)).sender;
+		if (verdict === "own") return true;
+		if (verdict === "unknown")
+			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
+		return false;
 	}
 
 	private async route(request: RemoteSendRequest): Promise<void> {
@@ -1730,7 +3089,11 @@ export class MultiNodeRouter {
 				!this.host.sessions.has(lease.subject.session.id),
 		);
 		const presenceOf = (lease: LeaseState) => lease.subject as RecipientPresenceSubject;
-		const exact = live.find((lease) => presenceOf(lease).session.id === request.target);
+		// #5607: a plain send to an id a session holds as an alias reaches that session.
+		const plain = isPlainSend(request);
+		const exact =
+			live.find((lease) => presenceOf(lease).session.id === request.target) ??
+			(plain ? await this.aliasHolder(live, request.target) : undefined);
 		let resolved: LeaseState | undefined = exact;
 		if (resolved === undefined) {
 			const replyAuthorized = await this.replyAuthorizedTargets(
@@ -1847,9 +3210,15 @@ export class MultiNodeRouter {
 	/**
 	 * #4997: a reply to a session here that no route authorizes, here or in the shared state, while a broker that may
 	 * keep its ask's route is down, is refused as retryable rather than by the local path's final refusal. True when
-	 * the reply was answered.
+	 * the reply was answered. #5607: `decisionStartedAt` is when the lookup of its ask's route in the shared state
+	 * began (`adoptSharedRouteWithin`); both lookups together end within `PRESENCE_REGISTRATION_BOUND_MS` of it, so the
+	 * reply, and the next reply its sender queued behind it, are answered before the sender stops waiting.
 	 */
-	private async routeUnreachable(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<boolean> {
+	private async routeUnreachable(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+		decisionStartedAt: number,
+	): Promise<boolean> {
 		const replyTo = request.message.replyTo;
 		if (!request.requirePendingReply || replyTo === undefined) return false;
 		if (this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, replyTo)) return false;
@@ -1860,9 +3229,10 @@ export class MultiNodeRouter {
 		const elsewhere = this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false);
 		// A shared database that stops answering leaves the reply undecided: it is refused as retryable, once, within the
 		// bound, so neither it nor the sender's later replies wait on that database for good. It authorizes nothing.
+		const remainingMs = Math.max(0, decisionStartedAt + PRESENCE_REGISTRATION_BOUND_MS - performance.now());
 		let bound: ReturnType<typeof setTimeout> | undefined;
 		const expired = new Promise<"expired">((resolve) => {
-			bound = setTimeout(() => resolve("expired"), PRESENCE_REGISTRATION_BOUND_MS);
+			bound = setTimeout(() => resolve("expired"), remainingMs);
 			bound.unref?.();
 		});
 		try {
@@ -1875,7 +3245,14 @@ export class MultiNodeRouter {
 		return true;
 	}
 
-	private async adoptSharedRouteWithin(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
+	/**
+	 * The send to deliver locally: `request`, or (#5607) `request` answering as its sender's alias; `UNCERTAIN_ALIAS`
+	 * when only an ask to an alias whose ownership is not confirmed now would authorize it.
+	 */
+	private async adoptSharedRouteWithin(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+	): Promise<RemoteSendRequest | typeof UNCERTAIN_ALIAS> {
 		const late = { abandoned: false };
 		const adopted = this.adoptSharedRoute(request, target, late);
 		// A reply that must answer an open ask can only be authorized by the shared state when this broker's routes do not
@@ -1887,34 +3264,114 @@ export class MultiNodeRouter {
 			bound.unref?.();
 		});
 		try {
-			if ((await Promise.race([adopted, expired])) === "expired") {
-				// The send takes the local path now: a route found later is left where it is, for a retry to find.
-				late.abandoned = true;
-				adopted.catch((error: Error) => this.report(error));
-			}
+			const settled = await Promise.race([adopted, expired]);
+			if (settled !== "expired") return settled;
+			// The send takes the local path now: a route found later is left where it is, for a retry to find.
+			late.abandoned = true;
+			adopted.catch((error: Error) => this.report(error));
 		} catch (error) {
 			this.report(error);
+			// #5607: a reply from a session holding an alias may answer an ask to that alias, which only the database
+			// that failed could show: it is refused as retryable, not for good.
+			if (request.requirePendingReply && this.replyAlias(request) !== undefined && !this.routedHere(request, target))
+				return UNCERTAIN_ALIAS;
 		} finally {
 			clearTimeout(bound);
 		}
+		return request;
 	}
 
 	private async adoptSharedRoute(
 		request: RemoteSendRequest,
 		target: BrokerConnectedSession,
 		late: { readonly abandoned: boolean },
-	): Promise<void> {
+	): Promise<RemoteSendRequest | typeof UNCERTAIN_ALIAS> {
 		const replyTo = request.message.replyTo;
-		const replySenderSessionId = request.from.info.id;
-		if (replyTo === undefined) return;
-		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
+		if (replyTo === undefined) return request;
+		// #5607: an ask to the id its sender holds as an alias, received under that id, is answered as that id.
+		const alias = this.replyAlias(request);
+		const repliers = alias === undefined ? [request.from.info.id] : [request.from.info.id, alias.id];
+		const answering = (replier: string) =>
+			replier === request.from.info.id || late.abandoned || alias === undefined
+				? request
+				: (this.answeringAsHeld(request, alias) ?? request);
+		const routedHere = () =>
+			repliers.find((replier) => this.host.pendingQuestions.matchesReply(replier, target.info.id, replyTo));
+		const here = routedHere();
+		if (here !== undefined && alias !== undefined && here === alias.id) await this.confirmAlias(request, alias);
+		if (here !== undefined) return answering(here);
 		// An ask whose route is still moving there from this broker is in the shared state once that move is done.
 		await Promise.all([...this.settling]);
-		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
-		const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
-		if ((await this.state.pendingAsks.matchesReply(route)).status !== "match" || late.abandoned) return;
-		this.host.pendingQuestions.record(target.info.id, replySenderSessionId, replyTo);
-		await this.settleSharedRoute({ senderSessionId: target.info.id, targetSessionId: replySenderSessionId, messageId: replyTo });
+		const moved = routedHere();
+		if (moved !== undefined && alias !== undefined && moved === alias.id) await this.confirmAlias(request, alias);
+		if (moved !== undefined) return answering(moved);
+		for (const replySenderSessionId of repliers) {
+			const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
+			if ((await this.state.pendingAsks.matchesReply(route)).status !== "match") continue;
+			if (alias !== undefined && replySenderSessionId === alias.id) await this.confirmAlias(request, alias);
+			if (late.abandoned) return request;
+			const sending = answering(replySenderSessionId);
+			// Its alias lost meanwhile authorizes nothing; one held unconfirmed leaves the shared route where it is.
+			if (sending === UNCERTAIN_ALIAS || (sending === request && replySenderSessionId !== request.from.info.id))
+				return sending;
+			this.host.pendingQuestions.record(target.info.id, replySenderSessionId, replyTo);
+			await this.settleSharedRoute({
+				senderSessionId: target.info.id,
+				targetSessionId: replySenderSessionId,
+				messageId: replyTo,
+			});
+			return sending;
+		}
+		return request;
+	}
+
+	/**
+	 * #5607: the id `request`'s sender holds as an alias, for a reply that may answer an ask that id received (the
+	 * session's earlier id, before it moved back to its own), and whether it is confirmed its own now, as `aliasTarget`
+	 * requires. Undefined for any other send, and for a sender holding no alias: nothing else is looked up for those.
+	 */
+	private replyAlias(request: RemoteSendRequest): HeldAlias | undefined {
+		if (!isReleasedReplyCandidate(request)) return undefined;
+		const session = this.host.sessions.get(request.from.info.id);
+		const entry = session === undefined ? undefined : this.presence.get(session);
+		const alias = entry?.alias;
+		if (alias === undefined || entry?.fenced === true) return undefined;
+		const id = alias.intercomSessionId;
+		return { id, token: alias.token, confirmed: this.aliasTarget(id) === session };
+	}
+
+	/**
+	 * #5607: an alias held but not confirmed recently is checked once, as a send to it is (`aliasCheck`), within the
+	 * claim's bound, before a reply goes out as from it: it is then confirmed, revoked, or still unknown.
+	 */
+	private async confirmAlias(request: RemoteSendRequest, alias: HeldAlias): Promise<void> {
+		if (alias.confirmed) return;
+		const session = this.host.sessions.get(request.from.info.id);
+		await (session === undefined ? undefined : this.aliasCheck(session))?.within(SESSION_ID_CLAIM_BOUND_MS, "unknown");
+	}
+
+	/**
+	 * #5607: `request` as from `alias`, an ask to which authorizes it, decided now, after the lookups that found that ask:
+	 * only while its sender still holds that same alias (by its token), confirmed its own now. `UNCERTAIN_ALIAS` while it
+	 * holds it unconfirmed; undefined once it lost it.
+	 */
+	private answeringAsHeld(
+		request: RemoteSendRequest,
+		alias: HeldAlias,
+	): RemoteSendRequest | typeof UNCERTAIN_ALIAS | undefined {
+		const now = this.replyAlias(request);
+		if (now === undefined || now.id !== alias.id || now.token !== alias.token) return undefined;
+		return now.confirmed ? this.answeringAs(request, now.id) : UNCERTAIN_ALIAS;
+	}
+
+	/**
+	 * #5607: `request`, a reply only the route of an ask to its sender's alias `alias` authorizes, goes out as from that
+	 * id, the one its asker asked: its shared route and its local delivery alike. Its sender's other sends do not.
+	 */
+	private answeringAs(request: RemoteSendRequest, alias: string): RemoteSendRequest {
+		const from = { ...request.from, info: { ...request.from.info, id: alias } };
+		answerAs(request.clientMessage, from);
+		return { ...request, from };
 	}
 
 	/**
@@ -2142,8 +3599,16 @@ export class MultiNodeRouter {
 	 * takes the local path. Lookups the shared database does not answer within `LOCAL_RETRY_LOOKUP_BOUND_MS` take the
 	 * local path too, and their late answers are ignored: the send has been answered once already.
 	 */
-	private async answerLocalRetry(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
+	private async answerLocalRetry(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+		owners?: SendOwnerChecks,
+	): Promise<void> {
 		const lookup = this.state.outbox.read(request.message.id);
+		// #5607: a lookup that fails while an owner check is still answering is reported when it is awaited below, not
+		// left unobserved meanwhile. The checks are waited for within the lookup's own bound, counted from now.
+		if (owners !== undefined) lookup.catch(() => {});
+		const verdicts = owners === undefined ? undefined : this.sendVerdicts(owners, LOCAL_RETRY_LOOKUP_BOUND_MS);
 		const released = this.movedReleasedAsk(request, target).catch((error: Error) => {
 			this.report(error);
 			return undefined;
@@ -2154,14 +3619,28 @@ export class MultiNodeRouter {
 			bound.unref?.();
 		});
 		try {
+			// #5607: checked within the same bound as the lookup. Without an answer the send takes the local path, which
+			// never depends on the shared database (spec §8); the check keeps running, and acts on a lost id when it answers.
+			if (verdicts !== undefined) {
+				const found = await verdicts;
+				if (found.sender === "lost" || found.target === "lost" || found.alias === "lost") {
+					lookup.catch((error: Error) => this.report(error));
+					// A sender disconnected here has nothing to be answered; a recipient disconnected here, or an alias it
+					// no longer holds, is looked for wherever that id lives now.
+					if (found.sender !== "lost") request.notFound();
+					return;
+				}
+			}
 			const existing = await Promise.race([lookup, expired]);
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
-				await this.adoptSharedRouteWithin(request, target);
+				const decisionStartedAt = performance.now();
+				const sending = await this.adoptSharedRouteWithin(request, target);
+				if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
 				// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
 				// the local path's final refusal just because the outbox lookup was slow.
-				if (await this.routeUnreachable(request, target)) return;
-				request.notFound();
+				if (await this.routeUnreachable(sending, target, decisionStartedAt)) return;
+				sending.notFound();
 				return;
 			}
 			if (existing.status === "found") {
@@ -2172,9 +3651,11 @@ export class MultiNodeRouter {
 			}
 			const moved = await Promise.race([released, expired]);
 			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
-			await this.adoptSharedRouteWithin(request, target);
-			if (await this.routeUnreachable(request, target)) return;
-			request.notFound();
+			const decisionStartedAt = performance.now();
+			const sending = await this.adoptSharedRouteWithin(request, target);
+			if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+			if (await this.routeUnreachable(sending, target, decisionStartedAt)) return;
+			sending.notFound();
 		} finally {
 			clearTimeout(bound);
 		}
@@ -2198,14 +3679,16 @@ export class MultiNodeRouter {
 		const replyTo = request.message.replyTo;
 		if (replyTo === undefined) return authorized;
 		const replySenderSessionId = request.from.info.id;
+		// #5607: or an open ask to the id its sender holds as an alias, which its reply answers as that id.
+		const alias = this.replyAlias(request);
+		const answers = async (replier: string, sessionId: string) => {
+			const route = { replySenderSessionId: replier, replyTargetSessionId: sessionId, replyTo };
+			return (await this.state.pendingAsks.matchesReply(route)).status === "match";
+		};
 		for (const sessionId of new Set(sessionIds)) {
 			if (this.host.supervisorCache.matchReply(replyTo, replySenderSessionId, sessionId)) authorized.add(sessionId);
-			else if (
-				(await this.state.pendingAsks.matchesReply({ replySenderSessionId, replyTargetSessionId: sessionId, replyTo }))
-					.status === "match"
-			) {
-				authorized.add(sessionId);
-			}
+			else if (await answers(replySenderSessionId, sessionId)) authorized.add(sessionId);
+			else if (alias !== undefined && (await answers(alias.id, sessionId))) authorized.add(sessionId);
 		}
 		return authorized;
 	}
@@ -2222,11 +3705,23 @@ export class MultiNodeRouter {
 		const sessions: KnownSessionState[] = [];
 		for (const session of found.sessions) {
 			// A record under an id bound to another session's return address is not that session's.
-			if (localIdentities.has(session.targetIdentity)) continue;
+			// #5607: one whose session here awaits that very id is reached as from another broker: through the queue for
+			// its identity, which this broker takes for it.
+			if (localIdentities.has(session.targetIdentity) && !this.awaitedHere(session, request.target)) continue;
 			if (await this.holdsSessionId(session.intercomSessionId, session.atomicSessionId)) sessions.push(session);
 		}
 		const byId = sessions.find((session) => session.intercomSessionId === request.target);
 		if (byId !== undefined) return byId;
+		// #5607: the other id a session answers to reaches it as that id.
+		// #5607: the other id a session answers to reaches it as that id, while that id is bound to its return address
+		// and no live registration elsewhere owns it.
+		const byAlias = sessions.find((session) => session.aliasSessionId === request.target);
+		if (
+			byAlias !== undefined &&
+			(await this.holdsSessionId(request.target, byAlias.atomicSessionId)) &&
+			(await this.aliasStillAnswers(byAlias, request.target))
+		)
+			return { ...byAlias, intercomSessionId: request.target };
 		const replyAuthorized = await this.replyAuthorizedTargets(
 			request,
 			sessions.map((session) => session.intercomSessionId),
@@ -2273,7 +3768,7 @@ export class MultiNodeRouter {
 
 	/** Run the origin's routing decisions on the shared state, then enqueue the exact local frame. */
 	private async deliverThroughOutbox(request: RemoteSendRequest, target: RemoteTarget): Promise<void> {
-		const { message, from } = request;
+		const { message } = request;
 		if (!isAgentRecipient(target.gates)) {
 			this.fail(request, NON_AGENT_RECIPIENT_REFUSAL);
 			return;
@@ -2289,15 +3784,20 @@ export class MultiNodeRouter {
 			return;
 		}
 		if (this.answerLocalDelivery(request, target)) return;
-		const correlatedReply =
-			message.replyTo !== undefined &&
-			(
-				await this.state.pendingAsks.matchesReply({
-					replySenderSessionId: from.info.id,
-					replyTargetSessionId: target.sessionId,
-					replyTo: message.replyTo,
-				})
-			).status === "match";
+		const answering = await this.correlatedReply(request, target.sessionId);
+		if (answering === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+		// #5607: a reply to an ask its sender's alias received goes out as from that alias.
+		await this.enqueueThroughOutbox(answering ?? request, target, digest, answering !== undefined);
+	}
+
+	/** `request`, checked by `deliverThroughOutbox`, written to the shared outbox; `correlatedReply`: an open ask's reply. */
+	private async enqueueThroughOutbox(
+		request: RemoteSendRequest,
+		target: RemoteTarget,
+		digest: string,
+		correlatedReply: boolean,
+	): Promise<void> {
+		const { message, from } = request;
 		if (request.requirePendingReply && !correlatedReply) {
 			await this.refuseUnauthorizedReply(request, { sessionId: target.sessionId, identity: target.identity });
 			return;
@@ -2371,6 +3871,27 @@ export class MultiNodeRouter {
 			});
 		}
 		await this.answerExistingRow(request, target, digest, enqueued.row);
+	}
+
+	/**
+	 * The send that answers an open ask of `asker` with `request`'s reply: `request` itself when the ask's route is to its
+	 * sender's id; #5607: `request` as from its sender's alias when the ask's route is to that alias, or `UNCERTAIN_ALIAS`
+	 * while that alias is not confirmed its own now. Undefined when no open ask's route authorizes it.
+	 */
+	private async correlatedReply(
+		request: RemoteSendRequest,
+		asker: string,
+	): Promise<RemoteSendRequest | typeof UNCERTAIN_ALIAS | undefined> {
+		const replyTo = request.message.replyTo;
+		if (replyTo === undefined) return undefined;
+		const answers = async (replySenderSessionId: string) =>
+			(await this.state.pendingAsks.matchesReply({ replySenderSessionId, replyTargetSessionId: asker, replyTo }))
+				.status === "match";
+		if (await answers(request.from.info.id)) return request;
+		const alias = this.replyAlias(request);
+		if (alias === undefined || !(await answers(alias.id))) return undefined;
+		await this.confirmAlias(request, alias);
+		return this.answeringAsHeld(request, alias);
 	}
 
 	/**
@@ -2756,7 +4277,12 @@ export class MultiNodeRouter {
 	}
 
 	private async claimFor(identity: string): Promise<void> {
-		if (this.localSessionFor(identity) === undefined) return;
+		const recipient = this.localSessionFor(identity);
+		if (recipient === undefined) return;
+		// #5607: rows sent to its id across nodes are taken for it only while the store confirms the id is its own; a later
+		// scan takes them once it does.
+		const owner = this.ownerCheck(recipient);
+		if (owner !== undefined && (await owner.within(SESSION_ID_CLAIM_BOUND_MS, "unknown" as const)) !== "own") return;
 		const claimed = await this.state.outbox.claim({
 			claimantId: this.brokerId,
 			targetIdentity: identity,
@@ -3164,6 +4690,8 @@ export class MultiNodeRouter {
 				present.map((presence) => (presence.subject as RecipientPresenceSubject).targetIdentity),
 			);
 			await this.state.leases.retireHolder(lease.holderId);
+			// #5607: the ids its registrations owned are free for those sessions to take again.
+			await this.state.knownSessions.owners?.retireBroker(lease.holderId);
 			await this.state.outbox.releaseClaimsOf(lease.holderId);
 		}
 	}
@@ -3171,6 +4699,7 @@ export class MultiNodeRouter {
 	private async renew(): Promise<void> {
 		if (this.membership !== undefined) {
 			const renewed = await this.state.leases.renew(this.membership);
+			this.storeAnswered();
 			if (renewed.status !== "renewed") this.membership = undefined;
 		}
 		if (this.membership === undefined) {
@@ -3196,7 +4725,8 @@ export class MultiNodeRouter {
 				}
 			} else {
 				this.serial(deliveryTargetIdentity(session), async () => {
-					if (this.presence.get(session) !== entry || entry.unbound === true) return;
+					// #5607: a session still to take its id is not presented across nodes before it has.
+					if (this.presence.get(session) !== entry || entry.unbound === true || entry.adoption !== undefined) return;
 					await this.acquirePresence(session, entry);
 					const { rebind } = entry;
 					if (entry.lease !== undefined && rebind !== undefined) {
@@ -3260,7 +4790,10 @@ export class MultiNodeRouter {
 	}
 
 	private async recordKnown(session: BrokerConnectedSession, entry: PresenceEntry): Promise<void> {
-		await this.state.knownSessions.record(this.knownOf(session));
+		// #5607: a session that awaits the id it asked for, or holds one as an alias, is known by that id too.
+		await this.state.knownSessions.record(
+			this.knownOf(session, entry.alias?.intercomSessionId ?? entry.awaits?.id),
+		);
 		entry.knownAt = Date.now();
 	}
 
@@ -3274,13 +4807,23 @@ export class MultiNodeRouter {
 	}
 
 	private presenceSubject(session: BrokerConnectedSession): RecipientPresenceSubject {
-		return { kind: "presence", targetIdentity: deliveryTargetIdentity(session), session: session.info };
+		// #5607: an id it holds as an alias is resolved to it by other brokers too, while it is still its registration's.
+		const alias = this.presence.get(session)?.alias;
+		return {
+			kind: "presence",
+			targetIdentity: deliveryTargetIdentity(session),
+			session: session.info,
+			...(alias === undefined
+				? {}
+				: { aliases: [{ id: alias.intercomSessionId, owner: ownerWitness(alias.token) }] }),
+		};
 	}
 
-	private knownOf(session: BrokerConnectedSession): KnownSession {
+	private knownOf(session: BrokerConnectedSession, aliasSessionId?: string): KnownSession {
 		return {
 			targetIdentity: deliveryTargetIdentity(session),
 			intercomSessionId: session.info.id,
+			...(aliasSessionId === undefined ? {} : { aliasSessionId }),
 			...(session.info.name === undefined ? {} : { name: session.info.name }),
 			...(session.registrationReturnAddress === undefined ? {} : { atomicSessionId: session.registrationReturnAddress }),
 			group: normalizeGroup(session.registrationGroup),
@@ -3364,6 +4907,8 @@ export class MultiNodeRouter {
 			for (const entry of this.presence.values()) {
 				if (entry.lease !== undefined) await this.state.leases.release(entry.lease);
 			}
+			// #5607: its sessions' ids are free for them to take again on another broker, as their presences are.
+			await this.state.knownSessions.owners?.retireBroker(this.brokerId);
 			if (this.membership !== undefined) await this.state.leases.release(this.membership);
 		} catch (error) {
 			this.report(error);

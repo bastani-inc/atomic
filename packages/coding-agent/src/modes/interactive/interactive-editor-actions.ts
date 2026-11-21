@@ -6,6 +6,7 @@ import {
 	APP_NAME,
 	AssistantMessageComponent,
 	CHANGELOG_URL,
+	type Component,
 	Container,
 	DynamicBorder,
 	getCapabilities,
@@ -130,6 +131,47 @@ InteractiveModeBase.prototype.showError = function (this: InteractiveModeBase, e
 	this.chatContainer.addChild(new Spacer(1));
 	this.chatContainer.addChild(new Text(theme.fg("error", `Error: ${errorMessage}`), 1, 0));
 	this.chatContainer.addChild(new Spacer(1));
+	this.ui.requestRender();
+};
+
+/** Each series' latest row, held only while the chat holds it. */
+const repeatedErrorRows = new WeakMap<object, WeakRef<Text>>();
+/** What each such row shows: its failure's message, and how many failures. Gone with the row. */
+const repeatedErrorCounts = new WeakMap<Text, { readonly message: string; count: number }>();
+/** The parts every repeated-failure row added to the chat. */
+const repeatedErrorParts = new WeakSet<Component>();
+
+/** Whether `text` is in the chat with only rows of repeated failures after it: the bottom of the chat. */
+function onlyRepeatedErrorsFrom(container: Container, text: Text): boolean {
+	const children = container.children;
+	for (let index = children.length - 1; index >= 0; index--) {
+		const child = children[index]!;
+		if (child === text) return true;
+		if (!repeatedErrorParts.has(child)) return false;
+	}
+	return false;
+}
+
+InteractiveModeBase.prototype.showRepeatedError = function (
+	this: InteractiveModeBase,
+	errorMessage: string,
+	series: object,
+): void {
+	const row = repeatedErrorRows.get(series)?.deref();
+	const shown = row && repeatedErrorCounts.get(row);
+	if (row !== undefined && shown?.message === errorMessage && onlyRepeatedErrorsFrom(this.chatContainer, row)) {
+		shown.count++;
+		row.setText(theme.fg("error", `Error: ${errorMessage} (${shown.count} times)`));
+		this.ui.requestRender();
+		return;
+	}
+	const text = new Text(theme.fg("error", `Error: ${errorMessage}`), 1, 0);
+	for (const part of [new Spacer(1), text, new Spacer(1)]) {
+		repeatedErrorParts.add(part);
+		this.chatContainer.addChild(part);
+	}
+	repeatedErrorRows.set(series, new WeakRef(text));
+	repeatedErrorCounts.set(text, { message: errorMessage, count: 1 });
 	this.ui.requestRender();
 };
 

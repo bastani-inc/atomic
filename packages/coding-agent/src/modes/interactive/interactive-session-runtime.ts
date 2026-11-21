@@ -203,6 +203,7 @@ InteractiveModeBase.prototype.handleEngineDiagnostic = function (
 		},
 		showStatus: (message, persist) => this.showStatus(message, persist),
 		showError: (message) => this.showError(message),
+		showRepeatedError: (message, series) => this.showRepeatedError(message, series),
 	});
 };
 
