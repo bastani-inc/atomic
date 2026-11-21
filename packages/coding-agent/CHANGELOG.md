@@ -66,6 +66,7 @@
 - While the screen shows a subagent that finished, the agent panel no longer redraws every second: an idle subagent chat writes nothing to the terminal until something changes. A running subagent's time and a finished row that is fading still update every second ([#6220](https://github.com/bastani-inc/atomic/pull/6220))
 - When Atomic's own handling of the engine's output fails the same way on every streamed update, the chat shows one error row with a count, such as `(42 times)`, instead of one row per update. A different failure, or one after other output, gets its own row.
 - An error while Atomic reports a malformed engine line, the engine's stderr output or a failed write to the engine no longer ends Atomic; a malformed line still restarts the engine.
+- On a SQLite, libSQL or PostgreSQL session store, going back with `/tree` to an entry before the latest compaction, or reopening a session whose saved resume index the store cannot use, no longer fails with a JSON error when an extension saved text such as `[draft` under the name `owner`, `tasks` or `groups` in one of its entries.
 
 ## [0.10.3] - 2026-11-21
 

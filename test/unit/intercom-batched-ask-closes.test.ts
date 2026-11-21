@@ -227,7 +227,8 @@ test("a reopened session reads asks closed one at a time and asks closed togethe
 describe.each(storageBackends)("a resume window rebuilt on $name", (backend) => {
 	const run = backend.skipReason === undefined ? test : test.skip;
 
-	async function recordedTogether() {
+	/** `before` writes more entries ahead of both compactions, so the rebuild reads them too. */
+	async function recordedTogether(before?: (manager: SessionManager) => Promise<void>) {
 		const scope = await backend.openScope();
 		const database = await scope.connect();
 		const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
@@ -247,6 +248,7 @@ describe.each(storageBackends)("a resume window rebuilt on $name", (backend) => 
 			askedAt: 1,
 		});
 		await manager.appendCustomEntry("intercom_ask_settled", { askIds: ["outbound-1"], state: "answered" });
+		await before?.(manager);
 		await manager.appendMessage({ role: "user", content: [{ type: "text", text: "A" }], timestamp: 2 });
 		await manager.appendCompaction("summary", null, 100, COMPACTION);
 		const kept = await manager.appendMessage({ role: "user", content: [{ type: "text", text: "B" }], timestamp: 3 });
@@ -271,7 +273,7 @@ describe.each(storageBackends)("a resume window rebuilt on $name", (backend) => 
 				manager.getSessionId(),
 			);
 		};
-		return { kept, reopen, forgetIndex };
+		return { kept, reopen, forgetIndex, sessionId: manager.getSessionId() };
 	}
 
 	function assertLeftOut(session: SessionManager): void {
@@ -306,5 +308,54 @@ describe.each(storageBackends)("a resume window rebuilt on $name", (backend) => 
 
 		assertLeftOut(await reopen());
 		assertLeftOut(await reopen());
+	});
+
+	/** Both ways to a rebuilt window: back to an entry before the latest compaction, and past an index it cannot use. */
+	async function rebuiltWindows(before: (manager: SessionManager) => Promise<void>): Promise<SessionManager[]> {
+		const branched = await recordedTogether(before);
+		const moved = await branched.reopen();
+		await moved.recordBranch(branched.kept);
+		const forgotten = await recordedTogether(before);
+		await forgotten.forgetIndex();
+		return [moved, await branched.reopen(), await forgotten.reopen()];
+	}
+
+	run("when an extension saved text that looks like a list or an object under the same names", async () => {
+		const windows = await rebuiltWindows(async (manager) => {
+			await manager.appendCustomEntry("my-extension-state", {
+				messageIds: "[draft",
+				askIds: "{draft",
+				groups: "[draft",
+				owner: "{draft",
+				tasks: "[draft",
+			});
+		});
+
+		for (const session of windows) assertLeftOut(session);
+	});
+
+	run("keeps the latest valid membership record when a later one names its groups as text", async () => {
+		const sessionId = "owner-session";
+		const windows = await rebuiltWindows(async (manager) => {
+			await manager.appendCustomEntry("intercom_session_memberships", {
+				sessionId,
+				homeGroup: "home",
+				groups: ["team"],
+			});
+			await manager.appendCustomEntry("intercom_session_memberships", {
+				sessionId,
+				homeGroup: "home",
+				groups: "team",
+			});
+		});
+
+		for (const session of windows)
+			assert.deepEqual(
+				session
+					.getBranch()
+					.filter((entry) => entry.type === "custom" && entry.customType === "intercom_session_memberships")
+					.map((entry) => (entry.type === "custom" ? entry.data : undefined)),
+				[{ sessionId, homeGroup: "home", groups: ["team"] }],
+			);
 	});
 });

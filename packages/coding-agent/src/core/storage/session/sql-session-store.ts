@@ -2102,6 +2102,8 @@ export class SqlSessionStore implements SessionStore {
 				"captureMs",
 			].map((key) => [key, j(key)] as const);
 			const messageKeys = ["role", "provider", "model", "usage", "toolCallId"];
+			const ofType = (key: string, type: "array" | "object") =>
+				`CASE WHEN ${jsonType("data", key)} = '${type}' THEN ${j("data", key)} END`;
 			const dataKeys = [
 				"childId",
 				"version",
@@ -2154,12 +2156,17 @@ export class SqlSessionStore implements SessionStore {
 					),
 				],
 				["op", op],
-				["owner", j("data", "owner")],
-				["tasks", j("data", "tasks")],
-				["groups", j("data", "groups")],
-				// Intercom's records of several asks at once: closed asks, and answered asks.
-				["messageIds", j("data", "messageIds")],
-				["askIds", j("data", "askIds")],
+				// These are parsed back from JSON text, which an extension's own text under the same name can look
+				// like. Read only the shape the resume fold uses: an owner object, and the lists (tasks, groups, and
+				// Intercom's records of several asks at once, closed and answered).
+				["owner", ofType("owner", "object")],
+				...["tasks", "messageIds", "askIds"].map((key) => [key, ofType(key, "array")] as const),
+				// A membership record with null groups is valid and one with any other value that is not a list is
+				// not, so that value reads as a text that is not a list.
+				[
+					"groups",
+					`CASE WHEN ${jsonType("data", "groups")} = 'array' THEN ${j("data", "groups")} WHEN ${jsonType("data", "groups")} <> 'null' THEN 'invalid' END`,
+				],
 				...["queries", "urls"].map(
 					(key) => [key, `CASE WHEN ${jsonType("data", key)} = 'array' THEN '[]' ELSE NULL END`] as const,
 				),
