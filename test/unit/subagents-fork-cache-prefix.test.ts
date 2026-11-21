@@ -294,7 +294,7 @@ function added(before: AnthropicPayload, after: AnthropicPayload): string {
  * A parent with two settled turns and a fork of it, made as the subagent tool makes one. `madeByEarlierVersion` makes
  * it as an earlier version did, with nothing recording where the copied history ends; `clockFromParentReply` makes it
  * while the clock reads that many milliseconds after the parent's last reply was stamped (0: the same millisecond;
- * negative: after the clock stepped back).
+ * negative: after the clock stepped back). Without it the fork is made on the caller's clock, which stays in place.
  */
 async function parentAndFork(
 	compat: object,
@@ -318,7 +318,9 @@ async function parentAndFork(
 	const forkManager = await (fork.madeByEarlierVersion
 		? parentManager.captureFork(parentManager.getLeafId()!)()
 		: createForkContextResolver(parentManager, "fork").sessionManagerForIndex(0)
-	).finally(() => vi.useRealTimers());
+	).finally(() => {
+		if (clock !== undefined) vi.useRealTimers();
+	});
 	assert.ok(forkManager);
 	if (clock !== undefined) {
 		assert.equal(Date.parse(forkManager.getHeader()!.createdAt), lastReply.message.timestamp + clock);
@@ -775,6 +777,9 @@ describe("a forked subagent continues its parent's cached request", () => {
 		await narrowed.prompt("another follow-up");
 
 		const [, , forkFirst, forkSecond, afterPolicy] = requests.map((request) => request.payload);
+		const dates = (payload: AnthropicPayload) =>
+			new Set(JSON.stringify(payload).match(/(?<=Current date: )\d{4}-\d{2}-\d{2}/g));
+		assert.deepEqual(dates(forkFirst), new Set(["2026-11-20"]), "the fork's first turn is on the first day");
 		assert.ok(extendsRequest(forkFirst, forkSecond), "a reopened fork reuses its whole request");
 		assert.match(added(forkFirst, forkSecond), /2026-11-21/);
 		assert.doesNotMatch(JSON.stringify(afterPolicy.system), /PROJECT_CONTEXT_SENTINEL|PARENT_SKILL_SENTINEL/);
