@@ -10,11 +10,13 @@ import type {
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { BashResult } from "../../../core/bash-executor.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import type { ChatMessageEntry, ChatMessageRenderOptions } from "./chat-message-renderer.ts";
 import type { ChatSteeringTarget } from "./chat-session-host-steering.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
+import type { KeptTaskAction } from "./kept-task.ts";
 import type { sessionPromptsFromEntries } from "./prompt-history-selector.ts";
 import type { AgentTokenMeterSnapshot, WorkingRunSnapshot } from "./working-run-meter.ts";
 
@@ -136,6 +138,8 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	 * transcript. Asked on every render; `undefined` shows nothing.
 	 */
 	transcriptEndBlock?: () => Component | undefined;
+	/** See `ToolExecutionOptions.keptTaskAction`: what this chat offers for a task a call left running. */
+	keptTaskAction?: (taskId: TaskId) => KeptTaskAction | undefined;
 	/** Custom hosts may retain live task rows; interactive subagent chats use footer-only status. */
 	taskRowsInChat?: boolean;
 	echoedInitialPrompt?: string | (() => string | undefined);
