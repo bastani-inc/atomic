@@ -59,6 +59,12 @@ import {
 } from "../recoverable-disconnect.js";
 import { type IntercomHostedSessionTimeoutFields, IntercomHostedSessionTimeoutError } from "../hosted-session-timeout-error.js";
 import { isSocketAnswering } from "./socket-liveness.js";
+import {
+  isReplyRouteVerdict,
+  REPLY_ROUTES_FRAME_MAX,
+  REPLY_ROUTES_TIMEOUT_MS,
+  type ReplyRouteVerdict,
+} from "./reply-routes.js";
 import { IntercomBrokerProtocolError, IntercomRoutingChangedError, IntercomRoutingUnavailableError } from "@bastani/atomic";
 import {
 	BROKER_PROTOCOL,
@@ -485,6 +491,8 @@ export class IntercomClient extends EventEmitter {
 	/** Durable wake queue: the broker of the current registration keeps queued messages across restarts. */
 	private brokerDropsEndedQueued = false;
 	private brokerStampsReleasedChildren = false;
+	/** The broker of this registration answers `reply_routes`, how it would take a reply now. */
+	private brokerAnswersReplyRoutes = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -495,6 +503,8 @@ export class IntercomClient extends EventEmitter {
   private pendingReplyTargets = new Map<string, { messageId: string; bind(sessionId: string): void }>();
   private pendingGroupLists = new Map<string, { resolve: (groups: GroupSummary[]) => void; reject: (error: Error) => void }>();
   private pendingLists = new Map<string, { resolve: (directory: SessionDirectory) => void; reject: (e: Error) => void }>();
+  /** `reply_routes` requests waiting for their answer; one that ends unanswered answers `unknown` for each reply. */
+  private pendingReplyRoutes = new Map<string, (verdicts: readonly ReplyRouteVerdict[] | undefined) => void>();
   private pendingPresence = new Map<string, {
     resolve: (group: string) => void;
     reject: (error: Error) => void;
@@ -591,6 +601,8 @@ export class IntercomClient extends EventEmitter {
     for (const pending of this.pendingMemberships.values()) pending.reject(error);
     for (const pending of this.pendingBrokerStatus.values()) pending.reject(error);
     for (const pending of this.pendingReach.values()) pending.reject(error);
+    for (const pending of this.pendingReplyRoutes.values()) pending(undefined);
+    this.pendingReplyRoutes.clear();
     this.pendingReach.clear();
     this.pendingLists.clear();
     this.pendingGroupLists.clear();
@@ -785,6 +797,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerWakesEndedChildren = false;
         this.brokerDropsEndedQueued = false;
         this.brokerStampsReleasedChildren = false;
+        this.brokerAnswersReplyRoutes = false;
         this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
@@ -929,6 +942,7 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.instanceId !== undefined && typeof brokerMessage.instanceId !== "string")
           || (brokerMessage.dropsEndedQueued !== undefined && brokerMessage.dropsEndedQueued !== true)
           || (brokerMessage.enforcesReach !== undefined && brokerMessage.enforcesReach !== true)
+          || (brokerMessage.answersReplyRoutes !== undefined && brokerMessage.answersReplyRoutes !== true)
           || (brokerMessage.protocol !== undefined && !isBrokerProtocolRange(brokerMessage.protocol as JsonWireValue))) {
           throw new Error("Invalid registered message");
         }
@@ -971,6 +985,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerDropsEndedQueued = brokerMessage.dropsEndedQueued === true;
         if (this.brokerDropsEndedQueued) this.dropToldLost();
         this.brokerStampsReleasedChildren = brokerMessage.stampsReleasedChildren === true;
+        this.brokerAnswersReplyRoutes = brokerMessage.answersReplyRoutes === true;
         this._brokerProtocol = protocolRangeOf(brokerMessage.protocol as BrokerProtocolRange | undefined);
         void this.syncReach().catch(() => {});
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
@@ -1014,6 +1029,16 @@ export class IntercomClient extends EventEmitter {
         }
         const pending = this.pendingReplyTargets.get(attemptId);
         if (pending?.messageId === messageId) pending.bind(sessionId);
+        break;
+      }
+      case "reply_routes": {
+        const { requestId, verdicts } = brokerMessage;
+        if (typeof requestId !== "string" || !Array.isArray(verdicts) || !verdicts.every(isReplyRouteVerdict)) {
+          throw new Error("Invalid reply_routes message");
+        }
+        const pending = this.pendingReplyRoutes.get(requestId);
+        this.pendingReplyRoutes.delete(requestId);
+        pending?.(verdicts);
         break;
       }
       case "sessions": {
@@ -1468,6 +1493,56 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
+  /**
+   * How the broker would take a reply from this session to each of these asks, sent now to the asker named by `to`
+   * (see {@link ReplyRouteVerdict}). Read-only: the broker routes, holds and changes nothing. Asked in frames of at most
+   * {@link REPLY_ROUTES_FRAME_MAX}, all within {@link REPLY_ROUTES_TIMEOUT_MS}: a broker without the query, one that has
+   * not answered by then, or a connection that ends, leaves `unknown` for every reply not answered.
+   */
+  async replyRoutes(
+    replies: readonly { readonly replyTo: string; readonly to: string }[],
+  ): Promise<readonly ReplyRouteVerdict[]> {
+    const verdicts: ReplyRouteVerdict[] = replies.map(() => "unknown");
+    if (!this.brokerAnswersReplyRoutes) return verdicts;
+    const deadline = Date.now() + REPLY_ROUTES_TIMEOUT_MS;
+    for (let start = 0; start < replies.length; start += REPLY_ROUTES_FRAME_MAX) {
+      const frame = replies.slice(start, start + REPLY_ROUTES_FRAME_MAX);
+      const answered = await this.replyRoutesFrame(frame, deadline - Date.now());
+      if (answered === undefined) break;
+      for (const [index, verdict] of answered.entries()) verdicts[start + index] = verdict;
+    }
+    return verdicts;
+  }
+
+  private replyRoutesFrame(
+    replies: readonly { readonly replyTo: string; readonly to: string }[],
+    timeoutMs: number,
+  ): Promise<readonly ReplyRouteVerdict[] | undefined> {
+    const socket = this.socket;
+    if (socket === null || timeoutMs <= 0) return Promise.resolve(undefined);
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        if (this.pendingReplyRoutes.delete(requestId)) resolve(undefined);
+      }, timeoutMs);
+      this.pendingReplyRoutes.set(requestId, (verdicts) => {
+        clearTimeout(timeout);
+        resolve(verdicts?.length === replies.length ? verdicts : undefined);
+      });
+      try {
+        writeMessage(socket, {
+          type: "reply_routes",
+          requestId,
+          replies: replies.map(({ replyTo, to }) => ({ replyTo, to })),
+        });
+      } catch {
+        clearTimeout(timeout);
+        this.pendingReplyRoutes.delete(requestId);
+        resolve(undefined);
+      }
+    });
+  }
+
   async listSessions(group?: string): Promise<SessionInfo[]> {
 	return (await this.listDirectory(group)).sessions;
   }

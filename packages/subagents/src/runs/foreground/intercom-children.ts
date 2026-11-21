@@ -145,6 +145,41 @@ export async function finishedSubagentAsks(
 	});
 }
 
+/**
+ * Intercom asks, at a restart, which of the asks this session holds unanswered came from one of its children that this
+ * restart relaunched and that registered with Intercom again: Intercom then asks the broker whether a reply to each would
+ * still reach it. `completion` resolves to their message ids.
+ */
+export const SUBAGENT_RELAUNCHED_ASKS_EVENT = "subagent:relaunched-asks";
+
+export interface SubagentRelaunchedAsksRequest {
+	readonly ownerSessionId: string;
+	readonly asks: readonly SubagentHeldAsk[];
+	completion?: Promise<readonly string[]>;
+}
+
+/** The ids of `asks` sent by one of `relaunched`, told by its name, run and index. */
+export function relaunchedSubagentAsks(
+	relaunched: readonly SubagentChildRecord[],
+	asks: readonly SubagentHeldAsk[],
+): string[] {
+	return asks.flatMap((ask) => (askingChild(relaunched, ask) === undefined ? [] : [ask.messageId]));
+}
+
+/** Answer Intercom's relaunched-ask requests while `isCurrent` holds, from `relaunched`; returns the unsubscribe. */
+export function answerRelaunchedAskRequests(
+	events: { on(eventName: string, handler: (payload: unknown) => void): () => void },
+	isCurrent: () => boolean,
+	relaunched: (ownerSessionId: string) => readonly SubagentChildRecord[],
+): () => void {
+	return events.on(SUBAGENT_RELAUNCHED_ASKS_EVENT, (payload) => {
+		const request = payload as Partial<SubagentRelaunchedAsksRequest> | null;
+		if (!isCurrent() || !request || request.completion || typeof request.ownerSessionId !== "string") return;
+		if (!Array.isArray(request.asks) || !request.asks.every(isHeldAsk)) return;
+		request.completion = Promise.resolve(relaunchedSubagentAsks(relaunched(request.ownerSessionId), request.asks));
+	});
+}
+
 function isHeldAsk(value: unknown): value is SubagentHeldAsk {
 	const ask = value as Partial<SubagentHeldAsk> | null | undefined;
 	return (

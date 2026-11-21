@@ -190,6 +190,19 @@ export class ReleasedAskerReplies {
 		return undefined;
 	}
 
+	/** Read-only: whether {@link take} would take a route for this reply now. */
+	wouldTake(questionId: string, replierSessionId: string, target: string): boolean {
+		const addressed = target.trim();
+		const now = this.now();
+		return [...(this.byQuestion.get(questionId) ?? [])].some(
+			(entry) =>
+				entry.expiresAt > now &&
+				entry.ownerSessionId !== undefined &&
+				entry.replierSessionId === replierSessionId &&
+				(addressed === entry.askerSessionId || normalizeReservationTarget(addressed) === entry.childKey),
+		);
+	}
+
 	/** #4765: whether an owner holds the route for this question, so the owner is handed its reply or failure. */
 	hasOwnedRoute(question: PendingQuestion): boolean {
 		this.expire();

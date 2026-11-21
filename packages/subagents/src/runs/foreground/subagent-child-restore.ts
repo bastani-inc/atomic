@@ -1316,6 +1316,21 @@ export function restoredChildrenAwaitingIntercom(ownerSessionId: string): Subage
 }
 
 /**
+ * The children of `ownerSessionId` a restoration in this process relaunched and that registered with Intercom again,
+ * once that restoration settled. A restoration still under way names none.
+ */
+export function relaunchedIntercomChildren(ownerSessionId: string): SubagentChildRecord[] {
+	const children: SubagentChildRecord[] = [];
+	for (const restoration of activeRestorations.values()) {
+		const { settled } = restoration;
+		if (restoration.ownerSessionId !== ownerSessionId) continue;
+		if (settled?.kind !== "restored" || settled.intercomLive !== true) continue;
+		children.push(settled.record);
+	}
+	return children;
+}
+
+/**
  * Restore every background child this session launched that had not settled when it was interrupted. A child whose
  * restoration met a failure that passes is left out, as it was, to be resumed.
  */

@@ -135,6 +135,7 @@ import {
   type RefusedReleasedAskerRoute,
   type ReleasedAskerReplyRoute,
 } from "./released-asker-replies.js";
+import { REPLY_ROUTES_FRAME_MAX, type ReplyRouteVerdict, replyRouteVerdict } from "./reply-routes.js";
 import {
   crashPoint,
   DEPARTURE_ASKS_TAKEN,
@@ -930,6 +931,7 @@ class IntercomBroker {
             multiNodeRouting: this.multiNodeStatus,
             protocol: { ...BROKER_PROTOCOL },
             ...(clientMessage.reachPolicy === undefined ? {} : { enforcesReach: true as const }),
+            answersReplyRoutes: true as const,
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -1292,6 +1294,32 @@ class IntercomBroker {
 				writeMessageIfOpen(socket, reply);
 			},
 		});
+        break;
+      }
+
+      case "reply_routes": {
+        const { requestId, replies } = clientMessage;
+        if (
+          typeof requestId !== "string" ||
+          !Array.isArray(replies) ||
+          replies.length > REPLY_ROUTES_FRAME_MAX ||
+          !replies.every(
+            (reply) =>
+              typeof reply === "object" &&
+              reply !== null &&
+              !Array.isArray(reply) &&
+              typeof reply.replyTo === "string" &&
+              typeof reply.to === "string",
+          )
+        ) {
+          throw new Error("Invalid reply_routes message");
+        }
+        const replier = currentId ? this.sessions.get(currentId) : undefined;
+        if (replier === undefined) throw new Error("Session not found");
+        const verdicts = (replies as { replyTo: string; to: string }[]).map(({ replyTo, to }) =>
+          this.replyRouteVerdict(replier.info.id, replyTo, to.trim()),
+        );
+        writeMessageIfOpen(socket, { type: "reply_routes", requestId, verdicts });
         break;
       }
 
@@ -2292,6 +2320,23 @@ class IntercomBroker {
     } catch {
       return "unknown";
     }
+  }
+
+  /**
+   * How this broker would take a reply from `replierId` to the ask `replyTo`, sent now to the session `to` names, as the
+   * send path decides it for a reply that needs its pending question. Read-only.
+   */
+  private replyRouteVerdict(replierId: string, replyTo: string, to: string): ReplyRouteVerdict {
+    const asker = this.sessions.get(to);
+    const childName = asker?.registrationName;
+    return replyRouteVerdict({
+      acrossMachines: this.multiNodeStatus !== "off",
+      keptRouteTakes: this.releasedAskerReplies.wouldTake(replyTo, replierId, to),
+      askerConnected: asker !== undefined,
+      correlated: this.pendingQuestions.matchesReply(replierId, to, replyTo),
+      restoring: this.pendingQuestions.replyWouldWait(to, replierId, replyTo),
+      reservedOrWaking: childName !== undefined && this.restoringRecipients.releasedOwner(childName) !== undefined,
+    });
   }
 
   /**

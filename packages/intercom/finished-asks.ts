@@ -7,7 +7,7 @@ import {
   ReplyTracker,
   restorePendingInboundAsks,
 } from "./reply-tracker.js";
-import { finishedChildAsks } from "./session-recovery.js";
+import { finishedChildAsks, type ReplyRouteVerdict, relaunchedChildAsks } from "./session-recovery.js";
 
 const PREVIEW_CHARS = 120;
 
@@ -59,6 +59,22 @@ function preview(context: IntercomContext): string {
   return text.length > PREVIEW_CHARS ? `${sliceHead(text, PREVIEW_CHARS)}…` : text;
 }
 
+/** The asks this session holds unanswered, as a reopened session restores them; none when its branch cannot be read. */
+export function heldInboundAsks(ctx: Pick<ExtensionContext, "sessionManager">): IntercomContext[] {
+  const pending = new ReplyTracker();
+  try {
+    restorePendingInboundAsks(
+      pending,
+      ctx.sessionManager.getBranch(),
+      ctx.sessionManager.getSessionId(),
+      () => ctx.sessionManager.getSessionRecoveryState?.().answeredInboundIds,
+    );
+  } catch {
+    return [];
+  }
+  return pending.listPending();
+}
+
 /**
  * #6168: after a restart, close the asks this session holds unanswered whose sender is one of its subagents that has
  * ended: no reply can reach them, and they would otherwise stay pending for good. Returns the recovery notice naming
@@ -67,20 +83,9 @@ function preview(context: IntercomContext): string {
 export async function closeFinishedChildAsks(
   pi: AskCloser,
   ctx: Pick<ExtensionContext, "sessionManager">,
+  asks: readonly IntercomContext[] = heldInboundAsks(ctx),
 ): Promise<string[]> {
-  const pending = new ReplyTracker();
   const sessionId = ctx.sessionManager.getSessionId();
-  try {
-    restorePendingInboundAsks(
-      pending,
-      ctx.sessionManager.getBranch(),
-      sessionId,
-      () => ctx.sessionManager.getSessionRecoveryState?.().answeredInboundIds,
-    );
-  } catch {
-    return [];
-  }
-  const asks = pending.listPending();
   const finished = await finishedChildAsks(pi.events, sessionId, asks);
   const closed: IntercomContext[] = [];
   for (const context of asks) {
@@ -98,6 +103,49 @@ export async function closeFinishedChildAsks(
   );
   return [
     `Closed ${closed.length === 1 ? "1 unanswered ask" : `${closed.length} unanswered asks`} from subagents that have ended: no reply can reach ${closed.length === 1 ? "it" : "them"} any more.\n${lines.join("\n")}`,
+  ];
+}
+
+/** How the broker would take a reply to each of these asks; `unknown` for all when it cannot be asked. */
+export type ReplyRouteQuery = (
+  replies: readonly { readonly replyTo: string; readonly to: string }[],
+) => Promise<readonly ReplyRouteVerdict[]>;
+
+/**
+ * After a restart, close the asks this session holds unanswered from a subagent the restart relaunched, when the broker
+ * says a reply to one would be refused now as one no pending question authorizes: the same refusal that closes an ask
+ * when a reply to it is refused (#6168). The relaunched subagent's earlier run asked it, and its route did not come back
+ * with the subagent. An ask whose reply the broker would route, or about which it cannot tell, stays pending. Nothing is
+ * sent to the subagent. A verdict that arrives once `isCurrent` no longer holds closes nothing. Returns the recovery
+ * notice naming the closed asks, if any.
+ */
+export async function closeRelaunchedChildAsks(
+  pi: AskCloser,
+  ctx: Pick<ExtensionContext, "sessionManager">,
+  query: ReplyRouteQuery,
+  isCurrent: () => boolean = () => true,
+  held: readonly IntercomContext[] = heldInboundAsks(ctx),
+): Promise<string[]> {
+  const relaunched = await relaunchedChildAsks(pi.events, ctx.sessionManager.getSessionId(), held);
+  const asks = held.filter((context) => relaunched.has(context.message.id));
+  if (asks.length === 0) return [];
+  const verdicts = await query(asks.map((context) => ({ replyTo: context.message.id, to: context.from.id })));
+  const closed: IntercomContext[] = [];
+  for (const [index, context] of asks.entries()) {
+    if (verdicts[index] !== "refused" || !isCurrent()) continue;
+    try {
+      await recordClosedInboundAsk(pi, context.message.id, "route-expired");
+      closed.push(context);
+    } catch {
+      // Unsaved, the ask stays pending: a refused reply, or the next restart, closes it.
+    }
+  }
+  if (closed.length === 0) return [];
+  const lines = closed.map(
+    (context) => `- ${context.message.id} from \`${context.from.name ?? context.from.id}\`: ${preview(context)}`,
+  );
+  return [
+    `Closed ${closed.length === 1 ? "1 unanswered ask" : `${closed.length} unanswered asks`} from subagents this restart relaunched: Intercom would refuse a reply to ${closed.length === 1 ? "it" : "them"} now, as no question of the relaunched subagent authorizes one, so ${closed.length === 1 ? "it no longer shows" : "they no longer show"} as pending. Send a plain message if a subagent still needs the answer.\n${lines.join("\n")}`,
   ];
 }
 

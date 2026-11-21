@@ -1,3 +1,4 @@
+import type { ReplyRouteVerdict } from "./broker/reply-routes.js";
 import type {
 	IntercomRecipientGoneErrorCode,
 	SerializedIntercomRecipientGoneError,
@@ -265,6 +266,8 @@ export type ClientMessage =
 	/** #3983: the recipient is still saving this message; its sender keeps waiting. Sent only to a broker that advertised `extendsSaves`. */
 	| { type: "saving"; messageId: string }
   | { type: "list"; requestId: string; group?: string }
+	/** How the broker would take a reply from this session, sent now, to each ask. Read-only; to a broker that advertised `answersReplyRoutes`. */
+	| { type: "reply_routes"; requestId: string; replies: { replyTo: string; to: string }[] }
 	| { type: "list_groups"; requestId: string }
 	| { type: "join_group"; requestId: string; group: string }
 	| { type: "leave_group"; requestId: string; group?: string }
@@ -402,6 +405,8 @@ export type BrokerMessage =
 			/** #4538: the wire protocol versions this broker accepts; absent on brokers of protocol 1. */
 			protocol?: { min: number; max: number };
 			enforcesReach?: true;
+			/** The broker answers `reply_routes`. */
+			answersReplyRoutes?: true;
 	  }
   | {
       type: "registration_failed";
@@ -411,6 +416,7 @@ export type BrokerMessage =
     }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[]; restricted?: true }
+  | { type: "reply_routes"; requestId: string; verdicts: ReplyRouteVerdict[] }
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }
 	| { type: "membership_ack"; requestId: string; groups: string[] }
 	| { type: "reach_ack"; requestId: string; reachable: string[]; groups: string[] }

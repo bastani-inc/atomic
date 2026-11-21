@@ -1,3 +1,4 @@
+import type { ReplyRouteVerdict } from "./broker/reply-routes.js";
 import { type PendingRecoveryDelivery, type SessionEntry, type SessionRecoveryReplayResult, sliceHead } from "@bastani/atomic";
 import type { IntercomClient } from "./broker/client.js";
 import { SUBAGENT_ENDED_OUTCOMES, type SubagentEndedOutcome } from "./broker/recipient-gone-errors.js";
@@ -177,8 +178,32 @@ export interface FinishedAsksRequest {
 	completion?: Promise<readonly string[]>;
 }
 
+/**
+ * Intercom asks Subagents which of the asks this session holds unanswered came from one of its children that this
+ * restart relaunched and that registered with Intercom again. Payload: {@link FinishedAsksRequest}.
+ */
+export const SUBAGENT_RELAUNCHED_ASKS_EVENT = "subagent:relaunched-asks";
+
 /** The ids of `asks` whose sender Subagents knows has ended; none without a Subagents extension. */
-export async function finishedChildAsks(
+export function finishedChildAsks(
+	events: { emit(eventName: string, payload: unknown): void },
+	ownerSessionId: string,
+	asks: readonly IntercomContextLike[],
+): Promise<ReadonlySet<string>> {
+	return askSubagentsAbout(SUBAGENT_FINISHED_ASKS_EVENT, events, ownerSessionId, asks);
+}
+
+/** The ids of `asks` whose sender is a child this restart relaunched; none without a Subagents extension. */
+export function relaunchedChildAsks(
+	events: { emit(eventName: string, payload: unknown): void },
+	ownerSessionId: string,
+	asks: readonly IntercomContextLike[],
+): Promise<ReadonlySet<string>> {
+	return askSubagentsAbout(SUBAGENT_RELAUNCHED_ASKS_EVENT, events, ownerSessionId, asks);
+}
+
+async function askSubagentsAbout(
+	eventName: string,
 	events: { emit(eventName: string, payload: unknown): void },
 	ownerSessionId: string,
 	asks: readonly IntercomContextLike[],
@@ -201,7 +226,7 @@ export async function finishedChildAsks(
 		})),
 	};
 	try {
-		events.emit(SUBAGENT_FINISHED_ASKS_EVENT, request);
+		events.emit(eventName, request);
 		return new Set(request.completion ? await request.completion : []);
 	} catch {
 		return new Set();
@@ -217,6 +242,17 @@ interface IntercomContextLike {
 
 /** Lazy-runtime request for the peers this session can reach after it reconnects on resume. */
 export const INTERCOM_RECOVERY_PEERS_EVENT = "intercom:recovery-peers";
+
+export type { ReplyRouteVerdict };
+
+/** Lazy-runtime request: how the broker would take a reply to each of these asks, in order. */
+export const INTERCOM_REPLY_ROUTES_EVENT = "intercom:reply-routes";
+
+export interface IntercomReplyRoutesRequest {
+	/** The ask each reply answers, and the session it would go to: the asker as the ask arrived. */
+	readonly replies: readonly { readonly replyTo: string; readonly to: string }[];
+	completion?: Promise<readonly ReplyRouteVerdict[]>;
+}
 
 const PEER_POLL_INTERVAL_MS = 200;
 const RECOVERED_BODY_MAX_CHARS = 2_000;

@@ -448,6 +448,17 @@ export class PendingQuestionIndex {
     this.answered = listener;
   }
 
+	/**
+	 * Read-only: whether a reply from `replierSessionId` to the ask `messageId` of `senderSessionId` would wait now
+	 * instead of being decided: the ask's write is not confirmed yet (#5252), or either session's routes are still being
+	 * restored (#5101).
+	 */
+	replyWouldWait(senderSessionId: string, replierSessionId: string, messageId: string): boolean {
+		const unconfirmed = this.unconfirmedAsks.get(messageId)?.route;
+		if (unconfirmed?.senderSessionId === senderSessionId && unconfirmed.targetSessionId === replierSessionId) return true;
+		return this.restoring.has(senderSessionId) || this.restoring.has(replierSessionId);
+	}
+
 	/** Authorize only the exact reverse route of a broker-recorded live ask. */
 	matchesReply(senderSessionId: string, targetSessionId: string, replyTo: string): boolean {
 		return (

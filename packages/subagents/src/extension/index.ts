@@ -24,7 +24,11 @@ import {
 } from "@bastani/atomic-tui";
 import { discoverAgents } from "../agents/agents.js";
 import { trackOwnIntercomSession } from "../intercom/own-intercom-session.js";
-import { answerFinishedAskRequests, answerIntercomChildrenRequests } from "../runs/foreground/intercom-children.js";
+import {
+	answerFinishedAskRequests,
+	answerIntercomChildrenRequests,
+	answerRelaunchedAskRequests,
+} from "../runs/foreground/intercom-children.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
 import { bindReleasedChildWakes } from "../runs/foreground/released-child-wakes.js";
 import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
@@ -35,6 +39,7 @@ import {
 	awaitSubagentChildRestoration,
 	holdRunningSubagentChildren,
 	recordReportedGoneSubagentChildren,
+	relaunchedIntercomChildren,
 	releaseEarlyChildHolds,
 	restoredChildrenAwaitingIntercom,
 	restoreSubagentChildren,
@@ -540,6 +545,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		eventUnsubscribes.push(answerIntercomChildrenRequests(pi.events, lifecycle.isCurrent));
 		// Intercom asks which unanswered asks came from a child's attempt that is over (#6168).
 		eventUnsubscribes.push(answerFinishedAskRequests(pi.events, lifecycle.isCurrent));
+		// Intercom asks which unanswered asks came from a child this restart relaunched, to ask the broker about them.
+		eventUnsubscribes.push(answerRelaunchedAskRequests(pi.events, lifecycle.isCurrent, relaunchedIntercomChildren));
 		// Intercom asks which relaunched children have not registered yet before it judges the peers of interrupted deliveries.
 		const unsubscribeRestoredPeers = pi.events.on(SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT, (payload) => {
 			const request = payload as Partial<SubagentRestoredIntercomPeersRequest> | null;

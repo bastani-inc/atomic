@@ -12,7 +12,9 @@ import {
 } from "./session-memberships.js";
 import {
   INTERCOM_RECOVERY_PEERS_EVENT,
+  INTERCOM_REPLY_ROUTES_EVENT,
   type IntercomRecoveryPeersRequest,
+  type IntercomReplyRoutesRequest,
   isAwaitIntercomPeerRequest,
   INTERCOM_CONNECTED_EVENT,
   type IntercomConnectedNotice,
@@ -1511,6 +1513,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const request = payload as IntercomRecoveryPeersRequest;
     if (request.completion) return;
     request.completion = ensureConnected("background").then((activeClient) => activeClient.listSessions());
+  });
+  // A restart asks the broker how it would take a reply to its relaunched subagents' asks; a broker that cannot tell
+  // answers nothing, and every ask then stays pending.
+  pi.events.on(INTERCOM_REPLY_ROUTES_EVENT, (payload) => {
+    if (!payload || typeof payload !== "object") return;
+    const request = payload as IntercomReplyRoutesRequest;
+    if (request.completion || !Array.isArray(request.replies)) return;
+    request.completion = ensureConnected("background").then((activeClient) => activeClient.replyRoutes(request.replies));
   });
   // #3760: the capability was issued to this session's own broker connection, so that connection reserves.
   pi.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {

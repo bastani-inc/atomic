@@ -23,7 +23,10 @@ import {
 	type AwaitIntercomPeerRequest,
 	hasIntercomHistory,
 	INTERCOM_RECOVERY_PEERS_EVENT,
+	INTERCOM_REPLY_ROUTES_EVENT,
 	type IntercomRecoveryPeersRequest,
+	type IntercomReplyRoutesRequest,
+	type ReplyRouteVerdict,
 	awaitRestoredIntercomPeers,
 	isAwaitIntercomPeerRequest,
 	isAcknowledgeReleasedChildWakeRequest,
@@ -53,7 +56,7 @@ import { intercomScriptAccess } from "./codemode-access.js";
 import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema } from "./ask-wait.js";
 import { RETURN_PATH_TOOL_NOTE } from "./group.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
-import { closeFinishedChildAsks } from "./finished-asks.js";
+import { closeFinishedChildAsks, closeRelaunchedChildAsks, heldInboundAsks } from "./finished-asks.js";
 import {
 	createForwardedHandlerMap,
 	createHeavyProxy,
@@ -901,8 +904,34 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			return [];
 		}
 	}
+	/** How the broker would take a reply to each of these asks, asked through the loaded runtime's connection. */
+	async function queryReplyRoutes(
+		ctx: ExtensionContext,
+		replies: readonly { readonly replyTo: string; readonly to: string }[],
+	): Promise<readonly ReplyRouteVerdict[]> {
+		try {
+			const handle = await loadHeavy(ctx);
+			handle.assertCurrent();
+			const forwarded: IntercomReplyRoutesRequest = { replies };
+			await dispatchEventHandlers(handle.heavy, INTERCOM_REPLY_ROUTES_EVENT, forwarded);
+			return forwarded.completion ? await forwarded.completion : replies.map(() => "unknown" as const);
+		} catch {
+			return replies.map(() => "unknown" as const);
+		}
+	}
 	pi.on("session_recovery_restore", async (_event, ctx) => {
-		const closed = await closeFinishedChildAsks(pi, ctx);
+		const generation = lifecycleGeneration;
+		const sessionId = ctx.sessionManager.getSessionId();
+		const isCurrent = () =>
+			lifecycleGeneration === generation && sessionSnapshot?.ctx.sessionManager.getSessionId() === sessionId;
+		const held = heldInboundAsks(ctx);
+		const closed =
+			held.length === 0
+				? []
+				: [
+						...(await closeFinishedChildAsks(pi, ctx, held)),
+						...(await closeRelaunchedChildAsks(pi, ctx, (replies) => queryReplyRoutes(ctx, replies), isCurrent, held)),
+					];
 		const peers = hasIntercomHistory(ctx.sessionManager.getEntries()) ? await recoveryPeers(ctx) : undefined;
 		const taken = ctx.sessionManager.getSessionRecoveryState?.().intercomTakenIds;
 		const notices =
