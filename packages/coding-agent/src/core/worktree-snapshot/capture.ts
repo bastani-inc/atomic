@@ -776,7 +776,8 @@ async function carriedModes(root: string, signal?: AbortSignal): Promise<Readonl
  * the checked-out file as a regular one (#4932). An edit keeps the mode, as Git keeps a tracked entry's mode where it
  * cannot read one from the file; a link's new content is its new target. Files the capture leaves out (`omitted`) keep
  * HEAD's entry. The modes go into a tree of this capture's own, never into the checkout's private index, which every
- * capture of the checkout reads from: `tree` itself when no file gets another mode.
+ * capture of the checkout reads from: `tree` itself when no file gets another mode. `read` is `recorded` when Git read
+ * it to compare, which shows that the repository holds it.
  */
 async function withRecordedModes(
 	root: string,
@@ -784,16 +785,17 @@ async function withRecordedModes(
 	recorded: string | undefined,
 	omitted: ReadonlySet<string>,
 	signal?: AbortSignal,
-): Promise<string> {
-	if (recorded === undefined || recorded === tree) return tree;
+): Promise<{ readonly tree: string; readonly read?: string }> {
+	if (recorded === undefined || recorded === tree) return { tree };
 	const carried = await carriedModes(root, signal);
-	if (carried.size === 0) return tree;
+	if (carried.size === 0) return { tree };
 	// A recorded tree this store no longer holds has no modes to give: Git fails, printing no entries.
 	const diff = await runGit(["diff-tree", "-r", "--raw", "-z", "--no-renames", recorded, tree], {
 		cwd: root,
 		signal,
 		allowExitCodes: [128],
 	});
+	const read = diff.exitCode === 0 ? recorded : undefined;
 	const fields = nulFields(diff.stdout);
 	const entries: string[] = [];
 	for (let index = 0; index + 1 < fields.length; index += 2) {
@@ -803,12 +805,12 @@ async function withRecordedModes(
 			entries.push(`${oldMode} ${newBlob}\t${path}\0`);
 		}
 	}
-	if (entries.length === 0) return tree;
+	if (entries.length === 0) return { tree, read };
 	return withScratchDirectory(async (scratch) => {
 		const git: GitRunOptions = { cwd: root, env: { GIT_INDEX_FILE: join(scratch, "index") }, signal };
 		await runGit(["read-tree", tree], git);
 		await runGit(["update-index", "-z", "--index-info"], { ...git, input: entries.join("") });
-		return gitText(["write-tree"], git);
+		return { tree: await gitText(["write-tree"], git), read };
 	});
 }
 
@@ -1240,10 +1242,8 @@ async function captureCheckout(
 	const read = await readWorkingFiles(checkout, settings, capture, signal, wroteBy);
 	const modeTree = previous?.tree ?? (await restoredTreeOf(capture.gitDir));
 	const omittedPaths = new Set(read.state.omitted.flatMap((omission) => ("path" in omission ? [omission.path] : [])));
-	const state = {
-		...read.state,
-		tree: await withRecordedModes(root, read.state.tree, modeTree, omittedPaths, signal),
-	};
+	const modes = await withRecordedModes(root, read.state.tree, modeTree, omittedPaths, signal);
+	const state = { ...read.state, tree: modes.tree };
 	const pathOmissions = read.omitted;
 	const omissions = pathOmissionKeys(pathOmissions);
 	if (
@@ -1266,7 +1266,8 @@ async function captureCheckout(
 			previous !== undefined &&
 			previous.head === head &&
 			previous.chain.length < settings.fullEvery &&
-			(await objectExists(root, previous.tree, signal));
+			// Comparing modes with the previous tree read it, where the repository does not trust file modes.
+			(modes.read === previous.tree || (await objectExists(root, previous.tree, signal)));
 		const baseTree = incremental
 			? previous.tree
 			: await gitText(["rev-parse", `${head}^{tree}`], { cwd: root, signal });

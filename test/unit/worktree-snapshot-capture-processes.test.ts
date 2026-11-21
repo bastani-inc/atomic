@@ -131,3 +131,31 @@ describe("files staged in your index despite an ignore rule", () => {
 		assert.deepEqual(await treePaths(clone, second.snapshot.tree), [".gitignore", "README.md", "edit.txt"]);
 	});
 });
+
+describe("the tree of the previous snapshot, where Git does not trust file modes", () => {
+	async function cloneWithoutTrustedModes(): Promise<string> {
+		const { clone } = await sandbox.remoteWithClone();
+		await sandbox.git(clone, "config", "core.filemode", "false");
+		return clone;
+	}
+
+	test("is known to exist once the capture read it to compare modes", async () => {
+		const clone = await cloneWithoutTrustedModes();
+		const first = captured(await captureWorktreeSnapshot(clone));
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const trace = sandbox.traceGitProcesses();
+		const second = captured(await captureWorktreeSnapshot(clone, { previous: first.snapshot }));
+		assert.equal(started(trace, "cat-file"), 0);
+		assert.equal(second.snapshot.delta.base, first.snapshot.id);
+	});
+
+	test("that the repository lacks gives a full change set from HEAD", async () => {
+		const clone = await cloneWithoutTrustedModes();
+		const first = captured(await captureWorktreeSnapshot(clone));
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const missing = { ...first.snapshot, tree: "1".repeat(first.snapshot.tree.length) };
+		const second = captured(await captureWorktreeSnapshot(clone, { previous: missing }));
+		assert.equal(second.snapshot.delta.base, "head");
+		assert.equal(second.snapshot.chain.length, 1);
+	});
+});
