@@ -687,11 +687,13 @@ def _install_stop_handlers() -> None:
 
 
 def _install_console_handler(handled: set[int]) -> None:
-    """Ctrl+C, Ctrl+Break, closing the console, logging off or shutting down: cancel the run at once.
+    """Ctrl+C, Ctrl+Break or closing the console: cancel the run at once.
 
     Python runs a signal's handler on the main thread, and only once that thread wakes; on Windows a
     thread waiting for the queries does not wake for a signal. This handler runs on a thread of its
-    own, so the queries stop as soon as the console asks.
+    own, so the queries stop as soon as the console asks. Logging off and shutting down are handled
+    like closing the console when they reach it, but Windows does not send them to a console handler
+    in a process that has loaded user32.dll, as these scripts have.
     """
     import ctypes
     from ctypes import wintypes
