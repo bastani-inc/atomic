@@ -12,6 +12,7 @@ import {
 } from "../helpers/skill-creator-scripts.js";
 import {
 	iteration,
+	openPage,
 	openServedPage,
 	savedFeedback,
 	savedReviews,
@@ -184,7 +185,7 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 					].join("\n"),
 					join(current, ".feedback.json.lock"),
 				],
-				{ stdout: "pipe" },
+				{ cwd: box.dir, env: box.env(), stdout: "pipe" },
 			);
 			viewers.push(holder);
 			assert.equal((await readLine(holder.stdout)).trim(), "held");
@@ -262,6 +263,43 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 		page.press("ArrowLeft");
 		await page.settled();
 		assert.equal(savedFeedback(current).status, "complete");
+		assert.ok(page.doneShown());
+	});
+
+	test("Submit on its way stays the complete review when the page moves to another run before it lands", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+		const url = await startViewer(box, [current]);
+		const page = await openServedPage(url);
+		page.type("the title is missing");
+		page.click("done-btn");
+		page.press("ArrowRight");
+		await page.settled();
+		assert.equal(savedFeedback(current).status, "complete");
+		assert.ok(page.doneShown());
+		// Closing the done dialog goes back to reviewing.
+		page.click("done-close");
+		await page.settled();
+		assert.equal(savedFeedback(current).status, "in_progress");
+	});
+
+	test("a static page downloads the feedback once on Submit, as before, whatever the page does next", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+		const output = join(box.dir, "review.html");
+		const result = spawnSyncCollect([python ?? "python3", viewerScript, current, "--static", output], {
+			cwd: box.dir,
+			env: box.env(),
+		});
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		const page = openPage(readFileSync(output, "utf8"));
+		page.type("the title is missing");
+		page.click("done-btn");
+		page.press("ArrowRight");
+		await page.settled();
+		assert.equal(page.downloads().length, 1);
+		const saved = JSON.parse((await page.downloads()[0]?.text()) ?? "{}") as { status: string };
+		assert.equal(saved.status, "complete");
 		assert.ok(page.doneShown());
 	});
 
@@ -379,9 +417,12 @@ describe.skipIf(!pyyaml)("skill-creator's package_skill", () => {
 			assert.equal(packageSkill(box, output).exitCode, 0);
 			const umask = process.umask();
 			assert.equal(statSync(join(output, "skill.skill")).mode & 0o777, 0o666 & ~umask);
-			chmodSync(join(output, "skill.skill"), 0o640);
-			assert.equal(packageSkill(box, output).exitCode, 0);
-			assert.equal(statSync(join(output, "skill.skill")).mode & 0o777, 0o640);
+			// Permissions the umask would take away from a new file are kept too.
+			for (const mode of [0o640, 0o666]) {
+				chmodSync(join(output, "skill.skill"), mode);
+				assert.equal(packageSkill(box, output).exitCode, 0);
+				assert.equal(statSync(join(output, "skill.skill")).mode & 0o777, mode);
+			}
 		},
 	);
 

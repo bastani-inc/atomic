@@ -74,12 +74,20 @@ export function openPage(html: string, server?: string) {
 	// The page's timers (the feedback box saves 800 ms after typing) run only when the test lets that time pass.
 	const timers = new Map<number, () => void>();
 	let nextTimer = 1;
+	// What the page downloads (a static page's feedback on Submit).
+	const downloads: Blob[] = [];
 	const context = {
 		window,
 		document,
 		console,
 		atob,
-		URL,
+		URL: {
+			createObjectURL: (blob: Blob) => {
+				downloads.push(blob);
+				return `blob:download-${downloads.length}`;
+			},
+			revokeObjectURL: () => undefined,
+		},
 		Blob,
 		globalThis: undefined as unknown,
 		setTimeout: (callback: () => void) => {
@@ -118,6 +126,7 @@ export function openPage(html: string, server?: string) {
 			[...document.querySelectorAll("#notices .notice")]
 				.filter((notice) => !notice.hasAttribute("hidden"))
 				.map((notice) => notice.textContent ?? ""),
+		downloads: () => downloads,
 		doneShown: () => document.getElementById("done-overlay")?.classList.contains("visible") === true,
 		type(value: string) {
 			textarea().value = value;
