@@ -17,6 +17,7 @@ import type {
 	SessionStartEvent,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { interactiveQuitOf } from "./interactive-quit.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { SessionTrustDecisions } from "./project-trust-state.ts";
 import type { AuthStatus } from "./provider-composer.ts";
@@ -141,23 +142,6 @@ function closeFailure(session: AgentSession, failure: Error): AgentRehydrateErro
  * and apply the next runtime. If creation fails, the error is propagated to the
  * caller. The caller is responsible for user-facing error handling.
  */
-/** How the interactive app quits a runtime: `handlerLimitMs` absent leaves the bound to the engine's host. */
-interface InteractiveQuit {
-	readonly handlerLimitMs?: number;
-}
-
-const interactiveQuits = new WeakMap<AgentSessionRuntime, InteractiveQuit>();
-
-/**
- * @internal Makes `runtime`'s `dispose()` quit as the interactive app does, which gives the sessions' `session_shutdown`
- * handlers about five seconds: an extension's `pi.exec` command still running is ended first, and with
- * `handlerLimitMs` the handlers are waited for at most that long from the start of the dispose, as an interactive
- * engine's are before its host ends it. The rest of each session's close still runs and is waited for.
- */
-export function quitAsInteractiveApp(runtime: AgentSessionRuntime, quit: InteractiveQuit = {}): void {
-	interactiveQuits.set(runtime, quit);
-}
-
 export class AgentSessionRuntime {
 	private rebindSession?: (session: AgentSession) => Promise<void>;
 	private beforeSessionInvalidate?: () => void;
@@ -1006,7 +990,7 @@ export class AgentSessionRuntime {
 	dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.closing) return this.closing;
 		this.closed = true;
-		const interactiveQuit = interactiveQuits.get(this);
+		const interactiveQuit = interactiveQuitOf(this);
 		if (interactiveQuit) {
 			const deadline =
 				interactiveQuit.handlerLimitMs === undefined

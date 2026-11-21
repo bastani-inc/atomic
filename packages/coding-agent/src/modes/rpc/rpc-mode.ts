@@ -16,7 +16,8 @@ import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 
 import { bindBundledHintCommands, setKeybindings } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
-import { type AgentSessionRuntime, quitAsInteractiveApp } from "../../core/agent-session-runtime.ts";
+import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { quitAsInteractiveApp } from "../../core/interactive-quit.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
 import { QueuedDeliveryRelay } from "../../core/queued-message-delivery.ts";

@@ -9,14 +9,11 @@ import {
 	waitUntilGone,
 } from "../../../test/helpers/recorded-process.js";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.ts";
-import {
-	AgentSessionRuntime,
-	type CreateAgentSessionRuntimeFactory,
-	quitAsInteractiveApp,
-} from "../src/core/agent-session-runtime.ts";
+import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
 import type { AgentSessionServices } from "../src/core/agent-session-services.ts";
 import type { ExecResult } from "../src/core/exec.ts";
 import type { ExtensionAPI } from "../src/core/extensions/types.ts";
+import { quitAsInteractiveApp } from "../src/core/interactive-quit.ts";
 import { createHarness, type Harness } from "./suite/harness.js";
 
 /**
