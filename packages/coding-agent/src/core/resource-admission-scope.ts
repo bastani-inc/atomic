@@ -1,7 +1,7 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { asyncScope } from "./async-scope.ts";
 import type { ResourceAdmission } from "./sdk-types.ts";
 
-const scope = new AsyncLocalStorage<ResourceAdmission | undefined>();
+const scope = asyncScope<ResourceAdmission | undefined>();
 
 export function withResourceAdmission<T>(admission: ResourceAdmission, callback: () => Promise<T>): Promise<T> {
 	return scope.run(admission, callback);

@@ -72,19 +72,28 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 	});
 
 	// Set up the extension shortcut handler on the default editor
-	this.defaultEditor.onExtensionShortcut = (data: string) => {
+	const find = (data: string) => {
 		for (const [shortcutStr, shortcut] of shortcuts) {
 			// Cast to KeyId - extension shortcuts use the same format
 			if (matchesKey(data, shortcutStr as KeyId) && !shortcut.editorKeys?.some((key) => matchesKey(data, key))) {
-				// Run handler async, don't block input
-				Promise.resolve(shortcut.handler(createContext())).catch((err) => {
-					this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
-				});
-				return true;
+				return shortcut;
 			}
 		}
-		return false;
+		return undefined;
 	};
+	const dispatch = (data: string) => {
+		const shortcut = find(data);
+		if (shortcut === undefined) return false;
+		// Run handler async, don't block input
+		Promise.resolve(shortcut.handler(createContext())).catch((err) => {
+			this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
+		});
+		return true;
+	};
+	// `takes` answers as `dispatch` would, without running the shortcut.
+	this.defaultEditor.onExtensionShortcut = Object.assign(dispatch, {
+		takes: (data: string) => find(data) !== undefined,
+	});
 };
 
 InteractiveModeBase.prototype.setExtensionStatus = function (
@@ -113,11 +122,14 @@ InteractiveModeBase.prototype.createWorkingLoader = function (this: InteractiveM
 };
 
 InteractiveModeBase.prototype.clearWorkingLoader = function (this: InteractiveModeBase): void {
+	const shown = this.loadingAnimation !== undefined;
 	this.loadingAnimation?.stop();
 	this.loadingAnimation = undefined;
 	this.workingIndicatorEmbedded = false;
 	this.setEditorWorkingStatusIndicator?.(undefined);
 	this.statusContainer.clear();
+	// The stopped row no longer asks for frames: without one now, it stays on screen until something else draws.
+	if (shown) this.ui.requestRender();
 };
 
 function stopLoader(mode: InteractiveModeBase): void {
