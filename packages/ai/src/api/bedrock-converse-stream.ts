@@ -485,9 +485,15 @@ function formatBedrockError(error: unknown, connection: ConnectionFailure): stri
 			? `${norm.status}: ${norm.body}`
 			: norm.message;
 	// An answer the SDK has no Bedrock exception for, such as a gateway's 503, names its status, as the other adapters'
-	// errors do, so the retry rules read it; a modeled exception's prefix already says what it is.
+	// errors do, so the retry rules read it; a modeled exception's prefix already says what it is. Only the SDK's error
+	// for the answer this request's latest attempt got, which carries that answer: never a hook's or another value's.
+	const answered = (error as { $response?: unknown } | null)?.$response;
 	const core =
-		norm.status !== undefined && !isModeledBedrockException(error) && !reported.startsWith(`${norm.status}`)
+		norm.status !== undefined &&
+		answered !== undefined &&
+		answered === connection.response &&
+		!isModeledBedrockException(error) &&
+		!new RegExp(`^${norm.status}(?![0-9])`).test(reported)
 			? `${norm.status}: ${reported}`
 			: reported;
 	const dataRetentionHint = /data retention mode/i.test(core)
@@ -510,12 +516,13 @@ function isModeledBedrockException(error: unknown): boolean {
 }
 
 /**
- * What one request's latest attempt failed with at Bedrock's HTTP handler, below every response: the request's own
- * connection failure. Cleared as each attempt starts, so an error a hook, a credential source or a later response
- * throws is never taken for it, even when it is the same object.
+ * What one request's latest attempt got from Bedrock's HTTP handler, below every response: the request's own connection
+ * failure, or the answer it received. Cleared as each attempt starts, so an error a hook, a credential source or a later
+ * response throws is never taken for either, even when it is the same object.
  */
 interface ConnectionFailure {
 	failure?: object;
+	response?: object;
 }
 
 /** A connection error's code, such as `ECONNRESET`, as Node.js and Bun name them. */
@@ -768,8 +775,12 @@ class ProxyHopHttpAgent extends HttpProxyAgent<string> {
 function addTransportFailureMiddleware(client: BedrockRuntimeClient, connection: ConnectionFailure): void {
 	const middleware: DeserializeMiddleware<object, MetadataBearer> = (next) => async (args) => {
 		connection.failure = undefined;
+		connection.response = undefined;
 		try {
-			return await next(args);
+			const result = await next(args);
+			const response: unknown = result.response;
+			if (typeof response === "object" && response !== null) connection.response = response;
+			return result;
 		} catch (error) {
 			const request = args.request as Partial<{ protocol: string; hostname: string; port: number }> | undefined;
 			const failure = request?.hostname

@@ -82,6 +82,8 @@ describe("an Amazon Bedrock answer the SDK has no Bedrock exception for", () => 
 			[500, '{"message":"boom"}', {}, "Unknown: 500: boom"],
 			[429, '{"message":"slow down"}', {}, "Unknown: 429: slow down"],
 			[503, '{"message":"busy","code":"GatewayBusy"}', {}, "GatewayBusy: 503: busy"],
+			// A message that starts with a longer number than the status does not name it.
+			[503, '{"message":"5031 jobs are queued"}', {}, "Unknown: 503: 5031 jobs are queued"],
 			[502, "bad gateway", { "content-type": "text/plain" }, "502: "],
 		] as const) {
 			const endpoint = await answering(status, body, headers);
@@ -126,6 +128,33 @@ describe("an Amazon Bedrock answer the SDK has no Bedrock exception for", () => 
 			);
 			assert.equal(message.errorMessage, expected);
 			assert.equal(isRetryableAssistantError(message), retryable, expected);
+		}
+	});
+
+	it("leaves a hook's error alone though it carries an HTTP status: no answer of Bedrock's was received for it", async () => {
+		const endpoint = await answering(400, '{"message":"bad request"}');
+		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const env = { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" };
+		for (const status of [
+			{ status: 503 },
+			{ status: 429 },
+			{ $metadata: { httpStatusCode: 503 } },
+		] as const) {
+			// Before anything is sent, and after an answer, as another service's SDK error a callback passes on.
+			const failure = Object.assign(new Error("Application preparation stopped"), status);
+			for (const hook of [
+				{ onPayload: async () => Promise.reject(failure) },
+				{ onResponse: async () => Promise.reject(failure) },
+			]) {
+				const message = await streamBedrock({ ...model, baseUrl: endpoint }, context, {
+					cacheRetention: "none",
+					maxRetries: 0,
+					env,
+					...hook,
+				}).result();
+				assert.equal(message.errorMessage, "Application preparation stopped", JSON.stringify(status));
+				assert.equal(isRetryableAssistantError(message), false, JSON.stringify(status));
+			}
 		}
 	});
 });
