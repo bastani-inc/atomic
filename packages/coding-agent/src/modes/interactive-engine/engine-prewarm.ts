@@ -10,8 +10,10 @@ import { availableParallelism } from "node:os";
 import { basename } from "node:path";
 import { ENV_AGENT_DIR, ENV_STARTUP_BENCHMARK, ENV_TIMING, getAgentDir, getEnvValue } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { COMPILE_CACHE_ENGINE_WARMUP_ENV, compileCacheDeferral } from "../../utils/compile-cache.ts";
 import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../../utils/interactive-engine-bootstrap.ts";
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
+import { isPlainInteractiveSessionInvocation } from "../../utils/interactive-invocation.ts";
 import { applyArgumentEnvironment, settingsEnvironmentForEarlyChild } from "../../utils/startup-environment.js";
 import { engineHeapRuntimeArgsForHost } from "./engine-heap.ts";
 
@@ -78,6 +80,8 @@ export function interactiveEngineEnvOverrides(): Record<string, string> {
 	return {
 		...(explicitAgentDir !== undefined ? { [ENV_AGENT_DIR]: explicitAgentDir } : {}),
 		...startupBenchmarkEngineEnv(),
+		// This host warms the engine's cold compile cache too, so the engine leaves it alone like the host.
+		...(compileCacheDeferral() ? { [COMPILE_CACHE_ENGINE_WARMUP_ENV]: "1" } : {}),
 	};
 }
 
@@ -111,19 +115,6 @@ interface Prewarm {
 const PREWARM_KEY = Symbol.for("@bastani/atomic/engine-prewarm");
 const prewarmState = globalThis as typeof globalThis & { [PREWARM_KEY]?: Prewarm };
 
-/** Options and arguments that start something other than the plain interactive session, which has no engine. */
-const NON_INTERACTIVE_FLAGS = new Set([
-	"-p",
-	"--print",
-	"--mode",
-	"-h",
-	"--help",
-	"-v",
-	"--version",
-	"--export",
-	"--list-models",
-]);
-
 /** What decides whether a host prewarms: its terminals and how many CPUs it can load both processes on. */
 export interface PrewarmHost {
 	readonly stdinIsTTY: boolean;
@@ -150,9 +141,7 @@ export function shouldPrewarmInteractiveEngine(
 		cpus: availableParallelism(),
 	},
 ): boolean {
-	if (!host.stdinIsTTY || !host.stdoutIsTTY || host.cpus < 2) return false;
-	if (args.length > 0 && !args[0]!.startsWith("-")) return false;
-	return !args.some((arg) => NON_INTERACTIVE_FLAGS.has(arg) || arg.startsWith("--internal-"));
+	return host.cpus >= 2 && isPlainInteractiveSessionInvocation(args, host);
 }
 
 function setReferenced(child: ChildProcess, referenced: boolean): void {
