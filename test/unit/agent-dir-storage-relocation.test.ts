@@ -1,15 +1,5 @@
 import assert from "node:assert/strict";
-import {
-	cpSync,
-	existsSync,
-	linkSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { cpSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { resolveSessionStore, selectSessionStorage } from "../../packages/coding-agent/src/core/session-storage.js";
@@ -22,6 +12,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/file-identity.js";
 import { collectStorageStatus } from "../../packages/coding-agent/src/core/storage/storage-status.js";
 
+import { moveFolderSync } from "../helpers/folder-move.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 let root: string;
@@ -239,7 +230,7 @@ test.each(["rename", "copy-then-remove"])(
 			await own.close();
 		}
 		if (move === "rename") {
-			renameSync(clone, moved);
+			moveFolderSync(clone, moved);
 		} else {
 			cpSync(clone, moved, { recursive: true });
 			rmSync(clone, { recursive: true });
@@ -308,7 +299,7 @@ test.each([
 		cpSync(original, moved, { recursive: true });
 		rmSync(original, { recursive: true });
 		const current = join(moved, "main");
-		renameSync(join(moved, "a1"), current);
+		moveFolderSync(join(moved, "a1"), current);
 		const links = join(root, "links");
 		const opened = variant.endsWith("-via-junction") ? join(links, "main") : current;
 		if (variant.endsWith("-via-junction")) {
@@ -385,7 +376,7 @@ test.each(["direct", "via-junction"])(
 		rmSync(original, { recursive: true });
 		const current = join(moved, "main");
 		const backup = join(moved, "main-backup");
-		renameSync(join(moved, "a1"), current);
+		moveFolderSync(join(moved, "a1"), current);
 		cpSync(current, backup, { recursive: true });
 		const links = join(root, "links");
 		const openedBackup = mode === "via-junction" ? join(links, "main-backup") : backup;
@@ -441,7 +432,7 @@ test.each(["move", "share"])(
 		useHome(original);
 		assert.equal(defaultSessionDatabasePath(undefined, {}), join(original, ".atomic", "workflows", "journal.sqlite"));
 		if (operation === "move") {
-			renameSync(original, current);
+			moveFolderSync(original, current);
 		} else {
 			mkdirSync(join(current, ".atomic"), { recursive: true });
 			symlinkSync(originalAgent, join(current, ".atomic", "agent"), "junction");
@@ -546,7 +537,7 @@ test.each(["owner-first", "sibling-first"])(
 		mkdirSync(join(original, "workflows"));
 		writeFileSync(join(original, "workflows", "journal.sqlite"), "");
 		assert.equal(defaultSessionDatabasePath(agent, {}), join(original, "workflows", "journal.sqlite"));
-		renameSync(original, moved);
+		moveFolderSync(original, moved);
 		const current = join(moved, "agent");
 		const sibling = join(moved, "sibling");
 		mkdirSync(sibling);
@@ -578,7 +569,7 @@ test.each(["rename", "copy"])(
 			join(original, "workflows", "journal.sqlite"),
 		);
 		assert.equal(storagePathBaseDir("history.sqlite", join(original, "agent"), settings), original);
-		if (operation === "rename") renameSync(original, moved);
+		if (operation === "rename") moveFolderSync(original, moved);
 		else {
 			cpSync(original, moved, { recursive: true, filter: (source) => source !== join(original, "agent") });
 			symlinkSync(physical, join(moved, "agent"), "junction");
@@ -656,14 +647,14 @@ test.each([
 		delete owner.legacyTargets;
 		writeFileSync(claim, JSON.stringify(owner));
 	}
-	if (operation === "rename-then-move") renameSync(agent, join(original, "main"));
+	if (operation === "rename-then-move") moveFolderSync(agent, join(original, "main"));
 	const beforeMove = JSON.parse(readFileSync(join(original, ".atomic-storage-parent-owner"), "utf8")) as {
 		path: string;
 		legacyTargets?: readonly string[];
 	};
 	cpSync(original, moved, { recursive: true });
 	rmSync(original, { recursive: true });
-	if (operation.startsWith("move-then-rename")) renameSync(join(moved, "a1"), join(moved, "main"));
+	if (operation.startsWith("move-then-rename")) moveFolderSync(join(moved, "a1"), join(moved, "main"));
 	resetStorageHomeCacheForTests();
 	const current = join(moved, operation.includes("rename") ? "main" : "a1");
 	if (operation === "move-then-rename-with-target-alias") {
@@ -761,7 +752,7 @@ test.each(["copy-before-rename", "copy-after-rename", "copy-to-old-name"])(
 		await seeded.close();
 		assert.equal(defaultSessionDatabasePath(original, {}), join(parent, "workflows", "journal.sqlite"));
 		if (operation === "copy-before-rename") cpSync(original, clone, { recursive: true });
-		renameSync(original, renamed);
+		moveFolderSync(original, renamed);
 		if (operation !== "copy-before-rename") cpSync(renamed, clone, { recursive: true });
 		mkdirSync(sibling);
 		resetStorageHomeCacheForTests();
@@ -798,7 +789,7 @@ test.each(["backup", "old-name"])(
 		const current = join(moved, "a1");
 		assert.equal(defaultSessionDatabasePath(current, {}), join(moved, "workflows", "journal.sqlite"));
 		const renamed = join(moved, "main");
-		renameSync(current, renamed);
+		moveFolderSync(current, renamed);
 		resetStorageHomeCacheForTests();
 		assert.equal(defaultSessionDatabasePath(renamed, {}), join(moved, "workflows", "journal.sqlite"));
 		const clone = join(moved, copy === "old-name" ? "a1" : "main-backup");
@@ -1001,8 +992,8 @@ test("absolute adoption records recover the moved parent and renamed owner witho
 		JSON.stringify({ path: agent, identity: fileIdentity(decision), homeIdentity: true }),
 	);
 	writeFileSync(join(original, "workflows", ".adopted-by"), `${agent}\n`);
-	renameSync(original, moved);
-	renameSync(join(moved, "original-agent"), renamed);
+	moveFolderSync(original, moved);
+	moveFolderSync(join(moved, "original-agent"), renamed);
 	mkdirSync(agent, { recursive: true });
 	mkdirSync(join(moved, "sibling"));
 	assert.equal(

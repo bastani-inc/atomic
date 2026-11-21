@@ -66,8 +66,11 @@ import { bunExecutable } from "./cli-test-helpers.ts";
 
 /** Room for a node or bash process to start and finish on a loaded machine. */
 const ACTION_TIMEOUT_MS = 60_000;
-/** The budget of an action that never finishes: enough for node to start, so its pid file exists when it expires. */
-const HANG_TIMEOUT_MS = 4_000;
+/**
+ * The budget of an action that never finishes. The clock never ends it: {@link expireBudgetOnceStarted} makes it run
+ * out once the action has started, however long a loaded machine takes to fetch and start it.
+ */
+const HANG_TIMEOUT_MS = 60 * 60 * 1_000;
 /** A Bun child loads this module graph and runs two actions: a real child process, not a slow test. */
 const BUN_PROBE_TIMEOUT_MS = 120_000;
 /** The budget of a step that only has to expire: long enough for bash to have started, short enough not to wait. */
@@ -241,6 +244,51 @@ function startRun(uses: string, options: RunOptions = {}): StartedRun {
 		}
 	})();
 	return { logPath, result };
+}
+
+/**
+ * Makes the budget of the run about to start run out once `started` exists, which the action writes as it starts,
+ * rather than once {@link HANG_TIMEOUT_MS} has passed. The timer a run arms for what is left of that budget is the only
+ * one longer than half of it; every other timer is armed as asked. Returns a restore for the timer functions.
+ */
+function expireBudgetOnceStarted(started: string): () => void {
+	const realSetTimeout = globalThis.setTimeout;
+	const realClearTimeout = globalThis.clearTimeout;
+	const budgets: { readonly standIn: NodeJS.Timeout; cleared: boolean; watch?: NodeJS.Timeout }[] = [];
+	globalThis.setTimeout = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
+		if (typeof timeout !== "number" || timeout <= HANG_TIMEOUT_MS / 2)
+			return realSetTimeout(handler, timeout, ...args);
+		const budget: (typeof budgets)[number] = {
+			standIn: realSetTimeout(() => undefined, 2 ** 31 - 1),
+			cleared: false,
+		};
+		budget.standIn.unref();
+		budgets.push(budget);
+		const look = () => {
+			if (budget.cleared) return;
+			if (existsSync(started)) handler(...args);
+			else budget.watch = realSetTimeout(look, 20);
+		};
+		look();
+		return budget.standIn;
+	}) as typeof setTimeout;
+	globalThis.clearTimeout = ((timer?: NodeJS.Timeout | string | number) => {
+		const budget = budgets.find((entry) => entry.standIn === timer);
+		if (budget !== undefined) {
+			budget.cleared = true;
+			realClearTimeout(budget.watch);
+		}
+		realClearTimeout(timer);
+	}) as typeof clearTimeout;
+	return () => {
+		globalThis.setTimeout = realSetTimeout;
+		globalThis.clearTimeout = realClearTimeout;
+		for (const budget of budgets) {
+			budget.cleared = true;
+			realClearTimeout(budget.watch);
+			realClearTimeout(budget.standIn);
+		}
+	};
 }
 
 function readText(path: string): string {
@@ -1220,8 +1268,14 @@ describe("how an action ends", () => {
 		commitNodeAction("acme/hang", hang);
 		const pidFile = join(fixture.root, "hang.pid");
 
-		const exit = await startRun("github.com/acme/hang@v1", { env: { PID_FILE: pidFile }, timeoutMs: HANG_TIMEOUT_MS })
-			.result;
+		const restore = expireBudgetOnceStarted(pidFile);
+		let exit: ProcessExit;
+		try {
+			exit = await startRun("github.com/acme/hang@v1", { env: { PID_FILE: pidFile }, timeoutMs: HANG_TIMEOUT_MS })
+				.result;
+		} finally {
+			restore();
+		}
 
 		assert.equal(exit.timedOut, true);
 		assert.notEqual(exit.exitStatus, 0);
