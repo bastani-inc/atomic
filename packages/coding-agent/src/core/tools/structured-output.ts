@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
-import { type Static, type TSchema, Type } from "typebox";
+import { type Static, type TSchema, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { defineTool, type ToolDefinition } from "../extensions/types.ts";
 import { resolveDecisionDeadlineMs, validateTimeoutOverride } from "../structured-output/deadline.js";
 
