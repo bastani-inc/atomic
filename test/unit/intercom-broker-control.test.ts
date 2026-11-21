@@ -39,10 +39,16 @@ import { recordProcess, signalRecordedProcess, stillRuns } from "../helpers/reco
  * multi-node line to `broker.log` either way.
  */
 
-/** A broker start, readiness, shutdown and multi-node opening on a local SQLite file; far above a healthy run. */
-const BROKER_WAIT_MS = 15_000;
-/** Each scenario starts and stops real broker processes. */
-const BROKER_SCENARIO_TIMEOUT_MS = 60_000;
+/**
+ * A broker start, readiness, shutdown and multi-node opening on a local SQLite file; far above a healthy run. A start
+ * compiles the broker, which has taken more than 15 s on a loaded Windows machine; other real-broker tests allow 30 s too.
+ */
+const BROKER_WAIT_MS = 30_000;
+/**
+ * Each scenario starts and stops real broker processes, up to two starts and a stop in one, and on Windows keeping a pid
+ * starts PowerShell, which can take about 20 s on a loaded machine.
+ */
+const BROKER_SCENARIO_TIMEOUT_MS = 120_000;
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
@@ -346,7 +352,11 @@ test(
 			after = exited(before).then(() => startBroker(fixture));
 		});
 		const progress: string[] = [];
-		const outcome = await restartIntercomBroker(fixture.agentDir, { onProgress: (line) => progress.push(line) });
+		// The new broker starts as this test's own do, which can take longer than a session's reconnect is waited for.
+		const outcome = await restartIntercomBroker(fixture.agentDir, {
+			onProgress: (line) => progress.push(line),
+			reconnectTimeoutMs: BROKER_WAIT_MS,
+		});
 		const replacement = await after;
 		assert.ok(replacement?.pid !== undefined);
 		assert.equal(outcome.status, "restarted");
