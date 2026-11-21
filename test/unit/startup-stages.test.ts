@@ -62,14 +62,14 @@ interface ChildReport {
 	readonly total: number;
 }
 
-function runChild(mode: "staged" | "natural"): ChildReport {
+function runChild(mode: "staged" | "natural", nodeOptions = ""): ChildReport {
 	const dir = makeTempDirectory("atomic-startup-stages-");
 	dirs.push(dir);
 	const script = join(dir, "child.mjs");
 	writeFileSync(script, CHILD);
 	const report = join(dir, "report.json");
 	const result = spawnSyncCollect([process.execPath, script, pathToFileURL(`${DIST}/`).href, mode, report], {
-		env: { ...process.env, NODE_OPTIONS: "" },
+		env: { ...process.env, NODE_OPTIONS: nodeOptions },
 		timeout: WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
 	});
 	assert.equal(result.exitCode, 0, result.stderr.toString());
@@ -99,6 +99,19 @@ describe("startup stages", () => {
 			assert.ok(staged.ranWhenTimerFired < staged.total, "a timer ran while the modules loaded");
 		},
 		2 * WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
+	);
+
+	test(
+		"no stages load in a process with a preload, which could resolve each importer's modules its own way",
+		() => {
+			const dir = makeTempDirectory("atomic-startup-stages-preload-");
+			dirs.push(dir);
+			const preload = join(dir, "preload.mjs");
+			writeFileSync(preload, "");
+			const staged = runChild("staged", `--import ${JSON.stringify(pathToFileURL(preload).href)}`);
+			assert.equal(staged.ranWhenTimerFired, staged.total, "no turn of the event loop while the modules loaded");
+		},
+		WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
 	);
 
 	test(
