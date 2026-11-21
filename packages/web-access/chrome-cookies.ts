@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { Worker } from "node:worker_threads";
 import { createChildProcessEnvironment } from "@bastani/atomic";
+import { findHelperExecutableAsync } from "@bastani/atomic-tui";
 import { pathExists } from "./path-exists.js";
 
 const pbkdf2Async = promisify(pbkdf2);
@@ -191,10 +192,12 @@ function readBrowserPassword(
 	return Promise.resolve(null);
 }
 
-function readKeychainPassword(account: string, service: string): Promise<string | null> {
+async function readKeychainPassword(account: string, service: string): Promise<string | null> {
+	const security = await findHelperExecutableAsync("security");
+	if (security === undefined) return null;
 	return new Promise((resolve) => {
 		execFile(
-			"security",
+			security,
 			["find-generic-password", "-w", "-a", account, "-s", service],
 			{ timeout: 5000, env: createChildProcessEnvironment() },
 			(err, stdout) => {
@@ -205,12 +208,15 @@ function readKeychainPassword(account: string, service: string): Promise<string 
 	});
 }
 
-function readLinuxPassword(secretToolApp: string | undefined): Promise<string> {
-	if (!secretToolApp) return Promise.resolve("peanuts");
+async function readLinuxPassword(secretToolApp: string | undefined): Promise<string> {
+	if (!secretToolApp) return "peanuts";
+	const secretTool = await findHelperExecutableAsync("secret-tool");
+	// Without secret-tool, as when it fails: KDE Wallet users fall through to peanuts intentionally.
+	if (secretTool === undefined) return "peanuts";
 
 	return new Promise((resolve) => {
 		execFile(
-			"secret-tool",
+			secretTool,
 			["lookup", "application", secretToolApp],
 			{ timeout: 5000, env: createChildProcessEnvironment() },
 			(err, stdout) => {

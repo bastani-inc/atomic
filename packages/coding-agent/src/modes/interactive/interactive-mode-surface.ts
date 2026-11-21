@@ -342,6 +342,11 @@ declare module "./interactive-mode-base.ts" {
 		openExternalEditor(): Promise<void>;
 		clearEditor(): void;
 		showError(errorMessage: string): void;
+		/**
+		 * Show one of a series of identical failures: a row of its own, or, while only such rows follow that series' row,
+		 * that row again with how many there were.
+		 */
+		showRepeatedError(errorMessage: string, series: object): void;
 		showWarning(warningMessage: string, targetContainer?: Container): void;
 		showNewVersionNotification(newVersion: string, targetContainer?: Container): void;
 		showPackageUpdateNotification(packages: string[], targetContainer?: Container): void;

@@ -8,6 +8,15 @@ import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import psFixtures from "./fixtures/ps-lstart.json" with { type: "json" };
 
+// The simulated platform's programs are the mocked child processes, so every helper is found under its own name.
+vi.mock("../src/utils/helper-command.ts", () => ({
+	findHelperExecutable: (name: string) => name,
+	findHelperExecutableAsync: async (name: string) => name,
+	helperLaunch: (name: string) => ({ file: name }),
+	helperLaunchAsync: async (name: string) => ({ file: name }),
+	missingHelperOptions: () => ({}),
+}));
+
 vi.mock("node:child_process", async (original) => {
 	const actual = await original<typeof childProcess>();
 	return { ...actual, execFile: vi.fn(actual.execFile) };
