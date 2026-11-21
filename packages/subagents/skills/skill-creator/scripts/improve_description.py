@@ -2,49 +2,52 @@
 """Improve a skill description based on eval results.
 
 Takes eval results (from run_eval.py) and generates an improved description
-by calling `claude -p` as a subprocess (same auth pattern as run_eval.py —
-uses the session's Claude Code auth, no separate ANTHROPIC_API_KEY needed).
+by running `atomic -p` with no tools (same models and credentials as your
+Atomic sessions, no separate API key needed).
 """
 
 import argparse
 import json
-import os
 import re
-import subprocess
+import shutil
 import sys
+import tempfile
+import time
 from pathlib import Path
 
+from scripts.atomic_cli import ISOLATED_RUN, AtomicProcess, Cancellation, Owner, run_main
 from scripts.utils import parse_skill_md
 
 
-def _call_claude(prompt: str, model: str | None, timeout: int = 300) -> str:
-    """Run `claude -p` with the prompt on stdin and return the text response.
+def _call_atomic(prompt: str, model: str | None, timeout: int = 300, cancellation: Cancellation | None = None) -> str:
+    """Run `atomic -p` with the prompt on stdin and return the text response.
 
     Prompt goes over stdin (not argv) because it embeds the full SKILL.md
     body and can easily exceed comfortable argv length.
     """
-    cmd = ["claude", "-p", "--output-format", "text"]
+    arguments = ["-p", *ISOLATED_RUN, "--no-tools"]
     if model:
-        cmd.extend(["--model", model])
+        arguments.extend(["--model", model])
 
-    # Remove CLAUDECODE env var to allow nesting claude -p inside a
-    # Claude Code session. The guard is for interactive terminal conflicts;
-    # programmatic subprocess usage is safe. Same pattern as run_eval.py.
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-
-    result = subprocess.run(
-        cmd,
-        input=prompt,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=timeout,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"claude -p exited {result.returncode}\nstderr: {result.stderr}"
-        )
-    return result.stdout
+    cancellation = cancellation or Cancellation()
+    deadline_ns = time.monotonic_ns() + timeout * 1_000_000_000
+    with Owner():
+        cancellation.check()
+        folder = Path(tempfile.mkdtemp(prefix="skill-improve-"))
+        try:
+            with AtomicProcess(arguments, prompt, None, folder / "atomic.log", cancellation) as atomic:
+                try:
+                    output = b"".join(atomic.lines(deadline_ns))
+                    status = atomic.wait_for_exit(deadline_ns)
+                except TimeoutError:
+                    status = None
+                if status is None:
+                    raise TimeoutError(f"atomic -p timed out after {timeout}s")
+                if status != 0:
+                    raise RuntimeError(f"atomic -p exited {status}\nstderr: {atomic.stderr_tail()}")
+            return output.decode("utf-8", errors="replace")
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 def improve_description(
@@ -57,8 +60,9 @@ def improve_description(
     test_results: dict | None = None,
     log_dir: Path | None = None,
     iteration: int | None = None,
+    cancellation: Cancellation | None = None,
 ) -> str:
-    """Call Claude to improve the description based on eval results."""
+    """Ask the model to improve the description based on eval results."""
     failed_triggers = [
         r for r in eval_results["results"]
         if r["should_trigger"] and not r["pass"]
@@ -76,9 +80,9 @@ def improve_description(
     else:
         scores_summary = f"Train: {train_score}"
 
-    prompt = f"""You are optimizing a skill description for a Claude Code skill called "{skill_name}". A "skill" is sort of like a prompt, but with progressive disclosure -- there's a title and description that Claude sees when deciding whether to use the skill, and then if it does use the skill, it reads the .md file which has lots more details and potentially links to other resources in the skill folder like helper files and scripts and additional documentation or examples.
+    prompt = f"""You are optimizing a skill description for an Atomic skill called "{skill_name}". A "skill" is sort of like a prompt, but with progressive disclosure -- there's a title and description that the model sees when deciding whether to use the skill, and then if it does use the skill, it reads the .md file which has lots more details and potentially links to other resources in the skill folder like helper files and scripts and additional documentation or examples.
 
-The description appears in Claude's "available_skills" list. When a user sends a query, Claude decides whether to invoke the skill based solely on the title and on this description. Your goal is to write a description that triggers for relevant queries, and doesn't trigger for irrelevant ones.
+The description appears in the model's "available_skills" list. When a user sends a query, the model decides whether to read the skill based solely on the title and on this description. Your goal is to write a description that triggers for relevant queries, and doesn't trigger for irrelevant ones.
 
 Here's the current description:
 <current_description>
@@ -134,14 +138,14 @@ Concretely, your description should not be more than about 100-200 words, even i
 Here are some tips that we've found to work well in writing these descriptions:
 - The skill should be phrased in the imperative -- "Use this skill for" rather than "this skill does"
 - The skill description should focus on the user's intent, what they are trying to achieve, vs. the implementation details of how the skill works.
-- The description competes with other skills for Claude's attention — make it distinctive and immediately recognizable.
+- The description competes with other skills for the model's attention — make it distinctive and immediately recognizable.
 - If you're getting lots of failures after repeated attempts, change things up. Try different sentence structures or wordings.
 
 I'd encourage you to be creative and mix up the style in different iterations since you'll have multiple opportunities to try different approaches and we'll just grab the highest-scoring one at the end. 
 
 Please respond with only the new description text in <new_description> tags, nothing else."""
 
-    text = _call_claude(prompt, model)
+    text = _call_atomic(prompt, model, cancellation=cancellation)
 
     match = re.search(r"<new_description>(.*?)</new_description>", text, re.DOTALL)
     description = match.group(1).strip().strip('"') if match else text.strip().strip('"')
@@ -158,7 +162,7 @@ Please respond with only the new description text in <new_description> tags, not
     # Safety net: the prompt already states the 1024-char hard limit, but if
     # the model blew past it anyway, make one fresh single-turn call that
     # quotes the too-long version and asks for a shorter rewrite. (The old
-    # SDK path did this as a true multi-turn; `claude -p` is one-shot, so we
+    # SDK path did this as a true multi-turn; `atomic -p` is one-shot, so we
     # inline the prior output into the new prompt instead.)
     if len(description) > 1024:
         shorten_prompt = (
@@ -171,7 +175,7 @@ Please respond with only the new description text in <new_description> tags, not
             f"important trigger words and intent coverage. Respond with only "
             f"the new description in <new_description> tags."
         )
-        shorten_text = _call_claude(shorten_prompt, model)
+        shorten_text = _call_atomic(shorten_prompt, model, cancellation=cancellation)
         match = re.search(r"<new_description>(.*?)</new_description>", shorten_text, re.DOTALL)
         shortened = match.group(1).strip().strip('"') if match else shorten_text.strip().strip('"')
 
@@ -196,7 +200,7 @@ def main():
     parser.add_argument("--eval-results", required=True, help="Path to eval results JSON (from run_eval.py)")
     parser.add_argument("--skill-path", required=True, help="Path to skill directory")
     parser.add_argument("--history", default=None, help="Path to history JSON (previous attempts)")
-    parser.add_argument("--model", required=True, help="Model for improvement")
+    parser.add_argument("--model", required=True, help="Atomic model pattern for the improvement, e.g. provider/id")
     parser.add_argument("--verbose", action="store_true", help="Print thinking to stderr")
     args = parser.parse_args()
 
@@ -205,10 +209,10 @@ def main():
         print(f"Error: No SKILL.md found at {skill_path}", file=sys.stderr)
         sys.exit(1)
 
-    eval_results = json.loads(Path(args.eval_results).read_text())
+    eval_results = json.loads(Path(args.eval_results).read_text(encoding="utf-8"))
     history = []
     if args.history:
-        history = json.loads(Path(args.history).read_text())
+        history = json.loads(Path(args.history).read_text(encoding="utf-8"))
 
     name, _, content = parse_skill_md(skill_path)
     current_description = eval_results["description"]
@@ -244,4 +248,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_main(main)
