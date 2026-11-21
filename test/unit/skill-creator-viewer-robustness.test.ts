@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import { removeTempDirectory, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
@@ -300,12 +310,12 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 			await page.release();
 			assert.equal(page.waiting(), 1, "the later save waits");
 			assert.ok(!page.doneShown(), "not done while a later save waits");
-			// Nothing can be written in the workspace when the later save arrives.
-			chmodSync(current, 0o555);
+			// feedback.json cannot be written when the later save arrives.
+			chmodSync(join(current, "feedback.json"), 0o444);
 			try {
 				await page.release();
 			} finally {
-				chmodSync(current, 0o755);
+				chmodSync(join(current, "feedback.json"), 0o644);
 			}
 			assert.ok(!page.doneShown(), "not done when the latest save failed");
 			assert.ok(
@@ -326,13 +336,13 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 			page.click("done-btn");
 			await page.settled();
 			assert.ok(page.doneShown());
-			chmodSync(current, 0o555);
+			chmodSync(join(current, "feedback.json"), 0o444);
 			try {
 				// A key behind the dialog moves to the next run, saving the review again.
 				page.press("ArrowRight");
 				await page.settled();
 			} finally {
-				chmodSync(current, 0o755);
+				chmodSync(join(current, "feedback.json"), 0o644);
 			}
 			assert.ok(!page.doneShown());
 			assert.ok(
@@ -390,16 +400,17 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 		async () => {
 			const box = sandbox();
 			const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+			// An empty feedback.json, as if none were saved, that cannot be written for a moment.
+			writeFileSync(join(current, "feedback.json"), "");
 			const url = await startViewer(box, [current]);
 			const page = await openServedPage(url);
-			// Nothing can be written in the workspace for a moment.
-			chmodSync(current, 0o555);
+			chmodSync(join(current, "feedback.json"), 0o444);
 			try {
 				page.type("the title is missing");
 				page.press("ArrowRight");
 				await page.settled();
 			} finally {
-				chmodSync(current, 0o755);
+				chmodSync(join(current, "feedback.json"), 0o644);
 			}
 			assert.ok(
 				page.notices().some((notice) => /^Not saved: /u.test(notice)),
@@ -435,6 +446,59 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 		);
 		assert.deepEqual(keptCopies(previous), []);
 	});
+
+	test("an empty feedback.json, or one with no reviews, is no feedback: no notice, no copy, and a save replaces it", async () => {
+		const box = sandbox();
+		for (const [index, content] of ["", " \n", "{}"].entries()) {
+			const current = iteration(box, `iteration-${index}`, ["eval-1", "eval-2"]);
+			writeFileSync(join(current, "feedback.json"), content);
+			const url = await startViewer(box, [current]);
+			const page = await openServedPage(url);
+			assert.deepEqual(page.notices(), [], JSON.stringify(content));
+			assert.deepEqual(keptCopies(current), []);
+			page.type("the title is missing");
+			page.press("ArrowRight");
+			await page.settled();
+			assert.deepEqual(savedReviews(current), [{ run_id: "eval-1-with_skill", feedback: "the title is missing" }]);
+		}
+	});
+
+	test.skipIf(windows)("a feedback.json that is a link is saved through it, to the file it links to", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+		mkdirSync(join(box.dir, "shared"));
+		writeFileSync(join(box.dir, "shared", "feedback.json"), JSON.stringify({ reviews: [] }));
+		symlinkSync(join("..", "shared", "feedback.json"), join(current, "feedback.json"));
+		const url = await startViewer(box, [current]);
+		const page = await openServedPage(url);
+		page.type("the title is missing");
+		page.press("ArrowRight");
+		await page.settled();
+		assert.ok(lstatSync(join(current, "feedback.json")).isSymbolicLink());
+		assert.deepEqual(savedReviews(join(box.dir, "shared")), [
+			{ run_id: "eval-1-with_skill", feedback: "the title is missing" },
+		]);
+	});
+
+	test.skipIf(windows || process.getuid?.() === 0)(
+		"a writable feedback.json in a folder that cannot take new files is saved in place, as before",
+		async () => {
+			const box = sandbox();
+			const current = iteration(box, "iteration-1", ["eval-1", "eval-2"], []);
+			const url = await startViewer(box, [current]);
+			const page = await openServedPage(url);
+			chmodSync(current, 0o555);
+			try {
+				page.type("the title is missing");
+				page.press("ArrowRight");
+				await page.settled();
+			} finally {
+				chmodSync(current, 0o755);
+			}
+			assert.deepEqual(page.notices(), []);
+			assert.deepEqual(savedReviews(current), [{ run_id: "eval-1-with_skill", feedback: "the title is missing" }]);
+		},
+	);
 
 	test("a run's prompt is read from a transcript.md with Windows line endings, as before", async () => {
 		const box = sandbox();
@@ -529,6 +593,80 @@ describe.skipIf(!pyyaml)("skill-creator's package_skill", () => {
 			}
 		},
 	);
+
+	test.skipIf(windows)("a .skill path that is a link is written through it, to the file it links to", () => {
+		const box = sandbox();
+		const output = join(box.dir, "dist");
+		mkdirSync(output);
+		mkdirSync(join(box.dir, "elsewhere"));
+		symlinkSync(join("..", "elsewhere", "skill.skill"), join(output, "skill.skill"));
+		assert.equal(packageSkill(box, output).exitCode, 0);
+		assert.ok(lstatSync(join(output, "skill.skill")).isSymbolicLink());
+		assert.equal(
+			readFileSync(join(box.dir, "elsewhere", "skill.skill"))
+				.subarray(0, 2)
+				.toString(),
+			"PK",
+		);
+	});
+
+	test.skipIf(windows || process.getuid?.() === 0)(
+		"a .skill file in a folder that cannot take new files is written in place, and a read-only one is refused, as before",
+		() => {
+			const box = sandbox();
+			const output = join(box.dir, "dist");
+			mkdirSync(output);
+			writeFileSync(join(output, "skill.skill"), "an earlier archive");
+			chmodSync(output, 0o555);
+			try {
+				assert.equal(packageSkill(box, output).exitCode, 0);
+				assert.equal(readFileSync(join(output, "skill.skill")).subarray(0, 2).toString(), "PK");
+				chmodSync(join(output, "skill.skill"), 0o444);
+				const refused = packageSkill(box, output);
+				assert.equal(refused.exitCode, 1);
+				assert.match(
+					refused.stdout.toString(),
+					/Error creating \.skill file: \[Errno 13\] Permission denied: '[^']*skill\.skill'/u,
+				);
+			} finally {
+				chmodSync(output, 0o755);
+			}
+			assert.deepEqual(readdirSync(output), ["skill.skill"]);
+		},
+	);
+
+	test.skipIf(windows || process.getuid?.() === 0)("a read-only .skill file is refused, as before, and kept", () => {
+		const box = sandbox();
+		const output = join(box.dir, "dist");
+		mkdirSync(output);
+		writeFileSync(join(output, "skill.skill"), "an earlier archive");
+		chmodSync(join(output, "skill.skill"), 0o444);
+		const result = packageSkill(box, output);
+		assert.equal(result.exitCode, 1);
+		assert.match(
+			result.stdout.toString(),
+			/Error creating \.skill file: \[Errno 13\] Permission denied: '[^']*skill\.skill'/u,
+		);
+		assert.equal(readFileSync(join(output, "skill.skill"), "utf8"), "an earlier archive");
+		assert.deepEqual(readdirSync(output), ["skill.skill"]);
+	});
+
+	test("an error names the .skill file, never a temporary one", () => {
+		const box = sandbox();
+		const output = join(box.dir, "dist");
+		// A folder in the archive's place.
+		mkdirSync(join(output, "skill.skill"), { recursive: true });
+		const result = packageSkill(box, output);
+		assert.equal(result.exitCode, 1);
+		const message =
+			result.stdout
+				.toString()
+				.split(/\r?\n/u)
+				.find((line) => line.includes("Error creating")) ?? "";
+		assert.match(message, /skill\.skill/u);
+		assert.doesNotMatch(message, /\.tmp/u);
+		assert.deepEqual(readdirSync(output), ["skill.skill"]);
+	});
 
 	test("a .skill file written inside the skill folder does not contain itself", () => {
 		const box = sandbox();
