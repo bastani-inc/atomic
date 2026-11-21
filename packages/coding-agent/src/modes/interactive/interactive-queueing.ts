@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PromptDisposition, UserMessageWithRawText } from "../../core/agent-session-types.js";
 import {
 	NO_QUEUED_MESSAGES,
@@ -12,7 +13,7 @@ import {
 } from "../interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
-import { promptHandle } from "./agent-view/agent-drafts.ts";
+import { promptHandle, rewritePromptOwnText } from "./agent-view/agent-drafts.ts";
 import { viewedSteering } from "./agent-view/viewed-submit.ts";
 import { combineQueuedMessagesForEditor } from "./chat-input-actions.ts";
 import { QueuedMessagesView, queuedMessageRows } from "./components/queued-messages-view.ts";
@@ -507,8 +508,23 @@ export function queuedMessagesReturnedNotice(count: number): string {
 	return `${queuedMessagesPhrase(count)} ${count === 1 ? "wasn't" : "weren't"} sent and ${count === 1 ? "is" : "are"} back in the editor`;
 }
 
-/** Per main chat, the messages run ends gave back to its editor, as the editor's text starts with them. */
-const returnedToEditor = new WeakMap<InteractiveModeBase, string>();
+/**
+ * Per main chat, the messages run ends gave back to its editor, which the editor's text starts with while it is not
+ * changed there: their length and digest, never the text itself.
+ */
+const returnedToEditor = new WeakMap<InteractiveModeBase, { readonly length: number; readonly digest: string }>();
+
+function textDigest(text: string): string {
+	return createHash("sha256").update(text).digest("hex");
+}
+
+/** How much of `text` is messages an earlier run's end gave back to `mode`'s editor, still as given back; 0 if none. */
+function returnedPrefixLength(mode: InteractiveModeBase, text: string): number {
+	const returned = returnedToEditor.get(mode);
+	if (returned === undefined || text.length < returned.length) return 0;
+	if (text.length > returned.length && !text.startsWith("\n\n", returned.length)) return 0;
+	return textDigest(text.slice(0, returned.length)) === returned.digest ? returned.length : 0;
+}
 
 /**
  * A run of the main chat's session ended with `event`, its `agent_end`, after it took queued messages and lost them a
@@ -522,18 +538,16 @@ export function returnDroppedQueuedMessages(mode: InteractiveModeBase, event: ob
 		...dropped.flatMap((message) => (message.lane === "steer" ? [message.text] : [])),
 		...dropped.flatMap((message) => (message.lane === "followUp" ? [message.text] : [])),
 	];
-	// Main's prompt, whatever the screen shows.
-	const prompt = promptHandle(mode, "main");
-	const current = prompt.getExpandedText();
-	// Messages an earlier run's end gave back were queued before these: they stay first while the editor still starts
-	// with them as given back.
-	const earlier = returnedToEditor.get(mode);
-	const kept =
-		earlier !== undefined && (current === earlier || current.startsWith(`${earlier}\n\n`)) ? earlier : undefined;
-	const returned = kept === undefined ? messages : [kept, ...messages];
-	const typed = kept === undefined ? current : current.slice(kept.length + 2);
-	prompt.setText(combineQueuedMessagesForEditor(returned, typed));
-	returnedToEditor.set(mode, returned.join("\n\n"));
+	// Main's prompt, whatever the screen shows, with what the user typed there (never a history entry it shows).
+	rewritePromptOwnText(mode, { kind: "main" }, (own) => {
+		// Messages an earlier run's end gave back were queued before these: they stay first while the editor still
+		// starts with them as given back.
+		const kept = returnedPrefixLength(mode, own);
+		const returned = kept === 0 ? messages : [own.slice(0, kept), ...messages];
+		const prefix = returned.join("\n\n");
+		returnedToEditor.set(mode, { length: prefix.length, digest: textDigest(prefix) });
+		return combineQueuedMessagesForEditor(returned, kept === 0 ? own : own.slice(kept + 2));
+	});
 	mode.showWarning(queuedMessagesReturnedNotice(messages.length));
 	mode.ui.requestRender();
 }
