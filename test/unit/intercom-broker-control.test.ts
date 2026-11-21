@@ -116,6 +116,30 @@ async function startBroker(fixture: IntercomBrokerFixture): Promise<ChildProcess
 	return broker;
 }
 
+/**
+ * Start a stand-in for a broker that predates `broker_status`: it drops a connection whose first frame is not `register`
+ * and shuts down on SIGTERM. It names itself in broker.pid before it listens, so once it answers, the pid is there.
+ */
+function startLegacyBroker(fixture: IntercomBrokerFixture): ChildProcess {
+	const legacy = spawn(
+		process.execPath,
+		[
+			"-e",
+			`const net = require("node:net");
+			const fs = require("node:fs");
+			fs.writeFileSync(process.argv[2], String(process.pid));
+			const server = net.createServer((socket) => socket.on("data", () => socket.destroy()));
+			server.listen(process.argv[1]);
+			process.on("SIGTERM", () => server.close(() => process.exit(0)));`,
+			getBrokerSocketPath(process.platform, fixture.agentDir),
+			getBrokerPidPath(fixture.agentDir),
+		],
+		{ stdio: "ignore" },
+	);
+	fixture.trackBroker(legacy);
+	return legacy;
+}
+
 /** A registered session over the raw protocol; it keeps an idle broker from retiring until it closes. */
 async function connectSession(agentDir: string, name: string): Promise<net.Socket> {
 	const socket = net.connect(getBrokerSocketPath(process.platform, agentDir));
@@ -370,6 +394,31 @@ test(
 	BROKER_SCENARIO_TIMEOUT_MS,
 );
 
+test(
+	"restart waits its default time for a session to start a new broker (#3857)",
+	async () => {
+		const fixture = fixtureFor(agentDirectory("restart-default"));
+		const before = await startBroker(fixture);
+		assert.ok(before.pid !== undefined);
+		const session = await connectSession(fixture.agentDir, "reconnecting");
+		onTestFinished(await keepProcessPid(before));
+		// A stand-in that starts in a moment, so the restart's own default wait decides, not the time a broker start takes.
+		let after: Promise<ChildProcess> | undefined;
+		session.once("close", () => {
+			after = exited(before).then(() => startLegacyBroker(fixture));
+		});
+		const outcome = await restartIntercomBroker(fixture.agentDir);
+		const replacement = await after;
+		assert.ok(replacement?.pid !== undefined);
+		assert.deepEqual(outcome, {
+			status: "restarted",
+			previous: { pid: before.pid, sessions: 1 },
+			current: { state: "legacy", pid: replacement.pid },
+		});
+	},
+	BROKER_SCENARIO_TIMEOUT_MS,
+);
+
 test("a stale legacy endpoint with a dead PID is stopped, not a restarted broker (#3857)", async () => {
 	const agentDir = agentDirectory("stale-legacy");
 	const dead = await keptExitedPid();
@@ -390,24 +439,8 @@ test(
 	"restart stops a broker that predates broker_status with SIGTERM (#3857)",
 	async () => {
 		const agentDir = agentDirectory("legacy");
-		const socketPath = getBrokerSocketPath(process.platform, agentDir);
-		// An older broker drops a connection whose first frame is not `register`, and shuts down on SIGTERM.
-		const legacy = spawn(
-			process.execPath,
-			[
-				"-e",
-				`const net = require("node:net");
-				const fs = require("node:fs");
-				const server = net.createServer((socket) => socket.on("data", () => socket.destroy()));
-				server.listen(process.argv[1], () => fs.writeFileSync(process.argv[2], String(process.pid)));
-				process.on("SIGTERM", () => server.close(() => process.exit(0)));`,
-				socketPath,
-				getBrokerPidPath(agentDir),
-			],
-			{ stdio: "ignore" },
-		);
 		const fixture = fixtureFor(agentDir);
-		fixture.trackBroker(legacy);
+		const legacy = startLegacyBroker(fixture);
 		assert.ok(legacy.pid !== undefined);
 		onTestFinished(await keepProcessPid(legacy));
 		await vi.waitFor(
