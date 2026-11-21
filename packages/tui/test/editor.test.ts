@@ -2925,6 +2925,20 @@ describe("Editor component", () => {
 								throw new Error("catalog no longer readable");
 							},
 						}),
+						async () => {
+							class Row {
+								readonly value: string;
+								readonly label: string;
+								constructor(value: string, label: string) {
+									this.value = value;
+									this.label = label;
+								}
+								get description(): string {
+									throw new Error("catalog no longer readable");
+								}
+							}
+							return { prefix: "/global", items: [new Row("/global", "/global")] };
+						},
 						() => new Promise(() => {}),
 					];
 					for (const getSuggestions of answers) {

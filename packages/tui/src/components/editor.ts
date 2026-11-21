@@ -415,10 +415,14 @@ interface CommandMenuRefresh {
 	staged?: AutocompleteSuggestions;
 }
 
-/** Whether `name` is an own data property of `item` holding a string (or absent, when `optional`). */
+/**
+ * Whether `name` is an own data property of `item` holding a string, or, when `optional`, holding undefined or missing
+ * altogether (not even inherited).
+ */
 function plainField(item: object, name: string, optional = false): boolean {
 	const field = Object.getOwnPropertyDescriptor(item, name);
-	return field === undefined ? optional : "value" in field && (typeof field.value === "string" || optional);
+	if (field === undefined) return optional && !(name in item);
+	return "value" in field && (typeof field.value === "string" || (optional && field.value === undefined));
 }
 
 /**
