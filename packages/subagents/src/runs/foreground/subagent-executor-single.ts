@@ -250,6 +250,7 @@ export async function runSinglePath(
 			intercomEvents: deps.pi.events,
 			runId,
 			sessionDir: sessionDirForIndex(0),
+			...(data.sessionStore ? { sessionStore: data.sessionStore } : {}),
 			sessionManager: await sessionManagerForIndex(0),
 			share: shareEnabled,
 			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,

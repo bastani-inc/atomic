@@ -782,6 +782,13 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	 */
 	_resumeHeldUpdate?: SystemMessageWithTransformedPrompt;
 	_runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
+	/**
+	 * The prompt sections that the latest sent prompt's `before_agent_start` handlers set, replaced or removed relative
+	 * to the base options, such as the MCP servers' section, for the extensions of `runner` (held weakly, so a reload's
+	 * retired extensions can be collected). A run that starts without a prompt (an interrupt, queued input) keeps them
+	 * as the conversation last had them; see `_currentRunSystemPromptOptions`.
+	 */
+	_promptSectionNames?: { runner: WeakRef<ExtensionRunner>; names: ReadonlySet<string> };
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;
 	_sessionOpenMarker: (() => Promise<void>) | undefined;

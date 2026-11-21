@@ -70,15 +70,15 @@ describe("PowerShell executable lookup", () => {
 		expect(lookupsIn("C:\\second-empty")).toBe(2);
 	});
 
-	it("resolves a relative PATH again when the working directory changes (#5324)", () => {
+	it("never takes PowerShell from a relative PATH entry, in whichever project folder Atomic works", () => {
 		process.env.PATH = "relative-bin";
 		existing.add("C:\\first-project\\relative-bin\\pwsh.exe");
 		existing.add("C:\\second-project\\relative-bin\\pwsh.exe");
 		const cwd = vi.spyOn(process, "cwd").mockReturnValue("C:\\first-project");
 		try {
-			assert.equal(getPowerShellConfig().shell, "C:\\first-project\\relative-bin\\pwsh.exe");
+			assert.throws(() => getPowerShellConfig(), /No PowerShell executable found/);
 			cwd.mockReturnValue("C:\\second-project");
-			assert.equal(getPowerShellConfig().shell, "C:\\second-project\\relative-bin\\pwsh.exe");
+			assert.throws(() => getPowerShellConfig(), /No PowerShell executable found/);
 		} finally {
 			cwd.mockRestore();
 		}

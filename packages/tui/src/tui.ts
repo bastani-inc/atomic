@@ -604,6 +604,8 @@ export interface TUI extends Component {
 	hasOverlay(): boolean;
 	start(): void;
 	stop(options?: TuiStopOptions): void;
+	/** Stop drawing and hand the terminal, still set up, to the renderer that starts on it next, with `held` input first. */
+	handOffTerminal(held?: readonly string[]): void;
 	whenStopped(): Promise<void>;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
@@ -1218,6 +1220,22 @@ export abstract class TuiBase extends Container implements TUI {
 
 	whenStopped(): Promise<void> {
 		return this.stopOutput;
+	}
+
+	/**
+	 * Stop drawing and hand the terminal, still set up as this renderer left it, to the renderer that starts on it next
+	 * (see `Terminal.handOff`): nothing on screen is cleared or restored, and input that arrives meanwhile waits for that
+	 * renderer. Without a terminal that can hand off, this is `stop()`.
+	 */
+	handOffTerminal(held: readonly string[] = []): void {
+		if (!this.terminal.handOff) {
+			this.stop();
+			return;
+		}
+		this.stopped = true;
+		process.off("exit", this.exitRestoreHandler);
+		this.cancelRenderTimer();
+		this.terminal.handOff(held);
 	}
 
 	renderNow(force = false): void {
