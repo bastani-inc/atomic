@@ -1,9 +1,15 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
-import { realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { open, realpath } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, sep } from "node:path";
 import process from "node:process";
 import crossSpawn from "cross-spawn";
-import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "../../../../utils/helper-command.ts";
+import {
+	findHelperExecutableAsync,
+	type HelperExecutableOptions,
+	type HelperLaunch,
+	helperLaunchAsync,
+	missingHelperOptions,
+} from "../../../../utils/helper-command.ts";
 import { type JsonRpcMessage, McpConnectionClosedError } from "../protocol/jsonrpc.js";
 import { JsonRpcLineReader } from "./lines.js";
 import { type McpTransport, TransportEvents } from "./transport.js";
@@ -69,6 +75,55 @@ function serverEnvironment(inherited: NodeJS.ProcessEnv, configured: Record<stri
 	return { ...Object.fromEntries(kept), ...configured };
 }
 
+/** How much of a script's start its interpreter line may take, as cross-spawn reads it. */
+const SHEBANG_BYTES = 150;
+
+/**
+ * Windows: a script without an extension that PATH's absolute directories hold under `command`, started by the
+ * interpreter its first line names (`#!/usr/bin/env node`), as cross-spawn starts one. The interpreter is looked up as
+ * the program is, never in the project folder. Undefined where there is no such script, or no interpreter for it.
+ */
+async function scriptLaunch(
+	command: string,
+	search: HelperExecutableOptions,
+): Promise<{ readonly launch: HelperLaunch; readonly args: readonly string[] } | undefined> {
+	if (extname(command) !== "") return undefined;
+	const script = await findHelperExecutableAsync(command, { ...search, asIs: true });
+	if (script === undefined) return undefined;
+	const interpreter = await readInterpreter(script);
+	if (interpreter === undefined) return undefined;
+	const [program, ...interpreterArgs] = interpreter;
+	const launch = await helperLaunchAsync(program, { ...search, shellScripts: true });
+	return launch.missing === undefined ? { launch, args: [...interpreterArgs, script] } : undefined;
+}
+
+/**
+ * The interpreter and its argument a script's first line names, read as cross-spawn reads it: `#!/usr/bin/env node`
+ * names `node`, `#!/bin/sh -e` names `sh` with `-e`. Undefined for a file without one, or one that cannot be read.
+ */
+async function readInterpreter(script: string): Promise<readonly [string, ...string[]] | undefined> {
+	let start: string;
+	try {
+		const file = await open(script, "r");
+		try {
+			const buffer = Buffer.alloc(SHEBANG_BYTES);
+			const { bytesRead } = await file.read(buffer, 0, SHEBANG_BYTES, 0);
+			start = buffer.toString("utf8", 0, bytesRead);
+		} finally {
+			await file.close();
+		}
+	} catch {
+		return undefined;
+	}
+	const line = /^#!(.*)/u.exec(start)?.[1];
+	if (line === undefined) return undefined;
+	const [path = "", argument] = line.replace(/^ /u, "").split(" ");
+	const binary = path.split("/").pop() ?? "";
+	if (binary === "env") return argument ? [argument] : undefined;
+	if (binary === "") return undefined;
+	return argument ? [binary, argument] : [binary];
+}
+
 /** `work`'s result, or `signal`'s reason as soon as it aborts, whatever `work` still waits for. */
 function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 	if (signal.aborted) return Promise.reject(signal.reason);
@@ -104,9 +159,10 @@ async function outsideProject(directory: string, projectCwd: string): Promise<bo
 
 export interface StdioTransportOptions {
 	/**
-	 * The server's program: a path is started as it is; a name only from PATH's absolute directories, never from the
-	 * project folder (`projectCwd`) or Atomic's working directory. On Windows a name is also looked up in a `cwd` that is
-	 * neither, as Windows looks in a program's working directory first.
+	 * The server's program: a path is started as it is; a name only from PATH's absolute directories, never through an
+	 * implicit search of the project folder (`projectCwd`) or Atomic's working directory. On Windows a name is also
+	 * looked up in a `cwd` outside the project folder, as Windows looks in a program's working directory first, and may
+	 * name a script without an extension, started by the interpreter its first line names.
 	 */
 	command: string;
 	args?: readonly string[];
@@ -160,6 +216,8 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		const projectCwd = this.options.projectCwd ?? this.options.cwd;
 		const { cwd } = this.options;
 		let launch: HelperLaunch;
+		/** What the program's command line starts with before the server's arguments: a script's interpreter's. */
+		let leading: readonly string[] = [];
 		try {
 			// Windows looks in a program's working directory first: one configured outside the project folder, for a
 			// program given by name.
@@ -172,14 +230,18 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 				(await untilAborted(outsideProject(cwd, projectCwd), this.lookup.signal))
 					? cwd
 					: undefined;
-			launch = await helperLaunchAsync(this.options.command, {
+			const search: HelperExecutableOptions = {
 				env,
 				...(projectCwd === undefined ? {} : { cwd: projectCwd }),
 				...(searchFirst === undefined ? {} : { searchFirst }),
-				// cross-spawn runs `.cmd` and `.bat` shims through cmd.exe.
-				shellScripts: true,
 				signal: this.lookup.signal,
-			});
+			};
+			// cross-spawn runs `.cmd` and `.bat` shims through cmd.exe.
+			launch = await helperLaunchAsync(this.options.command, { ...search, shellScripts: true });
+			if (launch.missing !== undefined && process.platform === "win32") {
+				const script = await scriptLaunch(this.options.command, search);
+				if (script !== undefined) ({ launch, args: leading } = script);
+			}
 		} catch (error) {
 			if (this.closed) throw new McpConnectionClosedError();
 			throw error;
@@ -197,7 +259,7 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		// A program found nowhere fails as a missing one does; cross-spawn would look in the working directory.
 		const child =
 			launch.missing === undefined
-				? crossSpawn(launch.file, this.options.args ?? [], options)
+				? crossSpawn(launch.file, [...leading, ...(this.options.args ?? [])], options)
 				: spawn(launch.file, this.options.args ?? [], { ...options, ...missingHelperOptions(launch) });
 		this.child = child;
 		const pid = child.pid;

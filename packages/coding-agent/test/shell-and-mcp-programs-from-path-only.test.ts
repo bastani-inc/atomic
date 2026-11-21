@@ -12,7 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 
 const windows = process.platform === "win32";
@@ -224,6 +224,43 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 		await assert.rejects(started, McpConnectionClosedError);
 		assert.equal(transport.pid, undefined);
 	});
+
+	test("an MCP server closed before it started reports its close once", async () => {
+		const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
+		const transport = new StdioTransport({ command: "atomic-test-mcp-server", cwd: project, projectCwd: project });
+		let closes = 0;
+		transport.onClose(() => {
+			closes++;
+		});
+
+		await transport.close();
+		await transport.close();
+
+		assert.equal(closes, 1);
+		assert.equal(transport.pid, undefined);
+	});
+
+	test.skipIf(!windows)(
+		"an MCP server named by a script without an extension runs through its interpreter, found as the program is",
+		async () => {
+			const bin = join(root, "bin");
+			mkdirSync(bin);
+			writeFileSync(
+				join(bin, "atomic-test-mcp-script"),
+				'#!/usr/bin/env node\nrequire("fs").appendFileSync(process.env.PLANTED_PROGRAM_MARKER, "script\\n"); setTimeout(() => {}, 5000);\n',
+			);
+			// An interpreter the project folder holds is never the one that runs the script.
+			writeFileSync(join(project, "node.cmd"), "@echo planted>> %PLANTED_PROGRAM_MARKER%\r\n");
+			vi.stubEnv("PATH", `${bin};${dirname(process.execPath)}`);
+			const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
+			const transport = new StdioTransport({ command: "atomic-test-mcp-script", cwd: project, projectCwd: project });
+
+			await transport.start();
+			await vi.waitFor(() => assert.deepEqual(runs(), ["script"]), { timeout: SERVER_START_BUDGET_MS });
+			await transport.close();
+			assert.deepEqual(runs(), ["script"]);
+		},
+	);
 
 	test("an MCP server closed while its program is looked up never starts", async () => {
 		const bin = join(root, "bin");

@@ -42,6 +42,8 @@ export interface HelperExecutableOptions {
 	readonly searchFirst?: string;
 	/** Windows: a name with an extension is tried only as it is, as a shell's lookup of such a name does. */
 	readonly exact?: boolean;
+	/** Windows: the name only as it is, with no extension added, as a script without an extension is looked up. */
+	readonly asIs?: boolean;
 }
 
 /** Windows' default PATHEXT, used when the environment has none. */
@@ -114,7 +116,7 @@ function searchFor(name: string, options: HelperExecutableOptions): Search | und
 	const extensions = [...named, ...[...DIRECT_EXTENSIONS].filter((extension) => !named.includes(extension))];
 	const hasExtension = win32.extname(name) !== "";
 	const names =
-		hasExtension && options.exact
+		options.asIs || (hasExtension && options.exact)
 			? [name]
 			: [...(hasExtension ? [name] : []), ...extensions.map((extension) => `${name}${extension}`)];
 	return { directories, names, windows };
