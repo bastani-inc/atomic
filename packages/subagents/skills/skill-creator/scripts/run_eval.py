@@ -24,7 +24,8 @@ from scripts.atomic_cli import (
     Cancelled,
     Owner,
     atomic_command,
-    remove_path,
+    remove_file,
+    remove_folder,
     run_main,
 )
 from scripts.utils import parse_skill_md
@@ -233,10 +234,10 @@ def _run_query(
                         raise RuntimeError(f"atomic -p exited {status}: {atomic.stderr_tail()}")
                 return False
             finally:
-                remove_path(stderr_path)
+                remove_file(stderr_path)
         finally:
             if own_folder is not None:
-                remove_path(own_folder)
+                remove_folder(own_folder)
 
 
 def _run_queries(
@@ -297,7 +298,7 @@ def _run_queries(
             executor.shutdown(wait=True, cancel_futures=True)
         cancellation.check()
     finally:
-        remove_path(folder)
+        remove_folder(folder)
     return query_triggers, query_items
 
 

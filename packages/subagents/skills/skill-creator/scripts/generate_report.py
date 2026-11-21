@@ -217,7 +217,8 @@ def generate_html(data: dict, auto_refresh: bool = False, skill_name: str = "") 
         test_total = h.get("test_total")
         description = h.get("description", "")
         train_results = h.get("train_results", h.get("results", []))
-        test_results = h.get("test_results", [])
+        # None when no queries are held out (--holdout 0).
+        test_results = h.get("test_results") or []
 
         # Create lookups for results by query
         train_by_query = {r["query"]: r for r in train_results}
