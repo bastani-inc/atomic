@@ -8,7 +8,7 @@ import type {
 	AutoCompactionRunOutcome,
 	AutoCompactionUrgency as CompactionUrgency,
 } from "./agent-session-methods.ts";
-import type { AgentQueueAccess } from "./agent-session-types.ts";
+import type { AgentQueueAccess } from "./agent-session-types.js";
 import {
 	calculateContextTokens,
 	estimateContextTokens,
