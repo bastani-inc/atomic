@@ -14,6 +14,7 @@ import {
 	type Text,
 	theme,
 } from "./interactive-mode-deps.ts";
+import { mountedResourceSections } from "./interactive-resource-disclosure.ts";
 
 function formatList(values: string[]): string {
 	if (values.length <= 1) return values[0] ?? "";
@@ -141,6 +142,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 		force?: boolean;
 		showDiagnosticsWhenQuiet?: boolean;
 		targetContainer?: Container;
+		keepSections?: boolean;
 	},
 ): void {
 	const targetContainer = options?.targetContainer ?? this.chatContainer;
@@ -149,6 +151,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 	if (!showListing && !showDiagnostics) {
 		return;
 	}
+	const keptSections = options?.keepSections ? mountedResourceSections(targetContainer) : undefined;
 	if (targetContainer === this.resourceDisclosureContainer) targetContainer.clear();
 
 	const skillsResult = this.session.resourceLoader.getSkills();
@@ -250,6 +253,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			extensions,
 			expandedSections,
 			targetContainer,
+			keptSections,
 		});
 	}
 

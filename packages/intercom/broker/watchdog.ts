@@ -4,11 +4,14 @@ export const BROKER_WATCHDOG_INTERVAL_MS = 2_000;
 export const BROKER_WATCHDOG_PROBE_TIMEOUT_MS = 10_000;
 export const BROKER_WATCHDOG_SILENCE_MS = 60_000;
 
+// Node evaluates this source as an ES module, which has no require, when --input-type=module reaches the worker (from
+// NODE_OPTIONS, or the process's flags under the permission model) (#6110); `builtin` loads Node's modules either way.
 const WATCHDOG_SOURCE = `
-const { workerData } = require("node:worker_threads");
-const { connect } = require("node:net");
-const { randomUUID } = require("node:crypto");
-const { writeFileSync } = require("node:fs");
+const builtin = typeof require === "function" ? require : (id) => process.getBuiltinModule(id);
+const { workerData } = builtin("node:worker_threads");
+const { connect } = builtin("node:net");
+const { randomUUID } = builtin("node:crypto");
+const { writeFileSync } = builtin("node:fs");
 let lastHealthyAt = performance.now();
 let consecutiveFailures = 0;
 
@@ -87,9 +90,9 @@ export function startBrokerWatchdog(socketPath: string, instanceId: string, logP
 	try {
 		const worker = new Worker(WATCHDOG_SOURCE, {
 			eval: true,
-			// None of the process's flags: an `--input-type=module` would make this CommonJS source a module, and the
-			// process's preloads would run again in the watchdog. Under Node's permission model a worker is restricted
-			// only by the flags it starts with, so there it keeps them.
+			// None of the process's flags: the process's preloads would run again in the watchdog, and its
+			// `--input-type=module` would make the source a module. Under Node's permission model a worker is
+			// restricted only by the flags it starts with, so there it keeps them.
 			execArgv: process.permission === undefined ? [] : undefined,
 			workerData: {
 				socketPath,

@@ -613,17 +613,18 @@ test(
 			assert.ok(row > 0);
 			cli.write(`\x1b[<0;5;${row}M\x1b[<0;5;${row}m`);
 			await approveProject();
+			// Approval lists the folder's prompts too; the section stays as the click left it.
 			await cli.waitForScreen(
-				(screen) => /\[Prompts\]\s+user\s/.test(screen),
+				(screen) => /\[Prompts\]\s+(user|project)\s/.test(screen),
 				5000,
-				"the expanded original prompts",
+				"the expanded prompts",
 			);
 		}),
 	3 * STARTUP_TIMEOUT_MS,
 );
 
 test(
-	"keeps the contents and expansion of mounted resource sections on project approval (#5693)",
+	"lists the approved resources in the mounted resource sections and keeps their expansion (#5693)",
 	() =>
 		withPendingProject(async (cli, approveProject) => {
 			const open = async (name: string, expanded: RegExp) => {
@@ -639,10 +640,21 @@ test(
 			const extensionPath = /extensions[/\\]policy\.ts/;
 			await open("Extensions", extensionPath);
 			await open("Prompts", /\[Prompts\]\s+user\s/);
-			await approveProject();
-			assert.match(cli.screen(), extensionPath);
-			assert.match(cli.screen(), /\[Prompts\]\s+user\s/);
 			assert.doesNotMatch(cli.screen(), /projectapproved/);
+			await approveProject();
+			await cli.waitForScreen(
+				(screen) => screen.split("\n").some((line) => line.trim() === "/projectapproved"),
+				STARTUP_TIMEOUT_MS,
+				"the approved prompt in the expanded list",
+			);
+			assert.match(cli.screen(), extensionPath);
+			assert.match(cli.screen(), /\[Prompts\]\s+(user|project)\s/);
+			assert.ok(
+				cli
+					.screen()
+					.split("\n")
+					.some((line) => line.trim() === "/globalone"),
+			);
 		}),
 	3 * STARTUP_TIMEOUT_MS,
 );

@@ -7,6 +7,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - When the session that kept a released subagent lets it go, a session whose question to that subagent was still open is told `Session "<subagent>" ended before replying`. It used to get a malformed failure that closed its Intercom connection, or a notice that did not name the subagent ([#6131](https://github.com/bastani-inc/atomic/issues/6131)).
+- Fixed the broker watchdog not starting in a broker whose `NODE_OPTIONS` contains `--input-type=module` ([#6110](https://github.com/bastani-inc/atomic/issues/6110))
 
 ## [0.10.2] - 2026-11-20
 
