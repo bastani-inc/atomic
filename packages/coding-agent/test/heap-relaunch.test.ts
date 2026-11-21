@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { isHeadlessInvocation } from "../src/utils/heap-relaunch.js";
+import { headlessHeapRelaunchArgs, isHeadlessInvocation } from "../src/utils/heap-relaunch.js";
 import { INTERACTIVE_ENGINE_BOOTSTRAP_FLAG } from "../src/utils/interactive-engine-bootstrap.js";
 
 const terminal = { stdinIsTTY: true, stdoutIsTTY: true };
@@ -32,5 +32,38 @@ describe("headless heap relaunch detection", () => {
 	it("never relaunches the interactive engine child, whose host already sized it", () => {
 		const engineArgs = ["--mode", "rpc", INTERACTIVE_ENGINE_BOOTSTRAP_FLAG, "/tmp/bootstrap"];
 		assert.equal(isHeadlessInvocation(engineArgs, { stdinIsTTY: false, stdoutIsTTY: false }), false);
+	});
+});
+
+describe("headless heap relaunch", () => {
+	function relaunchArgsWith(execArgv: readonly string[]): string[] {
+		const savedExecArgv = process.execArgv;
+		const savedHeapMb = process.env.ATOMIC_HEAP_MB;
+		process.execArgv = [...execArgv];
+		// A size of its own makes a run without a heap size on its command line relaunch on any machine.
+		process.env.ATOMIC_HEAP_MB = "1234";
+		try {
+			return headlessHeapRelaunchArgs(["--print", "hi"]);
+		} finally {
+			process.execArgv = savedExecArgv;
+			if (savedHeapMb === undefined) delete process.env.ATOMIC_HEAP_MB;
+			else process.env.ATOMIC_HEAP_MB = savedHeapMb;
+		}
+	}
+
+	it("relaunches a run whose command line sets no heap size", () => {
+		assert.deepEqual(relaunchArgsWith([]), ["--max-old-space-size=1234"]);
+		assert.deepEqual(relaunchArgsWith(["--max-semi-space-size=64"]), ["--max-old-space-size=1234"]);
+	});
+
+	it("keeps any heap size the run's command line sets, without starting a second process", () => {
+		for (const execArgv of [
+			["--max-old-space-size=4096"],
+			["--max-old-space-size-percentage=25"],
+			["--max_old_space_size_percentage", "25"],
+			["--max-heap-size=4096"],
+		]) {
+			assert.deepEqual(relaunchArgsWith(execArgv), [], execArgv.join(" "));
+		}
 	});
 });

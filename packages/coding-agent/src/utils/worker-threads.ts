@@ -15,8 +15,9 @@ export function evalWorkerExecArgv(): string[] | undefined {
 /**
  * The first line of a worker's evaluated source, which then loads Node's built-in modules with `builtin(id)` instead of
  * `require(id)`. Node evaluates the source as an ES module, which has no `require`, when `--input-type=module` reaches
- * the worker: from `NODE_OPTIONS`, which Node parses again for every worker whatever its `execArgv`, or from the
- * process's own flags under the permission model (#6110). Elsewhere `builtin` is that `require`.
+ * the worker: from `NODE_OPTIONS`, which Node parses again, as it holds then, for a worker given its own `execArgv` (as
+ * these workers are), or from the options the process started with, which a worker started without `execArgv` keeps,
+ * as under the permission model (#6110). Elsewhere `builtin` is that `require`.
  */
 export const EVAL_WORKER_BUILTIN =
 	'const builtin = typeof require === "function" ? require : (id) => process.getBuiltinModule(id);';

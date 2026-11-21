@@ -41,6 +41,7 @@
 - `atomic -p` with an extension command prints the command's own answer, or fails on its failed reply, even when another message is saved after it, and waits for a reply the command asks for while an earlier run is still finishing
 - On Windows, the first quit after installing or upgrading Atomic no longer takes several seconds. A session that finds Node's compile cache empty or out of date for this version runs without it, and a short-lived background process writes the cache while the session runs, so later sessions start from it ([#6132](https://github.com/bastani-inc/atomic/issues/6132))
 - `session.dispose()` now waits, for up to about five seconds, until the extension transpile cache has finished storing what the session's own extensions started, such as the transform of a module an extension imported after it started. An SDK host that removes the agent directory once `dispose()` resolves could fail with `ENOTEMPTY`, or find a file written into it afterwards ([#6190](https://github.com/bastani-inc/atomic/pull/6190))
+- On Node, the interactive engine now gets the heap size given as `--max-old-space-size-percentage` or `--max-heap-size` on Atomic's own command line, or as `--max-heap-size` in `NODE_OPTIONS`, instead of half of system memory, and a headless run given either one, in either place, no longer starts itself a second time. The engine also gets a `--max-semi-space-size` given on Atomic's command line
 
 ## [0.10.3] - 2026-11-21
 
