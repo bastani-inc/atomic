@@ -489,7 +489,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 
 /**
  * Writes the package's compiled modules, one file each as tsc wrote them, under `dist/_modules/`, beside the files
- * they read (the package's other files in `dist`, copied).
+ * they read (the package's other files in `dist`, copied), without source maps.
  * @param {string} dist
  * @param {string} compiledDir The saved compiled modules.
  * @param {Set<string>} standalone
@@ -510,24 +510,15 @@ function writeModulesCopy(dist, compiledDir, standalone) {
 				copy(path);
 				continue;
 			}
-			if (/\.d\.ts(\.map)?$/.test(entry.name)) continue;
+			// Declarations stay in dist; source maps name sources the package does not ship, so the copy has none.
+			if (/\.d\.ts$|\.map$/.test(entry.name)) continue;
 			const target = join(modules, rel);
-			const compiled = join(compiledDir, rel);
 			const isModule = entry.name.endsWith(".js") && !standalone.has(path);
-			const isModuleMap = entry.name.endsWith(".js.map") && !standalone.has(path.slice(0, -4));
-			// A facade's source map stands for no compiled module's: the module's own, if tsc wrote one, goes instead.
-			if (isModuleMap && !existsSync(compiled)) continue;
 			/** @type {string | Buffer} */
-			let contents = readFileSync(isModule || isModuleMap ? compiled : path);
-			if ((isModuleMap || entry.name.endsWith(".js.map")) && contents.length > 0) {
-				// A source map names its sources relative to itself, one directory deeper now.
-				const map = JSON.parse(contents.toString("utf8"));
-				map.sources = map.sources.map((/** @type {string} */ source) =>
-					isAbsolute(source) ? source : `../${source}`,
-				);
-				contents = JSON.stringify(map);
+			let contents = readFileSync(isModule ? join(compiledDir, rel) : path);
+			if (entry.name.endsWith(".js")) {
+				contents = contents.toString("utf8").replace(/\n\/\/# sourceMappingURL=[^\r\n]*\s*$/, "\n");
 			}
-			if (isModuleMap && contents.length === 0) continue;
 			mkdirSync(dirname(target), { recursive: true });
 			writeFileSync(`${target}.bundle`, contents);
 			renameSync(`${target}.bundle`, target);
