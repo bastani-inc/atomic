@@ -97,21 +97,23 @@ test("a SQLite selector works from a process started with --input-type=module an
 	assert.equal(preloadRuns(), 1, "the preload ran again for a selector connection");
 });
 
-test("a SQLite selector works in a process whose NODE_OPTIONS holds --input-type=module, in each spelling (#6110)", () => {
-	// Node also takes the flag quoted, with an escaped character, with an underscore, or with its value apart.
-	for (const nodeOptions of [
-		"--input-type=module",
-		'"--input-type=module"',
-		'"--input\\-type=module"',
-		"--input_type=module",
-		"--input-type module",
-	]) {
-		writeFileSync(preloadLog, "");
+// Node also takes the flag quoted, with an escaped character, with an underscore, or with its value apart.
+const NODE_OPTIONS_SPELLINGS = [
+	"--input-type=module",
+	'"--input-type=module"',
+	'"--input\\-type=module"',
+	"--input_type=module",
+	"--input-type module",
+];
+
+test.each(NODE_OPTIONS_SPELLINGS)(
+	"a SQLite selector works in a process whose NODE_OPTIONS holds %s (#6110)",
+	(nodeOptions) => {
 		const result = runNodeOptionsModuleHost(SELECTOR_SCRIPT, dir, nodeOptions);
-		assert.deepEqual(output(result), ['{"total":3}', '{"top":3}'], nodeOptions);
-		assert.equal(preloadRuns(), 1, `the preload ran again for a selector connection (${nodeOptions})`);
-	}
-});
+		assert.deepEqual(output(result), ['{"total":3}', '{"top":3}']);
+		assert.equal(preloadRuns(), 1, "the preload ran again for a selector connection");
+	},
+);
 
 test("a SQLite selector reports node:sqlite missing when NODE_OPTIONS disables it for workers of a module host (#6110)", () => {
 	// The process started with node:sqlite; workers parse NODE_OPTIONS again when they start.
