@@ -16,6 +16,7 @@ import argparse
 import base64
 import codecs
 import contextlib
+import errno
 import glob
 import hashlib
 import io
@@ -300,11 +301,18 @@ def read_feedback(path: Path) -> Feedback:
         return Feedback({}, None, None)
     except OSError as error:
         return Feedback({}, None, error.strerror or str(error))
+    text = raw.decode("utf-8-sig", errors="replace")
+    if not text.strip():
+        # Empty: no feedback yet, as the page read it before.
+        return Feedback({}, raw, None)
     try:
-        data = json.loads(raw.decode("utf-8-sig", errors="replace"))
+        data = json.loads(text)
     except (ValueError, RecursionError):
         return Feedback({}, raw, "it is not JSON")
     reviews = data.get("reviews") if isinstance(data, dict) else None
+    if isinstance(data, dict) and reviews is None:
+        # An object with no reviews, such as {}: no feedback, as the page read it before.
+        return Feedback({}, raw, None)
     if not isinstance(reviews, list):
         return Feedback({}, raw, 'it has no "reviews" list')
     readable = {
@@ -407,7 +415,15 @@ def feedback_lock(feedback_path: Path):
     A save waits at most LOCK_WAIT_SECONDS for another viewer's, then fails with OSError, so a viewer that stopped
     in the middle of a save never stops this one from answering.
     """
-    with open(feedback_path.with_name(f".{feedback_path.name}.lock"), "a+b") as lock:
+    try:
+        lock = open(feedback_path.with_name(f".{feedback_path.name}.lock"), "a+b")
+    except PermissionError:
+        lock = None
+    if lock is None:
+        # A folder that cannot take the lock file: saved as before, without it.
+        yield
+        return
+    with lock:
         if os.name == "nt":
             import msvcrt
 
@@ -444,25 +460,43 @@ def feedback_lock(feedback_path: Path):
 
 def write_replacing(path: Path, content: bytes) -> None:
     """Replace a file with content in one step: written whole under another name next to it, then renamed, so a
-    failure leaves the old file as it was and no one reads half a file. It keeps the old file's permissions."""
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
-    mode = creation_mode(path)
-    handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), mode)
+    failure leaves the old file as it was and no one reads half a file. It keeps the old file's permissions.
+
+    As writing it in place did before: a link is written through to the file it links to, a file that cannot
+    be written is refused, and in a folder that cannot take new files a file that can be written is written in
+    place. Errors name path, never the file written next to it.
+    """
+    # A link is written through to the file it links to.
+    target = Path(os.path.realpath(path)) if path.is_symlink() else path
+    if target.exists() and not os.access(target, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+    mode = creation_mode(target)
+    temporary = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), mode)
+    except PermissionError:
+        if not target.is_file():
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path)) from None
+        # A folder that cannot take new files: the file is written in place.
+        target.write_bytes(content)
+        return
     try:
         with os.fdopen(handle, "wb") as file:
             file.write(content)
-        if path.exists():
+        if target.exists():
             # Exactly the old file's permissions, which the umask may have narrowed at creation.
             os.chmod(temporary, mode)
         for attempt in range(20):
             try:
-                os.replace(temporary, path)
+                os.replace(temporary, target)
                 break
             except PermissionError:
                 # On Windows a program reading the file can hold it for a moment.
                 if os.name != "nt" or attempt == 19:
                     raise
                 time.sleep(0.05)
+    except OSError as error:
+        raise OSError(error.errno, error.strerror, str(path)) from None
     finally:
         with contextlib.suppress(OSError):
             temporary.unlink(missing_ok=True)

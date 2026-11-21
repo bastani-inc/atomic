@@ -10,6 +10,7 @@ Example:
     python utils/package_skill.py skills/public/my-skill ./dist
 """
 
+import errno
 import fnmatch
 import os
 import secrets
@@ -111,19 +112,32 @@ def package_skill(skill_path, output_dir=None):
         output_path = Path.cwd()
 
     skill_filename = output_path / f"{skill_name}.skill"
+    # A link is written through to the file it links to, as writing it in place did before.
+    target = Path(os.path.realpath(skill_filename)) if skill_filename.is_symlink() else skill_filename
 
     # Create the .skill file (zip format) under a temporary name next to it, and give it its name only once it is
     # complete: a failure or an interruption leaves no partial file, and an earlier .skill file as it was.
     temporary = None
     try:
-        temporary, handle = create_temporary(skill_filename)
-        with os.fdopen(handle, "wb") as archive, zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        if target.exists() and not os.access(target, os.W_OK):
+            # A file that cannot be written is refused, as before.
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(skill_filename))
+        try:
+            temporary, handle = create_temporary(target)
+            archive = os.fdopen(handle, "wb")
+        except PermissionError:
+            if not target.is_file():
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(skill_filename)) from None
+            # A folder that cannot take new files: the file is written in place, as before.
+            temporary = None
+            archive = open(target, "wb")
+        with archive, zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zipf:
             # Walk through the skill directory, excluding build artifacts
             for file_path in skill_path.rglob('*'):
                 if not file_path.is_file():
                     continue
                 # Never the archive itself, when it is written inside the skill folder.
-                if file_path in (temporary, skill_filename):
+                if file_path in (temporary, skill_filename, target):
                     continue
                 arcname = file_path.relative_to(skill_path.parent)
                 if should_exclude(arcname):
@@ -132,15 +146,19 @@ def package_skill(skill_path, output_dir=None):
                 zipf.write(file_path, arcname)
                 print(f"  Added: {arcname}")
 
-        if skill_filename.exists():
-            # A .skill file it replaces keeps exactly its permissions, as when it was written over before.
-            os.chmod(temporary, creation_mode(skill_filename))
-        os.replace(temporary, skill_filename)
-        temporary = None
+        if temporary is not None:
+            if target.exists():
+                # A .skill file it replaces keeps exactly its permissions, as when it was written over before.
+                os.chmod(temporary, creation_mode(target))
+            os.replace(temporary, target)
+            temporary = None
         print(f"\n✅ Successfully packaged skill to: {skill_filename}")
         return skill_filename
 
     except Exception as e:
+        if isinstance(e, OSError) and temporary is not None and str(temporary) in (e.filename, e.filename2):
+            # Named by the .skill file, never by the file written next to it.
+            e = OSError(e.errno, e.strerror, str(skill_filename))
         print(f"❌ Error creating .skill file: {e}")
         return None
     finally:
