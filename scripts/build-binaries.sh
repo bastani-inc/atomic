@@ -200,8 +200,10 @@ fi
 if [[ "$SKIP_PACKAGE_BUILD" == "false" ]]; then
     echo "==> Building @bastani/atomic package..."
     cd packages/coding-agent
-    # The binaries bundle the compiled modules: the npm package's split (build:split) is not part of them.
+    # The binaries bundle the compiled modules: the npm package's split (build:split) is not part of them; `npm pack`
+    # splits the package. The declarations step only lists what the package leaves out.
     npm run build:tsc
+    npm run build:declarations
     npm run build:assets
 else
     echo "==> Reusing caller-built @bastani/atomic package (--skip-package-build)"

@@ -375,6 +375,43 @@ function compiledPackage(target: string): void {
 			fs.copyFileSync(join(state, "compiled", `${entry}${suffix}`), join(target, "dist", `${entry}${suffix}`));
 }
 
+test(
+	"a split build whose build state is gone, as after a fresh npm ci, is refused with the file and the command that rebuilds it",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "state-gone");
+		compiledPackage(build);
+		const split = () => spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		assert.equal(split().status, 0);
+		fs.rmSync(join(build, "node_modules", ".cache", "atomic-split-dist"), { recursive: true, force: true });
+		const again = split();
+		assert.notEqual(again.status, 0);
+		assert.match(again.stderr, /dist\/cli\.js is an earlier split's output/);
+		assert.match(again.stderr, /run `npm run build`/);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"a module that mentions import.meta only in a comment inside an object literal splits",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "comment-meta");
+		compiledPackage(build);
+		const module = join(build, "dist", "core", "agent-session.js");
+		const compiled = fs.readFileSync(module, "utf8");
+		const commented = compiled.replace(
+			/^\/\/# sourceMappingURL=.*$/m,
+			"export const splitCommentProbe = {\n\t// reads import.meta.dirname nowhere\n\tvalue: 1,\n};\n$&",
+		);
+		assert.notEqual(commented, compiled);
+		fs.writeFileSync(module, commented);
+		const result = spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		assert.equal(result.status, 0, result.stderr);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
 const RELEASES = ["changes StorageError's constructor", "adds a module StorageError's module imports"] as const;
 test.each(RELEASES)(
 	"a process that loaded the package keeps one StorageError when it is replaced in place by a release that %s",
