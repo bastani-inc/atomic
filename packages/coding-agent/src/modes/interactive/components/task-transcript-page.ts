@@ -141,6 +141,8 @@ const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
  * the session, not the page, so a page opened again while a save is on its way reports the same ones.
  */
 const shownUnsaved = new WeakMap<TaskTranscriptSource, AgentMessage[]>();
+/** Saves already accounted for: every page following the session hears each, and each lets one message go. */
+const savesHeard = new WeakSet<object>();
 
 /**
  * A page follows `session`'s events: a queued message's row shows at its `message_start`, and its save arrives with its
@@ -157,15 +159,18 @@ function noteShownUnsaved(session: TaskTranscriptSource, event: AgentSessionEven
 		return;
 	}
 	if (event.type === "message_start" && event.message.role === "user" && startsQueuedMessage(event)) {
+		// Every page following the session hears the same event: the message is kept once.
 		const list = shown ?? [];
-		list.push(event.message);
+		if (!list.includes(event.message)) list.push(event.message);
 		shownUnsaved.set(session, list);
 	} else if (
 		event.type === "message_end" &&
 		event.message.role === "user" &&
 		shown !== undefined &&
-		shown.length > 0
+		shown.length > 0 &&
+		!savesHeard.has(event)
 	) {
+		savesHeard.add(event);
 		const saved = event.message;
 		const raw = (saved as { readonly rawText?: unknown }).rawText;
 		const text = userMessageText(saved);

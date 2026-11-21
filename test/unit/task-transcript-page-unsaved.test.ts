@@ -157,3 +157,23 @@ test("a shown queued message saved while no chat of it was open is not reported 
 		reopened.dispose();
 	}
 });
+
+test("two chats of one subagent report a shown queued message once, and its save once", async () => {
+	const events = await sessionEvents();
+	const child = followedChild();
+	const panel = await child.open();
+	const tasks = await child.open();
+	try {
+		child.emit(events[0]);
+		child.emit(events[1]);
+		child.emit(events[2]);
+		assert.deepEqual(panel.viewStatus("worker").unsaved, ["queued while it worked"]);
+		assert.deepEqual(tasks.viewStatus("worker").unsaved, ["queued while it worked"]);
+		panel.dispose();
+		child.emit(events[3]);
+		assert.equal(tasks.viewStatus("worker").unsaved, undefined);
+	} finally {
+		panel.dispose();
+		tasks.dispose();
+	}
+});
