@@ -30,6 +30,7 @@ import { currentChildWorktreeNote } from "../runs/foreground/run-worktrees.js";
 import {
 	clearSubagentChildTranscriptCache,
 	onSubagentCardDiscard,
+	type SubagentChildIndexEntry,
 	type SubagentChildToolCallEntry,
 	subagentChildCardRecord,
 	subagentChildCardTask,
@@ -709,6 +710,28 @@ function releasedWaitingTools(result: TaskResult): string | undefined {
 	return [...new Set(result.released.waitingOn.map((call) => call.toolName))].join(", ") || undefined;
 }
 
+/**
+ * A launched subagent waiting for its turn to run, or being stopped: the agent panel's `queued` and `stopping`. The live
+ * task says so, or, with no live task, the child's own record of this task while it waits to be dispatched (its span is
+ * null until then). A saved receipt can predate dispatch, and a settled result or a record of its end outranks both.
+ */
+function waitingState(input: {
+	readonly freshTask: TaskRecord | undefined;
+	readonly record: Pick<SubagentChildIndexEntry, "state" | "elapsedSpan" | "taskId"> | undefined;
+	readonly settled: TaskResult | undefined;
+	readonly observation: { readonly kind: WaitOutcome["kind"]; readonly taskId: string };
+	readonly activeTaskId: string;
+}): "queued" | "stopping" | undefined {
+	const { freshTask, record, settled, observation, activeTaskId } = input;
+	if (settled !== undefined || record?.state === "terminal") return undefined;
+	if (observation.kind === "settled" && observation.taskId === activeTaskId) return undefined;
+	const kind = freshTask?.execution.kind;
+	if (kind === "cancelling") return "stopping";
+	if (kind === "queued") return "queued";
+	if (kind === undefined && record?.elapsedSpan === null && record.taskId === activeTaskId) return "queued";
+	return undefined;
+}
+
 function buildOutcomeToolBlock(input: {
 	readonly slot: number;
 	readonly outcome:
@@ -843,11 +866,19 @@ function buildOutcomeToolBlock(input: {
 		const elapsedText = elapsedMs > 0 ? formatDuration(elapsedMs) : "";
 		const runningElapsedText = elapsedMs >= 1000 ? formatDuration(elapsedMs) : "";
 		const tokenText = formatTokenSegment({ mode: "receiving", count: tokens });
+		const waiting = waitingState({ freshTask, record, settled: taskSettled, observation, activeTaskId });
 
 		let status: ToolBlockStatus;
 		let statusLine: string;
 
-		if (task?.attention.kind === "input-needed") {
+		if (waiting === "stopping") {
+			// Being stopped, as the agent panel shows it, whatever it was doing.
+			status = "task-stopping";
+			statusLine = statJoin(theme, ["Stopping", elapsedText]);
+		} else if (waiting === "queued") {
+			status = "task-queued";
+			statusLine = statJoin(theme, ["Queued"]);
+		} else if (task?.attention.kind === "input-needed") {
 			status = "input";
 			const questionFirstLine = firstDisplayLine(task.attention.prompt || "");
 			const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });

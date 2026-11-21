@@ -388,7 +388,7 @@ export default function (pi: ExtensionAPI) {
 
 **Key points:**
 - Extend `CustomEditor` (not base `Editor`) to get app keybindings (escape to abort, ctrl+d, model switching)
-- Call `super.handleInput(data)` for keys you don't handle
+- Call `super.handleInput(data)` for keys you don't handle. A key you pass on keeps its prompt behavior: ↓ (`app.agents.focus`) on an empty prompt focuses the agent panel, and ← (`app.nav.back`) on an empty prompt returns from a subagent's chat to `main`
 - Editors keep the standalone working row by default. Pass `{ embedWorkingStatus: true }` as the fourth `CustomEditor` constructor argument to opt into the editor-border spinner.
 - Factory receives `tui`, `theme`, and `keybindings` from the app
 - Use `ctx.ui.getEditorComponent()` before `setEditorComponent()` to wrap the previously configured custom editor

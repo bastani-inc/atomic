@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@bastani/atomic";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { Component } from "@bastani/atomic-tui";
 import type { Details } from "../../packages/subagents/src/shared/types.js";
-import { RUNNING_FRAMES, type renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
+import type { renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
 
 export type { AgentToolResult, Component, Details, ExtensionContext };
 
@@ -14,10 +14,6 @@ export const theme = {
 	bold: (value: string) => value,
 } as unknown as RenderTheme;
 
-export { RUNNING_FRAMES };
-
-const SPINNER_CHARS = new Set(RUNNING_FRAMES);
-
 export function withMockedNow<T>(now: number, run: () => T): T {
 	const originalNow = Date.now;
 	Date.now = () => now;
@@ -26,15 +22,6 @@ export function withMockedNow<T>(now: number, run: () => T): T {
 	} finally {
 		Date.now = originalNow;
 	}
-}
-
-export function stripSpinnerChars(line: string): string {
-	return [...line].filter((char) => !SPINNER_CHARS.has(char)).join("");
-}
-
-export function firstSpinnerChar(text: string): string | undefined {
-	for (const char of text) if (SPINNER_CHARS.has(char)) return char;
-	return undefined;
 }
 
 export function runningSingleResult(): AgentToolResult<Details> {

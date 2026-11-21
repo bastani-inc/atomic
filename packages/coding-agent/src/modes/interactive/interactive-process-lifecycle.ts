@@ -90,7 +90,7 @@ InteractiveModeBase.prototype.handleCtrlC = function (this: InteractiveModeBase)
 		this.lastSigintTime = 0;
 		return;
 	}
-	// While a subagent is shown, an empty prompt's Ctrl+C pauses its work and shows main; it never exits from there.
+	// While a subagent is shown, an empty prompt's Ctrl+C pauses its work as Esc does; it never exits from there.
 	// An engine that owes an abort is still terminated first, as the watchdog advertises.
 	if (this.agentView?.viewed.kind === "agent" && !terminateInteractiveEngine(this.runtimeHost)) {
 		leaveViewedAgent(this);
