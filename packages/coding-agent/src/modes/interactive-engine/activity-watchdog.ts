@@ -21,6 +21,11 @@ export interface ActivityWatchdogDiagnostic {
 	source?: "watchdog" | "recovery" | "stderr" | "host";
 	/** The failure behind the diagnostic, when one was thrown. */
 	error?: Error;
+	/**
+	 * Identical failures of one host listener in a row (the same input, the same reason) share this object, so a view
+	 * can show them as one row with a count.
+	 */
+	series?: object;
 }
 
 /**
