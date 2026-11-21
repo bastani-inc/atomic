@@ -20,6 +20,7 @@ test("the system prompt puts what changes most last: install paths after the use
 		"session_memory",
 		"model",
 		"cwd",
+		"session_folder",
 		"date",
 	]);
 });

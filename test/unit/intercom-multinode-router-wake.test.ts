@@ -9,6 +9,8 @@ import {
 	MultiNodeRouter,
 	type ReservationOptions,
 	SESSION_ID_CLAIM_BOUND_MS,
+	type SessionIdClaim,
+	type UnansweredSessionIdClaim,
 } from "../../packages/intercom/broker/multinode-router.js";
 import {
 	BROKER_LEASE_RENEW_INTERVAL_MS,
@@ -136,15 +138,19 @@ afterEach(async () => {
 
 async function cluster(): Promise<Cluster> {
 	const leases = await openMemoryLeaseStoreFixture();
-	const outbox = await openMemoryOutboxFixture();
+	const bus = await openMemoryWakeUpBusFixture();
+	cleanups.push(() => bus.close());
+	// #5607: the hint an enqueue for an offline recipient sends, as the SQL outbox writes it with the row.
+	const wakes = await bus.connect();
+	const outbox = await openMemoryOutboxFixture(leases.presenceHolder, (brokerId, version) =>
+		wakes.publish({ brokerId, reason: "outbox", version }),
+	);
 	const heldSends = await openMemoryHeldSendFixture();
 	const reservations = await openMemoryRestoringReservationFixture();
 	const pendingAsks = await openMemoryPendingAskFixture();
 	const releasedAsks = await openMemoryReleasedAskFixture();
 	const sentMessages = await openMemorySentMessageFixture();
-	const knownSessions = await openMemoryKnownSessionFixture();
-	const bus = await openMemoryWakeUpBusFixture();
-	cleanups.push(() => bus.close());
+	const knownSessions = await openMemoryKnownSessionFixture(leases.returnAddressHolders);
 	return {
 		async connectState() {
 			return {
@@ -1850,6 +1856,8 @@ describe("released child sends queued across faults (#4401)", () => {
 });
 
 describe("an Intercom id bound to the return address that registered it", () => {
+	const granted = (claim: SessionIdClaim): boolean => claim.status === "granted";
+
 	/** A session on another broker registering under `original`'s id with a return address of its own. */
 	function underTheSameId(original: BrokerConnectedSession): BrokerConnectedSession {
 		const other = session("other");
@@ -1993,26 +2001,26 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
-		assert.equal(await node.router.claimSessionId(id, "return-2"), false);
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), true);
+		assert.equal(granted(await node.router.claimSessionId(id, "return-2")), false);
+		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), true);
 
 		const bind = vi.spyOn(node.state.knownSessions, "bind");
 		bind.mockRejectedValueOnce(new Error("the shared database is down"));
-		assert.equal(await node.router.claimSessionId(id, "return-1"), false, "a failed binding grants nothing");
+		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), false, "a failed binding grants nothing");
 		bind.mockReturnValueOnce(new Promise(() => {}));
 		const claim = node.router.claimSessionId(id, "return-1");
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
-		assert.equal(await claim, false, "a binding that does not answer in time grants nothing");
+		assert.equal(granted(await claim), false, "a binding that does not answer in time grants nothing");
 
 		await node.router.close();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), false, "a closed router grants nothing");
+		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), false, "a closed router grants nothing");
 	});
 
 	test("an expired claim does not bind an unused id while its confirmation is pending (#5607)", async () => {
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), true);
 		const knownSessions = node.state.knownSessions;
 		const bind = knownSessions.bind.bind(knownSessions);
 		const requests = vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
@@ -2035,7 +2043,7 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), true);
 		const knownSessions = node.state.knownSessions;
 		const bind = knownSessions.bind.bind(knownSessions);
 		let answer!: () => void;
@@ -2049,14 +2057,14 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		});
 
 		const claim = node.router.claimSessionId(id, "return-1");
-		let granted: boolean | undefined;
+		let grantedId: boolean | undefined;
 		void claim.then((result) => {
-			granted = result;
+			grantedId = granted(result);
 		});
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS - 1);
-		assert.equal(granted, undefined);
+		assert.equal(grantedId, undefined);
 		answer();
-		assert.equal(await claim, true);
+		assert.equal(granted(await claim), true);
 	});
 
 	test("an ended session's unanswered presence check expires on the first turn after its wall-clock deadline (#5607)", async () => {
@@ -2071,26 +2079,169 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		);
 	});
 
+	/**
+	 * A claim of `id` whose binding the database writes but whose answer the broker never reads in time: the broker stalled
+	 * past the claim's deadline.
+	 */
+	async function unansweredClaim(node: Node, id: string, returnAddress: string): Promise<UnansweredSessionIdClaim> {
+		const knownSessions = node.state.knownSessions;
+		const bind = knownSessions.bind.bind(knownSessions);
+		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			await bind(...args);
+			return new Promise<never>(() => {});
+		});
+		const pending = node.router.claimSessionId(id, returnAddress);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claim = await pending;
+		assert.equal(claim.status, "unanswered");
+		vi.mocked(knownSessions.bind).mockRestore();
+		return (claim as Extract<SessionIdClaim, { status: "unanswered" }>).unanswered;
+	}
+
+	/**
+	 * Registers the returning session as the broker does for an unanswered claim: under a fresh id, not yet shown on this
+	 * broker, until the binding write settles it once under the claimed id or the fresh one.
+	 */
+	function registerUnanswered(node: Node, claim: UnansweredSessionIdClaim, returnAddress: string, answered = false) {
+		const freshId = randomUUID();
+		const base = session("returning");
+		const target: BrokerConnectedSession = {
+			...base,
+			info: { ...base.info, id: freshId },
+			registrationReturnAddress: returnAddress,
+		};
+		const settles: boolean[] = [];
+		let settled = answered;
+		if (answered) node.sessions.set(freshId, target);
+		const registered = node.router.sessionRegistered(target, undefined, {
+			...claim,
+			settle: (keep) => {
+				if (settled) return false;
+				settled = true;
+				settles.push(keep);
+				const kept = keep && !node.sessions.has(claim.sessionId);
+				if (kept) target.info.id = claim.sessionId;
+				node.sessions.set(target.info.id, target);
+				return kept;
+			},
+			unsettled: () => !settled,
+		});
+		return { target, freshId, settles, registered };
+	}
+
+	test("a returning session whose claim went unanswered keeps the id when the binding is still the one its claim wrote (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const claim = await unansweredClaim(node, id, "return-1");
+
+		const back = registerUnanswered(node, claim, "return-1");
+		await back.registered;
+
+		assert.deepEqual(back.settles, [true]);
+		assert.equal(back.target.info.id, id);
+		const known = await node.state.knownSessions.lookup(id, KNOWN_SESSION_RETENTION_MS);
+		assert.deepEqual(known.status === "found" ? known.sessions.map((record) => record.intercomSessionId) : known, [
+			id,
+		]);
+		assert.deepEqual(await node.state.knownSessions.binding(back.freshId, KNOWN_SESSION_RETENTION_MS), {
+			status: "unbound",
+		});
+	});
+
+	test("a returning session whose claim went unanswered gets its fresh id, bound, when another registration of it claimed the id since (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const claim = await unansweredClaim(node, id, "return-1");
+		await node.state.knownSessions.bind(id, "return-1", KNOWN_SESSION_RETENTION_MS, randomUUID());
+
+		const back = registerUnanswered(node, claim, "return-1");
+		await back.registered;
+
+		assert.deepEqual(back.settles, [false]);
+		assert.equal(back.target.info.id, back.freshId);
+		assert.deepEqual(await node.state.knownSessions.binding(back.freshId, KNOWN_SESSION_RETENTION_MS), {
+			status: "bound",
+			returnAddress: "return-1",
+		});
+	});
+
+	test("a returning session whose claim went unanswered gets its fresh id when a session here holds the claimed id (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const claim = await unansweredClaim(node, id, "return-1");
+		const holder = session("holder");
+		node.sessions.set(id, { ...holder, info: { ...holder.info, id } });
+
+		const back = registerUnanswered(node, claim, "return-1");
+		await back.registered;
+
+		assert.deepEqual(back.settles, [true], "the write kept it, but the broker cannot give it");
+		assert.equal(back.target.info.id, back.freshId);
+		assert.deepEqual(await node.state.knownSessions.binding(back.freshId, KNOWN_SESSION_RETENTION_MS), {
+			status: "bound",
+			returnAddress: "return-1",
+		});
+	});
+
+	test("a returning session answered before its binding write decided stays under its fresh id, bound as before (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const claim = await unansweredClaim(node, id, "return-1");
+		const reclaim = vi.spyOn(node.state.knownSessions, "reclaim");
+
+		const back = registerUnanswered(node, claim, "return-1", true);
+		await back.registered;
+
+		assert.deepEqual(back.settles, []);
+		assert.equal(reclaim.mock.calls.length, 0, "no write tries to keep an id it can no longer give");
+		assert.deepEqual(await node.state.knownSessions.binding(back.freshId, KNOWN_SESSION_RETENTION_MS), {
+			status: "bound",
+			returnAddress: "return-1",
+		});
+	});
+
+	test("a store that cannot reclaim registers a session whose claim went unanswered under its fresh id, bound as before (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const claim = await unansweredClaim(node, id, "return-1");
+		Reflect.deleteProperty(node.state.knownSessions, "reclaim");
+
+		const back = registerUnanswered(node, claim, "return-1");
+		await back.registered;
+
+		assert.deepEqual(back.settles, [false]);
+		assert.equal(back.target.info.id, back.freshId);
+		assert.deepEqual(await node.state.knownSessions.binding(back.freshId, KNOWN_SESSION_RETENTION_MS), {
+			status: "bound",
+			returnAddress: "return-1",
+		});
+	});
+
 	test("a database that does not answer still ends the claim of a broker that keeps running late, with a fresh id (#5607)", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), true);
 		vi.spyOn(node.state.knownSessions, "bind").mockReturnValueOnce(new Promise(() => {}));
 
 		const claim = node.router.claimSessionId(id, "return-1");
-		let granted: boolean | undefined;
+		let grantedId: boolean | undefined;
 		void claim.then((result) => {
-			granted = result;
+			grantedId = granted(result);
 		});
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS - 100);
 		// From here every tick of the broker comes late: it is slow, not stalled once, and the claim must not wait for good.
-		for (let tick = 0; tick < 2 && granted === undefined; tick++) {
+		for (let tick = 0; tick < 2 && grantedId === undefined; tick++) {
 			stallEventLoop(STALL_PAST_BOUND_MS / 5);
 			await vi.advanceTimersByTimeAsync(100);
 		}
 
-		assert.equal(granted, false, "a late broker still ends an unanswered claim");
+		assert.equal(grantedId, false, "a late broker still ends an unanswered claim");
 	});
 
 	test("a presence taken under an id bound to another return address is not routed to by that id", async () => {
@@ -2175,3 +2326,86 @@ async function queuedRowCount(node: Node, target: BrokerConnectedSession): Promi
 	const listed = await node.state.outbox.listUndelivered(deliveryTargetIdentity(target));
 	return listed.status === "listed" ? listed.rows.length : 0;
 }
+
+describe("a row queued for an offline session that registered meanwhile (#5607)", () => {
+	/** `original` registered on `home` and is away; a sender on a broker whose outbox writes wait for `written`. */
+	async function awayRecipientAndGatedSender(shared: Cluster) {
+		const written = Promise.withResolvers<void>();
+		const home = await startNode(shared);
+		const original = session("original");
+		home.sessions.set(original.info.id, original);
+		await home.router.sessionRegistered(original);
+		home.sessions.delete(original.info.id);
+		home.router.sessionLeft(original, undefined, false);
+		await flush();
+		const senderNode = await startNode(shared, { enqueueGate: written.promise });
+		const sender = session("sender");
+		senderNode.sessions.set(sender.info.id, sender);
+		await senderNode.router.sessionRegistered(sender);
+		await flush();
+		return { home, original, senderNode, sender, written };
+	}
+
+	/** `original` registers again on `node`; its broker looks for what was queued for it as it registers. */
+	async function comesBack(node: Node, original: BrokerConnectedSession): Promise<BrokerConnectedSession> {
+		const back: BrokerConnectedSession = { ...original, info: { ...original.info }, socket: fakeSocket() };
+		node.sessions.set(back.info.id, back);
+		await node.router.sessionRegistered(back);
+		await flush();
+		return back;
+	}
+
+	const messageIds = (target: BrokerConnectedSession): string[] =>
+		framesOf(target).flatMap((frame) => (frame.type === "message" ? [frame.message.id] : []));
+
+	beforeEach(() => {
+		// The backup poll would deliver the row eventually; these rows must not wait for it.
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+	});
+
+	test("a send to an offline session reaches it at once when it registered on another broker before the row was written (#5607)", async () => {
+		const { home, original, senderNode, sender, written } = await awayRecipientAndGatedSender(await cluster());
+		const send = remoteSend(sender, original.info.id, false);
+		senderNode.router.routeSend(send.request);
+		await flush();
+		const back = await comesBack(home, original);
+		assert.deepEqual(messageIds(back), [], "its registration looked before the row was written");
+
+		written.resolve();
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "queued");
+		assert.deepEqual(messageIds(back), [send.id]);
+	});
+
+	test("an ask's failure reaches its offline asker at once when it registered on another broker before the failure was written (#5607)", async () => {
+		const { home, original, senderNode, sender, written } = await awayRecipientAndGatedSender(await cluster());
+		const askId = randomUUID();
+		await senderNode.state.pendingAsks.record({
+			senderSessionId: original.info.id,
+			targetSessionId: sender.info.id,
+			messageId: askId,
+		});
+		senderNode.sessions.delete(sender.info.id);
+		senderNode.router.sessionLeft(sender, undefined, true);
+		await flush();
+		const back = await comesBack(home, original);
+		assert.deepEqual(messageIds(back), [], "its registration looked before the failure was written");
+
+		written.resolve();
+		await flush();
+		assert.deepEqual(messageIds(back), [`ended:${askId}`]);
+	});
+
+	test("a send to an offline session reaches it at once when it registered on the sender's own broker before the row was written (#5607)", async () => {
+		const { original, senderNode, sender, written } = await awayRecipientAndGatedSender(await cluster());
+		const send = remoteSend(sender, original.info.id, false);
+		senderNode.router.routeSend(send.request);
+		await flush();
+		const back = await comesBack(senderNode, original);
+		assert.deepEqual(messageIds(back), []);
+
+		written.resolve();
+		await flush();
+		assert.deepEqual(messageIds(back), [send.id]);
+	});
+});

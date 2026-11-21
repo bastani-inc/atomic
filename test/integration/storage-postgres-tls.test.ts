@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { join } from "node:path";
+import { Duplex } from "node:stream";
 import { createServer as createTlsServer, getCACertificates, setDefaultCACertificates, TLSSocket } from "node:tls";
 import { inspect } from "node:util";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import { startConnectProxy } from "../helpers/http-connect-proxy.js";
-import { postgresSkipReason, postgresTestPassword, postgresTestUrl } from "../helpers/postgres-database.js";
+import {
+	postgresSkipReason,
+	postgresTestPassword,
+	postgresTestUrl,
+	withPostgresDatabase,
+} from "../helpers/postgres-database.js";
 import { connectTestServer } from "../helpers/postgres-proxy.js";
 import { makeTempDirectory, removeTempDirectory, spawnSyncCollect, writeTextSync } from "../helpers/runtime.js";
 
@@ -223,19 +229,22 @@ const REFUSED_HOST = "db.invalid";
 
 /**
  * Roots TLS verification will not anchor a server certificate to, and the code it reports for each (#6074): one that is
- * not a CA, one limited to client authentication, and one whose path length an intermediate CA exceeds.
+ * not a CA, one limited to client authentication, and one whose path length an intermediate CA exceeds; and one that
+ * may not sign certificates, which Node reports as UNSPECIFIED, its code for a result outside its table (#6112).
  */
 const REFUSED_ROOTS: readonly {
 	readonly name: string;
 	readonly extensions: readonly string[];
 	readonly intermediate: boolean;
 	readonly code: string;
+	readonly issue: string;
 }[] = [
 	{
 		name: "a root that is not a CA",
 		extensions: ["basicConstraints=critical,CA:FALSE"],
 		intermediate: false,
 		code: "INVALID_PURPOSE",
+		issue: "#6074",
 	},
 	{
 		name: "a root limited to client authentication",
@@ -246,12 +255,22 @@ const REFUSED_ROOTS: readonly {
 		],
 		intermediate: false,
 		code: "INVALID_PURPOSE",
+		issue: "#6074",
 	},
 	{
 		name: "a root whose path length the chain exceeds",
 		extensions: ["basicConstraints=critical,CA:TRUE,pathlen:0", "keyUsage=critical,keyCertSign,cRLSign"],
 		intermediate: true,
 		code: "PATH_LENGTH_EXCEEDED",
+		issue: "#6074",
+	},
+	{
+		name: "a root that may not sign certificates",
+		extensions: ["basicConstraints=critical,CA:TRUE", "keyUsage=critical,digitalSignature"],
+		intermediate: false,
+		// The tests run on Node; the standalone binary's runtime reports UNABLE_TO_VERIFY_LEAF_SIGNATURE instead.
+		code: "UNSPECIFIED",
+		issue: "#6112",
 	},
 ];
 
@@ -414,7 +433,7 @@ describe.skipIf(postgresSkipReason !== undefined)("A refused certificate authori
 	});
 
 	for (const [index, refused] of REFUSED_ROOTS.entries()) {
-		test(`a server certificate under ${refused.name} fails at once with ${refused.code} and the sslrootcert fix, directly and through a proxy (#6074)`, async () => {
+		test(`a server certificate under ${refused.name} fails at once with ${refused.code} and the sslrootcert fix, directly and through a proxy (${refused.issue})`, async () => {
 			const chain = writeRefusedChain(directory, `refused-${index}`, refused.extensions, refused.intermediate);
 			const front = await startRefusedFront(chain);
 			const proxy = await startConnectProxy({
@@ -488,4 +507,80 @@ describe.skipIf(postgresSkipReason !== undefined)("A refused certificate authori
 			await new Promise<void>((resolve) => secure.close(() => resolve()));
 		}
 	});
+	for (const [index, root] of [
+		{ extensions: ["basicConstraints=critical,CA:FALSE"], code: "INVALID_PURPOSE" },
+		{
+			extensions: ["basicConstraints=critical,CA:TRUE", "keyUsage=critical,digitalSignature"],
+			code: "UNSPECIFIED: key usage does not include certificate signing",
+		},
+	].entries())
+		test(`an https proxy whose certificate is refused (${root.code}) is named with the proxy's fix, never the server's, cause chain included (#6112)`, async () => {
+			const chain = writeRefusedChain(directory, `refused-proxy-${index}`, root.extensions, false);
+			let connections = 0;
+			const secure = createTlsServer({ cert: chain.cert, key: chain.key }, (socket) => socket.on("error", () => {}));
+			secure.on("connection", () => connections++);
+			secure.on("tlsClientError", () => {});
+			await new Promise<void>((resolve) => secure.listen(0, "127.0.0.1", resolve));
+			const address = secure.address();
+			assert.ok(address !== null && typeof address === "object");
+			const trusted = getCACertificates("default");
+			setDefaultCACertificates([...trusted, readFileSync(chain.root, "utf8")]);
+			try {
+				const error = await openFailure(
+					`postgresql://atomic@${REFUSED_HOST}:5432/atomic?sslmode=verify-ca&sslrootcert=${encodeURIComponent(chain.root)}`,
+					`https://127.0.0.1:${address.port}`,
+				);
+				const shown = inspect(error, { depth: null });
+				assert.equal(error.name, "StorageUnavailableError", shown);
+				assert.equal(connections, 1, "the proxy was connected to again");
+				assert.ok(
+					error.message.includes(
+						`the proxy https://127.0.0.1:${address.port} showed a TLS certificate that was not accepted (${root.code}), so no tunnel to ${REFUSED_HOST}:5432 was opened. The proxy's certificate is checked against the CAs Node.js trusts: if a private or corporate CA issued it, add that CA to NODE_EXTRA_CA_CERTS`,
+					),
+					error.message,
+				);
+				// sslrootcert is the database server's CA: nothing along the failure points the proxy's certificate at it.
+				assert.equal(shown.includes("sslrootcert=<CA file>"), false, shown);
+				assert.equal(shown.includes("The server's TLS certificate"), false, shown);
+			} finally {
+				setDefaultCACertificates(trusted);
+				await new Promise<void>((resolve) => secure.close(() => resolve()));
+			}
+		});
 });
+
+describe.skipIf(postgresSkipReason !== undefined)(
+	"A refused certificate on any connection the adapter opens (#6112)",
+	() => {
+		test("the connection that creates the schema fails at once on a refused certificate, as the pool's does (#6112)", async () => {
+			await withPostgresDatabase(async (scope) => {
+				const server = new URL(postgresTestUrl!);
+				let connections = 0;
+				// The first connection reaches the server; every later one fails as a refused certificate fails it.
+				const database = await scope.open({
+					socket: () => {
+						connections++;
+						if (connections === 1) return connect(Number(server.port || 5432), server.hostname);
+						return new Duplex({
+							read() {},
+							write(_chunk, _encoding, callback) {
+								callback();
+								this.destroy(Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" }));
+							},
+						});
+					},
+				});
+				assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+				assert.equal(connections, 1);
+				// The first statement that creates something creates the schema first, on a connection of its own.
+				const error = await database.exec("CREATE TABLE refused_probe (id INTEGER)").then(
+					() => assert.fail("the schema was created"),
+					(caught: Error) => caught,
+				);
+				const shown = inspect(error, { depth: null });
+				assert.ok(shown.includes("The server's TLS certificate was not accepted (CERT_HAS_EXPIRED: "), shown);
+				assert.equal(connections, 2, "the refused certificate was asked for again");
+			});
+		});
+	},
+);

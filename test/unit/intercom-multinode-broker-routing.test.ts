@@ -1571,10 +1571,10 @@ function countStatements(database: SqliteDatabase, within: AsyncLocalStorage<tru
 
 /**
  * What queuing one send for an offline session costs the shared database: its target resolved (the live presences, a
- * reservation, its known session and its id's binding), its row looked up, reserved and written in one transaction, and
- * one read once it is written.
+ * reservation, its known session and its id's binding), its row looked up, reserved and written in one transaction (the
+ * write reads the row back, with the broker its recipient's presence names, #5607), and one read once it is written.
  */
-const QUEUED_SEND_STATEMENTS = 12;
+const QUEUED_SEND_STATEMENTS = 11;
 
 test("sends queued for a session that stays offline cost the shared database no more statements each than before (#5607)", async () => {
 	const [a, b] = await cluster();

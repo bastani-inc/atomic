@@ -9,9 +9,11 @@
 
 import {
 	findGitHubCopilotError,
+	findTlsCertificateRefusal,
 	type GitHubCopilotError,
 	type GitHubCopilotErrorCode,
 	GitHubCopilotStreamEndedEarlyError,
+	getTlsCertificateRefusal,
 } from "@bastani/atomic-ai";
 import { isExtensionStartupFailure } from "./extension-startup-failure.ts";
 
@@ -99,6 +101,7 @@ const TRANSPORT_CANCELLATION_FAILURE_PATTERNS: readonly RegExp[] = [
 
 export type ModelFallbackFailureKind =
 	| "auth_on_candidate_provider"
+	| "certificate_refused"
 	| "rate_limit"
 	| "quota_exhausted"
 	| "provider_unavailable"
@@ -136,6 +139,8 @@ export interface ModelFallbackFailureOptions {
 
 const FALLBACKABLE_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new Set([
 	"auth_on_candidate_provider",
+	// The next candidate's endpoint may show a certificate the runtime trusts (#6114).
+	"certificate_refused",
 	"rate_limit",
 	"quota_exhausted",
 	"provider_unavailable",
@@ -655,6 +660,7 @@ function nestedSignalPriority(signal: ModelFallbackFailureSignal): number {
 		case "content_filter":
 			return 100;
 		case "auth_on_candidate_provider":
+		case "certificate_refused":
 			return 90;
 		case "request_incompatible":
 			return 85;
@@ -851,6 +857,17 @@ function githubCopilotSignal(error: unknown): ModelFallbackFailureSignal | undef
 }
 
 /**
+ * A request the runtime refused for its endpoint's TLS certificate (#6114): recorded by the adapter on a failed assistant
+ * message, or along a thrown failure's causes. The same request is refused again, so it is never retried on the same
+ * model; like a rejected credential, it may spend a fallback candidate, whose endpoint may be trusted.
+ */
+function certificateRefusalSignal(error: unknown): ModelFallbackFailureSignal | undefined {
+	const refusal = getTlsCertificateRefusal(asRecord(error)) ?? findTlsCertificateRefusal(error);
+	if (refusal === undefined) return undefined;
+	return { ...makeSignal("certificate_refused", error, undefined), code: refusal.code };
+}
+
+/**
  * How long the attempt ran, in milliseconds, before its response stream ended early. It is read from the typed GitHub
  * Copilot failure, never from message text: on the error, anywhere in its cause chain, or in the diagnostics of a
  * failed assistant message. Undefined for any other failure, and for a stream-cut error that carries no duration.
@@ -874,6 +891,8 @@ export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailur
 	}
 	const copilot = githubCopilotSignal(error);
 	if (copilot !== undefined) return copilot;
+	const certificate = certificateRefusalSignal(error);
+	if (certificate !== undefined) return certificate;
 	const structured = structuredSignal(error, new Set());
 	if (structured !== undefined) return structured;
 	const message = errorMessage(error);
