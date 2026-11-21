@@ -45,7 +45,9 @@ import {
 	readBrokerStartAnnouncement,
 	retractBrokerStartAnnouncement,
 } from "../../packages/intercom/broker/start-announcement.js";
+import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { keepProcessPidByStartTime, keptExitedPid } from "../helpers/exited-process.js";
+import { recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import { bunExecutable, removePathSync } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -134,17 +136,12 @@ beforeAll(async () => {
 	mkdirSync(pathsModule.getIntercomDirPath(), { recursive: true });
 });
 
-afterAll(() => {
-	// Restore first: an early return below must not leave the override installed.
-	restoreAgentDirEnv();
-	const pidPath = pathsModule.getBrokerPidPath();
-	if (!existsSync(pidPath)) return;
-	const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-	if (!Number.isFinite(pid)) return;
+afterAll(async () => {
 	try {
-		process.kill(pid, "SIGTERM");
-	} catch {
-		// The broker already exited.
+		// #6125: this suite's own agent dir, named explicitly, and only the broker that answers there.
+		await stopDetachedBroker(agentDir);
+	} finally {
+		restoreAgentDirEnv();
 	}
 });
 
@@ -595,12 +592,17 @@ describe("a broker behind a launcher that hides it", () => {
 			logPath,
 			announced,
 		);
+		// #6125: recorded as soon as it announces itself, while it waits to listen, and stopped only while its pid names it.
+		await eventually(() => readBrokerStartAnnouncement(announced) !== undefined, PROMPT_EXIT_BOUND_MS);
+		const announcedPid = readBrokerStartAnnouncement(announced)?.pid;
+		assert.ok(announcedPid !== undefined);
+		const broker = await recordProcess(announcedPid);
 		try {
 			await spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, probe(announced));
 
 			assert.ok(startedAt() - started >= listenAfterMs - 100, "answered before the broker could have listened");
 		} finally {
-			kill(readBrokerStartAnnouncement(announced)?.pid);
+			await signalRecordedProcess(broker);
 			await eventually(async () => !(await connectable(socketPath)), 10_000);
 			// A killed listener leaves its Unix socket file behind, which would refuse the next listener.
 			removePathSync(socketPath, { force: true });
@@ -1205,11 +1207,8 @@ describe("physical broker log cap", () => {
 					`log grew to ${size} bytes after ${attemptedBytes} were attempted, cap is ${BROKER_LOG_MAX_BYTES}`,
 				);
 
-				try {
-					if (child.pid !== undefined) process.kill(child.pid, "SIGTERM");
-				} catch {
-					// Already gone.
-				}
+				// Through the handle: once the probe has exited, its pid may name another process.
+				child.kill("SIGTERM");
 			},
 			REAL_BROKER_STARTUP_TIMEOUT_MS,
 		);
@@ -1248,8 +1247,13 @@ describe("a broker that is slow to start", () => {
 				"setInterval(function () {}, 1000);",
 			].join(" ");
 			const started = Date.now();
+			const starting = spawnModule.spawnBrokerIfNeeded(process.execPath, ["-e", script]);
+			starting.catch(() => {});
+			// #6125: recorded as soon as it records its pid, while it waits to listen.
+			await eventually(() => existsSync(pidPath), REAL_BROKER_STARTUP_TIMEOUT_MS);
+			const standIn = await recordProcess(Number.parseInt(readFileSync(pidPath, "utf8"), 10));
 			try {
-				await spawnModule.spawnBrokerIfNeeded(process.execPath, ["-e", script]);
+				await starting;
 
 				assert.ok(
 					Date.now() - started >= FORMER_BROKER_READY_TIMEOUT_MS,
@@ -1257,11 +1261,7 @@ describe("a broker that is slow to start", () => {
 				);
 				assert.equal(await connectable(socketPath), true);
 			} finally {
-				try {
-					process.kill(Number.parseInt(readFileSync(pidPath, "utf8"), 10), "SIGTERM");
-				} catch {
-					// The stand-in never started or already exited.
-				}
+				await signalRecordedProcess(standIn, "SIGTERM");
 				for (let attempt = 0; attempt < 100 && (await connectable(socketPath)); attempt++) {
 					await new Promise((resolve) => setTimeout(resolve, 50));
 				}

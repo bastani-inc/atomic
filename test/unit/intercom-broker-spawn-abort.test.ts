@@ -355,6 +355,8 @@ async function abandonAnnouncedStart(
 	command: string[],
 	beforeAbort: (broker: RecordedProcess) => Promise<void> = async () => {},
 ): Promise<RecordedProcess> {
+	// Runs after the broker is stopped: removes its files once Windows has let go of the broker log.
+	cleanups.push(() => removeTempRootReleasingBroker(join(agentDir, ".."), agentDir));
 	const controller = new AbortController();
 	const start = spawnBrokerIfNeeded(process.execPath, command, READY_TIMEOUT_MS, undefined, controller.signal);
 	const broker = await recordedProcess(markerPath, start);

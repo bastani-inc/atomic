@@ -159,6 +159,29 @@ test("stopDetachedBroker never signals a process a leftover broker.pid names whe
 	}
 });
 
+test("stopDetachedBroker only touches the agent dir it is given, never the one the environment names (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-scope-");
+	const outerDir = join(root, "outer");
+	const agentDir = join(root, "agent");
+	makeDirectorySync(join(outerDir, "intercom"), { recursive: true });
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	// The profile the environment names has a live broker; the suite's own agent dir has none.
+	const outerBroker = startStandInBroker(outerDir);
+	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
+	try {
+		await waitForFile(join(outerDir, "intercom", "broker.pid"));
+		process.env.ATOMIC_CODING_AGENT_DIR = outerDir;
+		await stopDetachedBroker(agentDir);
+		assert.equal(processExists(outerBroker.pid), true, "the cleanup stopped the broker of another agent dir");
+	} finally {
+		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+		outerBroker.kill("SIGKILL");
+		await outerBroker.exited;
+		removePathSync(root, { recursive: true, force: true });
+	}
+});
+
 test("stopDetachedBroker never signals the process broker.pid names when the broker answering there is another (#6125)", async () => {
 	const root = makeTempDirectory("atomic-broker-teardown-other-");
 	const agentDir = join(root, "agent");

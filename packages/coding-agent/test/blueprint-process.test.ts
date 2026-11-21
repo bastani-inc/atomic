@@ -20,12 +20,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import {
-	recordProcess,
-	signalRecordedProcess,
-	stillRuns,
-	waitUntilGone,
-} from "../../../test/helpers/recorded-process.js";
+import { isGone, recordProcess, signalRecordedProcess, waitUntilGone } from "../../../test/helpers/recorded-process.js";
 import {
 	copiesOutputToLog,
 	LOG_TAIL_BYTES,
@@ -689,7 +684,7 @@ describe("running a logged process (#4588)", () => {
 			try {
 				controller.abort(reason);
 				await assert.rejects(pending, (error: unknown) => error === reason);
-				assert.equal(await stillRuns(sleeper), false, "the sleep holding a file in the step's directory has ended");
+				assert.equal(await isGone(sleeper), true, "the sleep holding a file in the step's directory has ended");
 				renameSync(work, path("work-moved"));
 			} finally {
 				await signalRecordedProcess(sleeper);

@@ -68,10 +68,22 @@ export async function signalRecordedProcess(
 	}
 }
 
-/** Waits until `recorded` no longer runs, for up to `timeoutMs`; whether it is gone. */
+/**
+ * Whether `recorded` is known to have exited: no process has its pid any more, or the process with its pid started at
+ * another time. A process whose start cannot be read is not known to be gone, unlike in {@link stillRuns}: not being
+ * allowed to signal a pid is no proof that its process ended.
+ */
+export async function isGone(recorded: RecordedProcess): Promise<boolean> {
+	if (!pidInUse(recorded.pid)) return true;
+	if (!READS_PROCESS_STARTS || recorded.started === undefined) return false;
+	const current = await currentProcessStart(recorded.pid);
+	return current !== undefined && current !== recorded.started;
+}
+
+/** Waits until `recorded` is known to have exited ({@link isGone}), for up to `timeoutMs`; whether it has. */
 export async function waitUntilGone(recorded: RecordedProcess, timeoutMs: number, pollMs = 20): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
-	while (await stillRuns(recorded)) {
+	while (!(await isGone(recorded))) {
 		if (Date.now() >= deadline) return false;
 		await sleep(pollMs);
 	}

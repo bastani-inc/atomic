@@ -779,7 +779,8 @@ if ($broker.WaitForExit(${waitMs})) { exit 0 } else { exit 4 }
  * Stop the Windows broker found by its announcement, as {@link stopAnnouncedBrokerScript} does. A pid that already names
  * another process is left alone without starting PowerShell. The session waits at most
  * {@link ANNOUNCED_BROKER_STOP_START_MS} for the check and PowerShell's start, {@link STARTING_BROKER_KILL_WAIT_MS} for
- * the broker to exit, and {@link ANNOUNCED_BROKER_STOP_MARGIN_MS}; the PowerShell runs detached and finishes on its own.
+ * the broker to exit, and {@link ANNOUNCED_BROKER_STOP_MARGIN_MS}. It never ends the PowerShell: once the session stops
+ * waiting, the PowerShell finishes on its own, or ends with this process, which can only leave processes running.
  */
 async function stopAnnouncedBroker(pid: number, started: string): Promise<void> {
   const entered = performance.now();
@@ -796,7 +797,7 @@ async function stopAnnouncedBroker(pid: number, started: string): Promise<void> 
         "-EncodedCommand",
         Buffer.from(stopAnnouncedBrokerScript(pid, started, STARTING_BROKER_KILL_WAIT_MS), "utf16le").toString("base64"),
       ],
-      { cwd: systemRoot, detached: true, env: hostCommandEnvironment(), stdio: "ignore", windowsHide: true },
+      { cwd: systemRoot, env: hostCommandEnvironment(), stdio: "ignore", windowsHide: true },
     );
     powershell.unref();
     const done = () => {
