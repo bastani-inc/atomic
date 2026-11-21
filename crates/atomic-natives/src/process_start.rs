@@ -184,6 +184,40 @@ mod tests {
 		assert_eq!(process_creation_time(0), None);
 	}
 
+	#[cfg(windows)]
+	#[test]
+	fn ends_a_process_its_starter_started_a_moment_ago() {
+		use std::{process::Command, thread::sleep, time::Duration};
+		// A child created within one tick of the system clock before the stop, a few times over.
+		for _ in 0..5 {
+			let mut parent =
+				Command::new("cmd").args(["/d", "/c", "ping -n 60 127.0.0.1 >nul"]).spawn().unwrap();
+			let pid = parent.id();
+			let created = process_creation_time(pid).expect("the child's creation time");
+			let child = loop {
+				let listed = super::processes().map(|(listed, _)| listed).unwrap_or_default();
+				if let Some(&(id, _)) = listed.iter().find(|&&(_, started_by)| started_by == pid) {
+					break id;
+				}
+				std::thread::yield_now();
+			};
+			let ended = terminate_process_created_at(pid, created, true);
+			assert!(ended.is_some_and(|count| count >= 2), "ended {ended:?}");
+			parent.wait().unwrap();
+			for _ in 0..200 {
+				if process_creation_time(child).is_none() {
+					break;
+				}
+				sleep(Duration::from_millis(10));
+			}
+			assert_eq!(
+				process_creation_time(child),
+				None,
+				"the process it started a moment ago still runs"
+			);
+		}
+	}
+
 	#[cfg(not(windows))]
 	#[test]
 	fn reads_nothing_off_windows() {
