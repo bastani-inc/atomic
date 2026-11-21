@@ -67,24 +67,26 @@ function getCreateJiti(): Promise<typeof createJiti> {
 }
 
 const HOST_TYPEBOX = "@bastani/atomic-schema/typebox";
-const sharesHostTypeboxByDir = new Map<string, boolean>();
+const sharesHostTypeboxByDir = new Map<string, Promise<boolean>>();
 
 /**
  * Under Bun, whether to import the entry of Atomic's own package at `extensionPath`, as a source checkout loads it,
  * natively, as before Bun transformed every extension: Bun then resolves its imports itself, from the files the host
  * loads, which reach the host's own instances as long as its TypeBox is the host's copy.
  */
-function bunImportsNatively(extensionPath: string): boolean {
-	const bun = (globalThis as typeof globalThis & { Bun?: { resolveSync(id: string, parent: string): string } }).Bun;
-	if (bun === undefined || isBunBinary || isBundledBuild || !isSourceBuiltinExtensionPath(extensionPath)) return false;
+function bunImportsNatively(extensionPath: string): Promise<boolean> {
+	const bun = (globalThis as typeof globalThis & { Bun?: { resolve(id: string, parent: string): Promise<string> } })
+		.Bun;
+	if (bun === undefined || isBunBinary || isBundledBuild || !isSourceBuiltinExtensionPath(extensionPath)) {
+		return Promise.resolve(false);
+	}
 	const dir = path.dirname(extensionPath);
 	let shares = sharesHostTypeboxByDir.get(dir);
 	if (shares === undefined) {
-		try {
-			shares = bun.resolveSync(HOST_TYPEBOX, dir) === bun.resolveSync(HOST_TYPEBOX, currentModuleDir());
-		} catch {
-			shares = false;
-		}
+		shares = Promise.all([bun.resolve(HOST_TYPEBOX, dir), bun.resolve(HOST_TYPEBOX, currentModuleDir())]).then(
+			([fromPackage, fromHost]) => fromPackage === fromHost,
+			() => false,
+		);
 		sharesHostTypeboxByDir.set(dir, shares);
 	}
 	return shares;
@@ -826,7 +828,7 @@ async function importExtensionModule(
 		},
 		...(forceTransformedImports
 			? { tryNative: false }
-			: bunImportsNatively(extensionPath)
+			: (await bunImportsNatively(extensionPath))
 				? { tryNative: true }
 				: {}),
 		// A first native import can fall back to transformation too. Always share
@@ -948,8 +950,9 @@ export async function prepareExtensionEntries(
 	const createJitiImpl = await getCreateJiti();
 	// The options a load's jiti gets that decide whether it imports the entry natively and how it transforms modules.
 	const { options } = createJitiImpl(resolutionBaseUrl(import.meta.url), { moduleCache: false, fsCache: false });
+	const native = await Promise.all(entries.map((entry) => bunImportsNatively(entry)));
 	const transformed = entries.filter(
-		(entry) => nativelyImportedPaths.has(entry) || !(options.tryNative || bunImportsNatively(entry)),
+		(entry, index) => nativelyImportedPaths.has(entry) || !(options.tryNative || native[index]),
 	);
 	const importPaths = await Promise.all(transformed.map((entry) => realpathJs(entry).catch(() => entry)));
 	await prepareSourceEntries(
