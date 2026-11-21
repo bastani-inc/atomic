@@ -200,6 +200,27 @@ describe("closing the Windows console", () => {
 		assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
 	});
 
+	test("a close while a quit drains the keyboard's input leaves the console unrestored", async () => {
+		const { context, closeConsole } = createWindowsHost(async () => {});
+		vi.mocked(context.ui.terminal.drainInput).mockImplementation(async () => closeConsole());
+
+		await context.shutdown();
+
+		assert.equal(vi.mocked(context.stop).mock.calls.length, 0, "the closed console is not restored");
+		assert.deepEqual(vi.mocked(context.runtimeHost.dispose).mock.calls, [[]], "the quit's own disposal ran, once");
+		assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+	});
+
+	test("a close while a signalled shutdown drains the keyboard's input leaves the console unrestored", async () => {
+		const { context, closeConsole } = createWindowsHost(async () => {});
+		vi.mocked(context.ui.terminal.drainInput).mockImplementation(async () => closeConsole());
+
+		await context.shutdown({ fromSignal: true });
+
+		assert.equal(vi.mocked(context.stop).mock.calls.length, 0, "the closed console is not restored");
+		assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+	});
+
 	test("a close while the quit looks up its resume hint writes no hint and exits with STATUS_CONTROL_C_EXIT", async () => {
 		const isTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 		Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });

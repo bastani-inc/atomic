@@ -211,7 +211,7 @@ InteractiveModeBase.prototype.shutdown = async function (
 			// Drain any in-flight Kitty key release events briefly before stopping.
 			// Keep this bounded so Ctrl+C exits do not feel stalled on Windows.
 			await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
-			stopTerminal(this);
+			if (!ending.terminalLost) stopTerminal(this);
 		}
 		process.exit(ending.terminalLost ? terminalLostExitCode(ending) : 0);
 	}
@@ -225,11 +225,14 @@ InteractiveModeBase.prototype.shutdown = async function (
 
 	// Output for a terminal that is gone is never written, so its end is not waited for.
 	await Promise.race([chatHistoryBuilt(this.chatContainer), ending.terminalLoss]);
-	this.writeExitOutputInSlices = true;
-	stopTerminal(this);
-	// Stopping the screen unregistered the handlers. A console closed while the session shuts down still ends it
-	// within Windows's timeout and with its status.
-	listenForConsoleClose(this);
+	// A terminal lost meanwhile is not restored either, and the handlers stay registered.
+	if (!ending.terminalLost) {
+		this.writeExitOutputInSlices = true;
+		stopTerminal(this);
+		// Stopping the screen unregistered the handlers. A console closed while the session shuts down still ends it
+		// within Windows's timeout and with its status.
+		listenForConsoleClose(this);
+	}
 	await Promise.race([this.exitOutputWritten, ending.terminalLoss]);
 	await this.runtimeHost.dispose();
 	if (ending.terminalLost) process.exit(terminalLostExitCode(ending));
