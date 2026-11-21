@@ -78,6 +78,23 @@ describe("the runtime a compile-cache helper repeats", () => {
 		);
 	});
 
+	test("is refused for a NODE_OPTIONS value Node would refuse, so no helper starts (#6132)", () => {
+		// Node does not start with a quote left open in NODE_OPTIONS, so a helper given this value would never run.
+		for (const nodeOptions of ['"--max-old-space-size=4096', '--max-old-space-size=4096 "--require ./a.cjs', '"\\']) {
+			const runtime = compileCacheHelperRuntime([], { NODE_OPTIONS: nodeOptions });
+			assert.equal(runtime, undefined, nodeOptions);
+			assert.equal(
+				compileCacheStartMode({
+					...coldWindowsSession,
+					helperRuntime: runtime !== undefined,
+					warm: markerNeverRead,
+				}),
+				"enable",
+				nodeOptions,
+			);
+		}
+	});
+
 	test("is refused for anything else a second process would repeat (#6132)", () => {
 		for (const [execArgv, env] of [
 			[["--inspect"], {}],
