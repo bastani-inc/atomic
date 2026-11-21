@@ -2667,8 +2667,8 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		let delayed = 1;
 		vi.spyOn(knownSessions, "bind").mockImplementation(async (...args) => {
 			const binding = await bind(...args);
-			// The first attempt at the awaited id is written, but its answer comes only much later.
-			if (args[0] === id && delayed-- > 0) await late.promise;
+			// The first attempt that takes the awaited id is written, but its answer comes only much later.
+			if (args[0] === id && binding.status === "bound" && delayed-- > 0) await late.promise;
 			return binding;
 		});
 		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 3 * BROKER_LEASE_RENEW_INTERVAL_MS);
