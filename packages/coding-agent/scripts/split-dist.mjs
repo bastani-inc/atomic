@@ -411,7 +411,8 @@ for (const [name, directory] of [...inlined].sort(([a], [b]) => (a < b ? -1 : 1)
 		if (!INLINED_PACKAGES.includes(dependency))
 			throw new Error(`split-dist: ${name} is inlined, but its dependency ${dependency} is not`);
 	}
-	const licenseFile = readdirSync(directory).find((file) => /^(licen[sc]e|copying)(\.|$)/i.test(file));
+	// LICENSE, LICENSE.md, LICENSE-MIT, COPYING and the like.
+	const licenseFile = readdirSync(directory).find((file) => /^(licen[sc]e|copying)([.-]|$)/i.test(file));
 	const license = licenseFile ? readFileSync(join(directory, licenseFile), "utf8").trim() : `License: ${manifest.license}`;
 	notices.push(`## ${name} ${manifest.version}\n\n${license}\n`);
 }
