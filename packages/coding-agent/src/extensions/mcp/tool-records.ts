@@ -73,8 +73,9 @@ export interface McpToolRecordData {
 	/** The server summaries the section showed, when they changed. */
 	summaries?: McpServerSummaryRecord[];
 	/**
-	 * The section's lines in namespaces two or more of them share, in order, with the server each lists, written with
-	 * the summaries when they changed. Lines of a shared namespace name no server, so this says which line is whose.
+	 * The lines of the section a run's requests send that are in namespaces two or more of them share, in order, with
+	 * the server each lists, written when the run's first reply ends. Lines of a shared namespace name no server, so
+	 * this says which line is whose.
 	 */
 	serverLines?: McpServerLineRecord[];
 }
@@ -87,7 +88,10 @@ export interface McpToolRecords {
 	tools: Map<string, McpToolRecord>;
 	resourceServers: McpResourceServerRecord[] | undefined;
 	summaries: Map<string, McpServerSummaryRecord>;
-	/** The latest record of the lines of shared namespaces; undefined when there is none or it is malformed. */
+	/**
+	 * The latest record of the lines of shared namespaces, when no input that can start a request came after it, so it
+	 * is the record of the latest request's section; undefined otherwise, or when it is malformed.
+	 */
 	serverLines: McpServerLineRecord[] | undefined;
 }
 
@@ -224,6 +228,14 @@ export function readToolRecords(branch: readonly SessionEntry[]): McpToolRecords
 	const summaries = new Map<string, McpServerSummaryRecord>();
 	let serverLines: McpServerLineRecord[] | undefined;
 	for (const entry of branch) {
+		// Input that can start a request with a newly laid out section, after the lines were recorded, may be of a
+		// request whose record was not written. Replies and tool results continue the request the record is of.
+		if (
+			(entry.type === "message" && entry.message.role !== "assistant" && entry.message.role !== "toolResult") ||
+			entry.type === "custom_message" ||
+			entry.type === "branch_summary"
+		)
+			serverLines = undefined;
 		if (entry.type !== "custom" || entry.customType !== MCP_TOOL_RECORD_ENTRY_TYPE || !isRecord(entry.data)) continue;
 		const { data } = entry;
 		if (Array.isArray(data.tools))

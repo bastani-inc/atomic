@@ -32,6 +32,7 @@ import { createMcpExtension, MCP_SERVERS_SECTION } from "../../src/extensions/mc
 import { McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.ts";
 import {
 	MCP_TOOL_RECORD_ENTRY_TYPE,
+	type McpToolRecordData,
 	readToolRecords,
 	transportFingerprint,
 } from "../../src/extensions/mcp/tool-records.ts";
@@ -918,19 +919,103 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 	});
 
 	/**
-	 * A session whose shared namespace showed a configured description and another server's summary, then that server
-	 * reconnected without instructions, and the records of that prompt were not written. Returns the session file.
+	 * Lose the MCP records a session wrote after `written` (the file's text before it ran), as when their writes fail:
+	 * all of them, or only those that record summaries. The conversation is kept, with each entry's parent repaired.
 	 */
-	async function lostSharedRetirement(fixture: Fixture) {
-		const server = (instructions?: string) => ({ tools: [SEARCH], instructions, calls: [] });
+	function loseRecords(sessionFile: string, written: string, only: "all" | "summaries") {
+		const entries = readFileSync(sessionFile, "utf8")
+			.slice(written.length)
+			.split("\n")
+			.filter(Boolean)
+			.map(
+				(line) =>
+					JSON.parse(line) as {
+						id: string;
+						parentId: string | null;
+						customType?: string;
+						data?: { summaries?: unknown[] };
+					},
+			);
+		const lost = entries.filter(
+			(entry) =>
+				entry.customType === MCP_TOOL_RECORD_ENTRY_TYPE && (only === "all" || entry.data?.summaries?.length),
+		);
+		expect(lost.length).toBeGreaterThan(0);
+		const parents = new Map(lost.map((entry) => [entry.id, entry.parentId]));
+		const parentOf = (id: string | null): string | null =>
+			id !== null && parents.has(id) ? parentOf(parents.get(id)!) : id;
+		const kept = entries
+			.filter((entry) => !parents.has(entry.id))
+			.map((entry) => JSON.stringify({ ...entry, parentId: parentOf(entry.parentId) }));
+		writeFileSync(sessionFile, `${written}${kept.join("\n")}\n`);
+	}
+
+	const sharedServer = (instructions?: string, ready?: Promise<void>) => ({
+		tools: [SEARCH],
+		instructions,
+		ready,
+		calls: [],
+	});
+
+	it("records which server each line of a shared namespace lists once for a prompt whose replies call tools", async () => {
+		const fixture = await createFixture();
+		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
+		const live = await startSession(fixture, manager, {
+			servers: { [SHARED[0]]: sharedServer("First words."), [SHARED[1]]: sharedServer("Second words.") },
+			exposure: "codemode",
+		});
+		await settled(live);
+		const records = () =>
+			live.sessionManager
+				.getBranch()
+				.filter(
+					(entry) =>
+						entry.type === "custom" &&
+						entry.customType === MCP_TOOL_RECORD_ENTRY_TYPE &&
+						(entry.data as McpToolRecordData).serverLines !== undefined,
+				).length;
+		fixture.faux.setResponses([
+			fixture.callTool("no_such_tool", {}),
+			fixture.callTool("no_such_tool", {}),
+			fixture.reply("done"),
+		]);
+		await live.prompt("use tools");
+		expect(records()).toBe(1);
+		await promptReply(fixture, live, "again");
+		expect(records()).toBe(2);
+	});
+
+	it("does not show the summaries of servers that share a namespace once another server joined or left it", async () => {
+		const fixture = await createFixture();
+		const { sessionFile } = await liveCodemodeSession(fixture, {
+			servers: { [SHARED[0]]: sharedServer("First words."), [SHARED[1]]: sharedServer("Second words.") },
+		});
+
+		const reconnect = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: {
+				[SHARED[1]]: sharedServer("Second words.", reconnect.ready),
+				[SHARED[2]]: sharedServer("Third words.", reconnect.ready),
+			},
+			exposure: "codemode",
+		});
+		await promptReply(fixture, resumed, "while reconnecting");
+		expect(serverLines(currentSection(resumed))).toEqual([sharedLine(), sharedLine()]);
+		reconnect.release();
+		await settled(resumed);
+	});
+
+	it("does not show a summary on a shared namespace's line that the conversation showed for another server", async () => {
+		const fixture = await createFixture();
 		const descriptions = { [SHARED[0]]: "Shared words." };
 		const { sessionFile } = await liveCodemodeSession(fixture, {
-			servers: { [SHARED[0]]: server(), [SHARED[1]]: server("Shared words.") },
+			servers: { [SHARED[0]]: sharedServer(), [SHARED[1]]: sharedServer("Shared words.") },
 			descriptions,
 		});
 		const written = readFileSync(sessionFile, "utf8");
+		// The second server stops giving instructions; the records of the prompt that showed it are lost.
 		const first = await resume(fixture, sessionFile, {
-			servers: { [SHARED[0]]: server(), [SHARED[1]]: server() },
+			servers: { [SHARED[0]]: sharedServer(), [SHARED[1]]: sharedServer() },
 			descriptions,
 			exposure: "codemode",
 		});
@@ -938,53 +1023,86 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		await promptReply(fixture, first, "after reconnect");
 		expect(serverLines(currentSection(first))).toEqual([sharedLine("Shared words."), sharedLine()]);
 		await first.dispose();
-		// Everything that prompt's records said is lost, as when their write fails; the conversation is kept.
-		const lost = readFileSync(sessionFile, "utf8")
-			.slice(written.length)
-			.split("\n")
-			.filter((line) => line.includes(MCP_TOOL_RECORD_ENTRY_TYPE));
-		expect(lost).toHaveLength(1);
-		writeFileSync(sessionFile, readFileSync(sessionFile, "utf8").replace(`${lost[0]}\n`, ""));
-		return { sessionFile };
-	}
-
-	it("does not show a summary on a shared namespace's line that the conversation showed for another server", async () => {
-		const fixture = await createFixture();
-		const { sessionFile } = await lostSharedRetirement(fixture);
+		loseRecords(sessionFile, written, "all");
 
 		// The server with the description is gone, and another one shares the namespace now.
-		const server = held();
+		const reconnect = held();
 		const resumed = await resume(fixture, sessionFile, {
 			servers: {
-				[SHARED[1]]: { tools: [SEARCH], ready: server.ready, calls: [] },
-				[SHARED[2]]: { tools: [SEARCH], ready: server.ready, calls: [] },
+				[SHARED[1]]: sharedServer(undefined, reconnect.ready),
+				[SHARED[2]]: sharedServer(undefined, reconnect.ready),
 			},
 			exposure: "codemode",
 		});
 		await promptReply(fixture, resumed, "while reconnecting");
 		expect(serverLines(currentSection(resumed))).toEqual([sharedLine(), sharedLine()]);
-		server.release();
+		reconnect.release();
 		await settled(resumed);
 	});
 
-	it("does not show a shared namespace's summary that the conversation no longer showed when its replacement was not written", async () => {
+	it("does not show a summary a server in a shared namespace stopped giving when the conversation's records of it were lost", async () => {
 		const fixture = await createFixture();
-		const { sessionFile } = await lostSharedRetirement(fixture);
-
-		const server = held();
-		const resumed = await resume(fixture, sessionFile, {
-			servers: {
-				[SHARED[0]]: { tools: [SEARCH], ready: server.ready, calls: [] },
-				[SHARED[1]]: { tools: [SEARCH], ready: server.ready, calls: [] },
-			},
-			descriptions: { [SHARED[0]]: "Shared words." },
+		const { sessionFile, section } = await liveCodemodeSession(fixture, {
+			servers: { [SHARED[1]]: sharedServer("Withdrawn words."), [SHARED[2]]: sharedServer() },
+		});
+		expect(serverLines(section)).toEqual([sharedLine("Withdrawn words."), sharedLine()]);
+		const written = readFileSync(sessionFile, "utf8");
+		// Another server takes the namespace's first line with the same words as its description, and the server that
+		// gave them stops; the section reads the same, and that prompt's records are lost.
+		const first = await resume(fixture, sessionFile, {
+			servers: { [SHARED[0]]: sharedServer(), [SHARED[1]]: sharedServer() },
+			descriptions: { [SHARED[0]]: "Withdrawn words." },
 			exposure: "codemode",
 		});
-		const before = resumed.messages.length;
+		await settled(first);
+		await promptReply(fixture, first, "after reconnect");
+		expect(serverLines(currentSection(first))).toEqual([sharedLine("Withdrawn words."), sharedLine()]);
+		await first.dispose();
+		loseRecords(sessionFile, written, "all");
+
+		// The servers of the first section are back.
+		const reconnect = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: {
+				[SHARED[1]]: sharedServer(undefined, reconnect.ready),
+				[SHARED[2]]: sharedServer(undefined, reconnect.ready),
+			},
+			exposure: "codemode",
+		});
 		await promptReply(fixture, resumed, "while reconnecting");
-		expect(sectionUpdates(resumed, before)).toEqual([]);
-		expect(serverLines(currentSection(resumed))).toEqual([sharedLine("Shared words."), sharedLine()]);
-		server.release();
+		expect(serverLines(currentSection(resumed))).toEqual([sharedLine(), sharedLine()]);
+		reconnect.release();
+		await settled(resumed);
+	});
+
+	it("shows only the shared namespace's summaries that their servers' records still hold when a summary was not written", async () => {
+		const fixture = await createFixture();
+		const { sessionFile } = await liveCodemodeSession(fixture, {
+			servers: { [SHARED[0]]: sharedServer("First words."), [SHARED[1]]: sharedServer("Second words.") },
+		});
+		const written = readFileSync(sessionFile, "utf8");
+		// The second server gives other words; the record of its new summary is lost.
+		const first = await resume(fixture, sessionFile, {
+			servers: { [SHARED[0]]: sharedServer("First words."), [SHARED[1]]: sharedServer("Other words.") },
+			exposure: "codemode",
+		});
+		await settled(first);
+		await promptReply(fixture, first, "after reconnect");
+		expect(serverLines(currentSection(first))).toEqual([sharedLine("First words."), sharedLine("Other words.")]);
+		await first.dispose();
+		loseRecords(sessionFile, written, "summaries");
+
+		const reconnect = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: {
+				[SHARED[0]]: sharedServer("First words.", reconnect.ready),
+				[SHARED[1]]: sharedServer("Other words.", reconnect.ready),
+			},
+			exposure: "codemode",
+		});
+		await promptReply(fixture, resumed, "while reconnecting");
+		expect(serverLines(currentSection(resumed))).toEqual([sharedLine("First words."), sharedLine()]);
+		reconnect.release();
 		await settled(resumed);
 	});
 

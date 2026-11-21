@@ -294,10 +294,10 @@ function layOutServersSection(servers: readonly McpServerListing[]): ServersSect
 		.slice(0, kept)
 		.map((_, index) => (summarized[index]?.summary ? `${heads[index]}: ${summarized[index].summary}` : heads[index]));
 	const namespaces = listed.slice(0, kept).map((server) => mcpNamespace(server.entry.name));
+	const counts = new Map<string, number>();
+	for (const namespace of namespaces) counts.set(namespace, (counts.get(namespace) ?? 0) + 1);
 	const sharedLines = lines.flatMap((line, index) =>
-		namespaces.filter((namespace) => namespace === namespaces[index]).length > 1
-			? [{ server: listed[index]!.entry.name, line }]
-			: [],
+		counts.get(namespaces[index]!)! > 1 ? [{ server: listed[index]!.entry.name, line }] : [],
 	);
 	return { text: [intro, ...lines, ...omitted(listed.length - kept)].join("\n"), summarized, sharedLines };
 }
@@ -361,17 +361,6 @@ function sharedLineSummaries(
 		for (const [index, record] of recorded.entries()) owned.set(record.server, summaries[index]!);
 	}
 	return owned;
-}
-
-function sameServerLines(
-	left: readonly McpServerLineRecord[],
-	right: readonly McpServerLineRecord[] | undefined,
-): boolean {
-	return (
-		right !== undefined &&
-		left.length === right.length &&
-		left.every((record, index) => record.server === right[index]!.server && record.line === right[index]!.line)
-	);
 }
 
 /**
@@ -610,11 +599,17 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					? readSentServersSection(latestSystemSection(branch, MCP_SERVERS_SECTION))
 					: undefined;
 			// The servers listed now, in the section's order, own the lines of a shared namespace (see sharedLineSummaries).
-			const listed = servers
-				.filter((server) => isEnabled(server) && hasIndirectTools(server.entry))
-				.map((server) => server.entry.name)
-				.sort((a, b) => a.localeCompare(b));
-			const shared = section ? sharedLineSummaries(section, toolRecords.serverLines, listed) : new Map();
+			const shared =
+				section && toolRecords.serverLines
+					? sharedLineSummaries(
+							section,
+							toolRecords.serverLines,
+							servers
+								.filter((server) => isEnabled(server) && hasIndirectTools(server.entry))
+								.map((server) => server.entry.name)
+								.sort((a, b) => a.localeCompare(b)),
+						)
+					: new Map<string, string>();
 			shownRecords = new Set(
 				[...toolRecords.summaries.values()]
 					.filter((record) => showsRecordedSummary(section, record, shared))
@@ -634,6 +629,10 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					sharedLines: McpServerLineRecord[];
 			  }
 			| undefined;
+		/** The lines of shared namespaces in the section the conversation's requests send now (see promptSection). */
+		let sentSharedLines: McpServerLineRecord[] = [];
+		/** Whether `sentSharedLines` was recorded since the latest input that can start a request. */
+		let sharedLinesRecorded = false;
 
 		// Render resumed MCP calls even when their server has not connected or never connects.
 		pi.registerToolRenderer((toolName, next) => {
@@ -949,23 +948,15 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		};
 
 		/** Append summary records; a failed write is tried again with the next prompt, which finds them changed still. */
-		const recordSummaries = async (
-			summaries: McpServerSummaryRecord[],
-			serverLines?: McpServerLineRecord[],
-		): Promise<void> => {
+		const recordSummaries = async (summaries: McpServerSummaryRecord[]): Promise<void> => {
 			const records = toolRecords;
 			try {
-				await pi.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, {
-					tools: [],
-					summaries,
-					...(serverLines ? { serverLines } : {}),
-				});
+				await pi.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, { tools: [], summaries });
 				if (toolRecords === records) {
 					for (const record of summaries) {
 						if (record.summary) records.summaries.set(record.server, record);
 						else records.summaries.delete(record.server);
 					}
-					if (serverLines) records.serverLines = serverLines;
 				}
 			} catch {
 				// Without the record, a later resume shows the server without a summary until it connects, as before.
@@ -1804,18 +1795,30 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			if (promptSection) {
 				const { options, text, shown, kept, sharedLines } = promptSection;
 				promptSection = undefined;
+				sentSharedLines = [];
 				if (message.role === "system" || message.role === "user" || message.role === "custom") {
 					const sent =
 						text !== undefined &&
 						options.forceSystemPrompt === undefined &&
 						options.sections?.[MCP_SERVERS_SECTION] === text;
 					const updates = sent ? summaryUpdates(shown, kept) : summaryUpdates(new Map(), new Set());
-					// Which server each line of a shared namespace lists, written with the summaries when it changed.
-					const lines =
-						sent && sharedLines.length > 0 && !sameServerLines(sharedLines, toolRecords.serverLines)
-							? sharedLines
-							: undefined;
-					if (updates.length > 0 || lines) await recordSummaries(updates, lines);
+					if (updates.length > 0) await recordSummaries(updates);
+					sentSharedLines = sent ? sharedLines : [];
+				}
+			}
+			// The first reply after input that can start a request records which server each line of a shared namespace
+			// in the section its request sent lists, before the reply itself is saved. A resume trusts only a record that
+			// no such input follows (see readToolRecords).
+			if (message.role !== "assistant" && message.role !== "toolResult") sharedLinesRecorded = false;
+			else if (message.role === "assistant" && sentSharedLines.length > 0 && !sharedLinesRecorded) {
+				try {
+					await pi.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, {
+						tools: [],
+						serverLines: sentSharedLines,
+					});
+					sharedLinesRecorded = true;
+				} catch {
+					// Without the record, a later resume shows these lines without a summary until their servers reconnect.
 				}
 			}
 			if (message.role !== "system" || (!message.toolsAdded && !message.toolsRemoved)) return;
@@ -1892,6 +1895,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			pendingSummaries.clear();
 			shownRecords = new Set();
 			promptSection = undefined;
+			sentSharedLines = [];
+			sharedLinesRecorded = false;
 			declaredNames = new Set();
 			tokensAtSignIn.clear();
 			resourceToolsExposure = undefined;
