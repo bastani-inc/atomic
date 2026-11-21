@@ -244,3 +244,77 @@ test("a compaction that changed nothing is shown at once on an engine host (#559
 		await harness.cleanup();
 	}
 });
+
+/** Collect what the host reports, as the chat shows it, and every rejection nothing handled. */
+function watchFailures(host: Awaited<ReturnType<typeof hostOf>>) {
+	const shown: string[] = [];
+	host.runtime.onDiagnostic((d) =>
+		renderEngineDiagnostic(d, {
+			stopWorkingLoader: () => {},
+			showError: (m) => shown.push(m),
+			showStatus: (m) => shown.push(`status: ${m}`),
+		}),
+	);
+	const unhandled: unknown[] = [];
+	const record = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", record);
+	return { shown, unhandled, stop: () => process.off("unhandledRejection", record) };
+}
+
+test("a host listener that throws while a compaction's held events are released is reported, and the rest still arrive (#6107)", async () => {
+	const harness = await createHarness();
+	const host = await hostOf(harness);
+	const failures = watchFailures(host);
+	try {
+		host.session.subscribe((e) => {
+			if (e.type === "message_start")
+				throw new Error(`could not draw ${(e.message as { content: string }).content}`);
+		});
+		const later: string[] = [];
+		host.session.subscribe((e) => later.push(e.type));
+		host.emit(compactionEnd(true));
+		host.emit(user("after"));
+		host.emit(user("last"));
+
+		host.refreshes[0]!.resolve();
+		await new Promise<void>((r) => setImmediate(r));
+
+		assert.deepEqual(host.seen, ["compaction_end", "message_start:after", "message_start:last"]);
+		assert.deepEqual(later, ["compaction_end", "message_start", "message_start"]);
+		assert.deepEqual(failures.shown, [
+			`Atomic failed while handling the interactive engine's "message_start" event: could not draw after`,
+			`Atomic failed while handling the interactive engine's "message_start" event: could not draw last`,
+		]);
+		assert.deepEqual(failures.unhandled, []);
+		assert.equal(host.runtime.interruptBlockedCallback(), false, "the engine is not treated as blocked");
+	} finally {
+		failures.stop();
+		await harness.cleanup();
+	}
+});
+
+test("a host listener's rejected promise is reported once, not left unhandled (#6107)", async () => {
+	const harness = await createHarness();
+	const host = await hostOf(harness);
+	const failures = watchFailures(host);
+	try {
+		host.session.subscribe(async (e) => {
+			if (e.type === "message_start")
+				throw new Error(`could not draw ${(e.message as { content: string }).content}`);
+		});
+
+		host.emit(user("one"));
+		host.emit(user("two"));
+		await new Promise<void>((r) => setImmediate(r));
+
+		assert.deepEqual(host.seen, ["message_start:one", "message_start:two"]);
+		assert.deepEqual(failures.shown, [
+			`Atomic failed while handling the interactive engine's "message_start" event: could not draw one`,
+			`Atomic failed while handling the interactive engine's "message_start" event: could not draw two`,
+		]);
+		assert.deepEqual(failures.unhandled, []);
+	} finally {
+		failures.stop();
+		await harness.cleanup();
+	}
+});

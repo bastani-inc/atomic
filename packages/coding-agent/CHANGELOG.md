@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.
