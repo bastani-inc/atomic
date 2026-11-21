@@ -22,7 +22,15 @@ afterEach(async () => {
  */
 function engine(
 	batches: string[][],
-	options: { interactive?: boolean; frames?: string[]; onHeartbeat?: () => void } = {},
+	options: {
+		interactive?: boolean;
+		frames?: string[];
+		stderr?: string;
+		onHeartbeat?: () => void;
+		onActivityChange?: (active: boolean) => void;
+		/** The host's own reporter, called after the fixture keeps the diagnostic. */
+		onDiagnostic?: (diagnostic: ActivityWatchdogDiagnostic) => void;
+	} = {},
 ) {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-host-listener-"));
 	tempDirs.push(dir);
@@ -34,6 +42,7 @@ function engine(
 const batches = ${JSON.stringify(batches)};
 ${interactive ? `process.stdout.write(JSON.stringify({ type: "engine_ready", protocolVersion: 4, pid: process.pid }) + "\\n");` : ""}
 for (const frame of ${JSON.stringify(options.frames ?? [])}) process.stdout.write(frame + "\\n");
+${options.stderr === undefined ? "" : `process.stderr.write(${JSON.stringify(options.stderr)});`}
 let sent = 0;
 createInterface({ input: process.stdin }).on("line", (input) => {
 	const command = JSON.parse(input);
@@ -51,8 +60,12 @@ process.stdin.on("end", () => process.exit(0));
 		...(interactive
 			? {
 					interactiveEngine: {
-						onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => diagnostics.push(diagnostic),
+						onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => {
+							diagnostics.push(diagnostic);
+							return options.onDiagnostic?.(diagnostic);
+						},
 						...(options.onHeartbeat ? { onHeartbeat: options.onHeartbeat } : {}),
+						...(options.onActivityChange ? { onActivityChange: options.onActivityChange } : {}),
 					},
 				}
 			: {}),
@@ -63,8 +76,18 @@ process.stdin.on("end", () => process.exit(0));
 	return {
 		client,
 		ended,
+		diagnostics,
 		reports: () => diagnostics.map(({ level, source, message }) => ({ level, source, message })),
 	};
+}
+
+/** Collects every rejection nothing handled while the test runs. */
+function unhandledRejections(): unknown[] {
+	const unhandled: unknown[] = [];
+	const record = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", record);
+	stopWatching.push(() => process.off("unhandledRejection", record));
+	return unhandled;
 }
 
 /** Resolves with the first exception nothing caught, so a test can tell one apart from a wait that never ends. */
@@ -256,5 +279,90 @@ describe("RpcClient host listener failures", () => {
 		await client.getState();
 
 		assert.deepEqual(seen.at(-1), "agent_start");
+	});
+	test("a heartbeat callback that fails on every heartbeat is one series of failures, not one per heartbeat", async () => {
+		const heartbeat = line({ type: "engine_heartbeat", at: 1 });
+		const { client, diagnostics } = engine([], {
+			frames: [heartbeat, heartbeat, heartbeat],
+			onHeartbeat: () => {
+				throw new Error("could not count the heartbeat");
+			},
+		});
+		await client.start();
+
+		await client.getState();
+
+		const failures = diagnostics.filter((diagnostic) => diagnostic.source === "host");
+		assert.equal(failures.length, 3);
+		assert.ok(failures[0]?.series);
+		assert.ok(failures.every((failure) => failure.series === failures[0]?.series));
+	});
+
+	test("an activity callback that fails on every change is one series of failures", async () => {
+		const activity = (id: string) =>
+			line({ type: "engine_activity_started", activity: { id, kind: "tool.execute", name: "bash", startedAt: 1 } });
+		const { client, diagnostics } = engine([], {
+			frames: [activity("a"), activity("b")],
+			onActivityChange: () => {
+				throw new Error("could not show the activity");
+			},
+		});
+		await client.start();
+
+		await client.getState();
+
+		// The callback is also told of the engine's readiness: a failure on another message, of its own series.
+		const failures = diagnostics.filter(
+			(diagnostic) => diagnostic.source === "host" && diagnostic.message.includes('"engine_activity_started"'),
+		);
+		assert.equal(failures.length, 2);
+		assert.ok(failures[0]?.series);
+		assert.equal(failures[1]?.series, failures[0]?.series);
+	});
+
+	test("a reporter that throws on a malformed line neither escapes nor keeps the generation from ending", async () => {
+		const { client, ended } = engine([], {
+			frames: ["{not json"],
+			onDiagnostic: () => {
+				throw new Error("could not show the error");
+			},
+		});
+		const crashed = uncaughtException();
+		const generationEnded = Promise.withResolvers<void>();
+		client.onGenerationEnded(() => generationEnded.resolve());
+
+		await client.start().catch(() => undefined);
+		const crash = await Promise.race([generationEnded.promise, crashed]);
+
+		assert.equal(crash, undefined);
+		assert.deepEqual(ended, ["transport-error"]);
+	});
+
+	test("a reporter that throws or rejects on the engine's stderr does not end Atomic", async () => {
+		for (const fails of ["throws", "rejects"] as const) {
+			const reported = Promise.withResolvers<void>();
+			const { client } = engine([], {
+				stderr: "a warning from the engine\n",
+				onDiagnostic: (diagnostic) => {
+					if (diagnostic.source !== "stderr") return;
+					reported.resolve();
+					if (fails === "throws") throw new Error("could not show stderr");
+					return Promise.reject(new Error("could not show stderr")) as never;
+				},
+			});
+			const crashes: Error[] = [];
+			void uncaughtException().then((error) => crashes.push(error));
+			const unhandled = unhandledRejections();
+			await client.start();
+
+			await reported.promise;
+			// An exception thrown from the report's turn, and a rejection, surface before the next turn ends.
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			await new Promise<void>((resolve) => setImmediate(resolve));
+
+			assert.deepEqual(crashes, [], fails);
+			assert.deepEqual(unhandled, [], fails);
+			await client.getState();
+		}
 	});
 });
