@@ -8,7 +8,8 @@ import {
 	PromptSlot,
 	promptSlotDrewLive,
 } from "../src/modes/interactive/components/prompt-slot.ts";
-import { ScreenHold } from "../src/modes/interactive/screen-hold.ts";
+import { extensionChangedScreen, holdForExtensionCommand } from "../src/modes/interactive/extension-command-hold.ts";
+import { ScreenHold, screenHoldOf } from "../src/modes/interactive/screen-hold.ts";
 
 /**
  * The prompt's slot, driven through the orders in which a command's view can arrive: mounted at once or after an await,
@@ -290,4 +291,193 @@ test("a hold that reached its bound before any frame is not begun again from the
 	assert.equal(screen.region, undefined);
 	panel.ready();
 	assert.deepEqual(slot.render(40), ["Tasks", "  No background work."]);
+});
+
+/** The hold of a command that can mount its view after the hold ends, as an extension command does. */
+const LATE_VIEW = { lateView: true } as const;
+
+/** The slot of an interactive mode whose extension command runs, with its prompt showing the typed command. */
+function commandScreen() {
+	const requestRender = vi.fn();
+	const requestImmediateRender = vi.fn();
+	const mode = { ui: { requestImmediateRender } } as {
+		editorContainer: PromptSlot;
+		ui: { requestImmediateRender(): void };
+	};
+	const slot = new PromptSlot({ requestRender }, () => false, screenHoldOf(mode));
+	let lines = ["❯ /agents"];
+	slot.addChild({ render: () => lines, invalidate: () => {} });
+	slot.render(40);
+	lines = ["❯ "];
+	mode.editorContainer = slot;
+	return { mode, slot, requestRender, requestImmediateRender, screen: screenHoldOf(mode) };
+}
+
+test("a view mounted after the hold reached its bound, before the next frame, keeps the typed command until it draws (#6105)", () => {
+	vi.useFakeTimers();
+	const { slot, requestRender, screen } = slotWithPrompt();
+	holdPromptSlot(slot, LATE_VIEW);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	assert.equal(requestRender.mock.calls.length, 1, "the bound asks for a frame");
+	assert.equal(screen.region, undefined, "past the bound the screen is not held: another part of it can be");
+	const panel = pendingView("Agents", "  scout");
+	mountView(slot, panel.view);
+	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"], "no frame shows the empty view");
+	assert.equal(screen.region, "prompt");
+	panel.ready();
+	assert.deepEqual(slot.render(40), ["Agents", "  scout"]);
+});
+
+test("the typed command kept for a view mounted after the bound stays one more bound at most, and never again (#6105)", () => {
+	vi.useFakeTimers();
+	const { slot, requestRender, screen } = slotWithPrompt();
+	holdPromptSlot(slot, LATE_VIEW);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	const panel = pendingView("Agents");
+	mountView(slot, panel.view);
+	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS - 1);
+	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
+	vi.advanceTimersByTime(1);
+	assert.equal(requestRender.mock.calls.length, 2);
+	assert.equal(screen.region, undefined);
+	assert.deepEqual(slot.render(40), [], "past its own bound the view is drawn as it is");
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS * 2);
+	assert.deepEqual(slot.render(40), []);
+	assert.equal(screen.region, undefined, "the rows are not kept a third time");
+});
+
+test("with nothing mounted by the frame after the bound, the slot draws live, and a view mounted later keeps that frame (#6105)", () => {
+	vi.useFakeTimers();
+	const { slot } = slotWithPrompt();
+	holdPromptSlot(slot, LATE_VIEW);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	assert.deepEqual(slot.render(40), ["❯ "]);
+	const panel = pendingView("Agents");
+	mountView(slot, panel.view);
+	assert.deepEqual(slot.render(40), ["❯ "], "the frame on screen stays, not the typed command");
+	panel.ready();
+	assert.deepEqual(slot.render(40), ["Agents"]);
+});
+
+test("a key or another width between the bound and the next frame shows a view mounted meanwhile as it is (#6105)", () => {
+	vi.useFakeTimers();
+	const keyed = slotWithPrompt();
+	holdPromptSlot(keyed.slot, LATE_VIEW);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	keyed.screen.noteInput("j");
+	mountView(keyed.slot, pendingView("Agents").view);
+	assert.deepEqual(keyed.slot.render(40), []);
+	assert.equal(keyed.screen.region, undefined);
+
+	const resized = slotWithPrompt();
+	holdPromptSlot(resized.slot, LATE_VIEW);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	mountView(resized.slot, pendingView("Agents").view);
+	assert.deepEqual(resized.slot.render(30), []);
+	assert.deepEqual(resized.slot.render(40), [], "it does not come back at the old width");
+});
+
+test("an extension command's view mounted before the bound keeps the typed command until it draws, for one bound from then (#6105)", () => {
+	vi.useFakeTimers();
+	const { slot, requestRender, screen } = slotWithPrompt();
+	holdPromptSlot(slot, LATE_VIEW);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS - 10);
+	const panel = pendingView("Agents");
+	mountView(slot, panel.view);
+	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
+	vi.advanceTimersByTime(10);
+	assert.equal(screen.region, "prompt", "the command's bound no longer ends it: the view's first frame does");
+	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS - 10);
+	assert.equal(screen.region, undefined);
+	assert.equal(requestRender.mock.calls.length, 1);
+	assert.deepEqual(slot.render(40), [], "past its own bound the view is drawn as it is");
+	panel.ready();
+	assert.deepEqual(slot.render(40), ["Agents"]);
+});
+
+test("another extension's change that ends the hold keeps the typed command for the command's view mounted before the next frame (#6105)", () => {
+	const { mode, slot, requestImmediateRender, screen } = commandScreen();
+	holdForExtensionCommand(mode);
+	assert.deepEqual(slot.render(40), ["❯ /agents"]);
+	extensionChangedScreen(mode);
+	assert.equal(requestImmediateRender.mock.calls.length, 1, "the change is drawn at once");
+	assert.equal(screen.region, undefined);
+	const panel = pendingView("Agents");
+	mountView(slot, panel.view);
+	assert.deepEqual(slot.render(40), ["❯ /agents"], "no frame shows the empty view");
+	panel.ready();
+	assert.deepEqual(slot.render(40), ["Agents"]);
+});
+
+test("a command that ended with nothing mounted leaves its rows to no view (#6105)", () => {
+	vi.useFakeTimers();
+	const { mode, slot } = commandScreen();
+	const hold = holdForExtensionCommand(mode);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	hold.settle();
+	mountView(slot, pendingView("Another view").view);
+	assert.deepEqual(slot.render(40), []);
+});
+
+test("a second command's hold drops the first command's rows left for its view (#6105)", () => {
+	vi.useFakeTimers();
+	const { slot, screen } = slotWithPrompt();
+	holdPromptSlot(slot, LATE_VIEW);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	const second = holdPromptSlot(slot, LATE_VIEW);
+	assert.equal(screen.region, undefined, "rows a hold kept are not held again");
+	mountView(slot, pendingView("Second view").view);
+	assert.deepEqual(slot.render(40), []);
+	second.settle();
+});
+
+test("a command's late settle ends no later hold (#6105)", () => {
+	vi.useFakeTimers();
+	const { slot, screen } = slotWithPrompt();
+	const first = holdPromptSlot(slot, LATE_VIEW);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	assert.deepEqual(slot.render(40), ["❯ "]);
+	holdPromptSlot(slot, LATE_VIEW);
+	assert.equal(screen.region, "prompt");
+	first.settle();
+	assert.equal(screen.region, "prompt", "the first command's settle leaves the second command's hold");
+});
+
+test("a built-in command's hold shows a view mounted after its bound as it is, as before (#6105)", () => {
+	vi.useFakeTimers();
+	const { slot, screen } = slotWithPrompt();
+	holdPromptSlot(slot);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	mountView(slot, pendingView("Sessions").view);
+	assert.deepEqual(slot.render(40), []);
+	assert.equal(screen.region, undefined);
+});
+
+test("an extension command's hold keeps the typed command for its view mounted after the bound (#6105)", () => {
+	vi.useFakeTimers();
+	const { mode, slot } = commandScreen();
+	holdForExtensionCommand(mode);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+	const panel = pendingView("Agents");
+	mountView(slot, panel.view);
+	assert.deepEqual(slot.render(40), ["❯ /agents"]);
+	panel.ready();
+	assert.deepEqual(slot.render(40), ["Agents"]);
+});
+
+test("an extension command's view mounted before the bound with no frame drawn since keeps the typed command until it draws (#6105)", () => {
+	vi.useFakeTimers();
+	const { slot, screen } = slotWithPrompt();
+	holdPromptSlot(slot, LATE_VIEW);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS - 10);
+	const panel = pendingView("Agents");
+	mountView(slot, panel.view);
+	// The bound passes before any frame shows the mounted view.
+	vi.advanceTimersByTime(10);
+	assert.equal(screen.region, undefined);
+	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
+	panel.ready();
+	assert.deepEqual(slot.render(40), ["Agents"]);
 });

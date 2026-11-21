@@ -131,6 +131,8 @@ A setting always wins. To wait for the build without a UI too, as before, set:
 
 To start the first turn early in the TUI as well, set it to `"tools"`.
 
+A resume in a folder whose saved trust a user or global extension's `project_trust` handler can still decline (see [Project trust](/security#project-trust)) always works like `"tools"`: the session opens once the worktrees are restored, and their blueprints build after the session has decided the folder's trust. A restored worktree that decision does not cover stays unbuilt, and the agent is told it was not trusted.
+
 ### What the agent sees
 
 The first turn of a resumed session carries each applicable blueprint's `maintenance` steps and `knowledge` items, labelled with what happened: ran in this build, not yet run on this machine (skipped or untrusted), or not run or partial with the failing step and its log. The agent re-runs `maintenance` itself when it finds that dependencies changed. Atomic's default system prompt also asks the agent to keep `.atomic/blueprint.yaml` current as part of normal work: to write one when a repository has none, to update it in the same change that adds a dependency, tool or workspace, to record hard-won commands in `knowledge`, to leave secrets out, and to fix it after a Partial build. It edits `~/.atomic/agent/blueprint.yaml` only when you ask.
