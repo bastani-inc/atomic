@@ -12,6 +12,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 ### Fixed
 
 - A lookup that `setAutocompleteProvider(..., { preserveSelection: true })` retries for the new provider no longer raises an unhandled rejection when the provider fails, and later lookups still run ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- A completion lookup typed before the editor had a provider (`/`, an `@` token, a trigger character, Tab) starts when `setAutocompleteProvider` gives it one, while the prompt still holds that text and cursor; `snapshotDraft()` and `restoreDraft()` carry it to the editor that takes the prompt
 
 ## [0.10.3] - 2026-11-21
 

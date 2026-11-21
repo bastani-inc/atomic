@@ -724,6 +724,8 @@ const provider = new CombinedAutocompleteProvider(
 editor.setAutocompleteProvider(provider);
 ```
 
+A lookup the editor would have started before it had a provider (typing `/`, an `@` token or a trigger character, or pressing Tab) starts when `setAutocompleteProvider` gives it one, if the prompt still holds that text and cursor; an edit or cursor move that starts no lookup, or Esc, drops it. `snapshotDraft()` carries such a lookup, and `restoreDraft()` starts it in the editor that takes the prompt, at once or when that editor gets its provider.
+
 Replacing the built-in editor's provider normally closes its menu. To keep the current menu and use the new provider for the next lookup, call `editor.setAutocompleteProvider(provider, { preserveSelection: true })`. An open menu keeps the provider that offered its rows. If no menu has opened yet, a still-current lookup can retry with the new provider, preserving whether the user pressed Tab; if that retry fails, the prompt stays as it was and later lookups still run. Add `refreshCommandMenu: true` to also ask the new provider for an open menu of slash-command names in which the user has not chosen a row: a non-empty answer for the same text replaces the rows at the next render, with an exact match selected. A choice made in the menu, a thrown or rejected lookup, an empty answer, or one that arrives after the text changed leaves the menu as it was; such a lookup never delays the editor's own lookups. Extension-provided editors receive the usual single provider argument.
 
 **Features:**
