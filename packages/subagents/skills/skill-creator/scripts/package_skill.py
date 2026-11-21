@@ -178,8 +178,8 @@ def package_skill(skill_path, output_dir=None):
             if target.exists():
                 # A .skill file it replaces keeps exactly its permissions, as when it was written over before.
                 os.chmod(temporary, creation_mode(target))
+            # Removed below when it was copied in place rather than renamed.
             replace(temporary, target)
-            temporary = None
         print(f"\n✅ Successfully packaged skill to: {skill_filename}")
         return skill_filename
 
