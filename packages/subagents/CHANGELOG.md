@@ -15,6 +15,7 @@
 - A background subagent woken by the result of a call that kept running in the background, or by a background shell it launched finishing, now gets it as a notice card in its chat (the tool, whether it finished or failed, and its output), as the main chat gets a finished background task. It no longer shows up as a queued `Follow-up: The bash call … that kept running in the background finished:` message you could edit with Alt+Up, or as a message from you in its transcript, and the subagent reads each result once. When the result is the only thing that woke it, the notice starts its turn.
 - A subagent you paused with Esc, restored paused after a restart, no longer answers a notice it had not read yet before you continue it.
 - When Atomic itself continues a background subagent (after a restart, when you resume it without a message, or when something it waited for arrived), the subagent gets a short note in its chat saying why (`Continuing after Atomic restarted`, `Continuing where it left off`, `Woken: what it waited for arrived`) instead of a message from you. Resuming a paused subagent with a message no longer queues a `Follow-up: Continue where you left off…` row behind your message: the subagent reads your message and the note in one request.
+- A background subagent resumed with a message while it waited for its run's turn, after a restart while it waited on a background call, keeps your message until that call finishes and reads it then, instead of losing it.
 
 ## [0.10.3] - 2026-11-21
 
