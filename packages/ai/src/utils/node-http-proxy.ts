@@ -168,3 +168,42 @@ export function resolveHttpProxyUrlForTarget(targetUrl: string | URL, env?: Prov
 
 	return proxyUrl;
 }
+
+/** The proxy `value` names when it is one Bun's own fetch uses: an `http://` or `https://` URL, or a bare `host:port`. */
+function httpProxyUrl(value: string | undefined): URL | undefined {
+	if (!value) return undefined;
+	try {
+		const url = new URL(value.includes("://") ? value : `http://${value}`);
+		return url.protocol === "http:" || url.protocol === "https:" ? url : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Each value of `name`, lowercase and uppercase, from the provider's environment and then the process's, as set. */
+function proxyEnvValues(name: string, env?: ProviderEnv): (string | undefined)[] {
+	const lower = name.toLowerCase();
+	const upper = name.toUpperCase();
+	const processEnv = typeof process !== "undefined" ? process.env : {};
+	return [env?.[lower], env?.[upper], processEnv[lower], processEnv[upper]];
+}
+
+/**
+ * The http proxy an `https:` request to `targetUrl` takes when no https proxy is set, as Atomic's HTTP dispatcher on
+ * Node.js takes it: `http_proxy`, else `HTTP_PROXY`. Bun's own fetch and WebSocket, which the standalone binary uses,
+ * send such a request direct, so the binary passes them this proxy. Undefined for any other request: one that is not
+ * `https:` or that `NO_PROXY` exempts, and one for which an https proxy, or an `ALL_PROXY` naming an http or https proxy,
+ * is set, which Bun uses itself. Undefined too when the http proxy is unset, empty, or not an http or https proxy.
+ */
+export function resolveHttpsFallbackProxyUrl(targetUrl: string | URL, env?: ProviderEnv): URL | undefined {
+	const parsedUrl = parseProxyTargetUrl(targetUrl);
+	if (parsedUrl?.protocol !== "https:" || !parsedUrl.host) return undefined;
+	if (proxyEnvValues("https_proxy", env).some((value) => value)) return undefined;
+	if (proxyEnvValues("all_proxy", env).some((value) => httpProxyUrl(value) !== undefined)) return undefined;
+	const hostname = stripBrackets(parsedUrl.hostname);
+	const port = Number.parseInt(parsedUrl.port, 10) || DEFAULT_PROXY_PORTS.https;
+	if (!shouldProxyHostname(hostname, port, env)) return undefined;
+	// As undici reads it on Node.js: the lowercase variable when it is set at all, even empty.
+	const [providerLower, providerUpper, lower, upper] = proxyEnvValues("http_proxy", env);
+	return httpProxyUrl(providerLower ?? providerUpper ?? lower ?? upper);
+}
