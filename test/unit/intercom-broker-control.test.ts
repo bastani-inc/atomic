@@ -305,7 +305,22 @@ test(
 		const fixture = fixtureFor(agentDirectory("idle"));
 		const broker = await startBroker(fixture);
 		assert.ok(broker.pid !== undefined);
+		// A broker without sessions retires a few seconds after its last connection, and keeping its pid can take longer
+		// than that on a loaded Windows machine: a session keeps it running meanwhile.
+		const keeper = await connectSession(fixture.agentDir, "keeper");
+		fixture.onCleanup(() => {
+			keeper.destroy();
+		});
 		onTestFinished(await keepProcessPid(broker));
+		keeper.destroy();
+		// Each query is a new connection, so the last one, which finds no session, starts the broker's idle time again.
+		await vi.waitFor(
+			async () => {
+				const query = await queryIntercomBroker(fixture.agentDir);
+				assert.ok(query.state === "running" && query.report.sessions === 0, JSON.stringify(query));
+			},
+			{ timeout: BROKER_WAIT_MS, interval: 20 },
+		);
 		const outcome = await restartIntercomBroker(fixture.agentDir);
 		assert.deepEqual(outcome, { status: "stopped", previous: { pid: broker.pid, sessions: 0 } });
 		await exited(broker);
@@ -322,8 +337,9 @@ test(
 		const fixture = fixtureFor(agentDirectory("restart"));
 		const before = await startBroker(fixture);
 		assert.ok(before.pid !== undefined);
-		onTestFinished(await keepProcessPid(before));
+		// Connected first, so the broker does not retire for want of a session while its pid is being kept.
 		const session = await connectSession(fixture.agentDir, "reconnecting");
+		onTestFinished(await keepProcessPid(before));
 		// A real session reconnects through `spawnBrokerIfNeeded` once its broker is gone; this one starts the broker itself.
 		let after: Promise<ChildProcess> | undefined;
 		session.once("close", () => {
