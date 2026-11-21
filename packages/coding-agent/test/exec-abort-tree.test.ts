@@ -178,30 +178,64 @@ function uniqueMarker(): string {
 	return String(1_000_000 + Math.floor(Math.random() * 8_999_999));
 }
 
-/** The Windows processes whose command line holds `marker`, other than this test's own queries. */
-function windowsProcessesWith(marker: string): number[] {
+/** How long a Windows test's processes run when nothing ends them: bounded, well past any test. */
+const WINDOWS_FIXTURE_SECONDS = 120;
+
+interface WindowsProcess {
+	readonly pid: number;
+	readonly parent: number;
+	readonly image: string;
+	readonly commandLine: string;
+}
+
+function windowsProcesses(): WindowsProcess[] {
 	const output = execFileSync(
 		"powershell.exe",
 		[
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			`(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '\\b${marker}\\b' -and $_.Name -ne 'powershell.exe' }).ProcessId`,
+			"Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress",
 		],
-		{ encoding: "utf8", timeout: GONE_MS * 4 },
+		{ encoding: "utf8", timeout: GONE_MS * 4, maxBuffer: 64 * 1024 * 1024 },
 	);
-	return output.split(/\s+/).filter(Boolean).map(Number);
+	const rows = JSON.parse(output) as {
+		ProcessId: number;
+		ParentProcessId: number;
+		Name: string | null;
+		CommandLine: string | null;
+	}[];
+	return rows.map((row) => ({
+		pid: row.ProcessId,
+		parent: row.ParentProcessId,
+		image: (row.Name ?? "").toLowerCase(),
+		commandLine: row.CommandLine ?? "",
+	}));
 }
 
 /**
- * The processes a test's command started with `marker`, once they run, recorded with when they started so that a test
- * and its cleanup only ever signal those processes.
+ * The `image` processes below this test process whose command line holds `marker`, once they run, recorded with when
+ * they started, so that a test and its cleanup only ever signal those processes.
  */
-async function windowsProcessesStarted(marker: string): Promise<RecordedProcess[]> {
+async function windowsProcessesStarted(image: string, marker: string): Promise<RecordedProcess[]> {
 	const deadline = Date.now() + GONE_MS * 4;
 	let found: number[] = [];
 	while (found.length === 0 && Date.now() <= deadline) {
-		found = windowsProcessesWith(marker);
+		const table = windowsProcesses();
+		const parents = new Map(table.map((row) => [row.pid, row.parent]));
+		const descendsFromTest = (pid: number): boolean => {
+			for (let current = parents.get(pid), hops = 0; current !== undefined && hops < 8; hops++) {
+				if (current === process.pid) return true;
+				current = parents.get(current);
+			}
+			return false;
+		};
+		found = table
+			.filter(
+				(row) =>
+					row.image === image && new RegExp(`\\b${marker}\\b`).test(row.commandLine) && descendsFromTest(row.pid),
+			)
+			.map((row) => row.pid);
 		if (found.length === 0) await new Promise((resolve) => setTimeout(resolve, POLL_MS * 10));
 	}
 	const recorded = await Promise.all(found.map((pid) => recordProcess(pid)));
@@ -235,7 +269,7 @@ describe.runIf(process.platform === "win32")(
 			{
 				name: "a ping cmd.exe started",
 				command: process.env.ComSpec ?? "cmd.exe",
-				args: (marker) => ["/d", "/s", "/c", `ping -n ${marker} 127.0.0.1 > nul`],
+				args: (marker) => ["/d", "/s", "/c", `ping -n ${WINDOWS_FIXTURE_SECONDS} -w ${marker} 127.0.0.1 > nul`],
 			},
 			{
 				name: "a program PowerShell's Start-Process started",
@@ -243,7 +277,7 @@ describe.runIf(process.platform === "win32")(
 				args: (marker) => [
 					"-NoProfile",
 					"-Command",
-					`Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${marker}','127.0.0.1'; Start-Sleep 600`,
+					`Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${WINDOWS_FIXTURE_SECONDS}','-w','${marker}','127.0.0.1'; Start-Sleep ${WINDOWS_FIXTURE_SECONDS}`,
 				],
 			},
 		];
@@ -252,7 +286,7 @@ describe.runIf(process.platform === "win32")(
 				const marker = uniqueMarker();
 				const controller = new AbortController();
 				const running = execCommand(command, args(marker), process.cwd(), { signal: controller.signal }, quitStop);
-				const started = await windowsProcessesStarted(marker);
+				const started = await windowsProcessesStarted("ping.exe", marker);
 				assert.ok(started.length > 0, "the command started nothing");
 
 				controller.abort();
@@ -273,7 +307,7 @@ public static class Breakaway {
 	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool CreateProcessW(string app, string cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
 	public static int Start(string cmd) { var si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si); PROCESS_INFORMATION pi; if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x01000000 | 0x08000000, IntPtr.Zero, null, ref si, out pi)) return -Marshal.GetLastWin32Error(); return pi.pid; }
 }
-'@; Write-Output ([Breakaway]::Start('ping -n ${marker} 127.0.0.1')); Start-Sleep 600`;
+'@; Write-Output ([Breakaway]::Start('ping -n ${WINDOWS_FIXTURE_SECONDS} -w ${marker} 127.0.0.1')); Start-Sleep ${WINDOWS_FIXTURE_SECONDS}`;
 			const controller = new AbortController();
 			const running = execCommand(
 				"powershell.exe",
@@ -282,7 +316,7 @@ public static class Breakaway {
 				{ signal: controller.signal },
 				quitStop,
 			);
-			const started = await windowsProcessesStarted(marker);
+			const started = await windowsProcessesStarted("ping.exe", marker);
 			assert.ok(started.length > 0, "the child that asked to leave the job did not start");
 
 			controller.abort();
@@ -299,12 +333,12 @@ public static class Breakaway {
 			const controller = new AbortController();
 			const running = execCommand(
 				"bash",
-				["-c", `sleep ${marker} & wait`],
+				["-c", `sleep ${WINDOWS_FIXTURE_SECONDS}.${marker} & wait`],
 				process.cwd(),
 				{ signal: controller.signal },
 				quitStop,
 			);
-			const started = await windowsProcessesStarted(marker);
+			const started = await windowsProcessesStarted("sleep.exe", marker);
 			assert.ok(started.length > 0, "the command started nothing");
 
 			controller.abort();
@@ -321,7 +355,7 @@ public static class Breakaway {
 					[
 						"-NoProfile",
 						"-Command",
-						`(Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${marker}','127.0.0.1' -PassThru).Id`,
+						`(Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${WINDOWS_FIXTURE_SECONDS}','-w','${marker}','127.0.0.1' -PassThru).Id`,
 					],
 					{ encoding: "utf8", timeout: GONE_MS * 4 },
 				).trim(),
