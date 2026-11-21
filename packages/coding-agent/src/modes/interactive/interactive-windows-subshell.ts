@@ -30,7 +30,7 @@ export async function openWindowsSubshell(owner: SubshellOwner): Promise<void> {
 		// This is a temporary handoff, not final shutdown. Replaying the full
 		// document into the cooked Windows console can invalidate its handles.
 		owner.ui.stop({ preserveScreen: true });
-		const { shell } = await getPowerShellConfigAsync();
+		const { shell } = await getPowerShellConfigAsync(owner.sessionManager.getCwd());
 		const { PtySession: NativePtySession } = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
 			PtySession: typeof PtySession;
 		};

@@ -391,7 +391,7 @@ class AgentSessionBase {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._usesDefaultTools = config.usesDefaultTools ?? false;
 		this._defaultToolModifiers = config.defaultToolModifiers ?? [];
-		const powerShellAvailable = config.powerShellAvailable ?? isPowerShellAvailable();
+		const powerShellAvailable = config.powerShellAvailable ?? isPowerShellAvailable(this._cwd);
 		const builtinDefaultTools = defaultToolSelectionFor(powerShellAvailable, this._resourceLoader);
 		this._appliedDefaultTools = new Set(
 			this._usesDefaultTools

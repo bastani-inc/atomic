@@ -8,6 +8,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +26,14 @@ vi.mock("node:fs", async (importOriginal) => {
 		return actual.accessSync(path, mode);
 	};
 	return { ...actual, accessSync, default: { ...actual, accessSync } };
+});
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const access: typeof actual.access = (path, mode) =>
+		hiddenPaths.has(String(path))
+			? Promise.reject(Object.assign(new Error(`ENOENT: ${String(path)}`), { code: "ENOENT" }))
+			: actual.access(path, mode);
+	return { ...actual, access, default: { ...actual, access } };
 });
 
 /**
@@ -46,6 +55,9 @@ function plantProgram(directory: string, name: string): string {
 	chmodSync(file, 0o755);
 	return file;
 }
+
+/** How long a started server may take to record its run on a loaded machine. */
+const SERVER_START_BUDGET_MS = 20_000;
 
 let root: string;
 let project: string;
@@ -90,6 +102,31 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 			assert.ok(!config.shell.startsWith(project), config.shell);
 		}
 	});
+
+	test.skipIf(windows)(
+		"a shell found before is not taken again once the folder its commands run in is the shell's directory",
+		async () => {
+			hiddenPaths.add("/bin/bash");
+			const tools = join(root, "tools");
+			const elsewhere = join(root, "elsewhere");
+			mkdirSync(tools);
+			mkdirSync(elsewhere);
+			const bash = plantProgram(tools, "bash");
+			// The folder commands run in, under one name that comes to mean the shell's directory.
+			const folder = join(root, "folder");
+			symlinkSync(elsewhere, folder);
+			vi.stubEnv("PATH", tools);
+			const { getShellConfig, getShellConfigAsync } = await import("../src/utils/shell.ts");
+			assert.equal(getShellConfig(undefined, folder).shell, bash);
+			assert.equal((await getShellConfigAsync(undefined, folder)).shell, bash);
+
+			rmSync(folder);
+			symlinkSync(tools, folder);
+
+			assert.equal(getShellConfig(undefined, folder).shell, "/bin/sh");
+			assert.equal((await getShellConfigAsync(undefined, folder)).shell, "/bin/sh");
+		},
+	);
 
 	test.skipIf(!windows)(
 		"the bash and PowerShell tools never take a bash or PowerShell from the project folder",
@@ -136,6 +173,36 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 		assert.ok(transport.pid !== undefined);
 		await transport.close();
 	});
+
+	test.skipIf(!windows)(
+		"an MCP server's configured PATH chooses its program and is the PATH it gets, however either PATH is spelled",
+		async () => {
+			const inherited = join(root, "inherited");
+			const configured = join(root, "configured");
+			mkdirSync(inherited);
+			mkdirSync(configured);
+			plantProgram(inherited, "atomic-test-mcp-server");
+			const expected = plantProgram(configured, "atomic-test-mcp-server");
+			vi.stubEnv("PATH", inherited);
+			const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
+			const transport = new StdioTransport({
+				command: "atomic-test-mcp-server",
+				args: [
+					"-e",
+					'const { appendFileSync } = require("fs"); const { env, execPath } = process; appendFileSync(env.PLANTED_PROGRAM_MARKER, execPath + "\\n" + env.PATH + "\\n"); setTimeout(() => {}, 5000)',
+				],
+				cwd: project,
+				projectCwd: project,
+				// Sorted after the inherited `Path`, so without replacing it the program would get the inherited one.
+				env: { path: configured },
+			});
+
+			await transport.start();
+			await vi.waitFor(() => assert.equal(runs().length, 2), { timeout: SERVER_START_BUDGET_MS });
+			await transport.close();
+			assert.deepEqual(runs(), [expected, configured]);
+		},
+	);
 
 	test("an MCP server closed while its program is looked up never starts", async () => {
 		const bin = join(root, "bin");

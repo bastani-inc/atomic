@@ -57,6 +57,17 @@ function installExitHook(): void {
 	});
 }
 
+/**
+ * The server's environment: `configured` over `inherited`. Windows reads a variable's name in any letter case, so there a
+ * configured variable replaces the inherited one however either is spelled, for the program's lookup and the program.
+ */
+function serverEnvironment(inherited: NodeJS.ProcessEnv, configured: Record<string, string> = {}): NodeJS.ProcessEnv {
+	if (process.platform !== "win32") return { ...inherited, ...configured };
+	const replaced = new Set(Object.keys(configured).map((name) => name.toUpperCase()));
+	const kept = Object.entries(inherited).filter(([name]) => !replaced.has(name.toUpperCase()));
+	return { ...Object.fromEntries(kept), ...configured };
+}
+
 /** Whether `directory` is the project folder or inside it, where a program is never looked up by name. */
 function insideProject(directory: string, projectCwd: string | undefined): boolean {
 	if (projectCwd === undefined) return false;
@@ -118,7 +129,7 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		if (this.started) throw new Error("MCP stdio transport already started");
 		if (this.closed) throw new McpConnectionClosedError();
 		this.started = true;
-		const env = this.options.inheritEnv === false ? { ...this.options.env } : { ...process.env, ...this.options.env };
+		const env = serverEnvironment(this.options.inheritEnv === false ? {} : process.env, this.options.env);
 		const projectCwd = this.options.projectCwd ?? this.options.cwd;
 		let launch: HelperLaunch;
 		try {

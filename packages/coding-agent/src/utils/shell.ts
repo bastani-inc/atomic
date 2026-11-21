@@ -1,6 +1,6 @@
 import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import { lstat, stat } from "node:fs/promises";
-import { delimiter, join, win32 } from "node:path";
+import { delimiter, join, posix, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
 import { type ChildProcess, spawn } from "child_process";
 import { getBinDir } from "../config.js";
@@ -84,16 +84,23 @@ interface ExecutableLookup {
 
 const executablePathLookups = new Map<string, ExecutableLookup>();
 
-function isReusableLookup(lookup: ExecutableLookup): boolean {
-	return lookup.path === null
-		? Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS
-		: executableCandidateExists(lookup.path);
+/**
+ * A shell found before is reused while a lookup in its directory alone still finds it there: it is still a program, and
+ * its directory is still neither working directory, however either is spelled now.
+ */
+function rechecked(found: string, workingDirectory: string | undefined): [string, HelperExecutableOptions] {
+	const path = process.platform === "win32" ? win32 : posix;
+	return [path.basename(found), { ...lookupOptions(workingDirectory), env: { PATH: path.dirname(found) } }];
 }
 
-async function isReusableLookupAsync(lookup: ExecutableLookup): Promise<boolean> {
-	return lookup.path === null
-		? Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS
-		: executableCandidateExistsAsync(lookup.path);
+function isReusableLookup(lookup: ExecutableLookup, workingDirectory: string | undefined): boolean {
+	if (lookup.path === null) return Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS;
+	return findHelperExecutable(...rechecked(lookup.path, workingDirectory)) === lookup.path;
+}
+
+async function isReusableLookupAsync(lookup: ExecutableLookup, workingDirectory: string | undefined): Promise<boolean> {
+	if (lookup.path === null) return Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS;
+	return (await findHelperExecutableAsync(...rechecked(lookup.path, workingDirectory))) === lookup.path;
 }
 
 /**
@@ -115,7 +122,7 @@ function lookupKey(executable: string, workingDirectory: string | undefined): st
 function findExecutableOnPath(executable: string, workingDirectory?: string): string | null {
 	const key = lookupKey(executable, workingDirectory);
 	const cached = executablePathLookups.get(key);
-	if (cached && isReusableLookup(cached)) return cached.path;
+	if (cached && isReusableLookup(cached, workingDirectory)) return cached.path;
 	const path = lookupExecutableOnPath(executable, workingDirectory);
 	executablePathLookups.set(key, { path, checkedAt: Date.now() });
 	return path;
@@ -124,7 +131,7 @@ function findExecutableOnPath(executable: string, workingDirectory?: string): st
 async function findExecutableOnPathAsync(executable: string, workingDirectory?: string): Promise<string | null> {
 	const key = lookupKey(executable, workingDirectory);
 	const cached = executablePathLookups.get(key);
-	if (cached && (await isReusableLookupAsync(cached))) return cached.path;
+	if (cached && (await isReusableLookupAsync(cached, workingDirectory))) return cached.path;
 	const path = await lookupExecutableOnPathAsync(executable, workingDirectory);
 	executablePathLookups.set(key, { path, checkedAt: Date.now() });
 	return path;
@@ -319,18 +326,19 @@ export async function getPowerShellConfigAsync(workingDirectory?: string): Promi
 	return { shell, args: [...POWERSHELL_ARGS] };
 }
 
-export function isPowerShellAvailable(): boolean {
+/** Whether the powershell tool finds PowerShell for commands that run in `workingDirectory`. */
+export function isPowerShellAvailable(workingDirectory?: string): boolean {
 	try {
-		getPowerShellConfig();
+		getPowerShellConfig(workingDirectory);
 		return true;
 	} catch {
 		return false;
 	}
 }
 
-export async function isPowerShellAvailableAsync(): Promise<boolean> {
+export async function isPowerShellAvailableAsync(workingDirectory?: string): Promise<boolean> {
 	try {
-		await getPowerShellConfigAsync();
+		await getPowerShellConfigAsync(workingDirectory);
 		return true;
 	} catch {
 		return false;

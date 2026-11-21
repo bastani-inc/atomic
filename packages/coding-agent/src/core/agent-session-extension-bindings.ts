@@ -942,7 +942,7 @@ async function reloadOwnedGeneration(
 		await this.settingsManager.reload();
 		resetApiProviders();
 		await this._resourceLoader.reload();
-		const powerShellAvailable = await isPowerShellAvailableAsync();
+		const powerShellAvailable = await isPowerShellAvailableAsync(this._cwd);
 		const builtinDefaultToolNames = defaultToolSelectionFor(powerShellAvailable, this._resourceLoader);
 		const defaultTools = applyToolModifiers(
 			this.settingsManager.getDefaultToolsWith(builtinDefaultToolNames) ?? builtinDefaultToolNames,
@@ -981,7 +981,7 @@ async function reloadOwnedGeneration(
 
 	const settingsTransaction = await this.settingsManager.prepareReload();
 	const resourceTransaction = await prepareResourceReload(settingsTransaction.settingsManager);
-	const powerShellAvailable = await isPowerShellAvailableAsync();
+	const powerShellAvailable = await isPowerShellAvailableAsync(this._cwd);
 	const builtinDefaultToolNames = defaultToolSelectionFor(powerShellAvailable, resourceTransaction.loader);
 	const defaultTools = applyToolModifiers(
 		settingsTransaction.settingsManager.getDefaultToolsWith(builtinDefaultToolNames) ?? builtinDefaultToolNames,
@@ -1155,7 +1155,7 @@ async function reloadOwnedGeneration(
 export async function completeStartupResources(this: AgentSession, resourceLoader: ResourceLoader): Promise<void> {
 	assertSessionOpen(this);
 	return trackSessionWork(this, async () => {
-		const powerShellAvailable = await isPowerShellAvailableAsync();
+		const powerShellAvailable = await isPowerShellAvailableAsync(this._cwd);
 		this._resourceLoader = resourceLoader;
 		const startNewcomers = this._extensionRunner.attachStartupExtensions(resourceLoader.getExtensions().extensions);
 		// The early loader may not have supplied every built-in yet. Resolve the selection against the

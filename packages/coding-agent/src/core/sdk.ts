@@ -584,7 +584,7 @@ async function constructAgentSession(
 	// for any user who configures it (upstream 4d9aa837 + companion fix 541045ae).
 	const toolListError = options.tools ? getToolListError(options.tools) : undefined;
 	if (toolListError) throw new Error(`Invalid tools option: ${toolListError}`);
-	const powerShellAvailable = await isPowerShellAvailableAsync();
+	const powerShellAvailable = await isPowerShellAvailableAsync(cwd);
 	const builtinDefaultToolNames = defaultToolSelectionFor(powerShellAvailable, resourceLoader);
 	const defaultToolNames = options.noTools
 		? []
