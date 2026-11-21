@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
 - SDK: `session.dispose()` now waits for the notice lines the session is still saving, such as the "Retry failed" line that stopping a retry saves, when you passed your own `sessionManager`. Removing the session's folder right after `dispose()` resolves no longer fails with `ENOTEMPTY` ([#6128](https://github.com/bastani-inc/atomic/issues/6128), [#6150](https://github.com/bastani-inc/atomic/pull/6150))
 - Blueprint steps on a busy Windows machine no longer fail when starting their program is briefly refused. A program refused for a moment (`EPERM` or `EBUSY` on Windows, `ETXTBSY` on Linux) is now tried again for up to two seconds instead of half a second, every 50 ms at first and then less often. A program that stays refused fails its step at most two seconds later ([#6124](https://github.com/bastani-inc/atomic/issues/6124), [#6150](https://github.com/bastani-inc/atomic/pull/6150))
 

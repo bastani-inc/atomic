@@ -28,11 +28,18 @@ export class RpcEventBuffer {
 		this.timer ??= setTimeout(() => this.flush(), 16);
 	}
 
+	/**
+	 * Each update leaves the buffer before it is emitted. An emit that throws therefore keeps only the updates not yet
+	 * delivered, and an emit that drains the buffer (a listener stopping the client) takes only those: no update is
+	 * delivered twice.
+	 */
 	flush(): void {
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
-		for (const event of this.updates.values()) this.emit(event);
-		this.updates.clear();
+		for (const [key, event] of this.updates) {
+			this.updates.delete(key);
+			this.emit(event);
+		}
 	}
 
 	/** Remove the updates still held and return them, without emitting them. */
