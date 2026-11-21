@@ -152,6 +152,9 @@ pub(crate) fn sequence_number(buffer: &[u64], written: u32) -> Option<u64> {
 }
 
 #[cfg(windows)]
+pub(crate) use windows::{hold_below, process_table};
+
+#[cfg(windows)]
 mod windows {
 	use super::{Opened, sequence_number, walk};
 	use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -171,16 +174,23 @@ mod windows {
 	pub(super) fn hold_descendants(root: u32) -> Option<(OwnedHandle, Vec<OwnedHandle>)> {
 		let root_process =
 			open(root, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE)?;
-		let root_started = started(&root_process)?;
 		if !running(&root_process) {
 			return None;
 		}
+		let held = hold_below(root, &root_process)?;
+		Some((root_process, held))
+	}
+
+	/// The processes below process `root`, which `root_process` holds open with at least query rights, each held
+	/// through a handle that can end it (see `walk`); `None` where Windows does not give `root`'s place in the order of
+	/// process starts.
+	pub(crate) fn hold_below(root: u32, root_process: &OwnedHandle) -> Option<Vec<OwnedHandle>> {
+		let root_started = started(root_process)?;
 		let table = process_table();
-		let held = walk(root, root_started, &table, |pid| {
+		Some(walk(root, root_started, &table, |pid| {
 			let process = open(pid, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION)?;
 			Some(Opened { parent: parent_of(&process)?, started: started(&process)?, handle: process })
-		});
-		Some((root_process, held))
+		}))
 	}
 
 	fn running(process: &OwnedHandle) -> bool {
@@ -242,7 +252,8 @@ mod windows {
 		(status >= 0).then(|| information.InheritedFromUniqueProcessId as u32)
 	}
 
-	fn process_table() -> Vec<(u32, u32)> {
+	/// Every process and the id of the process that started it, as Windows lists them.
+	pub(crate) fn process_table() -> Vec<(u32, u32)> {
 		let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
 		if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
 			return Vec::new();
