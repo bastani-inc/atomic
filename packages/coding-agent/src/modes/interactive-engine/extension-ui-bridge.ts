@@ -167,6 +167,15 @@ export function terminateInteractiveEngine(runtime: AgentSessionRuntime): boolea
 }
 
 /**
+ * The interactive engine a shutdown of this host leaves to the runtime's own stop, which gives it a bounded window
+ * to run its extensions' shutdown: the ready engine of an isolated runtime, none for an in-process one.
+ */
+export function gracefullyStoppedEnginePids(runtime: AgentSessionRuntime): ReadonlySet<number> {
+	const pid = runtime instanceof IsolatedInteractiveRuntime ? runtime.getReadyEngineChildPid() : undefined;
+	return new Set(pid === undefined ? [] : [pid]);
+}
+
+/**
  * Command catalog the engine child exposes to the isolated host. Returns an
  * empty list for non-isolated runtimes so callers can merge unconditionally.
  */

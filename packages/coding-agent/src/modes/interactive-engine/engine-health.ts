@@ -8,7 +8,7 @@ export interface EngineHealthDeps {
 	 * Terminate the current (or hung replacement) engine child. `graceful` lets a ready
 	 * engine run its own shutdown first, within the client's bound.
 	 */
-	stop(options?: { graceful?: boolean }): Promise<void>;
+	stop(options?: { graceful?: boolean; hostSignaled?: boolean }): Promise<void>;
 	/** Replace the engine child and reload host state from it. */
 	restart(replacementReady: () => void): Promise<void>;
 	/** Drop streaming/compaction/callback activity owned by the dead generation. */
@@ -164,7 +164,7 @@ export class EngineHealthController {
 	 * teardown. Idempotent, and bounded by the client's own stop deadlines.
 	 * `graceful` is passed to that stop: a quit lets the engine run its own shutdown.
 	 */
-	shutdown(options?: { graceful?: boolean }): Promise<void> {
+	shutdown(options?: { graceful?: boolean; hostSignaled?: boolean }): Promise<void> {
 		if (this.shutdownPromise) return this.shutdownPromise;
 		this.stopped = true;
 		this.rescueRequested = false;
@@ -239,7 +239,7 @@ export class EngineHealthController {
 		return true;
 	}
 
-	private async stopQuietly(options?: { graceful?: boolean }): Promise<void> {
+	private async stopQuietly(options?: { graceful?: boolean; hostSignaled?: boolean }): Promise<void> {
 		try {
 			await this.deps.stop(options);
 		} catch {
