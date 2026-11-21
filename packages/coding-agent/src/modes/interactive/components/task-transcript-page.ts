@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import {
 	getKeybindings,
 	isHintActivation,
@@ -135,6 +136,66 @@ function observeChatWrite(write: Promise<void>, view: WeakRef<ObservedChatWrites
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
 /** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
 const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
+/**
+ * Per followed session: its queued messages whose row shows and whose save has not arrived yet, oldest first. Kept with
+ * the session, not the page, so a page opened again while a save is on its way reports the same ones.
+ */
+const shownUnsaved = new WeakMap<TaskTranscriptSource, AgentMessage[]>();
+
+/**
+ * A page follows `session`'s events: a queued message's row shows at its `message_start`, and its save arrives with its
+ * `message_end`. A message saved while no page followed the session is let go when a page follows it again.
+ */
+function noteShownUnsaved(session: TaskTranscriptSource, event: AgentSessionEvent | undefined): void {
+	let shown = shownUnsaved.get(session);
+	if (event === undefined) {
+		if (shown !== undefined && session.entryReceipt !== undefined) {
+			const receipt = session.entryReceipt.bind(session);
+			shown = shown.filter((message) => receipt(message) === undefined);
+			shownUnsaved.set(session, shown);
+		}
+		return;
+	}
+	if (event.type === "message_start" && event.message.role === "user" && startsQueuedMessage(event)) {
+		const list = shown ?? [];
+		list.push(event.message);
+		shownUnsaved.set(session, list);
+	} else if (
+		event.type === "message_end" &&
+		event.message.role === "user" &&
+		shown !== undefined &&
+		shown.length > 0
+	) {
+		const saved = event.message;
+		const raw = (saved as { readonly rawText?: unknown }).rawText;
+		const text = userMessageText(saved);
+		let index = shown.indexOf(saved);
+		if (index < 0)
+			index = shown.findIndex((message) => {
+				const queued = userMessageText(message);
+				return queued === raw || queued === text || text.startsWith(`${queued}\n\n`);
+			});
+		if (index >= 0) shown.splice(index, 1);
+	}
+}
+
+/** What a page's status reports of `session`'s queued messages shown but not saved yet; nothing when there are none. */
+function unsavedOf(session: TaskTranscriptSource | undefined): { unsaved?: readonly string[] } {
+	const shown = session === undefined ? undefined : shownUnsaved.get(session);
+	return shown === undefined || shown.length === 0 ? {} : { unsaved: shown.map(userMessageText) };
+}
+
+function userMessageText(message: object): string {
+	const content = (message as { readonly content?: unknown }).content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.flatMap((part: { readonly type?: unknown; readonly text?: unknown }) =>
+			part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+		)
+		.join("\n");
+}
+
 /** The page open on each subagent's chat, by the subagent across its attempts, per source: where messages that come back after an earlier page closed go. */
 const openPages = new WeakMap<TaskViewSource, Map<string, TaskAgentTranscriptPage>>();
 /** What Up recalled in a task's chat when the reader left it, oldest first, for when they come back. */
@@ -363,8 +424,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly requestRender: () => void;
 	private followed?: TaskTranscriptSource;
 	private followedSessionId?: string;
-	/** Queued messages of the followed session whose row shows and whose save has not reached the page, oldest first. */
-	private shownUnsaved: string[] = [];
 	private legacyWindow?: ReturnType<typeof retainTaskWindowReader>;
 	private legacyWindowActive = false;
 	private observedWrites?: ObservedChatWrites;
@@ -901,33 +960,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return task === undefined || dismissedTasks(this.source).has(task.ref.taskId);
 	}
 
-	/**
-	 * A queued message's row shows as its `message_start` arrives; its `message_end` arrives once its session saved it.
-	 * Between the two the page keeps its text, for the host to list if the engine running the subagent is lost.
-	 */
-	private noteShownUnsaved(event: AgentSessionEvent): void {
-		const messageText = (message: { readonly content?: unknown }): string => {
-			const content = message.content;
-			if (typeof content === "string") return content;
-			if (!Array.isArray(content)) return "";
-			return content
-				.flatMap((part: { readonly type?: unknown; readonly text?: unknown }) =>
-					part.type === "text" && typeof part.text === "string" ? [part.text] : [],
-				)
-				.join("\n");
-		};
-		if (event.type === "message_start" && event.message.role === "user" && startsQueuedMessage(event)) {
-			this.shownUnsaved.push(messageText(event.message));
-		} else if (event.type === "message_end" && event.message.role === "user" && this.shownUnsaved.length > 0) {
-			const raw = (event.message as { readonly rawText?: unknown }).rawText;
-			const text = messageText(event.message);
-			const index = this.shownUnsaved.findIndex(
-				(shown) => shown === raw || shown === text || text.startsWith(`${shown}\n\n`),
-			);
-			if (index >= 0) this.shownUnsaved.splice(index, 1);
-		}
-	}
-
 	/** The subagent as the single chat screen's prompt, rule, working line and panel show it. */
 	viewStatus(agentKey: string): AgentViewStatus {
 		const { name, label, placeholder, state } = this.composerText("view");
@@ -954,7 +986,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			...(delivering.steering.length === 0 && delivering.followUp.length === 0
 				? {}
 				: { delivering: { steering: [...delivering.steering], followUp: [...delivering.followUp] } }),
-			...(this.shownUnsaved.length === 0 ? {} : { unsaved: [...this.shownUnsaved] }),
+			...unsavedOf(this.followed),
 			...(readOnlyReason === undefined ? {} : { readOnlyReason }),
 			heldPrompt: this.heldPrompt() !== undefined,
 			...(working === undefined ? {} : { working }),
@@ -1238,8 +1270,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.unsubscribe?.();
 			this.unsubscribe = undefined;
 			this.followed = session;
-			// What the previous session showed unsaved is its own: a resumed attempt or another session starts with none.
-			this.shownUnsaved = [];
+			// Its queued messages shown unsaved as a page last saw them, without those saved since.
+			if (session !== undefined) noteShownUnsaved(session, undefined);
 			this.chat.resetFollowedSession({ preserveWorkedRun: sameConversation && session === undefined });
 		}
 		this.followedSessionId = nextSessionId;
@@ -1309,7 +1341,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				turnAborted = false;
 				setTaskTurnInterrupted(this.source, this.taskId, true);
 			}
-			this.noteShownUnsaved(event);
+			noteShownUnsaved(session, event);
 			if (event.type === "message_end") {
 				// The receipt arrives with the end of the message the row was drawn from as it streamed.
 				const sent = event as { seq?: unknown };

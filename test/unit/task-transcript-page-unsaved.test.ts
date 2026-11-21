@@ -57,34 +57,46 @@ async function sessionEvents(): Promise<AgentSessionEvent[]> {
 	return events;
 }
 
-test("a queued message the subagent's transcript shows is reported unsaved until its save arrives", async () => {
-	const events = await sessionEvents();
+/** A live child session whose events the test sends, and a task view source that follows it. */
+function followedChild(saved: Set<object> = new Set()) {
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	const session: TaskTranscriptSource = {
 		getSessionId: () => "child",
 		getEntries: () => [],
+		entryReceipt: (message) => (saved.has(message) ? { seq: 1 } : undefined),
 		subscribe: (listener) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
 	};
-	initTheme("dark");
-	const page = new TaskAgentTranscriptPage(
-		transcriptOnlySource({
-			readTaskTranscript: () => ({ ok: true, value: { messages: [] } }),
-			followTaskTranscript: () => ({ session, historyOnly: false }),
-		}),
-		TASK,
-		taskTranscriptEnvironment({ keybindings: new KeybindingsManager() }),
-		() => {},
-	);
-	try {
+	const source = transcriptOnlySource({
+		readTaskTranscript: () => ({ ok: true, value: { messages: [] } }),
+		followTaskTranscript: () => ({ session, historyOnly: false }),
+	});
+	const open = async () => {
+		initTheme("dark");
+		const page = new TaskAgentTranscriptPage(
+			source,
+			TASK,
+			taskTranscriptEnvironment({ keybindings: new KeybindingsManager() }),
+			() => {},
+		);
 		await page.load();
-		const emit = (index: number) => {
-			const event = events[index];
-			assert.ok(event);
-			for (const listener of listeners) listener(event);
-		};
+		return page;
+	};
+	const emit = (event: AgentSessionEvent | undefined) => {
+		assert.ok(event);
+		for (const listener of [...listeners]) listener(event);
+	};
+	return { open, emit };
+}
+
+test("a queued message the subagent's transcript shows is reported unsaved until its save arrives", async () => {
+	const events = await sessionEvents();
+	const child = followedChild();
+	const page = await child.open();
+	try {
+		const emit = (index: number) => child.emit(events[index]);
 		const unsaved = () => page.viewStatus("worker").unsaved;
 		// Its own prompt is no queued message.
 		emit(0);
@@ -97,5 +109,51 @@ test("a queued message the subagent's transcript shows is reported unsaved until
 		assert.equal(unsaved(), undefined, "saved");
 	} finally {
 		page.dispose();
+	}
+});
+
+test("a chat opened again while a shown queued message's save is on its way still reports it", async () => {
+	const events = await sessionEvents();
+	const child = followedChild();
+	const first = await child.open();
+	child.emit(events[0]);
+	child.emit(events[1]);
+	child.emit(events[2]);
+	assert.deepEqual(first.viewStatus("worker").unsaved, ["queued while it worked"]);
+	first.dispose();
+
+	const reopened = await child.open();
+	try {
+		assert.deepEqual(
+			reopened.viewStatus("worker").unsaved,
+			["queued while it worked"],
+			"the same child, not saved yet",
+		);
+		child.emit(events[3]);
+		assert.equal(reopened.viewStatus("worker").unsaved, undefined, "saved");
+	} finally {
+		reopened.dispose();
+	}
+});
+
+test("a shown queued message saved while no chat of it was open is not reported when one opens again", async () => {
+	const events = await sessionEvents();
+	const saved = new Set<object>();
+	const child = followedChild(saved);
+	const first = await child.open();
+	child.emit(events[0]);
+	child.emit(events[1]);
+	child.emit(events[2]);
+	first.dispose();
+	// Its save arrives while no page follows the session.
+	const start = events[2];
+	assert.ok(start?.type === "message_start");
+	saved.add(start.message);
+
+	const reopened = await child.open();
+	try {
+		assert.equal(reopened.viewStatus("worker").unsaved, undefined);
+	} finally {
+		reopened.dispose();
 	}
 });
