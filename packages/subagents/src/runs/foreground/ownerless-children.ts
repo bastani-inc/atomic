@@ -15,6 +15,7 @@ import {
 } from "./run-worktrees.js";
 import {
 	pendingMessagesOfResult,
+	releaseEndedChildRefs,
 	requestSubagentChildStop,
 	type SubagentChildLaunch,
 	type SubagentChildPendingMessages,
@@ -251,7 +252,10 @@ export function runOwnerlessChild(input: {
 		}
 		const swept = finishWorktree?.(status);
 		if (ownerClosed) record("running", undefined, pendingMessagesOfResult(child));
-		else record("terminal", status, stoppedByControl ? pendingMessagesOfResult(child) : undefined);
+		else {
+			record("terminal", status, stoppedByControl ? pendingMessagesOfResult(child) : undefined);
+			await releaseEndedChildRefs(input.recordChild, childSession.childSessionId, child, stoppedByControl);
+		}
 		if (!swept) {
 			finish();
 			return child;

@@ -3,13 +3,14 @@ import {
 	type DetachedToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
+	releaseSubagentSnapshotRefs,
 	type SessionEntry,
 	sliceHead,
 	type TaskElapsedSpan,
 	type WorktreeRootMapping,
 } from "@bastani/atomic";
 import type { AgentSource } from "../../agents/agent-types.js";
-import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
+import type { MaxOutputConfig, OutputMode, RunSyncOptions, SingleResult } from "../../shared/types.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
 import {
 	isReleasedChildError,
@@ -970,4 +971,22 @@ export function findSubagentChildRecord<T extends Pick<SubagentChildRecord, "tas
 /** Owners with appends in flight and stop requests not taken yet; both are empty when nothing is happening. */
 export function subagentChildRecordRegistrySizes(): { readonly appendChains: number; readonly stopRequests: number } {
 	return { appendChains: appendChains.size, stopRequests: stopRequests.size };
+}
+
+/**
+ * Once the record that a child's run ended for good (done, failed or killed, not released, paused, quit or left for its
+ * owner's restart) is saved, the refs that kept the snapshot commits its run recorded go, as a deleted session's do: it
+ * is no longer continued where it worked. A record that could not be saved keeps them.
+ */
+export async function releaseEndedChildRefs(
+	sink: Pick<SubagentChildRecordSink, "saved"> | undefined,
+	childSessionId: string | undefined,
+	child: Pick<SingleResult, "status" | "snapshotRoots" | "released">,
+	stoppedByControl: boolean,
+): Promise<void> {
+	if (childSessionId === undefined || child.snapshotRoots === undefined || child.snapshotRoots.length === 0) return;
+	if (child.released !== undefined || stoppedByControl) return;
+	if (child.status !== "ok" && child.status !== "error" && child.status !== "killed") return;
+	if ((await sink?.saved?.()) === false) return;
+	await releaseSubagentSnapshotRefs(childSessionId, child.snapshotRoots);
 }

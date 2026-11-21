@@ -69,6 +69,7 @@ import { readableSubagentChildRecordOf, subagentChildCardRecord } from "./subage
 import {
 	observeChildRecordFailure,
 	pendingMessagesOfResult,
+	releaseEndedChildRefs,
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	type SubagentChildLaunch,
 	type SubagentChildPendingMessages,
@@ -1051,6 +1052,12 @@ export async function runAgentTask(input: {
 							);
 						} else if (settled) {
 							recordChild("terminal", status, stoppedByControl ? pendingMessagesOfResult(child) : undefined);
+							await releaseEndedChildRefs(
+								input.recordChild,
+								childSession.childSessionId,
+								child,
+								stoppedByControl,
+							);
 						} else if (child.pendingMessages?.length)
 							recordChild("running", undefined, pendingMessagesOfResult(child));
 						if (swept) {

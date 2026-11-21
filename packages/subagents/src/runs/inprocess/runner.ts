@@ -513,6 +513,8 @@ export type AttemptOutcome = (
 		readonly cleanupCause?: unknown;
 		/** The working directory the child's session records, whose project its history URL is read in. */
 		readonly sessionCwd?: string;
+		/** The checkouts this attempt recorded snapshots of in the child's session, whose refs go once the run ended. */
+		readonly snapshotRoots?: readonly string[];
 	};
 
 interface SessionDisposal {
@@ -1104,6 +1106,27 @@ function promptAndAnswer(manager: SessionManager, inheritedThroughId: string | n
 			entry.message.content.some((block) => block.type === "text" && block.text.trim()),
 	);
 	return [...(prompt ? [prompt] : []), ...(answer ? [answer] : [])];
+}
+
+/**
+ * The checkouts this attempt recorded snapshots of in its session, in the entries it added after `since`, its session's
+ * leaf when it opened; when those entries already left the window, every checkout the session recorded.
+ */
+function capturedRoots(manager: SessionManager, since: string | null): string[] {
+	if (typeof manager.getBranch !== "function") return [];
+	const branch = manager.getBranch();
+	const roots = new Set<string>();
+	let reachedLaunch = since === null;
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index]!;
+		if (entry.id === since) {
+			reachedLaunch = true;
+			break;
+		}
+		if (entry.type === "worktree_snapshot" && entry.captureMs !== undefined) roots.add(entry.root);
+	}
+	if (!reachedLaunch) for (const root of manager.getLatestWorktreeSnapshots().keys()) roots.add(root);
+	return [...roots];
 }
 
 /** Why a finished child's saved history could not be read, as a task view shows it. */
@@ -2197,7 +2220,8 @@ export class SubagentControlRuntime {
 		onCleanup?: (cleanup: Promise<Cleanup>) => void,
 	): Promise<AttemptOutcome> {
 		let disposal: Promise<SessionDisposal> | undefined;
-		let sessionCwd: string | undefined;
+		let opened: SessionManager | undefined;
+		let openedAt: string | null | undefined;
 		const attempted = await this.attemptChild(
 			admitted,
 			candidate,
@@ -2208,11 +2232,18 @@ export class SubagentControlRuntime {
 				disposal = disposing;
 				onCleanup?.(disposing.then(({ cleanup }) => cleanup));
 			},
-			(cwd) => {
-				sessionCwd = cwd;
+			(manager) => {
+				opened = manager;
+				openedAt = typeof manager.getLeafId === "function" ? manager.getLeafId() : undefined;
 			},
 		);
-		const outcome: AttemptOutcome = sessionCwd === undefined ? attempted : { ...attempted, sessionCwd };
+		const sessionCwd = opened?.getHeader?.()?.cwd;
+		const snapshotRoots = opened === undefined || openedAt === undefined ? [] : capturedRoots(opened, openedAt);
+		const outcome: AttemptOutcome = {
+			...attempted,
+			...(sessionCwd === undefined ? {} : { sessionCwd }),
+			...(snapshotRoots.length === 0 ? {} : { snapshotRoots }),
+		};
 		if (onCleanup || disposal === undefined) return outcome;
 		if (outcome.status === "error" && outcome.startError && isSessionStartTimeoutError(outcome.startError)) {
 			const timeout: SessionStartError & { cleanupCause?: unknown } = outcome.startError;
@@ -2244,7 +2275,7 @@ export class SubagentControlRuntime {
 			  >
 			| undefined,
 		onDisposal: (disposal: Promise<SessionDisposal>) => void,
-		onSessionCwd?: (cwd: string) => void,
+		onSessionOpened?: (manager: SessionManager) => void,
 	): Promise<AttemptOutcome> {
 		const elapsedSpan = admitted.spec.elapsedSpan ?? { dispatchedAt: Date.now() };
 		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
@@ -2549,8 +2580,7 @@ export class SubagentControlRuntime {
 			// #5210: a child resumed in this process continues after the final answer its last run could not save.
 			await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
 			transcriptManager = sessionManager;
-			const recordedCwd = sessionManager.getHeader()?.cwd;
-			if (recordedCwd !== undefined) onSessionCwd?.(recordedCwd);
+			onSessionOpened?.(sessionManager);
 			openedThroughId = sessionManager.getEntries().at(-1)?.id ?? null;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {
