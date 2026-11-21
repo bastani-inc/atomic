@@ -88,6 +88,7 @@ import {
 	type TestSessionQueue,
 	truncateOutput,
 } from "../../shared/types.js";
+import { issuingCallEntries } from "../foreground/branch-read-back.js";
 import {
 	issuedCallArguments,
 	lateToolResultNotice,
@@ -2975,7 +2976,13 @@ export class SubagentControlRuntime {
 					{
 						triggerTurn: true,
 						persistWhenStreaming: true,
-						stageAdmissionKey: lateToolResultNoticeKey(lateResults),
+						stageAdmissionKey: lateToolResultNoticeKey(
+							lateResults,
+							await issuingCallEntries(
+								sessionManager,
+								lateResults.map((result) => result.toolCallId),
+							),
+						),
 					},
 				);
 				// Its card holds them now: the owner lets them go (#5012).

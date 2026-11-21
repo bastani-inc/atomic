@@ -16,7 +16,7 @@
 - A subagent you paused with Esc, restored paused after a restart, no longer answers a notice it had not read yet before you continue it.
 - `skill-creator`'s review viewer shows the feedback already saved for the iteration when its page is reopened or reloaded, or the viewer is started again, also from the second iteration on, where it showed empty boxes and the next keystroke's save dropped the saved feedback from `feedback.json`. Feedback from the previous iteration still shows only as previous feedback. A run's output or feedback that contains `</script>` no longer breaks the page.
 - A background subagent woken by a result it had already read before a compaction took that part of its conversation out of its context no longer gets the result a second time.
-- A background subagent whose model's provider gives a later tool call the id of an earlier one (as Kimi does) gets the late result of that later call, instead of losing it as if it had already read the earlier call's result.
+- A background subagent whose model's provider gives a later tool call the id of an earlier one (as Kimi does) gets the late result of that later call, also when the earlier call's result also arrived late, instead of losing it as if it had already read the earlier call's result.
 
 ## [0.10.3] - 2026-11-21
 

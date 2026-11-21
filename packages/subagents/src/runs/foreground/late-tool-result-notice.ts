@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type DetachedToolResult, initTheme, NoticeLine, type NoticeLineSpec } from "@bastani/atomic";
 import type { Component } from "@bastani/atomic-tui";
 import type { SubagentChildHeldMessages, SubagentChildHeldNotice } from "./subagent-child-records.js";
@@ -172,9 +173,26 @@ export function savedNoticeIds(
 	});
 }
 
-/** The stable admission key of the notice for these results: admitting it again adds nothing. */
-export function lateToolResultNoticeKey(results: readonly DetachedToolResult[]): string {
-	return `${SUBAGENT_LATE_TOOL_RESULT_TYPE}:${JSON.stringify(results.map((result) => result.toolCallId))}`;
+/**
+ * The stable admission key of the notice for these results: admitting it again adds nothing. Each result is named by its
+ * call's id, the entry that issued its call when known (by id, from `calls`) and a digest of what it holds, so the notice
+ * of another result for a call id seen before, such as a later call's that a provider gave an earlier call's id (#3274),
+ * is a notice of its own.
+ */
+export function lateToolResultNoticeKey(
+	results: readonly DetachedToolResult[],
+	calls?: ReadonlyMap<string, string>,
+): string {
+	return `${SUBAGENT_LATE_TOOL_RESULT_TYPE}:${JSON.stringify(
+		results.map((result) => [
+			result.toolCallId,
+			calls?.get(result.toolCallId) ?? null,
+			createHash("sha256")
+				.update(JSON.stringify([result.isError, result.result.content]))
+				.digest("hex")
+				.slice(0, 16),
+		]),
+	)}`;
 }
 
 function noticeItems(details: unknown): LateToolResultNoticeItem[] {

@@ -14,6 +14,7 @@ import {
 } from "@bastani/atomic";
 import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
 import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
+import { issuedCallIds, visitBranchBack } from "./branch-read-back.js";
 import { lateToolResultNoticeIds, legacyLateToolResultMessage } from "./late-tool-result-notice.js";
 import { SUBAGENT_OWNER_GENERATION } from "./owner-generation.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
@@ -314,14 +315,6 @@ interface SavedMessage {
 	readonly details?: unknown;
 }
 
-/** The ids of the tool calls an assistant message issued. */
-function issuedCallIds(message: SavedMessage): string[] {
-	if (message.role !== "assistant" || !Array.isArray(message.content)) return [];
-	return (message.content as ReadonlyArray<{ readonly type: string; readonly id?: unknown }>).flatMap((part) =>
-		part.type === "toolCall" && typeof part.id === "string" ? [part.id] : [],
-	);
-}
-
 /**
  * The ids of `results` a message shows read: its call's own result (one that is not "still running"), the notice a woken
  * child reads late results in, or the message an earlier version built from a late result.
@@ -392,8 +385,7 @@ function savedMessageOf(entry: SessionEntry): SavedMessage | undefined {
 
 /**
  * {@link savedToolResultIds}, read from the child's branch rather than its context, so also where a compaction took
- * them out of it: the entries the manager holds back from the newest, and, for a manager holding only its window, the
- * stored branch before them, read back a page at a time. Each result is read back only as far as its call.
+ * them out of it. Each result is read back only as far as its call.
  */
 export async function savedToolResultIdsInHistory(
 	sessionManager: Pick<SessionManager, "getBranch" | "readHistory" | "getLeafId" | "getEntrySeq">,
@@ -402,41 +394,11 @@ export async function savedToolResultIdsInHistory(
 	const saved = new Set<string>();
 	const open = new Set(results.map((result) => result.toolCallId));
 	if (open.size === 0) return [];
-	// The held branch back from its newest entry, as far as it runs on without a gap (a manager holding only its window
-	// links its older held entries past the ones it does not hold).
-	const branch = sessionManager.getBranch();
-	let oldest = Math.max(0, branch.length - 1);
-	while (oldest > 0 && branch[oldest]?.parentId === branch[oldest - 1]?.id) oldest--;
-	readBack(
-		branch.slice(oldest).flatMap((entry) => {
-			const message = savedMessageOf(entry);
-			return message === undefined ? [] : [message];
-		}),
-		results,
-		open,
-		saved,
-	);
-	const first = branch[oldest];
-	const leaf = sessionManager.getLeafId();
-	const branchLeafSeq = leaf === null ? undefined : sessionManager.getEntrySeq(leaf);
-	if (open.size === 0 || !first?.parentId || branchLeafSeq === undefined) return savedOf(results, saved);
-	const firstSeq = sessionManager.getEntrySeq(first.id);
-	for await (const page of sessionManager.readHistory({
-		branchLeafSeq,
-		...(firstSeq === undefined ? {} : { toSeq: firstSeq - 1 }),
-		direction: "backward",
-	})) {
-		readBack(
-			page.items.flatMap((item) => {
-				const message = "entry" in item ? savedMessageOf(item.entry) : undefined;
-				return message === undefined ? [] : [message];
-			}),
-			results,
-			open,
-			saved,
-		);
-		if (open.size === 0) break;
-	}
+	await visitBranchBack(sessionManager, (entry) => {
+		const message = savedMessageOf(entry);
+		if (message !== undefined) readBack([message], results, open, saved);
+		return open.size === 0;
+	});
 	return savedOf(results, saved);
 }
 
