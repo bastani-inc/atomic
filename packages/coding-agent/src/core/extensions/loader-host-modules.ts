@@ -34,6 +34,12 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 	const [
 		typebox,
 		typeboxCompile,
+		typeboxError,
+		typeboxFormat,
+		typeboxGuard,
+		typeboxSchema,
+		typeboxSystem,
+		typeboxType,
 		typeboxValue,
 		agentCore,
 		tui,
@@ -59,9 +65,16 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		codingAgent,
 		storage,
 	] = await Promise.all([
-		import("typebox"),
-		import("typebox/compile"),
-		import("typebox/value"),
+		// Atomic's one copy of TypeBox, which every `typebox` specifier an extension uses resolves to.
+		import("@bastani/atomic-ai/utils/typebox/index"),
+		import("@bastani/atomic-ai/utils/typebox/compile"),
+		import("@bastani/atomic-ai/utils/typebox/error"),
+		import("@bastani/atomic-ai/utils/typebox/format"),
+		import("@bastani/atomic-ai/utils/typebox/guard"),
+		import("@bastani/atomic-ai/utils/typebox/schema"),
+		import("@bastani/atomic-ai/utils/typebox/system"),
+		import("@bastani/atomic-ai/utils/typebox/type"),
+		import("@bastani/atomic-ai/utils/typebox/value"),
 		import("@bastani/atomic-agent-core"),
 		import("@bastani/atomic-tui"),
 		import("@bastani/atomic-tui/dist/layout.js"),
@@ -93,10 +106,22 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 	]);
 
 	// Each forked package also answers to its legacy pi names (@earendil-works/pi-*, @mariozechner/pi-*).
+	const typeboxModules = {
+		"": typebox,
+		"/compile": typeboxCompile,
+		"/error": typeboxError,
+		"/format": typeboxFormat,
+		"/guard": typeboxGuard,
+		"/schema": typeboxSchema,
+		"/system": typeboxSystem,
+		"/type": typeboxType,
+		"/value": typeboxValue,
+	};
 	return withLegacyPackageNames({
-		typebox,
-		"typebox/compile": typeboxCompile,
-		"typebox/value": typeboxValue,
+		...prefixedModules("typebox", typeboxModules),
+		...prefixedModules("@bastani/atomic-ai/utils/typebox/index", typeboxModules),
+		...prefixedModules("@bastani/atomic/typebox", typeboxModules),
+		// TypeBox 0.x's package name answers for the subpaths it shares with TypeBox 1.
 		"@sinclair/typebox": typebox,
 		"@sinclair/typebox/compile": typeboxCompile,
 		"@sinclair/typebox/value": typeboxValue,
@@ -128,6 +153,11 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@earendil-works/pi-coding-agent": codingAgent,
 		"@mariozechner/pi-coding-agent": codingAgent,
 	});
+}
+
+/** `modules` keyed by `name` followed by each key. */
+function prefixedModules(name: string, modules: Record<string, object>): Record<string, object> {
+	return Object.fromEntries(Object.entries(modules).map(([subpath, module]) => [`${name}${subpath}`, module]));
 }
 
 export const loaderHostModulesTestHooks = { loadOptionalAtomicNatives };

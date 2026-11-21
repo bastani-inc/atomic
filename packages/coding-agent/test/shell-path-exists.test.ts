@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type * as ChildProcess from "node:child_process";
 import type * as Fs from "node:fs";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type * as FsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
@@ -56,6 +56,7 @@ vi.mock("child_process", async (importOriginal) => ({
 }));
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+const realWindows = process.platform === "win32";
 const standInRoot = mkdtempSync(join(tmpdir(), "atomic-shell-path-stand-ins-"));
 standIns.directory = join(standInRoot, "directory");
 mkdirSync(standIns.directory);
@@ -150,13 +151,11 @@ describe("Windows Store shell aliases", () => {
 		assert.equal(shell.getShellConfig().shell, executable);
 	});
 
-	it("returns a relative PATH entry's match as an absolute path, so it starts from any working directory (#5324)", () => {
+	it("never takes a shell from a relative PATH entry, which names a directory in the project folder", () => {
 		vi.stubEnv("PATH", "relative-bin");
+		vi.stubEnv("SystemRoot", "D:\\Windows");
 
-		const found = shell.getPowerShellConfig().shell;
-
-		assert.equal(found, win32.resolve(process.cwd(), "relative-bin", "pwsh.exe"));
-		assert.ok(win32.isAbsolute(found), found);
+		assert.equal(shell.getPowerShellConfig().shell, "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
 	});
 
 	it("skips a directory named like the executable earlier on PATH (#5324)", () => {
@@ -196,14 +195,12 @@ describe("Windows Store shell aliases", () => {
 		assert.equal((await shell.getShellConfigAsync()).shell, executable);
 	});
 
-	it("resolves a relative PATH entry to an absolute path and skips a directory named like the executable when resolved asynchronously (#5324)", async () => {
+	it("skips a directory named like the executable and a relative PATH entry when resolved asynchronously (#5324)", async () => {
 		const shadowing = "D:\\first\\pwsh.exe";
 		standIns.directories.add(shadowing);
-		vi.stubEnv("PATH", `D:\\first;relative-bin`);
+		vi.stubEnv("PATH", `D:\\first;relative-bin;${aliasesDir}`);
 
-		const found = (await shell.getPowerShellConfigAsync()).shell;
-
-		assert.equal(found, win32.resolve(process.cwd(), "relative-bin", "pwsh.exe"));
+		assert.equal((await shell.getPowerShellConfigAsync()).shell, `${aliasesDir}\\pwsh.exe`);
 	});
 
 	it("keeps a Store alias whose link target cannot be read when resolved asynchronously (#5324)", async () => {
@@ -236,14 +233,25 @@ describe("Unix shell existence checks", () => {
 		assert.equal(shell.getShellConfig().shell, "/bin/bash");
 	});
 
-	it("falls back to bash on PATH when /bin/bash fails access(F_OK)", () => {
-		accessSyncMock.mockImplementationOnce(() => {
-			throw Object.assign(new Error("not found"), { code: "ENOENT" });
-		});
-		spawnSyncMock.mockReturnValue({ status: 0, stdout: "/usr/local/bin/bash\n" });
+	// A real directory on PATH, so only where Linux and macOS read it.
+	it.skipIf(realWindows)(
+		"falls back to bash in a PATH directory when /bin/bash fails access(F_OK), without starting which",
+		() => {
+			accessSyncMock.mockImplementationOnce(() => {
+				throw Object.assign(new Error("not found"), { code: "ENOENT" });
+			});
+			const bin = mkdtempSync(join(tmpdir(), "atomic-shell-path-bin-"));
+			try {
+				writeFileSync(join(bin, "bash"), "");
+				vi.stubEnv("PATH", bin);
 
-		assert.equal(shell.getShellConfig().shell, "/usr/local/bin/bash");
-	});
+				assert.equal(shell.getShellConfig().shell, join(bin, "bash"));
+				assert.equal(spawnSyncMock.mock.calls.length, 0);
+			} finally {
+				rmSync(bin, { recursive: true, force: true });
+			}
+		},
+	);
 
 	it("rejects an explicitly configured shell path that fails access(F_OK)", () => {
 		accessSyncMock.mockImplementationOnce(() => {
@@ -255,16 +263,23 @@ describe("Unix shell existence checks", () => {
 		});
 	});
 
-	it("resolves bash on PATH asynchronously with execFile when /bin/bash fails access(F_OK)", async () => {
-		accessMock.mockRejectedValueOnce(Object.assign(new Error("not found"), { code: "ENOENT" }));
-		execFileMock.mockImplementation(
-			(_file: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
-				cb(null, "/usr/local/bin/bash\n");
-			},
-		);
+	// A real directory on PATH, so only where Linux and macOS read it.
+	it.skipIf(realWindows)(
+		"resolves bash in a PATH directory asynchronously when /bin/bash fails access(F_OK), without starting which",
+		async () => {
+			accessMock.mockRejectedValueOnce(Object.assign(new Error("not found"), { code: "ENOENT" }));
+			const bin = mkdtempSync(join(tmpdir(), "atomic-shell-path-bin-"));
+			try {
+				writeFileSync(join(bin, "bash"), "");
+				vi.stubEnv("PATH", bin);
 
-		assert.equal((await shell.getShellConfigAsync()).shell, "/usr/local/bin/bash");
-		assert.equal(accessSyncMock.mock.calls.length, 0);
-		assert.equal(spawnSyncMock.mock.calls.length, 0);
-	});
+				assert.equal((await shell.getShellConfigAsync()).shell, join(bin, "bash"));
+				assert.equal(accessSyncMock.mock.calls.length, 0);
+				assert.equal(spawnSyncMock.mock.calls.length, 0);
+				assert.equal(execFileMock.mock.calls.length, 0);
+			} finally {
+				rmSync(bin, { recursive: true, force: true });
+			}
+		},
+	);
 });
