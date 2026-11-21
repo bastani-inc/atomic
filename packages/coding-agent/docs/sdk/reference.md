@@ -388,6 +388,7 @@ PowerShell tools and local operations accept a trusted `taskOwner` binding and t
 after the owner's command budget (normally 10000 ms); explicit per-call budgets override it,
 and execution timeout remains separate. Task descriptions retain the original command text.
 Without a supported owner, explicit background requests are refused and foreground execution waits for completion.
+On native Windows, a bash or PowerShell command run without an owner runs in a job of its own, as an owned one does: a timeout or an abort ends the processes it started, also background ones still writing its output after the shell exited, and a program that asks to leave the job (`CREATE_BREAKAWAY_FROM_JOB`) cannot start. What a finished command left running keeps running.
 
 ```typescript
 import { createPowerShellTool } from "@bastani/atomic";

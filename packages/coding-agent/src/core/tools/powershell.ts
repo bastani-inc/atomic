@@ -4,7 +4,7 @@ import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/
 import {
 	getPowerShellConfigAsync,
 	getShellEnvAsync,
-	killProcessTree,
+	shellProcessTree,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
@@ -88,16 +88,15 @@ export function createLocalPowerShellOperations(binding?: {
 				windowsHide: true,
 			});
 			if (child.pid) trackDetachedChildPid(child.pid);
+			const tree = child.pid ? shellProcessTree(child.pid) : undefined;
 			let timedOut = false;
 			let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-			const onAbort = () => {
-				if (child.pid) killProcessTree(child.pid);
-			};
+			const onAbort = () => tree?.kill();
 			try {
 				if (options.timeout !== undefined && options.timeout > 0) {
 					timeoutHandle = setTimeout(() => {
 						timedOut = true;
-						if (child.pid) killProcessTree(child.pid);
+						tree?.kill();
 					}, options.timeout * 1000);
 				}
 				child.stdout?.on("data", (data: Buffer) => options.onData(data, "stdout"));
@@ -111,6 +110,7 @@ export function createLocalPowerShellOperations(binding?: {
 				if (timedOut) throw new Error(`timeout:${options.timeout}`);
 				return { exitCode };
 			} finally {
+				tree?.release();
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				options.signal?.removeEventListener("abort", onAbort);

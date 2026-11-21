@@ -14,7 +14,7 @@ import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/
 import {
 	getShellConfigAsync,
 	getShellEnvAsync,
-	killProcessTree,
+	shellProcessTree,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
@@ -262,6 +262,7 @@ export function createLocalBashOperations(options?: {
 				child.stdin?.end(command);
 			}
 			if (child.pid) trackDetachedChildPid(child.pid);
+			const tree = child.pid ? shellProcessTree(child.pid) : undefined;
 			const startedAt = performance.now();
 			let shellExitedAfterMs: number | undefined;
 			child.once("exit", () => {
@@ -270,9 +271,7 @@ export function createLocalBashOperations(options?: {
 			// Set when the deadline fires, with the shell's exit time if it had already exited.
 			let deadline: { timeoutSeconds: number; elapsedMs: number; shellExitedAfterMs?: number } | undefined;
 			let timeoutHandle: NodeJS.Timeout | undefined;
-			const onAbort = () => {
-				if (child.pid) killProcessTree(child.pid);
-			};
+			const onAbort = () => tree?.kill();
 			try {
 				if (timeout !== undefined && timeout > 0) {
 					timeoutHandle = setTimeout(() => {
@@ -282,8 +281,9 @@ export function createLocalBashOperations(options?: {
 							shellExitedAfterMs,
 						};
 						// Also when the shell already exited: on Unix the group kill still reaches background
-						// processes holding the pipes. Windows cannot find them once the shell pid is gone.
-						if (child.pid) killProcessTree(child.pid);
+						// processes holding the pipes, and on Windows the shell's job does. Without the job, Windows
+						// cannot find them once the shell pid is gone.
+						tree?.kill();
 					}, timeout * 1000);
 				}
 				child.stdout?.on("data", (data: Buffer) => onData(data, "stdout"));
@@ -315,6 +315,7 @@ export function createLocalBashOperations(options?: {
 				}
 				return { exitCode: resolvedExitCode };
 			} finally {
+				tree?.release();
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);

@@ -4,6 +4,7 @@ import { delimiter, join, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
 import { type ChildProcess, execFile, spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.js";
+import { containProcessTree } from "../core/process-tree-containment.ts";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
@@ -565,6 +566,38 @@ function taskkillTree(pid: number, settled?: () => void): void {
 	} catch {
 		settled?.();
 	}
+}
+
+/** The process tree of a shell that the bash or PowerShell tool runs without a task owner. */
+export interface ShellProcessTree {
+	/** Ends the shell and the processes it started that are still in its tree. */
+	kill(): void;
+	/** Once its command is done: what the shell left running keeps running. */
+	release(): void;
+}
+
+/**
+ * On Windows, with the native module, the shell runs in a job of its own, as a shell a task owner runs does: `kill` ends
+ * its tree through that job, never through a process ID another process may have taken by then, and also ends what the
+ * shell left in its tree after it exited. A process the shell starts in its first microseconds, before it is in the job,
+ * is outside it, and a program that asks to leave the job (`CREATE_BREAKAWAY_FROM_JOB`) fails to start. Elsewhere, and
+ * without the native module, `kill` is `killProcessTree`.
+ */
+export function shellProcessTree(pid: number): ShellProcessTree {
+	const job = containProcessTree(pid);
+	if (job === undefined) return { kill: () => killProcessTree(pid), release: () => {} };
+	let held = true;
+	return {
+		kill: () => {
+			if (held) job.terminate();
+		},
+		release: () => {
+			if (!held) return;
+			held = false;
+			job.release();
+			job.close();
+		},
+	};
 }
 
 /**
