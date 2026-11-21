@@ -1,7 +1,13 @@
 import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
-import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
+import {
+	processLaunch,
+	processLaunchAsync,
+	spawnLaunchedProcess,
+	spawnLaunchedProcessSync,
+} from "../utils/child-process.ts";
 import type { GitSource } from "../utils/git.ts";
+import type { HelperLaunch } from "../utils/helper-command.ts";
 import { resolvePath as resolveAbsolutePath } from "../utils/paths.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
 import { getCommandEnv } from "./package-manager-env.ts";
@@ -199,11 +205,12 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private spawnCommand(
+		launch: HelperLaunch,
 		command: string,
 		args: string[],
 		options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 	): ChildProcess {
-		return spawnProcess(command, args, {
+		return spawnLaunchedProcess(launch, args, {
 			cwd: options?.cwd,
 			stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
 			env: getCommandEnv(command, options?.env),
@@ -211,24 +218,29 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private spawnCaptureCommand(
+		launch: HelperLaunch,
 		command: string,
 		args: string[],
 		options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 	): ChildProcessByStdio<null, Readable, Readable> {
-		return spawnProcess(command, args, {
+		return spawnLaunchedProcess(launch, args, {
 			cwd: options?.cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			env: getCommandEnv(command, options?.env),
 		});
 	}
 
-	private runCommandCapture(
+	private async runCommandCapture(
 		command: string,
 		args: string[],
 		options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv },
 	): Promise<string> {
+		const launch = await processLaunchAsync(command, {
+			cwd: options?.cwd,
+			env: getCommandEnv(command, options?.env),
+		});
 		return new Promise((resolvePromise, reject) => {
-			const child = this.spawnCaptureCommand(command, args, options);
+			const child = this.spawnCaptureCommand(launch, command, args, options);
 			let stdout = "";
 			let stderr = "";
 			let timedOut = false;
@@ -266,13 +278,17 @@ export class DefaultPackageManager implements PackageManager {
 		});
 	}
 
-	private runCommand(
+	private async runCommand(
 		command: string,
 		args: string[],
 		options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 	): Promise<void> {
+		const launch = await processLaunchAsync(command, {
+			cwd: options?.cwd,
+			env: getCommandEnv(command, options?.env),
+		});
 		return new Promise((resolvePromise, reject) => {
-			const child = this.spawnCommand(command, args, options);
+			const child = this.spawnCommand(launch, command, args, options);
 			child.on("error", reject);
 			child.on("exit", (code) => {
 				if (code === 0) {
@@ -285,7 +301,7 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private runCommandSync(command: string, args: string[]): string {
-		const result = spawnProcessSync(command, args, {
+		const result = spawnLaunchedProcessSync(processLaunch(command, { env: getCommandEnv(command) }), args, {
 			stdio: ["ignore", "pipe", "pipe"],
 			encoding: "utf-8",
 			env: getCommandEnv(command),
