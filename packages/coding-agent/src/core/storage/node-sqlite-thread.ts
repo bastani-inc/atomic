@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { startupNodeOptions } from "@bastani/atomic-codemode/node-options";
 import { EVAL_WORKER_BUILTIN } from "../../utils/worker-threads.js";
 import type { SqliteRow, SqliteStatement, SqliteValue } from "./database.js";
 import { sqliteDialect } from "./dialect.js";
@@ -363,6 +364,12 @@ export class ConnectionThreadEndedError extends Error {
 	}
 }
 
+/** Options that make every worker thread run code of the user's: a preload or a module loader. */
+const WORKER_CODE_OPTIONS = new Set(["--require", "-r", "--import", "--loader", "--experimental-loader"]);
+
+/** The thread `startSpare` started for the next open, until an open takes it or `releaseSpare` ends it. */
+let spare: ThreadConnection | undefined;
+
 /** A node:sqlite connection running on its own worker thread. */
 export class ThreadConnection {
 	private readonly worker: Worker;
@@ -395,7 +402,49 @@ export class ThreadConnection {
 		path: string,
 		options: { readonly readOnly: boolean; readonly openAs?: string },
 	): Promise<{ readonly connection: ThreadConnection; readonly location: string | null }> {
-		const connection = new ThreadConnection();
+		const started = spare;
+		spare = undefined;
+		if (started !== undefined && started.ended === undefined) {
+			try {
+				return await ThreadConnection.openOn(started, path, options);
+			} catch (error) {
+				// The spare thread was lost before it answered: open on a thread of its own, as without one.
+				if (error !== started.ended) throw error;
+			}
+		}
+		return ThreadConnection.openOn(new ThreadConnection(), path, options);
+	}
+
+	/**
+	 * Starts one connection thread now, for the next open to take, so that the thread's startup overlaps whatever the
+	 * process does until then (an interactive session loads its modules meanwhile). Idle, the thread keeps nothing
+	 * alive. Nothing starts when the process runs a preload or a module loader, which every worker thread runs again,
+	 * or runs under the permission model; a thread that cannot start leaves every open as it is without one.
+	 */
+	static startSpare(): void {
+		if (spare !== undefined || process.permission !== undefined) return;
+		if (startupNodeOptions().some((option) => WORKER_CODE_OPTIONS.has(option.name))) return;
+		try {
+			const started = new ThreadConnection();
+			started.worker.unref();
+			spare = started;
+		} catch {
+			// Opens start their own threads.
+		}
+	}
+
+	/** Ends the spare thread if no open has taken it. */
+	static releaseSpare(): void {
+		const started = spare;
+		spare = undefined;
+		if (started !== undefined) void started.stop();
+	}
+
+	private static async openOn(
+		connection: ThreadConnection,
+		path: string,
+		options: { readonly readOnly: boolean; readonly openAs?: string },
+	): Promise<{ readonly connection: ThreadConnection; readonly location: string | null }> {
 		try {
 			const location = await connection.request({
 				kind: "open",
