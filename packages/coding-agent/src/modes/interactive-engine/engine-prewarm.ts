@@ -11,7 +11,10 @@ import { basename } from "node:path";
 import { ENV_AGENT_DIR, ENV_STARTUP_BENCHMARK, ENV_TIMING, getAgentDir, getEnvValue } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { COMPILE_CACHE_ENGINE_WARMUP_ENV, compileCacheDeferral } from "../../utils/compile-cache.ts";
-import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../../utils/interactive-engine-bootstrap.ts";
+import {
+	INTERACTIVE_ENGINE_PREWARM_FLAG,
+	INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG,
+} from "../../utils/interactive-engine-bootstrap.ts";
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
 import { isPlainInteractiveSessionInvocation } from "../../utils/interactive-invocation.ts";
 import { applyArgumentEnvironment, settingsEnvironmentForEarlyChild } from "../../utils/startup-environment.js";
@@ -186,7 +189,14 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 	try {
 		launch =
 			options.launch ?? engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
-		child = spawn(launch.command, [...launch.args, INTERACTIVE_ENGINE_PREWARM_FLAG], {
+		// Off Windows a host waits for its engine's exit as it quits, the exit-time write of a cold compile cache included;
+		// a fresh engine would have started from the host's written cache instead (Windows ends an engine without it).
+		const writeCache = options.basis === "derived" && process.platform !== "win32";
+		const prewarmArgs = [
+			INTERACTIVE_ENGINE_PREWARM_FLAG,
+			...(writeCache ? [INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG] : []),
+		];
+		child = spawn(launch.command, [...launch.args, ...prewarmArgs], {
 			cwd: launch.cwd,
 			env: launch.env,
 			detached: launch.detached,

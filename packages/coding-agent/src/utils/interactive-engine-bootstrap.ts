@@ -32,6 +32,12 @@ export const INTERACTIVE_ENGINE_BOOTSTRAP_VERSION = 1;
  * loads the application, then reads them from its first stdin line (see engine-prewarm.ts).
  */
 export const INTERACTIVE_ENGINE_PREWARM_FLAG = "--internal-engine-prewarm";
+/**
+ * Follows {@link INTERACTIVE_ENGINE_PREWARM_FLAG} for a prewarmed child whose host would otherwise have started a fresh
+ * engine from its own written compile cache: the child writes its compile cache once it has loaded, if its host has
+ * not taken it over by then, so that its exit has little left to write. An earlier version ignores it.
+ */
+export const INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG = "--internal-engine-prewarm-write-cache";
 
 export interface InteractiveEngineBootstrap {
 	version: number;

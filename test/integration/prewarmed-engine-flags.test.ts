@@ -247,7 +247,24 @@ test(
 );
 
 // The prewarm reads the global settings before the host does. A setting edited in between makes the host's engine
-// differ from the prewarmed one; the host then starts another, which gets the edited environment.
+// differ from the prewarmed one; the host then starts another, which gets the edited environment. A preload in the
+// host edits the settings as the prewarmed engine is spawned, before the host can read them.
+const EDIT_AFTER_PREWARM = `
+const childProcess = require("node:child_process");
+const fs = require("node:fs");
+const spawn = childProcess.spawn;
+let edited = false;
+childProcess.spawn = function (command, args, ...rest) {
+	const child = spawn.call(this, command, args, ...rest);
+	if (!edited && Array.isArray(args) && args.includes(${JSON.stringify("--internal-engine-prewarm")})) {
+		edited = true;
+		fs.writeFileSync(process.env.ATOMIC_TEST_SETTINGS_FILE, process.env.ATOMIC_TEST_SETTINGS_EDIT);
+	}
+	return child;
+};
+require("node:module").syncBuiltinESMExports();
+`;
+
 test(
 	"an httpProxy setting removed while Atomic starts leaves the engine without that proxy",
 	async () => {
@@ -258,17 +275,21 @@ test(
 		const trace = join(root, "startup.jsonl");
 		const seen = join(root, "engine-proxy.txt");
 		const extension = join(root, "proxy-probe.mjs");
+		const preload = join(root, "edit-after-prewarm.cjs");
 		let program: PtyProgram | undefined;
 		try {
 			mkdirSync(project, { recursive: true });
 			prepareAgentDir(agentDir, "http://127.0.0.1:9");
 			const settingsFile = join(agentDir, "settings.json");
-			const settings = JSON.parse(readFileSync(settingsFile, "utf8")) as Record<string, unknown>;
-			writeFileSync(settingsFile, JSON.stringify({ ...settings, httpProxy: "http://127.0.0.1:9" }));
+			const settings = readFileSync(settingsFile, "utf8");
+			writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), httpProxy: "http://127.0.0.1:9" }));
+			writeFileSync(preload, EDIT_AFTER_PREWARM);
 			writeFileSync(
 				extension,
 				`import { writeFileSync } from "node:fs";
-export default (pi) => pi.on("session_start", () => writeFileSync(${JSON.stringify(seen)}, process.env.HTTP_PROXY ?? "unset"));
+export default (pi) => pi.on("session_start", (_event, ctx) => {
+	if (!ctx.isPresentationOnly) writeFileSync(${JSON.stringify(seen)}, process.env.HTTP_PROXY ?? "unset");
+});
 `,
 			);
 			prepareInstalledPackage(PACKAGE, packageDir);
@@ -285,6 +306,9 @@ export default (pi) => pi.on("session_start", () => writeFileSync(${JSON.stringi
 					ATOMIC_SKIP_VERSION_CHECK: "1",
 					ATOMIC_TELEMETRY: "0",
 					ATOMIC_STARTUP_TRACE: trace,
+					NODE_OPTIONS: `--require=${preload}`,
+					ATOMIC_TEST_SETTINGS_FILE: settingsFile,
+					ATOMIC_TEST_SETTINGS_EDIT: settings,
 					TERM: "xterm-256color",
 					CI: "0",
 				},
@@ -292,32 +316,30 @@ export default (pi) => pi.on("session_start", () => writeFileSync(${JSON.stringi
 				cols: 120,
 				rows: 40,
 			});
-			// Once the prewarmed engine has started, with the proxy, and before the host reads its settings.
+			await program.waitForScreen((screen) => screen.includes("❯"), REAL_STARTUP_TIMEOUT_MS, "the prompt");
 			const deadline = Date.now() + REAL_STARTUP_TIMEOUT_MS;
-			const started = () => {
-				const lines = existsSync(trace) ? readTrace(trace) : [];
-				const host = lines.find((line) => line.label === "process-entry")?.pid;
-				return lines.some((line) => line.label === "process-start" && line.ppid === host);
-			};
-			while (!started()) {
-				assert.ok(Date.now() < deadline, "the prewarmed engine never started");
-				await sleep(10);
-			}
-			assert.equal(
-				readTrace(trace).some((line) => line.label === "main-entry"),
-				false,
-				"the host had already read its settings",
-			);
-			writeFileSync(settingsFile, JSON.stringify(settings));
 			while (!existsSync(seen)) {
 				assert.ok(Date.now() < deadline, "the engine never started its session");
 				await sleep(50);
 			}
 			assert.equal(readFileSync(seen, "utf8"), "unset");
-			while (!readTrace(trace).some((line) => line.label === "engine-resources-ready")) {
+			// A line the trace is still writing is read on the next poll.
+			const marked = () =>
+				readTextSync(trace, "utf8")
+					.split("\n")
+					.some((line) => line.includes('"engine-resources-ready"'));
+			while (!marked()) {
 				assert.ok(Date.now() < deadline, "the engine never finished loading its resources");
 				await sleep(50);
 			}
+			program.write("/quit");
+			await program.waitForScreen(
+				(screen) => screen.includes("❯ /quit"),
+				REAL_STARTUP_TIMEOUT_MS,
+				"the quit command",
+			);
+			program.write("\r");
+			assert.equal((await program.exited).exitCode, 0, program.screen());
 			assert.equal(engineChildren(readTrace(trace)).length, 2, "the host started another engine");
 		} finally {
 			program?.kill();
