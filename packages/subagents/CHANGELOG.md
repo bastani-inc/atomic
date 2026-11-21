@@ -15,6 +15,7 @@
 - A background subagent woken by the result of a call that kept running in the background, or by a background shell it launched finishing, now gets it as a notice card in its chat (the tool, whether it finished or failed, and its output), as the main chat gets a finished background task. It no longer shows up as a queued `Follow-up: The bash call … that kept running in the background finished:` message you could edit with Alt+Up, or as a message from you in its transcript, and the subagent reads each result once. When the result is the only thing that woke it, the notice starts its turn.
 - A subagent you paused with Esc, restored paused after a restart, no longer answers a notice it had not read yet before you continue it.
 - A background subagent woken by a result it had already read before a compaction took that part of its conversation out of its context no longer gets the result a second time.
+- A background subagent whose model's provider gives a later tool call the id of an earlier one (as Kimi does) gets the late result of that later call, instead of losing it as if it had already read the earlier call's result.
 
 ## [0.10.3] - 2026-11-21
 

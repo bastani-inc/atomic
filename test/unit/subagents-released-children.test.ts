@@ -789,3 +789,61 @@ test("a late result the child read before a compaction took it out of its contex
 	assert.deepEqual(await savedToolResultIdsInHistory(child, [unread]), []);
 	assert.ok(pages.length <= 1, `read back only as far as its call: ${pages.join(", ")}`);
 });
+
+test("a held late result whose call reused an earlier call's id is not taken as read from that earlier call's result (#3274)", async () => {
+	// A provider that numbers each response's calls from 0 gives the background call the id of an earlier one.
+	const id = "functions.bash:0";
+	const late = result(id, "deployed");
+	for (const compacted of [false, true]) {
+		const store = new MemorySessionStore();
+		const child = await SessionManager.create(store, "/repo");
+		const call = () =>
+			child.appendMessage({
+				...fauxAssistantMessage([fauxToolCall("bash", { command: "npm test" }, { id })], { stopReason: "toolUse" }),
+			});
+		const ownResult = (text: string) =>
+			child.appendMessage({
+				role: "toolResult",
+				toolCallId: id,
+				toolName: "bash",
+				content: [{ type: "text", text }],
+				isError: false,
+				timestamp: 2,
+			});
+		await child.appendMessage({ role: "user", content: "run the tests", timestamp: 1 });
+		await call();
+		await ownResult("run 6 passed");
+		await child.appendMessage({ role: "user", content: "now deploy", timestamp: 3 });
+		if (compacted)
+			await child.appendCompaction("summary", null, 100, {
+				strategy: "verbatim-lines",
+				promptVersion: 7,
+				parameters: { query: "" },
+				stats: {
+					linesBefore: 3,
+					linesDeleted: 3,
+					linesKept: 0,
+					rangeCount: 1,
+					tokensBefore: 100,
+					tokensAfter: 10,
+					percentReduction: 90,
+				},
+				form: "cleared",
+			});
+		await child.appendMessage({ role: "user", content: "deploy it in the background", timestamp: 4 });
+		await call();
+		await ownResult(SUBAGENT_STILL_RUNNING_RESULT);
+		const reopened = await SessionManager.open(store, child.getSessionId(), "/repo", { history: "tail" });
+
+		for (const manager of [child, reopened]) {
+			const label = `${compacted ? "compacted" : "in context"}, ${manager === child ? "whole" : "reopened"}`;
+			assert.deepEqual(savedToolResultIds(manager, [late]), [], `${label}: its context`);
+			assert.deepEqual(await savedToolResultIdsInHistory(manager, [late]), [], `${label}: its history`);
+		}
+		// Read once its notice is saved, after its call.
+		const notice = lateToolResultNotice([late]);
+		await child.appendCustomMessageEntry(notice.customType, notice.content, notice.display, notice.details);
+		assert.deepEqual(savedToolResultIds(child, [late]), [id]);
+		assert.deepEqual(await savedToolResultIdsInHistory(child, [late]), [id]);
+	}
+});
