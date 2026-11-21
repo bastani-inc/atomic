@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { after, test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { assignGroups, bundlePackageDist } from "./bundle-package-dist.mjs";
@@ -84,6 +84,21 @@ function fixture() {
 			"",
 		].join("\n"),
 		"pkg/dist/deep/thing.js": `import { log } from "../log.js";\nlog("deep-thing");\nexport const thingUrl = import.meta.url;\n`,
+		// Two modules with functions and classes of the same names, which a shared file holds side by side.
+		"pkg/dist/deep/named.js": "export function classify() {}\nexport class Stream {}\n",
+		"pkg/dist/deep/named-again.js":
+			"function classify() {}\nclass Stream {}\nexport const again = [classify, Stream];\n",
+		// A module as tsc writes it with its source map, importing a JSON file.
+		"pkg/dist/deep/answer.js": `import values from "../data/values.json" with { type: "json" };\nexport const answer = values.answer;\n//# sourceMappingURL=answer.js.map\n`,
+		"pkg/dist/deep/answer.js.map": JSON.stringify({
+			version: 3,
+			file: "answer.js",
+			sourceRoot: "",
+			sources: ["../../src/deep/answer.ts"],
+			names: [],
+			mappings: "AAAA;AACA",
+		}),
+		"pkg/dist/data/values.json": JSON.stringify({ answer: 42 }),
 	});
 	return { root, pkg: join(root, "pkg") };
 }
@@ -300,4 +315,46 @@ test("modules share a group only with modules of the same tier that need the sam
 		"/d/provider.js": "lazy:heavy-sdk,node:fs;heavy-sdk,node:fs",
 		"/d/uses-provider.js": "lazy:heavy-sdk,node:fs;heavy-sdk,node:fs",
 	});
+});
+
+test("functions and classes keep their names when a shared file holds two of the same name", async () => {
+	const { pkg } = fixture();
+	await bundle(pkg);
+	const names = (path, values) =>
+		inChild(join(pkg, path), `process.stdout.write(JSON.stringify(${values}.map((value) => value.name)));`);
+	assert.deepEqual(names("dist/deep/named.js", "[m.classify, m.Stream]"), ["classify", "Stream"]);
+	assert.deepEqual(names("dist/deep/named-again.js", "m.again"), ["classify", "Stream"]);
+});
+
+test("the package ships each source map once, named by the file it describes, and each imported JSON file once", async () => {
+	const { root, pkg } = fixture();
+	await bundle(pkg);
+	const dist = join(pkg, "dist");
+	const files = readdirSync(dist, { recursive: true, encoding: "utf8" }).map((name) => name.split(sep).join("/"));
+	for (const map of files.filter((name) => name.endsWith(".map"))) {
+		const described = readFileSync(join(dist, map.slice(0, -".map".length)), "utf8");
+		assert.equal(/\/\/# sourceMappingURL=(\S+)\s*$/.exec(described)?.[1], map.split("/").at(-1), map);
+	}
+	// The copy bundlers read keeps the module's map, which still names the module's source.
+	const map = JSON.parse(readFileSync(join(dist, "_modules/deep/answer.js.map"), "utf8"));
+	assert.equal(resolve(dist, "_modules/deep", map.sources[0]), join(pkg, "src/deep/answer.ts"));
+	assert.deepEqual(
+		files.filter((name) => name.endsWith(".json")),
+		["data/values.json"],
+	);
+	// Node and bundlers both still read the JSON file.
+	assert.equal(inChild(join(dist, "deep/answer.js"), "process.stdout.write(JSON.stringify(m.answer));"), 42);
+	linkPackage(root, pkg);
+	const esbuild = await import("esbuild");
+	const result = await esbuild.build({
+		stdin: { contents: 'export { answer } from "fixture/deep/answer";', resolveDir: root, loader: "js" },
+		bundle: true,
+		platform: "browser",
+		format: "esm",
+		write: false,
+		metafile: true,
+		logLevel: "silent",
+	});
+	assert.ok(Object.keys(result.metafile.inputs).some((input) => input.endsWith("pkg/dist/_modules/deep/answer.js")));
+	assert.match(result.outputFiles[0]?.text ?? "", /answer: 42/);
 });

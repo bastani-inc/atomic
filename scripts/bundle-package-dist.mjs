@@ -37,10 +37,11 @@ import {
 	readdirSync,
 	readFileSync,
 	renameSync,
+	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** Where a package with an exports map keeps its compiled modules for bundlers, below `dist`. */
@@ -476,7 +477,16 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		const mode = existsSync(path) ? statSync(path).mode : undefined;
 		renameSync(`${path}.bundle`, path);
 		if (mode !== undefined && (mode & 0o111) !== 0) chmodSync(path, statSync(path).mode | (mode & 0o111));
-		if (item.type === "chunk" && item.isEntry) facades[item.fileName] = digest(readFileSync(path));
+		if (item.type === "chunk" && item.isEntry) {
+			facades[item.fileName] = digest(readFileSync(path));
+			// tsc's map of the module the facade replaced describes a file the package no longer has there.
+			rmSync(`${path}.map`, { force: true });
+		}
+	}
+	// Shared files an earlier bundle wrote that this one did not.
+	const written = new Set(output.output.map((item) => item.fileName));
+	for (const name of readdirSync(dist)) {
+		if (SHARED_FILE.test(name.replace(/\.map$/, "")) && !written.has(name)) rmSync(join(dist, name), { force: true });
 	}
 	if (manifest.exports) writeModulesCopy(dist, compiledDir, standalone);
 	mkdirSync(cacheDir, { recursive: true });
@@ -487,56 +497,71 @@ export async function bundlePackageDist(packageDir, options = {}) {
 	);
 }
 
+/** A relative specifier of a JSON file in a static or dynamic import: the quote, then the specifier. */
+const JSON_IMPORT = /((?:\bfrom|\bimport)\s*\(?\s*)(["'])(\.\.?\/[^"'\r\n]*\.json)\2/g;
+
 /**
  * Writes the package's compiled modules, one file each as tsc wrote them, under `dist/_modules/`, beside the files
- * they read (the package's other files in `dist`, copied), each with its source map inline.
+ * they read (the package's other files in `dist`, copied), each with tsc's source map beside it. A JSON file a module
+ * imports stays only in `dist`, and the copy imports it from there.
  * @param {string} dist
  * @param {string} compiledDir The saved compiled modules.
  * @param {Set<string>} standalone
  */
 function writeModulesCopy(dist, compiledDir, standalone) {
 	const modules = join(dist, MODULES_DIRECTORY);
+	rmSync(modules, { recursive: true, force: true });
+	/** @type {string[]} */
+	const files = [];
 	/** @param {string} directory */
-	const copy = (directory) => {
+	const collect = (directory) => {
 		for (const entry of readdirSync(directory, { withFileTypes: true })) {
 			const path = join(directory, entry.name);
-			const rel = relative(dist, path);
 			if (
 				directory === dist &&
 				(entry.name === MODULES_DIRECTORY || SHARED_FILE.test(entry.name.replace(/\.map$/, "")))
 			)
 				continue;
-			if (entry.isDirectory()) {
-				copy(path);
-				continue;
-			}
-			// Declarations stay in dist. A module's source map goes inline, so the copy adds no files.
-			if (/\.d\.ts$|\.map$/.test(entry.name)) continue;
-			const target = join(modules, rel);
-			const isModule = entry.name.endsWith(".js") && !standalone.has(path);
-			const source = isModule ? join(compiledDir, rel) : path;
-			/** @type {string | Buffer} */
-			let contents = readFileSync(source);
-			if (entry.name.endsWith(".js")) {
-				const mapFile = `${source}.map`;
-				const map = existsSync(mapFile) ? readFileSync(mapFile, "utf8") : "";
-				let inline = "";
-				if (map !== "") {
-					const parsed = JSON.parse(map);
-					// Its sources are named relative to the module, one directory deeper now.
-					parsed.sources = parsed.sources.map((/** @type {string} */ name) =>
-						isAbsolute(name) ? name : `../${name}`,
-					);
-					inline = `//# sourceMappingURL=data:application/json;base64,${Buffer.from(JSON.stringify(parsed)).toString("base64")}\n`;
-				}
-				contents = contents.toString("utf8").replace(/\n\/\/# sourceMappingURL=[^\r\n]*\s*$/, "\n") + inline;
-			}
-			mkdirSync(dirname(target), { recursive: true });
-			writeFileSync(`${target}.bundle`, contents);
-			renameSync(`${target}.bundle`, target);
+			if (entry.isDirectory()) collect(path);
+			// Declarations stay in dist; a module's map is written with it.
+			else if (!/\.d\.ts$|\.map$/.test(entry.name)) files.push(path);
 		}
 	};
-	copy(dist);
+	collect(dist);
+	/** @param {string} target @param {string | Buffer} contents */
+	const write = (target, contents) => {
+		mkdirSync(dirname(target), { recursive: true });
+		writeFileSync(`${target}.bundle`, contents);
+		renameSync(`${target}.bundle`, target);
+	};
+	/** JSON files the modules import, which the copy leaves in dist. */
+	const importedJson = new Set();
+	for (const path of files.filter((file) => file.endsWith(".js"))) {
+		const target = join(modules, relative(dist, path));
+		const source = standalone.has(path) ? path : join(compiledDir, relative(dist, path));
+		const code = readFileSync(source, "utf8").replace(JSON_IMPORT, (_, keyword, quote, specifier) => {
+			const json = join(dirname(path), specifier);
+			if (!existsSync(json)) return `${keyword}${quote}${specifier}${quote}`;
+			importedJson.add(json);
+			const fromCopy = toPosix(relative(dirname(target), json));
+			return `${keyword}${quote}${fromCopy.startsWith(".") ? fromCopy : `./${fromCopy}`}${quote}`;
+		});
+		const map = existsSync(`${source}.map`) ? readFileSync(`${source}.map`, "utf8") : "";
+		const withoutMapUrl = code.replace(/\n\/\/# sourceMappingURL=[^\r\n]*\s*$/, "\n");
+		if (map === "") {
+			write(target, withoutMapUrl);
+			continue;
+		}
+		const parsed = JSON.parse(map);
+		// Its sources are named relative to the map, one directory deeper now.
+		parsed.sources = parsed.sources.map((/** @type {string} */ name) => (isAbsolute(name) ? name : `../${name}`));
+		write(`${target}.map`, JSON.stringify(parsed));
+		write(target, `${withoutMapUrl}//# sourceMappingURL=${basename(target)}.map\n`);
+	}
+	for (const path of files) {
+		if (path.endsWith(".js") || importedJson.has(path)) continue;
+		write(join(modules, relative(dist, path)), readFileSync(path));
+	}
 }
 
 /**
