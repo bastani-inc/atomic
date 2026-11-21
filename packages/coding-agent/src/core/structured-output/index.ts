@@ -9,7 +9,7 @@ import {
 	type RetryPolicy,
 	retryAssistantCall,
 } from "@bastani/atomic-ai";
-import type { Static, TSchema } from "@bastani/atomic-ai/utils/typebox";
+import type { Static, TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import { Check } from "@bastani/atomic-ai/utils/typebox/value";
 import { raceWithAbortSignal } from "../../utils/abort.js";
 import { reportDebugAsync as reportDebug } from "../debug.ts";

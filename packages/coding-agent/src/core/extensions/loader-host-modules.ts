@@ -66,7 +66,7 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		storage,
 	] = await Promise.all([
 		// Atomic's one copy of TypeBox, which every `typebox` specifier an extension uses resolves to.
-		import("@bastani/atomic-ai/utils/typebox"),
+		import("@bastani/atomic-ai/utils/typebox/index"),
 		import("@bastani/atomic-ai/utils/typebox/compile"),
 		import("@bastani/atomic-ai/utils/typebox/error"),
 		import("@bastani/atomic-ai/utils/typebox/format"),
@@ -119,7 +119,7 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 	};
 	return withLegacyPackageNames({
 		...prefixedModules("typebox", typeboxModules),
-		...prefixedModules("@bastani/atomic-ai/utils/typebox", typeboxModules),
+		...prefixedModules("@bastani/atomic-ai/utils/typebox/index", typeboxModules),
 		...prefixedModules("@bastani/atomic/typebox", typeboxModules),
 		// TypeBox 0.x's package name answers for the subpaths it shares with TypeBox 1.
 		"@sinclair/typebox": typebox,

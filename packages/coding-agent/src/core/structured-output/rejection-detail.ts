@@ -1,4 +1,4 @@
-import type { TSchema } from "@bastani/atomic-ai/utils/typebox";
+import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import type { TLocalizedValidationError } from "@bastani/atomic-ai/utils/typebox/error";
 import { Errors } from "@bastani/atomic-ai/utils/typebox/value";
 

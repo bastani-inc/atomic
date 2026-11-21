@@ -32,7 +32,7 @@
  */
 
 import { join, resolve } from "node:path";
-import type { TSchema } from "@bastani/atomic-ai/utils/typebox";
+import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import type { SelectItem } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.js";
 import type {

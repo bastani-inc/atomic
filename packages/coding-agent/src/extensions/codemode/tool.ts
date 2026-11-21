@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
-import { type Static, Type } from "@bastani/atomic-ai/utils/typebox";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import type { CodemodeJsonSchema, CodemodeTool } from "@bastani/atomic-codemode";
 import { renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@bastani/atomic-codemode/declarations";
 import { CODEMODE_SOURCE_GRAMMAR } from "@bastani/atomic-codemode/source";

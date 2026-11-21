@@ -1,6 +1,6 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@bastani/atomic-agent-core";
 import type { ConstrainedSamplingConfig } from "@bastani/atomic-ai/compat";
-import type { Static, TSchema } from "@bastani/atomic-ai/utils/typebox";
+import type { Static, TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import type { Component } from "@bastani/atomic-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { SourceInfo } from "../source-info.ts";

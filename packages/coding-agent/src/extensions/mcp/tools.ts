@@ -13,7 +13,7 @@
 import { createHash } from "node:crypto";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { ImageContent, JsonValue, TextContent } from "@bastani/atomic-ai";
-import type { TSchema } from "@bastani/atomic-ai/utils/typebox";
+import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import { Container, Spacer, Text } from "@bastani/atomic-tui";
 import type {
 	ToolAnnotations,

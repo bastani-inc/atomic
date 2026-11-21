@@ -1,6 +1,6 @@
 /** Text for session event children: the seed prompt and the report a subscriber receives. */
 
-import { Type } from "@bastani/atomic-ai/utils/typebox";
+import { Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { defineTool } from "../extensions/tool-types.ts";
 import { isToolModifier } from "../settings-merge.js";
 import type { SubscriptionEvent } from "./types.js";

@@ -1,7 +1,7 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import type { Provider } from "@bastani/atomic-ai";
 import type { Api, ImageContent, Model, TextContent } from "@bastani/atomic-ai/compat";
-import type { TSchema } from "@bastani/atomic-ai/utils/typebox";
+import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import type { KeyId } from "@bastani/atomic-tui";
 import type { CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult } from "../cache-warmer.ts";
 import type { EventBus } from "../event-bus.js";

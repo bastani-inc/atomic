@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-import { Type } from "@bastani/atomic-ai/utils/typebox";
+import { Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { Text } from "@bastani/atomic-tui";
 import { expect, it } from "vitest";
 import { bunExecutable, moduleDir, spawnSyncCollect } from "../../../test/helpers/runtime.js";

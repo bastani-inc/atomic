@@ -11,7 +11,7 @@
  */
 
 import type { ImageContent, JsonValue, TextContent } from "@bastani/atomic-ai";
-import type { TSchema } from "@bastani/atomic-ai/utils/typebox";
+import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import type { ToolAnnotations, ToolDefinition } from "../../core/extensions/types.ts";
 import type {
 	ContentBlock,

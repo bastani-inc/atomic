@@ -1,45 +1,45 @@
 {
-	"@bastani/atomic": [
-		".",
-		"./rpc-entry",
-		"./storage",
-		"./storage/testing"
-	],
-	"@bastani/atomic-ai": [
-		".",
-		"./api/*",
-		"./bedrock-provider",
-		"./bun-oauth",
-		"./compat",
-		"./lazy-bedrock-provider",
-		"./lazy-oauth",
-		"./models",
-		"./oauth",
-		"./providers/*",
-		"./session-resources",
-		"./utils/*"
-	],
-	"@bastani/atomic-agent-core": [
-		".",
-		"./package.json"
-	],
+	"@bastani/atomic": {
+		".": "./dist/index.js",
+		"./rpc-entry": "./dist/rpc-entry.js",
+		"./storage": "./dist/core/storage/index.js",
+		"./storage/testing": "./dist/core/storage/testing.js"
+	},
+	"@bastani/atomic-ai": {
+		".": "./dist/index.js",
+		"./api/*": "./dist/api/*.js",
+		"./bedrock-provider": "./dist/bedrock-provider.js",
+		"./bun-oauth": "./dist/bun-oauth.js",
+		"./compat": "./dist/compat.js",
+		"./lazy-bedrock-provider": "./dist/lazy-bedrock-provider.js",
+		"./lazy-oauth": "./dist/lazy-oauth.js",
+		"./models": "./dist/models.js",
+		"./oauth": "./dist/oauth.js",
+		"./providers/*": "./dist/providers/*.js",
+		"./session-resources": "./dist/session-resources.js",
+		"./utils/*": "./dist/utils/*.js"
+	},
+	"@bastani/atomic-agent-core": {
+		".": "./dist/index.js",
+		"./package.json": "./package.json"
+	},
 	"@bastani/atomic-tui": null,
-	"@bastani/atomic-codemode": [
-		".",
-		"./cloudflare",
-		"./declarations",
-		"./portable",
-		"./source",
-		"./worker"
-	],
-	"@bastani/atomic-schema": [
-		".",
-		"./formats"
-	],
-	"@bastani/atomic-telemetry": [
-		".",
-		"./render",
-		"./testing"
-	],
+	"@bastani/atomic-codemode": {
+		".": "./dist/index.js",
+		"./cloudflare": "./dist/cloudflare.js",
+		"./declarations": "./dist/declarations.js",
+		"./portable": "./dist/portable.js",
+		"./source": "./dist/source.js",
+		"./worker": "./dist/runtime/worker.js"
+	},
+	"@bastani/atomic-schema": {
+		".": "./dist/index.js",
+		"./formats": "./dist/formats/index.js"
+	},
+	"@bastani/atomic-telemetry": {
+		".": "./dist/index.js",
+		"./render": "./dist/render.js",
+		"./testing": "./dist/testing/index.js"
+	},
 	"@bastani/atomic-natives": null
 }

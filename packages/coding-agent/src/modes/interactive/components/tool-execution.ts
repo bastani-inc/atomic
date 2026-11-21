@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
-import type { TSchema } from "@bastani/atomic-ai/utils/typebox";
+import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import {
 	type Component,
 	Container,

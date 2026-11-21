@@ -745,14 +745,14 @@ async function computeAliases(): Promise<Record<string, string>> {
 
 /**
  * Every `typebox` specifier, the SDK's re-exports of it (`@bastani/atomic/typebox`), and TypeBox 0.x's name for the
- * subpaths TypeBox 1 shares with it, as the files of Atomic's one copy of TypeBox in `@bastani/atomic-ai/utils/typebox`.
+ * subpaths TypeBox 1 shares with it, as the files of Atomic's one copy of TypeBox in `@bastani/atomic-ai/utils/typebox/`.
  */
 function typeboxAliases(forkedPackageAliases: Record<string, string>, sdkTypeboxDir: string): Record<string, string> {
 	const aiUtils = forkedPackageAliases["@bastani/atomic-ai/utils"];
 	if (aiUtils === undefined) throw new Error("@bastani/atomic-ai does not export ./utils/*");
 	const aliases: Record<string, string> = {};
 	for (const subpath of TYPEBOX_SUBPATHS) {
-		aliases[`typebox${subpath}`] = path.join(aiUtils, `typebox${subpath}.js`);
+		aliases[`typebox${subpath}`] = path.join(aiUtils, "typebox", `${subpath.slice(1) || "index"}.js`);
 		aliases[`@bastani/atomic/typebox${subpath}`] = path.join(sdkTypeboxDir, `${subpath.slice(1) || "index"}.js`);
 	}
 	for (const subpath of ["", "/compile", "/value"])

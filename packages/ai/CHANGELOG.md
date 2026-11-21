@@ -7,7 +7,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 ### Added
 
 - `resolveHttpsFallbackProxyUrl()` returns the http proxy an `https://` request takes when no https proxy is set, as Atomic's HTTP dispatcher on Node.js takes it (`http_proxy`, else `HTTP_PROXY`), for runtimes whose own HTTP client sends such a request direct, such as Bun. It is undefined when `NO_PROXY` exempts the host or an https proxy or an `http://`/`https://` `ALL_PROXY` is set ([#6233](https://github.com/bastani-inc/atomic/pull/6233))
-- `@bastani/atomic-ai/utils/typebox` and its subpaths (`/compile`, `/error`, `/format`, `/guard`, `/schema`, `/system`, `/type`, `/value`) export TypeBox 1.3.27, bundled in this package. Atomic and the extensions it loads use this one copy; the package's own TypeBox imports, `Type` included, load it too.
+- `@bastani/atomic-ai/utils/typebox/index` and the modules beside it (`/compile`, `/error`, `/format`, `/guard`, `/schema`, `/system`, `/type`, `/value`) export TypeBox 1.3.27, bundled in this package. Atomic and the extensions it loads use this one copy; the package's own TypeBox imports, `Type` included, load it too.
 
 ### Changed
 

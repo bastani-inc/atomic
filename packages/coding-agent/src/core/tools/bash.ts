@@ -3,7 +3,7 @@ import { access as fsAccess, stat as fsStat } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
-import { type Static, Type } from "@bastani/atomic-ai/utils/typebox";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { Container, Text } from "@bastani/atomic-tui";
 import { spawn } from "child_process";
 import { APP_NAME } from "../../config.js";

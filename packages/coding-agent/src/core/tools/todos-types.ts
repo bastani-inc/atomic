@@ -1,4 +1,4 @@
-import { type Static, Type } from "@bastani/atomic-ai/utils/typebox";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { StringEnum } from "../typebox-compat.ts";
 
 export interface TodoFrontMatter {

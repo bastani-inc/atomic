@@ -1,4 +1,4 @@
-import type { TSchema } from "@bastani/atomic-ai/utils/typebox";
+import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import { SettingsSchema } from "./settings-schema.ts";
 
 /** A setting, or one of its list entries, removed from a loaded file because the schema does not accept its JSON type. */

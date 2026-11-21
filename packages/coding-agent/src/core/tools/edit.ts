@@ -1,5 +1,5 @@
 import type { AgentTool } from "@bastani/atomic-agent-core";
-import { type Static, Type } from "@bastani/atomic-ai/utils/typebox";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { splitBom } from "../../utils/text.ts";
