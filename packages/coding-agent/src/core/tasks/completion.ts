@@ -104,7 +104,7 @@ function savedSubject(title: string): string {
 
 /** The line of a finished task's notice: what it is, its name, how it ended, and how long it ran. */
 export function taskNoticeLine(
-	envelope: TaskCompletionEnvelope,
+	envelope: Pick<TaskCompletionEnvelope, "result" | "taskKind" | "elapsedMs" | "interruptedByRestart">,
 	task?: Partial<Pick<TaskRecord, "kind" | "title" | "metrics">>,
 ): TaskNoticeLine {
 	const kind = task?.kind ?? envelope.taskKind;
