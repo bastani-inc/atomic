@@ -279,6 +279,8 @@ interface EditorDraftState {
 	readonly scrollOffset: number;
 	readonly preferredVisualCol: number | null;
 	readonly snappedFromCursorCol: number | null;
+	/** A lookup the prompt wanted before its editor had a completion provider (see Editor.completionIntent). */
+	readonly completionIntent?: CompletionIntent;
 }
 
 const editorDrafts = new WeakMap<EditorDraft, EditorDraftState>();
@@ -324,6 +326,14 @@ interface AutocompleteRequestOptions {
 	catalogRetry?: boolean;
 	/** An edit continues a menu not shown yet (its answer was held for the render): the menu goes on while this runs. */
 	continued?: boolean;
+}
+
+/** A lookup wanted for this text and cursor while the editor had no completion provider. */
+interface CompletionIntent {
+	readonly options: AutocompleteRequestOptions;
+	readonly text: string;
+	readonly line: number;
+	readonly col: number;
 }
 
 interface LayoutLine {
@@ -594,6 +604,11 @@ export class Editor implements Component, Focusable {
 	private pendingAutocomplete?: AutocompleteRequestOptions;
 	private emptyAutocomplete?: { text: string; line: number; col: number; options: AutocompleteRequestOptions };
 	private autocompleteStartToken: number = 0;
+	/**
+	 * A lookup wanted before the editor had a completion provider: typing `/`, an `@` token or a trigger character, or
+	 * Tab. The provider's arrival starts it while the prompt still holds that text and cursor.
+	 */
+	private completionIntent?: CompletionIntent;
 	private autocompleteRequestId: number = 0;
 
 	// Paste tracking for large pastes
@@ -689,11 +704,15 @@ export class Editor implements Component, Focusable {
 			refreshMenu?: boolean;
 		},
 	): void {
+		const intent = this.completionIntent;
 		this.cancelMenuRefresh();
 		if (!options?.preserveSelection) {
 			this.cancelAutocomplete();
+			this.completionIntent = intent;
 			this.autocompleteProvider = provider;
 			this.setAutocompleteTriggerCharacters(provider.triggerCharacters ?? []);
+			// A lookup the user wanted before there was a provider starts now, unless the prompt has moved on since.
+			this.startCompletionIntent();
 			return;
 		}
 		// A lookup still waiting is asked again of `provider`, keeping the original Tab intent. Otherwise an open menu keeps
@@ -708,6 +727,8 @@ export class Editor implements Component, Focusable {
 		this.setAutocompleteTriggerCharacters(provider.triggerCharacters ?? []);
 		if (pending) this.requestAutocomplete({ ...pending, catalogRetry: true });
 		else if (missed) this.startMenuRefresh(provider, { ...missed, catalogRetry: true });
+		// A lookup the user wanted before there was a provider starts now, unless the prompt has moved on since.
+		else this.startCompletionIntent();
 	}
 
 	private renderAutocompleteHint(width: number): string | undefined {
@@ -774,6 +795,7 @@ export class Editor implements Component, Focusable {
 			scrollOffset: this.scrollOffset,
 			preferredVisualCol: this.preferredVisualCol,
 			snappedFromCursorCol: this.snappedFromCursorCol,
+			...(this.currentCompletionIntent() === undefined ? {} : { completionIntent: this.completionIntent }),
 		});
 		return draft;
 	}
@@ -803,9 +825,12 @@ export class Editor implements Component, Focusable {
 		this.scrollOffset = saved.scrollOffset;
 		this.preferredVisualCol = saved.preferredVisualCol;
 		this.snappedFromCursorCol = saved.snappedFromCursorCol;
+		this.completionIntent = saved.completionIntent;
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		// A lookup the prompt wanted in an editor without a provider starts here if this one has one, else when it gets one.
+		this.startCompletionIntent();
 	}
 
 	/**
@@ -1122,10 +1147,14 @@ export class Editor implements Component, Focusable {
 		if (MENU_KEYS.some((key) => kb.matches(data, key))) this.settleForKeys();
 		const outer = this.editMenuState;
 		this.editMenuState = this.menuForEdits();
+		// A lookup wanted before there was a provider is for the prompt as that key left it: any later key that wants
+		// none (an edit, a cursor move, undo, history) leaves it behind, even one that brings the same text back.
+		const intent = this.completionIntent;
 		try {
 			this.handleKey(data, kb);
 		} finally {
 			this.editMenuState = outer;
+			if (intent !== undefined && this.completionIntent === intent) this.completionIntent = undefined;
 		}
 	}
 
@@ -2720,8 +2749,6 @@ export class Editor implements Component, Focusable {
 	}
 
 	private handleTabCompletion(): void {
-		if (!this.autocompleteProvider) return;
-
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		const beforeCursor = currentLine.slice(0, this.state.cursorCol);
 
@@ -2742,7 +2769,16 @@ export class Editor implements Component, Focusable {
 
 	private requestAutocomplete(options: AutocompleteRequestOptions): void {
 		const provider = this.autocompleteProvider;
-		if (!provider) return;
+		if (!provider) {
+			this.completionIntent = {
+				options,
+				text: this.getText(),
+				line: this.state.cursorLine,
+				col: this.state.cursorCol,
+			};
+			return;
+		}
+		this.completionIntent = undefined;
 
 		if (options.force) {
 			const shouldTrigger =
@@ -2960,10 +2996,30 @@ export class Editor implements Component, Focusable {
 		this.autocompleteState = force ? "force" : "regular";
 	}
 
+	/** The lookup wanted before there was a provider, while the prompt still holds its text and cursor. */
+	private currentCompletionIntent(): CompletionIntent | undefined {
+		const intent = this.completionIntent;
+		return intent &&
+			intent.text === this.getText() &&
+			intent.line === this.state.cursorLine &&
+			intent.col === this.state.cursorCol
+			? intent
+			: undefined;
+	}
+
+	/** Starts the lookup wanted before there was a provider, once there is one, unless the prompt moved on since. */
+	private startCompletionIntent(): void {
+		if (!this.autocompleteProvider || this.completionIntent === undefined) return;
+		const intent = this.currentCompletionIntent();
+		this.completionIntent = undefined;
+		if (intent && !this.autocompleteState) this.requestAutocomplete(intent.options);
+	}
+
 	protected dismissEmptyAutocomplete(): void {
 		this.emptyAutocomplete = undefined;
 		this.heldAnswer = undefined;
 		this.cancelMenuRefresh();
+		this.completionIntent = undefined;
 		// Esc stops a lookup the editor started on its own, or one that continues a menu not shown yet (as it closes that
 		// menu when answers show the moment they come).
 		const pending = this.pendingAutocomplete;
@@ -3130,6 +3186,7 @@ export class Editor implements Component, Focusable {
 		this.cancelAutocompleteRequest();
 		this.emptyAutocomplete = undefined;
 		this.clearAutocompleteUi();
+		this.completionIntent = undefined;
 	}
 
 	/** Whether the next menu key acts on an open menu (see menuForKeys). */

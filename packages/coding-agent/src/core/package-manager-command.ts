@@ -1,15 +1,22 @@
 import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
-import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
+import {
+	processLaunch,
+	processLaunchAsync,
+	spawnLaunchedProcess,
+	spawnLaunchedProcessSync,
+} from "../utils/child-process.ts";
+import type { HelperLaunch } from "../utils/helper-command.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
 import { getCommandEnv } from "./package-manager-env.ts";
 
 function spawnCommand(
+	launch: HelperLaunch,
 	command: string,
 	args: string[],
 	options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 ): ChildProcess {
-	return spawnProcess(command, args, {
+	return spawnLaunchedProcess(launch, args, {
 		cwd: options?.cwd,
 		stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
 		env: getCommandEnv(command, options?.env),
@@ -17,24 +24,26 @@ function spawnCommand(
 }
 
 function spawnCaptureCommand(
+	launch: HelperLaunch,
 	command: string,
 	args: string[],
 	options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 ): ChildProcessByStdio<null, Readable, Readable> {
-	return spawnProcess(command, args, {
+	return spawnLaunchedProcess(launch, args, {
 		cwd: options?.cwd,
 		stdio: ["ignore", "pipe", "pipe"],
 		env: getCommandEnv(command, options?.env),
 	});
 }
 
-export function runCommandCapture(
+export async function runCommandCapture(
 	command: string,
 	args: string[],
 	options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv },
 ): Promise<string> {
+	const launch = await processLaunchAsync(command, { cwd: options?.cwd, env: getCommandEnv(command, options?.env) });
 	return new Promise((resolvePromise, reject) => {
-		const child = spawnCaptureCommand(command, args, options);
+		const child = spawnCaptureCommand(launch, command, args, options);
 		let stdout = "";
 		let stderr = "";
 		let timedOut = false;
@@ -72,13 +81,14 @@ export function runCommandCapture(
 	});
 }
 
-export function runCommand(
+export async function runCommand(
 	command: string,
 	args: string[],
 	options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 ): Promise<void> {
+	const launch = await processLaunchAsync(command, { cwd: options?.cwd, env: getCommandEnv(command, options?.env) });
 	return new Promise((resolvePromise, reject) => {
-		const child = spawnCommand(command, args, options);
+		const child = spawnCommand(launch, command, args, options);
 		child.on("error", reject);
 		child.on("exit", (code) => {
 			if (code === 0) {
@@ -91,7 +101,7 @@ export function runCommand(
 }
 
 export function runCommandSync(command: string, args: string[]): string {
-	const result = spawnProcessSync(command, args, {
+	const result = spawnLaunchedProcessSync(processLaunch(command, { env: getCommandEnv(command) }), args, {
 		stdio: ["ignore", "pipe", "pipe"],
 		encoding: "utf-8",
 		env: getCommandEnv(command),
