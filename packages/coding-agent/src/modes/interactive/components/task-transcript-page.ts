@@ -9,6 +9,8 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
+import type { AgentSessionEvent } from "../../../core/agent-session.js";
+import { startsQueuedMessage } from "../../../core/agent-session-events.ts";
 import { chatReceiptWrite } from "../../../core/chat-receipts.js";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -361,6 +363,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly requestRender: () => void;
 	private followed?: TaskTranscriptSource;
 	private followedSessionId?: string;
+	/** Queued messages of the followed session whose row shows and whose save has not reached the page, oldest first. */
+	private shownUnsaved: string[] = [];
 	private legacyWindow?: ReturnType<typeof retainTaskWindowReader>;
 	private legacyWindowActive = false;
 	private observedWrites?: ObservedChatWrites;
@@ -897,6 +901,33 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return task === undefined || dismissedTasks(this.source).has(task.ref.taskId);
 	}
 
+	/**
+	 * A queued message's row shows as its `message_start` arrives; its `message_end` arrives once its session saved it.
+	 * Between the two the page keeps its text, for the host to list if the engine running the subagent is lost.
+	 */
+	private noteShownUnsaved(event: AgentSessionEvent): void {
+		const messageText = (message: { readonly content?: unknown }): string => {
+			const content = message.content;
+			if (typeof content === "string") return content;
+			if (!Array.isArray(content)) return "";
+			return content
+				.flatMap((part: { readonly type?: unknown; readonly text?: unknown }) =>
+					part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+				)
+				.join("\n");
+		};
+		if (event.type === "message_start" && event.message.role === "user" && startsQueuedMessage(event)) {
+			this.shownUnsaved.push(messageText(event.message));
+		} else if (event.type === "message_end" && event.message.role === "user" && this.shownUnsaved.length > 0) {
+			const raw = (event.message as { readonly rawText?: unknown }).rawText;
+			const text = messageText(event.message);
+			const index = this.shownUnsaved.findIndex(
+				(shown) => shown === raw || shown === text || text.startsWith(`${shown}\n\n`),
+			);
+			if (index >= 0) this.shownUnsaved.splice(index, 1);
+		}
+	}
+
 	/** The subagent as the single chat screen's prompt, rule, working line and panel show it. */
 	viewStatus(agentKey: string): AgentViewStatus {
 		const { name, label, placeholder, state } = this.composerText("view");
@@ -923,6 +954,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			...(delivering.steering.length === 0 && delivering.followUp.length === 0
 				? {}
 				: { delivering: { steering: [...delivering.steering], followUp: [...delivering.followUp] } }),
+			...(this.shownUnsaved.length === 0 ? {} : { unsaved: [...this.shownUnsaved] }),
 			...(readOnlyReason === undefined ? {} : { readOnlyReason }),
 			heldPrompt: this.heldPrompt() !== undefined,
 			...(working === undefined ? {} : { working }),
@@ -1206,6 +1238,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.unsubscribe?.();
 			this.unsubscribe = undefined;
 			this.followed = session;
+			// What the previous session showed unsaved is its own: a resumed attempt or another session starts with none.
+			this.shownUnsaved = [];
 			this.chat.resetFollowedSession({ preserveWorkedRun: sameConversation && session === undefined });
 		}
 		this.followedSessionId = nextSessionId;
@@ -1275,6 +1309,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				turnAborted = false;
 				setTaskTurnInterrupted(this.source, this.taskId, true);
 			}
+			this.noteShownUnsaved(event);
 			if (event.type === "message_end") {
 				// The receipt arrives with the end of the message the row was drawn from as it streamed.
 				const sent = event as { seq?: unknown };

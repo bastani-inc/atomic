@@ -123,6 +123,13 @@ export function _emitQueueUpdate(this: AgentSession): void {
 const consumedQueuedMessageEvents = new WeakMap<object, QueuedMessageDelivery>();
 /** Those whose taking was not announced yet: the session announces the queue without them as they start. */
 const unannouncedQueuedMessageEvents = new WeakSet<object>();
+/** Every user `message_start` of a message that was queued, as its listeners receive it. */
+const queuedMessageStarts = new WeakSet<object>();
+
+/** Whether `event`, a session event, is the `message_start` of a message the user had queued. */
+export function startsQueuedMessage(event: object): boolean {
+	return queuedMessageStarts.has(event);
+}
 /** Sessions whose run was just stopped at its request boundary, with the reported cause (#4226). */
 const pendingPersistenceStops = new WeakMap<object, string>();
 /** Agent-core's synthetic failure replies to those stops. */
@@ -213,7 +220,10 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 		if (started !== undefined) {
 			this._admittedQueuedMessageAwaitingReply = started.text;
 			delivery = started.delivery;
-			if (delivery !== undefined) consumedQueuedMessageEvents.set(event, delivery);
+			if (delivery !== undefined) {
+				consumedQueuedMessageEvents.set(event, delivery);
+				queuedMessageStarts.add(event);
+			}
 			// The queue without it was announced when its run took it; otherwise it is announced as it starts.
 			if (delivery !== undefined && !started.announced) unannouncedQueuedMessageEvents.add(event);
 		}

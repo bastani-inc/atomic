@@ -1028,6 +1028,37 @@ describe("the main prompt while a subagent is shown", () => {
 	);
 
 	test(
+		"a lost engine lists as unconfirmed what the shown subagent took and was not seen to save, shown or still on its way",
+		async () => {
+			screen = await mainScreen();
+			worker({
+				busy: true,
+				delivering: { steering: ["being delivered"], followUp: [] },
+				unsaved: ["shown, not saved"],
+			});
+			const ended = new Set<(event: InteractiveEngineGenerationEnded) => void>();
+			attachLostAgentQueueNotices(screen.mode, {
+				onGenerationEnded: (listener) => {
+					ended.add(listener);
+					return () => ended.delete(listener);
+				},
+			});
+			await view(WORKER);
+			for (const listener of ended)
+				listener({
+					generation: 1,
+					error: new Error("engine stopped"),
+					kind: "exit",
+					expected: false,
+				} as InteractiveEngineGenerationEnded);
+			assert.deepEqual(screen.warnings, [
+				"Engine restarted; these 2 messages to worker may not have been delivered:\nshown, not saved\nbeing delivered",
+			]);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
 		"Esc while the shown subagent waits to retry pauses it, which ends the wait (#5507)",
 		async () => {
 			screen = await mainScreen();
