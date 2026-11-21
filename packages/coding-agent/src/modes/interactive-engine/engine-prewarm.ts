@@ -9,6 +9,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { availableParallelism } from "node:os";
 import { basename } from "node:path";
 import { ENV_AGENT_DIR, ENV_STARTUP_BENCHMARK, ENV_TIMING, getEnvValue } from "../../config.js";
+import { applyArgumentEnvironment } from "../../utils/argument-environment.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../../utils/interactive-engine-bootstrap.ts";
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
@@ -160,6 +161,17 @@ function setReferenced(child: ChildProcess, referenced: boolean): void {
 		if (referenced) target?.ref?.();
 		else target?.unref?.();
 	}
+}
+
+/**
+ * Start the engine child this interactive host will most likely run, before the host has loaded its own code. The
+ * environment `main()` derives from `args` is set first, so the child starts with the environment a fresh engine would
+ * get and the host can adopt it.
+ */
+export async function prewarmInteractiveEngineForArgs(args: readonly string[]): Promise<void> {
+	if (prewarmState[PREWARM_KEY] || !shouldPrewarmInteractiveEngine(args)) return;
+	await applyArgumentEnvironment(args);
+	prewarmInteractiveEngine(args);
 }
 
 /** Start the engine child this interactive host will most likely run, before the host has loaded its own code. */

@@ -9,9 +9,9 @@ import {
 } from "./core/error-contract.ts";
 import { printTimings, time } from "./core/timings.ts";
 import type { AppMode } from "./main-app-mode.ts";
-import { isTruthyEnvFlag } from "./main-stdio.ts";
 import type { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 import { IsolatedInteractiveRuntime } from "./modes/interactive-engine/isolated-runtime.js";
+import { isTruthyEnvFlag } from "./utils/argument-environment.ts";
 import type { InteractiveEngineStartupEnv } from "./utils/interactive-engine-env.ts";
 
 /** Stable codes of StartupBenchmarkError. Codes are public API: never rename or reuse one. */

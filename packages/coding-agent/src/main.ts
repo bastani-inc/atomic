@@ -32,17 +32,7 @@ import {
 } from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
-import {
-	ENV_DEBUG,
-	ENV_OFFLINE,
-	ENV_SESSION_DIR,
-	ENV_SKIP_VERSION_CHECK,
-	getAgentDir,
-	getEnvValue,
-	getPackageDir,
-	setEnvValue,
-	VERSION,
-} from "./config.js";
+import { ENV_DEBUG, ENV_SESSION_DIR, getAgentDir, getEnvValue, getPackageDir, setEnvValue, VERSION } from "./config.js";
 import type { AgentSession } from "./core/agent-session.js";
 import { isSessionQuitting } from "./core/agent-session-events.ts";
 import type {
@@ -152,7 +142,6 @@ import {
 import {
 	collectSettingsDiagnostics,
 	drainProcessStdio,
-	isTruthyEnvFlag,
 	readPipedStdin,
 	reportDiagnostics,
 	unreadableTrustSettingsDiagnostics,
@@ -176,6 +165,7 @@ import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
 import { ENGINE_SHUTDOWN_GRACE_MS } from "./modes/rpc/rpc-client-process.js";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { applyOfflineEnvironment } from "./utils/argument-environment.ts";
 import { canonicalizePath, canonicalizePathAsync } from "./utils/canonical-path.ts";
 import { deferDeprecationWarnings, loadShownDeprecationNotices } from "./utils/deprecation.js";
 import {
@@ -442,11 +432,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	const onlyAtomicMarksBundled =
 		options?.builtinPackagePaths === undefined &&
 		!(options?.extensionFactories ?? []).some((input) => typeof input !== "function" && input.bundled === true);
-	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
-	if (offlineMode) {
-		setEnvValue(ENV_OFFLINE, "1");
-		setEnvValue(ENV_SKIP_VERSION_CHECK, "1");
-	}
+	const offlineMode = applyOfflineEnvironment(args);
 	if (process.platform === "win32") cleanupWindowsSelfUpdateQuarantine(getPackageDir());
 	let cwd: string;
 	try {
