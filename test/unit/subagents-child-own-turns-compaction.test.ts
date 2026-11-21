@@ -264,8 +264,9 @@ async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: Fi
 	const runAfterClear = async () => {
 		const childManager = await newManager();
 		const sessionId = childManager.getSessionId();
-		// Saved before the clear, which keeps it, so starting the child adds no entry after the clear.
-		await childManager.appendThinkingLevelChange("off");
+		// The model and level it runs on, saved before the clear, which keeps them: starting it adds no entry after the clear.
+		await childManager.appendModelChange(model.provider, model.id);
+		await childManager.appendThinkingLevelChange(parent.thinkingLevel);
 		await childManager.appendMessage({ role: "user", content: "the previous task", timestamp: Date.now() });
 		await childManager.appendMessage(assistant(EARLIER_ANSWER));
 		const clearId = await childManager.appendCompaction(

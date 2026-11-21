@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { parseArgs } from "../src/cli/args.js";
@@ -765,6 +765,68 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		assert.equal(compactions(resumed), 0);
 		assert.ok(JSON.stringify(firstAfterResume.messages).includes("answer to one"), "the history is not sent");
 		assert.ok(budgetOf(firstAfterResume) < 8192, `budget ${budgetOf(firstAfterResume)}`);
+	});
+
+	test("a session summary requested before the first prompt leaves the clear to the prompt", async () => {
+		const { installation, sessionId } = await nearWindowSession();
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const before = server.requests.length;
+		// RPC and interactive modes summarize a resumed session for the session picker as soon as it opens.
+		await resumed.session.bindExtensions({ mode: "rpc" });
+		await until(() => resumed.session.sessionManager.getEntries().some((entry) => entry.type === "session_summary"));
+		assert.equal(server.requests.length, before + 1, "the summary was not requested");
+
+		// The turn's end requests the next summary, so the prompt's own request is the first one it sends.
+		await resumed.session.prompt("three");
+		const firstAfterResume = server.requests[before + 1]!.json;
+		assert.equal(budgetOf(firstAfterResume), 8192);
+		assert.equal(compactions(resumed), 1);
+	});
+
+	test("a continuation that sends nothing leaves the clear to the first request", async () => {
+		const { installation, sessionId } = await nearWindowSession();
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const before = server.requests.length;
+		// Nothing is queued and the restored history ends with a reply, so the continuation stops before a request.
+		await assert.rejects(resumed.session._continueAgentAfterCompactionCheck(), /Cannot continue from message role/);
+		assert.equal(server.requests.length, before);
+
+		const firstAfterResume = await send(resumed, "three");
+		assert.equal(budgetOf(firstAfterResume), 8192);
+		assert.equal(compactions(resumed), 1);
+	});
+
+	test("a request whose provider setup fails leaves the clear to the request that follows", async () => {
+		const { installation, sessionId } = await nearWindowSession();
+		// The model's requests carry a header taken from an environment variable, which is unset at first.
+		writeFileSync(
+			join(installation.agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					anthropic: {
+						baseUrl: server.baseUrl,
+						modelOverrides: { [BUDGET_MODEL]: { headers: { "x-team": "$ATOMIC_TEST_TEAM_HEADER" } } },
+					},
+				},
+			}),
+		);
+		vi.stubEnv("ATOMIC_TEST_TEAM_HEADER", undefined);
+		cleanups.push(() => vi.unstubAllEnvs());
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const { agent } = resumed.session;
+		const before = server.requests.length;
+		// The conversation's request fails before anything is sent.
+		await assert.rejects(
+			async () =>
+				(await agent.streamFunction(agent.state.model, { messages: [] }, { sessionId: agent.sessionId })).result(),
+			/ATOMIC_TEST_TEAM_HEADER/,
+		);
+		assert.equal(server.requests.length, before);
+
+		vi.stubEnv("ATOMIC_TEST_TEAM_HEADER", "core");
+		const firstAfterResume = await send(resumed, "three");
+		assert.equal(budgetOf(firstAfterResume), 8192);
+		assert.equal(compactions(resumed), 1);
 	});
 
 	test("with automatic compaction off, the request lowers the budget to fit as before", async () => {

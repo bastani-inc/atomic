@@ -141,6 +141,12 @@ describe("interactive engine heap sizing", () => {
 		}
 	});
 
+	it("sizes the engine when NODE_OPTIONS sets only the young generation's size", () => {
+		for (const nodeOptions of ["--max-semi-space-size=64", "--max_semi_space_size=64 --trace-warnings"]) {
+			assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, nodeOptions }), ["--max-old-space-size=32768"]);
+		}
+	});
+
 	it("leaves a heap percentage or total heap size in NODE_OPTIONS to the inherited environment", () => {
 		for (const nodeOptions of [
 			"--max-old-space-size-percentage=25",
