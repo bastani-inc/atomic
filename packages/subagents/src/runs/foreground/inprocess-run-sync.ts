@@ -432,6 +432,7 @@ async function launchSingleInProcess(
 		...(options.resumeToolResults?.length ? { resumeToolResults: options.resumeToolResults } : {}),
 		...(options.resumeLateToolResults?.length ? { resumeLateToolResults: options.resumeLateToolResults } : {}),
 		...(options.resumeNotices?.length ? { resumeNotices: options.resumeNotices } : {}),
+		...(options.resumeNote ? { resumeNote: options.resumeNote } : {}),
 		...(options.skipTaskPrompt ? { skipTaskPrompt: true } : {}),
 		...(options.resumeTaskFallback ? { resumeTaskFallback: true } : {}),
 		...(options.resumePaused ? { resumePaused: true } : {}),
