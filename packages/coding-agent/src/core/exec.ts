@@ -50,32 +50,24 @@ export interface ExecResult {
 }
 
 /**
- * `command`'s launch, looked up as Atomic's own helper programs are; undefined when the command's abort signal, its
- * timeout or its session's quit stopped it during the lookup, which they end as they end a running command.
+ * Ends the lookup of `command`'s program, which runs before it starts, on what ends a running command: its abort
+ * signal, its timeout and its session's quit. Returns their release.
  */
-async function lookUpBeforeStart(
-	command: string,
-	env: NodeJS.ProcessEnv,
-	cwd: string,
+function stopLookupOn(
+	lookup: AbortController,
 	options: ExecOptions | undefined,
 	onQuit: ((stop: () => void) => () => void) | undefined,
-): Promise<HelperLaunch | undefined> {
-	const lookup = new AbortController();
+): () => void {
 	const stop = () => lookup.abort();
 	options?.signal?.addEventListener("abort", stop, { once: true });
 	if (options?.signal?.aborted) stop();
 	const timer = options?.timeout && options.timeout > 0 ? setTimeout(stop, options.timeout) : undefined;
 	const stopOnQuit = onQuit?.(stop);
-	try {
-		return await helperLaunchAsync(command, { env, cwd, signal: lookup.signal });
-	} catch (error) {
-		if (lookup.signal.aborted) return undefined;
-		throw error;
-	} finally {
+	return () => {
 		clearTimeout(timer);
 		options?.signal?.removeEventListener("abort", stop);
 		stopOnQuit?.();
-	}
+	};
 }
 
 /**
@@ -106,13 +98,26 @@ export async function execCommand(
 	// the interactive-engine control variables and their --api-key. Preserve
 	// Atomic's child attribution in the same explicit environment.
 	const env = createChildProcessEnvironment();
-	// Windows looks for a program named without a path in the working directory before PATH: look it up in PATH's
-	// absolute directories instead, so a project folder cannot supply it. A name found nowhere fails as before (ENOENT).
-	const launch: HelperLaunch | undefined =
-		process.platform === "win32" ? await lookUpBeforeStart(command, env, cwd, options, onQuit) : { file: command };
-	// Stopped while it was looked up: nothing starts, and the result is a command's that was stopped at once.
-	if (launch === undefined) {
-		return { stdout: "", stderr: "", code: 128 + osConstants.signals.SIGTERM, killed: true, truncated: false };
+	const startedAt = performance.now();
+	let launch: HelperLaunch = { file: command };
+	if (process.platform === "win32") {
+		// Windows looks for a program named without a path in the working directory before PATH: look it up in PATH's
+		// absolute directories instead, so a project folder cannot supply it. A name found nowhere fails as before.
+		const lookup = new AbortController();
+		const releaseLookupStops = stopLookupOn(lookup, options, onQuit);
+		try {
+			launch = await helperLaunchAsync(command, { env, cwd, signal: lookup.signal });
+		} catch (error) {
+			if (!lookup.signal.aborted) throw error;
+		} finally {
+			// From here until the command's own stops are in place everything runs at once: no stop can arrive between.
+			releaseLookupStops();
+		}
+		// Stopped while it was looked up, or as the lookup finished: nothing starts, and the result is a command's that
+		// was stopped at once.
+		if (lookup.signal.aborted) {
+			return { stdout: "", stderr: "", code: 128 + osConstants.signals.SIGTERM, killed: true, truncated: false };
+		}
 	}
 	// Without fork where that costs the host time in proportion to its memory (#5345).
 	const proc = spawnHostProcess(launch.file, args, {
@@ -185,7 +190,8 @@ export async function execCommand(
 	}
 
 	if (options?.timeout && options.timeout > 0) {
-		timeoutId = setTimeout(killProcess, options.timeout);
+		// The time the program's lookup took counts against the timeout.
+		timeoutId = setTimeout(killProcess, Math.max(0, options.timeout - (performance.now() - startedAt)));
 	}
 
 	// Keep only bytes within the combined cap (#11360). Close both pipes on overflow so writing

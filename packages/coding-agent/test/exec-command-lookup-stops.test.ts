@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type * as FsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,11 +8,16 @@ import type { ExecResult } from "../src/core/exec.ts";
 
 /** Directories whose file system never answers, as a network share that stopped responding. */
 const held = vi.hoisted(() => new Set<string>());
+/** Directories whose file system answers only after this many milliseconds, as a slow network share. */
+const slow = vi.hoisted(() => new Map<string, number>());
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof FsPromises>();
-	const answer = <T>(path: unknown, read: () => Promise<T>): Promise<T> =>
-		held.has(String(path)) ? new Promise<T>(() => {}) : read();
+	const answer = <T>(path: unknown, read: () => Promise<T>): Promise<T> => {
+		if (held.has(String(path))) return new Promise<T>(() => {});
+		const delay = slow.get(String(path));
+		return delay === undefined ? read() : new Promise((resolve) => setTimeout(resolve, delay)).then(read);
+	};
 	const stat = ((path: string, options?: { bigint?: boolean }) =>
 		answer(path, () => actual.stat(path, options))) as typeof actual.stat;
 	const access = ((path: string, mode?: number) =>
@@ -37,6 +42,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	held.clear();
+	slow.clear();
 	vi.unstubAllEnvs();
 	rmSync(root, { recursive: true, force: true });
 });
@@ -51,6 +57,33 @@ function execOnWindows(...call: Parameters<typeof execCommand>): Promise<ExecRes
 		Object.defineProperty(process, "platform", platform);
 	}
 }
+
+/** How long the PATH directory takes to answer in the timeout budget test. */
+const SLOW_LOOKUP_MS = 2_000;
+/** The command's timeout there: longer than the lookup, so the command starts. */
+const BUDGET_MS = 2_500;
+
+describe.skipIf(process.platform === "win32")("a pi.exec command whose lookup took a while", () => {
+	test("gets what its timeout leaves after the lookup, not a whole timeout more", async () => {
+		const bin = join(root, "bin");
+		held.delete(bin);
+		slow.set(bin, SLOW_LOOKUP_MS);
+		const program = join(bin, "atomic-test-program");
+		// Runs until it is stopped; PATH holds nothing else, so it names Node by its path.
+		writeFileSync(program, `#!/bin/sh\nexec '${process.execPath}' -e 'setTimeout(() => {}, 30000)'\n`, {
+			mode: 0o755,
+		});
+
+		const started = performance.now();
+		const result = await execOnWindows("atomic-test-program", [], root, { timeout: BUDGET_MS });
+		const elapsed = performance.now() - started;
+
+		assert.equal(result.killed, true);
+		assert.equal(result.code, 143);
+		// A second whole timeout after the lookup would end it after SLOW_LOOKUP_MS + BUDGET_MS.
+		assert.ok(elapsed < SLOW_LOOKUP_MS + BUDGET_MS - 500, `ended after ${Math.round(elapsed)} ms`);
+	});
+});
 
 describe("a pi.exec command whose program is still being looked up", () => {
 	test("ends when its signal aborts, starting nothing", async () => {
