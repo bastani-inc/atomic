@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from scripts.atomic_cli import ISOLATED_RUN, AtomicProcess, Cancellation, Owner, remove_folder, run_main
-from scripts.utils import parse_skill_md
+from scripts.utils import parse_skill_md, write_output_in_utf8
 
 
 def _call_atomic(prompt: str, model: str | None, timeout: int = 300, cancellation: Cancellation | None = None) -> str:
@@ -247,4 +247,5 @@ def main():
 
 
 if __name__ == "__main__":
+    write_output_in_utf8()
     run_main(main)
