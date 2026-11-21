@@ -11,7 +11,7 @@ import { WorkingStatusComponent } from "../components/working-status.ts";
 import { isPhysicalCtrlC, isPhysicalEscape } from "../interactive-key-identity.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { mergeRestoredDraft } from "../interactive-prompt-restore.ts";
-import { engineLossSubagentNotice } from "../interactive-queueing.ts";
+import { engineLossSubagentNotice, engineLossUnconfirmedNotice } from "../interactive-queueing.ts";
 import { theme } from "../theme/theme.js";
 import {
 	appendPromptText,
@@ -23,7 +23,13 @@ import {
 import type { AgentViewSwitcher, PendingOutcome } from "./agent-view-switcher.ts";
 import type { AgentViewChange, AgentViewPort, AgentWorkingLine, ViewedTarget } from "./contracts.ts";
 import { notifyViewed } from "./viewed-notices.ts";
-import { forgetIfIdle, goneAgentNotice, liveAgentSteering } from "./viewed-submit.ts";
+import {
+	backFromViewedAgent,
+	forgetIfIdle,
+	goneAgentNotice,
+	liveAgentSteering,
+	replayToViewedAgent,
+} from "./viewed-submit.ts";
 
 /**
  * Retarget the main prompt to the agent the screen shows. While main is shown nothing here changes what the
@@ -85,6 +91,8 @@ function retargetOnSwitch(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 			});
 			editor.setTopRuleLabel(() => port.status().ruleLabel);
 			mode.footer.setViewedWork(() => ({ working: port.status().busy, stopVerb: "pause" }));
+			// ← on its empty prompt shows main; the main chat's ← stays the editor's.
+			editor.onNavBack = (input) => backFromViewedAgent(mode, input);
 			unwatch = port.subscribe(() => {
 				mode.updatePendingMessagesDisplay();
 				mode.ui.requestRender();
@@ -93,6 +101,7 @@ function retargetOnSwitch(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 			editor.setPlaceholder(undefined);
 			editor.setTopRuleLabel(() => mode.sessionManager.getSessionName());
 			mode.footer.setViewedWork(undefined);
+			editor.onNavBack = undefined;
 		}
 		if (from.kind === "agent") {
 			if (from.port.status().gone) moveGoneDraftToMain(mode, from.port);
@@ -105,6 +114,7 @@ function retargetOnSwitch(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 	return () => {
 		stop();
 		unwatch?.();
+		editor.onNavBack = undefined;
 	};
 }
 
@@ -267,7 +277,8 @@ const heldForTask = new WeakMap<InteractiveModeBase, Map<TaskId, string>>();
  * While a subagent is being opened, what the reader types is meant for it. The keys wait, and once it is shown they
  * reach its prompt in order, Enter included. When the request does not land, their text is kept for that subagent
  * (or, when it cannot be opened, shown in a notice) and the keys that send, pause or take back are dropped: nothing
- * typed for one agent reaches another. Esc cancels the request; Ctrl+C and Ctrl+D are never held.
+ * typed for one agent reaches another. A ← among them moves its cursor and never shows main. Esc cancels the request;
+ * Ctrl+C and Ctrl+D are never held.
  */
 function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher): () => void {
 	let held: { readonly taskId: TaskId; readonly keys: string[] } | undefined;
@@ -285,7 +296,7 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 		held = undefined;
 		if (keys.keys.length === 0) return;
 		if (outcome === "shown") {
-			for (const key of keys.keys) mode.editor.handleInput(key);
+			replayToViewedAgent(mode, keys.keys);
 			mode.ui.requestRender();
 			return;
 		}
@@ -361,6 +372,14 @@ export function attachLostAgentQueueNotices(
 	return runtime.onGenerationEnded((event) => {
 		if (event.expected) return;
 		for (const { port, controller } of liveAgentSteering(mode)) {
+			// What it had taken and not been seen to save, being delivered or shown, may or may not have been saved with its
+			// session: listed in full.
+			const { delivering, unsaved } = port.status();
+			const taken = [
+				...(unsaved ?? []),
+				...(delivering === undefined ? [] : [...delivering.steering, ...delivering.followUp]),
+			];
+			if (taken.length > 0) mode.showWarning(engineLossUnconfirmedNotice(taken, port.status().name));
 			// Its listed queue, what it took before listing, and what was on its way: steering first, each lane in order.
 			controller.loseTarget();
 			const messages = controller.recoverTarget() ?? [];

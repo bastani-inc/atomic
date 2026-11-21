@@ -19,6 +19,7 @@ import type { SessionRecoveryReason } from "../../core/extensions/session-events
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import {
 	type QueuedDeliveryEnd,
+	type QueuedDeliveryEntry,
 	QueuedDeliveryView,
 	type QueuedMessageLanes,
 } from "../../core/queued-message-delivery.ts";
@@ -156,6 +157,16 @@ export function engineAgentPanelCounts(
 const COMPACTION_VIEW_HOLD_MS = 3_000;
 type HeldHostEvent = { event: JsonAgentSessionEvent; audience: number };
 
+/**
+ * Whether `message`, a user message as the engine sends it, is the queued message listed as `text`: by the text it was
+ * queued with, which a message with images keeps as its raw text when its content gains a note about them.
+ */
+function isQueuedText(message: { readonly content?: unknown; readonly rawText?: unknown }, text: string): boolean {
+	if (message.rawText === text) return true;
+	const content = userMessageText(message.content as Parameters<typeof userMessageText>[0]);
+	return content === text || content.startsWith(`${text}\n\n`);
+}
+
 function userMessageText(content: string | readonly { readonly type: string; readonly text?: string }[]): string {
 	if (typeof content === "string") return content;
 	return content
@@ -218,6 +229,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * draws them as queued until their own row arrives.
 	 */
 	private readonly queuedDeliveries = new QueuedDeliveryView();
+	/** What the engine was delivering when it was lost unexpectedly, until the main chat takes it. */
+	private deliveringAtLoss: QueuedMessageLanes | undefined;
+	/** Queued messages whose row the chat shows and whose save (`message_end`) has not reached it, oldest first. */
+	private startedUnsaved: QueuedDeliveryEntry[] = [];
 	/** Ends waiting for their event to reach the host's listeners, which a compaction can hold back. */
 	private readonly queuedDeliveryEnds = new WeakMap<object, QueuedDeliveryEnd>();
 	private readonly queuedDeliveryResetListeners = new Set<() => void>();
@@ -364,7 +379,19 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (event.generation === this.client.getGeneration()) {
 				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 				this.updateResources({});
-				// What the lost engine was delivering is gone with it; its replacement starts telling afresh.
+				// What a lost engine took from its queue and the chat never saw saved may have gone with it unsaved: kept for
+				// the chat to account for.
+				if (!event.expected) {
+					const delivering = this.queuedDeliveries.texts;
+					const started = (lane: QueuedDeliveryEntry["lane"]) =>
+						this.startedUnsaved.flatMap((entry) => (entry.lane === lane ? [entry.text] : []));
+					this.deliveringAtLoss = {
+						steering: [...started("steer"), ...delivering.steering],
+						followUp: [...started("followUp"), ...delivering.followUp],
+					};
+				}
+				this.startedUnsaved = [];
+				// Its replacement starts telling afresh.
 				this.forgetQueuedDeliveries();
 			}
 			// A first child that never became ready failed startup; initialStart reports it instead of a restart.
@@ -576,7 +603,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			const followsRestrictedCatalog = this.restrictedStartupCatalogs.has(session);
 			if (state.pendingProjectResourcesTrusted === false) this.restrictedStartupCatalogs.add(session);
 			else if (state.projectTrusted !== undefined) this.restrictedStartupCatalogs.delete(session);
-			const resourcesTrusted = state.projectTrusted ?? state.pendingProjectResourcesTrusted;
+			// A pending report can hold the project's resources back but never grants them: until the engine dispatches the
+			// decision, an extension can still register a handler that declines the folder. The decision itself arrives as
+			// `engine_trust_decision` or in the final report (#5693).
+			const resourcesTrusted =
+				state.projectTrusted ?? (state.pendingProjectResourcesTrusted === false ? false : undefined);
 			if (resourcesTrusted !== undefined && session.settingsManager.isProjectTrusted() !== resourcesTrusted) {
 				// The child owns trust hooks/decisions. The host only mirrors their result.
 				await session.settingsManager.setProjectTrustedAsync(resourcesTrusted);
@@ -826,6 +857,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	getEnginePid(): number | undefined {
 		return this.client.getEnginePid();
 	}
+	/** The process ID of the ready engine child, which this runtime's disposal stops within a bounded window. */
+	getReadyEngineChildPid(): number | undefined {
+		return this.client.getReadyEngineChildPid();
+	}
 	getEngineGeneration(): number {
 		return this.client.getGeneration();
 	}
@@ -871,8 +906,27 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	private forgetQueuedDeliveries(): void {
+		this.startedUnsaved = [];
 		if (!this.queuedDeliveries.reset()) return;
 		for (const listener of [...this.queuedDeliveryResetListeners]) listener();
+	}
+
+	/** A user message's save reached the chat: the oldest queued message shown with its text is saved. */
+	private noteQueuedMessageSaved(message: { readonly content?: unknown; readonly rawText?: unknown }): void {
+		if (this.startedUnsaved.length === 0) return;
+		const index = this.startedUnsaved.findIndex((entry) => isQueuedText(message, entry.text));
+		if (index >= 0) this.startedUnsaved.splice(index, 1);
+	}
+
+	/**
+	 * The messages the engine had taken from its queue when it was lost unexpectedly and the chat never saw saved: being
+	 * delivered, or shown without their save. The engine may or may not have saved them. Taken once; nothing after a
+	 * deliberate stop.
+	 */
+	takeDeliveringAtLoss(): QueuedMessageLanes | undefined {
+		const delivering = this.deliveringAtLoss;
+		this.deliveringAtLoss = undefined;
+		return delivering;
 	}
 
 	/**
@@ -1107,8 +1161,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			// Optional like the other transport surfaces focused test doubles omit.
 			const unrecordedQuit = !options?.fromSignal && (await this.client.announceExplicitQuit?.()) === false;
 			// A quit lets the engine run its extensions' shutdown on every platform. After a
-			// signal, Windows still ends the engine at once.
-			const stop = { graceful: !options?.fromSignal };
+			// signal, Windows still ends the engine at once. A disposal after a failed start is not one for a signal.
+			const stop =
+				options?.fromSignal && !this.startupFailure
+					? { graceful: false, hostSignaled: true }
+					: { graceful: !options?.fromSignal };
 			// EngineHealthController owns the first client stop and joins recovery.
 			await this.health.shutdown(stop);
 			// A replacement may have spawned while shutdown joined recovery; the
@@ -1546,8 +1603,19 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const end = this.queuedDeliveryEnds.get(event);
 		if (end !== undefined) {
 			this.queuedDeliveryEnds.delete(event);
-			this.queuedDeliveries.end(end);
+			const ended = this.queuedDeliveries.end(end);
+			// Only the queued message this user message_start shows is started; one that ended otherwise (a turn that
+			// failed before sending it queued it again) is not.
+			const started = ended.at(-1);
+			if (
+				started !== undefined &&
+				event.type === "message_start" &&
+				event.message.role === "user" &&
+				isQueuedText(event.message, started.text)
+			)
+				this.startedUnsaved.push(started);
 		}
+		if (event.type === "message_end" && event.message.role === "user") this.noteQueuedMessageSaved(event.message);
 		for (const [id, listener] of [...this.hostListeners])
 			if (id <= audience) this.hostListenerFailures.call(listener, event, "event");
 	}

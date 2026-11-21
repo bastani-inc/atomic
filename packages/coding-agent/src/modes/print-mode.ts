@@ -11,6 +11,7 @@ import type { AssistantMessage, ImageContent, ToolResultMessage } from "@bastani
 import { sessionConflictMessage } from "../cli/settings-startup.ts";
 import type { AgentSession, AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
+import { CommandDeliveries, collectCommandDeliveries } from "../core/command-deliveries.ts";
 import type { ExtensionError } from "../core/extensions/index.js";
 import type { ToolDefinition } from "../core/extensions/types.ts";
 import { enablePrintModelSelection, hasPrintModelSelection } from "../core/first-prompt-model.ts";
@@ -159,6 +160,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	let fallbackTarget: { model: string; thinkingLevel?: string } | undefined;
 	let suppressFinalOutput = false;
 	let activePromptHadCommandError = false;
+	/** Whether the last prompt's extension commands answered with messages they queued (#6113). */
+	let commandAnswered = false;
+	/** Whether a model reply ended during this run: the session's last reply is then possibly this run's own. */
+	let repliedThisRun = false;
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
 	const terminatingStructuredOutputCallIds = new Set<string>();
@@ -219,10 +224,26 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	): Promise<void> => {
 		activePromptHadCommandError = false;
 		try {
-			if (promptOptions === undefined) {
-				await session.prompt(text);
-			} else {
-				await session.prompt(text, promptOptions);
+			const deliveries = new CommandDeliveries();
+			const promptSession = session;
+			await collectCommandDeliveries(deliveries, promptSession, () =>
+				promptOptions === undefined ? promptSession.prompt(text) : promptSession.prompt(text, promptOptions),
+			).catch((error: unknown) => {
+				deliveries.close();
+				throw error;
+			});
+			// #6113: an extension command can answer with a message it queues (`pi.sendMessage`) and return before it is
+			// delivered. Its answer, and the reply of a turn that message starts, come before the result and before the
+			// next prompt; the session is closed only after them.
+			const queued = await deliveries.settle();
+			for (const error of queued.unreported) console.error(error instanceof Error ? error.message : String(error));
+			commandAnswered = queued.answered;
+			if (queued.lost) {
+				// The command's answer was lost: an earlier reply must not stand in for it, so text output prints nothing
+				// and fails. Its sender reported why. The JSON event stream never printed a reply in its place and keeps
+				// its exit status.
+				if (mode === "text") exitCode = 1;
+				activePromptHadCommandError = true;
 			}
 			const conflict = session.getPersistenceFailure()?.conflict;
 			if (conflict !== undefined) {
@@ -279,6 +300,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			if (isTerminatingStructuredOutputEvent(event, (name) => session.getToolDefinition(name))) {
 				terminatingStructuredOutputCallIds.add(event.toolCallId);
 			}
+			if (event.type === "message_end" && event.message.role === "assistant") repliedThisRun = true;
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			} else if (event.type === "message_end" && event.message.role === "assistant") {
@@ -355,7 +377,15 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 						requestedModel,
 					});
 		if (ranOn && mode === "text" && !suppressFinalOutput) console.error(ranOn);
-		if (lastAssistantMessage?.stopReason === "length" && mode === "text" && !suppressFinalOutput) {
+		// A command that answered with a message, in a run where no model replied, is not cut by an earlier run's reply
+		// that reached the output limit.
+		const answeredByCommand = commandAnswered && !repliedThisRun && lastMessage?.role !== "assistant";
+		if (
+			!answeredByCommand &&
+			lastAssistantMessage?.stopReason === "length" &&
+			mode === "text" &&
+			!suppressFinalOutput
+		) {
 			console.error("Response was truncated: the model reached its output token limit.");
 			exitCode = 1;
 		}

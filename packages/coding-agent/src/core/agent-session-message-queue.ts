@@ -27,8 +27,12 @@ import {
 import { abortTurnRetries } from "./agent-session-retry.ts";
 import {
 	forgetAllTypedQueuedTexts,
+	forgetTypedQueuedRecord,
 	forgetTypedQueuedText,
+	type QueueLane,
 	rememberTypedQueuedText,
+	restoreTypedQueuedText,
+	type TypedQueuedText,
 } from "./agent-session-typed-queue.ts";
 import {
 	type AgentQueueAccess,
@@ -43,8 +47,14 @@ import {
 	type UserMessageWithRawText,
 } from "./agent-session-types.js";
 import { noticeOvertookPrompt } from "./chat-admission-order.js";
+import { joinCommandSend, noteCommandAnswer } from "./command-deliveries.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
+import {
+	beginQueuedMessageDelivery,
+	endQueuedMessageDelivery,
+	type QueuedMessageDelivery,
+} from "./queued-message-delivery.ts";
 import { withOwnResourceAdmission } from "./resource-admission-scope.ts";
 import {
 	assertSessionOpen,
@@ -81,20 +91,52 @@ function queuedTextImages(texts: readonly string[], removed: readonly AgentMessa
 }
 
 /**
- * Queue a steering message (already expanded, no extension command check). `typed` is the text that was submitted,
- * when an `input` hook or an expansion may have changed it; `clearQueue()` gives it back.
+ * A message the user queued in a lane, from the moment it is queued until its `message_start` reaches the session:
+ * listed by its text while it waits in the queue; once a run takes it, under way with its delivery (#6080), and no
+ * longer listed or taken back by `clearQueue()`. It is the queued message object itself that names it, so another
+ * message with the same text, such as a prompt sent meanwhile, never takes its place.
  */
-export async function _queueSteer(
-	this: AgentSession,
+interface QueuedOccurrence {
+	readonly lane: QueueLane;
+	readonly text: string;
+	/** The text that was submitted for it, kept for `clearQueue()` while it is queued. */
+	typed: TypedQueuedText;
+	/** A run took it once and ended before starting it, and it was queued again: it is not queued again a second time. */
+	requeued?: true;
+	/** Under way: a run took it from the queue. */
+	taken?: {
+		readonly delivery: QueuedMessageDelivery | undefined;
+		/** A `queue_update` without it went out as the run took it, before its `message_start`. */
+		announced: boolean;
+	};
+}
+
+const queuedOccurrences = new WeakMap<AgentMessage, QueuedOccurrence>();
+/** Per session, oldest first: the queued messages runs took whose `message_start` has not reached the session. */
+const takenNotStarted = new WeakMap<AgentSession, AgentMessage[]>();
+/** Runs each session started, counted: a prompt that only starts a turn tells whether one started meanwhile. */
+const runsStarted = new WeakMap<AgentSession, number>();
+
+/** A run starts. */
+export function queueRunStarted(session: AgentSession): void {
+	runsStarted.set(session, (runsStarted.get(session) ?? 0) + 1);
+}
+
+/** How many runs the session started so far. */
+export function sessionRunsStarted(session: AgentSession): number {
+	return runsStarted.get(session) ?? 0;
+}
+
+/** Queue `text` in `lane`: listed, then queued for the agent, and only then announced (#4257: listeners may act on it). */
+function queueUserText(
+	session: AgentSession,
+	lane: QueueLane,
 	text: string,
-	images?: ImageContent[],
-	typed?: string,
-	rawText?: string,
-): Promise<void> {
-	assertSessionOpen(this);
-	this._steeringMessages.push(text);
-	rememberTypedQueuedText(this, "steer", text, typed);
-	this._emitQueueUpdate();
+	images: ImageContent[] | undefined,
+	typed: string | undefined,
+	rawText: string | undefined,
+): void {
+	assertSessionOpen(session);
 	const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 	if (images) {
 		content.push(...images);
@@ -107,7 +149,78 @@ export async function _queueSteer(
 	};
 	if (images?.length) markQueuedMessageImages(message);
 	rememberLaneMessage(message, images);
-	this._queueAgentMessage(message, "steer");
+	(lane === "steer" ? session._steeringMessages : session._followUpMessages).push(text);
+	queuedOccurrences.set(message, { lane, text, typed: rememberTypedQueuedText(session, lane, text, typed) });
+	session._queueAgentMessage(message, lane);
+	// A listener sees the message where it is: a `clearQueue()` it runs at once takes it back for good.
+	try {
+		session._emitQueueUpdate();
+	} catch (error) {
+		// The caller is told it was not queued, as before: so it is not. One a listener already handed to a run or took
+		// back meanwhile stays where it went, and was queued.
+		if (withdrawQueuedMessage(session, message)) throw error;
+	}
+}
+
+/** The index of the `rank`-th (from 0) `text` in `list`; -1 when there are not that many. */
+function nthIndexOf(list: readonly string[], text: string, rank: number): number {
+	let seen = 0;
+	for (let index = 0; index < list.length; index++)
+		if (list[index] === text) {
+			if (seen === rank) return index;
+			seen++;
+		}
+	return -1;
+}
+
+/** Take `message` back out of the queue it was just put in; false when it is no longer there to take. */
+function withdrawQueuedMessage(session: AgentSession, message: AgentMessage): boolean {
+	const occurrence = queuedOccurrences.get(message);
+	if (occurrence === undefined || occurrence.taken !== undefined) return false;
+	let found = false;
+	const hold = session._activeInterruptQueueHold;
+	for (const held of hold === undefined ? [] : [hold.steering, hold.followUp]) {
+		const index = held.indexOf(message);
+		if (index >= 0) {
+			held.splice(index, 1);
+			found = true;
+		}
+	}
+	if (!found) {
+		const queued = session._drainQueuedAgentMessages();
+		found = queued.steering.includes(message) || queued.followUp.includes(message);
+		session._restoreQueuedAgentMessages({
+			steering: queued.steering.filter((candidate) => candidate !== message),
+			followUp: queued.followUp.filter((candidate) => candidate !== message),
+		});
+	}
+	// A `clearQueue()` a listener ran already took it.
+	if (!found) return false;
+	queuedOccurrences.delete(message);
+	// Its own place: messages a listener queued meanwhile, even with the same text, keep theirs.
+	const list = occurrence.lane === "steer" ? session._steeringMessages : session._followUpMessages;
+	const index = nthIndexOf(list, occurrence.text, forgetTypedQueuedRecord(session, occurrence.typed));
+	if (index >= 0) list.splice(index, 1);
+	try {
+		session._emitQueueUpdate();
+	} catch {
+		// The listener's first failure is the one reported.
+	}
+	return true;
+}
+
+/**
+ * Queue a steering message (already expanded, no extension command check). `typed` is the text that was submitted,
+ * when an `input` hook or an expansion may have changed it; `clearQueue()` gives it back.
+ */
+export async function _queueSteer(
+	this: AgentSession,
+	text: string,
+	images?: ImageContent[],
+	typed?: string,
+	rawText?: string,
+): Promise<void> {
+	queueUserText(this, "steer", text, images, typed, rawText);
 }
 
 /**
@@ -120,23 +233,118 @@ export async function _queueFollowUp(
 	typed?: string,
 	rawText?: string,
 ): Promise<void> {
-	assertSessionOpen(this);
-	this._followUpMessages.push(text);
-	rememberTypedQueuedText(this, "followUp", text, typed);
-	this._emitQueueUpdate();
-	const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-	if (images) {
-		content.push(...images);
-	}
-	const message: UserMessageWithRawText = {
-		role: "user",
-		content,
-		...(rawText !== undefined && rawText !== text ? { rawText } : {}),
-		timestamp: Date.now(),
+	queueUserText(this, "followUp", text, images, typed, rawText);
+}
+
+/** A run takes the queued `message` now: it leaves the list and is under way until its `message_start`. */
+function takeOccurrence(session: AgentSession, message: AgentMessage): QueuedOccurrence | undefined {
+	const occurrence = queuedOccurrences.get(message);
+	if (occurrence === undefined || occurrence.taken !== undefined) return occurrence;
+	const list = occurrence.lane === "steer" ? session._steeringMessages : session._followUpMessages;
+	const index = nthIndexOf(list, occurrence.text, forgetTypedQueuedRecord(session, occurrence.typed));
+	if (index >= 0) list.splice(index, 1);
+	occurrence.taken = {
+		delivery: index >= 0 ? beginQueuedMessageDelivery(session, occurrence.lane, occurrence.text) : undefined,
+		announced: false,
 	};
-	if (images?.length) markQueuedMessageImages(message);
-	rememberLaneMessage(message, images);
-	this._queueAgentMessage(message, "followUp");
+	return occurrence;
+}
+
+/**
+ * Tell the session when a run takes queued messages: from then on they are under way, shown as being delivered and
+ * never given back to the editor, since the run delivers them whatever is cleared meanwhile.
+ */
+export function installQueuedMessageTaking(session: AgentSession): void {
+	session.agent.onQueuedMessagesTaken = (messages) => {
+		const taken: QueuedOccurrence[] = [];
+		for (const message of messages) {
+			const occurrence = queuedOccurrences.get(message);
+			if (occurrence === undefined || occurrence.taken !== undefined) continue;
+			takeOccurrence(session, message);
+			const pending = takenNotStarted.get(session) ?? [];
+			pending.push(message);
+			takenNotStarted.set(session, pending);
+			taken.push(occurrence);
+		}
+		if (taken.length === 0) return;
+		// Announced once, now: its `message_start` does not announce it again.
+		for (const occurrence of taken) if (occurrence.taken !== undefined) occurrence.taken.announced = true;
+		session._emitQueueUpdate();
+	};
+}
+
+/**
+ * The `message_start` of `message` reaches the session: when it is a queued message, it is no longer queued or waiting
+ * to start. Answers its text and its delivery, which ends as its `message_start` reaches the listeners.
+ */
+export function startQueuedMessage(
+	session: AgentSession,
+	message: AgentMessage,
+):
+	| { readonly text: string; readonly delivery: QueuedMessageDelivery | undefined; readonly announced: boolean }
+	| undefined {
+	const occurrence = takeOccurrence(session, message);
+	if (occurrence === undefined) return undefined;
+	queuedOccurrences.delete(message);
+	const pending = takenNotStarted.get(session);
+	const index = pending?.indexOf(message) ?? -1;
+	if (pending !== undefined && index >= 0) {
+		pending.splice(index, 1);
+		if (pending.length === 0) takenNotStarted.delete(session);
+	}
+	const taken = occurrence.taken;
+	return taken?.delivery === undefined
+		? undefined
+		: { text: occurrence.text, delivery: taken.delivery, announced: taken.announced };
+}
+
+/**
+ * The run ended: queued messages it took and never started (its turn preparation failed, or it stopped first) are
+ * queued again, at the front of their lanes in the order they were queued, with the text that was submitted for them,
+ * so they are delivered or taken back like any other queued message: the queue goes on as it does after any failed
+ * run. One that a run already took and lost once is not queued again but dropped, as it always was, so a run that
+ * keeps failing before it starts it never repeats it.
+ */
+export function requeueQueuedMessagesNotStarted(session: AgentSession): void {
+	const pending = takenNotStarted.get(session);
+	if (pending === undefined) return;
+	takenNotStarted.delete(session);
+	const back: Record<QueueLane, AgentMessage[]> = { steer: [], followUp: [] };
+	const typed: TypedQueuedText[] = [];
+	for (const message of pending) {
+		const occurrence = queuedOccurrences.get(message);
+		if (occurrence?.taken === undefined) continue;
+		const listed = occurrence.taken.delivery !== undefined;
+		endQueuedMessageDelivery(session, occurrence.taken.delivery);
+		occurrence.taken = undefined;
+		// Taken and lost once already, or no longer listed when it was taken: not queued again.
+		if (occurrence.requeued || !listed) {
+			queuedOccurrences.delete(message);
+			continue;
+		}
+		occurrence.requeued = true;
+		back[occurrence.lane].push(message);
+		typed.push(occurrence.typed);
+	}
+	if (back.steer.length === 0 && back.followUp.length === 0) return;
+	const textsOf = (messages: readonly AgentMessage[]) =>
+		messages.map((message) => queuedOccurrences.get(message)?.text ?? "");
+	session._steeringMessages.unshift(...textsOf(back.steer));
+	session._followUpMessages.unshift(...textsOf(back.followUp));
+	for (const record of typed.reverse()) restoreTypedQueuedText(session, record);
+	const hold = session._activeInterruptQueueHold;
+	if (hold !== undefined) {
+		// After the priority messages an interrupt put at the front, as they were queued.
+		hold.steering.splice(priorityHoldCounts.get(hold) ?? 0, 0, ...back.steer);
+		hold.followUp.unshift(...back.followUp);
+	} else {
+		const queued = session._drainQueuedAgentMessages();
+		session._restoreQueuedAgentMessages({
+			steering: [...back.steer, ...queued.steering],
+			followUp: [...back.followUp, ...queued.followUp],
+		});
+	}
+	session._emitQueueUpdate();
 }
 
 /**
@@ -169,7 +377,16 @@ export function _throwIfExtensionCommand(this: AgentSession, text: string): void
  * @param options.deliverAs Delivery mode: "steer", "followUp", "nextTurn", or "interrupt"
  */
 
-export async function sendCustomMessage<T = unknown>(
+export function sendCustomMessage<T = unknown>(
+	this: AgentSession,
+	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+	options?: SendMessageOptions,
+): Promise<void> {
+	// #6113: print mode waits for what an extension command sends before it prints and closes the session.
+	return joinCommandSend(this, () => sendCustomMessageNow.call(this, message, options));
+}
+
+async function sendCustomMessageNow<T>(
 	this: AgentSession,
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 	options?: SendMessageOptions,
@@ -226,7 +443,15 @@ async function admittedCustomMessage<T>(
 }
 
 /** Atomically admits a custom-message batch in array order. */
-export async function sendCustomMessages<T = unknown>(
+export function sendCustomMessages<T = unknown>(
+	this: AgentSession,
+	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
+	options?: SendMessagesOptions,
+): Promise<void> {
+	return joinCommandSend(this, () => sendCustomMessagesNow.call(this, messages, options));
+}
+
+async function sendCustomMessagesNow<T>(
 	this: AgentSession,
 	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
 	options?: SendMessagesOptions,
@@ -330,6 +555,7 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 	markCustomMessageDisplayed(this, entryId);
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });
+	noteCommandAnswer(this);
 }
 
 const pendingCustomMessageDrains = new WeakMap<AgentSession, Promise<void>>();

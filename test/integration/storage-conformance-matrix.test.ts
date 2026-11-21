@@ -6,7 +6,9 @@ import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/s
 import { registerSessionStoreConformance } from "../../packages/coding-agent/src/core/storage/session/conformance.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { registerSqliteDatabaseConformance } from "../../packages/coding-agent/src/core/storage/testing.js";
+import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import type { IntercomBrokerStateOptions } from "../../packages/intercom/broker/multinode-state-store.js";
+import { borrowedDatabase } from "../../packages/intercom/broker/open-broker-state.js";
 import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
@@ -27,6 +29,7 @@ import {
 	registerPendingAskStoreConformance,
 	registerReleasedAskStoreConformance,
 	registerRestoringReservationStoreConformance,
+	registerReturningSessionConformance,
 	registerSentMessageAuthorityConformance,
 } from "../helpers/intercom-multinode-contract.js";
 import { openMemoryOutboxFixture, openMemoryWakeUpBusFixture } from "../helpers/intercom-multinode-memory-reference.js";
@@ -208,6 +211,20 @@ for (const backend of storageBackends) {
 	registerSentMessageAuthorityConformance(run, intercom, scopeFixture(backend, openSqlSentMessageAuthority));
 	registerHeldSendStoreConformance(run, intercom, scopeFixture(backend, openSqlHeldSendStore));
 	registerRestoringReservationStoreConformance(run, intercom, scopeFixture(backend, openSqlRestoringReservationStore));
+	// The stores in the order a broker opens them, then its wake-up bus on the same connection (#5607).
+	registerReturningSessionConformance(
+		run,
+		intercom,
+		scopeFixture(backend, async (options) => ({
+			leases: await openSqlBrokerLeaseStore(options),
+			knownSessions: await openSqlKnownSessionStore(options),
+			outbox: await openSqlOutboxStore(options),
+			bus: await openDatabaseWakeUpBus({
+				openDatabase: async () => borrowedDatabase(options.database),
+				prefix: options.prefix,
+			}),
+		})),
+	);
 	registerCrossNodeRoundTripConformance(run, intercom, {
 		openOutbox: scopeFixture(backend, openSqlOutboxStore),
 		openPendingAsks: scopeFixture(backend, openSqlPendingAskStore),

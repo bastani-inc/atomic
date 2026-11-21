@@ -1,3 +1,4 @@
+import type { JsonSchema } from "@bastani/atomic-schema";
 import type {
 	Context,
 	Message,
@@ -258,14 +259,95 @@ export function toToolDeclaration(tool: Tool): Tool {
 	};
 }
 
+/** Code point order, the same on every host and locale. */
+function compareCodePoints(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Serializes the entries of an object in code point order of their keys, each value with `serialize`. */
+function canonicalObject(value: object, serialize: (key: string, item: unknown) => string): string {
+	const entries = Object.entries(value)
+		.filter(([, item]) => item !== undefined)
+		.sort(([left], [right]) => compareCodePoints(left, right));
+	return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${serialize(key, item)}`).join(",")}}`;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** `value` serialized with every object's keys in code point order; array order is kept. */
 function canonicalJson(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	if (typeof value !== "object" || value === null) return JSON.stringify(value);
-	const entries = Object.entries(value)
-		.filter(([, item]) => item !== undefined)
-		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-	return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+	if (!isPlainObject(value)) return JSON.stringify(value);
+	return canonicalObject(value, (_key, item) => canonicalJson(item));
+}
+
+/** JSON Schema keywords whose value is a schema, or for `items` an ordered list of schemas (a tuple). */
+const SUBSCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
+	"additionalItems",
+	"additionalProperties",
+	"contains",
+	"contentSchema",
+	"else",
+	"if",
+	"items",
+	"not",
+	"propertyNames",
+	"then",
+	"unevaluatedItems",
+	"unevaluatedProperties",
+]);
+/** JSON Schema keywords whose value is an ordered list of schemas. */
+const SUBSCHEMA_LIST_KEYWORDS: ReadonlySet<string> = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+/** JSON Schema keywords whose value maps names to schemas (`dependencies` also to lists of names, kept in order). */
+const SUBSCHEMA_MAP_KEYWORDS: ReadonlySet<string> = new Set([
+	"$defs",
+	"definitions",
+	"dependencies",
+	"dependentSchemas",
+	"patternProperties",
+	"properties",
+]);
+
+function canonicalSchemaList(value: unknown): string {
+	return Array.isArray(value) ? `[${value.map(canonicalSchema).join(",")}]` : canonicalJson(value);
+}
+
+/**
+ * A JSON Schema serialized like {@link canonicalJson}, except that a `required` list of names is sorted: the names it
+ * lists form a set, so a schema that lists them in another order means the same. Only `required` where a schema is
+ * expected counts; values (`enum`, `const`, `default`, `examples`), property names, tuples and lists of alternatives keep
+ * their order.
+ */
+function canonicalSchema(schema: unknown): string {
+	if (!isPlainObject(schema)) return canonicalJson(schema);
+	return canonicalObject(schema, (key, item) => {
+		if (key === "required" && Array.isArray(item) && item.every((name) => typeof name === "string")) {
+			return canonicalJson([...item].sort(compareCodePoints));
+		}
+		if (SUBSCHEMA_KEYWORDS.has(key)) return Array.isArray(item) ? canonicalSchemaList(item) : canonicalSchema(item);
+		if (SUBSCHEMA_LIST_KEYWORDS.has(key)) return canonicalSchemaList(item);
+		if (SUBSCHEMA_MAP_KEYWORDS.has(key) && isPlainObject(item)) {
+			return canonicalObject(item, (_name, subschema) => canonicalSchema(subschema));
+		}
+		return canonicalJson(item);
+	});
+}
+
+/** A tool declaration serialized canonically: its parameters as a JSON Schema, every other field as JSON. */
+function canonicalDeclaration(declaration: Tool): string {
+	return canonicalObject(declaration, (key, item) =>
+		key === "parameters" ? canonicalSchema(item) : canonicalJson(item),
+	);
+}
+
+/**
+ * Whether two JSON Schemas describe the same values, as {@link declarationsEqual} compares tool parameters: object keys
+ * in any order, and the names a `required` list holds in any order.
+ */
+export function jsonSchemasEqual(left: JsonSchema | undefined, right: JsonSchema | undefined): boolean {
+	return canonicalSchema(left) === canonicalSchema(right);
 }
 
 /**
@@ -274,7 +356,8 @@ function canonicalJson(value: unknown): string {
  * Both sides go through {@link toToolDeclaration} first: its JSON round-trip drops the
  * schema metadata keys (TypeBox's non-enumerable kind marks) and `undefined` fields that a structural comparison would see.
  * Object keys are compared in a canonical order, so a schema rebuilt with its keys in another order, as a server may
- * send it after reconnecting, is not a new definition. Array order counts. This avoids a deep-equal dependency in a
+ * send it after reconnecting, is not a new definition. A schema's `required` names form a set and may come in any order;
+ * other arrays, such as `enum` values or tuple items, keep their order. This avoids a deep-equal dependency in a
  * browser-safe package.
  */
 export function declarationsEqual(left: Tool, right: Tool): boolean {
@@ -282,7 +365,7 @@ export function declarationsEqual(left: Tool, right: Tool): boolean {
 	const rightDeclaration = toToolDeclaration(right);
 	return (
 		JSON.stringify(leftDeclaration) === JSON.stringify(rightDeclaration) ||
-		canonicalJson(leftDeclaration) === canonicalJson(rightDeclaration)
+		canonicalDeclaration(leftDeclaration) === canonicalDeclaration(rightDeclaration)
 	);
 }
 

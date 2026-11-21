@@ -374,3 +374,27 @@ test("a wake that only hands back tool results does not prompt the child's task 
 	await runSingleInProcess(root, agent, "continue the work", { ...options("skipped"), skipTaskPrompt: true });
 	assert.equal(existsSync(promptLogPath), false);
 });
+
+test(
+	"a woken child stopped before its wake prompt is sent keeps nothing of it to read later",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const childSession = await SessionManager.create(store, env.root);
+		const stop = new AbortController();
+		stop.abort("abort");
+
+		const stopped = await runSingleInProcess(env.root, agent, SUBAGENT_RELEASED_WAKE_PROMPT, {
+			...env.options("fallback-stopped", {
+				sessionManager: childSession,
+				resumeSession: true,
+				resumeTaskFallback: true,
+				signal: stop.signal,
+			}),
+		});
+
+		assert.notEqual(stopped.status, "ok");
+		assert.equal(stopped.pendingMessages, undefined, "the wake prompt is not a message the child was sent");
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);

@@ -65,7 +65,7 @@ import { createAgentSession, type HostInput } from "@bastani/atomic";
 
 On Node 22, `AsyncLocalStorage` runs on promise hooks. Once a session has run, they stay on for the whole process, and every `await` in your application costs more. Atomic keeps all of its context in one store, so the cost does not grow with the number of sessions. Node 24 and Bun have no such cost.
 
-On Node 22.7 or later, start your host with `node --experimental-async-context-frame` to avoid it. The flag switches `AsyncLocalStorage` to Node 24's implementation for the whole process, so check any code of your own that relies on Node 22's behavior, such as `disable()`.
+On Node 22.7 or a later 22.x release, start your host with `node --experimental-async-context-frame` to avoid it. The flag switches `AsyncLocalStorage` to Node 24's implementation for the whole process, so check any code of your own that relies on Node 22's behavior, such as `disable()`. Pass it on the host's own command line, not in `NODE_OPTIONS`: Node 24 and later refuse the flag, and commands your sessions' tools run inherit `NODE_OPTIONS`, so a newer Node among them would fail to start.
 
 ### Migrating an existing Node host
 

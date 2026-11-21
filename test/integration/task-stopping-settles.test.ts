@@ -11,6 +11,7 @@ import { type BashToolDetails, createBashTool } from "../../packages/coding-agen
 import { createKillTool } from "../../packages/coding-agent/src/core/tools/kill.js";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import { fileExists, readJson, sleep } from "../helpers/runtime.js";
 
 function alive(pid: number): boolean {
@@ -49,14 +50,16 @@ test.runIf(process.platform !== "win32")(
 		assert.ok(store.connect().ok);
 		const bash = createBashTool(process.cwd(), { taskOwner: host.ownerBinding });
 		const kill = createKillTool({ taskOwner: () => host.ownerBinding });
-		const processes: Array<{ parent: number; holder: number }> = [];
+		// #6125: each escaped holder, recorded while it holds the output open, so the cleanup never signals a later
+		// process given its pid.
+		const holders: RecordedProcess[] = [];
 		let closed: Awaited<ReturnType<typeof host.close>>;
 		const command = (name: string) =>
 			`exec ${JSON.stringify(process.execPath)} ${JSON.stringify(resolve("test/fixtures/task-escaped-output-holder.mjs"))} ${JSON.stringify(join(directory, name))}`;
 		const started = async (name: string) => {
 			await until(() => fileExists(join(directory, name)), 10_000, `${name} fixture started`);
 			const identities = await readJson<{ parent: number; holder: number }>(join(directory, name));
-			processes.push(identities);
+			holders.push(await recordProcess(identities.holder));
 			return identities;
 		};
 		try {
@@ -114,11 +117,7 @@ test.runIf(process.platform !== "win32")(
 				assert.equal(alive(identities.holder), true);
 			}
 		} finally {
-			for (const { holder } of processes) {
-				try {
-					process.kill(holder, "SIGKILL");
-				} catch {}
-			}
+			for (const holder of holders) await signalRecordedProcess(holder);
 			store.dispose();
 			closed = await host.close("session-close");
 			await rm(directory, { recursive: true, force: true });

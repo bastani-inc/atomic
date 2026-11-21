@@ -67,3 +67,20 @@ test("lists every steering message before any follow-up, each lane in the order 
 		{ lane: "followUp", text: "f2" },
 	]);
 });
+
+test("names the key that takes queued messages back only while one of the rows is still queued", () => {
+	const plain = (text: string) => text;
+	const drawn = (queued: { steering: string[]; followUp: string[] }, delivering: typeof queued) =>
+		new QueuedMessagesView(queuedMessageRows(queued, delivering), "alt+up", plain)
+			.render(80)
+			.map((line) => line.trim())
+			.filter((line) => line !== "");
+
+	// The agent took it already: it is drawn until its own row shows, and the key gives nothing back.
+	assert.deepEqual(drawn({ steering: [], followUp: [] }, { steering: ["taken"], followUp: [] }), ["Steering: taken"]);
+	assert.deepEqual(drawn({ steering: [], followUp: ["waiting"] }, { steering: ["taken"], followUp: [] }), [
+		"Steering: taken",
+		"Follow-up: waiting",
+		"↳ alt+up to edit all queued messages",
+	]);
+});

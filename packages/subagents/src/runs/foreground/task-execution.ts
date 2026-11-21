@@ -80,6 +80,7 @@ import {
 	subagentChildModelChoice,
 	subagentChildRecordsAppended,
 	subagentChildTask,
+	subagentChildTitle,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
@@ -664,6 +665,7 @@ export async function runAgentTask(input: {
 				? { orchestratorTarget: input.options.orchestratorIntercomTarget }
 				: {}),
 			...subagentChildTask(input.intentTask ?? input.task, input.options),
+			...subagentChildTitle(input.intentTask ?? input.task, input.options),
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 			// Every record a run writes says what that run waits on, so a later run's record never keeps the detached calls

@@ -7,7 +7,7 @@ import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
-import { evalWorkerExecArgv } from "./worker-threads.js";
+import { EVAL_WORKER_BUILTIN, evalWorkerExecArgv } from "./worker-threads.js";
 
 export interface ShellConfig {
 	shell: string;
@@ -407,10 +407,11 @@ interface DetachedChildGuardian {
 let detachedChildGuardian: DetachedChildGuardian | undefined;
 
 const PARENT_GUARDIAN_SOURCE = `
-const { parentPort, workerData } = require("node:worker_threads");
-const { spawn } = require("node:child_process");
-const { existsSync } = require("node:fs");
-const { join } = require("node:path");
+${EVAL_WORKER_BUILTIN}
+const { parentPort, workerData } = builtin("node:worker_threads");
+const { spawn } = builtin("node:child_process");
+const { existsSync } = builtin("node:fs");
+const { join } = builtin("node:path");
 const tracked = new Map();
 parentPort.on("message", ({ action, pid }) => {
   if (action === "track") tracked.set(pid, false);
@@ -484,8 +485,13 @@ export function untrackDetachedChildPid(pid: number): void {
 	detachedChildGuardian?.postMessage({ action: "untrack", pid });
 }
 
-export function killTrackedDetachedChildren(): void {
+/**
+ * Kill every tracked detached child and its tree, except those in `spare`, which stay tracked: their owner stops them
+ * itself, and a later call without `spare` still kills them.
+ */
+export function killTrackedDetachedChildren(spare?: ReadonlySet<number>): void {
 	for (const [pid, exited] of trackedDetachedChildPids) {
+		if (spare?.has(pid)) continue;
 		if (!exited) killProcessTree(pid);
 		else if (process.platform !== "win32") {
 			try {
@@ -493,8 +499,8 @@ export function killTrackedDetachedChildren(): void {
 			} catch {}
 		}
 		detachedChildGuardian?.postMessage({ action: "untrack", pid });
+		trackedDetachedChildPids.delete(pid);
 	}
-	trackedDetachedChildPids.clear();
 }
 
 /**

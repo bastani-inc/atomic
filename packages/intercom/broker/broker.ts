@@ -5,6 +5,7 @@ import "./bounded-stderr-install.js";
 import "./announce-on-import.js";
 import net from "net";
 import { chmodSync, existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
+import { access } from "fs/promises";
 import { hostname } from "os";
 import { dirname } from "path";
 import { createHash, randomUUID } from "crypto";
@@ -74,6 +75,7 @@ type ReleasedAskerReplyRouter,
 } from "./send-handler.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import { DurableEndedQueue, type KeptFailure, isRestoredSend, type RestoredEndedQueues } from "./durable-ended-queue.js";
+import type * as EndedChildQueueStoreModule from "./sql-ended-child-queue-store.js";
 import type { EndedChildQueueStore } from "./sql-ended-child-queue-store.js";
 import { ReturnPaths } from "./return-paths.js";
 import {
@@ -83,6 +85,8 @@ import {
   readSharedStorageSetting,
   resolveMultiNodeStartup,
   SHARED_STORAGE_UNAVAILABLE_REASON,
+  type SessionIdGrant,
+  type UnansweredSessionIdClaim,
 } from "./multinode-router.js";
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
@@ -339,6 +343,20 @@ function holdSenderOf(from: ConnectedSession, answersAsk?: true): HoldSender {
 	};
 }
 
+let endedChildQueueStoreModule: Promise<typeof EndedChildQueueStoreModule> | undefined;
+
+/**
+ * #5999 durable wake queue: the store's code, loaded when a session first registers or as a broker warms it, once; a
+ * load that failed is tried again.
+ */
+function loadEndedChildQueueStore(): Promise<typeof EndedChildQueueStoreModule> {
+  endedChildQueueStoreModule ??= import("./sql-ended-child-queue-store.js").catch((error: unknown) => {
+    endedChildQueueStoreModule = undefined;
+    throw error;
+  });
+  return endedChildQueueStoreModule;
+}
+
 class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
   /** #5146: presence frames gathered per recipient, so they grow with the changes, not their square. */
@@ -390,6 +408,11 @@ class IntercomBroker {
   private sessionIdReclaim = new SessionIdReclaim();
   /** Connections whose requested id is being checked against its multi-node binding before they register. */
   private claimingSessionIds = new WeakSet<net.Socket>();
+  /**
+   * #5607: connections whose claim of their id went unanswered and whose binding write has not yet decided which id
+   * they hold. They are about to register, so the broker does not retire for want of sessions meanwhile.
+   */
+  private readonly settlingRegistrations = new Set<net.Socket>();
   private pendingQuestions = new PendingQuestionIndex();
   private receipts = new RecipientReceipts<ConnectedSession>();
   // #4751: an ask has no expiry, so a released asker's route lasts until the child or its owner ends or it is back.
@@ -555,7 +578,22 @@ class IntercomBroker {
       this.lastConnectionAt = performance.now();
       this.scheduleShutdownCheck();
       if (this.boundSocketInode !== undefined) this.watchSocketOwnership();
+      this.warmEndedQueueStore();
     });
+  }
+
+  /**
+   * #5999 durable wake queue: a broker taking over the local store an earlier broker left loads the store's code as it
+   * starts. The first registration waits a bounded time for the store, and on a busy machine loading that code alone
+   * could use it up, so the earlier broker's messages were kept in memory only and lost. Nothing is opened here.
+   */
+  private warmEndedQueueStore(): void {
+    if (this.sharedStorageSetting !== undefined) return;
+    // Looked for off the event loop: a slow home directory must not hold the broker's first answers.
+    void access(getBrokerEndedChildQueuePath()).then(
+      () => loadEndedChildQueueStore().catch(() => {}),
+      () => {},
+    );
   }
 
   /**
@@ -684,6 +722,8 @@ class IntercomBroker {
       const departing = sessionId;
       if (departing === null) return;
       sessionId = null;
+      // #5607: a session fenced here left already, and its id may name another session by now.
+      if (this.sessions.get(departing)?.socket !== socket) return;
       this.disconnectSession(departing);
     };
 
@@ -713,7 +753,7 @@ class IntercomBroker {
         const now = performance.now();
         const awaitingFirstFrame = [...this.unclassifiedConnections.values()]
           .some((acceptedAt) => now - acceptedAt < BROKER_IDLE_TIMEOUT_MS);
-        if (awaitingFirstFrame) {
+        if (awaitingFirstFrame || this.settlingRegistrations.size > 0) {
           this.scheduleShutdownCheck(UNCLASSIFIED_CONNECTION_RECHECK_MS);
           return;
         }
@@ -807,16 +847,22 @@ class IntercomBroker {
     });
   }
 
-  /** Register the session under the id it was granted, and complete its registration (see `register`). */
+  /**
+   * Register the session under the id it was granted, and complete its registration (see `register`). `unanswered`: its
+   * claim of the id it asked for went unanswered (#5607). Its binding write, in the place of the fresh id's, may still
+   * keep that id; the session is registered here once that write has decided which id it holds, and never shown under
+   * the other.
+   */
   private completeSessionRegistration(
     socket: net.Socket,
     clientMessage: SessionRegistrationRequest,
-    id: string,
+    grantedId: string,
     supervisorId: string | undefined,
     setId: (id: string | null) => void,
-    ownerToken?: string,
+    unanswered?: UnansweredSessionIdClaim,
+    grant?: SessionIdGrant,
   ): void {
-        setId(id);
+        let id = grantedId;
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
         const legacyGroup = normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value);
         const info: SessionInfo = {
@@ -824,7 +870,7 @@ class IntercomBroker {
           id,
         };
 		setSessionGroups(info, initialGroups, legacyGroup);
-        this.sessions.set(id, {
+        const rejoined: ConnectedSession = {
           socket,
           info,
           registrationGroup: clientMessage.reachPolicy?.home ?? (typeof clientMessage.registrationGroup === "string"
@@ -844,14 +890,24 @@ class IntercomBroker {
             : {}),
           ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
           ...(clientMessage.reachPolicy === undefined ? {} : { reach: clientMessage.reachPolicy }),
-        });
+        };
+        const register = (): void => {
+          setId(id);
+          this.sessions.set(id, rejoined);
+        };
+        // #5607: until its binding write decides its id, the session is still claiming it, as it was before.
+        let settled = unanswered === undefined || this.multiNode === undefined;
+        if (settled) register();
+        else {
+          this.claimingSessionIds.add(socket);
+          this.settlingRegistrations.add(socket);
+        }
 
         if (this.shutdownTimer) {
           clearTimeout(this.shutdownTimer);
           this.shutdownTimer = null;
         }
 
-        const rejoined = this.sessions.get(id);
         const consumedCapability =
           supervisorId && isSupervisorRegistration(clientMessage.supervisor) ? clientMessage.supervisor.capability : undefined;
         const completeRegistration = (held: readonly HeldWrite[] = []): void => {
@@ -969,24 +1025,47 @@ class IntercomBroker {
           for (const send of restoredSends) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
           this.dispatchHeldSends(departedSends.filter((send) => !isQueuedForWake(send)));
         };
+        // #5101: set while its routes are being restored, as its registration completes.
+        let restoring: object | undefined;
+        // #5607: register the session as its binding write decided: under its unanswered claim's id when that write kept
+        // it and no session here holds it, otherwise under the fresh id. Once only; true when it kept the claimed id.
+        const settle = (keep: boolean): boolean => {
+          if (settled) return false;
+          settled = true;
+          this.claimingSessionIds.delete(socket);
+          this.settlingRegistrations.delete(socket);
+          const kept = keep && unanswered !== undefined && !this.sessions.has(unanswered.sessionId);
+          if (kept) {
+            id = unanswered.sessionId;
+            info.id = id;
+          }
+          register();
+          // #5101: its routes are restored only as its registration completes (see below).
+          restoring = this.pendingQuestions.beginRestoring(id);
+          // Its connection closed while the write was deciding: it leaves as if it closed now.
+          if (socket.destroyed || socket.writableEnded) {
+            setId(null);
+            this.disconnectSession(id);
+            this.scheduleShutdownCheck();
+          }
+          return kept;
+        };
         // Multi-node S5: brokers on other hosts find this session through its presence lease, so registration
         // completes once the lease is written (or bounded attempts found it still held elsewhere). The session is
         // routable meanwhile, so its frames are held until `registered` is written.
-        const presence =
-          rejoined === undefined
+        const presence = this.multiNode?.sessionRegistered(
+          rejoined,
+          consumedCapability === undefined && !info.name?.trim()
             ? undefined
-            : this.multiNode?.sessionRegistered(
-                rejoined,
-                consumedCapability === undefined && !info.name?.trim()
-                  ? undefined
-                  : {
-                      ...(consumedCapability === undefined ? {} : { capability: consumedCapability }),
-                      ...(info.name?.trim() ? { childName: info.name.trim() } : {}),
-                      groups: sessionGroups(info),
-                      ...(supervisorId ? { authorizedBy: supervisorId } : {}),
-                    },
-                ownerToken,
-              );
+            : {
+                ...(consumedCapability === undefined ? {} : { capability: consumedCapability }),
+                ...(info.name?.trim() ? { childName: info.name.trim() } : {}),
+                groups: sessionGroups(info),
+                ...(supervisorId ? { authorizedBy: supervisorId } : {}),
+              },
+          settled || unanswered === undefined ? undefined : { ...unanswered, settle, unsettled: () => !settled },
+          grant,
+        );
         // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
         // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS, and by ENDED_QUEUE_ROUTING_WAIT_MS with a shared `storage`).
         const keeper = this.endedQueue.decided
@@ -997,14 +1076,16 @@ class IntercomBroker {
           holdWrites(socket);
           // #5101: routable now, but its routes are restored only as its registration completes; a reply that only a
           // restored route would authorize waits for that rather than being refused.
-          const restoring = this.pendingQuestions.beginRestoring(id);
+          if (settled) restoring = this.pendingQuestions.beginRestoring(id);
           void Promise.all([presence, keeper]).then(() => {
+            // #5607: a binding write that has not decided by now leaves the session under the fresh id.
+            settle(false);
             const held = releaseHeldWrites(socket);
             try {
               if (this.sessions.get(id) === rejoined) completeRegistration(held);
               else discardHeldWrites(held);
             } finally {
-              this.pendingQuestions.finishRestoring(id, restoring);
+              if (restoring !== undefined) this.pendingQuestions.finishRestoring(id, restoring);
             }
           });
         }
@@ -1157,12 +1238,18 @@ class IntercomBroker {
           this.claimingSessionIds.add(socket);
           void multiNode
             .claimSessionId(preferred, returnAddress)
-            .then((ownerToken) => {
+            .then((claimed) => {
               this.claimingSessionIds.delete(socket);
               // #5607: an id this registration took but does not use is given back at once.
-              const granted = ownerToken !== undefined && !this.sessions.has(preferred);
+              const granted = claimed.status === "granted" && !this.sessions.has(preferred) ? claimed.grant : undefined;
               const giveBack = () => {
-                if (ownerToken !== undefined) void multiNode.releaseOwner({ intercomSessionId: preferred, token: ownerToken });
+                const token =
+                  claimed.status === "granted"
+                    ? claimed.grant.token
+                    : claimed.status === "unanswered"
+                      ? claimed.unanswered.token
+                      : undefined;
+                if (token !== undefined) void multiNode.releaseOwner({ intercomSessionId: preferred, token });
               };
               if (socket.destroyed || socket.writableEnded) {
                 giveBack();
@@ -1174,14 +1261,15 @@ class IntercomBroker {
                 socket.end();
                 return;
               }
-              if (!granted) giveBack();
+              if (claimed.status === "granted" && granted === undefined) giveBack();
               this.completeSessionRegistration(
                 socket,
                 registration,
-                granted ? preferred : randomUUID(),
+                granted !== undefined ? preferred : randomUUID(),
                 supervisorId,
                 setId,
-                granted ? ownerToken : undefined,
+                claimed.status === "unanswered" ? claimed.unanswered : undefined,
+                granted,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
@@ -2013,6 +2101,7 @@ class IntercomBroker {
                 dispatch: (socket, clientMessage, senderId) => this.dispatchSend(socket, clientMessage, senderId),
                 revokeReleasedReservation: (key, ownerSessionId) => this.revokeReleasedReservation(key, ownerSessionId),
                 holdsReservation: (key, ownerSessionId) => this.restoringRecipients.holds(key, ownerSessionId),
+                fence: (session) => this.fenceSession(session),
               },
             });
           } catch (error) {
@@ -2241,7 +2330,7 @@ class IntercomBroker {
     };
     let store: EndedChildQueueStore | undefined;
     if (this.sharedStorageSetting === undefined) {
-      const { openLocalEndedChildQueueStore } = await import("./sql-ended-child-queue-store.js");
+      const { openLocalEndedChildQueueStore } = await loadEndedChildQueueStore();
       store = await openLocalEndedChildQueueStore(getBrokerEndedChildQueuePath(), this.instanceId, retire, continuity);
     } else {
       await this.multiNodeFirstAttempt;
@@ -2850,6 +2939,19 @@ class IntercomBroker {
   }
 
   /** `ended`: the session said goodbye, so it is not coming back; otherwise its connection only dropped. */
+  /**
+   * #5607: another live registration of the same session owns this session's id across nodes: it leaves here as if its
+   * connection dropped, and its client reconnects and gets a fresh id. A hosted session goes alone; its host stays.
+   */
+  private fenceSession(session: BrokerConnectedSession): void {
+    const id = session.info.id;
+    if (this.sessions.get(id) !== session) return;
+    console.error(`Intercom session ${id} is registered on another broker, which owns its id; this registration reconnects with a fresh id`);
+    this.disconnectSession(id);
+    if (session.hostedBy === undefined) session.socket.destroy();
+    this.scheduleShutdownCheck();
+  }
+
   private disconnectSession(sessionId: string, ended = false): void {
     // A hosted session's departure joins its host's: its outcomes go out when the host's departure is saved.
     if (this.departureOutcomes !== undefined) {

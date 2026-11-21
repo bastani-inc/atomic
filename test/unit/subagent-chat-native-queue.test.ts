@@ -268,3 +268,48 @@ test.each(["steer", "followUp"] as const)(
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );
+
+test(
+	"a subagent whose turn fails before it starts the steer typed into its chat still reads that steer and its follow-up, and finishes",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const child = launchChild(env, "native-queue-failed-turn", [
+			fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "one" }, { id: "wait-1" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("steer handled"),
+			fauxAssistantMessage("follow-up handled"),
+		]);
+		await until(() => env.answers.length === 1, LIVE_CHILD_START_WAIT_MS);
+		const source = child.source()!;
+		await source.queueMessage!("child steer", "steer");
+		await source.queueMessage!("child fu", "followUp");
+		// The preparation of the turn after the tool fails once, as a cancelled compaction before that request fails it.
+		const agent = (source.chatSession as AgentSession).agent;
+		const prepare = agent.prepareNextTurnWithContext;
+		let failed = false;
+		agent.prepareNextTurnWithContext = async (context, signal) => {
+			if (!failed) {
+				failed = true;
+				throw new Error("compaction cancelled before the next request");
+			}
+			return prepare?.(context, signal);
+		};
+
+		answer(env, 0, "round one");
+		const result = await child.result;
+
+		assert.ok(failed);
+		assert.equal(result.status, "ok", result.error);
+		assert.equal(result.finalOutput, "follow-up handled");
+		assert.deepEqual(
+			child.requests
+				.slice(1)
+				.flatMap(tail)
+				.filter((line) => line.startsWith("user:")),
+			["user:child steer", "user:child fu"],
+			"both reach the model, in order, once",
+		);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);

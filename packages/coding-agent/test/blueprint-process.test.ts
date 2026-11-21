@@ -20,6 +20,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { isGone, recordProcess, signalRecordedProcess, waitUntilGone } from "../../../test/helpers/recorded-process.js";
 import {
 	copiesOutputToLog,
 	LOG_TAIL_BYTES,
@@ -38,6 +39,22 @@ import { getShellConfig } from "../src/utils/shell.ts";
 
 const STEADY_TIMEOUT_MS = 60_000;
 const PROCESS_START_WAIT_MS = 20_000;
+/**
+ * The codes with which the system refuses to start a program for a moment, as runLoggedProcess treats them. A busy
+ * Windows machine has refused to start Node for most of a second (#6124).
+ */
+const PASSING_REFUSALS = process.platform === "win32" ? ["EPERM", "EBUSY"] : ["ETXTBSY"];
+/**
+ * How many times a test that needs a running process starts it: a step tries for two seconds, so about ten in all. A
+ * machine that refuses starts can also be scanning a program just written, as the copy a held program is.
+ */
+const REFUSED_STARTS = 5;
+/** How many times, 50 ms apart, the process of such a test tries to start its own child: about ten seconds. */
+const REFUSED_CHILD_TRIES = 200;
+/** The most tries a step makes of a program that stays refused: ten 50 ms apart, then at most six, further apart. */
+const MAX_REFUSED_TRIES = 16;
+/** Bound on the event-loop turns until a refused step is waiting to try again. */
+const UNTIL_WAITING_TURNS = 10_000;
 
 let sandbox: string;
 let logCount = 0;
@@ -127,15 +144,6 @@ function heldNode(): {
 			open = false;
 		},
 	};
-}
-
-function isAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
 }
 
 test("an ordinary elapsed time matches the wall sample even if the thread is descheduled between reads (#5707)", () => {
@@ -278,14 +286,14 @@ describe("running a logged process (#4588)", () => {
 	);
 
 	test.skipIf(process.platform !== "linux")(
-		"a refusal at 450 whole milliseconds still gets the final 50 ms retry (#5608, #5707)",
+		"a refusal at 1950 whole milliseconds still gets the final retry (#5608, #5707, #6124)",
 		async () => {
 			const log = await openStepLog(path("boundary.log"));
 			const spawn = childProcess.spawn;
 			const held = heldNode();
 			const run = held.run('console.log("started")');
 			let release: NodeJS.Timeout | undefined;
-			// Both clocks read millisecond 450 when the step checks the real refusal. They are held still only from its
+			// Both clocks read millisecond 1950 when the step checks the real refusal. They are held still only from its
 			// start to that check, which runs without a turn of the event loop, so a loaded host cannot move the check to
 			// another millisecond. The retry and the started process then run on the real clocks.
 			const wallStart = Date.now();
@@ -303,7 +311,7 @@ describe("running a logged process (#4588)", () => {
 						decisionMs = Date.now() - wallStart;
 						realClocks();
 					}
-					return 2_000;
+					return 3_000;
 				},
 			};
 			const os = vi.spyOn(childProcess, "spawn").mockImplementationOnce((...args) => {
@@ -311,9 +319,9 @@ describe("running a logged process (#4588)", () => {
 					return spawn(...args);
 				} catch (error) {
 					assert.equal((error as NodeJS.ErrnoException).code, "ETXTBSY");
-					// The real refusal, partway through millisecond 450. Release the file during the backoff.
-					wall.mockReturnValue(wallStart + 450);
-					monotonic.mockReturnValue(monoStart + 450.25);
+					// The real refusal, partway through millisecond 1950. Release the file during the wait.
+					wall.mockReturnValue(wallStart + 1_950);
+					monotonic.mockReturnValue(monoStart + 1_950.25);
 					release = setTimeout(held.release, 25);
 					throw error;
 				}
@@ -321,7 +329,7 @@ describe("running a logged process (#4588)", () => {
 			syncBuiltinESMExports();
 			try {
 				const exit = await runLoggedProcess(run, log, options);
-				assert.equal(decisionMs, 450);
+				assert.equal(decisionMs, 1_950);
 				assert.equal(exit.spawnError, undefined);
 				assert.equal(exit.exitStatus, 0);
 			} finally {
@@ -357,7 +365,7 @@ describe("running a logged process (#4588)", () => {
 	);
 
 	test.skipIf(!refusesHeldPrograms)(
-		"a program the system keeps refusing to start resolves with the refusal within about half a second, however long each try takes (#5608)",
+		"a program the system keeps refusing to start resolves with the refusal within about two seconds, however long each try takes (#5608, #6124)",
 		async () => {
 			const sleeper = new Int32Array(new SharedArrayBuffer(4));
 			for (const tryMs of [0, 100]) {
@@ -379,9 +387,10 @@ describe("running a logged process (#4588)", () => {
 					assert.equal(result.exit.exitStatus, null, what);
 					assert.equal(result.exit.timedOut, false, what);
 					assert.equal(result.output, "", what);
-					assert.ok(tries > 1 && tries <= 10, `${what}: tried ${tries} times`);
-					// Tries stop half a second after the first; the rest is room for a busy machine.
-					assert.ok(result.exit.elapsedMs < 1_000, `${what}: refused after ${result.exit.elapsedMs} ms`);
+					// Ten tries in the first half second, then a few more, ever further apart.
+					assert.ok(tries > 1 && tries <= MAX_REFUSED_TRIES, `${what}: tried ${tries} times`);
+					// Tries stop two seconds after the first; the rest is room for a busy machine.
+					assert.ok(result.exit.elapsedMs < 4_000, `${what}: refused after ${result.exit.elapsedMs} ms`);
 					assert.equal(getEventListeners(controller.signal, "abort").length, 0, what);
 				} finally {
 					held.release();
@@ -391,7 +400,7 @@ describe("running a logged process (#4588)", () => {
 	);
 
 	test.skipIf(process.platform !== "win32")(
-		"a program Windows keeps refusing to start with EPERM resolves with the refusal within about half a second (#5608)",
+		"a program Windows keeps refusing to start with EPERM resolves with the refusal within about two seconds (#5608, #6124)",
 		async () => {
 			const refused = refusedNode();
 			try {
@@ -402,8 +411,8 @@ describe("running a logged process (#4588)", () => {
 				assert.equal(result.exit.spawnError?.message, "spawn EPERM");
 				assert.equal(result.exit.timedOut, false);
 				assert.equal(result.output, "");
-				assert.ok(tries > 1 && tries <= 10, `tried ${tries} times`);
-				assert.ok(result.exit.elapsedMs < 1_000, `refused after ${result.exit.elapsedMs} ms`);
+				assert.ok(tries > 1 && tries <= MAX_REFUSED_TRIES, `tried ${tries} times`);
+				assert.ok(result.exit.elapsedMs < 4_000, `refused after ${result.exit.elapsedMs} ms`);
 			} finally {
 				refused.allow();
 			}
@@ -570,23 +579,38 @@ describe("running a logged process (#4588)", () => {
 			const waitedMs = 2_000;
 			const sleeper = new Int32Array(new SharedArrayBuffer(4));
 			let firstTry = 0;
+			let started = false;
+			// The step's timers run on a fake clock, so starting the copied program and stopping it take no time on it. The
+			// wait before the second try is real: the step measures it on the real clocks.
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 			try {
-				const { result, tries } = await counting(
-					() => execute(held.run("setInterval(() => {}, 1000)"), { timeoutMs }),
-					(tries) => {
-						if (tries === 1) firstTry = Date.now();
-						if (tries !== 2) return;
-						// The second try starts two of the step's three seconds after the first.
-						const left = firstTry + waitedMs - Date.now();
-						if (left > 0) Atomics.wait(sleeper, 0, 0, left);
-						held.release();
+				const stepRun = stepProcessWatcher.run(
+					(_pid, running) => {
+						if (running) started = true;
 					},
+					() =>
+						counting(
+							() => execute(held.run("setInterval(() => {}, 1000)"), { timeoutMs }),
+							(tries) => {
+								if (tries === 1) firstTry = Date.now();
+								if (tries !== 2) return;
+								// The second try starts two of the step's three seconds after the first.
+								const left = firstTry + waitedMs - Date.now();
+								if (left > 0) Atomics.wait(sleeper, 0, 0, left);
+								held.release();
+							},
+						),
 				);
+				// The first try is refused; the clock ends its wait to be tried again.
+				while (!started) await vi.advanceTimersByTimeAsync(10);
+				// Stopped once the step's time ran out, a second after its process started, not after a whole timeout of its
+				// own: by then its process has run for less than that.
+				await vi.advanceTimersByTimeAsync(timeoutMs - waitedMs / 2);
+				const { result, tries } = await stepRun;
 				assert.equal(tries, 2);
 				assert.equal(result.exit.timedOut, true);
 				assert.equal(result.exit.spawnError, undefined);
-				// Stopped once the step's time ran out, not after a whole timeout of its own.
-				assert.ok(result.exit.elapsedMs < waitedMs + timeoutMs, `stopped after ${result.exit.elapsedMs} ms`);
+				assert.ok(result.exit.elapsedMs >= waitedMs, `the step took ${result.exit.elapsedMs} ms with its wait`);
 			} finally {
 				held.release();
 			}
@@ -610,6 +634,48 @@ describe("running a logged process (#4588)", () => {
 		},
 	);
 
+	test.skipIf(!refusesHeldPrograms)(
+		"cancelling a refused program during one of the longer waits between later tries rejects at once and never starts it (#6124)",
+		async () => {
+			const held = heldNode();
+			const marker = path("started");
+			const controller = new AbortController();
+			const reason = new Error("resume cancelled while it waits");
+			const wallStart = Date.now();
+			const wall = vi.spyOn(Date, "now");
+			// The step's own timers are fake, so only the abort can end its wait.
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			try {
+				const outcome = counting(
+					() =>
+						execute(held.run('require("node:fs").writeFileSync(process.argv[1], "")', [marker]), {
+							timeoutMs: STEADY_TIMEOUT_MS,
+							signal: controller.signal,
+						}).then(
+							() => "resolved",
+							(error: unknown) => error,
+						),
+					// The refusal is seen a second into the step, past the tries 50 ms apart, so it waits longer.
+					() => wall.mockReturnValue(wallStart + 1_000),
+				);
+				for (let turn = 0; vi.getTimerCount() === 0 && turn < UNTIL_WAITING_TURNS; turn++)
+					await new Promise((resolve) => setImmediate(resolve));
+				assert.equal(vi.getTimerCount(), 1, "the step waits to try again");
+				controller.abort(reason);
+				const { result, tries } = await outcome;
+				assert.equal(result, reason);
+				assert.equal(tries, 1);
+				assert.equal(vi.getTimerCount(), 0, "the wait ended with the abort");
+				assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+			} finally {
+				vi.useRealTimers();
+				wall.mockRestore();
+				held.release();
+			}
+			assert.equal(existsSync(marker), false);
+		},
+	);
+
 	test("an already aborted signal rejects with its reason before anything starts (#4588)", async () => {
 		const reason = new Error("cancelled early");
 		const run = nodeProcess('require("node:fs").writeFileSync(process.argv[1], "")', {}, [path("started")]);
@@ -620,44 +686,90 @@ describe("running a logged process (#4588)", () => {
 		assert.equal(existsSync(path("started")), false);
 	});
 
-	test("aborting while the process runs stops it and everything it started, and rejects with the reason (#4588)", async () => {
+	/**
+	 * Starts `script` as `launch` runs it, aborts it once its grandchild runs, and checks that both stopped and the step
+	 * rejected with the reason. `onRefused` runs each time the system refused to start the step's process.
+	 */
+	async function abortsRunningProcess(
+		launch: (script: string, scriptArgs: string[]) => LoggedProcess,
+		onRefused: () => void = () => {},
+	): Promise<void> {
 		const grandchild = "setInterval(() => {}, 1000)";
+		// What is checked is the abort of a running process, so a start the system refuses for a moment is made again,
+		// the grandchild's here and the process's below (#6124).
 		const script = [
 			'const { spawn } = require("node:child_process");',
 			'const fs = require("node:fs");',
-			`const child = spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore" });`,
+			"let child;",
+			`for (let tries = 1; child === undefined; tries++) {`,
+			`\ttry { child = spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore" }); }`,
+			`\tcatch (error) { if (tries >= ${REFUSED_CHILD_TRIES} || !${JSON.stringify(PASSING_REFUSALS)}.includes(error.code)) throw error; }`,
+			"\tif (child === undefined) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);",
+			"}",
 			"fs.writeFileSync(process.argv[1], String(child.pid));",
 			"setInterval(() => {}, 1000);",
 		].join("\n");
 		const controller = new AbortController();
 		const reason = new Error("resume cancelled");
-		const pending = execute(nodeProcess(script, {}, [path("grandchild.pid")]), {
-			timeoutMs: STEADY_TIMEOUT_MS,
-			signal: controller.signal,
-		});
-		// A process that ends, or cannot start, before its grandchild starts fails the wait at once with how it ended.
-		let endedFirst: unknown;
-		pending.then(
-			({ exit, output }) => {
-				endedFirst = { ...exit, spawnError: exit.spawnError?.message, output };
-			},
-			(error: unknown) => {
-				endedFirst = error;
-			},
-		);
-		await waitFor(() => {
-			assert.equal(endedFirst, undefined, "the process ended before its grandchild started");
-			return existsSync(path("grandchild.pid")) && readFileSync(path("grandchild.pid"), "utf8") !== "";
-		}, "the grandchild starting");
-		const grandchildPid = Number(readFileSync(path("grandchild.pid"), "utf8"));
+		let pending: Promise<{ exit: ProcessExit; output: string }>;
+		for (let start = 1; ; start++) {
+			const running = execute(launch(script, [path("grandchild.pid")]), {
+				timeoutMs: STEADY_TIMEOUT_MS,
+				signal: controller.signal,
+			});
+			// A process that ends, or cannot start, before its grandchild starts fails the wait at once with how it ended.
+			const ended: { first?: unknown; refused?: boolean } = {};
+			running.then(
+				({ exit, output }) => {
+					const code = (exit.spawnError as NodeJS.ErrnoException | undefined)?.code ?? "";
+					ended.refused = start < REFUSED_STARTS && PASSING_REFUSALS.includes(code);
+					ended.first = { ...exit, spawnError: exit.spawnError?.message, output };
+				},
+				(error: unknown) => {
+					ended.first = error;
+				},
+			);
+			await waitFor(() => {
+				if (ended.refused) return true;
+				assert.equal(ended.first, undefined, "the process ended before its grandchild started");
+				return existsSync(path("grandchild.pid")) && readFileSync(path("grandchild.pid"), "utf8") !== "";
+			}, "the grandchild starting");
+			if (!ended.refused) {
+				pending = running;
+				break;
+			}
+			onRefused();
+		}
+		// #6125: recorded while it waits to be stopped, so a later process given its pid is never taken for it.
+		const grandchildProcess = await recordProcess(Number(readFileSync(path("grandchild.pid"), "utf8")));
 		try {
 			controller.abort(reason);
 			await assert.rejects(pending, (error: unknown) => error === reason);
-			await waitFor(() => !isAlive(grandchildPid), "the grandchild stopping");
+			assert.equal(
+				await waitUntilGone(grandchildProcess, STEADY_TIMEOUT_MS),
+				true,
+				"the grandchild is still running",
+			);
 		} finally {
-			if (isAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
+			await signalRecordedProcess(grandchildProcess);
 		}
+	}
+
+	test("aborting while the process runs stops it and everything it started, and rejects with the reason (#4588)", async () => {
+		await abortsRunningProcess((script, scriptArgs) => nodeProcess(script, {}, scriptArgs));
 	});
+
+	test.skipIf(!refusesHeldPrograms)(
+		"aborting is checked on a running process even when the system refused to start it for longer than a step tries again (#6124)",
+		async () => {
+			const held = heldNode();
+			try {
+				await abortsRunningProcess(held.run, held.release);
+			} finally {
+				held.release();
+			}
+		},
+	);
 
 	test.skipIf(process.platform !== "win32")(
 		"aborting a bash step rejects only once every process it started has ended, even one whose shell ended first",
@@ -683,14 +795,14 @@ describe("running a logged process (#4588)", () => {
 				() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "",
 				"the background sleep starting",
 			);
-			const sleeper = Number(readFileSync(pidFile, "utf8").trim());
+			const sleeper = await recordProcess(Number(readFileSync(pidFile, "utf8").trim()));
 			try {
 				controller.abort(reason);
 				await assert.rejects(pending, (error: unknown) => error === reason);
-				assert.equal(isAlive(sleeper), false, "the sleep holding a file in the step's directory has ended");
+				assert.equal(await isGone(sleeper), true, "the sleep holding a file in the step's directory has ended");
 				renameSync(work, path("work-moved"));
 			} finally {
-				if (isAlive(sleeper)) process.kill(sleeper, "SIGKILL");
+				await signalRecordedProcess(sleeper);
 			}
 		},
 	);

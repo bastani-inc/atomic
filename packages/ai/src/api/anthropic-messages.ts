@@ -42,6 +42,7 @@ import { raceWithAbortSignal } from "../utils/abort.js";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { appendProviderResponseFailureDiagnostic, withCauseDetail } from "../utils/error-body.ts";
+import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
@@ -565,7 +566,7 @@ function hashThreadPrefix(
 		model.provider,
 		model.baseUrl,
 		params.model,
-		system,
+		normalizeThreadSystem(system),
 		tools,
 		thinking,
 		output_config,
@@ -588,6 +589,24 @@ function hashThreadPrefix(
  *   next request sends the same message as a string: "hi" vs [{ type: "text", text: "hi" }]. The
  *   same holds for a tool result's content.
  */
+/** The identity blocks OAuth requests send before the system prompt. */
+const oauthIdentityBlocks = new WeakSet<object>();
+
+/**
+ * OAuth requests send the identity block before the system prompt. Its breakpoint gives way when a request needs one
+ * more breakpoint in its messages (see `fitCheckpointInBreakpointLimit()`); while the system prompt after it keeps the
+ * same breakpoint, both prompts mean the same, so the thread continues either way.
+ */
+function normalizeThreadSystem(system: MessageCreateParamsStreaming["system"]): MessageCreateParamsStreaming["system"] {
+	if (!Array.isArray(system) || system.length < 2) return system;
+	const [identity, prompt] = system;
+	if (!identity || !oauthIdentityBlocks.has(identity) || !prompt?.cache_control) return system;
+	if (identity.cache_control && JSON.stringify(identity.cache_control) !== JSON.stringify(prompt.cache_control))
+		return system;
+	const { cache_control: _cacheControl, ...rest } = identity;
+	return [rest, ...system.slice(1)];
+}
+
 function normalizeThreadMessage(message: unknown): unknown {
 	if (message === null || typeof message !== "object") return message;
 	const { content, ...rest } = message as { content?: unknown };
@@ -837,7 +856,8 @@ class AtomicAnthropic extends Anthropic {
 		};
 		super({
 			...options,
-			fetch: admission?.fetch ?? options.fetch,
+			// Only this client's own requests can be refused a certificate (#6114).
+			fetch: transportFetch(admission?.fetch ?? options.fetch),
 			middleware: admission ? [tokenAdmission, ...(options.middleware ?? [])] : options.middleware,
 		});
 		this.admission = admission;
@@ -1130,7 +1150,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					},
 					retryTransport,
 				);
-			let disablePreferredStrictTools = strictToolLimitsExceeded(options?.sessionId, normalizedContext.messages);
+			let disablePreferredStrictTools = strictToolLimitsExceeded(options?.sessionId, context.messages);
 			let response: Response;
 			let params: MessageCreateParamsStreaming;
 			// The thread request that produced the response; undefined when no `thread` was sent.
@@ -1452,6 +1472,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? withCauseDetail(error) : JSON.stringify(error);
 			appendProviderResponseFailureDiagnostic(output, error);
+			recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamAttempt.snapshot());
 			stream.push({ type: "error", reason: output.stopReason, error: output });
@@ -1824,6 +1845,7 @@ function buildParams(
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
+		oauthIdentityBlocks.add(params.system[0]!);
 		if (initialSystemText) {
 			params.system.push({
 				type: "text",
@@ -2013,11 +2035,20 @@ function convertMessages(
 	};
 	// The input sent up to a message with a `cacheBreakpoint` hint ends with the last user or system message
 	// converted so far once that message is converted. For an assistant message, that is after the held-back system
-	// messages are flushed, where the request it answered ended.
-	let checkpoint: MessageParam | undefined;
+	// messages are flushed, where the request it answered ended. The block count keeps that end when later blocks
+	// join the same message.
+	let checkpoint: CacheCut | undefined;
+	// Where the request the last sent reply answered ended: its newest input got that request's last breakpoint.
+	let replyCut: CacheCut | undefined;
+	const inputCut = (): CacheCut | undefined => {
+		const index = params.length - 1;
+		const last = params[index];
+		return last?.role === "user" || last?.role === "system"
+			? { message: last, index, blocks: blockCount(last) }
+			: undefined;
+	};
 	const markCheckpoint = (): void => {
-		const last = params.at(-1);
-		if (last?.role === "user" || last?.role === "system") checkpoint = last;
+		checkpoint = inputCut() ?? checkpoint;
 	};
 
 	for (let i = 0; i < transformedMessages.length; i++) {
@@ -2113,6 +2144,7 @@ function convertMessages(
 			}
 			flushPendingSystemMessages();
 			if (msg.cacheBreakpoint) markCheckpoint();
+			replyCut = inputCut();
 			const messageIndex = params.length;
 			params.push({
 				role: "assistant",
@@ -2160,11 +2192,73 @@ function convertMessages(
 
 	// Add cache_control to the last user or system message to cache conversation history
 	const lastMessage = params.at(-1);
-	if (cacheControl && lastMessage) addCacheControl(lastMessage, cacheControl);
-	const checkpointBlock =
-		cacheControl && checkpoint && checkpoint !== lastMessage ? addCacheControl(checkpoint, cacheControl) : undefined;
+	const tailBlock = cacheControl && lastMessage ? addCacheControl(lastMessage, cacheControl) : undefined;
+	let checkpointBlock: { cache_control?: CacheControlEphemeral | null } | undefined;
+	if (cacheControl && checkpoint) {
+		checkpointBlock = addCacheControlAtCut(checkpoint, lastMessage, cacheControl);
+	} else if (
+		cacheControl &&
+		tailBlock &&
+		replyCut &&
+		positionsAfterCut(params, replyCut, assistantLevels) >= CACHE_LOOKBACK_POSITIONS
+	) {
+		// One turn added so many blocks that the newest breakpoint no longer reaches back to the previous request's.
+		checkpointBlock = addCacheControlAtCut(replyCut, lastMessage, cacheControl);
+	}
 
 	return { messages: params, assistantLevels, ...(checkpointBlock ? { checkpointBlock } : {}) };
+}
+
+/** The end of the input a request sent: a message, its index, and how many of its blocks were sent then. */
+interface CacheCut {
+	message: MessageParam;
+	index: number;
+	blocks: number;
+}
+
+function blockCount(message: MessageParam): number {
+	return typeof message.content === "string" ? 1 : message.content.length;
+}
+
+/**
+ * Claude finds an earlier request's cached prefix from a breakpoint only within this many positions, the breakpoint
+ * included. Every block counts as one position here, as on Bedrock; the Claude API also counts a run of tool calls
+ * or tool results as one, so this never counts fewer positions than the provider does.
+ */
+const CACHE_LOOKBACK_POSITIONS = 20;
+
+/**
+ * Positions after the last block of `cut` through the last block of the request, counted until they reach the
+ * lookback: blocks, and the effort marker the request sends before each assistant message with a recorded level.
+ */
+function positionsAfterCut(
+	messages: MessageParam[],
+	cut: CacheCut,
+	assistantLevels: Map<number, AnthropicEffort>,
+): number {
+	let positions = blockCount(cut.message) - cut.blocks;
+	for (let index = cut.index + 1; index < messages.length && positions < CACHE_LOOKBACK_POSITIONS; index++) {
+		positions += blockCount(messages[index]) + (assistantLevels.has(index) ? 1 : 0);
+	}
+	return positions;
+}
+
+/**
+ * Puts `cacheControl` on the last block `cut` sent, where that request's last breakpoint was, unless it is the last
+ * block of `lastMessage`, which has one already. Returns the block, or undefined if it can't take one.
+ */
+function addCacheControlAtCut(
+	cut: CacheCut,
+	lastMessage: MessageParam | undefined,
+	cacheControl: CacheControlEphemeral,
+): { cache_control?: CacheControlEphemeral | null } | undefined {
+	const { message, blocks } = cut;
+	if (message === lastMessage && blocks === blockCount(message)) return undefined;
+	if (typeof message.content === "string" || blocks === message.content.length) {
+		return addCacheControl(message, cacheControl);
+	}
+	const block = message.content[blocks - 1];
+	return block && acceptsCacheControl(block) ? Object.assign(block, { cache_control: cacheControl }) : undefined;
 }
 
 /** Anthropic rejects a request with more cache breakpoints than this. */
@@ -2211,19 +2305,22 @@ function addCacheControl(
 		return block;
 	}
 	const lastBlock = message.content[message.content.length - 1];
-	if (
-		lastBlock &&
-		(lastBlock.type === "text" ||
-			lastBlock.type === "image" ||
-			lastBlock.type === "tool_result" ||
-			lastBlock.type === "tool_addition" ||
-			lastBlock.type === "tool_removal")
-	) {
+	if (lastBlock && acceptsCacheControl(lastBlock)) {
 		const block = lastBlock as { cache_control?: CacheControlEphemeral | null };
 		block.cache_control = cacheControl;
 		return block;
 	}
 	return undefined;
+}
+
+function acceptsCacheControl(block: ContentBlockParam): boolean {
+	return (
+		block.type === "text" ||
+		block.type === "image" ||
+		block.type === "tool_result" ||
+		block.type === "tool_addition" ||
+		block.type === "tool_removal"
+	);
 }
 
 interface ConvertedAnthropicMessages {

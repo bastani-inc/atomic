@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-11-21
+
+### Fixed
+
+- A certificate that Node.js refuses as `UNSPECIFIED`, its code for a reason outside its own table, such as a root CA whose key usage leaves out `keyCertSign`, now fails the open at once with the reason (`UNSPECIFIED: key usage does not include certificate signing`), as in the standalone binary, instead of being retried as an unreachable server. OpenSSL's own failures reported as `UNSPECIFIED`, and errors that only share the code, are still retried. A refused certificate now fails at once on every connection the adapter opens, including the reconnect after a refused cloud token and the connection that creates the schema. When an `https://` proxy's own certificate is refused, the error, cause chain included, no longer carries the database server's wording and `sslrootcert` fix: it names the proxy and says to add the CA that issued its certificate to `NODE_EXTRA_CA_CERTS` ([#6112](https://github.com/bastani-inc/atomic/issues/6112))
+
+## [0.10.3-alpha.1] - 2026-11-21
+
+### Fixed
+
+- A certificate that Node.js refuses as `UNSPECIFIED`, its code for a reason outside its own table, such as a root CA whose key usage leaves out `keyCertSign`, now fails the open at once with the reason (`UNSPECIFIED: key usage does not include certificate signing`), as in the standalone binary, instead of being retried as an unreachable server. OpenSSL's own failures reported as `UNSPECIFIED`, and errors that only share the code, are still retried. A refused certificate now fails at once on every connection the adapter opens, including the reconnect after a refused cloud token and the connection that creates the schema. When an `https://` proxy's own certificate is refused, the error, cause chain included, no longer carries the database server's wording and `sslrootcert` fix: it names the proxy and says to add the CA that issued its certificate to `NODE_EXTRA_CA_CERTS` ([#6112](https://github.com/bastani-inc/atomic/issues/6112))
+
 ## [0.10.2] - 2026-11-20
 
 ### Fixed

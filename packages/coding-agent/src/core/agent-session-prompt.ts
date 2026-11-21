@@ -11,6 +11,7 @@ import {
 	registerHeldInput,
 	stopWaiting,
 } from "./agent-session-held-input.ts";
+import { sessionRunsStarted } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
@@ -27,6 +28,7 @@ import type {
 } from "./agent-session-types.js";
 import { formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
+import { joinCommandSend, joinCommandTurn, runCommandHandler } from "./command-deliveries.ts";
 import type { CustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import {
@@ -302,6 +304,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	};
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+	// Input that only starts a turn sends nothing once any turn started while it was being prepared.
+	const runsAtEntry = sessionRunsStarted(this);
+	const anotherTurnStarted = () => options?.startTurnOnly === true && sessionRunsStarted(this) !== runsAtEntry;
 	let preflightReported = false;
 	// Reported once: input held while the session compacts is accepted as queued before it is admitted.
 	const preflightResult = (success: boolean, disposition?: PromptDisposition): void => {
@@ -356,6 +361,11 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// A controlled pause is an admission gate, including the idle gap after
 		// abort settles. Queue the payload as input hooks leave it, without
 		// compaction or a provider turn; explicit resume makes it eligible again.
+		if (this._queuedMessagesPaused && options?.startTurnOnly) {
+			if (held) stopWaiting(this, held);
+			preflightResult?.(true, "handled");
+			return;
+		}
 		if (this._queuedMessagesPaused) {
 			const delivery = options?.streamingBehavior === "followUp" ? "followUp" : "steer";
 			let pausedText = text;
@@ -455,6 +465,10 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			assertCurrent();
 			// The queue may have been paused while the input waited. Keep it with the paused
 			// input instead of letting an abort that followed the pause drop it.
+			if (this._queuedMessagesPaused && options?.startTurnOnly) {
+				preflightResult?.(true, "handled");
+				return;
+			}
 			if (this._queuedMessagesPaused) {
 				if (held.lane === "followUp") await this._queueFollowUp(expandedText, currentImages, text, currentText);
 				else await this._queueSteer(expandedText, currentImages, text, currentText);
@@ -473,6 +487,11 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			(waited && (this._isEmittingAgentSettled || openRuns.has(this))) ||
 			queuesDuringAgentSettled(this, delivery) ||
 			(!busy && queuesBehindOpenRun(this, delivery));
+		if (((busy || settling) && options?.startTurnOnly) || anotherTurnStarted()) {
+			// Another turn runs or is about to: it is not queued behind it.
+			preflightResult?.(true, "handled");
+			return;
+		}
 		if (busy || settling) {
 			if (!delivery?.streamingBehavior) {
 				throw new AgentSessionBusyError();
@@ -601,6 +620,10 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		}
 		const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
 		this._runSystemPromptOptions = result.systemPromptOptions;
+		if (this._resumeBudgetCheckpoint) {
+			await this._compactBeforeResumedPrompt(updateMessage, messages);
+			assertCurrent();
+		}
 		if (updateMessage) messages.unshift(updateMessage);
 	} catch (error) {
 		if (preparingRun) this._isPreparingRun = false;
@@ -635,7 +658,23 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	}
 }
 
-export async function _runAgentPrompt(
+export function _runAgentPrompt(
+	this: AgentSession,
+	messages: AgentMessage | AgentMessage[],
+	promptStarted?: () => void,
+	reportDispatch?: (disposition: PromptDisposition) => void,
+	prepared = false,
+	customStarter?: CustomMessage,
+	fallbackGeneration?: number,
+): Promise<void> {
+	// A turn an extension command's message starts outlives that message's delivery; print mode waits for it (#6113).
+	return joinCommandTurn(
+		this,
+		runAgentPrompt.call(this, messages, promptStarted, reportDispatch, prepared, customStarter, fallbackGeneration),
+	);
+}
+
+async function runAgentPrompt(
 	this: AgentSession,
 	messages: AgentMessage | AgentMessage[],
 	promptStarted?: () => void,
@@ -1158,7 +1197,7 @@ export async function _tryExecuteExtensionCommand(this: AgentSession, text: stri
 	try {
 		await runCallback(
 			{ kind: "extension.hook", name: `command:${commandName}`, sourcePath: command.sourceInfo.path },
-			() => command.handler(args, ctx),
+			() => runCommandHandler(this, () => command.handler(args, ctx)),
 		);
 		return true;
 	} catch (err) {
@@ -1383,7 +1422,19 @@ export async function followUp(
  * @param options.deliverAs Delivery mode when streaming: "steer" or "followUp"
  * @param options.expandPromptTemplates Whether to dispatch extension commands and expand skill commands and prompt templates. Default: false.
  */
-export async function sendUserMessage(
+export function sendUserMessage(
+	this: AgentSession,
+	content: string | (TextContent | ImageContent)[],
+	options?: {
+		deliverAs?: "steer" | "followUp";
+		expandPromptTemplates?: boolean;
+	},
+): Promise<void> {
+	// #6113: print mode waits for what an extension command sends before it prints and closes the session.
+	return joinCommandSend(this, () => sendUserMessageNow.call(this, content, options));
+}
+
+async function sendUserMessageNow(
 	this: AgentSession,
 	content: string | (TextContent | ImageContent)[],
 	options?: {

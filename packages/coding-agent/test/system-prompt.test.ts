@@ -7,7 +7,12 @@ import { getDocsPath } from "../src/config.js";
 import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.js";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
-import { buildSessionMemoryGuideline, buildSystemPrompt } from "../src/core/system-prompt.ts";
+import {
+	type BuildSystemPromptOptions,
+	buildSessionMemoryGuideline,
+	buildSystemPrompt,
+	buildSystemPromptSections,
+} from "../src/core/system-prompt.ts";
 
 const testSkill: Skill = {
 	name: "test-skill",
@@ -525,29 +530,116 @@ describe("buildSystemPrompt", () => {
 			assert.ok(withShell[4]!.startsWith("  - Only as a fallback"), withShell[4]);
 		});
 
-		test("names where history lives, derived from the agent directory and the project", () => {
+		/** Runs `check` with an agent directory of its own, and the folder of a project in it. */
+		function withAgentDir(check: (agentDir: string, project: (name: string) => string) => void): void {
 			const root = mkdtempSync(join(tmpdir(), "atomic-prompt-agent-"));
 			const agentDir = join(root, "agent");
 			mkdirSync(agentDir, { recursive: true });
 			const previous = process.env.ATOMIC_CODING_AGENT_DIR;
 			process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 			try {
-				const project = join(agentDir, "projects", "alpha");
+				check(agentDir, (name) => join(agentDir, "projects", name));
+			} finally {
+				if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+				else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+				rmSync(root, { recursive: true, force: true });
+			}
+		}
+
+		test("names where history lives, derived from the agent directory and the project", () => {
+			withAgentDir((agentDir, projectDir) => {
+				const project = projectDir("alpha");
+				const sections = buildSystemPromptSections({
+					selectedTools: ["read"],
+					contextFiles: [],
+					skills: [],
+					cwd: project,
+				});
 				const prompt = buildSystemPrompt({ selectedTools: ["read"], contextFiles: [], skills: [], cwd: project });
 				const start = prompt.indexOf("**Session memory**");
 				const guidance = prompt.slice(start, prompt.indexOf("\n- ", start));
 				const workflowsDir = join(agentDir, "workflows");
 
 				assert.ok(guidance.includes(join(workflowsDir, "journal.sqlite")));
-				assert.ok(guidance.includes(getDefaultSessionDirPath(project, agentDir)));
+				assert.ok(
+					guidance.includes("in its session folder, named under `<session_folder>` at the end of this prompt"),
+				);
+				assert.equal(
+					sections.session_folder,
+					`<session_folder>\nSession folder of this project: ${getDefaultSessionDirPath(project, agentDir)}\n</session_folder>`,
+				);
 				assert.ok(guidance.includes("`atomic storage status` shows the store actually in use"));
 				assert.ok(guidance.indexOf("history://") < guidance.indexOf("journal.sqlite"));
 				assert.ok(guidance.includes("Only as a fallback"));
-			} finally {
-				if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-				else process.env.ATOMIC_CODING_AGENT_DIR = previous;
-				rmSync(root, { recursive: true, force: true });
-			}
+			});
+		});
+
+		test("sessions in different projects share every section before the ones that change most often (#6121)", () => {
+			withAgentDir((agentDir, projectDir) => {
+				const options = (cwd: string): BuildSystemPromptOptions => ({
+					selectedTools: ["read", "search", "bash", "edit", "write"],
+					appendSystemPrompt: "Team rules.",
+					contextFiles: [],
+					skills: [],
+					cwd,
+				});
+				const alpha = buildSystemPromptSections(options(projectDir("alpha")));
+				const beta = buildSystemPromptSections(options(projectDir("beta")));
+
+				const names = Object.keys(alpha);
+				assert.deepEqual(names.slice(-4), ["model", "cwd", "session_folder", "date"]);
+				assert.deepEqual(Object.keys(beta), names);
+				assert.equal(
+					names.find((name) => alpha[name] !== beta[name]),
+					"cwd",
+				);
+				assert.ok(!alpha.rules!.includes(getDefaultSessionDirPath(projectDir("alpha"), agentDir)));
+				assert.ok(alpha.session_folder!.includes(getDefaultSessionDirPath(projectDir("alpha"), agentDir)));
+			});
+		});
+
+		test("a prompt recorded with the session folder in its guidelines keeps it there (#6121)", () => {
+			withAgentDir((agentDir, projectDir) => {
+				const project = projectDir("alpha");
+				const options: BuildSystemPromptOptions = {
+					selectedTools: ["read"],
+					contextFiles: [],
+					skills: [],
+					cwd: project,
+				};
+				const current = buildSystemPromptSections(options);
+				const recorded = buildSystemPromptSections({ ...options, sessionFolderInGuidelines: true });
+
+				assert.equal(recorded.session_folder, undefined);
+				assert.ok(
+					recorded.rules!.includes(
+						`Older or JSONL-selected sessions of this project are in \`${getDefaultSessionDirPath(project, agentDir)}\`, where \`rg\` works.`,
+					),
+				);
+				const { rules: _rules, session_folder: _folder, ...unchanged } = current;
+				const { rules: _recordedRules, ...recordedUnchanged } = recorded;
+				assert.deepEqual(recordedUnchanged, unchanged);
+			});
+		});
+
+		test("names the session folder only with the Session memory guideline, also under a cwd of the caller's (#6121)", () => {
+			withAgentDir((agentDir, projectDir) => {
+				const project = projectDir("alpha");
+				const base: BuildSystemPromptOptions = { contextFiles: [], skills: [], cwd: project };
+				assert.equal(buildSystemPromptSections({ ...base, selectedTools: ["bash"] }).session_folder, undefined);
+				assert.equal(
+					buildSystemPromptSections({ ...base, selectedTools: ["read"], customPrompt: "Own prompt." })
+						.session_folder,
+					undefined,
+				);
+				const ownCwd = buildSystemPromptSections({
+					...base,
+					selectedTools: ["read"],
+					sections: { cwd: "Current working directory: elsewhere" },
+				});
+				assert.equal(ownCwd.cwd, "<cwd>\nCurrent working directory: elsewhere\n</cwd>");
+				assert.ok(ownCwd.session_folder!.includes(getDefaultSessionDirPath(project, agentDir)));
+			});
 		});
 	});
 

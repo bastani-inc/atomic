@@ -115,9 +115,10 @@ describe("a resumed request's checkpoint breakpoint", () => {
 
 	it("Anthropic: no hint, no checkpoint (a session that kept running)", async () => {
 		const model = { ...getModel("anthropic", "claude-sonnet-4-6"), ...offline };
-		const history = resumedHistory(model).map((message) =>
-			message.role === "assistant" ? { ...message, cacheBreakpoint: undefined } : message,
-		);
+		// Few enough new messages that the newest breakpoint reaches back to the previous request's.
+		const history = resumedHistory(model)
+			.slice(0, 6)
+			.map((message) => (message.role === "assistant" ? { ...message, cacheBreakpoint: undefined } : message));
 		const payload = (await capture(streamAnthropic as StreamFunction, model, history, "sk-ant-test")) as AnthropicPayload;
 		assert.deepEqual(markedMessages(payload), [payload.messages.length - 1]);
 	});
@@ -242,6 +243,51 @@ describe("a resumed session keeps its strict-tool fallback", () => {
 		assert.equal(bodies[0]?.tools?.[0]?.strict, true);
 		assert.equal(result.strictToolsDisabled, undefined);
 	});
+
+	it("sends strict schemas after a reply that failed for another reason (#6119)", async () => {
+		const { result, bodies } = await firstAttempt({
+			stopReason: "error",
+			errorMessage: "529 Overloaded",
+			diagnostics: [{ type: "provider_error", timestamp: 3 }],
+		});
+		assert.equal(bodies[0]?.tools?.[0]?.strict, true);
+		assert.equal(result.strictToolsDisabled, undefined);
+	});
+
+	/** A session resumed after a compaction removed every reply: what is left is the system message it replays. */
+	async function afterCompaction(system: Partial<SystemMessage>) {
+		const bodies: Array<{ tools?: Array<{ strict?: boolean }> }> = [];
+		const fetch: NonNullable<AnthropicOptions["fetch"]> = async (_input, init) => {
+			bodies.push(JSON.parse(init?.body as string));
+			return success();
+		};
+		const messages: Message[] = [
+			{ role: "system", content: "Be brief.", toolsAdded: [preferred], timestamp: 1, ...system },
+			{ role: "user", content: "[compacted conversation]", timestamp: 2 },
+			{ role: "system", content: "", sections: { date: "Current date: tomorrow" }, timestamp: 3 },
+			{ role: "user", content: "after the resume", timestamp: 4 },
+		];
+		const result = await streamAnthropic(model, { messages } as TranscriptContext, {
+			apiKey: "test-key",
+			fetch,
+			maxRetries: 0,
+			sessionId: "compacted-session",
+		}).result();
+		return { result, bodies };
+	}
+
+	it("sends no strict schemas when the system message a compaction replays records the rejection (#6119)", async () => {
+		const { result, bodies } = await afterCompaction({ strictToolsDisabled: true });
+		assert.equal(bodies.length, 1);
+		assert.equal(bodies[0]?.tools?.[0]?.strict, undefined);
+		assert.equal(result.strictToolsDisabled, true);
+	});
+
+	it("sends strict schemas after a compaction that recorded no rejection (#6119)", async () => {
+		const { result, bodies } = await afterCompaction({});
+		assert.equal(bodies[0]?.tools?.[0]?.strict, true);
+		assert.equal(result.strictToolsDisabled, undefined);
+	});
 });
 
 describe("a session whose earlier version folded prompt updates into its leading prompt", () => {
@@ -306,6 +352,39 @@ describe("a budget-based thinking request near the context window", () => {
 		const fitted = fitThinkingBudget(model, context, 32_768, 8_192);
 		assert.deepEqual(fitted, { maxTokens: 7_931, thinkingBudget: 6_907 });
 		assert.ok(fitted.maxTokens <= 32_768 - 20_741 - 4_096);
+	});
+
+	it("does not count a tool declared again unchanged, which a request without mid-conversation tool changes does not send again (#6117)", () => {
+		const searchTool = (description: string): Tool => ({
+			name: "search",
+			description,
+			parameters: Type.Object({ query: Type.String() }),
+		});
+		const declared = searchTool("a".repeat(14_000));
+		const redeclared = (tool: Tool): Message[] => [
+			{ role: "system", content: "You are a coding assistant.", toolsAdded: [declared], timestamp: 0 },
+			...contextWithInput(16_000),
+			// A resume declares the tool again. Without mid-conversation tool changes the request declares the current
+			// tools once, at the top.
+			{ role: "system", content: "", toolsRemoved: [{ name: "search" }], toolsAdded: [tool], timestamp: 3 },
+			{ role: "user", content: "next", timestamp: 4 },
+		];
+		// Unchanged: only the 16,000 reported and 2 for "next" count; 32,768 - 16,002 - 4,096 = 12,670 keeps the budget.
+		assert.deepEqual(fitThinkingBudget(model, { messages: redeclared(declared) } as TranscriptContext, 32_768, 8_192), {
+			maxTokens: 12_670,
+			thinkingBudget: 8_192,
+		});
+		// A changed definition counts in full (14,129 characters of JSON, 4,037 tokens), however long the old one was:
+		// 32,768 - 20,039 - 4,096 = 8,633.
+		assert.deepEqual(
+			fitThinkingBudget(
+				model,
+				{ messages: redeclared(searchTool("b".repeat(14_000))) } as TranscriptContext,
+				32_768,
+				8_192,
+			),
+			{ maxTokens: 8_633, thinkingBudget: 7_609 },
+		);
 	});
 
 	it("sends a configured budget below the minimum unchanged while it fits, as some compatible endpoints accept it", () => {

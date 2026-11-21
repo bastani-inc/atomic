@@ -8,11 +8,7 @@ import { getSingleResultOutput } from "../shared/utils.js";
 import { modelThinkingBadge } from "./render-event-formatting.js";
 import { getTermWidth, type Theme, truncLine } from "./render-layout.js";
 import { buildMultiProgressLabel, resultRowLabel } from "./render-progress.js";
-import {
-	advanceResultPulseFrame,
-	clearResultAnimationTimer,
-	type ResultAnimationContext,
-} from "./render-result-animation.js";
+import { clearResultAnimationTimer, type ResultAnimationContext } from "./render-result-animation.js";
 import { renderMultiCompact, renderSingleCompact } from "./render-result-compact.js";
 import { subagentResultRenderKey } from "./render-stable-output.js";
 import { renderSubagentStatus } from "./render-status.js";
@@ -45,34 +41,18 @@ export function renderLiveSubagentResult(
 	theme: Theme,
 	context: ResultAnimationContext,
 ): Component {
+	// Foreground results render into chat scrollback, which can sit above the viewport fold, so a row changes only
+	// with a real progress update: one snapshot time per update keeps durations from moving with the wall clock.
 	const nextKey = subagentResultRenderKey(result, options);
 	if (context.state.subagentResultSnapshotKey !== nextKey) {
 		context.state.subagentResultSnapshotKey = nextKey;
 		context.state.subagentResultSnapshotNow = Date.now();
-		// Advance the activity pulse exactly once per real progress update.
-		// Foreground subagent results render into chat scrollback, which can sit
-		// above the viewport fold. Animating on a timer there forces pi-tui into a
-		// destructive full-screen/scrollback clear on every tick (the flicker that
-		// scaled with widget height). Driving the pulse off genuine updates keeps
-		// the only line diffs tied to content that actually changed, so the
-		// differential renderer repaints exactly as it would for any progress
-		// update — no extra above-fold churn between updates.
-		context.state.subagentResultPulseFrame = advanceResultPulseFrame(context.state.subagentResultPulseFrame);
 	}
 	context.state.subagentResultSnapshotNow ??= Date.now();
-	context.state.subagentResultPulseFrame ??= 0;
 	// Never schedule timer-driven re-renders for scrollback content; clear any
 	// stale timer a previous version may have installed for this render slot.
 	clearResultAnimationTimer(context);
-	return renderSubagentResult(
-		result,
-		{
-			...options,
-			now: context.state.subagentResultSnapshotNow,
-			pulseFrame: context.state.subagentResultPulseFrame,
-		},
-		theme,
-	);
+	return renderSubagentResult(result, { ...options, now: context.state.subagentResultSnapshotNow }, theme);
 }
 
 /**
@@ -80,7 +60,7 @@ export function renderLiveSubagentResult(
  */
 export function renderSubagentResult(
 	result: AgentToolResult<Details>,
-	options: { expanded: boolean; now?: number; pulseFrame?: number },
+	options: { expanded: boolean; now?: number },
 	theme: Theme,
 ): Component {
 	const d = result.details;
@@ -98,12 +78,7 @@ export function renderSubagentResult(
 
 	if (d.mode === "single" && d.results.length === 1) {
 		const r = d.results[0];
-		if (!expanded)
-			return appendParentAskOutput(
-				renderSingleCompact(d, r, theme, options.now, options.pulseFrame),
-				handoffOutput,
-				theme,
-			);
+		if (!expanded) return appendParentAskOutput(renderSingleCompact(d, r, theme, options.now), handoffOutput, theme);
 		const isRunning = r.progress?.status === "running";
 		const icon = isRunning
 			? theme.fg("warning", "running")
@@ -204,8 +179,7 @@ export function renderSubagentResult(
 		return appendParentAskOutput(c, handoffOutput, theme);
 	}
 
-	if (!expanded)
-		return appendParentAskOutput(renderMultiCompact(d, theme, options.now, options.pulseFrame), handoffOutput, theme);
+	if (!expanded) return appendParentAskOutput(renderMultiCompact(d, theme, options.now), handoffOutput, theme);
 
 	const hasRunning =
 		d.progress?.some((p) => p.status === "running") || d.results.some((r) => r.progress?.status === "running");

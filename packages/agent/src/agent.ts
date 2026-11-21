@@ -223,6 +223,11 @@ export class Agent {
 		context: PrepareNextTurnContext,
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
+	/**
+	 * Called with the messages a run takes out of the steering or follow-up queue, as it takes them: before their
+	 * `message_start`, which may come after an awaited turn preparation, or never when the run fails first.
+	 */
+	public onQueuedMessagesTaken?: (messages: readonly AgentMessage[]) => void;
 	private activeRun?: ActiveRun;
 	/** Session identifier forwarded to providers for cache-aware backends. */
 	public sessionId?: string;
@@ -421,13 +426,13 @@ export class Agent {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
 		}
 
-		const queuedSteering = this.steeringQueue.drain();
+		const queuedSteering = this.takeQueued(this.steeringQueue);
 		if (queuedSteering.length > 0) {
 			await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
 			return true;
 		}
 
-		const queuedFollowUps = this.followUpQueue.drain();
+		const queuedFollowUps = this.takeQueued(this.followUpQueue);
 		if (queuedFollowUps.length > 0) {
 			await this.runPromptMessages(queuedFollowUps);
 			return true;
@@ -526,10 +531,17 @@ export class Agent {
 					skipInitialSteeringPoll = false;
 					return [];
 				}
-				return this.steeringQueue.drain();
+				return this.takeQueued(this.steeringQueue);
 			},
-			getFollowUpMessages: async () => this.followUpQueue.drain(),
+			getFollowUpMessages: async () => this.takeQueued(this.followUpQueue),
 		};
+	}
+
+	/** Take the messages a run delivers next out of `queue`, and say so. */
+	private takeQueued(queue: PendingMessageQueue): AgentMessage[] {
+		const taken = queue.drain();
+		if (taken.length > 0) this.onQueuedMessagesTaken?.(taken);
+		return taken;
 	}
 
 	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>): Promise<void> {

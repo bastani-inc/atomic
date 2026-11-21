@@ -1,19 +1,28 @@
-import { keyHintIfBound } from "@bastani/atomic";
+import { keyHintIfBound, TASK_MARKS, type TaskMark } from "@bastani/atomic";
 import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { formatModelThinking } from "../shared/formatters.js";
 import type { SubagentStatusGroup } from "../shared/types.js";
 import type { Theme } from "./render-layout.js";
 
 const COMPACT_CHILD_LIMIT = 6;
-const statusStyles = {
-	pending: { glyph: "○", label: "Pending", color: "dim" },
-	running: { glyph: "∀", label: "Running", color: "accent" },
-	ok: { glyph: "✓", label: "Completed", color: "success" },
-	error: { glyph: "✗", label: "Failed", color: "error" },
-	interrupted: { glyph: "■", label: "Interrupted", color: "warning" },
-	killed: { glyph: "■", label: "Killed (non-resumable)", color: "warning" },
-	continued: { glyph: "■", label: "Continued", color: "warning" },
-} as const;
+/**
+ * Each status's words and their colour, and the mark the agent panel and `/tasks` show that state with: a child that
+ * continued on its own still runs; an interrupted or killed one was stopped.
+ */
+const statusStyles: Readonly<
+	Record<
+		SubagentStatusGroup["children"][number]["status"],
+		{ mark: TaskMark; label: string; color: TaskMark["color"] }
+	>
+> = {
+	pending: { mark: TASK_MARKS.queued, label: "Pending", color: "dim" },
+	running: { mark: TASK_MARKS.running, label: "Running", color: "accent" },
+	ok: { mark: TASK_MARKS.done, label: "Completed", color: "success" },
+	error: { mark: TASK_MARKS.failed, label: "Failed", color: "error" },
+	interrupted: { mark: TASK_MARKS.stopped, label: "Interrupted", color: "warning" },
+	killed: { mark: TASK_MARKS.stopped, label: "Killed (non-resumable)", color: "warning" },
+	continued: { mark: TASK_MARKS.running, label: "Continued", color: "warning" },
+};
 
 const displayText = (value: string) => stripTerminalSequences(value).replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 
@@ -29,7 +38,7 @@ function childStatusLines(
 	const label = expanded
 		? name
 		: displayText(truncateToWidth(name, Math.max(1, width - visibleWidth(style.label) - 5), "…"));
-	const heading = `${theme.fg(style.color, style.glyph)} ${theme.fg("toolTitle", theme.bold(label))}${theme.fg("dim", " · ")}${theme.fg(style.color, style.label)}`;
+	const heading = `${theme.fg(style.mark.color, style.mark.glyph)} ${theme.fg("toolTitle", theme.bold(label))}${theme.fg("dim", " · ")}${theme.fg(style.color, style.label)}`;
 	const model = formatModelThinking(child.model, child.thinking);
 	const metadata = model ? [theme.fg("dim", `  ${displayText(model)}`)] : [];
 	if (!expanded) return [heading, ...metadata];

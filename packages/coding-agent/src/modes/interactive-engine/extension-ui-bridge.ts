@@ -5,6 +5,7 @@ import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
+import type { ExtensionShortcutHandler } from "../interactive/components/custom-editor.ts";
 import type { RpcAutocompleteItem, RpcResourceExtension, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { EngineDialogHostController } from "./engine-dialog-host.ts";
@@ -40,7 +41,7 @@ export function attachInteractiveEngineHost(
 	ui: ExtensionUIContext,
 	onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void,
 	tuiRendererLifecycle: TuiRendererLifecycle,
-	setShortcutHandler?: (handler: (data: string) => boolean) => undefined | (() => void),
+	setShortcutHandler?: (handler: ExtensionShortcutHandler) => undefined | (() => void),
 	keybindings?: KeybindingsManager,
 	onUIPrompt?: (event: UIPromptStartEvent | UIPromptEndEvent | undefined) => void,
 ): () => void {
@@ -57,11 +58,13 @@ export function attachInteractiveEngineHost(
 	// outlive, or answer through, a replacement engine child.
 	const dialogs = new EngineDialogHostController(runtime, ui);
 	let shortcuts: EngineExtensionShortcut[] = [];
-	const dispatchShortcut = (data: string): boolean => {
-		const shortcut = shortcuts.find(
+	const find = (data: string) =>
+		shortcuts.find(
 			({ key, editorKeys }) =>
 				matchesKey(data, key as KeyId) && !editorKeys?.some((editorKey) => matchesKey(data, editorKey)),
 		);
+	const dispatch = (data: string): boolean => {
+		const shortcut = find(data);
 		if (!shortcut) return false;
 		void runtime
 			.invokeRemoteShortcut(shortcut.key)
@@ -70,6 +73,10 @@ export function attachInteractiveEngineHost(
 			);
 		return true;
 	};
+	// `takes` answers as `dispatch` would, without running the shortcut.
+	const dispatchShortcut: ExtensionShortcutHandler = Object.assign(dispatch, {
+		takes: (data: string) => find(data) !== undefined,
+	});
 	let disposeShortcutHandler: (() => void) | undefined;
 	const installShortcutHandler = (): void => {
 		disposeShortcutHandler?.();
@@ -157,6 +164,15 @@ export function terminateInteractiveEngine(runtime: AgentSessionRuntime): boolea
 	if (!interactiveEngineNeedsExplicitTermination(runtime)) return false;
 	void (runtime as IsolatedInteractiveRuntime).terminateAndRecover();
 	return true;
+}
+
+/**
+ * The interactive engine a shutdown of this host leaves to the runtime's own stop, which gives it a bounded window
+ * to run its extensions' shutdown: the ready engine of an isolated runtime, none for an in-process one.
+ */
+export function gracefullyStoppedEnginePids(runtime: AgentSessionRuntime): ReadonlySet<number> {
+	const pid = runtime instanceof IsolatedInteractiveRuntime ? runtime.getReadyEngineChildPid() : undefined;
+	return new Set(pid === undefined ? [] : [pid]);
 }
 
 /**

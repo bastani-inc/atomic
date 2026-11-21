@@ -344,6 +344,11 @@ export interface PromptOptions {
 	expandPromptTemplates?: boolean;
 	images?: ImageContent[];
 	streamingBehavior?: "steer" | "followUp";
+	/**
+	 * Only start a turn with this input: when a turn runs or is about to, or queued input is paused, nothing is sent or
+	 * queued, and the prompt resolves as handled.
+	 */
+	startTurnOnly?: boolean;
 	source?: InputSource;
 	/** Called once when preflight accepts (`true`, with how the prompt was dispatched) or rejects (`false`) the prompt. */
 	preflightResult?: (success: boolean, disposition?: PromptDisposition) => void;

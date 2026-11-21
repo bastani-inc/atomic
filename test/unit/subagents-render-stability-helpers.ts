@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@bastani/atomic";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { Component } from "@bastani/atomic-tui";
 import type { Details } from "../../packages/subagents/src/shared/types.js";
-import { PULSE_FRAMES, RUNNING_FRAMES, type renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
+import { RUNNING_FRAMES, type renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
 
 export type { AgentToolResult, Component, Details, ExtensionContext };
 
@@ -14,7 +14,7 @@ export const theme = {
 	bold: (value: string) => value,
 } as unknown as RenderTheme;
 
-export { PULSE_FRAMES, RUNNING_FRAMES };
+export { RUNNING_FRAMES };
 
 const SPINNER_CHARS = new Set(RUNNING_FRAMES);
 
@@ -34,13 +34,6 @@ export function stripSpinnerChars(line: string): string {
 
 export function firstSpinnerChar(text: string): string | undefined {
 	for (const char of text) if (SPINNER_CHARS.has(char)) return char;
-	return undefined;
-}
-
-const PULSE_CHARS = new Set(PULSE_FRAMES);
-
-export function firstPulseChar(text: string): string | undefined {
-	for (const char of text) if (PULSE_CHARS.has(char)) return char;
 	return undefined;
 }
 

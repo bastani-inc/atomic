@@ -1,5 +1,6 @@
 import type { RetryDeadline } from "../types.ts";
 import { wrapFetchPreservingAdmission } from "./request-admission.ts";
+import { findTlsCertificateRefusal } from "./tls-certificate.ts";
 import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "./retry-sleep.ts";
 
 export const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
@@ -153,6 +154,8 @@ export async function retryProviderRequest<T>(
 			if (transport?.refusal) throw transport.refusal;
 			if (options.signal?.aborted) throw createAbortError();
 			if (retriesRemaining <= 0 || !isProviderError(error) || !isRetryableProviderError(error)) throw error;
+			// The certificate is the same on the next attempt (#6114).
+			if (findTlsCertificateRefusal(error) !== undefined) throw error;
 			if (error.status !== undefined && options.noRetryStatuses?.includes(error.status)) throw error;
 			if (options.noRetry?.(error)) throw error;
 

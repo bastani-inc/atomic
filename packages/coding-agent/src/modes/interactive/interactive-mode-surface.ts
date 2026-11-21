@@ -51,6 +51,7 @@ import type {
 	TUI,
 	VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
+import type { ExpandableText } from "./interactive-mode-helpers.ts";
 import type { ParkedViewport } from "./interactive-saved-chat-history.js";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import type { BlockedStatus } from "./program-status-reporter.ts";
@@ -148,12 +149,15 @@ declare module "./interactive-mode-base.ts" {
 				extensions?: string;
 			};
 			targetContainer?: Container;
+			keptSections?: ReadonlyMap<string, ExpandableText>;
 		}): void;
 		showLoadedResources(options?: {
 			extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
 			force?: boolean;
 			showDiagnosticsWhenQuiet?: boolean;
 			targetContainer?: Container;
+			/** Rewrite the mounted resource list keeping each section that stays, with its expansion. */
+			keepSections?: boolean;
 		}): void;
 		bindCurrentSessionExtensions(): Promise<void>;
 		applyRuntimeSettings(): void;
@@ -308,6 +312,7 @@ declare module "./interactive-mode-base.ts" {
 		interruptActiveOperation(): boolean;
 		handleCtrlD(): void;
 		shutdown(options?: { fromSignal?: boolean }): Promise<void>;
+		handleTerminalLost(): void;
 		emergencyTerminalExit(): never;
 		uncaughtCrash(error: Error): never;
 		getCrashExtensionHint(error: unknown): string | undefined;

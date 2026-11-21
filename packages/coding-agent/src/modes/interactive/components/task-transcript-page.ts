@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import {
 	getKeybindings,
 	isHintActivation,
@@ -9,6 +10,8 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
+import type { AgentSessionEvent } from "../../../core/agent-session.js";
+import { startsQueuedMessage } from "../../../core/agent-session-events.ts";
 import { chatReceiptWrite } from "../../../core/chat-receipts.js";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -17,6 +20,7 @@ import type { CustomMessage } from "../../../core/messages.ts";
 import { sessionWaitsToRetry } from "../../../core/session-retry-status.js";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import {
+	childOfAttempt,
 	latestSubagentAttempt,
 	releasedWaitingOn,
 	waitingReleasedShells,
@@ -132,6 +136,73 @@ function observeChatWrite(write: Promise<void>, view: WeakRef<ObservedChatWrites
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
 /** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
 const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
+/**
+ * Per followed session: its queued messages whose row shows and whose save has not arrived yet, oldest first. Kept with
+ * the session, not the page, so a page opened again while a save is on its way reports the same ones.
+ */
+const shownUnsaved = new WeakMap<TaskTranscriptSource, AgentMessage[]>();
+/** Saves already accounted for: every page following the session hears each, and each lets one message go. */
+const savesHeard = new WeakSet<object>();
+
+/**
+ * A page follows `session`'s events: a queued message's row shows at its `message_start`, and its save arrives with its
+ * `message_end`. A message saved while no page followed the session is let go when a page follows it again.
+ */
+function noteShownUnsaved(session: TaskTranscriptSource, event: AgentSessionEvent | undefined): void {
+	let shown = shownUnsaved.get(session);
+	if (event === undefined) {
+		if (shown !== undefined && session.entryReceipt !== undefined) {
+			const receipt = session.entryReceipt.bind(session);
+			shown = shown.filter((message) => receipt(message) === undefined);
+			shownUnsaved.set(session, shown);
+		}
+		return;
+	}
+	if (event.type === "message_start" && event.message.role === "user" && startsQueuedMessage(event)) {
+		// Every page following the session hears the same event: the message is kept once.
+		const list = shown ?? [];
+		if (!list.includes(event.message)) list.push(event.message);
+		shownUnsaved.set(session, list);
+	} else if (
+		event.type === "message_end" &&
+		event.message.role === "user" &&
+		shown !== undefined &&
+		shown.length > 0 &&
+		!savesHeard.has(event)
+	) {
+		savesHeard.add(event);
+		const saved = event.message;
+		const raw = (saved as { readonly rawText?: unknown }).rawText;
+		const text = userMessageText(saved);
+		let index = shown.indexOf(saved);
+		if (index < 0)
+			index = shown.findIndex((message) => {
+				const queued = userMessageText(message);
+				return queued === raw || queued === text || text.startsWith(`${queued}\n\n`);
+			});
+		if (index >= 0) shown.splice(index, 1);
+	}
+}
+
+/** What a page's status reports of `session`'s queued messages shown but not saved yet; nothing when there are none. */
+function unsavedOf(session: TaskTranscriptSource | undefined): { unsaved?: readonly string[] } {
+	const shown = session === undefined ? undefined : shownUnsaved.get(session);
+	return shown === undefined || shown.length === 0 ? {} : { unsaved: shown.map(userMessageText) };
+}
+
+function userMessageText(message: object): string {
+	const content = (message as { readonly content?: unknown }).content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.flatMap((part: { readonly type?: unknown; readonly text?: unknown }) =>
+			part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+		)
+		.join("\n");
+}
+
+/** The page open on each subagent's chat, by the subagent across its attempts, per source: where messages that come back after an earlier page closed go. */
+const openPages = new WeakMap<TaskViewSource, Map<string, TaskAgentTranscriptPage>>();
 /** What Up recalled in a task's chat when the reader left it, oldest first, for when they come back. */
 const keptPromptHistories = new WeakMap<TaskViewSource, Map<TaskId, readonly string[]>>();
 
@@ -486,6 +557,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			// What the reader types goes to the subagent's own session as the main chat's goes to its own: queued in its
 			// lane while it works, else its next turn, and the dequeue key takes the queue back.
 			steering: this.steeringTarget(),
+			// Alt+Up's answer that comes after the reader left this chat: back in its prompt when they return.
+			keepRestoredMessages: (messages) => this.keepForReturn(messages),
 			// Esc paused it: the reader's next message continues it, as their send continues the main chat after Esc.
 			isPaused: () => this.paused(),
 			commands: { handleSlashCommand: (text) => this.runCommand(text) },
@@ -494,6 +567,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.chat.seedPromptHistory(keptPromptHistories.get(source)?.get(taskId) ?? []);
 		this.restoreDraft();
 		this.restoreUndelivered();
+		const open = openPages.get(source) ?? new Map<string, TaskAgentTranscriptPage>();
+		open.set(this.subagentKey(), this);
+		openPages.set(source, open);
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
 			if (sessionId === this.childSessionId() || sessionId === this.shownPromptSessionId) this.requestRender();
 		});
@@ -538,6 +614,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return this.liveTask()?.ref.taskId ?? this.taskId;
 	}
 
+	/** The subagent this chat is of, the same for every attempt of it: its launch operation, else its task. */
+	private subagentKey(): string {
+		const task = this.liveTask();
+		return task?.kind === "agent" && typeof task.launchOperationId === "string" ? childOfAttempt(task) : this.taskId;
+	}
+
 	/**
 	 * The attempt the page reads: the live one, once there is a session to follow. A resumed attempt is listed before
 	 * its session is bound, and until then the page keeps the conversation it shows rather than read nothing.
@@ -549,6 +631,24 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.source.followTaskTranscript(this.taskId) !== undefined
 			? this.taskId
 			: live;
+	}
+
+	/**
+	 * Messages taken back from the subagent's queue after the reader left this chat: in front of what they typed here,
+	 * in this chat's prompt if it is open again, else for when they return.
+	 */
+	private keepForReturn(messages: readonly string[]): void {
+		if (messages.length === 0) return;
+		const id = this.liveTaskId();
+		const open = openPages.get(this.source)?.get(this.subagentKey());
+		if (open !== undefined && open !== this && !open.disposed) {
+			open.chat.setInputText(combineQueuedMessagesForEditor(messages, open.chat.inputText()));
+			open.requestRender();
+			return;
+		}
+		const kept = keptDrafts.get(this.source) ?? new Map<TaskId, string>();
+		kept.set(id, combineQueuedMessagesForEditor(messages, kept.get(id) ?? ""));
+		keptDrafts.set(this.source, kept);
 	}
 
 	/** Restores what was typed here before the reader left. */
@@ -891,6 +991,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			...(delivering.steering.length === 0 && delivering.followUp.length === 0
 				? {}
 				: { delivering: { steering: [...delivering.steering], followUp: [...delivering.followUp] } }),
+			...unsavedOf(this.followed),
 			...(readOnlyReason === undefined ? {} : { readOnlyReason }),
 			heldPrompt: this.heldPrompt() !== undefined,
 			...(working === undefined ? {} : { working }),
@@ -1041,6 +1142,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptPromptHistories.set(this.source, kept);
 		}
 		this.disposed = true;
+		const open = openPages.get(this.source);
+		for (const [id, page] of open ?? []) if (page === this) open?.delete(id);
 		this.cancelAdjacent();
 		this.latestRead?.abort();
 		this.boundaryReads.abort();
@@ -1124,14 +1227,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				else this.chat.showWarning(warning);
 			}
 			if (!this.disposed) this.restoreQueuedToEditor(paused.value);
-			else {
-				// The reader left while the turn ended: what came back waits in the prompt for their return.
-				const taken = [...paused.value.steering, ...paused.value.followUp];
-				const kept = keptDrafts.get(this.source) ?? new Map<TaskId, string>();
-				const id = this.liveTaskId();
-				if (taken.length > 0) kept.set(id, combineQueuedMessagesForEditor(taken, kept.get(id) ?? ""));
-				keptDrafts.set(this.source, kept);
-			}
+			// The reader left while the turn ended: what came back waits in the prompt for their return.
+			else this.keepForReturn([...paused.value.steering, ...paused.value.followUp]);
 			return { ok: true, value: undefined };
 		}
 		const interrupt = this.source.interruptTask;
@@ -1178,6 +1275,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.unsubscribe?.();
 			this.unsubscribe = undefined;
 			this.followed = session;
+			// Its queued messages shown unsaved as a page last saw them, without those saved since.
+			if (session !== undefined) noteShownUnsaved(session, undefined);
 			this.chat.resetFollowedSession({ preserveWorkedRun: sameConversation && session === undefined });
 		}
 		this.followedSessionId = nextSessionId;
@@ -1247,6 +1346,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				turnAborted = false;
 				setTaskTurnInterrupted(this.source, this.taskId, true);
 			}
+			noteShownUnsaved(session, event);
 			if (event.type === "message_end") {
 				// The receipt arrives with the end of the message the row was drawn from as it streamed.
 				const sent = event as { seq?: unknown };

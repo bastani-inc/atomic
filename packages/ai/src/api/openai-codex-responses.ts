@@ -2,7 +2,6 @@ import type * as NodeZlib from "node:zlib";
 import type { Tool as OpenAITool, ResponseInput, ResponseStreamEvent } from "openai/resources/responses/responses.js";
 
 import { clampThinkingLevel } from "../models.ts";
-import { getProviderRetryAfterMs, getRetryAfterMs } from "../utils/retry-hints.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
@@ -32,11 +31,19 @@ import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { admitFetch } from "../utils/request-admission.ts";
+import { getProviderRetryAfterMs, getRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "../utils/retry-sleep.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
+import {
+	findTlsCertificateRefusal,
+	isTlsVerificationError,
+	recordTlsCertificateRefusal,
+	transportFailure,
+	transportFetch,
+} from "../utils/tls-certificate.ts";
 import {
 	getDeclaredTools,
 	getInitialSystemMessage,
@@ -58,8 +65,8 @@ import {
 	isServiceTierRejection,
 	processResponsesStream,
 	type ResponsesServiceTier,
-	resolveRequestedServiceTier,
 	resolveChatGPTBackendServiceTier,
+	resolveRequestedServiceTier,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -393,6 +400,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							if (aborted || (isCodexNonTransportError(error) && !connectionLimitBeforeStart)) {
 								throw error;
 							}
+							// The SSE endpoint shows the same certificate: neither falls back nor remembers a fallback (#6114).
+							if (findTlsCertificateRefusal(error) !== undefined) throw error;
 							appendAssistantMessageDiagnostic(
 								output,
 								createAssistantMessageDiagnostic("provider_transport_failure", error, {
@@ -435,7 +444,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 					if (attempt > 0 && retryDeadlineReached(options?.retryDeadline))
 						throw new RetryDeadlineError("Request was aborted");
 					try {
-						const fetch = await admitFetch(options?.fetch, streamDeadline.signal);
+						const fetch = transportFetch(await admitFetch(options?.fetch, streamDeadline.signal));
 						if (attempt > 0 && retryDeadlineReached(options?.retryDeadline))
 							throw new RetryDeadlineError("Request was aborted");
 						const headerTimeoutSignal =
@@ -485,10 +494,10 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						const info = await parseErrorResponse(fakeResponse);
 						// Keep the HTTP status in the text, as the other providers' `<status>: <body>` does, so a 402
 						// (exhausted quota) or 5xx is still recognizable once only the message survives.
-						throw Object.assign(
-							new Error(info.friendlyMessage || `${response.status}: ${info.message}`),
-							{ status: response.status, retryAfterMs: getRetryAfterMs(response.headers, errorText) },
-						);
+						throw Object.assign(new Error(info.friendlyMessage || `${response.status}: ${info.message}`), {
+							status: response.status,
+							retryAfterMs: getRetryAfterMs(response.headers, errorText),
+						});
 					} catch (error) {
 						if (error instanceof RetryDeadlineError) throw error;
 						if (error instanceof Error) {
@@ -497,11 +506,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							}
 						}
 						lastError = error instanceof Error ? error : new Error(String(error));
-						// Network errors are retryable
+						// Network errors are retryable; a refused certificate is refused again (#6114).
 						if (
 							attempt < maxRetries &&
 							!(lastError instanceof RetryDelayExceededError) &&
-							!lastError.message.includes("usage limit")
+							!lastError.message.includes("usage limit") &&
+							findTlsCertificateRefusal(lastError) === undefined
 						) {
 							const delayMs = BASE_DELAY_MS * 2 ** attempt;
 							await sleep(delayMs, options?.signal);
@@ -581,6 +591,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			appendProviderResponseFailureDiagnostic(output, error);
+			// Codex's own error events, protocol errors and stream event callbacks are not the connection's TLS (#6114).
+			if (!isCodexNonTransportError(error)) recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -1214,7 +1226,8 @@ async function connectWebSocket(
 			resolve(socket);
 		};
 		const onError: WebSocketListener = (event) => {
-			fail(extractWebSocketError(event));
+			// The connection to this URL failed before it opened: its own transport failure (#6114).
+			fail(transportFailure(extractWebSocketError(event), url) as Error);
 		};
 		const onClose: WebSocketListener = (event) => {
 			fail(extractWebSocketCloseError(event));
@@ -1336,14 +1349,35 @@ async function acquireWebSocket(
 	};
 }
 
+/**
+ * How Bun's WebSocket reports a handshake its TLS refused: the runtime's reason after its own prefix, with the
+ * certificate's code on the event's error (#6114).
+ */
+// The URL may hold any character, an apostrophe included: the reason follows the last such phrase.
+const WEBSOCKET_TLS_HANDSHAKE_FAILURE = /^WebSocket connection to '.*' failed: TLS handshake failed: (.+)$/s;
+
+/** The certificate a WebSocket's own error event says its TLS refused, as an error with the runtime's reason. */
+function webSocketCertificateRefusal(error: Error): Error | undefined {
+	if (isTlsVerificationError(error)) return error;
+	const reason = WEBSOCKET_TLS_HANDSHAKE_FAILURE.exec(error.message)?.[1];
+	const code = (error as { code?: unknown }).code;
+	if (reason === undefined || typeof code !== "string") return undefined;
+	const refusal = Object.assign(new Error(reason, { cause: error }), { code });
+	return isTlsVerificationError(refusal) ? refusal : undefined;
+}
+
 function extractWebSocketError(event: unknown): Error {
 	if (event && typeof event === "object") {
+		const nestedError = "error" in event ? (event as { error?: unknown }).error : undefined;
+		// Bun's event carries the refused certificate's code on its error only (#6114).
+		const refusal = nestedError instanceof Error ? webSocketCertificateRefusal(nestedError) : undefined;
+		if (refusal !== undefined) return refusal;
+
 		const message = "message" in event ? (event as { message?: unknown }).message : undefined;
 		if (typeof message === "string" && message.length > 0) {
 			return new Error(message);
 		}
 
-		const nestedError = "error" in event ? (event as { error?: unknown }).error : undefined;
 		if (nestedError instanceof Error && nestedError.message.length > 0) {
 			return nestedError;
 		}

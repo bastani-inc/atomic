@@ -111,6 +111,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	/** The last token count shown from `workingTokenCount`, with the counted total it was shown at. */
 	countedTokensShown: { readonly counted: number; readonly count: number } | undefined = undefined;
 	readonly isPaused: (() => boolean) | undefined;
+	readonly keepRestoredMessages: ((messages: readonly string[]) => void) | undefined;
 	readonly isDisabled: (() => boolean) | undefined;
 	readonly isBashRunningOverride: (() => boolean) | undefined;
 	readonly showWarning: ((message: string) => void) | undefined;
@@ -332,6 +333,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.workingTokenCount = opts.workingTokenCount;
 		this.workingLifecycle = opts.isStreaming?.() === true ? { kind: "turn" } : { kind: "off" };
 		this.isPaused = opts.isPaused;
+		this.keepRestoredMessages = opts.keepRestoredMessages;
 		this.isDisabled = opts.isDisabled;
 		this.isBashRunningOverride = opts.isBashRunning;
 		this.canCancelRetry = opts.canCancelRetry;

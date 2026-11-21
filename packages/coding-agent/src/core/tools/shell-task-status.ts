@@ -5,6 +5,7 @@
  * transcript renders the same facts as a single status line. Structured data stays in the result `details`.
  */
 
+import { TASK_MARKS, type TaskMark } from "../../modes/interactive/components/task-marks.ts";
 import { hasErrorIdentity, type SerializedTypedError, serializeErrorCause } from "../error-contract.ts";
 import { cancelReasonText } from "../tasks/cancel-reason.js";
 import type {
@@ -22,9 +23,12 @@ import { TaskEvictedError } from "../tasks/eviction-error.js";
 
 export type TaskStatusTone = "success" | "error" | "warning" | "dim";
 
-/** One line of task state: `✓ completed · exit 0`. The glyph and label alone carry the meaning without color. */
+/**
+ * One line of task state: `● completed · exit 0`. The mark is the one the agent panel and `/tasks` show the task's
+ * state with; the mark and label alone carry the meaning without color, and `tone` colours the label.
+ */
 export interface TaskStatus {
-	glyph: "✓" | "✗" | "●" | "○";
+	mark: TaskMark;
 	tone: TaskStatusTone;
 	label: string;
 	detail?: string;
@@ -55,17 +59,19 @@ function withDetail(status: Omit<TaskStatus, "detail">, detail: string | undefin
 export function taskResultStatus(result: TaskResult): TaskStatus {
 	switch (result.kind) {
 		case "completed":
-			if (result.exitCode === 0) return { glyph: "✓", tone: "success", label: "completed", detail: "exit 0" };
-			if (result.exitCode === undefined) return { glyph: "✗", tone: "error", label: "ended without an exit code" };
-			return { glyph: "✗", tone: "error", label: `exited ${result.exitCode}` };
+			if (result.exitCode === 0)
+				return { mark: TASK_MARKS.done, tone: "success", label: "completed", detail: "exit 0" };
+			if (result.exitCode === undefined)
+				return { mark: TASK_MARKS.failed, tone: "error", label: "ended without an exit code" };
+			return { mark: TASK_MARKS.failed, tone: "error", label: `exited ${result.exitCode}` };
 		case "failed":
 			return withDetail(
-				{ glyph: "✗", tone: "error", label: "failed" },
+				{ mark: TASK_MARKS.failed, tone: "error", label: "failed" },
 				informativeMessage(result.code, result.message),
 			);
 		case "cancelled":
 			return withDetail(
-				{ glyph: "○", tone: "dim", label: "cancelled" },
+				{ mark: TASK_MARKS.stopped, tone: "dim", label: "cancelled" },
 				result.cause === "user" ? undefined : cancelReasonText(result),
 			);
 	}
@@ -92,7 +98,7 @@ function taskResultPhrase(result: TaskResult): string {
 export function waitStatus(observation: WaitOutcome, hasOutput: boolean): TaskStatus {
 	if (observation.kind === "settled") return taskResultStatus(observation.result);
 	return withDetail(
-		{ glyph: "●", tone: "warning", label: "still running" },
+		{ mark: TASK_MARKS.shell, tone: "warning", label: "still running" },
 		hasOutput ? "showing output so far" : undefined,
 	);
 }
@@ -151,9 +157,14 @@ export function cancelReceiptStatus(receipt: CancelReceipt): TaskStatus {
 		return receipt.decision === "already-settled" ? { ...status, label: `already ${status.label}` } : status;
 	}
 	return {
-		glyph: "●",
+		mark:
+			execution.kind === "cancelling"
+				? TASK_MARKS.stopping
+				: execution.kind === "queued"
+					? TASK_MARKS.queued
+					: TASK_MARKS.shell,
 		tone: "warning",
-		label: execution.kind === "cancelling" ? "stopping" : "still running",
+		label: execution.kind === "cancelling" ? "stopping" : `still ${execution.kind}`,
 		detail: "cancellation requested",
 	};
 }
