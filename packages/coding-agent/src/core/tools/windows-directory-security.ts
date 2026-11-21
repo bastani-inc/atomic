@@ -31,6 +31,7 @@ import type { Socket } from "node:net";
 import { dirname, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { clearTimeout, setTimeout } from "node:timers";
+import { helperLaunchAsync, missingHelperOptions } from "../../utils/helper-command.ts";
 import { createModuleRequire } from "../../utils/module-require.js";
 import { windowsPowerShellEnvironment } from "../../utils/windows-powershell.ts";
 import { asyncScope } from "../async-scope.ts";
@@ -360,15 +361,18 @@ class SharedSecurityRead {
 
 	private async readWith(executable: string): Promise<SecurityAttempt> {
 		const cwd = await neutralWorkingDirectory();
+		const env = powershellEnvironment(this.path);
+		const launch = await helperLaunchAsync(executable, { env, cwd });
 		if (this.controller.signal.aborted) return { failure: `${executable}: aborted` };
 		return new Promise((resolve) => {
 			let child: ChildProcess;
 			try {
-				child = spawn(executable, ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT], {
+				child = spawn(launch.file, ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT], {
 					cwd,
-					env: powershellEnvironment(this.path),
+					env,
 					stdio: ["ignore", "pipe", "pipe"],
 					windowsHide: true,
+					...missingHelperOptions(launch),
 				});
 			} catch (error) {
 				resolve({ failure: `${executable}: error=${error instanceof Error ? error.message : String(error)}` });

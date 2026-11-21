@@ -763,9 +763,10 @@ jobs:
         run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
         run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core run build:bundle
+      # The release binaries bundle the compiled modules, as scripts/build-binaries.sh builds them, not the npm split.
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
-        run: npm run build
+        run: npm run build:tsc && npm run build:assets
       # `bun build --compile --target=...` embeds that target's Bun runtime and, when it
       # is missing from the install cache, fetches it from the npm registry on one
       # connection. That fetch has run at ~45 KB/s here and outlasted this job's cap,
@@ -841,8 +842,7 @@ jobs:
             node_modules/@bastani/atomic-natives/package.json \
             node_modules/@bastani/atomic-natives/native/index.js \
             node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node \
-            node_modules/@modelcontextprotocol/ext-apps/package.json \
-            node_modules/@mozilla/readability/package.json; do
+            node_modules/mupdf/package.json; do
             test -f "$smoke_dir/atomic/$required_path" || {
               echo "Missing release archive path: $required_path" >&2
               exit 1
@@ -891,8 +891,7 @@ jobs:
             "node_modules/@bastani/atomic-natives/package.json",
             "node_modules/@bastani/atomic-natives/native/index.js",
             "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node",
-            "node_modules/@modelcontextprotocol/ext-apps/package.json",
-            "node_modules/@mozilla/readability/package.json"
+            "node_modules/mupdf/package.json"
           )) {
             $archivePath = Join-Path $smokeDir $requiredPath
             if (-not (Test-Path $archivePath)) {

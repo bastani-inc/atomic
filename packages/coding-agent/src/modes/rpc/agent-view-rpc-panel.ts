@@ -31,12 +31,17 @@ export function installEngineAgentViewBridge(context: EngineAgentViewContext): (
 		viewedTaskId: () => viewed,
 		requestView: (taskId, options) => {
 			const keepScreen = options?.keepScreen === true;
+			// What keeps the screen (`/tasks`) hid the panel; the host waits for it when it opens again as that closes.
+			const panel = keepScreen && taskId !== undefined && agentPanelReturnsOnShow(session);
+			// When the panel lists the subagent only once the screen shows it, a host that says first what it is about to
+			// show waits for that panel too.
+			const panelOnView = keepScreen && taskId !== undefined && !panel && agentPanelReturnsOnShow(session, taskId);
 			context.send({
 				type: "engine_view_agent",
 				taskId: taskId ?? null,
 				...(keepScreen ? { keepScreen: true as const } : {}),
-				// What keeps the screen (`/tasks`) hid the panel; the host waits for it when it opens again as that closes.
-				...(keepScreen && taskId !== undefined && agentPanelReturnsOnShow(session) ? { panel: true as const } : {}),
+				...(panel ? { panel: true as const } : {}),
+				...(panelOnView ? { panelOnView: true as const } : {}),
 			});
 		},
 		subscribe(listener) {

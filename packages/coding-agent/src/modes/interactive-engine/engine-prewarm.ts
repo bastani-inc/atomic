@@ -11,14 +11,18 @@ import { basename } from "node:path";
 import { ENV_AGENT_DIR, ENV_STARTUP_BENCHMARK, ENV_TIMING, getAgentDir, getEnvValue } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { COMPILE_CACHE_ENGINE_WARMUP_ENV, compileCacheDeferral } from "../../utils/compile-cache.ts";
-import {
-	INTERACTIVE_ENGINE_PREWARM_FLAG,
-	INTERACTIVE_ENGINE_PREWARM_NO_DATABASE,
-} from "../../utils/interactive-engine-bootstrap.ts";
+import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../../utils/interactive-engine-bootstrap.ts";
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
 import { isPlainInteractiveSessionInvocation } from "../../utils/interactive-invocation.ts";
 import { applyArgumentEnvironment, settingsEnvironmentForEarlyChild } from "../../utils/startup-environment.js";
 import { engineHeapRuntimeArgsForHost } from "./engine-heap.ts";
+
+/**
+ * `INTERACTIVE_ENGINE_PREWARM_NO_DATABASE` of `interactive-engine-bootstrap.ts`, made here from the one flag every
+ * version of that module exports: a process that loaded an earlier version of it, before an update replaced the
+ * installation, loads this module from the new one, and a name that earlier version lacks would fail to link.
+ */
+const PREWARM_NO_DATABASE = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-no-database`;
 
 /** Everything that decides how an engine child process starts, apart from its engine arguments. */
 export interface EngineLaunch {
@@ -205,7 +209,7 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 		const writeCache = options.basis === "derived" && process.platform !== "win32";
 		const prewarmArgs = [
 			INTERACTIVE_ENGINE_PREWARM_FLAG,
-			...(args.includes("--no-session") ? [INTERACTIVE_ENGINE_PREWARM_NO_DATABASE] : []),
+			...(args.includes("--no-session") ? [PREWARM_NO_DATABASE] : []),
 			...(writeCache ? [INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG] : []),
 		];
 		child = spawn(launch.command, [...launch.args, ...prewarmArgs], {

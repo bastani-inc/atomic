@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve, sep, win32 } from "path";
-import { shouldUseWindowsShell, spawnProcessSync } from "./utils/child-process.ts";
+import { processLaunch, shouldUseWindowsShell, spawnLaunchedProcessSync } from "./utils/child-process.ts";
 
 export interface SelfUpdateRuntime {
 	isBunBinary: boolean;
@@ -169,7 +169,7 @@ function readCommandOutput(
 	args: string[],
 	options: { requireSuccess?: boolean } = {},
 ): string | undefined {
-	const result = spawnProcessSync(command, args, {
+	const result = spawnLaunchedProcessSync(processLaunch(command, { env: process.env }), args, {
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: process.env,
