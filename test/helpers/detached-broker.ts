@@ -13,7 +13,7 @@
 import { join } from "node:path";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "../../packages/intercom/broker/control-request.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
-import { type RecordedProcess, recordProcess, stillRuns } from "./recorded-process.js";
+import { isGone, type RecordedProcess, recordProcess, stillRuns } from "./recorded-process.js";
 import { fileExistsSync, readTextSync, removePath, sleep } from "./runtime.js";
 
 const BROKER_EXIT_TIMEOUT_MS = 5_000;
@@ -22,8 +22,10 @@ const BROKER_EXIT_TIMEOUT_MS = 5_000;
 export interface DetachedBrokerProbe {
 	/** `pid`, recorded with when it started. */
 	record(pid: number): Promise<RecordedProcess>;
-	/** Whether `recorded` still runs. */
+	/** Whether `recorded` still runs, so that it may be signalled. */
 	stillRuns(recorded: RecordedProcess): Promise<boolean>;
+	/** Whether `recorded` is known to have exited. */
+	isGone(recorded: RecordedProcess): Promise<boolean>;
 	/** The pid of the broker that answers on `agentDir`'s socket now, if one does. */
 	answeringPid(agentDir: string): Promise<number | undefined>;
 }
@@ -52,29 +54,44 @@ async function answeringBrokerPid(agentDir: string): Promise<number | undefined>
 	return typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-const systemProbe: DetachedBrokerProbe = { record: recordProcess, stillRuns, answeringPid: answeringBrokerPid };
+const systemProbe: DetachedBrokerProbe = { record: recordProcess, stillRuns, isGone, answeringPid: answeringBrokerPid };
 
-/** Terminate and await the broker recorded at `{agentDir}/intercom/broker.pid`, if it is the broker that answers there. */
-export async function stopDetachedBroker(agentDir: string, probe: DetachedBrokerProbe = systemProbe): Promise<void> {
+export interface StopDetachedBrokerOptions {
+	/** Sent in turn while the broker still runs; a crash is simulated with `["SIGKILL"]` alone. */
+	readonly signals?: readonly NodeJS.Signals[];
+	readonly probe?: DetachedBrokerProbe;
+}
+
+/**
+ * Terminate and await the broker recorded at `{agentDir}/intercom/broker.pid`, if it is the broker that answers there.
+ * Returns whether it was signalled.
+ */
+export async function stopDetachedBroker(
+	agentDir: string,
+	{ signals = ["SIGTERM", "SIGKILL"], probe = systemProbe }: StopDetachedBrokerOptions = {},
+): Promise<boolean> {
 	const pid = readRecordedPid(agentDir);
-	if (pid === undefined) return;
+	if (pid === undefined) return false;
 	// Read before the broker answers: a process that started after its answer cannot be taken for it.
 	const recorded = await probe.record(pid);
-	if (!(await probe.stillRuns(recorded))) return;
-	if ((await probe.answeringPid(agentDir)) !== pid) return;
-	for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+	if (!(await probe.stillRuns(recorded))) return false;
+	if ((await probe.answeringPid(agentDir)) !== pid) return false;
+	let signalled = false;
+	for (const signal of signals) {
 		if (!(await probe.stillRuns(recorded))) break;
 		try {
 			process.kill(pid, signal);
+			signalled = true;
 		} catch {
 			// Already exited.
 		}
 	}
 	const deadline = Date.now() + BROKER_EXIT_TIMEOUT_MS;
-	while (await probe.stillRuns(recorded)) {
+	while (!(await probe.isGone(recorded))) {
 		if (Date.now() >= deadline) throw new Error(`Broker ${pid} did not exit; keeping ${agentDir}`);
 		await sleep(20);
 	}
+	return signalled;
 }
 
 /**
@@ -86,8 +103,8 @@ export async function stopDetachedBroker(agentDir: string, probe: DetachedBroker
 export async function removeTempRootReleasingBroker(
 	root: string,
 	agentDir = join(root, "agent"),
-	probe: DetachedBrokerProbe = systemProbe,
+	options: StopDetachedBrokerOptions = {},
 ): Promise<void> {
-	await stopDetachedBroker(agentDir, probe);
+	await stopDetachedBroker(agentDir, options);
 	await removePath(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 }

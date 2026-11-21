@@ -105,6 +105,7 @@ function mockedBroker(pid: number): DetachedBrokerProbe {
 	return {
 		record: async (recorded) => ({ pid: recorded, started: undefined }),
 		stillRuns: async (recorded) => processExists(recorded.pid),
+		isGone: async (recorded) => !processExists(recorded.pid),
 		answeringPid: async () => pid,
 	};
 }
@@ -236,7 +237,7 @@ test("agent-tree cleanup retains files until a pending termination is observed",
 		if (exited) throw Object.assign(new Error("no such process"), { code: "ESRCH" });
 		return true;
 	});
-	const cleanup = removeTempRootReleasingBroker(root, join(root, "agent"), mockedBroker(pid));
+	const cleanup = removeTempRootReleasingBroker(root, join(root, "agent"), { probe: mockedBroker(pid) });
 	try {
 		await sleep(0);
 		assert.ok(fileExistsSync(logPath), "do not delete files while the broker still exists");
@@ -274,7 +275,7 @@ test("agent-tree cleanup rejects at the broker deadline and preserves diagnostic
 	});
 	try {
 		const started = Date.now();
-		await assert.rejects(removeTempRootReleasingBroker(root, agentDir, mockedBroker(pid)), {
+		await assert.rejects(removeTempRootReleasingBroker(root, agentDir, { probe: mockedBroker(pid) }), {
 			message: `Broker ${pid} did not exit; keeping ${agentDir}`,
 		});
 		assert.ok(Date.now() - started >= 5_000, "the live broker must get the full exit grace period");
