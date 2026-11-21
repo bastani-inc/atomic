@@ -60,12 +60,24 @@ export interface McpServerSummaryRecord extends McpServerIdentity {
 	cut?: true;
 }
 
+/** A line of the `mcp_servers` section in a namespace that two or more of its lines share, and the server it lists. */
+export interface McpServerLineRecord {
+	server: string;
+	line: string;
+}
+
 export interface McpToolRecordData {
 	tools: McpToolRecord[];
 	/** The servers with resources, when the resource tools are declared and the set changed. */
 	resourceServers?: McpResourceServerRecord[];
 	/** The server summaries the section showed, when they changed. */
 	summaries?: McpServerSummaryRecord[];
+	/**
+	 * The lines of the section a run's requests send that are in namespaces two or more of them share, in order, with
+	 * the server each lists, written when the run's first reply ends. Lines of a shared namespace name no server, so
+	 * this says which line is whose.
+	 */
+	serverLines?: McpServerLineRecord[];
 }
 
 /**
@@ -76,6 +88,11 @@ export interface McpToolRecords {
 	tools: Map<string, McpToolRecord>;
 	resourceServers: McpResourceServerRecord[] | undefined;
 	summaries: Map<string, McpServerSummaryRecord>;
+	/**
+	 * The latest record of the lines of shared namespaces, when no input that can start a request came after it, so it
+	 * is the record of the latest request's section; undefined otherwise, or when it is malformed.
+	 */
+	serverLines: McpServerLineRecord[] | undefined;
 }
 
 /** The fields of a listed tool that its declaration and calls depend on. */
@@ -200,12 +217,27 @@ function isSummaryRecord(value: unknown): value is McpServerSummaryRecord {
 	return isServerRecord(value) && typeof value.summary === "string" && (value.cut === undefined || value.cut === true);
 }
 
+function isLineRecord(value: unknown): value is McpServerLineRecord {
+	return isRecord(value) && typeof value.server === "string" && typeof value.line === "string";
+}
+
 /** The latest records on the branch. Malformed records are ignored. */
 export function readToolRecords(branch: readonly SessionEntry[]): McpToolRecords {
 	const tools = new Map<string, McpToolRecord>();
 	let resourceServers: McpResourceServerRecord[] | undefined;
 	const summaries = new Map<string, McpServerSummaryRecord>();
+	let serverLines: McpServerLineRecord[] | undefined;
 	for (const entry of branch) {
+		// Input that can start a request with a newly laid out section, after the lines were recorded, may be of a
+		// request whose record was not written. Replies and tool results continue the request the record is of. A
+		// compaction may cover such input, and a resume that reads only the history after it does not see it.
+		if (
+			(entry.type === "message" && entry.message.role !== "assistant" && entry.message.role !== "toolResult") ||
+			entry.type === "custom_message" ||
+			entry.type === "branch_summary" ||
+			entry.type === "compaction"
+		)
+			serverLines = undefined;
 		if (entry.type !== "custom" || entry.customType !== MCP_TOOL_RECORD_ENTRY_TYPE || !isRecord(entry.data)) continue;
 		const { data } = entry;
 		if (Array.isArray(data.tools))
@@ -216,8 +248,11 @@ export function readToolRecords(branch: readonly SessionEntry[]): McpToolRecords
 			if (record.summary) summaries.set(record.server, record);
 			else summaries.delete(record.server);
 		}
+		if (data.serverLines !== undefined)
+			serverLines =
+				Array.isArray(data.serverLines) && data.serverLines.every(isLineRecord) ? data.serverLines : undefined;
 	}
-	return { tools, resourceServers, summaries };
+	return { tools, resourceServers, summaries, serverLines };
 }
 
 /** Whether the MCP integration records the declaration of a tool of this name. */
