@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -111,6 +111,20 @@ test(
 			assert.deepEqual(Object.keys(packed.optionalDependencies ?? {}).sort(), [...nativePackageNames].sort());
 			for (const dependency of nativePackageNames) {
 				assert.equal(packed.optionalDependencies?.[dependency], version, dependency);
+			}
+			// Each install gets its binary from the matching platform package alone: the root carries none.
+			const listed = spawnSyncCollect(["tar", "-tf", tarballs[0] as string], { cwd: outputDir });
+			assert.equal(listed.exitCode, 0, listed.stderr.toString());
+			assert.deepEqual(
+				listed.stdout
+					.toString()
+					.split("\n")
+					.filter((entry) => entry.endsWith(".node")),
+				[],
+			);
+			for (const [index, dependency] of nativePackageNames.entries()) {
+				const platformDir = join(stage, "npm", dependency.slice("@bastani/atomic-natives-".length));
+				assert.ok(existsSync(join(platformDir, nativeBinaryNames[index] as string)), dependency);
 			}
 		} finally {
 			rmSync(stage, { recursive: true, force: true });

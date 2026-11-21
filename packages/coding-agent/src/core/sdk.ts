@@ -14,6 +14,7 @@ import {
 } from "@bastani/atomic-ai/compat";
 import { getAtomicEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 import { getAgentDir } from "../config.js";
+import { assertNativeModuleAvailable } from "../utils/native-module.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { AgentSession } from "./agent-session.js";
@@ -94,7 +95,7 @@ import { physicalForkHeader } from "./session-manager-core.ts";
 import { prepareSessionOpenMarkers } from "./session-open-markers.js";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
 import { resolveSessionStore } from "./session-storage.js";
-import { releaseSessionWorktrees } from "./session-worktree-snapshots.ts";
+import { hasSubagentCaptures, releaseSessionWorktrees } from "./session-worktree-snapshots.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
@@ -227,6 +228,8 @@ function createScopedSession(
 ): Promise<CreateAgentSessionResult> {
 	let releaseWhenIdle: ReleaseWhenIdleOptions | undefined;
 	try {
+		// A session cannot run without Atomic's native module: say why it cannot load before anything opens.
+		assertNativeModuleAvailable();
 		releaseWhenIdle = parseReleaseWhenIdle(options.releaseWhenIdle);
 		if (options.intercom !== undefined) validateIntercomSessionOptions(options.intercom);
 	} catch (error) {
@@ -324,7 +327,9 @@ async function sessionResumedOnThisNode(
 	snapshots: CreateAgentSessionOptions["snapshots"],
 ): Promise<SessionManager | undefined> {
 	if (sessionManager === undefined || !sessionManager.isPersisted()) return sessionManager;
-	if (sessionManager.getLatestWorktreeSnapshots().size === 0) return sessionManager;
+	// One whose finished subagents captured a checkout is prepared too: it comes back as they left it.
+	if (sessionManager.getLatestWorktreeSnapshots().size === 0 && !hasSubagentCaptures(sessionManager))
+		return sessionManager;
 	const settings = settingsManager ?? (await SettingsManager.createAsync(process.cwd(), agentDir));
 	const prepared = await prepareSessionResume(sessionManager, {
 		...sessionResumeOptions(

@@ -10,6 +10,10 @@
 - `terminateProcessCreatedAt(pid, created, descendants)`: on Windows, ends the running process `pid` only if it was created at `created`, as `processCreationTime` reads it, and with `descendants` what it started, each through a handle checked before anything is ended; `null` when `pid` names no such process, and off Windows.
 - `holdProcessDescendants(pid)`: on Windows, holds the processes that a child process started, and those they started, each through a handle of its own, taken only while it is still its parent's child and started after it (by the kernel's order of process starts, not by a clock), so a process given one of their ids is never held. `terminate()` ends them and `release()` lets go of them, so the caller can end the child first and then them; `null` once `pid` has exited and elsewhere.
 
+### Changed
+
+- The package no longer includes the native binaries of every platform: each platform's binary comes from its own optional package (`@bastani/atomic-natives-<platform>`), which package managers install for the platform they run on. When the binary cannot load, the error says why instead of blaming an npm bug: which platform package an install that omitted optional dependencies left out and how to reinstall with it, an installed platform package that fails to load and its reason, a platform with no published package, or a `NAPI_RS_NATIVE_LIBRARY_PATH` override that fails.
+
 ## [0.10.1] - 2026-11-20
 
 ### Added

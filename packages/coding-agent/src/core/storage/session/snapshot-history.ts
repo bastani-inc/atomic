@@ -38,6 +38,16 @@ export function windowFromSnapshot(
 	const resume = sessionResumeOf(snapshot.header, entries, leaf, undefined, isProxy);
 	const childArchive = new ChildCatalog();
 	const branchIds = new Set(resume.branch.map(({ entry }) => entry.id));
+	// A record before the window is on the active branch when it is an ancestor of the leaf.
+	let active: Set<string> | undefined;
+	const onActiveBranch = (id: string): boolean => {
+		active ??= new Set(
+			resume.leafId === undefined || resume.leafId === null
+				? []
+				: getBranchPath(resume.leafId, new Map(entries.map((entry) => [entry.id, entry]))).map((entry) => entry.id),
+		);
+		return active.has(id);
+	};
 	childArchive.retire(
 		entries.flatMap((entry, i) =>
 			entry.type === "custom" && entry.customType === "subagent-child" && !branchIds.has(entry.id)
@@ -45,6 +55,7 @@ export function windowFromSnapshot(
 				: [],
 		),
 		resume.branch,
+		onActiveBranch,
 	);
 	let priorAnswer: AssistantAnswer | undefined;
 	if (resume.compaction && resume.leafId) {

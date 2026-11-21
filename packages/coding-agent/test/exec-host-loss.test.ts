@@ -41,6 +41,20 @@ async function recordedFrom(file: string): Promise<RecordedProcess> {
 	return recorded;
 }
 
+/** A program that records its pid in the file its first argument names, then runs until it is ended. */
+const RECORDS_ITS_PID =
+	'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+/** {@link RECORDS_ITS_PID}, ignoring SIGTERM. */
+const RECORDS_ITS_PID_DEAF =
+	'process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+/**
+ * A program that starts a process of its own running the program its second argument holds, with its first argument,
+ * a file, as that program's argument, in a session of its own when its third argument is `detached`. It then exits
+ * once the file exists when its fourth argument is `exit`, and otherwise runs until it is ended.
+ */
+const STARTS_A_PROCESS =
+	'const [file, program, session, keep] = process.argv.slice(1); require("node:child_process").spawn(process.execPath, ["-e", program, file], { stdio: "ignore", detached: session === "detached" }).unref(); if (keep === "exit") { const wait = setInterval(() => { if (require("node:fs").existsSync(file)) { clearInterval(wait); process.exit(0); } }, 10); } else setInterval(() => {}, 1000);';
+
 /**
  * A command that starts a process of its own, which records its pid in `file`; the command runs until it is ended,
  * or with `exitAfterStart` exits once that process runs, and with `detached` starts it in a session of its own.
@@ -49,12 +63,14 @@ function commandStartingAProcess(
 	file: string,
 	options: { exitAfterStart?: boolean; detached?: boolean; deaf?: boolean } = {},
 ): string[] {
-	const child = `${options.deaf ? 'process.on("SIGTERM", () => {});' : ""}require("node:fs").writeFileSync(${JSON.stringify(file)}, String(process.pid)); setInterval(() => {}, 1000);`;
-	const keep = options.exitAfterStart
-		? `const wait = setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(file)})) { clearInterval(wait); process.exit(0); } }, 10);`
-		: "setInterval(() => {}, 1000);";
-	const root = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { stdio: "ignore", detached: ${options.detached === true} }).unref(); ${keep}`;
-	return ["-e", root];
+	return [
+		"-e",
+		STARTS_A_PROCESS,
+		file,
+		options.deaf ? RECORDS_ITS_PID_DEAF : RECORDS_ITS_PID,
+		options.detached ? "detached" : "attached",
+		options.exitAfterStart ? "exit" : "run",
+	];
 }
 
 /** A quit stop as a session gives a command an extension runs outside its `session_shutdown` handlers. */

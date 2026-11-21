@@ -6,6 +6,7 @@ import {
 	mkdir,
 	mkdtemp,
 	open,
+	readdir,
 	readFile,
 	rm,
 	stat,
@@ -226,8 +227,6 @@ interface WorkingTreeOptions {
 	readonly neutral?: boolean;
 	readonly seedTree?: string;
 	readonly attributesFile?: string;
-	/** The recorded tree whose executable and symbolic-link modes unchanged files keep ({@link carryRecordedModes}). */
-	readonly modeTree?: string;
 }
 
 /**
@@ -428,12 +427,11 @@ async function writeCapturedTree(
 	policy: SnapshotPathPolicy,
 	scratch: string,
 	capture: CaptureIndex,
-	modeTree: string | undefined,
 	signal?: AbortSignal,
 ): Promise<WorkingTreeState> {
 	const { root } = checkout;
 	const { index, userIndexPath } = capture;
-	const options: WorkingTreeOptions = { signal, modeTree };
+	const options: WorkingTreeOptions = { signal };
 	if (!(await usableOutside(root, index))) return writeWorkingTree(checkout, settings, policy, scratch, options);
 	const working = `${index}.${process.pid}.tmp`;
 	try {
@@ -448,7 +446,7 @@ async function writeCapturedTree(
 		}
 		const state = await writeTreeThrough(working, checkout, settings, policy, options, {
 			refresh: true,
-			forceAdded: () => ignoredAdditionsToHead(checkout, signal),
+			forceAdded: () => ignoredAdditionsToHead(checkout, userIndexPath, scratch, signal),
 		});
 		const written: IndexRecord = {
 			version: CAPTURE_INDEX_VERSION,
@@ -484,8 +482,8 @@ export function nextCaptureTick(): number {
 
 /**
  * The computations of a checkout's working files that have not started reading them, by everything they compute
- * from: the checkout, its HEAD, its private index and the settings, then, after a NUL, the tree whose modes unchanged
- * files keep.
+ * from: the checkout, its HEAD, its private index and the settings. A computation keeps no modes from an earlier
+ * snapshot, which each capture gives its own tree afterwards, so every capture of those inputs can take it.
  */
 const pendingWorkingFiles = new Map<string, Promise<WorkingFiles>>();
 
@@ -500,27 +498,25 @@ const startedWorkingFiles = new Map<
  * computation another one requested for the same inputs when that has not started yet, instead of starting its own:
  * the computation reads the files after the joining capture was requested, so that capture records exactly what one
  * of its own starting at the same moment would. With `wroteBy`, when the writes it must hold ended, it also joins one
- * that started reading after that. Where the repository keeps no modes from an earlier tree, a capture from another
- * earlier snapshot computes the same tree, so the capture joins that one too; each capture still records its snapshot
- * from its own earlier one. Any other started computation is not joined, as it may have read a file before the
- * capture's writes: a capture waits for at most the computation running when it was requested and one more.
+ * that started reading after that. Any other started computation is not joined, as it may have read a file before the
+ * capture's writes: a capture waits for at most the computation running when it was requested and one more, whichever
+ * earlier snapshots the captures start from.
  */
 function readWorkingFiles(
 	checkout: Checkout,
 	settings: WorktreeSnapshotSettings,
 	capture: CaptureIndex,
-	modeTree: string | undefined,
 	signal?: AbortSignal,
 	wroteBy?: number,
 ): Promise<WorkingFiles> {
 	const compute = () =>
 		withScratchDirectory(async (scratch): Promise<WorkingFiles> => {
 			const policy = await loadSnapshotPathPolicy(checkout.root);
-			const state = await writeCapturedTree(checkout, settings, policy, scratch, capture, modeTree, signal);
+			const state = await writeCapturedTree(checkout, settings, policy, scratch, capture, signal);
 			return { state, omitted: [...state.omitted, ...(await submoduleOmissions(checkout.root, signal))] };
 		});
 	if (signal !== undefined) return inTurn(capture.index, compute);
-	const inputs = JSON.stringify([
+	const key = JSON.stringify([
 		checkout.root,
 		checkout.head,
 		capture.gitDir,
@@ -528,40 +524,22 @@ function readWorkingFiles(
 		capture.index,
 		settings,
 	]);
-	const key = `${inputs}\0${modeTree ?? ""}`;
-	const start = () => {
-		const pending = pendingWorkingFiles.get(key);
-		if (pending !== undefined) return pending;
-		const computation: Promise<WorkingFiles> = inTurn(capture.index, async () => {
-			if (pendingWorkingFiles.get(key) === computation) pendingWorkingFiles.delete(key);
-			const started = { computation, startedAt: nextCaptureTick() };
-			startedWorkingFiles.set(key, started);
-			try {
-				return await compute();
-			} finally {
-				if (startedWorkingFiles.get(key) === started) startedWorkingFiles.delete(key);
-			}
-		});
-		pendingWorkingFiles.set(key, computation);
-		return computation;
-	};
-	/** A computation of these inputs with `modes` (the key's suffix) that this capture may take. */
-	const joinable = (modes: (candidate: string) => boolean) => {
-		for (const [candidate, computation] of pendingWorkingFiles)
-			if (candidate.startsWith(`${inputs}\0`) && modes(candidate)) return computation;
-		if (wroteBy !== undefined)
-			for (const [candidate, started] of startedWorkingFiles)
-				if (candidate.startsWith(`${inputs}\0`) && modes(candidate) && started.startedAt > wroteBy)
-					return started.computation;
-		return undefined;
-	};
-	const own = joinable((candidate) => candidate === key);
-	if (own !== undefined) return own;
-	if (joinable((candidate) => candidate !== key) === undefined) return start();
-	return carriedModes(checkout.root).then(
-		(carried) => (carried.size === 0 ? joinable((candidate) => candidate !== key) : undefined) ?? start(),
-		start,
-	);
+	const pending = pendingWorkingFiles.get(key);
+	if (pending !== undefined) return pending;
+	const started = startedWorkingFiles.get(key);
+	if (wroteBy !== undefined && started !== undefined && started.startedAt > wroteBy) return started.computation;
+	const computation: Promise<WorkingFiles> = inTurn(capture.index, async () => {
+		if (pendingWorkingFiles.get(key) === computation) pendingWorkingFiles.delete(key);
+		const reading = { computation, startedAt: nextCaptureTick() };
+		startedWorkingFiles.set(key, reading);
+		try {
+			return await compute();
+		} finally {
+			if (startedWorkingFiles.get(key) === reading) startedWorkingFiles.delete(key);
+		}
+	});
+	pendingWorkingFiles.set(key, computation);
+	return computation;
 }
 
 /**
@@ -634,19 +612,72 @@ async function ignoredStagedOutsideSeed(
 }
 
 /**
- * Files staged in the user's index as additions to HEAD that an ignore rule matches (`git add -f`): one listing of the
- * staged additions, then the ignore rules on those paths alone.
+ * The files staged as additions to HEAD in each user's index this process listed, by index path: the hash of the
+ * index's bytes and the HEAD they were listed against, the listing, which follows from those two alone, and whether it
+ * holds a submodule.
  */
-async function ignoredAdditionsToHead(checkout: Checkout, signal?: AbortSignal): Promise<string[]> {
+const stagedAdditions = new Map<
+	string,
+	{ readonly key: string; readonly added: readonly string[]; readonly submodules: boolean }
+>();
+
+/** The command that lists the files staged in an index as additions to `head`. */
+function stagedAdditionsCommand(head: string, raw: boolean): string[] {
+	return [
+		"diff-index",
+		"--cached",
+		...(raw ? ["--raw", "--ignore-submodules=none"] : ["--name-only"]),
+		"-z",
+		"--no-renames",
+		"--diff-filter=A",
+		head,
+	];
+}
+
+/**
+ * Files staged in the user's index at `userIndexPath` as additions to HEAD that an ignore rule matches (`git add -f`):
+ * the staged additions, then the ignore rules on those paths alone. The additions are listed again only when the
+ * index's bytes or HEAD changed since the last listing, and then from a copy, in `scratch`, of exactly the bytes the
+ * listing is kept for: the user's index can change meanwhile. Whether Git lists a staged submodule follows its
+ * `ignore` setting, which the index does not hold, so while the index stages one the additions are listed every time.
+ */
+async function ignoredAdditionsToHead(
+	checkout: Checkout,
+	userIndexPath: string,
+	scratch: string,
+	signal?: AbortSignal,
+): Promise<string[]> {
 	const { root, head } = checkout;
-	const added = nulFields(
-		(
-			await runGit(["diff-index", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=A", head], {
-				cwd: root,
-				signal,
-			})
-		).stdout,
-	);
+	let bytes: Buffer | null;
+	try {
+		bytes = await readFile(userIndexPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
+		bytes = null;
+	}
+	const key = `${bytes === null ? "none" : sha256Hex(bytes)}\0${head}`;
+	let listed = stagedAdditions.get(userIndexPath);
+	if (listed?.key !== key) {
+		// A checkout without an index lists from an absent copy, as Git lists from its absent index: nothing.
+		const copy = join(scratch, "user-index");
+		if (bytes !== null) await writeFile(copy, bytes);
+		// Every addition with its mode, whatever any submodule's `ignore` setting says.
+		const fields = nulFields(
+			(await runGit(stagedAdditionsCommand(head, true), { cwd: root, env: { GIT_INDEX_FILE: copy }, signal }))
+				.stdout,
+		);
+		const added: string[] = [];
+		let submodules = false;
+		for (let index = 0; index + 1 < fields.length; index += 2) {
+			if (fields[index]!.slice(1).split(" ")[1] === "160000") submodules = true;
+			added.push(fields[index + 1]!);
+		}
+		listed = { key, added, submodules };
+		stagedAdditions.set(userIndexPath, listed);
+	}
+	const added = listed.submodules
+		? nulFields((await runGit(stagedAdditionsCommand(head, false), { cwd: root, signal })).stdout)
+		: listed.added;
 	if (added.length === 0) return [];
 	const ignored = await runGit(["check-ignore", "--no-index", "--stdin", "-z"], {
 		cwd: root,
@@ -732,15 +763,12 @@ async function writeTreeThrough(
 			input: `${admitted.join("\0")}\0`,
 		});
 	}
-	if (options.modeTree !== undefined) {
-		await carryRecordedModes(git, options.modeTree, new Set(omitted.map((omission) => omission.path)));
-	}
 	return { tree: await gitText(["write-tree"], git), omitted };
 }
 
 /**
  * The modes a capture of the checkout at `root` carries over from the tree of an earlier snapshot, as
- * `carryRecordedModes` does: executable files where the repository does not trust the file system's executable bits
+ * {@link withRecordedModes} does: executable files where the repository does not trust the file system's executable bits
  * (`core.filemode=false`), links where it has no symbolic links (`core.symlinks=false`). None where it trusts both, so
  * a capture records the same tree from whichever earlier snapshot it starts.
  */
@@ -765,21 +793,33 @@ async function carriedModes(root: string, signal?: AbortSignal): Promise<Readonl
 }
 
 /**
- * Where the repository does not trust the file system's executable bits (`core.filemode=false`) or has no symbolic
- * links (`core.symlinks=false`), as on Windows, gives each regular file of the private index that `recorded` holds as
- * executable or as a link the mode `recorded` gives it, with the file's current content: Git would otherwise record the
- * checked-out file as a regular one (#4932). An edit keeps the mode, as Git keeps a tracked entry's mode where it cannot
- * read one from the file; a link's new content is its new target. Files the capture leaves out (`omitted`) keep HEAD's
- * entry.
+ * `tree`, the tree of a checkout's working files as Git reads them, with the modes `recorded`, the tree of an earlier
+ * snapshot, gives its files: where the repository does not trust the file system's executable bits
+ * (`core.filemode=false`) or has no symbolic links (`core.symlinks=false`), as on Windows, each regular file of `tree`
+ * that `recorded` holds as executable or as a link gets that mode with its current content. Git would otherwise record
+ * the checked-out file as a regular one (#4932). An edit keeps the mode, as Git keeps a tracked entry's mode where it
+ * cannot read one from the file; a link's new content is its new target. Files the capture leaves out (`omitted`) keep
+ * HEAD's entry. The modes go into a tree of this capture's own, never into the checkout's private index, which every
+ * capture of the checkout reads from: `tree` itself when no file gets another mode. `read` is `recorded` when Git read
+ * it to compare, which shows that the repository holds it.
  */
-async function carryRecordedModes(git: GitRunOptions, recorded: string, omitted: ReadonlySet<string>): Promise<void> {
-	const carried = await carriedModes(git.cwd, git.signal);
-	if (carried.size === 0) return;
+async function withRecordedModes(
+	root: string,
+	tree: string,
+	recorded: string | undefined,
+	omitted: ReadonlySet<string>,
+	signal?: AbortSignal,
+): Promise<{ readonly tree: string; readonly read?: string }> {
+	if (recorded === undefined || recorded === tree) return { tree };
+	const carried = await carriedModes(root, signal);
+	if (carried.size === 0) return { tree };
 	// A recorded tree this store no longer holds has no modes to give: Git fails, printing no entries.
-	const diff = await runGit(["diff-index", "--cached", "--raw", "-z", "--no-renames", recorded], {
-		...git,
+	const diff = await runGit(["diff-tree", "-r", "--raw", "-z", "--no-renames", recorded, tree], {
+		cwd: root,
+		signal,
 		allowExitCodes: [128],
 	});
+	const read = diff.exitCode === 0 ? recorded : undefined;
 	const fields = nulFields(diff.stdout);
 	const entries: string[] = [];
 	for (let index = 0; index + 1 < fields.length; index += 2) {
@@ -789,7 +829,13 @@ async function carryRecordedModes(git: GitRunOptions, recorded: string, omitted:
 			entries.push(`${oldMode} ${newBlob}\t${path}\0`);
 		}
 	}
-	if (entries.length > 0) await runGit(["update-index", "-z", "--index-info"], { ...git, input: entries.join("") });
+	if (entries.length === 0) return { tree, read };
+	return withScratchDirectory(async (scratch) => {
+		const git: GitRunOptions = { cwd: root, env: { GIT_INDEX_FILE: join(scratch, "index") }, signal };
+		await runGit(["read-tree", tree], git);
+		await runGit(["update-index", "-z", "--index-info"], { ...git, input: entries.join("") });
+		return { tree: await gitText(["write-tree"], git), read };
+	});
 }
 
 async function fileBytes(path: string): Promise<number> {
@@ -918,6 +964,96 @@ interface HistoryCapture {
 	readonly blob?: SnapshotBlob;
 }
 
+/** Why a snapshot leaves its checkout's unpushed commits out. */
+type HistoryOmission = Extract<
+	WorktreeSnapshotOmission,
+	{ readonly reason: "unpushed-history-denied" | "bundle-over-cap" }
+>;
+
+/**
+ * The unpushed commits a capture of each checkout in this process last left out, by checkout root: the hash of their
+ * exact list (`fingerprint`), the omission recorded for it, and for a bundle over the cap, the repository's packs when
+ * the commits were bundled ({@link packsOf}). Which of those commits add or modify a deny-listed path follows from the
+ * list alone, and the size of their bundle from the list and the packs, so a later capture of the same list records the
+ * same omission without checking and bundling the commits again, which takes seconds for a long history no remote has.
+ */
+const leftOutHistory = new Map<
+	string,
+	{ readonly fingerprint: string; readonly omission: HistoryOmission; readonly packs: string | undefined }
+>();
+
+/**
+ * How far over the cap an earlier bundle of the same commits, from the same packs, must have been for a capture to
+ * leave them out without bundling them again: packing the same commits again can give a slightly smaller bundle.
+ * Nearer the cap they are bundled again.
+ */
+const OVER_CAP_REUSE_MARGIN = 0.1;
+
+/** How deep Git follows object directories that borrow from others (`objects/info/alternates`). */
+const ALTERNATES_DEPTH = 5;
+
+/**
+ * The packs of the repository with the Git directory `gitDir`, and of the object directories it borrows objects from
+ * (`objects/info/alternates`), as a hash of their file names and sizes; undefined when they cannot all be read. A
+ * bundle of the same commits packed from the same packs has nearly the same size; a repack or `git gc` replaces them
+ * and can make it much smaller. Objects written loose since then are not part of it: an unpushed commit's objects stay
+ * loose until a repack packs them, and objects written later are no part of the commits' bundle.
+ */
+async function packsOf(gitDir: string): Promise<string | undefined> {
+	let objects: string;
+	try {
+		// A linked worktree's Git directory names the repository's own, which holds the objects.
+		objects = join(resolve(gitDir, (await readFile(join(gitDir, "commondir"), "utf8")).trim()), "objects");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+		objects = join(gitDir, "objects");
+	}
+	const listed: string[] = [];
+	const visited = new Set<string>();
+	const visit = async (directory: string, depth: number): Promise<boolean> => {
+		if (visited.has(directory)) return true;
+		if (depth > ALTERNATES_DEPTH) return false;
+		visited.add(directory);
+		let names: string[];
+		let alternates: string;
+		try {
+			names = (await readdir(join(directory, "pack"))).sort();
+			for (const name of names)
+				listed.push(`${directory}\0${name}\0${(await stat(join(directory, "pack", name))).size}`);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+		}
+		try {
+			alternates = await readFile(join(directory, "info", "alternates"), "utf8");
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "ENOENT";
+		}
+		for (const line of alternates.split(/\r?\n/)) {
+			if (line === "" || line.startsWith("#")) continue;
+			// A quoted path is one Git unquotes first; it is not followed here, and the packs count as unknown.
+			if (line.startsWith('"') || !(await visit(resolve(directory, line), depth + 1))) return false;
+		}
+		return true;
+	};
+	return (await visit(objects, 0)) ? sha256Hex(listed.join("\n")) : undefined;
+}
+
+/**
+ * Whether `omission`, recorded for the same unpushed commits, still leaves them out under `settings`: a denied commit
+ * always does; a bundle over the cap does while the repository's packs are those it was bundled from (`packs`, as
+ * {@link packsOf} gives them now: `current`) and its size exceeds the cap by more than {@link OVER_CAP_REUSE_MARGIN}.
+ */
+async function stillLeftOut(
+	omission: HistoryOmission,
+	packs: string | undefined,
+	current: () => Promise<string | undefined>,
+	settings: WorktreeSnapshotSettings,
+): Promise<boolean> {
+	if (omission.reason === "unpushed-history-denied") return true;
+	if (packs === undefined || omission.bytes <= settings.maxSnapshotBytes * (1 + OVER_CAP_REUSE_MARGIN)) return false;
+	return (await current()) === packs;
+}
+
 const COMMIT_TOKEN = /^([0-9a-f]{40}|[0-9a-f]{64})(?: \(from [0-9a-f]+\))?$/;
 
 /** Commits of `commits` that add or modify a deny-listed path, with those paths. */
@@ -1017,6 +1153,7 @@ async function verifiedBundle(
 
 async function captureHistory(
 	checkout: Checkout,
+	gitDir: string,
 	settings: WorktreeSnapshotSettings,
 	previous: WorktreeSnapshot | undefined,
 	scratch: string,
@@ -1032,17 +1169,30 @@ async function captureHistory(
 	const sameHistory = (commits: readonly string[]) =>
 		previous?.head === head && commits.length === unpushed.length && commits.every((c, i) => c === unpushed[i]);
 	if (previous?.bundle && sameHistory(previous.bundle.commits)) return { bundle: previous.bundle, omitted: [] };
-	const denied = await deniedHistory(root, unpushed, signal);
-	if (denied.commits.length > 0) {
-		return { bundle: null, omitted: [{ reason: "unpushed-history-denied", ...denied }] };
+	const fingerprint = sha256Hex(unpushed.join("\n"));
+	const remembered = leftOutHistory.get(root);
+	if (
+		remembered?.fingerprint === fingerprint &&
+		(await stillLeftOut(remembered.omission, remembered.packs, () => packsOf(gitDir), settings))
+	) {
+		return { bundle: null, omitted: [remembered.omission] };
 	}
+	const leaveOut = (omission: HistoryOmission, packs?: string): HistoryCapture => {
+		leftOutHistory.set(root, { fingerprint, omission, packs });
+		return { bundle: null, omitted: [omission] };
+	};
+	const denied = await deniedHistory(root, unpushed, signal);
+	if (denied.commits.length > 0) return leaveOut({ reason: "unpushed-history-denied", ...denied });
+	const packs = await packsOf(gitDir);
 	const file = join(scratch, "history.bundle");
 	await bundlePinned(root, head, boundary, file, signal);
 	const data = await verifiedBundle(root, head, unpushed, file, signal);
 	// Not the commits that were checked: record the snapshot without its history rather than store them (#4900).
 	if (data === null) return { bundle: null, omitted: [] };
 	if (data.byteLength > settings.maxSnapshotBytes) {
-		return { bundle: null, omitted: [{ reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength }] };
+		// The size is kept for the packs only when they were the same before and after bundling.
+		const bundledFrom = packs === (await packsOf(gitDir)) ? packs : undefined;
+		return leaveOut({ reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength }, bundledFrom);
 	}
 	const blob = snapshotBlob(data);
 	return { bundle: { blob: blob.hash, bytes: data.byteLength, commits: unpushed }, omitted: [], blob };
@@ -1177,15 +1327,12 @@ async function captureCheckout(
 			? undefined
 			: candidate;
 	const capture = await captureIndexOf(checkout, resolve(defaultWorktreeSnapshotStoreDir()), signal);
+	const read = await readWorkingFiles(checkout, settings, capture, signal, wroteBy);
 	const modeTree = previous?.tree ?? (await restoredTreeOf(capture.gitDir));
-	const { state, omitted: pathOmissions } = await readWorkingFiles(
-		checkout,
-		settings,
-		capture,
-		modeTree,
-		signal,
-		wroteBy,
-	);
+	const omittedPaths = new Set(read.state.omitted.flatMap((omission) => ("path" in omission ? [omission.path] : [])));
+	const modes = await withRecordedModes(root, read.state.tree, modeTree, omittedPaths, signal);
+	const state = { ...read.state, tree: modes.tree };
+	const pathOmissions = read.omitted;
 	const omissions = pathOmissionKeys(pathOmissions);
 	if (
 		previous &&
@@ -1207,7 +1354,8 @@ async function captureCheckout(
 			previous !== undefined &&
 			previous.head === head &&
 			previous.chain.length < settings.fullEvery &&
-			(await objectExists(root, previous.tree, signal));
+			// Comparing modes with the previous tree read it, where the repository does not trust file modes.
+			(modes.read === previous.tree || (await objectExists(root, previous.tree, signal)));
 		const baseTree = incremental
 			? previous.tree
 			: await gitText(["rev-parse", `${head}^{tree}`], { cwd: root, signal });
@@ -1239,7 +1387,7 @@ async function captureCheckout(
 			bytes: patch?.data.byteLength ?? 0,
 		};
 		const chain = incremental ? [...previous.chain, link] : [link];
-		const history = await captureHistory(checkout, settings, previous, scratch, signal);
+		const history = await captureHistory(checkout, capture.gitDir, settings, previous, scratch, signal);
 		if (history.blob) blobs.push(history.blob);
 		const fields = {
 			root,

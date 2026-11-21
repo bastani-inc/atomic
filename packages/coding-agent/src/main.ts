@@ -184,6 +184,7 @@ import {
 	takeInteractiveEngineBootstrapArg,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./utils/interactive-engine-env.ts";
+import { assertNativeModuleAvailable, NativeModuleUnavailableError } from "./utils/native-module.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 export type { AppMode } from "./main-app-mode.ts";
@@ -443,6 +444,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	const onlyAtomicMarksBundled =
 		options?.builtinPackagePaths === undefined &&
 		!(options?.extensionFactories ?? []).some((input) => typeof input !== "function" && input.bundled === true);
+	// The same mapping as applyOfflineEnvironment in utils/startup-environment.ts, which applies it before a prewarmed
+	// engine starts. Written here again so that main's code imports no new name from code an earlier session holds.
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
 	if (offlineMode) {
 		setEnvValue(ENV_OFFLINE, "1");
@@ -1368,6 +1371,18 @@ export async function main(argv: string[], options?: MainOptions) {
 	};
 	createRuntime.prepareResume = prepareRuntime;
 	time("createRuntimeFactory");
+	// A session cannot run without the native module: say why it cannot load and stop, before the session opens (which
+	// loads it) and before the interactive host starts its engine.
+	try {
+		assertNativeModuleAvailable();
+	} catch (error) {
+		if (!(error instanceof NativeModuleUnavailableError)) throw error;
+		startupEarlyInputCapture?.consume();
+		console.error(chalk.red(`Error: ${error.message}`));
+		// A pipe may not have taken the message yet: exiting now would lose it.
+		await drainProcessStdio();
+		process.exit(1);
+	}
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
 	// --session and --resume may select a session from another project, so project-local
 	// settings, resources, provider registrations, and models must be resolved only after

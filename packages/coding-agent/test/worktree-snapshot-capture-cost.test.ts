@@ -14,9 +14,10 @@ import {
 	captureWorktreeSnapshot,
 	locateCheckout,
 	nextCaptureTick,
+	recordRestoredTree,
 	type WorktreeSnapshotCapture,
 } from "../src/core/worktree-snapshot/capture.ts";
-import { setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
+import { gitText, runGit, setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 
 useTemporaryAgentDir();
@@ -24,13 +25,14 @@ useTemporaryAgentDir();
 /**
  * Git processes one turn may start to learn that its checkout did not change: one `rev-parse` locates the checkout,
  * its Git directory, its index and HEAD; the tree is then computed through the private index with `read-tree`,
- * `update-index --refresh`, `diff-files`, `diff-index` (files staged despite an ignore rule), `ls-files --others`,
- * `update-index --stdin` (the files that differ from HEAD), the `config` lookup of the modes Git trusts, and
- * `write-tree`. The session ref already names the snapshot's commit, so it is not written again. Every turn that calls
- * a file-writing tool pays this, in every session of a host: before this budget an unchanged turn started 14, and a
- * host with many agents about 5 Git processes a second.
+ * `update-index --refresh`, `diff-files`, `ls-files --others`, `update-index --stdin` (the files that differ from
+ * HEAD), the `config` lookup of the modes Git trusts, and `write-tree`. The files staged in the user's index despite an
+ * ignore rule (`diff-index`) were listed by the turn before, from the same index and HEAD. The session ref already names
+ * the snapshot's commit, so it is not written again. Every turn that calls a file-writing tool pays this, in every
+ * session of a host: before this budget an unchanged turn started 14, and a host with many agents about 5 Git
+ * processes a second.
  */
-const UNCHANGED_TURN_GIT_PROCESSES = 9;
+const UNCHANGED_TURN_GIT_PROCESSES = 8;
 
 /**
  * The `diff-index` that gives changed files the executable or link mode their recorded tree holds, which a capture
@@ -180,10 +182,10 @@ describe("captures of one checkout requested together", () => {
 		const resumed = new Promise<void>((resolve) => {
 			resume = resolve;
 		});
-		// The first capture's sixth Git process, the lookup of the modes Git trusts, runs after its tree computation
-		// listed the changed and untracked files, and before it writes the tree.
+		// The first capture's fifth Git process, `write-tree`, runs after its tree computation listed the changed and
+		// untracked files (the files staged despite an ignore rule were listed by the capture before, from the same index).
 		countGitProcesses(async (started) => {
-			if (started !== 6) return;
+			if (started !== 5) return;
 			reading();
 			await resumed;
 		});
@@ -251,18 +253,77 @@ describe("captures of one checkout requested together", () => {
 		);
 	});
 
-	test("from different earlier snapshots each compute the tree where Git does not trust file modes", async () => {
-		const { clone, blobs, earlier } = await checkoutWithEarlierSnapshots(3, false);
+	test("from different earlier snapshots compute the checkout's tree at most twice where Git does not trust file modes either", async () => {
+		const { clone, blobs, earlier } = await checkoutWithEarlierSnapshots(CONCURRENT_CAPTURES, false);
 		const trace = sandbox.traceGitProcesses();
-		await Promise.all(earlier.map((previous) => captureWorktreeSnapshot(clone, { settings, blobs, previous })));
-		assert.equal(startedWith(trace, "write-tree"), 3);
+		const captures = await Promise.all(
+			earlier.map((previous) => captureWorktreeSnapshot(clone, { settings, blobs, previous })),
+		);
+		assert.ok(startedWith(trace, "write-tree") <= 2, `${startedWith(trace, "write-tree")} trees written`);
+		assert.deepEqual(
+			captures.map((capture) => captured(capture).snapshot.delta.base),
+			earlier.map((previous) => previous.id),
+		);
+	});
+
+	test("where Git does not trust file modes, captures from earlier snapshots with other modes share the scan, and each keeps the modes of its own", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+		await sandbox.git(clone, "config", "core.filemode", "false");
+		await sandbox.git(clone, "config", "core.symlinks", "false");
+		sandbox.write(join(clone, "tool.sh"), "echo\n");
+		const blobs = new MemorySnapshotBlobStore();
+		const plain = captured(await captureWorktreeSnapshot(clone, { settings, blobs })).snapshot;
+		// The checkout was restored from a snapshot that recorded tool.sh as executable, as one taken where Git trusts
+		// modes does: a capture with no earlier snapshot of its own keeps that mode, one from `plain` keeps its own.
+		const index = sandbox.path("mode-index");
+		const git = { cwd: clone, env: { GIT_INDEX_FILE: index } };
+		await runGit(["read-tree", plain.tree], git);
+		await runGit(["update-index", "--chmod=+x", "--", "tool.sh"], git);
+		await recordRestoredTree({ cwd: clone }, await gitText(["write-tree"], git));
+		sandbox.write(join(clone, "README.md"), "changed\n");
+		const checkout = await locateCheckout(clone);
+		if (checkout instanceof Error) throw checkout;
+
+		const trace = sandbox.path("git-trace.jsonl");
+		const traced = { ...sandbox.executable, env: { ...sandbox.executable.env, GIT_TRACE2_EVENT: trace } };
+		const scanning = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		let started = 0;
+		const previous = setWorktreeSnapshotGit(async () => {
+			started++;
+			// The first capture's sixth Git process, `write-tree`, runs once its scan listed the changed files (the files
+			// staged despite an ignore rule were listed by the capture of `plain`, from the same index and HEAD).
+			if (started === 6) {
+				scanning.resolve();
+				await resume.promise;
+			}
+			return traced;
+		});
+		cleanups.push(() => {
+			setWorktreeSnapshotGit(previous);
+		});
+		const first = captureLocatedCheckout(checkout, { settings, blobs, previous: plain });
+		await scanning.promise;
+		const restoredModes = captureLocatedCheckout(checkout, { settings, blobs });
+		const ownModes = captureLocatedCheckout(checkout, { settings, blobs, previous: plain });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		resume.resolve();
+		const [, executable, regular] = (await Promise.all([first, restoredModes, ownModes])).map(
+			(capture) => captured(capture).snapshot,
+		);
+		const scans = startedGitProcesses(trace).filter((event) => event.argv?.includes("--others")).length;
+		assert.equal(scans, 2, "the two later captures share one scan");
+		const modeOf = async (tree: string) => (await sandbox.git(clone, "ls-tree", tree, "tool.sh")).split(" ")[0];
+		assert.equal(await modeOf(executable!.tree), "100755");
+		assert.equal(await modeOf(regular!.tree), "100644");
 	});
 
 	/**
 	 * Captures `earlier[0]`'s session's checkout and, once that capture's scan of the working files started, requests a
 	 * capture from `earlier[1]` whose writes ended at the tick `wroteBy` gives, before or after that start. Every Git
-	 * process the snapshot runner starts is traced; the first capture's sixth one, the lookup of the modes Git trusts,
-	 * runs once its scan listed the changed files, and waits until the second capture was requested.
+	 * process the snapshot runner starts is traced; the first capture's sixth one, its scan's `write-tree`, runs once
+	 * the scan listed the changed files, and waits until the second capture was requested. The files staged despite an
+	 * ignore rule were listed by the earlier captures, from the same index and HEAD.
 	 */
 	async function captureDuringScan(wroteBy: (scanStarted: boolean) => number) {
 		const { clone, blobs, earlier } = await checkoutWithEarlierSnapshots(2, true);
