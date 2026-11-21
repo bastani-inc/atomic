@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads";
-import { evalWorkerExecArgv } from "../utils/worker-threads.js";
+import { EVAL_WORKER_BUILTIN, evalWorkerExecArgv } from "../utils/worker-threads.js";
 
 const QUEUED = 0;
 const CREATING = 1;
@@ -8,8 +8,9 @@ const FAILED = 3;
 const CLAIMED = 4;
 
 const CREATOR_SOURCE = `
-const { parentPort } = require("node:worker_threads");
-const { mkdirSync } = require("node:fs");
+${EVAL_WORKER_BUILTIN}
+const { parentPort } = builtin("node:worker_threads");
+const { mkdirSync } = builtin("node:fs");
 parentPort.on("message", ({ id, path, state, gate }) => {
   const slot = new Int32Array(state);
   if (Atomics.compareExchange(slot, 0, ${QUEUED}, ${CREATING}) !== ${QUEUED}) {

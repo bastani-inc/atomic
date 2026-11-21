@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,9 +8,11 @@ import { afterEach, beforeEach, test } from "vitest";
 import { TestSqliteDatabase } from "./helpers/sqlite.js";
 
 /**
- * Atomic's own worker threads run CommonJS source and need none of the process's command-line flags: a host started with
- * `--input-type=module` would turn that source into a module, and its `--import`/`--require` preloads would run again in
- * every worker (#6079). Each test runs a Node child with such flags that loads Atomic's modules from source.
+ * Atomic's own worker threads run evaluated source and need none of the process's command-line flags: a host started
+ * with `--input-type=module` would turn that source into a module, and its `--import`/`--require` preloads would run
+ * again in every worker (#6079). Node parses `NODE_OPTIONS` again for every worker whatever flags it is given, so there
+ * the source is evaluated as a module too (#6110). Each test runs a Node child with such flags that loads Atomic's
+ * modules from source.
  */
 
 // Atomic's sources import `.js` specifiers that name `.ts` files; Bun resolves them, and so does this hook for Node.
@@ -42,17 +44,31 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-function runNode(flags: readonly string[], script: string, cwd = dir): SpawnSyncReturns<string> {
+function runNode(
+	flags: readonly string[],
+	script: string,
+	cwd = dir,
+	env: Record<string, string> = {},
+): SpawnSyncReturns<string> {
 	return spawnSync(process.execPath, [...flags, "--import", dataUrl(RESOLVE_TS_SOURCES), "--eval", script], {
 		cwd,
 		encoding: "utf-8",
-		env: { ...process.env, ATOMIC_TEST_PRELOAD_LOG: preloadLog },
+		env: { ...process.env, ATOMIC_TEST_PRELOAD_LOG: preloadLog, ...env },
 	});
 }
 
 /** A host started with `--input-type=module` and a counting `--import` preload. */
 function runModuleHost(script: string, cwd = dir): SpawnSyncReturns<string> {
 	return runNode(["--import", dataUrl(COUNTING_PRELOAD), "--input-type=module"], script, cwd);
+}
+
+/** A host whose `NODE_OPTIONS` holds `--input-type=module`, with a counting `--import` preload. */
+function runNodeOptionsModuleHost(
+	script: string,
+	cwd = dir,
+	nodeOptions = "--input-type=module",
+): SpawnSyncReturns<string> {
+	return runNode(["--import", dataUrl(COUNTING_PRELOAD)], script, cwd, { NODE_OPTIONS: nodeOptions });
 }
 
 function preloadRuns(): number {
@@ -64,19 +80,63 @@ function output(result: SpawnSyncReturns<string>): unknown {
 	return JSON.parse(result.stdout);
 }
 
+const SELECTOR_SCRIPT = `
+	import { createReadToolDefinition } from ${sourceUrl("core/tools/read.ts")};
+	const tool = createReadToolDefinition(process.cwd());
+	const texts = [];
+	for (const query of ["select count(*) as total from n", "select max(v) as top from n"]) {
+		const read = await tool.execute("call", { path: "data.sqlite?q=" + encodeURIComponent(query) });
+		texts.push(read.content.map((part) => (part.type === "text" ? part.text : "")).join(""));
+	}
+	process.stdout.write(JSON.stringify(texts));
+`;
+
 test("a SQLite selector works from a process started with --input-type=module and runs its preload once (#6079)", () => {
-	const result = runModuleHost(`
-		import { createReadToolDefinition } from ${sourceUrl("core/tools/read.ts")};
-		const tool = createReadToolDefinition(process.cwd());
-		const texts = [];
-		for (const query of ["select count(*) as total from n", "select max(v) as top from n"]) {
-			const read = await tool.execute("call", { path: "data.sqlite?q=" + encodeURIComponent(query) });
-			texts.push(read.content.map((part) => (part.type === "text" ? part.text : "")).join(""));
-		}
-		process.stdout.write(JSON.stringify(texts));
-	`);
+	const result = runModuleHost(SELECTOR_SCRIPT);
 	assert.deepEqual(output(result), ['{"total":3}', '{"top":3}']);
 	assert.equal(preloadRuns(), 1, "the preload ran again for a selector connection");
+});
+
+test("a SQLite selector works in a process whose NODE_OPTIONS holds --input-type=module, in each spelling (#6110)", () => {
+	// Node also takes the flag quoted, with an escaped character, with an underscore, or with its value apart.
+	for (const nodeOptions of [
+		"--input-type=module",
+		'"--input-type=module"',
+		'"--input\\-type=module"',
+		"--input_type=module",
+		"--input-type module",
+	]) {
+		writeFileSync(preloadLog, "");
+		const result = runNodeOptionsModuleHost(SELECTOR_SCRIPT, dir, nodeOptions);
+		assert.deepEqual(output(result), ['{"total":3}', '{"top":3}'], nodeOptions);
+		assert.equal(preloadRuns(), 1, `the preload ran again for a selector connection (${nodeOptions})`);
+	}
+});
+
+test("a SQLite selector reports node:sqlite missing when NODE_OPTIONS disables it for workers of a module host (#6110)", () => {
+	// The process started with node:sqlite; workers parse NODE_OPTIONS again when they start.
+	const result = runNodeOptionsModuleHost(`
+		import { createReadToolDefinition } from ${sourceUrl("core/tools/read.ts")};
+		process.env.NODE_OPTIONS += " --no-experimental-sqlite";
+		const tool = createReadToolDefinition(process.cwd());
+		const read = tool.execute("call", { path: "data.sqlite?q=" + encodeURIComponent("select count(*) as total from n") });
+		process.stdout.write(JSON.stringify(await read.then(() => "read", (error) => error.message)));
+	`);
+	assert.equal(output(result), MISSING_NODE_SQLITE);
+});
+
+test("a SQLite storage connection opens on its own thread in a process whose NODE_OPTIONS holds --input-type=module (#6110)", () => {
+	const result = runNodeOptionsModuleHost(`
+		import { openNodeSqliteDatabase } from ${sourceUrl("core/storage/node-sqlite.ts")};
+		const database = await openNodeSqliteDatabase("store.sqlite");
+		await database.exec("create table t (v integer)");
+		await database.run("insert into t (v) values (?)", 7);
+		const rows = await database.all("select v from t");
+		await database.close();
+		process.stdout.write(JSON.stringify(rows));
+	`);
+	assert.deepEqual(output(result), [{ v: 7 }]);
+	assert.equal(preloadRuns(), 1, "the preload ran again for the connection's thread");
 });
 
 test("a SQLite selector still reports node:sqlite missing when the process disables it (#6079)", () => {
@@ -92,27 +152,57 @@ test("a SQLite selector still reports node:sqlite missing when the process disab
 	assert.equal(output(result), MISSING_NODE_SQLITE);
 });
 
+// Runs as a module or as CommonJS, whatever the host's input type.
+const FILE_WORKERS_SCRIPT = `(async () => {
+	const { DiagnosticWriter } = await import(${sourceUrl("core/diagnostic-writer.ts")});
+	const { createLockDirectory } = await import(${sourceUrl("core/settings-lock-directory.ts")});
+	const { matchLinesInWorker } = await import(${sourceUrl("core/tools/history-regex-worker.ts")});
+	const { existsSync, readFileSync } = await import("node:fs");
+	const failures = [];
+	const writer = new DiagnosticWriter((_path, error) => failures.push(error.message));
+	writer.append("diagnostic.log", "line\\n");
+	await writer.written();
+	await createLockDirectory("settings.lock").created;
+	const { matchedIndices } = await matchLinesInWorker(["alpha", "beta", "gamma"], "a$", "", false, false, 10_000);
+	process.stdout.write(JSON.stringify({
+		failures,
+		diagnostic: existsSync("diagnostic.log") ? readFileSync("diagnostic.log", "utf-8") : null,
+		lock: existsSync("settings.lock"),
+		matchedIndices,
+	}));
+})();`;
+const FILE_WORKERS_DONE = { failures: [], diagnostic: "line\n", lock: true, matchedIndices: [0, 1, 2] };
+
 test("diagnostic, settings-lock and history-search workers start without the process's flags (#6079)", () => {
-	const result = runModuleHost(`
-		import { DiagnosticWriter } from ${sourceUrl("core/diagnostic-writer.ts")};
-		import { createLockDirectory } from ${sourceUrl("core/settings-lock-directory.ts")};
-		import { matchLinesInWorker } from ${sourceUrl("core/tools/history-regex-worker.ts")};
-		import { existsSync, readFileSync } from "node:fs";
-		const failures = [];
-		const writer = new DiagnosticWriter((_path, error) => failures.push(error.message));
-		writer.append("diagnostic.log", "line\\n");
-		await writer.written();
-		await createLockDirectory("settings.lock").created;
-		const { matchedIndices } = await matchLinesInWorker(["alpha", "beta", "gamma"], "a$", "", false, false, 10_000);
-		process.stdout.write(JSON.stringify({
-			failures,
-			diagnostic: existsSync("diagnostic.log") ? readFileSync("diagnostic.log", "utf-8") : null,
-			lock: existsSync("settings.lock"),
-			matchedIndices,
-		}));
-	`);
-	assert.deepEqual(output(result), { failures: [], diagnostic: "line\n", lock: true, matchedIndices: [0, 1, 2] });
+	const result = runModuleHost(FILE_WORKERS_SCRIPT);
+	assert.deepEqual(output(result), FILE_WORKERS_DONE);
 	assert.equal(preloadRuns(), 1, "the preload ran again for a worker");
+});
+
+test("diagnostic, settings-lock and history-search workers start in a process whose NODE_OPTIONS holds --input-type=module (#6110)", () => {
+	const result = runNodeOptionsModuleHost(FILE_WORKERS_SCRIPT);
+	assert.deepEqual(output(result), FILE_WORKERS_DONE);
+	assert.equal(preloadRuns(), 1, "the preload ran again for a worker");
+});
+
+test("a NODE_OPTIONS preload that instruments require still sees the workers' module loads (#6110)", () => {
+	// As an APM agent's preload does: Node runs a NODE_OPTIONS --require preload in every worker thread too.
+	const instrument = join(dir, "instrument.cjs");
+	writeFileSync(
+		instrument,
+		`const Module = require("node:module");
+		const { appendFileSync } = require("node:fs");
+		const { isMainThread } = require("node:worker_threads");
+		const load = Module.prototype.require;
+		Module.prototype.require = function (id) {
+			if (!isMainThread) appendFileSync(process.env.ATOMIC_TEST_PRELOAD_LOG, id + "\\n");
+			return load.apply(this, arguments);
+		};`,
+	);
+	const result = runNode([], FILE_WORKERS_SCRIPT, dir, { NODE_OPTIONS: `--require ${JSON.stringify(instrument)}` });
+	assert.deepEqual(output(result), FILE_WORKERS_DONE);
+	const loads = new Set(readFileSync(preloadLog, "utf-8").split("\n").filter(Boolean));
+	assert.ok(loads.has("node:worker_threads") && loads.has("node:fs"), [...loads].join(", "));
 });
 
 test("under Node's permission model, diagnostic and settings-lock workers keep the process's restrictions (#6079)", () => {
@@ -139,25 +229,65 @@ test("under Node's permission model, diagnostic and settings-lock workers keep t
 	});
 });
 
-test("the parent-process guardian starts without the process's flags (#6079)", () => {
-	const stopFile = join(dir, "stop");
-	const result = runModuleHost(
+test("under Node's permission model, workers start in a process started with --input-type=module and keep its restrictions (#6110)", () => {
+	// There the workers keep the process's flags, --input-type included.
+	mkdirSync(join(dir, "allowed"));
+	const result = runNode(
+		[
+			"--permission",
+			"--allow-worker",
+			"--allow-fs-read=*",
+			`--allow-fs-write=${join(dir, "allowed")}`,
+			"--input-type=module",
+		],
 		`
+		import { DiagnosticWriter } from ${sourceUrl("core/diagnostic-writer.ts")};
+		import { createLockDirectory } from ${sourceUrl("core/settings-lock-directory.ts")};
+		import { existsSync } from "node:fs";
+		const failures = [];
+		const writer = new DiagnosticWriter((path) => failures.push(path));
+		writer.append("allowed/kept.log", "line\\n");
+		writer.append("denied.log", "line\\n");
+		await writer.written();
+		const lock = (path) => createLockDirectory(path).created.then(() => "created", (error) => error.code);
+		const locks = [await lock("allowed/kept.lock"), await lock("denied.lock")];
+		process.stdout.write(JSON.stringify({ failures, written: existsSync("allowed/kept.log"), locks }));
+	`,
+	);
+	assert.deepEqual(output(result), {
+		failures: ["denied.log"],
+		written: true,
+		locks: ["created", "ERR_ACCESS_DENIED"],
+	});
+});
+
+/** Starts the guardian, then writes its stop file: the guardian ends the process once it sees it. */
+function guardianScript(stopFile: string): string {
+	return `
 		import { startParentProcessGuardian } from ${sourceUrl("utils/shell.ts")};
 		import { writeFileSync } from "node:fs";
 		startParentProcessGuardian(process.pid, ${JSON.stringify(stopFile)});
 		writeFileSync(${JSON.stringify(stopFile)}, "");
-		// The guardian ends this process once it sees the stop file; outliving it means the guardian never ran.
+		// Outliving the stop file means the guardian never ran.
 		setTimeout(() => process.stdout.write("survived"), 15_000);
-	`,
-		// On Windows the guardian ends the process with a detached taskkill, which can outlive it in the process's
-		// working directory; outside the test's directory, that directory can still be removed.
-		tmpdir(),
-	);
+	`;
+}
+
+function assertGuardianEnded(result: SpawnSyncReturns<string>): void {
 	assert.equal(result.stdout, "");
 	assert.doesNotMatch(result.stderr, /Error/);
 	if (process.platform !== "win32") assert.equal(result.signal, "SIGKILL");
 	assert.equal(preloadRuns(), 1, "the preload ran again for the guardian");
+}
+
+// On Windows the guardian ends the process with a detached taskkill, which can outlive it in the process's working
+// directory; the children run outside the test's directory, so that directory can still be removed.
+test("the parent-process guardian starts without the process's flags (#6079)", () => {
+	assertGuardianEnded(runModuleHost(guardianScript(join(dir, "stop")), tmpdir()));
+});
+
+test("the parent-process guardian starts in a process whose NODE_OPTIONS holds --input-type=module (#6110)", () => {
+	assertGuardianEnded(runNodeOptionsModuleHost(guardianScript(join(dir, "stop")), tmpdir()));
 });
 
 // A 2x2 PNG, within every resize limit.

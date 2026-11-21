@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed reading Chromium cookies failing in a Node process whose `NODE_OPTIONS` contains `--input-type=module` ([#6110](https://github.com/bastani-inc/atomic/issues/6110))
+
 ## [0.10.2] - 2026-11-20
 
 ### Fixed

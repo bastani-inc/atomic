@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed SQLite selectors in the `read` tool, the SQLite session store, diagnostic logs, settings locks, history search and the engine's child-process guardian failing in a Node process whose `NODE_OPTIONS` contains `--input-type=module`, for example an SDK script run with `NODE_OPTIONS=--input-type=module node --eval`. Their worker threads now start however Node evaluates their source, also in a process started with `--input-type=module` under Node's permission model, and keep the process's flags and `NODE_OPTIONS` as before ([#6110](https://github.com/bastani-inc/atomic/issues/6110))
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.

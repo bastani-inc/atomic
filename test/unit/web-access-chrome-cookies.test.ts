@@ -108,13 +108,13 @@ const COOKIES_MODULE = JSON.stringify(
 	pathToFileURL(join(moduleDir(import.meta.url), "../../packages/web-access/chrome-cookies.ts")).href,
 );
 
-/** Reads the fixture's cookies in a Node child started with `flags`, which loads the reader from source. */
-function readCookiesInChild(flags: readonly string[], script: string): unknown {
+/** Reads the fixture's cookies in a Node child started with `flags` and `env`, which loads the reader from source. */
+function readCookiesInChild(flags: readonly string[], script: string, env: Record<string, string> = {}): unknown {
 	const { home, binDir } = makeCookieHome();
 	try {
 		const result = spawnSyncCollect(
 			[process.execPath, ...flags, "--import", dataUrl(RESOLVE_TS_SOURCES), "--eval", script],
-			{ env: { HOME: home, PATH: binDir, ATOMIC_TEST_PRELOAD_LOG: join(home, "preload.log") } },
+			{ env: { HOME: home, PATH: binDir, ATOMIC_TEST_PRELOAD_LOG: join(home, "preload.log"), ...env } },
 		);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
 		return {
@@ -136,6 +136,20 @@ test.runIf(process.platform === "linux")(
 			`import { getGoogleCookies } from ${COOKIES_MODULE};
 			const found = await getGoogleCookies({ requiredCookies: ["__Secure-1PSID", "__Secure-1PSIDTS"] });
 			process.stdout.write(JSON.stringify(found));`,
+		);
+		assert.deepEqual(outcome, { read: { cookies: FIXTURE_COOKIES, warnings: [] }, preloadRuns: 1 });
+	},
+);
+
+test.runIf(process.platform === "linux")(
+	"getGoogleCookies reads cookies in a process whose NODE_OPTIONS holds --input-type=module (#6110)",
+	() => {
+		const outcome = readCookiesInChild(
+			["--import", dataUrl(COUNTING_PRELOAD)],
+			`import { getGoogleCookies } from ${COOKIES_MODULE};
+			const found = await getGoogleCookies({ requiredCookies: ["__Secure-1PSID", "__Secure-1PSIDTS"] });
+			process.stdout.write(JSON.stringify(found));`,
+			{ NODE_OPTIONS: "--input-type=module" },
 		);
 		assert.deepEqual(outcome, { read: { cookies: FIXTURE_COOKIES, warnings: [] }, preloadRuns: 1 });
 	},

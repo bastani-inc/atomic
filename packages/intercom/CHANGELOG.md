@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the broker watchdog not starting in a broker whose `NODE_OPTIONS` contains `--input-type=module` ([#6110](https://github.com/bastani-inc/atomic/issues/6110))
+
 ## [0.10.2] - 2026-11-20
 
 ### Fixed

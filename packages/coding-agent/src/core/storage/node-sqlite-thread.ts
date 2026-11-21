@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { EVAL_WORKER_BUILTIN } from "../../utils/worker-threads.js";
 import type { SqliteRow, SqliteStatement, SqliteValue } from "./database.js";
 import { sqliteDialect } from "./dialect.js";
 import type { SqliteSequence } from "./statement-sequence.js";
@@ -11,9 +12,10 @@ import type { SqliteSequence } from "./statement-sequence.js";
  * finishing.
  */
 const CONNECTION_SOURCE = `
-const { parentPort, workerData } = require("node:worker_threads");
+${EVAL_WORKER_BUILTIN}
+const { parentPort, workerData } = builtin("node:worker_threads");
 process.emitWarning = () => {};
-const { DatabaseSync } = require("node:sqlite");
+const { DatabaseSync } = builtin("node:sqlite");
 let database;
 
 const STANDARD_ERRORS = [Error, TypeError, RangeError, SyntaxError, ReferenceError, EvalError, URIError];
@@ -370,8 +372,8 @@ export class ThreadConnection {
 	private closing?: Promise<undefined>;
 
 	private constructor() {
-		// None of the process's own flags: an `--input-type=module` would make this CommonJS source a module, and the
-		// caller's preloads would run again for every connection. Whether node:sqlite is available was settled by the
+		// None of the process's own flags: the caller's preloads would run again for every connection, and its
+		// `--input-type=module` would make this source a module. Whether node:sqlite is available was settled by the
 		// open before it started the thread.
 		this.worker = new Worker(CONNECTION_SOURCE, {
 			eval: true,
