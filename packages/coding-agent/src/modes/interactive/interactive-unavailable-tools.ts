@@ -5,18 +5,19 @@ import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 
 export interface UnavailableToolsNoticeMode {
 	readonly runtimeHost?: InteractiveModeBase["runtimeHost"];
-	readonly session: Pick<InteractiveModeBase["session"], "getToolStatusAsync">;
+	readonly session: Pick<InteractiveModeBase["session"], "_getToolStatusWithoutGit">;
 	readonly startupNoticesContainer: InteractiveModeBase["startupNoticesContainer"];
 	showWarning(message: string, targetContainer?: InteractiveModeBase["startupNoticesContainer"]): void;
 }
 
+/** The notice reads only `missing`, so the status is read without its Git section: that would start git. */
 async function readStartupToolStatus(mode: UnavailableToolsNoticeMode): Promise<ToolStatusReport> {
 	const host = mode.runtimeHost;
-	if (!(host instanceof IsolatedInteractiveRuntime)) return mode.session.getToolStatusAsync();
+	if (!(host instanceof IsolatedInteractiveRuntime)) return mode.session._getToolStatusWithoutGit();
 	// The runtime reports a failed resource load as its own diagnostic; the tools that failure left missing are
 	// reported from the status read after it.
 	await host.waitUntilResourcesReady().catch(() => undefined);
-	return host.getToolStatus();
+	return host.getToolStatus({ withoutGit: true });
 }
 
 export function formatUnavailableToolsNotice(report: Pick<ToolStatusReport, "missing">): string | undefined {
