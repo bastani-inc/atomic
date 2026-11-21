@@ -14,9 +14,10 @@ import {
 	captureWorktreeSnapshot,
 	locateCheckout,
 	nextCaptureTick,
+	recordRestoredTree,
 	type WorktreeSnapshotCapture,
 } from "../src/core/worktree-snapshot/capture.ts";
-import { setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
+import { gitText, runGit, setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 
 useTemporaryAgentDir();
@@ -251,11 +252,68 @@ describe("captures of one checkout requested together", () => {
 		);
 	});
 
-	test("from different earlier snapshots each compute the tree where Git does not trust file modes", async () => {
-		const { clone, blobs, earlier } = await checkoutWithEarlierSnapshots(3, false);
+	test("from different earlier snapshots compute the checkout's tree at most twice where Git does not trust file modes either", async () => {
+		const { clone, blobs, earlier } = await checkoutWithEarlierSnapshots(CONCURRENT_CAPTURES, false);
 		const trace = sandbox.traceGitProcesses();
-		await Promise.all(earlier.map((previous) => captureWorktreeSnapshot(clone, { settings, blobs, previous })));
-		assert.equal(startedWith(trace, "write-tree"), 3);
+		const captures = await Promise.all(
+			earlier.map((previous) => captureWorktreeSnapshot(clone, { settings, blobs, previous })),
+		);
+		assert.ok(startedWith(trace, "write-tree") <= 2, `${startedWith(trace, "write-tree")} trees written`);
+		assert.deepEqual(
+			captures.map((capture) => captured(capture).snapshot.delta.base),
+			earlier.map((previous) => previous.id),
+		);
+	});
+
+	test("where Git does not trust file modes, captures from earlier snapshots with other modes share the scan, and each keeps the modes of its own", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+		await sandbox.git(clone, "config", "core.filemode", "false");
+		await sandbox.git(clone, "config", "core.symlinks", "false");
+		sandbox.write(join(clone, "tool.sh"), "echo\n");
+		const blobs = new MemorySnapshotBlobStore();
+		const plain = captured(await captureWorktreeSnapshot(clone, { settings, blobs })).snapshot;
+		// The checkout was restored from a snapshot that recorded tool.sh as executable, as one taken where Git trusts
+		// modes does: a capture with no earlier snapshot of its own keeps that mode, one from `plain` keeps its own.
+		const index = sandbox.path("mode-index");
+		const git = { cwd: clone, env: { GIT_INDEX_FILE: index } };
+		await runGit(["read-tree", plain.tree], git);
+		await runGit(["update-index", "--chmod=+x", "--", "tool.sh"], git);
+		await recordRestoredTree({ cwd: clone }, await gitText(["write-tree"], git));
+		sandbox.write(join(clone, "README.md"), "changed\n");
+		const checkout = await locateCheckout(clone);
+		if (checkout instanceof Error) throw checkout;
+
+		const trace = sandbox.path("git-trace.jsonl");
+		const traced = { ...sandbox.executable, env: { ...sandbox.executable.env, GIT_TRACE2_EVENT: trace } };
+		const scanning = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		let started = 0;
+		const previous = setWorktreeSnapshotGit(async () => {
+			started++;
+			// The first capture's sixth Git process runs once its scan listed the changed files.
+			if (started === 6) {
+				scanning.resolve();
+				await resume.promise;
+			}
+			return traced;
+		});
+		cleanups.push(() => {
+			setWorktreeSnapshotGit(previous);
+		});
+		const first = captureLocatedCheckout(checkout, { settings, blobs, previous: plain });
+		await scanning.promise;
+		const restoredModes = captureLocatedCheckout(checkout, { settings, blobs });
+		const ownModes = captureLocatedCheckout(checkout, { settings, blobs, previous: plain });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		resume.resolve();
+		const [, executable, regular] = (await Promise.all([first, restoredModes, ownModes])).map(
+			(capture) => captured(capture).snapshot,
+		);
+		const scans = startedGitProcesses(trace).filter((event) => event.argv?.includes("--others")).length;
+		assert.equal(scans, 2, "the two later captures share one scan");
+		const modeOf = async (tree: string) => (await sandbox.git(clone, "ls-tree", tree, "tool.sh")).split(" ")[0];
+		assert.equal(await modeOf(executable!.tree), "100755");
+		assert.equal(await modeOf(regular!.tree), "100644");
 	});
 
 	/**

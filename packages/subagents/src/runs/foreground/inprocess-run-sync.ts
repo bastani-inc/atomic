@@ -175,6 +175,7 @@ function resultFromOutcome(
 						parentCwd: place.parentCwd,
 					}),
 				}),
+		...(outcome.worktreeCapturedAt === undefined ? {} : { worktreeCapturedAt: outcome.worktreeCapturedAt }),
 		progress: progressFor(agent, task, outcome, durationMs, index),
 		progressSummary: {
 			toolCount: outcome.stats.toolCalls,
