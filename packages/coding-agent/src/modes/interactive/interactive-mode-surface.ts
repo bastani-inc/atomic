@@ -69,10 +69,11 @@ declare module "./interactive-mode-base.ts" {
 		createBaseAutocompleteProvider(): AutocompleteProvider;
 		buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
 		/**
-		 * `refreshCommandMenu`, with `preserveSelection`: an open menu of command names whose first match is still
-		 * selected shows the new provider's answer for its text (see Editor.setAutocompleteProvider).
+		 * Rebuilds main's completion provider. An open menu stays open and shows the new provider's rows unless a row was
+		 * chosen in it, and a lookup under way asks the new provider (see Editor.setAutocompleteProvider); `closeMenu`
+		 * closes the menu instead, for a folder whose resources were just withheld.
 		 */
-		setupAutocompleteProvider(options?: { preserveSelection?: boolean; refreshCommandMenu?: boolean }): void;
+		setupAutocompleteProvider(options?: { closeMenu?: boolean }): void;
 		showStartupNoticesIfNeeded(targetContainer?: Container): void;
 		reportModelCatalogWarning(targetContainer?: Container): void;
 		reportedModelCatalogWarning: string | undefined;
@@ -341,6 +342,11 @@ declare module "./interactive-mode-base.ts" {
 		openExternalEditor(): Promise<void>;
 		clearEditor(): void;
 		showError(errorMessage: string): void;
+		/**
+		 * Show one of a series of identical failures: a row of its own, or, while only such rows follow that series' row,
+		 * that row again with how many there were.
+		 */
+		showRepeatedError(errorMessage: string, series: object): void;
 		showWarning(warningMessage: string, targetContainer?: Container): void;
 		showNewVersionNotification(newVersion: string, targetContainer?: Container): void;
 		showPackageUpdateNotification(packages: string[], targetContainer?: Container): void;
