@@ -230,9 +230,9 @@ export class ChildCatalog {
 		}
 		return key;
 	}
-	/** Ingest saved state, preserving any older contributing positions already retired by this manager.
-	 * Never retire a current-window entry, a live/released/paused/quit child or its unsettled deliveries. */
 	/**
+	 * Ingest saved state, preserving any older contributing positions already retired by this manager.
+	 * Never retire a current-window entry, a live/released/paused/quit child or its unsettled deliveries.
 	 * `onBranch` says whether a retired record is on the active branch when its state entry does not; it is asked only
 	 * for records of children that name a capture.
 	 */

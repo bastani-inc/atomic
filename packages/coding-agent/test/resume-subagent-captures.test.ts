@@ -395,6 +395,27 @@ test("a subagent's capture a compaction archived stops counting once the same se
 	assert.equal(content(prepared.sessionManager.getCwd(), "work.txt"), "second\n");
 });
 
+test("a subagent a compaction archived stops counting once the session starts over, also when it is resumed without reopening it", async () => {
+	const { clone, store, parent } = await project();
+	const { child, finished } = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "child\n");
+	await finished(await capture(child, store, clone));
+	await parent.appendCompaction("earlier work", null, 100, { strategy: "verbatim-lines" });
+	await parent.appendMessage({ role: "user", content: "later", timestamp: Date.now() });
+	await parent.resetLeaf();
+	await parent.appendMessage({ role: "user", content: "start over", timestamp: Date.now() });
+
+	const options = sessionResumeOptions(
+		"cli",
+		sandbox.root,
+		sandbox.path("agent"),
+		SettingsManager.inMemory(),
+		() => true,
+	);
+	await prepareSessionResume(parent, { ...options, blueprints: "skip" });
+	assert.equal(parent.getLatestWorktreeSnapshots().size, 0);
+});
+
 test("a checkout the session took from its subagent stays its own after the subagent's refs are gone and Git pruned unreferenced commits", async () => {
 	const { clone, store, parent } = await project();
 	const { child, finished } = await subagent(parent, store, clone);
