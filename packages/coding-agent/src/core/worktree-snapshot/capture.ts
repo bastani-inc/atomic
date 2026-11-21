@@ -908,6 +908,35 @@ interface HistoryCapture {
 	readonly blob?: SnapshotBlob;
 }
 
+/** Why a snapshot leaves its checkout's unpushed commits out. */
+type HistoryOmission = Extract<
+	WorktreeSnapshotOmission,
+	{ readonly reason: "unpushed-history-denied" | "bundle-over-cap" }
+>;
+
+/**
+ * The unpushed commits a capture of each checkout in this process last left out, by checkout root: the hash of their
+ * exact list (`fingerprint`) and the omission recorded for it. Which of those commits add or modify a deny-listed path,
+ * and how large their bundle is, follow from the list alone, so a later capture of the same list records the same
+ * omission without checking and bundling the commits again, which takes seconds for a long history no remote holds.
+ */
+const leftOutHistory = new Map<string, { readonly fingerprint: string; readonly omission: HistoryOmission }>();
+
+/**
+ * How far over the cap an earlier bundle of the same commits must have been for a capture to leave them out without
+ * bundling them again: packing the same commits again, after the repository was repacked, can give a slightly smaller
+ * bundle. Nearer the cap they are bundled again.
+ */
+const OVER_CAP_REUSE_MARGIN = 0.1;
+
+/** Whether `omission`, recorded for the same unpushed commits, still leaves them out under `settings`. */
+function stillLeftOut(omission: HistoryOmission, settings: WorktreeSnapshotSettings): boolean {
+	return (
+		omission.reason === "unpushed-history-denied" ||
+		omission.bytes > settings.maxSnapshotBytes * (1 + OVER_CAP_REUSE_MARGIN)
+	);
+}
+
 const COMMIT_TOKEN = /^([0-9a-f]{40}|[0-9a-f]{64})(?: \(from [0-9a-f]+\))?$/;
 
 /** Commits of `commits` that add or modify a deny-listed path, with those paths. */
@@ -1022,17 +1051,28 @@ async function captureHistory(
 	const sameHistory = (commits: readonly string[]) =>
 		previous?.head === head && commits.length === unpushed.length && commits.every((c, i) => c === unpushed[i]);
 	if (previous?.bundle && sameHistory(previous.bundle.commits)) return { bundle: previous.bundle, omitted: [] };
-	const denied = await deniedHistory(root, unpushed, signal);
-	if (denied.commits.length > 0) {
-		return { bundle: null, omitted: [{ reason: "unpushed-history-denied", ...denied }] };
+	const fingerprint = sha256Hex(unpushed.join("\n"));
+	const remembered = leftOutHistory.get(root);
+	// The previous snapshot's own record, for a capture in a process that has not checked these commits yet.
+	const recorded = previous?.omitted.find(
+		(omission): omission is HistoryOmission => omission.reason === "bundle-over-cap" && sameHistory(omission.commits),
+	);
+	for (const omission of [remembered?.fingerprint === fingerprint ? remembered.omission : undefined, recorded]) {
+		if (omission !== undefined && stillLeftOut(omission, settings)) return { bundle: null, omitted: [omission] };
 	}
+	const leaveOut = (omission: HistoryOmission): HistoryCapture => {
+		leftOutHistory.set(root, { fingerprint, omission });
+		return { bundle: null, omitted: [omission] };
+	};
+	const denied = await deniedHistory(root, unpushed, signal);
+	if (denied.commits.length > 0) return leaveOut({ reason: "unpushed-history-denied", ...denied });
 	const file = join(scratch, "history.bundle");
 	await bundlePinned(root, head, boundary, file, signal);
 	const data = await verifiedBundle(root, head, unpushed, file, signal);
 	// Not the commits that were checked: record the snapshot without its history rather than store them (#4900).
 	if (data === null) return { bundle: null, omitted: [] };
 	if (data.byteLength > settings.maxSnapshotBytes) {
-		return { bundle: null, omitted: [{ reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength }] };
+		return leaveOut({ reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength });
 	}
 	const blob = snapshotBlob(data);
 	return { bundle: { blob: blob.hash, bytes: data.byteLength, commits: unpushed }, omitted: [], blob };
