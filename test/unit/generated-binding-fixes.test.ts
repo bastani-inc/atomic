@@ -122,36 +122,48 @@ interface Host {
 }
 
 const LINUX_GLIBC_X64: Host = { platform: "linux", arch: "x64" };
+const LINUX_PACKAGE = "@bastani/atomic-natives-linux-x64-gnu";
 
 /**
- * The loader on a host where no binding loads, with the optional platform packages its package lists and the
- * packages installed beside it; returns its error message and what it reported to Atomic.
+ * The loader on a host where no binding loads, with the optional platform packages its package lists, the packages
+ * installed beside it and how each fails to load; returns its error message.
  */
 async function loadWithoutBinding(options: {
 	host?: Host;
+	env?: Record<string, string>;
 	optionalDependencies?: Record<string, string>;
-	installed?: string[];
+	/** Installed packages, with the error loading each one throws. */
+	installed?: Record<string, Error>;
 	/** Packages whose lookup fails with a permission error. */
 	unreadable?: string[];
-}) {
+}): Promise<string> {
 	const { loader } = await artifacts();
 	const host = options.host ?? LINUX_GLIBC_X64;
-	const installed = new Set(options.installed ?? []);
+	const installed = options.installed ?? {};
 	const unreadable = new Set(options.unreadable ?? []);
-	const reports: string[] = [];
+	// The loader sits in a folder named like another platform's package: only a failure's first line names what it tried.
 	const notFound = (id: string) =>
-		Object.assign(new Error(`Cannot find module '${id}'`), { code: "MODULE_NOT_FOUND" });
+		Object.assign(
+			new Error(
+				`Cannot find module '${id}'\nRequire stack:\n- /work/@bastani/atomic-natives-darwin-arm64/native/index.js`,
+			),
+			{
+				code: "MODULE_NOT_FOUND",
+			},
+		);
 	const require = Object.assign(
 		(id: string) => {
 			if (id === "fs") return { readFileSync: () => "" };
 			if (id === "../package.json")
 				return { name: "@bastani/atomic-natives", optionalDependencies: options.optionalDependencies };
+			const failure = installed[id];
+			if (failure) throw failure;
 			throw notFound(id);
 		},
 		{
 			resolve: (id: string) => {
 				const name = id.replace(/\/package\.json$/, "");
-				if (installed.has(name)) return id;
+				if (name in installed) return id;
 				if (unreadable.has(name))
 					throw Object.assign(new Error(`EACCES: permission denied, '${id}'`), { code: "EACCES" });
 				throw notFound(id);
@@ -161,68 +173,97 @@ async function loadWithoutBinding(options: {
 	const context = vm.createContext({
 		module: { exports: {} },
 		process: {
-			env: {},
+			env: options.env ?? {},
 			...host,
 			report: { getReport: () => ({ header: { glibcVersionRuntime: "2.39" } }) },
 		},
 		require,
 	});
-	vm.runInContext("globalThis", context)[Symbol.for("@bastani/atomic/natives/report-missing-platform-package")] = (
-		message: string,
-	) => reports.push(message);
-	let message = "";
 	try {
 		vm.runInContext(loader, context);
 	} catch (error) {
-		message = (error as Error).message;
+		return (error as Error).message;
 	}
-	return { message, reports };
+	throw new Error("the loader found a binding");
 }
 
-test("a missing platform package names itself and the install options that leave it out, and Atomic hears of it", async () => {
-	const { message, reports } = await loadWithoutBinding({ optionalDependencies: PUBLISHED_PLATFORM_PACKAGES });
+test("a platform package the install left out is named, with how to reinstall Atomic with optional dependencies", async () => {
 	assert.equal(
-		message,
-		"Cannot find Atomic's native module: the optional package @bastani/atomic-natives-linux-x64-gnu is not installed. " +
-			"Reinstall Atomic without omitting optional dependencies (npm --omit=optional, pnpm --no-optional and " +
-			"bun --omit=optional leave it out).",
+		await loadWithoutBinding({ optionalDependencies: PUBLISHED_PLATFORM_PACKAGES }),
+		"Atomic's native module is not installed: this install of Atomic omitted optional dependencies, which leaves out " +
+			"@bastani/atomic-natives-linux-x64-gnu. Reinstall Atomic with optional dependencies: npm install -g @bastani/atomic, " +
+			"pnpm add -g @bastani/atomic or bun add -g @bastani/atomic, without --omit=optional (npm, Bun) or --no-optional " +
+			"(pnpm); in a project, run its install without those options.",
 	);
-	assert.doesNotMatch(message, /npm has a bug/);
-	assert.deepEqual(reports, [message]);
 });
 
-test("an installed platform package whose binding fails to load is not reported as missing", async () => {
-	const { message, reports } = await loadWithoutBinding({
-		optionalDependencies: PUBLISHED_PLATFORM_PACKAGES,
-		installed: ["@bastani/atomic-natives-linux-x64-gnu"],
-	});
-	assert.equal(message, "Cannot load Atomic's native module from @bastani/atomic-natives-linux-x64-gnu.");
-	assert.deepEqual(reports, []);
+test("an installed platform package whose binary fails to load is named with the reason, never as left out", async () => {
+	const invalid = Object.assign(
+		new Error(
+			"/install/node_modules/@bastani/atomic-natives-linux-x64-gnu/atomic_natives.linux-x64-gnu.node: invalid ELF header",
+		),
+		{ code: "ERR_DLOPEN_FAILED" },
+	);
+	assert.equal(
+		await loadWithoutBinding({
+			optionalDependencies: PUBLISHED_PLATFORM_PACKAGES,
+			installed: { [LINUX_PACKAGE]: invalid },
+		}),
+		"Cannot load Atomic's native module from @bastani/atomic-natives-linux-x64-gnu: " +
+			"/install/node_modules/@bastani/atomic-natives-linux-x64-gnu/atomic_natives.linux-x64-gnu.node: invalid ELF header",
+	);
 });
 
-test("a platform package that cannot be looked up is not reported as missing", async () => {
-	const { message, reports } = await loadWithoutBinding({
-		optionalDependencies: PUBLISHED_PLATFORM_PACKAGES,
-		unreadable: ["@bastani/atomic-natives-linux-x64-gnu"],
-	});
-	assert.equal(message, "Cannot load Atomic's native module from @bastani/atomic-natives-linux-x64-gnu.");
-	assert.deepEqual(reports, []);
+test("a platform package that cannot be looked up is not called left out", async () => {
+	assert.equal(
+		await loadWithoutBinding({ optionalDependencies: PUBLISHED_PLATFORM_PACKAGES, unreadable: [LINUX_PACKAGE] }),
+		"Cannot load Atomic's native module from @bastani/atomic-natives-linux-x64-gnu: " +
+			"Cannot find module '@bastani/atomic-natives-linux-x64-gnu'",
+	);
 });
 
-const UNPUBLISHED: { name: string; host: Host; optionalDependencies?: Record<string, string> }[] = [
-	{ name: "Android", host: { platform: "android", arch: "arm64" }, optionalDependencies: PUBLISHED_PLATFORM_PACKAGES },
+const PUBLISHED_FOR =
+	"it is published for win32-x64-msvc, win32-arm64-msvc, darwin-x64, darwin-arm64, linux-x64-gnu, linux-arm64-gnu, " +
+	"linux-x64-musl, linux-arm64-musl.";
+
+const UNPUBLISHED: { name: string; host: Host; message: string }[] = [
+	{
+		name: "Android",
+		host: { platform: "android", arch: "arm64" },
+		message: `Atomic has no native module for android-arm64: ${PUBLISHED_FOR}`,
+	},
 	{
 		name: "Windows under a MinGW build of Node",
 		host: { platform: "win32", arch: "x64", config: { variables: { shlib_suffix: "dll.a" } } },
-		optionalDependencies: PUBLISHED_PLATFORM_PACKAGES,
+		message: `Atomic has no native module for win32-x64-gnu: ${PUBLISHED_FOR}`,
 	},
-	{ name: "a source checkout, whose package lists no platform packages", host: LINUX_GLIBC_X64 },
+	{
+		name: "an architecture napi does not know",
+		host: { platform: "android", arch: "ia32" },
+		message: "Cannot load Atomic's native module: Unsupported architecture on Android ia32",
+	},
 ];
 
-for (const { name, host, optionalDependencies } of UNPUBLISHED) {
-	test(`without a published platform package for the host (${name}), no reinstall is advised and nothing is reported`, async () => {
-		const { message, reports } = await loadWithoutBinding({ host, optionalDependencies });
-		assert.equal(message, "Cannot load Atomic's native module.");
-		assert.deepEqual(reports, []);
+for (const { name, host, message } of UNPUBLISHED) {
+	test(`a host Atomic publishes no native module for (${name}) is told so, never to reinstall`, async () => {
+		assert.equal(await loadWithoutBinding({ host, optionalDependencies: PUBLISHED_PLATFORM_PACKAGES }), message);
 	});
 }
+
+test("a source checkout without a built binary names the binary it looked for", async () => {
+	assert.equal(
+		await loadWithoutBinding({}),
+		"Cannot load Atomic's native module: Cannot find module './atomic_natives.linux-x64-gnu.node'",
+	);
+});
+
+test("a NAPI_RS_NATIVE_LIBRARY_PATH override that fails is named, never a platform package", async () => {
+	assert.equal(
+		await loadWithoutBinding({
+			env: { NAPI_RS_NATIVE_LIBRARY_PATH: "/opt/atomic/natives.node" },
+			optionalDependencies: PUBLISHED_PLATFORM_PACKAGES,
+		}),
+		"Cannot load Atomic's native module from NAPI_RS_NATIVE_LIBRARY_PATH (/opt/atomic/natives.node): " +
+			"Cannot find module '/opt/atomic/natives.node'",
+	);
+});

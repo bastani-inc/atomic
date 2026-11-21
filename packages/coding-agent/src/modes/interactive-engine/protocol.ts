@@ -110,7 +110,7 @@ export type InteractiveEngineMessage =
 	 * A deprecation warning the engine raised, for the host to show as it shows its own: once per message, and with
 	 * `once`, the notice's identity, once across starts.
 	 */
-	| { type: "engine_deprecation_warning"; message: string; once?: string; label?: string; showInUi?: boolean }
+	| { type: "engine_deprecation_warning"; message: string; once?: string }
 	/** The status of a subagent the host shows on its main screen (view `viewId`), on every change. */
 	| { type: "engine_agent_view_status"; viewId: string; status: AgentViewStatus }
 	/** The engine's agent panel or `/tasks` asks the host to show a subagent, or main when `taskId` is null. */
@@ -574,17 +574,8 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		case "engine_heartbeat":
 			return typeof value.at === "number" ? { type: value.type, at: value.at } : undefined;
 		case "engine_deprecation_warning":
-			return typeof value.message === "string" &&
-				(value.once === undefined || typeof value.once === "string") &&
-				(value.label === undefined || typeof value.label === "string") &&
-				(value.showInUi === undefined || typeof value.showInUi === "boolean")
-				? {
-						type: value.type,
-						message: value.message,
-						...(value.once === undefined ? {} : { once: value.once }),
-						...(value.label === undefined ? {} : { label: value.label }),
-						...(value.showInUi === undefined ? {} : { showInUi: value.showInUi }),
-					}
+			return typeof value.message === "string" && (value.once === undefined || typeof value.once === "string")
+				? { type: value.type, message: value.message, ...(value.once === undefined ? {} : { once: value.once }) }
 				: undefined;
 		case "engine_agent_view_status": {
 			const status = parseAgentViewStatus(value.status);

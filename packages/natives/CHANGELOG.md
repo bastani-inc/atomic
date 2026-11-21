@@ -10,7 +10,7 @@
 
 ### Changed
 
-- The package no longer includes the native binaries of every platform: each platform's binary comes from its own optional package (`@bastani/atomic-natives-<platform>`), which package managers install for the platform they run on. When that package is missing, the error names it and says to reinstall without omitting optional dependencies, instead of blaming an npm bug, and tells Atomic so that it can show a warning.
+- The package no longer includes the native binaries of every platform: each platform's binary comes from its own optional package (`@bastani/atomic-natives-<platform>`), which package managers install for the platform they run on. When the binary cannot load, the error says why instead of blaming an npm bug: which platform package an install that omitted optional dependencies left out and how to reinstall with it, an installed platform package that fails to load and its reason, a platform with no published package, or a `NAPI_RS_NATIVE_LIBRARY_PATH` override that fails.
 
 ## [0.10.1] - 2026-11-20
 

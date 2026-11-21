@@ -447,8 +447,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				return;
 			}
 			if (message.type === "engine_deprecation_warning") {
-				const { type: _type, message: text, ...notice } = message;
-				warnDeprecation(text, notice);
+				warnDeprecation(message.message, message.once === undefined ? {} : { once: message.once });
 				return;
 			}
 			if (message.type === "engine_agent_panel_state") {

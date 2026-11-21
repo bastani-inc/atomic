@@ -184,7 +184,7 @@ import {
 	takeInteractiveEngineBootstrapArg,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./utils/interactive-engine-env.ts";
-import { installNativeModuleWarning } from "./utils/native-module-warning.js";
+import { assertNativeModuleAvailable, NativeModuleUnavailableError } from "./utils/native-module.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 export type { AppMode } from "./main-app-mode.ts";
@@ -466,7 +466,6 @@ export async function main(argv: string[], options?: MainOptions) {
 	loadShownDeprecationNotices(agentDir);
 	// The interactive engine sends its warnings to the host, which shows them, rather than writing them to its stderr.
 	if (engineEnv.child === "1") deferDeprecationWarnings();
-	installNativeModuleWarning();
 	// Before the first settings load, so a removed routing setting is not also reported as ignored. When another process
 	// holds the file, its migration below tries again, and the load's "ignored" warning waits for that.
 	removeSavedModelRoutingSettings(cwd, { retryLater: true });
@@ -1370,6 +1369,16 @@ export async function main(argv: string[], options?: MainOptions) {
 	};
 	createRuntime.prepareResume = prepareRuntime;
 	time("createRuntimeFactory");
+	// A session cannot run without the native module: say why it cannot load and stop, before the session opens (which
+	// loads it) and before the interactive host starts its engine.
+	try {
+		assertNativeModuleAvailable();
+	} catch (error) {
+		if (!(error instanceof NativeModuleUnavailableError)) throw error;
+		startupEarlyInputCapture?.consume();
+		console.error(chalk.red(`Error: ${error.message}`));
+		process.exit(1);
+	}
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
 	// --session and --resume may select a session from another project, so project-local
 	// settings, resources, provider registrations, and models must be resolved only after

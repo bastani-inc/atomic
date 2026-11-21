@@ -23,8 +23,6 @@ vi.mock("../../packages/coding-agent/src/utils/interactive-engine-env.ts", async
 }));
 
 const IGNORED = 'Ignored legacy "routerModel" because "decisionModel" is already set.';
-const NATIVE =
-	"Cannot find Atomic's native module: the optional package @bastani/atomic-natives-linux-x64-gnu is not installed.";
 let warn: MockInstance<typeof console.warn>;
 
 beforeEach(() => {
@@ -71,34 +69,7 @@ test("an engine that exits before it can send its warnings writes them to stderr
 	assert.match(String(warn.mock.calls[0]?.[0]), /Ignored legacy "routerModel"/);
 });
 
-test("an engine's warning keeps its label and its place in the UI on the way to the host", () => {
-	deferDeprecationWarnings();
-	warnDeprecation(NATIVE, { label: "Warning", showInUi: true });
-
-	const lines: string[] = [];
-	const liveness = startInteractiveEngineLiveness((line) => lines.push(line));
-	liveness.stop();
-	assert.deepEqual(
-		engineMessages(lines).filter((message) => message.type === "engine_deprecation_warning"),
-		[{ type: "engine_deprecation_warning", message: NATIVE, label: "Warning", showInUi: true }],
-	);
-});
-
-test("an engine that exits before it can send a warning writes it to stderr with its own label", () => {
-	deferDeprecationWarnings();
-	warnDeprecation(NATIVE, { label: "Warning", showInUi: true });
-	finishDeprecationWarningsAtExit();
-	assert.equal(warn.mock.calls.length, 1);
-	const printed = String(warn.mock.calls[0]?.[0]);
-	assert.ok(printed.includes(`Warning: ${NATIVE}`), printed);
-	assert.equal(printed.includes("Deprecation"), false, printed);
-});
-
-/**
- * A host running an engine: `send` delivers an engine message to it as the engine's stdout would. The runtime is
- * disposed after `use` returns.
- */
-async function withEngineHost(use: (send: (message: InteractiveEngineMessage) => void) => void): Promise<void> {
+test("the host shows an engine's deprecation warning once with its own, and stderr text that looks like one stays a diagnostic", async () => {
 	const harness = await createHarness();
 	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	const client = {
@@ -137,56 +108,31 @@ async function withEngineHost(use: (send: (message: InteractiveEngineMessage) =>
 		},
 		client as never,
 	);
-	try {
-		use((message) => {
-			for (const listener of [...engineListeners]) listener(message);
-		});
-	} finally {
-		await runtime.dispose();
-		await harness.cleanup();
-	}
-}
-
-test("the host shows an engine's deprecation warning once with its own, and stderr text that looks like one stays a diagnostic", async () => {
 	const shown: string[] = [];
 	const restore = setDeprecationWarningSink((message) => shown.push(message));
 	try {
-		await withEngineHost((send) => {
-			warnDeprecation(IGNORED);
-			for (const message of [IGNORED, "an engine-only notice"])
-				send({ type: "engine_deprecation_warning", message });
-			assert.deepEqual(shown, [IGNORED, "an engine-only notice"]);
+		warnDeprecation(IGNORED);
+		for (const message of [IGNORED, "an engine-only notice"])
+			for (const listener of [...engineListeners]) listener({ type: "engine_deprecation_warning", message });
+		assert.deepEqual(shown, [IGNORED, "an engine-only notice"]);
 
-			const statuses: string[] = [];
-			renderEngineDiagnostic(
-				{
-					activity: undefined,
-					elapsedMs: 0,
-					level: "blocking",
-					source: "stderr",
-					message: "Deprecation warning: spoofed\u0007\n",
-				},
-				{ showStatus: (message) => statuses.push(message), showError: () => {}, stopWorkingLoader: () => {} },
-			);
-			assert.deepEqual(shown, [IGNORED, "an engine-only notice"], "stderr text is never taken for a warning");
-			assert.equal(statuses.length, 1);
-			assert.doesNotMatch(statuses[0]!, /\u0007/, "and its display is sanitized");
-		});
+		const statuses: string[] = [];
+		renderEngineDiagnostic(
+			{
+				activity: undefined,
+				elapsedMs: 0,
+				level: "blocking",
+				source: "stderr",
+				message: "Deprecation warning: spoofed\u0007\n",
+			},
+			{ showStatus: (message) => statuses.push(message), showError: () => {}, stopWorkingLoader: () => {} },
+		);
+		assert.deepEqual(shown, [IGNORED, "an engine-only notice"], "stderr text is never taken for a warning");
+		assert.equal(statuses.length, 1);
+		assert.doesNotMatch(statuses[0]!, /\u0007/, "and its display is sanitized");
 	} finally {
 		restore();
+		await runtime.dispose();
+		await harness.cleanup();
 	}
-});
-
-test("a host without its UI yet prints an engine's warning with the engine's label, and its UI shows it once it starts", async () => {
-	await withEngineHost((send) => {
-		send({ type: "engine_deprecation_warning", message: NATIVE, label: "Warning", showInUi: true });
-	});
-	assert.equal(warn.mock.calls.length, 1);
-	const printed = String(warn.mock.calls[0]?.[0]);
-	assert.ok(printed.includes(`Warning: ${NATIVE}`), printed);
-	assert.equal(printed.includes("Deprecation"), false, printed);
-
-	const shown: string[] = [];
-	setDeprecationWarningSink((message) => shown.push(message))();
-	assert.deepEqual(shown, [NATIVE]);
 });

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Atomic needs its optional dependencies: an install that omits them (`npm install --omit=optional`, `pnpm install --no-optional`, `bun install --omit=optional`) leaves out the package with the native module for your platform, and Atomic then stops at startup with one message that names that package and how to reinstall Atomic with optional dependencies. Global npm installs are unaffected: npm installs the platform package from Atomic's shrinkwrap even with `--omit=optional`.
+
 ### Changed
 
 - Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
@@ -12,7 +16,7 @@
 - Atomic starts faster, most of all on Windows: the packages it ships for models, the terminal UI, the agent loop, schemas and telemetry (`@bastani/atomic-ai`, `-tui`, `-agent-core`, `-schema`, `-telemetry`) now load from a few files each instead of one file per module, so a start reads about 290 fewer files. Their import paths, deep paths included, are unchanged. A bundler (esbuild, Vite, webpack, rolldown) that bundles `@bastani/atomic-ai`, `-agent-core`, `-schema` or `-telemetry` into an app still gets one file per module and leaves out what the app does not use. One that bundles `@bastani/atomic-tui` gets its modules in the shared files and can no longer leave the unused ones out: importing only `visibleWidth` grows from about 198 KB to 345 KB minified.
 - Interactive sessions reach the editor sooner: the thread that opens the session database starts while Atomic loads instead of after it, the native clipboard module loads the first time you copy or paste instead of at every start, and the `models.json` checker is built only when a `models.json` exists. With `--no-mcp`, the interactive window no longer loads the subagent and web tools that only its engine runs.
 - A global npm install of Atomic writes about 21,100 files instead of 28,000, so installing and upgrading finish sooner, most of all on Windows, where antivirus software scans each new file. `@bastani/atomic` no longer depends on packages that none of its files load, such as the MCP SDK, zod and linkedom, whose code the builtin extensions already include; an app or extension that imports one of them without listing it in its own `package.json` must now list it. Atomic's packages no longer include declaration maps (`.d.ts.map`), which pointed at TypeScript sources the packages do not include. Each builtin extension that includes third-party code lists those packages' licence and notice texts in its `THIRD_PARTY_NOTICES.txt`.
-- Installing Atomic downloads about 29 MB less and writes about 150 MB less: `@bastani/atomic-natives` no longer carries the native binary of every platform, and the binary comes from the optional package for your platform alone. An install that omits optional dependencies (`npm --omit=optional`, `pnpm --no-optional`, `bun --omit=optional`) leaves that package out; Atomic then runs without its native module, as before on its fallbacks, and shows a warning once that names the missing package and says to reinstall without omitting optional dependencies.
+- Installing Atomic downloads about 29 MB less and writes about 150 MB less: `@bastani/atomic-natives` no longer carries the native binary of every platform, and the binary comes from the optional package for your platform alone.
 - On Windows, the first start after a restart or an install reaches the editor much sooner: while Atomic loads, a short-lived helper reads the files it is about to load many at a time, so the antivirus scans them in parallel instead of one after another as Node opens them. It only reads, and it ends when Atomic does.
 
 ### Fixed

@@ -44,8 +44,8 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 		write(serializeInteractiveEngineMessage(message));
 	};
 	// The host shows the engine's deprecation warnings as it shows its own: once, and in its UI.
-	const restoreDeprecationSink = setDeprecationWarningSink((message, notice) =>
-		send({ type: "engine_deprecation_warning", message, ...notice }),
+	const restoreDeprecationSink = setDeprecationWarningSink((message, { once }) =>
+		send({ type: "engine_deprecation_warning", message, ...(once === undefined ? {} : { once }) }),
 	);
 	setCallbackActivityReporter({
 		started: (activity) =>
