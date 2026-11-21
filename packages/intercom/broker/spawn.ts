@@ -38,13 +38,18 @@ import {
   isIntercomBrokerStopTimeoutError,
   processSharedStorageSelection,
   processSharedStorageSelectionAsync,
-  processStartToken,
-  readProcessStartToken,
   takeTakeoverMutex,
   takeTakeoverMutexAsync,
 } from "@bastani/atomic";
-import * as atomicHost from "@bastani/atomic";
-import { type BrokerProcess, identifyBrokerProcessAsync, laterProcessProbe, stopWindowsProcess } from "./broker-process.js";
+import {
+  type BrokerProcess,
+  identifyBrokerProcessAsync,
+  laterProcessProbe,
+  nativeProcessCreationTime,
+  processStartToken,
+  readProcessStartToken,
+  stopWindowsProcess,
+} from "./broker-process.js";
 import { isBrokerStatusReport } from "./broker-status.js";
 import { BROKER_UPGRADE_STOP_TIMEOUT_MS, requestBrokerShutdown, waitForBrokerExit } from "./broker-stop.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
@@ -1200,27 +1205,20 @@ function lockedProcessLine(content: string, nowMs: number): string | undefined {
 }
 
 /**
- * The Windows native module's creation-time reader, as the host provides it. A host older than this package, as one
- * still running while an update replaces this package, has none: there the lock follows pids alone, as before.
- */
-const nativeProcessCreationTime = (
-  atomicHost as { readonly nativeProcessCreationTime?: (pid: number) => string | null | undefined }
-).nativeProcessCreationTime;
-
-/**
  * The start the spawn lock records beside a pid: read without starting a process (Linux `/proc`, the Windows native
- * module), so taking the lock never waits on one; undefined elsewhere, where the lock follows the pid alone.
+ * module), so taking the lock never waits on one; undefined elsewhere, or with a host that has no such reader, where the
+ * lock follows the pid alone.
  */
 function lockProcessStart(pid: number): string | undefined {
   if (process.platform === "linux") return processStartToken(pid);
-  if (process.platform === "win32") return nativeProcessCreationTime?.(pid) ?? undefined;
+  if (process.platform === "win32") return nativeProcessCreationTime(pid);
   return undefined;
 }
 
 /** {@link lockProcessStart} without blocking the event loop. */
 async function lockProcessStartAsync(pid: number): Promise<string | undefined> {
   if (process.platform === "linux") return readProcessStartToken(pid);
-  if (process.platform === "win32") return nativeProcessCreationTime?.(pid) ?? undefined;
+  if (process.platform === "win32") return nativeProcessCreationTime(pid);
   return undefined;
 }
 

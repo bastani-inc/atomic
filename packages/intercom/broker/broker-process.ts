@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { processStartToken, readProcessCreationTime, readProcessStartToken } from "@bastani/atomic";
+import * as atomicHost from "@bastani/atomic";
 import { hostCommandEnvironment } from "./host-command-environment.js";
 
 /**
@@ -27,6 +27,37 @@ export interface BrokerProcess {
 	 * are too close to tell.
 	 */
 	readonly wroteBrokerPid: "yes" | "no" | "unknown" | "unavailable";
+}
+
+/**
+ * The host's process start readers. A host older than this package, as one still running while an update replaces this
+ * package's files, may lack any of them: a missing reader reads no start, so a pid decides alone, as before.
+ */
+const hostStarts = atomicHost as {
+	readonly processStartToken?: (pid: number) => string | undefined;
+	readonly readProcessStartToken?: (pid: number) => Promise<string | undefined>;
+	readonly readProcessCreationTime?: (pid: number) => Promise<string | undefined>;
+	readonly nativeProcessCreationTime?: (pid: number) => string | null | undefined;
+};
+
+/** The start token of process `pid` (Linux `/proc`), read now and synchronously; undefined where it cannot be read. */
+export function processStartToken(pid: number): string | undefined {
+	return hostStarts.processStartToken?.(pid);
+}
+
+/** The start token of process `pid`, read now without blocking; undefined where it cannot be read. */
+export async function readProcessStartToken(pid: number): Promise<string | undefined> {
+	return hostStarts.readProcessStartToken?.(pid);
+}
+
+/** When Windows process `pid` was created, read now; undefined where it cannot be read. */
+export async function readProcessCreationTime(pid: number): Promise<string | undefined> {
+	return hostStarts.readProcessCreationTime?.(pid);
+}
+
+/** When Windows process `pid` was created, from the native module only, without starting a process. */
+export function nativeProcessCreationTime(pid: number): string | undefined {
+	return hostStarts.nativeProcessCreationTime?.(pid) ?? undefined;
 }
 
 /** Windows file times count 100 ns intervals from 1601-01-01 UTC; Node reports times from 1970-01-01 UTC. */
