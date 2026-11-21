@@ -72,13 +72,18 @@ export function copiesOutputToLog(platform: NodeJS.Platform): boolean {
 }
 
 /**
- * How many times, how far apart, and for how long a process the system refuses to start for a moment is tried: no try is
- * scheduled more than half a second after the first, so a program that stays refused fails its step at most that much
- * later. A refused process was never created, so trying again cannot run a step twice.
+ * How many times, how far apart, and for how long a process the system refuses to start for a moment is tried. The first
+ * tries are 50 ms apart for half a second. A busy Windows machine has refused a start for most of a second (#6124), so
+ * the tries go on, each after half the time already spent (100 to 400 ms), until two seconds after the first: a
+ * program that stays refused fails its step at most that much later. A refused process was never created, so trying
+ * again cannot run a step twice.
  */
-const SPAWN_TRIES = 10;
+const SPAWN_STEADY_TRIES = 10;
 const SPAWN_RETRY_MS = 50;
-const SPAWN_RETRY_WINDOW_MS = 500;
+const SPAWN_STEADY_WINDOW_MS = 500;
+const SPAWN_BACKOFF_MIN_MS = 100;
+const SPAWN_BACKOFF_MAX_MS = 400;
+const SPAWN_RETRY_WINDOW_MS = 2_000;
 const MAX_TIMER_MS = 2_147_483_647;
 
 /**
@@ -100,14 +105,19 @@ export function startElapsedMs(wallStart = Date.now()): () => number {
 	};
 }
 
-/** Whether a start refused with `error` on try `tries`, `elapsedMs` into a step allowed `timeoutMs`, is tried again. */
-function triesStartAgain(error: unknown, tries: number, elapsedMs: number, timeoutMs: number): boolean {
-	return (
-		passingRefusals(process.platform).includes((error as NodeJS.ErrnoException).code ?? "") &&
-		tries < SPAWN_TRIES &&
-		elapsedMs + SPAWN_RETRY_MS <= SPAWN_RETRY_WINDOW_MS &&
-		elapsedMs + SPAWN_RETRY_MS < Math.ceil(timeoutMs)
-	);
+/**
+ * How long a start refused with `error` on try `tries`, `elapsedMs` into a step allowed `timeoutMs`, waits before it is
+ * tried again; undefined when it is not tried again. A try is made only while the shortest wait still ends inside the
+ * window and before the step's timeout, and no wait ends after either.
+ */
+function retryWaitMs(error: unknown, tries: number, elapsedMs: number, timeoutMs: number): number | undefined {
+	if (!passingRefusals(process.platform).includes((error as NodeJS.ErrnoException).code ?? "")) return undefined;
+	const lastStartMs = Math.min(SPAWN_RETRY_WINDOW_MS, Math.ceil(timeoutMs) - 1);
+	// Written so that a timeout that is not a number, which no try fits, makes none.
+	if (!(elapsedMs + SPAWN_RETRY_MS <= lastStartMs)) return undefined;
+	if (tries < SPAWN_STEADY_TRIES && elapsedMs + SPAWN_RETRY_MS <= SPAWN_STEADY_WINDOW_MS) return SPAWN_RETRY_MS;
+	const backoffMs = Math.min(SPAWN_BACKOFF_MAX_MS, Math.max(SPAWN_BACKOFF_MIN_MS, Math.floor(elapsedMs / 2)));
+	return Math.min(backoffMs, lastStartMs - elapsedMs);
 }
 
 /** Waits `ms`, or rejects with the reason of `signal` as soon as it aborts. */
@@ -133,7 +143,7 @@ function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
  * Runs `run` with its output appended to `log`, in its own process group (POSIX) so stopping it stops everything it
  * started. Resolves how it ended: exited, stopped by a signal, timed out after `timeoutMs`, or could not be started
  * (`spawnError`), including when the system refuses to start it at once. A refusal that passes by itself (EPERM or
- * EBUSY on Windows, ETXTBSY on Linux) is tried again for up to half a second first, and nothing starts once `timeoutMs`
+ * EBUSY on Windows, ETXTBSY on Linux) is tried again for up to two seconds first, and nothing starts once `timeoutMs`
  * has passed. Rejects with `signal.reason` when `options.signal` aborts, since cancelling is not a failure; nothing
  * starts once it has.
  */
@@ -183,7 +193,8 @@ export async function runLoggedProcess(
 			// spawn throws, rather than emitting "error", when the system refuses at once (EPERM, EBUSY, ETXTBSY, ENOTDIR).
 			const elapsed = elapsedMs();
 			refusal = error as Error;
-			if (!triesStartAgain(error, tries, elapsed, options.timeoutMs)) {
+			const waitMs = retryWaitMs(error, tries, elapsed, options.timeoutMs);
+			if (waitMs === undefined) {
 				return {
 					exitStatus: null,
 					signal: null,
@@ -192,7 +203,7 @@ export async function runLoggedProcess(
 					spawnError: refusal,
 				};
 			}
-			await pause(SPAWN_RETRY_MS, options.signal);
+			await pause(waitMs, options.signal);
 		}
 	}
 	const child = started;
