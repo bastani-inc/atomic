@@ -14,9 +14,11 @@ export interface ActivityWatchdogDiagnostic {
 	/**
 	 * Set when the diagnostic is operational rather than a concrete engine
 	 * failure: `"watchdog"` for heartbeat-gap reports, `"recovery"` for calm
-	 * engine replacement status, or `"stderr"` for child diagnostics.
+	 * engine replacement status, or `"stderr"` for child diagnostics. `"host"`
+	 * is a concrete failure of this process's own handling of what the engine
+	 * sent; the engine itself is fine.
 	 */
-	source?: "watchdog" | "recovery" | "stderr";
+	source?: "watchdog" | "recovery" | "stderr" | "host";
 	/** The failure behind the diagnostic, when one was thrown. */
 	error?: Error;
 }
@@ -25,10 +27,11 @@ export interface ActivityWatchdogDiagnostic {
  * Chat-surface policy for engine diagnostics. Heartbeat-watchdog gaps and
  * engine-recovery status stay internal: the TUI remains responsive and both are
  * operational noise rather than a concrete engine failure. Concrete engine
- * failures (RPC errors, a restart that could not complete) always surface.
+ * failures (RPC errors, a restart that could not complete) always surface, as
+ * do the host's own failures to handle what the engine sent.
  */
 export function shouldRenderEngineDiagnosticAsChatError(diagnostic: ActivityWatchdogDiagnostic): boolean {
-	return diagnostic.level === "unresponsive" && diagnostic.source === undefined;
+	return diagnostic.level === "unresponsive" && (diagnostic.source === undefined || diagnostic.source === "host");
 }
 
 export interface ActivityWatchdogOptions {

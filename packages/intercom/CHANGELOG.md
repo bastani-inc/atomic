@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- When the session that kept a released subagent lets it go, a session whose question to that subagent was still open is told `Session "<subagent>" ended before replying`. It used to get a malformed failure that closed its Intercom connection, or a notice that did not name the subagent ([#6131](https://github.com/bastani-inc/atomic/issues/6131)).
+
 ## [0.10.2] - 2026-11-20
 
 ### Fixed
