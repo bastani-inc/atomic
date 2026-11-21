@@ -2855,7 +2855,7 @@ describe("Editor component", () => {
 				getSuggestions: async () => commands(...values),
 				applyCompletion,
 			});
-			const approved = { preserveSelection: true, refreshCommandMenu: true } as const;
+			const approved = { preserveSelection: true, refreshMenu: true } as const;
 			const openMenu = async () => {
 				const editor = new Editor(createTestTUI(), defaultEditorTheme);
 				editor.setAutocompleteProvider(catalog("/globalone", "/globaltwo"));
@@ -3039,7 +3039,7 @@ describe("Editor component", () => {
 				}
 			});
 
-			it("leaves a file menu as it is", async () => {
+			it("shows a file menu's new rows too", async () => {
 				const editor = new Editor(createTestTUI(), defaultEditorTheme);
 				const files = (...values: string[]): AutocompleteProvider => ({
 					getSuggestions: async () => ({
@@ -3054,7 +3054,7 @@ describe("Editor component", () => {
 				await flushAutocomplete();
 				editor.setAutocompleteProvider(files("@demo0.txt", "@demo1.txt", "@demo2.txt"), approved);
 				await flushAutocomplete();
-				assert.ok(!rows(editor).some((line) => line.includes("demo0")));
+				assert.ok(rows(editor).includes("❯ @demo0.txt"));
 			});
 		});
 
@@ -3137,6 +3137,8 @@ describe("Editor component", () => {
 					{ preserveSelection: true },
 				);
 				await flushAutocomplete();
+				// The choices show at the next render; the first Tab after that inserts one.
+				editor.render(80);
 				assert.equal(editor.isShowingAutocomplete(), !dismissed);
 				if (!dismissed) {
 					editor.handleInput("\t");

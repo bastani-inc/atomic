@@ -469,9 +469,15 @@ class ResumeProtocols {
 		}
 		if (branchActive && kind === "intercom_ask" && typeof data.askId === "string")
 			this.keepPending(`ask:${data.askId}`, seq);
-		if (branchActive && kind === "intercom_ask_settled" && typeof data.askId === "string") {
-			this.settle(`ask:${data.askId}`);
-			this.settle(`reply:${data.askId}`);
+		if (branchActive && kind === "intercom_ask_settled") {
+			// One ask's outcome, or several answered asks at once.
+			const answered = data.state === "answered" && Array.isArray(data.askIds) ? data.askIds : [];
+			const askIds = [data.askId, ...answered];
+			for (const askId of askIds) {
+				if (typeof askId !== "string") continue;
+				this.settle(`ask:${askId}`);
+				this.settle(`reply:${askId}`);
+			}
 		}
 		if (branchActive && kind === "intercom_sent" && typeof record(data.message).replyTo === "string")
 			this.settle(`inbound:${record(data.message).replyTo}`);

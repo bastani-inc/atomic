@@ -400,12 +400,16 @@ export function isAwaitIntercomPeerRequest(value: object): value is AwaitInterco
 	);
 }
 
-/** A resumed session that used Intercom before re-registers at once, so peers can address it by its name again. */
+/**
+ * A resumed session that used Intercom before re-registers at once, so peers can address it by its name again. An ask it
+ * sent that has no recorded outcome counts too: its reply may be waiting for it at the broker.
+ */
 export function hasIntercomHistory(entries: readonly SessionEntry[]): boolean {
 	return entries.some(
 		(entry) =>
 			(entry.type === "custom_message" && entry.customType === "intercom_message") ||
 			(entry.type === "custom" && entry.customType === "intercom_inbox") ||
+			(entry.type === "custom" && entry.customType === "intercom_ask") ||
 			(entry.type === "custom" && entry.customType === "subagent-child") ||
 			(entry.type === "message" &&
 				entry.message.role === "toolResult" &&
