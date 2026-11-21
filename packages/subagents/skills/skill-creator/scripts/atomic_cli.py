@@ -13,7 +13,9 @@ POLL_SECONDS, and the waiting thread then stops its own child: SIGTERM, a
 second SIGTERM if it is still running, then SIGKILL.
 
 On Windows a child runs in a job object, which ends it and anything it starts
-when the evaluation stops it or when the scripts' own process ends.
+when the evaluation stops it or when the scripts' own process ends, and in a
+console of its own without a window, so Ctrl+C, Ctrl+Break and closing the
+scripts' console reach only the scripts, which then end the job.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from queue import Empty, SimpleQueue
 
 POLL_SECONDS = 0.1
 _POLL_NS = 100_000_000
+# The first wait for a terminated job's processes to end.
+_FIRST_JOB_POLL_NS = 1_000_000
 # A child asked to stop has this many polls to exit before it is asked again, and as many again
 # before it is killed. They are counted rather than timed: time the job spends stopped by Ctrl+Z
 # does not use them up.
@@ -147,26 +151,36 @@ def _check_batch_arguments(command: Sequence[str], arguments: Sequence[str]) -> 
             )
 
 
-def remove_path(path: Path) -> None:
-    """Remove a temporary file or folder the scripts created, never raising.
+def remove_file(path: Path) -> None:
+    """Remove a temporary file the scripts created, or a link in its place, never raising.
 
-    On Windows a process that has not quite exited, or any other process, can hold one of its files
-    open; removal is retried for a bounded time and then left to the system's temporary folder, so
-    a query reports its own outcome rather than this cleanup.
+    A query then reports its own outcome rather than this cleanup's. On Windows a process that has not
+    quite exited, or any other process, can hold the file open; removal is retried for a bounded time,
+    then the file is left to the system's temporary folder.
     """
     for attempt in range(STOP_POLLS):
         try:
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-            else:
-                path.unlink(missing_ok=True)
-            return
-        except FileNotFoundError:
+            path.unlink(missing_ok=True)
             return
         except OSError:
             if os.name != "nt" or attempt == STOP_POLLS - 1:
                 return
             time.sleep(POLL_SECONDS)
+
+
+def remove_folder(path: Path) -> None:
+    """Remove a temporary folder the scripts created and everything in it, never raising.
+
+    As shutil.rmtree(ignore_errors=True): an entry that cannot be removed does not keep the others,
+    and a link or anything else in the folder's place is left alone. On Windows, removal is retried
+    while part of the folder is held open, as remove_file retries.
+    """
+    for attempt in range(STOP_POLLS):
+        shutil.rmtree(path, ignore_errors=True)
+        # os.path's checks answer False, rather than raise, for a path they cannot examine.
+        if os.name != "nt" or attempt == STOP_POLLS - 1 or not os.path.isdir(path) or os.path.islink(path):
+            return
+        time.sleep(POLL_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -226,8 +240,9 @@ class AtomicProcess:
                     stderr=self._stderr,
                     cwd=cwd,
                     env=environment,
-                    # Ctrl+C reaches the scripts, which end the job.
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    # A hidden console of its own: the console events of the scripts' console reach only
+                    # the scripts, which end the job, so no query ends before they know they were stopped.
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
                 )
                 try:
                     self._job.assign(self.process.pid)
@@ -435,7 +450,7 @@ def _child_pids() -> set[int]:
     if all((task / "children").exists() for task in tasks):
         for task in tasks:
             try:
-                pids.update(int(pid) for pid in (task / "children").read_text().split())
+                pids.update(int(pid) for pid in (task / "children").read_bytes().split())
             except OSError:
                 continue
         return pids
@@ -445,7 +460,7 @@ def _child_pids() -> set[int]:
             continue
         try:
             # The parent follows the parenthesized command name, which may itself contain ") ".
-            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            fields = (entry / "stat").read_bytes().rsplit(b")", 1)[1].split()
         except (OSError, IndexError):
             continue
         if int(fields[1]) == me:
@@ -602,10 +617,17 @@ class _WindowsJob:
             self._kernel32.TerminateJobObject(self._handle, 1)
 
     def wait_until_empty(self) -> None:
-        """Wait, for a bounded time, until no process of the job is left."""
+        """Wait, for a bounded time, until no process of the job is left.
+
+        Terminated processes end within moments, so the first checks follow each other closely; the
+        time between checks then doubles up to POLL_SECONDS. The waits add up to at most STOP_POLLS
+        times POLL_SECONDS.
+        """
         basic_accounting_information = 1
         accounting = self._accounting()
-        for _ in range(STOP_POLLS):
+        budget_ns = STOP_POLLS * _POLL_NS
+        wait_ns = _FIRST_JOB_POLL_NS
+        while True:
             if self._handle is None or not self._kernel32.QueryInformationJobObject(
                 self._handle,
                 basic_accounting_information,
@@ -614,9 +636,12 @@ class _WindowsJob:
                 None,
             ):
                 return
-            if accounting.ActiveProcesses == 0:
+            if accounting.ActiveProcesses == 0 or budget_ns == 0:
                 return
-            time.sleep(POLL_SECONDS)
+            wait_ns = min(wait_ns, budget_ns)
+            time.sleep(wait_ns / 1_000_000_000)
+            budget_ns -= wait_ns
+            wait_ns = min(2 * wait_ns, _POLL_NS)
 
     def close(self) -> None:
         if self._handle is not None:
@@ -645,34 +670,47 @@ def _on_stop_signal(signum: int, _frame: object) -> None:
 
 
 def _install_stop_handlers() -> None:
+    handled = set()
     for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
         signum = getattr(signal, name, None)
         # A signal the shell left ignored (nohup, or a background job's SIGINT) stays ignored.
         if signum is None or signal.getsignal(signum) == signal.SIG_IGN:
             continue
         signal.signal(signum, _on_stop_signal)
+        handled.add(signum)
     if hasattr(signal, "SIGCHLD"):
         # A child stays unreaped, so its process ID keeps naming it, until this process waits for
         # it, even when SIGCHLD came in ignored.
         signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     if os.name == "nt":
-        _install_console_close_handler()
+        _install_console_handler(handled)
 
 
-def _install_console_close_handler() -> None:
-    """Closing the console, logging off or shutting down: clean up during the time Windows allows."""
+def _install_console_handler(handled: set[int]) -> None:
+    """Ctrl+C, Ctrl+Break or closing the console: cancel the run at once.
+
+    Python runs a signal's handler on the main thread, and only once that thread wakes; on Windows a
+    thread waiting for the queries does not wake for a signal. This handler runs on a thread of its
+    own, so the queries stop as soon as the console asks. Logging off and shutting down are handled
+    like closing the console when they reach it, but Windows does not send them to a console handler
+    in a process that has loaded user32.dll, as these scripts have.
+    """
     import ctypes
     from ctypes import wintypes
 
     global _console_handler
+    # CTRL_C_EVENT and CTRL_BREAK_EVENT, unless their signals were left ignored.
+    interrupts = {event: signum for event, signum in ((0, signal.SIGINT), (1, signal.SIGBREAK)) if signum in handled}
     close_events = {2, 5, 6}  # CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
     def handler(event: int) -> bool:
+        # With nothing to clean up, the stop handler exits at once with the console-interrupt status.
+        if event in interrupts:
+            _on_stop_signal(interrupts[event], None)
+            return True
         if event not in close_events:
-            return False  # Ctrl+C and Ctrl+Break reach the SIGINT and SIGBREAK handlers.
-        if _owners == 0:
-            return False  # Nothing to clean up: Windows ends the process.
+            return False
         _on_stop_signal(signal.SIGINT, None)
         # Windows ends the process about five seconds after a close event: exit with the
         # console-interrupt status once the cleanup is done, before Windows ends it with another.
