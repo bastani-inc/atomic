@@ -378,6 +378,48 @@ function compiledPackage(target: string): void {
 	});
 }
 
+test(
+	"a split after a fresh compile bundles the compiled code, not the copy an earlier split saved",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "recompiled");
+		compiledPackage(build);
+		const split = () => {
+			const result = spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr);
+		};
+		const module = join(build, "dist", "core", "agent-session.js");
+		const compiled = fs.readFileSync(module, "utf8");
+		split();
+		assert.equal(fs.existsSync(module), false, "the split removes the compiled file of a bundled module");
+
+		// The next compile emits the module again, changed, with its map.
+		const marker = 'globalThis.atomicSplitRevision = "recompiled";';
+		const recompiled = compiled.replace(/^\/\/# sourceMappingURL=.*$/m, `${marker}\n$&`);
+		assert.notEqual(recompiled, compiled);
+		fs.writeFileSync(module, recompiled);
+		const saved = join(
+			build,
+			"node_modules",
+			".cache",
+			"atomic-split-dist",
+			"compiled",
+			"core",
+			"agent-session.js.map",
+		);
+		fs.copyFileSync(saved, `${module}.map`);
+		split();
+		assert.equal(fs.existsSync(module), false, "the split removes it again");
+		const shared = join(build, "dist", "_shared");
+		const bundled = fs
+			.readdirSync(shared)
+			.filter((file) => file.endsWith(".js"))
+			.some((file) => fs.readFileSync(join(shared, file), "utf8").includes(marker));
+		assert.ok(bundled, "the bundle holds the recompiled module");
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
 const RELEASES = ["changes StorageError's constructor", "adds a module StorageError's module imports"] as const;
 test.each(RELEASES)(
 	"a process that loaded the package keeps one StorageError when it is replaced in place by a release that %s",
