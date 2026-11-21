@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "vitest";
+import { NODE_TS_SOURCE_ARGS } from "../helpers/node-ts-sources.js";
 import {
 	decodeStream,
 	makeTempDirectory,
@@ -30,7 +31,7 @@ test("a user's inspector pause remains theirs and diagnostics still sample the n
 	const root = makeTempDirectory("event-loop-user-inspector-");
 	const go = join(root, "go");
 	const log = join(root, "blocks.jsonl");
-	const child = spawnProcess([process.execPath, "--inspect=0", FIXTURE, go], {
+	const child = spawnProcess([process.execPath, "--inspect=0", ...NODE_TS_SOURCE_ARGS, FIXTURE, go], {
 		cwd: ROOT,
 		stdout: "pipe",
 		stderr: "pipe",

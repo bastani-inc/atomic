@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "vitest";
+import { NODE_TS_SOURCE_ARGS } from "../helpers/node-ts-sources.js";
 import {
 	type RecordedProcess,
 	recordProcess,
@@ -18,8 +19,9 @@ import {
 	spawnProcess,
 } from "../helpers/runtime.js";
 
+// The source module: the package bundles its own modules and ships no file of this one.
 const EXEC_MODULE = pathToFileURL(
-	join(moduleDir(import.meta.url), "../../packages/coding-agent/dist/core/exec.js"),
+	join(moduleDir(import.meta.url), "../../packages/coding-agent/src/core/exec.ts"),
 ).href;
 /** Longer than starting Node and its commands takes, however loaded the machine. */
 const START_MS = 30_000;
@@ -63,7 +65,7 @@ describe.runIf(process.platform === "linux")("a process running extensions' pi.e
 	void execCommand(process.execPath, ["-e", ${JSON.stringify(command(kept))}], process.cwd());
 	setInterval(() => {}, 1000);
 });`;
-		const host = spawnProcess([process.execPath, "-e", script], {
+		const host = spawnProcess([process.execPath, ...NODE_TS_SOURCE_ARGS, "-e", script], {
 			stdin: "ignore",
 			stdout: "ignore",
 			stderr: "inherit",
