@@ -9,6 +9,7 @@
 ### Fixed
 
 - Stopping `skill-creator`'s description scripts with Ctrl+C, `kill` or by closing the terminal (on Windows Ctrl+C, Ctrl+Break or closing the console) stops every evaluation process (each `atomic` they started and whatever that started), removes their temporary files and exits with that signal's status; the report left open in your browser is not touched. Ctrl+Z, `fg` and `bg` pause and continue the evaluation together with the script. Importing the scripts leaves your signal handlers alone, and `scripts.atomic_cli.cancel()` stops an evaluation in progress. Queries now run on Windows, and the review viewer picks a free port instead of stopping the program that listens on port 3117 ([#5625](https://github.com/bastani-inc/atomic/issues/5625)).
+- Subagent result rows, status lists, launch cards and `pause`, `quit` and `resume` results use the agent panel's marks: a running subagent shows a still grey `◯` instead of `∀` or a pulsing dot, a finished one a green `●`, and an interrupted, killed, paused or quit one a red `◯`. A subagent waiting for an answer shows `◆` and one paused with Esc `‖`. A foreground subagent that continued on its own reads `Continued` with the running mark instead of `Stopped` ([#6122](https://github.com/bastani-inc/atomic/issues/6122)).
 
 ## [0.10.2] - 2026-11-20
 

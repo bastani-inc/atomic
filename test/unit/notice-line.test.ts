@@ -32,20 +32,27 @@ test("a notice collapses to exactly one line, at 80 and at 160 columns", () => {
 	assert.equal(visibleWidth(plain(new NoticeLine(command).render(80))[0]!), 80);
 });
 
-test("each status has its own marker and colour, so it reads without colour too", () => {
-	const markers = (["success", "failure", "stopped", "warning", "paused"] as const).map((status) => {
-		const [line] = new NoticeLine({ status, label: "Task", subject: "x", outcome: "ended" }).render(80);
-		return { glyph: stripVTControlCharacters(line!).slice(1, 2), line: line! };
+test("each status has its own marker and colour, the agent panel's for a task's states (#6122)", () => {
+	const markers = (["success", "failure", "stopped", "warning", "paused", "running"] as const).map((status) => {
+		const spec = { status, label: "Task", subject: "x", outcome: "ended" };
+		const [line] = new NoticeLine(spec).render(80);
+		return { glyph: stripVTControlCharacters(line!).slice(1, 2), line: line!, text: noticeLineText(spec) };
 	});
 	assert.deepEqual(
 		markers.map((marker) => marker.glyph),
-		["●", "✗", "◼", "!", "⏸"],
+		["●", "✗", "◯", "!", "‖", "◯"],
 	);
 	assert.ok(markers[0]!.line.startsWith(` ${theme.fg("success", "●")}`));
 	assert.ok(markers[1]!.line.startsWith(` ${theme.fg("error", "✗")}`));
-	assert.ok(markers[2]!.line.startsWith(` ${theme.fg("muted", "◼")}`));
+	assert.ok(markers[2]!.line.startsWith(` ${theme.fg("error", "◯")}`), "a stopped task: the panel's red circle");
 	assert.ok(markers[3]!.line.startsWith(` ${theme.fg("warning", "!")}`));
-	assert.ok(markers[4]!.line.startsWith(` ${theme.fg("muted", "⏸")}`));
+	assert.ok(markers[4]!.line.startsWith(` ${theme.fg("warning", "‖")}`));
+	assert.ok(markers[5]!.line.startsWith(` ${theme.fg("muted", "◯")}`), "a running task: still, not the working ∀");
+	assert.deepEqual(
+		markers.map((marker) => marker.text.slice(0, 1)),
+		["●", "✗", "◯", "!", "‖", "◯"],
+		"the plain text reads the same marks",
+	);
 });
 
 test("a narrow line shortens the quoted subject first and keeps how it ended", () => {

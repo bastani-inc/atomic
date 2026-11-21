@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ToolBlock` and `NoticeLine` take the states `agent-running`, `shell-running`, `input` and `task-stopped`, which draw a subagent's or background task's state with the marks of the agent panel and `/tasks`, and `TASK_MARKS` gives those marks for text an extension draws itself ([#6122](https://github.com/bastani-inc/atomic/issues/6122)).
+
 ### Changed
 
 - While you view a subagent, `←` on its empty prompt returns to the main chat and leaves the subagent running, with its queued messages and unsent draft kept. The hint by the prompt reads `← main chat`. `Esc` no longer switches back to the main chat; it only pauses a working subagent, so how you leave a subagent no longer depends on whether it is working ([#6135](https://github.com/bastani-inc/atomic/issues/6135))
+- `NoticeLine` and `ToolBlock` draw three existing states with new marks. On a `NoticeLine`, `running` shows a grey `◯` instead of `∀` and `stopped` a red `◯` instead of a muted `◼`, as the agent panel marks a running and a stopped subagent; a `ToolBlock` keeps `∀` for a call in progress and the muted `◼` for an interrupted one. `paused` shows `‖` in the warning colour instead of a muted `⏸` on both. With `NO_COLOR` a running and a stopped notice both show `◯`, and only their words tell them apart ([#6122](https://github.com/bastani-inc/atomic/issues/6122)).
 - Sessions in different projects share more of the cached system prompt. The Session memory guideline no longer names the project's session folder; a `session_folder` section near the end of the prompt does. Sessions started before keep the prompt they recorded ([#6121](https://github.com/bastani-inc/atomic/issues/6121)).
 
 ### Fixed
@@ -24,6 +29,7 @@
 - A resumed session no longer sends the `mcp_servers` part of the system prompt twice more while its MCP servers reconnect: a server without a configured `description` keeps the summary the session last showed for it until it connects, and the part changes only if the server's instructions did ([#6108](https://github.com/bastani-inc/atomic/issues/6108))
 - Sessions no longer store a hash of an MCP stdio server's arguments, which can hold a token, and changing such an argument no longer drops the server's tools from the first requests after a resume ([#6109](https://github.com/bastani-inc/atomic/issues/6109))
 - Running Atomic from a source checkout no longer freezes the interface for about a second shortly after startup. A bundled package's modules that load later, such as Intercom's when it joins, are compiled in a background thread, and `/reload` runs the current code of such a module after you edit it, also under Bun and on Windows ([#6118](https://github.com/bastani-inc/atomic/issues/6118))
+- Every view of a subagent or background task uses the marks of the agent panel and `/tasks`: completion notices, launch cards, a chat's task rows and the `wait` and `kill` lines show a grey `◯` (a shell's `⧗`) while it runs, a green `●` once it is done and a red `◯` once it was stopped, also for a subagent paused or quit until it is resumed. A `wait` that returns before its shell finishes no longer shows the done mark `●`, a stopped task's notice no longer shows `◼`, which `/tasks` uses for a task that is stopping, and a command sent to the background shows `⧗` on its block instead of `●`. A task row shows a waiting question with `◆` and a stopping task with `◼`, and in `/tasks` a subagent paused with Esc reads in the warning colour and a queued one dim, as in the agent panel ([#6122](https://github.com/bastani-inc/atomic/issues/6122)).
 - A resumed Claude session no longer sends strict tools once more after compactions removed every reply that recorded their rejection: the compaction keeps the record ([#6119](https://github.com/bastani-inc/atomic/issues/6119)).
 - A tool whose schema lists its `required` parameters in another order, as an MCP server may after reconnecting, no longer counts as a changed tool: its declaration and the cached prompt stay the same, and a resumed session runs a call to it instead of refusing it as changed ([#6130](https://github.com/bastani-inc/atomic/issues/6130)).
 

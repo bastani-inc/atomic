@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
 import {
-	PULSE_FRAMES,
-	pulseGlyph,
 	RUNNING_ANIMATION_MS,
 	renderLiveSubagentResult,
 	renderSubagentResult,
@@ -67,7 +65,6 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 			undefined,
 			"foreground subagent rows must not run a wall-clock timer (above-fold ticks flicker)",
 		);
-		assert.equal(context.state.subagentResultPulseFrame, 1, "the first render seeds the pulse at frame 1");
 		assert.equal(context.state.subagentResultSnapshotNow, 10_000);
 	});
 
@@ -81,36 +78,47 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 			renderLiveSubagentResult(result, { expanded: false, isPartial: true }, theme, context).render(120).join("\n"),
 		);
 		assert.equal(second, first, "with no progress update the row must not change across host re-renders / time");
-		assert.equal(context.state.subagentResultPulseFrame, 1, "the pulse must not advance without a progress update");
 	});
 
-	test("the pulse advances exactly once per progress update and refreshes the row", () => {
+	test("a progress update refreshes the row", () => {
 		let result = runningSingleResult();
 		const context = freshContext();
 		const before = withMockedNow(10_000, () =>
 			renderLiveSubagentResult(result, { expanded: false, isPartial: true }, theme, context).render(120).join("\n"),
 		);
-		assert.equal(context.state.subagentResultPulseFrame, 1);
 
 		result = bumpProgress(result);
 		const after = withMockedNow(10_000, () =>
 			renderLiveSubagentResult(result, { expanded: false, isPartial: true }, theme, context).render(120).join("\n"),
 		);
-		assert.equal(context.state.subagentResultPulseFrame, 2, "a progress update advances the pulse by exactly one");
 		assert.notEqual(after, before, "a progress update refreshes the foreground row");
 	});
 
-	test("the pulse frame advances on each progress update while single compact rows stay stable", () => {
-		let result = runningSingleResult();
+	test("running rows keep the agent panel's still running mark through progress updates (#6122)", () => {
+		const base = runningSingleResult().details!.results[0]!;
+		let result: AgentToolResult<Details> = {
+			content: [{ type: "text", text: "running parallel" }],
+			details: {
+				mode: "parallel",
+				results: [
+					base,
+					{ ...base, agent: "reviewer", progress: { ...base.progress!, agent: "reviewer", index: 1 } },
+				],
+				progress: [base.progress!, { ...base.progress!, agent: "reviewer", index: 1 }],
+				totalSteps: 2,
+			},
+		};
 		const context = freshContext();
-		for (let frame = 1; frame <= PULSE_FRAMES.length + 2; frame++) {
-			const out = withMockedNow(10_000, () =>
-				renderLiveSubagentResult(result, { expanded: false, isPartial: true }, theme, context)
-					.render(120)
-					.join("\n"),
+		for (let update = 0; update < 6; update++) {
+			const lines = withMockedNow(10_000, () =>
+				renderLiveSubagentResult(result, { expanded: false, isPartial: true }, theme, context).render(120),
 			);
-			assert.equal(context.state.subagentResultPulseFrame, frame);
-			assert.match(out, /Running/);
+			const marks = lines.map((line) => /^ *([^\s]) /u.exec(line)?.[1]).filter((mark) => mark !== undefined);
+			assert.deepEqual(
+				marks.filter((mark) => mark !== "⎿" && mark !== "P"),
+				["◯", "◯", "◯"],
+				`the run and both running rows, update ${update}:\n${lines.join("\n")}`,
+			);
 			result = bumpProgress(result);
 		}
 	});
@@ -118,23 +126,19 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 	test("the running row is decoupled from wall-clock time", () => {
 		const result = runningSingleResult();
 		const a = withMockedNow(10_000, () =>
-			renderSubagentResult(result, { expanded: false, now: 10_000, pulseFrame: 2 }, theme).render(120).join("\n"),
+			renderSubagentResult(result, { expanded: false, now: 10_000 }, theme).render(120).join("\n"),
 		);
 		const b = withMockedNow(10_000 + 9 * RUNNING_ANIMATION_MS, () =>
-			renderSubagentResult(result, { expanded: false, now: 10_000, pulseFrame: 2 }, theme).render(120).join("\n"),
+			renderSubagentResult(result, { expanded: false, now: 10_000 }, theme).render(120).join("\n"),
 		);
-		assert.equal(a, b, "same pulse frame + same captured now must render byte-identically regardless of wall-clock");
+		assert.equal(a, b, "the same captured now must render byte-identically regardless of wall-clock");
 	});
 
 	test("foreground placeholder rows keep their existing running glyph", () => {
 		const glyph = withMockedNow(10_000, () => runningGlyph());
 
 		assert.ok(firstSpinnerChar(glyph), "foreground placeholder helper keeps the preexisting running spinner glyph");
-		assert.notEqual(
-			glyph,
-			pulseGlyph(1),
-			"foreground placeholder helper must not reuse the async/foreground pulse frame",
-		);
+		assert.notEqual(glyph, "◯", "foreground placeholder helper must not reuse the result row's running mark");
 	});
 
 	test("multi-agent compact rows stay stable until a progress update", () => {

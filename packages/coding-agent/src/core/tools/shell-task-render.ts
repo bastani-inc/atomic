@@ -2,11 +2,13 @@
  * Transcript presentation for shell task results: a `wait` observation and a `kill` receipt each become one status
  * line, with the task's output (when it has any) below it. Raw observation envelopes and internal ids never appear.
  *
- * Roles follow DESIGN.md: success, error, warning and dim carry the state, `·` separates facts, and only the glyphs
- * `✓ ✗ ● ○` are used. The status reads the same without color, which the theme drops when `NO_COLOR` is set.
+ * Roles follow DESIGN.md: success, error, warning and dim carry the state and `·` separates facts. The mark is the one
+ * the agent panel and `/tasks` show the task's state with. The status reads the same without color, which the theme
+ * drops when `NO_COLOR` is set.
  */
 import { type Container, Spacer, Text } from "@bastani/atomic-tui";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
+import { TASK_MARKS } from "../../modes/interactive/components/task-marks.ts";
 import { VisualLinePreview } from "../../modes/interactive/components/visual-truncate.ts";
 import { theme } from "../../modes/interactive/theme/theme.js";
 import type { ToolRenderResultOptions } from "../extensions/types.ts";
@@ -29,9 +31,9 @@ export const SHELL_OUTPUT_PREVIEW_LINES = 5;
 type ResultContent = Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 
 function statusLine(status: TaskStatus): string {
-	const head = `${status.glyph} ${status.label}`;
+	const head = `${theme.fg(status.mark.color, status.mark.glyph)} ${theme.fg(status.tone, status.label)}`;
 	const detail = status.detail ? theme.fg("dim", " · ") + theme.fg("muted", status.detail) : "";
-	return theme.fg(status.tone, head) + detail;
+	return head + detail;
 }
 
 function addErrorLines(component: Container, headline: string, hint: string | undefined): void {
@@ -161,6 +163,10 @@ export function rebuildKillResult(
 	const failure = cleanupFailureSummary(receipt.cleanup);
 	if (failure)
 		component.addChild(
-			new Text(statusLine({ glyph: "✗", tone: "error", label: "cleanup failed", detail: failure }), 0, 0),
+			new Text(
+				statusLine({ mark: TASK_MARKS.failed, tone: "error", label: "cleanup failed", detail: failure }),
+				0,
+				0,
+			),
 		);
 }

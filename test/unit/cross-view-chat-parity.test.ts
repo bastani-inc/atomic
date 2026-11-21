@@ -927,7 +927,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 					).render(80),
 				);
 			assert.deepEqual(renderMainAgentBlock(), [
-				" ⏸ Agent(worker · Inspect concurrent spawn locks.)",
+				" ‖ Agent(worker · Inspect concurrent spawn locks.)",
 				"   ⎿  Paused · 14s",
 			]);
 
@@ -939,7 +939,7 @@ describe("cross-view parity across main chat and subagent view (#5224)", () => {
 			const resumedItems = agentPanelItems(ownerSession);
 			assert.equal(resumedItems[0]?.state, "running", "panel item returns to running after follow-up message");
 			const resumedBlock = renderMainAgentBlock();
-			assert.match(resumedBlock[0] ?? "", /^ ∀ Agent\(worker · Inspect concurrent spawn locks\.\)$/);
+			assert.match(resumedBlock[0] ?? "", /^ ◯ Agent\(worker · Inspect concurrent spawn locks\.\)$/);
 			assert.match(resumedBlock[1] ?? "", /^ {3}⎿ {2}Running · 14s · ↓ 800 tokens/);
 			const resumedRows = plain(inspector.renderViewport(80, 24));
 			const resumedRule =
