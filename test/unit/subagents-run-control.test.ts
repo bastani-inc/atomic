@@ -139,6 +139,7 @@ import {
 	wakeSubagentChildForMessage,
 } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import {
+	queuedResumeStart,
 	runAgentTask,
 	takeStoppedQueuedSubagentChild,
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
@@ -7602,4 +7603,66 @@ test("a launch card in another session reads only where its owner's children sta
 	} finally {
 		loads.mockRestore();
 	}
+});
+
+test("a resumed child of a session without a task host, stopped while it waited for its run's slot, reads the message it is resumed with next", async () => {
+	const h = harness({ ownerless: true });
+	const bGate = Promise.withResolvers<void>();
+	const aGate = Promise.withResolvers<void>();
+	h.finishOn.set("slot-b-task", bGate);
+	h.finishOn.set("slot-a-task", aGate);
+	cleanups.push(async () => {
+		aGate.resolve();
+		bGate.resolve();
+	});
+	const launched = h.call({
+		tasks: [
+			{ agent: "worker", task: "slot-b-task" },
+			{ agent: "worker", task: "slot-a-task" },
+		],
+		concurrency: 1,
+	});
+	const children = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 2 && Date.now() < deadline) await sleep(10);
+	const [childB, childA] = children();
+	assert.ok(childA && childB);
+	await h.waitForLatest(childB.childId, (candidate) => !!candidate.childSessionId);
+	await h.call({ action: "pause", id: childB.childId });
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId && candidate.state === "running");
+	const startsOfB = () =>
+		h.runs.filter((run) => run.options.runId === childB.runId && run.options.index === childB.index);
+	// Resumed without a message, it waits behind its sibling for the run's only slot, and is paused there.
+	await h.call({ action: "resume", id: childB.childId });
+	await h.call({ action: "pause", id: childB.childId });
+	const resumed = h.call({ action: "resume", id: childB.childId, message: "then check the edge case" });
+	aGate.resolve();
+	const until = Date.now() + RECORD_WAIT_MS;
+	while (startsOfB().length < 2 && Date.now() < until) await sleep(10);
+	bGate.resolve();
+	await Promise.race([resumed, sleep(RECORD_WAIT_MS)]);
+	await Promise.race([launched, sleep(RECORD_WAIT_MS)]);
+
+	const run = startsOfB().at(-1);
+	assert.ok(run, "it starts");
+	assert.ok(run.task.includes("then check the edge case"), `its message is its prompt: ${JSON.stringify(run.task)}`);
+	assert.notEqual(run.options.skipTaskPrompt, true, "and is prompted");
+});
+
+test("a child stopped while it waited for its run's slot and resumed with a message starts on it, its task first if it had one to prompt", () => {
+	const options = { cwd: "/repo", runId: "slot", resumeTaskLiteral: true } as RunSyncOptions;
+	assert.deepEqual(queuedResumeStart("the task", options, undefined), { task: "the task", options });
+	assert.deepEqual(queuedResumeStart("the task", options, "and this"), { task: "the task\n\nand this", options });
+	// A start its note or continued results begin prompts no task: the message is its prompt, as written.
+	for (const start of [
+		{ task: "", options: { ...options, skipTaskPrompt: true } },
+		{ task: SUBAGENT_RELEASED_WAKE_PROMPT, options: { ...options, resumeTaskFallback: true } },
+	])
+		assert.deepEqual(queuedResumeStart(start.task, start.options, "and this"), {
+			task: "and this",
+			options: { ...start.options, skipTaskPrompt: false, resumeTaskFallback: false, resumeTaskLiteral: true },
+		});
 });

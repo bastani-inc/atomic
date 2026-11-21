@@ -595,6 +595,26 @@ function wakeForResultsHeldDuringRun(
  * and its observation registered, and the child reports by its completion notice. `subagent({ action: "wait" })` waits
  * for it explicitly.
  */
+/**
+ * What a child stopped while it waited for its run's slot starts with when it is resumed with `message`: its task, then
+ * that message. A start that prompts no task of its own (its notes or the results it continues with start its turn)
+ * prompts the message alone, as written.
+ */
+export function queuedResumeStart(
+	task: string,
+	options: RunSyncOptions,
+	message: string | undefined,
+): { readonly task: string; readonly options: RunSyncOptions } {
+	if (!message) return { task, options };
+	const prompted = task !== "" && options.skipTaskPrompt !== true && options.resumeTaskFallback !== true;
+	return prompted
+		? { task: `${task}\n\n${message}`, options }
+		: {
+				task: message,
+				options: { ...options, skipTaskPrompt: false, resumeTaskFallback: false, resumeTaskLiteral: true },
+			};
+}
+
 export async function runAgentTask(input: {
 	host: AgentTaskHost;
 	cwd: string;
@@ -770,10 +790,10 @@ export async function runAgentTask(input: {
 				cwd: input.cwd,
 				agents: input.agents,
 				agent: input.agent,
-				task: launch.message ? `${input.task}\n\n${launch.message}` : input.task,
+				...queuedResumeStart(input.task, input.options, launch.message),
 				...(input.intentTask === undefined ? {} : { intentTask: input.intentTask }),
 				options: {
-					...input.options,
+					...queuedResumeStart(input.task, input.options, launch.message).options,
 					cwdVerdict: undefined,
 					signal: undefined,
 					interruptSignal: undefined,
