@@ -21,6 +21,7 @@
 - Atomic starts faster again: the package's own dependencies for YAML, Markdown and HTML conversion, diffs, version ranges, glob patterns, JSON streaming and starting commands load from its shared files instead of about 260 files of their own. Their licenses are in `dist/THIRD_PARTY_NOTICES.md`.
 - Atomic starts faster, most of all on Windows: the packages it ships for models, the terminal UI, the agent loop, schemas and telemetry (`@bastani/atomic-ai`, `-tui`, `-agent-core`, `-schema`, `-telemetry`) now load from a few files each instead of one file per module, so a start reads about 290 fewer files. Their import paths, deep paths included, are unchanged. A bundler (esbuild, Vite, webpack, rolldown) that bundles `@bastani/atomic-ai`, `-agent-core`, `-schema` or `-telemetry` into an app still gets one file per module and leaves out what the app does not use. One that bundles `@bastani/atomic-tui` gets its modules in the shared files and can no longer leave the unused ones out: importing only `visibleWidth` grows from about 198 KB to 345 KB minified.
 - Atomic starts faster again: TypeBox loads from one file instead of about 670.
+- On Windows, the first start after a restart or an install reaches the editor much sooner: while Atomic loads, a short-lived helper reads the files it is about to load many at a time, so the antivirus scans them in parallel instead of one after another as Node opens them. It only reads, and it ends when Atomic does.
 
 ### Fixed
 
