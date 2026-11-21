@@ -30,6 +30,12 @@ const packageDir = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(packageDir, "dist");
 /** The entries that are bundled: the bin, `main.js` (which the CLI imports), and the SDK's other export paths. */
 const BUNDLED_ENTRIES = ["cli", "main", "index", "rpc-entry"];
+/**
+ * Modules defining what the host and its extensions both hold (the context's model registry and session manager, and
+ * the context retirement effects): bundled entries at their own paths, which every other module imports through
+ * `#dist/*`, so their own code stays in that one file across releases.
+ */
+const OWNER_ENTRIES = ["core/model-registry", "core/session-manager-core", "core/extensions/runner-context"];
 /** The public entries whose modules stay compiled files at their own paths. */
 const COMPILED_PUBLIC_ENTRIES = ["core/storage/index", "core/storage/testing"];
 /** Where shared code goes, below `dist`. */
@@ -62,10 +68,16 @@ const writtenBySplit = (entry) => {
 	const file = join(dist, `${entry}.js`);
 	return state.entries[entry] !== undefined && existsSync(file) && state.entries[entry] === digest(readFileSync(file));
 };
+/** Whether `source` is a split's output rather than compiled code. */
+const splitOutput = (source) => source.includes(`/${SHARED_DIRECTORY}/`) || source.includes(MODULE_URL_SPECIFIER);
 /** `dist/<path>` as compiled, also where an earlier split overwrote it. */
 const compiledSource = (path) => {
 	const entry = path.replace(/\.js$/, "");
-	if (!writtenBySplit(entry)) return readFileSync(join(dist, path), "utf8");
+	if (!writtenBySplit(entry)) {
+		const source = readFileSync(join(dist, path), "utf8");
+		if (splitOutput(source)) throw new Error(`split-dist: ${path} is an earlier split's output; rebuild from clean`);
+		return source;
+	}
 	const saved = join(COMPILED_ENTRIES, path);
 	if (!existsSync(saved))
 		throw new Error(`split-dist: ${path} is an earlier split's output and its compiled copy is gone; rebuild from clean`);
@@ -90,15 +102,16 @@ const visitCompiled = (path) => {
 for (const entry of COMPILED_PUBLIC_ENTRIES) visitCompiled(`${entry}.js`);
 const SPLIT_ENTRIES = [
 	...BUNDLED_ENTRIES,
+	...OWNER_ENTRIES,
 	...[...lateImports].filter((path) => !compiledModules.has(path)).map((path) => path.replace(/\.js$/, "")),
 ];
 if (SPLIT_ENTRIES.some((entry) => compiledModules.has(`${entry}.js`)))
 	throw new Error("split-dist: a bundled entry is also loaded by a compiled public entry");
 
-// A compiled module an earlier split overwrote gets its compiled code back.
-for (const path of compiledModules) {
-	const entry = path.replace(/\.js$/, "");
-	if (!writtenBySplit(entry)) continue;
+// A file an earlier split wrote that is no entry now gets its compiled code back.
+for (const entry of Object.keys(state.entries)) {
+	if (SPLIT_ENTRIES.includes(entry) || !writtenBySplit(entry)) continue;
+	const path = `${entry}.js`;
 	for (const suffix of ["", ".map"]) {
 		const saved = join(COMPILED_ENTRIES, `${path}${suffix}`);
 		if (existsSync(saved)) writeFileSync(join(dist, `${path}${suffix}`), readFileSync(saved));
@@ -111,8 +124,11 @@ for (const entry of SPLIT_ENTRIES) {
 	const file = join(dist, `${entry}.js`);
 	const saved = join(COMPILED_ENTRIES, `${entry}.js`);
 	if (!writtenBySplit(entry)) {
+		const compiled = readFileSync(file);
+		if (splitOutput(compiled.toString("utf8")))
+			throw new Error(`split-dist: ${entry}.js is an earlier split's output; rebuild from clean`);
 		mkdirSync(dirname(saved), { recursive: true });
-		writeFileSync(saved, readFileSync(file));
+		writeFileSync(saved, compiled);
 		if (existsSync(`${file}.map`)) writeFileSync(`${saved}.map`, readFileSync(`${file}.map`));
 		else rmSync(`${saved}.map`, { force: true });
 	} else if (!existsSync(saved)) {
@@ -154,9 +170,14 @@ const result = await build({
 			setup(context) {
 				context.onResolve({ filter: /^#dist-module-url$/ }, () => ({ path: MODULE_URL_SPECIFIER, external: true }));
 				// A module a compiled public entry loads is imported from its compiled file, not bundled.
-				context.onResolve({ filter: /^\.{1,2}\// }, ({ path, resolveDir }) => {
+				// An owner module is imported from its own entry file, never bundled into another file.
+				const owners = new Set(OWNER_ENTRIES.map((entry) => `${entry}.js`));
+				context.onResolve({ filter: /^\.{1,2}\// }, ({ path, resolveDir, kind }) => {
+					if (kind === "entry-point") return undefined;
 					const target = relative(dist, join(resolveDir, path)).split(sep).join("/");
-					return compiledModules.has(target) ? { path: `${COMPILED_SPECIFIER_PREFIX}${target}`, external: true } : undefined;
+					return compiledModules.has(target) || owners.has(target)
+						? { path: `${COMPILED_SPECIFIER_PREFIX}${target}`, external: true }
+						: undefined;
 				});
 				context.onLoad({ filter: /\.js$/ }, async ({ path }) => {
 					if (!path.startsWith(dist + sep) || path === MODULE_URL_FILE) return undefined;

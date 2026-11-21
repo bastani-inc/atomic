@@ -53,9 +53,9 @@ function loadedFrom(entries: readonly string[]): Set<string> {
  * The package installed at a path with spaces, a non-ASCII letter and URL-reserved characters, beside links to the
  * workspace's other packages: what `npm install` leaves, moved somewhere the build never saw.
  */
-function installedLayout(): { readonly nodeModules: string; readonly atomic: string } {
+function installedLayout(name = "install"): { readonly nodeModules: string; readonly atomic: string } {
 	layoutRoot ??= fs.mkdtempSync(join(os.tmpdir(), "atomic split café #% "));
-	const nodeModules = join(layoutRoot, "install", "node_modules");
+	const nodeModules = join(layoutRoot, name, "node_modules");
 	const atomic = join(nodeModules, "@bastani", "atomic");
 	if (fs.existsSync(atomic)) return { nodeModules, atomic };
 	const linkType = process.platform === "win32" ? "junction" : "dir";
@@ -165,135 +165,147 @@ const SHARED_EXPORTS: [alias: string, packageName: string, exportName: string][]
 	["@earendil-works/pi-agent-core", "@bastani/atomic-agent-core", "Agent"],
 ];
 
+/**
+ * Runs the installed package's CLI on a terminal with the extension above, `/reload`s once and quits, and returns what
+ * the extension recorded: each generation's identity checks, then each context's retirement through the loader's and
+ * through Node's own import of the SDK.
+ */
+async function identitySession(
+	host: "in-process" | "isolated",
+	layout: { readonly nodeModules: string; readonly atomic: string },
+	extraEnv: Record<string, string> = {},
+): Promise<IdentityRecord[]> {
+	const { nodeModules, atomic } = layout;
+	const root = fs.mkdtempSync(join(layoutRoot as string, `${host}-`));
+	const project = join(root, "project");
+	const agentDir = join(root, "agent");
+	const home = join(root, "home");
+	const record = join(root, "record.jsonl");
+	for (const directory of [project, agentDir, home]) fs.mkdirSync(directory, { recursive: true });
+	prepareAgentDir(agentDir, "http://127.0.0.1:9");
+	fs.symlinkSync(nodeModules, join(project, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+	fs.writeFileSync(join(project, "native.cjs"), "exports.load = (name) => import(name);\n");
+	fs.writeFileSync(join(project, "revision.ts"), 'export const revision = "first";\n');
+	const extension = join(project, "extension.ts");
+	fs.writeFileSync(
+		extension,
+		[
+			'import { appendFileSync } from "node:fs";',
+			'import { createRequire } from "node:module";',
+			'import { revision } from "./revision.ts";',
+			...SHARED_EXPORTS.map(([alias], index) => `import * as shared${index} from ${JSON.stringify(alias)};`),
+			`const native = createRequire(${JSON.stringify(join(project, "index.cjs"))})("./native.cjs");`,
+			`const log = (type, data = {}) => appendFileSync(${JSON.stringify(record)}, JSON.stringify({ type, revision, ...data }) + "\\n");`,
+			`const pairs = ${JSON.stringify(SHARED_EXPORTS)};`,
+			`const viaLoader = [${SHARED_EXPORTS.map((_, index) => `shared${index}`).join(", ")}];`,
+			"export default function (pi) {",
+			'	pi.on("session_start", async (_event, ctx) => {',
+			"		try {",
+			"			const checks = [];",
+			"			for (const [index, [alias, packageName, name]] of pairs.entries()) {",
+			"				const direct = await native.load(packageName);",
+			"				checks.push([alias, typeof viaLoader[index][name], viaLoader[index][name] === direct[name]]);",
+			"			}",
+			'			const sdk = await native.load("@bastani/atomic");',
+			'			shared0.registerExtensionContextRetirementEffect(ctx, () => log("virtual-retired"));',
+			'			sdk.registerExtensionContextRetirementEffect(ctx, () => log("native-retired"));',
+			'			log("ready", { checks, ctxModel: ctx.modelRegistry instanceof sdk.ModelRegistry, ctxSession: ctx.sessionManager instanceof sdk.SessionManager });',
+			"		} catch (error) {",
+			'			log("error", { error: String(error && error.stack || error) });',
+			"		}",
+			"	});",
+			"}",
+		].join("\n"),
+	);
+	const read = (): IdentityRecord[] =>
+		fs.existsSync(record)
+			? fs
+					.readFileSync(record, "utf8")
+					.trim()
+					.split("\n")
+					.filter(Boolean)
+					.map((line) => JSON.parse(line) as IdentityRecord)
+			: [];
+	const env: Record<string, string> = {
+		PATH: process.env.PATH ?? "",
+		HOME: home,
+		USERPROFILE: home,
+		ATOMIC_CODING_AGENT_DIR: agentDir,
+		ATOMIC_OFFLINE: "1",
+		ATOMIC_SKIP_VERSION_CHECK: "1",
+		ATOMIC_TELEMETRY: "0",
+		ATOMIC_INTERCOM_JOIN_AT_STARTUP: "0",
+		TERM: "xterm-256color",
+		CI: "0",
+		...extraEnv,
+	};
+	for (const name of ["SystemRoot", "ComSpec", "PATHEXT", "TEMP", "TMP", "TMPDIR"])
+		if (process.env[name]) env[name] = process.env[name] as string;
+	let program: PtyProgram | undefined;
+	try {
+		program = startPtyProgram({
+			executable: process.execPath,
+			args: [
+				join(atomic, "dist", "cli.js"),
+				"--offline",
+				"--no-mcp",
+				host === "in-process" ? "--no-approve" : "--approve",
+				"-e",
+				extension,
+			],
+			cwd: project,
+			env,
+			cols: 120,
+			rows: 40,
+			timeoutMs: SESSION_TIMEOUT_MS,
+		});
+		const started = (revision: string) => (screen: string) =>
+			screen.includes("❯") && read().some((entry) => entry.revision === revision);
+		await program.waitForScreen(started("first"), SESSION_TIMEOUT_MS / 2, "the first session start");
+		fs.writeFileSync(join(project, "revision.ts"), 'export const revision = "second";\n');
+		program.write("/reload");
+		await program.waitForScreen((screen) => screen.includes("/reload"), SESSION_TIMEOUT_MS / 4, "/reload typed");
+		program.write("\r");
+		await program.waitForScreen(started("second"), SESSION_TIMEOUT_MS / 2, "the reloaded session start");
+		program.write("/quit");
+		await program.waitForScreen((screen) => screen.includes("/quit"), SESSION_TIMEOUT_MS / 4, "/quit typed");
+		program.write("\r");
+		const exited = await program.exited;
+		assert.equal(exited.exitCode, 0, program.screen());
+	} finally {
+		program?.kill();
+	}
+	return read();
+}
+
+/** One instance of every shared export in each generation, and each context retired through both registrations. */
+function assertOneInstanceEach(records: readonly IdentityRecord[]): void {
+	assert.deepEqual(
+		records.filter((entry) => entry.type === "error"),
+		[],
+	);
+	const ready = records.filter((entry) => entry.type === "ready");
+	assert.deepEqual(
+		ready.map((entry) => entry.revision),
+		["first", "second"],
+	);
+	for (const entry of ready) {
+		assert.equal(entry.ctxModel, true, "the context's model registry is the SDK's ModelRegistry");
+		assert.equal(entry.ctxSession, true, "the context's session manager is the SDK's SessionManager");
+		for (const [alias, type, same] of entry.checks ?? []) {
+			assert.notEqual(type, "undefined", `${alias} is missing`);
+			assert.equal(same, true, `${alias} is another instance than Node's`);
+		}
+	}
+	// Each generation's context retires once, at /reload and at quit, through both registrations.
+	assert.equal(records.filter((entry) => entry.type === "virtual-retired").length, 2);
+	assert.equal(records.filter((entry) => entry.type === "native-retired").length, 2);
+}
+
 for (const host of ["in-process", "isolated"] as const) {
 	test(
 		`an extension sees one instance of the package's shared exports before and after /reload (${host} host)`,
-		async () => {
-			const { nodeModules, atomic } = installedLayout();
-			const root = fs.mkdtempSync(join(layoutRoot as string, `${host}-`));
-			const project = join(root, "project");
-			const agentDir = join(root, "agent");
-			const home = join(root, "home");
-			const record = join(root, "record.jsonl");
-			for (const directory of [project, agentDir, home]) fs.mkdirSync(directory, { recursive: true });
-			prepareAgentDir(agentDir, "http://127.0.0.1:9");
-			fs.symlinkSync(nodeModules, join(project, "node_modules"), process.platform === "win32" ? "junction" : "dir");
-			fs.writeFileSync(join(project, "native.cjs"), "exports.load = (name) => import(name);\n");
-			fs.writeFileSync(join(project, "revision.ts"), 'export const revision = "first";\n');
-			const extension = join(project, "extension.ts");
-			fs.writeFileSync(
-				extension,
-				[
-					'import { appendFileSync } from "node:fs";',
-					'import { createRequire } from "node:module";',
-					'import { revision } from "./revision.ts";',
-					...SHARED_EXPORTS.map(([alias], index) => `import * as shared${index} from ${JSON.stringify(alias)};`),
-					`const native = createRequire(${JSON.stringify(join(project, "index.cjs"))})("./native.cjs");`,
-					`const log = (type, data = {}) => appendFileSync(${JSON.stringify(record)}, JSON.stringify({ type, revision, ...data }) + "\\n");`,
-					`const pairs = ${JSON.stringify(SHARED_EXPORTS)};`,
-					`const viaLoader = [${SHARED_EXPORTS.map((_, index) => `shared${index}`).join(", ")}];`,
-					"export default function (pi) {",
-					'	pi.on("session_start", async (_event, ctx) => {',
-					"		try {",
-					"			const checks = [];",
-					"			for (const [index, [alias, packageName, name]] of pairs.entries()) {",
-					"				const direct = await native.load(packageName);",
-					"				checks.push([alias, typeof viaLoader[index][name], viaLoader[index][name] === direct[name]]);",
-					"			}",
-					'			const sdk = await native.load("@bastani/atomic");',
-					'			shared0.registerExtensionContextRetirementEffect(ctx, () => log("virtual-retired"));',
-					'			sdk.registerExtensionContextRetirementEffect(ctx, () => log("native-retired"));',
-					'			log("ready", { checks, ctxModel: ctx.modelRegistry instanceof sdk.ModelRegistry, ctxSession: ctx.sessionManager instanceof sdk.SessionManager });',
-					"		} catch (error) {",
-					'			log("error", { error: String(error && error.stack || error) });',
-					"		}",
-					"	});",
-					"}",
-				].join("\n"),
-			);
-			const read = (): IdentityRecord[] =>
-				fs.existsSync(record)
-					? fs
-							.readFileSync(record, "utf8")
-							.trim()
-							.split("\n")
-							.filter(Boolean)
-							.map((line) => JSON.parse(line) as IdentityRecord)
-					: [];
-			const env: Record<string, string> = {
-				PATH: process.env.PATH ?? "",
-				HOME: home,
-				USERPROFILE: home,
-				ATOMIC_CODING_AGENT_DIR: agentDir,
-				ATOMIC_OFFLINE: "1",
-				ATOMIC_SKIP_VERSION_CHECK: "1",
-				ATOMIC_TELEMETRY: "0",
-				ATOMIC_INTERCOM_JOIN_AT_STARTUP: "0",
-				TERM: "xterm-256color",
-				CI: "0",
-			};
-			for (const name of ["SystemRoot", "ComSpec", "PATHEXT", "TEMP", "TMP", "TMPDIR"])
-				if (process.env[name]) env[name] = process.env[name] as string;
-			let program: PtyProgram | undefined;
-			try {
-				program = startPtyProgram({
-					executable: process.execPath,
-					args: [
-						join(atomic, "dist", "cli.js"),
-						"--offline",
-						"--no-mcp",
-						host === "in-process" ? "--no-approve" : "--approve",
-						"-e",
-						extension,
-					],
-					cwd: project,
-					env,
-					cols: 120,
-					rows: 40,
-					timeoutMs: SESSION_TIMEOUT_MS,
-				});
-				const started = (revision: string) => (screen: string) =>
-					screen.includes("❯") && read().some((entry) => entry.revision === revision);
-				await program.waitForScreen(started("first"), SESSION_TIMEOUT_MS / 2, "the first session start");
-				fs.writeFileSync(join(project, "revision.ts"), 'export const revision = "second";\n');
-				program.write("/reload");
-				await program.waitForScreen(
-					(screen) => screen.includes("/reload"),
-					SESSION_TIMEOUT_MS / 4,
-					"/reload typed",
-				);
-				program.write("\r");
-				await program.waitForScreen(started("second"), SESSION_TIMEOUT_MS / 2, "the reloaded session start");
-				program.write("/quit");
-				await program.waitForScreen((screen) => screen.includes("/quit"), SESSION_TIMEOUT_MS / 4, "/quit typed");
-				program.write("\r");
-				const exited = await program.exited;
-				assert.equal(exited.exitCode, 0, program.screen());
-			} finally {
-				program?.kill();
-			}
-			const records = read();
-			assert.deepEqual(
-				records.filter((entry) => entry.type === "error"),
-				[],
-			);
-			const ready = records.filter((entry) => entry.type === "ready");
-			assert.deepEqual(
-				ready.map((entry) => entry.revision),
-				["first", "second"],
-			);
-			for (const entry of ready) {
-				assert.equal(entry.ctxModel, true, "the context's model registry is the SDK's ModelRegistry");
-				assert.equal(entry.ctxSession, true, "the context's session manager is the SDK's SessionManager");
-				for (const [alias, type, same] of entry.checks ?? []) {
-					assert.notEqual(type, "undefined", `${alias} is missing`);
-					assert.equal(same, true, `${alias} is another instance than Node's`);
-				}
-			}
-			// Each generation's context retires once, at /reload and at quit, through both registrations.
-			assert.equal(records.filter((entry) => entry.type === "virtual-retired").length, 2);
-			assert.equal(records.filter((entry) => entry.type === "native-retired").length, 2);
-		},
+		async () => assertOneInstanceEach(await identitySession(host, installedLayout())),
 		SESSION_TIMEOUT_MS + LAYOUT_TIMEOUT_MS,
 	);
 }
@@ -395,4 +407,60 @@ test.each(RELEASES)(
 		assert.deepEqual(result, { same: true, instance: true });
 	},
 	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"the host and its extensions keep one ModelRegistry when the install is replaced by a release regrouping it while Atomic starts",
+	async () => {
+		const layout = installedLayout("install-replaced-while-starting");
+		const next = join(dirname(layout.nodeModules), "next");
+		compiledPackage(next);
+		// The release adds a module that only the model registry imports, so it joins the registry's code, named to sort
+		// before every module, so it would come first in any file holding the registry.
+		const registry = join(next, "dist", "core", "model-registry.js");
+		fs.writeFileSync(join(next, "dist", "0-model-registry-revision.js"), "export const revision = 2;\n");
+		const source = fs.readFileSync(registry, "utf8");
+		assert.ok(source.includes("export class ModelRegistry {"));
+		fs.writeFileSync(
+			registry,
+			`import { revision } from "../0-model-registry-revision.js";\n${source.replace("export class ModelRegistry {", "export class ModelRegistry {\n    static revision = revision;")}`,
+		);
+		const split = spawnSync(process.execPath, [join(next, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		assert.equal(split.status, 0, split.stderr);
+		// The install is replaced, as npm replaces a package, when the host first resolves the SDK entry during startup.
+		const preload = join(dirname(layout.nodeModules), "replace-at-sdk.cjs");
+		const receipt = join(dirname(layout.nodeModules), "replaced");
+		fs.writeFileSync(
+			preload,
+			[
+				'const { registerHooks } = require("node:module");',
+				'const { pathToFileURL } = require("node:url");',
+				'const fs = require("node:fs");',
+				'const path = require("node:path");',
+				'if (process.argv[1]?.endsWith("cli.js") && !process.argv.includes("--internal-engine-prewarm")) {',
+				`	const dist = ${JSON.stringify(join(layout.atomic, "dist"))};`,
+				'	const sdk = pathToFileURL(path.join(dist, "index.js")).href;',
+				"	let pending = true;",
+				"	registerHooks({",
+				"		resolve(specifier, context, nextResolve) {",
+				"			const result = nextResolve(specifier, context);",
+				"			if (pending && result.url === sdk) {",
+				"				pending = false;",
+				'				fs.renameSync(dist, dist + "-replaced");',
+				`				fs.renameSync(${JSON.stringify(join(next, "dist"))}, dist);`,
+				`				fs.writeFileSync(${JSON.stringify(receipt)}, String(process.pid));`,
+				"			}",
+				"			return result;",
+				"		},",
+				"	});",
+				"}",
+			].join("\n"),
+		);
+		const records = await identitySession("in-process", layout, {
+			NODE_OPTIONS: `--require ${JSON.stringify(preload.replaceAll("\\", "/"))}`,
+		});
+		assert.ok(fs.existsSync(receipt), "the install was replaced while Atomic started");
+		assertOneInstanceEach(records);
+	},
+	SESSION_TIMEOUT_MS + LAYOUT_TIMEOUT_MS,
 );
