@@ -16,7 +16,7 @@
  * Source maps chain to the TypeScript sources through the compiled files' maps.
  */
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, transform } from "esbuild";
@@ -36,18 +36,18 @@ const META_URL_SYMBOL = "__atomicDistModuleUrl";
 if (!existsSync(join(dist, "cli.js"))) throw new Error("split-dist: run tsc first; dist/cli.js is missing");
 
 /**
- * What the last split left: the digest of each entry it wrote, and the shared files it wrote. An entry whose file
- * still has that digest was not compiled again since, and is bundled from the compiled copy saved beside it: the
- * incremental build compiles only what changed, and must still bundle what changed below an entry it left alone.
+ * What the last split wrote: the digest of each entry. An entry whose file still has that digest was not compiled
+ * again since, and is bundled from the compiled copy saved before it was overwritten: the incremental build compiles
+ * only what changed, and must still bundle what changed below an entry it left alone. Build state, kept outside the
+ * package's files.
  */
-const STATE_FILE = join(dist, SHARED_DIRECTORY, ".split-state.json");
+const STATE_DIRECTORY = join(packageDir, "node_modules", ".cache", "atomic-split-dist");
+const STATE_FILE = join(STATE_DIRECTORY, "state.json");
 /** The compiled entries, saved before the split overwrites them. */
-const COMPILED_ENTRIES = join(dist, SHARED_DIRECTORY, ".compiled");
-/** Packing drops the shared files of earlier builds, which stay otherwise for processes still running from them. */
-const prune = process.argv.includes("--prune") || process.env.npm_lifecycle_event === "prepack";
+const COMPILED_ENTRIES = join(STATE_DIRECTORY, "compiled");
 const digest = (content) => createHash("sha256").update(content).digest("hex");
-/** @type {{ entries: Record<string, string>, outputs: string[] }} */
-const state = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, "utf8")) : { entries: {}, outputs: [] };
+/** @type {{ entries: Record<string, string> }} */
+const state = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, "utf8")) : { entries: {} };
 /** Each entry's compiled code with its compiled source map inlined, by its path in `dist`. */
 const compiledEntries = new Map();
 for (const entry of SPLIT_ENTRIES) {
@@ -128,28 +128,19 @@ const result = await build({
 	],
 });
 
-// Each file is written whole before it takes its name. Shared files of earlier builds stay, for processes started
-// from them that load a chunk later; `--prune`, which packing passes, removes them.
-const written = [];
+// Each file is written whole before it takes its name. Shared files of earlier builds stay: a process started from
+// them may still load one. A fresh build, as a release's, has none.
 for (const file of result.outputFiles) {
 	mkdirSync(dirname(file.path), { recursive: true });
 	writeFileSync(`${file.path}.split`, file.contents);
 	renameSync(`${file.path}.split`, file.path);
-	written.push(relative(dist, file.path).split(sep).join("/"));
 }
 for (const entry of ["cli", "rpc-entry"]) chmodSync(join(dist, `${entry}.js`), 0o755);
-if (prune) {
-	const keep = new Set(written);
-	for (const name of readdirSync(join(dist, SHARED_DIRECTORY))) {
-		const path = `${SHARED_DIRECTORY}/${name}`;
-		if (!name.startsWith(".") && !keep.has(path)) rmSync(join(dist, SHARED_DIRECTORY, name), { force: true });
-	}
-}
+mkdirSync(STATE_DIRECTORY, { recursive: true });
 writeFileSync(
 	STATE_FILE,
 	JSON.stringify({
 		entries: Object.fromEntries(SPLIT_ENTRIES.map((entry) => [entry, digest(readFileSync(join(dist, `${entry}.js`)))])),
-		outputs: written,
 	}),
 );
 
