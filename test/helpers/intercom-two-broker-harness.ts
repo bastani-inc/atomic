@@ -10,7 +10,7 @@ import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storag
 import { defaultSharedStoragePath } from "../../packages/coding-agent/src/core/storage/file-identity.js";
 import { loadStorageAdapter } from "../../packages/coding-agent/src/core/storage/provider.js";
 import { selectStorage } from "../../packages/coding-agent/src/core/storage/selection.js";
-import { IntercomClient } from "../../packages/intercom/broker/client.js";
+import { IntercomClient, type IntercomIdHandoff } from "../../packages/intercom/broker/client.js";
 import { queryIntercomBroker } from "../../packages/intercom/broker/control.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
@@ -56,6 +56,7 @@ const REGISTRATION_GATE = "registration-gate";
 const PRESENCE_READ_GATE = "presence-read-gate";
 const RESERVATION_GATE = "reservation-gate";
 const ID_CLAIM_STALL_GATE = "id-claim-stall-gate";
+const STORAGE_OUTAGE_GATE = "storage-outage-gate";
 
 export interface ReceivedFrame {
 	readonly from: SessionInfo;
@@ -72,6 +73,10 @@ export interface TwoBrokerConnectOptions {
 	/** How long to wait for the broker to answer the registration; default `CLIENT_REGISTRATION_TIMEOUT_MS`. */
 	readonly connectTimeoutMs?: number;
 	readonly preferredSessionId?: string;
+	/** #5607: take an id back when the broker hands it over, as a current session does (see `IntercomClientOptions`). */
+	readonly takesIdHandoff?: true;
+	/** #5607: the hand-over the session's previous connection was given. */
+	readonly idHandoff?: IntercomIdHandoff;
 	/** Default true: confirm each saved message (#3761), as a real session does. */
 	readonly acknowledgeReceipts?: boolean;
 	readonly supervisor?: SupervisorRegistration;
@@ -133,6 +138,8 @@ export interface TwoBrokerHarnessOptions {
 	readonly parkablePresenceRead?: BrokerNode;
 	/** Every broker can stall while it claims an id back (`stallIdClaim`). */
 	readonly stallableIdClaims?: true;
+	/** These nodes' brokers can lose the shared storage while they keep running (`setStorageOutage`). */
+	readonly storageOutageNodes?: readonly BrokerNode[];
 	/** The nodes to run, each with its own broker over the one shared storage; default `BROKER_NODES`. */
 	readonly nodes?: readonly BrokerNode[];
 	/** Added to every broker's environment, as a shortened bound (`ATOMIC_INTERCOM_LOST_RECIPIENT_AFTER_MS`). */
@@ -163,6 +170,7 @@ function nodeSettings(
 	presenceReadGate?: string,
 	reservationGate?: string,
 	idClaimStallGate?: string,
+	outageGate?: string,
 ): string {
 	return JSON.stringify({
 		storage: {
@@ -175,6 +183,7 @@ function nodeSettings(
 				...(presenceReadGate === undefined ? {} : { presenceReadGate }),
 				...(reservationGate === undefined ? {} : { reservationGate }),
 				...(idClaimStallGate === undefined ? {} : { idClaimStallGate }),
+				...(outageGate === undefined ? {} : { outageGate }),
 			},
 			prefix: TWO_BROKER_STORAGE_PREFIX,
 		},
@@ -244,6 +253,10 @@ export class TwoBrokerHarness {
 			const presenceReadGate = options.parkablePresenceRead === node ? join(root, PRESENCE_READ_GATE) : undefined;
 			const reservationGate = options.parkableReservations === true ? join(root, RESERVATION_GATE) : undefined;
 			const idClaimStallGate = options.stallableIdClaims === true ? join(root, ID_CLAIM_STALL_GATE) : undefined;
+			const outageGate =
+				options.storageOutageNodes?.includes(node) === true
+					? join(root, `${STORAGE_OUTAGE_GATE}-${node}`)
+					: undefined;
 			writeFileSync(
 				join(agentDir, "settings.json"),
 				nodeSettings(
@@ -254,6 +267,7 @@ export class TwoBrokerHarness {
 					presenceReadGate,
 					reservationGate,
 					idClaimStallGate,
+					outageGate,
 				),
 			);
 			nodes[node] = {
@@ -397,6 +411,16 @@ export class TwoBrokerHarness {
 			join(this.root, ID_CLAIM_STALL_GATE),
 			JSON.stringify({ returnAddress, stallMs, overdueCallbackMs, writeDelayMs, slowWrite }),
 		);
+	}
+
+	/**
+	 * While `down`, every shared-storage statement of `node`'s broker fails, as one to an unreachable database does; the
+	 * broker keeps running, and the other brokers keep their storage (`storageOutageNodes`).
+	 */
+	setStorageOutage(node: BrokerNode, down: boolean): void {
+		const gate = join(this.root, `${STORAGE_OUTAGE_GATE}-${node}`);
+		if (down) writeFileSync(gate, node);
+		else rmSync(gate, { force: true });
 	}
 
 	/** Whether a broker has stalled on the claim `stallIdClaim` set up for `returnAddress`. */
@@ -560,6 +584,8 @@ export class TwoBrokerHarness {
 		const client = new IntercomClient(returnAddress, {
 			brokerSocketPath: options.socketPath ?? getBrokerSocketPath(process.platform, state.fixture.agentDir),
 			...(options.preferredSessionId === undefined ? {} : { preferredSessionId: options.preferredSessionId }),
+			...(options.takesIdHandoff === undefined ? {} : { takesIdHandoff: options.takesIdHandoff }),
+			...(options.idHandoff === undefined ? {} : { idHandoff: options.idHandoff }),
 			acknowledgesReceipt: true,
 			connectTimeoutMs: options.connectTimeoutMs ?? CLIENT_REGISTRATION_TIMEOUT_MS,
 			...(options.reachable === undefined
