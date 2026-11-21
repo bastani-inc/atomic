@@ -235,11 +235,17 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		return session;
 	}
 
+	/**
+	 * How long a first process may take to list its server's tools. The in-memory server answers at once, but the
+	 * session's startup work before the listing can take seconds on a loaded machine.
+	 */
+	const TOOLS_LISTED_TIMEOUT_MS = 10_000;
+
 	/** A first process that declared the server's tools; it sends one more request (the control) and quits. */
 	async function liveSession(fixture: Fixture, options: StartOptions, tool = "mcp__docs__search") {
 		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
 		const live = await startSession(fixture, manager, options);
-		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain(tool));
+		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain(tool), { timeout: TOOLS_LISTED_TIMEOUT_MS });
 		fixture.faux.setResponses([fixture.reply("one")]);
 		await live.prompt("first");
 		// The control: the request the same process sends next, without a resume.
