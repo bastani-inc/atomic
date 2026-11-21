@@ -8,55 +8,82 @@
 	"sideEffects": [
 		"./dist/compat.js",
 		"./dist/images.js",
-		"./dist/providers/images/register-builtins.js"
+		"./dist/providers/images/register-builtins.js",
+		"./dist/_modules/compat.js",
+		"./dist/_modules/images.js",
+		"./dist/_modules/providers/images/register-builtins.js"
 	],
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",
+			"module": "./dist/_modules/index.js",
+			"browser": "./dist/_modules/index.js",
 			"import": "./dist/index.js"
 		},
 		"./models": {
 			"types": "./dist/models.d.ts",
+			"module": "./dist/_modules/models.js",
+			"browser": "./dist/_modules/models.js",
 			"import": "./dist/models.js"
 		},
 		"./session-resources": {
 			"types": "./dist/session-resources.d.ts",
+			"module": "./dist/_modules/session-resources.js",
+			"browser": "./dist/_modules/session-resources.js",
 			"import": "./dist/session-resources.js"
 		},
 		"./compat": {
 			"types": "./dist/compat.d.ts",
+			"module": "./dist/_modules/compat.js",
+			"browser": "./dist/_modules/compat.js",
 			"import": "./dist/compat.js"
 		},
 		"./providers/*": {
 			"types": "./dist/providers/*.d.ts",
+			"module": "./dist/_modules/providers/*.js",
+			"browser": "./dist/_modules/providers/*.js",
 			"import": "./dist/providers/*.js"
 		},
 		"./api/*": {
 			"types": "./dist/api/*.d.ts",
+			"module": "./dist/_modules/api/*.js",
+			"browser": "./dist/_modules/api/*.js",
 			"import": "./dist/api/*.js"
 		},
 		"./utils/*": {
 			"types": "./dist/utils/*.d.ts",
+			"module": "./dist/_modules/utils/*.js",
+			"browser": "./dist/_modules/utils/*.js",
 			"import": "./dist/utils/*.js"
 		},
 		"./oauth": {
 			"types": "./dist/oauth.d.ts",
+			"module": "./dist/_modules/oauth.js",
+			"browser": "./dist/_modules/oauth.js",
 			"import": "./dist/oauth.js"
 		},
 		"./bedrock-provider": {
 			"types": "./dist/bedrock-provider.d.ts",
+			"module": "./dist/_modules/bedrock-provider.js",
+			"browser": "./dist/_modules/bedrock-provider.js",
 			"import": "./dist/bedrock-provider.js"
 		},
 		"./bun-oauth": {
 			"types": "./dist/bun-oauth.d.ts",
+			"module": "./dist/_modules/bun-oauth.js",
+			"browser": "./dist/_modules/bun-oauth.js",
 			"import": "./dist/bun-oauth.js"
 		},
 		"./lazy-bedrock-provider": {
 			"types": "./dist/lazy-bedrock-provider.d.ts",
+			"module": "./dist/_modules/lazy-bedrock-provider.js",
+			"browser": "./dist/_modules/lazy-bedrock-provider.js",
 			"import": "./dist/lazy-bedrock-provider.js"
 		},
 		"./lazy-oauth": {
 			"types": "./dist/lazy-oauth.d.ts",
+			"module": "./dist/_modules/lazy-oauth.js",
+			"browser": "./dist/_modules/lazy-oauth.js",
 			"import": "./dist/lazy-oauth.js"
 		}
 	},
@@ -65,6 +92,7 @@
 	},
 	"files": [
 		"dist",
+		"!dist/**/*.d.ts.map",
 		"README.md",
 		"LICENSE",
 		"NOTICE.md",
@@ -85,6 +113,8 @@
 		"check": "biome check --error-on-warnings . && npm run typecheck",
 		"format": "biome check --write .",
 		"prepublishOnly": "npm run clean && npm run build",
+		"build:bundle": "node ../../scripts/bundle-package-dist.mjs",
+		"prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\"",
 		"build:catalog": "npm run generate-models && npm run build:offline"
 	},
 	"dependencies": {
