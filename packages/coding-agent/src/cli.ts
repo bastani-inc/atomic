@@ -63,7 +63,7 @@ if (heapArgs.length > 0) {
 	const prewarm =
 		prewarmedEngine || interactiveHost ? import("./modes/interactive-engine/engine-prewarm.ts") : undefined;
 	const started = interactiveHost
-		? prewarm!.then(({ prewarmInteractiveEngine }) => prewarmInteractiveEngine(args)).catch(() => {})
+		? prewarm!.then(({ prewarmInteractiveEngineForArgs }) => prewarmInteractiveEngineForArgs(args)).catch(() => {})
 		: Promise.resolve();
 	const mainArgs = prewarmedEngine
 		? prewarm!.then(({ readPrewarmedEngineArgs }) => readPrewarmedEngineArgs())

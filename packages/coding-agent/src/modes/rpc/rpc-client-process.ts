@@ -87,8 +87,10 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 		const launch = engineLaunch(options);
 		// A child prewarmed exactly as this one would start has already loaded the application.
 		const prewarmed = options.interactiveEngine ? adoptPrewarmedEngine(launch, cliArgs) : undefined;
-		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache.
-		if (options.interactiveEngine && !prewarmed) flushPersistentCompileCache();
+		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache. On
+		// Windows, where writing a cold cache takes seconds, a host that adopted its prewarmed engine writes its cache now
+		// too, while the engine starts, so that quitting never waits for it.
+		if (options.interactiveEngine && (!prewarmed || process.platform === "win32")) flushPersistentCompileCache();
 		child =
 			prewarmed ??
 			spawn(launch.command, [...launch.args, ...cliArgs], {
