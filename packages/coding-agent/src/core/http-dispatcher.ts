@@ -64,11 +64,16 @@ function createBunFetch(fetch: typeof globalThis.fetch): typeof globalThis.fetch
 		};
 		if (init === undefined || init === null) return fetch(input, added);
 		// The request's own options are read from `init` itself, as Bun reads them: inherited or not enumerable,
-		// getters with `init` as their receiver, and only the ones Bun asks for. Only Bun's two are added.
-		const options = new Proxy(init, {
-			get: (target, key) =>
-				Object.hasOwn(added, key) ? added[key as keyof BunFetchInit] : Reflect.get(target, key, target),
-		});
+		// getters with `init` as their receiver, and only the ones Bun asks for. Only Bun's two are added, on a separate
+		// object, so a frozen `init` that sets either to undefined is never asked to report another value.
+		const options = new Proxy<RequestInit>(
+			{},
+			{
+				get: (_holder, key) =>
+					Object.hasOwn(added, key) ? added[key as keyof BunFetchInit] : Reflect.get(init, key, init),
+				has: (_holder, key) => Object.hasOwn(added, key) || Reflect.has(init, key),
+			},
+		);
 		return fetch(input, options);
 	}, fetch);
 }

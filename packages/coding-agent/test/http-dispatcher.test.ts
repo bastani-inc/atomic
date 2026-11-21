@@ -568,6 +568,7 @@ describe("the standalone binary's fetch (Bun)", () => {
 						`	inherited: Object.create(options),`,
 						`	notEnumerable: Object.defineProperties({}, { method: { value: "POST" }, headers: { value: { "x-fixture": "ok" } }, body: { value: "hello" } }),`,
 						`	frozen: Object.freeze({ ...options }),`,
+						`	frozenWithoutTimeout: Object.freeze({ ...options, timeout: undefined, proxy: undefined }),`,
 						`	unreadGetter: { ...options, get traceMetadata() { reads++; throw new Error("read"); } },`,
 						`};`,
 						`const results = {};`,
