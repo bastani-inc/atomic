@@ -260,6 +260,28 @@ function hasPartialHistory(sessionManager: SessionManager): boolean {
 	return false;
 }
 
+/** The position of the child's launch leaf in its session, for a session that knows its entries' positions. */
+async function launchSeqOf(sessionManager: SessionManager, record: SubagentChildRecord): Promise<number | undefined> {
+	return (
+		record.launchLeafSeq ??
+		(record.launchLeafId === null
+			? 0
+			: typeof record.launchLeafId === "string"
+				? typeof sessionManager.findEntrySeq === "function"
+					? await sessionManager.findEntrySeq(record.launchLeafId)
+					: sessionManager.getEntrySeq(record.launchLeafId)
+				: undefined)
+	);
+}
+
+/** Where on `branch` the entries after the launch leaf begin; past its end when the branch does not hold that leaf. */
+function launchIndexOf(branch: ReturnType<SessionManager["getBranch"]>, record: SubagentChildRecord): number {
+	if (record.launchLeafId === undefined) return branch.length;
+	if (record.launchLeafId === null) return 0;
+	const index = branch.findIndex((entry) => entry.id === record.launchLeafId);
+	return index === -1 ? branch.length : index + 1;
+}
+
 async function entriesAfterLaunch(
 	sessionManager: SessionManager,
 	branch: ReturnType<SessionManager["getBranch"]>,
@@ -267,24 +289,9 @@ async function entriesAfterLaunch(
 ): Promise<ReturnType<SessionManager["getBranch"]>> {
 	const branchLaunchIndex =
 		typeof record.launchLeafId === "string" ? branch.findIndex((entry) => entry.id === record.launchLeafId) : -1;
-	const launchIndex =
-		record.launchLeafId === undefined
-			? branch.length
-			: record.launchLeafId === null
-				? 0
-				: branchLaunchIndex === -1
-					? branch.length
-					: branchLaunchIndex + 1;
+	const launchIndex = launchIndexOf(branch, record);
 	if (typeof sessionManager.getEntrySeq === "function") {
-		const launchSeq =
-			record.launchLeafSeq ??
-			(record.launchLeafId === null
-				? 0
-				: typeof record.launchLeafId === "string"
-					? typeof sessionManager.findEntrySeq === "function"
-						? await sessionManager.findEntrySeq(record.launchLeafId)
-						: sessionManager.getEntrySeq(record.launchLeafId)
-					: undefined);
+		const launchSeq = await launchSeqOf(sessionManager, record);
 		return launchSeq === undefined
 			? branch.slice(launchIndex)
 			: branch.filter((entry) => (sessionManager.getEntrySeq(entry.id) ?? 0) > launchSeq);
@@ -392,18 +399,47 @@ function recordTime(entry: { readonly timestamp: string }): number | undefined {
 	return Number.isNaN(at) ? undefined : at;
 }
 
+/**
+ * The latest model and thinking level the child's own session changed to after its launch, each on its own. They are
+ * read from memory, never from the session's saved history: a session that holds only part of its history still holds
+ * the latest change of each on its branch, which is what `getLatestBranchSettings` answers. A session without it
+ * (an SDK caller's) is searched from its launch on, as it holds it.
+ */
+async function settingsChangedSinceLaunch(
+	sessionManager: SessionManager,
+	record: SubagentChildRecord,
+): Promise<{ readonly model?: string; readonly thinking?: string }> {
+	let afterLaunch: ReturnType<SessionManager["getBranch"]>;
+	if (
+		typeof sessionManager.getLatestBranchSettings === "function" &&
+		typeof sessionManager.getEntrySeq === "function"
+	) {
+		const launchSeq = await launchSeqOf(sessionManager, record);
+		if (launchSeq !== undefined) {
+			const { model, thinkingLevel } = sessionManager.getLatestBranchSettings(launchSeq);
+			return {
+				...(model ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
+				...(thinkingLevel ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
+			};
+		}
+		const branch = sessionManager.getBranch();
+		afterLaunch = branch.slice(launchIndexOf(branch, record));
+	} else afterLaunch = await entriesAfterLaunch(sessionManager, sessionManager.getBranch(), record);
+	let model: string | undefined;
+	let thinking: string | undefined;
+	for (const entry of afterLaunch) {
+		if (entry.type === "model_change") model = `${entry.provider}/${entry.modelId}`;
+		else if (entry.type === "thinking_level_change") thinking = entry.thinkingLevel;
+	}
+	return { ...(model ? { model } : {}), ...(thinking ? { thinking } : {}) };
+}
+
 async function ownSessionModelCandidate(
 	sessionManager: SessionManager,
 	record: SubagentChildRecord,
 	resolveCandidateModel: ReturnType<typeof createCandidateModelResolver>,
 ): Promise<string | undefined> {
-	const branch = sessionManager.getBranch();
-	let changedModel: string | undefined;
-	let changedThinking: string | undefined;
-	for (const entry of await entriesAfterLaunch(sessionManager, branch, record)) {
-		if (entry.type === "model_change") changedModel = `${entry.provider}/${entry.modelId}`;
-		else if (entry.type === "thinking_level_change") changedThinking = entry.thinkingLevel;
-	}
+	const { model: changedModel, thinking: changedThinking } = await settingsChangedSinceLaunch(sessionManager, record);
 	const context = sessionManager.buildSessionContext();
 	const model =
 		changedModel ??
