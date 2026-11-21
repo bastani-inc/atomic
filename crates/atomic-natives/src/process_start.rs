@@ -195,11 +195,14 @@ mod tests {
 				Command::new("cmd").args(["/d", "/c", "ping -n 60 127.0.0.1 >nul"]).spawn().unwrap();
 			let pid = parent.id();
 			let created = process_creation_time(pid).expect("the child's creation time");
+			// Polled without a pause, so the stop follows the child's start by far less than a tick.
+			let deadline = std::time::Instant::now() + Duration::from_secs(10);
 			let child = loop {
 				let listed = super::processes().map(|(listed, _)| listed).unwrap_or_default();
 				if let Some(&(id, _)) = listed.iter().find(|&&(_, started_by)| started_by == pid) {
 					break id;
 				}
+				assert!(std::time::Instant::now() < deadline, "cmd never listed the ping it starts");
 				std::thread::yield_now();
 			};
 			let ended = terminate_process_created_at(pid, created, true);
