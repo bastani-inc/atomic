@@ -80,6 +80,11 @@ export type InteractiveEngineMessage =
 	 * work, such as writing its compile cache, which the host need not wait for.
 	 */
 	| { type: "engine_shutdown_complete" }
+	/**
+	 * Windows: the console the engine shares with its host was closed. The engine hears of it before the host, then
+	 * runs its shutdown and exits: the host shuts down too, rather than replacing an engine it lost.
+	 */
+	| { type: "engine_console_closed" }
 	| { type: "engine_resources_ready" }
 	/** `decisionError`: a refused decision-model setting, kept typed so the host can stop as startup does. */
 	| { type: "engine_resources_failed"; message: string; decisionError?: SerializedDecisionError }
@@ -540,6 +545,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		case "engine_project_trust_resolved":
 		case "engine_explicit_quit_ack":
 		case "engine_shutdown_complete":
+		case "engine_console_closed":
 		case "engine_extension_ui_reset":
 			return { type: value.type };
 		case "engine_resources_ready":

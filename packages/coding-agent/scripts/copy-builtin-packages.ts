@@ -8,10 +8,12 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
+import { createRequire, isBuiltin } from "node:module";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
 	INSTALLED_EXTENSION_ENTRIES,
+	INTERCOM_BROKER_BUNDLE_ENTRY,
 	type BuiltinPackageDirName,
 } from "../src/core/builtin-install-layout.ts";
 import {
@@ -202,6 +204,106 @@ async function bundleEntrypoint(entry: string, outfile: string, label: string): 
 	console.log(`Bundled ${label} -> ${relative(distDir, outfile)}`);
 }
 
+/** The broker's own dynamic imports whose modules use the host storage layer. */
+const BROKER_STORAGE_ROOTS = ["./sql-ended-child-queue-store.js", "./open-broker-state.js"] as const;
+const HOST_STORAGE = "@bastani/atomic/storage";
+const DEFERRED_HOST_STORAGE = "atomic-broker:deferred-host-storage";
+
+/**
+ * The Intercom broker runs in a process of its own. Prebuilt into one file, it starts without a TypeScript loader and
+ * reads one file instead of its source tree, and a package replaced while it runs (an upgrade) cannot leave it with
+ * modules it has not loaded yet.
+ *
+ * As from source, the host storage layer loads only when a store does. A static import of it would otherwise be hoisted
+ * to the top of the bundle, loaded before the broker caps its stderr and announces itself, and needed by every broker.
+ * So the stores' static imports bind to {@link deferredHostStorageModule}, and each dynamic import of a store first
+ * loads the storage layer, as the store's own import of it would have.
+ */
+async function bundleIntercomBroker(): Promise<void> {
+	const intercomDir = join(distBuiltinDir, "intercom");
+	const entry = join(intercomDir, "broker", "broker.ts");
+	const outfile = join(intercomDir, INTERCOM_BROKER_BUNDLE_ENTRY);
+	const storageExports = Object.keys(await import(pathToFileURL(join(distDir, "core", "storage", "index.js")).href));
+	const result = await Bun.build({
+		entrypoints: [entry],
+		target: "node",
+		format: "esm",
+		external: HOST_PROVIDED_EXTERNALS,
+		define: RUNTIME_ENV_DEFINES,
+		plugins: [
+			{
+				name: "atomic-broker-deferred-host-storage",
+				setup(build) {
+					build.onResolve({ filter: /^@bastani\/atomic\/storage$/ }, (args) =>
+						args.kind === "dynamic-import"
+							? { path: HOST_STORAGE, external: true }
+							: { path: DEFERRED_HOST_STORAGE, namespace: "atomic-broker" },
+					);
+					build.onResolve({ filter: /^atomic-broker:deferred-host-storage$/ }, () => ({
+						path: DEFERRED_HOST_STORAGE,
+						namespace: "atomic-broker",
+					}));
+					build.onLoad({ filter: /.*/, namespace: "atomic-broker" }, () => ({
+						loader: "js",
+						contents: deferredHostStorageModule(storageExports),
+					}));
+					build.onLoad({ filter: /[\\/]broker[\\/]broker\.ts$/ }, (args) => ({
+						loader: "ts",
+						contents: loadStorageBeforeStores(readFileSync(args.path, "utf-8")),
+					}));
+				},
+			},
+		],
+	});
+	const output = result.outputs[0];
+	if (!result.success || output === undefined || result.outputs.length !== 1) {
+		throw new Error(`Failed to bundle the Intercom broker: ${result.logs.map((log) => log.message).join("\n")}`);
+	}
+	const code = await output.text();
+	// Only Node's own modules may load before the broker's first module runs: anything else would run before its stderr
+	// is capped, and would have to resolve for any broker to start.
+	const hoisted = new Bun.Transpiler({ loader: "js" })
+		.scanImports(code)
+		.filter((entry) => entry.kind === "import-statement" && !isBuiltin(entry.path));
+	if (hoisted.length > 0) {
+		throw new Error(`The Intercom broker bundle loads ${hoisted.map((entry) => entry.path).join(", ")} before it starts`);
+	}
+	writeFileSync(outfile, code, "utf-8");
+	console.log(`Bundled @bastani/intercom broker -> ${relative(distDir, outfile)}`);
+}
+
+/** Bindings for the stores' static imports of the host storage layer, set when it loads. */
+function deferredHostStorageModule(names: readonly string[]): string {
+	const bindings = names.join(", ");
+	return [
+		`export let ${bindings};`,
+		"let loading;",
+		"export function loadHostStorage() {",
+		`\tloading ??= import(${JSON.stringify(HOST_STORAGE)}).then(`,
+		`\t\t(storage) => { ({ ${bindings} } = storage); },`,
+		"\t\t(error) => { loading = undefined; throw error; },",
+		"\t);",
+		"\treturn loading;",
+		"}",
+		"",
+	].join("\n");
+}
+
+function loadStorageBeforeStores(source: string): string {
+	// Imported last, so the broker's first imports still run first.
+	const loader = `import { loadHostStorage as __loadHostStorage } from ${JSON.stringify(DEFERRED_HOST_STORAGE)};`;
+	let rewritten = `${source}\n${loader}\n`;
+	for (const root of BROKER_STORAGE_ROOTS) {
+		const dynamicImport = `import(${JSON.stringify(root)})`;
+		const parts = rewritten.split(dynamicImport);
+		if (parts.length !== 2) {
+			throw new Error(`Expected broker.ts to import ${root} dynamically once, found ${parts.length - 1}`);
+		}
+		rewritten = parts.join(`__loadHostStorage().then(() => ${dynamicImport})`);
+	}
+	return rewritten;
+}
+
 function readManifest(packageJsonPath: string): Record<string, unknown> {
 	return JSON.parse(readFileSync(packageJsonPath, "utf-8")) as Record<string, unknown>;
 }
@@ -299,6 +401,7 @@ await bundleEntrypoint(
 	join(distBuiltinDir, "intercom", INSTALLED_EXTENSION_ENTRIES.intercom),
 	"@bastani/intercom extension",
 );
+await bundleIntercomBroker();
 
 for (const { workspaceDirName: dirName } of WORKSPACE_BUILTINS) {
 	const manifestPath = join(distBuiltinDir, dirName, "package.json");
