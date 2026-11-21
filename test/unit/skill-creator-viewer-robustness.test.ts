@@ -436,6 +436,28 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 		assert.deepEqual(keptCopies(previous), []);
 	});
 
+	test("a run's prompt is read from a transcript.md with Windows line endings, as before", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1"]);
+		writeFileSync(
+			join(current, "eval-1", "with_skill", "transcript.md"),
+			"# Transcript\r\n\r\n## Eval Prompt\r\n\r\nMake a chart of sales\r\n\r\n## Steps\r\nRead the data.\r\n",
+		);
+		const url = await startViewer(box, [current]);
+		const page = await openServedPage(url);
+		assert.equal(page.document.getElementById("prompt-text")?.textContent, "Make a chart of sales");
+	});
+
+	test("a save request that names no revision is saved as before", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1"], [{ run_id: "eval-1-with_skill", feedback: "older" }]);
+		const url = await startViewer(box, [current]);
+		const reviews = { reviews: [{ run_id: "eval-1-with_skill", feedback: "from another program" }] };
+		const saved = await fetch(`${url}/api/feedback`, { method: "POST", body: JSON.stringify(reviews) });
+		assert.equal(saved.status, 200, await saved.clone().text());
+		assert.deepEqual(savedReviews(current), reviews.reviews);
+	});
+
 	test("the viewer run with its output captured in place, as by runpy, reports its errors", () => {
 		const box = sandbox();
 		const program = [
