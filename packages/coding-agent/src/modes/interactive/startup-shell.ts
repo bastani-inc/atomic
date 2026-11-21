@@ -33,6 +33,8 @@ import { isPhysicalCtrlC } from "./interactive-key-identity.ts";
 import { createFullscreenTui, createProcessTerminal } from "./interactive-tui.ts";
 import type { StartupShellPlan } from "./startup-shell-eligibility.ts";
 import { getEditorTheme, initTheme, theme } from "./theme/theme.js";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 
 export type StartupShellState = "painting" | "holding" | "handedOver" | "aborted" | "quitting";
 
@@ -154,6 +156,11 @@ class StartupShell {
 
 	/** Decides, for each key, whether the prompt takes it now, it waits for the session, or it is Ctrl+C/Ctrl+D. */
 	private route(data: string): { consume: true } | undefined {
+		if (process.env.W7SM_ROUTE_LOG) {
+			try {
+				require("node:fs").appendFileSync(process.env.W7SM_ROUTE_LOG, `${Date.now()} ${this.state} ${JSON.stringify(data)} ${JSON.stringify(this.keybindingIds.filter((id) => this.keybindings.matches(data, id as never)))}\n`);
+			} catch {}
+		}
 		if (this.state !== "painting" && this.state !== "holding") return { consume: true };
 		if (isPhysicalCtrlC(data)) return this.ctrlC(data);
 		if (this.state === "holding") return this.hold(data);
