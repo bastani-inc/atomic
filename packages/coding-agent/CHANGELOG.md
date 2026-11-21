@@ -37,7 +37,7 @@
 - A queued message that two runs in a row took and failed before sending comes back to the editor, as typed and in the order it was queued, with a notice, instead of disappearing
 - When the engine stops unexpectedly while delivering a queued message, the message comes back to the editor if the session files show it was never saved, and is no longer reported as possibly undelivered if they show it was; the notice now lists only messages whose delivery cannot be confirmed
 - `atomic -p` with an extension command prints the command's own answer, or fails on its failed reply, even when another message is saved after it, and waits for a reply the command asks for while an earlier run is still finishing
-- `session.dispose()` now resolves only after the extension transpile cache has finished storing what the session's extensions started, such as the transform of a module an extension imported after it started. An SDK host that removes the agent directory once `dispose()` resolves could fail with `ENOTEMPTY`, or find a file written into it afterwards ([#6190](https://github.com/bastani-inc/atomic/pull/6190))
+- `session.dispose()` now waits, for up to about five seconds, until the extension transpile cache has finished storing what the session's own extensions started, such as the transform of a module an extension imported after it started. An SDK host that removes the agent directory once `dispose()` resolves could fail with `ENOTEMPTY`, or find a file written into it afterwards ([#6190](https://github.com/bastani-inc/atomic/pull/6190))
 
 ## [0.10.3] - 2026-11-21
 

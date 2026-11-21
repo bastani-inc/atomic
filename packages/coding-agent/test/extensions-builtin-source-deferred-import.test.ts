@@ -25,7 +25,10 @@ import {
 import { resetNativeBuiltinExtensionEntriesForTest } from "../src/core/extensions/native-builtin-entries.ts";
 import { prepareSourceEntries, transformTemplate } from "../src/core/extensions/source-builtin-imports.ts";
 import { moduleTransformOptions } from "../src/core/extensions/transform-graph.ts";
-import { transpileCacheWritesSettled } from "../src/core/extensions/transpile-cache-writes.ts";
+import {
+	transpileCacheWritesSettled,
+	withTranspileCacheWriteOwner,
+} from "../src/core/extensions/transpile-cache-writes.ts";
 import { createTypeScriptSourceSpecifierTransform } from "../src/core/extensions/ts-source-specifiers.ts";
 import type { ExtensionFactory } from "../src/core/extensions/types.ts";
 
@@ -47,14 +50,22 @@ const cleanups: Array<() => void | Promise<void>> = [];
 
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+	testWork = {};
 	clearExtensionCache();
 	resetNativeBuiltinExtensionEntriesForTest();
 });
 
-/** Removes a test's folder once nothing still stores a transform or a graph into it. */
+/** The test's own work: the transpile cache writes its imports start are waited for before its folders go. */
+let testWork: object = {};
+
+function asTestWork<T>(operation: () => T): T {
+	return withTranspileCacheWriteOwner(testWork, operation);
+}
+
+/** Removes a test's folder once nothing the test started still stores a transform or a graph into it. */
 function removeWhenWritesSettle(root: string): () => Promise<void> {
 	return async () => {
-		await transpileCacheWritesSettled();
+		assert.equal(await transpileCacheWritesSettled(testWork, STORED_TRANSFORM_TIMEOUT_MS), 0);
 		rmSync(root, { recursive: true, force: true });
 	};
 }
@@ -186,7 +197,8 @@ async function loadFactory(entry: string, agentDir: string): Promise<DeferredLoa
 	const factory: ExtensionFactory | undefined = await loadExtensionModule(entry, undefined, agentDir);
 	assert.equal(typeof factory, "function");
 	const start = factory as unknown as () => { load: DeferredLoad } | Promise<{ load: DeferredLoad }>;
-	return (await start()).load;
+	const { load } = await asTestWork(start);
+	return () => asTestWork(load);
 }
 
 /** Starts the deferred import and notes which events happened by the time it settled. */
@@ -740,7 +752,8 @@ describe.each([
 `,
 		});
 		const leaf = join(dir, "leaf.ts");
-		const run = async (factory: ExtensionFactory | undefined) => (factory as unknown as () => Promise<string>)();
+		const run = async (factory: ExtensionFactory | undefined) =>
+			asTestWork(factory as unknown as () => Promise<string>);
 		await run(await loadExtensionModule(entry, undefined, agentDir));
 		clearExtensionCache();
 		const replaced = await loadExtensionModule(entry, undefined, agentDir);
