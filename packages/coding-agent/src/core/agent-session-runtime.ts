@@ -142,6 +142,12 @@ function closeFailure(session: AgentSession, failure: Error): AgentRehydrateErro
  * and apply the next runtime. If creation fails, the error is propagated to the
  * caller. The caller is responsible for user-facing error handling.
  */
+/**
+ * @internal What an interactive engine passes to {@link AgentSessionRuntime.switchSession} for a session its host created
+ * just before the switch.
+ */
+export const HOST_STARTED_SESSION: unique symbol = Symbol("host-started-session");
+
 export class AgentSessionRuntime {
 	private rebindSession?: (session: AgentSession) => Promise<void>;
 	private beforeSessionInvalidate?: () => void;
@@ -722,6 +728,13 @@ export class AgentSessionRuntime {
 			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
 			history?: "tail" | "full";
+			/**
+			 * @internal The session was created just before this switch, as the fork a session whose directory is missing
+			 * asks for, so it is a new session rather than a resumed one: the manager that created it, which hands its
+			 * {@link SessionManager.startedSession} to the session this switch opens, or
+			 * {@link HOST_STARTED_SESSION} from an interactive engine whose host created it.
+			 */
+			startedSession?: SessionManager | typeof HOST_STARTED_SESSION;
 		},
 	): Promise<{ cancelled: boolean }> {
 		return this.replace(async () => {
@@ -738,6 +751,9 @@ export class AgentSessionRuntime {
 				}),
 				sessionId,
 			);
+			if (options?.startedSession === HOST_STARTED_SESSION) opened.markSessionStarted();
+			else if (options?.startedSession instanceof SessionManager)
+				await options.startedSession.handOverStartedSession(opened);
 			const { sessionManager, unrecorded } = await this.resumeWorktree(opened, options?.sessionDirectory);
 			const missingCwd = await findMissingSessionCwdIssueAsync(sessionManager, this.cwd);
 			if (missingCwd !== undefined) throw new MissingSessionCwdError(missingCwd);

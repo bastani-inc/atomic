@@ -3,7 +3,7 @@ import { normalizeProviderId } from "@bastani/atomic-ai";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { KeyId } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
-import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { type AgentSessionRuntime, HOST_STARTED_SESSION } from "../../core/agent-session-runtime.ts";
 import { THINKING_LEVELS } from "../../core/agent-session-types.js";
 import { runCallback } from "../../core/callback-activity.ts";
 import { setDebugSetting } from "../../core/debug-setting.ts";
@@ -673,6 +673,10 @@ export function createRpcCommandHandler({
 					cwdOverride: command.cwdOverride,
 					sessionDirectory: command.sessionDirectory,
 					history: "tail",
+					// Only the host of an interactive engine created the session in a process this engine trusts.
+					...(command.startedSession === true && isInteractiveEngineChild()
+						? { startedSession: HOST_STARTED_SESSION }
+						: {}),
 				});
 				if (!result.cancelled) {
 					await rebindSession();
