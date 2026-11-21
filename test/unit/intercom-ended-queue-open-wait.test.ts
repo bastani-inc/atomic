@@ -4,6 +4,7 @@ import { afterEach, test, vi } from "vitest";
 import {
 	DurableEndedQueue,
 	type DurableEndedQueueHost,
+	ENDED_QUEUE_OPEN_WAIT_ENV,
 	ENDED_QUEUE_OPEN_WAIT_MS,
 	ENDED_QUEUE_TOTAL_WAIT_MS,
 } from "../../packages/intercom/broker/durable-ended-queue.js";
@@ -28,11 +29,13 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-function queueWith(host: Pick<DurableEndedQueueHost, "openStore" | "storeCodeLoaded">) {
+function queueWith(
+	host: Pick<DurableEndedQueueHost, "openStore" | "storeCodeLoaded"> & Partial<DurableEndedQueueHost>,
+) {
 	const outcome = { retired: false, logs: [] as string[] };
 	const queue = new DurableEndedQueue({
-		...host,
 		routingStarted: () => undefined,
+		...host,
 		retireStore: () => {
 			outcome.retired = true;
 		},
@@ -93,5 +96,36 @@ test("a broker whose local store's code never loads keeps the queue in memory wi
 	await vi.advanceTimersByTimeAsync(1);
 	assert.equal(decided, true, "and no longer");
 	assert.equal(queue.durable, false);
+	assert.equal(outcome.retired, true);
+});
+
+test("a test's longer open wait also holds while multi-node routing starts, so a slow start keeps the shared store", async () => {
+	const openWaitMs = 4 * ENDED_QUEUE_TOTAL_WAIT_MS;
+	const previous = process.env[ENDED_QUEUE_OPEN_WAIT_ENV];
+	process.env[ENDED_QUEUE_OPEN_WAIT_ENV] = String(openWaitMs);
+	cleanups.push(() => {
+		if (previous === undefined) delete process.env[ENDED_QUEUE_OPEN_WAIT_ENV];
+		else process.env[ENDED_QUEUE_OPEN_WAIT_ENV] = previous;
+	});
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	cleanups.push(() => {
+		vi.useRealTimers();
+	});
+	const never = new Promise<never>(() => {});
+	const { queue, outcome } = queueWith({
+		routingStarted: () => never,
+		openStore: async () => never,
+	});
+	let decided = false;
+	void queue
+		.decide(() => {})
+		.then(() => {
+			decided = true;
+		});
+
+	await vi.advanceTimersByTimeAsync(ENDED_QUEUE_TOTAL_WAIT_MS);
+	assert.equal(decided, false, "the store still has the test's whole wait, though routing has not started");
+	await vi.advanceTimersByTimeAsync(openWaitMs - ENDED_QUEUE_TOTAL_WAIT_MS);
+	assert.equal(decided, true);
 	assert.equal(outcome.retired, true);
 });

@@ -30,7 +30,10 @@ import { PRESENCE_REGISTRATION_BOUND_MS } from "./multinode-router.js";
  * shared `storage`, it counts from when multi-node routing has started: the store opens in its database.
  */
 export const ENDED_QUEUE_OPEN_WAIT_MS = 2_000;
-/** Test-only override of {@link ENDED_QUEUE_OPEN_WAIT_MS} for the decision at the first registration, in milliseconds. */
+/**
+ * Test-only override of {@link ENDED_QUEUE_OPEN_WAIT_MS} for the decision at the first registration, in milliseconds. A
+ * longer wait also lengthens {@link ENDED_QUEUE_TOTAL_WAIT_MS} to it, so it holds while routing starts too.
+ */
 export const ENDED_QUEUE_OPEN_WAIT_ENV = "ATOMIC_INTERCOM_ENDED_QUEUE_OPEN_WAIT_MS";
 /** The longest delay a timer takes as given. */
 const MAX_TIMER_MS = 2_147_483_647;
@@ -230,7 +233,7 @@ export class DurableEndedQueue {
 		const before = this.host.routingStarted() ?? this.host.storeCodeLoaded?.();
 		if (before === undefined) wait(openWaitMs);
 		else {
-			wait(ENDED_QUEUE_TOTAL_WAIT_MS);
+			wait(Math.max(ENDED_QUEUE_TOTAL_WAIT_MS, openWaitMs));
 			void before.then(waitToOpen, waitToOpen);
 		}
 		let finishLoad: () => void = () => {};
