@@ -2,11 +2,10 @@ import { spawn } from "node:child_process";
 import { totalmem } from "node:os";
 import { getHeapStatistics } from "node:v8";
 import { ENV_HEAP_MB, getEnvValue } from "../config.js";
-import { engineHeapRuntimeArgs } from "../modes/interactive-engine/engine-heap.ts";
+import { commandLineSetsHeapSize, engineHeapRuntimeArgs } from "../modes/interactive-engine/engine-heap.ts";
 import { INTERACTIVE_ENGINE_BOOTSTRAP_FLAG } from "./interactive-engine-bootstrap.ts";
 
 const HEAP_RELAUNCHED_ENV = "ATOMIC_INTERNAL_HEAP_RELAUNCHED";
-const HEAP_FLAG = /^--max[-_]old[-_]space[-_]size(?:=|$)/;
 
 export interface TerminalState {
 	readonly stdinIsTTY: boolean;
@@ -33,7 +32,7 @@ export function headlessHeapRelaunchArgs(args: readonly string[]): string[] {
 		delete process.env[HEAP_RELAUNCHED_ENV];
 		return [];
 	}
-	if (!isHeadlessInvocation(args, terminal) || process.execArgv.some((arg) => HEAP_FLAG.test(arg))) return [];
+	if (!isHeadlessInvocation(args, terminal) || commandLineSetsHeapSize(process.execArgv)) return [];
 	// Bun gets no heap flags, and reading its heap statistics alone takes about 14 ms.
 	if ("bun" in process.versions) return [];
 	return engineHeapRuntimeArgs({

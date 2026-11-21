@@ -1,4 +1,5 @@
 import type { Agent as HttpsAgent } from "node:https";
+import type { Socket } from "node:net";
 import {
 	BedrockRuntimeClient,
 	type BedrockRuntimeClientConfig,
@@ -55,7 +56,11 @@ import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { type InlineImageMimeType, inlineImageMimeType, unsupportedImagePlaceholder } from "../utils/inline-images.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
-import { recordTlsCertificateRefusal, transportFailure } from "../utils/tls-certificate.ts";
+import {
+	recordProxyConnectionFailure,
+	recordTlsCertificateRefusal,
+	transportFailure,
+} from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
@@ -251,8 +256,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				// on `http2` module and has no support for http agent.
 				// Use NodeHttpHandler to support HTTP(S) proxy agents.
 				config.requestHandler = new NodeHttpHandler({
-					httpAgent: new HttpProxyAgent(proxyUrl),
-					httpsAgent: new HttpsProxyAgent(proxyUrl) as unknown as HttpsAgent,
+					httpAgent: new ProxyHopHttpAgent(proxyUrl),
+					httpsAgent: new ProxyHopHttpsAgent(proxyUrl) as unknown as HttpsAgent,
 				});
 			} else if (getProviderEnvValue("AWS_BEDROCK_FORCE_HTTP1", options.env) === "1") {
 				// Some custom endpoints require HTTP/1.1 instead of HTTP/2
@@ -558,12 +563,40 @@ function bedrockUserAgent(identity: ClientIdentity | undefined): string | [strin
 }
 
 /**
- * Attach caller-supplied headers to the outgoing Bedrock request via a Smithy
- * `build`-step middleware. The `build` step runs after request serialisation but
- * before SigV4 signing, so injected headers are covered by the signature. Reserved
- * SigV4 / auth headers (`x-amz-*`, `authorization`, `host`) are silently skipped;
- * all other caller headers override any existing same-named header on the request.
+ * The agent for an HTTPS endpoint through the proxy, recording what its connection to the proxy fails with before the
+ * tunnel opens as the proxy's: a certificate the proxy shows is then named as the proxy's, not the endpoint's. The
+ * endpoint's own TLS session runs over the tunnel after `connect` returns, so its failures are never recorded.
  */
+class ProxyHopHttpsAgent extends HttpsProxyAgent<string> {
+	override async connect(...args: Parameters<HttpsProxyAgent<string>["connect"]>): Promise<Socket> {
+		try {
+			return await super.connect(...args);
+		} catch (error) {
+			recordProxyConnectionFailure(error, this.proxy);
+			throw error;
+		}
+	}
+}
+
+/**
+ * The agent for a plain HTTP endpoint through the proxy, which carries the request on its connection to the proxy: every
+ * failure of that connection is the proxy's, including an https proxy's certificate, refused after `connect` returns.
+ */
+class ProxyHopHttpAgent extends HttpProxyAgent<string> {
+	override async connect(...args: Parameters<HttpProxyAgent<string>["connect"]>): Promise<Socket> {
+		let socket: Socket;
+		try {
+			socket = await super.connect(...args);
+		} catch (error) {
+			recordProxyConnectionFailure(error, this.proxy);
+			throw error;
+		}
+		if (this.proxy.protocol === "https:")
+			socket.prependListener("error", (error) => recordProxyConnectionFailure(error, this.proxy));
+		return socket;
+	}
+}
+
 /**
  * Reports what the HTTP handler rejects with, below every response, as the request's own transport failure for its
  * host, so only a refused certificate on that connection is read as one (#6114).
@@ -584,6 +617,13 @@ function addTransportFailureMiddleware(client: BedrockRuntimeClient): void {
 	client.middlewareStack.add(middleware, { step: "deserialize", name: "atomic-transport-failure", priority: "low" });
 }
 
+/**
+ * Attach caller-supplied headers to the outgoing Bedrock request via a Smithy
+ * `build`-step middleware. The `build` step runs after request serialisation but
+ * before SigV4 signing, so injected headers are covered by the signature. Reserved
+ * SigV4 / auth headers (`x-amz-*`, `authorization`, `host`) are silently skipped;
+ * all other caller headers override any existing same-named header on the request.
+ */
 function addCustomHeadersMiddleware(client: BedrockRuntimeClient, headers: Record<string, string>): void {
 	const middleware: BuildMiddleware<object, MetadataBearer> = (next) => async (args) => {
 		const request = args.request;
