@@ -1,5 +1,6 @@
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
 import { bindChatReceipt } from "./chat-receipts.js";
+import { trackChatRecordSave } from "./chat-record-saves.ts";
 import { physicalForkHeader, type SessionManager } from "./session-manager-core.ts";
 import { saveChatRecord } from "./storage/session/chat-records.js";
 
@@ -42,5 +43,5 @@ export function recordPromptOrder(session: AgentSessionInternalSurface, promptId
 	)
 		return;
 	bindChatReceipt(event, { id: promptId, anchor: moved.firstNotice });
-	saveChatRecord(scope, moved.firstNotice, { kind: "promptBefore", promptId });
+	trackChatRecordSave(session, saveChatRecord(scope, moved.firstNotice, { kind: "promptBefore", promptId }));
 }

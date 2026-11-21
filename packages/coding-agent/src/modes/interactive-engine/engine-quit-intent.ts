@@ -53,3 +53,36 @@ function writeShutdownComplete(): void {
 export function reportShutdownCompleteAtExit(): void {
 	process.once("exit", writeShutdownComplete);
 }
+
+/** Whether this process leads a process group: one with its own process ID, which only it can have created. */
+function leadsProcessGroup(): boolean {
+	try {
+		process.kill(-process.pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** End this process's group, this process with it. */
+function endOwnProcessGroup(): void {
+	try {
+		process.kill(-process.pid, "SIGKILL");
+	} catch {
+		// Nothing to end.
+	}
+}
+
+/**
+ * Once every exit handler registered so far has run, among them the ones that write this engine child's last
+ * diagnostics records, end its whole process group, itself last. Call it immediately before `process.exit`, when the
+ * host stopped the engine because it was itself signalled: a host signal used to end the group at once, so a process
+ * an extension started in it, neither detached nor stopped in its shutdown, would otherwise outlive the engine. Only an
+ * engine that leads its own group ends it: its host creates one for it, and while the engine runs no other group can
+ * have its process ID, so an engine started inside another process's group never ends that group. Not on Windows,
+ * which has no process groups.
+ */
+export function endProcessGroupAtExit(): void {
+	if (process.platform === "win32" || !leadsProcessGroup()) return;
+	process.once("exit", endOwnProcessGroup);
+}
