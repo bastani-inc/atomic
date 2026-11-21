@@ -12,10 +12,14 @@ import {
 	lateToolResultNoticeKey,
 	SUBAGENT_LATE_TOOL_RESULT_TYPE,
 } from "../../packages/subagents/src/runs/foreground/late-tool-result-notice.ts";
-import { SUBAGENT_STILL_RUNNING_RESULT } from "../../packages/subagents/src/runs/foreground/released-children.ts";
+import {
+	SUBAGENT_RELEASED_WAKE_PROMPT,
+	SUBAGENT_STILL_RUNNING_RESULT,
+} from "../../packages/subagents/src/runs/foreground/released-children.ts";
 import { resumeNoteMessage } from "../../packages/subagents/src/runs/foreground/resume-note.ts";
 import { SUBAGENT_RESUME_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.ts";
 import { SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-run-control.ts";
+import { queuedResumeStart } from "../../packages/subagents/src/runs/foreground/task-execution.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { sleep } from "../helpers/runtime.js";
@@ -343,6 +347,45 @@ test(
 		assert.equal(restored.status, "ok");
 		assert.equal(requests.length, 1);
 		assert.equal(count(requests[0] ?? [], "Atomic restarted while you were working"), 1, "told once");
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a woken child stopped while it waited for its run's slot and resumed with a message reads the message as written, and is not told it was woken (#6161)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const child = await SessionManager.create(store, env.root);
+		await child.appendMessage({ role: "user", content: "watch CI", timestamp: Date.now() });
+		await child.appendMessage(fauxAssistantMessage("Waiting on CI."));
+		const requests: Context["messages"][] = [];
+		env.faux.setResponses([
+			(context) => {
+				requests.push(context.messages);
+				return fauxAssistantMessage("Checked.");
+			},
+		]);
+		const message = "Check this edge first.\nKeep  both  spaces.";
+		// Its wake had nothing else to start its turn, so its note would have; the user's message now does.
+		const start = queuedResumeStart(
+			"",
+			env.options("slot-wake-message", {
+				sessionManager: await SessionManager.open(store, child.getSessionId()),
+				resumeSession: true,
+				skipTaskPrompt: true,
+				resumeNote: { kind: "wake", text: SUBAGENT_RELEASED_WAKE_PROMPT },
+			}),
+			message,
+		);
+
+		const resumed = await runSingleInProcess(env.root, agent, start.task, start.options);
+
+		assert.equal(resumed.status, "ok");
+		assert.equal(requests.length, 1);
+		const request = requests[0] ?? [];
+		assert.equal(count(request, message), 1, "the message, as written");
+		assert.equal(count(request, SUBAGENT_RELEASED_WAKE_PROMPT), 0, "never told it was woken");
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );

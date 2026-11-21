@@ -7656,4 +7656,32 @@ test("a child stopped while it waited for its run's slot and resumed with a mess
 			task: "and this",
 			options: { ...start.options, skipTaskPrompt: false, resumeTaskFallback: false, resumeTaskLiteral: true },
 		});
+	// Why it runs again is still read with the message; that it was woken is not: the message starts its turn (#6161).
+	const resumeNote = { kind: "resume", text: SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } as const;
+	assert.deepEqual(queuedResumeStart("", { ...options, skipTaskPrompt: true, resumeNote }, "and this"), {
+		task: "and this",
+		options: { ...options, resumeNote, skipTaskPrompt: false, resumeTaskFallback: false, resumeTaskLiteral: true },
+	});
+	assert.deepEqual(
+		queuedResumeStart(
+			"",
+			{ ...options, skipTaskPrompt: true, resumeNote: { kind: "wake", text: SUBAGENT_RELEASED_WAKE_PROMPT } },
+			"and this",
+		),
+		{
+			task: "and this",
+			options: { ...options, skipTaskPrompt: false, resumeTaskFallback: false, resumeTaskLiteral: true },
+		},
+	);
+	// A start that runs its detached calls again prompts nothing: the message waits for its wake, after what it held.
+	const redispatch = {
+		...options,
+		redispatchDetachedCalls: true,
+		resumeTaskFallback: true,
+		resumeFollowUps: ["held"],
+	} satisfies RunSyncOptions;
+	assert.deepEqual(queuedResumeStart(SUBAGENT_RELEASED_WAKE_PROMPT, redispatch, "and this"), {
+		task: SUBAGENT_RELEASED_WAKE_PROMPT,
+		options: { ...redispatch, resumeFollowUps: ["held", "and this"] },
+	});
 });

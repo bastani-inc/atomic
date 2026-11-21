@@ -598,7 +598,8 @@ function wakeForResultsHeldDuringRun(
 /**
  * What a child stopped while it waited for its run's slot starts with when it is resumed with `message`: its task, then
  * that message. A start that prompts no task of its own (its notes or the results it continues with start its turn)
- * prompts the message alone, as written.
+ * prompts the message alone, as written, and is not told it was woken: the message starts its turn (#6161). A start
+ * that runs its detached calls again prompts nothing, so the message waits with its held messages, after them.
  */
 export function queuedResumeStart(
 	task: string,
@@ -606,12 +607,16 @@ export function queuedResumeStart(
 	message: string | undefined,
 ): { readonly task: string; readonly options: RunSyncOptions } {
 	if (!message) return { task, options };
+	if (options.redispatchDetachedCalls === true)
+		return { task, options: { ...options, resumeFollowUps: [...(options.resumeFollowUps ?? []), message] } };
+	const { resumeNote, ...rest } = options;
+	const noted = resumeNote === undefined || resumeNote.kind === "wake" ? rest : options;
 	const prompted = task !== "" && options.skipTaskPrompt !== true && options.resumeTaskFallback !== true;
 	return prompted
-		? { task: `${task}\n\n${message}`, options }
+		? { task: `${task}\n\n${message}`, options: noted }
 		: {
 				task: message,
-				options: { ...options, skipTaskPrompt: false, resumeTaskFallback: false, resumeTaskLiteral: true },
+				options: { ...noted, skipTaskPrompt: false, resumeTaskFallback: false, resumeTaskLiteral: true },
 			};
 }
 
