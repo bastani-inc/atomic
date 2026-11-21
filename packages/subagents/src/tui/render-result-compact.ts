@@ -1,10 +1,10 @@
-import { formatTokenSegment, keyHintIfBound, navEntryKeyParts } from "@bastani/atomic";
+import { formatTokenSegment, keyHintIfBound, navEntryKeyParts, TASK_MARKS } from "@bastani/atomic";
 import { type Component, Container, clickableKeysHint, getKeybindings, Text } from "@bastani/atomic-tui";
 import { formatDuration, shortenPath } from "../shared/formatters.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getSingleResultOutput } from "../shared/utils.js";
 import { modelThinkingBadge } from "./render-event-formatting.js";
-import { getTermWidth, pulseGlyph, type Theme, truncLine } from "./render-layout.js";
+import { getTermWidth, type Theme, truncLine } from "./render-layout.js";
 import { buildMultiProgressLabel, resultRowLabel } from "./render-progress.js";
 import {
 	compactCurrentActivity,
@@ -14,6 +14,7 @@ import {
 	formatProgressStats,
 	formatToolUseStat,
 	hasEmptyTextOutputWithoutOutputTarget,
+	markText,
 	resultGlyph,
 	resultStatusLine,
 	statJoin,
@@ -22,17 +23,11 @@ import {
 
 export const RUNNING_BLOCK_RECENT_TOOLS = 3;
 
-export function renderSingleCompact(
-	d: Details,
-	r: Details["results"][number],
-	theme: Theme,
-	now?: number,
-	pulseFrame?: number,
-): Component {
+export function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme, now?: number): Component {
 	return {
 		render(width) {
 			if (width < 1) return [];
-			return renderSingleCompactAtWidth(d, r, theme, Math.floor(width), now, pulseFrame).render(width);
+			return renderSingleCompactAtWidth(d, r, theme, Math.floor(width), now).render(width);
 		},
 		invalidate() {},
 	};
@@ -44,13 +39,12 @@ function renderSingleCompactAtWidth(
 	theme: Theme,
 	width: number,
 	now?: number,
-	pulseFrame?: number,
 ): Component {
 	const output = r.truncation?.text || getSingleResultOutput(r);
 	const progress = r.progress || r.progressSummary;
 	const isRunning = r.progress?.status === "running";
 	const c = new Container();
-	const glyph = resultGlyph(r, output, theme, isRunning, pulseFrame);
+	const glyph = resultGlyph(r, output, theme, isRunning);
 
 	if (isRunning && r.progress) {
 		const hasCurrentTool = Boolean(r.progress.currentTool);
@@ -98,7 +92,7 @@ function renderSingleCompactAtWidth(
 	const outcome = finished ? "finished" : resultStatusLine(r, output).toLowerCase();
 	const durationMs = progress ? displayProgressDurationMs(progress, now) : 0;
 	const stats = durationMs > 0 ? theme.fg("dim", formatDuration(durationMs)) : "";
-	const outcomeGlyph = finished ? theme.fg("success", "●") : glyph;
+	const outcomeGlyph = finished ? markText(theme, TASK_MARKS.done) : glyph;
 	c.addChild(
 		new Text(
 			truncLine(
@@ -135,19 +129,17 @@ function renderSingleCompactAtWidth(
 	return c;
 }
 
-export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulseFrame?: number): Component {
+export function renderMultiCompact(d: Details, theme: Theme, now?: number): Component {
 	const hasRunning =
 		d.progress?.some((p) => p.status === "running") || d.results.some((r) => r.progress?.status === "running");
 	const failed = d.results.some((r) => r.status === "error" && r.progress?.status !== "running");
 	const hasKilled = d.results.some((r) => r.status === "killed" && r.progress?.status !== "running");
-	const interruptedOrDetached = d.results.some(
+	const interrupted = d.results.some(
 		(r) =>
-			(r.interrupted ||
-				r.detached ||
-				r.status === "interrupted" ||
-				r.status === "continued" ||
-				r.status === "skipped") &&
-			r.progress?.status !== "running",
+			(r.interrupted || r.status === "interrupted" || r.status === "skipped") && r.progress?.status !== "running",
+	);
+	const continued = d.results.some(
+		(r) => (r.detached || r.status === "continued") && r.progress?.status !== "running",
 	);
 	let totalSummary = d.progressSummary;
 	if (!totalSummary) {
@@ -170,13 +162,19 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 		!hasRunning && hasKilled ? theme.fg("warning", "killed (non-resumable)") : "",
 		formatProgressStats(theme, totalSummary, true, now),
 	]);
-	const glyph = hasRunning
-		? theme.fg("accent", pulseGlyph(pulseFrame))
-		: failed
-			? theme.fg("error", "✗")
-			: hasKilled || interruptedOrDetached
-				? theme.fg("muted", "◼")
-				: theme.fg("success", "●");
+	// A child that continued on its own still runs; one that was killed, interrupted or skipped was stopped.
+	const glyph = markText(
+		theme,
+		hasRunning
+			? TASK_MARKS.running
+			: failed
+				? TASK_MARKS.failed
+				: hasKilled || interrupted
+					? TASK_MARKS.stopped
+					: continued
+						? TASK_MARKS.running
+						: TASK_MARKS.done,
+	);
 	const c = new Container();
 	const width = getTermWidth() - 4;
 	c.addChild(
@@ -220,7 +218,7 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 			if (runningProg) {
 				const runningStats = formatProgressStats(theme, runningProg, true, now);
 				const runningBadge = modelThinkingBadge(theme, runningProg.model, runningProg.thinking);
-				const runningLine = `${theme.fg("accent", pulseGlyph(pulseFrame))} ${rowLabel}: ${themeBold(theme, agentName)}${runningBadge}${runningStats ? ` ${theme.fg("dim", "·")} ${runningStats}` : ""}`;
+				const runningLine = `${markText(theme, TASK_MARKS.running)} ${rowLabel}: ${themeBold(theme, agentName)}${runningBadge}${runningStats ? ` ${theme.fg("dim", "·")} ${runningStats}` : ""}`;
 				c.addChild(new Text(truncLine(`  ${runningLine}`, width), 0, 0));
 				const activity = compactCurrentActivity(runningProg, now);
 				c.addChild(new Text(truncLine(theme.fg("dim", `    ⎿  ${activity}`), width), 0, 0));
@@ -231,7 +229,16 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 				}
 				continue;
 			}
-			c.addChild(new Text(truncLine(theme.fg("dim", `  ◦ ${rowLabel}: ${agentName} · pending`), width), 0, 0));
+			c.addChild(
+				new Text(
+					truncLine(
+						`  ${markText(theme, TASK_MARKS.queued)} ${theme.fg("dim", `${rowLabel}: ${agentName} · pending`)}`,
+						width,
+					),
+					0,
+					0,
+				),
+			);
 			continue;
 		}
 		const output = getSingleResultOutput(r);
@@ -249,7 +256,7 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 					: i + 1;
 		const stepStats = formatProgressStats(theme, rProg, true, now);
 		const modelDisplay = modelThinkingBadge(theme, r.model ?? rProg?.model, r.thinking ?? rProg?.thinking);
-		const glyph = rPending ? theme.fg("dim", "◦") : resultGlyph(r, output, theme, rRunning, pulseFrame);
+		const glyph = rPending ? markText(theme, TASK_MARKS.queued) : resultGlyph(r, output, theme, rRunning);
 		const pendingLabel = rPending ? ` ${theme.fg("dim", "· pending")}` : "";
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
 		const line = `${glyph} ${stepLabel}: ${themeBold(theme, agentName)}${modelDisplay}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}${pendingLabel}`;

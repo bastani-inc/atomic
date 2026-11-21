@@ -8,7 +8,7 @@ description: Component and focusable interfaces, keyboard input, line width, inv
 
 ## Tool blocks
 
-Use `ToolBlock` from `@bastani/atomic` for a transcript item with a state glyph, one header row and connected result rows. It accepts `status`, `title`, optional `args`, `meta`, `details`, `body` and `outputPad` (default `1`). Supported states are `running`, `success`, `failure`, `stopped`, `warning`, `paused`, `waiting` (a still, dim `◌`: not working, and wakes by itself when what it waits on finishes) and `info`. Code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`.
+Use `ToolBlock` from `@bastani/atomic` for a transcript item with a state glyph, one header row and connected result rows. It accepts `status`, `title`, optional `args`, `meta`, `details`, `body` and `outputPad` (default `1`). Supported states are `running` (the working `∀` of a call in progress), `success`, `failure`, `stopped` (a call that was interrupted or not run), `warning`, `paused`, `waiting` (a still, dim `◌`: not working, and wakes by itself when what it waits on finishes) and `info`. A block that stands for a subagent or background task shows its state with the marks of the agent panel and `/tasks`: `agent-running` (a grey `◯`), `shell-running` (`⧗`), `input` (`◆`, waiting for an answer) and `task-stopped` (a red `◯`). `TASK_MARKS` from `@bastani/atomic` holds those marks for text you draw yourself. Code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`, `agent-running`, `shell-running`, `input` and `task-stopped`.
 
 ```typescript
 import { ToolBlock, ToolBlockRecords } from "@bastani/atomic";

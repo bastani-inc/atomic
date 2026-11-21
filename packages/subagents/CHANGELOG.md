@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Subagent result rows, status lists, launch cards and `pause`, `quit` and `resume` results use the agent panel's marks: a running subagent shows a still grey `◯` instead of `∀` or a pulsing dot, a finished one a green `●`, and an interrupted, killed, paused or quit one a red `◯`. A subagent waiting for an answer shows `◆` and one paused with Esc `‖`. A foreground subagent that continued on its own reads `Continued` with the running mark instead of `Stopped` ([#6122](https://github.com/bastani-inc/atomic/issues/6122))
+
 ## [0.10.2] - 2026-11-20
 
 ### Breaking Changes
