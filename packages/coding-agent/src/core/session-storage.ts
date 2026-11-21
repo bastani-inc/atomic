@@ -1,9 +1,12 @@
+import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { Value } from "typebox/value";
-import { getAgentDir } from "../config.js";
+import { getAgentDir, getProjectConfigPaths } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
+import { stripBom } from "../utils/text.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import { deepMergeSettings } from "./settings-merge.js";
 import { SessionStorageSelectionSchema } from "./settings-schema.ts";
 import type { Settings } from "./settings-types.ts";
 import { StorageConfigError } from "./storage/errors.js";
@@ -44,6 +47,75 @@ export const ENGINE_SESSION_STORAGE_FLAG = "--internal-session-storage";
 
 export function getEngineSessionStorage(store: SessionStore): EngineSessionStorage | undefined {
 	return engineSelections.get(store) ?? undefined;
+}
+
+/** The settings keys that select a session store and the storage home its relative paths resolve from. */
+const SESSION_STORAGE_SETTINGS = ["sessions", "storage", "workflows"] as const;
+
+/** The parts of `settings` that select the session store, as stable text. */
+function sessionStorageProjection(settings: Settings): string {
+	const stable = (value: unknown): unknown =>
+		typeof value === "object" && value !== null && !Array.isArray(value)
+			? Object.fromEntries(
+					Object.keys(value)
+						.sort()
+						.map((key) => [key, stable((value as Record<string, unknown>)[key])]),
+				)
+			: Array.isArray(value)
+				? value.map(stable)
+				: value;
+	const workflows = (settings as StorageHomeSettings).workflows;
+	return JSON.stringify(
+		stable({
+			sessions: settings.sessions?.storage,
+			storage: settings.storage,
+			journal:
+				typeof workflows === "object" && workflows !== null && !Array.isArray(workflows)
+					? workflows.journal
+					: undefined,
+		}),
+	);
+}
+
+/**
+ * Whether the project settings layers (highest precedence first) can put a folder's sessions in another store than
+ * `global` alone: their storage-selecting values are merged over the global ones as settings merge, and compared as
+ * written. Nothing is resolved, read or opened, so equal values are the only proof of the same store.
+ */
+export function sessionStorageSettingsDiffer(global: Settings, projectLayers: readonly Settings[]): boolean {
+	const project = projectLayers.reduceRight<Settings>((merged, layer) => {
+		const selecting: Record<string, unknown> = {};
+		for (const key of SESSION_STORAGE_SETTINGS)
+			if (Object.hasOwn(layer, key)) selecting[key] = (layer as Record<string, unknown>)[key];
+		return deepMergeSettings(merged, selecting as Settings);
+	}, {});
+	return sessionStorageProjection(deepMergeSettings(global, project)) !== sessionStorageProjection(global);
+}
+
+/**
+ * Whether a project's own settings files can put its sessions in another store than the global settings, read as
+ * plain JSON without applying them (#5693). A file that cannot be read or parsed counts as different: only the
+ * folder's decision may tell what it would choose.
+ */
+export function projectSettingsChooseSessionStorage(cwd: string, globalSettings: Settings): boolean {
+	const layers: Settings[] = [];
+	for (const path of getProjectConfigPaths(cwd, "settings.json")) {
+		let text: string;
+		try {
+			text = readFileSync(path, "utf8");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			return true;
+		}
+		try {
+			const parsed: unknown = JSON.parse(stripBom(text));
+			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return true;
+			layers.push(parsed as Settings);
+		} catch {
+			return true;
+		}
+	}
+	return sessionStorageSettingsDiffer(globalSettings, layers);
 }
 
 export function canIsolateSessionStore(store: SessionStore): boolean {

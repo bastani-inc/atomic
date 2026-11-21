@@ -148,6 +148,15 @@ export interface PrepareSessionResumeOptions {
 	 * reach the agent and the user with that tool's result, not `notices`.
 	 */
 	readonly waitForBlueprint?: "prompt" | "tools";
+	/**
+	 * Restored worktrees whose trust the session decides only after it starts (#5693): when the resume restores one, it
+	 * returns once restored, as with `waitForBlueprint: "tools"`, and the build starts when `decided` settles, so no
+	 * project build step runs before the decision. `blueprint.trusted` answers for them after that.
+	 */
+	readonly trustDecidedLater?: {
+		readonly applies: (root: string) => Promise<boolean>;
+		readonly decided: Promise<void>;
+	};
 }
 
 export type PreparedSessionResume =
@@ -588,18 +597,21 @@ async function prepareResume(
 			blueprintContext: BLUEPRINT_BUILDING_CONTEXT,
 		};
 	}
-	if (restoredNow.size > 0 && options.blueprints !== "skip" && options.waitForBlueprint === "tools") {
+	const trustLater = options.trustDecidedLater;
+	let decided: Promise<void> | undefined;
+	if (trustLater !== undefined && options.blueprints !== "skip") {
+		for (const root of restoredNow) if (await trustLater.applies(root)) decided = trustLater.decided;
+	}
+	const awaitsTrust = decided !== undefined;
+	if (restoredNow.size > 0 && options.blueprints !== "skip" && (options.waitForBlueprint === "tools" || awaitsTrust)) {
 		// The build can be stopped when the process ends before it does (#4748): its steps' process trees end with it,
 		// what ran is recorded, and the ledger keeps the worktrees unbuilt for the next resume.
 		const stopping = new AbortController();
 		const signal =
 			options.signal === undefined ? stopping.signal : AbortSignal.any([options.signal, stopping.signal]);
-		const building = setUpCheckoutBlueprints(
-			opened.sessionManager,
-			restoredNow,
-			storeDir,
-			{ ...options, signal },
-			lfs,
+		// A build that waits for the session's trust decision claims and locks nothing while it waits.
+		const building = (decided ? untilSettled(decided, signal) : Promise.resolve()).then(() =>
+			setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, { ...options, signal }, lfs),
 		);
 		const result = building.then(
 			async (blueprints): Promise<BlueprintBuildResult> => {
@@ -1169,6 +1181,25 @@ async function setUpCheckoutBlueprints(
 		for (const root of claimed) if (buildsInProgress.get(root) === settled) buildsInProgress.delete(root);
 		settle(undefined);
 	}
+}
+
+/** `promise`, or `signal`'s reason once it aborts first. */
+function untilSettled(promise: Promise<void>, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise<void>((resolvePromise, reject) => {
+		const abort = () => reject(signal.reason);
+		signal.addEventListener("abort", abort, { once: true });
+		promise.then(
+			() => {
+				signal.removeEventListener("abort", abort);
+				resolvePromise();
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", abort);
+				reject(error);
+			},
+		);
+	});
 }
 
 /** The blueprint builds this process runs, by the restored worktree they build, each settling once its build has. */
