@@ -488,6 +488,7 @@ export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
+  private _awaitedSessionId: string | null = null;
   /** Source identity is captured once at connect, never read from env per message. */
   private _messageSource: Message["source"] | undefined;
   private pendingSends = new PendingSendRegistry();
@@ -606,6 +607,14 @@ export class IntercomClient extends EventEmitter {
   get sessionId(): string | null {
     return this._sessionId;
   }
+  /**
+   * #5607: with multi-node routing, the id this registration asked for when it got another only because a registration
+   * of the same session still held it; null otherwise. The session keeps asking for that id rather than this one.
+   */
+  get awaitedSessionId(): string | null {
+    return this._awaitedSessionId;
+  }
+
   get supervisorSessionId(): string | null {
     return this._supervisorSessionId;
   }
@@ -774,6 +783,7 @@ export class IntercomClient extends EventEmitter {
         }
         this._sessionId = null;
         this._supervisorSessionId = null;
+        this._awaitedSessionId = null;
         this.releaseRegistration = undefined;
         this.verifyRelease = undefined;
         this.brokerAcknowledgesReceipt = false;
@@ -927,6 +937,7 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.marksEndedChildren !== undefined && brokerMessage.marksEndedChildren !== true)
           || (brokerMessage.wakesEndedChildren !== undefined && brokerMessage.wakesEndedChildren !== true)
           || (brokerMessage.instanceId !== undefined && typeof brokerMessage.instanceId !== "string")
+          || (brokerMessage.awaitsSessionId !== undefined && typeof brokerMessage.awaitsSessionId !== "string")
           || (brokerMessage.dropsEndedQueued !== undefined && brokerMessage.dropsEndedQueued !== true)
           || (brokerMessage.enforcesReach !== undefined && brokerMessage.enforcesReach !== true)
           || (brokerMessage.protocol !== undefined && !isBrokerProtocolRange(brokerMessage.protocol as JsonWireValue))) {
@@ -951,6 +962,8 @@ export class IntercomClient extends EventEmitter {
           break;
         }
         this._sessionId = brokerMessage.sessionId;
+        // #5607: the id it asked for is another registration's for now; the broker gives it back when it can.
+        this._awaitedSessionId = typeof brokerMessage.awaitsSessionId === "string" ? brokerMessage.awaitsSessionId : null;
         this._supervisorSessionId = typeof brokerMessage.supervisorSessionId === "string"
           ? brokerMessage.supervisorSessionId
           : null;

@@ -189,7 +189,7 @@ async function register(node: Node, target: Session, ownerToken?: string): Promi
 		target,
 		undefined,
 		undefined,
-		ownerToken === undefined ? undefined : { token: ownerToken, confirmed: clockMark() },
+		ownerToken === undefined ? undefined : { token: ownerToken, confirmed: clockMark(), sessionId: target.info.id },
 	);
 	await flush();
 }

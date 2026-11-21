@@ -71,6 +71,7 @@ type ReleasedAskerReplyRouter,
 	type SendClientMessage,
 	detachSend,
 	messageFrameFor,
+	resolveSessionAliasesWith,
 	senderAtReceipt,
 } from "./send-handler.js";
 import { buildMessageSendSignature } from "./send-signature.js";
@@ -477,6 +478,8 @@ class IntercomBroker {
   private holdsStartupLock: () => boolean = () => false;
 
   constructor() {
+    // #5607: with multi-node routing, a plain send to an id a session here holds as an alias reaches that session.
+    resolveSessionAliasesWith(this.sessions, (sessionId) => this.multiNode?.aliasTarget(sessionId));
     mkdirSync(INTERCOM_DIR, { recursive: true, mode: 0o700 });
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
@@ -861,6 +864,7 @@ class IntercomBroker {
     setId: (id: string | null) => void,
     unanswered?: UnansweredSessionIdClaim,
     grant?: SessionIdGrant,
+    awaits?: string,
   ): void {
         let id = grantedId;
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
@@ -934,6 +938,9 @@ class IntercomBroker {
             multiNodeRouting: this.multiNodeStatus,
             protocol: { ...BROKER_PROTOCOL },
             ...(clientMessage.reachPolicy === undefined ? {} : { enforcesReach: true as const }),
+            // #5607: the id it asked for is another registration's for now; it gets it back as an alias once that one
+            // gives it up or goes stale, so it keeps asking for that id rather than this one.
+            ...(awaits === undefined || awaits === id ? {} : { awaitsSessionId: awaits }),
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -1065,6 +1072,7 @@ class IntercomBroker {
               },
           settled || unanswered === undefined ? undefined : { ...unanswered, settle, unsettled: () => !settled },
           grant,
+          awaits,
         );
         // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
         // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS, and by ENDED_QUEUE_ROUTING_WAIT_MS with a shared `storage`).
@@ -1236,20 +1244,32 @@ class IntercomBroker {
           // In multi-node mode the id carries authority on every broker (shared ask routes and known sessions name
           // sessions by id), so it is granted only to the return address it is bound to in shared storage.
           this.claimingSessionIds.add(socket);
+          // #5607: an id held here for this session is taken back by the registration of its own delivery identity only.
+          const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
+          const home =
+            registration.reachPolicy?.home ??
+            (typeof clientMessage.registrationGroup === "string"
+              ? normalizeGroup(clientMessage.registrationGroup)
+              : normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value));
           void multiNode
-            .claimSessionId(preferred, returnAddress)
+            .claimSessionId(preferred, returnAddress, JSON.stringify(["return", returnAddress, normalizeGroup(home)]))
             .then((claimed) => {
               this.claimingSessionIds.delete(socket);
-              // #5607: an id this registration took but does not use is given back at once.
-              const granted = claimed.status === "granted" && !this.sessions.has(preferred) ? claimed.grant : undefined;
+              // #5607: the id granted is the one asked for, or one held here for this session since it awaited it. An id
+              // this registration took but does not use is given back at once.
+              const grantedId = claimed.status === "granted" ? claimed.grant.sessionId : undefined;
+              const granted =
+                claimed.status === "granted" && grantedId !== undefined && !this.sessions.has(grantedId)
+                  ? claimed.grant
+                  : undefined;
               const giveBack = () => {
-                const token =
-                  claimed.status === "granted"
-                    ? claimed.grant.token
-                    : claimed.status === "unanswered"
-                      ? claimed.unanswered.token
-                      : undefined;
-                if (token !== undefined) void multiNode.releaseOwner({ intercomSessionId: preferred, token });
+                if (claimed.status === "granted")
+                  void multiNode.releaseOwner({ intercomSessionId: claimed.grant.sessionId, token: claimed.grant.token });
+                else if (claimed.status === "unanswered")
+                  void multiNode.releaseOwner({
+                    intercomSessionId: claimed.unanswered.sessionId,
+                    token: claimed.unanswered.token,
+                  });
               };
               if (socket.destroyed || socket.writableEnded) {
                 giveBack();
@@ -1265,11 +1285,13 @@ class IntercomBroker {
               this.completeSessionRegistration(
                 socket,
                 registration,
-                granted !== undefined ? preferred : randomUUID(),
+                granted !== undefined ? granted.sessionId : randomUUID(),
                 supervisorId,
                 setId,
                 claimed.status === "unanswered" ? claimed.unanswered : undefined,
                 granted,
+                // #5607: held by another registration of this session: it awaits the id.
+                claimed.status === "held" ? preferred : undefined,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
@@ -2101,7 +2123,7 @@ class IntercomBroker {
                 dispatch: (socket, clientMessage, senderId) => this.dispatchSend(socket, clientMessage, senderId),
                 revokeReleasedReservation: (key, ownerSessionId) => this.revokeReleasedReservation(key, ownerSessionId),
                 holdsReservation: (key, ownerSessionId) => this.restoringRecipients.holds(key, ownerSessionId),
-                fence: (session) => this.fenceSession(session),
+                fence: (session, reason) => this.fenceSession(session, reason),
               },
             });
           } catch (error) {
@@ -2943,10 +2965,14 @@ class IntercomBroker {
    * #5607: another live registration of the same session owns this session's id across nodes: it leaves here as if its
    * connection dropped, and its client reconnects and gets a fresh id. A hosted session goes alone; its host stays.
    */
-  private fenceSession(session: BrokerConnectedSession): void {
+  private fenceSession(session: BrokerConnectedSession, reason: "lost" | "reclaimed" = "lost"): void {
     const id = session.info.id;
     if (this.sessions.get(id) !== session) return;
-    console.error(`Intercom session ${id} is registered on another broker, which owns its id; this registration reconnects with a fresh id`);
+    console.error(
+      reason === "lost"
+        ? `Intercom session ${id} is registered on another broker, which owns its id; this registration reconnects with a fresh id`
+        : `Intercom session ${id} reconnects to take back the id it asked for, which its earlier registration no longer holds`,
+    );
     this.disconnectSession(id);
     if (session.hostedBy === undefined) session.socket.destroy();
     this.scheduleShutdownCheck();

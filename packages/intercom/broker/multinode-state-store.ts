@@ -104,6 +104,11 @@ export interface RecipientPresenceSubject {
 	/** Stable recipient authority (`deliveryTargetIdentity`), which survives reconnects. */
 	readonly targetIdentity: string;
 	readonly session: SessionInfo;
+	/**
+	 * #5607: ids the session also owns, as aliases: a plain send to one reaches it. Absent from older brokers, which
+	 * ignore it.
+	 */
+	readonly aliases?: readonly string[];
 }
 
 export type LeaseSubject = BrokerMembershipSubject | RecipientPresenceSubject;
@@ -816,6 +821,11 @@ export interface KnownSession {
 	readonly targetIdentity: string;
 	/** The Intercom session id it last registered with. */
 	readonly intercomSessionId: string;
+	/**
+	 * #5607: the other id it answers to: the one it asked for and awaits while it has a fresh one, or the fresh one it
+	 * had meanwhile once it has its own again. Absent from older brokers' records.
+	 */
+	readonly aliasSessionId?: string;
 	/** Verbatim. */
 	readonly name?: string;
 	/** The host (Atomic) session id: the registration's return address. */

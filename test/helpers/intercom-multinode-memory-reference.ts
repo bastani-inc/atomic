@@ -1101,6 +1101,7 @@ function knownSessionStore(
 					(record) =>
 						isLive(record.recordedAt, retentionMs) &&
 						(record.session.intercomSessionId === target ||
+							record.session.aliasSessionId === target ||
 							record.session.atomicSessionId === target ||
 							record.session.name?.toLowerCase() === name),
 				)

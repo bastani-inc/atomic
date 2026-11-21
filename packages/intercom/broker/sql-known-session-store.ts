@@ -31,6 +31,7 @@ function returnIdentityPrefix(returnAddress: string): string {
 type KnownRow = SqliteRow & {
 	target_identity: string;
 	intercom_session_id: string;
+	alias_id?: string | null;
 	name_json: string | null;
 	atomic_session_id: string | null;
 	group_name: string;
@@ -44,6 +45,7 @@ function stateFromRow(row: KnownRow): KnownSessionState {
 	return {
 		targetIdentity: row.target_identity,
 		intercomSessionId: row.intercom_session_id,
+		...(typeof row.alias_id === "string" ? { aliasSessionId: row.alias_id } : {}),
 		...(row.name_json === null ? {} : { name: JSON.parse(row.name_json) as string }),
 		...(row.atomic_session_id === null ? {} : { atomicSessionId: row.atomic_session_id }),
 		group: row.group_name,
@@ -119,7 +121,18 @@ export async function openSqlKnownSessionStore({
 	/** The id is free for `owner` to take: no other registration owns it, or its owner went unrenewed past its age. */
 	const ownerFree = `(${bindings}.owner_token IS NULL OR ${bindings}.owner_token = ? OR ${bindings}.owner_renewed_at IS NULL
 		OR ${greatest("0", `${nowMs} - ${bindings}.owner_renewed_at`)} > ?)`;
-	const columns = `target_identity, intercom_session_id, name_json, atomic_session_id, group_name, groups_json,
+	// #5607: added later: the other id the session answers to, the one it awaits or had meanwhile. An older broker's
+	// `record` leaves it as it is, and its `lookup` does not read it. Without it (a role that may not add it), a session
+	// is known by its current id alone, as before.
+	const aliased = await addOptionalColumn(
+		database,
+		table,
+		"alias_id",
+		"TEXT",
+		`CREATE INDEX IF NOT EXISTS ${table}_alias_id ON ${table}(alias_id)`,
+	);
+	const aliasColumn = aliased ? ", alias_id" : "";
+	const columns = `target_identity, intercom_session_id${aliasColumn}, name_json, atomic_session_id, group_name, groups_json,
 					recipient_purpose, reply_capability, ${age} AS age_ms`;
 
 	/** #5607: the owner methods, on a store that keeps owners. */
@@ -296,11 +309,11 @@ export async function openSqlKnownSessionStore({
 			if (session.intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
 			if (session.group.length === 0) return { status: "invalid", reason: "empty-group" };
 			await database.run(
-				`INSERT INTO ${table}(target_identity, intercom_session_id, name_json, name_key, atomic_session_id,
+				`INSERT INTO ${table}(target_identity, intercom_session_id${aliasColumn}, name_json, name_key, atomic_session_id,
 					group_name, groups_json, recipient_purpose, reply_capability, recorded_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${nowMs})
+				 VALUES (?, ?${aliased ? ", ?" : ""}, ?, ?, ?, ?, ?, ?, ?, ${nowMs})
 				 ON CONFLICT(target_identity) DO UPDATE SET
-					intercom_session_id = excluded.intercom_session_id,
+					intercom_session_id = excluded.intercom_session_id,${aliased ? "\n\t\t\t\t\talias_id = excluded.alias_id," : ""}
 					name_json = excluded.name_json,
 					name_key = excluded.name_key,
 					atomic_session_id = excluded.atomic_session_id,
@@ -312,6 +325,7 @@ export async function openSqlKnownSessionStore({
 					lost_at = NULL`,
 				session.targetIdentity,
 				session.intercomSessionId,
+				...(aliased ? [session.aliasSessionId ?? null] : []),
 				session.name === undefined ? null : JSON.stringify(session.name),
 				session.name === undefined ? null : JSON.stringify(session.name.toLowerCase()),
 				session.atomicSessionId ?? null,
@@ -327,15 +341,16 @@ export async function openSqlKnownSessionStore({
 			const rows = await database.all<KnownRow>(
 				// One reading of the clock, so a session found within the retention reports an age within it too.
 				`WITH clock AS (SELECT ${nowMs} AS now)
-				SELECT target_identity, intercom_session_id, name_json, atomic_session_id, group_name, groups_json,
+				SELECT target_identity, intercom_session_id${aliasColumn}, name_json, atomic_session_id, group_name, groups_json,
 					recipient_purpose, reply_capability, ${clockAge} AS age_ms
 				 FROM ${table}
-				 WHERE (intercom_session_id = ? OR atomic_session_id = ? OR name_key = ?)
+				 WHERE (intercom_session_id = ? OR atomic_session_id = ? OR name_key = ?${aliased ? " OR alias_id = ?" : ""})
 					AND ${clockAge} <= ?
 				 ORDER BY record_order`,
 				target,
 				target,
 				JSON.stringify(target.toLowerCase()),
+				...(aliased ? [target] : []),
 				retentionMs,
 			);
 			return { status: "found", sessions: rows.map(stateFromRow) };

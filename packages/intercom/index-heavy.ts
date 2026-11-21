@@ -1385,7 +1385,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               supervisorRefusedSince = undefined;
               supervisorRefusalAttempts = 0;
             }
-            if (nextClient.sessionId && nextClient.sessionId !== preferredSessionId) {
+            // #5607: an id given only while another registration of this session still holds the one it asked for is not
+            // kept: the session asks for that one again, which the broker gives back once it is free.
+            if (
+              nextClient.sessionId &&
+              nextClient.sessionId !== preferredSessionId &&
+              (preferredSessionId === undefined || nextClient.awaitedSessionId !== preferredSessionId)
+            ) {
               await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
             }
             // The broker forgot every reservation this connection made when the last one ended.

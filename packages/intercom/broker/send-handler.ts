@@ -233,6 +233,23 @@ export interface RemoteSendRequest {
   readonly notFound: () => void;
 }
 
+/**
+ * #5607: for a broker's session map, the session that holds an id as an alias (with multi-node routing, the id it had
+ * while it awaited its own, or the one it awaited): a plain send to that exact id reaches it, with the send itself,
+ * its target and its digest unchanged.
+ */
+const sessionAliases = new WeakMap<
+	ReadonlyMap<string, BrokerConnectedSession>,
+	(sessionId: string) => BrokerConnectedSession | undefined
+>();
+
+export function resolveSessionAliasesWith(
+	sessions: ReadonlyMap<string, BrokerConnectedSession>,
+	resolve: (sessionId: string) => BrokerConnectedSession | undefined,
+): void {
+	sessionAliases.set(sessions, resolve);
+}
+
 /** Local sends the multi-node router has already checked against the shared outbox. */
 const checkedAgainstSharedOutbox = new WeakSet<SendClientMessage>();
 const sendersAtReceipt = new WeakMap<SendClientMessage, BrokerConnectedSession>();
@@ -423,7 +440,9 @@ export function handleBrokerSend(
   // Exact-id targeting always resolves against the full pool so a cross-group id
   // is caught by the defense-in-depth group check below. Only a broker-authorized
   // supervisor frame or an exact recorded reply may resolve across groups.
-	const exactIdTarget = sessions.get(trimmedTo);
+	const plainSend =
+		!supervisorSend && message.replyTo === undefined && !requirePendingReply && expectedRecipientId === undefined;
+	const exactIdTarget = sessions.get(trimmedTo) ?? (plainSend ? sessionAliases.get(sessions)?.(trimmedTo) : undefined);
   const visibleCandidates = Array.from(sessions.values(), (session) => session.info).filter(
 	(info) => reachesSession(fromSession, info) ||
       (supervisorSend && info.id === fromSession.supervisorId) ||

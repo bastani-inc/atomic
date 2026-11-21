@@ -2836,6 +2836,30 @@ export function registerIdOwnerConformance(
 	);
 
 	check(
+		"a known session is found by the other id it answers to, until it is recorded without one (#5607)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const record = {
+				targetIdentity: JSON.stringify(["return", ADDRESS, "team"]),
+				intercomSessionId: "fresh-id",
+				atomicSessionId: ADDRESS,
+				group: "team",
+				groups: ["team"],
+			};
+			assert.deepEqual(await a.record({ ...record, aliasSessionId: "awaited-id" }), { status: "recorded" });
+			const found = await b.lookup("awaited-id", LIVE_MS);
+			assert.deepEqual(
+				found.status === "found"
+					? found.sessions.map((session) => [session.intercomSessionId, session.aliasSessionId])
+					: found,
+				[["fresh-id", "awaited-id"]],
+			);
+			assert.deepEqual(await a.record(record), { status: "recorded" });
+			assert.deepEqual(await b.lookup("awaited-id", LIVE_MS), { status: "found", sessions: [] });
+		},
+	);
+
+	check(
 		"an owner its broker no longer renews is taken once stale; a retired broker's owners at once (#5607)",
 		async (connect) => {
 			const [a, b] = [await connect(), await connect()];
