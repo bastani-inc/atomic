@@ -264,8 +264,9 @@ if (isEntry(entry) && listPath && packageDir) {
 	process.stdin.on("error", () => process.exit(0));
 	process.stdin.resume();
 	void readStartupFiles(listPath, packageDir).then(
-		() => {
-			if (markerPath && version) recordStartupFilesRead(markerPath, version, packageDir);
+		(read) => {
+			// A list it could not use, or files it could not read, says nothing about the next start.
+			if (read > 0 && markerPath && version) recordStartupFilesRead(markerPath, version, packageDir);
 			process.exit(0);
 		},
 		() => process.exit(0),

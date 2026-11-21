@@ -367,7 +367,7 @@ test("the marker tells this installation's files read since the machine started 
 	assert.equal(startupFilesReadThisStart(undefined, "1.2.3", "/a", now), false);
 });
 
-test("the reader records that it read the files, only where the agent directory exists", async () => {
+test("the reader records that it read the files, only where the agent directory exists and it read some", async () => {
 	const atomic = join(dir, "app", "node_modules", "@bastani", "atomic");
 	file(join(atomic, "dist", "main.js"));
 	const list = file(
@@ -401,6 +401,11 @@ test("the reader records that it read the files, only where the agent directory 
 	assert.ok(startupFilesReadThisStart(JSON.stringify(read), "1.2.3", atomic, machineStartTimeMs()));
 	const elsewhere = join(dir, "no-agent-dir", STARTUP_FILES_READ_MARKER);
 	await runReader(elsewhere);
+	// A list naming nothing it could read records nothing either: the next start reads again.
+	rmSync(markerPath);
+	rmSync(join(atomic, "dist", "main.js"));
+	await runReader(markerPath);
+	assert.equal(existsSync(markerPath), false);
 	assert.equal(existsSync(elsewhere), false);
 	assert.equal(existsSync(dirname(elsewhere)), false);
 });
