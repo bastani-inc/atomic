@@ -154,7 +154,7 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
-        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
       # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
       # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
       # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
@@ -179,9 +179,9 @@ jobs:
             npm run hydrate:model-data
           fi
       - name: Build @bastani/atomic-ai
-        run: npm run build:offline --workspace=@bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
-        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build:bundle
       # Measured at 42s Linux / 86s Windows, both inside the existing caps.
       - name: Build native bindings for the root suites
         if: steps.natives.outputs.cache-hit != 'true'
@@ -283,7 +283,7 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
-        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
       # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
       # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
       # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
@@ -308,9 +308,9 @@ jobs:
             npm run hydrate:model-data
           fi
       - name: Build @bastani/atomic-ai
-        run: npm run build:offline --workspace=@bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
-        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build:bundle
       - name: Build native bindings for the root suites
         if: steps.natives.outputs.cache-hit != 'true'
         run: npm --workspace=@bastani/atomic-natives run build
@@ -419,7 +419,7 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
-        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
       - name: Restore model data
         id: model-data
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -439,9 +439,9 @@ jobs:
             npm run hydrate:model-data
           fi
       - name: Build @bastani/atomic-ai
-        run: npm run build:offline --workspace=@bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
-        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build:bundle
       - name: Build native bindings for the root suites
         if: steps.natives.outputs.cache-hit != 'true'
         run: npm --workspace=@bastani/atomic-natives run build
@@ -559,7 +559,7 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
-        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
       # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
       # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
       # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
@@ -584,9 +584,9 @@ jobs:
             npm run hydrate:model-data
           fi
       - name: Build @bastani/atomic-ai
-        run: npm run build:offline --workspace=@bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
-        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build:bundle
       - name: atomic-ai vitest suite
         run: npm --workspace=@bastani/atomic-ai run test -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
       # The other forked packages' suites are small, so one shard per OS runs them whole.
@@ -734,7 +734,7 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
-        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
       # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
       # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
       # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
@@ -760,9 +760,9 @@ jobs:
           fi
       # build-binaries.sh gets --offline-model-data below, so it doesn't regenerate the data a second time.
       - name: Build @bastani/atomic-ai
-        run: npm run build:offline --workspace=@bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
-        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build:bundle
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
@@ -973,11 +973,11 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
-        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
       - name: Build @bastani/atomic-ai
-        run: npm --workspace=@bastani/atomic-ai run build
+        run: npm --workspace=@bastani/atomic-ai run build && npm --workspace=@bastani/atomic-ai run build:bundle
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
-        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build:bundle
       - name: Check the generation left the committed provider shards unchanged
         id: model-data-saveable
         shell: bash
