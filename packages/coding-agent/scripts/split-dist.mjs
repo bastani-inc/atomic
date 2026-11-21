@@ -31,11 +31,16 @@ const dist = join(packageDir, "dist");
 /** The entries that are bundled: the bin, `main.js` (which the CLI imports), and the SDK's other export paths. */
 const BUNDLED_ENTRIES = ["cli", "main", "index", "rpc-entry"];
 /**
- * Modules defining what the host and its extensions both hold (the context's model registry and session manager, and
- * the context retirement effects): bundled entries at their own paths, which every other module imports by that path,
+ * Modules defining what the host and its extensions both hold (the context's model registry and session manager, the
+ * context retirement effects, and the session stores' errors): bundled entries at their own paths, which every other module imports by that path,
  * so their own code stays in that one file across releases.
  */
-const OWNER_ENTRIES = ["core/model-registry", "core/session-manager-core", "core/extensions/runner-context"];
+const OWNER_ENTRIES = [
+	"core/model-registry",
+	"core/session-manager-core",
+	"core/extensions/runner-context",
+	"core/storage/session/errors",
+];
 /** The public entries whose modules stay compiled files at their own paths. */
 const COMPILED_PUBLIC_ENTRIES = ["core/storage/index", "core/storage/testing"];
 /** Where shared code goes, below `dist`. */
@@ -91,14 +96,29 @@ const compiledSource = (path) => {
  */
 const compiledModules = new Set();
 const lateImports = new Set();
+/** Every import of a compiled module, static or dynamic, by its path in `dist`. */
+const compiledImports = [];
 const relativeImport = (from, specifier) => posix.normalize(posix.join(posix.dirname(from), specifier));
 const visitCompiled = (path) => {
 	if (compiledModules.has(path)) return;
 	compiledModules.add(path);
 	const source = compiledSource(path);
-	for (const match of source.matchAll(/^(?:import|export)\b[^;]*?\bfrom\s*"(\.{1,2}\/[^"]+)"|^import\s*"(\.{1,2}\/[^"]+)"/gm))
-		visitCompiled(relativeImport(path, match[1] ?? match[2]));
-	for (const match of source.matchAll(/\bimport\(\s*"(\.{1,2}\/[^"]+)"\s*\)/g)) lateImports.add(relativeImport(path, match[1]));
+	for (const match of source.matchAll(/^(?:import|export)\b[^;]*?\bfrom\s*"(\.{1,2}\/[^"]+)"|^import\s*"(\.{1,2}\/[^"]+)"/gm)) {
+		const target = relativeImport(path, match[1] ?? match[2]);
+		compiledImports.push({ from: path, target });
+		visitCompiled(target);
+	}
+	for (const match of source.matchAll(/\bimport\(\s*([^)]*?)\s*\)/g)) {
+		const literal = /^"(\.{1,2}\/[^"]+)"$/.exec(match[1]);
+		if (literal === null) {
+			if (/^["'`]\.{1,2}\//.test(match[1]) || /^`/.test(match[1]))
+				throw new Error(`split-dist: ${path} imports a computed path of this package: import(${match[1]})`);
+			continue;
+		}
+		const target = relativeImport(path, literal[1]);
+		compiledImports.push({ from: path, target });
+		lateImports.add(target);
+	}
 };
 for (const entry of COMPILED_PUBLIC_ENTRIES) visitCompiled(`${entry}.js`);
 const SPLIT_ENTRIES = [
@@ -212,6 +232,20 @@ const result = await build({
 
 // Each file is written whole before it takes its name. Shared files of earlier builds stay: a process started from
 // them may still load one. A fresh build, as a release's, has none.
+// On the main thread, a module is either compiled or bundled, never both: the compiled modules' code stays out of the
+// bundle, and every module a compiled module imports is compiled too or an entry whose file the bundle writes.
+const bundledModules = new Set(
+	Object.keys(result.metafile.inputs)
+		.filter((input) => input.startsWith("dist/"))
+		.map((input) => input.slice("dist/".length)),
+);
+for (const path of compiledModules)
+	if (bundledModules.has(path)) throw new Error(`split-dist: ${path} is both a compiled file and bundled`);
+for (const { from, target } of compiledImports) {
+	if (compiledModules.has(target) || SPLIT_ENTRIES.includes(target.replace(/\.js$/, ""))) continue;
+	throw new Error(`split-dist: compiled ${from} imports ${target}, whose code is also bundled`);
+}
+
 // A shared file is named by the first of the modules it holds, by path (or, for one that only re-exports a dynamic
 // import, by that import's module), not by its content: an install updated in place keeps the path of every shared
 // file whose first module stays first, so a process still running from the earlier install resolves the new entries to

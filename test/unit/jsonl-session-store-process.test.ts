@@ -8,25 +8,16 @@ import { createInterface } from "node:readline";
 import { it } from "vitest";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 
-// Native ESM gives the store and its errors one canonical module identity on every platform. The writers load the
-// sources, whose module graph is the same whatever the build bundles; Node strips their types.
+// Native ESM gives the store and its errors one canonical module identity on every platform.
 const storeModule = new URL(
-	"../../packages/coding-agent/src/core/storage/session/jsonl-session-store.ts",
+	"../../packages/coding-agent/dist/core/storage/session/jsonl-session-store.js",
 	import.meta.url,
 ).href;
-const errorsModule = new URL("./errors.ts", storeModule).href;
-// The sources import `.js` specifiers that name `.ts` files; this hook resolves them for Node.
-const RESOLVE_TS_SOURCES = `data:text/javascript,${encodeURIComponent(`import { registerHooks } from "node:module";
-registerHooks({ resolve(specifier, context, nextResolve) {
-	try { return nextResolve(specifier, context); }
-	catch (error) { if (/^\\.\\.?\\//.test(specifier) && specifier.endsWith(".js")) return nextResolve(specifier.slice(0, -3) + ".ts", context); throw error; }
-} });`)}`;
+const errorsModule = new URL("./errors.js", storeModule).href;
 
 async function raceWriters(directory: string, operation: "create" | "append"): Promise<string[]> {
 	const children = ["/a", "/b"].map((cwd) => {
 		const child = spawn(process.execPath, [
-			"--import",
-			RESOLVE_TS_SOURCES,
 			"--input-type=module",
 			"--eval",
 			`
@@ -123,8 +114,6 @@ it("loads, lists and appends after a writer process is killed mid-append (#4993)
 	}
 	const acknowledgedSize = (await stat(path)).size;
 	const child = spawn(process.execPath, [
-		"--import",
-		RESOLVE_TS_SOURCES,
 		"--input-type=module",
 		"--eval",
 		`
@@ -176,8 +165,6 @@ console.log("ACKNOWLEDGED");
 it("recovers the filesystem lock after a writer process is killed", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "jsonl-killed-writer-"));
 	const child = spawn(process.execPath, [
-		"--import",
-		RESOLVE_TS_SOURCES,
 		"--input-type=module",
 		"--eval",
 		`
