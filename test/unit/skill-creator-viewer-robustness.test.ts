@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
-import { removeTempDirectory, type spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
-import { createScriptSandbox, python, type ScriptSandbox, skillCreatorDir } from "../helpers/skill-creator-scripts.js";
+import { removeTempDirectory, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	createScriptSandbox,
+	python,
+	readLine,
+	type ScriptSandbox,
+	skillCreatorDir,
+} from "../helpers/skill-creator-scripts.js";
 import {
 	iteration,
 	openServedPage,
@@ -14,6 +20,10 @@ import {
 } from "../helpers/skill-creator-viewer.js";
 
 const windows = process.platform === "win32";
+// How long a save waits for another viewer's save before it fails: LOCK_WAIT_SECONDS in generate_review.py.
+const LOCK_WAIT_MS = 10_000;
+// That wait, plus starting the viewer and the program holding the lock under load.
+const LOCK_TEST_MS = LOCK_WAIT_MS + 30_000;
 // package_skill reads SKILL.md's frontmatter with PyYAML.
 const pyyaml = python !== undefined && spawnSyncCollect([python, "-c", "import yaml"]).exitCode === 0;
 
@@ -149,6 +159,54 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 			{ run_id: "eval-2-with_skill", feedback: "add axis labels" },
 		]);
 	});
+
+	test(
+		"a save waits for another viewer's save of the same workspace, and fails after 10 s instead of hanging",
+		async () => {
+			const box = sandbox();
+			const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+			const url = await startViewer(box, [current]);
+			const page = await openServedPage(url);
+			// Another viewer of the workspace, in the middle of a save that does not end.
+			const holder = spawnProcess(
+				[
+					python ?? "python3",
+					"-c",
+					[
+						"import os, sys, time",
+						"lock = open(sys.argv[1], 'a+b')",
+						"if os.name == 'nt':",
+						"    import msvcrt; lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)",
+						"else:",
+						"    import fcntl; fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)",
+						"print('held', flush=True)",
+						"time.sleep(120)",
+					].join("\n"),
+					join(current, ".feedback.json.lock"),
+				],
+				{ stdout: "pipe" },
+			);
+			viewers.push(holder);
+			assert.equal((await readLine(holder.stdout)).trim(), "held");
+			const started = Date.now();
+			page.type("the title is missing");
+			page.press("ArrowRight");
+			await page.settled();
+			assert.ok(Date.now() - started >= LOCK_WAIT_MS - 1_000, "it waited for the other save");
+			assert.ok(
+				page.notices().some((notice) => /Not saved: another viewer/u.test(notice)),
+				page.notices().join("\n"),
+			);
+			assert.ok(!existsSync(join(current, "feedback.json")), "nothing was written");
+			// Once the other viewer is done, the next save goes through.
+			holder.kill("SIGKILL");
+			await holder.exited;
+			page.press("ArrowLeft");
+			await page.settled();
+			assert.deepEqual(savedReviews(current), [{ run_id: "eval-1-with_skill", feedback: "the title is missing" }]);
+		},
+		LOCK_TEST_MS,
+	);
 
 	test("one tab's saves land in order and never refuse each other, however fast they follow", async () => {
 		const box = sandbox();
