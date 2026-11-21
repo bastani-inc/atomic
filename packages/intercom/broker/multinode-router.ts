@@ -512,6 +512,19 @@ interface ReservedId {
 	handedAgain?: true;
 }
 
+/**
+ * #5607: a hand-over whose hold lapsed before its session registered again: the hand-over, the id it was for (given
+ * back), the id the session had meanwhile with the token it is still written with (no longer renewed, so another
+ * registration may take it once it goes stale), and when the hold lapsed.
+ */
+interface LapsedHandoff {
+	readonly handoff: string;
+	readonly id: string;
+	readonly alias: string;
+	readonly aliasToken?: string;
+	readonly lapsedAt: ClockMark;
+}
+
 /** #5607: what a check of a registration's id found: still its own, another registration's, or no answer. */
 type OwnerVerdict = "own" | "lost" | "unknown";
 
@@ -880,16 +893,7 @@ export class MultiNodeRouter {
 	 * it was for (given back), the id the session had meanwhile with the token it is still written with (no longer
 	 * renewed, so another registration may take it once it goes stale), and when the hold lapsed.
 	 */
-	private readonly lapsedHandoffs = new Map<
-		string,
-		{
-			readonly handoff: string;
-			readonly id: string;
-			readonly alias: string;
-			readonly aliasToken?: string;
-			readonly lapsedAt: ClockMark;
-		}
-	>();
+	private readonly lapsedHandoffs = new Map<string, LapsedHandoff>();
 	/** #5607: tokens of held ids that a registration coming back is taking, until it is registered here. */
 	private readonly consumingTokens = new Set<string>();
 	/** #5607: when the shared store last answered one of this broker's statements. */
@@ -987,24 +991,21 @@ export class MultiNodeRouter {
 		// registration that presents the hand-over the session was given, of the same delivery identity, only.
 		const reserved =
 			identity === undefined || handoff === undefined ? undefined : this.takeReservedId(asked, identity, handoff);
-		// #5607: one presented after its hold lapsed takes the id as any registration does, and the id the session had
-		// meanwhile back as an alias with a conditional write of its own, unless another registration took it.
+		// #5607: one presented after its hold lapsed takes the id as any registration does; once its registration owns
+		// it, the alias the hand-over kept is taken back (`retakeLapsedAlias`). One that cannot take the id leaves the
+		// session awaiting it, as one presented in time does.
 		const lapsed =
 			reserved !== undefined || identity === undefined || handoff === undefined
 				? undefined
-				: this.takeLapsedHandoff(asked, identity, handoff);
+				: this.lapsedHandoffFor(asked, identity, handoff);
 		const sessionId = reserved?.id ?? asked;
 		const handedAlias: { readonly alias?: string; readonly aliasToken?: string } =
-			reserved !== undefined
-				? reserved.alias === sessionId
-					? {}
-					: {
-							alias: reserved.alias,
-							...(reserved.aliasToken === undefined ? {} : { aliasToken: reserved.aliasToken }),
-						}
-				: lapsed === undefined || lapsed.alias === sessionId
-					? {}
-					: { alias: lapsed.alias, ...(lapsed.aliasToken === undefined ? {} : { aliasToken: lapsed.aliasToken }) };
+			reserved === undefined || reserved.alias === sessionId
+				? {}
+				: {
+						alias: reserved.alias,
+						...(reserved.aliasToken === undefined ? {} : { aliasToken: reserved.aliasToken }),
+					};
 		const owner = this.newOwner(reserved?.token);
 		if (reserved !== undefined) this.consumingTokens.add(reserved.token);
 		const deadline = performance.now() + SESSION_ID_CLAIM_BOUND_MS;
@@ -1068,6 +1069,7 @@ export class MultiNodeRouter {
 				this.holdAgain(identity, reserved);
 				return { status: "held" };
 			}
+			if (lapsed !== undefined && (claimed.status === "held" || claimed.status === "refused")) return { status: "held" };
 			return claimed;
 		} catch (error) {
 			this.report(error);
@@ -1075,7 +1077,7 @@ export class MultiNodeRouter {
 				this.holdAgain(identity, reserved);
 				return { status: "held" };
 			}
-			return { status: "refused" };
+			return { status: lapsed === undefined ? "refused" : "held" };
 		} finally {
 			clearTimeout(bound);
 			// A held token stays in use until the registration that took it is registered here, which its broker does as
@@ -1505,19 +1507,29 @@ export class MultiNodeRouter {
 			delete entry.awaits;
 			const identity = deliveryTargetIdentity(session);
 			const earlier = this.reservedIds.get(identity);
-			// Its own id stays owned through the move, for the registration that comes back to keep as an alias.
+			// An alias a lapsed hand-over of this identity kept for this id is the one carried over: the asks it got went
+			// there. The id the session had since then is given back once it moved.
+			const lapsed = this.lapsedHandoffs.get(identity);
+			const kept = lapsed?.id === awaits.id ? lapsed : undefined;
+			if (kept !== undefined) this.lapsedHandoffs.delete(identity);
+			// Otherwise its own id stays owned through the move, for the registration that comes back to keep as an alias.
 			entry.handsOver = true;
 			const handoff = randomUUID();
+			const alias =
+				kept === undefined
+					? { alias: session.info.id, ...(entry.owner === undefined ? {} : { aliasToken: entry.owner.token }) }
+					: { alias: kept.alias, ...(kept.aliasToken === undefined ? {} : { aliasToken: kept.aliasToken }) };
 			this.reservedIds.set(identity, {
 				id: awaits.id,
 				token: owner.token,
 				handoff,
-				alias: session.info.id,
-				...(entry.owner === undefined ? {} : { aliasToken: entry.owner.token }),
+				...alias,
 				confirmed,
 				handedAt: clockMark(),
 			});
 			this.host.fence(session, "reclaimed", { sessionId: awaits.id, handoff });
+			if (kept !== undefined && entry.owner !== undefined && !this.tokenInUse(entry.owner.token))
+				await this.releaseOwner({ intercomSessionId: session.info.id, token: entry.owner.token });
 			if (earlier !== undefined) await this.releaseOwner({ intercomSessionId: earlier.id, token: earlier.token });
 			return;
 		}
@@ -1547,7 +1559,7 @@ export class MultiNodeRouter {
 	/**
 	 * #5607: `reserved`'s hold lapsed: its id is given back (unless a registration here took its token meanwhile), and its
 	 * hand-over is kept with the alias's token, no longer renewed: presented later, it takes the alias back with that
-	 * token unless another registration took the alias once it went stale (`takeLapsedHandoff`).
+	 * token unless another registration took the alias once it went stale (`retakeLapsedAlias`).
 	 */
 	private lapse(identity: string, reserved: ReservedId): void {
 		if (!this.tokenInUse(reserved.token)) void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
@@ -1572,21 +1584,28 @@ export class MultiNodeRouter {
 			void this.releaseOwner({ intercomSessionId: lapsed.alias, token: lapsed.aliasToken });
 	}
 
-	/**
-	 * #5607: the alias (and its token) of a hand-over whose hold lapsed, for the registration of its identity that
-	 * presents it, once, within `LAPSED_HANDOFF_KEEP_MS`.
-	 */
-	private takeLapsedHandoff(
-		sessionId: string,
-		identity: string,
-		handoff: string,
-	): { readonly alias: string; readonly aliasToken?: string } | undefined {
+	/** #5607: the hand-over of identity `identity` whose hold lapsed, when `handoff` is it and was for `sessionId`. */
+	private lapsedHandoffFor(sessionId: string, identity: string, handoff: string): LapsedHandoff | undefined {
 		const lapsed = this.lapsedHandoffs.get(identity);
-		if (lapsed === undefined || lapsed.handoff !== handoff || lapsed.id !== sessionId) return undefined;
+		return lapsed !== undefined && lapsed.handoff === handoff && lapsed.id === sessionId ? lapsed : undefined;
+	}
+
+	/**
+	 * #5607: a registration that owns the id a lapsed hand-over of its identity was for takes back the alias that hand-over
+	 * kept for it, with the token it is written with, unless another registration took that id once it went unrenewed.
+	 */
+	private async retakeLapsedAlias(session: BrokerConnectedSession, entry: PresenceEntry): Promise<void> {
+		const identity = deliveryTargetIdentity(session);
+		const lapsed = this.lapsedHandoffs.get(identity);
+		if (lapsed === undefined || lapsed.id !== session.info.id || entry.alias !== undefined) return;
 		this.lapsedHandoffs.delete(identity);
-		if (elapsedSince(lapsed.lapsedAt) < LAPSED_HANDOFF_KEEP_MS) return lapsed;
-		this.giveBackLapsed(lapsed);
-		return undefined;
+		try {
+			await this.takeAlias(session, entry, lapsed.alias, this.newOwner(lapsed.aliasToken ?? entry.owner?.token));
+		} catch (error) {
+			// Unanswered: kept for the session's next registration under that id.
+			if (!this.lapsedHandoffs.has(identity)) this.lapsedHandoffs.set(identity, lapsed);
+			throw error;
+		}
 	}
 
 	/** #5607: `reserved` is held for the session of `identity` again, unless another hold took its place meanwhile. */
@@ -1888,6 +1907,8 @@ export class MultiNodeRouter {
 							const aliasToken = grant?.alias === undefined ? reclaim?.aliasToken : grant.aliasToken;
 							if (alias !== undefined && (reclaim === undefined || session.info.id === reclaim.sessionId))
 								await this.takeAlias(session, entry, alias, this.newOwner(aliasToken ?? owner.token));
+							// #5607: and the alias a lapsed hand-over of its identity kept for this id.
+							await this.retakeLapsedAlias(session, entry);
 						}
 						// #5607: a hand-over whose id its binding write did not keep gives its alias back too.
 						if (
