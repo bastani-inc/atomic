@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { availableParallelism, constants, setPriority } from "node:os";
 import { join } from "node:path";
 import { startupNodeOptions } from "@bastani/atomic-codemode/node-options";
 import { isBunBinary } from "../config.js";
@@ -7,8 +8,13 @@ import { isBunBinary } from "../config.js";
 /** Options that make Node run code of the user's in every process it starts: a preload or a module loader. */
 const USER_CODE_OPTIONS = new Set(["--require", "-r", "--import", "--loader", "--experimental-loader"]);
 
-/** Reads the startup's files with this many in flight: the reader process's own I/O pool, never this process's. */
-const READER_THREADS = "32";
+/**
+ * Reads the startup's files with this many in flight, on the reader process's own I/O pool, never this process's: four
+ * per CPU, from 4 to 32, so that on a machine with few CPUs the reader leaves them to Atomic's own start.
+ */
+function readerThreads(): string {
+	return String(Math.min(32, Math.max(4, 4 * availableParallelism())));
+}
 
 /**
  * Starts a short-lived process that reads the files this interactive session is about to load, many at once
@@ -36,8 +42,15 @@ export function startStartupPrefetch(packageDir: string): void {
 		const reader = spawn(process.execPath, [readerPath, listPath, packageDir], {
 			stdio: ["pipe", "ignore", "ignore"],
 			windowsHide: true,
-			env: { ...process.env, UV_THREADPOOL_SIZE: READER_THREADS, NODE_OPTIONS: "" },
+			env: { ...process.env, UV_THREADPOOL_SIZE: readerThreads(), NODE_OPTIONS: "" },
 		});
+		// Below Atomic's own priority: where the files are already in memory, and there are few CPUs, reading them would
+		// otherwise take CPU time from Atomic's own start.
+		try {
+			if (reader.pid !== undefined) setPriority(reader.pid, constants.priority.PRIORITY_BELOW_NORMAL);
+		} catch {
+			// It reads at normal priority.
+		}
 		reader.on("error", () => {});
 		reader.stdin?.on("error", () => {});
 		reader.unref();
