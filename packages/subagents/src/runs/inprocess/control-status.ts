@@ -42,7 +42,9 @@ function childLines(control: Control, id?: string): string[] {
 			...(cause ? [`Cause: ${cause}`] : []),
 			...(ranOn ? [ranOn] : []),
 			`Residency: ${child.loaded ? "loaded" : "cold"}`,
-			...(delivered?.sessionFile ? [`Session: ${delivered.sessionFile}`] : []),
+			...(delivered?.sessionFile || delivered?.sessionUrl
+				? [`Session: ${delivered.sessionFile ?? delivered.sessionUrl}`]
+				: []),
 		];
 	}
 	return control.listChildren().map((child) => {
@@ -70,6 +72,7 @@ function statusGroup(control: Control, id?: string): SubagentStatusGroup {
 					...(childId === undefined ? {} : { childId }),
 					...(failure === undefined ? {} : { failure }),
 					sessionFile: delivered?.sessionFile,
+					...(delivered?.sessionUrl ? { sessionUrl: delivered.sessionUrl } : {}),
 					...(metadata?.model === undefined ? {} : { model: metadata.model }),
 					...(metadata?.thinking === undefined ? {} : { thinking: metadata.thinking }),
 					...(metadata?.requestedModel === undefined ? {} : { requestedModel: metadata.requestedModel }),

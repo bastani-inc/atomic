@@ -75,6 +75,24 @@ export async function releaseSessionSnapshotRefs(sessionId: string, roots: Itera
 }
 
 /**
+ * Deletes the ref that keeps session `sessionId`'s snapshot commit of each of `roots`, as {@link
+ * releaseSessionSnapshotRefs} does, for a session whose refs are gone for good with the session that launched it: this
+ * process keeps nothing of them afterwards. Never throws.
+ */
+export async function retireSessionSnapshotRefs(sessionId: string, roots: Iterable<string>): Promise<void> {
+	for (const root of roots) {
+		try {
+			const canonicalRoot = await canonicalizeWorktreePathAsync(root);
+			const ref = sessionSnapshotRef(sessionId, canonicalRoot);
+			writtenRefs.delete(writtenRefKey(canonicalRoot, ref));
+			await runGit(["update-ref", "-d", ref], { cwd: root });
+		} catch (error) {
+			reportDebug("storage", "snapshot-ref-release-failed", { root, ...failureDebugFields(error) });
+		}
+	}
+}
+
+/**
  * Whether the repository of the checkout at `root` keeps a snapshot commit of session `sessionId` for that checkout,
  * whichever snapshot it is, and names the repository `snapshot` recorded. Only a capture of the session in this
  * checkout writes the ref, so it tells the checkout the session worked in from another clone at the same path even

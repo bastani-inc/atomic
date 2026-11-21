@@ -9,4 +9,9 @@ export {
 	isIntercomBrokerStopTimeoutError,
 } from "./intercom-broker-error.ts";
 export { ProjectGroupError } from "./intercom-project-group-error.ts";
-export { processStartToken, readProcessCreationTime, readProcessStartToken } from "./process-start-token.js";
+export {
+	nativeTerminateProcess,
+	processStartToken,
+	readProcessCreationTime,
+	readProcessStartToken,
+} from "./process-start-token.js";

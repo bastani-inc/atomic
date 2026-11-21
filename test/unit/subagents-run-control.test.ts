@@ -14,7 +14,7 @@ import {
 import { createServer } from "node:net";
 import { delimiter, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
+import type { DetachedToolCall, DetachedToolResult, ExtensionContext, SessionStore } from "@bastani/atomic";
 import { Agent } from "@bastani/atomic-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { stripTerminalSequences } from "@bastani/atomic-tui";
@@ -577,6 +577,13 @@ function text(result: SubagentToolResult): string {
 function transcript(record: SubagentChildRecord): string {
 	assert.ok(record.childSessionFile);
 	return readFileSync(record.childSessionFile, "utf8");
+}
+
+/** A child's whole session as its lines: its own file, or its entries in its parent's store, where a launch keeps it. */
+async function storedTranscript(record: SubagentChildRecord, store: SessionStore): Promise<string> {
+	if (record.childSessionFile) return transcript(record);
+	assert.ok(record.childSessionId);
+	return (await store.load(record.childSessionId)).entries.map((entry) => JSON.stringify(entry)).join("\n");
 }
 
 function occurrences(haystack: string, needle: string): number {
@@ -2680,7 +2687,8 @@ test("a child an SDK session without a task host resumed keeps running across th
 		(candidate) => candidate.taskId === outcome.taskId && candidate.state === "terminal",
 	);
 	assert.equal(finished.terminalStatus, "ok", "the reopened session restores it");
-	const delivered = transcript(finished);
+	const store = h.sessionManager.getSessionStore();
+	const delivered = await storedTranscript(finished, store);
 	assert.equal(occurrences(delivered, steer), 1, "the held steer is delivered exactly once");
 	assert.equal(occurrences(delivered, followUp), 1, "the held follow-up is delivered exactly once");
 	assert.ok(delivered.indexOf(steer) < delivered.indexOf(followUp), "in the order it queued them");
@@ -2688,11 +2696,12 @@ test("a child an SDK session without a task host resumed keeps running across th
 	const again = await h.call({ action: "resume", id: running.childId });
 	assert.notEqual(again.isError, true, text(again));
 	const againTask = resumedTaskId(again);
-	const after = transcript(
+	const after = await storedTranscript(
 		await h.waitForLatest(
 			running.childId,
 			(candidate) => candidate.taskId === againTask && candidate.state === "terminal",
 		),
+		store,
 	);
 	assert.equal(occurrences(after, steer), 1, "a later resume does not deliver the steer again");
 	assert.equal(occurrences(after, followUp), 1, "a later resume does not deliver the follow-up again");
@@ -4289,7 +4298,7 @@ test("an SDK session without a task host can pause, resume, quit and resume agai
 	const call = sdkSession();
 
 	const launch = call({ agent: "worker", task: ORIGINAL_TASK, context: "fresh" });
-	const running = await waitForRecord((candidate) => candidate.state === "running" && !!candidate.childSessionFile);
+	const running = await waitForRecord((candidate) => candidate.state === "running" && !!candidate.childSessionId);
 	const steer = "STEER: report the permission error only";
 	const followUp = "FOLLOWUP: include the failing command";
 	const session = await live.promise;
@@ -4319,7 +4328,7 @@ test("an SDK session without a task host can pause, resume, quit and resume agai
 		(candidate) => candidate.taskId === secondResume && candidate.state === "terminal",
 	);
 	assert.equal(finished.terminalStatus, "ok");
-	const delivered = transcript(finished);
+	const delivered = await storedTranscript(finished, sessionManager.getSessionStore());
 	assert.equal(occurrences(delivered, steer), 1, "the held steer is delivered exactly once");
 	assert.equal(occurrences(delivered, followUp), 1, "the held follow-up is delivered exactly once");
 	assert.equal(occurrences(delivered, "then wrap up"), 1, "the resume message is delivered exactly once");
