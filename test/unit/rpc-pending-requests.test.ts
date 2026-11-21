@@ -141,6 +141,26 @@ test("only ownership frames survive a dead generation", () => {
 	assert.deepEqual(accepted, ["req_1"]);
 });
 
+test("a dead engine's word that its Windows console was closed still reaches the host", () => {
+	const drain = new RpcTerminalDrain();
+	let consoleClosed = 0;
+	const observe = (line: string) =>
+		drain.observe(
+			1,
+			line,
+			() => {},
+			() => {
+				consoleClosed += 1;
+			},
+		);
+
+	void drain.begin(1, new Promise<void>(() => {}), EXIT(), () => {});
+	assert.equal(observe(JSON.stringify({ type: "engine_heartbeat", at: 1 })), true);
+	assert.equal(consoleClosed, 0);
+	assert.equal(observe(JSON.stringify({ type: "engine_console_closed" })), true);
+	assert.equal(consoleClosed, 1, "the engine exited before the host read that its console was closed");
+});
+
 test("a response settles its request and admission for an unknown id is ignored", () => {
 	const pending = new RpcPendingRequests();
 	const settled = track(pending, "req_1");

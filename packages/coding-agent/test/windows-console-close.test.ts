@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
+import type { InteractiveEngineMessage } from "../src/modes/interactive-engine/protocol.ts";
 
 // Windows reports the closing of the console window as SIGHUP, and ends the process about five seconds later. The
 // session then shuts down as it does when its terminal is gone, within a bound that ends first, and Atomic exits with
@@ -58,7 +60,10 @@ const exits: Array<number | string | null | undefined> = [];
 let contexts: Context[] = [];
 
 /** An interactive host on Windows whose session's shutdown settles when `dispose` does. */
-function createWindowsHost(dispose: () => Promise<void>): { context: Context; closeConsole: () => void } {
+function createWindowsHost(
+	dispose: () => Promise<void>,
+	runtime?: IsolatedInteractiveRuntime,
+): { context: Context; closeConsole: () => void } {
 	const context: Context = {
 		isShuttingDown: false,
 		signalCleanupHandlers: [],
@@ -66,7 +71,7 @@ function createWindowsHost(dispose: () => Promise<void>): { context: Context; cl
 		writeExitOutputInSlices: false,
 		exitOutputWritten: undefined,
 		sessionManager: { isPersisted: () => false, getSessionFile: () => undefined },
-		runtimeHost: { dispose: vi.fn(dispose) },
+		runtimeHost: runtime ? Object.assign(runtime, { dispose: vi.fn(dispose) }) : { dispose: vi.fn(dispose) },
 		ui: { terminal: { drainInput: vi.fn(async () => {}) } },
 		themeController: { disableAutoSync: vi.fn() },
 		// As the interactive mode's stop does.
@@ -152,6 +157,33 @@ describe("closing the Windows console", () => {
 		await assert.rejects(vi.advanceTimersByTimeAsync(1), ProcessExit);
 		assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
 		assert.equal(context.isShuttingDown, true);
+	});
+
+	test("an engine that says the console was closed shuts the session down as the close does", async () => {
+		// The engine shares the console and hears of its close first; the host hears of it only once the engine is gone.
+		const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
+		const runtime = Object.assign(Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime, {
+			getReadyEngineChildPid: () => undefined,
+			onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
+				engineListeners.push(listener);
+				return () => engineListeners.splice(engineListeners.indexOf(listener), 1);
+			},
+		});
+		const disposed = Promise.withResolvers<void>();
+		const { context, closeConsole } = createWindowsHost(() => disposed.promise, runtime);
+
+		for (const listener of [...engineListeners]) listener({ type: "engine_console_closed" });
+		await settle();
+		assert.deepEqual(vi.mocked(context.runtimeHost.dispose).mock.calls, [[{ fromSignal: true }]]);
+		assert.deepEqual(exits, [], "Atomic does not exit before the session has shut down");
+
+		// Windows then tells the host itself, once the engine is gone.
+		closeConsole();
+		disposed.resolve();
+		await settle();
+		assert.equal(vi.mocked(context.runtimeHost.dispose).mock.calls.length, 1);
+		assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+		assert.equal(vi.mocked(context.stop).mock.calls.length, 0, "the console is not restored");
 	});
 
 	test("a close after a failed write shortens the bound and sets the status", async () => {

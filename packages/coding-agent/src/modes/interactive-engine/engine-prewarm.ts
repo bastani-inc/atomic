@@ -22,12 +22,6 @@ export interface EngineLaunch {
 	readonly cwd: string;
 	readonly env: Readonly<Record<string, string>>;
 	readonly detached: boolean;
-	/**
-	 * Windows: the engine starts on a console of its own, without a window, rather than on the host's. Like an engine in
-	 * a session of its own on Linux and macOS, it then gets none of the console's control events, such as the close of
-	 * its window, which would end it before the host could let it shut down.
-	 */
-	readonly windowsHide: boolean;
 }
 
 /** How an RPC client starts its child: the inputs `spawnRpcClientProcess` passes to `spawn`. */
@@ -52,18 +46,11 @@ export function engineLaunch(options: EngineLaunchOptions): EngineLaunch {
 		cwd: options.cwd ?? process.cwd(),
 		env: definedEnvironment(scrubInteractiveEngineEnv(createChildProcessEnvironment(options.env))),
 		detached: options.interactiveEngine && process.platform !== "win32",
-		windowsHide: options.interactiveEngine && process.platform === "win32",
 	};
 }
 
 export function sameEngineLaunch(left: EngineLaunch, right: EngineLaunch): boolean {
-	if (
-		left.command !== right.command ||
-		left.cwd !== right.cwd ||
-		left.detached !== right.detached ||
-		left.windowsHide !== right.windowsHide
-	)
-		return false;
+	if (left.command !== right.command || left.cwd !== right.cwd || left.detached !== right.detached) return false;
 	if (left.args.length !== right.args.length || left.args.some((arg, index) => arg !== right.args[index])) {
 		return false;
 	}
@@ -187,7 +174,6 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 			cwd: launch.cwd,
 			env: launch.env,
 			detached: launch.detached,
-			windowsHide: launch.windowsHide,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 	} catch {

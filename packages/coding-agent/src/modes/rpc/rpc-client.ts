@@ -590,7 +590,15 @@ export class RpcClient extends RpcClientApi {
 			this.handleStoppedEngineLine(line, this.stoppedEngine.shutdownComplete);
 			return;
 		}
-		if (this.terminalDrain.observe(generation, line, (id) => this.pendingRequests.markAccepted(id))) return;
+		if (
+			this.terminalDrain.observe(
+				generation,
+				line,
+				(id) => this.pendingRequests.markAccepted(id),
+				() => this.emitInteractiveEngineMessage({ type: "engine_console_closed" }, generation),
+			)
+		)
+			return;
 		if (this.engineMonitor?.handleLine(line)) return;
 		// Until the line has been read, an exception means the engine wrote something that is not a message. Once it has
 		// been read, only a raw client's listener can still throw here: an interactive engine's host contains what its
