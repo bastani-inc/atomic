@@ -23,6 +23,7 @@
 - Atomic starts faster again: TypeBox loads from one file instead of about 670.
 - On Windows, the first start after a restart or an install reaches the editor much sooner: while Atomic loads, a short-lived helper reads the files it is about to load many at a time, so the antivirus scans them in parallel instead of one after another as Node opens them. It only reads, and it ends when Atomic does.
 - An interactive session shows its editor and takes typing as soon as Atomic starts, before the rest of the session has loaded, so you can start typing at once, also on a slow first start. The header, the footer and the chat appear on the same screen when the session is ready, with what you typed, its cursor and any paste kept. Keys that do more than edit the prompt, such as Enter, a command or Esc, wait and then act in the order you pressed them, exactly once; Ctrl+C clears the prompt or, pressed twice on an empty one, exits, and Ctrl+D on an empty prompt exits. Startup is as before when something must come first: a question about the folder's trust, the first-run setup, an argument such as `--resume`, or settings that change how the editor looks.
+- While Atomic loads at start, the editor it shows echoes what you type as you type it, instead of all at once when loading has finished: the rest of Atomic loads in steps with room to answer keys between them, in the same order as before.
 
 ### Fixed
 
