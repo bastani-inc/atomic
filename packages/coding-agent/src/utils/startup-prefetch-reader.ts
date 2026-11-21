@@ -7,9 +7,9 @@
  *
  * Imports nothing but Node's own modules, so starting it reads no file of Atomic's but itself.
  */
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, uptime } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -234,8 +234,28 @@ function isEntry(script: string | undefined): boolean {
 	}
 }
 
-// Started as a process's entry: `<runtime> startup-prefetch-reader.js <list> <packageDir>`.
-const [entry, listPath, packageDir] = process.argv.slice(1);
+/**
+ * Records, in `markerPath`, that this installation's startup files were read since the machine started (see
+ * `startup-prefetch.ts`): only where its directory, the agent directory, already exists, written whole (to another file
+ * first, then renamed over it), and on any failure not at all.
+ */
+export function recordStartupFilesRead(markerPath: string, version: string, install: string): void {
+	if (!existsSync(dirname(markerPath))) return;
+	const written = `${markerPath}.${process.pid}.tmp`;
+	try {
+		writeFileSync(written, JSON.stringify({ version, install, bootTimeMs: Date.now() - uptime() * 1000 }));
+		renameSync(written, markerPath);
+	} catch {
+		try {
+			unlinkSync(written);
+		} catch {
+			// Nothing was written.
+		}
+	}
+}
+
+// Started as a process's entry: `<runtime> startup-prefetch-reader.js <list> <packageDir> [<marker> <version>]`.
+const [entry, listPath, packageDir, markerPath, version] = process.argv.slice(1);
 if (isEntry(entry) && listPath && packageDir) {
 	// The process that started this one holds the other end of standard input: when it ends, however it ends, so does
 	// this reader.
@@ -244,7 +264,11 @@ if (isEntry(entry) && listPath && packageDir) {
 	process.stdin.on("error", () => process.exit(0));
 	process.stdin.resume();
 	void readStartupFiles(listPath, packageDir).then(
-		() => process.exit(0),
+		(read) => {
+			// A list it could not use, or files it could not read, says nothing about the next start.
+			if (read > 0 && markerPath && version) recordStartupFilesRead(markerPath, version, packageDir);
+			process.exit(0);
+		},
 		() => process.exit(0),
 	);
 }

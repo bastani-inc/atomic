@@ -248,7 +248,7 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 
 InteractiveModeBase.prototype.setupAutocompleteProvider = function (
 	this: InteractiveModeBase,
-	options?: { preserveSelection?: boolean; refreshCommandMenu?: boolean },
+	options?: { closeMenu?: boolean },
 ): void {
 	let provider = this.createBaseAutocompleteProvider();
 	for (const wrapProvider of this.autocompleteProviderWrappers) {
@@ -258,9 +258,11 @@ InteractiveModeBase.prototype.setupAutocompleteProvider = function (
 	this.autocompleteProvider = provider;
 	// While a subagent is shown the prompt keeps completing its commands; main's provider is ready for the way back.
 	const shown = viewedAgentAutocompleteProvider(this) ?? provider;
-	this.defaultEditor.setAutocompleteProvider(shown, options);
+	// fd, the engine's commands and late extensions can arrive while the user types: the menu they see stays open.
+	const replacement = options?.closeMenu ? undefined : ({ preserveSelection: true, refreshMenu: true } as const);
+	this.defaultEditor.setAutocompleteProvider(shown, replacement);
 	if (this.editor !== this.defaultEditor) {
-		this.editor.setAutocompleteProvider?.(shown);
+		this.editor.setAutocompleteProvider?.(shown, replacement);
 	}
 };
 

@@ -842,8 +842,7 @@ jobs:
             node_modules/@bastani/atomic-natives/package.json \
             node_modules/@bastani/atomic-natives/native/index.js \
             node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node \
-            node_modules/@modelcontextprotocol/ext-apps/package.json \
-            node_modules/@mozilla/readability/package.json; do
+            node_modules/mupdf/package.json; do
             test -f "$smoke_dir/atomic/$required_path" || {
               echo "Missing release archive path: $required_path" >&2
               exit 1
@@ -892,8 +891,7 @@ jobs:
             "node_modules/@bastani/atomic-natives/package.json",
             "node_modules/@bastani/atomic-natives/native/index.js",
             "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node",
-            "node_modules/@modelcontextprotocol/ext-apps/package.json",
-            "node_modules/@mozilla/readability/package.json"
+            "node_modules/mupdf/package.json"
           )) {
             $archivePath = Join-Path $smokeDir $requiredPath
             if (-not (Test-Path $archivePath)) {

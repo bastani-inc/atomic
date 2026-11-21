@@ -4,6 +4,12 @@ import { availableParallelism, constants, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
+import { VERSION } from "../../packages/coding-agent/src/config.js";
+import {
+	machineStartTimeMs,
+	STARTUP_FILES_READ_MARKER,
+	startupFilesReadThisStart,
+} from "../../packages/coding-agent/src/utils/startup-prefetch.ts";
 import {
 	readStartupFiles,
 	readsFoundFilesInMemory,
@@ -229,6 +235,7 @@ interface ReaderStart {
 }
 
 const marker = () => join(dir, "reader-started.json");
+const agentDir = () => join(dir, "agent");
 
 /**
  * A package directory whose reader only records how it was started and then waits, and a parent script that runs
@@ -281,7 +288,12 @@ function startPrefetchIn(nodeFlags: readonly string[] = [], env: Record<string, 
 		stdout: "pipe",
 		stderr: "pipe",
 		timeout: CHILD_TIMEOUT_MS,
-		env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096", ...env },
+		env: {
+			...process.env,
+			NODE_OPTIONS: "--max-old-space-size=4096",
+			ATOMIC_CODING_AGENT_DIR: agentDir(),
+			...env,
+		},
 	});
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	const { started } = JSON.parse(result.stdout.toString().trim().split("\n").at(-1) ?? "{}") as { started: number };
@@ -305,7 +317,12 @@ test.runIf(process.platform === "win32")(
 		const start = startPrefetchIn();
 		assert.ok(start, "a reader started");
 		const packageDir = join(dir, "package");
-		assert.deepEqual(start.argv, [join(packageDir, "dist", "startup-files.json"), packageDir]);
+		assert.deepEqual(start.argv, [
+			join(packageDir, "dist", "startup-files.json"),
+			packageDir,
+			join(agentDir(), STARTUP_FILES_READ_MARKER),
+			VERSION,
+		]);
 		// The reader's I/O pool is its own, sized by the CPUs, and nothing of the user's NODE_OPTIONS runs in it.
 		const threads = Number(start.threads);
 		assert.ok(threads >= 4 && threads <= Math.min(32, Math.max(4, 4 * availableParallelism())), `${threads} threads`);
@@ -315,6 +332,83 @@ test.runIf(process.platform === "win32")(
 		await expectGone(start.pid);
 	},
 );
+
+test.runIf(process.platform === "win32")(
+	"a start after the files were read since the machine started starts no reader; another start, version or install does",
+	() => {
+		const packageDir = join(dir, "package");
+		const markerPath = join(agentDir(), STARTUP_FILES_READ_MARKER);
+		const record = (version: string, install: string, bootTimeMs: number) =>
+			file(markerPath, JSON.stringify({ version, install, bootTimeMs }));
+		record(VERSION, packageDir, machineStartTimeMs());
+		assert.equal(startPrefetchIn(), undefined, "read since this start");
+		record(VERSION, packageDir, machineStartTimeMs() - 24 * 60 * 60 * 1000);
+		assert.ok(startPrefetchIn(), "read before the machine last started");
+		record("0.0.1-other", packageDir, machineStartTimeMs());
+		assert.ok(startPrefetchIn(), "read by another version");
+		record(VERSION, join(dir, "other-install"), machineStartTimeMs());
+		assert.ok(startPrefetchIn(), "read for another installation");
+		file(markerPath, "{not json");
+		assert.ok(startPrefetchIn(), "a marker that cannot be read");
+	},
+);
+
+test("the marker tells this installation's files read since the machine started from anything else", () => {
+	const now = machineStartTimeMs();
+	const marker = (fields: Record<string, unknown>) => JSON.stringify({ version: "1.2.3", install: "/a", ...fields });
+	assert.equal(startupFilesReadThisStart(marker({ bootTimeMs: now }), "1.2.3", "/a", now), true);
+	// The clock moved a little since: the same start.
+	assert.equal(startupFilesReadThisStart(marker({ bootTimeMs: now - 3_000 }), "1.2.3", "/a", now), true);
+	assert.equal(startupFilesReadThisStart(marker({ bootTimeMs: now - 60 * 60 * 1000 }), "1.2.3", "/a", now), false);
+	assert.equal(startupFilesReadThisStart(marker({ bootTimeMs: now }), "1.2.4", "/a", now), false);
+	assert.equal(startupFilesReadThisStart(marker({ bootTimeMs: now }), "1.2.3", "/b", now), false);
+	assert.equal(startupFilesReadThisStart(marker({ bootTimeMs: "now" }), "1.2.3", "/a", now), false);
+	assert.equal(startupFilesReadThisStart("{not json", "1.2.3", "/a", now), false);
+	assert.equal(startupFilesReadThisStart(undefined, "1.2.3", "/a", now), false);
+});
+
+test("the reader records that it read the files, only where the agent directory exists and it read some", async () => {
+	const atomic = join(dir, "app", "node_modules", "@bastani", "atomic");
+	file(join(atomic, "dist", "main.js"));
+	const list = file(
+		join(atomic, "dist", "startup-files.json"),
+		JSON.stringify({
+			version: 2,
+			self: "@bastani/atomic",
+			packages: [["@bastani/atomic", -1]],
+			files: [[0, "dist/main.js"]],
+		}),
+	);
+	// Its standard input stays open, as its parent's pipe does: it ends once it has read the files.
+	const runReader = async (markerPath: string) => {
+		const reader = spawnProcess([process.execPath, fileURLToPath(readerModule), list, atomic, markerPath, "1.2.3"], {
+			env: { ...process.env, NODE_OPTIONS: "" },
+			timeout: CHILD_TIMEOUT_MS,
+			stdin: "pipe",
+		});
+		assert.equal(await reader.exited, 0);
+	};
+	mkdirSync(agentDir(), { recursive: true });
+	const markerPath = join(agentDir(), STARTUP_FILES_READ_MARKER);
+	await runReader(markerPath);
+	const read = JSON.parse(readFileSync(markerPath, "utf8")) as {
+		version: string;
+		install: string;
+		bootTimeMs: number;
+	};
+	assert.equal(read.version, "1.2.3");
+	assert.equal(read.install, atomic);
+	assert.ok(startupFilesReadThisStart(JSON.stringify(read), "1.2.3", atomic, machineStartTimeMs()));
+	const elsewhere = join(dir, "no-agent-dir", STARTUP_FILES_READ_MARKER);
+	await runReader(elsewhere);
+	// A list naming nothing it could read records nothing either: the next start reads again.
+	rmSync(markerPath);
+	rmSync(join(atomic, "dist", "main.js"));
+	await runReader(markerPath);
+	assert.equal(existsSync(markerPath), false);
+	assert.equal(existsSync(elsewhere), false);
+	assert.equal(existsSync(dirname(elsewhere)), false);
+});
 
 test.runIf(process.platform === "win32")("the reader ends when its parent is killed", async () => {
 	const parentScript = prefetchFixture(true);

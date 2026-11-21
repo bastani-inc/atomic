@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -36,9 +37,21 @@ try {
 	// The extension's own `process`, declared after what the loader adds to the module.
 	fs.writeFileSync(
 		path.join(extensionDir, "own-process.ts"),
-		'const process = { label: "mine" };\nexport const ownProcess = () => [process.label, __dirname, import.meta.dir];\n',
+		'const process = { label: "mine" };\nconst URL = "https://example.invalid/profile";\nexport const ownProcess = () => [process.label, URL, __dirname, import.meta.dir, import.meta.resolve("./not-yet-created.json")];\n',
 	);
 	const entry = path.join(extensionDir, "extension.ts");
+	// What a module Bun imports itself answers for paths to missing files: an absolute one on Windows throws.
+	const missingPaths = `[${JSON.stringify(path.join(extensionDir, "absent.ts"))}, "./missing.js"].map((specifier) => {
+	try {
+		return import.meta.resolve(specifier);
+	} catch (error) {
+		return "throws " + error.code;
+	}
+})`;
+	fs.writeFileSync(path.join(extensionDir, "native.mjs"), `console.log(JSON.stringify(${missingPaths}));\n`);
+	const native = spawnSync(process.execPath, [path.join(extensionDir, "native.mjs")], { encoding: "utf8" });
+	assert.equal(native.status, 0, native.stderr);
+	const nativeMissingPaths: unknown = JSON.parse(native.stdout);
 	fs.writeFileSync(
 		entry,
 		`import { readFileSync } from "node:fs";
@@ -74,6 +87,7 @@ export default function (pi) {
 			resolved: import.meta.resolve("./a.ts"),
 			builtins: [import.meta.resolve("node:fs"), meta.resolve("fs")],
 			missingFile: meta.resolve("./missing.js"),
+			missingPaths: ${missingPaths},
 			missingPackage: (() => { try { return meta.resolve("atomic-no-such-package"); } catch (error) { return error.code; } })(),
 			aliasedResolved: meta.resolve("./a.ts"),
 			metaRequired: import.meta.require.resolve("./a.ts"),
@@ -126,12 +140,19 @@ export default function (pi) {
 					resolved: pathToFileURL(path.join(extensionDir, "a.ts")).href,
 					builtins: ["node:fs", "node:fs"],
 					missingFile: pathToFileURL(path.join(extensionDir, "missing.js")).href,
+					missingPaths: nativeMissingPaths,
 					missingPackage: "ERR_MODULE_NOT_FOUND",
 					aliasedResolved: pathToFileURL(path.join(extensionDir, "a.ts")).href,
 					metaRequired: path.join(extensionDir, "a.ts"),
 					destructuredRequired: path.join(extensionDir, "a.ts"),
 					requiredJson: "a JSON string",
-					ownProcess: ["mine", extensionDir, extensionDir],
+					ownProcess: [
+						"mine",
+						"https://example.invalid/profile",
+						extensionDir,
+						extensionDir,
+						pathToFileURL(path.join(extensionDir, "not-yet-created.json")).href,
+					],
 				},
 				load,
 			);

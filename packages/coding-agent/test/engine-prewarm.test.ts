@@ -161,8 +161,8 @@ describe("adopting a prewarmed engine child", () => {
 			`import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(join(dir, "argv"))}, JSON.stringify(process.argv.slice(2)));\nprocess.stdin.resume();\n`,
 		);
 		const argvFile = join(dir, "argv");
-		const startedArgv = async (hostArgs: string[]): Promise<string[]> => {
-			prewarmInteractiveEngine(hostArgs, { host: terminal, launch: standIn(script) });
+		const startedArgv = async (hostArgs: string[], basis?: PrewarmLaunchBasis): Promise<string[]> => {
+			prewarmInteractiveEngine(hostArgs, { host: terminal, launch: standIn(script), basis });
 			await vi.waitFor(() => assert.ok(existsSync(argvFile)), { timeout: ENGINE_START_OR_EXIT_WAIT_MS });
 			const argv = JSON.parse(readFileSync(argvFile, "utf8")) as string[];
 			discardPrewarmedEngine();
@@ -174,6 +174,17 @@ describe("adopting a prewarmed engine child", () => {
 			"--internal-engine-prewarm-no-database",
 		]);
 		assert.deepEqual(await startedArgv([]), ["--internal-engine-prewarm"]);
+		// The engine reads the no-database marker as its second argument; the cache flag comes after it.
+		assert.deepEqual(
+			await startedArgv(["--no-session"], "derived"),
+			process.platform === "win32"
+				? ["--internal-engine-prewarm", "--internal-engine-prewarm-no-database"]
+				: [
+						"--internal-engine-prewarm",
+						"--internal-engine-prewarm-no-database",
+						"--internal-engine-prewarm-write-cache",
+					],
+		);
 	});
 
 	test("adopts the child prewarmed with the very launch the host would start, and runs it as the host's engine", async () => {

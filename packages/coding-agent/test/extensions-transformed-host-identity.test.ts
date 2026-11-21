@@ -11,6 +11,7 @@ import { createEventBus } from "../src/core/event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } from "../src/core/extensions/loader.js";
 import { clearExtensionCache, extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { expectedShadowedNames, writeShadowedNamesExtension } from "./fixtures/extension-shadowed-names.js";
 
 const REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS = 120_000;
 
@@ -239,6 +240,92 @@ it(
 	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 );
 
+// A path to a file that does not exist resolves as it does for a module the runtime imports itself, whose answer differs
+// between Node and Bun and between platforms: an absolute path on Windows is one (#6199).
+it(
+	"an extension's import.meta.resolve() answers a path to a missing file as a native module's does",
+	async () => {
+		const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-import-meta-resolve-"));
+		const entry = path.join(root, "extension.ts");
+		const probe = `const answer = (specifier) => {
+	try {
+		return import.meta.resolve(specifier);
+	} catch (error) {
+		return "throws " + error.code;
+	}
+};
+const answers = [${JSON.stringify(path.join(root, "absent.ts"))}, "./missing.js", "../missing.js"].map(answer);`;
+		fs.writeFileSync(path.join(root, "native.mjs"), `${probe}\nconsole.log(JSON.stringify(answers));\n`);
+		fs.writeFileSync(
+			entry,
+			`export default function (pi) {\n${probe}\npi.events.emit("resolve-probe", answers);\n}\n`,
+		);
+		const native = spawnSyncCollect([process.execPath, path.join(root, "native.mjs")], {
+			timeout: REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+		});
+		expect(native.exitCode, native.stderr.toString()).toBe(0);
+		const expected = JSON.parse(native.stdout.toString()) as string[];
+		const bus = createEventBus();
+		const observations: string[][] = [];
+		bus.on("resolve-probe", (value) => observations.push(value as string[]));
+		try {
+			for (const load of ["first", "reload"]) {
+				clearExtensionCache();
+				const factory =
+					load === "first"
+						? await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry)
+						: await extensionLoaderTestHooks.loadTransformedExtensionModule(entry);
+				await loadExtensionFromFactory(factory!, root, bus, createExtensionRuntime(), entry);
+				expect(observations.at(-1), load).toEqual(expected);
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			clearExtensionCache();
+		}
+	},
+	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+);
+
+// An extension module may declare at its top level any name the code the loader or jiti's transform adds also reads,
+// and still loads as it does natively (#6199).
+it(
+	"an extension module that declares a name the loader's code reads loads as natively, under Node",
+	async () => {
+		const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-shadowed-names-"));
+		const entry = writeShadowedNamesExtension(root);
+		const bus = createEventBus();
+		const observations: unknown[] = [];
+		bus.on("shadowed-names", (value) => observations.push(value));
+		try {
+			for (const load of ["first", "reload"]) {
+				clearExtensionCache();
+				const factory =
+					load === "first"
+						? await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry)
+						: await extensionLoaderTestHooks.loadTransformedExtensionModule(entry);
+				await loadExtensionFromFactory(factory!, root, bus, createExtensionRuntime(), entry);
+				expect(observations.at(-1), load).toEqual(expectedShadowedNames(root));
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			clearExtensionCache();
+		}
+	},
+	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+);
+
+it(
+	"an extension module that declares a name the loader's code reads loads as natively, under Bun",
+	() => {
+		const result = spawnSyncCollect(
+			[bunExecutable(), path.join(moduleDir(import.meta.url), "fixtures/extensions-shadowed-names-bun.ts")],
+			{ timeout: REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS },
+		);
+		expect(result.exitCode, result.stdout.toString() + result.stderr.toString()).toBe(0);
+	},
+	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+);
+
 // What the loader adds to an extension's code reads none of the extension's own bindings, whatever their names, and
 // works while an import cycle runs the extension's code before its own top level has run.
 it(
@@ -263,11 +350,21 @@ export const probe = () => ({ hasVersion: process.versions.node !== undefined, f
 			`const _importMeta = "mine";
 const __atomicImportMeta = "also mine";
 const jitiESMResolve = (specifier) => "mine:" + specifier;
+const URL = "https://example.invalid/profile";
+const Error = "my error";
 const load = (jitiImport) => import("./helper.ts").then((helper) => [jitiImport, helper.value]);
 export const probe = async () => ({
-	own: [_importMeta, __atomicImportMeta, jitiESMResolve("x")],
+	own: [_importMeta, __atomicImportMeta, jitiESMResolve("x"), URL, Error],
 	nested: ((_importMeta) => [_importMeta, import.meta.filename])("nested"),
 	resolved: import.meta.resolve("./helper.ts"),
+	notYetCreated: import.meta.resolve("./not-yet-created.json"),
+	missingPackage: (() => {
+		try {
+			return import.meta.resolve("atomic-no-such-package");
+		} catch (error) {
+			return error.code;
+		}
+	})(),
 	loaded: await load("mine"),
 });
 `,
@@ -317,9 +414,11 @@ export default async function (pi) {
 					processConst: { label: "mine", dirname: root, filename: file("process-const.ts") },
 					processVar: { hasVersion: false, filename: file("process-var.ts") },
 					ownNames: {
-						own: ["mine", "also mine", "mine:x"],
+						own: ["mine", "also mine", "mine:x", "https://example.invalid/profile", "my error"],
 						nested: ["nested", file("own-names.ts")],
 						resolved: pathToFileURL(file("helper.ts")).href,
+						notYetCreated: pathToFileURL(file("not-yet-created.json")).href,
+						missingPackage: "ERR_MODULE_NOT_FOUND",
 						loaded: ["mine", "helper"],
 					},
 					cycle: { seen: file("cycle.ts") },
