@@ -135,37 +135,100 @@ export const TLS_CERTIFICATE_REFUSED_DIAGNOSTIC = "provider_tls_certificate_refu
 
 const MAX_CAUSE_DEPTH = 5;
 
-/** Whether `value` carries an HTTP status, as an SDK error for a response does. */
-function hasHttpStatus(value: object): boolean {
+/**
+ * The runtime's own reasons for each code TLS verification refuses a certificate with, lowercase: OpenSSL 3's and
+ * BoringSSL's, and Node.js's and Bun's for a certificate that does not name the host. A runtime may add to them, as
+ * Node.js 24 adds a hint to some, so each is a prefix.
+ */
+const VERIFICATION_REASONS: Readonly<Record<string, readonly string[]>> = {
+	ERR_TLS_CERT_ALTNAME_INVALID: ["hostname/ip does not match certificate's altnames"],
+	UNABLE_TO_GET_ISSUER_CERT: ["unable to get issuer certificate"],
+	UNABLE_TO_GET_CRL: ["unable to get certificate crl"],
+	UNABLE_TO_DECRYPT_CERT_SIGNATURE: ["unable to decrypt certificate's signature"],
+	UNABLE_TO_DECRYPT_CRL_SIGNATURE: ["unable to decrypt crl's signature"],
+	UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY: ["unable to decode issuer public key"],
+	CERT_SIGNATURE_FAILURE: ["certificate signature failure"],
+	CRL_SIGNATURE_FAILURE: ["crl signature failure"],
+	CERT_NOT_YET_VALID: ["certificate is not yet valid"],
+	CERT_HAS_EXPIRED: ["certificate has expired"],
+	CRL_NOT_YET_VALID: ["crl is not yet valid"],
+	CRL_HAS_EXPIRED: ["crl has expired"],
+	ERROR_IN_CERT_NOT_BEFORE_FIELD: ["format error in certificate's notbefore field"],
+	ERROR_IN_CERT_NOT_AFTER_FIELD: ["format error in certificate's notafter field"],
+	ERROR_IN_CRL_LAST_UPDATE_FIELD: ["format error in crl's lastupdate field"],
+	ERROR_IN_CRL_NEXT_UPDATE_FIELD: ["format error in crl's nextupdate field"],
+	DEPTH_ZERO_SELF_SIGNED_CERT: ["self-signed certificate", "self signed certificate"],
+	SELF_SIGNED_CERT_IN_CHAIN: [
+		"self-signed certificate in certificate chain",
+		"self signed certificate in certificate chain",
+	],
+	UNABLE_TO_GET_ISSUER_CERT_LOCALLY: ["unable to get local issuer certificate"],
+	UNABLE_TO_VERIFY_LEAF_SIGNATURE: ["unable to verify the first certificate"],
+	CERT_CHAIN_TOO_LONG: ["certificate chain too long"],
+	CERT_REVOKED: ["certificate revoked"],
+	INVALID_CA: ["invalid ca certificate"],
+	PATH_LENGTH_EXCEEDED: ["path length constraint exceeded"],
+	INVALID_PURPOSE: ["unsuitable certificate purpose", "unsupported certificate purpose"],
+	CERT_UNTRUSTED: ["certificate not trusted"],
+	CERT_REJECTED: ["certificate rejected"],
+	HOSTNAME_MISMATCH: ["hostname mismatch"],
+	UNSPECIFIED: UNSPECIFIED_CERTIFICATE_REASONS,
+};
+
+/**
+ * Whether `message` is the runtime's own text for a certificate it refused with `code`, as Node's and Bun's TLS give
+ * it, or Bun's fetch (`<code> fetching "<url>"`), rather than a provider's: a gateway can relay an upstream's
+ * certificate code in its own words, which says nothing about the certificate this request was shown.
+ */
+function isVerificationMessage(code: string, message: string): boolean {
+	const text = message.toLowerCase();
+	if (text.startsWith(`${code.toLowerCase()} fetching `)) return true;
+	return (VERIFICATION_REASONS[code] ?? []).some((reason) => text.startsWith(reason));
+}
+
+/**
+ * Whether `value` came from a response: an HTTP status as SDK errors carry it, including pi-messages' recorded one, or
+ * the response headers an SDK error for an error event inside a successful response keeps.
+ */
+function isResponseError(value: object): boolean {
 	const fields = value as {
 		status?: unknown;
 		statusCode?: unknown;
+		headers?: unknown;
 		$metadata?: { httpStatusCode?: unknown };
 		$response?: { statusCode?: unknown };
+		diagnosticDetails?: { status?: unknown };
 	};
 	return (
 		typeof fields.status === "number" ||
 		typeof fields.statusCode === "number" ||
+		(typeof fields.headers === "object" && fields.headers !== null) ||
 		typeof fields.$metadata?.httpStatusCode === "number" ||
-		typeof fields.$response?.statusCode === "number"
+		typeof fields.$response?.statusCode === "number" ||
+		typeof fields.diagnosticDetails?.status === "number"
 	);
 }
 
 /**
  * The refused certificate a failed request's error carries along its cause chain, as Node's fetch (`fetch failed`),
- * Bun's fetch and the provider SDKs (`Connection error.`) wrap it; undefined for any other failure. Only an error's
- * own code counts, never its text, and a failure that got an HTTP response is never one: a status such as a 502 whose
- * body quotes a certificate code is the provider's answer.
+ * Bun's fetch and the provider SDKs (`Connection error.`) wrap it; undefined for any other failure. It takes an error's
+ * own code with the runtime's own reason for it, and a failure that got a response is never one: a 502, or an error
+ * event in a stream, whose body names a certificate code is the provider's answer.
  */
 export function findTlsCertificateRefusal(error: unknown): TlsCertificateRefusal | undefined {
 	let refusal: TlsCertificateRefusal | undefined;
 	let current = error;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
-		// Any link with a status, above or below the code, means the request got an answer.
-		if (hasHttpStatus(current)) return undefined;
+		// Any link from a response, above or below the code, means the request got an answer.
+		if (isResponseError(current)) return undefined;
 		const { code, message } = current as { code?: unknown; message?: unknown };
 		const text = typeof message === "string" ? message.trim() : "";
-		if (refusal === undefined && typeof code === "string" && isRefusedCertificate(code, text)) {
+		if (
+			refusal === undefined &&
+			typeof code === "string" &&
+			isRefusedCertificate(code, text) &&
+			isVerificationMessage(code, text)
+		) {
 			// Bun's fetch names the code and the URL instead of a reason; the URL can carry credentials.
 			refusal = { code, reason: text.startsWith(code) || text.includes("://") ? "" : text };
 		}

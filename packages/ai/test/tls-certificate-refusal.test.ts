@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpsServer, type Server } from "node:https";
 import { createServer as createNetServer, type Server as NetServer, type Socket } from "node:net";
 import { connect as connectTls } from "node:tls";
-import { createServer as createHttpsServer, type Server } from "node:https";
 import { afterEach, describe, it, vi } from "vitest";
 import { createTestCertificate } from "../../../test/helpers/tls-certificates.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
@@ -13,6 +14,7 @@ import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { stream as streamOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
+import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
 import { getModel } from "../src/compat.ts";
 import type { Api, AssistantMessage, Model } from "../src/types.ts";
 import { retryProviderRequest } from "../src/utils/provider-retry.ts";
@@ -60,7 +62,11 @@ const TURNS: Readonly<Record<string, Turn>> = {
 			transport: "sse",
 		}).result(),
 	"Azure OpenAI Responses": (baseUrl) =>
-		streamAzureOpenAIResponses(createModel("azure-openai-responses", `${baseUrl}/openai/v1`), context, options).result(),
+		streamAzureOpenAIResponses(
+			createModel("azure-openai-responses", `${baseUrl}/openai/v1`),
+			context,
+			options,
+		).result(),
 	"Google Gemini": (baseUrl) =>
 		streamGoogleGenerativeAI(createModel("google-generative-ai", baseUrl), context, options).result(),
 	"Google Vertex": (baseUrl) =>
@@ -71,7 +77,10 @@ const TURNS: Readonly<Record<string, Turn>> = {
 		}).result(),
 	Mistral: (baseUrl) => streamMistral(createModel("mistral-conversations", baseUrl), context, options).result(),
 	"Amazon Bedrock": (baseUrl) => {
-		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const model = getModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
 		return streamBedrock({ ...model, baseUrl }, context, {
 			cacheRetention: "none",
 			maxRetries: SDK_RETRIES,
@@ -80,7 +89,7 @@ const TURNS: Readonly<Record<string, Turn>> = {
 	},
 };
 
-const servers: (Server | NetServer)[] = [];
+const servers: (Server | NetServer | import("node:http").Server)[] = [];
 
 afterEach(async () => {
 	vi.unstubAllGlobals();
@@ -227,9 +236,69 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 		assert.equal(requests, 2, failure.message);
 	});
 
+	it("a response whose body or stream error names a certificate code is the provider's answer, retried as before (#6114)", async () => {
+		const relayed = { message: "upstream connect error: certificate has expired", code: "CERT_HAS_EXPIRED" };
+		const answering = async (status: number, contentType: string, body: string) => {
+			const server = createHttpServer((request, response) => {
+				request.resume();
+				request.on("end", () => {
+					response.writeHead(status, { "content-type": contentType });
+					response.end(body);
+				});
+			});
+			servers.push(server);
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+			const address = server.address();
+			assert.ok(address !== null && typeof address === "object");
+			return `http://127.0.0.1:${address.port}`;
+		};
+		const turns: [string, Promise<AssistantMessage>][] = [
+			[
+				"pi-messages 502",
+				answering(502, "application/json", JSON.stringify({ error: relayed })).then((baseUrl) =>
+					streamPiMessages(createModel("pi-messages", baseUrl), context, { apiKey: "test-key" }).result(),
+				),
+			],
+			[
+				"OpenAI Completions stream error event",
+				answering(200, "text/event-stream", `data: ${JSON.stringify({ error: relayed })}\n\n`).then((baseUrl) =>
+					streamOpenAICompletions(createModel("openai-completions", `${baseUrl}/v1`), context, {
+						apiKey: "test-key",
+						maxRetries: 0,
+					}).result(),
+				),
+			],
+			[
+				"OpenAI Responses stream error event",
+				answering(
+					200,
+					"text/event-stream",
+					`data: ${JSON.stringify({ type: "error", sequence_number: 0, ...relayed })}\n\n`,
+				).then((baseUrl) =>
+					streamOpenAIResponses(createModel("openai-responses", `${baseUrl}/v1`), context, {
+						apiKey: "test-key",
+						maxRetries: 0,
+					}).result(),
+				),
+			],
+		];
+		for (const [label, turn] of turns) {
+			const message = await turn;
+			assert.equal(message.stopReason, "error", label);
+			assert.deepEqual(tlsDiagnostics(message), [], `${label}: ${message.errorMessage}`);
+			assert.equal(
+				message.errorMessage?.includes("NODE_EXTRA_CA_CERTS"),
+				false,
+				`${label}: ${message.errorMessage}`,
+			);
+			assert.equal(isRetryableAssistantError(message), true, `${label}: ${message.errorMessage}`);
+		}
+	});
+
 	it("a certificate code on an error that also carries a response's status, at any depth, is not a refusal (#6114)", async () => {
+		// The runtime's own wording, but over an answer with a status.
 		const answered = Object.assign(
-			new Error("SDK wrapped server refusal", { cause: Object.assign(new Error("502"), { status: 502 }) }),
+			new Error("certificate has expired", { cause: Object.assign(new Error("502"), { status: 502 }) }),
 			{ code: "CERT_HAS_EXPIRED" },
 		);
 		let requests = 0;
@@ -238,7 +307,7 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 				requests++;
 				throw Object.assign(new Error("Connection error.", { cause: answered }), {
 					status: undefined,
-					headers: new Headers({ "retry-after-ms": "0" }),
+					headers: undefined,
 				});
 			},
 			{ maxRetries: 1 },
@@ -254,7 +323,14 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 				api: "openai-completions",
 				provider: "test-provider",
 				model: "test-model",
-				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
 				stopReason: "error",
 				errorMessage: "Connection error.: read ECONNRESET (ECONNRESET)",
 				timestamp: 1,
@@ -268,7 +344,11 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 
 	it("OpenSSL's own failures reported as UNSPECIFIED, an UNSPECIFIED that is not TLS's, and OUT_OF_MEM stay retried; a certificate refused as UNSPECIFIED does not (#6114)", async () => {
 		// A root that may not sign certificates: Node reports UNSPECIFIED with OpenSSL's reason for it.
-		const root = createTestCertificate({ subject: "Root without keyCertSign", ca: true, keyUsage: ["digitalSignature"] });
+		const root = createTestCertificate({
+			subject: "Root without keyCertSign",
+			ca: true,
+			keyUsage: ["digitalSignature"],
+		});
 		const leaf = createTestCertificate({
 			subject: "localhost",
 			issuer: root,
@@ -296,11 +376,15 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 			await retryProviderRequest(
 				async () => {
 					count++;
-					// As the OpenAI and Anthropic SDKs report a connection failure: no status, the reason in the causes.
-					throw Object.assign(new Error("Connection error.", { cause: new TypeError("fetch failed", { cause }) }), {
-						status: undefined,
-						headers: new Headers({ "retry-after-ms": "0" }),
-					});
+					// As the OpenAI and Anthropic SDKs report a connection failure: no status or headers, the reason in the
+					// causes.
+					throw Object.assign(
+						new Error("Connection error.", { cause: new TypeError("fetch failed", { cause }) }),
+						{
+							status: undefined,
+							headers: undefined,
+						},
+					);
 				},
 				{ maxRetries: 1 },
 			).catch(() => {});

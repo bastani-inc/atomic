@@ -5,6 +5,7 @@
  */
 
 import assert from "node:assert/strict";
+import { createServer as createHttpServer, type ServerResponse } from "node:http";
 import { createServer, type Server } from "node:https";
 import {
 	type AssistantMessage,
@@ -165,4 +166,82 @@ test("a refused certificate is sent once and moves to the next fallback model, w
 			: [],
 	);
 	assert.ok(shown[0]?.startsWith(certificateProblem), shown.join("\n"));
+});
+
+/** A plain-HTTP gateway that answers every request with `respond`; counts the requests. */
+async function gateway(respond: (response: ServerResponse) => void): Promise<{ baseUrl: string; requests(): number }> {
+	let requests = 0;
+	const server = createHttpServer((request, response) => {
+		requests++;
+		request.resume();
+		request.on("end", () => respond(response));
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+	const address = server.address();
+	assert.ok(address !== null && typeof address === "object");
+	return { baseUrl: `http://127.0.0.1:${address.port}`, requests: () => requests };
+}
+
+/** How many retries a session with `retry.maxRetries: 3` started for one prompt to a model of `api` at `baseUrl`. */
+async function retriesFor(api: "pi-messages" | "openai-completions", baseUrl: string): Promise<number> {
+	const runtime = await ModelRuntime.create({
+		credentials: AuthStorage.inMemory(),
+		modelsPath: null,
+		allowModelNetwork: false,
+	});
+	const model: Model<typeof api> = {
+		id: "gateway-model",
+		name: "Gateway",
+		api,
+		provider: "gateway",
+		baseUrl,
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 100_000,
+		maxTokens: 1_000,
+	};
+	runtime.registerProvider("gateway", { api, baseUrl, apiKey: "fixture-key", models: [model] });
+	cleanups.push(() => runtime.unregisterProvider("gateway"));
+	const settingsManager = SettingsManager.inMemory({
+		defaultProvider: "gateway",
+		defaultModel: "gateway-model",
+		retry: { enabled: true, maxRetries: 3, baseDelayMs: 1, maxAgentDelayMs: 1 },
+	});
+	const { options } = buildSessionOptions(parseArgs([]), [], false, runtime, settingsManager);
+	const { session } = await createAgentSession({
+		...options,
+		cwd: process.cwd(),
+		modelRuntime: runtime,
+		settingsManager,
+		sessionManager: SessionManager.inMemory(),
+		resourceLoader: createTestResourceLoader(),
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
+		tools: ["read"],
+	});
+	cleanups.push(() => session.dispose());
+	let retries = 0;
+	session.subscribe((event) => {
+		if (event.type === "auto_retry_start") retries++;
+	});
+	await session.prompt("hello");
+	return retries;
+}
+
+test("a gateway's 502 or stream error that names a certificate code keeps its same-model retries (#6114)", async () => {
+	const relayed = { message: "upstream connect error: certificate has expired", code: "CERT_HAS_EXPIRED" };
+	const answered = await gateway((response) => {
+		response.writeHead(502, { "content-type": "application/json" });
+		response.end(JSON.stringify({ error: relayed }));
+	});
+	assert.equal(await retriesFor("pi-messages", answered.baseUrl), 3);
+	assert.equal(answered.requests(), 4);
+
+	const streamed = await gateway((response) => {
+		response.writeHead(200, { "content-type": "text/event-stream" });
+		response.end(`data: ${JSON.stringify({ error: relayed })}\n\n`);
+	});
+	assert.equal(await retriesFor("openai-completions", `${streamed.baseUrl}/v1`), 3);
+	assert.equal(streamed.requests(), 4);
 });
