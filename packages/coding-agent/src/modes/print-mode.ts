@@ -239,8 +239,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			for (const error of queued.unreported) console.error(error instanceof Error ? error.message : String(error));
 			commandAnswered = queued.answered;
 			if (queued.lost) {
-				// The command's answer was lost: an earlier reply must not stand in for it. Its sender reported why.
-				exitCode = 1;
+				// The command's answer was lost: an earlier reply must not stand in for it, so text output prints nothing
+				// and fails. Its sender reported why. The JSON event stream never printed a reply in its place and keeps
+				// its exit status.
+				if (mode === "text") exitCode = 1;
 				activePromptHadCommandError = true;
 			}
 			const conflict = session.getPersistenceFailure()?.conflict;

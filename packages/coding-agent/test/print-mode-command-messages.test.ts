@@ -55,6 +55,14 @@ function answeringCommands(pi: ExtensionAPI): void {
 			);
 		},
 	});
+	pi.registerCommand("quiet", {
+		description: "Catches the failure of a message that cannot be saved and answers nothing else",
+		handler: async () => {
+			try {
+				await pi.sendMessage({ customType: "broken", content: "first", display: true, details: { size: 1n } });
+			} catch {}
+		},
+	});
 	pi.registerCommand("recover", {
 		description: "Answers again when its first message cannot be saved",
 		handler: async () => {
@@ -276,6 +284,28 @@ test("a command whose message cannot be saved fails the run and never prints the
 	assert.equal(output.stderr.length, 1);
 	assert.match(output.stderr[0] ?? "", /^Extension error \(<runtime>\): /);
 });
+
+for (const command of ["broken", "quiet"]) {
+	test(`a JSON run keeps exit 0 when /${command}'s message cannot be saved (#6113)`, async () => {
+		const harness = await sessionWithEarlierReply(fauxAssistantMessage("earlier answer"));
+		const output = captureOutput();
+
+		const exitCode = await runPrintMode(runtimeHostFor(harness), { mode: "json", initialMessage: `/${command}` });
+
+		assert.equal(exitCode, 0);
+		assert.equal(output.stderr.length, 1);
+		assert.match(output.stderr[0] ?? "", /^Extension error \(<runtime>\): /);
+		const events = output.stdout
+			.join("")
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as { type: string; message?: { role: string } });
+		assert.deepEqual(
+			events.filter((event) => event.type === "message_end").map((event) => event.message?.role),
+			[],
+		);
+	});
+}
 
 test("a command that answers again after its first message fails prints that answer (#6113)", async () => {
 	const harness = await sessionWithEarlierReply(fauxAssistantMessage("earlier answer"));

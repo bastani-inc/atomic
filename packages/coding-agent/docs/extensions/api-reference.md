@@ -664,7 +664,7 @@ pi.sendMessage({
 - `excludeFromContext: true` - Render and persist the custom message without adding it to LLM context. With no `deliverAs`, this remains display-only even while the agent is streaming.
 - `interruptAbortMessage` - Optional text used to replace generic abort results (for example `Operation aborted`) when `deliverAs: "interrupt"` aborts an active turn.
 
-A command can answer with `sendMessage()`, `sendMessages()` or `sendUserMessage()` without awaiting it. In print mode (`-p`) and the JSON event stream, Atomic waits for the messages a command sends to its session, and for the turns they start, before it prints the result or runs the next prompt. The printed result is the command's message, or the reply of the turn it started. A command whose messages could not be saved, and that sent nothing else that was, makes the run exit with status `1`.
+A command can answer with `sendMessage()`, `sendMessages()` or `sendUserMessage()` without awaiting it. In print mode (`-p`) and the JSON event stream, Atomic waits for the messages a command sends to its session, and for the turns they start, before it prints the result or runs the next prompt. The printed result is the command's message, or the reply of the turn it started. With text output (`-p` without `--mode json`), a command whose messages could not be saved, and that sent nothing else that was, prints nothing and makes the run exit with status `1`.
 
 ### pi.sendMessages(messages, options?)
 
