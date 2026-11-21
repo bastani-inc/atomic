@@ -5,6 +5,7 @@ import { abortBash } from "./agent-session-bash.ts";
 import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-session-detached-tools.ts";
 import { heldInputView } from "./agent-session-held-input.ts";
 import {
+	forgetQueuedMessageReceipt,
 	queuedMessageReceiptId,
 	queueRunStarted,
 	requeueQueuedMessagesNotStarted,
@@ -468,7 +469,10 @@ export async function _processAgentEvent(
 			this._messagesAwaitingPersistence.delete(event.message);
 		}
 		if (entryId) {
-			if (event.message.role === "user") recordPromptOrder(this, entryId, event);
+			if (event.message.role === "user") {
+				recordPromptOrder(this, entryId, event);
+				forgetQueuedMessageReceipt(event.message);
+			}
 			this._entryIdsByMessage.set(event.message, entryId);
 			noteMessageSaved(this, event.message);
 		}

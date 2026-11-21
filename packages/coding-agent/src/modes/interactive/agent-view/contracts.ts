@@ -1,4 +1,5 @@
 import type { Component } from "@bastani/atomic-tui";
+import type { QueuedMessageReceipt } from "../../../core/queued-message-delivery.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { QueuedTaskMessages } from "../../../core/tasks/supervisor.js";
 import type { TaskViewResult } from "../../../core/tasks/task-view-source.js";
@@ -56,6 +57,12 @@ export interface AgentViewStatus {
 	 * Left out when there are none.
 	 */
 	readonly unsaved?: readonly string[];
+	/**
+	 * How the saves of the messages it took and was not seen to save can be found in its session's store after its engine
+	 * is lost: its session, and each message's receipt (null for one without), in the order of `unsaved`, then
+	 * `delivering`'s steering and follow-up lanes. Left out when it has none to find.
+	 */
+	readonly receipts?: AgentViewReceipts;
 	/** Why messages cannot reach it any more; undefined while they can. */
 	readonly readOnlyReason?: string;
 	/** It waits on a question form, drawn in the transcript area, which takes the keys meanwhile. */
@@ -64,6 +71,14 @@ export interface AgentViewStatus {
 	readonly working?: AgentWorkingLine;
 	/** The subagent is gone (dismissed, removed, or its engine was lost): the screen shows main again. */
 	readonly gone: boolean;
+}
+
+/** See {@link AgentViewStatus.receipts}. */
+export interface AgentViewReceipts {
+	readonly sessionId: string;
+	/** The file the session is kept in, when it has its own, as a subagent's session does. */
+	readonly sessionFile?: string;
+	readonly taken: readonly (QueuedMessageReceipt | null)[];
 }
 
 /**
