@@ -68,6 +68,15 @@ const isMuslFromChildProcess = () => {
   }
 }
 
+// Marks a platform package's own load failure with the package, where the loader required it.
+const __atomicPlatformPackage = Symbol('platform package')
+function __atomicPlatformPackageError(error, platformPackage) {
+  try {
+    Object.defineProperty(error, __atomicPlatformPackage, { value: platformPackage })
+  } catch { /* A thrown value that is not an object stays unmarked. */ }
+  return error
+}
+
 function requireNative() {
   if (process.env.NAPI_RS_NATIVE_LIBRARY_PATH) {
     try {
@@ -99,7 +108,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-android-arm64'))
       }
     } else if (process.arch === 'arm') {
       try {
@@ -115,7 +124,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-android-arm-eabi'))
       }
     } else {
       loadErrors.push(new Error(`Unsupported architecture on Android ${process.arch}`))
@@ -136,7 +145,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-win32-x64-gnu'))
         }
       } else {
         try {
@@ -152,7 +161,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-win32-x64-msvc'))
         }
       }
     } else if (process.arch === 'ia32') {
@@ -169,7 +178,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-win32-ia32-msvc'))
       }
     } else if (process.arch === 'arm64') {
       try {
@@ -185,7 +194,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-win32-arm64-msvc'))
       }
     } else {
       loadErrors.push(new Error(`Unsupported architecture on Windows: ${process.arch}`))
@@ -204,7 +213,7 @@ function requireNative() {
       }
       return binding
     } catch (e) {
-      loadErrors.push(e)
+      loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-darwin-universal'))
     }
     if (process.arch === 'x64') {
       try {
@@ -220,7 +229,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-darwin-x64'))
       }
     } else if (process.arch === 'arm64') {
       try {
@@ -236,7 +245,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-darwin-arm64'))
       }
     } else {
       loadErrors.push(new Error(`Unsupported architecture on macOS: ${process.arch}`))
@@ -256,7 +265,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-freebsd-x64'))
       }
     } else if (process.arch === 'arm64') {
       try {
@@ -272,7 +281,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-freebsd-arm64'))
       }
     } else if (process.arch === 'ppc64') {
       try {
@@ -288,7 +297,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-freebsd-ppc64'))
       }
     } else {
       loadErrors.push(new Error(`Unsupported architecture on FreeBSD: ${process.arch}`))
@@ -309,7 +318,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-x64-musl'))
         }
       } else {
         try {
@@ -325,7 +334,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-x64-gnu'))
         }
       }
     } else if (process.arch === 'arm64') {
@@ -343,7 +352,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-arm64-musl'))
         }
       } else {
         try {
@@ -359,7 +368,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-arm64-gnu'))
         }
       }
     } else if (process.arch === 'arm') {
@@ -377,7 +386,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-arm-musleabihf'))
         }
       } else {
         try {
@@ -393,7 +402,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-arm-gnueabihf'))
         }
       }
     } else if (process.arch === 'loong64') {
@@ -411,7 +420,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-loong64-musl'))
         }
       } else {
         try {
@@ -427,7 +436,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-loong64-gnu'))
         }
       }
     } else if (process.arch === 'riscv64') {
@@ -445,7 +454,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-riscv64-musl'))
         }
       } else {
         try {
@@ -461,7 +470,7 @@ function requireNative() {
           }
           return binding
         } catch (e) {
-          loadErrors.push(e)
+          loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-riscv64-gnu'))
         }
       }
     } else if (process.arch === 'ppc64') {
@@ -478,7 +487,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-ppc64-gnu'))
       }
     } else if (process.arch === 's390x') {
       try {
@@ -494,7 +503,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-linux-s390x-gnu'))
       }
     } else {
       loadErrors.push(new Error(`Unsupported architecture on Linux: ${process.arch}`))
@@ -514,7 +523,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-openharmony-arm64'))
       }
     } else if (process.arch === 'x64') {
       try {
@@ -530,7 +539,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-openharmony-x64'))
       }
     } else if (process.arch === 'arm') {
       try {
@@ -546,7 +555,7 @@ function requireNative() {
         }
         return binding
       } catch (e) {
-        loadErrors.push(e)
+        loadErrors.push(__atomicPlatformPackageError(e, '@bastani/atomic-natives-openharmony-arm'))
       }
     } else {
       loadErrors.push(new Error(`Unsupported architecture on OpenHarmony: ${process.arch}`))
@@ -723,22 +732,14 @@ if (!nativeBinding || forceWasi) {
 
 if (!nativeBinding) {
   if (loadErrors.length > 0) {
-    const firstLine = (loadError) => String(loadError && loadError.message).split('\n')[0]
+    const firstLine = (loadError) => String(loadError && loadError.message).split(/\r?\n/)[0]
     let publishedPackages = []
     try {
       publishedPackages = Object.keys(require('../package.json').optionalDependencies || {})
     } catch { /* Without its package metadata the loader knows of no platform package. */ }
-    // The platform package this loader tried, as its own failure names it: the package, or a path inside it, on the
-    // failure's first line (the lines after it list the modules that required it).
-    let attempted
-    let attemptError
-    for (const loadError of loadErrors) {
-      const match = /@bastani[\\/](atomic-natives-[a-z0-9-]+)/.exec(firstLine(loadError))
-      if (match && !match[1].includes('wasm32-wasi') && attempted === undefined) {
-        attempted = `@bastani/${match[1]}`
-        attemptError = loadError
-      }
-    }
+    // The platform package this loader tried, as its require site marked the failure.
+    const attemptError = loadErrors.find((loadError) => loadError && loadError[__atomicPlatformPackage])
+    const attempted = attemptError && attemptError[__atomicPlatformPackage]
     let installed = true
     if (attempted && publishedPackages.includes(attempted)) {
       try {

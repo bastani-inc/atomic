@@ -18,7 +18,30 @@ export function fixGeneratedBinding(loader: string, declarations: string) {
 	// dependencies) and how to reinstall Atomic with it, an installed platform package whose binary fails to load, a
 	// platform Atomic publishes no package for (such as Android, FreeBSD or Windows under a MinGW build of Node), or a
 	// NAPI_RS_NATIVE_LIBRARY_PATH override that fails. Atomic stops at startup with this message
-	// (packages/coding-agent/src/utils/native-module.ts).
+	// (packages/coding-agent/src/utils/native-module.ts). Each platform package's require marks its own failure with the
+	// package, so no message or path is read for it.
+	const platformRequire =
+		/(const binding = require\('(@bastani\/atomic-natives-[a-z0-9-]+)'\)[\s\S]*?\} catch \(e\) \{\n\s*)loadErrors\.push\(e\)/g;
+	const platformRequires = loader.split("const binding = require('@bastani/atomic-natives-").length - 1;
+	const markedRequires = loader.split("loadErrors.push(__atomicPlatformPackageError(e, '").length - 1;
+	if (markedRequires !== platformRequires) {
+		if (markedRequires !== 0 || [...loader.matchAll(platformRequire)].length !== platformRequires)
+			throw new Error("Review updated napi platform package requires");
+		loader = loader.replace(platformRequire, "$1loadErrors.push(__atomicPlatformPackageError(e, '$2'))");
+	}
+	const markPlatformPackage = `// Marks a platform package's own load failure with the package, where the loader required it.
+const __atomicPlatformPackage = Symbol('platform package')
+function __atomicPlatformPackageError(error, platformPackage) {
+  try {
+    Object.defineProperty(error, __atomicPlatformPackage, { value: platformPackage })
+  } catch { /* A thrown value that is not an object stays unmarked. */ }
+  return error
+}`;
+	const requireNative = "function requireNative() {";
+	if (!loader.includes(markPlatformPackage)) {
+		if (!loader.includes(requireNative)) throw new Error("Review updated napi requireNative");
+		loader = loader.replace(requireNative, `${markPlatformPackage}\n\n${requireNative}`);
+	}
 	const misleadingMiss = [
 		"    const error = new Error(",
 		"      `Cannot find native binding. ` +",
@@ -26,22 +49,14 @@ export function fixGeneratedBinding(loader: string, declarations: string) {
 		"        'Please try `npm i` again after removing both package-lock.json and node_modules directory.',",
 		"    )",
 	].join("\n");
-	const platformPackageMiss = `    const firstLine = (loadError) => String(loadError && loadError.message).split('\\n')[0]
+	const platformPackageMiss = `    const firstLine = (loadError) => String(loadError && loadError.message).split(/\\r?\\n/)[0]
     let publishedPackages = []
     try {
       publishedPackages = Object.keys(require('../package.json').optionalDependencies || {})
     } catch { /* Without its package metadata the loader knows of no platform package. */ }
-    // The platform package this loader tried, as its own failure names it: the package, or a path inside it, on the
-    // failure's first line (the lines after it list the modules that required it).
-    let attempted
-    let attemptError
-    for (const loadError of loadErrors) {
-      const match = /@bastani[\\\\/](atomic-natives-[a-z0-9-]+)/.exec(firstLine(loadError))
-      if (match && !match[1].includes('wasm32-wasi') && attempted === undefined) {
-        attempted = \`@bastani/\${match[1]}\`
-        attemptError = loadError
-      }
-    }
+    // The platform package this loader tried, as its require site marked the failure.
+    const attemptError = loadErrors.find((loadError) => loadError && loadError[__atomicPlatformPackage])
+    const attempted = attemptError && attemptError[__atomicPlatformPackage]
     let installed = true
     if (attempted && publishedPackages.includes(attempted)) {
       try {

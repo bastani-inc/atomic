@@ -198,19 +198,33 @@ test("a platform package the install left out is named, with how to reinstall At
 });
 
 test("an installed platform package whose binary fails to load is named with the reason, never as left out", async () => {
-	const invalid = Object.assign(
+	// Installed below a folder named like another platform's package: the failure's path names that one first.
+	const binary =
+		"/work/@bastani/atomic-natives-darwin-arm64/checkout/node_modules/@bastani/atomic-natives-linux-x64-gnu/atomic_natives.linux-x64-gnu.node";
+	const tooShort = Object.assign(new Error(`${binary}: file too short`), { code: "ERR_DLOPEN_FAILED" });
+	assert.equal(
+		await loadWithoutBinding({
+			optionalDependencies: PUBLISHED_PLATFORM_PACKAGES,
+			installed: { [LINUX_PACKAGE]: tooShort },
+		}),
+		`Cannot load Atomic's native module from @bastani/atomic-natives-linux-x64-gnu: ${binary}: file too short`,
+	);
+});
+
+test("a Windows binary that fails to load is named by its package, though Windows puts its path on the next line", async () => {
+	const failure = Object.assign(
 		new Error(
-			"/install/node_modules/@bastani/atomic-natives-linux-x64-gnu/atomic_natives.linux-x64-gnu.node: invalid ELF header",
+			"The specified module could not be found.\r\n\\\\?\\C:\\app\\node_modules\\@bastani\\atomic-natives-win32-x64-msvc\\atomic_natives.win32-x64-msvc.node",
 		),
 		{ code: "ERR_DLOPEN_FAILED" },
 	);
 	assert.equal(
 		await loadWithoutBinding({
+			host: { platform: "win32", arch: "x64" },
 			optionalDependencies: PUBLISHED_PLATFORM_PACKAGES,
-			installed: { [LINUX_PACKAGE]: invalid },
+			installed: { "@bastani/atomic-natives-win32-x64-msvc": failure },
 		}),
-		"Cannot load Atomic's native module from @bastani/atomic-natives-linux-x64-gnu: " +
-			"/install/node_modules/@bastani/atomic-natives-linux-x64-gnu/atomic_natives.linux-x64-gnu.node: invalid ELF header",
+		"Cannot load Atomic's native module from @bastani/atomic-natives-win32-x64-msvc: The specified module could not be found.",
 	);
 });
 
