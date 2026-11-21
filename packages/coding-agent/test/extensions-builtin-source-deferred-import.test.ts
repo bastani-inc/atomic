@@ -753,6 +753,7 @@ describe("the transform options a preparation uses", () => {
 		await jiti.import(file);
 
 		assert.equal(received.length, 1);
-		assert.deepEqual(moduleTransformOptions(transformTemplate(jiti.options), file, received[0].source), received[0]);
+		const named = jiti.resolve(file);
+		assert.deepEqual(moduleTransformOptions(transformTemplate(jiti.options), named, received[0].source), received[0]);
 	});
 });

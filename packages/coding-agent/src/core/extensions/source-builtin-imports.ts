@@ -154,18 +154,20 @@ export async function prepareSourceEntries(load: SourceBuiltinLoad, entries: rea
 	const { createJiti: createJitiImpl, cacheDir, template } = load;
 	if (cacheDir === undefined) return;
 	const transform = createTypeScriptSourceSpecifierTransform(createJitiImpl, import.meta.url, () => cacheDir);
+	// Each entry as jiti names the file it transforms (with forward slashes on Windows), which the stored key includes.
+	const files = entries.map((entry) => resolveFrom(createJitiImpl, entry, entry) ?? entry);
 	const cold = await Promise.all(
-		entries.map(async (entry) => {
-			const source = await readModuleSource(entry);
-			return source !== undefined && transform.cached(moduleTransformOptions(template, entry, source)) === undefined;
+		files.map(async (file) => {
+			const source = await readModuleSource(file);
+			return source !== undefined && transform.cached(moduleTransformOptions(template, file, source)) === undefined;
 		}),
 	);
 	await Promise.all(
-		entries
-			.filter((_entry, index) => cold[index])
-			.map((entry) =>
-				shared(preparing, `${cacheDir}\0${entry}`, () =>
-					runTransformWorker({ cacheDir, template, targets: [entry], visited: [] }),
+		files
+			.filter((_file, index) => cold[index])
+			.map((file) =>
+				shared(preparing, `${cacheDir}\0${file}`, () =>
+					runTransformWorker({ cacheDir, template, targets: [file], visited: [] }),
 				),
 			),
 	);
