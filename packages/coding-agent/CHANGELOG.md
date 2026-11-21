@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Running Atomic from a source checkout no longer freezes the interface for about a second shortly after startup. A bundled package's modules that load later, such as Intercom's when it joins, are compiled in a background thread, and `/reload` runs the current code of such a module after you edit it, also under Bun and on Windows ([#6118](https://github.com/bastani-inc/atomic/issues/6118))
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.

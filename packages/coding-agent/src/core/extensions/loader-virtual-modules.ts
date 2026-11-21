@@ -17,14 +17,21 @@ import {
 	withLegacyPackageNames,
 } from "./forked-package-names.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
+import { normalizeJitiAliases } from "./jiti-aliases.ts";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
-import { isNativeBuiltinExtensionPath } from "./native-builtin-entries.ts";
+import { isNativeBuiltinExtensionPath, isSourceBuiltinExtensionPath } from "./native-builtin-entries.ts";
 import {
 	evaluateReloadableScript,
 	installReloadableScripts,
 	isReloadableScriptPath,
 	withReloadableScriptPrologue,
 } from "./reloadable-scripts.ts";
+import {
+	importAfterEvaluation,
+	registerSourceBuiltinLoad,
+	type SourceBuiltinLoad,
+	transformTemplate,
+} from "./source-builtin-imports.ts";
 import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.js";
 import type { ExtensionFactory } from "./types.ts";
 
@@ -324,6 +331,7 @@ function withDeferredGraphRecording(
 	extensionPath: string,
 	cacheDir: string,
 	factory: ExtensionFactory,
+	owner?: RetainedTransformedLoad,
 ): ExtensionFactory {
 	return async (pi) => {
 		const recorder = createGraphRecorder(cacheDir);
@@ -334,18 +342,20 @@ function withDeferredGraphRecording(
 		} finally {
 			activeGraphRecorders.delete(recorder);
 			uninstallReadFileSyncObserver();
-			if (recorder.files.size > 0) await mergeDeferredGraphReads(extensionPath, cacheDir, recorder.files);
+			if (recorder.files.size > 0) await mergeDeferredGraphReads(extensionPath, cacheDir, recorder.files, owner);
 		}
 	};
 }
 
+/** Merges into the retained evaluation for `extensionPath`; with `owner`, only while that is still `owner`. */
 async function mergeDeferredGraphReads(
 	extensionPath: string,
 	cacheDir: string,
 	files: Map<string, string>,
+	owner?: RetainedTransformedLoad,
 ): Promise<void> {
 	const retained = retainedTransformedLoads.get(extensionPath);
-	if (!retained || retained.cacheDir !== cacheDir) return;
+	if (!retained || retained.cacheDir !== cacheDir || (owner !== undefined && retained !== owner)) return;
 	let changed = false;
 	for (const [filePath, hash] of files) {
 		if (retained.manifest.files[filePath] !== hash) {
@@ -354,6 +364,34 @@ async function mergeDeferredGraphReads(
 		}
 	}
 	if (changed) await writeGraphManifest(retained.manifest, retained.cacheDir);
+}
+
+const lateReadWrites = new WeakSet<RetainedTransformedLoad>();
+
+/**
+ * Adds a module that a retained evaluation of a builtin package's source evaluated after its graph was recorded, such
+ * as one it imported lazily, to that evaluation's graph, while it is still the evaluation /reload would reuse. An edit
+ * to the module then makes /reload evaluate the extension again instead of keeping the module as it was (#6118).
+ * The digest is of the source jiti evaluated; the manifest is written once per burst of modules.
+ */
+function recordLateModule(
+	extensionPath: string,
+	owner: RetainedTransformedLoad,
+	filename: string | undefined,
+	source: string,
+): void {
+	if (filename === undefined || retainedTransformedLoads.get(extensionPath) !== owner) return;
+	const file = path.normalize(filename);
+	const hash = sha256Hex(source);
+	if (owner.manifest.files[file] === hash) return;
+	owner.manifest.files[file] = hash;
+	if (lateReadWrites.has(owner)) return;
+	lateReadWrites.add(owner);
+	setImmediate(() => {
+		lateReadWrites.delete(owner);
+		if (retainedTransformedLoads.get(extensionPath) === owner)
+			void writeGraphManifest(owner.manifest, owner.cacheDir);
+	});
 }
 
 let extensionCacheCwd: string | undefined;
@@ -475,7 +513,7 @@ function currentModuleDir(): string {
  * In Bun binary mode, virtualModules is used instead.
  */
 function getAliases(): Promise<Record<string, string>> {
-	_aliases ??= computeAliases().catch((error: Error) => {
+	_aliases ??= computeAliases().then(normalizeJitiAliases, (error: Error) => {
 		_aliases = null;
 		throw error;
 	});
@@ -680,11 +718,22 @@ async function importExtensionModule(
 		resolutionBaseUrl(import.meta.url),
 		() => cacheDir,
 	);
-	installReloadableScripts((id) => createJitiImpl(id, { moduleCache: false, fsCache: false }));
+	// Atomic's own packages as a source checkout loads them: their deferred imports are transformed in a worker, and a
+	// retained evaluation keeps the modules it evaluates later in its graph (#6118).
+	const sourceBuiltin: SourceBuiltinLoad | undefined =
+		!isSingleFileBuild && isSourceBuiltinExtensionPath(extensionPath)
+			? { createJiti: createJitiImpl, cacheDir }
+			: undefined;
+	let retained: RetainedTransformedLoad | undefined;
+	installReloadableScripts((id) => createJitiImpl(id, { moduleCache: false, fsCache: false }), importAfterEvaluation);
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
 		fsCache: false,
 		transform: (options) => {
+			if (sourceBuiltin) {
+				sourceBuiltin.template ??= transformTemplate(options);
+				if (retained) recordLateModule(extensionPath, retained, options.filename, options.source);
+			}
 			const { code } = transformSource(options);
 			return { code: withReloadableScriptPrologue(code, options.filename ?? "", options.source) };
 		},
@@ -694,6 +743,7 @@ async function importExtensionModule(
 		virtualModules: await getVirtualModules(),
 		...(!isSingleFileBuild ? { alias: await getAliases() } : {}),
 	});
+	if (sourceBuiltin) registerSourceBuiltinLoad(jiti, sourceBuiltin);
 	const specifier = extensionImportSpecifier(importPath, cacheToken);
 	// The runtime would keep a JavaScript entry it loads itself until the process exits, so jiti's transform
 	// evaluates it instead, as on every reload (#4988). Installed builtin bundles cannot change while Atomic runs,
@@ -739,8 +789,11 @@ async function importExtensionModule(
 		};
 	}
 	if (recordedManifest && cacheDir !== undefined) {
-		factory = withDeferredGraphRecording(extensionPath, cacheDir, factory);
-		retainedTransformedLoads.set(extensionPath, { factory, manifest: recordedManifest, cacheDir });
+		const load: RetainedTransformedLoad = { factory, manifest: recordedManifest, cacheDir };
+		load.factory = withDeferredGraphRecording(extensionPath, cacheDir, factory, sourceBuiltin ? load : undefined);
+		factory = load.factory;
+		retainedTransformedLoads.set(extensionPath, load);
+		if (sourceBuiltin) retained = load;
 	}
 	if (isCurrentCacheToken(cacheToken)) {
 		extensionCache.set(extensionPath, factory);

@@ -32,14 +32,31 @@ import type { createJiti } from "jiti";
  */
 
 type Jiti = ReturnType<typeof createJiti>;
-type JitiImport = (id: string) => Promise<unknown>;
+export type JitiImport = (id: string) => Promise<unknown>;
 type ModuleCache = Record<string, ModuleRecord>;
 
 interface ModuleRecord {
 	exports: unknown;
 	filename: string;
 	parent?: ModuleRecord;
+	/** Set by jiti once the module's evaluation has finished. */
+	loaded?: boolean;
+	children?: ModuleRecord[];
 }
+
+/** A module jiti evaluated for an extension, as the prologue hands it over. */
+export type LoadedModule = ModuleRecord;
+
+/**
+ * Takes over a path import made by a module that has finished evaluating, or returns `undefined` to leave it to
+ * jiti at once.
+ */
+export type SettledPathImport = (
+	importer: LoadedModule,
+	id: string,
+	require: Jiti,
+	jitiImport: JitiImport,
+) => Promise<unknown> | undefined;
 
 /** One load of one extension: the modules it evaluated, so each file is evaluated once per load. */
 interface LoadContext {
@@ -64,6 +81,7 @@ const ESM_SYNTAX = /(?:^|[\s;])(?:import\s*["'{*]|import\s+\w|export\s*[{*]|expo
 const fsExports = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
 const loadContexts = new WeakMap<object, LoadContext>();
 let createResolver: (id: string) => Jiti;
+let settledPathImport: SettledPathImport | undefined;
 /** Per importing directory, a jiti without host aliases that resolves a bare import from there as the runtime would. */
 const runtimeResolvers = new Map<string, Jiti>();
 
@@ -164,7 +182,11 @@ function bindReloadableScriptLoaders(
 		if (isBuiltin(id)) return jitiImport(id);
 		if (isPathSpecifier(id)) {
 			const filename = reloadableFile(id, require, loadContextOf(module));
-			return filename === undefined ? jitiImport(id) : load(filename, true);
+			if (filename !== undefined) return load(filename, true);
+			return (
+				(module.loaded === true ? settledPathImport?.(module, id, require, jitiImport) : undefined) ??
+				jitiImport(id)
+			);
 		}
 		if (!resolvesBareByRuntime) return jitiImport(id);
 		let target: string;
@@ -179,9 +201,16 @@ function bindReloadableScriptLoaders(
 	return [reloadableRequire, reloadableImport, filename, path.dirname(filename)];
 }
 
-/** Routes the imports of transformed extension modules as described above; `createJiti` makes a jiti without host aliases. */
-export function installReloadableScripts(createJiti: (id: string) => Jiti): void {
+/**
+ * Routes the imports of transformed extension modules as described above; `createJiti` makes a jiti without host
+ * aliases. `onSettledPathImport` may take over a path import made after its importer finished evaluating.
+ */
+export function installReloadableScripts(
+	createJiti: (id: string) => Jiti,
+	onSettledPathImport?: SettledPathImport,
+): void {
 	createResolver = createJiti;
+	settledPathImport = onSettledPathImport;
 	(globalThis as Record<symbol, unknown>)[BINDER_KEY] = bindReloadableScriptLoaders;
 }
 
