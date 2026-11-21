@@ -11,7 +11,8 @@
 // longer emitted stay in dist, except under @bastani/atomic-ai's providers/data, which mirrors src/providers/data.
 //
 // A package with a `build:bundle` script is bundled from the staged files before anything moves (see
-// bundle-package-dist.mjs), so its dist only ever holds bundled files, and its `_modules` mirrors the staged one.
+// bundle-package-dist.mjs), so its dist only ever holds bundled files, its `_modules` mirrors the staged one, and the
+// shared files an earlier bundle wrote that this one did not are removed.
 //
 // Windows refuses to replace a file that another program has open. The rename is tried again while a reader finishes
 // with the file; only a file still held after about two seconds is written in place, as the package build does.
@@ -33,6 +34,7 @@ import {
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isSharedFile } from "./bundle-package-dist.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -193,7 +195,17 @@ export function refreshPackageDist(packageDir, { generateModelData = true, tsBui
 		}
 		// The copy of a bundled package's modules for bundlers mirrors the compiled modules exactly.
 		const prune = [...(copied ? [copied.to] : []), ...(bundled !== undefined ? ["_modules"] : [])];
-		const { files, replaced, removed } = moveChangedFiles(output, join(packageDir, "dist"), prune);
+		const dist = join(packageDir, "dist");
+		const sharedFiles = new Set(readdirSync(output).filter(isSharedFile));
+		const { files, replaced, removed } = moveChangedFiles(output, dist, prune);
+		// A shared file an earlier bundle wrote that this one did not: nothing the package has now imports it.
+		if (bundled !== undefined) {
+			for (const file of readdirSync(dist)) {
+				if (!isSharedFile(file) || sharedFiles.has(file)) continue;
+				unlinkSync(join(dist, file));
+				removed.push(file);
+			}
+		}
 		console.log(
 			`[refresh-dist] ${name}: ${replaced.length} of ${files} files changed${removed.length > 0 ? `, ${removed.length} removed` : ""}`,
 		);

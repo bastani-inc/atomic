@@ -5,6 +5,7 @@ import { boundedInteractiveModelRefresh } from "../../core/bounded-model-refresh
 import { formatModelLabel } from "../../core/model-label.ts";
 import { thinkingLevelForModelSwitch } from "../../core/model-switch-thinking-level.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+import { loadOnDemand } from "../../utils/updated-install.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -408,7 +409,9 @@ InteractiveModeBase.prototype.showUserMessageSelector = async function (this: In
 	const manager = this.session.sessionManager;
 	const stored =
 		manager?.hasFullHistory?.() === false
-			? await (await import("./components/user-message-selector-archive.js")).ForkPromptArchive.open(manager)
+			? await loadOnDemand("/fork", async () =>
+					(await import("./components/user-message-selector-archive.js")).ForkPromptArchive.open(manager),
+				)
 			: undefined;
 	const userMessages: Array<{ entryId: string; text: string; partial?: true }> =
 		stored?.prompts ?? this.session.getUserMessagesForForking();

@@ -407,6 +407,7 @@ The repository state of one checkout at the end of a turn that called a file-wri
 - `unrestored`: Present on an entry written when a resume continued without restoring the checkout at `root` (#4733), never together with `restore`: `{ "snapshotId", "continuedIn", "place": "recorded" | "launch", "from"?, "cause", "causeReason"?, "detail", "hint", "at" }`. `from` is set on the checkout the session worked in when it continued in the directory the resume started in: the working directory it left there. The session's file tools then resolve paths under `from` to the same place under `continuedIn`, until a later resume restores that checkout.
 - `restoreWarnings`: Optional, only with `restore`: what that restore reported beyond the snapshot record, `{ "code": "lfs-objects-unavailable", "paths": [...] }` or `{ "code": "stale-restore-retained", "path": "...", "kind": "worktree" | "record" | "records-directory" }`. A session resume downloads a fresh worktree's LFS objects after recording its restore, so it reports their `lfs-objects-unavailable` warning with the resume's notices, not here.
 - `captureMs`: Present on an entry a turn's capture wrote: how long that capture took, in milliseconds.
+- `capturedAt`: Present on an entry a resume wrote to restore a checkout as one of the session's subagents last captured it: when the subagent's session recorded that capture.
 - `blobs`: Present only in exported files: base64 patch and bundle content keyed by SHA-256. Import verifies and stores them, then drops this field.
 
 ## Tree Structure

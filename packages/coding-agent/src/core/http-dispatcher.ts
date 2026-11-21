@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
-import { resolveHttpsFallbackProxyUrl } from "@bastani/atomic-ai/utils/node-http-proxy";
-import { recordProxyConnectionFailure } from "@bastani/atomic-ai/utils/tls-certificate";
+import * as nodeHttpProxy from "@bastani/atomic-ai/utils/node-http-proxy";
+import * as tlsCertificate from "@bastani/atomic-ai/utils/tls-certificate";
 import * as undici from "undici";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
@@ -37,6 +37,15 @@ function installUndiciGlobals(): void {
 /** The idle timeout the standalone binary's fetch gives Bun for each request; see `createBunFetch`. */
 let bunIdleTimeoutMs: number = DEFAULT_HTTP_IDLE_TIMEOUT_MS;
 
+/*
+ * Two `@bastani/atomic-ai` functions this module calls that 0.10.3's copy of that package lacks. A process that loaded
+ * the earlier copy before an update replaced the installation keeps it, and loads this module from the update: a named
+ * import of either would fail to link there. Without them a request keeps that copy's behaviour: no http proxy for an
+ * `https:` request, and a proxy's refused certificate recorded as the endpoint's.
+ */
+const fallbackProxies: Partial<Pick<typeof nodeHttpProxy, "resolveHttpsFallbackProxyUrl">> = nodeHttpProxy;
+const proxyFailures: Partial<Pick<typeof tlsCertificate, "recordProxyConnectionFailure">> = tlsCertificate;
+
 /** The URL a fetch call asks for. */
 function requestUrl(input: Parameters<typeof globalThis.fetch>[0]): string | URL {
 	return typeof input === "string" || input instanceof URL ? input : input.url;
@@ -54,7 +63,7 @@ function createBunFetch(fetch: typeof globalThis.fetch): typeof globalThis.fetch
 		const own: RequestInit = init ?? {};
 		let fallback: { readonly proxy: string | undefined } | undefined;
 		const fallbackProxy = () => {
-			fallback ??= { proxy: resolveHttpsFallbackProxyUrl(requestUrl(input))?.href };
+			fallback ??= { proxy: fallbackProxies.resolveHttpsFallbackProxyUrl?.(requestUrl(input))?.href };
 			return fallback.proxy;
 		};
 		// Every option is read from the request's own `init` when Bun asks for it, once per time it asks, as Bun reads
@@ -171,7 +180,7 @@ function createUndiciProxyClient(proxy: string | URL, options: object): undici.D
 	if (typeof connect !== "function") return createUndiciClient(proxy, options);
 	const connectToProxy: undici.buildConnector.connector = (connectOptions, callback) =>
 		connect(connectOptions, (...result) => {
-			if (result[0] !== null) recordProxyConnectionFailure(result[0], proxy);
+			if (result[0] !== null) proxyFailures.recordProxyConnectionFailure?.(result[0], proxy);
 			callback(...result);
 		});
 	return createUndiciClient(proxy, { ...options, connect: connectToProxy });
