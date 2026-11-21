@@ -434,8 +434,13 @@ export class FooterComponent implements Component {
 			const segments = ("segments" in hints ? hints.segments : hints).map((text) => this.renderStyle.muted(text));
 			const optionalIndex = "segments" in hints ? hints.optionalIndex : undefined;
 			const kept = segments.filter((_, index) => index !== optionalIndex);
-			// The segments kept longest: the first, or the first two leading together. The others go first.
-			const lead = "segments" in hints && hints.leadPair === true && optionalIndex === undefined ? 2 : 1;
+			// The segments kept longest: the first, or the first two leading together when they fit together. The others
+			// go first. A pair that does not fit gives up its second, and its first then stays longest.
+			const leadPair =
+				"segments" in hints && hints.leadPair === true && optionalIndex === undefined && kept.length >= 2;
+			const pairFits = leadPair && visibleWidth(kept[0] + hintSeparator + kept[1]) <= width;
+			if (leadPair && !pairFits) kept.splice(1, 1);
+			const lead = pairFits ? 2 : 1;
 			if (statusText && kept.length > 0) {
 				const required = working ? visibleWidth(statusText) : MIN_STATUS_WIDTH;
 				const room = () => width - visibleWidth(hintSeparator + kept.join(hintSeparator));
@@ -446,7 +451,7 @@ export class FooterComponent implements Component {
 			}
 			if (!statusText) {
 				while (kept.length > 1 && visibleWidth(kept.join(hintSeparator)) > width) {
-					kept.splice(kept.length > 2 ? lead : lead - 1, 1);
+					kept.splice(kept.length > 2 ? lead : leadPair ? 1 : 0, 1);
 				}
 			}
 			// Fit the optional hint around what survived, never the other way round.

@@ -433,7 +433,10 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 		assert.equal(viewed(38), "esc to pause · ← main chat · ↓ 1 agent");
 		assert.equal(viewed(37), "← main chat · ↓ 1 agent");
 		assert.equal(viewed(23), "← main chat · ↓ 1 agent");
-		assert.equal(viewed(22), "← main chat");
+		// Too narrow for both: the panel hint gives way, and what fits stays beside the way back, as before.
+		assert.equal(viewed(22), "← main chat · ? keys");
+		assert.equal(viewed(20), "← main chat · ? keys");
+		assert.equal(viewed(19), "← main chat");
 
 		const main = footerFor(false);
 		assert.equal(main(37), "esc to interrupt · ↓ 1 agent · ? keys");
