@@ -117,7 +117,7 @@ describe("startup stages", () => {
 	);
 
 	test(
-		"a stage that has not run in full by the turn after it, as one awaiting another stage would, ends the stages",
+		"a stage whose modules would await at their top level ends the stages before running any of it",
 		() => {
 			// The stage loader with two stages of its own: the first awaits what the second releases.
 			const dir = makeTempDirectory("atomic-startup-stages-await-");
@@ -166,10 +166,24 @@ process.exit(0);
 				timeout: WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
 			});
 			assert.equal(result.exitCode, 0, result.stderr.toString());
+			// Nothing waits on a later stage: the session's own imports run both, in their own order.
 			assert.deepEqual(JSON.parse(result.stdout.toString()), {
-				afterStages: ["awaits"],
-				ran: ["awaits", "releases", "released"],
+				afterStages: [],
+				ran: ["releases", "awaits", "released"],
 			});
+		},
+		WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
+	);
+
+	test(
+		"no stages load in a process with a CommonJS preload either",
+		() => {
+			const dir = makeTempDirectory("atomic-startup-stages-require-");
+			dirs.push(dir);
+			const preload = join(dir, "preload.cjs");
+			writeFileSync(preload, "");
+			const staged = runChild("staged", `-r ${JSON.stringify(preload)}`);
+			assert.equal(staged.ranWhenTimerFired, staged.total, "no turn of the event loop while the modules loaded");
 		},
 		WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
 	);
