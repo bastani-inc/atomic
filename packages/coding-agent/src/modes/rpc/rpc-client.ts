@@ -317,9 +317,10 @@ export class RpcClient extends RpcClientApi {
 	 * on every platform. Without it a Windows engine is ended at once, because Windows
 	 * has no signal a process can handle for this.
 	 *
-	 * With `hostSignaled`, the engine is stopped because its host was itself signalled or lost its terminal. On Linux
-	 * and macOS it is then asked with SIGHUP rather than SIGTERM, and once its shutdown has run it ends its whole
-	 * process group, as a host signal ending that group at once always did.
+	 * With `hostSignaled`, the engine is stopped because its host was itself signalled, lost its terminal or, on
+	 * Windows, had its console closed. A ready engine then runs its own shutdown too. On Linux and macOS it is asked
+	 * with SIGHUP rather than SIGTERM, and once its shutdown has run it ends its whole process group, as a host signal
+	 * ending that group at once always did.
 	 */
 	stop(options?: { graceful?: boolean; hostSignaled?: boolean }): Promise<void> {
 		this.restartRevision += 1;
@@ -379,7 +380,7 @@ export class RpcClient extends RpcClientApi {
 			await terminateRpcClientProcess(
 				child,
 				terminateTree,
-				graceful && engineReady,
+				(graceful || hostSignaled) && engineReady,
 				shutdownComplete.promise,
 				hostSignaled,
 			);
@@ -597,10 +598,18 @@ export class RpcClient extends RpcClientApi {
 		// Ahead of the terminal drain, which a transport error during the stop can begin: it would swallow the
 		// engine's report that its shutdown is complete.
 		if (this.stoppedEngine?.generation === generation) {
-			this.handleStoppedEngineLine(line, this.stoppedEngine.shutdownComplete);
+			this.handleStoppedEngineLine(line, generation, this.stoppedEngine.shutdownComplete);
 			return;
 		}
-		if (this.terminalDrain.observe(generation, line, (id) => this.pendingRequests.markAccepted(id))) return;
+		if (
+			this.terminalDrain.observe(
+				generation,
+				line,
+				(id) => this.pendingRequests.markAccepted(id),
+				() => this.emitInteractiveEngineMessage({ type: "engine_console_closed" }, generation),
+			)
+		)
+			return;
 		if (this.engineMonitor?.handleLine(line)) return;
 		// Until the line has been read, an exception means the engine wrote something that is not a message. Once it has
 		// been read, only a raw client's listener can still throw here: an interactive engine's host contains what its
@@ -636,14 +645,19 @@ export class RpcClient extends RpcClientApi {
 	/**
 	 * A line an engine writes while an explicit stop ends it. The host has already torn down that generation's UI,
 	 * so its extension UI requests, engine frames and events are dropped. What settles its own requests still
-	 * counts, as in its terminal drain, a failed shutdown is still reported, and the stop learns when the engine
-	 * says its shutdown is complete.
+	 * counts, as in its terminal drain, a failed shutdown is still reported, the stop learns when the engine
+	 * says its shutdown is complete, and the host still hears that the console it shares with the engine was closed.
 	 */
-	private handleStoppedEngineLine(line: string, shutdownComplete: PromiseWithResolvers<void>): void {
+	private handleStoppedEngineLine(
+		line: string,
+		generation: number,
+		shutdownComplete: PromiseWithResolvers<void>,
+	): void {
 		const message = parseInteractiveEngineMessage(line);
 		if (message) {
 			if (message.type === "engine_request_accepted") this.pendingRequests.markAccepted(message.requestId);
 			else if (message.type === "engine_shutdown_complete") shutdownComplete.resolve();
+			else if (message.type === "engine_console_closed") this.emitInteractiveEngineMessage(message, generation);
 			return;
 		}
 		try {
