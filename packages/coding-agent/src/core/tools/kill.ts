@@ -1,5 +1,5 @@
+import { Type } from "@bastani/atomic-schema/typebox";
 import { Container, Text } from "@bastani/atomic-tui";
-import { Type } from "typebox";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { CancelReceipt } from "../tasks/contracts.js";

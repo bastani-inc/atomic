@@ -1,8 +1,8 @@
 import { type CoercingValidator, compile } from "@bastani/atomic-schema";
 import { formats } from "@bastani/atomic-schema/formats";
-import { Compile } from "typebox/compile";
-import type { TLocalizedValidationError } from "typebox/error";
-import { Value } from "typebox/value";
+import { Compile } from "@bastani/atomic-schema/typebox/compile";
+import type { TLocalizedValidationError } from "@bastani/atomic-schema/typebox/error";
+import { Value } from "@bastani/atomic-schema/typebox/value";
 import type { Tool, ToolCall } from "../types.ts";
 
 const validatorCache = new WeakMap<object, ReturnType<typeof Compile>>();

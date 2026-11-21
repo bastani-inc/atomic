@@ -1,5 +1,5 @@
 import type { Api, ClassifierAnswer, ClassifierApi, ClassifierModel, Model, RetryPolicy } from "@bastani/atomic-ai";
-import type { Static, TSchema } from "typebox";
+import type { Static, TSchema } from "@bastani/atomic-schema/typebox";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import type { JsonObject } from "../tools/structured-output.ts";

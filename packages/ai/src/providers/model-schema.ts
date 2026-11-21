@@ -1,4 +1,4 @@
-import { type Static, type TSchemaOptions, Type } from "typebox";
+import { type Static, type TSchemaOptions, Type } from "@bastani/atomic-schema/typebox";
 
 export const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export const MODEL_THINKING_LEVELS = ["off", ...THINKING_LEVELS] as const;

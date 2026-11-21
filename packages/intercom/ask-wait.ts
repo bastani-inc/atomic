@@ -1,5 +1,5 @@
 import type { WaitPolicy } from "@bastani/atomic";
-import { Type } from "typebox";
+import { Type } from "@bastani/atomic-schema/typebox";
 
 /** #4751: an `ask`'s `wait`, with bash's field names and semantics. */
 export const askWaitSchema = Type.Unsafe<WaitPolicy>({

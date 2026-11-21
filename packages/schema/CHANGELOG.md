@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-schema`. Its history up to 
 
 ## [Unreleased]
 
+### Added
+
+- `@bastani/atomic-schema/typebox` and its subpaths (`/compile`, `/error`, `/format`, `/guard`, `/schema`, `/system`, `/type`, `/value`) export TypeBox 1.3.27, bundled in this package. Atomic and the extensions it loads use this one copy.
+
 ## [0.9.88] - 2026-11-16
 
 ### Changed
