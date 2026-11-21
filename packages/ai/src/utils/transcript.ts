@@ -1,3 +1,4 @@
+import type { JsonSchema } from "@bastani/atomic-schema";
 import type {
 	Context,
 	Message,
@@ -345,7 +346,7 @@ function canonicalDeclaration(declaration: Tool): string {
  * Whether two JSON Schemas describe the same values, as {@link declarationsEqual} compares tool parameters: object keys
  * in any order, and the names a `required` list holds in any order.
  */
-export function jsonSchemasEqual(left: unknown, right: unknown): boolean {
+export function jsonSchemasEqual(left: JsonSchema | undefined, right: JsonSchema | undefined): boolean {
 	return canonicalSchema(left) === canonicalSchema(right);
 }
 

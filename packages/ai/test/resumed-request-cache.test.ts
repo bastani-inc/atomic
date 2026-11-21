@@ -244,6 +244,16 @@ describe("a resumed session keeps its strict-tool fallback", () => {
 		assert.equal(result.strictToolsDisabled, undefined);
 	});
 
+	it("sends strict schemas after a reply that failed for another reason (#6119)", async () => {
+		const { result, bodies } = await firstAttempt({
+			stopReason: "error",
+			errorMessage: "529 Overloaded",
+			diagnostics: [{ type: "provider_error", timestamp: 3 }],
+		});
+		assert.equal(bodies[0]?.tools?.[0]?.strict, true);
+		assert.equal(result.strictToolsDisabled, undefined);
+	});
+
 	/** A session resumed after a compaction removed every reply: what is left is the system message it replays. */
 	async function afterCompaction(system: Partial<SystemMessage>) {
 		const bodies: Array<{ tools?: Array<{ strict?: boolean }> }> = [];
