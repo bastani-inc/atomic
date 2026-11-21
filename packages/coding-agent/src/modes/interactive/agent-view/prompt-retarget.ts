@@ -393,6 +393,8 @@ export function attachLostAgentQueueNotices(
 	const stops = new Set<() => void>();
 	const stopEnded = runtime.onGenerationEnded((event) => {
 		if (event.expected) return;
+		// Two chats of one subagent report the same message with the same receipt: it is accounted for once.
+		const reported = new Set<string>();
 		for (const { port, controller } of liveAgentSteering(mode)) {
 			const { delivering, unsaved, receipts, name } = port.status();
 			const texts = [
@@ -400,9 +402,13 @@ export function attachLostAgentQueueNotices(
 				...(delivering === undefined ? [] : [...delivering.steering, ...delivering.followUp]),
 			];
 			// Receipts name the same messages in the same order; any other list is not theirs.
-			const taken: TakenMessage[] = texts.map((text, index) => {
+			const taken: TakenMessage[] = texts.flatMap((text, index) => {
 				const receipt = receipts?.taken.length === texts.length ? receipts.taken[index] : undefined;
-				return receipt === undefined || receipt === null ? { text } : { text, receipt };
+				if (receipt === undefined || receipt === null) return [{ text }];
+				const key = JSON.stringify([receipts?.sessionId, receipt.epoch ?? null, receipt.id]);
+				if (reported.has(key)) return [];
+				reported.add(key);
+				return [{ text, receipt }];
 			});
 			// Its listed queue, what it took before listing, and what was on its way: steering first, each lane in order.
 			controller.loseTarget();

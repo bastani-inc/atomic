@@ -1123,6 +1123,61 @@ describe("the main prompt while a subagent is shown", () => {
 		);
 
 	test(
+		"a lost engine accounts once for a message two chats of one subagent report with the same receipt",
+		async () => {
+			screen = await mainScreen();
+			const status = {
+				busy: true,
+				delivering: { steering: ["never saved"], followUp: [] },
+				receipts: { sessionId: "worker-session", taken: [{ id: "never-id", after: 3, local: true as const }] },
+			};
+			const first = worker(status);
+			// A send still on its way keeps the first chat's steering after the screen shows main again.
+			first.promptAnswer = () => new Promise<void>(() => {});
+			const ended = new Set<(event: InteractiveEngineGenerationEnded) => void>();
+			const recovered = new Set<(replaced: boolean) => void>();
+			let lookups = 0;
+			attachLostAgentQueueNotices(screen.mode, {
+				onGenerationEnded: (listener) => {
+					ended.add(listener);
+					return () => ended.delete(listener);
+				},
+				onEngineRecovered: (listener) => {
+					recovered.add(listener);
+					return () => recovered.delete(listener);
+				},
+				findQueuedMessages: async () => {
+					lookups++;
+					return { saved: new Set<string>(), absent: new Set(["never-id"]) };
+				},
+			});
+			await view(WORKER);
+			await screen.type("on its way");
+			await screen.press(ENTER);
+			await view(undefined);
+			worker(status);
+			await view(WORKER);
+			for (const listener of ended)
+				listener({
+					generation: 1,
+					error: new Error("engine stopped"),
+					kind: "exit",
+					expected: false,
+				} as InteractiveEngineGenerationEnded);
+			for (const listener of [...recovered]) listener(true);
+			await until(() => (screen?.warnings.length ?? 0) > 0);
+			await settle();
+			assert.equal(lookups, 1);
+			assert.equal(
+				screen.warnings.filter((warning) => warning.includes("never saved")).length,
+				1,
+				screen.warnings.join("\n---\n"),
+			);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
 		"Esc while the shown subagent waits to retry pauses it, which ends the wait (#5507)",
 		async () => {
 			screen = await mainScreen();

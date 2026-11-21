@@ -131,9 +131,14 @@ export function queuedMessageReceiptId(message: AgentMessage): string | undefine
 /** The receipt of each queued message a run took, by the message object. */
 const takenReceipts = new WeakMap<AgentMessage, QueuedMessageReceipt>();
 
-/** The receipt of `message`, a queued message a run took; undefined for any other message. */
+/** The receipt of `message`, a queued message a run took and has not saved; undefined for any other message. */
 export function queuedMessageReceipt(message: AgentMessage): QueuedMessageReceipt | undefined {
 	return takenReceipts.get(message);
+}
+
+/** `message` was saved: nothing needs to find its save any more, so its receipt (and the text it keeps) goes. */
+export function forgetQueuedMessageReceipt(message: AgentMessage): void {
+	takenReceipts.delete(message);
 }
 /** Per session, oldest first: the queued messages runs took whose `message_start` has not reached the session. */
 const takenNotStarted = new WeakMap<AgentSession, AgentMessage[]>();
