@@ -1301,12 +1301,16 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					if (cancellationEpoch !== this.promptCancellationEpoch) return;
 					let disposition: PromptDisposition;
 					try {
-						disposition = await this.client.prompt(
-							text,
-							options?.images,
-							options?.streamingBehavior,
-							options?.queuedMessageId,
-						);
+						// The id goes with the prompt only when there is one, so other prompts are sent as they always were.
+						disposition =
+							options?.queuedMessageId === undefined
+								? await this.client.prompt(text, options?.images, options?.streamingBehavior)
+								: await this.client.prompt(
+										text,
+										options.images,
+										options.streamingBehavior,
+										options.queuedMessageId,
+									);
 					} catch (error) {
 						if (!isRpcRequestAcceptedFailure(error)) options?.preflightResult?.(false);
 						throw error;
