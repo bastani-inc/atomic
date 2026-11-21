@@ -167,15 +167,29 @@ test.skipIf(process.platform === "win32")(
 				expectsReply: true,
 			}),
 		);
+		// Each reaches the session once: under the fresh id, or, should the move back come first, under its id.
+		let backNow: TwoBrokerClient | undefined;
+		void registeredBack.then(
+			(client) => {
+				backNow = client;
+			},
+			() => {},
+		);
+		const holders = () => (backNow === undefined ? [moved] : [moved, backNow]);
+		const holderOf = (text: string) => holders().find((client) => textsOf(client).includes(text));
 		await vi.waitFor(
-			() => assert.equal(textsOf(moved).filter((text) => text.endsWith("to the fresh id")).length, 3),
+			() =>
+				assert.deepEqual(
+					questions.map((_, index) => holderOf(`question ${index} to the fresh id`) !== undefined),
+					[true, true, true],
+				),
 			WAIT,
 		);
 		for (const result of await Promise.all(asked)) assert.notEqual(result.reason, "Session not found");
 
 		// Queued for the session, as while its earlier broker still holds the id; never refused.
 		const early = sender.client.send(moving.id, { text: "to the id at 5 s" });
-		await vi.waitFor(() => assert.ok(textsOf(moved).includes("to the id at 5 s")), WAIT);
+		await vi.waitFor(() => assert.ok(holderOf("to the id at 5 s") !== undefined), WAIT);
 		assert.notEqual((await early).reason, "Session not found");
 
 		// Once the hold lapses, "b" takes the id back for the session and has it register again under it.
@@ -186,13 +200,17 @@ test.skipIf(process.platform === "win32")(
 		assert.equal(back.sessionId, moving.id);
 
 		// Back under its id, it answers the asks it got under the fresh one: each asker gets its answer once, from the id
-		// it asked. A reply to an ask it never got is still refused.
+		// the ask reached it under. A reply to an ask it never got is still refused.
+		const reachedUnder = (index: number) =>
+			holderOf(`question ${index} to the fresh id`) === moved ? fresh : moving.id;
 		for (const index of [0, 1]) {
 			const asker = askers[index]!;
 			const answer = await answerOnce(back, asker, questions[index]!, `answer ${index} from the id`);
 			await vi.waitFor(
 				() =>
-					assert.deepEqual(answersTo(asker, questions[index]!), [[fresh, answer, `answer ${index} from the id`]]),
+					assert.deepEqual(answersTo(asker, questions[index]!), [
+						[reachedUnder(index), answer, `answer ${index} from the id`],
+					]),
 				WAIT,
 			);
 		}
@@ -252,14 +270,20 @@ test.skipIf(process.platform === "win32")(
 				expectedRecipientId: nearby.sessionId,
 				logicalTarget: nearby.sessionId,
 			});
-			assert.equal(refused.delivered, false, JSON.stringify(refused));
-			assert.equal(refused.reasonCode, "route_unavailable", JSON.stringify(refused));
+			// An ask that reached it under its own id has its route here, which needs no storage.
+			if (reachedUnder(2) === fresh) {
+				assert.equal(refused.delivered, false, JSON.stringify(refused));
+				assert.equal(refused.reasonCode, "route_unavailable", JSON.stringify(refused));
+			} else assert.equal(refused.delivered, true, JSON.stringify(refused));
 		} finally {
 			harness.setStorageOutage("b", false);
 		}
 		await answerOnce(back, nearby, questions[2]!, "answer 2 from the id", pendingAnswer);
 		await vi.waitFor(
-			() => assert.deepEqual(answersTo(nearby, questions[2]!), [[fresh, pendingAnswer, "answer 2 from the id"]]),
+			() =>
+				assert.deepEqual(answersTo(nearby, questions[2]!), [
+					[reachedUnder(2), pendingAnswer, "answer 2 from the id"],
+				]),
 			WAIT,
 		);
 		await vi.waitFor(
