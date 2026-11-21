@@ -10,6 +10,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 - On the Claude API, a run of tool calls or of tool results counts as one lookback position, as Claude counts it, so a turn of many parallel tool calls no longer takes an extra breakpoint, and an OAuth request keeps the identity block's breakpoint.
 - `declarationsEqual()`, `getToolStateChanges()` and `jsonSchemasEqual()` treat a schema's list of `type`s and the names `dependentRequired` and `dependencies` list as sets, so a tool that lists them in another order is no longer declared again.
 - On Node.js, an OpenAI Codex WebSocket refused for its TLS certificate now fails at once with the certificate message, as on Bun, instead of first falling back to SSE and remembering that fallback for the session. Node.js's WebSocket names no certificate on its error, so the connection's own failure is read instead; a reset, an upgrade the server refuses and other failures still fall back to SSE ([#6171](https://github.com/bastani-inc/atomic/pull/6171))
+- A model request refused for the TLS certificate of the `https://` proxy it goes through now names that proxy, by its host, and the fix for a proxy, instead of naming the endpoint, which the proxy never reached. This applies to Amazon Bedrock's proxy and to any proxy connection whose failures are recorded with the new `recordProxyConnectionFailure()`. A certificate refused by the endpoint behind the proxy is still named as the endpoint's ([#6208](https://github.com/bastani-inc/atomic/pull/6208))
 
 ## [0.10.3] - 2026-11-21
 
