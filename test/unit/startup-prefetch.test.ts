@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
 import { readStartupFiles } from "../../packages/coding-agent/src/utils/startup-prefetch-reader.ts";
 import { isGone, recordProcess, signalRecordedProcess, waitUntilGone } from "../helpers/recorded-process.js";
@@ -87,7 +87,7 @@ test("the built list names files that this build loads, and the reader finds eve
 	};
 	assert.equal(list.self, "@bastani/atomic");
 	assert.ok(list.files.some(([index, path]) => list.packages[index] === "@bastani/atomic" && path === "dist/main.js"));
-	const read = await readStartupFiles(listPath.pathname, new URL(".", codingAgent).pathname);
+	const read = await readStartupFiles(fileURLToPath(listPath), fileURLToPath(codingAgent));
 	assert.ok(read >= list.files.length, `read ${read} of ${list.files.length}`);
 });
 
