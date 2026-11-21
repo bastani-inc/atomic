@@ -2,9 +2,10 @@
  * How long one spawn attempt waits for a new broker to answer on its socket, unless `brokerStartupTimeoutMs` in the
  * Intercom config says otherwise.
  *
- * A Node install starts the broker from `broker/broker.ts` through jiti, so the wait is the broker's own start-up,
- * which scales with the CPU share it gets. Measured from spawn to the first answered connection (Linux, one broker,
- * pinned to a core shared with busy loops):
+ * An installed package starts the prebuilt `broker/broker.bundle.mjs`, which answers in about 50 ms on an idle Linux
+ * machine. The budget is set by the slowest start: a Node source checkout starts the broker from `broker/broker.ts`
+ * through jiti, so the wait is the broker's own start-up, which scales with the CPU share it gets. Measured from spawn
+ * to the first answered connection (Linux, one broker, pinned to a core shared with busy loops):
  *
  * | jiti cache | idle   | 5 processes per core | 9 per core | 17 per core |
  * | ---------- | ------ | -------------------- | ---------- | ----------- |

@@ -427,6 +427,14 @@ export class InteractiveModeBase {
 	managedToolStatusStarted = false;
 	/** Invalidates readiness callbacks after the transcript is rebuilt for another session. */
 	managedToolStatusGeneration = 0;
+	/**
+	 * When the managed-tool readiness check (`ensureManagedToolsReady`, which runs fd, rg and git) starts, once each time
+	 * the mode starts. `on-init`: init() starts it, for a mode that init() or handleEvent() alone drives. `after-input`:
+	 * run() drives the mode, and it starts once the editor takes input, or as a turn begins first (a prompt given on the
+	 * command line, or input typed while Atomic started), so its processes never compete with the editor's start.
+	 * `started`: it has, until stop() ends this start of the mode.
+	 */
+	managedToolReadiness: "on-init" | "after-input" | "started" = "on-init";
 
 	// Streaming message tracking
 	streamingComponent: AssistantMessageComponent | undefined = undefined;

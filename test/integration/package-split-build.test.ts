@@ -4,9 +4,10 @@
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { dirname, join, posix, relative, resolve } from "node:path";
+import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, test, vi } from "vitest";
 import { prepareAgentDir } from "../helpers/event-loop-guard-fixture.js";
@@ -146,14 +147,22 @@ test(
 	() => {
 		const paths = packedPaths();
 		for (const file of loadedFrom(RUN_BY_PATH)) assert.ok(paths.has(`dist/${file}`), `dist/${file} is not packed`);
-		// Classes the SDK entry exports from its bundle: no compiled copy a deep path could load as a second class.
+		const state = join(packageDir, "node_modules", ".cache", "atomic-split-dist", "state.json");
+		const splitEntries = (JSON.parse(fs.readFileSync(state, "utf8")) as { entries: Record<string, string> }).entries;
+		// Classes the SDK entry exports from its bundle: no compiled copy a deep path could load as a second class. A
+		// module kept at its path as an entry, because the package imports it lazily, holds the bundle's code there.
 		for (const module of [
 			"core/agent-session",
 			"core/session-manager",
 			"core/settings-manager",
 			"core/extensions/loader",
 		]) {
-			assert.equal(paths.has(`dist/${module}.js`), false, `dist/${module}.js is packed beside the bundle`);
+			if (paths.has(`dist/${module}.js`)) {
+				const digest = createHash("sha256")
+					.update(fs.readFileSync(join(dist, `${module}.js`)))
+					.digest("hex");
+				assert.equal(digest, splitEntries[module], `dist/${module}.js is a compiled copy beside the bundle`);
+			}
 			assert.ok(paths.has(`dist/${module}.d.ts`), `dist/${module}.d.ts is not packed`);
 		}
 	},
@@ -416,6 +425,67 @@ test(
 			.filter((file) => file.endsWith(".js"))
 			.some((file) => fs.readFileSync(join(shared, file), "utf8").includes(marker));
 		assert.ok(bundled, "the bundle holds the recompiled module");
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"a split build whose build state is gone, as after a fresh npm ci, is refused with the file and the command that rebuilds it",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "state-gone");
+		compiledPackage(build);
+		const split = () => spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		assert.equal(split().status, 0);
+		fs.rmSync(join(build, "node_modules", ".cache", "atomic-split-dist"), { recursive: true, force: true });
+		const again = split();
+		assert.notEqual(again.status, 0);
+		assert.match(again.stderr, /dist\/cli\.js is an earlier split's output/);
+		assert.match(again.stderr, /run `npm run build`/);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"a module that mentions import.meta only in a comment inside an object literal splits",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "comment-meta");
+		compiledPackage(build);
+		const module = join(build, "dist", "core", "agent-session.js");
+		const compiled = fs.readFileSync(module, "utf8");
+		const commented = compiled.replace(
+			/^\/\/# sourceMappingURL=.*$/m,
+			"export const splitCommentProbe = {\n\t// reads import.meta.dirname nowhere\n\tvalue: 1,\n};\n$&",
+		);
+		assert.notEqual(commented, compiled);
+		fs.writeFileSync(module, commented);
+		const result = spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		assert.equal(result.status, 0, result.stderr);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"a module the compiled package imported lazily still has a file at its path, for a process of an earlier version",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "lazy-paths");
+		compiledPackage(build);
+		const compiledDist = join(build, "dist");
+		const lazy = new Set<string>();
+		for (const file of fs.readdirSync(compiledDist, { recursive: true }) as string[]) {
+			const path = file.split(sep).join("/");
+			if (!path.endsWith(".js") || path.startsWith("builtin/")) continue;
+			const source = fs.readFileSync(join(compiledDist, file), "utf8");
+			for (const match of source.matchAll(/\bimport\(\s*"(\.{1,2}\/[^"]+)"\s*\)/g))
+				lazy.add(posix.normalize(posix.join(posix.dirname(path), match[1] as string)));
+		}
+		assert.ok(lazy.size > 10, "the compiled package imports modules lazily");
+		const result = spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		assert.equal(result.status, 0, result.stderr);
+		const missing = [...lazy].filter((path) => !fs.existsSync(join(compiledDist, path)));
+		assert.deepEqual(missing, [], "lazily imported modules without a file after the split");
 	},
 	LAYOUT_TIMEOUT_MS,
 );

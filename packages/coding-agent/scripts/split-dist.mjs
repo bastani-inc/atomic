@@ -100,22 +100,27 @@ const restoreCompiled = (path) => {
 	for (const suffix of ["", ".map"])
 		if (existsSync(`${saved}${suffix}`)) writeFileSync(join(dist, `${path}${suffix}`), readFileSync(`${saved}${suffix}`));
 };
+/** The error for `dist/<path>` holding an earlier split's output when the compiled code it came from is gone. */
+const staleSplit = (path) =>
+	new Error(
+		`split-dist: dist/${path} is an earlier split's output, and the compiled code it was split from is gone, as after a fresh \`npm ci\`; run \`npm run build\` to compile and split again`,
+	);
 /** `dist/<path>` as compiled, also where an earlier split overwrote or removed it. */
 const compiledSource = (path) => {
 	const entry = path.replace(/\.js$/, "");
 	if (!existsSync(join(dist, path))) {
 		const saved = join(COMPILED_ENTRIES, path);
-		if (!existsSync(saved)) throw new Error(`split-dist: ${path} is missing; rebuild from clean`);
+		if (!existsSync(saved))
+			throw new Error(`split-dist: dist/${path} is missing and no earlier split saved it; run \`npm run build\` to compile and split again`);
 		return readFileSync(saved, "utf8");
 	}
 	if (!writtenBySplit(entry)) {
 		const source = readFileSync(join(dist, path), "utf8");
-		if (splitOutput(source)) throw new Error(`split-dist: ${path} is an earlier split's output; rebuild from clean`);
+		if (splitOutput(source)) throw staleSplit(path);
 		return source;
 	}
 	const saved = join(COMPILED_ENTRIES, path);
-	if (!existsSync(saved))
-		throw new Error(`split-dist: ${path} is an earlier split's output and its compiled copy is gone; rebuild from clean`);
+	if (!existsSync(saved)) throw staleSplit(path);
 	return readFileSync(saved, "utf8");
 };
 
@@ -166,11 +171,33 @@ const visitThread = (path) => {
 	for (const target of [...imports.static, ...imports.dynamic]) visitThread(target);
 };
 for (const [root, siblings] of Object.entries(RUN_BY_PATH)) for (const path of [root, ...siblings]) visitThread(`${path}.js`);
+/**
+ * The modules the bundled code imports dynamically by a literal path. Each is an entry at its own path: a process of an
+ * earlier version, still running from an install updated in place, imports such a module by that path when it first
+ * needs it, and finds it there, as it found the compiled file before.
+ */
+const lazyTargets = new Set();
+const bundledVisited = new Set();
+const visitBundled = (path) => {
+	if (bundledVisited.has(path) || compiledModules.has(path)) return;
+	bundledVisited.add(path);
+	const imports = importsOf(path, compiledSource(path));
+	for (const target of imports.static) visitBundled(target);
+	for (const target of imports.dynamic) {
+		lazyTargets.add(target);
+		visitBundled(target);
+	}
+};
+for (const entry of [...BUNDLED_ENTRIES, ...OWNER_ENTRIES, ...lateImports]) visitBundled(entry.endsWith(".js") ? entry : `${entry}.js`);
 const SPLIT_ENTRIES = [
-	...BUNDLED_ENTRIES,
-	...OWNER_ENTRIES,
-	...PATH_LOADED_ENTRIES,
-	...[...lateImports].filter((path) => !compiledModules.has(path)).map((path) => path.replace(/\.js$/, "")),
+	...new Set([
+		...BUNDLED_ENTRIES,
+		...OWNER_ENTRIES,
+		...PATH_LOADED_ENTRIES,
+		...[...lateImports, ...lazyTargets]
+			.filter((path) => !compiledModules.has(path) && !threadModules.has(path))
+			.map((path) => path.replace(/\.js$/, "")),
+	]),
 ];
 if (SPLIT_ENTRIES.some((entry) => compiledModules.has(`${entry}.js`)))
 	throw new Error("split-dist: a bundled entry is also loaded by a compiled public entry");
@@ -193,14 +220,13 @@ for (const entry of SPLIT_ENTRIES) {
 	const saved = join(COMPILED_ENTRIES, `${entry}.js`);
 	if (!writtenBySplit(entry)) {
 		const compiled = readFileSync(file);
-		if (splitOutput(compiled.toString("utf8")))
-			throw new Error(`split-dist: ${entry}.js is an earlier split's output; rebuild from clean`);
+		if (splitOutput(compiled.toString("utf8"))) throw staleSplit(`${entry}.js`);
 		mkdirSync(dirname(saved), { recursive: true });
 		writeFileSync(saved, compiled);
 		if (existsSync(`${file}.map`)) writeFileSync(`${saved}.map`, readFileSync(`${file}.map`));
 		else rmSync(`${saved}.map`, { force: true });
 	} else if (!existsSync(saved)) {
-		throw new Error(`split-dist: ${entry}.js is an earlier split's output and its compiled copy is gone; rebuild from clean`);
+		throw staleSplit(`${entry}.js`);
 	}
 	compiledEntries.set(file, inlineSourceMap(readFileSync(saved, "utf8"), `${saved}.map`));
 }
@@ -228,7 +254,7 @@ const result = await build({
 	packages: "external",
 	keepNames: true,
 	sourcemap: "linked",
-	sourcesContent: true,
+	sourcesContent: false,
 	chunkNames: `${SHARED_DIRECTORY}/[name]-[hash]`,
 	metafile: true,
 	logLevel: "warning",
@@ -265,8 +291,9 @@ const result = await build({
 						sourcemap: "inline",
 						define: { [META_URL]: META_URL_SYMBOL },
 					};
-					// Token-aware: a mention in a comment is not a use. Any meta property but `url` stops the build.
-					const probe = (await transform(withMap, { ...options, sourcemap: false })).code;
+					// Token-aware: a mention in a comment is not a use (minifying whitespace drops every comment, which a plain
+					// transform keeps inside an object literal). Any meta property but `url` stops the build.
+					const probe = (await transform(withMap, { ...options, sourcemap: false, minifyWhitespace: true })).code;
 					if (probe.includes("import.meta")) throw new Error(`split-dist: ${relative(dist, path)} uses import.meta beyond import.meta.url`);
 					if (!probe.includes(META_URL_SYMBOL)) return entry === undefined ? undefined : { contents: entry, loader: "js" };
 					const url = relative(dist, path).split(sep).map(encodeURIComponent).join("/");
@@ -308,8 +335,11 @@ for (const path of new Set([...bundledModules, ...compiledModules, ...threadModu
 	const source = compiledSource(path);
 	const computed = /\bnew URL\(\s*`\.{1,2}\/|\bimport\(\s*`/;
 	if (!/["'`]\.{1,2}\/[^"'`\r\n]*\.js["'`]/.test(source) && !computed.test(source)) continue;
-	// Token-aware: comments and the imports the bundle follows do not count.
-	const code = (await transform(source, { loader: "js", format: "esm", legalComments: "none" })).code
+	// Token-aware: comments and the imports the bundle follows do not count. Minifying whitespace drops every comment, a
+	// comment inside an object literal too; printing the result again puts each import on a line of its own.
+	const minified = (await transform(source, { loader: "js", format: "esm", minifyWhitespace: true, legalComments: "none" }))
+		.code;
+	const code = (await transform(minified, { loader: "js", format: "esm" })).code
 		.replace(/^(?:import|export)\b[^;]*?\bfrom\s*"[^"]+"|^import\s*"[^"]+"/gm, "")
 		.replace(/\bimport\(\s*"[^"]+"\s*\)/g, "");
 	if (computed.test(code) && !(path.replace(/\.js$/, "") in RUN_BY_PATH))
