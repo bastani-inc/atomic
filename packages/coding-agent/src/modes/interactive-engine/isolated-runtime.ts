@@ -67,7 +67,7 @@ import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { InteractiveEngineGenerationEndedListener } from "./engine-generation.ts";
 import { type EngineDiagnosticListener, EngineHealthController } from "./engine-health.ts";
 import { EngineSessionStats } from "./engine-session-stats.js";
-import { HostListenerFailures } from "./host-listener-failures.ts";
+import { HostListenerFailures } from "./host-listener-failures.js";
 import {
 	type AtomicOAuthLoginCallbacks,
 	loginIsolatedApiKeyProvider,
