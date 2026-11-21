@@ -40,3 +40,18 @@ test("a subagent view's status carries the queued messages shown but not seen sa
 	assert.deepEqual(parsed(status), { type: "engine_agent_view_status", viewId: "v1", status });
 	assert.equal(parsed({ ...status, unsaved: [3] }), undefined, "a malformed list is not a status");
 });
+
+test("a subagent view's status carries the receipts of what it took, and receipts not as an engine writes them are left out", () => {
+	const receipts = { sessionId: "child", taken: [{ id: "r1", after: 4, local: true }, null] };
+	assert.deepEqual(parsed({ ...status, unsaved: ["shown"], receipts }), {
+		type: "engine_agent_view_status",
+		viewId: "v1",
+		status: { ...status, unsaved: ["shown"], receipts },
+	});
+	// Its messages are then reported as unconfirmed, as an engine without receipts has them.
+	assert.deepEqual(parsed({ ...status, unsaved: ["shown"], receipts: { sessionId: "child", taken: [{ id: 3 }] } }), {
+		type: "engine_agent_view_status",
+		viewId: "v1",
+		status: { ...status, unsaved: ["shown"] },
+	});
+});

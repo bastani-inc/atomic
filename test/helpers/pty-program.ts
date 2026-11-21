@@ -47,6 +47,17 @@ export interface PtyProgramOptions {
 
 const SCREEN_POLL_MS = 50;
 
+/**
+ * On Windows an interactive session that finds the default compile cache cold runs without it and starts a helper
+ * process that writes it. Test sessions keep the cache Node enables from NODE_COMPILE_CACHE instead, in the directory
+ * Node would use by default, so they never start that helper. A test of the helper sets NODE_COMPILE_CACHE to "".
+ */
+function withSessionCompileCache(env: Record<string, string>): Record<string, string> {
+	if (process.platform !== "win32" || "NODE_COMPILE_CACHE" in env || "NODE_DISABLE_COMPILE_CACHE" in env) return env;
+	const temp = env.TEMP || env.TMP || `${env.SystemRoot || env.windir || "C:\\Windows"}\\temp`;
+	return { ...env, NODE_COMPILE_CACHE: `${temp.replace(/\\+$/, "")}\\node-compile-cache` };
+}
+
 export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 	const { PtySession } = createRequire(import.meta.url)("@bastani/atomic-natives") as {
 		PtySession: new () => NativePtySession;
@@ -70,7 +81,7 @@ export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 			{
 				command,
 				cwd: options.cwd,
-				env: options.env,
+				env: withSessionCompileCache(options.env),
 				timeoutMs: options.timeoutMs,
 				cols: options.cols,
 				rows: options.rows,

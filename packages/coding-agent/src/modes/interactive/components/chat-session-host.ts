@@ -3,6 +3,7 @@ import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-se
 import { chatReceipt } from "../../../core/chat-receipts.js";
 import { hostNoticeForEvent } from "../../../core/host-notices.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
+import type { QueuedMessageReceipt } from "../../../core/queued-message-delivery.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
 import type { SessionStore } from "../../../core/storage/session/types.js";
@@ -1121,6 +1122,14 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 */
 	deliveringMessages(): { readonly steering: readonly string[]; readonly followUp: readonly string[] } {
 		return { steering: this.state.deliveringTexts("steer"), followUp: this.state.deliveringTexts("followUp") };
+	}
+
+	/** The receipts of the messages {@link deliveringMessages} lists, per lane, in its order. */
+	deliveringReceipts(): {
+		readonly steering: readonly (QueuedMessageReceipt | undefined)[];
+		readonly followUp: readonly (QueuedMessageReceipt | undefined)[];
+	} {
+		return { steering: this.state.deliveringReceipts("steer"), followUp: this.state.deliveringReceipts("followUp") };
 	}
 
 	/** How many user messages reached the transcript so far: it grows when a delivered message shows. */

@@ -128,6 +128,18 @@ export function queuedTextsUnderWay(
 	return texts;
 }
 
+/** The receipts of `lane`'s messages `listed` still has under way, as {@link queuedTextsUnderWay} lists their texts. */
+export function queuedReceiptsUnderWay(
+	listed: QueueUpdateDeliveries | undefined,
+	lane: QueuedMessageDelivery["lane"],
+): (QueuedMessageReceipt | undefined)[] {
+	if (listed === undefined) return [];
+	const receipts: (QueuedMessageReceipt | undefined)[] = [];
+	for (const delivery of listed.session.underWay.values())
+		if (delivery.lane === lane && delivery.order <= listed.through) receipts.push(delivery.receipt);
+	return receipts;
+}
+
 /**
  * Every message `session` is delivering now, per lane. The session's queue lists none of them, so a chat that reads
  * the queue and this at the same moment shows each queued message once. The same object until a delivery begins or
