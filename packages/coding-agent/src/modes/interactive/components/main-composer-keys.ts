@@ -23,7 +23,16 @@ export interface MainComposerKeyState {
 	readonly shells?: number;
 	/** The chat's subagents in /tasks, listed in the panel or not. */
 	readonly subagents?: number;
+	/** The agent the prompt writes to works: the main chat's, or the shown subagent's. */
 	readonly working: boolean;
+	/** While a subagent is shown: the keys that lead back to main from its empty prompt. Esc pauses it there. */
+	readonly viewedAgent?: { readonly backKeys: readonly string[] };
+}
+
+/** A way back from the prompt: the keys that take it there now, and where they lead. */
+export interface ComposerBackHint {
+	readonly keys: readonly string[];
+	readonly label: string;
 }
 
 export type MainComposerHintSource =
@@ -72,22 +81,34 @@ function promptKeybindings(keybindings: NavKeybindings | undefined): NavKeybindi
 export function mainComposerHintSegments(
 	keybindings: NavKeybindings | undefined,
 	state?: MainComposerHintSource,
+	back?: ComposerBackHint,
 ): string[] {
-	return mainComposerHints(keybindings, state).map(stripHintMarkers);
+	return mainComposerHints(keybindings, state, back).map(stripHintMarkers);
 }
 
 /**
  * The hint segments the main chat shows by its prompt: `↓ N agents` and the counts of what the panel lists, `/tasks to
- * manage` when the panel has nothing to focus, and `? keys`. A click on a key's segment presses the key, and a click on
- * the `/tasks` segment runs the command.
+ * manage` when the panel has nothing to focus, and `? keys`. With `back`, the way back leads them, such as `← main chat`
+ * while a subagent is shown. A click on a key's segment presses the key, and a click on the `/tasks` segment runs the
+ * command.
  */
-export function mainComposerHints(keybindings: NavKeybindings | undefined, state?: MainComposerHintSource): string[] {
-	return mainComposerFooterHints(keybindings, state).segments;
+export function mainComposerHints(
+	keybindings: NavKeybindings | undefined,
+	state?: MainComposerHintSource,
+	back?: ComposerBackHint,
+): string[] {
+	return mainComposerFooterHints(keybindings, state, back).segments;
+}
+
+/** `keys` joined as a hint names them (`←`, `h/←`), each part pressing its own key; empty for no keys. */
+function keyListParts(keys: readonly string[]) {
+	return navEntryKeyParts({ matches: () => false, getKeys: () => keys }, { action: "app.nav.back", label: "" });
 }
 
 export function mainComposerFooterHints(
 	keybindings: NavKeybindings | undefined,
 	state?: MainComposerHintSource,
+	back?: ComposerBackHint,
 ): FooterHints {
 	const counts = resolveAgentCounts(keybindings, state);
 	const promptKeys = promptKeybindings(keybindings);
@@ -107,6 +128,8 @@ export function mainComposerFooterHints(
 	});
 	const helpKeys = navEntryKeyParts(promptKeys, { action: "app.keys.help", label: "" });
 	if (helpKeys.length > 0) segments.push(clickableKeysHint(helpKeys, " keys"));
+	const backKeys = keyListParts(back?.keys ?? []);
+	if (back !== undefined && backKeys.length > 0) segments.unshift(clickableKeysHint(backKeys, ` ${back.label}`));
 	return { segments };
 }
 
@@ -116,9 +139,20 @@ function finiteCount(value: number): number {
 
 export function mainComposerKeys(state: MainComposerKeyState): NavKey[] {
 	const agentRows = state.agentRows ?? 0;
+	const back = keyListParts(state.viewedAgent?.backKeys ?? [])
+		.map((part) => part.text)
+		.join("");
 	return [
 		{ keys: "enter", label: "send the prompt" },
-		...(state.working ? [{ action: "app.interrupt", label: "interrupt the agent's turn" }] : []),
+		...(back ? [{ keys: back, label: "main chat, on an empty prompt" }] : []),
+		...(state.working
+			? [
+					{
+						action: "app.interrupt",
+						label: state.viewedAgent ? "pause the agent's turn" : "interrupt the agent's turn",
+					},
+				]
+			: []),
 		...(agentRows > 0 ? [{ action: "app.agents.focus", label: "agents, on an empty prompt" }] : []),
 		{ keys: "/", label: "commands, at the start of the prompt" },
 		{ keys: "@", label: "insert a file path" },
