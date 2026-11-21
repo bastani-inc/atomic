@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `watchSessionEnd(onEnd)`: on Windows, a hidden top-level window that hears the end of the user's session (sign-out, restart or shutdown), calls `onEnd` with how many milliseconds ago Windows said so, and keeps Windows waiting while the process shuts down: until `onEnd` returns false, the process exits, or 4.5 seconds have passed. Elsewhere it does nothing.
+
 ## [0.10.1] - 2026-11-20
 
 ### Added
