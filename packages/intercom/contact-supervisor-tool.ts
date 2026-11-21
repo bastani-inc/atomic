@@ -5,6 +5,7 @@ import type { IntercomClient } from "./broker/client.js";
 import { ReleasedReplyHandoff, type ReplyWait, type ReplyWaitAdmission } from "./reply-waiter.ts";
 import { prepareReleasedReplyWait, releasedReplyHandoffResult } from "./released-reply-wait.js";
 import { appendEntryUnlessReleased, contactSupervisorCallMayDetach } from "./detachable-calls.js";
+import { recordAnsweredQuestion } from "./outbound-asks.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import { renderContactSupervisorCall, renderContactSupervisorResult } from "./result-renderers.js";
 import {
@@ -326,13 +327,15 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             ? formatAttachments(replyMessage.content.attachments)
             : "";
           const structuredReply = reason === "interview_request" ? parseStructuredSupervisorReply(replyText, supervisorInterview!) : undefined;
-          await appendEntryUnlessReleased(pi, "intercom_received", {
+          const receipt = await appendEntryUnlessReleased(pi, "intercom_received", {
             from: metadata.orchestratorTarget,
             message: { text: replyText, attachments: replyMessage.content.attachments },
             messageId: replyMessage.id,
             timestamp: replyMessage.timestamp,
             subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
           });
+          // Once the reply is saved as taken, a reopened session keeps neither it nor the question's other records.
+          if (receipt === "appended") await recordAnsweredQuestion(pi, questionId);
           return {
             content: [{ type: "text", text: `**Reply from supervisor:**\n${replyText}${replyAttachments}` }],
             isError: false,

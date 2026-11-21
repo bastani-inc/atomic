@@ -54,6 +54,7 @@ import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSch
 import { RETURN_PATH_TOOL_NOTE } from "./group.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import { closeFinishedChildAsks } from "./finished-asks.js";
+import { OutboundAsks } from "./outbound-asks.js";
 import {
 	createForwardedHandlerMap,
 	createHeavyProxy,
@@ -903,12 +904,21 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	}
 	pi.on("session_recovery_restore", async (_event, ctx) => {
 		const closed = await closeFinishedChildAsks(pi, ctx);
-		const peers = hasIntercomHistory(ctx.sessionManager.getEntries()) ? await recoveryPeers(ctx) : undefined;
+		const usedIntercom = hasIntercomHistory(ctx.sessionManager.getEntries());
+		const peers = usedIntercom ? await recoveryPeers(ctx) : undefined;
 		const taken = ctx.sessionManager.getSessionRecoveryState?.().intercomTakenIds;
 		const notices =
 			unconsumedIntercomInbox(ctx.sessionManager.getBranch(), taken).length === 0
 				? []
 				: await replayIntercomInbox(ctx, peers);
+		// Answers taken without a record (by an earlier version, or shown as a message) are recorded now, so the next
+		// reopened session keeps neither those asks nor their replies. A reply is saved only with Intercom history.
+		if (usedIntercom)
+			await new OutboundAsks({
+				entries: () => ctx.sessionManager.getBranch(),
+				append: (customType, data) => pi.appendEntry(customType, data),
+				sessionId: () => ctx.sessionManager.getSessionId(),
+			}).recordTakenAnswers(taken);
 		return closed.length + notices.length > 0 ? { notices: [...closed, ...notices] } : undefined;
 	});
 	pi.on("session_recovery_replay", async (event, ctx) => {
