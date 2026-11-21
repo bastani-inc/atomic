@@ -309,12 +309,27 @@ for (const [host, trust] of [
 }
 
 test(
-	"a startup error after the prompt showed is printed where the user sees it",
+	"a startup error after the prompt showed is printed where the user sees it, and nothing of the prompt stays",
 	async () => {
 		const program = startCli(["--approve"], { ATOMIC_STORAGE: "{not json" });
 		const exit = (await program.exited) as PtyExit;
 		assert.equal(exit.exitCode, 1);
-		assert.match(program.screen(), /Error: .*ATOMIC_STORAGE/);
+		const output = program.output();
+		// Its prompt marker, in the program's own output or in what Windows' pseudo console redrew from it.
+		assert.ok(output.includes("❯"), "the early editor showed before the error");
+		// As without the early editor: the screen shows the error, once, after everything else, and no line of the prompt.
+		const lines = ((await screensOf(output, 100, 30)).at(-1) ?? "")
+			.split("\n")
+			.map((line) => line.trimEnd())
+			.filter((line) => line !== "");
+		assert.deepEqual(
+			lines.filter((line) => /[❯─]/u.test(line)),
+			[],
+			`the prompt's lines are gone:\n${lines.join("\n")}`,
+		);
+		const errors = lines.flatMap((line, index) => (/Error: .*ATOMIC_STORAGE/.test(line) ? [index] : []));
+		assert.equal(errors.length, 1, `the error is shown once:\n${lines.join("\n")}`);
+		assert.equal(lines.at(-1), lines[errors[0]!], `the error is the last thing on the screen:\n${lines.join("\n")}`);
 	},
 	REAL_CLI_TEST_TIMEOUT_MS,
 );

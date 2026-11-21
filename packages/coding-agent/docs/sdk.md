@@ -475,7 +475,7 @@ console.log(JSON.stringify(transcript.parts()));
 
 ```typescript
 import { getModel } from "@bastani/atomic-ai/compat";
-import { Type } from "typebox";
+import { Type } from "@bastani/atomic/typebox";
 import {
   AuthStorage,
   createAgentSession,

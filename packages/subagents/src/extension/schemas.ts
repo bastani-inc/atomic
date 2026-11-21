@@ -2,7 +2,7 @@
  * TypeBox schemas for subagent tool parameters
  */
 
-import { type Static, Type } from "typebox";
+import { type Static, Type } from "@bastani/atomic-ai";
 import { withoutLegacyWait } from "../runs/foreground/legacy-foreground-wait.js";
 import { warnRemovedRoutingOption } from "../shared/removed-routing-warning.js";
 import {

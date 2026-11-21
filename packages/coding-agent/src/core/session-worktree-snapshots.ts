@@ -1114,6 +1114,207 @@ function* currentSnapshots(
 	return current;
 }
 
+/** An entry a turn's capture wrote, rather than a restore's or a resume's record of a checkout it left unrestored. */
+function isCapture(entry: WorktreeSnapshotEntry): boolean {
+	return entry.captureMs !== undefined && entry.restore === undefined && entry.unrestored === undefined;
+}
+
+/** A finished subagent of a session, kept in that session's store, and when its session last captured a checkout. */
+interface SubagentCaptureHint {
+	readonly sessionId: string;
+	readonly cwd: string;
+	readonly at: number;
+}
+
+/**
+ * Whether the session recorded a finished subagent whose session captured a checkout, which a resume compares with the
+ * session's own snapshots even when the session recorded none. Cheap: no store is read.
+ */
+export function hasSubagentCaptures(sessionManager: SessionManager): boolean {
+	return subagentCaptureHints(sessionManager).size > 0;
+}
+
+/** The finished subagents the session launched, recorded on its active branch, whose sessions recorded a capture. */
+function subagentCaptureHints(sessionManager: SessionManager): Map<string, SubagentCaptureHint> {
+	const owner = sessionManager.getSessionId();
+	const hints = new Map<string, SubagentCaptureHint>();
+	const note = (record: {
+		readonly ownerSessionId?: unknown;
+		readonly childSessionId?: unknown;
+		readonly childSessionFile?: unknown;
+		readonly worktreeCapturedAt?: unknown;
+		readonly cwd?: unknown;
+	}) => {
+		if (record.ownerSessionId !== owner || typeof record.childSessionId !== "string") return;
+		if (record.childSessionFile !== undefined || typeof record.worktreeCapturedAt !== "string") return;
+		if (typeof record.cwd !== "string") return;
+		const at = Date.parse(record.worktreeCapturedAt);
+		if (!Number.isFinite(at)) return;
+		const known = hints.get(record.childSessionId);
+		if (known === undefined || at > known.at)
+			hints.set(record.childSessionId, { sessionId: record.childSessionId, cwd: record.cwd, at });
+	};
+	// Only records on the active branch count, also those a compaction moved out of the window, while the window they
+	// preceded is still on it; a record on another branch belongs to a conversation the session left.
+	const archived = sessionManager.getArchivedSubagentCaptures?.();
+	if (archived?.anchor !== undefined && archived.captures.length > 0) {
+		const anchor = archived.anchor;
+		if (sessionManager.getBranch().some((entry) => entry.id === anchor))
+			for (const capture of archived.captures) note(capture);
+	}
+	// Most sessions launched no subagent that captured anything: one pass over the entries says so without the branch.
+	const recorded = sessionManager
+		.getEntries()
+		.some(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === "subagent-child" &&
+				typeof (entry.data as { readonly worktreeCapturedAt?: unknown } | undefined)?.worktreeCapturedAt ===
+					"string",
+		);
+	if (!recorded) return hints;
+	for (const entry of sessionManager.getBranch()) {
+		if (entry.type !== "custom" || entry.customType !== "subagent-child") continue;
+		const data = entry.data as { readonly owner?: { readonly sessionId?: unknown } } & Record<string, unknown>;
+		note({ ...data, ownerSessionId: data.owner?.sessionId });
+	}
+	return hints;
+}
+
+/**
+ * Before a resume decides what to restore, each checkout the session recorded, or works in, that one of its own finished
+ * subagents captured later than the session itself did gets that capture as the session's latest snapshot, so the
+ * resume restores the subagent's changes as well. Captures are compared by when they were recorded; at the same
+ * instant the session's own wins. A checkout a resume restored only partly keeps its pinned snapshot (#4922), and a
+ * subagent's checkout the session neither recorded nor works in, such as its named worktree, is its own. A subagent
+ * session that cannot be read is left out. Resolves with the checkouts that took a subagent's capture.
+ */
+export async function adoptSubagentCaptures(sessionManager: SessionManager, signal?: AbortSignal): Promise<string[]> {
+	if (sessionManager.getSessionStore().snapshotBlobs === undefined) return [];
+	const hints = subagentCaptureHints(sessionManager);
+	if (hints.size === 0) return [];
+	// What the session had recorded when the choice below was made: a snapshot recorded since, by a turn or anything
+	// else, makes the choice stale, and a later resume makes it again.
+	const plannedAt = sessionManager.getLeafId();
+	const written = new Set<string>();
+	const unchanged = () => {
+		const branch = sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index]!;
+			if (entry.id === plannedAt) return;
+			if (entry.type === "worktree_snapshot" && !written.has(entry.id))
+				throw new Error("The session recorded a snapshot while its subagents' captures were compared");
+		}
+		if (plannedAt !== null)
+			throw new Error("The session's branch changed while its subagents' captures were compared");
+	};
+	const mappings = sessionManager.getWorktreeRootMappings();
+	const own = new Map<string, { readonly root: string; at: number }>();
+	const note = async (root: string, at: number) => {
+		const original = await runCanonicalStepsAsync(originalRoot(root, mappings));
+		own.set(original, { root, at: Math.max(own.get(original)?.at ?? Number.NEGATIVE_INFINITY, at) });
+	};
+	// A subagent's capture an earlier resume took counts as of when the subagent took it, so a later resume neither
+	// takes an older one in its place, as when its subagent's session is gone, nor misses a newer one it did not know.
+	for (const entry of await branchSnapshotEntries(sessionManager, signal)) {
+		const at = isCapture(entry)
+			? Date.parse(entry.timestamp)
+			: entry.capturedAt !== undefined
+				? Date.parse(entry.capturedAt)
+				: Number.NEGATIVE_INFINITY;
+		await note(entry.root, Number.isFinite(at) ? at : Number.NEGATIVE_INFINITY);
+	}
+	const pinned = new Set<string>();
+	for (const [original, checkout] of await runCanonicalStepsAsync(checkoutRecords(sessionManager, mappings)))
+		if (checkout.pin !== undefined && !checkout.pin.lapsed) pinned.add(original);
+	const cwd = sessionManager.getHeader()?.cwd ?? sessionManager.getCwd();
+	/** Whether the session works in checkout `original`: it recorded it, or its working directory is inside it. */
+	const works = async (original: string) =>
+		own.has(original) || (await runCanonicalStepsAsync(isInside(original, cwd)));
+	// A subagent can capture any checkout the session works in, whatever its own working directory: one that captured
+	// nothing later than the session's oldest latest capture of them has nothing newer, and is not read.
+	let coversCwd = false;
+	for (const original of own.keys()) if (await runCanonicalStepsAsync(isInside(original, cwd))) coversCwd = true;
+	let threshold = coversCwd ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+	for (const checkout of own.values()) threshold = Math.min(threshold, checkout.at);
+	const best = new Map<
+		string,
+		{ readonly child: SessionManager; readonly entry: WorktreeSnapshotEntry; at: number }
+	>();
+	for (const hint of hints.values()) {
+		signal?.throwIfAborted();
+		if (hint.at <= threshold) continue;
+		let child: SessionManager;
+		try {
+			child = await sessionManager.openSessionById(hint.sessionId, undefined, undefined, { history: "tail" });
+		} catch {
+			continue;
+		}
+		const childMappings = child.getWorktreeRootMappings();
+		let entries: WorktreeSnapshotEntry[];
+		try {
+			entries = await branchSnapshotEntries(child, signal);
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			if (!isCapture(entry)) continue;
+			const at = Date.parse(entry.timestamp);
+			const original = await runCanonicalStepsAsync(originalRoot(entry.root, childMappings));
+			if (pinned.has(original) || !(await works(original))) continue;
+			if (at <= (own.get(original)?.at ?? Number.NEGATIVE_INFINITY)) continue;
+			const chosen = best.get(original);
+			if (chosen === undefined || at > chosen.at || (chosen.child === child && at >= chosen.at))
+				best.set(original, { child, entry, at });
+		}
+	}
+	const adopted: string[] = [];
+	for (const [original, { child, entry }] of best) {
+		signal?.throwIfAborted();
+		let record: WorktreeSnapshot | undefined;
+		let held: boolean;
+		try {
+			record = (await snapshotRecordsOf(child, [entry.snapshotId], signal)).get(entry.snapshotId);
+			held = (await snapshotRecordsOf(sessionManager, [entry.snapshotId], signal)).has(entry.snapshotId);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			// The subagent's record could not be read: this checkout keeps the session's own.
+			continue;
+		}
+		if (record === undefined) continue;
+		// Recorded where the session knows the checkout, which a restore of the subagent's session may have moved. Not a
+		// capture of the session's own: it makes the snapshot the checkout's latest and says when the subagent took it,
+		// which a later resume compares. A capture of the snapshot the checkout already has is still recorded, once, so the
+		// subagents' older captures never replace it.
+		const root = own.get(original)?.root ?? original;
+		try {
+			written.add(
+				await sessionManager.appendWorktreeSnapshot(
+					root,
+					entry.snapshotId,
+					held ? undefined : record,
+					undefined,
+					[],
+					undefined,
+					undefined,
+					undefined,
+					entry.timestamp,
+					unchanged,
+				),
+			);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			// The session changed while the captures were compared, here or in another process: the choice no longer holds
+			// for any checkout, and a later resume makes it again.
+			break;
+		}
+		// The session's own ref keeps the commit, as for a capture of its own, where the checkout is on this machine.
+		await keepSessionSnapshotCommit(sessionManager.getSessionId(), root, record.snapshot).catch(() => {});
+		adopted.push(original);
+	}
+	return adopted;
+}
+
 /** A checkout a resume continued without, because nothing of its snapshot could be restored here (#4733). */
 export interface UnrestoredWorktree {
 	readonly root: string;

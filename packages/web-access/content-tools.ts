@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import type { ImageContent, TextContent } from "@bastani/atomic-ai";
 import { Text } from "@bastani/atomic-tui";
-import { Type } from "typebox";
+import { Type } from "@bastani/atomic-ai";
 import {
 	renderCodeSearchResult,
 	renderFetchContentResult,

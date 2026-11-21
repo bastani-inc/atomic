@@ -25,6 +25,14 @@ export const sharedAliases: readonly Alias[] = [
 		find: /^@bastani\/atomic\/storage$/,
 		replacement: fileURLToPath(new URL("./packages/coding-agent/src/core/storage/index.ts", import.meta.url)),
 	},
+	{
+		find: /^@bastani\/atomic\/typebox$/,
+		replacement: fileURLToPath(new URL("./packages/coding-agent/src/typebox/index.ts", import.meta.url)),
+	},
+	{
+		find: /^@bastani\/atomic\/typebox\/([a-z]+)$/,
+		replacement: `${fileURLToPath(new URL("./packages/coding-agent/src/typebox/", import.meta.url))}$1.ts`,
+	},
 ];
 
 /** The base every vitest config in the repository merges with. */

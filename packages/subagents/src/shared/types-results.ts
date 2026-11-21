@@ -226,6 +226,8 @@ export interface SingleResult {
 	sessionFile?: string;
 	/** Where to read the child's session when it has no file of its own: its `history://sessions/<id>` URL. */
 	sessionUrl?: string;
+	/** When the child's session last recorded a worktree snapshot of a checkout it changed. */
+	worktreeCapturedAt?: string;
 	skills?: string[];
 	skillsWarning?: string;
 	progress?: AgentProgress;

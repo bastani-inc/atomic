@@ -183,6 +183,34 @@ describe("an interactive top-level session joins Intercom at startup", () => {
 		}
 	});
 
+	test("a session that starts to quit stops the broker start its join waits for before its shutdown handlers run", async () => {
+		const session = intercomSession();
+		// A broker that never listens: its start ends only when its wait is aborted.
+		let startSignal: AbortSignal | undefined;
+		vi.mocked(spawnBrokerIfNeeded).mockImplementation(
+			(_command, _args, _timeoutMs, _extensionDir, signal) =>
+				new Promise<void>((_resolve, reject) => {
+					startSignal = signal;
+					signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+				}),
+		);
+		const lifetime = new AbortController();
+		const ctx = sessionContext(
+			{ mode: "tui", sessionSignal: lifetime.signal, getCurrentSessionSignal: () => lifetime.signal },
+			[],
+		);
+		try {
+			await session.start(ctx);
+			await vi.waitFor(() => assert.ok(startSignal, "the join starts the broker"), { timeout: 15_000 });
+			assert.equal(startSignal?.aborted, false);
+			// The quit begins: the session's lifetime ends before any shutdown handler runs.
+			lifetime.abort();
+			assert.equal(startSignal?.aborted, true, "the broker start is stopped as the quit begins");
+		} finally {
+			await session.shutdown(ctx);
+		}
+	});
+
 	test("it registers under the name and group the same session gets when it joins on first use", async () => {
 		const eager = intercomSession();
 		const eagerCtx = sessionContext({ mode: "tui", cwd: "/work/repo" }, []);
