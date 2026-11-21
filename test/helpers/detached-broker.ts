@@ -33,8 +33,8 @@ export interface DetachedBrokerProbe {
 	stillRuns(recorded: RecordedProcess): Promise<boolean>;
 	/** Whether `recorded` is known to have exited. */
 	isGone(recorded: RecordedProcess): Promise<boolean>;
-	/** The pid of the broker that answers on `agentDir`'s socket now, if one does. */
-	answeringPid(agentDir: string): Promise<number | undefined>;
+	/** The pid of the broker that answers on `agentDir`'s socket within `timeoutMs`, if one does. */
+	answeringPid(agentDir: string, timeoutMs: number): Promise<number | undefined>;
 }
 
 function readRecordedPid(agentDir: string): number | undefined {
@@ -44,14 +44,19 @@ function readRecordedPid(agentDir: string): number | undefined {
 	return Number.isFinite(pid) && pid > 0 ? pid : undefined;
 }
 
-async function answeringBrokerPid(agentDir: string): Promise<number | undefined> {
+async function answeringBrokerPid(agentDir: string, timeoutMs: number): Promise<number | undefined> {
 	let socketPath: string;
 	try {
 		socketPath = getBrokerSocketPath(process.platform, agentDir);
 	} catch {
 		return undefined;
 	}
-	const answer = await controlRequest(socketPath, "broker_status", "broker_status", BROKER_CONTROL_TIMEOUT_MS);
+	const answer = await controlRequest(
+		socketPath,
+		"broker_status",
+		"broker_status",
+		Math.min(timeoutMs, BROKER_CONTROL_TIMEOUT_MS),
+	);
 	if (!answer.connected || answer.reply === undefined) return undefined;
 	const reply = answer.reply;
 	const report = typeof reply === "object" && reply !== null && !Array.isArray(reply) ? reply.report : undefined;
@@ -66,6 +71,8 @@ const systemProbe: DetachedBrokerProbe = { record: recordProcess, stillRuns, isG
 export interface StopDetachedBrokerOptions {
 	/** Sent in turn while the broker still runs; a crash is simulated with `["SIGKILL"]` alone. */
 	readonly signals?: readonly NodeJS.Signals[];
+	/** How long the process `broker.pid` names is followed until it answers as the broker; {@link BROKER_ANSWER_TIMEOUT_MS}. */
+	readonly answerWindowMs?: number;
 	readonly probe?: DetachedBrokerProbe;
 }
 
@@ -75,18 +82,25 @@ export interface StopDetachedBrokerOptions {
  */
 export async function stopDetachedBroker(
 	agentDir: string,
-	{ signals = ["SIGTERM", "SIGKILL"], probe = systemProbe }: StopDetachedBrokerOptions = {},
+	{
+		signals = ["SIGTERM", "SIGKILL"],
+		answerWindowMs = BROKER_ANSWER_TIMEOUT_MS,
+		probe = systemProbe,
+	}: StopDetachedBrokerOptions = {},
 ): Promise<boolean> {
 	const pid = readRecordedPid(agentDir);
 	if (pid === undefined) return false;
 	// Read before the broker answers: a process that started after its answer cannot be taken for it.
 	const recorded = await probe.record(pid);
-	const answerBy = Date.now() + BROKER_ANSWER_TIMEOUT_MS;
+	// One window on a monotonic clock, for every request and read in it: an answer that comes after it is not taken.
+	const answerBy = performance.now() + answerWindowMs;
+	const left = () => answerBy - performance.now();
 	for (;;) {
-		if (!(await probe.stillRuns(recorded))) return false;
-		if ((await probe.answeringPid(agentDir)) === pid) break;
-		if (Date.now() >= answerBy) return false;
-		await sleep(BROKER_ANSWER_POLL_MS);
+		if (!(await probe.stillRuns(recorded)) || left() <= 0) return false;
+		const answered = await probe.answeringPid(agentDir, Math.ceil(left()));
+		if (left() < 0) return false;
+		if (answered === pid) break;
+		await sleep(Math.min(BROKER_ANSWER_POLL_MS, left()));
 	}
 	let signalled = false;
 	for (const signal of signals) {
@@ -98,9 +112,9 @@ export async function stopDetachedBroker(
 			// Already exited.
 		}
 	}
-	const deadline = Date.now() + BROKER_EXIT_TIMEOUT_MS;
+	const deadline = performance.now() + BROKER_EXIT_TIMEOUT_MS;
 	while (!(await probe.isGone(recorded))) {
-		if (Date.now() >= deadline) throw new Error(`Broker ${pid} did not exit; keeping ${agentDir}`);
+		if (performance.now() >= deadline) throw new Error(`Broker ${pid} did not exit; keeping ${agentDir}`);
 		await sleep(20);
 	}
 	return signalled;

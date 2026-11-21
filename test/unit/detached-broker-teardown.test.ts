@@ -112,6 +112,23 @@ test("stopDetachedBroker stops its broker that recorded its pid before it answer
 	}
 });
 
+test("stopDetachedBroker takes no answer that comes after its answer window, though it names the pid (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-window-");
+	const agentDir = join(root, "agent");
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	// Every answer comes 1.5 s after its request, past the whole 1 s window, so none may be waited for.
+	const broker = startStandInBroker(agentDir, { replyAfterMs: 1_500 });
+	try {
+		await waitForFile(join(agentDir, "intercom", "broker.pid"));
+		assert.equal(await stopDetachedBroker(agentDir, { answerWindowMs: 1_000 }), false);
+		assert.equal(processExists(broker.pid), true, "a process that answered too late was signalled");
+	} finally {
+		broker.kill("SIGKILL");
+		await broker.exited;
+		await removeTempRootReleasingBroker(root, agentDir);
+	}
+});
+
 test("stopDetachedBroker never signals a process a leftover broker.pid names when no broker answers there (#6125)", async () => {
 	const root = makeTempDirectory("atomic-broker-teardown-reused-");
 	const agentDir = join(root, "agent");

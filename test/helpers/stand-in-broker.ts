@@ -2,7 +2,8 @@
  * A stand-in Intercom broker for tests of broker cleanup: it listens on an agent dir's broker socket, answers
  * `broker_status` with its own pid as a broker does (or, with `pidless`, with a report that names none), records its pid
  * in `broker.pid` once it listens (with `listenAfterMs`, first records its pid and listens that much later, as a real
- * broker records its pid before it listens), and with `holdLog` keeps `broker.log` open.
+ * broker records its pid before it listens), with `replyAfterMs` answers that much later, and with `holdLog` keeps
+ * `broker.log` open.
  */
 import { join } from "node:path";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
@@ -10,7 +11,7 @@ import { spawnProcess } from "./runtime.js";
 
 const STAND_IN_BROKER = `const fs = require("node:fs");
 const net = require("node:net");
-const [socketPath, pidPath, logPath, pidless, listenAfter] = process.argv.slice(1);
+const [socketPath, pidPath, logPath, pidless, listenAfter, replyAfter] = process.argv.slice(1);
 if (logPath) fs.openSync(logPath, "a");
 const frame = (message) => {
 	const payload = Buffer.from(JSON.stringify(message));
@@ -28,7 +29,8 @@ const server = net.createServer((socket) => {
 			buffer = buffer.subarray(4 + buffer.readUInt32BE(0));
 			if (message.type !== "broker_status") continue;
 			const report = pidless === "pidless" ? {} : { pid: process.pid, sessions: 0, multiNode: { status: "off" } };
-			socket.write(frame({ type: "broker_status", requestId: message.requestId, report }));
+			const reply = frame({ type: "broker_status", requestId: message.requestId, report });
+			setTimeout(() => socket.write(reply), Number(replyAfter || 0));
 		}
 	});
 });
@@ -50,7 +52,13 @@ export function startStandInBroker(
 		holdLog = false,
 		pidless = false,
 		listenAfterMs,
-	}: { readonly holdLog?: boolean; readonly pidless?: boolean; readonly listenAfterMs?: number } = {},
+		replyAfterMs,
+	}: {
+		readonly holdLog?: boolean;
+		readonly pidless?: boolean;
+		readonly listenAfterMs?: number;
+		readonly replyAfterMs?: number;
+	} = {},
 ): StandInBroker {
 	const intercomDir = join(agentDir, "intercom");
 	const child = spawnProcess({
@@ -63,6 +71,7 @@ export function startStandInBroker(
 			holdLog ? join(intercomDir, "broker.log") : "",
 			pidless ? "pidless" : "",
 			listenAfterMs === undefined ? "" : String(listenAfterMs),
+			replyAfterMs === undefined ? "" : String(replyAfterMs),
 		],
 		stdin: "ignore",
 		stdout: "ignore",
