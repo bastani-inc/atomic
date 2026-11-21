@@ -44,6 +44,8 @@ describe("nodeOptionsFromEnvironment", () => {
 			{ name: "--unhandled-rejections", value: "warn" },
 			{ name: "--trace-warnings", value: undefined },
 		]);
+		// Node reads `\-` at the start of a separate value as `-`.
+		expect(nodeOptionsFromEnvironment("--title \\-atomic")).toEqual([{ name: "--title", value: "-atomic" }]);
 	});
 
 	it("stops at the first word that is neither an option nor an option's value, as Node does", () => {
