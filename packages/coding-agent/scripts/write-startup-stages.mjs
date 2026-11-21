@@ -25,10 +25,14 @@ const distUrl = pathToFileURL(`${dist}/`).href;
 const stagesDir = join(dist, "startup-stages");
 
 /**
- * About how much module source one stage loads: on Windows, where each file costs most, a stage of this size keeps a
- * typed key's echo at about 50 ms (and the first one at about 80 ms) with no later session; larger stages wait longer.
+ * About how much module source the first stage loads; each stage after it loads about twice as much as the one before,
+ * up to {@link LARGEST_STAGE_BYTES}. The first stages, while a user is likely to start typing, are small and answer
+ * keys soon (within about 80 ms on Windows); the later ones are larger, so that only about fifteen stages, each with
+ * its own small cost, load everything, and none keeps a key waiting much longer than the largest group of modules that
+ * must load together.
  */
-const STAGE_BYTES = 192 * 1024;
+const FIRST_STAGE_BYTES = 48 * 1024;
+const LARGEST_STAGE_BYTES = 1024 * 1024;
 
 if (process.argv[2] === "--trace") {
 	await trace(process.argv[3]);
@@ -235,37 +239,39 @@ function planStages(order, resolutions, formats, ranBefore, marked, entryUrls) {
 	}
 	const costBetween = (from, to) => costUpTo[to + 1] - costUpTo[from + 1];
 
-	// Walk the run order: after the last module imported, the next import is the largest importable module whose own
-	// graph starts at or before the next module to run and fits a stage, else the smallest importable one.
-	const picks = [];
-	let done = -1;
-	while (done < ranOrder.length - 1) {
-		let pick;
-		for (let url = ranOrder[done + 1]; url !== undefined; url = parentOf.get(url)) {
-			if (!importable(url) || firstOfOwnGraph.get(url) > done + 1) continue;
-			if (pick !== undefined && costBetween(done, position.get(url)) > STAGE_BYTES) break;
-			pick = url;
-		}
-		if (pick === undefined) throw new Error(`No module can load the startup module ${ranOrder[done + 1]} in its order`);
-		picks.push(pick);
-		done = position.get(pick);
-	}
-
-	// Stages: consecutive imports, up to the stage size.
+	// Walk the run order and fill the stages, each with about twice the budget of the one before: after the last module
+	// imported, the next import is the largest importable module whose own graph starts at or before the next module to
+	// run and still fits the stage, else the smallest importable one; one that does not fit starts the next stage.
 	const stages = [];
 	let stage = [];
 	let stageCost = 0;
-	let previous = -1;
-	for (const pick of picks) {
-		const cost = costBetween(previous, position.get(pick));
-		previous = position.get(pick);
-		if (stage.length > 0 && stageCost + cost > STAGE_BYTES) {
-			stages.push(stage);
-			stage = [];
-			stageCost = 0;
+	let budget = FIRST_STAGE_BYTES;
+	const closeStage = () => {
+		stages.push(stage);
+		stage = [];
+		stageCost = 0;
+		budget = Math.min(2 * budget, LARGEST_STAGE_BYTES);
+	};
+	let done = -1;
+	while (done < ranOrder.length - 1) {
+		let pick;
+		let pickCost = 0;
+		for (let url = ranOrder[done + 1]; url !== undefined; url = parentOf.get(url)) {
+			if (!importable(url) || firstOfOwnGraph.get(url) > done + 1) continue;
+			const cost = costBetween(done, position.get(url));
+			if (pick !== undefined && stageCost + cost > budget) break;
+			pick = url;
+			pickCost = cost;
+		}
+		if (pick === undefined) throw new Error(`No module can load the startup module ${ranOrder[done + 1]} in its order`);
+		if (stage.length > 0 && stageCost + pickCost > budget) {
+			closeStage();
+			continue;
 		}
 		stage.push(specifierOf(pick));
-		stageCost += cost;
+		stageCost += pickCost;
+		done = position.get(pick);
+		if (stageCost >= budget) closeStage();
 	}
 	if (stage.length > 0) stages.push(stage);
 	return stages;

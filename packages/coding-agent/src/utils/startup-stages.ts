@@ -32,6 +32,10 @@ const RESOLUTION_OPTIONS = new Set([
 	"--preserve-symlinks",
 	"--preserve-symlinks-main",
 	"--experimental-policy",
+	// What reports how modules load through `require`, which loads the stages: the stages would show in it.
+	"--trace-require-module",
+	"--experimental-print-required-tla",
+	"--no-experimental-require-module",
 	// Conditions choose which file of a package a name resolves to.
 	"--conditions",
 	"-C",
@@ -72,7 +76,7 @@ export async function loadStartupStages(): Promise<void> {
 			loadStage(fileURLToPath(new URL(`${stage}.js`, STAGES_DIR)));
 		} catch {
 			// A module failed, or one awaits at its top level (an installed version this build did not check), which
-			// `require` refuses before it runs any of the stage: the session's own imports take the rest from here.
+			// `require` refuses before it runs the stage: the session's own imports take the rest from here.
 			return;
 		}
 		await new Promise<void>((resolve) => setImmediate(resolve));
