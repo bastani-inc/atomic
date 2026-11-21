@@ -204,6 +204,23 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 		},
 	);
 
+	test.skipIf(!windows)(
+		"an MCP server whose folder is a link into the project folder never starts a program from there",
+		async () => {
+			const inside = join(project, "server");
+			mkdirSync(inside);
+			plantProgram(inside, "atomic-test-mcp-server");
+			// Outside the project folder by its name, inside it by what it is.
+			const link = join(root, "server-link");
+			symlinkSync(inside, link, "junction");
+			const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
+			const transport = new StdioTransport({ command: "atomic-test-mcp-server", cwd: link, projectCwd: project });
+
+			await assert.rejects(transport.start(), { code: "ENOENT" });
+			await transport.close();
+		},
+	);
+
 	test("an MCP server closed while its program is looked up never starts", async () => {
 		const bin = join(root, "bin");
 		mkdirSync(bin);

@@ -1,5 +1,6 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
 import process from "node:process";
 import crossSpawn from "cross-spawn";
 import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "../../../../utils/helper-command.ts";
@@ -68,11 +69,18 @@ function serverEnvironment(inherited: NodeJS.ProcessEnv, configured: Record<stri
 	return { ...Object.fromEntries(kept), ...configured };
 }
 
-/** Whether `directory` is the project folder or inside it, where a program is never looked up by name. */
-function insideProject(directory: string, projectCwd: string | undefined): boolean {
-	if (projectCwd === undefined) return false;
-	const fromProject = relative(resolve(projectCwd), resolve(directory));
-	return fromProject !== ".." && !fromProject.startsWith(`..${sep}`) && !isAbsolute(fromProject);
+/**
+ * Whether `directory` is certainly outside the project folder, with links and other spellings of either resolved: only
+ * there may a program be looked up by name. Not when either cannot be read.
+ */
+async function outsideProject(directory: string, projectCwd: string): Promise<boolean> {
+	try {
+		const [real, project] = await Promise.all([realpath(directory), realpath(projectCwd)]);
+		const fromProject = relative(project, real);
+		return fromProject === ".." || fromProject.startsWith(`..${sep}`) || isAbsolute(fromProject);
+	} catch {
+		return false;
+	}
 }
 
 export interface StdioTransportOptions {
@@ -131,14 +139,21 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		this.started = true;
 		const env = serverEnvironment(this.options.inheritEnv === false ? {} : process.env, this.options.env);
 		const projectCwd = this.options.projectCwd ?? this.options.cwd;
+		const { cwd } = this.options;
 		let launch: HelperLaunch;
 		try {
+			// Windows looks in a program's working directory first: one configured outside the project folder.
+			const searchFirst =
+				process.platform === "win32" &&
+				cwd !== undefined &&
+				projectCwd !== undefined &&
+				(await outsideProject(cwd, projectCwd))
+					? cwd
+					: undefined;
 			launch = await helperLaunchAsync(this.options.command, {
 				env,
 				...(projectCwd === undefined ? {} : { cwd: projectCwd }),
-				...(this.options.cwd === undefined || insideProject(this.options.cwd, projectCwd)
-					? {}
-					: { searchFirst: this.options.cwd }),
+				...(searchFirst === undefined ? {} : { searchFirst }),
 				// cross-spawn runs `.cmd` and `.bat` shims through cmd.exe.
 				shellScripts: true,
 				signal: this.lookup.signal,
