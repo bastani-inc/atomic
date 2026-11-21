@@ -92,11 +92,11 @@ export function bundledPackageDirs(inputFiles: readonly string[]): string[] {
 }
 
 /**
- * The text of a THIRD_PARTY_NOTICES file for a bundle built from `inputFiles`: each bundled
+ * The text of a THIRD_PARTY_NOTICES file for bundles built from `inputFiles`: each bundled
  * package's name, version and license, followed by its licence and notice files. Undefined when
  * the bundle includes no installed package.
  */
-export function thirdPartyNotices(bundleName: string, inputFiles: readonly string[]): string | undefined {
+export function thirdPartyNotices(bundleNames: readonly string[], inputFiles: readonly string[]): string | undefined {
 	const inputsByPackage = new Map<string, string[]>();
 	for (const file of inputFiles) {
 		const packageDir = installedPackageDir(file);
@@ -122,7 +122,7 @@ export function thirdPartyNotices(bundleName: string, inputFiles: readonly strin
 	if (sections.size === 0) return undefined;
 	const ordered = [...sections].sort(([a], [b]) => a.localeCompare(b)).map(([, section]) => section);
 	return [
-		`${bundleName} includes code from the following packages. Their licence and notice files follow.\n`,
+		`${bundleNames.join(" and ")} ${bundleNames.length === 1 ? "includes" : "include"} code from the following packages. Their licence and notice files follow.\n`,
 		...ordered,
 	].join("\n");
 }

@@ -21,7 +21,7 @@ import {
 	INSTALLED_IMPORT_CLOSURE_ROOTS,
 	shouldSkipBuiltinCopyEntry,
 } from "./derive-import-closure.js";
-import { thirdPartyNotices } from "./third-party-notices.js";
+import { installedPackageDir, thirdPartyNotices } from "./third-party-notices.js";
 
 const require = createRequire(import.meta.url);
 const linkedomWorkerEntry = join(dirname(require.resolve("linkedom/package.json")), "worker.js");
@@ -190,11 +190,28 @@ function getCopyPlan(): BuiltinCopy[] {
 	});
 }
 
+/** Per builtin, the bundles it ships and the files each was built from, for its third-party notices. */
+const bundledInputs = new Map<BuiltinPackageDirName, { bundles: string[]; inputs: string[] }>();
+
+function recordBundledInputs(
+	dirName: BuiltinPackageDirName,
+	outfile: string,
+	metafile: { inputs: Record<string, object> } | undefined,
+): void {
+	// Metafile input paths are relative to the working directory of the build.
+	const inputs = Object.keys(metafile?.inputs ?? {}).map((input) => resolve(input));
+	if (!inputs.some((input) => installedPackageDir(input) !== undefined)) return;
+	const record = bundledInputs.get(dirName) ?? { bundles: [], inputs: [] };
+	record.bundles.push(relative(join(distBuiltinDir, dirName), outfile).split("\\").join("/"));
+	record.inputs.push(...inputs);
+	bundledInputs.set(dirName, record);
+}
+
 async function bundleEntrypoint(
 	entry: string,
 	outfile: string,
 	label: string,
-	noticesDir: string,
+	dirName: BuiltinPackageDirName,
 ): Promise<void> {
 	if (!existsSync(entry)) {
 		throw new Error(`Missing ${label} bundle entry: ${entry}`);
@@ -214,10 +231,7 @@ async function bundleEntrypoint(
 	}
 	mkdirSync(join(outfile, ".."), { recursive: true });
 	writeFileSync(outfile, await output.text(), "utf-8");
-	// Metafile input paths are relative to the working directory of the build.
-	const inputs = Object.keys(result.metafile?.inputs ?? {}).map((input) => resolve(input));
-	const notices = thirdPartyNotices(relative(noticesDir, outfile).split("\\").join("/"), inputs);
-	if (notices !== undefined) writeFileSync(join(noticesDir, THIRD_PARTY_NOTICES_FILE), notices, "utf-8");
+	recordBundledInputs(dirName, outfile, result.metafile);
 	console.log(`Bundled ${label} -> ${relative(distDir, outfile)}`);
 }
 
@@ -247,6 +261,7 @@ async function bundleIntercomBroker(): Promise<void> {
 		format: "esm",
 		external: HOST_PROVIDED_EXTERNALS,
 		define: RUNTIME_ENV_DEFINES,
+		metafile: true,
 		plugins: [
 			{
 				name: "atomic-broker-deferred-host-storage",
@@ -286,6 +301,7 @@ async function bundleIntercomBroker(): Promise<void> {
 		throw new Error(`The Intercom broker bundle loads ${hoisted.map((entry) => entry.path).join(", ")} before it starts`);
 	}
 	writeFileSync(outfile, code, "utf-8");
+	recordBundledInputs("intercom", outfile, result.metafile);
 	console.log(`Bundled @bastani/intercom broker -> ${relative(distDir, outfile)}`);
 }
 
@@ -402,27 +418,32 @@ await bundleEntrypoint(
 	join(distBuiltinDir, "subagents", "src", "extension", "index.ts"),
 	join(distBuiltinDir, "subagents", INSTALLED_EXTENSION_ENTRIES.subagents),
 	"@bastani/subagents extension",
-	join(distBuiltinDir, "subagents"),
+	"subagents",
 );
 await bundleEntrypoint(
 	join(distBuiltinDir, "mcp", "index.ts"),
 	join(distBuiltinDir, "mcp", INSTALLED_EXTENSION_ENTRIES.mcp),
 	"@bastani/mcp extension",
-	join(distBuiltinDir, "mcp"),
+	"mcp",
 );
 await bundleEntrypoint(
 	join(distBuiltinDir, "web-access", "index.ts"),
 	join(distBuiltinDir, "web-access", INSTALLED_EXTENSION_ENTRIES["web-access"]),
 	"@bastani/web-access extension",
-	join(distBuiltinDir, "web-access"),
+	"web-access",
 );
 await bundleEntrypoint(
 	join(distBuiltinDir, "intercom", "index.ts"),
 	join(distBuiltinDir, "intercom", INSTALLED_EXTENSION_ENTRIES.intercom),
 	"@bastani/intercom extension",
-	join(distBuiltinDir, "intercom"),
+	"intercom",
 );
 await bundleIntercomBroker();
+
+for (const [dirName, { bundles, inputs }] of bundledInputs) {
+	const notices = thirdPartyNotices(bundles, inputs);
+	if (notices !== undefined) writeFileSync(join(distBuiltinDir, dirName, THIRD_PARTY_NOTICES_FILE), notices, "utf-8");
+}
 
 for (const { workspaceDirName: dirName } of WORKSPACE_BUILTINS) {
 	const manifestPath = join(distBuiltinDir, dirName, "package.json");

@@ -64,11 +64,14 @@ test("bundle notices carry the licence files of every bundled package and the de
 		},
 	);
 
-	const notices = thirdPartyNotices("index.bundle.mjs", [
-		join(root, "src", "index.ts"),
-		join(modules, "prebuilt", "worker.js"),
-		join(modules, "@scope", "direct", "index.js"),
-	]);
+	const notices = thirdPartyNotices(
+		["index.bundle.mjs"],
+		[
+			join(root, "src", "index.ts"),
+			join(modules, "prebuilt", "worker.js"),
+			join(modules, "@scope", "direct", "index.js"),
+		],
+	);
 
 	assert.ok(notices !== undefined);
 	assert.match(notices, /^index\.bundle\.mjs includes code from the following packages/);
@@ -98,5 +101,5 @@ test("bundle notices carry the licence files of every bundled package and the de
 });
 
 test("a bundle of first-party code only has no notices", () => {
-	assert.equal(thirdPartyNotices("index.bundle.mjs", [join(root, "src", "index.ts")]), undefined);
+	assert.equal(thirdPartyNotices(["index.bundle.mjs"], [join(root, "src", "index.ts")]), undefined);
 });

@@ -16,7 +16,10 @@ import { basename, join, relative } from "node:path";
 import { parse } from "acorn";
 import { simple } from "acorn-walk";
 import { test } from "vitest";
-import { INSTALLED_EXTENSION_ENTRIES } from "../../packages/coding-agent/src/core/builtin-install-layout.js";
+import {
+	INSTALLED_EXTENSION_ENTRIES,
+	INTERCOM_BROKER_BUNDLE_ENTRY,
+} from "../../packages/coding-agent/src/core/builtin-install-layout.js";
 import { getVirtualModules } from "../../packages/coding-agent/src/core/extensions/loader-host-modules.js";
 import { moduleDir, npmSpawnPrefix, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -130,7 +133,11 @@ test(
 
 			// Bun marks each inlined module with its path; every package one comes from has its licence shipped.
 			const unlicensed: string[] = [];
-			for (const [dirName, entry] of Object.entries(INSTALLED_EXTENSION_ENTRIES)) {
+			const bundles = [
+				...Object.entries(INSTALLED_EXTENSION_ENTRIES),
+				["intercom", INTERCOM_BROKER_BUNDLE_ENTRY] as const,
+			];
+			for (const [dirName, entry] of bundles) {
 				const bundled = bundledPackageNames(readFileSync(join(builtinRoot, dirName, entry), "utf8"));
 				if (bundled.size === 0) continue;
 				const thirdPartyNotices = readFileSync(join(builtinRoot, dirName, "THIRD_PARTY_NOTICES.txt"), "utf8");
