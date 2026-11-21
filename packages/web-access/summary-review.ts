@@ -1,7 +1,10 @@
 import type { ProviderHeaders } from "@bastani/atomic-ai";
-import { getModel, type Message, type Model } from "@bastani/atomic-ai/compat";
+import { type Api, getModel, type Message, type Model } from "@bastani/atomic-ai/compat";
 import type { ExtensionContext } from "@bastani/atomic";
 import type { QueryResultData } from "./storage.js";
+
+/** `getModel` is typed for one literal provider and model id; it returns undefined for an id the catalog lacks. */
+export type CatalogModelLookup = (provider: string, modelId: string) => Model<Api> | undefined;
 
 const PREFERRED_SUMMARY_MODELS = [
 	{ provider: "anthropic", id: "claude-haiku-4-5" },
@@ -181,7 +184,7 @@ export function buildDeterministicSummary(results: QueryResultData[]): { summary
 async function resolveSummaryModel(
 	ctx: SummaryGenerationContext,
 	modelOverride?: string,
-): Promise<{ model: Model; apiKey: string; headers?: ProviderHeaders }> {
+): Promise<{ model: Model<Api>; apiKey: string; headers?: ProviderHeaders }> {
 	const normalizedOverride = typeof modelOverride === "string" ? modelOverride.trim() : "";
 	if (normalizedOverride.length > 0) {
 		const slashIndex = normalizedOverride.indexOf("/");
@@ -206,7 +209,7 @@ async function resolveSummaryModel(
 	}
 
 	for (const { provider, id } of PREFERRED_SUMMARY_MODELS) {
-		const model = getModel(provider, id);
+		const model = (getModel as CatalogModelLookup)(provider, id);
 		if (!model) continue;
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (auth.ok && auth.apiKey) {
