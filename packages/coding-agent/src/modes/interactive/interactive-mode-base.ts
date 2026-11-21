@@ -213,6 +213,12 @@ export function seedStartupInput(
 	}
 }
 
+/**
+ * The rows the chat drew as the echo of one sent message, before the session shows the message. The send that drew it
+ * names its own echo with it, so it never takes another send's echo of the same text.
+ */
+export type DeferredUserInputEcho = Component[];
+
 export interface InteractiveTuiInputSubscription {
 	handler: TuiInputListener;
 	unsubscribe: () => void;
@@ -370,12 +376,6 @@ export class InteractiveModeBase {
 	deferredRenderedUserInputs: string[] = [];
 
 	deferredRenderedUserInputComponents = new Map<string, Component[][]>();
-
-	/**
-	 * The echo of the submission that started the latest run, until that run shows its message. The run begins with the
-	 * message, which may carry other text than the echo when an `input` hook rewrote it (#4277).
-	 */
-	startedDeferredUserInput: string | undefined = undefined;
 
 	/** Count of user messages the session showed that no echo stood for; see `expectStartedUserInput`. */
 	userMessagesShownBySession = 0;

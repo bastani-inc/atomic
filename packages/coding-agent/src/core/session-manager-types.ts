@@ -65,6 +65,11 @@ export interface SessionEntryBase {
 export interface SessionMessageEntry extends SessionEntryBase {
 	type: "message";
 	message: AgentMessage;
+	/**
+	 * For a user message that was queued (steering or follow-up), the id it was queued with: after an engine that was
+	 * delivering it is lost, its replacement finds whether it was saved by this id.
+	 */
+	queuedMessageId?: string;
 }
 
 export interface ThinkingLevelChangeEntry extends SessionEntryBase {

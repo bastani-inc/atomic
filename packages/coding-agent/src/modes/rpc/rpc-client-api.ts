@@ -60,8 +60,15 @@ export abstract class RpcClientApi {
 		message: string,
 		images?: ImageContent[],
 		streamingBehavior?: "steer" | "followUp",
+		queuedMessageId?: string,
 	): Promise<PromptDisposition> {
-		const response = await this.request({ type: "prompt", message, images, streamingBehavior });
+		const response = await this.request({
+			type: "prompt",
+			message,
+			images,
+			streamingBehavior,
+			...(queuedMessageId === undefined ? {} : { queuedMessageId }),
+		});
 		return this.data<{ disposition: PromptDisposition }>(response).disposition;
 	}
 	async steer(message: string, images?: ImageContent[]): Promise<QueuedInputDisposition> {
@@ -309,6 +316,22 @@ export abstract class RpcClientApi {
 	}
 	async getMessages(): Promise<AgentMessage[]> {
 		return this.data<{ messages: AgentMessage[] }>(await this.request({ type: "get_messages" })).messages;
+	}
+
+	/** Which queued messages the session's store holds (see the `find_queued_messages` command). */
+	async findQueuedMessages(query: {
+		readonly ids: readonly string[];
+		readonly after: number;
+		readonly epoch?: string;
+	}): Promise<{ saved: string[]; absent: string[] }> {
+		return this.data<{ saved: string[]; absent: string[] }>(
+			await this.request({
+				type: "find_queued_messages",
+				ids: [...query.ids],
+				after: query.after,
+				...(query.epoch === undefined ? {} : { epoch: query.epoch }),
+			}),
+		);
 	}
 	async getCommands(): Promise<RpcSlashCommand[]> {
 		return this.data<{ commands: RpcSlashCommand[] }>(await this.request({ type: "get_commands" })).commands;

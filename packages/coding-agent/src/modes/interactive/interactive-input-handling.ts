@@ -49,6 +49,7 @@ import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./intera
 import { handOffCompactionQueue, mainSteering } from "./interactive-queueing.ts";
 import { followStartedRunEcho } from "./interactive-render-chat.ts";
 import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
+import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { screenHoldOf } from "./screen-hold.ts";
 import type { SteeringSubmitResult } from "./steering-queue-controller.ts";
 import { theme } from "./theme/theme.js";
@@ -339,12 +340,10 @@ InteractiveModeBase.prototype.handleClipboardImagePaste = async function (this: 
 
 InteractiveModeBase.prototype.deliverStartupReplayPrompt = function (this: InteractiveModeBase, text: string): void {
 	if (this.onInputCallback) {
-		if (!text.startsWith("/")) {
-			this.renderDeferredUserInput(text);
-		}
+		const echo = text.startsWith("/") ? undefined : this.renderDeferredUserInput(text);
 		const callback = this.onInputCallback;
 		this.onInputCallback = undefined;
-		callback({ text, draft: text });
+		callback({ text, draft: text, ...(echo === undefined ? {} : { echo }) });
 	} else {
 		this.pendingUserInputs.push({ text, draft: text });
 	}
@@ -770,12 +769,10 @@ async function submitToMainChat(
 							disposition === "started" &&
 							!text.startsWith("/") &&
 							this.userMessagesShownBySession === shownBefore;
-						if (echoed) {
-							this.renderDeferredUserInput(text);
-							this.expectStartedUserInput(text, shownBefore);
-						}
+						const echo = echoed ? this.renderDeferredUserInput(text) : undefined;
+						if (echoed) this.expectStartedUserInput(text, shownBefore, echo);
 						// The run's own events decide this echo (#5135), however they and this answer are ordered.
-						startedEcho.answer(echoed);
+						startedEcho.answer(echoed, echo);
 					},
 				});
 			} finally {
@@ -802,12 +799,10 @@ async function submitToMainChat(
 		// The draft travels with this submission, never through shared state: a
 		// later submission whose trimmed text is identical must not be able to
 		// claim, or clear, this one's exact buffer.
-		const submission = { text, draft: submittedDraft };
+		const submission: InteractiveSubmission = { text, draft: submittedDraft };
 
 		if (this.onInputCallback) {
-			if (!text.startsWith("/")) {
-				this.renderDeferredUserInput(text);
-			}
+			if (!text.startsWith("/")) submission.echo = this.renderDeferredUserInput(text);
 			this.promptTurn ??= { dispatched: false };
 			this.onInputCallback(submission);
 		} else {

@@ -33,6 +33,10 @@
 - Resuming another folder's session from a folder whose own settings choose its session store loads the bundled extensions once, and shuts down the extensions that decided the first folder before the session's own load; a shutdown that does not finish within about five seconds no longer holds the session back and is named in a warning ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
 - When a folder is approved after the chat is on screen, an open menu of command names in which you have not chosen a row shows the approved commands, with an exact match selected; a completion provider that fails or never answers leaves the menu as it was ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
 - The resource list at the top of the chat shows an approval as soon as a selection, click, drag or search that held it ends, instead of checking again every 250 ms ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- The same message sent twice in quick succession, which an `input` extension rewrites, no longer leaves a copy of the typed text in the chat
+- A queued message that two runs in a row took and failed before sending comes back to the editor, as typed and in the order it was queued, with a notice, instead of disappearing
+- When the engine stops unexpectedly while delivering a queued message, the message comes back to the editor if the session files show it was never saved, and is no longer reported as possibly undelivered if they show it was; the notice now lists only messages whose delivery cannot be confirmed
+- `atomic -p` with an extension command prints the command's own answer, or fails on its failed reply, even when another message is saved after it, and waits for a reply the command asks for while an earlier run is still finishing
 
 ## [0.10.3] - 2026-11-21
 
