@@ -19,7 +19,7 @@ import { type IntercomReachPolicy, notFoundInReachReason, outsideReachReason } f
 import { HELD_FOR_AWAY_ASKER_TARGET } from "./held-reply-targets.js";
 import { PAUSED_LIVE_RECIPIENT_TARGET } from "./ended-child-wakes.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
-import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
+import { ROUTE_UNAVAILABLE_REASON, UNAUTHORIZED_REPLY_REASON } from "./delivery-failure-reason.js";
 import { type ReturnPathParty, type ReturnPaths, returnPathClosedReason } from "./return-paths.js";
 import { returnAddressOf } from "./multinode-state-store.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL } from "../recipient-purpose.js";
@@ -761,7 +761,7 @@ export function handleBrokerSend(
 			type: "delivery_failed",
 			messageId: message.id,
 			attemptId,
-			reason: "Pending question route does not authorize this public reply",
+			reason: UNAUTHORIZED_REPLY_REASON,
 		});
 		return;
 	}

@@ -84,6 +84,12 @@ export interface RpcClientOptions {
 		 * decisions it is given.
 		 */
 		trustDecisions?: SessionTrustDecisions;
+		/**
+		 * The session the host started, as a new session or a fork, for the engine to open, delivered through the
+		 * bootstrap file. Only the first engine this client starts gets it: a restarted engine continues the session as
+		 * a resume does.
+		 */
+		startedSessionId?: string;
 	};
 }
 
@@ -180,6 +186,8 @@ export class RpcClient extends RpcClientApi {
 				? await prepareRpcClientBootstrap(
 						this.options.interactiveEngine.apiKey,
 						this.options.interactiveEngine.trustDecisions,
+						// Only the first engine: a later one continues the session as a resume does.
+						this.generation === 0 ? this.options.interactiveEngine.startedSessionId : undefined,
 					)
 				: undefined;
 			if (this.stopPromise) {

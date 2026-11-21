@@ -1063,7 +1063,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		sessionId: string,
 		options?: Parameters<AgentSessionRuntime["switchSession"]>[1],
 	): Promise<{ cancelled: boolean }> {
-		const result = await this.client.switchSession(sessionId, options?.cwdOverride, options?.sessionDirectory);
+		// A session this host created just before the switch is the engine's new session, which it cannot tell by its ID.
+		const started =
+			options?.startedSession instanceof SessionManager &&
+			options.startedSession.getSessionId() === sessionId &&
+			options.startedSession.takeStartedSession();
+		const result = started
+			? await this.client.requestInternal<{ cancelled: boolean; notices?: readonly RpcResumeNotice[] }>({
+					type: "switch_session",
+					sessionId,
+					cwdOverride: options?.cwdOverride,
+					sessionDirectory: options?.sessionDirectory,
+					startedSession: true,
+				})
+			: await this.client.switchSession(sessionId, options?.cwdOverride, options?.sessionDirectory);
 		if (!result.cancelled) {
 			this.discardHeldHostEvents();
 			this.queueResumeNotices(result.notices ?? []);

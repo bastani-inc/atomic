@@ -32,7 +32,8 @@ A refusal or a recipient that ended arrives the same way as a failed-ask message
 
 export const ASK_USAGE = `  intercom({ action: "ask", to: "session-name", message: "..." })   → Ask; reply inline if quick, else later as a message
   intercom({ action: "ask", to: "session-name", message: "...", wait: { kind: "background" } }) → Ask without waiting
-  intercom({ action: "cancel", askId: "..." })                       → Cancel one of your pending asks`;
+  intercom({ action: "cancel", askId: "..." })                       → Cancel one of your pending asks
+  intercom({ action: "cancel", replyTo: "..." })                     → Close an ask sent to you without replying`;
 
 export const ASK_PROMPT_SNIPPET =
 	'`ask` does not block: a reply that misses the wait arrives later as a message ("Reply to your ask <id> from <name>").';
