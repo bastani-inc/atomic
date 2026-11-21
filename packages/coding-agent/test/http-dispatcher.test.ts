@@ -547,6 +547,52 @@ describe("the standalone binary's fetch (Bun)", () => {
 	);
 
 	it(
+		"passes a request's own options as Bun reads them: inherited, not enumerable, frozen, getters left unread, and a Request's",
+		async () => {
+			const echo = http.createServer(async (request, response) => {
+				let body = "";
+				for await (const chunk of request) body += chunk;
+				response.end(
+					JSON.stringify({ method: request.method, marker: request.headers["x-fixture"] ?? null, body }),
+				);
+			});
+			await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+			const url = `http://127.0.0.1:${(echo.address() as net.AddressInfo).port}/`;
+			try {
+				const printed = await runUnderBun(
+					[
+						`configureHttpDispatcher(30_000);`,
+						`let reads = 0;`,
+						`const options = { method: "POST", headers: { "x-fixture": "ok" }, body: "hello" };`,
+						`const inits = {`,
+						`	inherited: Object.create(options),`,
+						`	notEnumerable: Object.defineProperties({}, { method: { value: "POST" }, headers: { value: { "x-fixture": "ok" } }, body: { value: "hello" } }),`,
+						`	frozen: Object.freeze({ ...options }),`,
+						`	unreadGetter: { ...options, get traceMetadata() { reads++; throw new Error("read"); } },`,
+						`};`,
+						`const results = {};`,
+						`for (const [name, init] of Object.entries(inits)) results[name] = await outcome(fetch(${JSON.stringify(url)}, init));`,
+						`results.request = await outcome(fetch(new Request(${JSON.stringify(url)}, options)));`,
+						`console.log(JSON.stringify({ results, reads }));`,
+					].join("\n"),
+					{},
+				);
+				const { results, reads } = JSON.parse(printed) as {
+					results: Record<string, { text?: string }>;
+					reads: number;
+				};
+				expect(reads).toBe(0);
+				for (const [name, result] of Object.entries(results))
+					expect(JSON.parse(result.text ?? "{}"), name).toEqual({ method: "POST", marker: "ok", body: "hello" });
+			} finally {
+				echo.closeAllConnections();
+				await new Promise<void>((resolve) => echo.close(() => resolve()));
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
+
+	it(
 		"sends an https request through HTTP_PROXY when no https proxy is set, as on Node.js, keeping NO_PROXY, ALL_PROXY and HTTPS_PROXY",
 		async () => {
 			const certificate = createTestCertificate({ subject: "localhost", altNames: ["localhost"] });

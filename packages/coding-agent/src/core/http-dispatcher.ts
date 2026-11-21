@@ -54,12 +54,21 @@ function requestUrl(input: Parameters<typeof globalThis.fetch>[0]): string | URL
  */
 function createBunFetch(fetch: typeof globalThis.fetch): typeof globalThis.fetch {
 	return Object.assign((input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
-		const options: BunFetchInit = { ...init };
-		if (options.timeout === undefined) options.timeout = bunIdleTimeoutMs === 0 ? false : bunIdleTimeoutMs;
-		if (options.proxy === undefined) {
-			const proxy = resolveHttpsFallbackProxyUrl(requestUrl(input));
-			if (proxy !== undefined) options.proxy = proxy.href;
-		}
+		const given = init as BunFetchInit | undefined;
+		const timeout = given?.timeout === undefined ? (bunIdleTimeoutMs === 0 ? false : bunIdleTimeoutMs) : undefined;
+		const proxy = given?.proxy === undefined ? resolveHttpsFallbackProxyUrl(requestUrl(input))?.href : undefined;
+		if (timeout === undefined && proxy === undefined) return fetch(input, init);
+		const added: BunFetchInit = {
+			...(timeout === undefined ? {} : { timeout }),
+			...(proxy === undefined ? {} : { proxy }),
+		};
+		if (init === undefined || init === null) return fetch(input, added);
+		// The request's own options are read from `init` itself, as Bun reads them: inherited or not enumerable,
+		// getters with `init` as their receiver, and only the ones Bun asks for. Only Bun's two are added.
+		const options = new Proxy(init, {
+			get: (target, key) =>
+				Object.hasOwn(added, key) ? added[key as keyof BunFetchInit] : Reflect.get(target, key, target),
+		});
 		return fetch(input, options);
 	}, fetch);
 }
