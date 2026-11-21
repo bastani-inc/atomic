@@ -40,6 +40,7 @@ import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import {
 	announceBrokerStart,
 	BROKER_ANNOUNCE_PATH_ENV,
+	BROKER_ANNOUNCE_START_ENV,
 	BROKER_ANNOUNCE_TOKEN_ENV,
 	readBrokerStartAnnouncement,
 	retractBrokerStartAnnouncement,
@@ -271,7 +272,44 @@ describe("a broker announces its own pid", () => {
 		announceBrokerStart(env(file), 4242);
 
 		assert.equal(readFileSync(file, "utf8"), `${token} 4242\n`);
-		assert.equal(readBrokerStartAnnouncement({ path: file, token }), 4242);
+		assert.deepEqual(readBrokerStartAnnouncement({ path: file, token }), { pid: 4242 });
+	});
+
+	test("adds when the broker was created where the parent asks for it, and is read back with it (#6133)", () => {
+		announceBrokerStart({ ...env(file), [BROKER_ANNOUNCE_START_ENV]: "1" }, 4242, () => "133456789012345678");
+
+		assert.equal(readFileSync(file, "utf8"), `${token} 4242 133456789012345678\n`);
+		assert.deepEqual(readBrokerStartAnnouncement({ path: file, token }), {
+			pid: 4242,
+			started: "133456789012345678",
+		});
+	});
+
+	test("is asked to say when the broker was created by the parent that asks it to announce itself (#6133)", () => {
+		const announced = { path: file, token };
+		assert.equal(
+			spawnModule.getBrokerSpawnOptions("/extension", "ignore", announced).env[BROKER_ANNOUNCE_START_ENV],
+			"1",
+		);
+		assert.equal(spawnModule.getBrokerSpawnOptions("/extension").env[BROKER_ANNOUNCE_START_ENV], undefined);
+	});
+
+	test("is exactly `<token> <pid>` for a parent that does not ask when it was created, as an older one does (#6133)", () => {
+		let asked = false;
+		announceBrokerStart(env(file), 4242, () => {
+			asked = true;
+			return "133456789012345678";
+		});
+
+		assert.equal(readFileSync(file, "utf8"), `${token} 4242\n`);
+		assert.equal(asked, false, "the broker read its creation time though nobody asked for it");
+	});
+
+	test("leaves out a creation time it cannot read (#6133)", () => {
+		announceBrokerStart({ ...env(file), [BROKER_ANNOUNCE_START_ENV]: "1" }, 4242, () => undefined);
+
+		assert.equal(readFileSync(file, "utf8"), `${token} 4242\n`);
+		assert.deepEqual(readBrokerStartAnnouncement({ path: file, token }), { pid: 4242 });
 	});
 
 	test("is not written where the parent asked for nothing, or asked in a form that is not plain", () => {
@@ -296,6 +334,12 @@ describe("a broker announces its own pid", () => {
 		assert.equal(readBrokerStartAnnouncement({ path: file, token }), undefined);
 
 		writeFileSync(file, `${token} 4242 extra\n`);
+		assert.equal(readBrokerStartAnnouncement({ path: file, token }), undefined);
+
+		writeFileSync(file, `${token} 4242 0133456789\n`);
+		assert.equal(readBrokerStartAnnouncement({ path: file, token }), undefined);
+
+		writeFileSync(file, `${token} 4242 133456789 1\n`);
 		assert.equal(readBrokerStartAnnouncement({ path: file, token }), undefined);
 
 		removePathSync(file, { force: true });
@@ -324,7 +368,7 @@ describe("a broker announces its own pid", () => {
 		// The old broker finally answers and takes back its own announcement, which is no longer the file's content.
 		retractBrokerStartAnnouncement(oldBroker, 4242);
 
-		assert.equal(readBrokerStartAnnouncement({ path: file, token }), 5151);
+		assert.deepEqual(readBrokerStartAnnouncement({ path: file, token }), { pid: 5151 });
 		assert.equal(readBrokerStartAnnouncement({ path: file, token: oldToken }), undefined);
 	});
 
@@ -381,7 +425,7 @@ describe("a broker announces its own pid", () => {
 				const code = await exitCodeOf(broker);
 
 				assert.equal(code, 0, "the broker did not yield to the live one");
-				assert.equal(readBrokerStartAnnouncement(announced), broker.pid);
+				assert.equal(readBrokerStartAnnouncement(announced)?.pid, broker.pid);
 				assert.equal(
 					existsSync(pathsModule.getBrokerPidPath(dir)),
 					false,
@@ -484,7 +528,7 @@ describe("a broker behind a launcher that hides it", () => {
 		});
 		launchThroughStandIn(`${recordStart} ${brokerScript}`, log, announced);
 		await eventually(() => readBrokerStartAnnouncement(announced) !== undefined, PROMPT_EXIT_BOUND_MS);
-		const pid = readBrokerStartAnnouncement(announced);
+		const pid = readBrokerStartAnnouncement(announced)?.pid;
 		assert.ok(pid !== undefined);
 		assert.equal(finished, false, "broker started after test cleanup");
 		release = await keepProcessPidByStartTime(pid, readFileSync(creationTimePath, "utf8"));
@@ -495,7 +539,7 @@ describe("a broker behind a launcher that hides it", () => {
 		return pid;
 	}
 
-	const probe = (announced: { path: string; token: string }) => () => readBrokerStartAnnouncement(announced);
+	const probe = (announced: { path: string; token: string }) => () => readBrokerStartAnnouncement(announced)?.pid;
 
 	test("a crash after announcing is reported with the broker's log long before the start-up budget (#5332)", async () => {
 		writeFileSync(logPath, "");
@@ -556,7 +600,7 @@ describe("a broker behind a launcher that hides it", () => {
 
 			assert.ok(startedAt() - started >= listenAfterMs - 100, "answered before the broker could have listened");
 		} finally {
-			kill(readBrokerStartAnnouncement(announced));
+			kill(readBrokerStartAnnouncement(announced)?.pid);
 			await eventually(async () => !(await connectable(socketPath)), 10_000);
 			// A killed listener leaves its Unix socket file behind, which would refuse the next listener.
 			removePathSync(socketPath, { force: true });

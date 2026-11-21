@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed closing a session on Windows while its Intercom broker was still starting ending an unrelated process: Windows can give the pid of a broker that has exited to another process within seconds, and the broker was stopped by its pid alone. The broker now records when it was created, and is stopped only through a handle to the process created then, with the processes it started; a pid that names another process counts as a broker that has already exited, so closing no longer waits for it either ([#6133](https://github.com/bastani-inc/atomic/issues/6133)).
+
 ## [0.10.2] - 2026-11-20
 
 ### Fixed
