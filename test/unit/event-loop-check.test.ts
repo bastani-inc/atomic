@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, test } from "vitest";
 import type { CallGraph } from "../../scripts/event-loop/call-graph.ts";
 import { analyzeEventLoop, buildCallGraph, type EventLoopReport } from "../../scripts/event-loop/check-event-loop.ts";
 import { DETACHED_CALLBACKS, type EventLoopPolicy, SINKS } from "../../scripts/event-loop/policy.ts";
-import { REPO_ROOT } from "../../scripts/event-loop/program.ts";
+import { openProject, REPO_ROOT } from "../../scripts/event-loop/program.ts";
 
 const FIXTURE = join(REPO_ROOT, "test", "fixtures", "event-loop");
 const COMPILER_START_TIMEOUT_MS = 60_000;
@@ -332,4 +332,28 @@ describe("event-loop check", () => {
 			"OWNED_ELSEWHERE: nothing left for a landed statement in src/stores.ts#MemoryStore.save; remove the entry",
 		]);
 	});
+});
+
+describe("the interactive host's analysis program", () => {
+	test(
+		"contains every declaration file a sink names, so the callbacks registered through it are followed",
+		() => {
+			// Each sink is matched by the file that declares it. If that file drops out of the program, as lib.dom.d.ts
+			// does when nothing adds the DOM library, every callback registered through the sink is silently skipped.
+			const { project, close } = openProject();
+			try {
+				const files = project.program.getSourceFileNames().map((name) => name.replaceAll("\\", "/"));
+				const declarationFiles = SINKS.map((spec) => spec.file).filter(
+					(file) => file.endsWith(".d.ts") && file !== ".d.ts",
+				);
+				assert.deepEqual(
+					declarationFiles.filter((file) => !files.some((name) => name.endsWith(file))),
+					[],
+				);
+			} finally {
+				close();
+			}
+		},
+		COMPILER_START_TIMEOUT_MS,
+	);
 });
