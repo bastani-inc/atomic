@@ -61,6 +61,12 @@ For TypeScript ESM Node apps, set `"type": "module"` in `package.json` and `"mod
 import { createAgentSession, type HostInput } from "@bastani/atomic";
 ```
 
+### Node 22 hosts
+
+On Node 22, `AsyncLocalStorage` runs on promise hooks. Once a session has run, they stay on for the whole process, and every `await` in your application costs more. Atomic keeps all of its context in one store, so the cost does not grow with the number of sessions. Node 24 and Bun have no such cost.
+
+On Node 22.7 or later, start your host with `node --experimental-async-context-frame` to avoid it. The flag switches `AsyncLocalStorage` to Node 24's implementation for the whole process, so check any code of your own that relies on Node 22's behavior, such as `disable()`.
+
 ### Migrating an existing Node host
 
 <a id="migrating-from-the-experimental-client" />

@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { dirname } from "node:path";
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import { type AuthInteraction, drainPendingOAuthRotations, OAUTH_SHUTDOWN_DRAIN_MS } from "@bastani/atomic-ai";
@@ -10,6 +9,7 @@ import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
 import { onSessionClose } from "./agent-session-release.ts";
 import { type AtomicOAuthLoginCallbacks, loginRuntimeOAuthProvider } from "./agent-session-runtime-auth.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
+import { asyncScope } from "./async-scope.ts";
 import type {
 	ProjectTrustContext,
 	ReplacedSessionContext,
@@ -151,7 +151,7 @@ export class AgentSessionRuntime {
 	private candidates = new Set<AgentSession>();
 	private replacements = 0;
 	private publication: Promise<void> = Promise.resolve();
-	private publicationContext = new AsyncLocalStorage<{ active: boolean }>();
+	private publicationContext = asyncScope<{ active: boolean }>();
 	private retained = new Set<AgentSession>();
 	private retirementCleanup = new Set<Promise<void>>();
 	/** Sessions `rehydrate` brought back that are live now, by id. Released or closed sessions have no entry. */
