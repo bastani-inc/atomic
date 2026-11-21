@@ -22,6 +22,7 @@ import * as os from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { afterAll, test } from "vitest";
 import { withoutSqliteExperimentalWarning } from "../fixtures/sdk-host-fixture-support.mjs";
+import { startPtyProgram } from "../helpers/pty-program.js";
 import { bunExecutable, moduleDir, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -359,77 +360,178 @@ runTest(
 // Packing, registry installation, two strict compiler passes and real Node hosts are structural work.
 const PACKED_NODE_CONSUMER_TIMEOUT_MS = 480_000;
 
+/** This host's napi target, as the platform package of `@bastani/atomic-natives` names it. */
+function hostNativeTarget(): string {
+	if (process.platform === "win32") return `win32-${process.arch}-msvc`;
+	if (process.platform !== "linux") return `${process.platform}-${process.arch}`;
+	const header = (process.report.getReport() as { header?: { glibcVersionRuntime?: string } }).header;
+	return `linux-${process.arch}-${header?.glibcVersionRuntime ? "gnu" : "musl"}`;
+}
+
+/** An isolated profile for a consumer: its own home, agent directory and journal, and npm's repository cache. */
+function consumerProfileEnv(consumer: string, npmCache?: string): NodeJS.ProcessEnv {
+	return {
+		...process.env,
+		HOME: join(consumer, "atomic-journal-home"),
+		USERPROFILE: join(consumer, "atomic-journal-home"),
+		ATOMIC_CODING_AGENT_DIR: join(consumer, "atomic-journal-home", ".atomic", "agent"),
+		ATOMIC_WORKFLOW_JOURNAL_PATH: join(consumer, "atomic-journal-home", "journal.sqlite"),
+		ATOMIC_INTERCOM_SESSION_ID: undefined,
+		...(npmCache === undefined ? {} : { npm_config_cache: npmCache }),
+	};
+}
+
+/** Run Node with `args` and log how long it took; `expectedStatus` is the exit status the run must end with. */
+function runNodeLogged(args: string[], cwd: string, name: string, env: NodeJS.ProcessEnv, expectedStatus = 0) {
+	assert.ok(nodeExe);
+	const started = performance.now();
+	const result = spawnSync(nodeExe, args, {
+		cwd,
+		encoding: "utf8",
+		timeout: PACKED_NODE_CONSUMER_TIMEOUT_MS,
+		maxBuffer: 64 * 1024 * 1024,
+		env,
+	});
+	fs.writeSync(
+		process.stdout.fd,
+		`[packed-node-consumer] ${name}: ${Math.round(performance.now() - started)}ms (status=${result.status})\n`,
+	);
+	for (const line of (result.stdout ?? "").split("\n")) {
+		if (line.startsWith("[packed-node-consumer]")) fs.writeSync(process.stdout.fd, `${line}\n`);
+	}
+	assert.equal(result.status, expectedStatus, `${name}: ${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
+	return result;
+}
+
+interface PackedClosure {
+	/** The packages a consumer installs, `@bastani/atomic-natives` as published. */
+	archives: string[];
+	/** This host's platform package of `@bastani/atomic-natives`, as publish.yml packs it. */
+	platformArchive: string;
+	target: string;
+	/** npm's cache of the repository installation, which the consumers reuse. */
+	npmCache: string;
+}
+
+let packedClosure: PackedClosure | undefined;
+
+/**
+ * Pack the published closure once for every consumer. `@bastani/atomic-natives` is packed as publish.yml leaves it: no
+ * binary of its own, and every platform package listed as an optional dependency at its version.
+ */
+function packClosure(npmCli: string): PackedClosure {
+	if (packedClosure) return packedClosure;
+	packedRoot ??= fs.mkdtempSync(join(os.tmpdir(), "atomic-packed-consumer-"));
+	const archivesDir = join(packedRoot, "archives");
+	fs.mkdirSync(archivesDir);
+	const npmCache = runNodeLogged(
+		[npmCli, "config", "get", "cache"],
+		repoRoot,
+		"repository npm cache",
+		process.env,
+	).stdout.trim();
+	assert.ok(npmCache, "npm must resolve the repository installation cache");
+	const env = { ...process.env, npm_config_cache: npmCache };
+	runNodeLogged(
+		[
+			npmCli,
+			"pack",
+			"--workspace=@bastani/atomic",
+			"--workspace=@bastani/atomic-ai",
+			"--workspace=@bastani/atomic-agent-core",
+			"--workspace=@bastani/atomic-codemode",
+			"--workspace=@bastani/atomic-schema",
+			"--workspace=@bastani/atomic-telemetry",
+			"--workspace=@bastani/atomic-tui",
+			"--ignore-scripts",
+			"--pack-destination",
+			archivesDir,
+		],
+		repoRoot,
+		"pack consumer closure",
+		env,
+	);
+	const nativesDir = join(repoRoot, "packages", "natives");
+	const nativesManifest = JSON.parse(fs.readFileSync(join(nativesDir, "package.json"), "utf8")) as {
+		version: string;
+		files: string[];
+	};
+	const published = JSON.parse(fs.readFileSync(join(packageDir, "npm-shrinkwrap.json"), "utf8")) as {
+		packages: Record<string, { optionalDependencies?: Record<string, string> }>;
+	};
+	const optionalDependencies = published.packages["node_modules/@bastani/atomic-natives"]?.optionalDependencies;
+	assert.ok(optionalDependencies, "the published shrinkwrap lists the platform packages of @bastani/atomic-natives");
+	const nativesStage = join(packedRoot, "natives-package");
+	for (const file of [...nativesManifest.files, "LICENSE"]) {
+		fs.mkdirSync(join(nativesStage, file, ".."), { recursive: true });
+		fs.copyFileSync(join(nativesDir, file), join(nativesStage, file));
+	}
+	fs.writeFileSync(join(nativesStage, "package.json"), JSON.stringify({ ...nativesManifest, optionalDependencies }));
+	runNodeLogged(
+		[npmCli, "pack", "--ignore-scripts", "--pack-destination", archivesDir],
+		nativesStage,
+		"pack native module package",
+		env,
+	);
+	const target = hostNativeTarget();
+	const platformPackage = join(packedRoot, "platform-package");
+	fs.mkdirSync(platformPackage);
+	fs.copyFileSync(
+		join(nativesDir, "native", `atomic_natives.${target}.node`),
+		join(platformPackage, `atomic_natives.${target}.node`),
+	);
+	fs.writeFileSync(
+		join(platformPackage, "package.json"),
+		JSON.stringify({
+			name: `@bastani/atomic-natives-${target}`,
+			version: nativesManifest.version,
+			main: `atomic_natives.${target}.node`,
+			files: [`atomic_natives.${target}.node`],
+		}),
+	);
+	runNodeLogged(
+		[npmCli, "pack", "--ignore-scripts", "--pack-destination", packedRoot],
+		platformPackage,
+		"pack platform package",
+		env,
+	);
+	const archives = fs.readdirSync(archivesDir).map((name) => join(archivesDir, name));
+	assert.equal(archives.length, 8);
+	const platformArchive = fs
+		.readdirSync(packedRoot)
+		.filter((name) => name.endsWith(".tgz"))
+		.map((name) => join(packedRoot!, name));
+	assert.equal(platformArchive.length, 1);
+	packedClosure = { archives, platformArchive: platformArchive[0]!, target, npmCache };
+	return packedClosure;
+}
+
+/** npm's CLI, as the suite runs through npm. */
+function npmCliPath(): string {
+	const npmCli = process.env.npm_execpath;
+	assert.ok(npmCli && /npm-cli\.js$/.test(npmCli), "run this integration suite through npm");
+	return npmCli;
+}
+
 // #3105: no workspace links or loader aliases may participate in this consumer.
 runTest(
 	"packed Node consumer types, assets and builtin parity",
 	() => {
 		assert.ok(nodeExe);
-		packedRoot = fs.mkdtempSync(join(os.tmpdir(), "atomic-packed-consumer-"));
-		const consumer = join(packedRoot, "consumer");
+		const npmCli = npmCliPath();
+		const { archives, platformArchive, target, npmCache } = packClosure(npmCli);
+		const consumer = join(packedRoot!, "consumer");
 		fs.mkdirSync(consumer);
 		fs.writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
-		const npmCli = process.env.npm_execpath;
-		assert.ok(npmCli && /npm-cli\.js$/.test(npmCli), "run this integration suite through npm");
-		const consumerEnv: NodeJS.ProcessEnv = {
-			...process.env,
-			HOME: join(consumer, "atomic-journal-home"),
-			USERPROFILE: join(consumer, "atomic-journal-home"),
-			ATOMIC_CODING_AGENT_DIR: join(consumer, "atomic-journal-home", ".atomic", "agent"),
-			ATOMIC_WORKFLOW_JOURNAL_PATH: join(consumer, "atomic-journal-home", "journal.sqlite"),
-			ATOMIC_INTERCOM_SESSION_ID: undefined,
-		};
-		const execute = (args: string[], cwd: string, name: string, env = consumerEnv) => {
-			const started = performance.now();
-			const result = spawnSync(nodeExe, args, {
-				cwd,
-				encoding: "utf8",
-				timeout: PACKED_NODE_CONSUMER_TIMEOUT_MS,
-				maxBuffer: 64 * 1024 * 1024,
-				env,
-			});
-			fs.writeSync(
-				process.stdout.fd,
-				`[packed-node-consumer] ${name}: ${Math.round(performance.now() - started)}ms (status=${result.status})\n`,
-			);
-			for (const line of (result.stdout ?? "").split("\n")) {
-				if (line.startsWith("[packed-node-consumer]")) fs.writeSync(process.stdout.fd, `${line}\n`);
-			}
-			assert.equal(result.status, 0, `${name}: ${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
-			return result;
-		};
-		const cacheArgs = [npmCli, "config", "get", "cache"];
-		const repositoryCache = execute(cacheArgs, repoRoot, "repository npm cache", process.env).stdout.trim();
-		const isolatedCache = execute(cacheArgs, consumer, "isolated npm cache").stdout.trim();
-		assert.ok(repositoryCache, "npm must resolve the repository installation cache");
+		const consumerEnv = consumerProfileEnv(consumer);
+		const execute = (args: string[], cwd: string, name: string, env = consumerEnv) =>
+			runNodeLogged(args, cwd, name, env);
+		const isolatedCache = execute([npmCli, "config", "get", "cache"], consumer, "isolated npm cache").stdout.trim();
 		fs.writeSync(
 			process.stdout.fd,
-			`[packed-node-consumer] npm cache: isolated=${isolatedCache}; reused=${repositoryCache}\n`,
+			`[packed-node-consumer] npm cache: isolated=${isolatedCache}; reused=${npmCache}\n`,
 		);
-		consumerEnv.npm_config_cache = repositoryCache;
-		execute(
-			[
-				npmCli,
-				"pack",
-				"--workspace=@bastani/atomic",
-				"--workspace=@bastani/atomic-ai",
-				"--workspace=@bastani/atomic-agent-core",
-				"--workspace=@bastani/atomic-codemode",
-				"--workspace=@bastani/atomic-schema",
-				"--workspace=@bastani/atomic-telemetry",
-				"--workspace=@bastani/atomic-tui",
-				"--workspace=@bastani/atomic-natives",
-				"--ignore-scripts",
-				"--pack-destination",
-				packedRoot,
-			],
-			repoRoot,
-			"pack consumer closure",
-		);
-		const archives = fs
-			.readdirSync(packedRoot)
-			.filter((name) => name.endsWith(".tgz"))
-			.map((name) => join(packedRoot!, name));
-		assert.equal(archives.length, 8);
+		consumerEnv.npm_config_cache = npmCache;
 		// Local tarball manifests lack the registry's _hasShrinkwrap marker. Seed
 		// npm's root lock so this consumer uses the published dependency pins too.
 		const publishedShrinkwrap = fs.readFileSync(join(packageDir, "npm-shrinkwrap.json"), "utf8");
@@ -443,6 +545,7 @@ runTest(
 				"--no-fund",
 				"--save-exact",
 				...archives,
+				platformArchive,
 				"typescript@7.0.2",
 				"@types/node@24.12.4",
 			],
@@ -466,7 +569,8 @@ runTest(
 		assert.equal(shrinkwrap, publishedShrinkwrap, "the packed shrinkwrap must match the consumer's lock seed");
 		assert.ok(!shrinkwrap.includes(repoRoot));
 		assert.doesNotMatch(shrinkwrap, /"(?:link|resolved)"\s*:\s*(?:true|"(?:file:|\.\.\/|packages\/))/);
-		assert.ok(fs.readdirSync(join(installed, "atomic-natives", "native")).some((name) => name.endsWith(".node")));
+		assert.ok(!fs.readdirSync(join(installed, "atomic-natives", "native")).some((name) => name.endsWith(".node")));
+		assert.ok(fs.existsSync(join(installed, `atomic-natives-${target}`, `atomic_natives.${target}.node`)));
 		const fixtures = [
 			"consumer-parity-types.mts",
 			"consumer-parity.mjs",
@@ -502,6 +606,133 @@ runTest(
 		const runtime = execute([join(consumer, "consumer-parity.mjs")], consumer, "consumer parity");
 		assert.equal(withoutSqliteExperimentalWarning(runtime.stderr), "");
 		assert.match(runtime.stdout, /"packedConsumer":true/);
+	},
+	PACKED_NODE_CONSUMER_TIMEOUT_MS,
+);
+
+/** How long an interactive start that stops before its first frame may take: a real CLI loading under Node. */
+const STOPPED_START_TIMEOUT_MS = 60_000;
+
+runTest(
+	"an install that omits optional dependencies stops in every mode with one message naming the left-out package",
+	async () => {
+		assert.ok(nodeExe);
+		const npmCli = npmCliPath();
+		const { archives, target, npmCache } = packClosure(npmCli);
+		const consumer = join(packedRoot!, "consumer-without-optional");
+		fs.mkdirSync(consumer);
+		fs.writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
+		fs.copyFileSync(join(packageDir, "npm-shrinkwrap.json"), join(consumer, "npm-shrinkwrap.json"));
+		const env = consumerProfileEnv(consumer, npmCache);
+		runNodeLogged(
+			[
+				npmCli,
+				"install",
+				"--omit=optional",
+				"--ignore-scripts",
+				"--no-audit",
+				"--no-fund",
+				"--save-exact",
+				...archives,
+			],
+			consumer,
+			"install without optional dependencies",
+			env,
+		);
+		const installed = join(consumer, "node_modules", "@bastani");
+		assert.ok(fs.existsSync(join(installed, "atomic-natives", "native", "index.js")));
+		assert.ok(!fs.existsSync(join(installed, `atomic-natives-${target}`)), "npm left the platform package out");
+		const expected =
+			"Atomic's native module is not installed: this install of Atomic omitted optional dependencies, which leaves out " +
+			`@bastani/atomic-natives-${target}. Reinstall Atomic with optional dependencies: npm install -g @bastani/atomic, ` +
+			"pnpm add -g @bastani/atomic or bun add -g @bastani/atomic, without --omit=optional (npm, Bun) or --no-optional " +
+			"(pnpm); in a project, run its install without those options.";
+		const cli = join(installed, "atomic", "dist", "cli.js");
+		const project = join(consumer, "project");
+		fs.mkdirSync(join(project, ".atomic"), { recursive: true });
+		const plain = (text: string) => text.replace(/\u001b\[[0-9;]*m/g, "");
+
+		for (const [mode, args] of [
+			["print", ["-p", "hello"]],
+			["json", ["--mode", "json", "-p", "hello"]],
+			["rpc", ["--mode", "rpc"]],
+		] as const) {
+			const result = runNodeLogged(
+				[cli, "--offline", ...args],
+				project,
+				`${mode} mode without optional dependencies`,
+				env,
+				1,
+			);
+			assert.equal(plain(withoutSqliteExperimentalWarning(result.stderr)), `Error: ${expected}\n`, mode);
+			assert.equal(result.stdout, "", `${mode}: nothing on stdout`);
+		}
+
+		fs.writeFileSync(
+			join(consumer, "sdk-without-native-module.mjs"),
+			`import { createAgentSession } from "@bastani/atomic";
+const written = [];
+const write = process.stderr.write;
+process.stderr.write = (chunk) => (written.push(String(chunk)), true);
+let outcome;
+try {
+	await createAgentSession({ cwd: ${JSON.stringify(project)} });
+	outcome = { created: true };
+} catch (error) {
+	outcome = { name: error.name, code: error.code, message: error.message };
+}
+process.stderr.write = write;
+console.log(JSON.stringify({ ...outcome, stderr: written.join("") }));
+`,
+		);
+		const sdk = runNodeLogged(
+			[join(consumer, "sdk-without-native-module.mjs")],
+			consumer,
+			"SDK without optional dependencies",
+			env,
+		);
+		const outcome = JSON.parse(sdk.stdout) as { name?: string; code?: string; message?: string; stderr: string };
+		assert.deepEqual(
+			{ ...outcome, stderr: withoutSqliteExperimentalWarning(outcome.stderr) },
+			{ name: "NativeModuleUnavailableError", code: "NativeModuleUnavailable", message: expected, stderr: "" },
+		);
+
+		// Both interactive hosts: the isolated engine host for a trusted folder, the in-process one for an untrusted one.
+		for (const trust of ["--approve", "--no-approve"]) {
+			const program = startPtyProgram({
+				executable: nodeExe,
+				args: [cli, "--offline", trust],
+				cwd: project,
+				env: Object.fromEntries(
+					Object.entries({ ...env, TERM: "xterm-256color" }).filter(
+						(entry): entry is [string, string] => entry[1] !== undefined,
+					),
+				),
+				timeoutMs: STOPPED_START_TIMEOUT_MS,
+				cols: 500,
+				rows: 24,
+			});
+			try {
+				const exit = await program.exited;
+				assert.deepEqual(exit, { exitCode: 1, timedOut: false }, program.screen());
+				const lines = program
+					.screen()
+					.split("\n")
+					.map((line) => line.trimEnd())
+					.filter(
+						(line) => line !== "" && !line.includes("ExperimentalWarning") && !line.includes("--trace-warnings"),
+					);
+				// The early editor may have painted its empty frame before the session started; nothing else is shown.
+				assert.deepEqual(
+					lines.filter((line) => !/^(?:─+|❯)$/.test(line)),
+					[`Error: ${expected}`],
+					`${trust}:\n${program.screen()}`,
+				);
+				assert.equal(lines.at(-1), `Error: ${expected}`, trust);
+			} finally {
+				program.kill();
+			}
+		}
 	},
 	PACKED_NODE_CONSUMER_TIMEOUT_MS,
 );

@@ -285,6 +285,137 @@ test("a snapshot the session records while its subagents' captures are compared 
 	assert.equal(reopened.getLatestWorktreeSnapshots().get(clone)?.id, recorded);
 });
 
+test("a subagent recorded before a compaction of the session still counts", async () => {
+	const { clone, store, parent } = await project();
+	const { child, finished } = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "child\n");
+	await finished(await capture(child, store, clone));
+	await parent.appendCompaction("earlier work", null, 100, { strategy: "verbatim-lines" });
+	await parent.appendMessage({ role: "user", content: "later", timestamp: Date.now() });
+	const reopened = await SessionManager.open(store, parent.getSessionId());
+	assert.ok(
+		!reopened.getBranch().some((entry) => entry.type === "custom" && entry.customType === "subagent-child"),
+		"the subagent's record left the session's window",
+	);
+
+	const resumed = await resume(store, parent, clone, true);
+	assert.equal(content(resumed.getCwd(), "work.txt"), "child\n");
+});
+
+test("a subagent recorded on a branch the session left still does not count once a compaction archived it", async () => {
+	const { clone, store, parent } = await project();
+	const before = parent.getLeafId();
+	assert.ok(before);
+	const { child, finished } = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "child\n");
+	await finished(await capture(child, store, clone));
+	await parent.branch(before);
+	await parent.appendMessage({ role: "user", content: "another way", timestamp: Date.now() });
+	await parent.appendCompaction("earlier work", null, 100, { strategy: "verbatim-lines" });
+	await parent.appendMessage({ role: "user", content: "later", timestamp: Date.now() });
+
+	const resumed = await resume(store, parent, clone, false);
+	assert.equal(resumed.getLatestWorktreeSnapshots().size, 0);
+});
+
+test("a subagent a compaction archived stops counting once the same session goes on along another branch", async () => {
+	const { clone, store, parent } = await project();
+	const before = parent.getLeafId();
+	assert.ok(before);
+	const { child, finished } = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "child\n");
+	await finished(await capture(child, store, clone));
+	await parent.appendCompaction("earlier work", null, 100, { strategy: "verbatim-lines" });
+	await parent.appendMessage({ role: "user", content: "later", timestamp: Date.now() });
+	const live = await SessionManager.open(store, parent.getSessionId());
+	await live.branch(before);
+	await live.appendMessage({ role: "user", content: "another way", timestamp: Date.now() });
+
+	const options = sessionResumeOptions(
+		"cli",
+		sandbox.root,
+		sandbox.path("agent"),
+		SettingsManager.inMemory(),
+		() => true,
+	);
+	await prepareSessionResume(live, { ...options, blueprints: "skip" });
+	assert.equal(live.getLatestWorktreeSnapshots().size, 0);
+});
+
+test("a subagent's capture one compaction archived still counts after a later compaction of the same session", async () => {
+	const { clone, store, parent } = await project();
+	const { child, finished } = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "child\n");
+	await finished(await capture(child, store, clone));
+	await parent.appendCompaction("earlier work", null, 100, { strategy: "verbatim-lines" });
+	await parent.appendMessage({ role: "user", content: "later", timestamp: Date.now() });
+	await parent.appendCompaction("later work", null, 100, { strategy: "verbatim-lines" });
+	await parent.appendMessage({ role: "user", content: "even later", timestamp: Date.now() });
+	renameSync(clone, `${clone}-moved`);
+
+	const options = sessionResumeOptions(
+		"cli",
+		sandbox.root,
+		sandbox.path("agent"),
+		SettingsManager.inMemory(),
+		() => true,
+	);
+	const prepared = await prepareSessionResume(parent, { ...options, blueprints: "skip" });
+	assert.ok(prepared.status === "ready");
+	assert.equal(content(prepared.sessionManager.getCwd(), "work.txt"), "child\n");
+});
+
+test("a subagent's capture a compaction archived stops counting once the same session went on along another branch and compacted again", async () => {
+	const { clone, store, parent } = await project();
+	const first = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "first\n");
+	await first.finished(await capture(first.child, store, clone));
+	await parent.appendCompaction("earlier work", null, 100, { strategy: "verbatim-lines" });
+	await parent.resetLeaf();
+	await parent.appendMessage({ role: "user", content: "start over", timestamp: Date.now() });
+	const second = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "second\n");
+	const secondAt = await capture(second.child, store, clone);
+	sandbox.write(join(clone, "work.txt"), "first\n");
+	await capture(first.child, store, clone);
+	await second.finished(secondAt);
+	await parent.appendCompaction("other work", null, 100, { strategy: "verbatim-lines" });
+	await parent.appendMessage({ role: "user", content: "later", timestamp: Date.now() });
+	renameSync(clone, `${clone}-moved`);
+
+	const options = sessionResumeOptions(
+		"cli",
+		sandbox.root,
+		sandbox.path("agent"),
+		SettingsManager.inMemory(),
+		() => true,
+	);
+	const prepared = await prepareSessionResume(parent, { ...options, blueprints: "skip" });
+	assert.ok(prepared.status === "ready");
+	assert.equal(content(prepared.sessionManager.getCwd(), "work.txt"), "second\n");
+});
+
+test("a subagent a compaction archived stops counting once the session starts over, also when it is resumed without reopening it", async () => {
+	const { clone, store, parent } = await project();
+	const { child, finished } = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "child\n");
+	await finished(await capture(child, store, clone));
+	await parent.appendCompaction("earlier work", null, 100, { strategy: "verbatim-lines" });
+	await parent.appendMessage({ role: "user", content: "later", timestamp: Date.now() });
+	await parent.resetLeaf();
+	await parent.appendMessage({ role: "user", content: "start over", timestamp: Date.now() });
+
+	const options = sessionResumeOptions(
+		"cli",
+		sandbox.root,
+		sandbox.path("agent"),
+		SettingsManager.inMemory(),
+		() => true,
+	);
+	await prepareSessionResume(parent, { ...options, blueprints: "skip" });
+	assert.equal(parent.getLatestWorktreeSnapshots().size, 0);
+});
+
 test("a checkout the session took from its subagent stays its own after the subagent's refs are gone and Git pruned unreferenced commits", async () => {
 	const { clone, store, parent } = await project();
 	const { child, finished } = await subagent(parent, store, clone);

@@ -430,7 +430,9 @@ for (const [output, meta] of Object.entries(result.metafile.outputs)) {
 	if ([...renames.values()].includes(renamed)) throw new Error(`split-dist: two shared files would be named ${renamed}`);
 	renames.set(`${match[2]}-${match[3]}.js`, renamed);
 }
-const contentNames = renames.size > 0 ? new RegExp([...renames.keys()].map((name) => name.replace(/[.]/g, "\\.")).join("|"), "g") : undefined;
+/** `text` matched literally in a regular expression. */
+const literally = (text) => text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+const contentNames = renames.size > 0 ? new RegExp([...renames.keys()].map(literally).join("|"), "g") : undefined;
 const outputFiles = result.outputFiles.map((file) => {
 	const base = file.path.slice(file.path.lastIndexOf(sep) + 1);
 	const renamedBase = renames.get(base) ?? renames.get(base.replace(/\.map$/, ""))?.concat(".map");

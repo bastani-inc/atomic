@@ -213,7 +213,7 @@ A message can reach a session from a sender outside its groups: a session with a
 
 - It leads only to the session whose message reached you. It never lets you reach anyone else, and it does not add the sender to your `intercom list`. Only an explicit `send` or `ask` to that sender uses it: a pattern send such as a name glob or `subagents:*` never does.
 - It belongs to that session, not to its name or ID. When the sender quits for good the path closes, and a different session that later takes the same name or ID cannot be reached through it.
-- You can send at most **3 messages** within **30 minutes** of the sender's latest message to you. Each new message from that sender opens the path again with a fresh count and window. A message the sender retries, or one handed to you again, is not a new message and opens nothing. A retried answer of yours is counted once.
+- You can send at most **3 messages** within **30 minutes** of the sender's latest message to you. Each new message from that sender opens the path again with a fresh count and window. An answer that reaches Intercom after a new message was handed to you counts toward that new message's 3, even one you sent before you read it. A message the sender retries, or one handed to you again, is not a new message and opens nothing. A retried answer of yours is counted once.
 - With [multi-node routing](/intercom/operations#running-intercom-across-machines), it works the same across machines, and an answer to a sender that went offline waits for it like any other message.
 - A session with a [reach policy](#reach-policies) sends only within that policy and never uses a return path. A session without one that it writes to can still answer it this way.
 
