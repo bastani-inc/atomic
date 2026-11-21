@@ -25,6 +25,7 @@
 - An npm or Bun install of Atomic writes about 2,170 fewer files of its own: the package no longer includes the separate compiled copies of the code it bundles (about 4,480 files and 70 MB unpacked with them, 2,300 files and 40 MB now).
 - Atomic starts faster again: the package's own dependencies for YAML, Markdown and HTML conversion, diffs, version ranges, glob patterns, JSON streaming and starting commands load from its shared files instead of about 260 files of their own. Their licenses are in `dist/THIRD_PARTY_NOTICES.md`.
 - A global npm install of Atomic writes about 21,100 files instead of 28,000, so installing and upgrading finish sooner, most of all on Windows, where antivirus software scans each new file. `@bastani/atomic` no longer depends on packages that none of its files load, such as the MCP SDK, zod and linkedom, whose code the builtin extensions already include; an app or extension that imports one of them without listing it in its own `package.json` must now list it. Atomic's packages no longer include declaration maps (`.d.ts.map`), which pointed at TypeScript sources the packages do not include. Each builtin extension that includes third-party code lists those packages' licence and notice texts in its `THIRD_PARTY_NOTICES.txt`.
+- An npm or Bun install of Atomic writes about 2,180 fewer files of its own: the package no longer includes the separate compiled copies of the code it bundles (about 3,900 files and 71 MB unpacked with them, 1,720 files and 41 MB now).
 
 ### Fixed
 
