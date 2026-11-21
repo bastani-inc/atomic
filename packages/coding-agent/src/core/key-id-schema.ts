@@ -1,5 +1,5 @@
+import { type TSchemaOptions, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { Key, type KeyId } from "@bastani/atomic-tui";
-import { type TSchemaOptions, Type } from "typebox";
 
 const modifiers = ["ctrl", "shift", "alt", "super"] as const;
 const baseKeyPattern = `(?:[a-z0-9]|${Object.values(Key)
