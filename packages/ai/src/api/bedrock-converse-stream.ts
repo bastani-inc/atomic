@@ -501,14 +501,12 @@ function formatBedrockError(error: unknown, connection: ConnectionFailure): stri
 }
 
 /**
- * Whether `error` is one of Bedrock's modeled exceptions, such as `ValidationException`: the SDK throws its base
- * service exception for an answer it has no exception for, under whatever name the answer gives.
+ * Whether `error` is one of Bedrock's modeled exceptions, such as `ValidationException`, whose names all end in
+ * `Exception` (see `extractBedrockErrorCode`). An answer the SDK has no exception for comes as `Unknown`, under the code
+ * the answer gives, or as the error that parsing it failed with.
  */
 function isModeledBedrockException(error: unknown): boolean {
-	return (
-		error instanceof BedrockRuntimeServiceException &&
-		Object.getPrototypeOf(error) !== BedrockRuntimeServiceException.prototype
-	);
+	return error instanceof Error && error.name.endsWith("Exception");
 }
 
 /**
