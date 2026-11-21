@@ -300,6 +300,8 @@ pi.on("session_shutdown", async (event, ctx) => {
 
 When you quit the interactive app, `session_shutdown` handlers have about five seconds to finish; a handler still running then is stopped with the rest of the session. The same applies, with `fromSignal: true`, when Atomic receives `SIGTERM` or `SIGHUP` or its terminal window is closed on Linux or macOS; a second `SIGTERM` stops the session at once. On Windows, closing the console window ends Atomic without running `session_shutdown`.
 
+A signal that arrives while a quit is already shutting down joins that shutdown instead of ending Atomic at once; only a second `SIGTERM` does. A [`pi.exec`](/extensions/api-reference#pi-exec-command-args-options) command still running when you quit is ended first, so it cannot hold up the handlers.
+
 ### Agent Events
 
 #### before_agent_start
