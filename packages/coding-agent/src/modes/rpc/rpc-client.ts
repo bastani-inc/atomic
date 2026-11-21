@@ -129,6 +129,8 @@ export class RpcClient extends RpcClientApi {
 	 * whether that child said its shutdown is complete.
 	 */
 	private stoppedEngine: { generation: number; shutdownComplete: PromiseWithResolvers<void> } | undefined;
+	/** The ready engine child an explicit stop is ending, until that stop has finished. */
+	private stoppingEngine: ChildProcess | undefined;
 
 	private declare options: RpcClientOptions;
 
@@ -333,6 +335,8 @@ export class RpcClient extends RpcClientApi {
 		this.engineMonitor = undefined;
 		this.stdinWriter = undefined;
 		this.process = null;
+		// Until the stop is over, the engine it is ending is still this client's ready engine.
+		if (terminateTree && engineReady) this.stoppingEngine = child;
 		// When this stop ends an engine generation, updates read before it reach the host before the host hears
 		// the generation ended, and what the engine writes while it shuts down does not reach the host at all
 		// (handleStoppedEngineLine). A generation that already ended on its own keeps its terminal drain.
@@ -353,7 +357,11 @@ export class RpcClient extends RpcClientApi {
 		// Claim before terminating so the exit this provokes does not relabel a
 		// deliberate stop; an exit that already claimed keeps its own error.
 		this.terminalDrain.claim(endedGeneration, stopError);
-		await terminateRpcClientProcess(child, terminateTree, graceful && engineReady, shutdownComplete.promise);
+		try {
+			await terminateRpcClientProcess(child, terminateTree, graceful && engineReady, shutdownComplete.promise);
+		} finally {
+			if (this.stoppingEngine === child) this.stoppingEngine = undefined;
+		}
 		await this.beginTerminalDrain(endedGeneration, stopError);
 		this.stopReadingStdout?.();
 		this.stopReadingStdout = null;
@@ -482,9 +490,13 @@ export class RpcClient extends RpcClientApi {
 	getEnginePid(): number | undefined {
 		return this.enginePid;
 	}
-	/** The process ID of the engine child this client runs, once that child has reported ready; its stop ends it. */
+	/**
+	 * The process ID of the engine child this client runs once it has reported ready, or of a ready one a stop is still
+	 * ending, while it has not exited: the stop ends it within its bounded window.
+	 */
 	getReadyEngineChildPid(): number | undefined {
-		return this.enginePid === undefined ? undefined : this.process?.pid;
+		const child = this.enginePid === undefined ? undefined : (this.process ?? this.stoppingEngine);
+		return child && child.exitCode === null && child.signalCode === null ? child.pid : undefined;
 	}
 	getGeneration(): number {
 		return this.generation;
