@@ -67,7 +67,7 @@ import { Value } from "typebox/value";
 import { Type as SinclairType } from "@sinclair/typebox";
 import { Value as SinclairValue } from "@sinclair/typebox/value";
 import { Type as SdkType } from "@bastani/atomic/typebox";
-import { Type as SchemaType } from "@bastani/atomic-schema/typebox";
+import { Type as SchemaType } from "@bastani/atomic-ai/utils/typebox";
 import { Type as AiType } from "@bastani/atomic-ai";
 import { Type as LegacyAiType } from "@mariozechner/pi-ai";
 export default function (pi) {

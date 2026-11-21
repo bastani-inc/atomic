@@ -1,5 +1,5 @@
-export type { Static, TSchema } from "@bastani/atomic-schema/typebox";
-export { Type } from "@bastani/atomic-schema/typebox";
+export type { Static, TSchema } from "typebox";
+export { Type } from "typebox";
 
 // Core only, side-effect free: no generated catalogs, no provider factories,
 // no api-registry, no OAuth implementations, no compat. Provider factories

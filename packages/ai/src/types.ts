@@ -883,7 +883,7 @@ export interface ClassifierResult {
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
-import type { TSchema } from "@bastani/atomic-schema/typebox";
+import type { TSchema } from "typebox";
 
 /** OpenAI grammar variants for constrained sampling. */
 export type GrammarFormat = "openai_lark" | "openai_regex";

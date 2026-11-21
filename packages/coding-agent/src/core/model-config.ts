@@ -9,9 +9,9 @@ import {
 	ModelPromptCacheSchema,
 	ThinkingLevelMapSchema,
 } from "@bastani/atomic-ai/providers/model-schema";
-import { type Static, Type } from "@bastani/atomic-schema/typebox";
-import { Compile } from "@bastani/atomic-schema/typebox/compile";
-import type { TLocalizedValidationError } from "@bastani/atomic-schema/typebox/error";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox";
+import { Compile } from "@bastani/atomic-ai/utils/typebox/compile";
+import type { TLocalizedValidationError } from "@bastani/atomic-ai/utils/typebox/error";
 import { stripJsonComments } from "../utils/json.ts";
 import { normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";

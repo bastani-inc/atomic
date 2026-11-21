@@ -1,5 +1,5 @@
-import { type Static, type TProperties, Type } from "@bastani/atomic-schema/typebox";
-import { Compile } from "@bastani/atomic-schema/typebox/compile";
+import { type Static, type TProperties, Type } from "@bastani/atomic-ai/utils/typebox";
+import { Compile } from "@bastani/atomic-ai/utils/typebox/compile";
 import { THEME_TOKENS, type ThemeColorValues, type ThemeTokenDescriptors } from "./theme-tokens.ts";
 
 function colorValue(description?: string) {

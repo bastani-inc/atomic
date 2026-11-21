@@ -44,7 +44,7 @@ export function withLegacyPackageNames<T>(modules: Record<string, T>): Record<st
 }
 
 /**
- * TypeBox's public subpaths. Atomic bundles one copy of TypeBox in `@bastani/atomic-schema/typebox`, and every
+ * TypeBox's public subpaths. Atomic bundles one copy of TypeBox in `@bastani/atomic-ai/utils/typebox`, and every
  * `typebox` specifier an extension imports resolves to it.
  */
 export const TYPEBOX_SUBPATHS = [

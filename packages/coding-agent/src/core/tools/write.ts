@@ -1,5 +1,5 @@
 import type { AgentTool } from "@bastani/atomic-agent-core";
-import { type Static, Type } from "@bastani/atomic-schema/typebox";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox";
 import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";

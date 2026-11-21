@@ -67,7 +67,8 @@ function getCreateJiti(): Promise<typeof createJiti> {
 	return createJitiPromise;
 }
 
-const HOST_TYPEBOX = "@bastani/atomic-schema/typebox";
+/** Where Atomic's own packages import TypeBox's `Type` from. */
+const HOST_TYPEBOX = "@bastani/atomic-ai";
 const sharesHostTypeboxByDir = new Map<string, Promise<boolean>>();
 
 /**
@@ -744,14 +745,14 @@ async function computeAliases(): Promise<Record<string, string>> {
 
 /**
  * Every `typebox` specifier, the SDK's re-exports of it (`@bastani/atomic/typebox`), and TypeBox 0.x's name for the
- * subpaths TypeBox 1 shares with it, as the files of Atomic's one copy of TypeBox in `@bastani/atomic-schema`.
+ * subpaths TypeBox 1 shares with it, as the files of Atomic's one copy of TypeBox in `@bastani/atomic-ai/utils/typebox`.
  */
 function typeboxAliases(forkedPackageAliases: Record<string, string>, sdkTypeboxDir: string): Record<string, string> {
+	const aiUtils = forkedPackageAliases["@bastani/atomic-ai/utils"];
+	if (aiUtils === undefined) throw new Error("@bastani/atomic-ai does not export ./utils/*");
 	const aliases: Record<string, string> = {};
 	for (const subpath of TYPEBOX_SUBPATHS) {
-		const target = forkedPackageAliases[`@bastani/atomic-schema/typebox${subpath}`];
-		if (target === undefined) throw new Error(`@bastani/atomic-schema does not export ./typebox${subpath}`);
-		aliases[`typebox${subpath}`] = target;
+		aliases[`typebox${subpath}`] = path.join(aiUtils, `typebox${subpath}.js`);
 		aliases[`@bastani/atomic/typebox${subpath}`] = path.join(sdkTypeboxDir, `${subpath.slice(1) || "index"}.js`);
 	}
 	for (const subpath of ["", "/compile", "/value"])

@@ -1,6 +1,6 @@
 import { readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
 import type { AgentTool } from "@bastani/atomic-agent-core";
-import { type Static, Type } from "@bastani/atomic-schema/typebox";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox";
 import { Text } from "@bastani/atomic-tui";
 import nodePath from "path";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";

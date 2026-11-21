@@ -1,4 +1,4 @@
-import { type Static, Type } from "@bastani/atomic-schema/typebox";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox";
 import type { ExtensionAPI, ToolDefinition, ToolInfo, ToolNamespace } from "../../core/extensions/types.ts";
 import { resolveSchemaRef } from "../../utils/json-schema-ref.ts";
 import { createMcpToolName } from "../mcp/tools.ts";

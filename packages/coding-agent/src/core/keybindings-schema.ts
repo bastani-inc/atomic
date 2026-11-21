@@ -1,4 +1,4 @@
-import { type TSchema, Type } from "@bastani/atomic-schema/typebox";
+import { type TSchema, Type } from "@bastani/atomic-ai/utils/typebox";
 import { KeybindingValueSchema, keybindingValueSchema } from "./key-id-schema.ts";
 import { KEYBINDINGS } from "./keybindings.ts";
 

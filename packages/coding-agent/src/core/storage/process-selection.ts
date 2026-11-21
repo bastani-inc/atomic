@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import type { Static, TSchema } from "@bastani/atomic-schema/typebox";
-import { Value } from "@bastani/atomic-schema/typebox/value";
+import type { Static, TSchema } from "@bastani/atomic-ai/utils/typebox";
+import { Value } from "@bastani/atomic-ai/utils/typebox/value";
 import { ENV_SESSION_DIR } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
 import { SessionStorageSelectionSchema, StorageSelectionSchema } from "../settings-schema.ts";

@@ -1,5 +1,5 @@
 import { ModelThinkingLevelSchema } from "@bastani/atomic-ai/providers/model-schema";
-import { type Static, type TSchemaOptions, Type } from "@bastani/atomic-schema/typebox";
+import { type Static, type TSchemaOptions, Type } from "@bastani/atomic-ai/utils/typebox";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 
 function nonNegativeSafeInteger(options: { default?: number; description?: string } = {}) {

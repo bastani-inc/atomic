@@ -1,5 +1,5 @@
 import { type ClassifierAnswer, containsKnownEnvCredential } from "@bastani/atomic-ai";
-import { type TSchema, Type } from "@bastani/atomic-schema/typebox";
+import { type TSchema, Type } from "@bastani/atomic-ai/utils/typebox";
 import { raceWithAbortSignal } from "../../utils/abort.js";
 import { type DecisionRunResult, decisionFailure, runDecision } from "../structured-output/index.js";
 import { resolveDecisionModel } from "../structured-output/resolver.js";

@@ -1,4 +1,4 @@
-import { type Static, type TProperties, type TSchemaOptions, Type } from "@bastani/atomic-schema/typebox";
+import { type Static, type TProperties, type TSchemaOptions, Type } from "typebox";
 import { ModelCostSchema } from "./model-schema.ts";
 
 function sessionAffinityFormat(options?: TSchemaOptions) {

@@ -1,6 +1,6 @@
 import { StringEnum, type ExtensionAPI } from "@bastani/atomic";
 import { Text } from "@bastani/atomic-tui";
-import { Type } from "@bastani/atomic-schema/typebox";
+import { Type } from "@bastani/atomic-ai";
 import { renderWebSearchResult } from "./result-renderers.js";
 import type { ExtractedContent } from "./extract.js";
 import { search } from "./gemini-search.js";

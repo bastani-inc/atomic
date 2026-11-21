@@ -44,11 +44,14 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@bastani/atomic-tui": "*",
-    "@bastani/atomic-schema": "*"
+    "@bastani/atomic-ai": "*",
+    "@bastani/atomic-tui": "*"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {
+      "optional": true
+    },
+    "@bastani/atomic-ai": {
       "optional": true
     },
     "@bastani/atomic-tui": {

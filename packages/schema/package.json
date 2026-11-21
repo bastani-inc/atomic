@@ -19,69 +19,6 @@
 			"module": "./dist/_modules/formats/index.js",
 			"browser": "./dist/_modules/formats/index.js",
 			"import": "./dist/formats/index.js"
-		},
-		"./typebox": {
-			"source": "./src/typebox/index.ts",
-			"types": "./dist/typebox/index.d.ts",
-			"module": "./dist/_modules/typebox/index.js",
-			"browser": "./dist/_modules/typebox/index.js",
-			"import": "./dist/typebox/index.js"
-		},
-		"./typebox/compile": {
-			"source": "./src/typebox/compile.ts",
-			"types": "./dist/typebox/compile.d.ts",
-			"module": "./dist/_modules/typebox/compile.js",
-			"browser": "./dist/_modules/typebox/compile.js",
-			"import": "./dist/typebox/compile.js"
-		},
-		"./typebox/error": {
-			"source": "./src/typebox/error.ts",
-			"types": "./dist/typebox/error.d.ts",
-			"module": "./dist/_modules/typebox/error.js",
-			"browser": "./dist/_modules/typebox/error.js",
-			"import": "./dist/typebox/error.js"
-		},
-		"./typebox/format": {
-			"source": "./src/typebox/format.ts",
-			"types": "./dist/typebox/format.d.ts",
-			"module": "./dist/_modules/typebox/format.js",
-			"browser": "./dist/_modules/typebox/format.js",
-			"import": "./dist/typebox/format.js"
-		},
-		"./typebox/guard": {
-			"source": "./src/typebox/guard.ts",
-			"types": "./dist/typebox/guard.d.ts",
-			"module": "./dist/_modules/typebox/guard.js",
-			"browser": "./dist/_modules/typebox/guard.js",
-			"import": "./dist/typebox/guard.js"
-		},
-		"./typebox/schema": {
-			"source": "./src/typebox/schema.ts",
-			"types": "./dist/typebox/schema.d.ts",
-			"module": "./dist/_modules/typebox/schema.js",
-			"browser": "./dist/_modules/typebox/schema.js",
-			"import": "./dist/typebox/schema.js"
-		},
-		"./typebox/system": {
-			"source": "./src/typebox/system.ts",
-			"types": "./dist/typebox/system.d.ts",
-			"module": "./dist/_modules/typebox/system.js",
-			"browser": "./dist/_modules/typebox/system.js",
-			"import": "./dist/typebox/system.js"
-		},
-		"./typebox/type": {
-			"source": "./src/typebox/type.ts",
-			"types": "./dist/typebox/type.d.ts",
-			"module": "./dist/_modules/typebox/type.js",
-			"browser": "./dist/_modules/typebox/type.js",
-			"import": "./dist/typebox/type.js"
-		},
-		"./typebox/value": {
-			"source": "./src/typebox/value.ts",
-			"types": "./dist/typebox/value.d.ts",
-			"module": "./dist/_modules/typebox/value.js",
-			"browser": "./dist/_modules/typebox/value.js",
-			"import": "./dist/typebox/value.js"
 		}
 	},
 	"sideEffects": false,
@@ -99,7 +36,7 @@
 		"build": "tsc -p tsconfig.build.json",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build",
-		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --inline=typebox",
+		"build:bundle": "node ../../scripts/bundle-package-dist.mjs",
 		"prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\""
 	},
 	"keywords": [
@@ -129,10 +66,8 @@
 	"engines": {
 		"node": ">=22.19.0"
 	},
-	"dependencies": {
-		"typebox": "1.3.27"
-	},
 	"devDependencies": {
+		"typebox": "1.3.27",
 		"vitest": "4.1.12"
 	}
 }

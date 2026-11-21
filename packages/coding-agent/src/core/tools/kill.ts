@@ -1,4 +1,4 @@
-import { Type } from "@bastani/atomic-schema/typebox";
+import { Type } from "@bastani/atomic-ai/utils/typebox";
 import { Container, Text } from "@bastani/atomic-tui";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";

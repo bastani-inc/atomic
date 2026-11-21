@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type KeyId, Text } from "@bastani/atomic-tui";
-import { Type } from "@bastani/atomic-schema/typebox";
+import { Type } from "@bastani/atomic-ai";
 import { renderWebAccessToolResult } from "./result-renderers.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, type LifecycleLease } from "./lifecycle-lease.js";
 

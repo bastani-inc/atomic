@@ -19,7 +19,7 @@ try {
 	const { loadExtensionFromFactory, createExtensionRuntime } = await import("../../src/core/extensions/loader.ts");
 	const { createEventBus } = await import("../../src/index.ts");
 	const { validateToolArguments } = await import("@bastani/atomic-ai");
-	const host = await import("@bastani/atomic-schema/typebox/format");
+	const host = await import("@bastani/atomic-ai/utils/typebox/format");
 	const extensionDir = path.join(root, "extension");
 	// A `typebox` package of the extension's own, which Bun would resolve if it imported the extension natively.
 	const ownTypebox = path.join(extensionDir, "node_modules", "typebox");

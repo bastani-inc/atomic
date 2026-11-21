@@ -1,5 +1,5 @@
 import type { ClassifierAnswer } from "@bastani/atomic-ai";
-import type { Static, TSchema } from "@bastani/atomic-schema/typebox";
+import type { Static, TSchema } from "@bastani/atomic-ai/utils/typebox";
 import type { StructuredChoiceQuestion } from "./types.js";
 
 type ChoiceValue = string | number | boolean | null;

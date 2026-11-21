@@ -1,5 +1,5 @@
 import type { AgentTool, AgentToolParams } from "@bastani/atomic-agent-core";
-import type { Static, TSchema } from "@bastani/atomic-schema/typebox";
+import type { Static, TSchema } from "@bastani/atomic-ai/utils/typebox";
 import { runCallback, runSynchronousCallback } from "../callback-activity.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import type { ToolConcurrency } from "./tool-concurrency.ts";

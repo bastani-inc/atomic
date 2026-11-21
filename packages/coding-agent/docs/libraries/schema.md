@@ -138,9 +138,6 @@ const user = compile(Type.Object({ name: Type.String(), tags: Type.Array(Type.St
 TypeBox's `BigInt` and `Undefined` are supported (see Values). Its other JavaScript-only types (`Function`, `Symbol`,
 ...), refinements and codecs are not JSON Schema and are not supported.
 
-`@bastani/atomic-schema/typebox` and its subpaths (`/compile`, `/value`, `/format` and TypeBox's others) export the copy
-of TypeBox that Atomic uses; `@bastani/atomic/typebox` re-exports it.
-
 ### Coercion
 
 `compile(schema, { coerce: true })` adds `coerce()` and `parse()`, for loosely typed input such as a model's tool call

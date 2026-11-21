@@ -1,3 +1,3 @@
 /** TypeBox's `typebox/compile`, the copy Atomic uses: import it from here to share Atomic's formats, settings and locale. */
-export * from "@bastani/atomic-schema/typebox/compile";
-export { default } from "@bastani/atomic-schema/typebox/compile";
+export * from "@bastani/atomic-ai/utils/typebox/compile";
+export { default } from "@bastani/atomic-ai/utils/typebox/compile";

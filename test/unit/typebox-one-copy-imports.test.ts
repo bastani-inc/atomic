@@ -18,15 +18,16 @@ function sourceFiles(directory: string): string[] {
 	return files;
 }
 
-// Atomic ships one copy of TypeBox, in @bastani/atomic-schema. Shipped code that imported the `typebox` package itself
-// would load a second copy, whose formats and settings Atomic's validation never sees.
+// Atomic ships one copy of TypeBox, bundled into @bastani/atomic-ai, whose own `typebox` imports the bundle keeps in that
+// copy. Other shipped code that imported the `typebox` package itself would load a second copy, whose formats and
+// settings Atomic's validation never sees.
 test("shipped sources import TypeBox only from Atomic's copy", () => {
 	const packages = join(repositoryRoot, "packages");
 	const offenders: string[] = [];
 	for (const name of readdirSync(packages)) {
 		for (const file of sourceFiles(join(packages, name))) {
 			const path = relative(repositoryRoot, file).split("\\").join("/");
-			if (path.startsWith("packages/schema/src/typebox/")) continue;
+			if (path.startsWith("packages/ai/src/")) continue;
 			const source = readFileSync(file, "utf8");
 			if (/(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:typebox|@sinclair\/typebox)(?:\/[^"']*)?["']/.test(source))
 				offenders.push(path);

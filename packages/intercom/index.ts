@@ -1,7 +1,7 @@
 import { forwardReleaseObservation } from "./broker/released-child-receipts.js";
 import { reportOwnedIntercomDiagnostic } from "./diagnostics.js";
 import { APP_NAME, type ExtensionAPI, type ExtensionContext, getEnvValue, type SessionStartEvent, type ToolDefinition } from "@bastani/atomic";
-import { Type } from "@bastani/atomic-schema/typebox";
+import { Type } from "@bastani/atomic-ai";
 import { getExtensionContextOwner } from "./context-owner.js";
 import { renderContactSupervisorCall, renderIntercomCall, renderIntercomToolResult } from "./result-renderers.js";
 import { renderIntercomCustomMessage } from "./ui/inline-message.js";

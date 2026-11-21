@@ -66,15 +66,15 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		storage,
 	] = await Promise.all([
 		// Atomic's one copy of TypeBox, which every `typebox` specifier an extension uses resolves to.
-		import("@bastani/atomic-schema/typebox"),
-		import("@bastani/atomic-schema/typebox/compile"),
-		import("@bastani/atomic-schema/typebox/error"),
-		import("@bastani/atomic-schema/typebox/format"),
-		import("@bastani/atomic-schema/typebox/guard"),
-		import("@bastani/atomic-schema/typebox/schema"),
-		import("@bastani/atomic-schema/typebox/system"),
-		import("@bastani/atomic-schema/typebox/type"),
-		import("@bastani/atomic-schema/typebox/value"),
+		import("@bastani/atomic-ai/utils/typebox"),
+		import("@bastani/atomic-ai/utils/typebox/compile"),
+		import("@bastani/atomic-ai/utils/typebox/error"),
+		import("@bastani/atomic-ai/utils/typebox/format"),
+		import("@bastani/atomic-ai/utils/typebox/guard"),
+		import("@bastani/atomic-ai/utils/typebox/schema"),
+		import("@bastani/atomic-ai/utils/typebox/system"),
+		import("@bastani/atomic-ai/utils/typebox/type"),
+		import("@bastani/atomic-ai/utils/typebox/value"),
 		import("@bastani/atomic-agent-core"),
 		import("@bastani/atomic-tui"),
 		import("@bastani/atomic-tui/dist/layout.js"),
@@ -119,7 +119,7 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 	};
 	return withLegacyPackageNames({
 		...prefixedModules("typebox", typeboxModules),
-		...prefixedModules("@bastani/atomic-schema/typebox", typeboxModules),
+		...prefixedModules("@bastani/atomic-ai/utils/typebox", typeboxModules),
 		...prefixedModules("@bastani/atomic/typebox", typeboxModules),
 		// TypeBox 0.x's package name answers for the subpaths it shares with TypeBox 1.
 		"@sinclair/typebox": typebox,

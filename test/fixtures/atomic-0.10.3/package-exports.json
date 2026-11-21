@@ -1,0 +1,45 @@
+{
+	"@bastani/atomic": [
+		".",
+		"./rpc-entry",
+		"./storage",
+		"./storage/testing"
+	],
+	"@bastani/atomic-ai": [
+		".",
+		"./api/*",
+		"./bedrock-provider",
+		"./bun-oauth",
+		"./compat",
+		"./lazy-bedrock-provider",
+		"./lazy-oauth",
+		"./models",
+		"./oauth",
+		"./providers/*",
+		"./session-resources",
+		"./utils/*"
+	],
+	"@bastani/atomic-agent-core": [
+		".",
+		"./package.json"
+	],
+	"@bastani/atomic-tui": null,
+	"@bastani/atomic-codemode": [
+		".",
+		"./cloudflare",
+		"./declarations",
+		"./portable",
+		"./source",
+		"./worker"
+	],
+	"@bastani/atomic-schema": [
+		".",
+		"./formats"
+	],
+	"@bastani/atomic-telemetry": [
+		".",
+		"./render",
+		"./testing"
+	],
+	"@bastani/atomic-natives": null
+}

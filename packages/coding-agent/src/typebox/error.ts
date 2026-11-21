@@ -1,2 +1,2 @@
 /** TypeBox's `typebox/error`, the copy Atomic uses: import it from here to share Atomic's formats, settings and locale. */
-export * from "@bastani/atomic-schema/typebox/error";
+export * from "@bastani/atomic-ai/utils/typebox/error";

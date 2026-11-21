@@ -8,7 +8,7 @@ import {
   isRetryableIntercomRoutingError,
   sliceHead,
 } from "@bastani/atomic";
-import { Type } from "@bastani/atomic-schema/typebox";
+import { Type } from "@bastani/atomic-ai";
 import { type IntercomClient, sameReachPolicy, type SendOptions, type SendResult } from "./broker/client.js";
 import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDirectory } from "./types.js";
 import { OutboundAsks } from "./outbound-asks.js";

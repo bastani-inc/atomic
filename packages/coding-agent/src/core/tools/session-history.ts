@@ -1,4 +1,4 @@
-import { Type } from "@bastani/atomic-schema/typebox";
+import { Type } from "@bastani/atomic-ai/utils/typebox";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { InternalResourceRouter } from "./resource-selectors.ts";
 
