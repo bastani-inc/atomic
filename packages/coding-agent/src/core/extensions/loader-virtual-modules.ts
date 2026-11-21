@@ -41,7 +41,7 @@ import type { ExtensionFactory } from "./types.ts";
 
 export { getVirtualModules } from "./loader-host-modules.js";
 
-const require = createRequire(import.meta.url);
+const requireFromHere = createRequire(import.meta.url);
 let _aliases: Promise<Record<string, string>> | null = null;
 let createJitiPromise: Promise<typeof createJiti> | undefined;
 // A transpile cache directory nothing has used for this long is removed by the next process that sets up another one.
@@ -200,7 +200,7 @@ function sha256Hex(content: string | NodeJS.ArrayBufferView): string {
 // sees the complete transitive graph. The observer records into every active
 // recorder; unrelated reads that interleave only over-record, which at worst
 // forces a redundant re-evaluation later — never a stale one.
-const fsExports = require("node:fs") as typeof fs;
+const fsExports = requireFromHere("node:fs") as typeof fs;
 
 /** Files read by one evaluation; reads of its own transpile cache are not part of the graph. */
 interface GraphRecorder {
@@ -590,7 +590,7 @@ function extensionImportSpecifier(extensionPath: string, cacheToken: ExtensionCa
  * the same node_modules chain Node would, without exports-map encapsulation.
  */
 async function findPackageRoot(packageName: string, searchPaths?: string[]): Promise<string> {
-	for (const base of searchPaths ?? require.resolve.paths(packageName) ?? []) {
+	for (const base of searchPaths ?? requireFromHere.resolve.paths(packageName) ?? []) {
 		const candidate = path.join(base, packageName);
 		if (await pathExists(path.join(candidate, "package.json"))) {
 			return candidate;

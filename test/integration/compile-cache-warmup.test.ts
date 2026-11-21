@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import {
 	closeSync,
 	constants,
@@ -9,6 +9,7 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -26,12 +27,16 @@ import { makeTempDirectory, moduleDir, sleep } from "../helpers/runtime.js";
 
 const REPO = join(moduleDir(import.meta.url), "../..");
 const PACKAGE = join(REPO, "packages/coding-agent");
-/** A real CLI session in a terminal, started twice, with a helper process loading the whole module graph between. */
-const SESSIONS_TIMEOUT_MS = 240_000;
 const CLI_TIMEOUT_MS = 90_000;
-/** How long the helper may take to load and write the module graph on a loaded runner. */
+/** How long the helpers may take to load and write the module graph on a loaded runner. */
 const HELPER_WAIT_MS = 120_000;
+/** Two real CLI sessions in a terminal, waiting between them for the helpers to warm the cache and end. */
+const SESSIONS_TIMEOUT_MS = 2 * CLI_TIMEOUT_MS + 3 * HELPER_WAIT_MS;
+/** One CLI session, then waiting for its helpers to end. */
+const SESSION_AND_HELPERS_TIMEOUT_MS = CLI_TIMEOUT_MS + HELPER_WAIT_MS + 30_000;
 const POLL_MS = 50;
+/** Longer than a session takes after its first frame to start a helper for a cold cache. */
+const WARM_SESSION_HELPER_WINDOW_MS = 3_000;
 const windows = process.platform === "win32";
 /** The sessions run the CLI with this runtime, and the compile cache handling they check is Node's. */
 const onNode = !("bun" in process.versions);
@@ -119,6 +124,42 @@ async function waitForWarmCache(cacheBase: string, report: SessionReport): Promi
 	}
 }
 
+/** This checkout's helper script; other jobs on the machine run their own. */
+const HELPER_SCRIPT = join(PACKAGE, "dist", "utils", "compile-cache-warmup.js");
+
+/** Compile-cache helpers of this checkout running now, by their command line. */
+function helperProcesses(): number {
+	const query = spawnSync(
+		"powershell.exe",
+		[
+			"-NoProfile",
+			"-Command",
+			`@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${HELPER_SCRIPT}') }).Count`,
+		],
+		{ encoding: "utf8", timeout: 60_000 },
+	);
+	assert.equal(query.status, 0, query.stderr);
+	return Number(query.stdout.trim());
+}
+
+/** Wait until no helper runs: a helper starts the next one of its chain before it ends, so none means all ended. */
+async function waitForNoHelper(): Promise<void> {
+	const deadline = Date.now() + HELPER_WAIT_MS;
+	while (helperProcesses() > 0) {
+		if (Date.now() >= deadline) throw new Error(`A compile-cache helper still runs after ${HELPER_WAIT_MS} ms`);
+		await sleep(500);
+	}
+}
+
+/** Wait until a helper holds the build lock. */
+async function waitForWarmupStart(cacheBase: string): Promise<void> {
+	const deadline = Date.now() + HELPER_WAIT_MS;
+	while (!warmupRunning(cacheBase)) {
+		if (Date.now() >= deadline) throw new Error(`No compile-cache helper started within ${HELPER_WAIT_MS} ms`);
+		await sleep(POLL_MS);
+	}
+}
+
 function sessionFixture(prefix: string) {
 	const root = makeTempDirectory(prefix);
 	const agentDir = join(root, "agent");
@@ -159,15 +200,17 @@ export default (pi) => pi.on("session_start", () => {
 		TMPDIR: temp,
 		// The default location, where an interactive session decides about the cache itself.
 		NODE_COMPILE_CACHE: "",
+		// A terminal adds the runner's environment to these, and no helper starts under CI.
+		CI: "0",
 		...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
 		...(process.env.PATH ? { PATH: process.env.PATH } : {}),
 	};
-	const start = (hostArgs: readonly string[]): PtyProgram =>
+	const start = (hostArgs: readonly string[], envChanges: Record<string, string> = {}): PtyProgram =>
 		startPtyProgram({
 			executable: process.execPath,
 			args: [join(PACKAGE, "dist/cli.js"), "--offline", "--no-mcp", ...hostArgs, "-e", extension],
 			cwd: project,
-			env,
+			env: { ...env, ...envChanges },
 			timeoutMs: CLI_TIMEOUT_MS,
 			cols: 120,
 			rows: 40,
@@ -232,10 +275,86 @@ describe.skipIf(!onNode)("the compile cache of an interactive session", () => {
 			} finally {
 				program?.kill();
 				await program?.exited;
+				if (windows) await waitForNoHelper();
 				await removeTempRootReleasingBroker(fixture.root, fixture.agentDir);
 			}
 		},
 		SESSIONS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!windows)(
+		"a session that quits as soon as its helper starts still leaves the cache warm, and a warm session starts no helper (#6132)",
+		async () => {
+			const fixture = sessionFixture("atomic-compile-cache-short-");
+			let program: PtyProgram | undefined;
+			try {
+				program = fixture.start(["--no-approve"]);
+				await program.waitForScreen(
+					(screen) => screen.includes("❯") && fixture.readReports().length === 1,
+					CLI_TIMEOUT_MS,
+					"the first session",
+				);
+				const [first] = fixture.readReports();
+				assert.equal(first?.cacheDir, null, "a session with a cold cache runs without it");
+				await waitForWarmupStart(fixture.cacheBase);
+				await quit(program);
+				// The helper goes on after its session and finishes warming the cache.
+				await waitForWarmCache(fixture.cacheBase, first!);
+				await waitForNoHelper();
+
+				program = fixture.start(["--no-approve"]);
+				await program.waitForScreen(
+					(screen) => screen.includes("❯") && fixture.readReports().length === 2,
+					CLI_TIMEOUT_MS,
+					"the second session",
+				);
+				assert.notEqual(fixture.readReports()[1]?.cacheDir ?? null, null, "the next session reads the warm cache");
+				// Past the point where a session with a cold cache starts its helper.
+				await sleep(WARM_SESSION_HELPER_WINDOW_MS);
+				assert.equal(helperProcesses(), 0, "a session with a warm cache starts no helper");
+				await quit(program);
+			} finally {
+				program?.kill();
+				await program?.exited;
+				if (windows) await waitForNoHelper();
+				await removeTempRootReleasingBroker(fixture.root, fixture.agentDir);
+			}
+		},
+		SESSIONS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!windows)(
+		"under CI a session with a cold cache still quits without writing it, and starts no helper (#6132)",
+		async () => {
+			const fixture = sessionFixture("atomic-compile-cache-ci-");
+			let program: PtyProgram | undefined;
+			try {
+				program = fixture.start(["--no-approve"], { CI: "1" });
+				await program.waitForScreen(
+					(screen) => screen.includes("❯") && fixture.readReports().length === 1,
+					CLI_TIMEOUT_MS,
+					"the session",
+				);
+				assert.equal(fixture.readReports()[0]?.cacheDir, null, "a session with a cold cache runs without it");
+				// Past the point where a session outside CI starts its helper.
+				await sleep(WARM_SESSION_HELPER_WINDOW_MS);
+				assert.equal(helperProcesses(), 0, "no helper starts under CI");
+				const beforeQuit = cacheFiles(fixture.cacheBase);
+				await quit(program);
+				assert.deepEqual(
+					writtenBetween(beforeQuit, cacheFiles(fixture.cacheBase)),
+					[],
+					"quitting wrote compile cache files",
+				);
+				assert.equal(helperProcesses(), 0, "no helper starts when the session quits under CI");
+			} finally {
+				program?.kill();
+				await program?.exited;
+				if (windows) await waitForNoHelper();
+				await removeTempRootReleasingBroker(fixture.root, fixture.agentDir);
+			}
+		},
+		SESSION_AND_HELPERS_TIMEOUT_MS,
 	);
 
 	test(
@@ -258,10 +377,12 @@ describe.skipIf(!onNode)("the compile cache of an interactive session", () => {
 			} finally {
 				program?.kill();
 				await program?.exited;
+				// A helper may still finish the cache this session left cold.
+				if (windows) await waitForNoHelper();
 				await removeTempRootReleasingBroker(fixture.root, fixture.agentDir);
 			}
 		},
-		CLI_TIMEOUT_MS + 30_000,
+		SESSION_AND_HELPERS_TIMEOUT_MS,
 	);
 });
 
@@ -325,12 +446,69 @@ test.skipIf(!onNode)(
 	HELPER_RUN_TIMEOUT_MS,
 );
 
+/** How soon a helper ends once its installation starts to change, on a loaded runner. */
+const STAND_DOWN_BOUND_MS = 5_000;
+
+test.skipIf(!onNode).each(["moves the old package aside", "puts a new package beside it"])(
+	"a helper stands down as soon as an installer %s, leaving no marker (#6132)",
+	async (change) => {
+		const root = makeTempDirectory("atomic-compile-cache-stand-down-");
+		const installation = join(root, "node_modules", "atomic");
+		const temp = join(root, "temp");
+		mkdirSync(temp, { recursive: true });
+		let helper: ChildProcess | undefined;
+		try {
+			const script = copyInstallation(installation);
+			const launch = compileCacheHelperLaunch({ execArgv: [], nodeOptions: "" }, "stand-down-test", script, {
+				...process.env,
+				TEMP: temp,
+				TMP: temp,
+				TMPDIR: temp,
+				NODE_COMPILE_CACHE: "",
+			});
+			helper = spawn(launch.command, [...launch.args], {
+				cwd: launch.cwd,
+				env: launch.env,
+				detached: launch.detached,
+				stdio: ["pipe", "ignore", "ignore"],
+			});
+			const exited = new Promise<number | null>((resolve) => helper!.once("exit", () => resolve(Date.now())));
+			const cacheBase = join(temp, "node-compile-cache");
+			const deadline = Date.now() + HELPER_WAIT_MS;
+			while (cacheEntryCount(cacheBase) === 0 && helper.exitCode === null) {
+				if (Date.now() >= deadline) throw new Error("The helper did not start warming");
+				await sleep(POLL_MS);
+			}
+			assert.equal(helper.exitCode, null, "the helper still warms");
+			const changedAt = Date.now();
+			if (change === "moves the old package aside") {
+				// What npm does first when it replaces or removes a package.
+				renameSync(installation, join(root, "node_modules", ".atomic-retired"));
+			} else {
+				// An installer that unpacks the new package next to the old one before it swaps them.
+				mkdirSync(join(root, "node_modules", ".atomic-staged"));
+			}
+			const endedAt = await exited;
+			assert.ok(
+				endedAt !== null && endedAt - changedAt < STAND_DOWN_BOUND_MS,
+				`ended ${endedAt! - changedAt} ms later`,
+			);
+			const markers = [...cacheFiles(cacheBase).keys()].filter((path) => /atomic-warm-/.test(path));
+			assert.deepEqual(markers, []);
+		} finally {
+			if (helper && helper.exitCode === null) helper.kill();
+			rmSync(root, { recursive: true, force: true, maxRetries: 10 });
+		}
+	},
+	HELPER_RUN_TIMEOUT_MS,
+);
+
 /** An upgrade replaces a few hundred files; the helper loads the module graph from them meanwhile. */
 const UPGRADE_DURING_WARMUP_TIMEOUT_MS = 180_000;
 
-test.skipIf(!windows || !onNode)(
-	"an upgrade or an uninstall while the compile cache warms succeeds (#6132)",
-	async () => {
+test.skipIf(!windows || !onNode).each(["an uninstall", "an upgrade"])(
+	"%s while the compile cache warms succeeds (#6132)",
+	async (change) => {
 		const root = makeTempDirectory("atomic-compile-cache-upgrade-");
 		const installation = join(root, "installation");
 		const temp = join(root, "temp");
@@ -360,9 +538,17 @@ test.skipIf(!windows || !onNode)(
 				}
 				await sleep(POLL_MS);
 			}
-			// An uninstall removes every file of the installation, the native module included.
-			rmSync(installation, { recursive: true });
-			assert.equal(existsSync(installation), false);
+			if (change === "an uninstall") {
+				// An uninstall removes every file of the installation, the native module included.
+				rmSync(installation, { recursive: true });
+				assert.equal(existsSync(installation), false);
+			} else {
+				// An upgrade moves the installation aside, puts the new one in its place and removes the old one.
+				renameSync(installation, `${installation}.old`);
+				copyInstallation(installation);
+				rmSync(`${installation}.old`, { recursive: true });
+				assert.equal(existsSync(`${installation}.old`), false);
+			}
 			helper.kill();
 			await exited;
 		} finally {

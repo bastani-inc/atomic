@@ -2,6 +2,7 @@ import { type ExtensionAPI, type ExtensionContext, sliceHead } from "@bastani/at
 import { UNAUTHORIZED_REPLY_REASON } from "./broker/delivery-failure-reason.js";
 import {
   type ClosedInboundAsk,
+  type ClosedInboundAsks,
   INTERCOM_ASK_CLOSED_ENTRY,
   type IntercomContext,
   ReplyTracker,
@@ -24,6 +25,64 @@ const SENDER_GONE_CODES: ReadonlySet<string> = new Set([
   "recipient_stopped",
   "recipient_cancelled",
 ]);
+
+/** The most asks one record of closed asks names, and the most bytes their ids take, so a record stays small. */
+const CLOSED_ASKS_PER_RECORD = 500;
+const CLOSED_ASK_ID_BYTES_PER_RECORD = 32 * 1024;
+
+/** The most closed asks a recovery notice names one by one; it counts the rest. */
+export const CLOSED_ASKS_LISTED = 20;
+
+/**
+ * Record that this session closed each of `messageIds` without a reply, for `reason`: one entry per
+ * {@link CLOSED_ASKS_PER_RECORD} asks (or {@link CLOSED_ASK_ID_BYTES_PER_RECORD} of their ids), not one per ask, so a
+ * restart that closes many does not wait for a write each. Returns the ids whose record was saved; an ask whose record
+ * was not saved stays pending.
+ */
+export async function recordClosedInboundAsks(
+  pi: Pick<ExtensionAPI, "appendEntry">,
+  messageIds: readonly string[],
+  reason: ClosedInboundAsk["reason"],
+): Promise<string[]> {
+  const recorded: string[] = [];
+  for (const batch of closedAskBatches(messageIds)) {
+    try {
+      if (batch.length === 1) await recordClosedInboundAsk(pi, batch[0]!, reason);
+      else await pi.appendEntry(INTERCOM_ASK_CLOSED_ENTRY, { messageIds: batch, reason } satisfies ClosedInboundAsks);
+      recorded.push(...batch);
+    } catch {
+      // Unsaved, these asks stay pending; the next resume decides about them again.
+    }
+  }
+  return recorded;
+}
+
+function closedAskBatches(messageIds: readonly string[]): string[][] {
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let bytes = 0;
+  for (const messageId of messageIds) {
+    const size = Buffer.byteLength(messageId) + 3;
+    if (batch.length > 0 && (batch.length >= CLOSED_ASKS_PER_RECORD || bytes + size > CLOSED_ASK_ID_BYTES_PER_RECORD)) {
+      batches.push(batch);
+      batch = [];
+      bytes = 0;
+    }
+    batch.push(messageId);
+    bytes += size;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
+
+/** The lines a recovery notice names closed asks with: the first {@link CLOSED_ASKS_LISTED}, and a count of the rest. */
+function closedAskLines(closed: readonly IntercomContext[]): string {
+  const lines = closed
+    .slice(0, CLOSED_ASKS_LISTED)
+    .map((context) => `- ${context.message.id} from \`${context.from.name ?? context.from.id}\`: ${preview(context)}`);
+  if (closed.length > CLOSED_ASKS_LISTED) lines.push(`- and ${closed.length - CLOSED_ASKS_LISTED} more`);
+  return lines.join("\n");
+}
 
 /** Record that this session closed `messageId` without a reply; the ask then stays closed across restarts (#6168). */
 export async function recordClosedInboundAsk(
@@ -82,22 +141,17 @@ export async function closeFinishedChildAsks(
   }
   const asks = pending.listPending();
   const finished = await finishedChildAsks(pi.events, sessionId, asks);
-  const closed: IntercomContext[] = [];
-  for (const context of asks) {
-    if (!finished.has(context.message.id)) continue;
-    try {
-      await recordClosedInboundAsk(pi, context.message.id, "sender-ended");
-      closed.push(context);
-    } catch {
-      // Unsaved, the ask stays pending; the next resume decides about it again.
-    }
-  }
-  if (closed.length === 0) return [];
-  const lines = closed.map(
-    (context) => `- ${context.message.id} from \`${context.from.name ?? context.from.id}\`: ${preview(context)}`,
+  const recorded = new Set(
+    await recordClosedInboundAsks(
+      pi,
+      asks.filter((context) => finished.has(context.message.id)).map((context) => context.message.id),
+      "sender-ended",
+    ),
   );
+  const closed = asks.filter((context) => recorded.has(context.message.id));
+  if (closed.length === 0) return [];
   return [
-    `Closed ${closed.length === 1 ? "1 unanswered ask" : `${closed.length} unanswered asks`} from subagents that have ended: no reply can reach ${closed.length === 1 ? "it" : "them"} any more.\n${lines.join("\n")}`,
+    `Closed ${closed.length === 1 ? "1 unanswered ask" : `${closed.length} unanswered asks`} from subagents that have ended: no reply can reach ${closed.length === 1 ? "it" : "them"} any more.\n${closedAskLines(closed)}`,
   ];
 }
 
