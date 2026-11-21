@@ -14,6 +14,7 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "@bastani/atomic";
+import { helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
 import { asyncScope } from "../../shared/async-scope.js";
 import { pathExists } from "../../shared/path-exists.js";
 import { performPostCreationSetup } from "./worktree-post-create.js";
@@ -254,10 +255,13 @@ export async function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv
 	// Never inherit a phase from an enclosing filter; it describes only this Git invocation.
 	if (finishing.getStore()) gitEnv.ATOMIC_SUBAGENT_WORKTREE_PHASE = "finishing";
 	else delete gitEnv.ATOMIC_SUBAGENT_WORKTREE_PHASE;
-	const result = await spawnCollect("git", ["-C", cwd, ...args], {
+	// git only from PATH's absolute directories, never from the working directory.
+	const git = await helperLaunchAsync("git", { env: gitEnv });
+	const result = await spawnCollect(git.file, ["-C", cwd, ...args], {
 		env: gitEnv,
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
 		...(onStall && { timeout: STALLED_CHECK_GIT_TIMEOUT_MS }),
+		...missingHelperOptions(git),
 	});
 	if (onStall && result.error?.code === "ETIMEDOUT") onStall();
 	return {

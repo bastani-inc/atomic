@@ -179,6 +179,7 @@ async function lostCluster({
 				dispatch: () => {},
 				revokeReleasedReservation: () => {},
 				holdsReservation: () => true,
+				fence: () => {},
 			},
 		});
 		cleanups.push(() => router.close());

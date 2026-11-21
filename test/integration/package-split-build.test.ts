@@ -48,7 +48,12 @@ function loadedFrom(entries: readonly string[]): Set<string> {
 		const file = pending.pop() as string;
 		if (seen.has(file)) continue;
 		seen.add(file);
-		const source = fs.readFileSync(join(dist, file), "utf8");
+		// Comment lines are not code: a bundled dependency's documentation may name an import.
+		const source = fs
+			.readFileSync(join(dist, file), "utf8")
+			.split("\n")
+			.filter((line) => !/^\s*(?:\*|\/\/|\/\*)/.test(line))
+			.join("\n");
 		for (const match of source.matchAll(/(?:from|import\()\s*"(\.{1,2}\/[^"]+)"/g)) {
 			pending.push(posix.normalize(posix.join(posix.dirname(file), match[1] as string)));
 		}
@@ -186,6 +191,76 @@ test(
 		);
 		assert.equal(probe.status, 0, probe.stderr);
 		assert.match(probe.stdout, /src[\\/]cli[\\/]args\.ts:\d+:\d+/, probe.stdout);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"the dependencies bundled into the shared files load from there, and their licenses ship beside them",
+	() => {
+		const { atomic } = installedLayout();
+		const notices = fs.readFileSync(join(atomic, "dist", "THIRD_PARTY_NOTICES.md"), "utf8");
+		const inlined = [...notices.matchAll(/^## (\S+) \S+$/gm)].map((match) => match[1] as string);
+		assert.ok(inlined.includes("yaml") && inlined.includes("semver"), notices.slice(0, 400));
+		// Each package's own license text, not only the name of its license.
+		for (const section of notices.split(/^## /m).slice(1)) {
+			const text = section.slice(section.indexOf("\n")).trim();
+			assert.doesNotMatch(text, /^License: \S+$/, section.slice(0, 200));
+			assert.match(text, /permission|copyright|licen[sc]e/i, section.slice(0, 200));
+		}
+		const probe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { registerHooks } from "node:module";
+				const packages = new Set();
+				registerHooks({ load(url, context, next) {
+					const match = /\\/node_modules\\/((?:@[^/]+\\/)?[^/]+)\\//.exec(decodeURIComponent(url).replaceAll("\\\\", "/"));
+					if (match) packages.add(match[1]);
+					return next(url, context);
+				} });
+				await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "main.js")).href)});
+				console.log(JSON.stringify([...packages]));`,
+			],
+			{ encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS },
+		);
+		assert.equal(probe.status, 0, probe.stderr);
+		const loaded = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
+		// A dependency that stays external still loads from node_modules, as the probe sees.
+		assert.ok(loaded.includes("undici"), loaded.join(", "));
+		assert.deepEqual(
+			loaded.filter((name) => inlined.includes(name)),
+			[],
+		);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+// highlight.js stays a package of its own: a language or plugin an SDK app registers in the installed highlight.js
+// reaches Atomic's highlightCode, as before the split build.
+test(
+	"a language an SDK app registers in the installed highlight.js reaches highlightCode",
+	() => {
+		const { atomic } = installedLayout();
+		const probe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { createRequire } from "node:module";
+				const hljs = createRequire(${JSON.stringify(join(atomic, "package.json"))})("highlight.js");
+				hljs.registerLanguage("atomic-probe", () => ({ contains: [{ className: "keyword", begin: /\\bprobekw\\b/ }] }));
+				const sdk = await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "index.js")).href)});
+				sdk.initTheme("dark");
+				console.log(JSON.stringify(sdk.highlightCode("probekw plain", "atomic-probe")));`,
+			],
+			{ encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS },
+		);
+		assert.equal(probe.status, 0, probe.stderr);
+		const [line] = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
+		// The keyword the registered grammar finds is colored on its own.
+		assert.match(line ?? "", /probekw\u001b\[39m plain/, JSON.stringify(line));
 	},
 	LAYOUT_TIMEOUT_MS,
 );
