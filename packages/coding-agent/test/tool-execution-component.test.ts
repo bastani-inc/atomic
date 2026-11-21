@@ -439,7 +439,7 @@ describe("ToolExecutionComponent parity", () => {
 			vi.advanceTimersByTime(4_200);
 			component.updateResult({ ...yielded, durationMs }, false);
 			const rendered = stripAnsi(component.render(120).join("\n"));
-			assert.ok(rendered.includes("● Bash(sleep 60) · background"), rendered);
+			assert.ok(rendered.includes("⧗ Bash(sleep 60) · background"), rendered);
 			assert.match(rendered, /⎿ {2}Running in background/);
 			assert.doesNotMatch(rendered, /Took|Observed for|Elapsed/);
 			component.dispose();

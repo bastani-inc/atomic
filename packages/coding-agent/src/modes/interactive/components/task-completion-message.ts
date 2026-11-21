@@ -261,6 +261,14 @@ function legacyStop(title: string, result: unknown): { line: TaskNoticeLine; age
 	};
 }
 
+/**
+ * The mark a saved line's status shows: a subagent paused or quit until it is resumed is stopped, as the agent panel
+ * and `/tasks` show it; its line keeps its `paused` status and its words.
+ */
+function noticeMarkStatus(status: NoticeLineSpec["status"]): NoticeLineSpec["status"] {
+	return status === "paused" ? "stopped" : status;
+}
+
 export function taskNoticeLineSpec(notice: TaskCompletionNotice): NoticeLineSpec {
 	const line = notice.line;
 	if (isAgentNotice(notice)) {
@@ -268,7 +276,7 @@ export function taskNoticeLineSpec(notice: TaskCompletionNotice): NoticeLineSpec
 			line?.status ??
 			(notice.status === "completed" ? "success" : notice.status === "failed" ? "failure" : "stopped");
 		return {
-			status,
+			status: noticeMarkStatus(status),
 			label: agentNoticeName(notice),
 			outcome: agentNoticeOutcome(status, line),
 			...(line?.elapsedMs === undefined ? {} : { meta: [noticeDuration(line.elapsedMs)] }),
@@ -276,7 +284,7 @@ export function taskNoticeLineSpec(notice: TaskCompletionNotice): NoticeLineSpec
 	}
 	if (line !== undefined)
 		return {
-			status: line.status,
+			status: noticeMarkStatus(line.status),
 			label: line.label,
 			...(line.subject === undefined ? {} : { subject: line.subject }),
 			outcome: line.outcome,

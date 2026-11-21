@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
+import { sleep } from "../helpers/runtime.js";
+import { startStandInBroker } from "../helpers/stand-in-broker.js";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -232,15 +234,17 @@ test("cleanup stops a detached successor broker recorded at broker.pid after the
 	Object.assign(child, { exitCode: 0 });
 	child.emit("exit", 0, null);
 	child.emit("close", 0, null);
-	const successor = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-	assert.ok(successor.pid !== undefined);
-	writeFileSync(join(agentDir, "intercom", "broker.pid"), `${successor.pid}\n`);
+	// A successor broker answers on the agent dir's socket with the pid it recorded, as a broker does (#6125).
+	const successor = startStandInBroker(agentDir);
+	const pidPath = join(agentDir, "intercom", "broker.pid");
+	for (let waited = 0; !existsSync(pidPath) && waited < 10_000; waited += 20) await sleep(20);
 	try {
 		await fixture.cleanup();
-		assert.throws(() => process.kill(successor.pid!, 0), { code: "ESRCH" });
+		assert.throws(() => process.kill(successor.pid, 0), { code: "ESRCH" });
 		assert.equal(existsSync(agentDir), false);
 	} finally {
-		if (successor.exitCode === null && successor.signalCode === null) successor.kill("SIGKILL");
+		successor.kill("SIGKILL");
+		await successor.exited;
 		rmSync(agentDir, { recursive: true, force: true });
 	}
 });

@@ -237,7 +237,7 @@ for (const backend of ["sqlite", "jsonl"] as const) {
 					{
 						const card = mount(message);
 						try {
-							assert.match(card.draw(), /⏸ worker/u);
+							assert.match(card.draw(), /◯ worker/u);
 						} finally {
 							card.close();
 						}
@@ -265,7 +265,7 @@ for (const backend of ["sqlite", "jsonl"] as const) {
 				};
 				try {
 					for (let i = 0; i < 4; i++) card.invalidate();
-					assert.match(stripVTControlCharacters(card.render(120).join("")), /⏸ worker ops killed/u);
+					assert.match(stripVTControlCharacters(card.render(120).join("")), /◯ worker ops killed/u);
 				} finally {
 					Object.getOwnPropertyDescriptor = descriptor;
 					card.dispose();
@@ -274,7 +274,7 @@ for (const backend of ["sqlite", "jsonl"] as const) {
 				// Sharing details does not share the header decision with a different message body.
 				const other = new CustomMessageComponent({ ...message, content: title });
 				try {
-					assert.match(stripVTControlCharacters(other.render(120).join("")), /◼ worker ops stopped/u);
+					assert.match(stripVTControlCharacters(other.render(120).join("")), /◯ worker ops stopped/u);
 				} finally {
 					other.dispose();
 				}

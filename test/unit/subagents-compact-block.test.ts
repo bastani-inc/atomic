@@ -90,7 +90,7 @@ const text = (component: { render(width: number): string[] }, width = 160) =>
 		.join("\n");
 
 test("a running child shows its last three tool calls and one running line under its call heading (#5224)", () => {
-	const out = text(renderSingleCompact(details(running(9, 5)), running(9, 5), theme, 0, 0));
+	const out = text(renderSingleCompact(details(running(9, 5)), running(9, 5), theme, 0));
 	assert.doesNotMatch(out, /Agent\(|more detail the block never shows/);
 	assert.match(out, /… \+6 tool uses/);
 	assert.match(out, /step 3/);
@@ -101,7 +101,7 @@ test("a running child shows its last three tool calls and one running line under
 
 test("a running child's line names no model and counts output even without tool calls (#5224)", () => {
 	const child = { ...running(0, 0), model: "anthropic/claude-haiku", thinking: "low" } as Result;
-	const out = text(renderSingleCompact(details(child), child, theme, 0, 0));
+	const out = text(renderSingleCompact(details(child), child, theme, 0));
 	assert.match(out, /⎿ {2}Running · 18m · ↓ 87\.4k tokens/);
 	assert.doesNotMatch(out, /claude-haiku/);
 });
@@ -110,7 +110,7 @@ test("a running card keeps each tool on one line at narrow and wide widths (#522
 	const child = running(3, 3);
 	child.progress!.recentTools = child.progress!.recentTools.map((tool) => ({ ...tool, args: "x".repeat(180) }));
 	for (const width of [20, 80, 160]) {
-		const lines = renderSingleCompact(details(child), child, theme, 0, 0).render(width);
+		const lines = renderSingleCompact(details(child), child, theme, 0).render(width);
 		assert.equal(lines.length, 5, `three tools, activity and status at ${width} columns`);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
 	}
@@ -119,15 +119,15 @@ test("a running card keeps each tool on one line at narrow and wide widths (#522
 test("a running card's management hint follows rebound and disabled live keys (#5224)", () => {
 	const child = running(0, 0);
 	setKeybindings(new KeybindingsManager({ "app.agents.focus": "ctrl+g" }));
-	assert.match(text(renderSingleCompact(details(child), child, theme, 0, 0)), /ctrl\+g to manage/);
+	assert.match(text(renderSingleCompact(details(child), child, theme, 0)), /ctrl\+g to manage/);
 	setKeybindings(new KeybindingsManager({ "app.agents.focus": [], "app.tools.expand": "ctrl+e" }));
-	assert.match(text(renderSingleCompact(details(child), child, theme, 0, 0)), /ctrl\+e for live detail/);
+	assert.match(text(renderSingleCompact(details(child), child, theme, 0)), /ctrl\+e for live detail/);
 	setKeybindings(new KeybindingsManager({ "app.agents.focus": [], "app.tools.expand": [] }));
-	assert.doesNotMatch(text(renderSingleCompact(details(child), child, theme, 0, 0)), /to manage|for live detail/);
+	assert.doesNotMatch(text(renderSingleCompact(details(child), child, theme, 0)), /to manage|for live detail/);
 });
 
 test("a running child with few tool calls folds nothing (#5224)", () => {
-	const out = text(renderSingleCompact(details(running(2, 2)), running(2, 2), theme, 0, 0));
+	const out = text(renderSingleCompact(details(running(2, 2)), running(2, 2), theme, 0));
 	assert.doesNotMatch(out, /tool uses?$/m);
 	assert.doesNotMatch(out, /… \+/);
 });
@@ -145,7 +145,7 @@ test("a finished child is one outcome line plus the result's headline (#5224)", 
 			},
 		],
 	} as unknown as Result;
-	const out = text(renderSingleCompact(details(result), result, theme, 0, 0));
+	const out = text(renderSingleCompact(details(result), result, theme, 0));
 	assert.match(out, /^● debugger finished · 1h 31m$/m);
 	assert.doesNotMatch(out, /tool uses|tokens|⟳/);
 	assert.match(out, /⎿ {2}PR #5221 open: atomic lock creation/);
@@ -155,7 +155,7 @@ test("a finished child is one outcome line plus the result's headline (#5224)", 
 
 test("a running child keeps its completed tool beside the current tool (#5243)", () => {
 	const child = runningSteps(1, "step 2");
-	const out = text(renderSingleCompact(details(child), child, theme, 0, 0));
+	const out = text(renderSingleCompact(details(child), child, theme, 0));
 	assert.doesNotMatch(out, /… \+/);
 	assert.match(out, /bash: step 1/);
 	assert.match(out, /bash: step 2/);
@@ -163,7 +163,7 @@ test("a running child keeps its completed tool beside the current tool (#5243)",
 
 test("a running child accounts for all nine tool calls while active and settled (#5243)", () => {
 	const active = runningSteps(8, "step 9");
-	const activeOut = text(renderSingleCompact(details(active), active, theme, 0, 0));
+	const activeOut = text(renderSingleCompact(details(active), active, theme, 0));
 	assert.match(activeOut, /… \+6 tool uses/);
 	assert.doesNotMatch(activeOut, /step 6/);
 	assert.match(activeOut, /bash: step 7/);
@@ -171,7 +171,7 @@ test("a running child accounts for all nine tool calls while active and settled 
 	assert.match(activeOut, /bash: step 9/);
 
 	const betweenTools = runningSteps(9);
-	const betweenOut = text(renderSingleCompact(details(betweenTools), betweenTools, theme, 0, 0));
+	const betweenOut = text(renderSingleCompact(details(betweenTools), betweenTools, theme, 0));
 	assert.match(betweenOut, /… \+6 tool uses/);
 	assert.doesNotMatch(betweenOut, /step 6/);
 	assert.match(betweenOut, /bash: step 7/);
@@ -190,7 +190,7 @@ test("a running child accounts for all nine tool calls while active and settled 
 			},
 		],
 	} as unknown as Result;
-	const settledOut = text(renderSingleCompact(details(settled), settled, theme, 0, 0));
+	const settledOut = text(renderSingleCompact(details(settled), settled, theme, 0));
 	assert.match(settledOut, /^● debugger finished · 18m$/m);
 	assert.doesNotMatch(settledOut, /tool uses/);
 	assert.match(settledOut, /⎿ {2}All nine steps verified/);
@@ -229,7 +229,7 @@ test("task-backed CLI launches render canonical Agent tool blocks for running, n
 		const rows = runningBlock.render(width);
 		assert.deepEqual(
 			rows.map((r) => stripTerminalSequences(r).trimEnd()),
-			[" ∀ Agent(debugger · #5220 spawn lock)", "   ⎿  Running · 18m · ↓ 87.4k tokens · ↓ to manage"],
+			[" ◯ Agent(debugger · #5220 spawn lock)", "   ⎿  Running · 18m · ↓ 87.4k tokens · ↓ to manage"],
 		);
 		assert.ok(rows.every((r) => visibleWidth(r) <= width));
 		assert.ok(!rows.join("").includes("\u001b[48;"));
@@ -269,7 +269,7 @@ test("task-backed CLI launches render canonical Agent tool blocks for running, n
 	const inputResult = { ...runningResult, details: { ...runningResult.details!, taskRecords: [inputTask] } };
 	assert.deepEqual(
 		text(renderSubagentToolResult(inputResult, { expanded: false, isPartial: false }, theme, context)).split("\n"),
-		[" ! Agent(debugger · #5220 spawn lock)", "   ⎿  Needs input · Approve lock strategy? · ↓ to answer"],
+		[" ◆ Agent(debugger · #5220 spawn lock)", "   ⎿  Needs input · Approve lock strategy? · ↓ to answer"],
 	);
 
 	const doneResult = taskToolResult({
@@ -325,7 +325,7 @@ test("task-backed CLI launches render canonical Agent tool blocks for running, n
 	];
 	assert.deepEqual(
 		text(renderSubagentToolResult(stoppedResult, { expanded: false, isPartial: false }, theme, context)).split("\n"),
-		[" ◼ Agent(debugger · #5220 spawn lock)", "   ⎿  Stopped · 12s"],
+		[" ◯ Agent(debugger · #5220 spawn lock)", "   ⎿  Stopped · 12s"],
 	);
 
 	for (const width of [12, 20, 80, 160]) {
@@ -416,7 +416,7 @@ test("parallel task-backed launches render one canonical ToolBlock per child wit
 	const group = renderSubagentToolResult(result, { expanded: false, isPartial: false }, theme, context);
 	assert.equal(isToolBlock(group), true);
 	assert.deepEqual(text(group, 100).split("\n"), [
-		" ∀ Agent(debugger · #5220 spawn lock)",
+		" ◯ Agent(debugger · #5220 spawn lock)",
 		"   ⎿  Running · 1m · ↓ 12.0k tokens · ↓ to manage",
 		"",
 		" ✗ Agent(worker · Fix shipping batches.)",
@@ -577,20 +577,20 @@ test("task-backed launch block dynamically refreshes elapsed time, fresh task to
 		assert.equal(isToolBlock(block), true);
 		assert.equal(block.isWorking?.(), true);
 		assert.deepEqual(text(block, 80).split("\n"), [
-			" ∀ Agent(debugger · #5220 spawn lock)",
+			" ◯ Agent(debugger · #5220 spawn lock)",
 			"   ⎿  Running · 2s · ↓ 1.2k tokens · ↓ to manage",
 		]);
 
 		mockNow = 15_000;
 		assert.deepEqual(text(block, 80).split("\n"), [
-			" ∀ Agent(debugger · #5220 spawn lock)",
+			" ◯ Agent(debugger · #5220 spawn lock)",
 			"   ⎿  Running · 7s · ↓ 1.2k tokens · ↓ to manage",
 		]);
 
 		mockNow = 20_000;
 		liveTask = { ...initialTask, metrics: { elapsedMs: 12_000, tokenCount: 45_600, toolCount: 3 } };
 		assert.deepEqual(text(block, 80).split("\n"), [
-			" ∀ Agent(debugger · #5220 spawn lock)",
+			" ◯ Agent(debugger · #5220 spawn lock)",
 			"   ⎿  Running · 12s · ↓ 45.6k tokens · ↓ to manage",
 		]);
 
@@ -604,7 +604,7 @@ test("task-backed launch block dynamically refreshes elapsed time, fresh task to
 			},
 		};
 		assert.deepEqual(text(block, 80).split("\n"), [
-			" ! Agent(debugger · #5220 spawn lock)",
+			" ◆ Agent(debugger · #5220 spawn lock)",
 			"   ⎿  Needs input · Approve deployment? · ↓ to answer",
 		]);
 
