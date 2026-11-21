@@ -425,7 +425,9 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.result = result;
 		this.isPartial = isPartial;
 		this.changed();
-		if (!isPartial) this.sendLatestState();
+		// Once what settled it in this turn has run (such as the row becoming its group's head), so the engine is asked
+		// for the row as the next paint would draw it, before that paint.
+		if (!isPartial) queueMicrotask(() => this.sendLatestState());
 	}
 	getGroupRole(): ToolGroupRole {
 		return this.groupRole;

@@ -51,7 +51,7 @@ test("an engine-rendered row draws nothing until its first frame arrives, not a 
 	assert.deepEqual(notice.render(80), ["rendered"]);
 });
 
-test("a call that settles while its row is not drawn tells the engine at once, so the engine stops drawing it as running", () => {
+test("a call that settles while its row is not drawn tells the engine at once, so the engine stops drawing it as running", async () => {
 	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
 	const commands: InteractiveEngineCommand[] = [];
 	const runtime = {
@@ -71,6 +71,7 @@ test("a call that settles while its row is not drawn tells the engine at once, s
 	// The screen stops drawing the row (its chat is hidden); the call finishes there.
 	commands.length = 0;
 	tool.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+	await Promise.resolve();
 	assert.deepEqual(
 		commands.map((command) => [command.type, partial(command)]),
 		[["engine_tool_render", false]],
@@ -83,7 +84,21 @@ test("a call that settles while its row is not drawn tells the engine at once, s
 	const unseen = new RemoteToolExecutionComponent("bash", "unseen-tool", { command: "ls" }, {}, runtime, () => {});
 	commands.length = 0;
 	unseen.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+	await Promise.resolve();
 	assert.deepEqual(commands, []);
+
+	// What settles the call in the same turn, such as the row becoming its group's head, is in the one request.
+	const lead = new RemoteToolExecutionComponent("read", "lead-tool", { path: "a.txt" }, {}, runtime, () => {});
+	lead.render(80);
+	commands.length = 0;
+	lead.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+	lead.setGroupRole({ kind: "head", clauses: [{ family: "read", count: 2 }] });
+	await Promise.resolve();
+	assert.equal(commands.length, 1);
+	const request = commands[0];
+	assert.ok(request?.type === "engine_tool_render" && request.groupRole?.kind === "head", JSON.stringify(request));
+	lead.render(80);
+	assert.equal(commands.length, 1, "the next paint asks for nothing more");
 });
 
 test("a call that settles while a click on its hidden row is being compared tells the engine once the comparison ends", async () => {
@@ -115,6 +130,7 @@ test("a call that settles while a click on its hidden row is being compared tell
 		// The call finishes and the row stops being drawn while the comparison is under way.
 		commands.length = 0;
 		tool.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+		await Promise.resolve();
 		assert.deepEqual(commands, [], `${end}: the comparison keeps the request line`);
 		if (end === "answered" && compare?.type === "engine_tool_render") {
 			const message: InteractiveEngineMessage = {
