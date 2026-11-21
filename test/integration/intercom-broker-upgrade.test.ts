@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
-import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
+import {
+	READS_PROCESS_STARTS,
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	stillRuns,
+} from "../helpers/recorded-process.js";
 import { type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
 import { temporaryAgentDir, useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -382,6 +388,24 @@ describe("a session of this version finding a 0.9.71 broker (#4538)", () => {
 	);
 });
 
+/** A stop bound no wait that sees the later process given the broker's pid comes near. */
+const LATER_PROCESS_STOP_BOUND_MS = 20_000;
+/** How long before a process's start broker.pid is dated when a test stands in for a broker that wrote it and exited. */
+const WRITTEN_BEFORE_ITS_PID_WAS_GIVEN_AGAIN_MS = 60_000;
+/** A part of a second no write time a FAT or exFAT volume keeps has (they keep 2 s and 10 ms steps). */
+const SUB_MILLISECOND_S = 0.000_345_6;
+
+/**
+ * broker.pid naming `pid`, as the broker that held it wrote it a minute before the pid was given to the process that
+ * holds it now, on a volume that keeps write times to 100 ns.
+ */
+function datedBeforeItsPidWasGivenAgain(pid: number): void {
+	const pidPath = join(agentDir, "intercom", "broker.pid");
+	writeFileSync(pidPath, String(pid));
+	const written = (Date.now() - WRITTEN_BEFORE_ITS_PID_WAS_GIVEN_AGAIN_MS) / 1_000 + SUB_MILLISECOND_S;
+	utimesSync(pidPath, written, written);
+}
+
 interface FakeLegacyBrokerOptions {
 	/** How long it keeps accepting connections after acknowledging a shutdown, as a Windows named pipe does until its process has exited. */
 	readonly exitDelayMs?: number;
@@ -609,6 +633,9 @@ describe("replacing an older broker (#4538)", () => {
 		"an older broker still running past the stop bound fails the replacement at the stop, typed, and the spawn lock follows its process",
 		async () => {
 			const legacy = await startFakeLegacyBroker({ shutdown: "ignored" });
+			// broker.pid as the broker writes it once it runs: on Windows its write time proves the pid named the broker then.
+			writeFileSync(join(agentDir, "intercom", "broker.pid"), String(legacy.pid));
+			const found = await recordProcess(legacy.pid);
 			const { BROKER_PROTOCOL } = await import("../../packages/intercom/broker/protocol-version.js");
 			const { isSpawnLockStale, upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
 			const error = await upgradeBroker("bun", [], 30_000, undefined, BROKER_PROTOCOL, 2_000).catch(
@@ -621,7 +648,11 @@ describe("replacing an older broker (#4538)", () => {
 			assert.deepEqual([error.cause.pid, error.cause.timeoutMs], [legacy.pid, 2_000]);
 			assert.equal(legacy.shutdownRequests(), 1);
 			const lockPath = join(agentDir, "intercom", "broker.spawn.lock");
-			assert.equal(readFileSync(lockPath, "utf8").trim().split("\n")[2], String(legacy.pid));
+			// The lock names the broker's pid, as earlier versions read it, and where starts are read, when it started.
+			assert.equal(
+				readFileSync(lockPath, "utf8").trim().split("\n")[2],
+				READS_PROCESS_STARTS ? `${legacy.pid} ${found.started}` : String(legacy.pid),
+			);
 			assert.equal(
 				isSpawnLockStale(lockPath),
 				false,
@@ -631,6 +662,56 @@ describe("replacing an older broker (#4538)", () => {
 			await vi.waitFor(() => assert.equal(isAlive(legacy.pid), false), WAIT);
 			assert.equal(isSpawnLockStale(lockPath), true, "once it has gone, the next spawner takes the lock");
 			rmSync(lockPath, { force: true });
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	// On Windows only broker.pid's write time proves that the process a pid names is the broker that wrote it.
+	test.skipIf(process.platform !== "win32")(
+		"an older broker found without broker.pid is handed the spawn lock by its pid alone, as before",
+		async () => {
+			const legacy = await startFakeLegacyBroker({ shutdown: "ignored" });
+			const { BROKER_PROTOCOL } = await import("../../packages/intercom/broker/protocol-version.js");
+			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+			const error = await upgradeBroker("bun", [], 30_000, undefined, BROKER_PROTOCOL, 2_000).catch(
+				(caught: unknown) => caught,
+			);
+			const { isIntercomBrokerUpgradeError } = await import("@bastani/atomic");
+			assert.ok(isIntercomBrokerUpgradeError(error), String(error));
+			assert.equal(error.phase, "stop");
+			const lockPath = join(agentDir, "intercom", "broker.spawn.lock");
+			assert.equal(readFileSync(lockPath, "utf8").trim().split("\n")[2], String(legacy.pid));
+			rmSync(lockPath, { force: true });
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	// Windows gives the pid of an exited process to another within seconds. A broker that acknowledged its shutdown and
+	// whose pid broker.pid shows was given to a later process has exited: the replacement goes on at once to start its
+	// successor, rather than waiting for that later process until the stop bound and handing it the spawn lock.
+	test.skipIf(process.platform !== "win32")(
+		"a session replacing an older broker does not wait for a later process given the broker's pid",
+		async () => {
+			const legacy = await startFakeLegacyBroker({ shutdown: "ignored" });
+			const later = await recordProcess(legacy.pid);
+			datedBeforeItsPidWasGivenAgain(legacy.pid);
+			const { BROKER_PROTOCOL } = await import("../../packages/intercom/broker/protocol-version.js");
+			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+			const startedAt = performance.now();
+			const error = await upgradeBroker(
+				"atomic-test-missing-broker-runtime-4538",
+				[],
+				5_000,
+				undefined,
+				BROKER_PROTOCOL,
+				LATER_PROCESS_STOP_BOUND_MS,
+			).catch((caught: unknown) => caught);
+			const { isIntercomBrokerUpgradeError } = await import("@bastani/atomic");
+			assert.ok(isIntercomBrokerUpgradeError(error), String(error));
+			assert.equal(error.phase, "start", "the replacement waited for the later process until the stop bound");
+			assert.ok(performance.now() - startedAt < LATER_PROCESS_STOP_BOUND_MS);
+			assert.equal(await stillRuns(later), true, "the later process given the broker's pid was ended");
+			assert.equal(existsSync(join(agentDir, "intercom", "broker.spawn.lock")), false);
 		},
 		UPGRADE_TEST_TIMEOUT_MS,
 	);
@@ -649,7 +730,7 @@ describe("replacing an older broker (#4538)", () => {
 				const [owner, time] = readFileSync(lockPath, "utf8").split("\n");
 				if (time === undefined || time === "") return;
 				writtenAt.add(time);
-				if (owner !== String(process.pid)) foreignOwner = true;
+				if (Number.parseInt(owner ?? "", 10) !== process.pid) foreignOwner = true;
 				if (legacy.exitedAt() === undefined && isSpawnLockStale(lockPath)) staleSeen = true;
 			}, 250);
 			try {
@@ -820,6 +901,22 @@ describe("atomic intercom upgrade against a 0.9.71 broker (#4538)", () => {
 			assert.equal(timedOut.phase, "stop");
 			assert.ok(isIntercomBrokerStopTimeoutError(timedOut.cause), String(timedOut.cause));
 			assert.deepEqual([timedOut.cause.pid, timedOut.cause.timeoutMs], [stuck.pid, 200]);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"stops waiting for an older broker once broker.pid shows its pid was given to a later process",
+		async () => {
+			const { upgradeIntercomBroker } = await control();
+			const legacy = await startFakeLegacyBroker({ sessions: 0, shutdown: "ignored" });
+			const later = await recordProcess(legacy.pid);
+			datedBeforeItsPidWasGivenAgain(legacy.pid);
+			const startedAt = performance.now();
+			const outcome = await upgradeIntercomBroker(agentDir, { stopTimeoutMs: LATER_PROCESS_STOP_BOUND_MS });
+			assert.deepEqual(outcome, { status: "stopped", previous: { pid: legacy.pid, protocol: { min: 1, max: 1 } } });
+			assert.ok(performance.now() - startedAt < LATER_PROCESS_STOP_BOUND_MS);
+			assert.equal(await stillRuns(later), true, "the later process given the broker's pid was ended");
 		},
 		UPGRADE_TEST_TIMEOUT_MS,
 	);
