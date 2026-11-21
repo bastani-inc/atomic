@@ -11,6 +11,7 @@ import {
 	waitUntilGone,
 } from "../../../test/helpers/recorded-process.js";
 import { execCommand } from "../src/core/exec.ts";
+import { endCommandThenHeld, type HeldProcessDescendants } from "../src/core/process-tree-containment.ts";
 
 /** Longer than a killed process takes to be gone, however loaded the machine. */
 const GONE_MS = 5_000;
@@ -153,6 +154,66 @@ describe("a pi.exec command ended by Atomic ends with the processes it started",
 			assert.equal(await waitUntilGone(detached, KILL_SEEN_MS), false, "a program that detached itself was ended");
 		},
 	);
+});
+
+/**
+ * A command that waits on the one process it started, as `cmd /c ping` does: it exits with its own status as soon as
+ * that process ends, and reports SIGTERM's code only when it was ended itself.
+ */
+function waitingCommand(): {
+	kill: () => boolean;
+	held: HeldProcessDescendants;
+	status: () => string;
+	events: string[];
+} {
+	let command: "running" | "ended" | "exited on its own" = "running";
+	let child: "running" | "ended" = "running";
+	const events: string[] = [];
+	return {
+		kill: () => {
+			events.push("command");
+			if (command !== "running") return false;
+			command = "ended";
+			return true;
+		},
+		held: {
+			count: 1,
+			terminate: () => {
+				events.push("held");
+				child = "ended";
+				// However long the stop pauses here, a command still running would see its process end and exit.
+				if (command === "running") command = "exited on its own";
+				return 1;
+			},
+			release: () => {
+				events.push("release");
+			},
+		},
+		status: () => `${command}, child ${child}`,
+		events,
+	};
+}
+
+describe("a Windows stop ends the command before the processes below it", () => {
+	test("so that a command waiting on what it started is ended, not left to exit on its own", () => {
+		const command = waitingCommand();
+
+		endCommandThenHeld(command.held, command.kill);
+
+		assert.equal(command.status(), "ended, child ended");
+		assert.deepEqual(command.events, ["command", "held", "release"]);
+	});
+
+	test("and a command that exited by itself first leaves what it started running", () => {
+		const command = waitingCommand();
+		command.kill();
+		command.events.length = 0;
+
+		endCommandThenHeld(command.held, command.kill);
+
+		assert.equal(command.status(), "ended, child running");
+		assert.deepEqual(command.events, ["command", "release"]);
+	});
 });
 
 /** A number no other process's command line is likely to hold, which a test's command passes to what it starts. */

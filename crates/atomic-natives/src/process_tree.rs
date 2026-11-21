@@ -1,26 +1,74 @@
-//! Ends the processes a running child process started, on Windows, through handles: never by a process id that another
-//! process may have been given meanwhile. A tree is read from the system's process table, but each process in it is
+//! Holds, and then ends, the processes a running child process started, on Windows, through handles: never by a process
+//! id that another process may have been given meanwhile. A tree is read from the system's process table, but each process in it is
 //! taken only once it is open, and only when the opened process's own parent id is its parent's and it was started
 //! after that parent. An open process keeps its id, so the walk stands on processes it holds. Which process started
 //! first is the kernel's own count of process starts (the process sequence number), which no clock change moves;
 //! where it cannot be read, that process is not taken.
 use napi_derive::napi;
 
-/// Ends the processes that running process `pid` started, and those they started, each through a handle; returns how
-/// many it ended. Not `pid` itself, and nothing once `pid` has exited, checked again right before the first of them is
-/// ended. The caller must hold `pid`'s own handle (a child it has not reaped), so that `pid` names that process. A
-/// process whose parent ended before the call is not found. Nothing off Windows, nor where Windows does not give the
-/// order in which processes started.
-#[napi(js_name = "terminateProcessDescendants")]
-pub fn terminate_process_descendants(pid: u32) -> u32 {
+/// The processes below a running process, each held through a handle of its own, as `holdProcessDescendants` found them:
+/// while held, none of their ids can be given to another process.
+#[napi]
+pub struct HeldProcessDescendants {
+	held: Vec<Held>,
+}
+
+#[cfg(windows)]
+type Held = std::os::windows::io::OwnedHandle;
+#[cfg(not(windows))]
+type Held = ();
+
+#[napi]
+impl HeldProcessDescendants {
+	/// How many processes it holds.
+	#[napi(getter)]
+	pub fn count(&self) -> u32 {
+		self.held.len() as u32
+	}
+
+	/// Ends every process it holds, through its handle, and lets go of them; returns how many it ended.
+	#[napi]
+	pub fn terminate(&mut self) -> u32 {
+		#[cfg(windows)]
+		{
+			use std::os::windows::io::AsRawHandle;
+			use windows_sys::Win32::System::Threading::TerminateProcess;
+			let ended = self
+				.held
+				.iter()
+				.filter(|process| unsafe { TerminateProcess(process.as_raw_handle(), 1) } != 0)
+				.count();
+			self.held.clear();
+			ended as u32
+		}
+		#[cfg(not(windows))]
+		{
+			self.held.clear();
+			0
+		}
+	}
+
+	/// Lets go of the processes it holds without ending them.
+	#[napi]
+	pub fn release(&mut self) {
+		self.held.clear();
+	}
+}
+
+/// Holds the processes that running process `pid` started, and those they started, each through a handle, so that the
+/// caller can end `pid` first and then them, only if it ended `pid`. `null` once `pid` has exited, off Windows, and
+/// where Windows does not give the order in which processes started. The caller must hold `pid`'s own handle (a child
+/// it has not reaped), so that `pid` names that process. A process whose parent ended before the call is not found.
+#[napi(js_name = "holdProcessDescendants")]
+pub fn hold_process_descendants(pid: u32) -> Option<HeldProcessDescendants> {
 	#[cfg(windows)]
 	{
-		windows::terminate_descendants(pid)
+		windows::hold_descendants(pid).map(|held| HeldProcessDescendants { held })
 	}
 	#[cfg(not(windows))]
 	{
 		let _ = pid;
-		0
+		None
 	}
 }
 
@@ -99,34 +147,20 @@ mod windows {
 	};
 	use windows_sys::Win32::System::Threading::{
 		OpenProcess, PROCESS_BASIC_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-		PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+		PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, WaitForSingleObject,
 	};
 
-	pub(super) fn terminate_descendants(root: u32) -> u32 {
-		let Some(root_process) = open(root, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE)
-		else {
-			return 0;
-		};
-		let Some(root_started) = started(&root_process) else { return 0 };
+	pub(super) fn hold_descendants(root: u32) -> Option<Vec<OwnedHandle>> {
+		let root_process = open(root, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE)?;
+		let root_started = started(&root_process)?;
 		if !running(&root_process) {
-			return 0;
+			return None;
 		}
 		let table = process_table();
-		let kept = walk(root, root_started, &table, |pid| {
+		Some(walk(root, root_started, &table, |pid| {
 			let process = open(pid, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION)?;
 			Some(Opened { parent: parent_of(&process)?, started: started(&process)?, handle: process })
-		});
-		// A command that ended meanwhile leaves what it started running, as one that ended before.
-		if !running(&root_process) {
-			return 0;
-		}
-		let mut ended = 0;
-		for process in &kept {
-			if unsafe { TerminateProcess(process.as_raw_handle(), 1) } != 0 {
-				ended += 1;
-			}
-		}
-		ended
+		}))
 	}
 
 	fn running(process: &OwnedHandle) -> bool {
@@ -138,7 +172,11 @@ mod windows {
 			return None;
 		}
 		let handle = unsafe { OpenProcess(access, 0, pid) };
-		(!handle.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(handle) })
+		if handle.is_null() {
+			return None;
+		}
+		// SAFETY: `handle` is a process handle this function just opened and owns.
+		Some(unsafe { OwnedHandle::from_raw_handle(handle) })
 	}
 
 	/// The process's `ProcessSequenceNumber` from `ProcessTelemetryIdInformation` (Windows 10 and later): its place in
@@ -228,22 +266,36 @@ mod tests {
 
 	#[cfg(windows)]
 	#[test]
-	fn ends_a_ping_that_a_running_cmd_started() {
+	fn holds_and_ends_a_ping_that_a_running_cmd_started() {
 		// The ping runs 30 seconds at most if nothing ends it.
 		let mut cmd = std::process::Command::new("cmd.exe")
 			.args(["/d", "/c", "ping -n 30 127.0.0.1 > nul"])
 			.spawn()
 			.expect("cmd.exe starts");
 		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-		let mut ended = 0;
-		while ended == 0 && std::time::Instant::now() < deadline {
+		let mut held = None;
+		while held.is_none() && std::time::Instant::now() < deadline {
 			std::thread::sleep(std::time::Duration::from_millis(100));
-			ended = super::terminate_process_descendants(cmd.id());
+			held = super::hold_process_descendants(cmd.id()).filter(|held| held.count() > 0);
 		}
 		let _ = cmd.kill();
 		let _ = cmd.wait();
 		// The ping, and a console host cmd.exe may have started.
-		assert!(ended >= 1, "nothing cmd.exe started was ended");
+		let mut held = held.expect("nothing cmd.exe started was held");
+		assert!(held.terminate() >= 1, "nothing cmd.exe started was ended");
+		assert_eq!(held.count(), 0, "it lets go once it ended them");
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn holds_nothing_below_a_process_that_exited() {
+		let mut cmd = std::process::Command::new("cmd.exe")
+			.args(["/d", "/c", "exit 0"])
+			.spawn()
+			.expect("cmd.exe starts");
+		cmd.wait().expect("cmd.exe exits");
+		// `cmd` still holds the process's handle, so its id names that process, which has exited.
+		assert!(super::hold_process_descendants(cmd.id()).is_none());
 	}
 
 	#[test]

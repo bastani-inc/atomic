@@ -18,6 +18,19 @@ export declare class AdvisoryLock {
   release(): void
 }
 
+/**
+ * The processes below a running process, each held through a handle of its own, as `holdProcessDescendants` found them:
+ * while held, none of their ids can be given to another process.
+ */
+export declare class HeldProcessDescendants {
+  /** How many processes it holds. */
+  get count(): number
+  /** Ends every process it holds, through its handle, and lets go of them; returns how many it ended. */
+  terminate(): number
+  /** Lets go of the processes it holds without ending them. */
+  release(): void
+}
+
 /** A process the host started with [`start_host_process`]. */
 export declare class HostProcess {
   get pid(): number
@@ -550,6 +563,14 @@ export interface GrepResult {
  */
 export declare function hasMatch(content: string | Uint8Array, pattern: string | Uint8Array, ignoreCase?: boolean | undefined | null, multiline?: boolean | undefined | null): boolean
 
+/**
+ * Holds the processes that running process `pid` started, and those they started, each through a handle, so that the
+ * caller can end `pid` first and then them, only if it ended `pid`. `null` once `pid` has exited, off Windows, and
+ * where Windows does not give the order in which processes started. The caller must hold `pid`'s own handle (a child
+ * it has not reaped), so that `pid` names that process. A process whose parent ended before the call is not found.
+ */
+export declare function holdProcessDescendants(pid: number): HeldProcessDescendants | null
+
 export type HostObservation =
   | { kind: 'foreground'; waitId: string }
   | { kind: 'background'; reason: string }
@@ -962,15 +983,6 @@ export type TaskResult =
  * another process, or this process may not end it), and off Windows.
  */
 export declare function terminateProcessCreatedAt(pid: number, created: string, descendants: boolean): number | null
-
-/**
- * Ends the processes that running process `pid` started, and those they started, each through a handle; returns how
- * many it ended. Not `pid` itself, and nothing once `pid` has exited, checked again right before the first of them is
- * ended. The caller must hold `pid`'s own handle (a child it has not reaped), so that `pid` names that process. A
- * process whose parent ended before the call is not found. Nothing off Windows, nor where Windows does not give the
- * order in which processes started.
- */
-export declare function terminateProcessDescendants(pid: number): number
 
 /**
  * Explicit termination causes. Timer/idle/wall-clock causes are intentionally
