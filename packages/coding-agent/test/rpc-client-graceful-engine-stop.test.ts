@@ -19,7 +19,8 @@ type EngineBehavior =
 	| "reports-then-lingers"
 	| "ignores-sigterm"
 	| "shuts-down-on-sigterm"
-	| "names-its-signal";
+	| "names-its-signal"
+	| "console-closes-in-shutdown";
 
 const tempDirs: string[] = [];
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -70,6 +71,11 @@ if (${JSON.stringify(behavior)} !== "never-ready") {
 process.stdin.on("end", () => {
 	appendFileSync(${JSON.stringify(record)}, "shutdown started\\n");
 	if (${JSON.stringify(behavior)} === "hangs-in-shutdown") return;
+	if (${JSON.stringify(behavior)} === "console-closes-in-shutdown") {
+		// As an engine whose Windows console closes while a quit stops it: it says so, then exits.
+		process.stdout.write(JSON.stringify({ type: "engine_console_closed" }) + "\\n", () => process.exit(0));
+		return;
+	}
 	appendFileSync(${JSON.stringify(record)}, "shutdown finished\\n");
 	if (${JSON.stringify(behavior)} === "reports-then-lingers") {
 		// As an engine whose runtime still writes its compile cache after its last exit handler.
@@ -91,7 +97,10 @@ setTimeout(() => process.exit(0), ${CHILD_LIFETIME_MS});
 	return { client, record, started };
 }
 
-async function stopOnWindows(client: RpcClient, options?: { graceful?: boolean }): Promise<number> {
+async function stopOnWindows(
+	client: RpcClient,
+	options?: { graceful?: boolean; hostSignaled?: boolean },
+): Promise<number> {
 	Object.defineProperty(process, "platform", { ...platform, value: "win32" });
 	const startedAt = performance.now();
 	try {
@@ -157,6 +166,40 @@ describe("RpcClient graceful engine stop on Windows", () => {
 		await assert.rejects(starting);
 		assert.equal(readRecord(record), "", "the engine was ended without being asked to shut down");
 		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
+	});
+
+	test("a stop because the console was closed lets a ready engine run its shutdown before it exits", async () => {
+		const { client, record } = startEngine("shuts-down");
+		await client.start();
+
+		const elapsedMs = await stopOnWindows(client, { hostSignaled: true });
+
+		assert.equal(readRecord(record), "shutdown started\nshutdown finished\n");
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
+	});
+
+	test("a stop because the console was closed ends an engine that is not ready yet at once", async () => {
+		const { client, record, started } = startEngine("never-ready");
+		const starting = client.start();
+		starting.catch(() => {});
+		while (!existsSync(started)) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+
+		const elapsedMs = await stopOnWindows(client, { hostSignaled: true });
+
+		await assert.rejects(starting);
+		assert.equal(readRecord(record), "", "the engine was ended without being asked to shut down");
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
+	});
+
+	test("an engine whose console is closed while a quit stops it still tells the host", async () => {
+		const { client } = startEngine("console-closes-in-shutdown");
+		await client.start();
+		const messages: string[] = [];
+		client.onInteractiveEngineMessage((message) => messages.push(message.type));
+
+		await stopOnWindows(client, { graceful: true });
+
+		assert.ok(messages.includes("engine_console_closed"), JSON.stringify(messages));
 	});
 
 	test("a quit ends an engine whose shutdown hangs within the bound (#6075)", async () => {

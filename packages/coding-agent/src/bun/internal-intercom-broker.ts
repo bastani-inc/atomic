@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { INTERCOM_BROKER_BUNDLE_ENTRY } from "../core/builtin-install-layout.ts";
 import { type AppHostModuleSpecifier, type AppHostModules, requestAppHostModulesOnly } from "./app-host-modules.js";
 
 export const INTERNAL_INTERCOM_BROKER_ARG = "--atomic-internal-intercom-broker";
@@ -51,6 +52,11 @@ export function getBundledIntercomBrokerPath(executablePath: string = process.ex
 	return join(dirname(executablePath), "builtin", "intercom", "broker", "broker.ts");
 }
 
+/** The prebuilt broker the binary ships beside its source; the broker starts from it when it is there. */
+export function getPrebuiltIntercomBrokerPath(executablePath: string = process.execPath): string {
+	return join(dirname(executablePath), "builtin", "intercom", ...INTERCOM_BROKER_BUNDLE_ENTRY.split("/"));
+}
+
 function comparablePath(path: string, platform: NodeJS.Platform): string {
 	const resolved = resolve(path);
 	return platform === "win32" ? resolved.toLowerCase() : resolved;
@@ -61,8 +67,10 @@ export function isBundledIntercomBrokerPath(
 	executablePath: string = process.execPath,
 	platform: NodeJS.Platform = process.platform,
 ): boolean {
+	const path = comparablePath(modulePath, platform);
 	return (
-		comparablePath(modulePath, platform) === comparablePath(getBundledIntercomBrokerPath(executablePath), platform)
+		path === comparablePath(getBundledIntercomBrokerPath(executablePath), platform) ||
+		path === comparablePath(getPrebuiltIntercomBrokerPath(executablePath), platform)
 	);
 }
 
