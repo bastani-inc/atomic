@@ -91,7 +91,7 @@ let warmupStarted = false;
  */
 export function warmCompileCache(engineExecArgv: readonly string[]): void {
 	const deferral = compileCacheDeferral();
-	if (!deferral || warmupStarted) return;
+	if (!deferral?.helper || warmupStarted) return;
 	warmupStarted = true;
 	const own = deferral.runtime;
 	const engine = { execArgv: engineExecArgv, nodeOptions: own.nodeOptions };

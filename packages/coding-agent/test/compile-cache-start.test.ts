@@ -10,6 +10,7 @@ import {
 	compileCacheStartMode,
 	compileCacheWarmMarker,
 	isCiValue,
+	startsCompileCacheHelper,
 } from "../src/utils/compile-cache.ts";
 
 const tempDirs: string[] = [];
@@ -20,7 +21,6 @@ afterEach(() => {
 
 const coldWindowsSession: CompileCacheStartInput = {
 	platform: "win32",
-	ci: false,
 	runtimeIsBun: false,
 	unsupported: false,
 	alreadyEnabled: false,
@@ -43,8 +43,6 @@ describe("how a process starts with the compile cache", () => {
 	test("every other process uses the cache as before, without reading the marker (#6132)", () => {
 		const others: Partial<CompileCacheStartInput>[] = [
 			{ platform: "linux" },
-			// CI, as the fullscreen TUI reads it
-			{ ci: true },
 			{ platform: "darwin" },
 			{ runtimeIsBun: true },
 			{ unsupported: true },
@@ -68,6 +66,12 @@ describe("how a process starts with the compile cache", () => {
 });
 
 describe("a CI run, which starts no compile-cache helper", () => {
+	test("still leaves a cold cache alone but starts no helper to write it (#6132)", () => {
+		assert.equal(startsCompileCacheHelper({ CI: "true" }), false);
+		assert.equal(startsCompileCacheHelper({ CI: "0" }), true);
+		assert.equal(startsCompileCacheHelper({}), true);
+	});
+
 	test("is any CI value but empty, 0 and false (#6132)", () => {
 		for (const value of ["true", "1", "github-actions", " TRUE "]) assert.equal(isCiValue(value), true, value);
 		for (const value of [undefined, "", " ", "0", "false", "FALSE"])

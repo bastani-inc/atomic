@@ -205,12 +205,12 @@ export default (pi) => pi.on("session_start", () => {
 		...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
 		...(process.env.PATH ? { PATH: process.env.PATH } : {}),
 	};
-	const start = (hostArgs: readonly string[]): PtyProgram =>
+	const start = (hostArgs: readonly string[], envChanges: Record<string, string> = {}): PtyProgram =>
 		startPtyProgram({
 			executable: process.execPath,
 			args: [join(PACKAGE, "dist/cli.js"), "--offline", "--no-mcp", ...hostArgs, "-e", extension],
 			cwd: project,
-			env,
+			env: { ...env, ...envChanges },
 			timeoutMs: CLI_TIMEOUT_MS,
 			cols: 120,
 			rows: 40,
@@ -321,6 +321,40 @@ describe.skipIf(!onNode)("the compile cache of an interactive session", () => {
 			}
 		},
 		SESSIONS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!windows)(
+		"under CI a session with a cold cache still quits without writing it, and starts no helper (#6132)",
+		async () => {
+			const fixture = sessionFixture("atomic-compile-cache-ci-");
+			let program: PtyProgram | undefined;
+			try {
+				program = fixture.start(["--no-approve"], { CI: "1" });
+				await program.waitForScreen(
+					(screen) => screen.includes("❯") && fixture.readReports().length === 1,
+					CLI_TIMEOUT_MS,
+					"the session",
+				);
+				assert.equal(fixture.readReports()[0]?.cacheDir, null, "a session with a cold cache runs without it");
+				// Past the point where a session outside CI starts its helper.
+				await sleep(WARM_SESSION_HELPER_WINDOW_MS);
+				assert.equal(helperProcesses(), 0, "no helper starts under CI");
+				const beforeQuit = cacheFiles(fixture.cacheBase);
+				await quit(program);
+				assert.deepEqual(
+					writtenBetween(beforeQuit, cacheFiles(fixture.cacheBase)),
+					[],
+					"quitting wrote compile cache files",
+				);
+				assert.equal(helperProcesses(), 0, "no helper starts when the session quits under CI");
+			} finally {
+				program?.kill();
+				await program?.exited;
+				if (windows) await waitForNoHelper();
+				await removeTempRootReleasingBroker(fixture.root, fixture.agentDir);
+			}
+		},
+		SESSION_AND_HELPERS_TIMEOUT_MS,
 	);
 
 	test(

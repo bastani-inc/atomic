@@ -40,8 +40,6 @@ export const COMPILE_CACHE_ENGINE_WARMUP_ENV = "ATOMIC_INTERNAL_COMPILE_CACHE_WA
 /** What decides how a process starts with the compile cache. */
 export interface CompileCacheStartInput {
 	readonly platform: NodeJS.Platform;
-	/** Running under CI: no helper starts there. */
-	readonly ci: boolean;
 	/** Bun keeps its own cache: nothing here applies. */
 	readonly runtimeIsBun: boolean;
 	/** This Node has no compile cache API. */
@@ -64,9 +62,14 @@ export interface CompileCacheStartInput {
  * keep the cache as it was.
  */
 export function compileCacheStartMode(input: CompileCacheStartInput): "enable" | "defer" {
-	if (input.platform !== "win32" || input.ci || input.runtimeIsBun || input.unsupported) return "enable";
+	if (input.platform !== "win32" || input.runtimeIsBun || input.unsupported) return "enable";
 	if (input.alreadyEnabled || input.disabled || !input.interactive || !input.helperRuntime) return "enable";
 	return input.warm() ? "enable" : "defer";
+}
+
+/** Whether a session that left its cold cache alone starts a helper to write it: never under CI. */
+export function startsCompileCacheHelper(env: NodeJS.ProcessEnv): boolean {
+	return !isCiValue(env.CI);
 }
 
 /** Whether `CI` names a CI run, as the fullscreen TUI reads it: any value but empty, `0` and `false`. */
@@ -167,10 +170,12 @@ export function currentCompileCacheWarmMarker(buildId: string): string {
 	});
 }
 
-/** A process that left its cold cache to a helper: the build to warm and how a helper repeats this runtime. */
+/** A process that left its cold cache alone: the build, how a helper repeats this runtime, and whether one starts. */
 export interface CompileCacheDeferral {
 	readonly buildId: string;
 	readonly runtime: CompileCacheHelperRuntime;
+	/** False under CI: the session still quits without writing the cache, and nothing warms it. */
+	readonly helper: boolean;
 }
 
 let deferral: CompileCacheDeferral | undefined;
@@ -185,7 +190,6 @@ export function enablePersistentCompileCache(options: { interactive?: boolean; b
 		const buildId = compileCacheBuildId(`${import.meta.url}\0${options.build ?? ""}`);
 		const mode = compileCacheStartMode({
 			platform: process.platform,
-			ci: isCiValue(process.env.CI),
 			runtimeIsBun: "bun" in process.versions,
 			unsupported: typeof compileCacheApi.enableCompileCache !== "function",
 			alreadyEnabled: compileCacheApi.getCompileCacheDir?.() !== undefined,
@@ -195,7 +199,7 @@ export function enablePersistentCompileCache(options: { interactive?: boolean; b
 			warm: () => existsSync(currentCompileCacheWarmMarker(buildId)),
 		});
 		if (mode === "defer" && runtime) {
-			deferral = { buildId, runtime };
+			deferral = { buildId, runtime, helper: startsCompileCacheHelper(process.env) };
 			return;
 		}
 		compileCacheApi.enableCompileCache?.();
