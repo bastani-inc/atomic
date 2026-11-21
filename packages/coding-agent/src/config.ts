@@ -569,13 +569,15 @@ export function getBlueprintActionsDir(agentDir: string = getAgentDir()): string
 const EXTENSION_TRANSPILE_CACHE_FORMAT = "ts-source-specifiers";
 
 /**
- * Get path to the extension transpile cache directory (jiti fsCache).
+ * Get path to the extension transpile cache directory.
  * Scoped by version and transform format so neither a release upgrade nor a
  * loader transform change reads stale transpiled output. Lives under the agent
  * directory of the load that uses it, which defaults to the one in effect now.
+ * Earlier releases keep theirs in `cache/jiti`, where each removes every other
+ * version's directory, so this one is in `cache/transpile`.
  */
 export function getExtensionTranspileCacheDir(agentDir: string = getAgentDir()): string {
-	return join(agentDir, "cache", "jiti", `${VERSION}+${EXTENSION_TRANSPILE_CACHE_FORMAT}`);
+	return join(agentDir, "cache", "transpile", `${VERSION}+${EXTENSION_TRANSPILE_CACHE_FORMAT}`);
 }
 
 /** Get path to prompt templates directory */

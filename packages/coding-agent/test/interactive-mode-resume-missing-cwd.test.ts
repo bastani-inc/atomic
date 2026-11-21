@@ -16,6 +16,7 @@ type SwitchOptions = {
 	sessionDirectory?: string;
 	withSession?: unknown;
 	projectTrustContextFactory?: (cwd: string) => unknown;
+	startedSession?: { getSessionId(): string; startedSession(): boolean };
 };
 type SwitchSession = (sessionId: string, options?: SwitchOptions) => Promise<{ cancelled: boolean }>;
 
@@ -173,6 +174,12 @@ describe("InteractiveMode /resume with a missing session cwd (earendil-works/pi#
 		expect(forkOptions?.sessionDirectory).toBeUndefined();
 		expect(forkOptions?.withSession).toBe(withSession);
 		expect(forkOptions?.projectTrustContextFactory?.(currentCwd)).toEqual({});
+		// The fork is a new session, so it shows what a new session shows; the switch by ID that found the cwd missing
+		// opened the original and says nothing of the kind.
+		const startedBy = forkOptions?.startedSession;
+		expect(startedBy?.getSessionId()).toBe(forkId);
+		expect(startedBy?.startedSession()).toBe(true);
+		expect(switchSession.mock.calls[0]?.[1]?.startedSession).toBeUndefined();
 
 		const forked = await activeStore.load(forkId ?? "");
 		expect(forked.header.cwd).toBe(currentCwd);
@@ -272,6 +279,10 @@ describe("InteractiveMode /resume with a missing session cwd (earendil-works/pi#
 		});
 		const continueOptions = switchSession.mock.calls[1]?.[1];
 		expect(continueOptions?.projectTrustContextFactory?.(currentCwd)).toEqual({});
+		expect(
+			continueOptions?.startedSession,
+			"the original session continues: it is not a new session",
+		).toBeUndefined();
 		expect(setupResult.host.createProjectTrustContext).toHaveBeenCalledWith(currentCwd);
 		expect(setupResult.host.clearFirstRunOnboardingUi).not.toHaveBeenCalled();
 		expect(await listIds(activeStore)).toEqual([current.getSessionId()]);

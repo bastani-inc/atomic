@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isProxy } from "node:util/types";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
@@ -5,7 +6,6 @@ import { recordsStrictToolLimits } from "@bastani/atomic-ai/api/strict-tool-limi
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
-
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import { forkContextPath, includeNamedForkOutputs } from "./fork-context-path.js";
@@ -432,6 +432,8 @@ export class SessionManager {
 
 	private branchLinks: ReadonlyMap<string, string> | undefined;
 	private historyLoad: Promise<void> | undefined;
+	/** The session this manager started, as a new session or a fork, in this process; never one it opened. */
+	private startedSessionId: string | undefined;
 
 	private constructor(store: SessionStore, cwd: string, sessionDir: string, options?: NewSessionOptions) {
 		this.store = store;
@@ -925,6 +927,8 @@ export class SessionManager {
 			);
 			this.store = store;
 			this.restoreOpened(opened, path);
+			// An opened file continues a saved session, even one with the ID of the session this manager started.
+			this.startedSessionId = undefined;
 		});
 	}
 
@@ -936,6 +940,7 @@ export class SessionManager {
 		this.historyEpoch = created.epoch;
 		this.entrySeqs = new Map(this.getEntries().map((entry, i) => [entry.id, i + 1]));
 		this.lastEntryId = this.getEntries().at(-1)?.id ?? null;
+		this.markSessionStarted();
 	}
 
 	private async storeForNewSession(): Promise<SessionStore> {
@@ -974,6 +979,7 @@ export class SessionManager {
 			this.labelsById.clear();
 			this.labelTimestampsById.clear();
 			this.restore({ header: record, entries: [], lastSeq: result.lastSeq, epoch: result.epoch }, location);
+			this.markSessionStarted();
 			return this.sessionFile;
 		});
 	}
@@ -993,6 +999,55 @@ export class SessionManager {
 
 	isPersisted(): boolean {
 		return !(this.store instanceof MemorySessionStore);
+	}
+
+	/**
+	 * @internal Whether the current session is one this process started, as a new session or a fork, rather than one
+	 * it resumed, reopened or imported, and {@link takeStartedSession} has not taken that yet.
+	 */
+	startedSession(): boolean {
+		return this.startedSessionId !== undefined && this.startedSessionId === this.sessionId;
+	}
+
+	/**
+	 * @internal Records the current session as started in this process: by this manager, or, for an interactive engine,
+	 * by the host that created it for the engine to open.
+	 */
+	markSessionStarted(): void {
+		this.startedSessionId = this.sessionId;
+	}
+
+	/** @internal {@link startedSession}, answered true at most once for a session. */
+	takeStartedSession(): boolean {
+		if (!this.startedSession()) return false;
+		this.startedSessionId = undefined;
+		return true;
+	}
+
+	/**
+	 * @internal Moves {@link startedSession} to `replacement`, a manager of this same session record opened to continue it
+	 * in place of this one, as a resume does in the directory it continues in. A session file is the same record however
+	 * its path is spelled; a session kept without one is the same record in the same store.
+	 */
+	async handOverStartedSession(replacement: SessionManager): Promise<void> {
+		const sessionId = this.sessionId;
+		if (replacement === this || replacement.sessionId !== sessionId || !this.startedSession()) return;
+		const [own, theirs] = [this.sessionFile, replacement.sessionFile];
+		if (own === undefined || theirs === undefined) {
+			if (own !== theirs || replacement.store !== this.store) return;
+		} else if (own !== theirs) {
+			// The file's own spelling, case included, as the filesystem resolves it; a path that cannot be resolved
+			// proves nothing.
+			const [ownPath, theirPath] = await Promise.all([
+				realpath(own).catch(() => undefined),
+				realpath(theirs).catch(() => undefined),
+			]);
+			if (ownPath === undefined || ownPath !== theirPath) return;
+			// Either manager may have moved to another session while the paths were resolved.
+			if (this.sessionId !== sessionId || this.sessionFile !== own) return;
+			if (replacement.sessionId !== sessionId || replacement.sessionFile !== theirs) return;
+		}
+		if (this.takeStartedSession()) replacement.markSessionStarted();
 	}
 
 	getCwd(): string {
@@ -1138,6 +1193,8 @@ export class SessionManager {
 			await storeSessionBlobs(this.store, snapshot.header.id, blobs);
 			// The imported file is saved; continue from its current context window, as a resume does (#5554).
 			manager.restoreOpened(await readStoredSession(this.store, snapshot.header.id, undefined), manager.sessionFile);
+			// An imported session continues one started elsewhere.
+			manager.startedSessionId = undefined;
 			return manager;
 		} finally {
 			await source.close();
@@ -2427,6 +2484,7 @@ export class SessionManager {
 			const opened = await readStoredSession(store, record.id, undefined);
 			this.store = store;
 			this.restoreOpened(opened, location);
+			this.markSessionStarted();
 			return this.sessionFile;
 		});
 	}
@@ -2468,6 +2526,7 @@ export class SessionManager {
 		);
 		this.store = store;
 		this.restoreOpened(await readStoredSession(store, record.id, undefined), location);
+		this.markSessionStarted();
 		return this.sessionFile;
 	}
 
@@ -2666,6 +2725,7 @@ export class SessionManager {
 						},
 						manager.sessionFile,
 					);
+					manager.markSessionStarted();
 					return manager;
 				}
 			}
@@ -2681,6 +2741,7 @@ export class SessionManager {
 			if (stamp !== undefined && opened.resume.epoch !== stamp)
 				throw new SessionConflictError(manager.sessionId, created.lastSeq, opened.resume.lastSeq);
 			manager.restoreOpened(opened, manager.sessionFile);
+			manager.markSessionStarted();
 			return manager;
 		});
 	}
@@ -2967,6 +3028,7 @@ export class SessionManager {
 					if (created.epoch !== undefined && opened.resume.epoch !== created.epoch)
 						throw new SessionConflictError(manager.sessionId, created.lastSeq, opened.resume.lastSeq);
 					manager.restoreOpened(opened, manager.sessionFile);
+					manager.markSessionStarted();
 					return manager;
 				};
 				if (typeof sessionDir === "string") {
