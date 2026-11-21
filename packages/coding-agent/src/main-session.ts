@@ -90,11 +90,16 @@ async function sessionsWithIdPrefix(
 	idPrefix: string,
 	store: SessionStore,
 ): Promise<{ readonly id: string; readonly cwd: string }[]> {
-	const sessions: { readonly id: string; readonly cwd: string }[] = [];
-	for await (const summary of store.list({ idPrefix, includeInternal: true })) {
-		sessions.push({ id: summary.id, cwd: summary.cwd });
+	// Listed sessions first: internal ones, such as subagents' sessions created around the same time, share the
+	// prefix of their time-ordered ids. An internal session is found by a prefix only no listed session has.
+	for (const includeInternal of [false, true]) {
+		const sessions: { readonly id: string; readonly cwd: string }[] = [];
+		for await (const summary of store.list({ idPrefix, includeInternal })) {
+			sessions.push({ id: summary.id, cwd: summary.cwd });
+		}
+		if (sessions.length > 0) return sessions;
 	}
-	return sessions;
+	return [];
 }
 
 async function resolveSessionId(sessionArg: string, cwd: string, store: SessionStore): Promise<ResolvedSession> {
