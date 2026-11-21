@@ -14,6 +14,12 @@ import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 // A real interactive CLI: host, engine child, extension loading and the folder's trust decision.
 const STARTUP_TIMEOUT_MS = 60_000;
 
+/** Global extensions that answer project_trust with "yes" and with "no". */
+const TRUST_POLICIES = {
+	yes: "export default function(pi) { pi.on('project_trust', async () => ({ trusted: 'yes' })); }",
+	no: "export default function(pi) { pi.on('project_trust', async () => ({ trusted: 'no' })); }",
+} as const;
+
 function write(path: string, text: string): void {
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, text);
@@ -55,12 +61,7 @@ async function startSavedTrustedFolder(policy: "yes" | "no" | "none", args: stri
 			sessions: { storage: { dir: globalSessions } },
 		}),
 	);
-	if (policy !== "none") {
-		write(
-			join(agentDir, "extensions", "policy.ts"),
-			`export default function(pi) { pi.on('project_trust', async () => ({ trusted: ${JSON.stringify(policy)} })); }`,
-		);
-	}
+	if (policy !== "none") write(join(agentDir, "extensions", "policy.ts"), TRUST_POLICIES[policy]);
 	await seed(cwd, agentDir, globalSessions, "GLOBAL RECEIPT");
 	await seed(cwd, agentDir, projectSessions, "PROJECT RECEIPT");
 	linkSharedTranspileCache(agentDir);

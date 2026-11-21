@@ -25,7 +25,7 @@ import type { TruncationResult } from "../../../core/tools/truncate.ts";
 import { getCwdRelativePath, resolvePath, shortenHomePath } from "../../../utils/paths.ts";
 import { singleLineDisplayText, terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { type CodeHighlighter, getLanguageFromPath, highlightCode, type Theme, theme } from "../theme/theme.js";
-import { slashCommandHint } from "./nav-keys.ts";
+import { type KeptTaskAction, keptTaskHint } from "./kept-task.ts";
 import { collapseToolBlockLines, TOOL_BLOCK_LIMITS, ToolBlockRecords, type ToolBlockStatus } from "./tool-block.ts";
 import { formatWorkingElapsed } from "./working-run-meter.ts";
 
@@ -56,6 +56,8 @@ export interface BuiltinToolBlockInput {
 	readonly highlighter?: CodeHighlighter;
 	readonly theme?: Pick<Theme, "fg" | "bold">;
 	readonly canManageTask?: (taskId: string) => boolean;
+	/** What the chat showing the block offers for a task its call left running; given, it decides instead of `canManageTask`. */
+	readonly keptTaskAction?: (taskId: string) => KeptTaskAction | undefined;
 }
 
 export interface BuiltinToolBlockPresentation {
@@ -1083,8 +1085,16 @@ function presentBash(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 	if (classified.kind === "background") {
 		const taskId = asString(asRecord(asRecord(input.result?.details)?.observation)?.taskId);
 		// Shells are managed in /tasks; the agent panel lists subagents only.
-		const manage = taskId !== undefined && taskId !== "" && input.canManageTask?.(taskId) === true;
-		const bgLine = `${theme.fg("text", "Running in background")}${manage ? theme.fg("dim", ` · ${slashCommandHint("/tasks to manage")}`) : ""}`;
+		const action =
+			taskId === undefined || taskId === ""
+				? undefined
+				: input.keptTaskAction !== undefined
+					? input.keptTaskAction(taskId)
+					: input.canManageTask?.(taskId) === true
+						? "tasks"
+						: undefined;
+		const hint = keptTaskHint(action);
+		const bgLine = `${theme.fg("text", "Running in background")}${hint ? theme.fg("dim", ` · ${hint}`) : ""}`;
 		const hasOutput = classified.output !== "" && classified.output !== EMPTY_OUTPUT_TEXT;
 		const outputLines = hasOutput
 			? collapseToolBlockLines(

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
+import { isDeepStrictEqual, stripVTControlCharacters } from "node:util";
 import {
 	agentWakeDispatcher,
 	currentWorktreeRootMappings,
@@ -25,10 +25,14 @@ import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import {
+	lateToolResultNotice,
+	lateToolResultNoticeKey,
+	legacyLateToolResultMessage,
+} from "../../packages/subagents/src/runs/foreground/late-tool-result-notice.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
 	interruptedStillRunningResult,
-	lateToolResultMessage,
 	SUBAGENT_INTERRUPTED_BY_RESTART_RESULT,
 	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
@@ -44,6 +48,7 @@ import {
 	createSubagentChildRecordSink,
 	holdInterruptedStillRunningCalls,
 	holdSubagentChildMessages,
+	holdSubagentChildNotices,
 	readSubagentChildRecords,
 	recordSubagentChildHeldToolResults,
 	recordSubagentChildStatus,
@@ -252,7 +257,7 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 		const [parentCwd, agents, agentName, task, options] = args;
 		runs.push({ task, options, scope: currentWorktreeRootMappings() });
 		if (task !== ORIGINAL_TASK) {
-			const { resumeToolResults: results, skipTaskPrompt: _skip, ...rest } = options;
+			const { resumeToolResults: results, skipTaskPrompt, ...rest } = options;
 			// As the real runner: a woken run's results are saved into its transcript only once nothing stopped it first, and
 			// then toolResultsSaved reports them.
 			const saveResults = () => {
@@ -283,7 +288,11 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 					interrupted: true,
 					messages: [],
 					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-					pendingMessages: [task, ...(rest.resumeFollowUps ?? [])],
+					// As the runner: a task that only starts a turn is not handed back.
+					pendingMessages: [
+						...(skipTaskPrompt || rest.resumeTaskFallback ? [] : [task]),
+						...(rest.resumeFollowUps ?? []),
+					],
 				} as SingleResult;
 			}
 			if (woken) {
@@ -640,7 +649,7 @@ async function endedOnPendingCall(h: Harness, runId: string): Promise<SubagentCh
 	return record;
 }
 
-test("a result that comes after its call was answered reaches a woken child as a message it reads literally, with no prompt of its own (#4326)", async () => {
+test("a result that comes after its call was answered reaches a woken child in its notice, never as a prompt or a queued message, and starts the turn itself", async () => {
 	const h = harness();
 	const record = await releasedChild(h, "wake-late");
 	const late = waitResult("/deploy now");
@@ -651,25 +660,212 @@ test("a result that comes after its call was answered reaches a woken child as a
 		promptless: true,
 	});
 
-	assert.equal(run.task, lateToolResultMessage(late));
-	assert.equal(run.resumeTaskLiteral, true);
-	assert.equal(run.resumeFollowUps, undefined, "a wake by results alone is not told to read anything");
+	assert.deepEqual(run.resumeLateToolResults, [late]);
+	assert.equal(run.task, "", "the result is not its prompt");
+	assert.equal(run.resumeFollowUps, undefined, "nothing is queued for it to read");
 	assert.deepEqual(run.resumeToolResults, []);
-	assert.equal(run.skipTaskPrompt, undefined, "the late message is the prompt");
+	assert.equal(run.skipTaskPrompt, true, "the notice starts its turn");
+	assert.equal(run.resumeTaskFallback, undefined, "no wake prompt");
 });
 
-test("a late result and a message wake the child together: the result is read, with no wake prompt after it (#4326)", async () => {
+test("a late result and a message wake the child together: the result is read in its notice, with no wake prompt after it", async () => {
 	const h = harness();
 	const record = await releasedChild(h, "wake-both");
 	const late = waitResult("deployed");
 
 	const run = await restored(h, record.childId, { ...MESSAGE_WAKE, toolResults: [late] });
 
-	assert.equal(run.task, lateToolResultMessage(late));
+	assert.deepEqual(run.resumeLateToolResults, [late]);
 	assert.equal(run.resumeFollowUps, undefined, "the message arrives as its own; nothing generic follows the result");
 	assert.equal(run.resumeTaskFallback, undefined);
+	assert.equal(run.skipTaskPrompt, true);
+	assert.notEqual(run.task, SUBAGENT_RELEASED_WAKE_PROMPT);
+});
+
+test("a late result and a message held for the child reach it together: the message as written, the result in its notice", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "wake-held");
+	assert.equal(
+		await holdSubagentChildMessages(h.deps.pi, record.owner.sessionId, record.childId, ["Also rerun lint."]),
+		"released",
+	);
+	const late = waitResult("deployed");
+
+	const run = await restored(h, record.childId, { ...MESSAGE_WAKE, toolResults: [late] });
+
+	assert.equal(run.task, "Also rerun lint.");
 	assert.equal(run.resumeTaskLiteral, true);
-	assert.equal(run.skipTaskPrompt, undefined);
+	assert.deepEqual(run.resumeLateToolResults, [late]);
+	assert.equal(run.resumeFollowUps, undefined);
+	assert.equal(lateTimes(run, late), 1);
+});
+
+for (const [kind, marked] of [
+	["an earlier build's record", false],
+	["a record written since", true],
+] as const)
+	test(`a late result's copy held as a message in ${kind} is ${marked ? "a message the child was sent" : "left out once, its result read in the notice"}`, async () => {
+		const h = harness();
+		const record = await releasedChild(h, `legacy-held-${marked}`);
+		const late = waitResult("deployed");
+		const copy = legacyLateToolResultMessage(late);
+		// The copy twice: an earlier build held at most one per result; the other is a message the child was sent.
+		const legacy = {
+			...record,
+			heldToolResults: [late],
+			heldMessages: {
+				taskId: record.taskId ?? "",
+				messages: [copy, copy, "Ship it."],
+				taskExpands: false,
+				withoutWakePrompt: true,
+				...(marked ? { withoutLateResults: true } : {}),
+			},
+		} as SubagentChildRecord;
+		await appendRecord(h, legacy);
+		observeSubagentChildRecord(legacy);
+
+		const run = await restored(h, record.childId, { ...MESSAGE_WAKE, toolResults: [late] });
+
+		assert.deepEqual(run.resumeLateToolResults, [late]);
+		const read = [run.task, ...(run.resumeFollowUps ?? [])];
+		assert.deepEqual(
+			read,
+			marked ? [copy, copy, "Ship it."] : [copy, "Ship it."],
+			"only the earlier build's own copy is left out",
+		);
+	});
+
+function shellNotice(completionId: string) {
+	return {
+		customType: "task-completion",
+		content: `Background shell completed: npm test\nTask: task-${completionId}`,
+		details: { completionId },
+	};
+}
+
+test("a finished background task's notice held for a released child reaches it as that notice, starting its turn, never as a message or the wake prompt", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "wake-notice");
+	const notice = shellNotice("c-1");
+	assert.equal(
+		await holdSubagentChildNotices(h.deps.pi, record.owner.sessionId, record.childId, [notice]),
+		"released",
+	);
+
+	const run = await restored(h, record.childId, MESSAGE_WAKE);
+
+	assert.deepEqual(run.resumeNotices, [notice]);
+	assert.equal(run.task, "", "the notice is not its prompt");
+	assert.equal(run.resumeFollowUps, undefined, "nothing is queued for it to read");
+	assert.equal(run.skipTaskPrompt, true, "the notice starts its turn");
+	assert.equal(run.resumeTaskFallback, undefined, "no wake prompt");
+	const done = await h.waitForLatest(record.childId, (latest) => latest.terminalStatus === "ok");
+	assert.deepEqual(done.heldNotices ?? [], [], "the owner lets it go once the child saved it");
+});
+
+test("a held notice the child's transcript already holds is not given to it again (#5012)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "notice-saved");
+	const notice = shellNotice("c-2");
+	assert.ok(record.childSessionFile);
+	const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+	await session.appendCustomMessageEntry(notice.customType, notice.content, true, notice.details);
+	assert.equal(
+		await holdSubagentChildNotices(h.deps.pi, record.owner.sessionId, record.childId, [notice]),
+		"released",
+	);
+
+	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+	assert.equal(run.resumeNotices, undefined);
+	assert.equal(run.task, "a new message");
+	assert.deepEqual(h.latest(record.childId)?.heldNotices ?? [], []);
+});
+
+/** A child that finished on its own, its transcript holding `late` in `form`, with `late` still held for it. */
+async function finishedHolding(
+	h: Harness,
+	runId: string,
+	late: DetachedToolResult,
+	form: "message" | "read notice" | "unread notice",
+): Promise<SubagentChildRecord> {
+	h.original = "completes";
+	await settled(h, await h.admit(runId));
+	const record = await h.waitForLatest(`${runId}:0`, (latest) => latest.terminalStatus === "ok");
+	assert.ok(record.childSessionFile);
+	const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+	if (form === "message")
+		await session.appendMessage({ role: "user", content: legacyLateToolResultMessage(late), timestamp: Date.now() });
+	else {
+		const notice = lateToolResultNotice([late]);
+		const card = await session.appendCustomMessageEntry(
+			notice.customType,
+			notice.content,
+			true,
+			notice.details,
+			true,
+			{ delivery: "steer" },
+			lateToolResultNoticeKey([late]),
+		);
+		if (form === "read notice")
+			await session.appendCustomMessageEntry(
+				"atomic:protected-streaming-reconciliation",
+				notice.content,
+				false,
+				{ protectedReconciliationOf: card },
+				true,
+			);
+	}
+	if (form !== "unread notice")
+		await session.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "Deployed; done." }],
+			api: "faux",
+			provider: "faux",
+			model: "faux",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
+	return record;
+}
+
+for (const form of ["message", "read notice"] as const)
+	test(`a wake of a finished child by a result it already read as a ${form} does not run it again`, async () => {
+		const h = harness();
+		const late = waitResult("deployed");
+		const record = await finishedHolding(h, `settled-noop-${form.replace(" ", "-")}`, late, form);
+		const runsBefore = h.runs.length;
+
+		const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, {
+			...MESSAGE_WAKE,
+			toolResults: [late],
+			promptless: true,
+		});
+
+		assert.equal(outcome.kind, "terminal", JSON.stringify(outcome));
+		assert.equal(h.runs.length, runsBefore, "nothing is left for it to read: no run and no request");
+		assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], [], "the duplicate is let go");
+	});
+
+test("a wake of a finished child whose transcript holds a notice it has not read yet runs it to read the notice", async () => {
+	const h = harness();
+	const late = waitResult("deployed");
+	const record = await finishedHolding(h, "settled-unread", late, "unread notice");
+
+	const run = await restored(h, record.childId, { ...MESSAGE_WAKE, toolResults: [late], promptless: true });
+
+	assert.equal(run.resumeLateToolResults, undefined, "the notice is not delivered twice");
+	assert.equal(run.resumeSession, true, "its reopened session reads the notice");
+	assert.equal(run.skipTaskPrompt, true, "and nothing else: no empty prompt after it");
 });
 
 const stoppedAfterRelease = [
@@ -747,7 +943,7 @@ test("a paused child whose latest record is in a copy of its owner's session no 
 	assert.equal(run.task, "carry on");
 });
 
-test("a child restored after a restart reads the results held for it as messages before its continuation prompt (#4326)", async () => {
+test("a child restored after a restart reads the results held for it in a notice with its continuation prompt (#4326)", async () => {
 	const h = harness();
 	h.original = "waits";
 	await h.admit("restart-held");
@@ -767,8 +963,9 @@ test("a child restored after a restart reads the results held for it as messages
 	assert.ok(outcome?.kind === "restored");
 	await settled(h, outcome.taskId);
 	const run = h.runs.at(-1);
-	assert.equal(run?.task, lateToolResultMessage(held));
-	assert.deepEqual(run?.options.resumeFollowUps, [SUBAGENT_RESUME_CONTINUATION_PROMPT]);
+	assert.deepEqual(run?.options.resumeLateToolResults, [held]);
+	assert.equal(run?.task, SUBAGENT_RESUME_CONTINUATION_PROMPT);
+	assert.equal(run?.options.resumeFollowUps, undefined);
 	assert.equal(run?.options.resumeTaskLiteral, true);
 	assert.deepEqual(run?.options.resumeToolResults, []);
 	assert.equal(run?.options.skipTaskPrompt, undefined);
@@ -1438,12 +1635,21 @@ async function restartOwner(h: Harness, childId: string, whileClosed?: () => Pro
 }
 
 /** How many times the child's runs were given `message`, as their task or a follow-up. */
-function toldTimes(h: Harness, message: string): number {
-	return h.runs.filter((run) => run.task === message || run.options.resumeFollowUps?.includes(message)).length;
+/** How often a run gives the child `result` as a late result: in its notice, or as an earlier build's message. */
+function lateTimes(run: RunSyncOptions & { task: string }, result: DetachedToolResult): number {
+	const legacy = legacyLateToolResultMessage(result);
+	return (
+		(run.resumeLateToolResults ?? []).filter((late) => isDeepStrictEqual(late, result)).length +
+		[run.task, ...(run.resumeFollowUps ?? [])].filter((text) => text === legacy).length
+	);
+}
+
+function toldTimes(h: Harness, result: DetachedToolResult): number {
+	return h.runs.filter((run) => lateTimes({ ...run.options, task: run.task }, result) > 0).length;
 }
 
 function told(run: RunSyncOptions & { task: string }): string {
-	return JSON.stringify([run.task, run.resumeFollowUps, run.resumeToolResults]);
+	return JSON.stringify([run.task, run.resumeFollowUps, run.resumeToolResults, run.resumeLateToolResults]);
 }
 
 test("a call a wake answered still running is reported interrupted when Atomic restarts before the woken child saved its results (#5014)", async () => {
@@ -1494,12 +1700,12 @@ test("a call a wake answered still running is reported interrupted when Atomic r
 	const run = h.runs.at(-1);
 	assert.ok(run);
 
-	assert.equal(
-		run.task,
-		lateToolResultMessage(interruptedDeploy()),
-		"the restored child reads first that deploy-2 died with the restart",
+	assert.deepEqual(
+		run.options.resumeLateToolResults,
+		[interruptedDeploy()],
+		"the restored child reads in a notice that deploy-2 died with the restart",
 	);
-	assert.equal(toldTimes(h, lateToolResultMessage(interruptedDeploy())), 1);
+	assert.equal(toldTimes(h, interruptedDeploy()), 1);
 	assert.doesNotMatch(
 		told({ ...run.options, task: run.task }),
 		/ci-1 green/,
@@ -1532,8 +1738,8 @@ test("a call a wake answered still running is reported interrupted after a resta
 	});
 
 	assert.deepEqual(run.resumeToolResults, [lint]);
-	assert.equal(run.task, lateToolResultMessage(interruptedDeploy()));
-	assert.equal(toldTimes(h, lateToolResultMessage(interruptedDeploy())), 1);
+	assert.deepEqual(run.resumeLateToolResults, [interruptedDeploy()]);
+	assert.equal(toldTimes(h, interruptedDeploy()), 1);
 });
 
 test("a child that finished after a wake told it a call is still running is woken after a restart to learn the call was interrupted (#5014)", async () => {
@@ -1547,7 +1753,7 @@ test("a child that finished after a wake told it a call is still running is woke
 	const dispatcher = agentWakeDispatcher();
 	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
 	cleanups.push(async () => stop());
-	const interrupted = lateToolResultMessage(interruptedDeploy());
+	const interrupted = interruptedDeploy();
 	const done = await h.waitForLatest(
 		record.childId,
 		(latest) => toldTimes(h, interrupted) > 0 && latest.state === "terminal" && latest.terminalStatus === "ok",
@@ -1639,7 +1845,7 @@ test("a woken child whose run saved its results and then failed is not given the
 	assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], []);
 });
 
-test("a result for a call the child was told is still running still reaches it, as a message (#5012)", async () => {
+test("a result for a call the child was told is still running still reaches it, in its late-result notice (#5012)", async () => {
 	const h = harness();
 	const record = await endedOnPendingCall(h, "late-after-still-running");
 	await saveIntoTranscript(record, [stillRunning]);
@@ -1651,7 +1857,8 @@ test("a result for a call the child was told is still running still reaches it, 
 		promptless: true,
 	});
 
-	assert.equal(run.task, lateToolResultMessage(late));
+	assert.deepEqual(run.resumeLateToolResults, [late]);
+	assert.equal(lateTimes(run, late), 1);
 });
 
 test("a late result the child already read as a message is not given to it again (#5012)", async () => {
@@ -1661,7 +1868,7 @@ test("a late result the child already read as a message is not given to it again
 	const late = waitResult("/deploy now");
 	assert.ok(record.childSessionFile);
 	const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
-	await session.appendMessage({ role: "user", content: lateToolResultMessage(late), timestamp: Date.now() });
+	await session.appendMessage({ role: "user", content: legacyLateToolResultMessage(late), timestamp: Date.now() });
 	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
 
 	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
@@ -1762,8 +1969,7 @@ test("a late result a woken child was stopped before reading reaches it once whe
 
 	const run = h.runs.at(-1);
 	assert.ok(run);
-	const message = lateToolResultMessage(late);
-	assert.equal(told({ ...run.options, task: run.task }).split(JSON.stringify(message).slice(1, -1)).length - 1, 1);
+	assert.equal(lateTimes({ ...run.options, task: run.task }, late), 1);
 });
 
 for (const saved of [false, true])
@@ -1791,7 +1997,7 @@ for (const saved of [false, true])
 		const run = h.runs.at(-1);
 		assert.ok(run);
 
-		if (saved) assert.equal(run.task, lateToolResultMessage(interruptedDeploy()));
+		if (saved) assert.deepEqual(run.options.resumeLateToolResults, [interruptedDeploy()]);
 		else assert.deepEqual(run.options.resumeToolResults, [waitResult("ci-1 green"), interruptedDeploy()]);
 		assert.equal(
 			h.runs.filter((item) =>
