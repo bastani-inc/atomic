@@ -562,23 +562,38 @@ describe("running a logged process (#4588)", () => {
 			const waitedMs = 2_000;
 			const sleeper = new Int32Array(new SharedArrayBuffer(4));
 			let firstTry = 0;
+			let started = false;
+			// The step's timers run on a fake clock, so starting the copied program and stopping it take no time on it. The
+			// wait before the second try is real: the step measures it on the real clocks.
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 			try {
-				const { result, tries } = await counting(
-					() => execute(held.run("setInterval(() => {}, 1000)"), { timeoutMs }),
-					(tries) => {
-						if (tries === 1) firstTry = Date.now();
-						if (tries !== 2) return;
-						// The second try starts two of the step's three seconds after the first.
-						const left = firstTry + waitedMs - Date.now();
-						if (left > 0) Atomics.wait(sleeper, 0, 0, left);
-						held.release();
+				const stepRun = stepProcessWatcher.run(
+					(_pid, running) => {
+						if (running) started = true;
 					},
+					() =>
+						counting(
+							() => execute(held.run("setInterval(() => {}, 1000)"), { timeoutMs }),
+							(tries) => {
+								if (tries === 1) firstTry = Date.now();
+								if (tries !== 2) return;
+								// The second try starts two of the step's three seconds after the first.
+								const left = firstTry + waitedMs - Date.now();
+								if (left > 0) Atomics.wait(sleeper, 0, 0, left);
+								held.release();
+							},
+						),
 				);
+				// The first try is refused; the clock ends its wait to be tried again.
+				while (!started) await vi.advanceTimersByTimeAsync(10);
+				// Stopped once the step's time ran out, a second after its process started, not after a whole timeout of its
+				// own: by then its process has run for less than that.
+				await vi.advanceTimersByTimeAsync(timeoutMs - waitedMs / 2);
+				const { result, tries } = await stepRun;
 				assert.equal(tries, 2);
 				assert.equal(result.exit.timedOut, true);
 				assert.equal(result.exit.spawnError, undefined);
-				// Stopped once the step's time ran out, not after a whole timeout of its own.
-				assert.ok(result.exit.elapsedMs < waitedMs + timeoutMs, `stopped after ${result.exit.elapsedMs} ms`);
+				assert.ok(result.exit.elapsedMs >= waitedMs, `the step took ${result.exit.elapsedMs} ms with its wait`);
 			} finally {
 				held.release();
 			}

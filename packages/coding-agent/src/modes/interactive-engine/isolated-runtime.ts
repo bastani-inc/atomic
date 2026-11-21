@@ -576,7 +576,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			const followsRestrictedCatalog = this.restrictedStartupCatalogs.has(session);
 			if (state.pendingProjectResourcesTrusted === false) this.restrictedStartupCatalogs.add(session);
 			else if (state.projectTrusted !== undefined) this.restrictedStartupCatalogs.delete(session);
-			const resourcesTrusted = state.projectTrusted ?? state.pendingProjectResourcesTrusted;
+			// A pending report can hold the project's resources back but never grants them: until the engine dispatches the
+			// decision, an extension can still register a handler that declines the folder. The decision itself arrives as
+			// `engine_trust_decision` or in the final report (#5693).
+			const resourcesTrusted =
+				state.projectTrusted ?? (state.pendingProjectResourcesTrusted === false ? false : undefined);
 			if (resourcesTrusted !== undefined && session.settingsManager.isProjectTrusted() !== resourcesTrusted) {
 				// The child owns trust hooks/decisions. The host only mirrors their result.
 				await session.settingsManager.setProjectTrustedAsync(resourcesTrusted);

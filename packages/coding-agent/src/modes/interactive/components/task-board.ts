@@ -8,10 +8,10 @@ import { formatTokenCount } from "../../../utils/token-count.ts";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_MODEL_MIN_WIDTH, formatPanelElapsed, panelModelText } from "./agent-panel.ts";
 import type { ModelCellReport } from "./model-column.ts";
-import { DONE_TASK_MARKER, RUNNING_TASK_MARKER, STOPPED_TASK_MARKER, WAITING_MARKER } from "./notice-line.ts";
-import { taskDisplayText, taskLabel, taskState } from "./task-row.js";
+import { type TaskMark, taskMark } from "./task-marks.ts";
+import { type TaskBoardState, taskBoardState, taskDisplayText, taskLabel } from "./task-row.js";
 
-export type TaskBoardState = AgentPanelItem["state"];
+export { type TaskBoardState, taskBoardState };
 
 export type TaskBoardItem = AgentPanelItem;
 
@@ -26,33 +26,6 @@ export const TASK_BOARD_GROUP_TITLES: Readonly<Record<TaskBoardGroup, string>> =
 	waiting: "Waiting",
 	done: "Done",
 };
-
-export function taskBoardState(task: TaskRecord): TaskBoardState {
-	if (isTaskTurnInterrupted(task)) return "paused";
-	switch (taskState(task)) {
-		case "input-needed":
-			return "input";
-		case "queued":
-			return "queued";
-		case "cancelling":
-			return "stopping";
-		case "completed":
-			return "done";
-		case "failed":
-			return "failed";
-		case "paused":
-			return "stopped";
-		case "killed":
-		case "cancelled":
-			return "stopped";
-		case "released":
-			return "waiting";
-		case "running":
-			return "running";
-		default:
-			return task.execution.kind === "settled" ? "done" : "running";
-	}
-}
 
 export function rowState(row: TaskBoardRow): TaskBoardState {
 	return row.kind === "task" ? taskBoardState(row.task) : row.item.state;
@@ -104,29 +77,9 @@ export function taskBoardCounts(rows: readonly TaskBoardRow[]): string {
 		.join(" · ");
 }
 
-type Glyph = { glyph: string; color: "accent" | "success" | "error" | "warning" | "muted" | "dim" };
-
-export function stateGlyph(state: TaskBoardState, kind?: TaskBoardItem["kind"] | "command"): Glyph {
-	switch (state) {
-		case "input":
-			return { glyph: "◆", color: "warning" };
-		case "queued":
-			return { glyph: "○", color: "muted" };
-		case "stopping":
-			return { glyph: "◼", color: "warning" };
-		case "waiting":
-			return WAITING_MARKER;
-		case "done":
-			return DONE_TASK_MARKER;
-		case "failed":
-			return { glyph: "✗", color: "error" };
-		case "paused":
-			return { glyph: "‖", color: "muted" };
-		case "stopped":
-			return STOPPED_TASK_MARKER;
-		default:
-			return kind === "shell" || kind === "command" ? { glyph: "⧗", color: "accent" } : RUNNING_TASK_MARKER;
-	}
+/** A row's mark: the agent panel's for its state, the hourglass for a running shell. */
+export function stateGlyph(state: TaskBoardState, kind?: TaskBoardItem["kind"] | "command"): TaskMark {
+	return taskMark(state, kind === "shell" || kind === "command");
 }
 
 function rowElapsed(row: TaskBoardRow): number | undefined {

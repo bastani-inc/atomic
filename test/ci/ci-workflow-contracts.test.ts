@@ -239,7 +239,19 @@ test("typecheck builds the forked packages before compiling dependents", async (
 test("SQLite selectors resolve on either runtime and their tests cannot silently empty", async () => {
 	const tools = join(root, "packages/coding-agent/src/core/tools");
 	const connection = await readText(join(tools, "sqlite-selector-connection.ts"));
-	assert.ok(connection.includes('require("node:sqlite")'), "the SQLite selector connection must load node:sqlite");
+	// The worker's source loads Node's modules through `builtin`: the `require` of the CommonJS script it runs as, or
+	// `process.getBuiltinModule` where Node runs it as a module (#6110). Either loads exactly the module it is given.
+	assert.ok(
+		/const CONNECTION_SOURCE = `\s*\$\{EVAL_WORKER_BUILTIN\}\n/u.test(connection) &&
+			connection.includes('builtin("node:sqlite")'),
+		"the SQLite selector connection must load node:sqlite",
+	);
+	const { EVAL_WORKER_BUILTIN } = await import("../../packages/coding-agent/src/utils/worker-threads.js");
+	assert.equal(
+		EVAL_WORKER_BUILTIN,
+		'const builtin = typeof require === "function" ? require : (id) => process.getBuiltinModule(id);',
+		"the worker sources' loader must load the module it is given and no other",
+	);
 	for (const file of ["sqlite-selector-connection.ts", "resource-selectors.ts"]) {
 		assert.ok(
 			!(await readText(join(tools, file))).includes("bun:sqlite"),
