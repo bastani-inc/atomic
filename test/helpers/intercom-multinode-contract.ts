@@ -2743,6 +2743,21 @@ export function registerReturningSessionConformance(
 		},
 	);
 
+	check(
+		"an unanswered claim does not keep an id presented in another group by a session whose return address is any text (#5607)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const reclaim = a.knownSessions.reclaim;
+			assert.ok(reclaim !== undefined, "the store reclaims ids");
+			// Characters outside the basic plane, quotes and a backslash, as a return address may hold.
+			const address = 'ünï 🚀 "quoted" \\ 𝄞';
+			expectStatus(await a.knownSessions.bind("recipient-session", address, LIVE_MS, "claim-1"), "bound");
+			const elsewhere = JSON.stringify(["return", address, "another group"]);
+			expectStatus(await b.leases.acquire(presence(elsewhere), "broker-b", LIVE_MS), "acquired");
+			expectStatus(await reclaim({ ...reclaimOf("claim-1", "fresh-1"), returnAddress: address }), "fresh");
+		},
+	);
+
 	check("an unanswered claim of an id bound to another return address gets the fresh id (#5607)", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		const reclaim = a.knownSessions.reclaim;

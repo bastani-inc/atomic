@@ -169,14 +169,15 @@ export async function openSqlKnownSessionStore({
 					 WHERE intercom_session_id = ? AND return_address = ? AND latest_claim = ? AND ${nowMs} - recorded_at <= ?
 						AND NOT EXISTS (
 							SELECT 1 FROM ${leases} presence
-							WHERE presence.kind = 'presence' AND substr(presence.key, 1, ?) = ? AND presence.holder_id IS NOT NULL
+							WHERE presence.kind = 'presence' AND substr(presence.key, 1, length(?)) = ? AND presence.holder_id IS NOT NULL
 								AND presence.holder_id <> ? AND ${greatest("0", `${nowMs} - presence.renewed_at`)} <= ?
 						)`,
 					request.intercomSessionId,
 					request.returnAddress,
 					request.claim,
 					request.retentionMs,
-					identities.length,
+					// The database measures the prefix itself, in its own characters.
+					identities,
 					identities,
 					request.brokerId,
 					request.presenceStaleAfterMs,
