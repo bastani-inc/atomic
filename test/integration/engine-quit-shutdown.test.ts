@@ -37,6 +37,9 @@ const ENGINE_SHUTDOWN_GRACE_MS = 5_000;
  */
 const BOUNDED_SHUTDOWN_MS = 6 * ENGINE_SHUTDOWN_GRACE_MS;
 
+/** How long the Windows tree's processes run when nothing ends them: bounded, well past any test. */
+const WINDOWS_FIXTURE_SECONDS = 120;
+
 /**
  * The extension every session here loads. Its source never changes: it reads what to do, and the files to record
  * into, from `fixture.json` beside it.
@@ -57,6 +60,12 @@ export default (pi) => {
 		if (fixture.execGrandchild) {
 			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1] + ".root", String(process.pid)); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
 			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild], fixture.execTimeoutMs === undefined ? {} : { timeout: fixture.execTimeoutMs });
+		}
+		if (fixture.execTree) {
+			// PowerShell starts a program that Node did not start, which so is in no job of Node's.
+			const file = fixture.files.execChild.replace(/'/g, "''");
+			const script = "$p = Start-Process -WindowStyle Hidden ping -ArgumentList '-n','" + fixture.fixtureSeconds + "','127.0.0.1' -PassThru; Set-Content -NoNewline -Path '" + file + ".root' -Value $PID; Set-Content -NoNewline -Path '" + file + "' -Value $p.Id; Start-Sleep " + fixture.fixtureSeconds;
+			void pi.exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
 		}
 		if (fixture.execLeftover) {
 			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); child.unref(); require("node:fs").writeFileSync(process.argv[1], String(child.pid));';
@@ -114,6 +123,8 @@ interface SessionOptions {
 	readonly groupChild?: boolean;
 	/** The extension runs a `pi.exec` command that starts a process of its own and then runs until it is ended. */
 	readonly execGrandchild?: boolean;
+	/** As `execGrandchild`, on Windows: the command is PowerShell, and the process it starts with `Start-Process` a ping. */
+	readonly execTree?: boolean;
 	/** The `timeout` the extension gives that `pi.exec` command. */
 	readonly execTimeoutMs?: number;
 	/** The extension runs a `pi.exec` command that starts a process of its own, which it leaves running, and exits. */
@@ -158,6 +169,8 @@ async function endSession(
 			JSON.stringify({
 				groupChild: options.groupChild === true,
 				execGrandchild: options.execGrandchild === true,
+				execTree: options.execTree === true,
+				fixtureSeconds: WINDOWS_FIXTURE_SECONDS,
 				execTimeoutMs: options.execTimeoutMs,
 				execLeftover: options.execLeftover === true,
 				waitForRelease: options.waitForRelease === true,
@@ -213,13 +226,13 @@ async function endSession(
 			groupChildProcess = await recordProcess(Number(readTextSync(groupChild, "utf8")));
 			assert.ok(await stillRuns(groupChildProcess), "the extension started its process");
 		}
-		if (options.execGrandchild || options.execLeftover) {
+		if (options.execGrandchild || options.execTree || options.execLeftover) {
 			while (!(fileExistsSync(execChild) && readTextSync(execChild, "utf8") !== "") && Date.now() < deadline)
 				await sleep(RECORD_POLL_MS);
 			// The command, and so the process it started, is running: the pid names that process.
 			execChildProcess = await recordProcess(Number(readTextSync(execChild, "utf8")));
 			assert.ok(await stillRuns(execChildProcess), "the command started its process");
-			if (options.execGrandchild) {
+			if (options.execGrandchild || options.execTree) {
 				execRootProcess = await recordProcess(Number(readTextSync(`${execChild}.root`, "utf8")));
 				assert.ok(await stillRuns(execRootProcess), "the command runs");
 			}
@@ -525,6 +538,37 @@ for (const inProcess of [false, true]) {
 					await waitUntilGone(execChild, GROUP_CHILD_GONE_MS),
 					true,
 					"the process the command started outlived its host",
+				);
+			} finally {
+				await signalRecordedProcess(execChild);
+				await signalRecordedProcess(execRoot);
+			}
+		},
+		CLI_TIMEOUT_MS + 10_000,
+	);
+}
+
+for (const inProcess of [false, true]) {
+	test.runIf(process.platform === "win32")(
+		`on Windows, a program an extension's running pi.exec command started ends when the host is killed${inProcess ? ", in the host process" : ""}`,
+		async () => {
+			const ended = await endSession(
+				async ({ hostPid }) => {
+					await signalRecordedProcess(await recordProcess(hostPid), "SIGKILL");
+				},
+				HANDLER_WORK_MS,
+				{ execTree: true, inProcess },
+			);
+
+			const { execChild, execRoot } = ended;
+			assert.ok(execChild !== undefined && execRoot !== undefined);
+			try {
+				assert.equal(ended.exit.timedOut, false, ended.screen);
+				assert.equal(await waitUntilGone(execRoot, GROUP_CHILD_GONE_MS), true, "the command outlived its host");
+				assert.equal(
+					await waitUntilGone(execChild, GROUP_CHILD_GONE_MS),
+					true,
+					"the program the command started outlived its host",
 				);
 			} finally {
 				await signalRecordedProcess(execChild);
