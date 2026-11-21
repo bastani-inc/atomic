@@ -384,13 +384,15 @@ export class TwoBrokerHarness {
 	 * Stall the broker after it requests the preferred binding. With a serial writer, the confirmation is ready on
 	 * resume and subsequent bindings each hold the writer. Otherwise the confirmation is withheld; a second callback
 	 * can stall the broker again while the first fresh binding or the following known-session write is in flight.
+	 * `uncommitted`: the broker stalls while the binding is still being written, which the database holds open for
+	 * `writeDelayMs` and then refuses, so the claim never binds the id.
 	 */
 	stallIdClaim(
 		returnAddress: string,
 		stallMs: number,
 		overdueCallbackMs?: number,
 		writeDelayMs?: number,
-		slowWrite: "fresh binding" | "serial bindings" | "known session" = "fresh binding",
+		slowWrite: "fresh binding" | "serial bindings" | "known session" | "uncommitted" = "fresh binding",
 	): void {
 		writeFileSync(
 			join(this.root, ID_CLAIM_STALL_GATE),

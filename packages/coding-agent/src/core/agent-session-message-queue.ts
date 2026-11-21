@@ -101,6 +101,8 @@ interface QueuedOccurrence {
 	readonly text: string;
 	/** The text that was submitted for it, kept for `clearQueue()` while it is queued. */
 	typed: TypedQueuedText;
+	/** A run took it once and ended before starting it, and it was queued again: it is not queued again a second time. */
+	requeued?: true;
 	/** Under way: a run took it from the queue. */
 	taken?: {
 		readonly delivery: QueuedMessageDelivery | undefined;
@@ -112,24 +114,11 @@ interface QueuedOccurrence {
 const queuedOccurrences = new WeakMap<AgentMessage, QueuedOccurrence>();
 /** Per session, oldest first: the queued messages runs took whose `message_start` has not reached the session. */
 const takenNotStarted = new WeakMap<AgentSession, AgentMessage[]>();
-/**
- * Sessions whose last run ended before it started a queued message it took. That run made no progress, so the queue
- * is not continued on its own after it (it could fail the same way again and again): it waits, listed, for whatever
- * starts the next run, such as the user's next message.
- */
-const stalledQueues = new WeakSet<AgentSession>();
-
-/** Whether the session's queue waits for something else to start a run, because its last run took and lost nothing. */
-export function queueWaitsAfterFailedStart(session: AgentSession): boolean {
-	return stalledQueues.has(session);
-}
-
 /** Runs each session started, counted: a prompt that only starts a turn tells whether one started meanwhile. */
 const runsStarted = new WeakMap<AgentSession, number>();
 
-/** A run starts: its queue is continued again as usual once it ends. */
+/** A run starts. */
 export function queueRunStarted(session: AgentSession): void {
-	stalledQueues.delete(session);
 	runsStarted.set(session, (runsStarted.get(session) ?? 0) + 1);
 }
 
@@ -312,7 +301,9 @@ export function startQueuedMessage(
 /**
  * The run ended: queued messages it took and never started (its turn preparation failed, or it stopped first) are
  * queued again, at the front of their lanes in the order they were queued, with the text that was submitted for them,
- * so they are delivered or taken back like any other queued message, never lost.
+ * so they are delivered or taken back like any other queued message: the queue goes on as it does after any failed
+ * run. One that a run already took and lost once is not queued again but dropped, as it always was, so a run that
+ * keeps failing before it starts it never repeats it.
  */
 export function requeueQueuedMessagesNotStarted(session: AgentSession): void {
 	const pending = takenNotStarted.get(session);
@@ -323,16 +314,19 @@ export function requeueQueuedMessagesNotStarted(session: AgentSession): void {
 	for (const message of pending) {
 		const occurrence = queuedOccurrences.get(message);
 		if (occurrence?.taken === undefined) continue;
+		const listed = occurrence.taken.delivery !== undefined;
 		endQueuedMessageDelivery(session, occurrence.taken.delivery);
-		// One that was no longer listed when it was taken is not listed again either.
-		if (occurrence.taken.delivery !== undefined) {
-			back[occurrence.lane].push(message);
-			typed.push(occurrence.typed);
-		}
 		occurrence.taken = undefined;
+		// Taken and lost once already, or no longer listed when it was taken: not queued again.
+		if (occurrence.requeued || !listed) {
+			queuedOccurrences.delete(message);
+			continue;
+		}
+		occurrence.requeued = true;
+		back[occurrence.lane].push(message);
+		typed.push(occurrence.typed);
 	}
 	if (back.steer.length === 0 && back.followUp.length === 0) return;
-	stalledQueues.add(session);
 	const textsOf = (messages: readonly AgentMessage[]) =>
 		messages.map((message) => queuedOccurrences.get(message)?.text ?? "");
 	session._steeringMessages.unshift(...textsOf(back.steer));

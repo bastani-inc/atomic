@@ -52,6 +52,26 @@ import type { FetchFunction, Model } from "../src/types.ts";
 import { formatUserAgent } from "../src/utils/identity.ts";
 
 const PI_USER_AGENT = formatUserAgent();
+
+/**
+ * The URLs the global fetch was asked for while `fetch` sent one request. The adapter wraps the fetch it hands the
+ * client, to tell its own connection's failures apart, and reads the global one when the request is sent (#6114).
+ */
+async function globalFetchCalls(fetch: FetchFunction): Promise<string[]> {
+	const calls: string[] = [];
+	const spy = Object.assign(async (input: Parameters<FetchFunction>[0]) => {
+		calls.push(String(input));
+		return new Response("{}");
+	}, globalThis.fetch);
+	vi.stubGlobal("fetch", spy);
+	try {
+		await fetch("https://vertex.test/v1");
+	} finally {
+		vi.unstubAllGlobals();
+	}
+	return calls;
+}
+
 const model = getModel("google-vertex", "gemini-3-flash-preview");
 const context = normalizeContext({
 	messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
@@ -157,10 +177,9 @@ describe("google-vertex api key resolution", () => {
 		await stream.result();
 
 		expect(googleGenAiMock.constructorCalls).toHaveLength(1);
-		expect(googleGenAiMock.constructorCalls[0]?.httpOptions).toEqual({
-			fetch: globalThis.fetch,
-			headers: { "User-Agent": PI_USER_AGENT },
-		});
+		const { fetch, ...rest } = googleGenAiMock.constructorCalls[0]?.httpOptions as { fetch: FetchFunction };
+		expect(rest).toEqual({ headers: { "User-Agent": PI_USER_AGENT } });
+		assert.deepEqual(await globalFetchCalls(fetch), ["https://vertex.test/v1"]);
 	});
 
 	it("lets explicit headers override the default User-Agent", async () => {
@@ -173,14 +192,17 @@ describe("google-vertex api key resolution", () => {
 		await stream.result();
 
 		expect(googleGenAiMock.constructorCalls).toHaveLength(1);
-		expect(googleGenAiMock.constructorCalls[0]?.httpOptions).toEqual({
-			fetch: globalThis.fetch,
-			headers: { "User-Agent": "custom-agent" },
-		});
+		const { fetch, ...rest } = googleGenAiMock.constructorCalls[0]?.httpOptions as { fetch: FetchFunction };
+		expect(rest).toEqual({ headers: { "User-Agent": "custom-agent" } });
+		assert.deepEqual(await globalFetchCalls(fetch), ["https://vertex.test/v1"]);
 	});
 
 	it("forwards custom fetch to the ADC client (#12097)", async () => {
-		const customFetch: FetchFunction = async () => new Response("{}");
+		const customCalls: string[] = [];
+		const customFetch: FetchFunction = Object.assign(async (input: Parameters<FetchFunction>[0]) => {
+			customCalls.push(String(input));
+			return new Response("{}");
+		}, globalThis.fetch);
 		const stream = streamGoogleVertex(model, context, {
 			project: "test-project",
 			location: "us-central1",
@@ -190,10 +212,11 @@ describe("google-vertex api key resolution", () => {
 		await stream.result();
 
 		assert.equal(googleGenAiMock.constructorCalls.length, 1);
-		assert.deepEqual(googleGenAiMock.constructorCalls[0]?.httpOptions, {
-			fetch: customFetch,
-			headers: { "User-Agent": PI_USER_AGENT },
-		});
+		const { fetch, ...rest } = googleGenAiMock.constructorCalls[0]?.httpOptions as { fetch: FetchFunction };
+		assert.deepEqual(rest, { headers: { "User-Agent": PI_USER_AGENT } });
+		const before = customCalls.length;
+		await fetch("https://vertex.test/v1");
+		assert.deepEqual(customCalls.slice(before), ["https://vertex.test/v1"]);
 	});
 
 	it("uses globalThis.fetch when options are omitted on the ADC client (#12097)", async () => {
@@ -205,10 +228,9 @@ describe("google-vertex api key resolution", () => {
 			await streamGoogleVertex(model, context).result();
 
 			assert.equal(googleGenAiMock.constructorCalls.length, 1);
-			assert.deepEqual(googleGenAiMock.constructorCalls[0]?.httpOptions, {
-				fetch: globalThis.fetch,
-				headers: { "User-Agent": PI_USER_AGENT },
-			});
+			const { fetch, ...rest } = googleGenAiMock.constructorCalls[0]?.httpOptions as { fetch: FetchFunction };
+			assert.deepEqual(rest, { headers: { "User-Agent": PI_USER_AGENT } });
+			assert.deepEqual(await globalFetchCalls(fetch), ["https://vertex.test/v1"]);
 		} finally {
 			if (previousProject === undefined) {
 				delete process.env.GOOGLE_CLOUD_PROJECT;

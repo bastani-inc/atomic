@@ -20,6 +20,7 @@ import {
 	formatProviderError,
 	normalizeProviderError,
 } from "../utils/error-body.ts";
+import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
@@ -337,6 +338,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				output.errorMessage = errorMessage;
 			}
 			appendProviderResponseFailureDiagnostic(output, error);
+			recordTlsCertificateRefusal(output, error);
 			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamAttempt.snapshot());
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -467,7 +469,7 @@ function createClient(
 			apiKey,
 			baseURL: model.baseUrl,
 			dangerouslyAllowBrowser: true,
-			fetch: getFetchAdmission(fetch)?.fetch ?? fetch,
+			fetch: transportFetch(getFetchAdmission(fetch)?.fetch ?? fetch),
 			defaultHeaders: headers,
 		}),
 		fetch,

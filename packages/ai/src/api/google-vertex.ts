@@ -28,6 +28,7 @@ import {
 	formatProviderError,
 	normalizeProviderError,
 } from "../utils/error-body.ts";
+import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
@@ -328,6 +329,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			appendProviderResponseFailureDiagnostic(output, error, googleErrorStatus(output.errorMessage));
+			recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -425,7 +427,7 @@ function buildHttpOptions(
 	identity?: ClientIdentity,
 	fetch?: FetchFunction,
 ): HttpOptions {
-	const httpOptions: HttpOptions = { fetch: fetch ?? globalThis.fetch };
+	const httpOptions: HttpOptions = { fetch: transportFetch(fetch) };
 	const baseUrl = resolveCustomBaseUrl(model.baseUrl);
 	if (baseUrl) {
 		httpOptions.baseUrl = baseUrl;

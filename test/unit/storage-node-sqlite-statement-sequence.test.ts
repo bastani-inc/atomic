@@ -17,8 +17,10 @@ import {
 } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { SequenceRequest } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { type RunSequence, sequenceRunner } from "../../packages/coding-agent/src/core/storage/statement-sequence.js";
+import { collectGarbage } from "../helpers/collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { interceptConnectionRequests } from "../helpers/sqlite-connection-requests.js";
+import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 
 /** Most statements one request to a connection's thread carries. */
 const REQUEST_STATEMENTS = 256;
@@ -29,10 +31,10 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function openFile(): Promise<SqliteDatabase> {
+async function openFile(options?: { readonly busyTimeoutMs?: number }): Promise<SqliteDatabase> {
 	const directory = makeTempDirectory("atomic-statement-sequence-");
 	cleanups.push(() => removeTempDirectory(directory));
-	const database = await openNodeSqliteDatabase(join(directory, "sequence.sqlite"));
+	const database = await openNodeSqliteDatabase(join(directory, "sequence.sqlite"), options);
 	cleanups.push(() => database.close());
 	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
 	return database;
@@ -155,6 +157,220 @@ test("an abort event dispatched on a signal that did not abort stops nothing (#6
 		return values(tx);
 	});
 	assert.deepEqual(rows, ["a", "b"]);
+});
+
+test("a signal sent an abort event without aborting still stops the thread when it aborts later in the same sequence (#6106)", async () => {
+	const database = await openFile();
+	const controller = new AbortController();
+	const reason = new Error("stopped");
+	// Two requests: before the first reaches its thread the signal gets an abort event only; before the second, it aborts.
+	const expected = Array.from({ length: REQUEST_STATEMENTS }, (_, index) => `v${index}`);
+	watchSequences((request, send) => {
+		if (request.statements[0]?.params[0] === "v0") controller.signal.dispatchEvent(new Event("abort"));
+		else controller.abort(reason);
+		return send();
+	});
+	const { failure, rows } = await database.transaction(async (tx) => {
+		const failure = await runnerOf(tx)({
+			statements: [...expected, "late", "later"].map(insert),
+			signal: controller.signal,
+		}).then(
+			() => assert.fail("the sequence succeeded"),
+			(error: unknown) => error,
+		);
+		return { failure, rows: await values(tx) };
+	});
+	assert.equal(failure, reason);
+	assert.deepEqual(rows, expected);
+});
+
+/**
+ * A database file with a table `t`, to attach to a database's connection with a page cache of 10 pages, and a reader of
+ * the test's own. A statement that writes more of the file than the cache holds has to write the file before it ends,
+ * which waits for every reader to finish: while the test's reader holds a transaction open, that statement waits in the
+ * middle, and a new reader of the file is refused, which is how the test sees it waiting. Made before the database it
+ * is attached to, so it is removed after that database closed.
+ */
+function gateFile() {
+	const directory = makeTempDirectory("atomic-statement-sequence-gate-");
+	cleanups.push(() => removeTempDirectory(directory));
+	const path = join(directory, "gate.sqlite");
+	const reader = new DatabaseSync(path);
+	const probe = new DatabaseSync(path);
+	cleanups.push(() => {
+		reader.close();
+		probe.close();
+	});
+	reader.exec("PRAGMA busy_timeout=0; CREATE TABLE t (value TEXT NOT NULL)");
+	probe.exec("PRAGMA busy_timeout=0");
+	const count = () => Number(reader.prepare("SELECT count(*) AS rows FROM t").get()?.rows);
+	let reading = false;
+	const release = () => {
+		if (!reading) return;
+		reading = false;
+		reader.exec("COMMIT");
+	};
+	return {
+		async attachTo(database: SqliteDatabase, name: string): Promise<void> {
+			await database.exec(`ATTACH DATABASE '${path.replaceAll("'", "''")}' AS ${name}`);
+			await database.exec(`PRAGMA ${name}.cache_size=10`);
+		},
+		/** Holds a read transaction on the file open until `release`, or until the test ends, before its database closes. */
+		hold(): void {
+			reader.exec("BEGIN");
+			count();
+			reading = true;
+			cleanups.push(release);
+		},
+		release,
+		/** Whether a statement of another connection is waiting to write the file. */
+		writerWaiting(): boolean {
+			try {
+				probe.prepare("SELECT count(*) FROM t").get();
+				return false;
+			} catch (error) {
+				if ((error as { errcode?: number }).errcode === 5) return true;
+				throw error;
+			}
+		},
+		rows: count,
+	};
+}
+
+test("a sequence whose signal aborts while one of its statements runs finishes that statement and runs none after it (#6106)", async () => {
+	const gate = gateFile();
+	const database = await openFile({ busyTimeoutMs: TEST_TIMEOUT_MS });
+	await gate.attachTo(database, "gate");
+	// 200 rows of 1,000 characters: far more than the gate's 10 cached pages.
+	const fillGate: SqliteStatement = {
+		sql: "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200) INSERT INTO gate.t (value) SELECT hex(randomblob(500)) FROM n",
+		params: [],
+	};
+	gate.hold();
+	const controller = new AbortController();
+	const reason = new Error("stopped");
+	const { sent } = watchSequences();
+	const ran = database.transaction(async (tx) => {
+		const failure = await runnerOf(tx)({
+			statements: [insert("a"), fillGate, insert("c"), insert("d")],
+			signal: controller.signal,
+		}).then(
+			() => assert.fail("the sequence succeeded"),
+			(error: unknown) => error,
+		);
+		// What the statements before the abort, and the one it landed in, did stays in the transaction for the caller.
+		const inTransaction = {
+			items: await values(tx),
+			gateRows: Number((await tx.get<{ rows: number }>("SELECT count(*) AS rows FROM gate.t"))?.rows),
+		};
+		throw Object.assign(new Error("rolled back"), { failure, inTransaction });
+	});
+	let ended = false;
+	const outcome = ran.then(
+		() => assert.fail("the transaction committed"),
+		(error: unknown) => error as { failure: unknown; inTransaction: unknown },
+	);
+	const end = () => {
+		ended = true;
+	};
+	outcome.then(end, end);
+	cleanups.push(end);
+	// The thread is in the middle of the second statement, which cannot end until the test's reader does.
+	while (!ended && !gate.writerWaiting()) await new Promise((resolve) => setImmediate(resolve));
+	controller.abort(reason);
+	gate.release();
+	const { failure, inTransaction } = await outcome;
+	assert.equal(sent.length, 1, "the statements went as one request");
+	assert.equal(failure, reason);
+	assert.deepEqual(inTransaction, { items: ["a"], gateRows: 200 });
+	// The caller's transaction ends as the caller decides: here it rolls back, the attached file's rows with it.
+	assert.deepEqual(await database.all("SELECT value FROM items"), []);
+	assert.equal(gate.rows(), 0);
+});
+
+/** Calls made in the memory tests below; on Node 22 a derived signal made per call kept about 200 bytes each. */
+const MEASURED_CALLS = 10_000;
+
+/**
+ * How much more heap stays in use after `MEASURED_CALLS` sequences made with the signal `signalOf` gives for each
+ * call, than after as many made before (the first calls also compile and cache what every later call uses). The
+ * sequences hold no statements: each watches its signal as any sequence does, and none waits for the connection's
+ * thread, so how busy the machine is changes only how long the calls take, not what they keep.
+ */
+async function heapGrownByCalls(signalOf: () => AbortSignal): Promise<number> {
+	const database = await openFile();
+	const { sent } = watchSequences();
+	let ended = false;
+	cleanups.push(() => {
+		ended = true;
+	});
+	const callAll = () =>
+		database.transaction(async (tx) => {
+			const run = runnerOf(tx);
+			for (let call = 0; call < MEASURED_CALLS && !ended; call++) await run({ statements: [], signal: signalOf() });
+		});
+	const heapInUse = async () => {
+		await collectGarbage();
+		return process.memoryUsage().heapUsed;
+	};
+	await callAll();
+	const before = await heapInUse();
+	await callAll();
+	const grown = (await heapInUse()) - before;
+	assert.equal(sent.length, 0, "no sequence went to the connection's thread");
+	return grown;
+}
+
+test("sequences made with one signal keep nothing of each call once it returned (#6106)", async () => {
+	// The signal outlives every call, as a history index build's does.
+	const controller = new AbortController();
+	const grown = await heapGrownByCalls(() => controller.signal);
+	assert.equal(controller.signal.aborted, false);
+	assert.ok(grown < MEASURED_CALLS * 64, `${grown} bytes retained after ${MEASURED_CALLS} calls`);
+});
+
+test("what a sequence keeps for its signal goes with the signal (#6106)", async () => {
+	const grown = await heapGrownByCalls(() => new AbortController().signal);
+	assert.ok(
+		grown < MEASURED_CALLS * 64,
+		`${grown} bytes retained after ${MEASURED_CALLS} calls with signals since released`,
+	);
+});
+
+test("a signal shared by two sequences running at once stops the second after the first returned (#6106)", async () => {
+	const database = await openFile();
+	const controller = new AbortController();
+	const reason = new Error("stopped");
+	let firstReturned!: () => void;
+	const firstDone = new Promise<void>((resolve) => {
+		firstReturned = resolve;
+	});
+	// Before the database closes, so a request still held here goes on if the test ends early.
+	cleanups.push(() => firstReturned());
+	// The second sequence's request waits until the first sequence returned; the signal then aborts while that request is
+	// on its way to the thread.
+	watchSequences(async (request, send) => {
+		if (request.statements[0]?.params[0] === "first") return send();
+		await firstDone;
+		controller.abort(reason);
+		return send();
+	});
+	const { outcomes, rows } = await database.transaction(async (tx) => {
+		const run = runnerOf(tx);
+		const settled = (sequence: Promise<number>) =>
+			sequence.then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+		// Both watch the signal from here on: the second starts before the first returns.
+		const first = settled(run({ statements: [insert("first")], signal: controller.signal }));
+		const second = settled(run({ statements: [insert("second")], signal: controller.signal }));
+		const firstOutcome = await first;
+		firstReturned();
+		return { outcomes: [firstOutcome, await second], rows: await values(tx) };
+	});
+	assert.deepEqual(outcomes, [undefined, reason]);
+	assert.deepEqual(rows, ["first"]);
 });
 
 test("a sequence reports the failing statement's error, not the abort, when its signal aborts after the statement failed (#6082)", async () => {

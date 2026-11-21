@@ -3,8 +3,10 @@ import { join } from "node:path";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import type { OutboxStore } from "../../packages/intercom/broker/multinode-state-store.js";
+import type { OutboxStore, RecipientPresenceSubject } from "../../packages/intercom/broker/multinode-state-store.js";
+import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-store.js";
+import type { SessionInfo } from "../../packages/intercom/types.js";
 import { useFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
 import {
 	type OpenSharedStoreFixture,
@@ -85,6 +87,52 @@ test("keeps each table prefix's outbox in its own <prefix>intercom_outbox table"
 		await assert.rejects(openSqlOutboxStore({ database, prefix: "bad prefix" }));
 	} finally {
 		await database.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("a message queued for an offline session is kept when the wake-up hint written with it fails (#5607)", async () => {
+	const directory = makeTempDirectory("intercom-outbox-wake-");
+	const database = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
+	try {
+		const opened = await openIntercomBrokerState({ openDatabase: async () => database });
+		const { state } = opened;
+		await opened.bus.close();
+		const target = JSON.stringify(["return", "recipient", "team"]);
+		const from: SessionInfo = { id: "s", name: "s", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
+		const presence: RecipientPresenceSubject = {
+			kind: "presence",
+			targetIdentity: target,
+			session: { ...from, id: "r" },
+		};
+		assert.equal((await state.leases.acquire(presence, "broker-b", 60_000)).status, "acquired");
+		// The hint log cannot take the hint: only the hint's write fails, the message's own writes would succeed.
+		await database.exec("DROP TABLE intercom_wakeups");
+		const frame = (id: string) =>
+			({ type: "message", from, message: { id, timestamp: 1, content: { text: id } } }) as const;
+		const request = (id: string) =>
+			({
+				targetIdentity: target,
+				originBrokerId: "broker-a",
+				digest: id,
+				frame: frame(id),
+				wakeHostWithinMs: 60_000,
+			}) as const;
+
+		const reserved = await state.reserveAndEnqueue!(
+			{ messageId: "m1", digest: "m1", targetIdentity: target },
+			request("m1"),
+		);
+		const queued = await state.outbox.enqueue(request("m2"));
+
+		assert.deepEqual([reserved.status, queued.status], ["inserted", "inserted"]);
+		assert.deepEqual(
+			[(await state.outbox.read("m1")).status, (await state.outbox.read("m2")).status],
+			["found", "found"],
+		);
+		await state.close();
+	} finally {
+		await database.close().catch(() => {});
 		removeTempDirectory(directory);
 	}
 });

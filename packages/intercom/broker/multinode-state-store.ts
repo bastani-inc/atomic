@@ -183,6 +183,13 @@ export interface OutboxEnqueueRequest {
 	 * refusing it would leave the ask waiting forever.
 	 */
 	readonly owed?: boolean;
+	/**
+	 * #5607: the sender found the recipient offline. In the write that inserts the row, the broker holding the
+	 * recipient's presence lease, renewed within this many milliseconds, is sent a wake-up hint for it (the database
+	 * wake-up bus's `outbox` hint), so a recipient that registered elsewhere meanwhile gets the row at once. A store that
+	 * ignores it wakes nobody; the backup poll still finds the row.
+	 */
+	readonly wakeHostWithinMs?: number;
 }
 
 export interface OutboxRow {
@@ -227,7 +234,12 @@ export interface OutboxClaimRequest {
 }
 
 export type OutboxEnqueueResult =
-	| { readonly status: "inserted"; readonly row: OutboxRow }
+	| {
+			readonly status: "inserted";
+			readonly row: OutboxRow;
+			/** #5607: with `wakeHostWithinMs`, the broker the write sent a wake-up hint for the row. */
+			readonly woke?: string;
+	  }
 	/** Same id and digest: no second row is written and the existing row reports its current state. */
 	| { readonly status: "duplicate"; readonly row: OutboxRow }
 	| { readonly status: "conflict"; readonly messageId: string }
@@ -833,6 +845,27 @@ export type KnownSessionBindResult =
 	| { readonly status: "bound" }
 	| { readonly status: "refused"; readonly returnAddress: string }
 	| InvalidStateInput;
+/** #5607: see `KnownSessionStore.reclaim`. */
+export interface SessionIdReclaim {
+	readonly intercomSessionId: string;
+	readonly returnAddress: string;
+	/** The `claim` the registration's own `bind` was given. */
+	readonly claim: string;
+	readonly retentionMs: number;
+	/** The broker reclaiming; a presence lease it holds itself does not count. */
+	readonly brokerId: string;
+	/** A presence lease renewed within this many milliseconds is live. */
+	readonly presenceStaleAfterMs: number;
+	/** The id bound instead when the id is not kept. */
+	readonly freshId: string;
+}
+
+export type SessionIdReclaimResult =
+	| { readonly status: "kept" }
+	/** Not kept: `freshId` was bound as `bind` binds it, with its result. */
+	| { readonly status: "fresh"; readonly binding: KnownSessionBindResult }
+	| InvalidStateInput;
+
 export type KnownSessionBindingResult =
 	| { readonly status: "bound"; readonly returnAddress: string }
 	| { readonly status: "unbound" }
@@ -855,9 +888,22 @@ export interface KnownSessionStore {
 	 * gave none), unless another return address has held it within `retentionMs`, and reset the binding's age. In multi-node mode an id carries
 	 * authority: it is granted, and delivered to, only the session it is bound to. An id with no binding yet is bound
 	 * first to the return address its earliest known-session record has, so a record kept from before bindings existed
-	 * still holds it.
+	 * still holds it. #5607: `claim`, a value unique to this registration, is recorded as the binding's latest claim
+	 * when it binds, so `reclaim` can tell later whether the binding is still the one this registration wrote.
 	 */
-	bind(intercomSessionId: string, returnAddress: string, retentionMs: number): Promise<KnownSessionBindResult>;
+	bind(
+		intercomSessionId: string,
+		returnAddress: string,
+		retentionMs: number,
+		claim?: string,
+	): Promise<KnownSessionBindResult>;
+	/**
+	 * #5607: the one write a returning registration makes when its `bind` did not answer in time. It keeps the id when
+	 * the binding is still the one that `bind` wrote (same return address and claim, within `retentionMs`) and no other
+	 * broker holds a live presence lease for a session of that return address, in any group, resetting the binding's age. Otherwise
+	 * it binds `freshId` as `bind` does. Optional: without it such a registration gets a fresh id, bound as `bind` binds it.
+	 */
+	reclaim?(request: SessionIdReclaim): Promise<SessionIdReclaimResult>;
 	/** The return address the id is bound to, if a binding recorded within `retentionMs` holds it. */
 	binding(intercomSessionId: string, retentionMs: number): Promise<KnownSessionBindingResult>;
 	/** Delete records and bindings last recorded more than `olderThanMs` ago; returns the count of records. */
