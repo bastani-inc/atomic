@@ -70,7 +70,7 @@ export interface McpToolRecordData {
 
 /**
  * What the branch's records say: the latest record of each tool name, of the servers with resources, and of each
- * server's summary.
+ * server's summary (servers whose latest summary record is empty have none).
  */
 export interface McpToolRecords {
 	tools: Map<string, McpToolRecord>;
@@ -202,8 +202,11 @@ export function readToolRecords(branch: readonly SessionEntry[]): McpToolRecords
 		if (Array.isArray(data.tools))
 			for (const record of data.tools) if (isToolRecord(record)) tools.set(record.name, record);
 		if (Array.isArray(data.resourceServers)) resourceServers = data.resourceServers.filter(isServerRecord);
-		if (Array.isArray(data.summaries))
-			for (const record of data.summaries) if (isSummaryRecord(record)) summaries.set(record.server, record);
+		// A record without a summary retires the server's earlier ones.
+		for (const record of Array.isArray(data.summaries) ? data.summaries.filter(isSummaryRecord) : []) {
+			if (record.summary) summaries.set(record.server, record);
+			else summaries.delete(record.server);
+		}
 	}
 	return { tools, resourceServers, summaries };
 }

@@ -218,12 +218,22 @@ export interface McpServerListing {
 	recordedSummaryCut?: boolean;
 }
 
-/** First line of the configured description, else the recorded summary, else the first line of the instructions. */
+/** First line of the configured description, or of the server instructions once connected. */
 function serverSummary(server: McpServerListing): string {
-	const description = server.entry.config.description?.trim();
-	if (!description && server.recordedSummary !== undefined) return server.recordedSummary;
-	const text = description || server.connection?.instructions || "";
+	const text = server.entry.config.description?.trim() || server.connection?.instructions || "";
 	return (text.split("\n", 1)[0] ?? "").trim();
+}
+
+/**
+ * The summary a server's line shows with room for `room` characters: its configured description, else its recorded
+ * summary while it reconnects (none with room for one character when the record is a cut summary's ellipsis), else
+ * the first line of its instructions.
+ */
+function shownSummary(server: McpServerListing, room: number): string {
+	if (server.entry.config.description?.trim() || server.recordedSummary === undefined) {
+		return truncate(serverSummary(server), room);
+	}
+	return room === 1 && server.recordedSummaryCut ? "" : truncate(server.recordedSummary, room);
 }
 
 /** A summary as a server's line shows it, whether it is only the ellipsis of a longer one, and the server shown. */
@@ -271,11 +281,7 @@ function layOutServersSection(servers: readonly McpServerListing[]): ServersSect
 			: Math.min(MAX_SERVER_DESCRIPTION_CHARS, Math.floor((MAX_SERVERS_SECTION_CHARS - size(kept)) / kept) - 2);
 	const summarized =
 		perServer > 0
-			? listed.slice(0, kept).map((listing) => ({
-					listing,
-					summary:
-						perServer === 1 && listing.recordedSummaryCut ? "" : truncate(serverSummary(listing), perServer),
-				}))
+			? listed.slice(0, kept).map((listing) => ({ listing, summary: shownSummary(listing, perServer) }))
 			: [];
 	const lines = listed
 		.slice(0, kept)
@@ -815,7 +821,12 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const records = toolRecords;
 			try {
 				await pi.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, { tools: [], summaries });
-				if (toolRecords === records) for (const record of summaries) records.summaries.set(record.server, record);
+				if (toolRecords === records) {
+					for (const record of summaries) {
+						if (record.summary) records.summaries.set(record.server, record);
+						else records.summaries.delete(record.server);
+					}
+				}
 			} catch {
 				// Without the record, a later resume shows the server without a summary until it connects, as before.
 			}
