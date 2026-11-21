@@ -8,18 +8,20 @@ import type { ExecResult } from "../src/core/exec.ts";
 
 /** Directories whose file system never answers, as a network share that stopped responding. */
 const held = vi.hoisted(() => new Set<string>());
-/** Directories whose file system answers only after this many milliseconds, as a slow network share. */
+/** Directories where a file's status comes only after this many milliseconds, as on a slow network share. */
 const slow = vi.hoisted(() => new Map<string, number>());
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof FsPromises>();
-	const answer = <T>(path: unknown, read: () => Promise<T>): Promise<T> => {
-		if (held.has(String(path))) return new Promise<T>(() => {});
-		const delay = slow.get(String(path));
-		return delay === undefined ? read() : new Promise((resolve) => setTimeout(resolve, delay)).then(read);
-	};
+	const { dirname } = await import("node:path");
+	const answer = <T>(path: unknown, read: () => Promise<T>): Promise<T> =>
+		held.has(String(path)) || held.has(dirname(String(path))) ? new Promise<T>(() => {}) : read();
 	const stat = ((path: string, options?: { bigint?: boolean }) =>
-		answer(path, () => actual.stat(path, options))) as typeof actual.stat;
+		answer(path, () => {
+			const delay = slow.get(dirname(path));
+			const read = () => actual.stat(path, options);
+			return delay === undefined ? read() : new Promise((resolve) => setTimeout(resolve, delay)).then(read);
+		})) as typeof actual.stat;
 	const access = ((path: string, mode?: number) =>
 		answer(path, () => actual.access(path, mode))) as typeof actual.access;
 	return { ...actual, stat, access, default: { ...actual, stat, access } };
