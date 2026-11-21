@@ -64,6 +64,8 @@
 - In the standalone binary, an `https://` request, including the OpenAI Codex WebSocket, now goes through `HTTP_PROXY` when `HTTPS_PROXY` is unset, as with the npm-installed `atomic`, instead of connecting directly. `NO_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` keep working as before. The [network proxy settings](docs/settings.md#network-proxy) list the remaining differences between the binary and the npm install ([#6233](https://github.com/bastani-inc/atomic/pull/6233))
 - `/reload` reads the current contents of a JSON file an extension imports or requires by path, also one it imports only later. It kept the content first loaded until Atomic restarted, and editing only such a file did not make `/reload` evaluate the extension again. A JSON file in a package the extension depends on still loads once per process
 - While the screen shows a subagent that finished, the agent panel no longer redraws every second: an idle subagent chat writes nothing to the terminal until something changes. A running subagent's time and a finished row that is fading still update every second ([#6220](https://github.com/bastani-inc/atomic/pull/6220))
+- When Atomic's own handling of the engine's output fails the same way on every streamed update, the chat shows one error row with a count, such as `(42 times)`, instead of one row per update. A different failure, or one after other output, gets its own row.
+- An error while Atomic reports a malformed engine line, the engine's stderr output or a failed write to the engine no longer ends Atomic; a malformed line still restarts the engine.
 
 ## [0.10.3] - 2026-11-21
 
