@@ -551,8 +551,15 @@ export function followStartedRunEcho(
 				echoEvent.type === "user-message" &&
 				event.type === "message_start" &&
 				!takeUserMessage(followers, event, text)
-			)
+			) {
+				// Another send's message: the run showing it is an earlier one, though the host had not seen it start. What
+				// that run did so far is not this message's run's.
+				if (state.kind === "awaiting-answer" && !state.userMessageShown) {
+					state = STARTED_RUN_ECHO_SENT;
+					earlierRun = true;
+				}
 				return;
+			}
 			apply(echoEvent);
 		}),
 	);

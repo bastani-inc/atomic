@@ -129,3 +129,25 @@ test("a run getting past its prompt reaches every sent message still waiting for
 	assert.deepEqual(host.discarded, ["hello", "again"]);
 	assert.equal(host.listening(), 0);
 });
+
+test("a sent message whose answer comes after an earlier send's whole run keeps its echo for its own run (#6126)", () => {
+	const host = chat({ earlierRunGoing: false, echoes: ["first text", "second text"] });
+	const first = followStartedRunEcho(host.mode, "first text", { sendShowsWorkingRow: true });
+	first.answer(true);
+	// The second send is followed before the host reads any of the first send's run, which then comes with the second
+	// send's answer in one read.
+	const second = followStartedRunEcho(host.mode, "second text", { sendShowsWorkingRow: true });
+	host.emit(
+		{ type: "agent_start" },
+		{ type: "message_start", message: { role: "user", content: "first text" } },
+		{ type: "message_start", message: { role: "assistant", content: [] } },
+		{ type: "turn_end" },
+		{ type: "agent_end", messages: [] },
+		{ type: "agent_settled" },
+	);
+	second.answer(true);
+	assert.deepEqual(host.discarded, [], "the first run was not the second send's");
+	host.emit({ type: "agent_start" }, { type: "message_start", message: { role: "user", content: "second text" } });
+	assert.deepEqual(host.discarded, [], "the second run's message takes the second echo's place");
+	assert.equal(host.listening(), 0);
+});
