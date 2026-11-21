@@ -6,7 +6,7 @@
  * behind, the timers it leaves pending and the copying a new child costs the session must not grow with them.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import v8 from "node:v8";
 import vm from "node:vm";
@@ -374,26 +374,31 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 	);
 
 	test(
-		"a finished child whose session file was deleted still shows its result, creates no file, and refuses resume clearly (#5186)",
+		"a finished child whose session was deleted still shows its result, creates no session, and refuses resume clearly (#5186)",
 		async () => {
 			const second = launches.get("1");
 			assert.ok(second, "the second child was launched");
+			// The child's session is kept in the main session's store, as the main session's own is.
+			const sessions = session.sessionManager.getSessionStore();
+			const record = session.sessionManager
+				.getEntries()
+				.flatMap((entry) =>
+					entry.type === "custom" && entry.customType === "subagent-child"
+						? [entry.data as { childId?: string; childSessionId?: string; childSessionFile?: string }]
+						: [],
+				)
+				.findLast((record) => record.childId === second.childId && record.childSessionId !== undefined);
+			const childSessionId = record?.childSessionId;
+			assert.ok(childSessionId, "the child saved its session");
+			assert.equal(record?.childSessionFile, undefined, "the child has no session file of its own");
+			await sessions.delete(childSessionId);
 			const agentDir = getAgentDir();
-			const childFiles = () =>
-				readdirSync(agentDir, { recursive: true, encoding: "utf8" }).filter(
-					(name) =>
-						name.includes("subagent-sessions") &&
-						name.endsWith(".jsonl") &&
-						readFileSync(join(agentDir, name), "utf8").includes('Do TASK-1"'),
-				);
-			const [file] = childFiles();
-			assert.ok(file, "the child saved its session file");
-			rmSync(join(agentDir, file));
 			const sessionFiles = () =>
 				readdirSync(agentDir, { recursive: true, encoding: "utf8" })
 					.filter((name) => name.endsWith(".jsonl") && !name.includes("artifacts"))
 					.sort();
 			const before = sessionFiles();
+			const childSession = () => sessions.readHeader(childSessionId);
 
 			const store = getOwnerTaskStore(session);
 			assert.ok(store, "the main session has a task store");
@@ -403,8 +408,9 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 			assert.equal(detail.output, "done 1");
 			const page = await view.readTaskTranscript(second.taskId as never);
 			assert.ok(!page.ok, "the transcript says its history is gone");
-			assert.match(page.error.message, /moved or deleted/);
+			assert.match(page.error.message, /deleted from its session store/);
 			assert.deepEqual(sessionFiles(), before, "reading a deleted history creates no session file");
+			assert.equal(await childSession(), undefined, "reading a deleted history creates no session");
 
 			const results: string[] = [];
 			const unsubscribe = session.subscribe((event) => {
@@ -417,9 +423,10 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 			} finally {
 				unsubscribe();
 			}
-			assert.match(results[0]!, /session file is missing/);
+			assert.match(results[0]!, /no longer exists in the session store/);
 			assert.equal(resumedRequests.length, 1, "the child was not resumed without its history");
 			assert.deepEqual(sessionFiles(), before, "a refused resume creates no session file");
+			assert.equal(await childSession(), undefined, "a refused resume creates no session");
 		},
 		ACCUMULATION_TIMEOUT_MS,
 	);
