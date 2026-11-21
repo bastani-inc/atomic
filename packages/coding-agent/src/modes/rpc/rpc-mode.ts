@@ -29,6 +29,7 @@ import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { CONSOLE_CLOSED_EXIT_CODE, CONSOLE_CLOSED_SHUTDOWN_MS } from "../../utils/windows-console-close.js";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import { endCommandsWhenHostIsGone } from "../interactive-engine/engine-host-loss.ts";
 import { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import { EngineProjectTrustService } from "../interactive-engine/engine-project-trust.js";
 import {
@@ -95,6 +96,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	const sessionPicker = interactiveEngineChild ? new EngineSessionPickerService(writeRawStdout) : undefined;
 	const inputForm = interactiveEngineChild ? new EngineInputFormService(writeRawStdout) : undefined;
 	const quitIntent = interactiveEngineChild ? new EngineQuitIntent(writeRawStdout) : undefined;
+	const hostPid = Number.parseInt(interactiveEngineStartupEnv().hostPid ?? "", 10);
+	if (quitIntent && Number.isSafeInteger(hostPid) && hostPid > 0) {
+		endCommandsWhenHostIsGone(hostPid, () => quitIntent.explicitQuitRequested);
+	}
 	const projectTrust = interactiveEngineChild
 		? new EngineProjectTrustService(() => runtimeHost.session.extensionRunner)
 		: undefined;
