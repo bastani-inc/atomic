@@ -41,7 +41,7 @@ import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
 import { subagentStartHoldMs } from "../shared/start-progress.js";
-import { savedNoticeIds, withoutLegacyLateMessages } from "./late-tool-result-notice.js";
+import { savedNoticeIds, unreadNotices, withoutLegacyLateMessages } from "./late-tool-result-notice.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
 import {
@@ -52,6 +52,7 @@ import {
 	SUBAGENT_OWNER_GENERATION,
 	savedToolResultIds,
 } from "./released-children.js";
+import type { SubagentResumeNote } from "./resume-note.js";
 import { boundedWorktreeReply, resumeRunWorktree, WORKTREE_REPLY_WAIT_MS } from "./run-worktrees.js";
 import {
 	indexSubagentChildOwner,
@@ -144,10 +145,12 @@ export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "config" | "discoverAg
 export interface SubagentChildResumeRequest {
 	/** The prompt the reopened child runs next. */
 	readonly prompt: string;
-	/** Run after `prompt` when it steers a turn the child had not finished. */
+	/** Read with `prompt`, as the child's resume note, when it steers a turn the child had not finished. */
 	readonly continuation?: string;
 	/** The caller's message; a child stopped before it ever started gets it after its original task. */
 	readonly message?: string;
+	/** `prompt` only tells the child to continue (a resume without a message): it is the child's resume note. */
+	readonly continuationOnly?: true;
 	/** Additional resume messages batched with the first, in arrival order. */
 	readonly followUps?: readonly string[];
 	/** Results of the child's detached calls that arrived for it (#4326), in arrival order. */
@@ -453,38 +456,21 @@ async function ownSessionModelCandidate(
 	return resolveCandidateModel(candidate)?.model ? candidate : undefined;
 }
 
-/** The entry a session saves once a turn read a notice saved before it (see `holdsUnreadNotice`). */
-const PROTECTED_RECONCILIATION_CUSTOM_TYPE = "atomic:protected-streaming-reconciliation";
-
-/**
- * Whether the child's session holds a notice saved for a turn that never read it, as when its process stopped between
- * saving the notice and the turn that reads it: the reopened session reads it, so the child has to run.
- */
-function holdsUnreadNotice(sessionManager: SessionManager): boolean {
-	const branch = sessionManager.getBranch();
-	const read = new Set(sessionManager.getSessionRecoveryState?.().reconciledCardIds ?? []);
-	for (const entry of branch) {
-		if (entry.type !== "custom_message" || entry.customType !== PROTECTED_RECONCILIATION_CUSTOM_TYPE) continue;
-		const card = (entry.details as { readonly protectedReconciliationOf?: unknown } | undefined)
-			?.protectedReconciliationOf;
-		if (typeof card === "string") read.add(card);
-	}
-	return branch.some(
-		(entry) => entry.type === "custom_message" && entry.protectedReconciliation !== undefined && !read.has(entry.id),
-	);
-}
-
-/** What a restored child is prompted with: its task, then follow-ups delivered as written. */
+/** What a restored child is prompted with: its task, then follow-ups delivered as written, and its resume note. */
 interface ResumePrompts {
 	readonly task: string;
 	readonly followUps: readonly string[];
 	/** The task is delivered as written rather than as a fresh launch's task. */
 	readonly taskLiteral: boolean;
+	/** Why it runs again, when Atomic says so rather than a message: read with its turn, never as a message. */
+	readonly note?: SubagentResumeNote;
 }
 
 /**
  * What the reopened child is prompted with, in order: the messages it had queued and not read when it was stopped,
- * once, then the resume prompt and its continuation. A continuation it had queued is not repeated.
+ * once, then the resume's own message. Atomic's own continuation (after a restart, a resume without a message, or the
+ * continuation of an interrupted turn) is its resume note. A continuation an earlier version held as a message is not
+ * repeated.
  */
 function resumedPrompts(record: SubagentChildRecord, resume: SubagentChildResumeRequest | undefined): ResumePrompts {
 	const prompt = resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT;
@@ -498,19 +484,26 @@ function resumedPrompts(record: SubagentChildRecord, resume: SubagentChildResume
 		resume?.continuation,
 		resume?.message || heldAllSent ? undefined : prompt,
 	]);
-	const held = recorded ? recorded.messages.filter((message) => !continuations.has(message)) : [];
+	// Held messages written since continuations became notes are each a message the child was sent.
+	const held = recorded
+		? recorded.messages.filter((message) => recorded.withoutContinuations === true || !continuations.has(message))
+		: [];
 	// Only an original task the child never read keeps a fresh launch's handling; a held message it already received,
 	// or the resume's own message, is delivered as written whether or not anything was held (#4027).
 	const taskExpands =
 		recorded !== undefined && heldTaskExpands(recorded) && held.length > 0 && held[0] === recorded.messages[0];
-	// A wake's fallback prompt is not among them: the wake decides whether it starts the turn (see wakeFallbackPrompts).
-	const [task = "", ...followUps] = [
-		...held,
-		...(resume?.wakeFallback ? [] : [prompt]),
-		...(resume?.followUps ?? []),
-		...(resume?.continuation ? [resume.continuation] : []),
-	];
-	return { task, followUps, taskLiteral: !taskExpands };
+	const note: SubagentResumeNote | undefined =
+		resume === undefined
+			? { kind: "restart", text: SUBAGENT_RESUME_CONTINUATION_PROMPT }
+			: resume.continuationOnly === true
+				? { kind: "resume", text: prompt }
+				: resume.continuation
+					? { kind: "resume", text: resume.continuation }
+					: undefined;
+	// A wake's fallback prompt is not among them: the wake decides whether its note starts the turn.
+	const promptIsNote = resume === undefined || resume.continuationOnly === true || resume.wakeFallback === true;
+	const [task = "", ...followUps] = [...held, ...(promptIsNote ? [] : [prompt]), ...(resume?.followUps ?? [])];
+	return { task, followUps, taskLiteral: !taskExpands, ...(note === undefined ? {} : { note }) };
 }
 
 /** Whether `prompts` give the child anything to read. */
@@ -912,7 +905,9 @@ async function relaunchChild(
 		notices.length === 0 &&
 		!promptsAnything(wokenPrompts) &&
 		resume !== undefined;
-	const prompts: ResumePrompts = fallback ? { task: resume.prompt, followUps: [], taskLiteral: true } : wokenPrompts;
+	const prompts: ResumePrompts = fallback
+		? { task: "", followUps: [], taskLiteral: true, note: { kind: "wake", text: resume.prompt } }
+		: wokenPrompts;
 	// A wake by results alone of a child that finished on its own, all of them already in its transcript, leaves it
 	// nothing to continue, read or answer: it is not run again. One with a notice it has not read yet is, to read it.
 	if (
@@ -927,13 +922,13 @@ async function relaunchChild(
 		notices.length === 0 &&
 		!fallback &&
 		!promptsAnything(prompts) &&
-		!holdsUnreadNotice(sessionManager)
+		unreadNotices(sessionManager).length === 0
 	) {
 		await hold?.release();
 		return { kind: "terminal", record: latest };
 	}
-	// Redispatched calls start the child; their task is never prompted, so it is only a fallback too.
-	const taskFallback = fallback || (redispatch && wakeFallback);
+	// Redispatched calls start the child; their task is never prompted, so it is only a fallback.
+	const taskFallback = redispatch && wakeFallback;
 	// A fresh child its launch created in its owner's store starts there, while the owner's store is not files.
 	const sessionStore = fresh?.ownerStore && !sessionManager ? childSessionStore(ctx.sessionManager) : undefined;
 	const options: RunSyncOptions = {
@@ -976,7 +971,9 @@ async function relaunchChild(
 			: {}),
 		...(notices.length > 0 ? { resumeNotices: notices } : {}),
 		// An empty prompt is never sent: what it has to read, a notice its reopened session replays included, starts its turn.
-		...((wakePlan?.skipPrompt || !promptsAnything(prompts)) && !fallback ? { skipTaskPrompt: true } : {}),
+		...(wakePlan?.skipPrompt || !promptsAnything(prompts) ? { skipTaskPrompt: true } : {}),
+		// Its note says why it runs again; a paused child is told nothing until the user continues it.
+		...(prompts.note !== undefined && !restoredPaused && !redispatch ? { resumeNote: prompts.note } : {}),
 		...(taskFallback ? { resumeTaskFallback: true } : {}),
 		...(redispatch ? { redispatchDetachedCalls: true } : {}),
 		intercomEvents: deps.pi.events,
@@ -1052,7 +1049,7 @@ async function relaunchChild(
 			? fresh.intentTask === undefined
 				? {}
 				: { intentTask: fresh.intentTask }
-			: resume?.wakeFallback === true
+			: resume?.wakeFallback === true || prompts.task === ""
 				? { intentTask: resumedTaskLabel(record) }
 				: {}),
 		...(resume || fresh ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
