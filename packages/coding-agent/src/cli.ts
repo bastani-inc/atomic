@@ -12,7 +12,11 @@
 import { APP_NAME, getPackageDir, VERSION } from "./config.js";
 import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
-import { COMPILE_CACHE_ENGINE_WARMUP_ENV, enablePersistentCompileCache } from "./utils/compile-cache.ts";
+import {
+	COMPILE_CACHE_ENGINE_WARMUP_ENV,
+	enablePersistentCompileCache,
+	flushPersistentCompileCache,
+} from "./utils/compile-cache.ts";
 import { headlessHeapRelaunchArgs, isHeadlessInvocation, relaunchWithHeap } from "./utils/heap-relaunch.ts";
 import { noteInheritedHangup } from "./utils/inherited-hangup.js";
 import {
@@ -83,18 +87,30 @@ if (heapArgs.length > 0) {
 	const mainArgs = prewarmedEngine
 		? prewarm!.then(({ readPrewarmedEngineArgs }) => readPrewarmedEngineArgs())
 		: Promise.resolve(args);
+	let adopted = false;
+	void mainArgs.then(() => {
+		adopted = true;
+	});
 	// No top-level await: the compiled binary is built with --bytecode (CJS),
 	// which forbids TLA anywhere in the bundled graph.
 	void started
-		.then(() =>
-			Promise.all([
+		.then(() => {
+			const loaded = Promise.all([
 				import("./core/http-dispatcher.ts"),
 				import("./main.ts"),
 				import("./cli/settings-startup.ts"),
-				mainArgs,
-			]),
-		)
-		.then(([{ configureHttpDispatcher }, { main }, { exitOnDecisionConfigError }, runArgs]) => {
+			]);
+			// A prewarmed child asked to write its compile cache does it once loaded, while it waits for its host, and not
+			// once its host has taken it over: then it starts its session at once and writes the cache as it exits.
+			if (prewarmedEngine)
+				void Promise.all([loaded, prewarm!]).then(([, module]) => {
+					const flag = (module as { INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG?: string })
+						.INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG;
+					if (!adopted && flag !== undefined && args.includes(flag)) flushPersistentCompileCache();
+				});
+			return Promise.all([loaded, mainArgs]);
+		})
+		.then(([[{ configureHttpDispatcher }, { main }, { exitOnDecisionConfigError }], runArgs]) => {
 			configureHttpDispatcher();
 			main(runArgs).catch(exitOnDecisionConfigError);
 		});
