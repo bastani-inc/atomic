@@ -90,8 +90,13 @@ import {
 	type TestSessionQueue,
 	truncateOutput,
 } from "../../shared/types.js";
+import {
+	issuedCallArguments,
+	lateToolResultNotice,
+	lateToolResultNoticeKey,
+} from "../foreground/late-tool-result-notice.js";
 import { releasedChildWaitingCalls } from "../foreground/released-child-replies.js";
-import type { SubagentChildWaitingCall } from "../foreground/subagent-child-records.js";
+import type { SubagentChildHeldNotice, SubagentChildWaitingCall } from "../foreground/subagent-child-records.js";
 import { readPreviousIntercomId } from "../foreground/subagent-child-session.js";
 import {
 	lastNonEmptyAssistantText,
@@ -265,6 +270,17 @@ export interface ChildSpec {
 	 * follow-up or prompt; the turn that issued them continues.
 	 */
 	readonly resumeToolResults?: readonly DetachedToolResult[];
+	/**
+	 * Results of calls the child was already told are still running, in arrival order. It reads them in one notice
+	 * delivered with its next turn (the continued turn, its task's, or, when nothing else starts one, the notice's own),
+	 * never as a message from the user.
+	 */
+	readonly resumeLateToolResults?: readonly DetachedToolResult[];
+	/**
+	 * Notices of finished background tasks the child launched, held for it while it could not take them: each is
+	 * delivered with its next turn as the notice a running child gets, never as a message from the user.
+	 */
+	readonly resumeNotices?: readonly SubagentChildHeldNotice[];
 	/** The wake only hands back tool results: the continued turn is the whole run, and `task` is not prompted. */
 	readonly skipTaskPrompt?: boolean;
 	/**
@@ -946,6 +962,20 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 					});
 				onRecorded?.(results.map((result) => result.toolCallId));
 			});
+		},
+		// As a real session saves a card: the notice is in its transcript, and a turn reads it.
+		sendCustomMessage: async (message: {
+			customType: string;
+			content: string;
+			display: boolean;
+			details?: unknown;
+		}) => {
+			await sessionManager.appendCustomMessageEntry(
+				message.customType,
+				message.content,
+				message.display,
+				message.details,
+			);
 		},
 		pauseQueuedMessages: () => {
 			queuedMessagesPaused = true;
@@ -2190,6 +2220,7 @@ export class SubagentControlRuntime {
 			| "bindChildSession"
 			| "bindChildLaunch"
 			| "toolResultsSaved"
+			| "noticesSaved"
 			| "reportTurnPaused"
 			| "setExtensionStatus"
 			| "clearExtensionStatuses"
@@ -2238,6 +2269,7 @@ export class SubagentControlRuntime {
 					| "bindChildSession"
 					| "bindChildLaunch"
 					| "toolResultsSaved"
+					| "noticesSaved"
 					| "reportTurnPaused"
 					| "setExtensionStatus"
 					| "clearExtensionStatuses"
@@ -2967,11 +2999,8 @@ export class SubagentControlRuntime {
 				if (termination) break;
 				await session.sendCustomMessage(message);
 			}
-			if (!termination && admitted.spec.resumeSession) {
-				await recoverChildSession(session, admitted.spec);
-				await settleInterruptedTurns();
-			}
-			// The user had paused it: it comes back paused, prompted with nothing, and waits for them to continue it.
+			// The user had paused it: it comes back paused, prompted with nothing, and waits for them to continue it. Paused
+			// before its recovery replays what an earlier process left unread, so nothing replayed runs a turn meanwhile.
 			const resumedPaused = !termination && admitted.spec.resumePaused === true;
 			if (resumedPaused) {
 				taskPending = false;
@@ -2980,7 +3009,34 @@ export class SubagentControlRuntime {
 				reportTurnPaused(true);
 				await endTurn(() => transcriptSession.pauseTurn());
 			}
+			if (!termination && admitted.spec.resumeSession) {
+				await recoverChildSession(session, admitted.spec);
+				// A paused child's turn settles once the user continues it, after its dispatch below.
+				if (!resumedPaused) await settleInterruptedTurns();
+			}
 			restoringPaused = false;
+			const lateResults = admitted.spec.resumeLateToolResults ?? [];
+			if (!termination && !resumedPaused && lateResults.length > 0) {
+				// Saved as one card before its turn reads it, and read once: a restart before that turn replays it.
+				await session.sendCustomMessage(
+					lateToolResultNotice(lateResults, issuedCallArguments(sessionManager.buildSessionProjection().messages)),
+					{
+						triggerTurn: true,
+						persistWhenStreaming: true,
+						stageAdmissionKey: lateToolResultNoticeKey(lateResults),
+					},
+				);
+				// Its card holds them now: the owner lets them go (#5012).
+				taskHooks?.toolResultsSaved?.(lateResults.map((result) => result.toolCallId));
+			}
+			for (const notice of admitted.spec.resumeNotices ?? []) {
+				if (termination || resumedPaused) break;
+				await session.sendCustomMessage(
+					{ ...notice, display: true },
+					{ triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: notice.details.completionId },
+				);
+				taskHooks?.noticesSaved?.([notice.details.completionId]);
+			}
 			const redispatched =
 				!termination && !resumedPaused && admitted.spec.redispatchDetachedCalls
 					? session.redispatchDetachedToolCalls()

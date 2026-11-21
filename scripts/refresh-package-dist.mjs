@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Brings the dist directories of the packages `npm run typecheck` checks against up to date without rewriting them in
-// place, so tests that import those packages while a typecheck runs never read a missing or half-written file.
+// Brings the dist directories of the packages Atomic depends on up to date without rewriting them in place, so tests
+// and other processes that import those packages while `npm run build` or `npm run typecheck` runs never read a
+// missing or half-written file.
 //
 // Usage: node scripts/refresh-package-dist.mjs <package-dir>...
 //
@@ -8,6 +9,9 @@
 // the source maps point at the same sources. Only files whose bytes differ are then moved into dist, each replacing the
 // old file in one rename, so an up-to-date dist is left exactly as it was. Like the package build, files that are no
 // longer emitted stay in dist, except under @bastani/atomic-ai's providers/data, which mirrors src/providers/data.
+//
+// A package with a `build:bundle` script is bundled from the staged files before anything moves (see
+// bundle-package-dist.mjs), so its dist only ever holds bundled files, and its `_modules` mirrors the staged one.
 //
 // Windows refuses to replace a file that another program has open. The rename is tried again while a reader finishes
 // with the file; only a file still held after about two seconds is written in place, as the package build does.
@@ -127,8 +131,8 @@ export function moveChangedFiles(staged, dist, prune = []) {
 }
 
 /** Runs a package.json script of the package in `cwd` through npm, as `npm run` would. @param {string} cwd @param {string} name */
-function runScript(cwd, name, { quiet = false } = {}) {
-	const result = spawnSync("npm", ["run", "--silent", name], {
+function runScript(cwd, name, { quiet = false, args = /** @type {string[]} */ ([]) } = {}) {
+	const result = spawnSync("npm", ["run", "--silent", name, ...(args.length > 0 ? ["--", ...args] : [])], {
 		cwd,
 		stdio: quiet ? "ignore" : "inherit",
 		shell: process.platform === "win32",
@@ -145,32 +149,58 @@ function ensureModelData(/** @type {string} */ packageDir) {
 	}
 }
 
-/** @param {string} packageDir absolute */
-export function refreshPackageDist(packageDir) {
+/**
+ * @param {string} packageDir absolute
+ * @param {{ generateModelData?: boolean, tsBuildInfoFile?: string }} [options] With `generateModelData: false`,
+ *   @bastani/atomic-ai's model data is copied as it is, for a caller that has checked it, as the build does; by default
+ *   missing or stale data is generated. `tsBuildInfoFile` keeps tsc's incremental state there between refreshes, so an
+ *   unchanged program is not checked again; every file is still emitted into the staging directory.
+ */
+export function refreshPackageDist(packageDir, { generateModelData = true, tsBuildInfoFile } = {}) {
 	const name = relative(root, packageDir).split("\\").join("/");
 	const copied = COPIED_OUTPUTS[name];
-	if (copied?.modelData) ensureModelData(packageDir);
+	if (copied?.modelData && generateModelData) ensureModelData(packageDir);
 	const staged = mkdtempSync(join(packageDir, ".dist-staging-"));
+	/** Where a bundled package's staged dist is bundled (see below). */
+	let bundleRoot;
 	try {
 		// The workspace's one TypeScript, the compiler every package build script runs.
 		const manifest = createRequire(import.meta.url).resolve("typescript/package.json");
 		const tsc = join(dirname(manifest), JSON.parse(readFileSync(manifest, "utf8")).bin.tsc);
-		const compiled = spawnSync(process.execPath, [tsc, "-p", "tsconfig.build.json", "--outDir", staged], {
-			cwd: packageDir,
-			stdio: "inherit",
-		});
+		const incremental = tsBuildInfoFile === undefined ? [] : ["--incremental", "--tsBuildInfoFile", tsBuildInfoFile];
+		const compiled = spawnSync(
+			process.execPath,
+			[tsc, "-p", "tsconfig.build.json", "--outDir", staged, ...incremental],
+			{
+				cwd: packageDir,
+				stdio: "inherit",
+			},
+		);
 		if (compiled.status !== 0) throw new Error(`${name}: tsc failed (${compiled.status ?? compiled.signal})`);
 		if (copied) cpSync(join(packageDir, copied.from), join(staged, copied.to), { recursive: true });
-		const { files, replaced, removed } = moveChangedFiles(
-			staged,
-			join(packageDir, "dist"),
-			copied ? [copied.to] : [],
-		);
+		// A package that ships bundled (see bundle-package-dist.mjs) is bundled before anything moves into its dist. The
+		// bundle names modules by their paths from the directory holding `dist`, so the staged files are bundled in a
+		// directory named `dist`, one level down, which bundles them exactly as the package's own dist would be.
+		let output = staged;
+		const bundled = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")).scripts?.["build:bundle"];
+		if (bundled !== undefined) {
+			bundleRoot = mkdtempSync(join(packageDir, ".bundle-staging-"));
+			output = join(bundleRoot, "dist");
+			renameSync(staged, output);
+			if (!runScript(packageDir, "build:bundle", { args: [`--dist=${relative(packageDir, output)}`] })) {
+				throw new Error(`${name}: bundling failed`);
+			}
+		}
+		// The copy of a bundled package's modules for bundlers mirrors the compiled modules exactly.
+		const prune = [...(copied ? [copied.to] : []), ...(bundled !== undefined ? ["_modules"] : [])];
+		const { files, replaced, removed } = moveChangedFiles(output, join(packageDir, "dist"), prune);
 		console.log(
 			`[refresh-dist] ${name}: ${replaced.length} of ${files} files changed${removed.length > 0 ? `, ${removed.length} removed` : ""}`,
 		);
 	} finally {
 		rmSync(staged, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		if (bundleRoot !== undefined)
+			rmSync(bundleRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 	}
 }
 

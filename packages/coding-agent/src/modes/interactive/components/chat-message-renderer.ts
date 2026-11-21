@@ -26,6 +26,7 @@ import { BranchSummaryMessageComponent } from "./branch-summary-message.ts";
 import { extractMessageText } from "./chat-session-host-utils.ts";
 import { compactionBoundaryFromMessage } from "./compaction-boundary-message.ts";
 import { CustomMessageComponent } from "./custom-message.ts";
+import type { KeptTaskAction } from "./kept-task.ts";
 import { fromChatComponentFactory } from "./renderer-disposal.js";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 import type { TaskCompletionMessageOptions } from "./task-completion-message.js";
@@ -126,6 +127,8 @@ export interface ChatMessageRenderOptions {
 	renderLatex?: boolean;
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
 	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
+	/** See `ToolExecutionOptions.keptTaskAction`. */
+	keptTaskAction?: (taskId: TaskId) => KeptTaskAction | undefined;
 	loadTaskTranscript?: TaskCompletionMessageOptions["loadTranscript"];
 	hasTaskTranscript?: (taskId: TaskId) => boolean;
 	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
@@ -1026,6 +1029,8 @@ export interface ChatRendererContext {
 	outputPad: number;
 	showImages: boolean;
 	imageWidthCells?: number;
+	/** See `ToolExecutionOptions.keptTaskAction`. */
+	keptTaskAction?: (taskId: TaskId) => KeptTaskAction | undefined;
 }
 
 function rendererContext(options: ChatMessageRenderOptions, requestRender: () => void): ChatRendererContext {
@@ -1035,6 +1040,7 @@ function rendererContext(options: ChatMessageRenderOptions, requestRender: () =>
 		outputPad: options.outputPad ?? 1,
 		showImages: options.showImages ?? true,
 		imageWidthCells: options.imageWidthCells,
+		...(options.keptTaskAction === undefined ? {} : { keptTaskAction: options.keptTaskAction }),
 	};
 }
 
@@ -1113,6 +1119,7 @@ export function renderHostedChatEntry(
 					imageWidthCells: options.imageWidthCells,
 					outputPad: options.outputPad,
 					getTaskRecord: options.getTaskRecord,
+					...(options.keptTaskAction === undefined ? {} : { keptTaskAction: options.keptTaskAction }),
 					getToolDefinition: options.getToolDefinition,
 				},
 				options.getToolDefinition?.(messageEntry.toolName),

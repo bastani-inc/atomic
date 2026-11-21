@@ -75,6 +75,7 @@ import {
 	MCP_TOOL_RECORD_ENTRY_TYPE,
 	type McpResourceServerRecord,
 	type McpServerIdentity,
+	type McpServerLineRecord,
 	type McpServerSummaryRecord,
 	type McpToolRecord,
 	type McpToolRecordData,
@@ -254,6 +255,8 @@ interface ShownSummary {
 interface ServersSection {
 	text: string;
 	summarized: { listing: McpServerListing; summary: string }[];
+	/** The lines of namespaces that two or more lines share, in order, with the server each lists. */
+	sharedLines: McpServerLineRecord[];
 }
 
 /**
@@ -290,7 +293,13 @@ function layOutServersSection(servers: readonly McpServerListing[]): ServersSect
 	const lines = listed
 		.slice(0, kept)
 		.map((_, index) => (summarized[index]?.summary ? `${heads[index]}: ${summarized[index].summary}` : heads[index]));
-	return { text: [intro, ...lines, ...omitted(listed.length - kept)].join("\n"), summarized };
+	const namespaces = listed.slice(0, kept).map((server) => mcpNamespace(server.entry.name));
+	const counts = new Map<string, number>();
+	for (const namespace of namespaces) counts.set(namespace, (counts.get(namespace) ?? 0) + 1);
+	const sharedLines = lines.flatMap((line, index) =>
+		counts.get(namespaces[index]!)! > 1 ? [{ server: listed[index]!.entry.name, line }] : [],
+	);
+	return { text: [intro, ...lines, ...omitted(listed.length - kept)].join("\n"), summarized, sharedLines };
 }
 
 /** Room for a summary that each server line of a section with `intro`, these `heads` and `omitted` line had. */
@@ -308,6 +317,8 @@ interface SentServersSection {
 	room: number;
 	/** The summaries shown for a namespace, "" for a line without one; more than one when two servers share it. */
 	summaries: Map<string, string[]>;
+	/** The lines of each namespace, in order. */
+	lines: Map<string, string[]>;
 }
 
 /** The section a request sent as `text`, with its tags; undefined when it is not one this extension wrote. */
@@ -317,25 +328,57 @@ function readSentServersSection(text: string | undefined): SentServersSection | 
 	const omitted = rest.at(-1)?.startsWith("- … ") ? [rest.at(-1)!] : [];
 	const heads: string[] = [];
 	const summaries = new Map<string, string[]>();
+	const lines = new Map<string, string[]>();
 	for (const line of rest.slice(0, rest.length - omitted.length)) {
 		const match = SERVER_LINE.exec(line);
 		if (!match) return undefined;
 		heads.push(match[1]!);
 		summaries.set(match[2]!, [...(summaries.get(match[2]!) ?? []), match[3] ?? ""]);
+		lines.set(match[2]!, [...(lines.get(match[2]!) ?? []), line]);
 	}
-	return { room: summaryRoom(intro, heads, omitted), summaries };
+	return { room: summaryRoom(intro, heads, omitted), summaries, lines };
+}
+
+/**
+ * The summary the sent section shows on each line of a namespace two or more of its lines share, by the server that
+ * line lists. Those lines name no server, so a namespace counts only when the recorded `serverLines` are its lines
+ * exactly, in order, and list the servers it lists now (`listed`, in the section's order); otherwise its lines show
+ * no recorded summary, since they cannot be told apart.
+ */
+function sharedLineSummaries(
+	section: SentServersSection,
+	serverLines: readonly McpServerLineRecord[] | undefined,
+	listed: readonly string[],
+): Map<string, string> {
+	const owned = new Map<string, string>();
+	for (const [namespace, lines] of section.lines) {
+		if (lines.length < 2) continue;
+		const recorded = serverLines?.filter((record) => mcpNamespace(record.server) === namespace) ?? [];
+		const servers = listed.filter((name) => mcpNamespace(name) === namespace);
+		if (recorded.length !== lines.length || servers.length !== lines.length) continue;
+		if (recorded.some((record, index) => record.line !== lines[index] || record.server !== servers[index])) continue;
+		const summaries = section.summaries.get(namespace)!;
+		for (const [index, record] of recorded.entries()) owned.set(record.server, summaries[index]!);
+	}
+	return owned;
 }
 
 /**
  * Whether the section a request sent last shows `record`'s summary on its server's line, as the line shows it with the
  * room it had. A record the conversation does not show, such as one whose replacement could not be written, is not
- * shown again after a resume; nor is one a line without a summary leaves unconfirmed.
+ * shown again after a resume; nor is one a line without a summary leaves unconfirmed. In a namespace two lines
+ * share, the server's line is the one `shared` (see sharedLineSummaries) says.
  */
-function showsRecordedSummary(section: SentServersSection | undefined, record: McpServerSummaryRecord): boolean {
+function showsRecordedSummary(
+	section: SentServersSection | undefined,
+	record: McpServerSummaryRecord,
+	shared: ReadonlyMap<string, string>,
+): boolean {
 	const shown = section?.summaries.get(mcpNamespace(record.server));
-	if (!section || section.room <= 0 || shown?.length !== 1) return false;
+	if (!section || section.room <= 0 || shown === undefined) return false;
+	const line = shown.length === 1 ? shown[0] : shared.get(record.server);
 	const expected = shownRecordedSummary(record.summary, record.cut === true, section.room);
-	return expected !== "" && shown[0] === expected;
+	return expected !== "" && line === expected;
 }
 
 /**
@@ -524,7 +567,12 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		 */
 		const recordedOnly = new Set<string>();
 		/** The latest records on the session's branch. */
-		let toolRecords: McpToolRecords = { tools: new Map(), resourceServers: undefined, summaries: new Map() };
+		let toolRecords: McpToolRecords = {
+			tools: new Map(),
+			resourceServers: undefined,
+			summaries: new Map(),
+			serverLines: undefined,
+		};
 		/** Tool records being appended, by name, and the resource servers being appended, as JSON. */
 		const recordingTools = new Map<string, McpToolRecord>();
 		let recordingResources: string | undefined;
@@ -550,9 +598,21 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				toolRecords.summaries.size > 0
 					? readSentServersSection(latestSystemSection(branch, MCP_SERVERS_SECTION))
 					: undefined;
+			// The servers listed now, in the section's order, own the lines of a shared namespace (see sharedLineSummaries).
+			const shared =
+				section && toolRecords.serverLines
+					? sharedLineSummaries(
+							section,
+							toolRecords.serverLines,
+							servers
+								.filter((server) => isEnabled(server) && hasIndirectTools(server.entry))
+								.map((server) => server.entry.name)
+								.sort((a, b) => a.localeCompare(b)),
+						)
+					: new Map<string, string>();
 			shownRecords = new Set(
 				[...toolRecords.summaries.values()]
-					.filter((record) => showsRecordedSummary(section, record))
+					.filter((record) => showsRecordedSummary(section, record, shared))
 					.map((record) => record.server),
 			);
 		};
@@ -566,8 +626,13 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					text: string | undefined;
 					shown: Map<string, ShownSummary>;
 					kept: Set<string>;
+					sharedLines: McpServerLineRecord[];
 			  }
 			| undefined;
+		/** The lines of shared namespaces in the section the conversation's requests send now (see promptSection). */
+		let sentSharedLines: McpServerLineRecord[] = [];
+		/** Whether `sentSharedLines` was recorded since the latest input that can start a request. */
+		let sharedLinesRecorded = false;
 
 		// Render resumed MCP calls even when their server has not connected or never connects.
 		pi.registerToolRenderer((toolName, next) => {
@@ -1689,7 +1754,13 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				}
 			}
 			// Recorded once the prompt sends its first message (message_end below).
-			promptSection = { options: event.systemPromptOptions, text: section?.text, shown, kept };
+			promptSection = {
+				options: event.systemPromptOptions,
+				text: section?.text,
+				shown,
+				kept,
+				sharedLines: section?.sharedLines ?? [],
+			};
 		});
 
 		// A codemode script waits for the servers it names, or for every server when it searches or
@@ -1722,8 +1793,9 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		pi.on("message_end", async (event) => {
 			const { message } = event;
 			if (promptSection) {
-				const { options, text, shown, kept } = promptSection;
+				const { options, text, shown, kept, sharedLines } = promptSection;
 				promptSection = undefined;
+				sentSharedLines = [];
 				if (message.role === "system" || message.role === "user" || message.role === "custom") {
 					const sent =
 						text !== undefined &&
@@ -1731,6 +1803,22 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 						options.sections?.[MCP_SERVERS_SECTION] === text;
 					const updates = sent ? summaryUpdates(shown, kept) : summaryUpdates(new Map(), new Set());
 					if (updates.length > 0) await recordSummaries(updates);
+					sentSharedLines = sent ? sharedLines : [];
+				}
+			}
+			// The first reply after input that can start a request records which server each line of a shared namespace
+			// in the section its request sent lists, before the reply itself is saved. A resume trusts only a record that
+			// no such input follows (see readToolRecords).
+			if (message.role !== "assistant" && message.role !== "toolResult") sharedLinesRecorded = false;
+			else if (message.role === "assistant" && sentSharedLines.length > 0 && !sharedLinesRecorded) {
+				try {
+					await pi.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, {
+						tools: [],
+						serverLines: sentSharedLines,
+					});
+					sharedLinesRecorded = true;
+				} catch {
+					// Without the record, a later resume shows these lines without a summary until their servers reconnect.
 				}
 			}
 			if (message.role !== "system" || (!message.toolsAdded && !message.toolsRemoved)) return;
@@ -1795,13 +1883,20 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			toolOwners.clear();
 			listedTools.clear();
 			recordedOnly.clear();
-			toolRecords = { tools: new Map(), resourceServers: undefined, summaries: new Map() };
+			toolRecords = {
+				tools: new Map(),
+				resourceServers: undefined,
+				summaries: new Map(),
+				serverLines: undefined,
+			};
 			recordingTools.clear();
 			recordingResources = undefined;
 			pendingResourceServers.clear();
 			pendingSummaries.clear();
 			shownRecords = new Set();
 			promptSection = undefined;
+			sentSharedLines = [];
+			sharedLinesRecorded = false;
 			declaredNames = new Set();
 			tokensAtSignIn.clear();
 			resourceToolsExposure = undefined;
