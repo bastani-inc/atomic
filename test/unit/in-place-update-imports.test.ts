@@ -155,7 +155,9 @@ function releasedModule(path: string): [url: string, names: string[]] {
 	assert.ok(names, `no recorded 0.10.3 exports for ${path}`);
 	const file = path.startsWith("@bastani/atomic-ai/utils/")
 		? join(ROOT, "packages/ai/dist/utils", `${path.slice("@bastani/atomic-ai/utils/".length)}.js`)
-		: join(PACKAGE, path);
+		: path === "@bastani/atomic-tui"
+			? join(ROOT, "packages/tui/dist/index.js")
+			: join(PACKAGE, path);
 	assert.ok(existsSync(file), file);
 	return [pathToFileURL(file).href, names];
 }
@@ -217,7 +219,7 @@ for (const { lazy, cached, path } of [
 	{
 		path: "a released session's history",
 		lazy: "core/storage/session/released-history-files.js",
-		cached: ["dist/core/process-start-token.js"],
+		cached: ["dist/core/process-start-token.js", "@bastani/atomic-tui"],
 	},
 	{
 		path: "the HTTP dispatcher",
