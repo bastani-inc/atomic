@@ -3,6 +3,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, vi } from "vitest";
+// Loaded when the file is collected rather than in the first test: the web-access modules import the agent package,
+// whose first compile on a loaded machine would otherwise take most of that test's own budget. Tests that need fresh
+// module state still reset the registry and import their modules again, with the mocks below.
+import "../../packages/web-access/github-config.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 interface ConfigReadGate {

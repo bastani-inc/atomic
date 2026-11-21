@@ -71,6 +71,33 @@ describe("issue #1647 Windows exit poll", () => {
 		expect(resolved).toBe(true);
 	});
 
+	it("reports an exit that never arrives as 0 once the grace has passed, and not before", async () => {
+		// The clock is fake; the turn the fallback waits for after the grace is a real one.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		const synthetic = createSyntheticChildProcess(1649);
+		let resolved = false;
+
+		const wait = waitForChildProcess(synthetic.child, {
+			platform: "win32",
+			isWindowsProcessAlive: () => false,
+			windowsExitPollIntervalMs: 1,
+			windowsExitCodeGraceMs: 1_000,
+		}).then((code) => {
+			resolved = true;
+			return code;
+		});
+
+		synthetic.stdout.emit("end");
+		synthetic.stderr.emit("end");
+		// The poll finds the process gone after 1 ms; its exit is never reported.
+		await vi.advanceTimersByTimeAsync(1);
+		await vi.advanceTimersByTimeAsync(999);
+		expect(resolved).toBe(false);
+
+		await vi.advanceTimersByTimeAsync(1);
+		await expect(wait).resolves.toBe(0);
+	});
+
 	it.each(["before", "after"] as const)(
 		"keeps a stopped process's exit code when a loaded machine holds the loop past the grace with its exit already queued (output ended %s it)",
 		async (outputEnds) => {

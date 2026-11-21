@@ -3,6 +3,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { test, vi } from "vitest";
+// Imported when the file is collected rather than in the test: the module imports the agent package, whose first
+// compile on a loaded machine would otherwise take most of the test's own budget. The mocks below still apply.
+import { clearCloneCache, extractGitHub } from "../../packages/web-access/github-extract.js";
 import { fileExists, makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const boundary = vi.hoisted(() => ({ path: "", clone: vi.fn() }));
@@ -44,7 +47,6 @@ test("closing a clone owner preserves its sibling's same-repository files and ca
 			return Object.assign(new EventEmitter(), { kill: () => true });
 		},
 	);
-	const { extractGitHub, clearCloneCache } = await import("../../packages/web-access/github-extract.js");
 	try {
 		const url = "https://github.com/example/repository";
 		assert.match(

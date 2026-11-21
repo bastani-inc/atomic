@@ -93,7 +93,7 @@ async function history(name: string, snapshots: number, events: number) {
 		events,
 		sessionBlobs.length,
 	);
-	await ageBlobs(shared.database, shared.journal.snapshotBlobs.table, 10_000);
+	await ageBlobsTogether(shared, 10_000);
 	const measure = async <T>(action: () => Promise<T>) => {
 		counted.statements.length = 0;
 		counted.counts.transactions = 0;
@@ -106,6 +106,17 @@ async function history(name: string, snapshots: number, events: number) {
 		};
 	};
 	return { shared, counted, measure, keptBlobs: kept.length + 1 };
+}
+
+/**
+ * Ages every blob of `shared` to `seconds` before the oldest. Each blob is stored with the database clock as its
+ * statement runs, so a store that crosses a second boundary dates the blobs before it a second earlier; collection pages
+ * go by age, and those earlier blobs, the failed run's, would then fill a page of their own and make the page's count
+ * depend on the clock. One age for all keeps every page the same hash-ordered mix.
+ */
+async function ageBlobsTogether(shared: SharedSnapshotDatabase, seconds: number): Promise<void> {
+	const table = shared.journal.snapshotBlobs.table;
+	await shared.database.run(`UPDATE ${table} SET created_at = (SELECT MIN(created_at) FROM ${table}) - ?`, seconds);
 }
 
 async function queryPlan(shared: SharedSnapshotDatabase, statement: CountedStatement): Promise<string[]> {

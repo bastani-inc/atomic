@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -77,9 +78,12 @@ describeExternalEditor("openExternalEditorForText", () => {
 describe("cleanupStaleClipboardFiles", () => {
 	it("removes only stale atomic clipboard files", async () => {
 		const now = Date.now();
-		const oldFile = path.join(os.tmpdir(), "atomic-clipboard-old-test.png");
-		const freshFile = path.join(os.tmpdir(), "atomic-clipboard-fresh-test.png");
-		const oldDir = path.join(os.tmpdir(), "atomic-clipboard-old-test-dir");
+		// Names of this run's own: another checkout's suite running at the same time shares the temp directory, and its
+		// cleanup of fixed names would remove this run's files.
+		const run = randomUUID();
+		const oldFile = path.join(os.tmpdir(), `atomic-clipboard-old-test-${run}.png`);
+		const freshFile = path.join(os.tmpdir(), `atomic-clipboard-fresh-test-${run}.png`);
+		const oldDir = path.join(os.tmpdir(), `atomic-clipboard-old-test-dir-${run}`);
 		createdPaths.push(oldFile, freshFile, oldDir);
 
 		fs.writeFileSync(oldFile, "old");

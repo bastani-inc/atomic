@@ -10,6 +10,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -44,6 +45,25 @@ const GONE_START = "abcdefabcdef";
 const MISSING_PID = 2 ** 22 + 7;
 const UNSTARTED_LIMIT_MS = 60_000;
 const POWERSHELL_READS_TIMEOUT_MS = 60_000;
+/** How long a test waits for a marker published off the event loop: a file write, which a loaded machine delays. */
+const MARKER_PUBLISHED_TIMEOUT_MS = 15_000;
+const NATIVE_MODULE_PATH = createRequire(import.meta.url).resolve("@bastani/atomic-natives");
+
+/**
+ * Has the fallback's bounded query answered by a Node child that reads the start with the native module, instead of by
+ * PowerShell. On a loaded machine PowerShell alone can take longer to start than the query's bound, which leaves that
+ * read without a start; the tests that use this check what callers do with a start the fallback reads, and
+ * process-start-token.test.ts checks PowerShell's reads.
+ */
+function answerStartQueriesQuickly(): void {
+	setProcessCreationTimeQueryForTesting({
+		file: process.execPath,
+		args: (pid) => [
+			"-e",
+			`const created = require(${JSON.stringify(NATIVE_MODULE_PATH)}).processCreationTime(${pid}); if (created) process.stdout.write(created);`,
+		],
+	});
+}
 
 let agentDir: string;
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -136,6 +156,7 @@ describe("callers reading starts without the native module (#5315)", () => {
 			const own = processStartToken(process.pid);
 			const later = await runningProcess();
 			setNativeProcessCreationTimeForTesting(null);
+			answerStartQueriesQuickly();
 			const sessionId = "11111111-1111-4111-8111-111111111111";
 			const path = join(agentDir, "session-claims", `${sessionId}.json`);
 			mkdirSync(join(agentDir, "session-claims"), { recursive: true });
@@ -157,6 +178,7 @@ describe("callers reading starts without the native module (#5315)", () => {
 			const own = processStartToken(process.pid);
 			const holder = await runningProcess();
 			setNativeProcessCreationTimeForTesting(null);
+			answerStartQueriesQuickly();
 			const sessionId = "22222222-2222-4222-8222-222222222222";
 			const markers = join(agentDir, "open-sessions", sessionId);
 			const marker = (nonce: string, start: string | undefined) => {
@@ -176,11 +198,14 @@ describe("callers reading starts without the native module (#5315)", () => {
 			await prepareSessionOpenMarkers();
 			cleanups.push(holdSessionOpenMarker(ownSession, { agentDir }));
 			// The marker is published off the event loop once the hold is taken.
-			const name = await vi.waitFor(() => {
-				const names = readdirSync(join(agentDir, "open-sessions", ownSession));
-				assert.equal(names.length, 1);
-				return names[0];
-			});
+			const name = await vi.waitFor(
+				() => {
+					const names = readdirSync(join(agentDir, "open-sessions", ownSession));
+					assert.equal(names.length, 1);
+					return names[0];
+				},
+				{ timeout: MARKER_PUBLISHED_TIMEOUT_MS },
+			);
 			assert.match(name ?? "", new RegExp(`^${process.pid}-[0-9a-f]{16}-${own}\\.json$`));
 		},
 		POWERSHELL_READS_TIMEOUT_MS,
@@ -199,8 +224,9 @@ describe("callers reading starts without the native module (#5315)", () => {
 
 			const release = freshMarkers.holdSessionOpenMarker(sessionId, { agentDir });
 			// Named when the hold is taken and published off the event loop, still before the start is read.
-			await vi.waitFor(() =>
-				assert.match(readdirSync(markers)[0] ?? "", new RegExp(`^${process.pid}-[0-9a-f]{16}\\.json$`)),
+			await vi.waitFor(
+				() => assert.match(readdirSync(markers)[0] ?? "", new RegExp(`^${process.pid}-[0-9a-f]{16}\\.json$`)),
+				{ timeout: MARKER_PUBLISHED_TIMEOUT_MS },
 			);
 			await freshMarkers.prepareSessionOpenMarkers();
 			await release();
@@ -216,6 +242,7 @@ describe("callers reading starts without the native module (#5315)", () => {
 			const own = processStartToken(process.pid);
 			const holder = await runningProcess();
 			setNativeProcessCreationTimeForTesting(null);
+			answerStartQueriesQuickly();
 			assert.equal(
 				await holderRuns({ host: HOST, pid: holder.pid, start: GONE_START }, 0, UNSTARTED_LIMIT_MS),
 				false,
@@ -242,6 +269,7 @@ describe("callers reading starts without the native module (#5315)", () => {
 				JSON.stringify({ host: hostname(), pid: later.pid, started: GONE_START, lock: lockHolder(lockPath) }),
 			);
 			setNativeProcessCreationTimeForTesting(null);
+			answerStartQueriesQuickly();
 
 			const manager = SettingsManager.fromStorage(new FileSettingsStorage(agentDir, agentDir));
 			manager.setTheme("dark");
@@ -265,6 +293,7 @@ describe("callers reading starts without the native module (#5315)", () => {
 				}),
 			);
 			setNativeProcessCreationTimeForTesting(null);
+			answerStartQueriesQuickly();
 
 			const projectManager = SettingsManager.fromStorage(new FileSettingsStorage(projectDir, agentDir));
 			projectManager.setProjectPackages(["npm:example"]);
@@ -304,6 +333,7 @@ describe("callers reading starts without the native module (#5315)", () => {
 				}
 			}
 			setNativeProcessCreationTimeForTesting(null);
+			answerStartQueriesQuickly();
 
 			const manager = SettingsManager.fromStorage(new InspectingSettingsStorage(agentDir, agentDir));
 			manager.setTheme("dark");
@@ -364,6 +394,7 @@ describe("callers reading starts without the native module (#5315)", () => {
 			}
 			setNativeLocksForTesting(null);
 			setNativeProcessCreationTimeForTesting(null);
+			answerStartQueriesQuickly();
 
 			const manager = SettingsManager.fromStorage(new InspectingMutexStorage(agentDir, agentDir));
 			manager.setTheme("dark");
@@ -387,6 +418,7 @@ describe("callers reading starts without the native module (#5315)", () => {
 				JSON.stringify({ id: "dead-claim-mutex", host: hostname(), pid: laterClaimMutex.pid, started: GONE_START }),
 			);
 			setNativeProcessCreationTimeForTesting(null);
+			answerStartQueriesQuickly();
 
 			await prepareSessionClaim(sessionId, { agentDir });
 			cleanups.push(claimSession(sessionId, { agentDir }));
