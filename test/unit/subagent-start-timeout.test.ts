@@ -9,8 +9,10 @@ import assert from "node:assert/strict";
 import { AsyncLocalStorage, createHook, executionAsyncId } from "node:async_hooks";
 import { pbkdf2, pbkdf2Sync } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MessagePort } from "node:worker_threads";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
@@ -62,17 +64,18 @@ const REAL_CHILD_SESSION_TIMEOUT_MS = 90_000;
  */
 const SATURATED_TURN_MS = 20;
 /**
- * The loop turns a child's steps take one after another from its launch to its first provider request, which is what a
- * saturated thread multiplies: 713 turns before #4319 (one fs read per header byte, two writes for the initial model
- * and thinking level) and 135 steps after it on this fixture, at any load. Independent ancestor probes run together
- * (#5514), so directory depth adds requests but not steps; the bound leaves room for changes to the start but not for a
- * per-byte or per-entry regression.
+ * The loop turns a child's own work needs from its launch to its first provider request, which is what a saturated
+ * thread multiplies: its steps one after another and its requests over long-lived channels (see {@link SaturatedStart}).
+ * 713 turns before #4319 (one fs read per header byte, two writes for the initial model and thinking level); after it,
+ * 135 steps and no requests on this fixture, at any load. Independent ancestor probes run together (#5514), so directory
+ * depth adds file requests but not steps; the bound leaves room for changes to the start but not for a per-byte,
+ * per-entry or per-query regression.
  */
 const START_LOOP_TURN_BOUND = 200;
 /**
  * How many directories below the fixture's own a nested child starts. A start that walks its parent directories one
- * request at a time takes a step for each of them; one that checks them together takes the same steps at any depth.
- * Fewer extra steps than levels tells the two apart: walking them one at a time adds about ten steps a level.
+ * request at a time takes a turn of its own for each of them; one that checks them together takes the same turns at any
+ * depth. Fewer extra turns than levels tells the two apart: walking them one at a time adds about ten steps a level.
  */
 const NESTED_CWD_LEVELS = 12;
 /**
@@ -492,6 +495,45 @@ interface SaturatedStart {
 	readonly turns: number;
 	/** The loop turns its steps take one after another: see {@link stepsOf}. */
 	readonly steps: number;
+	/** The requests it sent over long-lived channels: see {@link requestsOf}. */
+	readonly requests: number;
+}
+
+/**
+ * The loop turns a start's own work needs at the least on a saturated thread: a turn for each of its steps, and one for
+ * each answer to a request it sent over a long-lived channel, which the steps cannot follow. However long a loaded host
+ * holds its work, this stays the same.
+ */
+function ownTurns(start: SaturatedStart): number {
+	return start.steps + start.requests;
+}
+
+/**
+ * Counts the requests work started in `launched` sends over long-lived channels: messages to another thread, such as
+ * those to the thread every SQLite connection runs on, and writes to a socket or pipe other than this process's own
+ * output. The answer to each arrives on the channel's handle, which was made before it and answers every request, so
+ * {@link stepsOf} cannot tell one answer waited for after another from answers waited for together; each is counted as
+ * a turn of its own. Returns the count so far and a restore for the channels.
+ */
+function requestsOf(launched: AsyncLocalStorage<true>): { readonly count: () => number; readonly restore: () => void } {
+	const post = MessagePort.prototype.postMessage;
+	const write = Socket.prototype.write;
+	let count = 0;
+	MessagePort.prototype.postMessage = function (this: MessagePort, ...args: Parameters<MessagePort["postMessage"]>) {
+		if (launched.getStore()) count++;
+		return post.apply(this, args);
+	};
+	Socket.prototype.write = function (this: Socket, ...args: Parameters<typeof write>) {
+		if (launched.getStore() && this !== process.stdout && this !== process.stderr) count++;
+		return write.apply(this, args);
+	} as typeof write;
+	return {
+		count: () => count,
+		restore: () => {
+			MessagePort.prototype.postMessage = post;
+			Socket.prototype.write = write;
+		},
+	};
 }
 
 /** Async resources whose callbacks run in the turn that queued them: promise reactions, ticks and microtasks. */
@@ -552,10 +594,11 @@ async function saturatedStart(
 	const load = hostLoad?.();
 	const launched = new AsyncLocalStorage<true>();
 	const steps = stepsOf(launched);
+	const requests = requestsOf(launched);
 	let firstRequest: SaturatedStart | undefined;
 	const startTurns = loop.turns();
 	fixture.onFirstRequest(() => {
-		firstRequest = { turns: loop.turns() - startTurns, steps: steps.current() };
+		firstRequest = { turns: loop.turns() - startTurns, steps: steps.current(), requests: requests.count() };
 	});
 	steps.enable();
 	try {
@@ -565,6 +608,7 @@ async function saturatedStart(
 		return firstRequest;
 	} finally {
 		steps.disable();
+		requests.restore();
 		loop.stop();
 		await load;
 	}
@@ -574,10 +618,10 @@ test(
 	"a child on a saturated main thread reaches its provider within a bounded number of loop turns (#4319)",
 	async () => {
 		const fixture = await startFixture();
-		const { steps, turns } = await saturatedStart(fixture, "start-saturated");
+		const start = await saturatedStart(fixture, "start-saturated");
 		assert.ok(
-			steps <= START_LOOP_TURN_BOUND,
-			`the start took ${steps} steps one after another, in ${turns} saturated loop turns`,
+			ownTurns(start) <= START_LOOP_TURN_BOUND,
+			`the start took ${start.steps} steps one after another and sent ${start.requests} requests over long-lived channels, in ${start.turns} saturated loop turns`,
 		);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
@@ -598,8 +642,8 @@ test(
 		);
 
 		assert.ok(
-			deep.steps - shallow.steps < NESTED_CWD_LEVELS,
-			`the start took ${shallow.steps} steps (${shallow.turns} loop turns) in ${fixture.cwd} and ${deep.steps} steps (${deep.turns} loop turns) ${NESTED_CWD_LEVELS} directories below it`,
+			ownTurns(deep) - ownTurns(shallow) < NESTED_CWD_LEVELS,
+			`the start took ${shallow.steps} steps and ${shallow.requests} requests (${shallow.turns} loop turns) in ${fixture.cwd} and ${deep.steps} steps and ${deep.requests} requests (${deep.turns} loop turns) ${NESTED_CWD_LEVELS} directories below it`,
 		);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
