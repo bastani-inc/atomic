@@ -3,7 +3,7 @@ import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as os from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import psFixtures from "./fixtures/ps-lstart.json" with { type: "json" };
@@ -17,8 +17,11 @@ vi.mock("node:fs/promises", async (original) => {
 	return {
 		...actual,
 		copyFile: vi.fn(actual.copyFile),
+		opendir: vi.fn(actual.opendir),
+		readdir: vi.fn(actual.readdir),
 		readFile: vi.fn(actual.readFile),
 		readlink: vi.fn(actual.readlink),
+		rm: vi.fn(actual.rm),
 	};
 });
 vi.mock("node:os", async (original) => {
@@ -248,7 +251,7 @@ test.skipIf(process.platform !== "linux")(
 	},
 );
 
-test("Windows boot and process start lookups preserve uncertainty and separate reused PIDs", async () => {
+test("Windows boot and PowerShell process start lookups preserve uncertainty and separate reused PIDs", async () => {
 	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
 	Object.defineProperty(process, "platform", { value: "win32" });
 	vi.spyOn(process, "kill").mockReturnValue(true);
@@ -282,6 +285,8 @@ test("Windows boot and process start lookups preserve uncertainty and separate r
 	});
 	try {
 		vi.resetModules();
+		// Without the native reader, start times come from PowerShell.
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(null);
 		const module = await import("../src/core/storage/session/released-history-files.js");
 		const directory = await module.releasedHistoryFiles(root).createDirectory();
 		assert.ok(!(directory instanceof Error));
@@ -422,6 +427,8 @@ test.each(
 );
 
 test.each(["darwin", "win32"])("%s boot identities keep files from an earlier boot out of the sweep", async (value) => {
+	// An agent directory of its own: the first owner's background sweep, legitimately in its own boot, finds nothing there.
+	const caseRoot = join(root, `earlier-boot-${value}`);
 	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
 	Object.defineProperty(process, "platform", { value });
 	let boot = value === "darwin" ? "{ sec = 1730000000, usec = 123456 }" : "123456789";
@@ -435,17 +442,17 @@ test.each(["darwin", "win32"])("%s boot identities keep files from an earlier bo
 	try {
 		vi.resetModules();
 		const first = await import("../src/core/storage/session/released-history-files.js");
-		const a = await first.releasedHistoryFiles(root).createDirectory();
+		const a = await first.releasedHistoryFiles(caseRoot).createDirectory();
 		assert.ok(!(a instanceof Error));
 		const stale = join(dirname(dirname(a.path)), "2147483647-1");
 		fs.mkdirSync(stale);
 		boot = value === "darwin" ? "{ sec = 1730000000, usec = 123457 }" : "123456780";
 		vi.resetModules();
 		const second = await import("../src/core/storage/session/released-history-files.js");
-		const b = await second.releasedHistoryFiles(root).createDirectory();
+		const b = await second.releasedHistoryFiles(caseRoot).createDirectory();
 		assert.ok(!(b instanceof Error));
 		assert.notEqual(dirname(dirname(a.path)), dirname(dirname(b.path)));
-		await second.sweepReleasedHistory(root);
+		await second.sweepReleasedHistory(caseRoot);
 		assert.ok(fs.existsSync(stale));
 		await a.remove();
 		await b.remove();
@@ -485,6 +492,8 @@ test.each([
 		}) as typeof childProcess.execFile);
 		try {
 			vi.resetModules();
+			// Without the native reader, Windows start times come from PowerShell too.
+			(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(null);
 			const module = await import("../src/core/storage/session/released-history-files.js");
 			const directory = await module.releasedHistoryFiles(root).createDirectory();
 			assert.ok(!(directory instanceof Error));
@@ -498,3 +507,215 @@ test.each([
 		}
 	},
 );
+
+test.each(["win32", "darwin"])(
+	"%s startup with no released history to sweep starts no boot or start-time lookup",
+	async (value) => {
+		const caseRoot = join(root, `nothing-to-sweep-${value}`);
+		const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+		Object.defineProperty(process, "platform", { value });
+		vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+			const callback = args.at(-1) as (error: unknown, stdout: string, stderr: string) => void;
+			const isBoot = args[0] === "sysctl" || (args[1] as string[]).at(-1)?.includes("Win32_OperatingSystem");
+			callback(
+				null,
+				isBoot ? (value === "darwin" ? "{ sec = 1730000000, usec = 123456 }" : "123456789") : "1000",
+				"",
+			);
+			return {} as childProcess.ChildProcess;
+		});
+		try {
+			vi.resetModules();
+			const tokens = await import("../src/core/process-start-token.js");
+			tokens.setNativeProcessCreationTimeForTesting(null);
+			const first = await import("../src/core/storage/session/released-history-files.js");
+			// No released-history directory at all: the default session stores never create one.
+			await first.sweepReleasedHistory(caseRoot);
+			assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 0, "nothing under the agent directory");
+			// A store released history and closed: this host's directory is left, empty.
+			const directory = await first.releasedHistoryFiles(caseRoot).createDirectory();
+			assert.ok(!(directory instanceof Error));
+			await directory.write(1, Buffer.from("released"));
+			await directory.remove();
+			const host = dirname(dirname(directory.path));
+			assert.deepEqual(fs.readdirSync(host), []);
+			vi.mocked(childProcess.execFile).mockClear();
+			vi.resetModules();
+			(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(null);
+			const next = await import("../src/core/storage/session/released-history-files.js");
+			await next.sweepReleasedHistory(caseRoot);
+			assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 0, "only an empty host directory");
+			// A directory a killed process left is still swept, after looking up the boot once.
+			const left = join(host, "2147483647-1000");
+			fs.mkdirSync(left);
+			vi.spyOn(process, "kill").mockImplementation(() => {
+				throw Object.assign(new Error("gone"), { code: "ESRCH" });
+			});
+			await next.sweepReleasedHistory(caseRoot);
+			assert.equal(fs.existsSync(left), false);
+			assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 1, "one boot lookup");
+		} finally {
+			Object.defineProperty(process, "platform", platform);
+		}
+	},
+);
+
+test("Windows sweeps read process start times from the native module, not PowerShell", async () => {
+	const caseRoot = join(root, "native-start-times");
+	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+	Object.defineProperty(process, "platform", { value: "win32" });
+	vi.spyOn(process, "kill").mockReturnValue(true);
+	vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+		const callback = args.at(-1) as (error: unknown, stdout: string, stderr: string) => void;
+		const isBoot = (args[1] as string[]).at(-1)?.includes("Win32_OperatingSystem");
+		callback(null, isBoot ? "123456789" : "1000", "");
+		return {} as childProcess.ChildProcess;
+	});
+	// Creation times as GetProcessTimes reports them; 403 cannot be read (gone or not queryable).
+	const created = new Map<number, string>([
+		[process.pid, "5000"],
+		[401, "1000"],
+		[402, "2000"],
+	]);
+	try {
+		vi.resetModules();
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(
+			(pid) => created.get(pid) ?? null,
+		);
+		const module = await import("../src/core/storage/session/released-history-files.js");
+		const directory = await module.releasedHistoryFiles(caseRoot).createDirectory();
+		assert.ok(!(directory instanceof Error));
+		assert.ok(directory.path.includes(`${process.pid}-5000-`), "this process's directory names its creation time");
+		const parent = dirname(dirname(directory.path));
+		for (const pid of [401, 402, 403]) fs.mkdirSync(join(parent, `${pid}-1000`));
+		await module.sweepReleasedHistory(caseRoot);
+		// 401 still runs, 402 is a later process given the same id, 403 cannot be told apart.
+		for (const pid of [401, 402, 403])
+			assert.equal(fs.existsSync(join(parent, `${pid}-1000`)), pid !== 402, `pid ${pid}`);
+		const queries = vi.mocked(childProcess.execFile).mock.calls.map(([, argv]) => (argv as string[]).at(-1) ?? "");
+		assert.deepEqual(
+			queries.map((query) => query.includes("Win32_OperatingSystem")),
+			[true],
+			"only the boot identity starts PowerShell",
+		);
+		await directory.remove();
+	} finally {
+		Object.defineProperty(process, "platform", platform);
+	}
+});
+
+test("the startup check reads a bounded part of a large shared released-history directory", async () => {
+	const caseRoot = join(root, "shared-released-history");
+	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+	Object.defineProperty(process, "platform", { value: "win32" });
+	vi.mocked(os.hostname).mockReturnValue("this-host");
+	vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+		const callback = args.at(-1) as (error: unknown, stdout: string, stderr: string) => void;
+		callback(null, "123456789", "");
+		return {} as childProcess.ChildProcess;
+	});
+	// Other machines' directories in an agent directory they share, and nothing of this host's.
+	for (let index = 0; index < 500; index++)
+		fs.mkdirSync(join(caseRoot, "released-history", `other-${index}-0`), { recursive: true });
+	const actual = await vi.importActual<typeof fsPromises>("node:fs/promises");
+	let entriesRead = 0;
+	vi.mocked(fsPromises.opendir).mockImplementation(async (...args: Parameters<typeof fsPromises.opendir>) => {
+		const directory = await actual.opendir(...args);
+		const read = directory.read.bind(directory) as () => Promise<fs.Dirent | null>;
+		Object.assign(directory, {
+			read: async () => {
+				entriesRead++;
+				return read();
+			},
+		});
+		return directory;
+	});
+	try {
+		vi.resetModules();
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(null);
+		const module = await import("../src/core/storage/session/released-history-files.js");
+		await module.sweepReleasedHistory(caseRoot);
+		assert.ok(entriesRead <= 33, `read ${entriesRead} entries`);
+		// Past the bound the sweep goes on as before: it looks up this boot and reads only this host's directory.
+		assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 1);
+	} finally {
+		Object.defineProperty(process, "platform", platform);
+	}
+});
+
+test("under Bun only an absent released-history directory skips the boot lookup", async () => {
+	const caseRoot = join(root, "bun-runtime");
+	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+	Object.defineProperty(process, "platform", { value: "win32" });
+	// Bun's Dir lists a whole directory on its first read, so the bounded listing is Node's alone.
+	Object.defineProperty(process.versions, "bun", { value: "1.4.5", configurable: true, enumerable: true });
+	vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+		const callback = args.at(-1) as (error: unknown, stdout: string, stderr: string) => void;
+		callback(null, "123456789", "");
+		return {} as childProcess.ChildProcess;
+	});
+	try {
+		vi.resetModules();
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(null);
+		const module = await import("../src/core/storage/session/released-history-files.js");
+		await module.sweepReleasedHistory(caseRoot);
+		assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 0, "no released-history directory");
+		fs.mkdirSync(join(caseRoot, "released-history"), { recursive: true });
+		await module.sweepReleasedHistory(caseRoot);
+		assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 1, "an existing one is swept as before");
+		assert.equal(vi.mocked(fsPromises.opendir).mock.calls.length, 0, "and never listed by the check");
+	} finally {
+		delete (process.versions as { bun?: string }).bun;
+		Object.defineProperty(process, "platform", platform);
+	}
+});
+
+test("a host directory another tool renamed to other letter case is still swept where names ignore case", async () => {
+	const caseRoot = join(root, "recased-host");
+	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+	Object.defineProperty(process, "platform", { value: "win32" });
+	vi.mocked(os.hostname).mockReturnValue("this-host");
+	vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+		const callback = args.at(-1) as (error: unknown, stdout: string, stderr: string) => void;
+		callback(null, "123456789", "");
+		return {} as childProcess.ChildProcess;
+	});
+	vi.spyOn(process, "kill").mockImplementation(() => {
+		throw Object.assign(new Error("gone"), { code: "ESRCH" });
+	});
+	try {
+		vi.resetModules();
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(() => "5000");
+		const first = await import("../src/core/storage/session/released-history-files.js");
+		const directory = await first.releasedHistoryFiles(caseRoot).createDirectory();
+		assert.ok(!(directory instanceof Error));
+		const host = dirname(dirname(directory.path));
+		fs.mkdirSync(join(host, "2147483647-1000"));
+		await directory.remove();
+		const recased = join(dirname(host), basename(host).toUpperCase());
+		fs.renameSync(host, recased);
+		// As on Windows and macOS: a path names a directory whatever the case of its letters.
+		const onDisk = (path: unknown): string => {
+			const text = String(path);
+			if (!text.startsWith(caseRoot)) return text;
+			let current = caseRoot;
+			for (const part of relative(caseRoot, text).split(sep).filter(Boolean)) {
+				const names = fs.existsSync(current) ? fs.readdirSync(current) : [];
+				current = join(current, names.find((name) => name.toLowerCase() === part.toLowerCase()) ?? part);
+			}
+			return current;
+		};
+		const actual = await vi.importActual<typeof fsPromises>("node:fs/promises");
+		vi.mocked(fsPromises.opendir).mockImplementation((path, options) => actual.opendir(onDisk(path), options));
+		vi.mocked(fsPromises.readdir).mockImplementation(((path: string, options: undefined) =>
+			actual.readdir(onDisk(path), options)) as typeof fsPromises.readdir);
+		vi.mocked(fsPromises.rm).mockImplementation((path, options) => actual.rm(onDisk(path), options));
+		vi.resetModules();
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(() => "5000");
+		const next = await import("../src/core/storage/session/released-history-files.js");
+		await next.sweepReleasedHistory(caseRoot);
+		assert.equal(fs.existsSync(join(recased, "2147483647-1000")), false, "the dead owner's directory is gone");
+	} finally {
+		Object.defineProperty(process, "platform", platform);
+	}
+});
