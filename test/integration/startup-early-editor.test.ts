@@ -15,6 +15,8 @@ const CLI_TIMEOUT_MS = 90_000;
 const SESSION_HEADER = "guard-model";
 /** Between the two parts of a paste: long enough for the session to become ready meanwhile on a fast machine. */
 const SPLIT_PASTE_GAP_MS = 1_000;
+/** Longer than the terminal waits before it reads a lone Esc as one locally (10 ms), shorter than Atomic's load. */
+const KEYS_APART_MS = 60;
 /** Longer than the terminal waits before it reads a lone Esc as one (10 ms locally, 100 ms over SSH). */
 const LONE_ESCAPE_GAP_MS = 300;
 /** Long enough for several of a 50 ms check's turns. */
@@ -237,6 +239,22 @@ for (const [host, trust] of [
 					CLI_TIMEOUT_MS,
 					"the typing in the early editor",
 				);
+			},
+			REAL_CLI_TEST_TIMEOUT_MS,
+		);
+
+		test(
+			"Esc typed apart from the next key stays Esc while Atomic loads, not that key with Alt",
+			async () => {
+				const program = startCli([trust]);
+				await program.waitForScreen((screen) => screen.includes("❯"), CLI_TIMEOUT_MS, "the prompt");
+				// While Atomic loads its modules it reads keys late: an Esc and the key typed after it arrive together.
+				program.write("/qu\x1b");
+				await sleep(KEYS_APART_MS);
+				program.write("it\r");
+				const exit = (await program.exited) as PtyExit;
+				assert.equal(exit.timedOut, false);
+				assert.equal(exit.exitCode, 0);
 			},
 			REAL_CLI_TEST_TIMEOUT_MS,
 		);
