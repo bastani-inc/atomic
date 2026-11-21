@@ -37,7 +37,6 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"TerminationCause",
 	"blockRangeAt",
 	"containProcessTree",
-	"containProcessTreeAllowingBreakaway",
 	"glob",
 	"grep",
 	"hasMatch",

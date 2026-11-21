@@ -47,32 +47,15 @@ impl ProcessTreeContainment {
 	}
 }
 
-/// Ends process `pid` and the processes it starts later with this process, and with `terminate`, in a job of its own.
 #[napi(js_name = "containProcessTree")]
 pub fn contain_process_tree(pid: u32) -> Option<ProcessTreeContainment> {
-	contain(pid, false)
-}
-
-/// As `containProcessTree`, but a process in the tree may still start a child outside it, which
-/// `CREATE_BREAKAWAY_FROM_JOB` asks for and which fails otherwise. Released, the job keeps allowing it.
-#[napi(js_name = "containProcessTreeAllowingBreakaway")]
-pub fn contain_process_tree_allowing_breakaway(pid: u32) -> Option<ProcessTreeContainment> {
-	contain(pid, true)
-}
-
-fn contain(pid: u32, allow_breakaway: bool) -> Option<ProcessTreeContainment> {
 	#[cfg(windows)]
 	{
 		use std::os::windows::io::{FromRawHandle, OwnedHandle};
 		use windows_sys::Win32::System::Threading::{
 			OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
 		};
-		let job = if allow_breakaway {
-			ContainmentJob::create_allowing_breakaway()
-		} else {
-			ContainmentJob::create()
-		}
-		.ok()?;
+		let job = ContainmentJob::create().ok()?;
 		let process = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
 		if process.is_null() {
 			return None;
@@ -83,7 +66,7 @@ fn contain(pid: u32, allow_breakaway: bool) -> Option<ProcessTreeContainment> {
 	}
 	#[cfg(not(windows))]
 	{
-		let _ = (pid, allow_breakaway);
+		let _ = pid;
 		None
 	}
 }

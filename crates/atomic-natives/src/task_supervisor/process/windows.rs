@@ -1,4 +1,4 @@
-//! Suspended Windows launch and kill-on-close job ownership. No breakaway flags, except in a job made to allow them.
+//! Suspended Windows launch and kill-on-close job ownership. No breakaway flags.
 use super::windows_pty::PseudoConsole;
 use super::*;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -12,10 +12,10 @@ use windows_sys::Win32::{
 	System::{
 		JobObjects::{
 			AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT,
-			JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-			JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-			JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-			QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+			JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+			JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+			JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+			TerminateJobObject,
 		},
 		Pipes::{CreatePipe, PeekNamedPipe},
 		Threading::{
@@ -29,23 +29,15 @@ use windows_sys::Win32::{
 	},
 };
 
-/// A job whose processes end when its last handle closes; the second field is the limits it keeps once released.
-pub(super) struct ContainmentJob(OwnedHandle, JOB_OBJECT_LIMIT);
+pub(super) struct ContainmentJob(OwnedHandle);
 impl ContainmentJob {
 	pub(super) fn create() -> io::Result<Self> {
-		Self::create_keeping(0)
-	}
-	/// A job that also lets a process in it start a child outside it, as `CREATE_BREAKAWAY_FROM_JOB` asks.
-	pub(super) fn create_allowing_breakaway() -> io::Result<Self> {
-		Self::create_keeping(JOB_OBJECT_LIMIT_BREAKAWAY_OK)
-	}
-	fn create_keeping(kept: JOB_OBJECT_LIMIT) -> io::Result<Self> {
 		let job = unsafe { CreateJobObjectW(null(), null()) };
 		if job.is_null() {
 			return Err(io::Error::last_os_error());
 		}
-		let job = Self(unsafe { OwnedHandle::from_raw_handle(job) }, kept);
-		job.limit(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | kept)?;
+		let job = Self(unsafe { OwnedHandle::from_raw_handle(job) });
+		job.limit(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)?;
 		Ok(job)
 	}
 	fn limit(&self, flags: JOB_OBJECT_LIMIT) -> io::Result<()> {
@@ -65,7 +57,7 @@ impl ContainmentJob {
 		Ok(())
 	}
 	pub(super) fn release(self) -> io::Result<()> {
-		self.limit(self.1)
+		self.limit(0)
 	}
 	pub(super) fn assign(&self, process: HANDLE) -> io::Result<()> {
 		if unsafe { AssignProcessToJobObject(raw(&self.0), process) } == 0 {
