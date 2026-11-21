@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MessagePort } from "node:worker_threads";
+import { BroadcastChannel, MessagePort } from "node:worker_threads";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
@@ -67,7 +67,7 @@ const SATURATED_TURN_MS = 20;
  * The loop turns a child's own work needs from its launch to its first provider request, which is what a saturated
  * thread multiplies: its steps one after another and its requests over long-lived channels (see {@link SaturatedStart}).
  * 713 turns before #4319 (one fs read per header byte, two writes for the initial model and thinking level); after it,
- * 135 steps and no requests on this fixture, at any load. Independent ancestor probes run together (#5514), so directory
+ * 135 to 149 steps, by platform and Node version, and no requests on this fixture, at any load. Independent ancestor probes run together (#5514), so directory
  * depth adds file requests but not steps; the bound leaves room for changes to the start but not for a per-byte,
  * per-entry or per-query regression.
  */
@@ -510,18 +510,23 @@ function ownTurns(start: SaturatedStart): number {
 
 /**
  * Counts the requests work started in `launched` sends over long-lived channels: messages to another thread, such as
- * those to the thread every SQLite connection runs on, and writes to a socket or pipe other than this process's own
- * output. The answer to each arrives on the channel's handle, which was made before it and answers every request, so
+ * those to the thread every SQLite connection runs on (a worker's messages go through its port), messages on a
+ * broadcast channel, and writes to a socket or pipe other than this process's own output. The answer to each arrives on the channel's handle, which was made before it and answers every request, so
  * {@link stepsOf} cannot tell one answer waited for after another from answers waited for together; each is counted as
  * a turn of its own. Returns the count so far and a restore for the channels.
  */
 function requestsOf(launched: AsyncLocalStorage<true>): { readonly count: () => number; readonly restore: () => void } {
 	const post = MessagePort.prototype.postMessage;
+	const broadcast = BroadcastChannel.prototype.postMessage;
 	const write = Socket.prototype.write;
 	let count = 0;
 	MessagePort.prototype.postMessage = function (this: MessagePort, ...args: Parameters<MessagePort["postMessage"]>) {
 		if (launched.getStore()) count++;
 		return post.apply(this, args);
+	};
+	BroadcastChannel.prototype.postMessage = function (this: BroadcastChannel, message: unknown) {
+		if (launched.getStore()) count++;
+		return broadcast.call(this, message);
 	};
 	Socket.prototype.write = function (this: Socket, ...args: Parameters<typeof write>) {
 		if (launched.getStore() && this !== process.stdout && this !== process.stderr) count++;
@@ -531,6 +536,7 @@ function requestsOf(launched: AsyncLocalStorage<true>): { readonly count: () => 
 		count: () => count,
 		restore: () => {
 			MessagePort.prototype.postMessage = post;
+			BroadcastChannel.prototype.postMessage = broadcast;
 			Socket.prototype.write = write;
 		},
 	};

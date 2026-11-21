@@ -250,6 +250,10 @@ function startRun(uses: string, options: RunOptions = {}): StartedRun {
  * Makes the budget of the run about to start run out once `started` exists, which the action writes as it starts,
  * rather than once {@link HANG_TIMEOUT_MS} has passed. The timer a run arms for what is left of that budget is the only
  * one longer than half of it; every other timer is armed as asked. Returns a restore for the timer functions.
+ *
+ * A test that uses it no longer sees how long the timer is armed for: "does not forgive a step that ran out of time"
+ * still runs a step against a real budget, which node actions and composite steps share through the same process
+ * runner.
  */
 function expireBudgetOnceStarted(started: string): () => void {
 	const realSetTimeout = globalThis.setTimeout;
