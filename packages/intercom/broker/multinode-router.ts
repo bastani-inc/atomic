@@ -85,6 +85,7 @@ import {
 	unrestoredReasonCode,
 } from "./restoring-recipients.js";
 import {
+	answerAs,
 	type BrokerConnectedSession,
 	deliveryTargetIdentity,
 	messageFrameFor,
@@ -512,10 +513,13 @@ type OwnerVerdict = "own" | "lost" | "unknown";
 interface SendOwnerChecks {
 	readonly sender?: OwnerCheck;
 	readonly target?: OwnerCheck;
+	/** #5607: the alias a local send reached its recipient through. */
+	readonly alias?: OwnerCheck;
 }
 interface SendOwnerVerdicts {
 	readonly sender: OwnerVerdict;
 	readonly target: OwnerVerdict;
+	readonly alias: OwnerVerdict;
 }
 
 /** #5607: the id a registration owns in the shared store. */
@@ -597,6 +601,19 @@ export function isPlainSend(request: {
 		request.expectedRecipientId === undefined &&
 		request.supervisorSend !== true
 	);
+}
+
+/**
+ * #5607: a reply only an ask to its sender's alias authorizes, while that alias is not confirmed its sender's now (its
+ * renewals went unanswered): refused as retryable, as a reply whose route may be unreachable is, never for good.
+ */
+const UNCERTAIN_ALIAS = "uncertain-alias";
+
+/** #5607: an id a session holds as an alias, by the token it owns it with, and whether it is confirmed its own now. */
+interface HeldAlias {
+	readonly id: string;
+	readonly token: string;
+	readonly confirmed: boolean;
 }
 
 /** #5607: the later of two marks. Both are this process's, so the monotonic clock orders them. */
@@ -1121,7 +1138,28 @@ export class MultiNodeRouter {
 		if (entry.fenced === true) return OwnerCheck.settled("lost");
 		if (entry.adoption !== undefined) return this.adoptionCheck(session, entry);
 		const owned = entry.owner;
-		if (owned === undefined || elapsedSince(owned.confirmed) < SESSION_ID_OWNER_SAFE_MS) return undefined;
+		return owned === undefined ? undefined : this.recheck(owned, () => this.checkOwner(session, entry, owned));
+	}
+
+	/**
+	 * #5607: as `ownerCheck`, for the id `session` holds as an alias: a lost alias is revoked alone, and the session keeps
+	 * its own id. Undefined when it holds none, or confirmed it within `SESSION_ID_OWNER_SAFE_MS`.
+	 */
+	private aliasCheck(session: BrokerConnectedSession): OwnerCheck | undefined {
+		const entry = this.presence.get(session);
+		const alias = entry?.alias;
+		if (entry === undefined || alias === undefined) return undefined;
+		if (entry.fenced === true) return OwnerCheck.settled("lost");
+		return this.recheck(alias, () => this.checkAlias(session, entry, alias));
+	}
+
+	/**
+	 * #5607: the check routing for `owned` waits for: undefined while it was confirmed within `SESSION_ID_OWNER_SAFE_MS`,
+	 * otherwise the one `check` in flight (a new one once the last went unanswered for a renewal interval), or `unknown`
+	 * while two the store has not answered are in flight.
+	 */
+	private recheck(owned: OwnedSessionId, check: () => Promise<OwnerVerdict>): OwnerCheck | undefined {
+		if (elapsedSince(owned.confirmed) < SESSION_ID_OWNER_SAFE_MS) return undefined;
 		// A check still unanswered after a renewal interval is followed by a new one, should the store answer anything else
 		// meanwhile; either may act on a lost id.
 		const inFlight = (owned.inFlight ??= []);
@@ -1131,7 +1169,7 @@ export class MultiNodeRouter {
 			this.mayWrite(inFlight);
 		if ((owned.checking === undefined && inFlight.length < 2) || followed) {
 			owned.checkingSince = clockMark();
-			const written = this.tracked(inFlight, () => this.checkOwner(session, entry, owned));
+			const written = this.tracked(inFlight, check);
 			const checking = new OwnerCheck(written);
 			owned.checking = checking;
 			void written.finally(() => {
@@ -1140,6 +1178,30 @@ export class MultiNodeRouter {
 		}
 		// Two checks in flight that the store has not answered: nothing is known until it does.
 		return owned.checking ?? OwnerCheck.settled("unknown");
+	}
+
+	/** #5607: renew the alias `session` holds, conditionally on its token; `lost` once the store says it is not its own. */
+	private async checkAlias(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		alias: OwnedSessionId,
+	): Promise<OwnerVerdict> {
+		const owners = this.state.knownSessions.owners;
+		if (owners === undefined) return "unknown";
+		const confirmed = clockMark();
+		let renewed: KnownSessionOwnership[];
+		try {
+			renewed = await owners.renew([{ intercomSessionId: alias.intercomSessionId, token: alias.token }]);
+			this.storeAnswered();
+		} catch (error) {
+			this.report(error);
+			return "unknown";
+		}
+		if (this.presence.get(session) !== entry || entry.alias !== alias) return "unknown";
+		const key = ownershipKey(alias);
+		const still = renewed.some((ownership) => ownershipKey(ownership) === key);
+		this.settleAlias(session, entry, alias, still, confirmed);
+		return still ? "own" : "lost";
 	}
 
 	/**
@@ -1587,16 +1649,26 @@ export class MultiNodeRouter {
 	}
 
 	/**
-	 * #5607: the session here that holds `sessionId` as an alias, confirmed its own within `SESSION_ID_OWNER_SAFE_MS`,
-	 * for a plain send to that id. Undefined otherwise: such a send then takes the shared route.
+	 * #5607: the session here that holds `sessionId` as an alias, confirmed its own within `SESSION_ID_OWNER_SAFE_MS`:
+	 * what answers for the alias without a check, as a known-session record or a reply from it does. Undefined otherwise.
 	 */
 	aliasTarget(sessionId: string): BrokerConnectedSession | undefined {
+		const session = this.localAliasTarget(sessionId);
+		const alias = session === undefined ? undefined : this.presence.get(session)?.alias;
+		return alias !== undefined && elapsedSince(alias.confirmed) < SESSION_ID_OWNER_SAFE_MS ? session : undefined;
+	}
+
+	/**
+	 * #5607: the session here that holds `sessionId` as an alias, confirmed recently or not, for a plain send from a
+	 * session on this broker: as a send to its own id, that send waits for one check of the alias within the local
+	 * bound (`sendOwnerChecks`), is delivered here while the shared store does not answer it, and takes the shared
+	 * route once the store says the alias is no longer this session's.
+	 */
+	localAliasTarget(sessionId: string): BrokerConnectedSession | undefined {
 		const session = this.aliases.get(sessionId);
 		if (session === undefined) return undefined;
 		const entry = this.presence.get(session);
-		const alias = entry?.alias;
-		if (alias?.intercomSessionId !== sessionId || entry?.fenced === true) return undefined;
-		if (elapsedSince(alias.confirmed) >= SESSION_ID_OWNER_SAFE_MS) return undefined;
+		if (entry?.alias?.intercomSessionId !== sessionId || entry.fenced === true) return undefined;
 		return this.host.sessions.get(session.info.id) === session ? session : undefined;
 	}
 
@@ -1613,25 +1685,35 @@ export class MultiNodeRouter {
 	}
 
 	/**
-	 * #5607: the checks a send waits for: its sender's and its local recipient's ids, where either needs one. Undefined on
-	 * the healthy path.
+	 * #5607: the checks a send waits for: its sender's and its local recipient's ids, and the alias it was sent to when it
+	 * reached its local recipient through one, where any needs one. Undefined on the healthy path.
 	 */
 	private sendOwnerChecks(request: RemoteSendRequest): SendOwnerChecks | undefined {
 		const sender = this.ownerCheck(request.from);
-		const target = request.localTarget === undefined ? undefined : this.ownerCheck(request.localTarget);
-		if (sender === undefined && target === undefined) return undefined;
-		return { ...(sender === undefined ? {} : { sender }), ...(target === undefined ? {} : { target }) };
+		const local = request.localTarget;
+		const target = local === undefined ? undefined : this.ownerCheck(local);
+		const alias =
+			local !== undefined && request.target !== local.info.id && this.localAliasTarget(request.target) === local
+				? this.aliasCheck(local)
+				: undefined;
+		if (sender === undefined && target === undefined && alias === undefined) return undefined;
+		return {
+			...(sender === undefined ? {} : { sender }),
+			...(target === undefined ? {} : { target }),
+			...(alias === undefined ? {} : { alias }),
+		};
 	}
 
 	/** #5607: what a send's checks found within `boundMs`; one not answered by then is `unknown`. */
 	private async sendVerdicts(checks: SendOwnerChecks, boundMs: number): Promise<SendOwnerVerdicts> {
 		const own: OwnerVerdict = "own";
 		const unknown: OwnerVerdict = "unknown";
-		const [sender, target] = await Promise.all([
+		const [sender, target, alias] = await Promise.all([
 			checks.sender?.within(boundMs, unknown) ?? own,
 			checks.target?.within(boundMs, unknown) ?? own,
+			checks.alias?.within(boundMs, unknown) ?? own,
 		]);
-		return { sender, target };
+		return { sender, target, alias };
 	}
 
 	private holdsSessionId(sessionId: string, returnAddress: string | undefined): Promise<boolean> {
@@ -2739,9 +2821,30 @@ export class MultiNodeRouter {
 		} catch (error) {
 			this.report(error);
 			// Local delivery does not depend on the shared database (spec §8).
-			if (request.localTarget !== undefined) return request.notFound();
+			if (request.localTarget !== undefined) return this.deliverLocally(request, request.localTarget);
 			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
 		}
+	}
+
+	/**
+	 * A send to a session here that the shared database failed for is delivered locally. #5607: a reply that this
+	 * broker's own routes say answers an ask to its sender's alias goes out as from that alias while the alias is
+	 * confirmed its own, and is refused as retryable while it is not: the database that could confirm it failed.
+	 */
+	private deliverLocally(request: RemoteSendRequest, target: BrokerConnectedSession): void {
+		const replyTo = request.message.replyTo;
+		const alias = this.replyAlias(request);
+		const pending = this.host.pendingQuestions;
+		if (
+			replyTo === undefined ||
+			alias === undefined ||
+			pending.matchesReply(request.from.info.id, target.info.id, replyTo) ||
+			!pending.matchesReply(alias.id, target.info.id, replyTo)
+		)
+			return request.notFound();
+		const sending = this.answeringAsHeld(request, alias);
+		if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+		(sending ?? request).notFound();
 	}
 
 	/**
@@ -2917,7 +3020,14 @@ export class MultiNodeRouter {
 		return true;
 	}
 
-	private async adoptSharedRouteWithin(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
+	/**
+	 * The send to deliver locally: `request`, or (#5607) `request` answering as its sender's alias; `UNCERTAIN_ALIAS`
+	 * when only an ask to an alias whose ownership is not confirmed now would authorize it.
+	 */
+	private async adoptSharedRouteWithin(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+	): Promise<RemoteSendRequest | typeof UNCERTAIN_ALIAS> {
 		const late = { abandoned: false };
 		const adopted = this.adoptSharedRoute(request, target, late);
 		// A reply that must answer an open ask can only be authorized by the shared state when this broker's routes do not
@@ -2929,34 +3039,110 @@ export class MultiNodeRouter {
 			bound.unref?.();
 		});
 		try {
-			if ((await Promise.race([adopted, expired])) === "expired") {
-				// The send takes the local path now: a route found later is left where it is, for a retry to find.
-				late.abandoned = true;
-				adopted.catch((error: Error) => this.report(error));
-			}
+			const settled = await Promise.race([adopted, expired]);
+			if (settled !== "expired") return settled;
+			// The send takes the local path now: a route found later is left where it is, for a retry to find.
+			late.abandoned = true;
+			adopted.catch((error: Error) => this.report(error));
 		} catch (error) {
 			this.report(error);
 		} finally {
 			clearTimeout(bound);
 		}
+		return request;
 	}
 
 	private async adoptSharedRoute(
 		request: RemoteSendRequest,
 		target: BrokerConnectedSession,
 		late: { readonly abandoned: boolean },
-	): Promise<void> {
+	): Promise<RemoteSendRequest | typeof UNCERTAIN_ALIAS> {
 		const replyTo = request.message.replyTo;
-		const replySenderSessionId = request.from.info.id;
-		if (replyTo === undefined) return;
-		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
+		if (replyTo === undefined) return request;
+		// #5607: an ask to the id its sender holds as an alias, received under that id, is answered as that id.
+		const alias = this.replyAlias(request);
+		const repliers = alias === undefined ? [request.from.info.id] : [request.from.info.id, alias.id];
+		const answering = (replier: string) =>
+			replier === request.from.info.id || late.abandoned || alias === undefined
+				? request
+				: (this.answeringAsHeld(request, alias) ?? request);
+		const routedHere = () =>
+			repliers.find((replier) => this.host.pendingQuestions.matchesReply(replier, target.info.id, replyTo));
+		const here = routedHere();
+		if (here !== undefined && alias !== undefined && here === alias.id) await this.confirmAlias(request, alias);
+		if (here !== undefined) return answering(here);
 		// An ask whose route is still moving there from this broker is in the shared state once that move is done.
 		await Promise.all([...this.settling]);
-		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
-		const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
-		if ((await this.state.pendingAsks.matchesReply(route)).status !== "match" || late.abandoned) return;
-		this.host.pendingQuestions.record(target.info.id, replySenderSessionId, replyTo);
-		await this.settleSharedRoute({ senderSessionId: target.info.id, targetSessionId: replySenderSessionId, messageId: replyTo });
+		const moved = routedHere();
+		if (moved !== undefined && alias !== undefined && moved === alias.id) await this.confirmAlias(request, alias);
+		if (moved !== undefined) return answering(moved);
+		for (const replySenderSessionId of repliers) {
+			const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
+			if ((await this.state.pendingAsks.matchesReply(route)).status !== "match") continue;
+			if (alias !== undefined && replySenderSessionId === alias.id) await this.confirmAlias(request, alias);
+			if (late.abandoned) return request;
+			const sending = answering(replySenderSessionId);
+			// Its alias lost meanwhile authorizes nothing; one held unconfirmed leaves the shared route where it is.
+			if (sending === UNCERTAIN_ALIAS || (sending === request && replySenderSessionId !== request.from.info.id))
+				return sending;
+			this.host.pendingQuestions.record(target.info.id, replySenderSessionId, replyTo);
+			await this.settleSharedRoute({
+				senderSessionId: target.info.id,
+				targetSessionId: replySenderSessionId,
+				messageId: replyTo,
+			});
+			return sending;
+		}
+		return request;
+	}
+
+	/**
+	 * #5607: the id `request`'s sender holds as an alias, for a reply that may answer an ask that id received (the
+	 * session's earlier id, before it moved back to its own), and whether it is confirmed its own now, as `aliasTarget`
+	 * requires. Undefined for any other send, and for a sender holding no alias: nothing else is looked up for those.
+	 */
+	private replyAlias(request: RemoteSendRequest): HeldAlias | undefined {
+		if (!isReleasedReplyCandidate(request)) return undefined;
+		const session = this.host.sessions.get(request.from.info.id);
+		const entry = session === undefined ? undefined : this.presence.get(session);
+		const alias = entry?.alias;
+		if (alias === undefined || entry?.fenced === true) return undefined;
+		const id = alias.intercomSessionId;
+		return { id, token: alias.token, confirmed: this.aliasTarget(id) === session };
+	}
+
+	/**
+	 * #5607: an alias held but not confirmed recently is checked once, as a send to it is (`aliasCheck`), within the
+	 * claim's bound, before a reply goes out as from it: it is then confirmed, revoked, or still unknown.
+	 */
+	private async confirmAlias(request: RemoteSendRequest, alias: HeldAlias): Promise<void> {
+		if (alias.confirmed) return;
+		const session = this.host.sessions.get(request.from.info.id);
+		await (session === undefined ? undefined : this.aliasCheck(session))?.within(SESSION_ID_CLAIM_BOUND_MS, "unknown");
+	}
+
+	/**
+	 * #5607: `request` as from `alias`, an ask to which authorizes it, decided now, after the lookups that found that ask:
+	 * only while its sender still holds that same alias (by its token), confirmed its own now. `UNCERTAIN_ALIAS` while it
+	 * holds it unconfirmed; undefined once it lost it.
+	 */
+	private answeringAsHeld(
+		request: RemoteSendRequest,
+		alias: HeldAlias,
+	): RemoteSendRequest | typeof UNCERTAIN_ALIAS | undefined {
+		const now = this.replyAlias(request);
+		if (now === undefined || now.id !== alias.id || now.token !== alias.token) return undefined;
+		return now.confirmed ? this.answeringAs(request, now.id) : UNCERTAIN_ALIAS;
+	}
+
+	/**
+	 * #5607: `request`, a reply only the route of an ask to its sender's alias `alias` authorizes, goes out as from that
+	 * id, the one its asker asked: its shared route and its local delivery alike. Its sender's other sends do not.
+	 */
+	private answeringAs(request: RemoteSendRequest, alias: string): RemoteSendRequest {
+		const from = { ...request.from, info: { ...request.from.info, id: alias } };
+		answerAs(request.clientMessage, from);
+		return { ...request, from };
 	}
 
 	/**
@@ -3208,10 +3394,10 @@ export class MultiNodeRouter {
 			// never depends on the shared database (spec §8); the check keeps running, and acts on a lost id when it answers.
 			if (verdicts !== undefined) {
 				const found = await verdicts;
-				if (found.sender === "lost" || found.target === "lost") {
+				if (found.sender === "lost" || found.target === "lost" || found.alias === "lost") {
 					lookup.catch((error: Error) => this.report(error));
-					// A sender disconnected here has nothing to be answered; a recipient disconnected here is looked for
-					// wherever its id lives now.
+					// A sender disconnected here has nothing to be answered; a recipient disconnected here, or an alias it
+					// no longer holds, is looked for wherever that id lives now.
 					if (found.sender !== "lost") request.notFound();
 					return;
 				}
@@ -3219,11 +3405,12 @@ export class MultiNodeRouter {
 			const existing = await Promise.race([lookup, expired]);
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
-				await this.adoptSharedRouteWithin(request, target);
+				const sending = await this.adoptSharedRouteWithin(request, target);
+				if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
 				// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
 				// the local path's final refusal just because the outbox lookup was slow.
-				if (await this.routeUnreachable(request, target)) return;
-				request.notFound();
+				if (await this.routeUnreachable(sending, target)) return;
+				sending.notFound();
 				return;
 			}
 			if (existing.status === "found") {
@@ -3234,9 +3421,10 @@ export class MultiNodeRouter {
 			}
 			const moved = await Promise.race([released, expired]);
 			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
-			await this.adoptSharedRouteWithin(request, target);
-			if (await this.routeUnreachable(request, target)) return;
-			request.notFound();
+			const sending = await this.adoptSharedRouteWithin(request, target);
+			if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+			if (await this.routeUnreachable(sending, target)) return;
+			sending.notFound();
 		} finally {
 			clearTimeout(bound);
 		}
@@ -3260,14 +3448,16 @@ export class MultiNodeRouter {
 		const replyTo = request.message.replyTo;
 		if (replyTo === undefined) return authorized;
 		const replySenderSessionId = request.from.info.id;
+		// #5607: or an open ask to the id its sender holds as an alias, which its reply answers as that id.
+		const alias = this.replyAlias(request);
+		const answers = async (replier: string, sessionId: string) => {
+			const route = { replySenderSessionId: replier, replyTargetSessionId: sessionId, replyTo };
+			return (await this.state.pendingAsks.matchesReply(route)).status === "match";
+		};
 		for (const sessionId of new Set(sessionIds)) {
 			if (this.host.supervisorCache.matchReply(replyTo, replySenderSessionId, sessionId)) authorized.add(sessionId);
-			else if (
-				(await this.state.pendingAsks.matchesReply({ replySenderSessionId, replyTargetSessionId: sessionId, replyTo }))
-					.status === "match"
-			) {
-				authorized.add(sessionId);
-			}
+			else if (await answers(replySenderSessionId, sessionId)) authorized.add(sessionId);
+			else if (alias !== undefined && (await answers(alias.id, sessionId))) authorized.add(sessionId);
 		}
 		return authorized;
 	}
@@ -3347,7 +3537,7 @@ export class MultiNodeRouter {
 
 	/** Run the origin's routing decisions on the shared state, then enqueue the exact local frame. */
 	private async deliverThroughOutbox(request: RemoteSendRequest, target: RemoteTarget): Promise<void> {
-		const { message, from } = request;
+		const { message } = request;
 		if (!isAgentRecipient(target.gates)) {
 			this.fail(request, NON_AGENT_RECIPIENT_REFUSAL);
 			return;
@@ -3363,15 +3553,20 @@ export class MultiNodeRouter {
 			return;
 		}
 		if (this.answerLocalDelivery(request, target)) return;
-		const correlatedReply =
-			message.replyTo !== undefined &&
-			(
-				await this.state.pendingAsks.matchesReply({
-					replySenderSessionId: from.info.id,
-					replyTargetSessionId: target.sessionId,
-					replyTo: message.replyTo,
-				})
-			).status === "match";
+		const answering = await this.correlatedReply(request, target.sessionId);
+		if (answering === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+		// #5607: a reply to an ask its sender's alias received goes out as from that alias.
+		await this.enqueueThroughOutbox(answering ?? request, target, digest, answering !== undefined);
+	}
+
+	/** `request`, checked by `deliverThroughOutbox`, written to the shared outbox; `correlatedReply`: an open ask's reply. */
+	private async enqueueThroughOutbox(
+		request: RemoteSendRequest,
+		target: RemoteTarget,
+		digest: string,
+		correlatedReply: boolean,
+	): Promise<void> {
+		const { message, from } = request;
 		if (request.requirePendingReply && !correlatedReply) {
 			await this.refuseUnauthorizedReply(request, { sessionId: target.sessionId, identity: target.identity });
 			return;
@@ -3445,6 +3640,27 @@ export class MultiNodeRouter {
 			});
 		}
 		await this.answerExistingRow(request, target, digest, enqueued.row);
+	}
+
+	/**
+	 * The send that answers an open ask of `asker` with `request`'s reply: `request` itself when the ask's route is to its
+	 * sender's id; #5607: `request` as from its sender's alias when the ask's route is to that alias, or `UNCERTAIN_ALIAS`
+	 * while that alias is not confirmed its own now. Undefined when no open ask's route authorizes it.
+	 */
+	private async correlatedReply(
+		request: RemoteSendRequest,
+		asker: string,
+	): Promise<RemoteSendRequest | typeof UNCERTAIN_ALIAS | undefined> {
+		const replyTo = request.message.replyTo;
+		if (replyTo === undefined) return undefined;
+		const answers = async (replySenderSessionId: string) =>
+			(await this.state.pendingAsks.matchesReply({ replySenderSessionId, replyTargetSessionId: asker, replyTo }))
+				.status === "match";
+		if (await answers(request.from.info.id)) return request;
+		const alias = this.replyAlias(request);
+		if (alias === undefined || !(await answers(alias.id))) return undefined;
+		await this.confirmAlias(request, alias);
+		return this.answeringAsHeld(request, alias);
 	}
 
 	/**

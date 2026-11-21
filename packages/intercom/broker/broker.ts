@@ -479,7 +479,7 @@ class IntercomBroker {
 
   constructor() {
     // #5607: with multi-node routing, a plain send to an id a session here holds as an alias reaches that session.
-    resolveSessionAliasesWith(this.sessions, (sessionId) => this.multiNode?.aliasTarget(sessionId));
+    resolveSessionAliasesWith(this.sessions, (sessionId) => this.multiNode?.localAliasTarget(sessionId));
     mkdirSync(INTERCOM_DIR, { recursive: true, mode: 0o700 });
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));

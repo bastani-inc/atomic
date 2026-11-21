@@ -56,6 +56,7 @@ const REGISTRATION_GATE = "registration-gate";
 const PRESENCE_READ_GATE = "presence-read-gate";
 const RESERVATION_GATE = "reservation-gate";
 const ID_CLAIM_STALL_GATE = "id-claim-stall-gate";
+const STORAGE_OUTAGE_GATE = "storage-outage-gate";
 
 export interface ReceivedFrame {
 	readonly from: SessionInfo;
@@ -137,6 +138,8 @@ export interface TwoBrokerHarnessOptions {
 	readonly parkablePresenceRead?: BrokerNode;
 	/** Every broker can stall while it claims an id back (`stallIdClaim`). */
 	readonly stallableIdClaims?: true;
+	/** These nodes' brokers can lose the shared storage while they keep running (`setStorageOutage`). */
+	readonly storageOutageNodes?: readonly BrokerNode[];
 	/** The nodes to run, each with its own broker over the one shared storage; default `BROKER_NODES`. */
 	readonly nodes?: readonly BrokerNode[];
 	/** Added to every broker's environment, as a shortened bound (`ATOMIC_INTERCOM_LOST_RECIPIENT_AFTER_MS`). */
@@ -167,6 +170,7 @@ function nodeSettings(
 	presenceReadGate?: string,
 	reservationGate?: string,
 	idClaimStallGate?: string,
+	outageGate?: string,
 ): string {
 	return JSON.stringify({
 		storage: {
@@ -179,6 +183,7 @@ function nodeSettings(
 				...(presenceReadGate === undefined ? {} : { presenceReadGate }),
 				...(reservationGate === undefined ? {} : { reservationGate }),
 				...(idClaimStallGate === undefined ? {} : { idClaimStallGate }),
+				...(outageGate === undefined ? {} : { outageGate }),
 			},
 			prefix: TWO_BROKER_STORAGE_PREFIX,
 		},
@@ -248,6 +253,10 @@ export class TwoBrokerHarness {
 			const presenceReadGate = options.parkablePresenceRead === node ? join(root, PRESENCE_READ_GATE) : undefined;
 			const reservationGate = options.parkableReservations === true ? join(root, RESERVATION_GATE) : undefined;
 			const idClaimStallGate = options.stallableIdClaims === true ? join(root, ID_CLAIM_STALL_GATE) : undefined;
+			const outageGate =
+				options.storageOutageNodes?.includes(node) === true
+					? join(root, `${STORAGE_OUTAGE_GATE}-${node}`)
+					: undefined;
 			writeFileSync(
 				join(agentDir, "settings.json"),
 				nodeSettings(
@@ -258,6 +267,7 @@ export class TwoBrokerHarness {
 					presenceReadGate,
 					reservationGate,
 					idClaimStallGate,
+					outageGate,
 				),
 			);
 			nodes[node] = {
@@ -401,6 +411,16 @@ export class TwoBrokerHarness {
 			join(this.root, ID_CLAIM_STALL_GATE),
 			JSON.stringify({ returnAddress, stallMs, overdueCallbackMs, writeDelayMs, slowWrite }),
 		);
+	}
+
+	/**
+	 * While `down`, every shared-storage statement of `node`'s broker fails, as one to an unreachable database does; the
+	 * broker keeps running, and the other brokers keep their storage (`storageOutageNodes`).
+	 */
+	setStorageOutage(node: BrokerNode, down: boolean): void {
+		const gate = join(this.root, `${STORAGE_OUTAGE_GATE}-${node}`);
+		if (down) writeFileSync(gate, node);
+		else rmSync(gate, { force: true });
 	}
 
 	/** Whether a broker has stalled on the claim `stallIdClaim` set up for `returnAddress`. */

@@ -38,6 +38,7 @@ import {
 	type BrokerConnectedSession,
 	deliveryTargetIdentity,
 	type RemoteSendRequest,
+	senderAtReceipt,
 } from "../../packages/intercom/broker/send-handler.js";
 import type { BrokerOutboundFrame } from "../../packages/intercom/broker/socket-writes.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
@@ -131,6 +132,8 @@ interface Node {
 	readonly fenced: BrokerConnectedSession[];
 	/** #5607: the hand-overs given to sessions moved back to the id they awaited. */
 	readonly handoffs: { readonly sessionId: string; readonly handoff: string }[];
+	/** This broker's own ask routes. */
+	readonly pendingQuestions: PendingQuestionIndex;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -293,6 +296,7 @@ async function startNode(
 	const dispatched: string[] = [];
 	const fenced: BrokerConnectedSession[] = [];
 	const handoffs: { readonly sessionId: string; readonly handoff: string }[] = [];
+	const pendingQuestions = new PendingQuestionIndex();
 	const router: MultiNodeRouter = await MultiNodeRouter.start({
 		...options.process,
 		state,
@@ -308,7 +312,7 @@ async function startNode(
 				onSettled(true);
 			},
 			supervisorCache: new SupervisorChannelCache(),
-			pendingQuestions: new PendingQuestionIndex(),
+			pendingQuestions,
 			deliveredMessages: { lookupForTarget: () => "miss", lookupQuestionTarget: () => undefined },
 			dispatch: (_socket, clientMessage) => {
 				dispatched.push((clientMessage as unknown as HeldSendRequest).message.id);
@@ -326,7 +330,7 @@ async function startNode(
 	});
 	cleanups.push(() => router.close());
 	await flush();
-	return { router, sessions, state, published, spied, dispatched, fenced, handoffs };
+	return { router, sessions, state, published, spied, dispatched, fenced, handoffs, pendingQuestions };
 }
 
 function reserve(
@@ -2672,6 +2676,206 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		const taken = elsewhere.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
 		assert.equal((await taken).status, "held", "the id is the session's again, on one registration");
+	});
+
+	/**
+	 * A session that awaited its id while a stopped broker held it, asked twice under its fresh id by a session on a third
+	 * broker, and back under its id on `here` with the fresh one as its alias. `reply` sends its reply to one of those
+	 * asks, as the reply tool does; `outcomeOf` is the answer its sender gets.
+	 */
+	async function backWithAsksToItsFreshId() {
+		const { shared, here, live, fresh } = await awaitingWhileStopped();
+		const third = await startNode(shared);
+		const asker = session("asker");
+		await registeredOn(third, asker);
+		const asks = [randomUUID(), randomUUID()];
+		for (const messageId of asks)
+			await third.state.pendingAsks.record({
+				senderSessionId: asker.info.id,
+				targetSessionId: fresh.info.id,
+				messageId,
+			});
+		await untilMovedBack(here, fresh);
+		const claim = await here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			here.handoffs[0]!.handoff,
+		);
+		assert.ok(claim.status === "granted" && claim.grant.aliasToken !== undefined);
+		const back: BrokerConnectedSession = {
+			...fresh,
+			socket: fakeSocket(),
+			info: { ...fresh.info, id: live.info.id },
+		};
+		const again = registeredOn(here, back, claim.grant);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await again;
+		const reply = (replyTo: string) => {
+			const send = remoteSend(back, asker.info.id, false);
+			const message = { ...send.request.message, replyTo };
+			here.router.routeSend({
+				...send.request,
+				message,
+				clientMessage: { ...send.request.clientMessage, message },
+				requirePendingReply: true,
+				expectedRecipientId: asker.info.id,
+			});
+			return send.id;
+		};
+		const outcomeOf = (id: string) =>
+			framesOf(back).find(
+				(frame) => (frame.type === "delivered" || frame.type === "delivery_failed") && frame.messageId === id,
+			);
+		const answers = () =>
+			framesOf(asker).flatMap((frame) =>
+				frame.type === "message" ? [[frame.from.id, frame.message.id, frame.message.replyTo]] : [],
+			);
+		return { here, fresh, back, asks, aliasToken: claim.grant.aliasToken, reply, outcomeOf, answers };
+	}
+
+	test("a session back under its id answers an ask its fresh id received, as that id, and only that ask (#5607)", async () => {
+		const { here, fresh, asks, reply, outcomeOf, answers } = await backWithAsksToItsFreshId();
+		const answered = reply(asks[0]!);
+		const unasked = reply(randomUUID());
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			assert.deepEqual(answers(), [[fresh.info.id, answered, asks[0]]], "from the id its asker asked");
+			assert.equal(outcomeOf(unasked)?.type, "delivery_failed", "a reply to an ask it never got");
+		});
+
+		// The fresh id's renewals go unanswered past the safe window, and so does the one check a reply makes: whether it is
+		// still its own is not known, so a reply only an ask to that id would authorize is refused as retryable, not for
+		// good. Once the store answers, the same reply goes out.
+		const owners = here.state.knownSessions.owners!;
+		const renew = owners.renew.bind(owners);
+		const renewals = vi.spyOn(owners, "renew").mockImplementation(async (ownerships) => {
+			if (ownerships.some((ownership) => ownership.intercomSessionId === fresh.info.id))
+				throw new Error("the database does not answer");
+			return renew(ownerships);
+		});
+		await vi.advanceTimersByTimeAsync(SESSION_ID_OWNER_SAFE_MS + 1_000);
+		const uncertain = reply(asks[1]!);
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			const outcome = outcomeOf(uncertain);
+			assert.ok(outcome?.type === "delivery_failed" && outcome.routeUnavailable === true, JSON.stringify(outcome));
+		});
+		assert.equal(answers().length, 1, "nothing else reached the asker");
+		renewals.mockRestore();
+		const retried = reply(asks[1]!);
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			assert.deepEqual(answers()[1], [fresh.info.id, retried, asks[1]]);
+		});
+	});
+
+	test("a reply this broker's routes say answers an ask to the sender's alias goes out as the alias when the database fails at once, and is refused as retryable while the alias is unconfirmed (#5607)", async () => {
+		const { here, fresh, back } = await backWithAsksToItsFreshId();
+		const near = session("near");
+		await registeredOn(here, near);
+		const asks = [randomUUID(), randomUUID()];
+		for (const ask of asks) here.pendingQuestions.record(near.info.id, fresh.info.id, ask);
+		vi.spyOn(here.state.outbox, "read").mockRejectedValue(new Error("the database failed"));
+		const reply = (replyTo: string) => {
+			const send = localSend(back, near);
+			const message = { ...send.request.message, replyTo };
+			const clientMessage = { ...send.request.clientMessage, message };
+			const local = { as: [] as (string | undefined)[] };
+			here.router.routeSend({
+				...send.request,
+				message,
+				clientMessage,
+				requirePendingReply: true,
+				expectedRecipientId: near.info.id,
+				notFound: () => void local.as.push(senderAtReceipt(clientMessage)?.info.id),
+			});
+			return { id: message.id, local };
+		};
+		const confirmed = reply(asks[0]!);
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		assert.deepEqual(confirmed.local.as, [fresh.info.id], "delivered here, from the id its asker asked");
+
+		const owners = here.state.knownSessions.owners!;
+		const renew = owners.renew.bind(owners);
+		vi.spyOn(owners, "renew").mockImplementation(async (ownerships) => {
+			if (ownerships.some((ownership) => ownership.intercomSessionId === fresh.info.id))
+				throw new Error("the database does not answer");
+			return renew(ownerships);
+		});
+		await vi.advanceTimersByTimeAsync(SESSION_ID_OWNER_SAFE_MS + 1_000);
+		const unconfirmed = reply(asks[1]!);
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		assert.deepEqual(unconfirmed.local.as, [], "not delivered as the session's own id, nor as the alias");
+		const outcome = framesOf(back).find(
+			(frame) => frame.type === "delivery_failed" && frame.messageId === unconfirmed.id,
+		);
+		assert.ok(outcome?.type === "delivery_failed" && outcome.routeUnavailable === true, JSON.stringify(outcome));
+	});
+
+	test("a plain send from this broker to an alias is delivered here while the store does not answer its check, and looked for elsewhere once the store says the alias is another's (#5607)", async () => {
+		const { here, fresh, back, aliasToken } = await backWithAsksToItsFreshId();
+		const sender = session("sender");
+		await registeredOn(here, sender);
+		const toAlias = () => {
+			const send = localSend(sender, back);
+			const local = { answers: 0, aliased: [] as (BrokerConnectedSession | undefined)[] };
+			here.router.routeSend({
+				...send.request,
+				target: fresh.info.id,
+				clientMessage: { ...send.request.clientMessage, to: fresh.info.id },
+				notFound: () => {
+					local.answers++;
+					local.aliased.push(here.router.localAliasTarget(fresh.info.id));
+				},
+			});
+			return local;
+		};
+		const owners = here.state.knownSessions.owners!;
+		const renewals = vi.spyOn(owners, "renew").mockRejectedValue(new Error("the database does not answer"));
+		await vi.advanceTimersByTimeAsync(SESSION_ID_OWNER_SAFE_MS + 1_000);
+		assert.equal(here.router.aliasTarget(fresh.info.id), undefined, "not confirmed within the safe window");
+		assert.equal(here.router.localAliasTarget(fresh.info.id), back, "still the session's here");
+		const unknown = toAlias();
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		assert.deepEqual(unknown.aliased, [back], "delivered here: local delivery does not wait for the shared database");
+
+		// The store answers again, and says the alias is no longer this session's: it is revoked, and the send is looked
+		// for elsewhere.
+		renewals.mockRestore();
+		await owners.release({ intercomSessionId: fresh.info.id, token: aliasToken });
+		const lost = toAlias();
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		assert.deepEqual(lost.aliased, [undefined], "the alias is revoked before the send is looked for again");
+		assert.equal(here.router.localAliasTarget(fresh.info.id), undefined);
+		assert.deepEqual(here.fenced, [fresh], "only the move back disconnected it: the session keeps its own id");
+	});
+
+	test("a reply does not go out as the fresh id once the session lost it while the reply's ask was being looked up (#5607)", async () => {
+		const { here, fresh, asks, aliasToken, reply, outcomeOf, answers } = await backWithAsksToItsFreshId();
+		const pendingAsks = here.state.pendingAsks;
+		const matchesReply = pendingAsks.matchesReply.bind(pendingAsks);
+		const lookedUp = Promise.withResolvers<void>();
+		const answer = Promise.withResolvers<void>();
+		vi.spyOn(pendingAsks, "matchesReply").mockImplementation(async (route) => {
+			if (route.replySenderSessionId === fresh.info.id) {
+				lookedUp.resolve();
+				await answer.promise;
+			}
+			return matchesReply(route);
+		});
+		const sent = reply(asks[0]!);
+		await lookedUp.promise;
+		// The fresh id passes to another registration, and the session's next renewal finds it is no longer its own.
+		await here.state.knownSessions.owners!.release({ intercomSessionId: fresh.info.id, token: aliasToken });
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		assert.equal(here.router.aliasTarget(fresh.info.id), undefined);
+		answer.resolve();
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			assert.equal(outcomeOf(sent)?.type, "delivery_failed");
+		});
+		assert.deepEqual(answers(), []);
 	});
 
 	test("a send from another broker to an alias another registration took meanwhile does not reach the session that held it (#5607)", async () => {

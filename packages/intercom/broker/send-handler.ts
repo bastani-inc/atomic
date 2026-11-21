@@ -268,6 +268,14 @@ export function detachSend(clientMessage: SendClientMessage, sender?: BrokerConn
   if (sender !== undefined) sendersAtReceipt.set(clientMessage, sender);
 }
 
+/**
+ * #5607: `clientMessage`, a reply to an ask that an id its sender holds as an alias received, answers as that id: its
+ * local delivery goes out from `sender`, the sender under that id, as its shared route does.
+ */
+export function answerAs(clientMessage: SendClientMessage, sender: BrokerConnectedSession): void {
+  sendersAtReceipt.set(clientMessage, sender);
+}
+
 /** Durable wake queue: the sender of `clientMessage` as the broker took it, once it has. */
 export function senderAtReceipt(clientMessage: SendClientMessage): BrokerConnectedSession | undefined {
   return sendersAtReceipt.get(clientMessage);
