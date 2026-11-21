@@ -12,9 +12,9 @@ import {
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
-import { awaitFirstContent, PROMPT_SLOT_HOLD_MS } from "../interactive/components/prompt-slot.ts";
+import { awaitFirstContent, PROMPT_SLOT_HOLD_MS } from "../interactive/components/prompt-slot.js";
 import { isSingleLeftClick } from "../interactive/components/single-click.ts";
-import { AGENT_PANEL_WIDGET_KEY } from "../rpc/agent-panel-bridge.ts";
+import { AGENT_PANEL_WIDGET_KEY } from "../rpc/agent-panel-bridge.js";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type {
 	EngineBlockedStatus,

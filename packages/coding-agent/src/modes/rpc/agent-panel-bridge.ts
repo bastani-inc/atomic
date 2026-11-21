@@ -37,7 +37,7 @@ import type { TaskId, TaskRecord } from "../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { launchedTaskViewSource, ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
-import { withAgentPanelReturn } from "../interactive/agent-panel-return.ts";
+import { withAgentPanelReturn } from "../interactive/agent-panel-return.js";
 import { type AgentViewBridge, agentViewBridge } from "../interactive/agent-view/agent-view-bridge.ts";
 import {
 	AGENT_PANEL_FOCUSED_ROWS,

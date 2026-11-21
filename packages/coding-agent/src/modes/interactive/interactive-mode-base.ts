@@ -77,7 +77,7 @@ import {
 	type InteractiveTui,
 	type InternalUiActionResult,
 } from "./interactive-tui.ts";
-import { dockScene, navigationShown } from "./navigation-scene.ts";
+import { dockScene, navigationShown } from "./navigation-scene.js";
 import { type BlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
 import { screenHoldOf } from "./screen-hold.ts";
 

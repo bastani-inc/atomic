@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { type Component, clickableHint, keyHintAction, stripHintMarkers } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
-import { PROMPT_SLOT_HOLD_MS } from "../src/modes/interactive/components/prompt-slot.ts";
+import { PROMPT_SLOT_HOLD_MS } from "../src/modes/interactive/components/prompt-slot.js";
 import type { InteractiveEngineCommand, InteractiveEngineMessage } from "../src/modes/interactive-engine/protocol.js";
 import {
 	RemoteComponentController,
@@ -9,7 +9,7 @@ import {
 	type RemoteComponentUI,
 	type TuiRendererLifecycle,
 } from "../src/modes/interactive-engine/remote-component.js";
-import { AGENT_PANEL_WIDGET_KEY } from "../src/modes/rpc/agent-panel-bridge.ts";
+import { AGENT_PANEL_WIDGET_KEY } from "../src/modes/rpc/agent-panel-bridge.js";
 
 /**
  * The isolated host while a navigation view (`/tasks`, the focused agent panel) takes the prompt's place: the agent panel

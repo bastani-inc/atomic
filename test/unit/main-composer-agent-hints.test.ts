@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { setKeybindings, stripTerminalSequences, type TUI } from "@bastani/atomic-tui";
+import {
+	isKittyProtocolActive,
+	setKeybindings,
+	setKittyProtocolActive,
+	stripTerminalSequences,
+	type TUI,
+} from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
@@ -347,7 +353,7 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 	});
 
 	test("an extension's editor built on the prompt's editor focuses the agent panel with Down on its empty prompt, once, and keeps Down when it takes it or holds text", async () => {
-		const { mode, customs, pressDown } = createHarness({
+		const { mode, customs, closeCustoms, pressDown } = createHarness({
 			initialItems: [{ id: "run:1", kind: "agent", state: "running", name: "other-flow", task: "stage one" }],
 		});
 		await mode.setupKeyHandlers();
@@ -371,6 +377,7 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 
 		press(DOWN);
 		assert.equal(customs.length, 1, "Down on the empty prompt focuses the panel once");
+		await closeCustoms();
 
 		takesDown = true;
 		press(DOWN);
@@ -378,6 +385,16 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 		assert.equal(customs.length, 1);
 
 		takesDown = false;
+		// A release of ↓, which an editor that asks for releases gets too, focuses nothing.
+		const wasKitty = isKittyProtocolActive();
+		setKittyProtocolActive(true);
+		try {
+			mode.editor.handleInput("\x1b[1;1:3B");
+		} finally {
+			setKittyProtocolActive(wasKitty);
+		}
+		assert.equal(customs.length, 1, "a key release is not a press");
+
 		mode.editor.setText("first line\nsecond");
 		press(DOWN);
 		assert.equal(customs.length, 1, "with text typed Down is the editor's");

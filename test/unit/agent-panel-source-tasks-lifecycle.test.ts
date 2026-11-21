@@ -18,7 +18,7 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { bindAgentPanel, showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
+import { bindAgentPanel, showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import {
 	agentPanelBoardSource,
 	showEngineTaskInspector,
@@ -296,7 +296,7 @@ test("showTaskInspector hides the agent panel in-process, across a task reopenin
 				}
 				return new Promise<T>((resolve) => {
 					const done = () => resolve(undefined as T);
-					const mountedWhilePanelVisible = widgetMounted;
+					// Mounted a microtask later, as the host mounts a view: whether the panel still shows then.
 					void Promise.resolve(
 						factory(
 							{
@@ -308,7 +308,7 @@ test("showTaskInspector hides the agent panel in-process, across a task reopenin
 							done as (result: unknown) => void,
 						),
 					).then((component) => {
-						mounts.push({ component, done, mountedWhilePanelVisible });
+						mounts.push({ component, done, mountedWhilePanelVisible: widgetMounted });
 					});
 				});
 			},
@@ -322,7 +322,7 @@ test("showTaskInspector hides the agent panel in-process, across a task reopenin
 		});
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(mounts.length, 1);
-		// Asked for while the panel shows: the panel hides once the view is mounted, so no frame shows neither.
+		// Mounted while the panel shows: the panel hides only after that, so no frame shows neither.
 		assert.equal(mounts[0]!.mountedWhilePanelVisible, true);
 		assert.equal(widgetMounted, false);
 		mounts[0]!.component.handleInput?.("\x1b");
@@ -337,7 +337,8 @@ test("showTaskInspector hides the agent panel in-process, across a task reopenin
 		await engineRun;
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(mounts.length, 3);
-		assert.equal(mounts[2]!.mountedWhilePanelVisible, false);
+		// The first /tasks closed in the same step, showing the panel; the reopened one hides it once mounted.
+		assert.equal(mounts[2]!.mountedWhilePanelVisible, true);
 		assert.equal(widgetMounted, false, "panel stays hidden while reopened /tasks is mounted");
 
 		mounts[2]!.component.handleInput?.("\x1b");

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
 import { type AgentPanelItem, AgentPanelSourceHub } from "../src/core/tasks/agent-panel-source.ts";
 import { agentViewBridge } from "../src/modes/interactive/agent-view/agent-view-bridge.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { EngineCustomUiService } from "../src/modes/interactive-engine/engine-custom-ui.ts";
+import { EngineCustomUiService } from "../src/modes/interactive-engine/engine-custom-ui.js";
 import type { InteractiveEngineMessage } from "../src/modes/interactive-engine/protocol.ts";
-import { bindAgentPanel, hideAgentPanelFor, setAgentPanelVisible } from "../src/modes/rpc/agent-panel-bridge.ts";
+import { bindAgentPanel, hideAgentPanelFor, setAgentPanelVisible } from "../src/modes/rpc/agent-panel-bridge.js";
 import { installEngineAgentViewBridge } from "../src/modes/rpc/agent-view-rpc-panel.ts";
 
 /**

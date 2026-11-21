@@ -18,7 +18,7 @@ import type { ScrollableWidgetComponent, WidgetScrollRequest } from "../../core/
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
-import { agentPanelReturning } from "../interactive/agent-panel-return.ts";
+import { agentPanelReturning } from "../interactive/agent-panel-return.js";
 import { runRendererCleanup } from "../interactive/components/renderer-disposal.js";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";

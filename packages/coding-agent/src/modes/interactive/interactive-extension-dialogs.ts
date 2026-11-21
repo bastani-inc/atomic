@@ -1,5 +1,5 @@
 import { showStartupInput, showStartupSelector } from "../../cli/startup-ui.ts";
-import { agentsFocusForwarder } from "./agent-panel-focus.ts";
+import { agentsFocusForwarder } from "./agent-panel-focus.js";
 import { navBackForwarder } from "./agent-view/viewed-keys.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { isTrustDecision, safeTrustChoiceIndex, TrustDecisionSelector } from "./components/trust-decision-selector.ts";

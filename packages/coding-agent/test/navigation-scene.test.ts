@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { type Component, clickableHint, keyHintAction, stripHintMarkers } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
-import { holdPromptSlot, markNavigationView, PromptSlot } from "../src/modes/interactive/components/prompt-slot.ts";
-import { WidgetContainer } from "../src/modes/interactive/components/scroll-widget.ts";
-import { dockScene, navigationShown } from "../src/modes/interactive/navigation-scene.ts";
-import { ScreenHold } from "../src/modes/interactive/screen-hold.ts";
+import { holdPromptSlot, markNavigationView, PromptSlot } from "../src/modes/interactive/components/prompt-slot.js";
+import { WidgetContainer } from "../src/modes/interactive/components/scroll-widget.js";
+import { dockScene, navigationShown } from "../src/modes/interactive/navigation-scene.js";
+import { ScreenHold } from "../src/modes/interactive/screen-hold.js";
 
 /**
  * The footer's hints and the widgets around the prompt change in the frame the prompt's slot does: while a navigation

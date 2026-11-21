@@ -24,12 +24,12 @@ import {
 	showTaskInspector,
 	type TaskInspectorUi,
 } from "../rpc/task-ui-bridge.js";
-import { setAgentPanelFocuser } from "./agent-panel-focus.ts";
+import { setAgentPanelFocuser } from "./agent-panel-focus.js";
 import { type PromptHandle, promptHandle } from "./agent-view/agent-drafts.ts";
 import { gateMovedDraft } from "./agent-view/viewed-commands.ts";
 import { viewedAgentBackKeyList } from "./agent-view/viewed-keys.ts";
 import { escapeViewedAgent, submitToViewedAgent } from "./agent-view/viewed-submit.ts";
-import type { AgentsFocusInput } from "./components/custom-editor.ts";
+import type { AgentsFocusInput } from "./components/custom-editor.js";
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { bindMainComposerAgentRows, MainComposerKeyOverlay } from "./components/main-composer-keys.ts";

@@ -24,7 +24,7 @@ import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interact
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
 import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts";
-import { hideAgentPanelFor } from "./agent-panel-bridge.ts";
+import { hideAgentPanelFor } from "./agent-panel-bridge.js";
 
 /** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
 export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &

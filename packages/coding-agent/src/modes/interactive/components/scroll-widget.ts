@@ -1,7 +1,7 @@
 import { Container, ScrollView, stripHintMarkers, type TuiMouseEvent, VStack } from "@bastani/atomic-tui";
 import { LAYOUT_NODE, type StackLayoutNode } from "@bastani/atomic-tui/dist/layout-node.js";
 import type { ScrollableWidgetComponent, WidgetScrollState } from "../../../core/extensions/ui-types.js";
-import type { DockScene } from "../navigation-scene.ts";
+import type { DockScene } from "../navigation-scene.js";
 
 /** A native layout node, so the dock's final allocation also owns mouse bounds. */
 export class ScrollWidget extends ScrollView {
