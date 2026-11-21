@@ -47,7 +47,9 @@ const traced = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--t
 	env: { ...process.env, NODE_OPTIONS: "" },
 });
 if (traced.status !== 0) throw new Error(`Tracing the startup modules failed with status ${traced.status}`);
-const { order, resolutions, formats, loadedBefore, marked, entryUrls } = JSON.parse(readFileSync(traceFile, "utf8"));
+const { order, resolutions, formats, loadedBefore, loadedWhile, marked, entryUrls } = JSON.parse(
+	readFileSync(traceFile, "utf8"),
+);
 rmSync(traceFile);
 const stages = planStages(
 	order,
@@ -56,6 +58,7 @@ const stages = planStages(
 	new Set(loadedBefore),
 	new Set(marked),
 	entryUrls,
+	loadedWhile,
 );
 rmSync(stagesDir, { recursive: true, force: true });
 mkdirSync(stagesDir, { recursive: true });
@@ -74,6 +77,8 @@ async function trace(outFile) {
 	const resolutions = [];
 	const formats = [];
 	const loadedBefore = [];
+	/** Each file loaded after the prefix, with how many modules had started running by then. */
+	const loadedWhile = [];
 	const marked = [];
 	let beforeEntries = true;
 	globalThis.__atomicStartupStagesTrace = ran;
@@ -89,6 +94,7 @@ async function trace(outFile) {
 			if (!url.startsWith("file:")) return result;
 			formats.push([url, result.format]);
 			if (beforeEntries) loadedBefore.push(url);
+			else loadedWhile.push([url, ran.length]);
 			if ((result.format !== "module" && result.format !== "commonjs") || result.source == null) return result;
 			marked.push(url);
 			const source = typeof result.source === "string" ? result.source : Buffer.from(result.source).toString("utf8");
@@ -103,10 +109,13 @@ async function trace(outFile) {
 	ran.length = 0;
 	beforeEntries = false;
 	const entryUrls = await Promise.all(entries.map(async (url) => (await import(url), import.meta.resolve(url))));
-	writeFileSync(outFile, JSON.stringify({ order: ran, resolutions, formats, loadedBefore, marked, entryUrls }));
+	writeFileSync(
+		outFile,
+		JSON.stringify({ order: ran, resolutions, formats, loadedBefore, loadedWhile, marked, entryUrls }),
+	);
 }
 
-function planStages(order, resolutions, formats, ranBefore, marked, entryUrls) {
+function planStages(order, resolutions, formats, ranBefore, marked, entryUrls, loadedWhile) {
 	const isOwn = (url) => url.startsWith(distUrl) && url.endsWith(".js");
 	const modules = new Map();
 	const moduleOf = (url) => {
@@ -219,23 +228,43 @@ function planStages(order, resolutions, formats, ranBefore, marked, entryUrls) {
 		return cycle.every((member) => visitedAt.get(url) <= visitedAt.get(member));
 	};
 	const specifierOf = (url) => (isOwn(url) ? `../${url.slice(distUrl.length)}` : byName.get(url));
-	// What each module costs to load: its source and that of every module that ran just before it outside the list.
+	// What each module costs to load: its source and that of every module that ran just before it outside the list,
+	// and the files a module that carried no marker loads while it runs (a CommonJS package requires its own files as
+	// it runs), counted to the module that was running.
 	const size = (url) => statSync(fileURLToPath(url)).size;
 	const costUpTo = [0];
 	{
+		// A file loaded after the k-th marked module started belongs to the module running then: an unmarked one that
+		// runs right after the k-th marked module in the run order (a CommonJS package's entry), else the k-th itself.
+		const runIndex = new Map(ranOrder.map((url, index) => [url, index]));
+		const ownerAfter = (running) => {
+			if (running === 0) return ranOrder[0];
+			const last = order[running - 1];
+			const next = ranOrder[(runIndex.get(last) ?? -2) + 1];
+			return next !== undefined && !marked.has(next) ? next : last;
+		};
+		const extra = new Map();
+		for (const [url, running] of loadedWhile) {
+			if (marked.has(url) || ranOrder.includes(url)) continue;
+			const owner = ownerAfter(running);
+			extra.set(owner, (extra.get(owner) ?? 0) + size(url));
+		}
 		let pending = 0;
 		const inList = new Set(ranOrder);
 		const cost = new Map();
 		for (const url of order) {
-			pending += size(url);
+			pending += size(url) + (extra.get(url) ?? 0);
 			if (inList.has(url)) {
 				cost.set(url, pending);
 				pending = 0;
 			}
 		}
-		// A module that carried no marker (CommonJS the runtime reads itself) costs its own source.
+		// A module that carried no marker (CommonJS the runtime reads itself) costs its own source and what it loads.
 		for (const url of ranOrder)
-			costUpTo.push(costUpTo[costUpTo.length - 1] + (ranBefore.has(url) ? 0 : (cost.get(url) ?? size(url))));
+			costUpTo.push(
+				costUpTo[costUpTo.length - 1] +
+					(ranBefore.has(url) ? 0 : (cost.get(url) ?? size(url) + (extra.get(url) ?? 0))),
+			);
 	}
 	const costBetween = (from, to) => costUpTo[to + 1] - costUpTo[from + 1];
 
