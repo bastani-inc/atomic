@@ -29,6 +29,10 @@ import {
 	answerIntercomChildrenRequests,
 	answerRelaunchedAskRequests,
 } from "../runs/foreground/intercom-children.js";
+import {
+	renderLateToolResultNotice,
+	SUBAGENT_LATE_TOOL_RESULT_TYPE,
+} from "../runs/foreground/late-tool-result-notice.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
 import { bindReleasedChildWakes } from "../runs/foreground/released-child-wakes.js";
 import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
@@ -304,6 +308,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			return createSlashResultComponent(details, options, theme, pi);
 		});
 		pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", renderSubagentNotification);
+		pi.registerMessageRenderer(SUBAGENT_LATE_TOOL_RESULT_TYPE, (message, options) =>
+			renderLateToolResultNotice(message, options),
+		);
 		pi.registerMessageRenderer<SubagentControlMessageDetails>(
 			SUBAGENT_CONTROL_MESSAGE_TYPE,
 			(message, _options, theme) => {
