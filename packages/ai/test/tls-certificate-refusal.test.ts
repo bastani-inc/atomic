@@ -11,7 +11,10 @@ import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamGoogleGenerativeAI } from "../src/api/google-generative-ai.ts";
 import { stream as streamGoogleVertex } from "../src/api/google-vertex.ts";
 import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
-import { stream as streamOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
+import {
+	getOpenAICodexWebSocketDebugStats,
+	stream as streamOpenAICodexResponses,
+} from "../src/api/openai-codex-responses.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
 import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
@@ -281,8 +284,9 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 		}
 	});
 
-	it("OpenAI Codex over the runtime's own WebSocket still falls back to SSE for a reset or an upgrade the server refused (#6114)", async () => {
-		// A TLS endpoint that resets each connection during the handshake, and a plain one that answers the upgrade with 502.
+	it("OpenAI Codex over the runtime's own WebSocket still falls back to SSE for a reset, a refused connection or an upgrade the server refused, reporting the WebSocket's error as before (#6114)", async () => {
+		// A TLS endpoint that resets each connection during the handshake, a port nothing listens on, and a plain endpoint
+		// that answers the upgrade with 502.
 		const reset = createNetServer((socket: Socket) => {
 			socket.on("error", () => {});
 			socket.once("data", () => socket.resetAndDestroy());
@@ -297,14 +301,31 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 			return address.port;
 		};
 
-		for (const baseUrl of [`https://localhost:${portOf(reset)}`, `http://127.0.0.1:${portOf(refusing)}`]) {
+		const closed = createNetServer();
+		await new Promise<void>((resolve) => closed.listen(0, "127.0.0.1", resolve));
+		const closedPort = portOf(closed);
+		await new Promise<void>((resolve) => closed.close(() => resolve()));
+
+		for (const baseUrl of [
+			`https://localhost:${portOf(reset)}`,
+			`https://127.0.0.1:${closedPort}`,
+			`http://127.0.0.1:${portOf(refusing)}`,
+		]) {
 			const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+			const sessionId = `codex-native-websocket-${baseUrl}`;
 			const message = await streamOpenAICodexResponses(createModel("openai-codex-responses", baseUrl), context, {
 				apiKey: CODEX_TOKEN,
 				transport: "auto",
 				fetch,
-				sessionId: `codex-native-websocket-${baseUrl}`,
+				sessionId,
 			}).result();
+
+			// The WebSocket's own error, as Node.js 22 and Node.js 24 and later word it, not the connection's failure.
+			assert.match(
+				getOpenAICodexWebSocketDebugStats(sessionId)?.lastWebSocketError ?? "",
+				/^(?:WebSocket error|Received network error or non-101 status code\.)$/,
+				baseUrl,
+			);
 
 			assert.equal(message.stopReason, "error");
 			assert.equal(fetch.mock.calls.length, 1, `${baseUrl}: ${message.errorMessage}`);
