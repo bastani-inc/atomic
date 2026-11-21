@@ -3,11 +3,17 @@
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { accessSync, constants, statSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { delimiter, join, resolve as resolvePath } from "node:path";
+import { resolve as resolvePath } from "node:path";
+import {
+	findHelperExecutable,
+	type HelperLaunch,
+	helperLaunch,
+	helperLaunchAsync,
+	missingHelperOptions,
+} from "../../utils/helper-command.ts";
 import { requireTimerMs } from "./admission.js";
 import {
 	CONTINUE_AFTER_FAILURE,
@@ -625,20 +631,12 @@ class GitHubResponseError extends Error {
 /** `gh` exits with this status when it needs a login (`gh help exit-codes`). */
 const GH_EXIT_AUTH_REQUIRED = 4;
 
-/** True when `path` is a regular file this process may execute. */
-function isExecutableFile(path: string): boolean {
-	try {
-		accessSync(path, constants.X_OK);
-		return statSync(path).isFile();
-	} catch {
-		return false; // a missing or unreadable candidate only means this PATH entry has no gh
-	}
-}
-
-/** True when the PATH names an executable `gh`; the default runner spawns it by name. */
+/**
+ * True when PATH is set and its absolute directories hold an executable `gh`, the one the default runner starts.
+ * Without PATH, `gh` counts as missing.
+ */
 function ghOnPath(): boolean {
-	const name = process.platform === "win32" ? "gh.exe" : "gh";
-	return (process.env.PATH ?? "").split(delimiter).some((directory) => isExecutableFile(join(directory, name)));
+	return process.env.PATH !== undefined && findHelperExecutable("gh") !== undefined;
 }
 
 /**
@@ -655,7 +653,13 @@ export const ghAuthCheck = { timeoutMs: 10_000 };
 function requireGhLogin(): void {
 	const started = performance.now();
 	try {
-		execFileSync("gh", ["auth", "token"], { stdio: "ignore", timeout: ghAuthCheck.timeoutMs, windowsHide: true });
+		const launch = helperLaunch("gh");
+		execFileSync(launch.file, ["auth", "token"], {
+			stdio: "ignore",
+			timeout: ghAuthCheck.timeoutMs,
+			windowsHide: true,
+			...missingHelperOptions(launch),
+		});
 	} catch (error) {
 		if (errnoCode(error) === "ETIMEDOUT") {
 			const elapsedMs = Math.round(performance.now() - started);
@@ -676,12 +680,21 @@ function missingSetup(error: unknown): SubscriptionSetupError | undefined {
 	return undefined;
 }
 
-const runGh: GitHubCommandRunner = (args, signal) =>
-	new Promise((resolve, reject) => {
+const runGh: GitHubCommandRunner = async (args, signal) => {
+	let launch: HelperLaunch;
+	try {
+		// A cancellation while gh is looked up ends the run as it ends a running gh, and starts nothing.
+		launch = await helperLaunchAsync("gh", { signal });
+	} catch (error) {
+		throw new GitHubCommandError(undefined, signal.aborted ? "ABORT_ERR" : errnoCode(error), "", error);
+	}
+	// A cancellation that came as the lookup finished still starts nothing.
+	if (signal.aborted) throw new GitHubCommandError(undefined, "ABORT_ERR", "", signal.reason);
+	return new Promise((resolve, reject) => {
 		execFile(
-			"gh",
+			launch.file,
 			[...args],
-			{ signal, maxBuffer: GH_MAX_OUTPUT_BYTES, windowsHide: true },
+			{ signal, maxBuffer: GH_MAX_OUTPUT_BYTES, windowsHide: true, ...missingHelperOptions(launch) },
 			(error, stdout, stderr) => {
 				if (error === null) {
 					resolve(stdout);
@@ -693,6 +706,7 @@ const runGh: GitHubCommandRunner = (args, signal) =>
 			},
 		);
 	});
+};
 
 function pollFailureDetail(error: unknown): string {
 	if (error instanceof GitHubCommandError) return error.message;

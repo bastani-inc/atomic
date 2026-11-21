@@ -118,6 +118,16 @@ export {
 } from "./components/windowed-container.ts";
 // Editor component interface (for custom editors)
 export type { EditorComponent } from "./editor-component.ts";
+// Helper programs, found only in PATH's absolute directories
+export {
+	findHelperExecutable,
+	findHelperExecutableAsync,
+	type HelperExecutableOptions,
+	type HelperLaunch,
+	helperLaunch,
+	helperLaunchAsync,
+	missingHelperOptions,
+} from "./executable-path.ts";
 // Fuzzy matching
 export { type FuzzyMatch, fuzzyFilter, fuzzyMatch } from "./fuzzy.ts";
 // Keybindings

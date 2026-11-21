@@ -1,5 +1,6 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
 import type { ExtensionAPI } from "@bastani/atomic";
+import { findHelperExecutableAsync } from "@bastani/atomic-tui";
 import { access } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { platform } from "node:os";
@@ -21,11 +22,15 @@ let glimpseOpenPromise: Promise<GlimpseOpen | null> | undefined;
 
 async function openInBrowser(pi: ExtensionAPI, url: string): Promise<void> {
 	const plat = platform();
-	const result = plat === "darwin"
-		? await pi.exec("open", [url])
+	const [name, args]: [string, string[]] = plat === "darwin"
+		? ["open", [url]]
 		: plat === "win32"
-			? await pi.exec("cmd", ["/c", "start", "", url])
-			: await pi.exec("xdg-open", [url]);
+			? ["cmd", ["/c", "start", "", url]]
+			: ["xdg-open", [url]];
+	// Only from PATH's absolute directories, never from the working directory.
+	const file = await findHelperExecutableAsync(name);
+	if (file === undefined) throw new Error(`spawn ${name} ENOENT`);
+	const result = await pi.exec(file, args);
 	if (result.code !== 0) {
 		throw new Error(result.stderr || `Failed to open browser (exit code ${result.code})`);
 	}

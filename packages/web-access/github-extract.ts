@@ -1,5 +1,6 @@
 import { readFile, rm, stat, readdir, open, realpath, lstat, mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
@@ -120,7 +121,23 @@ async function prepareCloneDirectory(paths: ClonePaths): Promise<boolean> {
 	}
 }
 
-function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
+async function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
+	const env = createChildProcessEnvironment();
+	const startedAt = performance.now();
+	const expired = AbortSignal.timeout(timeoutMs);
+	let launch: HelperLaunch;
+	try {
+		// gh and git only from PATH's absolute directories, never from the working directory. The lookup counts against
+		// the clone's time limit and ends with its cancellation, which then starts nothing.
+		launch = await helperLaunchAsync(args[0]!, { env, signal: signal ? AbortSignal.any([signal, expired]) : expired });
+	} catch (error) {
+		if (signal?.aborted || expired.aborted) return removeOwnedClone(paths).then(() => null);
+		throw error;
+	}
+	// A cancellation or the time limit that came as the lookup finished still starts nothing.
+	if (signal?.aborted || expired.aborted) return removeOwnedClone(paths).then(() => null);
+	// Whole milliseconds, as spawn's `timeout` takes them, and never 0, which spawn reads as no limit.
+	const remainingMs = Math.max(1, Math.ceil(timeoutMs - (performance.now() - startedAt)));
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		let exited = false;
@@ -152,18 +169,23 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			if (exited || child.pid === undefined) finish(true);
 		};
 		const onAbort = () => stop();
-		const child = spawn(args[0]!, args.slice(1), {
-			timeout: timeoutMs,
-			detached: process.platform !== "win32",
-			windowsHide: true,
-			stdio: ["ignore", "pipe", "pipe"],
-			env: createChildProcessEnvironment(),
-		});
+		const child = spawn(
+			launch.file,
+			args.slice(1),
+			{
+				timeout: remainingMs,
+				detached: process.platform !== "win32",
+				windowsHide: true,
+				stdio: ["ignore", "pipe", "pipe"],
+				env,
+				...missingHelperOptions(launch),
+			},
+		);
 		const tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
 		const detachedPid =
 			process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid ? child.pid : undefined;
 		if (detachedPid !== undefined) trackDetachedChildPid(detachedPid);
-		const timer = setTimeout(stop, timeoutMs);
+		const timer = setTimeout(stop, remainingMs);
 		child.on("error", () => finish(true));
 		child.on("exit", (code, exitSignal) => {
 			exited = true;

@@ -42,7 +42,12 @@ import {
 	type UpdateTarget,
 } from "./package-manager-cli-parser.ts";
 import { renderSelfUpdateNote, resolveSelfUpdatePlan, type SelfUpdatePlan } from "./self-update-plan.ts";
-import { spawnProcess, spawnProcessSync } from "./utils/child-process.ts";
+import {
+	processLaunch,
+	processLaunchAsync,
+	spawnLaunchedProcess,
+	spawnLaunchedProcessSync,
+} from "./utils/child-process.ts";
 import {
 	cleanupWindowsSelfUpdateQuarantine,
 	quarantineWindowsNativeDependencies,
@@ -157,8 +162,9 @@ function printSelfUpdateNote(note: string): void {
 async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
 	console.log(chalk.dim(`Updating ${APP_NAME} with ${command.display}...`));
 	for (const step of command.steps ?? [command]) {
+		const launch = await processLaunchAsync(step.command);
 		await new Promise<void>((resolve, reject) => {
-			const child = spawnProcess(step.command, step.args, {
+			const child = spawnLaunchedProcess(launch, step.args, {
 				stdio: "inherit",
 			});
 			child.on("error", (error) => {
@@ -216,10 +222,11 @@ function getInstalledAtomicEnv(): NodeJS.ProcessEnv {
 
 /** Version printed by `atomic --version` as resolved from PATH, the Atomic the user runs next. */
 function readVersionOnPath(): string | undefined {
-	const result = spawnProcessSync(APP_NAME, ["--version"], {
+	const env = getInstalledAtomicEnv();
+	const result = spawnLaunchedProcessSync(processLaunch(APP_NAME, { env }), ["--version"], {
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],
-		env: getInstalledAtomicEnv(),
+		env,
 	});
 	return result.status === 0 ? result.stdout.trim() || undefined : undefined;
 }
@@ -230,10 +237,11 @@ function readVersionOnPath(): string | undefined {
  * harmless on every release.
  */
 function installedListsIntercomUpgrade(): boolean {
-	const result = spawnProcessSync(APP_NAME, ["intercom", "--help"], {
+	const env = getInstalledAtomicEnv();
+	const result = spawnLaunchedProcessSync(processLaunch(APP_NAME, { env }), ["intercom", "--help"], {
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "ignore"],
-		env: getInstalledAtomicEnv(),
+		env,
 	});
 	return (
 		result.status === 0 && result.stdout.split("\n").some((line) => line.trim() === `${APP_NAME} intercom upgrade`)
@@ -247,10 +255,12 @@ function installedListsIntercomUpgrade(): boolean {
  */
 async function runIntercomUpgrade(): Promise<void> {
 	if (!installedListsIntercomUpgrade()) return;
+	const env = getInstalledAtomicEnv();
+	const launch = await processLaunchAsync(APP_NAME, { env });
 	const failure = await new Promise<string | undefined>((resolve) => {
-		const child = spawnProcess(APP_NAME, ["intercom", "upgrade"], {
+		const child = spawnLaunchedProcess(launch, ["intercom", "upgrade"], {
 			stdio: ["ignore", "inherit", "inherit"],
-			env: getInstalledAtomicEnv(),
+			env,
 		});
 		child.on("error", (error) => resolve(error.message));
 		child.on("close", (code, signal) => {
