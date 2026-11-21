@@ -67,6 +67,7 @@
 - When Atomic's own handling of the engine's output fails the same way on every streamed update, the chat shows one error row with a count, such as `(42 times)`, instead of one row per update. A different failure, or one after other output, gets its own row.
 - An error while Atomic reports a malformed engine line, the engine's stderr output or a failed write to the engine no longer ends Atomic; a malformed line still restarts the engine.
 - A tool call in the main chat that finishes while a subagent's chat is on screen no longer keeps redrawing that chat several times a second: the call is drawn as finished at once, also while its chat is hidden ([#6243](https://github.com/bastani-inc/atomic/pull/6243))
+- An Amazon Bedrock request through an `https://` proxy that closes the connection before its TLS handshake no longer ends Atomic with an unhandled error. Such a request, and one whose connection to the proxy is reset or closed before the proxy answers, is now retried like other dropped connections instead of failing at once ([#6237](https://github.com/bastani-inc/atomic/pull/6237))
 
 ## [0.10.3] - 2026-11-21
 
