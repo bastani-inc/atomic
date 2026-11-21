@@ -41,9 +41,9 @@ const GIT_OUTPUT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
 // Sanitize the Git environment: under a hook runner (e.g. prek) Git exports
 // GIT_DIR/GIT_WORK_TREE, which it honors over cwd (see git-env.ts).
-function git(args: string[]): string {
+function git(args: string[], cwd = repoRoot): string {
 	return execFileSync("git", args, {
-		cwd: repoRoot,
+		cwd,
 		encoding: "utf-8",
 		env: createGitEnvironment(),
 		stdio: ["ignore", "pipe", "pipe"],
@@ -51,16 +51,25 @@ function git(args: string[]): string {
 	});
 }
 
-/** The release tag for a changelog version, or null when no such tag exists locally. */
-function resolveTag(version: string): string | null {
-	// Atomic tags are bare (`0.9.11-alpha.9`); inherited upstream tags carry a `v` prefix.
+/**
+ * The tags of the repository checked out at `cwd`: those whose history contains one of HEAD's root commits. A clone
+ * that also fetched another remote's tags, such as upstream pi's `v0.10.2`, has tags from an unrelated history; they
+ * share no commit with HEAD, so they are left out.
+ */
+function repositoryTags(cwd = repoRoot): ReadonlySet<string> {
+	const tags = new Set<string>();
+	for (const rootCommit of git(["rev-list", "--max-parents=0", "HEAD"], cwd).split("\n").filter(Boolean)) {
+		for (const tag of git(["tag", "--list", "--contains", rootCommit], cwd).split("\n").filter(Boolean))
+			tags.add(tag);
+	}
+	return tags;
+}
+
+/** The release tag for a changelog version among `tags`, or null when there is none. */
+function resolveTag(version: string, tags: ReadonlySet<string>): string | null {
+	// Atomic tags are bare (`0.9.11-alpha.9`); its releases before 0.8.24 carry a `v` prefix.
 	for (const candidate of [version, `v${version}`]) {
-		try {
-			git(["rev-parse", "--verify", "--quiet", `refs/tags/${candidate}^{commit}`]);
-			return candidate;
-		} catch {
-			// try the next spelling
-		}
+		if (tags.has(candidate)) return candidate;
 	}
 	return null;
 }
@@ -217,8 +226,53 @@ describe("changelog parsing", () => {
 // AGENTS.md: "A released section (`## [0.12.2]`) is immutable" and "New entries go under
 // `## [Unreleased]`". Once a version is tagged, its published notes are fixed, so the
 // released tail of every package changelog must still read exactly as it did at that tag.
+describe("release tags", () => {
+	test("only tags from this repository's history anchor a changelog, not another remote's tags", () => {
+		const clone = mkdtempSync(join(tmpdir(), "atomic-changelog-tags-"));
+		const settings = [
+			"user.name=Atomic Test",
+			"user.email=test@example.invalid",
+			"commit.gpgSign=false",
+			"tag.gpgSign=false",
+		];
+		const inClone = (args: string[]) => git([...settings.flatMap((setting) => ["-c", setting]), ...args], clone);
+		try {
+			inClone(["init", "--quiet", "--initial-branch=main"]);
+			inClone(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "first"]);
+			// A release before 0.8.24, tagged on the main line with a `v` prefix.
+			inClone(["tag", "v0.8.23"]);
+			// A release tags a commit off the main line that only stamps the version.
+			inClone(["checkout", "--quiet", "--detach"]);
+			inClone(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "Release 0.10.3"]);
+			inClone(["tag", "0.10.3"]);
+			// Tags fetched from an unrelated upstream remote.
+			inClone(["checkout", "--quiet", "--orphan", "upstream"]);
+			inClone(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "Release v0.10.4"]);
+			inClone(["tag", "v0.10.4"]);
+			inClone(["tag", "0.10.5"]);
+			inClone(["checkout", "--quiet", "main"]);
+			inClone(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "later work"]);
+
+			const tags = repositoryTags(clone);
+			assert.deepEqual([...tags].sort(), ["0.10.3", "v0.8.23"]);
+			// A section prepared for 0.10.4 or 0.10.5 before its tag exists is not anchored on the upstream tags.
+			assert.equal(resolveTag("0.10.5", tags), null);
+			assert.equal(resolveTag("0.10.4", tags), null);
+			assert.equal(resolveTag("0.10.3", tags), "0.10.3");
+			assert.equal(resolveTag("0.8.23", tags), "v0.8.23");
+		} finally {
+			rmSync(clone, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("released changelog sections", () => {
 	const changelogPaths = packageChangelogPaths();
+	let tags: ReadonlySet<string> | undefined;
+	const releaseTags = () => {
+		tags ??= repositoryTags();
+		return tags;
+	};
 
 	test("finds a package changelog to check", () => {
 		assert.ok(changelogPaths.length > 0, "no packages/*/CHANGELOG.md parsed into released sections");
@@ -232,7 +286,7 @@ describe("released changelog sections", () => {
 			// anything above it (an in-flight release, plus [Unreleased]) is still editable.
 			let anchor: { entry: ChangelogEntry; tag: string } | null = null;
 			for (const entry of current) {
-				const tag = resolveTag(entry.version);
+				const tag = resolveTag(entry.version, releaseTags());
 				if (tag) {
 					anchor = { entry, tag };
 					break;
@@ -242,12 +296,11 @@ describe("released changelog sections", () => {
 				// A first-release package has a version section but no tag yet — the tag
 				// is created by cut-release only after the changelog PR merges — so it has
 				// no released sections and immutability holds vacuously. Pass only when
-				// tags are actually present: an empty tag list means the suite ran without
-				// fetching tags and would otherwise pass every file blindly.
-				const tagsPresent = git(["tag", "--list"]).trim().length > 0;
+				// this repository's tags are actually present: none means the suite ran
+				// without fetching tags and would otherwise pass every file blindly.
 				assert.ok(
-					tagsPresent,
-					`no version in ${relativePath} resolves to a local tag; fetch tags before running this suite`,
+					releaseTags().size > 0,
+					`no version in ${relativePath} resolves to a tag of this repository; fetch tags before running this suite`,
 				);
 				return;
 			}
