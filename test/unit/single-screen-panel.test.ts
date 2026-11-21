@@ -394,6 +394,47 @@ test("Enter on a subagent in /tasks asks for it before /tasks closes, keeping th
 	assert.deepEqual(sent, [{ type: "engine_view_agent", taskId: "a1", keepScreen: true }]);
 });
 
+test("Enter on a finished subagent in /tasks, while the panel lists nothing, says the panel lists it once shown", async () => {
+	for (const dismissed of [false, true]) {
+		const engineSession = { extensionRunner: {} } as never as AgentSession;
+		const engineStore = new FakeOwnerTaskStore([done(agent("a1"))]);
+		bindOwnerTaskStore(engineSession, engineStore);
+		if (dismissed) dismissedAgentPanelItems(engineSession).add("task:a1");
+		const sent: InteractiveEngineMessage[] = [];
+		const context = {
+			session: engineSession,
+			send: (message: InteractiveEngineMessage) => sent.push(message),
+		} as never;
+		disposers.push(installEngineAgentViewBridge(context));
+		let widget: IdleWidget | undefined;
+		disposers.push(
+			bindAgentPanel(engineSession, {
+				setWidget(_key: string, content: unknown) {
+					widget = typeof content === "function" ? (content({} as never, {} as never) as never) : undefined;
+				},
+				requestRender() {},
+			} as never),
+		);
+		// The key comes after /tasks is on screen, which has hidden the panel by then.
+		const engineUi = hostUi(async (component) => {
+			await new Promise((resolve) => setImmediate(resolve));
+			component.handleInput(ENTER);
+		}).ui;
+		await openTasks(engineSession, engineStore, engineUi, "a1");
+		// `panel` keeps its meaning for older hosts; a host that tells the engine first what it is about to show waits.
+		assert.deepEqual(
+			sent,
+			[{ type: "engine_view_agent", taskId: "a1", keepScreen: true, ...(dismissed ? {} : { panelOnView: true }) }],
+			`dismissed: ${dismissed}`,
+		);
+		// Told that a1 is about to be shown, the panel back from /tasks lists it as shown: the frame the host waits for.
+		await handleSetViewedAgent({ type: "set_viewed_agent", taskId: "a1" }, context);
+		const lines = (widget?.render(100) ?? []).map((line) => stripVTControlCharacters(line).trimEnd());
+		if (dismissed) assert.deepEqual(lines, []);
+		else assert.match(lines[1] ?? "", /^ {2}● worker +job a1 +done$/, lines.join("\n"));
+	}
+});
+
 function asking(task: TaskRecord): TaskRecord {
 	return {
 		...task,
