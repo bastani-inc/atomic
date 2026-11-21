@@ -18,10 +18,12 @@ import type { BrokerOutboundFrame } from "../../packages/intercom/broker/socket-
 import {
 	clientHostsSessions,
 	holdWrites,
+	ID_HANDOFF_FRAME_TYPES,
 	PROTOCOL_2_FRAME_TYPES,
 	PROTOCOL_3_FRAME_TYPES,
 	PROTOCOL_4_FRAME_TYPES,
 	recordClientProtocol,
+	recordClientTakesIdHandoff,
 	releaseHeldWrites,
 	writeMessageIfOpen,
 	writeMessageWithOutcome,
@@ -279,5 +281,25 @@ describe("the broker's address across versions (#4538)", () => {
 			assert.equal(current.getBrokerPidPath(agentDir), previousPaths.getBrokerPidPath(agentDir));
 		}
 		assert.match(current.getBrokerSocketPath("win32", agentDirs[0]), /^\\\\\.\\pipe\\/);
+	});
+});
+
+describe("an id hand-over (#5607)", () => {
+	test("is written only to a client that registered saying it takes ids back, whatever its protocol", () => {
+		assert.deepEqual([...ID_HANDOFF_FRAME_TYPES], ["id_handoff"]);
+		const handoff: BrokerOutboundFrame = { type: "id_handoff", sessionId: "p", handoff: "h" };
+		for (const [protocol, takes, written] of [
+			[LEGACY_BROKER_PROTOCOL, false, false],
+			[range(1, 4), false, false],
+			[range(1, 4), true, true],
+		] as const) {
+			const { socket, frames } = recordingSocket();
+			recordClientProtocol(socket, protocol);
+			recordClientTakesIdHandoff(socket, takes);
+			assert.equal(writeMessageIfOpen(socket, handoff), written, JSON.stringify([protocol, takes]));
+			assert.equal(frames.length, written ? 1 : 0);
+		}
+		const { socket } = recordingSocket();
+		assert.equal(writeMessageIfOpen(socket, handoff), false, "a client that never registered");
 	});
 });

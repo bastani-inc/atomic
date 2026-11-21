@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import { hostCommandEnvironment } from "./host-command-environment.js";
 import { getIntercomDirPath } from "./paths.js";
 
@@ -67,6 +67,21 @@ export interface HostIdentitySources {
 	readonly configDir: string;
 }
 
+/**
+ * Where a host command lives: the operating system's own copy, started by its absolute path, so neither the working
+ * directory nor PATH can put another program in its place.
+ */
+function hostCommandPath(command: string): string {
+	if (/[\\/]/.test(command)) return command;
+	if (process.platform === "win32") {
+		const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+		return command === "powershell"
+			? win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+			: win32.join(systemRoot, "System32", `${command}.exe`);
+	}
+	return process.platform === "darwin" ? `/usr/sbin/${command}` : command;
+}
+
 /** This host's real identity sources, saving a machine id under `configDir`. */
 export const systemSources = (configDir: string = getIntercomDirPath()): HostIdentitySources => ({
 	platform: process.platform,
@@ -75,7 +90,7 @@ export const systemSources = (configDir: string = getIntercomDirPath()): HostIde
 	run: (command, args) =>
 		new Promise<string>((resolve, reject) => {
 			const child = execFile(
-				command,
+				hostCommandPath(command),
 				[...args],
 				{ encoding: "utf8", env: hostCommandEnvironment(), timeout: HOST_COMMAND_TIMEOUT_MS, windowsHide: true },
 				(error, stdout) => (error ? reject(error) : resolve(stdout)),

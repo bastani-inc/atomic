@@ -134,6 +134,8 @@ abstract class RemoteRenderer implements Component {
 	private readonly clickChecks: { command: RemoteRenderCommand; baseline?: string[]; changed(): void }[] = [];
 	private toggleAfterChecks = false;
 	private clickCancellation?: AbortSignal;
+	/** The latest state is owed to the engine once the click comparison under way ends (see sendLatestState). */
+	private latestStateOwed = false;
 	protected expanded = false;
 
 	protected readonly runtime: IsolatedInteractiveRuntime;
@@ -253,6 +255,22 @@ abstract class RemoteRenderer implements Component {
 		this.requestRender();
 	}
 
+	/**
+	 * Gives the engine this row's latest state at the width it was last drawn, also while the screen does not draw the
+	 * row (its chat is hidden, or its group folded): the engine draws a call it last saw running as running, and keeps
+	 * animating it, until a frame request tells it the call settled.
+	 */
+	protected sendLatestState(): void {
+		if (this.requestId === 0 || this.disposed) return;
+		// A click's comparison of the two expansions is under way: the state goes once it ends, however it ends.
+		if (this.clickChecks.length > 0) {
+			this.latestStateOwed = true;
+			return;
+		}
+		if (!this.dirty) return;
+		RemoteRenderer.prototype.render.call(this, this.width);
+	}
+
 	private readonly cancelClickChecks = (): void => {
 		this.clearClickChecks();
 		this.requestRender();
@@ -264,6 +282,11 @@ abstract class RemoteRenderer implements Component {
 		this.clickChecks.length = 0;
 		this.toggleAfterChecks = false;
 		this.markDirty();
+		if (this.latestStateOwed) {
+			this.latestStateOwed = false;
+			// Once whatever ended the comparison (an expansion it decided, a cancel) has run.
+			queueMicrotask(() => this.sendLatestState());
+		}
 	};
 
 	isExpanded(): boolean {
@@ -402,6 +425,9 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.result = result;
 		this.isPartial = isPartial;
 		this.changed();
+		// Once what settled it in this turn has run (such as the row becoming its group's head), so the engine is asked
+		// for the row as the next paint would draw it, before that paint.
+		if (!isPartial) queueMicrotask(() => this.sendLatestState());
 	}
 	getGroupRole(): ToolGroupRole {
 		return this.groupRole;
