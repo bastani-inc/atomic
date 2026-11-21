@@ -3,30 +3,54 @@
  *
  * The helper for the engine's runtime flags runs first and the helper for this host's own flags last, so the host's
  * marker, which decides whether later sessions defer, is written only once both caches are warm. Each helper ends
- * with this session: it is stopped when the session exits, and stops by itself when the session is gone.
+ * with this session: it is stopped when the session exits, and the system ends it when the session ends any other way
+ * (it runs in a job that is closed with the session). Where that job cannot be made, it stops by itself once its stdin
+ * ends, after the step it is in.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { parse } from "node:path";
 import { fileURLToPath } from "node:url";
+import { containProcessTree } from "../core/process-tree-containment.ts";
 import { type CompileCacheHelperRuntime, compileCacheDeferral } from "./compile-cache.ts";
 import { COMPILE_CACHE_WARMUP_DONE } from "./compile-cache-warmup-status.ts";
 
-function helperEnvironment(runtime: CompileCacheHelperRuntime): NodeJS.ProcessEnv {
-	const env = { ...process.env };
-	if (runtime.nodeOptions) env.NODE_OPTIONS = runtime.nodeOptions;
-	else delete env.NODE_OPTIONS;
-	return env;
+/** How a helper process starts: everything `spawn` gets. */
+export interface CompileCacheHelperLaunch {
+	readonly command: string;
+	readonly args: readonly string[];
+	readonly cwd: string;
+	readonly env: NodeJS.ProcessEnv;
+}
+
+/**
+ * The helper for `runtime`: this runtime with its heap size and without preloads, loading no native module
+ * (`--no-addons`), working outside the installation (an upgrade or an uninstall replaces it while the helper may run).
+ */
+export function compileCacheHelperLaunch(
+	runtime: CompileCacheHelperRuntime,
+	buildId: string,
+	script: string = fileURLToPath(new URL("./compile-cache-warmup.js", import.meta.url)),
+	env: NodeJS.ProcessEnv = process.env,
+): CompileCacheHelperLaunch {
+	const helperEnv = { ...env };
+	if (runtime.nodeOptions) helperEnv.NODE_OPTIONS = runtime.nodeOptions;
+	else delete helperEnv.NODE_OPTIONS;
+	return {
+		command: process.execPath,
+		args: [...runtime.execArgv, "--no-addons", script, buildId],
+		cwd: parse(script).root,
+		env: helperEnv,
+	};
 }
 
 /** Run one helper to its end. True when the cache for its runtime flags is warm. */
 function runHelper(runtime: CompileCacheHelperRuntime, buildId: string): Promise<boolean> {
-	const script = fileURLToPath(new URL("./compile-cache-warmup.js", import.meta.url));
 	let child: ChildProcess;
 	try {
-		child = spawn(process.execPath, [...runtime.execArgv, "--no-addons", script, buildId], {
-			// Outside the installation, which an upgrade replaces while the helper may still run.
-			cwd: parse(script).root,
-			env: helperEnvironment(runtime),
+		const launch = compileCacheHelperLaunch(runtime, buildId);
+		child = spawn(launch.command, [...launch.args], {
+			cwd: launch.cwd,
+			env: launch.env,
 			// The helper stops when this pipe ends, which it does when this process is gone.
 			stdio: ["pipe", "ignore", "ignore"],
 			windowsHide: true,
@@ -34,6 +58,8 @@ function runHelper(runtime: CompileCacheHelperRuntime, buildId: string): Promise
 	} catch {
 		return Promise.resolve(false);
 	}
+	// The system ends the helper when this process ends, however it ends.
+	const containment = child.pid === undefined ? undefined : containProcessTree(child.pid);
 	const stopAtExit = () => {
 		try {
 			child.kill("SIGKILL");
@@ -48,10 +74,12 @@ function runHelper(runtime: CompileCacheHelperRuntime, buildId: string): Promise
 	return new Promise((resolve) => {
 		child.once("error", () => {
 			process.off("exit", stopAtExit);
+			containment?.close();
 			resolve(false);
 		});
 		child.once("exit", (code) => {
 			process.off("exit", stopAtExit);
+			containment?.close();
 			resolve(code === COMPILE_CACHE_WARMUP_DONE);
 		});
 	});
