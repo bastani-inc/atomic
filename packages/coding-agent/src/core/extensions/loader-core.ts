@@ -26,7 +26,12 @@ import {
 import type { PackageMcpServerSource, ResourceLoaderInheritanceSnapshotProvider } from "./loader-resources.ts";
 import { factoryAcquisitions, factoryRollbackError, rollbackExtensionFactories } from "./loader-rollback.ts";
 import { createExtensionRuntime } from "./loader-runtime.ts";
-import { type ExtensionCacheToken, loadExtensionModule, useExtensionCacheCwd } from "./loader-virtual-modules.js";
+import {
+	type ExtensionCacheToken,
+	loadExtensionModule,
+	prepareExtensionEntries,
+	useExtensionCacheCwd,
+} from "./loader-virtual-modules.js";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./types.ts";
 
 /** Associate extension runtimes with the event bus used to construct their APIs. */
@@ -316,6 +321,11 @@ async function loadExtensionsInternal(
 	const resolvedRuntime = runtime ?? createExtensionRuntime();
 	runtimeEventBuses.set(resolvedRuntime, resolvedEventBus);
 
+	// Only speeds up the loads below; each load works the same whether or not this did anything.
+	await prepareExtensionEntries(
+		paths.map((extPath) => resolvePath(extPath, resolvedCwd, { normalizeUnicodeSpaces: true })),
+		agentDir ?? cacheToken?.agentDir,
+	).catch(() => {});
 	let processedExtensionCount = 0;
 	let lastYieldAt = Date.now();
 	for (const extPath of paths) {

@@ -2,7 +2,13 @@ import type { Worker } from "node:worker_threads";
 import type { createJiti } from "jiti";
 import { startModuleWorker } from "../../utils/worker-threads.js";
 import type { JitiImport, LoadedModule } from "./reloadable-scripts.ts";
-import { isTypeScriptFile, readModuleSource, resolveFrom, walkStaticImports } from "./transform-graph.js";
+import {
+	isTypeScriptFile,
+	moduleTransformOptions,
+	readModuleSource,
+	resolveFrom,
+	walkStaticImports,
+} from "./transform-graph.js";
 import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.js";
 
 type CreateJiti = typeof createJiti;
@@ -16,7 +22,7 @@ export type TransformTemplate = Omit<TransformOptions, "filename" | "source" | "
 export interface SourceBuiltinLoad {
 	readonly createJiti: CreateJiti;
 	readonly cacheDir: string | undefined;
-	template?: TransformTemplate;
+	readonly template: TransformTemplate;
 }
 
 /** What the transform worker prepares: `targets` and the modules they import statically, except `visited`. */
@@ -35,18 +41,22 @@ const importing = new WeakMap<SourceBuiltinLoad, Map<string, Promise<unknown>>>(
 const preparing = new Map<string, Promise<void>>();
 let transformWorkerUrl: URL | undefined;
 
-export function registerSourceBuiltinLoad(jiti: Jiti, load: SourceBuiltinLoad): void {
-	loads.set(jiti.options, load);
+export function registerSourceBuiltinLoad(jiti: Jiti, load: Omit<SourceBuiltinLoad, "template">): void {
+	loads.set(jiti.options, { ...load, template: transformTemplate(jiti.options) });
 }
 
-export function transformTemplate({
-	filename: _filename,
-	source: _source,
-	ts: _ts,
-	async: _async,
-	...template
-}: TransformOptions): TransformTemplate {
-	return template;
+/**
+ * The options jiti's transform hands the `transform` option for every module a jiti with `options` evaluates, without
+ * the module's own, as jiti 2 builds them. With source maps on, jiti also names each module in `babel.sourceFileName`;
+ * {@link moduleTransformOptions} adds that back.
+ */
+export function transformTemplate(options: Jiti["options"]): TransformTemplate {
+	return {
+		...options.transformOptions,
+		babel: { ...(options.sourceMaps ? { sourceMaps: "inline" } : {}), ...options.transformOptions?.babel },
+		interopDefault: options.interopDefault,
+		jsx: options.jsx,
+	};
 }
 
 /**
@@ -88,7 +98,7 @@ export function importAfterEvaluation(
 	jitiImport: JitiImport,
 ): Promise<unknown> | undefined {
 	const load = loads.get(require.options);
-	if (load?.cacheDir === undefined || load.template === undefined) return undefined;
+	if (load?.cacheDir === undefined) return undefined;
 	let target: string;
 	try {
 		target = require.resolve(id);
@@ -133,6 +143,41 @@ function shared(promises: Map<string, Promise<void>>, key: string, start: () => 
 }
 
 /**
+ * Before jiti evaluates builtin packages' source entries for the first time, a cold transpile cache (no stored
+ * transform of an entry) would have jiti transform the entry's whole module graph on the main thread, several seconds
+ * in a fresh source checkout. A worker per entry without a stored transform transforms its graph into the cache
+ * first, the workers side by side, and the loads that follow find them there; like a deferred import's load, each
+ * still reads every file and uses a stored transform only for the same source. With every entry's transform stored,
+ * nothing is started and the loads run as before. Always settles.
+ */
+export async function prepareSourceEntries(load: SourceBuiltinLoad, entries: readonly string[]): Promise<void> {
+	const { createJiti: createJitiImpl, cacheDir, template } = load;
+	if (cacheDir === undefined) return;
+	const transform = createTypeScriptSourceSpecifierTransform(createJitiImpl, import.meta.url, () => cacheDir);
+	const cold = await Promise.all(
+		entries.map(async (entry) => {
+			const source = await readModuleSource(entry);
+			return source !== undefined && transform.cached(moduleTransformOptions(template, entry, source)) === undefined;
+		}),
+	);
+	await Promise.all(
+		entries
+			.filter((_entry, index) => cold[index])
+			.map((entry) =>
+				shared(preparing, `${cacheDir}\0${entry}`, () =>
+					runTransformWorker({ cacheDir, template, targets: [entry], visited: [] }),
+				),
+			),
+	);
+}
+
+/** {@link prepareSourceEntries} for the entry of a load registered with {@link registerSourceBuiltinLoad}. */
+export async function prepareSourceEntry(jiti: Jiti, entry: string): Promise<void> {
+	const load = loads.get(jiti.options);
+	if (load !== undefined) await prepareSourceEntries(load, [entry]);
+}
+
+/**
  * Finds the modules of the preparation's targets that have no stored transform, reading each file without blocking,
  * and has a worker transform those. Always settles, whatever happens to the files or the worker.
  */
@@ -150,9 +195,9 @@ async function prepareTransforms(createJitiImpl: CreateJiti, preparation: Transf
 		async (filename) => {
 			const source = await readModuleSource(filename);
 			if (source === undefined) return undefined;
-			const code = transform.cached({ ...preparation.template, filename, source, async: true, ts: true });
-			if (code === undefined) missing.push(filename);
-			return code;
+			const stored = transform.cached(moduleTransformOptions(preparation.template, filename, source));
+			if (stored === undefined) missing.push(filename);
+			return stored;
 		},
 		(importer, specifier) => resolveFrom(createJitiImpl, importer, specifier),
 	);

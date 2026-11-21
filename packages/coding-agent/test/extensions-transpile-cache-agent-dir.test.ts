@@ -14,6 +14,17 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 
 /** Background pruning of stale cache versions is asynchronous; this bounds the wait for it. */
 const PRUNE_WAIT_MS = 10_000;
+/** A cache directory nothing has used for longer than a week is removed. */
+const UNUSED_FOR_EIGHT_DAYS = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+
+/** A cache directory of another version or installation, last used at `usedAt`. */
+function otherCacheDir(agentDir: string, parent: "transpile" | "jiti", name: string, usedAt?: Date): string {
+	const dir = path.join(agentDir, "cache", parent, name);
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, "entry.ts.0123.mjs"), "[]\nexport {};\n");
+	if (usedAt) fs.utimesSync(dir, usedAt, usedAt);
+	return dir;
+}
 
 const roots: string[] = [];
 const sessions: AgentSession[] = [];
@@ -131,8 +142,10 @@ describe("extension transpile cache follows the agent directory", () => {
 			path.join(tempDir("atomic-4728-prune-a-"), "agent"),
 			path.join(tempDir("atomic-4728-prune-b-"), "agent"),
 		];
-		const staleDirs = agentDirs.map((agentDir) => path.join(agentDir, "cache", "jiti", "0.0.1+ts-source-specifiers"));
-		for (const staleDir of staleDirs) fs.mkdirSync(staleDir, { recursive: true });
+		const staleDirs = agentDirs.flatMap((agentDir) => [
+			otherCacheDir(agentDir, "transpile", "0.0.1+ts-source-specifiers", UNUSED_FOR_EIGHT_DAYS),
+			otherCacheDir(agentDir, "jiti", "0.0.1+ts-source-specifiers", UNUSED_FOR_EIGHT_DAYS),
+		]);
 		const entry = writeExtension(tempDir("atomic-4728-ext-"));
 
 		for (const agentDir of agentDirs) {
@@ -150,6 +163,81 @@ describe("extension transpile cache follows the agent directory", () => {
 		for (const agentDir of agentDirs) {
 			assert.ok(fs.existsSync(getExtensionTranspileCacheDir(agentDir)), "the current cache version must remain");
 		}
+	});
+
+	it("keeps the caches that another installation or version in the same agent directory uses", async () => {
+		const agentDir = existingAgentDir("atomic-shared-agent-");
+		const inUse = [
+			otherCacheDir(agentDir, "transpile", "0.10.9+ts-source-specifiers"),
+			otherCacheDir(
+				agentDir,
+				"transpile",
+				"0.0.1+ts-source-specifiers",
+				new Date(Date.now() - 6 * 24 * 60 * 60 * 1000),
+			),
+			otherCacheDir(agentDir, "jiti", "0.10.3+ts-source-specifiers"),
+		];
+		const unused = otherCacheDir(agentDir, "transpile", "0.0.2+ts-source-specifiers", UNUSED_FOR_EIGHT_DAYS);
+		const entry = writeExtension(tempDir("atomic-shared-ext-"));
+
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		await loadUnderCurrentAgentDir(entry);
+		await extensionLoaderTestHooks.transpileCachePrune(agentDir);
+
+		assert.deepEqual(
+			inUse.filter((dir) => !fs.existsSync(dir)),
+			[],
+			"a cache used within the last week must remain",
+		);
+		assert.equal(fs.existsSync(unused), false, "a cache unused for over a week must be removed");
+	});
+
+	it("removes only unused version caches, never other files beside them", async () => {
+		const agentDir = existingAgentDir("atomic-foreign-cache-");
+		const foreign = [
+			path.join(agentDir, "cache", "transpile", "unrelated-extension"),
+			path.join(agentDir, "cache", "jiti", "notes"),
+		];
+		for (const dir of foreign) {
+			fs.mkdirSync(dir, { recursive: true });
+			fs.utimesSync(dir, UNUSED_FOR_EIGHT_DAYS, UNUSED_FOR_EIGHT_DAYS);
+		}
+		const foreignFile = path.join(agentDir, "cache", "transpile", "0.0.3+ts-source-specifiers");
+		fs.writeFileSync(foreignFile, "not a cache directory");
+		fs.utimesSync(foreignFile, UNUSED_FOR_EIGHT_DAYS, UNUSED_FOR_EIGHT_DAYS);
+		const unused = otherCacheDir(agentDir, "jiti", "0.9.1", UNUSED_FOR_EIGHT_DAYS);
+		const entry = writeExtension(tempDir("atomic-foreign-cache-ext-"));
+
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		await loadUnderCurrentAgentDir(entry);
+		await extensionLoaderTestHooks.transpileCachePrune(agentDir);
+
+		assert.deepEqual(
+			[...foreign, foreignFile].filter((file) => !fs.existsSync(file)),
+			[],
+			"only version cache directories may be removed",
+		);
+		assert.equal(fs.existsSync(unused), false, "an unused version cache must be removed");
+	});
+
+	it("marks the cache it uses as used, so other versions keep it", async () => {
+		const entry = writeExtension(tempDir("atomic-mark-used-ext-"));
+		const warmAgentDir = existingAgentDir("atomic-mark-used-warm-");
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", warmAgentDir);
+		await loadUnderCurrentAgentDir(entry);
+		// A cache that already holds every transform the load needs, so the load writes nothing into it.
+		const agentDir = existingAgentDir("atomic-mark-used-");
+		const cacheDir = getExtensionTranspileCacheDir(agentDir);
+		fs.cpSync(getExtensionTranspileCacheDir(warmAgentDir), cacheDir, { recursive: true });
+		fs.utimesSync(cacheDir, UNUSED_FOR_EIGHT_DAYS, UNUSED_FOR_EIGHT_DAYS);
+
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		await loadUnderCurrentAgentDir(entry);
+
+		await vi.waitFor(
+			() => assert.ok(fs.statSync(cacheDir).mtimeMs > Date.now() - 60_000, "the cache in use must be marked used"),
+			{ timeout: PRUNE_WAIT_MS, interval: 20 },
+		);
 	});
 
 	it("puts an SDK session's cache under its agentDir option (#4728)", async () => {

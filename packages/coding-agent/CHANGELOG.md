@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `/reload` runs the current code of a module that your own or an installed extension imported after it started, when only that module changed. On Windows, under Bun, and in the standalone binary, `/reload` could keep the module as it was first loaded
+- An installed Atomic and a source checkout, or two Atomic versions, that share an agent directory no longer delete each other's extension transpile cache, so neither starts with an empty cache after the other has run. The cache moved to `cache/transpile/` in the agent directory, and a version's cache is removed once it has gone unused for a week
+- In a source checkout, a first start with an empty transpile cache compiles the bundled packages in a background thread instead of blocking startup, and modules a package imports later are prepared for exactly the files they import
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.

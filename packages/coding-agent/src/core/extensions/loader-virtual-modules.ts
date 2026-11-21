@@ -28,8 +28,9 @@ import {
 } from "./reloadable-scripts.ts";
 import {
 	importAfterEvaluation,
+	prepareSourceEntries,
+	prepareSourceEntry,
 	registerSourceBuiltinLoad,
-	type SourceBuiltinLoad,
 	transformTemplate,
 } from "./source-builtin-imports.js";
 import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.js";
@@ -40,8 +41,13 @@ export { getVirtualModules } from "./loader-host-modules.js";
 const require = createRequire(import.meta.url);
 let _aliases: Promise<Record<string, string>> | null = null;
 let createJitiPromise: Promise<typeof createJiti> | undefined;
-// Cache directories this process has tried to set up, one per agent directory, and those it has pruned.
-const prunedTranspileCacheDirs = new Set<string>();
+// A transpile cache directory nothing has used for this long is removed by the next process that sets up another one.
+const UNUSED_TRANSPILE_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+// How often a process marks a transpile cache directory it keeps using as used.
+const TRANSPILE_CACHE_USE_MARK_MS = 60 * 60 * 1000;
+const transpileCacheUseMarks = new Map<string, number>();
+// Per cache directory this process has set up, the removal of the unused ones beside it.
+const transpileCachePrunes = new Map<string, Promise<void>>();
 
 function getCreateJiti(): Promise<typeof createJiti> {
 	createJitiPromise ??= (
@@ -68,8 +74,9 @@ async function mkdirBelowExisting(root: string, dir: string): Promise<boolean> {
  * Persistent on-disk cache for transpiled extension modules, under the agent
  * directory of this load: the session's `agentDir`, else the one in effect now.
  * Entries are keyed by source content and resolved TypeScript siblings, so they
- * self-invalidate when either changes; stale sibling version dirs are pruned in
- * the background once per cache directory. The first use of an agent directory
+ * self-invalidate when either changes. Each version has its own directory, and
+ * the cache directories nothing has used for a week are removed in the
+ * background once per cache directory. The first use of an agent directory
  * creates it as before. After that, a missing agent directory was removed: the
  * load runs uncached and the directory is not recreated (#4728).
  */
@@ -77,33 +84,57 @@ async function resolveTranspileCacheDir(agentDir: string = getAgentDir()): Promi
 	const root = path.resolve(agentDir);
 	const cacheDir = getExtensionTranspileCacheDir(root);
 	if (!(await mkdirBelowExisting(root, cacheDir))) return undefined;
-	if (!prunedTranspileCacheDirs.has(cacheDir)) {
-		prunedTranspileCacheDirs.add(cacheDir);
-		pruneStaleTranspileCaches(cacheDir);
-	}
+	markTranspileCacheUsed(cacheDir);
+	if (!transpileCachePrunes.has(cacheDir)) transpileCachePrunes.set(cacheDir, pruneUnusedTranspileCaches(cacheDir));
 	return cacheDir;
 }
 
-function pruneStaleTranspileCaches(currentDir: string): void {
+/** Sets the modification time of a cache directory in use, which a process removing unused ones goes by. */
+function markTranspileCacheUsed(cacheDir: string): void {
+	const now = Date.now();
+	if (now - (transpileCacheUseMarks.get(cacheDir) ?? Number.NEGATIVE_INFINITY) < TRANSPILE_CACHE_USE_MARK_MS) return;
+	transpileCacheUseMarks.set(cacheDir, now);
+	const time = new Date(now);
+	void fs.promises.utimes(cacheDir, time, time).catch(() => {});
+}
+
+// The name of a version's cache directory: `<version>+<transform format>`, or `<version>` in early releases.
+const TRANSPILE_CACHE_DIR_NAME = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/**
+ * Removes the version cache directories beside `currentDir`, and those that earlier releases kept in `cache/jiti`,
+ * that have not been used for {@link UNUSED_TRANSPILE_CACHE_MS}. Another Atomic using the same agent directory, such
+ * as a source checkout beside an installed Atomic, or another version, keeps its cache while it uses it. Only
+ * directories named like a version's cache are removed. Never rejects.
+ */
+async function pruneUnusedTranspileCaches(currentDir: string): Promise<void> {
 	const parent = path.dirname(currentDir);
-	const keep = path.basename(currentDir);
-	void fs.promises
-		.readdir(parent)
-		.then((entries) =>
-			Promise.all(
-				entries
-					.filter((entry) => entry !== keep)
-					.map((entry) => fs.promises.rm(path.join(parent, entry), { recursive: true, force: true })),
-			),
-		)
-		.catch(() => {});
+	const unusedSince = Date.now() - UNUSED_TRANSPILE_CACHE_MS;
+	await Promise.all(
+		[parent, path.join(path.dirname(parent), "jiti")].map(async (dir) => {
+			const entries = await fs.promises.readdir(dir).catch((): string[] => []);
+			await Promise.all(
+				entries.map(async (entry) => {
+					const entryPath = path.join(dir, entry);
+					if (entryPath === currentDir || !TRANSPILE_CACHE_DIR_NAME.test(entry)) return;
+					try {
+						const stats = await fs.promises.lstat(entryPath);
+						if (!stats.isDirectory() || stats.mtimeMs > unusedSince) return;
+						await fs.promises.rm(entryPath, { recursive: true, force: true });
+					} catch {
+						// Another process removed or replaced it, or it cannot be removed; nothing to do.
+					}
+				}),
+			);
+		}),
+	);
 }
 
 /**
  * Per-extension-path record of the complete file graph a transformed (jiti)
  * evaluation read, mapping each absolute file path to the SHA256 hex digest of
  * its content at evaluation time. Persisted under the versioned transpile
- * cache directory so pruneStaleTranspileCaches handles version cleanup.
+ * cache directory so pruneUnusedTranspileCaches handles version cleanup.
  */
 export interface ExtensionGraphManifest {
 	version: 1;
@@ -255,11 +286,16 @@ async function readGraphManifestIn(
 	}
 }
 
+/**
+ * Runs `load` while recording the files it reads, then hands the result and its graph to `recorded` before anything
+ * else runs, so a module the evaluation imports from then on can join that graph, and persists the graph.
+ */
 async function recordExtensionGraph<T>(
 	extensionPath: string,
-	cacheDir: string | undefined,
+	cacheDir: string,
 	load: () => Promise<T>,
-): Promise<{ result: T; manifest: ExtensionGraphManifest }> {
+	recorded: (result: T, manifest: ExtensionGraphManifest) => void,
+): Promise<T> {
 	const recorder = createGraphRecorder(cacheDir);
 	activeGraphRecorders.add(recorder);
 	installReadFileSyncObserver();
@@ -275,8 +311,9 @@ async function recordExtensionGraph<T>(
 		extensionPath,
 		files: Object.fromEntries([...recorder.files.entries()].sort(([a], [b]) => a.localeCompare(b))),
 	};
+	recorded(result, manifest);
 	await writeGraphManifest(manifest, cacheDir);
-	return { result, manifest };
+	return result;
 }
 
 /**
@@ -331,7 +368,7 @@ function withDeferredGraphRecording(
 	extensionPath: string,
 	cacheDir: string,
 	factory: ExtensionFactory,
-	owner?: RetainedTransformedLoad,
+	owner: RetainedTransformedLoad,
 ): ExtensionFactory {
 	return async (pi) => {
 		const recorder = createGraphRecorder(cacheDir);
@@ -347,15 +384,15 @@ function withDeferredGraphRecording(
 	};
 }
 
-/** Merges into the retained evaluation for `extensionPath`; with `owner`, only while that is still `owner`. */
+/** Merges into `owner`'s graph while it is still the retained evaluation for `extensionPath`. */
 async function mergeDeferredGraphReads(
 	extensionPath: string,
 	cacheDir: string,
 	files: Map<string, string>,
-	owner?: RetainedTransformedLoad,
+	owner: RetainedTransformedLoad,
 ): Promise<void> {
 	const retained = retainedTransformedLoads.get(extensionPath);
-	if (!retained || retained.cacheDir !== cacheDir || (owner !== undefined && retained !== owner)) return;
+	if (retained !== owner || retained.cacheDir !== cacheDir) return;
 	let changed = false;
 	for (const [filePath, hash] of files) {
 		if (retained.manifest.files[filePath] !== hash) {
@@ -369,10 +406,10 @@ async function mergeDeferredGraphReads(
 const lateReadWrites = new WeakSet<RetainedTransformedLoad>();
 
 /**
- * Adds a module that a retained evaluation of a builtin package's source evaluated after its graph was recorded, such
- * as one it imported lazily, to that evaluation's graph, while it is still the evaluation /reload would reuse. An edit
- * to the module then makes /reload evaluate the extension again instead of keeping the module as it was (#6118).
- * The digest is of the source jiti evaluated; the manifest is written once per burst of modules.
+ * Adds a module that a retained evaluation evaluated after its graph was recorded, such as one it imported lazily, to
+ * that evaluation's graph, while it is still the evaluation /reload would reuse. An edit to the module then makes
+ * /reload evaluate the extension again instead of keeping the module as it was (#6118). The digest is of the source
+ * jiti evaluated; the manifest is written once per burst of modules.
  */
 function recordLateModule(
 	extensionPath: string,
@@ -679,6 +716,9 @@ export const extensionLoaderTestHooks = {
 	getAliases,
 	findPackageRoot,
 	getTranspileCacheDir: (agentDir?: string): Promise<string | undefined> => resolveTranspileCacheDir(agentDir),
+	/** The removal of unused cache directories that setting up `agentDir`'s cache started, if any. */
+	transpileCachePrune: (agentDir: string): Promise<void> | undefined =>
+		transpileCachePrunes.get(getExtensionTranspileCacheDir(path.resolve(agentDir))),
 	graphManifestPath: (extensionPath: string, agentDir: string = getAgentDir()): string =>
 		graphManifestPath(extensionPath, getExtensionTranspileCacheDir(path.resolve(agentDir))),
 	readExtensionGraphManifest,
@@ -718,22 +758,17 @@ async function importExtensionModule(
 		resolutionBaseUrl(import.meta.url),
 		() => cacheDir,
 	);
-	// Atomic's own packages as a source checkout loads them: their deferred imports are transformed in a worker, and a
-	// retained evaluation keeps the modules it evaluates later in its graph (#6118).
-	const sourceBuiltin: SourceBuiltinLoad | undefined =
-		!isSingleFileBuild && isSourceBuiltinExtensionPath(extensionPath)
-			? { createJiti: createJitiImpl, cacheDir }
-			: undefined;
+	// Atomic's own packages as a source checkout loads them: their entries and deferred imports are transformed in a
+	// worker (#6118).
+	const sourceBuiltin = !isSingleFileBuild && isSourceBuiltinExtensionPath(extensionPath);
+	// The evaluation /reload may reuse, from the moment its graph is recorded: the modules it evaluates later join it.
 	let retained: RetainedTransformedLoad | undefined;
 	installReloadableScripts((id) => createJitiImpl(id, { moduleCache: false, fsCache: false }), importAfterEvaluation);
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
 		fsCache: false,
 		transform: (options) => {
-			if (sourceBuiltin) {
-				sourceBuiltin.template ??= transformTemplate(options);
-				if (retained) recordLateModule(extensionPath, retained, options.filename, options.source);
-			}
+			if (retained) recordLateModule(extensionPath, retained, options.filename, options.source);
 			const { code } = transformSource(options);
 			return { code: withReloadableScriptPrologue(code, options.filename ?? "", options.source) };
 		},
@@ -743,7 +778,7 @@ async function importExtensionModule(
 		virtualModules: await getVirtualModules(),
 		...(!isSingleFileBuild ? { alias: await getAliases() } : {}),
 	});
-	if (sourceBuiltin) registerSourceBuiltinLoad(jiti, sourceBuiltin);
+	if (sourceBuiltin) registerSourceBuiltinLoad(jiti, { createJiti: createJitiImpl, cacheDir });
 	const specifier = extensionImportSpecifier(importPath, cacheToken);
 	// The runtime would keep a JavaScript entry it loads itself until the process exits, so jiti's transform
 	// evaluates it instead, as on every reload (#4988). Installed builtin bundles cannot change while Atomic runs,
@@ -758,16 +793,36 @@ async function importExtensionModule(
 			await transformSource.flush();
 		}
 	};
+	const flushingFactory = (loadedFactory: ExtensionFactory): ExtensionFactory =>
+		cacheDir === undefined
+			? loadedFactory
+			: async (pi) => {
+					try {
+						return await loadedFactory(pi);
+					} finally {
+						await transformSource.flush();
+					}
+				};
+	// Unless the runtime imports the entry itself, a cold cache would have jiti transform a builtin package's source
+	// graph on the main thread.
+	if (sourceBuiltin && !jiti.options.tryNative) await prepareSourceEntry(jiti, importPath);
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
 	// recorded into a content-hash manifest. Without a transpile cache there is
 	// nowhere to persist the manifest, so the evaluation is not retained.
 	let module: unknown;
-	let recordedManifest: ExtensionGraphManifest | undefined;
 	if (forceTransformedImports && cacheDir !== undefined) {
-		const recorded = await recordExtensionGraph(extensionPath, cacheDir, importEntry);
-		module = recorded.result;
-		recordedManifest = recorded.manifest;
+		module = await recordExtensionGraph(extensionPath, cacheDir, importEntry, (loaded, manifest) => {
+			if (typeof loaded !== "function") return;
+			const load: RetainedTransformedLoad = {
+				factory: flushingFactory(loaded as ExtensionFactory),
+				manifest,
+				cacheDir,
+			};
+			load.factory = withDeferredGraphRecording(extensionPath, cacheDir, load.factory, load);
+			retainedTransformedLoads.set(extensionPath, load);
+			retained = load;
+		});
 	} else {
 		module = await importEntry();
 	}
@@ -776,25 +831,8 @@ async function importExtensionModule(
 	if ((isWindows || jiti.options.tryNative) && !forceTransformedImports) {
 		nativelyImportedPaths.add(extensionPath);
 	}
-	const loadedFactory = module as ExtensionFactory;
-	if (typeof loadedFactory !== "function") return undefined;
-	let factory: ExtensionFactory = loadedFactory;
-	if (cacheDir !== undefined) {
-		factory = async (pi) => {
-			try {
-				return await loadedFactory(pi);
-			} finally {
-				await transformSource.flush();
-			}
-		};
-	}
-	if (recordedManifest && cacheDir !== undefined) {
-		const load: RetainedTransformedLoad = { factory, manifest: recordedManifest, cacheDir };
-		load.factory = withDeferredGraphRecording(extensionPath, cacheDir, factory, sourceBuiltin ? load : undefined);
-		factory = load.factory;
-		retainedTransformedLoads.set(extensionPath, load);
-		if (sourceBuiltin) retained = load;
-	}
+	if (typeof module !== "function") return undefined;
+	const factory = retained?.factory ?? flushingFactory(module as ExtensionFactory);
 	if (isCurrentCacheToken(cacheToken)) {
 		extensionCache.set(extensionPath, factory);
 	}
@@ -831,6 +869,29 @@ async function loadTransformedExtensionModule(
 		return retained.factory;
 	}
 	return importExtensionModule(extensionPath, cacheToken, true, cacheDir);
+}
+
+/**
+ * Before a batch of extension loads: the builtin packages' source entries among `extensionPaths` (a source checkout)
+ * that jiti will transform and whose transforms are not stored have their module graphs transformed in workers, so
+ * their loads do not transform them on the main thread. Does nothing for any other extension or layout. The transpile
+ * cache is chosen as {@link loadExtensionModule} chooses it.
+ */
+export async function prepareExtensionEntries(extensionPaths: readonly string[], agentDir?: string): Promise<void> {
+	if (isBunBinary || isBundledBuild) return;
+	const entries = extensionPaths.filter(isSourceBuiltinExtensionPath);
+	if (entries.length === 0) return;
+	const cacheDir = await resolveTranspileCacheDir(agentDir);
+	if (cacheDir === undefined) return;
+	const createJitiImpl = await getCreateJiti();
+	// The options a load's jiti gets that decide whether it imports the entry natively and how it transforms modules.
+	const { options } = createJitiImpl(resolutionBaseUrl(import.meta.url), { moduleCache: false, fsCache: false });
+	const transformed = entries.filter((entry) => nativelyImportedPaths.has(entry) || !options.tryNative);
+	const importPaths = await Promise.all(transformed.map((entry) => realpathJs(entry).catch(() => entry)));
+	await prepareSourceEntries(
+		{ createJiti: createJitiImpl, cacheDir, template: transformTemplate(options) },
+		importPaths,
+	);
 }
 
 /**
