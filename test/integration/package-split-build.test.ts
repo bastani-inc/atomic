@@ -293,16 +293,20 @@ test(
 	LAYOUT_TIMEOUT_MS,
 );
 
-/** A one-page PDF whose page says `text`, written by hand: PDF needs no library to write. */
-function onePagePdf(text: string): string {
-	const stream = `BT /F1 18 Tf 20 100 Td (${text}) Tj ET`;
-	const objects = [
+/** A one-page PDF drawing `content` with `fonts` (resource name to font dictionary), written by hand. */
+function pdfWith(content: string, fonts: Record<string, string>): string {
+	const objects: string[] = [
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-		`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
-		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		"",
+		`<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
 	];
+	const fontRefs: string[] = [];
+	for (const [name, dictionary] of Object.entries(fonts)) {
+		objects.push(dictionary);
+		fontRefs.push(`/${name} ${objects.length} 0 R`);
+	}
+	objects[2] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << ${fontRefs.join(" ")} >> >> >>`;
 	let pdf = "%PDF-1.4\n";
 	const offsets = objects.map((object, index) => {
 		const offset = pdf.length;
@@ -315,58 +319,121 @@ function onePagePdf(text: string): string {
 	return `${pdf}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
 }
 
+const HELVETICA = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+/** A one-page PDF whose page says `text`. */
+function onePagePdf(text: string): string {
+	return pdfWith(`BT /F1 18 Tf 72 700 Td (${text}) Tj ET`, { F1: HELVETICA });
+}
+
+/** A DOCX whose document body is `body`, written by hand. */
+async function docxWith(body: string): Promise<Uint8Array> {
+	const zip = new JSZip();
+	zip.file(
+		"[Content_Types].xml",
+		`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+	);
+	zip.file(
+		"_rels/.rels",
+		`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+	);
+	zip.file(
+		"word/document.xml",
+		`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}</w:body></w:document>`,
+	);
+	return zip.generateAsync({ type: "uint8array" });
+}
+
+/**
+ * Documents and the text a read gives for each. The last four need the converter's dependencies at the versions a
+ * fresh install resolves (MuPDF 1.28.6 keeps the text state across a TJ array and maps a subset Symbol font; mammoth
+ * 1.13 reads custom XML and moved paragraphs): the bundle must not fall behind them.
+ */
+const DOCUMENTS: { name: string; content: () => string | Promise<Uint8Array>; texts: string[] }[] = [
+	{
+		name: "sample.docx",
+		content: () => docxWith("<w:p><w:r><w:t>Hello DOCX</w:t></w:r></w:p>"),
+		texts: ["Hello DOCX"],
+	},
+	{ name: "sample.pdf", content: () => onePagePdf("Hello PDF"), texts: ["Hello PDF"] },
+	{
+		name: "text-state.pdf",
+		content: () =>
+			pdfWith(
+				"BT /F1 18 Tf 72 700 Td [(Hello) -200 2 Tc (World) 0 Tc (Again)] TJ ET BT /F1 18 Tf 72 650 Td (Second line) Tj ET",
+				{ F1: HELVETICA },
+			),
+		texts: ["Hello WorldAgain", "Second line"],
+	},
+	{
+		name: "subset-symbol.pdf",
+		content: () =>
+			pdfWith("BT /F1 18 Tf 72 700 Td (abgd) Tj ET BT /F2 18 Tf 72 650 Td (Plain text) Tj ET", {
+				F1: "<< /Type /Font /Subtype /Type1 /BaseFont /ABCDEF+Symbol >>",
+				F2: HELVETICA,
+			}),
+		texts: ["αβγδ", "Plain text"],
+	},
+	{
+		name: "custom-xml.docx",
+		content: () =>
+			docxWith(
+				'<w:p><w:r><w:t>Before</w:t></w:r></w:p><w:customXml w:element="clause"><w:p><w:r><w:t>Inside custom XML block</w:t></w:r></w:p></w:customXml><w:p><w:customXml w:element="name"><w:r><w:t>inline custom</w:t></w:r></w:customXml><w:r><w:t> after</w:t></w:r></w:p>',
+			),
+		texts: ["Before", "Inside custom XML block", "inline custom after"],
+	},
+	{
+		name: "moved.docx",
+		content: () =>
+			docxWith(
+				'<w:p><w:r><w:t>Kept</w:t></w:r></w:p><w:p><w:moveTo w:id="1" w:author="a"><w:r><w:t>Moved paragraph text</w:t></w:r></w:moveTo></w:p>',
+			),
+		texts: ["Kept", "Moved paragraph text"],
+	},
+];
+
 test(
 	"documents convert with the document converter bundled into the shared files, loading only mupdf from node_modules",
 	async () => {
 		const { atomic } = installedLayout();
 		const documents = fs.mkdtempSync(join(layoutRoot ?? os.tmpdir(), "documents "));
-		const zip = new JSZip();
-		zip.file(
-			"[Content_Types].xml",
-			`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
-		);
-		zip.file(
-			"_rels/.rels",
-			`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
-		);
-		zip.file(
-			"word/document.xml",
-			`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello DOCX</w:t></w:r></w:p></w:body></w:document>`,
-		);
-		fs.writeFileSync(join(documents, "sample.docx"), await zip.generateAsync({ type: "uint8array" }));
-		fs.writeFileSync(join(documents, "sample.pdf"), onePagePdf("Hello PDF"));
-		const probe = spawnSync(
-			process.execPath,
-			[
-				"--input-type=module",
-				"-e",
-				`import { registerHooks } from "node:module";
-				const packages = new Set();
+		for (const { name, content } of DOCUMENTS) fs.writeFileSync(join(documents, name), await content());
+		const probeFile = join(documents, "probe.mjs");
+		fs.writeFileSync(
+			probeFile,
+			`const packages = new Set();
+			if (!process.versions.bun) {
+				const { registerHooks } = await import("node:module");
 				registerHooks({ load(url, context, next) {
 					const match = /\\/node_modules\\/((?:@[^/]+\\/)?[^/]+)\\//.exec(decodeURIComponent(url).replaceAll("\\\\", "/"));
 					if (match) packages.add(match[1]);
 					return next(url, context);
 				} });
-				const { createReadToolDefinition } = await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "index.js")).href)});
-				const before = new Set(packages);
-				const read = createReadToolDefinition(${JSON.stringify(documents)});
-				const text = [];
-				for (const path of ["sample.docx", "sample.pdf"]) {
-					const result = await read.execute("read", { path }, undefined, undefined, {});
-					text.push(result.content.map((item) => item.text ?? "").join("\\n"));
-				}
-				console.log(JSON.stringify({ text, loaded: [...packages].filter((name) => !before.has(name)) }));`,
-			],
-			{ encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS },
+			}
+			const { createReadToolDefinition } = await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "index.js")).href)});
+			const before = new Set(packages);
+			const read = createReadToolDefinition(${JSON.stringify(documents)});
+			const text = [];
+			for (const path of ${JSON.stringify(DOCUMENTS.map(({ name }) => name))}) {
+				const result = await read.execute("read", { path }, undefined, undefined, {});
+				text.push(result.content.map((item) => item.text ?? "").join("\\n"));
+			}
+			console.log(JSON.stringify({ text, loaded: [...packages].filter((name) => !before.has(name)) }));`,
 		);
-		assert.equal(probe.status, 0, probe.stderr);
-		const { text, loaded } = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "{}") as {
-			text: string[];
-			loaded: string[];
-		};
-		assert.match(text[0] ?? "", /Hello DOCX/);
-		assert.match(text[1] ?? "", /Hello PDF/);
-		assert.deepEqual(loaded, ["mupdf"]);
+		for (const runtime of [process.execPath, bunExecutable()]) {
+			const probe = spawnSync(runtime, [probeFile], { encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS });
+			assert.equal(probe.status, 0, `${runtime}: ${probe.stderr}`);
+			const { text, loaded } = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "{}") as {
+				text: string[];
+				loaded: string[];
+			};
+			for (const [index, { name, texts }] of DOCUMENTS.entries()) {
+				for (const expected of texts)
+					assert.ok(text[index]?.includes(expected), `${runtime} ${name}: ${text[index]}`);
+			}
+			// Node reports what loads from node_modules; Bun has no load hooks.
+			if (runtime === process.execPath) assert.deepEqual(loaded, ["mupdf"]);
+		}
 	},
 	LAYOUT_TIMEOUT_MS,
 );

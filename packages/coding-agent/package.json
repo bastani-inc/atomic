@@ -141,7 +141,7 @@
     "lovely-mermaid": "0.3.3",
     "lru-cache": "11.5.3",
     "minimatch": "11.0.4",
-    "mupdf": "1.28.0",
+    "mupdf": "1.28.6",
     "proper-lockfile": "4.1.2",
     "quickjs-wasi": "3.6.3",
     "semver": "7.8.5",

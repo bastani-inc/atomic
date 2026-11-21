@@ -30,7 +30,7 @@
 				"lovely-mermaid": "0.3.3",
 				"lru-cache": "11.5.3",
 				"minimatch": "11.0.4",
-				"mupdf": "1.28.0",
+				"mupdf": "1.28.6",
 				"proper-lockfile": "4.1.2",
 				"quickjs-wasi": "3.6.3",
 				"semver": "7.8.5",
@@ -1538,9 +1538,9 @@
 			"license": "MIT"
 		},
 		"node_modules/mupdf": {
-			"version": "1.28.0",
-			"resolved": "https://registry.npmjs.org/mupdf/-/mupdf-1.28.0.tgz",
-			"integrity": "sha512-ACUnbpECaQ5JLq04pwd89lS+0IGMest5qL5tb08g9TAR7bDtfqflHEkb2Xm3o4rvC/szguLiV+WEbW9kstj8Sg==",
+			"version": "1.28.6",
+			"resolved": "https://registry.npmjs.org/mupdf/-/mupdf-1.28.6.tgz",
+			"integrity": "sha512-LsNqk3a9TNJGjJKWVOUK1YMlWJNxFh8bIf+SSxGI+A+WXDlkwc4R2PW/n1qINb4YpqZfOazjPdRqw95WpmCrfw==",
 			"license": "AGPL-3.0-or-later"
 		},
 		"node_modules/node-domexception": {
