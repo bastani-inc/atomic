@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { type AgentPanelItem, AgentPanelSourceHub } from "../src/core/tasks/agent-panel-source.ts";
 import { agentViewBridge } from "../src/modes/interactive/agent-view/agent-view-bridge.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { EngineCustomUiService } from "../src/modes/interactive-engine/engine-custom-ui.ts";
 import type { InteractiveEngineMessage } from "../src/modes/interactive-engine/protocol.ts";
-import { bindAgentPanel, setAgentPanelVisible } from "../src/modes/rpc/agent-panel-bridge.ts";
+import { bindAgentPanel, hideAgentPanelFor, setAgentPanelVisible } from "../src/modes/rpc/agent-panel-bridge.ts";
 import { installEngineAgentViewBridge } from "../src/modes/rpc/agent-view-rpc-panel.ts";
 
 /**
@@ -85,5 +87,56 @@ test("a request says nothing of the panel when another view still hides it, it h
 		setAgentPanelVisible(empty.session, true);
 	} finally {
 		empty.dispose();
+	}
+});
+
+test("only the close of the view that hid the agent panel, as the panel opens again, says the panel comes back", async () => {
+	initTheme("dark");
+	const hub = new AgentPanelSourceHub();
+	let rows: AgentPanelItem[] = [worker];
+	let changed = () => {};
+	hub.register({
+		items: () => rows,
+		subscribe: (listener) => {
+			changed = listener;
+			return () => {};
+		},
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } } as unknown as AgentSession;
+	const lines: string[] = [];
+	const engine = new EngineCustomUiService((line) => lines.push(line), new KeybindingsManager());
+	const unbind = bindAgentPanel(session, {
+		setWidget: (key: string, factory: unknown) => engine.setWidget(key, factory as never),
+		requestRender() {},
+	} as never);
+	/** Open a view, close it with `close`, and answer the done the engine announced. */
+	const closeView = async (close: (done: () => void) => void) => {
+		let done!: () => void;
+		const shown = engine.custom<void>((_tui, _theme, _keys, finish) => {
+			done = () => finish();
+			return { render: () => ["Tasks"], invalidate() {} };
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		lines.length = 0;
+		close(done);
+		await shown;
+		return lines.map((line) => JSON.parse(line)).find((message) => message.type === "engine_custom_done");
+	};
+	try {
+		const tasks = hideAgentPanelFor(session);
+		tasks.hide();
+		await Promise.resolve();
+		assert.equal((await closeView((done) => tasks.show(done)))?.panel, true);
+		// Any other view's close says nothing, also in the same turn.
+		assert.equal((await closeView((done) => done()))?.panel, undefined);
+		// With no rows left the panel does not open again: no wait.
+		const empty = hideAgentPanelFor(session);
+		empty.hide();
+		await Promise.resolve();
+		rows = [];
+		changed();
+		assert.equal((await closeView((done) => empty.show(done)))?.panel, undefined);
+	} finally {
+		unbind();
 	}
 });
