@@ -248,7 +248,7 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 
 InteractiveModeBase.prototype.setupAutocompleteProvider = function (
 	this: InteractiveModeBase,
-	options?: { preserveSelection?: boolean },
+	options?: { preserveSelection?: boolean; refreshCommandMenu?: boolean },
 ): void {
 	let provider = this.createBaseAutocompleteProvider();
 	for (const wrapProvider of this.autocompleteProviderWrappers) {

@@ -14,6 +14,25 @@ export interface QueuedMessageDelivery {
 	readonly text: string;
 	/** Its place in the order the session's turns took messages. */
 	readonly order: number;
+	/** How its save can be found in the session's store after the engine delivering it is lost. */
+	readonly receipt?: QueuedMessageReceipt;
+}
+
+/**
+ * How a queued message's save is found in its session's store: the message is saved with `id`, and only after the
+ * session's stored entries reached `after` (in generation `epoch` of the store), as it was taken after that. `typed` is
+ * the text submitted for it, when it is not the text it was queued as.
+ */
+export interface QueuedMessageReceipt {
+	readonly id: string;
+	readonly after: number;
+	readonly epoch?: string;
+	readonly typed?: string;
+	/**
+	 * The engine that took it writes its session to a local file, so nothing it wrote can land after it exited: only then
+	 * can a replacement prove the message was never saved.
+	 */
+	readonly local?: true;
 }
 
 /** Messages per lane, each lane in the order the turns took them. */
@@ -52,13 +71,19 @@ export function beginQueuedMessageDelivery(
 	session: object,
 	lane: QueuedMessageDelivery["lane"],
 	text: string,
+	receipt?: QueuedMessageReceipt,
 ): QueuedMessageDelivery {
 	let deliveries = sessions.get(session);
 	if (deliveries === undefined) {
 		deliveries = { taken: 0, underWay: new Map() };
 		sessions.set(session, deliveries);
 	}
-	const delivery: QueuedMessageDelivery = { lane, text, order: ++deliveries.taken };
+	const delivery: QueuedMessageDelivery = {
+		lane,
+		text,
+		order: ++deliveries.taken,
+		...(receipt === undefined ? {} : { receipt }),
+	};
 	deliveries.underWay.set(delivery.order, delivery);
 	deliveries.lanes = undefined;
 	underWay.add(delivery);
@@ -115,19 +140,83 @@ export function queuedMessagesUnderWay(session: object): QueuedMessageLanes {
 	return deliveries.lanes;
 }
 
-/** A message a turn took, as an engine names it to its host. */
+/** A message a turn took, as an engine names it to its host, with its receipt when the engine keeps one. */
 export interface QueuedDeliveryEntry {
 	readonly lane: QueuedMessageDelivery["lane"];
 	readonly text: string;
+	readonly receipt?: QueuedMessageReceipt;
+}
+
+/**
+ * The queued messages dropped as a run ended, by its `agent_end` event, until the one that gives them back takes them:
+ * only for a session that has one (see {@link keepDroppedQueuedMessages}), so nothing else that keeps the event keeps
+ * them.
+ */
+const droppedAtRunEnd = new WeakMap<object, readonly QueuedDeliveryEntry[]>();
+/**
+ * Per session, how many take what its runs drop from its queue to give it back to the user: a main chat that shows the
+ * session, or the binding that tells an engine's host about it.
+ */
+const droppedKeepers = new WeakMap<object, number>();
+
+/**
+ * What `session`'s runs drop from its queue is given back to the user: its main chat, or its engine's host, takes it
+ * from each run's end. Answers the release, which the taker calls once it no longer follows the session.
+ */
+export function keepDroppedQueuedMessages(session: object): () => void {
+	droppedKeepers.set(session, (droppedKeepers.get(session) ?? 0) + 1);
+	let kept = true;
+	return () => {
+		if (!kept) return;
+		kept = false;
+		const keepers = (droppedKeepers.get(session) ?? 1) - 1;
+		if (keepers > 0) droppedKeepers.set(session, keepers);
+		else droppedKeepers.delete(session);
+	};
+}
+
+/** Whether something gives `session`'s dropped queued messages back to the user. */
+export function keepsDroppedQueuedMessages(session: object): boolean {
+	return droppedKeepers.has(session);
+}
+
+/**
+ * The run that sends `event`, an `agent_end`, dropped `dropped`: queued messages runs took and lost twice, as they were
+ * submitted, which are no longer queued and were never sent.
+ */
+export function noteQueuedMessagesDropped(event: object, dropped: readonly QueuedDeliveryEntry[]): void {
+	droppedAtRunEnd.set(event, dropped);
+}
+
+/**
+ * Take the queued messages dropped as the run that sent `event`, an `agent_end`, ended; undefined when none was. Taken
+ * once: the event holds them no longer.
+ */
+export function takeQueuedMessagesDroppedAt(event: object): readonly QueuedDeliveryEntry[] | undefined {
+	const dropped = droppedAtRunEnd.get(event);
+	droppedAtRunEnd.delete(event);
+	return dropped;
+}
+
+/** `copy` is sent in place of `event`, an `agent_end`: what that run's end dropped goes with it instead. */
+export function carryDroppedQueuedMessages(event: object, copy: object): void {
+	const dropped = droppedAtRunEnd.get(event);
+	if (dropped === undefined) return;
+	droppedAtRunEnd.delete(event);
+	droppedAtRunEnd.set(copy, dropped);
 }
 
 /**
  * What changed in the deliveries an engine told its host about: the `ended` oldest of them are no longer under way,
- * then the turns took `taken`, in order.
+ * then the turns took `taken`, in order. With a run's `agent_end`, `dropped` are the messages that run took and lost a
+ * second time, as submitted, which are no longer queued (see `requeueQueuedMessagesNotStarted`).
  */
 export interface QueuedDeliveryChange {
 	readonly ended?: number;
 	readonly taken?: readonly QueuedDeliveryEntry[];
+	readonly dropped?: readonly QueuedDeliveryEntry[];
+	/** With a queued user message's start, or its save, the receipt id the message is queued (and saved) with. */
+	readonly message?: string;
 }
 
 /**
@@ -149,9 +238,14 @@ export class QueuedDeliveryRelay {
 	private toldThrough = 0;
 	private readonly retired = new WeakSet<object>();
 
-	/** The change to send with `event`, which `session` sends now; undefined when there is none to send with it. */
-	note(session: object, event: { readonly type: string }): QueuedDeliveryChange | undefined {
+	/**
+	 * The change to send with `event`, which `session` sends now; undefined when there is none to send with it. `message`
+	 * is the receipt id of the queued user message `event` starts or saves.
+	 */
+	note(session: object, event: { readonly type: string }, message?: string): QueuedDeliveryChange | undefined {
 		// Before it is written, a newer update of the same tool call can replace a tool update, and a change with it.
+		// Taken from a run's end even when it is not sent, so the event holds them no longer.
+		const dropped = event.type === "agent_end" ? (takeQueuedMessagesDroppedAt(event) ?? []) : [];
 		if (event.type === "tool_execution_update" || this.retired.has(session)) return undefined;
 		const start = this.head;
 		for (let next = this.told[this.head]; next !== undefined && !underWay.has(next); next = this.told[this.head]) {
@@ -166,10 +260,20 @@ export class QueuedDeliveryRelay {
 			this.head = 0;
 		}
 		for (const delivery of taken) this.told.push(delivery);
-		if (ended === 0 && taken.length === 0) return undefined;
+		if (ended === 0 && taken.length === 0 && dropped.length === 0 && message === undefined) return undefined;
 		return {
+			...(message === undefined ? {} : { message }),
 			...(ended > 0 ? { ended } : {}),
-			...(taken.length > 0 ? { taken: taken.map(({ lane, text }) => ({ lane, text })) } : {}),
+			...(taken.length > 0
+				? {
+						taken: taken.map(({ lane, text, receipt }) => ({
+							lane,
+							text,
+							...(receipt === undefined ? {} : { receipt }),
+						})),
+					}
+				: {}),
+			...(dropped.length > 0 ? { dropped: dropped.map(({ lane, text }) => ({ lane, text })) } : {}),
 		};
 	}
 
@@ -225,6 +329,11 @@ export class QueuedDeliveryView {
 	/** The messages being delivered, per lane; the same object until they change. */
 	get texts(): QueuedMessageLanes {
 		return this.lanes;
+	}
+
+	/** The messages being delivered, oldest first, with their receipts. */
+	get underWay(): readonly QueuedDeliveryEntry[] {
+		return this.entries;
 	}
 
 	/** A line brought `change`: what it took joins now; its end, returned, applies when its event reaches the chat. */
@@ -290,19 +399,59 @@ export function takeQueuedDeliveryChange(event: object): QueuedDeliveryChange | 
 /** `value` as a change in deliveries, as an engine writes one; undefined for anything else. */
 function parseQueuedDeliveryChange(value: unknown): QueuedDeliveryChange | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-	const { ended, taken } = value as { ended?: unknown; taken?: unknown };
+	const { ended, taken, dropped, message } = value as {
+		ended?: unknown;
+		taken?: unknown;
+		dropped?: unknown;
+		message?: unknown;
+	};
 	if (ended !== undefined && !(typeof ended === "number" && Number.isSafeInteger(ended) && ended >= 0))
 		return undefined;
-	if (taken !== undefined && !Array.isArray(taken)) return undefined;
-	const entries: QueuedDeliveryEntry[] = [];
-	for (const entry of (taken as unknown[] | undefined) ?? []) {
-		if (typeof entry !== "object" || entry === null) return undefined;
-		const { lane, text } = entry as { lane?: unknown; text?: unknown };
-		if ((lane !== "steer" && lane !== "followUp") || typeof text !== "string") return undefined;
-		entries.push({ lane, text });
-	}
+	if (message !== undefined && typeof message !== "string") return undefined;
+	const entries = parseQueuedDeliveryEntries(taken);
+	const droppedEntries = parseQueuedDeliveryEntries(dropped);
+	if (entries === undefined || droppedEntries === undefined) return undefined;
 	return {
 		...(typeof ended === "number" && ended > 0 ? { ended } : {}),
 		...(entries.length > 0 ? { taken: entries } : {}),
+		...(droppedEntries.length > 0 ? { dropped: droppedEntries } : {}),
+		...(message === undefined ? {} : { message }),
+	};
+}
+
+/** `value`, absent or a list of messages with their lanes, as an engine writes one; undefined for anything else. */
+function parseQueuedDeliveryEntries(value: unknown): QueuedDeliveryEntry[] | undefined {
+	if (value !== undefined && !Array.isArray(value)) return undefined;
+	const entries: QueuedDeliveryEntry[] = [];
+	for (const entry of (value as unknown[] | undefined) ?? []) {
+		if (typeof entry !== "object" || entry === null) return undefined;
+		const { lane, text, receipt } = entry as { lane?: unknown; text?: unknown; receipt?: unknown };
+		if ((lane !== "steer" && lane !== "followUp") || typeof text !== "string") return undefined;
+		const parsed = parseQueuedMessageReceipt(receipt);
+		entries.push(parsed === undefined ? { lane, text } : { lane, text, receipt: parsed });
+	}
+	return entries;
+}
+
+/** `value` as a receipt, as an engine writes one; undefined for anything else, which leaves the message without one. */
+function parseQueuedMessageReceipt(value: unknown): QueuedMessageReceipt | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const { id, after, epoch, typed, local } = value as {
+		id?: unknown;
+		after?: unknown;
+		epoch?: unknown;
+		typed?: unknown;
+		local?: unknown;
+	};
+	if (typeof id !== "string" || !(typeof after === "number" && Number.isSafeInteger(after) && after >= 0))
+		return undefined;
+	if ((epoch !== undefined && typeof epoch !== "string") || (typed !== undefined && typeof typed !== "string"))
+		return undefined;
+	return {
+		id,
+		after,
+		...(epoch === undefined ? {} : { epoch }),
+		...(typed === undefined ? {} : { typed }),
+		...(local === true ? { local } : {}),
 	};
 }

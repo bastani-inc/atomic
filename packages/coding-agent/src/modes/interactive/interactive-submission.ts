@@ -1,3 +1,5 @@
+import type { DeferredUserInputEcho } from "./interactive-mode-base.ts";
+
 /**
  * One Enter press, carried end to end.
  *
@@ -13,6 +15,8 @@ export interface InteractiveSubmission {
 	text: string;
 	/** Exact editor buffer captured for this submission. */
 	draft: string;
+	/** The echo the chat drew for this submission, when it drew one. */
+	echo?: DeferredUserInputEcho;
 }
 
 /**
