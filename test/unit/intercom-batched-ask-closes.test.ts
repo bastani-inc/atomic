@@ -212,3 +212,45 @@ test("a reopened session reads asks closed one at a time and asks closed togethe
 	await manager.appendMessage({ role: "user", content: [{ type: "text", text: "after" }], timestamp: 3 });
 	assert.deepEqual(pendingIds(await reopen()), ["ask-3"]);
 });
+
+/**
+ * Moving back to an entry before the latest compaction reopens the session from a resume index rebuilt from its saved
+ * entries. Asks recorded together, closed or answered, stay out of that rebuilt window too.
+ */
+test("asks recorded together stay out of a window rebuilt for an entry before the latest compaction", async () => {
+	const { manager, reopen } = await sqliteSession();
+	await ownerHolding(manager, 3);
+	await closeFinishedChildAsks(closer(manager), { sessionManager: manager });
+	await manager.appendCustomEntry("intercom_ask", {
+		askId: "outbound-1",
+		sessionId: manager.getSessionId(),
+		to: child.name,
+		recipientId: child.id,
+		question: "status?",
+		askedAt: 1,
+	});
+	await manager.appendCustomEntry("intercom_ask_settled", { askIds: ["outbound-1"], state: "answered" });
+	await manager.appendMessage({ role: "user", content: [{ type: "text", text: "A" }], timestamp: 2 });
+	await manager.appendCompaction("summary", null, 100, COMPACTION);
+	const kept = await manager.appendMessage({ role: "user", content: [{ type: "text", text: "B" }], timestamp: 3 });
+	await manager.appendCompaction("summary 2", null, 100, COMPACTION);
+	await manager.appendMessage({ role: "user", content: [{ type: "text", text: "D" }], timestamp: 4 });
+
+	const moved = await reopen();
+	await moved.recordBranch(kept);
+	const reopened = await reopen();
+
+	for (const session of [moved, reopened]) {
+		assert.deepEqual(pendingIds(session), []);
+		assert.equal(
+			session
+				.getBranch()
+				.some((entry) => entry.type === "custom_message" && entry.customType === "intercom_message"),
+			false,
+		);
+		assert.equal(
+			session.getBranch().some((entry) => entry.type === "custom" && entry.customType === "intercom_ask"),
+			false,
+		);
+	}
+});
