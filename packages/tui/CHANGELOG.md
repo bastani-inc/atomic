@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- `TuiAltScreen.isPointerIdle()` tells whether rows can move on screen without changing what the user selects, presses, drags or searches ([#5693](https://github.com/bastani-inc/atomic/issues/5693)).
+
 ## [0.10.1] - 2026-11-20
 
 ### Added

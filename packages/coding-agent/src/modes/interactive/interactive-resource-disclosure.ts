@@ -63,6 +63,19 @@ InteractiveModeBase.prototype.formatDiagnostics = function (
 	return lines.join("\n");
 };
 
+/** The resource list's sections, by the name in their heading. */
+const resourceSectionNames = new WeakMap<object, string>();
+
+/** The resource list sections `container` shows now, by name. */
+export function mountedResourceSections(container: Container): Map<string, ExpandableText> {
+	const sections = new Map<string, ExpandableText>();
+	for (const child of container.children) {
+		const name = resourceSectionNames.get(child);
+		if (name !== undefined && child instanceof ExpandableText) sections.set(name, child);
+	}
+	return sections;
+}
+
 InteractiveModeBase.prototype.addResourceDisclosure = function (
 	this: InteractiveModeBase,
 	options: {
@@ -77,6 +90,8 @@ InteractiveModeBase.prototype.addResourceDisclosure = function (
 			extensions?: string;
 		};
 		targetContainer?: Container;
+		/** Sections already on screen, by name: one that stays is updated in place and keeps its expansion. */
+		keptSections?: ReadonlyMap<string, ExpandableText>;
 	},
 ): void {
 	const targetContainer = options.targetContainer ?? this.chatContainer;
@@ -88,15 +103,13 @@ InteractiveModeBase.prototype.addResourceDisclosure = function (
 	const addSection = (name: string, labels: string[], expandedBody?: string, sort = true): void => {
 		if (labels.length === 0) return;
 		const collapsedBody = compactList(labels, sort);
-		targetContainer.addChild(
-			new ExpandableText(
-				() => `${theme.fg("mdHeading", `[${name}]`)}\n${collapsedBody}`,
-				() => `${theme.fg("mdHeading", `[${name}]`)}\n${expandedBody ?? collapsedBody}`,
-				this.getStartupExpansionState(),
-				0,
-				0,
-			),
-		);
+		const collapsed = () => `${theme.fg("mdHeading", `[${name}]`)}\n${collapsedBody}`;
+		const expanded = () => `${theme.fg("mdHeading", `[${name}]`)}\n${expandedBody ?? collapsedBody}`;
+		const kept = options.keptSections?.get(name);
+		const section = kept ?? new ExpandableText(collapsed, expanded, this.getStartupExpansionState(), 0, 0);
+		if (kept) kept.replaceText(collapsed, expanded);
+		resourceSectionNames.set(section, name);
+		targetContainer.addChild(section);
 		targetContainer.addChild(new Spacer(1));
 	};
 
