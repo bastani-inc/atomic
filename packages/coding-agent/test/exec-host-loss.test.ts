@@ -143,8 +143,15 @@ describe.skipIf(process.platform === "win32")("ending the commands at once when 
 
 describe("whether the engine's host is gone", () => {
 	test("once the engine's parent is no longer the host, unless the host announced its quit", () => {
-		assert.equal(hostIsGone(4242, 4242, false), false, "the host is still the engine's parent");
-		assert.equal(hostIsGone(4242, 1, false), true, "the engine was given to another parent");
-		assert.equal(hostIsGone(4242, 1, true), false, "a host that announced its quit is not gone");
+		assert.equal(hostIsGone(4242, 4242, false, false), false, "the host is still the engine's parent");
+		assert.equal(hostIsGone(4242, 1, false, false), true, "the engine was given to another parent");
+		assert.equal(hostIsGone(4242, 1, true, false), false, "a host that announced its quit is not gone");
+	});
+
+	test("once the channel to the host closed while the host is still the engine's parent, as while a killed host exits", () => {
+		// The system closes a killed host's pipes before it gives the host's children another parent, and the engine
+		// can exit in between.
+		assert.equal(hostIsGone(4242, 4242, false, true), true, "the host's channel closed without a quit");
+		assert.equal(hostIsGone(4242, 4242, true, true), false, "a host that announced its quit and closed the channel");
 	});
 });

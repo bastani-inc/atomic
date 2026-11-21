@@ -20,6 +20,18 @@ let stdoutTakeoverState: StdoutTakeoverState | undefined;
 const RAW_STDOUT_RETRY_DELAY_MS = 10;
 
 let rawStdoutWriteTail: Promise<void> = Promise.resolve();
+/** Whether a raw stdout write failed, so that this process exits because whoever read its output is gone. */
+let rawStdoutFailed = false;
+
+/** Whether a write of {@link writeRawStdout} or {@link writeRawStdoutControl} failed; the process exits then. */
+export function rawStdoutWriteFailed(): boolean {
+	return rawStdoutFailed;
+}
+
+function exitAfterFailedWrite(): never {
+	rawStdoutFailed = true;
+	process.exit(1);
+}
 
 function isRetryableWriteError(error: Error): boolean {
 	const code = (error as Error & { code?: unknown }).code;
@@ -194,10 +206,10 @@ export function writeRawStdoutControl(text: string): void | Promise<void> {
 	}
 	try {
 		getRawStdoutRecordWrite()(text, (error) => {
-			if (error) process.exit(1);
+			if (error) exitAfterFailedWrite();
 		});
 	} catch {
-		process.exit(1);
+		exitAfterFailedWrite();
 	}
 }
 
@@ -207,7 +219,7 @@ export function writeRawStdout(text: string): void {
 	}
 	rawStdoutWriteTail = rawStdoutWriteTail.then(() => writeRawStdoutChunk(text));
 	void rawStdoutWriteTail.catch(() => {
-		process.exit(1);
+		exitAfterFailedWrite();
 	});
 }
 
