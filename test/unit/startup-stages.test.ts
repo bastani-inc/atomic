@@ -115,7 +115,7 @@ describe("startup stages", () => {
 	);
 
 	test(
-		"Bun loads the stages and then the session's entry modules",
+		"under Bun, which turns the event loop while it loads modules itself, the session's modules load as before",
 		() => {
 			const dir = makeTempDirectory("atomic-startup-stages-bun-");
 			dirs.push(dir);
@@ -125,14 +125,15 @@ describe("startup stages", () => {
 				`const dist = ${JSON.stringify(pathToFileURL(`${DIST}/`).href)};
 const { loadStartupStages } = await import(new URL("utils/startup-stages.js", dist).href);
 await loadStartupStages();
+const stagesLoaded = Object.keys(require.cache).some((path) => /[\\/]startup-stages[\\/]/.test(path));
 const [, main] = await Promise.all([import(new URL("core/http-dispatcher.js", dist).href), import(new URL("main.js", dist).href), import(new URL("cli/settings-startup.js", dist).href)]);
-process.stdout.write(typeof main.main);
+process.stdout.write(JSON.stringify({ stagesLoaded, main: typeof main.main }));
 process.exit(0);
 `,
 			);
 			const result = spawnSyncCollect([bunExecutable(), script], { timeout: WHOLE_APPLICATION_LOAD_TIMEOUT_MS });
 			assert.equal(result.exitCode, 0, result.stderr.toString());
-			assert.equal(result.stdout.toString(), "function");
+			assert.deepEqual(JSON.parse(result.stdout.toString()), { stagesLoaded: false, main: "function" });
 		},
 		WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
 	);
