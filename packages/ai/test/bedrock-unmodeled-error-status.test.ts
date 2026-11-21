@@ -6,6 +6,7 @@ import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { getModel } from "../src/compat.ts";
 import type { Api, AssistantMessage, Model } from "../src/types.ts";
+import { isContextOverflow } from "../src/utils/overflow.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -150,6 +151,8 @@ describe("an Amazon Bedrock answer the SDK has no Bedrock exception for", () => 
 			{ status: 503 },
 			{ status: 429 },
 			{ $metadata: { httpStatusCode: 503 } },
+			// Another call's answer, as an SDK error of another request carries it.
+			{ $response: { statusCode: 503, headers: {}, body: undefined } },
 		] as const) {
 			// Before anything is sent, and after an answer, as another service's SDK error a callback passes on.
 			const failure = Object.assign(new Error("Application preparation stopped"), status);
@@ -167,5 +170,12 @@ describe("an Amazon Bedrock answer the SDK has no Bedrock exception for", () => 
 				assert.equal(isRetryableAssistantError(message), false, JSON.stringify(status));
 			}
 		}
+	});
+
+	it("reads a gateway's 413 whose body is not JSON as a context overflow", async () => {
+		const message = await bedrockTurn(await answering(413, "Request Entity Too Large", { "content-type": "text/plain" }));
+
+		assert.ok(message.errorMessage?.startsWith("413: "), message.errorMessage);
+		assert.equal(isContextOverflow(message), true, message.errorMessage);
 	});
 });
