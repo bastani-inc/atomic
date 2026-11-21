@@ -17,6 +17,7 @@ vi.mock("node:fs/promises", async (original) => {
 	return {
 		...actual,
 		copyFile: vi.fn(actual.copyFile),
+		opendir: vi.fn(actual.opendir),
 		readFile: vi.fn(actual.readFile),
 		readlink: vi.fn(actual.readlink),
 	};
@@ -424,6 +425,8 @@ test.each(
 );
 
 test.each(["darwin", "win32"])("%s boot identities keep files from an earlier boot out of the sweep", async (value) => {
+	// An agent directory of its own: the first owner's background sweep, legitimately in its own boot, finds nothing there.
+	const caseRoot = join(root, `earlier-boot-${value}`);
 	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
 	Object.defineProperty(process, "platform", { value });
 	let boot = value === "darwin" ? "{ sec = 1730000000, usec = 123456 }" : "123456789";
@@ -437,17 +440,17 @@ test.each(["darwin", "win32"])("%s boot identities keep files from an earlier bo
 	try {
 		vi.resetModules();
 		const first = await import("../src/core/storage/session/released-history-files.js");
-		const a = await first.releasedHistoryFiles(root).createDirectory();
+		const a = await first.releasedHistoryFiles(caseRoot).createDirectory();
 		assert.ok(!(a instanceof Error));
 		const stale = join(dirname(dirname(a.path)), "2147483647-1");
 		fs.mkdirSync(stale);
 		boot = value === "darwin" ? "{ sec = 1730000000, usec = 123457 }" : "123456780";
 		vi.resetModules();
 		const second = await import("../src/core/storage/session/released-history-files.js");
-		const b = await second.releasedHistoryFiles(root).createDirectory();
+		const b = await second.releasedHistoryFiles(caseRoot).createDirectory();
 		assert.ok(!(b instanceof Error));
 		assert.notEqual(dirname(dirname(a.path)), dirname(dirname(b.path)));
-		await second.sweepReleasedHistory(root);
+		await second.sweepReleasedHistory(caseRoot);
 		assert.ok(fs.existsSync(stale));
 		await a.remove();
 		await b.remove();
@@ -594,6 +597,45 @@ test("Windows sweeps read process start times from the native module, not PowerS
 			"only the boot identity starts PowerShell",
 		);
 		await directory.remove();
+	} finally {
+		Object.defineProperty(process, "platform", platform);
+	}
+});
+
+test("the startup check reads a bounded part of a large shared released-history directory", async () => {
+	const caseRoot = join(root, "shared-released-history");
+	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+	Object.defineProperty(process, "platform", { value: "win32" });
+	vi.mocked(os.hostname).mockReturnValue("this-host");
+	vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+		const callback = args.at(-1) as (error: unknown, stdout: string, stderr: string) => void;
+		callback(null, "123456789", "");
+		return {} as childProcess.ChildProcess;
+	});
+	// Other machines' directories in an agent directory they share, and nothing of this host's.
+	for (let index = 0; index < 500; index++)
+		fs.mkdirSync(join(caseRoot, "released-history", `other-${index}-0`), { recursive: true });
+	const actual = await vi.importActual<typeof fsPromises>("node:fs/promises");
+	let entriesRead = 0;
+	vi.mocked(fsPromises.opendir).mockImplementation(async (...args: Parameters<typeof fsPromises.opendir>) => {
+		const directory = await actual.opendir(...args);
+		const read = directory.read.bind(directory) as () => Promise<fs.Dirent | null>;
+		Object.assign(directory, {
+			read: async () => {
+				entriesRead++;
+				return read();
+			},
+		});
+		return directory;
+	});
+	try {
+		vi.resetModules();
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(null);
+		const module = await import("../src/core/storage/session/released-history-files.js");
+		await module.sweepReleasedHistory(caseRoot);
+		assert.ok(entriesRead <= 33, `read ${entriesRead} entries`);
+		// Past the bound the sweep goes on as before: it looks up this boot and reads only this host's directory.
+		assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 1);
 	} finally {
 		Object.defineProperty(process, "platform", platform);
 	}

@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants, rmdirSync, rmSync } from "node:fs";
-import { copyFile, mkdir, open, readdir, readFile, readlink, rename, rm, rmdir } from "node:fs/promises";
+import { copyFile, mkdir, open, opendir, readdir, readFile, readlink, rename, rm, rmdir } from "node:fs/promises";
 import { hostname, release } from "node:os";
 import { join } from "node:path";
 import { BroadcastChannel, isMainThread, receiveMessageOnPort } from "node:worker_threads";
-import { nativeProcessCreationTime } from "../../process-start-token.ts";
+import { nativeProcessCreationTime } from "../../process-start-token.js";
 import { getErrnoCode } from "../../tools/errno.ts";
 import {
 	SESSION_TEMP_DIR_MODE,
@@ -93,27 +93,41 @@ async function hostDirectory(agentDir: string): Promise<string> {
 	return join(releasedHistoryDirectory(agentDir), `${hostDirectoryPrefix(host)}${digest}`);
 }
 
+/** How many entries of the released-history directory a sweep's preflight reads before it leaves the answer to the sweep. */
+const PREFLIGHT_ENTRY_LIMIT = 32;
+
 /**
  * Whether a sweep could find anything under `agentDir`: false only when the released-history directory is absent, or
- * holds one directory with this host's name and that one is empty. More than one such directory (one is left per boot)
- * or anything unreadable counts as something to sweep. Telling this needs no boot or namespace identity, whose lookup
- * starts a process on macOS and Windows.
+ * holds a single directory with this host's name and that one is empty. More than one such directory (one is left per
+ * boot), more than {@link PREFLIGHT_ENTRY_LIMIT} entries, or anything unreadable counts as something to sweep. Telling
+ * this needs no boot or namespace identity, whose lookup starts a process on macOS and Windows.
  */
 async function mayHoldReleasedHistory(agentDir: string): Promise<boolean> {
 	const parent = releasedHistoryDirectory(agentDir);
-	let names: string[];
-	try {
-		names = await readdir(parent);
-	} catch (error) {
-		return getErrnoCode(error) !== "ENOENT";
-	}
 	// Case-insensitive file systems (Windows, macOS by default) name one directory with names that differ only by case.
 	const prefix = hostDirectoryPrefix(hostname()).toLowerCase();
-	const hosts = names.filter((name) => name.toLowerCase().startsWith(prefix));
-	if (hosts.length === 0) return false;
-	if (hosts.length > 1) return true;
+	let host: string | undefined;
 	try {
-		return (await readdir(join(parent, hosts[0] as string))).length > 0;
+		const entries = await opendir(parent);
+		try {
+			for (let read = 0; ; read++) {
+				const entry = await entries.read();
+				if (entry === null) break;
+				if (read >= PREFLIGHT_ENTRY_LIMIT) return true;
+				if (!entry.name.toLowerCase().startsWith(prefix)) continue;
+				if (host !== undefined) return true;
+				host = entry.name;
+			}
+		} finally {
+			await entries.close();
+		}
+		if (host === undefined) return false;
+		const contents = await opendir(join(parent, host));
+		try {
+			return (await contents.read()) !== null;
+		} finally {
+			await contents.close();
+		}
 	} catch (error) {
 		return getErrnoCode(error) !== "ENOENT";
 	}
