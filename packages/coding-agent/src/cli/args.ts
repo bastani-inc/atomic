@@ -17,11 +17,11 @@ import {
 	ENV_TELEMETRY,
 } from "../config.js";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
-import { getToolListError } from "../core/settings-merge.js";
 import { StorageConfigError } from "../core/storage/errors.js";
 import { validateStoragePrefix } from "../core/storage/prefix.js";
 import type { StorageFlagArgument } from "../core/storage/process-selection.js";
 import { isValidThinkingLevel, VALID_THINKING_LEVELS } from "../core/thinking-levels.ts";
+import { getToolListError } from "../core/tool-list-entries.js";
 
 export type Mode = "text" | "json" | "rpc";
 

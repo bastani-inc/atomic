@@ -11,8 +11,15 @@
  */
 import { APP_NAME, getPackageDir, VERSION } from "./config.js";
 import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecycle-timings.ts";
+import { engineHeapRuntimeArgsForHost } from "./modes/interactive-engine/engine-heap.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
-import { COMPILE_CACHE_ENGINE_WARMUP_ENV, enablePersistentCompileCache } from "./utils/compile-cache.ts";
+import {
+	COMPILE_CACHE_ENGINE_WARMUP_ENV,
+	compileCacheDeferral,
+	enablePersistentCompileCache,
+	flushPersistentCompileCache,
+} from "./utils/compile-cache.ts";
+import { warmCompileCache } from "./utils/compile-cache-warmup-host.ts";
 import { headlessHeapRelaunchArgs, isHeadlessInvocation, relaunchWithHeap } from "./utils/heap-relaunch.ts";
 import { noteInheritedHangup } from "./utils/inherited-hangup.js";
 import {
@@ -22,6 +29,7 @@ import {
 } from "./utils/interactive-engine-bootstrap.ts";
 import { isPlainInteractiveSessionInvocation } from "./utils/interactive-invocation.ts";
 import { startStartupPrefetch } from "./utils/startup-prefetch.js";
+import { updatedInstallError } from "./utils/updated-install.ts";
 
 installLifecycleTraceFromEnv();
 markLifecycleTiming("process-entry");
@@ -42,6 +50,10 @@ enablePersistentCompileCache({
 			: isPlainInteractiveSessionInvocation(args, terminal),
 	build: VERSION,
 });
+// A session that ends before it starts its compile-cache helpers starts them as it exits; they outlive it.
+if (compileCacheDeferral() && !prewarmedEngine && !hasInteractiveEngineBootstrapArg(args)) {
+	process.once("exit", () => warmCompileCache(engineHeapRuntimeArgsForHost(true)));
+}
 
 process.title = APP_NAME;
 process.env[`${APP_NAME.toUpperCase()}_CODING_AGENT`] = "true";
@@ -77,25 +89,57 @@ if (heapArgs.length > 0) {
 			({ ThreadConnection }) => ThreadConnection.startSpare(),
 			() => {},
 		);
-	const started = interactiveHost
-		? prewarm!.then(({ prewarmInteractiveEngine }) => prewarmInteractiveEngine(args)).catch(() => {})
+	const prewarmed = interactiveHost
+		? prewarm!.then(({ prewarmInteractiveEngineForArgs }) => prewarmInteractiveEngineForArgs(args)).catch(() => {})
 		: Promise.resolve();
+	// An interactive session shows its editor and takes typing before the rest of Atomic has loaded, where nothing it
+	// shows before its editor would come first (startup-shell.ts). Its modules load before the rest.
+	const started =
+		interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)
+			? prewarmed
+					.then(() => import("./modes/interactive/startup-shell-eligibility.ts"))
+					.then(async ({ planStartupShell }) => {
+						const plan = planStartupShell(args, process.cwd());
+						if (plan) (await import("./modes/interactive/startup-shell.ts")).startStartupShell(plan);
+					})
+					.catch(() => {})
+			: prewarmed;
 	const mainArgs = prewarmedEngine
 		? prewarm!.then(({ readPrewarmedEngineArgs }) => readPrewarmedEngineArgs())
 		: Promise.resolve(args);
+	let adopted = false;
+	void mainArgs.then(() => {
+		adopted = true;
+	});
 	// No top-level await: the compiled binary is built with --bytecode (CJS),
 	// which forbids TLA anywhere in the bundled graph.
 	void started
-		.then(() =>
-			Promise.all([
+		.then(() => {
+			const loaded = Promise.all([
 				import("./core/http-dispatcher.ts"),
 				import("./main.ts"),
 				import("./cli/settings-startup.ts"),
-				mainArgs,
-			]),
-		)
-		.then(([{ configureHttpDispatcher }, { main }, { exitOnDecisionConfigError }, runArgs]) => {
+			]);
+			// A prewarmed child asked to write its compile cache does it once loaded, while it waits for its host, and not
+			// once its host has taken it over: then it starts its session at once and writes the cache as it exits.
+			if (prewarmedEngine)
+				void Promise.all([loaded, prewarm!]).then(([, module]) => {
+					const flag = (module as { INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG?: string })
+						.INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG;
+					if (!adopted && flag !== undefined && args.includes(flag)) flushPersistentCompileCache();
+				});
+			return Promise.all([loaded, mainArgs]);
+		})
+		.then(([[{ configureHttpDispatcher }, { main }, { exitOnDecisionConfigError }], runArgs]) => {
 			configureHttpDispatcher();
 			main(runArgs).catch(exitOnDecisionConfigError);
+		})
+		// An update that replaced the installation while this process started leaves modules that no longer load: say
+		// to start again instead of failing with the runtime's error. Any other failure stays the runtime's own.
+		.catch(async (error: unknown) => {
+			const updated = await updatedInstallError(error, APP_NAME);
+			if (!updated) throw error;
+			console.error(updated.message);
+			process.exit(1);
 		});
 }

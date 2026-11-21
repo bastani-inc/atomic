@@ -921,7 +921,13 @@ export class SessionManager {
 		if (options?.id !== undefined) assertValidSessionId(options.id);
 		this.sessionId = options?.id ?? createSessionId();
 		this.fileEntries = [
-			createSessionHeader(this.sessionId, this.cwd, new Date().toISOString(), options?.parentSession),
+			createSessionHeader(
+				this.sessionId,
+				this.cwd,
+				new Date().toISOString(),
+				options?.parentSession,
+				options?.internal,
+			),
 		];
 		this.lastSeq = 0;
 		this.childArchive = new ChildCatalog();
@@ -990,6 +996,7 @@ export class SessionManager {
 				this.cwd,
 				new Date().toISOString(),
 				options?.parentSession,
+				options?.internal,
 			);
 			const record = this.recordHeader(header);
 			const store = await this.storeForNewSession();
@@ -1566,7 +1573,14 @@ export class SessionManager {
 				this.leafId,
 				coveredThroughEntryId,
 			);
-			const projected = this.buildSessionProjection().messages;
+			// A boundary that covers the history only through an earlier entry of the current branch carries the prompt as
+			// of that entry; the entries after it, prompt changes among them, replay after the boundary. Any other boundary
+			// carries the prompt as it is now.
+			const covered =
+				coveredThroughEntryId !== undefined && this.getBranch().some((entry) => entry.id === coveredThroughEntryId)
+					? coveredThroughEntryId
+					: this.leafId;
+			const projected = this.buildSessionProjection("model", covered).messages;
 			const systemMessage = getCurrentSystemMessage(projected);
 			const transformedPrompt = carriedTransformedPrompt(projected);
 			if (systemMessage) {
@@ -1835,8 +1849,11 @@ export class SessionManager {
 		unrestored?: WorktreeUnrestored,
 		captureMs?: number,
 		degradedFrom?: string,
+		capturedAt?: string,
+		precondition?: () => void,
 	): Promise<string> {
 		return this.runMutation(async () => {
+			precondition?.();
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
 				throw new WorkspaceConfigError("sdk", "snapshot", "a snapshot whose id is snapshotId");
 			}
@@ -1873,6 +1890,7 @@ export class SessionManager {
 				unrestored,
 				captureMs,
 				degradedFrom,
+				capturedAt,
 			);
 			await this._appendEntry(entry);
 			return entry.id;

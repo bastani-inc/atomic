@@ -263,6 +263,7 @@ export async function runParallelPath(
 			signal,
 			runId,
 			sessionDirForIndex,
+			...(data.sessionStore ? { sessionStore: data.sessionStore } : {}),
 			sessionManagerForIndex,
 			shareEnabled,
 			artifactConfig,

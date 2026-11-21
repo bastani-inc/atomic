@@ -500,3 +500,94 @@ describe("ProcessTerminal dimensions", () => {
 		}
 	});
 });
+
+describe("ProcessTerminal hand-off to the next renderer", () => {
+	function setup() {
+		const terminal = new ProcessTerminal();
+		const writes: string[] = [];
+		let dataHandler: ((data: string) => void) | undefined;
+		const previousWrite = process.stdout.write;
+		const previousOn = process.stdin.on;
+		process.stdout.write = ((chunk: string | Uint8Array) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write;
+		process.stdin.on = ((event: string | symbol, listener: (...args: unknown[]) => void) => {
+			if (event === "data") dataHandler = listener as (data: string) => void;
+			return process.stdin;
+		}) as typeof process.stdin.on;
+		const first: string[] = [];
+		terminal.start(
+			(data) => first.push(data),
+			() => {},
+		);
+		return {
+			terminal,
+			writes,
+			first,
+			send: (data: string) => dataHandler?.(data),
+			cleanup() {
+				try {
+					terminal.stop();
+				} finally {
+					process.stdout.write = previousWrite;
+					process.stdin.on = previousOn;
+					setKittyProtocolActive(false);
+				}
+			},
+		};
+	}
+
+	it("holds input for the next start, which receives the handed-over keys, then what arrived meanwhile, then later input", async () => {
+		const harness = setup();
+		try {
+			harness.send("a");
+			assert.deepEqual(harness.first, ["a"]);
+			harness.terminal.handOff(["\r"]);
+			harness.send("b");
+			harness.send("\x1b[200~pasted\x1b[201~");
+			assert.deepEqual(harness.first, ["a"], "the first owner gets nothing after handing off");
+			assert.equal(
+				harness.terminal.continuedFromHandOff,
+				true,
+				"a renderer starting now paints over the last frame",
+			);
+
+			const writesBefore = harness.writes.length;
+			const second: string[] = [];
+			harness.terminal.start(
+				(data) => second.push(data),
+				() => {},
+			);
+			// The second start binds handlers only: raw input, bracketed paste and the keyboard protocol query stay as set.
+			assert.deepEqual(harness.writes.slice(writesBefore), []);
+			harness.send("c");
+			await Promise.resolve();
+			harness.send("d");
+			assert.deepEqual(second, ["\r", "b", "\x1b[200~pasted\x1b[201~", "c", "d"]);
+			assert.equal(harness.terminal.continuedFromHandOff, true);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("starts afresh after a stop that follows a hand-off", () => {
+		const harness = setup();
+		try {
+			harness.terminal.handOff(["x"]);
+			harness.terminal.stop();
+			assert.equal(harness.terminal.continuedFromHandOff, false);
+			const writesBefore = harness.writes.length;
+			const next: string[] = [];
+			harness.terminal.start(
+				(data) => next.push(data),
+				() => {},
+			);
+			assert.ok(harness.writes.slice(writesBefore).includes("\x1b[?2004h"), "a full start enables bracketed paste");
+			harness.send("y");
+			assert.deepEqual(next, ["y"], "nothing held from before the stop");
+		} finally {
+			harness.cleanup();
+		}
+	});
+});

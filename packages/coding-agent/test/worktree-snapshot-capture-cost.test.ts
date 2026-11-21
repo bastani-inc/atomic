@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
-import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { GitSandbox, startedGitProcesses } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SessionWorktreeSnapshotRecorder } from "../src/core/session-worktree-snapshots.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
@@ -13,9 +13,11 @@ import {
 	captureLocatedCheckout,
 	captureWorktreeSnapshot,
 	locateCheckout,
+	nextCaptureTick,
+	recordRestoredTree,
 	type WorktreeSnapshotCapture,
 } from "../src/core/worktree-snapshot/capture.ts";
-import { setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
+import { gitText, runGit, setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 
 useTemporaryAgentDir();
@@ -205,6 +207,166 @@ describe("captures of one checkout requested together", () => {
 				"written while the first capture ran",
 			);
 		}
+	});
+
+	/** A checkout edited after each of `count` captures, each from the one before, and edited once more. */
+	async function checkoutWithEarlierSnapshots(count: number, fileMode: boolean) {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "run.sh": "echo\n" });
+		// Git for Windows writes both as false into a new repository's config: the test says which it trusts.
+		await sandbox.git(clone, "config", "core.filemode", String(fileMode));
+		await sandbox.git(clone, "config", "core.symlinks", String(fileMode));
+		const blobs = new MemorySnapshotBlobStore();
+		const earlier: WorktreeSnapshotCapture[] = [];
+		for (let index = 0; index < count; index++) {
+			sandbox.write(join(clone, `step-${index}.txt`), "step\n");
+			const previous = earlier.at(-1);
+			earlier.push(
+				await captureWorktreeSnapshot(clone, {
+					settings,
+					blobs,
+					...(previous ? { previous: captured(previous).snapshot } : {}),
+				}),
+			);
+		}
+		sandbox.write(join(clone, "README.md"), "together\n");
+		return { clone, blobs, earlier: earlier.map((capture) => captured(capture).snapshot) };
+	}
+
+	function startedWith(trace: string, command: string): number {
+		return startedGitProcesses(trace).filter((event) => event.argv?.includes(command)).length;
+	}
+
+	test("from different earlier snapshots compute the checkout's tree at most twice where Git trusts file modes, and each records its own chain", async () => {
+		const { clone, blobs, earlier } = await checkoutWithEarlierSnapshots(CONCURRENT_CAPTURES, true);
+		const trace = sandbox.traceGitProcesses();
+		const captures = await Promise.all(
+			earlier.map((previous) => captureWorktreeSnapshot(clone, { settings, blobs, previous })),
+		);
+		assert.ok(startedWith(trace, "write-tree") <= 2, `${startedWith(trace, "write-tree")} trees written`);
+		const snapshots = captures.map((capture) => captured(capture).snapshot);
+		assert.equal(new Set(snapshots.map((snapshot) => snapshot.tree)).size, 1, "one tree");
+		assert.deepEqual(
+			snapshots.map((snapshot) => snapshot.delta.base),
+			earlier.map((previous) => previous.id),
+			"each snapshot follows its own earlier one",
+		);
+	});
+
+	test("from different earlier snapshots compute the checkout's tree at most twice where Git does not trust file modes either", async () => {
+		const { clone, blobs, earlier } = await checkoutWithEarlierSnapshots(CONCURRENT_CAPTURES, false);
+		const trace = sandbox.traceGitProcesses();
+		const captures = await Promise.all(
+			earlier.map((previous) => captureWorktreeSnapshot(clone, { settings, blobs, previous })),
+		);
+		assert.ok(startedWith(trace, "write-tree") <= 2, `${startedWith(trace, "write-tree")} trees written`);
+		assert.deepEqual(
+			captures.map((capture) => captured(capture).snapshot.delta.base),
+			earlier.map((previous) => previous.id),
+		);
+	});
+
+	test("where Git does not trust file modes, captures from earlier snapshots with other modes share the scan, and each keeps the modes of its own", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+		await sandbox.git(clone, "config", "core.filemode", "false");
+		await sandbox.git(clone, "config", "core.symlinks", "false");
+		sandbox.write(join(clone, "tool.sh"), "echo\n");
+		const blobs = new MemorySnapshotBlobStore();
+		const plain = captured(await captureWorktreeSnapshot(clone, { settings, blobs })).snapshot;
+		// The checkout was restored from a snapshot that recorded tool.sh as executable, as one taken where Git trusts
+		// modes does: a capture with no earlier snapshot of its own keeps that mode, one from `plain` keeps its own.
+		const index = sandbox.path("mode-index");
+		const git = { cwd: clone, env: { GIT_INDEX_FILE: index } };
+		await runGit(["read-tree", plain.tree], git);
+		await runGit(["update-index", "--chmod=+x", "--", "tool.sh"], git);
+		await recordRestoredTree({ cwd: clone }, await gitText(["write-tree"], git));
+		sandbox.write(join(clone, "README.md"), "changed\n");
+		const checkout = await locateCheckout(clone);
+		if (checkout instanceof Error) throw checkout;
+
+		const trace = sandbox.path("git-trace.jsonl");
+		const traced = { ...sandbox.executable, env: { ...sandbox.executable.env, GIT_TRACE2_EVENT: trace } };
+		const scanning = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		let started = 0;
+		const previous = setWorktreeSnapshotGit(async () => {
+			started++;
+			// The first capture's sixth Git process runs once its scan listed the changed files.
+			if (started === 6) {
+				scanning.resolve();
+				await resume.promise;
+			}
+			return traced;
+		});
+		cleanups.push(() => {
+			setWorktreeSnapshotGit(previous);
+		});
+		const first = captureLocatedCheckout(checkout, { settings, blobs, previous: plain });
+		await scanning.promise;
+		const restoredModes = captureLocatedCheckout(checkout, { settings, blobs });
+		const ownModes = captureLocatedCheckout(checkout, { settings, blobs, previous: plain });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		resume.resolve();
+		const [, executable, regular] = (await Promise.all([first, restoredModes, ownModes])).map(
+			(capture) => captured(capture).snapshot,
+		);
+		const scans = startedGitProcesses(trace).filter((event) => event.argv?.includes("--others")).length;
+		assert.equal(scans, 2, "the two later captures share one scan");
+		const modeOf = async (tree: string) => (await sandbox.git(clone, "ls-tree", tree, "tool.sh")).split(" ")[0];
+		assert.equal(await modeOf(executable!.tree), "100755");
+		assert.equal(await modeOf(regular!.tree), "100644");
+	});
+
+	/**
+	 * Captures `earlier[0]`'s session's checkout and, once that capture's scan of the working files started, requests a
+	 * capture from `earlier[1]` whose writes ended at the tick `wroteBy` gives, before or after that start. Every Git
+	 * process the snapshot runner starts is traced; the first capture's sixth one, the lookup of the modes Git trusts,
+	 * runs once its scan listed the changed files, and waits until the second capture was requested.
+	 */
+	async function captureDuringScan(wroteBy: (scanStarted: boolean) => number) {
+		const { clone, blobs, earlier } = await checkoutWithEarlierSnapshots(2, true);
+		const checkout = await locateCheckout(clone);
+		if (checkout instanceof Error) throw checkout;
+		const trace = sandbox.path("git-trace.jsonl");
+		const traced = { ...sandbox.executable, env: { ...sandbox.executable.env, GIT_TRACE2_EVENT: trace } };
+		const scanning = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		let started = 0;
+		const previous = setWorktreeSnapshotGit(async () => {
+			started++;
+			if (started === 6) {
+				scanning.resolve();
+				await resume.promise;
+			}
+			return traced;
+		});
+		cleanups.push(() => {
+			setWorktreeSnapshotGit(previous);
+		});
+		const before = wroteBy(false);
+		const first = captureLocatedCheckout(checkout, { settings, blobs, previous: earlier[0] });
+		await scanning.promise;
+		const tick = wroteBy(true) || before;
+		const second = captureLocatedCheckout(checkout, { settings, blobs, previous: earlier[1] }, tick);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		resume.resolve();
+		const [one, two] = (await Promise.all([first, second])).map((capture) => captured(capture).snapshot);
+		assert.equal(two!.tree, one!.tree);
+		assert.deepEqual(
+			[one!.delta.base, two!.delta.base],
+			earlier.map((snapshot) => snapshot.id),
+			"each its own chain",
+		);
+		return startedWith(trace, "write-tree");
+	}
+
+	test("a capture takes the tree of a scan that started after its writes ended", async () => {
+		const trees = await captureDuringScan((scanStarted) => (scanStarted ? 0 : nextCaptureTick()));
+		assert.equal(trees, 1);
+	});
+
+	test("a capture does not take the tree of a scan that started before its writes ended", async () => {
+		const trees = await captureDuringScan((scanStarted) => (scanStarted ? nextCaptureTick() : 0));
+		assert.equal(trees, 2);
 	});
 
 	test("captures of different checkouts requested together each record their own checkout", async () => {

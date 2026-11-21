@@ -4,6 +4,7 @@ import { isResumeFailure } from "../../core/resume/failure.ts";
 import type { SessionInfo } from "../../core/session-manager.ts";
 import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
 import { canonicalizePathAsync } from "../../utils/paths.ts";
+import { loadOnDemand } from "../../utils/updated-install.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
@@ -187,7 +188,9 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 	const mainPrompt = promptHandle(this, "main");
 	const archived =
 		this.sessionManager.hasFullHistory?.() === false
-			? await (await import("./components/stored-tree-view.js")).StoredTreeView.open(this.sessionManager)
+			? await loadOnDemand("/tree", async () =>
+					(await import("./components/stored-tree-view.js")).StoredTreeView.open(this.sessionManager),
+				)
 			: undefined;
 	const tree = archived?.tree ?? this.sessionManager.getTree();
 	const realLeafId = archived ? archived.leaf : this.sessionManager.getLeafId();

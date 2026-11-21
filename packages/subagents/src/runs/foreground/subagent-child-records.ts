@@ -158,6 +158,11 @@ export interface SubagentChildRecord {
 	readonly childSessionId?: string;
 	/** Present only for file-backed (JSONL) child sessions; database-backed sessions have no session file. */
 	readonly childSessionFile?: string;
+	/**
+	 * When the child's own session last recorded a worktree snapshot a turn captured, as of its latest run: its owner's
+	 * resume restores a checkout from it when it is newer than the owner's own snapshot of that checkout.
+	 */
+	readonly worktreeCapturedAt?: string;
 	/** The model (`provider/id`) and thinking level the child actually started on, once its session was created. */
 	readonly launchModel?: string;
 	readonly launchThinkingLevel?: string;
@@ -370,6 +375,11 @@ export interface SubagentChildLaunch {
 	 * starts on: its id, in the owner's session store, and its file when that store keeps one.
 	 */
 	readonly forkSession?: { readonly id: string; readonly file?: string };
+	/**
+	 * A fresh child whose session is created in its owner's session store once it starts, rather than as a file in
+	 * `sessionDir`, which is kept for releases that do not read this.
+	 */
+	readonly ownerStore?: true;
 	readonly sessionDir?: string;
 	readonly modelOverride?: string;
 	readonly skills?: readonly string[];
@@ -398,6 +408,7 @@ export function subagentChildLaunch(
 					},
 				}
 			: {}),
+		...(options.sessionStore && !forkSession ? { ownerStore: true as const } : {}),
 		...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
 		...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
 		...(options.skills ? { skills: options.skills } : {}),

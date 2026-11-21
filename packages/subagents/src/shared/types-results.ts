@@ -103,6 +103,8 @@ export interface SubagentResultIntercomChild {
 	cause?: string;
 	artifactPath?: string;
 	sessionPath?: string;
+	/** Set, equal to `sessionPath`, when the child's session has no file and is cited by its history URL. */
+	sessionUrl?: string;
 	intercomTarget?: string;
 }
 
@@ -222,6 +224,10 @@ export interface SingleResult {
 	 */
 	startError?: SerializedSessionStartError;
 	sessionFile?: string;
+	/** Where to read the child's session when it has no file of its own: its `history://sessions/<id>` URL. */
+	sessionUrl?: string;
+	/** When the child's session last recorded a worktree snapshot of a checkout it changed. */
+	worktreeCapturedAt?: string;
 	skills?: string[];
 	skillsWarning?: string;
 	progress?: AgentProgress;
@@ -247,6 +253,8 @@ export interface SubagentStatusGroup {
 			/** Why a failed or interrupted child ended, as its result says. */
 			failure?: string;
 			sessionFile?: string;
+			/** The child's `history://sessions/<id>` URL, when its session has no file of its own. */
+			sessionUrl?: string;
 			model?: string;
 			thinking?: string;
 			/** The model the child's launch asked for, when known; `model` is the one it runs or ran on (#4188). */

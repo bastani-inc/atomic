@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { randomUUID } from "crypto";
-import { Type } from "typebox";
+import { Type } from "@bastani/atomic-ai";
 import type { IntercomClient } from "./broker/client.js";
 import { ReleasedReplyHandoff, type ReplyWait, type ReplyWaitAdmission } from "./reply-waiter.ts";
 import { prepareReleasedReplyWait, releasedReplyHandoffResult } from "./released-reply-wait.js";

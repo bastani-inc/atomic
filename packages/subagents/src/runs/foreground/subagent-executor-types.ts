@@ -1,4 +1,10 @@
-import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, SessionManager } from "@bastani/atomic";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ExtensionToolContext,
+	SessionManager,
+	SessionStore,
+} from "@bastani/atomic";
 import type { AgentConfig, AgentDiscoveryOptions, AgentScope } from "../../agents/agents.js";
 import type { IntercomBridgeState } from "../../intercom/intercom-bridge.js";
 import type { ModelInfo } from "../../shared/model-info.js";
@@ -133,6 +139,8 @@ export interface ExecutionContextData {
 	shareEnabled: boolean;
 	sessionRoot: string;
 	sessionDirForIndex: (idx?: number) => string;
+	/** The store a fresh child's session is created in; undefined when its session is a file in its directory. */
+	sessionStore?: SessionStore;
 	sessionManagerForIndex: (idx?: number) => Promise<SessionManager | undefined>;
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
