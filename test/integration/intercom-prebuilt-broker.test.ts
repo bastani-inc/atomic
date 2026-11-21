@@ -133,30 +133,29 @@ runTest(
 
 /**
  * Node module hooks that refuse to resolve the storage layer the first time the broker imports it, as during an update
- * that is replacing Atomic's files, and let every later import through. Each attempt is written to `log`.
+ * that is replacing Atomic's files, and let every later import through. Each attempt is written to `log`. The hooks run
+ * on the broker's own thread, so the attempt is written, refused and settled in one step that nothing else interleaves.
  */
 function refuseStorageOnce(root: string, log: string): string {
 	const hooks = join(root, "refuse-storage-once.mjs");
 	writeFileSync(
 		hooks,
 		`import { appendFileSync } from "node:fs";
+import { registerHooks } from "node:module";
 let attempts = 0;
-export async function resolve(specifier, context, next) {
-	if (specifier === "@bastani/atomic/storage") {
-		attempts += 1;
-		appendFileSync(${JSON.stringify(log)}, attempts === 1 ? "refused\\n" : "resolved\\n");
-		if (attempts === 1) throw Object.assign(new Error("Cannot find package '@bastani/atomic/storage'"), { code: "ERR_MODULE_NOT_FOUND" });
-	}
-	return next(specifier, context);
-}
+registerHooks({
+	resolve(specifier, context, next) {
+		if (specifier === "@bastani/atomic/storage") {
+			attempts += 1;
+			appendFileSync(${JSON.stringify(log)}, attempts === 1 ? "refused\\n" : "resolved\\n");
+			if (attempts === 1) throw Object.assign(new Error("Cannot find package '@bastani/atomic/storage'"), { code: "ERR_MODULE_NOT_FOUND" });
+		}
+		return next(specifier, context);
+	},
+});
 `,
 	);
-	const registration = join(root, "register-refuse-storage-once.mjs");
-	writeFileSync(
-		registration,
-		`import { register } from "node:module";\nregister(${JSON.stringify(pathToFileURL(hooks).href)});\n`,
-	);
-	return pathToFileURL(registration).href;
+	return pathToFileURL(hooks).href;
 }
 
 runTest(
