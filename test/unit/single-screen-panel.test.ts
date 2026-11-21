@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings, type TuiMouseEvent, type TuiMouseEventResult } from "@bastani/atomic-tui";
-import { afterEach, beforeAll, beforeEach, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -218,6 +218,47 @@ test("the shown subagent stays listed once it finished, marked, with main above 
 
 	const main = panelSession([done(agent("a1"))]);
 	assert.deepEqual(idlePanel(main.session).lines(), []);
+});
+
+/** How many frames the panel below the prompt asks for over `seconds` with nothing else happening. */
+function framesAskedOver(session: object, seconds: number): number {
+	let frames = 0;
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date", "performance"] });
+	try {
+		let widget: IdleWidget | undefined;
+		disposers.push(
+			bindAgentPanel(
+				session as never,
+				{
+					setWidget(_key: string, content: unknown) {
+						widget = typeof content === "function" ? (content({} as never, {} as never) as never) : undefined;
+					},
+					requestRender() {
+						frames++;
+					},
+				} as never,
+			),
+		);
+		widget?.render(100);
+		frames = 0;
+		for (let second = 0; second < seconds; second++) {
+			vi.advanceTimersByTime(1_000);
+			widget?.render(100);
+		}
+		return frames;
+	} finally {
+		vi.useRealTimers();
+	}
+}
+
+test("the shown subagent's finished row asks for no frames while it stays shown", () => {
+	const shown = panelSession([done(agent("a1"))], "a1");
+	assert.equal(framesAskedOver(shown.session, 30), 0);
+});
+
+test("a shown subagent still running asks for a frame every second, for its time", () => {
+	const shown = panelSession([agent("a1")], "a1");
+	assert.ok(framesAskedOver(shown.session, 5) >= 5);
 });
 
 test("the panel below the prompt always draws the shown subagent: past its four rows it takes the last place", () => {
