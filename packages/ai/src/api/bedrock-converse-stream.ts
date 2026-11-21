@@ -1,5 +1,6 @@
 import type { Agent as HttpsAgent } from "node:https";
-import type { Socket } from "node:net";
+import { connect as connectNet, isIP, isIPv6, Socket } from "node:net";
+import { connect as connectTls } from "node:tls";
 import {
 	BedrockRuntimeClient,
 	type BedrockRuntimeClientConfig,
@@ -562,19 +563,115 @@ function bedrockUserAgent(identity: ClientIdentity | undefined): string | [strin
 	return mode === "short" ? [["atomic"]] : [["atomic", getClientVersion(identity)]];
 }
 
+/** What a proxy answered a tunnel request with: its status, and every byte read from it so far. */
+interface TunnelAnswer {
+	readonly statusCode: number;
+	readonly buffered: Buffer;
+}
+
+/** A connection to the proxy that ended before it answered, as a reset connection is reported, so it is retried. */
+function proxyConnectionEnded(): Error {
+	return Object.assign(new Error("Proxy connection ended before receiving CONNECT response"), { code: "ECONNRESET" });
+}
+
 /**
- * The agent for an HTTPS endpoint through the proxy, recording what its connection to the proxy fails with before the
- * tunnel opens as the proxy's: a certificate the proxy shows is then named as the proxy's, not the endpoint's. The
- * endpoint's own TLS session runs over the tunnel after `connect` returns, so its failures are never recorded.
+ * Reads the proxy's answer to `CONNECT` on `socket`, as https-proxy-agent does, but keeps listening for errors on it after
+ * a failure: Node.js's TLS layer reports a connection to an https proxy that ended before its handshake with an error
+ * after the end, which would otherwise go unhandled and end the process.
+ */
+function readTunnelAnswer(socket: Socket): Promise<TunnelAnswer> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		let settled = false;
+		const stopReading = () => {
+			settled = true;
+			socket.removeListener("readable", read);
+			socket.removeListener("end", onEnd);
+		};
+		const fail = (error: Error) => {
+			if (settled) return;
+			stopReading();
+			socket.destroy();
+			reject(error);
+		};
+		const onEnd = () => fail(proxyConnectionEnded());
+		// Bun reports the same end as its socket being closed.
+		const onError = (error: Error & { code?: unknown }) =>
+			fail(error.code === "ERR_SOCKET_CLOSED" ? proxyConnectionEnded() : error);
+		function read(): void {
+			for (let chunk: Buffer | null = socket.read(); chunk !== null; chunk = socket.read()) {
+				chunks.push(chunk);
+				const buffered = Buffer.concat(chunks);
+				const end = buffered.indexOf("\r\n\r\n");
+				if (end === -1) continue;
+				const [statusLine = "", ...headerLines] = buffered.subarray(0, end).toString("ascii").split("\r\n");
+				if (statusLine === "") return fail(new Error("No header received from proxy CONNECT response"));
+				const invalid = headerLines.find((line) => line !== "" && !line.includes(":"));
+				if (invalid !== undefined) return fail(new Error(`Invalid header from proxy CONNECT response: "${invalid}"`));
+				stopReading();
+				socket.removeListener("error", onError);
+				return resolve({ statusCode: Number(statusLine.split(" ")[1]), buffered });
+			}
+		}
+		socket.on("readable", read);
+		socket.on("end", onEnd);
+		socket.on("error", onError);
+	});
+}
+
+/** `options` with the server name TLS checks, for a host that is not an IP address, as https-proxy-agent sets it. */
+function withServerName<T extends { host?: string | null; servername?: string }>(options: T): T {
+	return options.servername === undefined && options.host && isIP(options.host) === 0
+		? { ...options, servername: options.host }
+		: options;
+}
+
+/**
+ * The agent for an HTTPS endpoint through the proxy. It opens the tunnel as https-proxy-agent does, except that a failed
+ * connection to the proxy rejects the request and never goes unhandled, and its end before the proxy answered is
+ * reported as a reset connection. What that connection fails with before the tunnel opens is recorded as the proxy's: a
+ * certificate the proxy shows is then named as the proxy's, not the endpoint's. The endpoint's own TLS session runs over
+ * the tunnel after `connect` returns, so its failures are never recorded.
  */
 class ProxyHopHttpsAgent extends HttpsProxyAgent<string> {
-	override async connect(...args: Parameters<HttpsProxyAgent<string>["connect"]>): Promise<Socket> {
+	override async connect(...[request, options]: Parameters<HttpsProxyAgent<string>["connect"]>): Promise<Socket> {
+		const proxy = this.proxy;
+		if (!options.host) throw new TypeError('No "host" provided');
+		const socket = proxy.protocol === "https:" ? connectTls(withServerName(this.connectOpts)) : connectNet(this.connectOpts);
+		const headers = typeof this.proxyHeaders === "function" ? this.proxyHeaders() : { ...this.proxyHeaders };
+		const host = isIPv6(options.host) ? `[${options.host}]` : options.host;
+		if (proxy.username || proxy.password) {
+			const credentials = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
+			headers["Proxy-Authorization"] = `Basic ${Buffer.from(credentials).toString("base64")}`;
+		}
+		headers.Host = `${host}:${options.port}`;
+		if (!headers["Proxy-Connection"]) headers["Proxy-Connection"] = this.keepAlive ? "Keep-Alive" : "close";
+		const answer = readTunnelAnswer(socket);
+		const lines = Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`);
+		socket.write(`CONNECT ${host}:${options.port} HTTP/1.1\r\n${lines.join("")}\r\n`);
+		let response: TunnelAnswer;
 		try {
-			return await super.connect(...args);
+			response = await answer;
 		} catch (error) {
-			recordProxyConnectionFailure(error, this.proxy);
+			recordProxyConnectionFailure(error, proxy);
 			throw error;
 		}
+		if (response.statusCode === 200) {
+			// Resumed once every 'socket' listener, the HTTP client's included, is attached.
+			request.once("socket", (tunnel: Socket) => setImmediate(() => tunnel.resume()));
+			if (!options.secureEndpoint) return socket;
+			const { host: _host, path: _path, port: _port, ...endpoint } = withServerName(options);
+			return connectTls({ ...endpoint, socket });
+		}
+		// The proxy's own answer is handed to the HTTP client as the response, on a socket that sends the request nowhere.
+		socket.destroy();
+		const answered = new Socket({ writable: false });
+		answered.readable = true;
+		request.once("socket", (replay: Socket) => {
+			replay.push(response.buffered);
+			replay.push(null);
+		});
+		return answered;
 	}
 }
 
