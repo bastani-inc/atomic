@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as nodeResolvePath, posix, relative, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnProcess, waitForChildProcess } from "./child-process.ts";
+import { processLaunchAsync, spawnLaunchedProcess, waitForChildProcess } from "./child-process.ts";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
@@ -171,7 +171,7 @@ export async function markPathIgnoredByCloudSync(path: string): Promise<void> {
 				? ["xattr", ["-w", attr, "1", path]]
 				: ["setfattr", ["-n", attr, "-v", "1", path]];
 		try {
-			const child = spawnProcess(command, args, { stdio: "ignore" });
+			const child = spawnLaunchedProcess(await processLaunchAsync(command), args, { stdio: "ignore" });
 			await waitForChildProcess(child);
 		} catch {}
 	}

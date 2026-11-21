@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `gh`, `git`, `ffmpeg`, `ffprobe`, `yt-dlp`, `npm`, the browser opener and the keychain helpers run only from the absolute directories in your PATH; the project folder counts only when PATH names it.
+
 ## [0.10.3] - 2026-11-21
 
 ### Fixed
