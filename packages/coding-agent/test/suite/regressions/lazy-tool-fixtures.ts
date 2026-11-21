@@ -148,6 +148,7 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			"reach-errors.ts",
 			"startup-join.ts",
 			"finished-asks.ts",
+			"outbound-asks.ts",
 			"reply-tracker.ts",
 			"session-identity.ts",
 			"session-target.ts",
