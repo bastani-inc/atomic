@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isNativeError, isPromise } from "node:util/types";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 
@@ -41,6 +42,20 @@ function describeFailure(error: unknown): string {
 const ignore = (): void => {};
 
 /**
+ * Run `report`, a call of the host's own diagnostic reporter, so that nothing it throws, and no rejection of the
+ * native promise it returns, goes further: reporting a failure must never end the process, nor stop what reported it.
+ * Only a native promise is observed, with the intrinsic `then`; any other returned value is left as it is.
+ */
+export function reportContained(report: () => unknown): void {
+	try {
+		const reported = report();
+		if (isPromise(reported)) observe(reported, ignore);
+	} catch {
+		// Reporting failed too. There is nowhere left to report it, and it must not end the process.
+	}
+}
+
+/**
  * Observe a native promise's rejection with the intrinsic `then`, so the promise's own `then` or `catch` never runs.
  * Only a native promise is observed at all: checking any other value for `then` would run that value's code. A
  * promise that cannot be observed (its constructor throws) is left as it is.
@@ -63,44 +78,97 @@ export class HostListenerFailures {
 	private readonly report: (diagnostic: ActivityWatchdogDiagnostic) => void;
 	/** How a listener's pending promise reaches this reporter without keeping it, or its host, alive. */
 	private readonly weak = new WeakRef(this);
+	/** Each failing listener's latest failure on each input it failed on, kept only while the listener is. */
+	private readonly latest = new WeakMap<object, ListenerFailures>();
 
 	constructor(report: (diagnostic: ActivityWatchdogDiagnostic) => void) {
 		this.report = report;
 	}
 
-	/** Call `listener` with `value`, which is, or comes from, `about`: what the engine sent, described on failure. */
-	call<T>(listener: (value: T) => unknown, value: T, input: HostListenerInput, about: unknown = value): void {
+	/**
+	 * Call `listener` with `value`, which is, or comes from, `about`: what the engine sent, described on failure. `key`
+	 * is the listener as the host registered it, when `listener` only adapts it to this call.
+	 */
+	call<T>(
+		listener: (value: T) => unknown,
+		value: T,
+		input: HostListenerInput,
+		about: unknown = value,
+		key: object = listener,
+	): void {
 		let result: unknown;
 		try {
 			result = listener(value);
 		} catch (error) {
-			this.fail(describeInput(input, about), error);
+			this.fail(this.failuresOf(key), describeInput(input, about), error);
 			return;
 		}
 		if (isPromise(result))
-			observe(result, HostListenerFailures.rejectionObserver(this.weak, describeInput(input, about)));
+			observe(
+				result,
+				HostListenerFailures.rejectionObserver(this.weak, this.failuresOf(key), describeInput(input, about)),
+			);
 	}
 
 	/**
-	 * What observes a listener's promise holds while it is pending: the description of the input and a weak
-	 * reference to the reporter, never the input itself or the host behind the reporter.
+	 * What observes a listener's promise holds while it is pending: the description of the input, the record of its
+	 * listener's failures and a weak reference to the reporter, never the input, the listener or the host behind the
+	 * reporter.
 	 */
-	private static rejectionObserver(failures: WeakRef<HostListenerFailures>, handling: string) {
-		return (error: unknown) => failures.deref()?.fail(handling, error);
+	private static rejectionObserver(
+		failures: WeakRef<HostListenerFailures>,
+		listener: ListenerFailures,
+		handling: string,
+	) {
+		return (error: unknown) => failures.deref()?.fail(listener, handling, error);
 	}
 
-	private fail(handling: string, error: unknown): void {
-		try {
-			const reported: unknown = this.report({
+	private failuresOf(key: object): ListenerFailures {
+		let failures = this.latest.get(key);
+		if (failures === undefined) {
+			failures = new Map();
+			this.latest.set(key, failures);
+		}
+		return failures;
+	}
+
+	/**
+	 * Report one failure. One that repeats its listener's latest failure on the same input, for the same reason,
+	 * continues that failure's series, so a listener that fails on every streamed update is shown once, with a count,
+	 * not once per update.
+	 */
+	private fail(listener: ListenerFailures, handling: string, error: unknown): void {
+		const reason = describeFailure(error);
+		const identity = failureIdentity(reason);
+		const latest = listener.get(handling);
+		const series = latest?.identity === identity ? latest.series : {};
+		listener.delete(handling);
+		listener.set(handling, { identity, series });
+		if (listener.size > TRACKED_INPUTS) listener.delete(listener.keys().next().value!);
+		reportContained(() =>
+			this.report({
 				activity: undefined,
 				elapsedMs: 0,
 				level: "unresponsive",
 				source: "host",
-				message: `Atomic failed while handling ${handling}: ${describeFailure(error)}`,
-			});
-			if (isPromise(reported)) observe(reported, ignore);
-		} catch {
-			// Reporting the failure failed too. There is nowhere left to report it, and it must not end the process.
-		}
+				message: `Atomic failed while handling ${handling}: ${reason}`,
+				series,
+			}),
+		);
 	}
 }
+
+/** How many inputs a listener's latest failures are kept for; one that fails on more forgets the oldest. */
+const TRACKED_INPUTS = 16;
+/** Reasons up to this long are kept as they are; a longer one is kept as its digest. */
+const KEPT_REASON_LENGTH = 256;
+
+/** What tells two failure reasons apart, without keeping a long one: its text, or the digest of its code units. */
+function failureIdentity(reason: string): string {
+	return reason.length <= KEPT_REASON_LENGTH
+		? `text:${reason}`
+		: `digest:${reason.length}:${createHash("sha256").update(Buffer.from(reason, "utf16le")).digest("base64")}`;
+}
+
+/** A listener's latest failure on each input, oldest first: why it failed, and the series of identical failures. */
+type ListenerFailures = Map<string, { readonly identity: string; readonly series: object }>;
