@@ -3,6 +3,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, test } from "vitest";
 import {
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	waitUntilGone,
+} from "../helpers/recorded-process.js";
+import {
 	bunExecutable,
 	fileExistsSync,
 	makeTempDirectory,
@@ -27,7 +33,8 @@ const { getBrokerPidPath, getBrokerWatchdogLogPath, getIntercomDirPath } = await
 );
 const { BROKER_READY_TIMEOUT_MS, spawnBrokerIfNeeded } = await import("../../packages/intercom/broker/spawn.js");
 const clients: InstanceType<typeof IntercomClient>[] = [];
-const ownedPids = new Set<number>();
+/** #6125: brokers this suite started, recorded while they run; the cleanup signals only those processes. */
+const ownedBrokers = new Map<number, RecordedProcess>();
 const REAL_STALLED_BROKER_TIMEOUT_MS = 100_000;
 const WATCHDOG_EXIT_BUDGET_MS = 80_000;
 const STARTUP_BUDGET_MS = 10_000;
@@ -68,20 +75,11 @@ async function waitUntil(condition: () => boolean, budgetMs: number): Promise<vo
 
 afterEach(async () => {
 	for (const client of clients.splice(0)) await client.disconnect();
-	for (const pid of ownedPids) {
-		try {
-			process.kill(pid, "SIGKILL");
-		} catch {}
-		await waitUntil(() => {
-			try {
-				process.kill(pid, 0);
-				return false;
-			} catch {
-				return true;
-			}
-		}, STARTUP_BUDGET_MS);
+	for (const broker of ownedBrokers.values()) {
+		await signalRecordedProcess(broker);
+		assert.equal(await waitUntilGone(broker, STARTUP_BUDGET_MS), true, `broker ${broker.pid} outlived its test`);
 	}
-	ownedPids.clear();
+	ownedBrokers.clear();
 	removePathSync(getIntercomDirPath(), { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
 
@@ -143,7 +141,7 @@ setInterval(() => {
 			{ env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir }, stdout: "pipe", stderr: "pipe" },
 		);
 		assert.ok(child.pid !== undefined);
-		ownedPids.add(child.pid);
+		ownedBrokers.set(child.pid, await recordProcess(child.pid));
 		const output = captureOutput([child.stdout, child.stderr]);
 		let earlyExit: number | undefined;
 		void child.exited.then((code) => {
@@ -187,11 +185,11 @@ setInterval(() => {
 		assert.match(diagnostic, /stopped answering health requests/u);
 		assert.equal((JSON.parse(diagnostic) as { pid: number }).pid, child.pid);
 		assert.ok(Buffer.byteLength(diagnostic) < 1024);
-		ownedPids.delete(child.pid);
+		ownedBrokers.delete(child.pid);
 		removePathSync(gate, { force: true });
 		await Promise.all(Array.from({ length: 8 }, () => spawnBrokerIfNeeded("npx", ["--no-install", "tsx"])));
 		const replacementPid = Number(readTextSync(getBrokerPidPath(), "utf8"));
-		ownedPids.add(replacementPid);
+		ownedBrokers.set(replacementPid, await recordProcess(replacementPid));
 		assert.notEqual(replacementPid, child.pid);
 		const after = await connect("after-stall");
 		assert.deepEqual(

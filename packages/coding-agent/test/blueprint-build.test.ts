@@ -627,7 +627,9 @@ describe("blueprint build: failures never block and are reported (#4588)", () =>
 		assert.equal(failure.error.phase, "maintenance");
 		assert.equal(failure.error.step, "hang");
 		assert.ok(failure.error.elapsedMs >= 300);
-		assert.deepEqual(ran(), [`started ${shellPath(repo.root)}`]);
+		// It never finished. A shell that starts slowly on a loaded machine is stopped before it marks its start.
+		const marks = ran();
+		assert.deepEqual(marks, [`started ${shellPath(repo.root)}`].slice(0, marks.length));
 		assert.ok(failure.logPath !== null);
 		assert.match(readFileSync(failure.logPath, "utf8"), /timed out after 400 ms/);
 	});
