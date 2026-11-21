@@ -82,8 +82,12 @@ describe("an Amazon Bedrock answer the SDK has no Bedrock exception for", () => 
 			[500, '{"message":"boom"}', {}, "Unknown: 500: boom"],
 			[429, '{"message":"slow down"}', {}, "Unknown: 429: slow down"],
 			[503, '{"message":"busy","code":"GatewayBusy"}', {}, "GatewayBusy: 503: busy"],
-			// A message that starts with a longer number than the status does not name it.
+			// A message that starts with a longer number, or a word, that begins with the status does not name it.
 			[503, '{"message":"5031 jobs are queued"}', {}, "Unknown: 503: 5031 jobs are queued"],
+			[503, '{"message":"503ms queued"}', {}, "Unknown: 503: 503ms queued"],
+			// The answer's own status, not one its body gives.
+			[503, '{"message":"over quota","statusCode":400}', {}, "Unknown: 503: over quota"],
+			[500, '{"message":"boom","status":400}', {}, "Unknown: 500: boom"],
 			[502, "bad gateway", { "content-type": "text/plain" }, "502: "],
 		] as const) {
 			const endpoint = await answering(status, body, headers);
@@ -114,9 +118,16 @@ describe("an Amazon Bedrock answer the SDK has no Bedrock exception for", () => 
 	});
 
 	it("names its status but is not retried when it is a 403, and Bedrock's own exceptions read as before", async () => {
-		const forbidden = await bedrockTurn(await answering(403, '{"message":"forbidden"}'));
-		assert.equal(forbidden.errorMessage, "Unknown: 403: forbidden");
-		assert.equal(isRetryableAssistantError(forbidden), false);
+		for (const body of [
+			'{"message":"forbidden"}',
+			// A status its body gives is not the answer's.
+			'{"message":"forbidden","statusCode":503}',
+			'{"message":"forbidden","status":503}',
+		]) {
+			const forbidden = await bedrockTurn(await answering(403, body));
+			assert.equal(forbidden.errorMessage, "Unknown: 403: forbidden", body);
+			assert.equal(isRetryableAssistantError(forbidden), false, body);
+		}
 
 		for (const [status, type, expected, retryable] of [
 			[400, "ValidationException", "Validation error: bad input", false],

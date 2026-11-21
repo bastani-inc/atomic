@@ -487,14 +487,17 @@ function formatBedrockError(error: unknown, connection: ConnectionFailure): stri
 	// An answer the SDK has no Bedrock exception for, such as a gateway's 503, names its status, as the other adapters'
 	// errors do, so the retry rules read it; a modeled exception's prefix already says what it is. Only the SDK's error
 	// for the answer this request's latest attempt got, which carries that answer: never a hook's or another value's.
+	// The status is the answer's own, never a `status` or `statusCode` its body or a wrapper gives.
 	const answered = (error as { $response?: unknown } | null)?.$response;
+	const status =
+		answered !== undefined && answered === connection.response
+			? (answered as { statusCode?: unknown }).statusCode
+			: undefined;
 	const core =
-		norm.status !== undefined &&
-		answered !== undefined &&
-		answered === connection.response &&
+		typeof status === "number" &&
 		!isModeledBedrockException(error) &&
-		!new RegExp(`^${norm.status}(?![0-9])`).test(reported)
-			? `${norm.status}: ${reported}`
+		!new RegExp(`^${status}(?::|$)`).test(reported)
+			? `${status}: ${reported}`
 			: reported;
 	const dataRetentionHint = /data retention mode/i.test(core)
 		? ` See ${BEDROCK_DATA_RETENTION_DOCS_URL} for supported data retention modes.`
