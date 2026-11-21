@@ -7,7 +7,7 @@ import {
 	type TranscriptContext,
 } from "@bastani/atomic-ai";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
-import { convertToLlm } from "./messages.ts";
+import { convertToLlm, withImagesBlocked } from "./messages.ts";
 import { BLUEPRINT_CONTEXT_TYPE } from "./resume/blueprint/context.ts";
 
 /**
@@ -70,6 +70,8 @@ export interface ResumedRequest {
 	model: Model<Api>;
 	thinkingLevel: ThinkingLevel;
 	thinkingBudgets: ThinkingBudgets | undefined;
+	/** Whether requests send images as text because image reading is disabled. */
+	blockImages: boolean;
 	/** The restored history, through the restored checkpoint. */
 	history: readonly AgentMessage[];
 	/** What only the resume added after it: blueprint context, notices, prompt updates. */
@@ -93,11 +95,14 @@ export function clearsForResumedBudget(request: ResumedRequest): boolean {
 	if (reasoning === "off") return false;
 	const sent = lastSentBudget(request.history, request.model, reasoning);
 	if (sent === undefined) return false;
-	const budgetFor = (messages: readonly AgentMessage[]) =>
-		fittedThinkingBudget(request.model, { messages: convertToLlm([...messages]) } as TranscriptContext, {
+	const budgetFor = (messages: readonly AgentMessage[]) => {
+		const converted = convertToLlm([...messages]);
+		const sent = request.blockImages ? withImagesBlocked(converted) : converted;
+		return fittedThinkingBudget(request.model, { messages: sent } as TranscriptContext, {
 			reasoning,
 			thinkingBudgets: request.thinkingBudgets,
 		});
+	};
 	if (budgetFor([...request.history, ...request.resumeOnly, ...request.prompt]).sent === sent) return false;
 	if (budgetFor([...request.history, ...request.prompt]).sent !== sent) return false;
 	const cleared = budgetFor([...request.cleared, ...request.prompt]);

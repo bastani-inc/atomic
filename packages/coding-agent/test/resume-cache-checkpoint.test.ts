@@ -72,6 +72,7 @@ describe("clearing the context before the first request after a resume near the 
 		model,
 		thinkingLevel: "medium" as const,
 		thinkingBudgets: undefined,
+		blockImages: false,
 		history,
 		resumeOnly,
 		prompt: [text(10)],

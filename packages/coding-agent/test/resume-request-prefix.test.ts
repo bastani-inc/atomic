@@ -521,7 +521,11 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 	const MORE_INSTRUCTIONS = `Prefer small changes.\n${"Keep each change reviewed. ".repeat(520)}\n`;
 
 	/** A session on the budget model that sent two prompts near the window, and the history's last budget. */
-	async function nearWindowSession(settings: Record<string, unknown> = {}, factories: ExtensionFactory[] = []) {
+	async function nearWindowSession(
+		settings: Record<string, unknown> = {},
+		factories: ExtensionFactory[] = [],
+		instructions = MORE_INSTRUCTIONS,
+	) {
 		const installation = await install(BUDGET_MODEL, "install", {
 			settings: { defaultThinkingLevel: "medium", ...settings },
 			factories,
@@ -532,7 +536,7 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		const lastBeforeExit = await send(live, "two");
 		const sessionId = live.session.sessionManager.getSessionId();
 		await live.dispose();
-		writeFileSync(join(installation.cwd, "AGENTS.md"), MORE_INSTRUCTIONS);
+		writeFileSync(join(installation.cwd, "AGENTS.md"), instructions);
 		return { installation, sessionId, lastBeforeExit };
 	}
 
@@ -653,6 +657,24 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 			assert.ok(JSON.stringify(firstAfterResume.messages).includes("answer to one"), "the history is not sent");
 			assert.deepEqual(firstAfterResume.thinking, lastBeforeExit.thinking);
 		});
+
+	test("with image reading disabled, images in the prompt count as the text that is sent for them", async () => {
+		// About 2,000 tokens of new instructions fit with the budget; two images counted as images would not.
+		const { installation, sessionId, lastBeforeExit } = await nearWindowSession(
+			{ images: { blockImages: true } },
+			[],
+			`Prefer small changes.\n${"Keep each change reviewed. ".repeat(260)}\n`,
+		);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+		const image = { type: "image" as const, data: pixel, mimeType: "image/png" };
+		await resumed.session.prompt("three", { images: [image, image] });
+		const firstAfterResume = server.requests.at(-1)!.json;
+
+		assert.equal(compactions(resumed), 0);
+		assert.ok(JSON.stringify(firstAfterResume.messages).includes("answer to one"), "the history is not sent");
+		assert.deepEqual(firstAfterResume.thinking, lastBeforeExit.thinking);
+	});
 
 	test("with automatic compaction off, the request lowers the budget to fit as before", async () => {
 		const { installation, sessionId } = await nearWindowSession({ compaction: { enabled: false } });

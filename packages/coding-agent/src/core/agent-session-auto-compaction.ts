@@ -728,6 +728,7 @@ export async function _compactBeforeResumedPrompt(
 		model,
 		thinkingLevel: this.thinkingLevel,
 		thinkingBudgets: this.agent.thinkingBudgets,
+		blockImages: this.settingsManager.getBlockImages(),
 		history,
 		resumeOnly: added,
 		prompt: input,
