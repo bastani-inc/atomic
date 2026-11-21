@@ -27,11 +27,13 @@ import { makeTempDirectory, moduleDir, sleep } from "../helpers/runtime.js";
 
 const REPO = join(moduleDir(import.meta.url), "../..");
 const PACKAGE = join(REPO, "packages/coding-agent");
-/** A real CLI session in a terminal, started twice, with a helper process loading the whole module graph between. */
-const SESSIONS_TIMEOUT_MS = 240_000;
 const CLI_TIMEOUT_MS = 90_000;
-/** How long the helper may take to load and write the module graph on a loaded runner. */
+/** How long the helpers may take to load and write the module graph on a loaded runner. */
 const HELPER_WAIT_MS = 120_000;
+/** Two real CLI sessions in a terminal, waiting between them for the helpers to warm the cache and end. */
+const SESSIONS_TIMEOUT_MS = 2 * CLI_TIMEOUT_MS + 3 * HELPER_WAIT_MS;
+/** One CLI session, then waiting for its helpers to end. */
+const SESSION_AND_HELPERS_TIMEOUT_MS = CLI_TIMEOUT_MS + HELPER_WAIT_MS + 30_000;
 const POLL_MS = 50;
 /** Longer than a session takes after its first frame to start a helper for a cold cache. */
 const WARM_SESSION_HELPER_WINDOW_MS = 3_000;
@@ -122,14 +124,17 @@ async function waitForWarmCache(cacheBase: string, report: SessionReport): Promi
 	}
 }
 
-/** Compile-cache helpers running on this machine, by their command line. */
+/** This checkout's helper script; other jobs on the machine run their own. */
+const HELPER_SCRIPT = join(PACKAGE, "dist", "utils", "compile-cache-warmup.js");
+
+/** Compile-cache helpers of this checkout running now, by their command line. */
 function helperProcesses(): number {
 	const query = spawnSync(
 		"powershell.exe",
 		[
 			"-NoProfile",
 			"-Command",
-			"@(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -like '*compile-cache-warmup*' }).Count",
+			`@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${HELPER_SCRIPT}') }).Count`,
 		],
 		{ encoding: "utf8", timeout: 60_000 },
 	);
@@ -341,7 +346,7 @@ describe.skipIf(!onNode)("the compile cache of an interactive session", () => {
 				await removeTempRootReleasingBroker(fixture.root, fixture.agentDir);
 			}
 		},
-		CLI_TIMEOUT_MS + 30_000,
+		SESSION_AND_HELPERS_TIMEOUT_MS,
 	);
 });
 
