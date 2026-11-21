@@ -28,6 +28,8 @@ export interface InteractiveEngineStartupEnv {
 	readonly projectResourceWithdrawals?: true;
 	/** The host draws the queued messages the main session is delivering (see `QueuedDeliveryRelay`). */
 	readonly queuedDeliveries?: true;
+	/** The session the host started for this engine to open, as a new session or a fork. */
+	readonly startedSessionId?: string;
 }
 
 let snapshot: InteractiveEngineStartupEnv | undefined;
@@ -68,6 +70,7 @@ export function captureInteractiveEngineStartupEnv(
 					...(bootstrap.trustDecisions ? { trustDecisions: bootstrap.trustDecisions } : {}),
 					...(bootstrap.projectResourceWithdrawals ? { projectResourceWithdrawals: true as const } : {}),
 					...(bootstrap.queuedDeliveries ? { queuedDeliveries: true as const } : {}),
+					...(bootstrap.startedSessionId !== undefined ? { startedSessionId: bootstrap.startedSessionId } : {}),
 				}
 			: {
 					child: process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD,
