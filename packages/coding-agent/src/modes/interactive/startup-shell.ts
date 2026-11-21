@@ -160,6 +160,13 @@ class StartupShell {
 		// Enter typed before the terminal was set up arrives as a line feed, which the terminal's line discipline made
 		// of it; the startup input capture always read a line feed as Enter, and so does the early editor.
 		if (!data.startsWith("\x1b") && data.includes("\n")) data = data.replaceAll("\n", "\r");
+		// Esc followed by one character is that character with Alt only when they arrive together; while Atomic loads
+		// it reads keys late, and an Esc typed apart from the next key arrives with it. As the startup input capture
+		// read them, they are Esc and then the character: Esc waits for the session, and so does the character.
+		if (/^\x1b[^\x1b]$/u.test(data)) {
+			this.route("\x1b");
+			return this.route(data.slice(1)) ?? this.hold(data.slice(1));
+		}
 		if (isPhysicalCtrlC(data)) return this.ctrlC(data);
 		if (this.state === "holding") return this.hold(data);
 		if (isKeyRelease(data)) return undefined;
