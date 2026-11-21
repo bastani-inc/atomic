@@ -129,10 +129,12 @@ async function resumeOtherFolder(
 	write(
 		join(agentDir, "extensions", "policy.ts"),
 		`import { appendFileSync } from 'node:fs';
+		import { basename } from 'node:path';
 		const log = (line) => appendFileSync(${JSON.stringify(logFile)}, line + '\\n');
 		export default async function(pi) {
-			const cwd = (await pi.exec('pwd', [])).stdout.trim();
-			const folder = cwd === ${JSON.stringify(a)} ? 'A' : cwd === ${JSON.stringify(b)} ? 'B' : cwd;
+			// The folder a command runs in when the extension gives none.
+			const cwd = (await pi.exec(process.execPath, ['-e', 'process.stdout.write(process.cwd())'])).stdout;
+			const folder = basename(cwd) === 'a' ? 'A' : basename(cwd) === 'b' ? 'B' : cwd;
 			log('factory ' + folder);
 			const timer = setInterval(() => log('tick ' + folder), 20);
 			pi.on('project_trust', async () => ({ trusted: 'yes' }));
