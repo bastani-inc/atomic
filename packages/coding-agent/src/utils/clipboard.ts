@@ -6,7 +6,7 @@ import { join } from "path";
 import { ENV_CLIPBOARD_OSC52, getEnvNames } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { isWaylandSession } from "./clipboard-image.ts";
-import { type ClipboardModule, clipboard } from "./clipboard-native.ts";
+import { type ClipboardModule, getNativeClipboard } from "./clipboard-native.ts";
 import { windowsPowerShellEnvironment } from "./windows-powershell.ts";
 import { isWSL } from "./wsl.ts";
 
@@ -142,7 +142,7 @@ function readTermuxClipboardText(): Promise<string | undefined> {
 }
 
 export async function readClipboardText(
-	source: { getText(): Promise<string> } | null = clipboard,
+	source: { getText(): Promise<string> } | null = getNativeClipboard(),
 ): Promise<string | null> {
 	if (process.env.TERMUX_VERSION) {
 		const text = await readTermuxClipboardText();
@@ -175,7 +175,7 @@ JSON.stringify(paths);`;
  * only then, because the module cannot read file URLs itself.
  */
 export async function readClipboardFilePaths(
-	source: Pick<ClipboardModule, "availableFormats"> | null = clipboard,
+	source: Pick<ClipboardModule, "availableFormats"> | null = getNativeClipboard(),
 	currentPlatform: NodeJS.Platform = process.platform,
 ): Promise<string[] | null> {
 	if (currentPlatform !== "darwin" || !source?.availableFormats?.().includes(FILE_URL_PASTEBOARD_TYPE)) return null;
@@ -216,7 +216,8 @@ export async function copyToClipboard(text: string): Promise<void> {
 	// clipboard. The platform tools below (wl-copy, xclip, xsel) properly
 	// daemonize and keep ownership.
 	try {
-		if (clipboard && p !== "linux") {
+		const clipboard = p === "linux" ? null : getNativeClipboard();
+		if (clipboard) {
 			await clipboard.setText(text);
 			copied = true;
 		}
