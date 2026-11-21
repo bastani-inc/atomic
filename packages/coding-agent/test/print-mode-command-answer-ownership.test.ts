@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { type FauxResponseStep, fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import type { ExtensionAPI, ExtensionFactory } from "../src/core/extensions/index.js";
 import { runPrintMode } from "../src/modes/print-mode.ts";
 import { createHarness, getUserTexts, type Harness } from "./suite/harness.js";
@@ -150,6 +150,63 @@ for (const mode of ["text", "json"] as const) {
 		}
 	});
 }
+
+test("a JSON run still fails when the session's last message is another run's failed reply", async () => {
+	const answered = gate();
+	const finish = gate();
+	const api: { pi?: ExtensionAPI } = {};
+	const harness = await harnessWith(
+		answeringCommand("message", answered, finish, api),
+		fauxAssistantMessage("", { stopReason: "error", errorMessage: "quota exceeded" }),
+	);
+	const output = captureOutput();
+
+	const run = runPrintMode(runtimeHostFor(harness), { mode: "json", initialMessage: "/answer" });
+	await answered.promise;
+	// Another run fails after the command answered: the JSON stream shows it as the session's last message.
+	await harness.session.prompt("another question").catch(() => {});
+	finish.resolve();
+
+	assert.equal(await run, 1);
+	assert.ok(output.stdout.join("").includes("quota exceeded"));
+});
+
+test("a command that answers and then opens a new session prints the new session, not its old answer", async () => {
+	const cleanups: Harness[] = [];
+	const extension: ExtensionFactory = (pi) => {
+		pi.registerCommand("move", {
+			description: "Answers, then leaves the conversation",
+			handler: async (_args, ctx) => {
+				await pi.sendMessage({ customType: "old", content: "Answer in the old session", display: true });
+				await ctx.newSession();
+			},
+		});
+	};
+	const harness = await harnessWith(extension);
+	const services = (target: Harness) =>
+		({
+			cwd: target.tempDir,
+			agentDir: target.tempDir,
+			modelRuntime: target.session.modelRuntime,
+			settingsManager: target.settingsManager,
+			resourceLoader: target.session.resourceLoader,
+			diagnostics: [],
+		}) as never;
+	const runtime = new AgentSessionRuntime(harness.session, services(harness), async (options) => {
+		const next = await createHarness({ sessionManager: options.sessionManager });
+		cleanups.push(next);
+		return { session: next.session, services: services(next), diagnostics: [] };
+	});
+	const output = captureOutput();
+
+	try {
+		assert.equal(await runPrintMode(runtime, { mode: "text", initialMessage: "/move" }), 0);
+		assert.notEqual(runtime.session, harness.session, "the command moved to a new session");
+		assert.equal(output.stdout.join(""), "");
+	} finally {
+		for (const next of cleanups) await next.cleanup();
+	}
+});
 
 /**
  * `/answer` waits until an earlier run of the session is in its `agent_settled` handlers, which hold any turn asked for

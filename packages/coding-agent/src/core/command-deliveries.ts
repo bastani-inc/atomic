@@ -9,16 +9,21 @@ export interface CommandDeliveryOutcome {
 	 */
 	answered: boolean;
 	/**
-	 * The latest message the commands' own deliveries saved: a message of theirs, or a message of a turn one of them
-	 * started. A message something else saved after it, such as another sender's notice, is not their answer.
+	 * Per session, the commands' own answer there: the latest message their deliveries saved to it (a message of theirs,
+	 * or a message of a turn one of them started) and the latest model reply of such a turn. A message something else
+	 * saved after it, such as another sender's notice, is not their answer.
 	 */
-	answer: AgentMessage | undefined;
-	/** The latest model reply of a turn one of their messages started. */
-	reply: AgentMessage | undefined;
+	answers: WeakMap<object, CommandAnswer>;
 	/** A message of theirs could not be delivered, or a turn one started failed, and nothing of theirs answered. */
 	lost: boolean;
 	/** Failures of the turns those messages started that no sender saw, so nothing has reported them yet. */
 	unreported: unknown[];
+}
+
+/** What extension commands answered in one session (see {@link CommandDeliveryOutcome.answers}). */
+export interface CommandAnswer {
+	readonly answer: AgentMessage;
+	readonly reply: AgentMessage | undefined;
 }
 
 /**
@@ -36,8 +41,7 @@ export class CommandDeliveries {
 	private readonly turnErrors: unknown[] = [];
 	private failed = false;
 	private answered = false;
-	private answer: AgentMessage | undefined;
-	private reply: AgentMessage | undefined;
+	private answers = new WeakMap<object, CommandAnswer>();
 
 	/** Whether a command of this prompt runs in `session` (or was handed it after a switch). */
 	owns(session: object): boolean {
@@ -70,11 +74,11 @@ export class CommandDeliveries {
 		if (this.sessions !== undefined) this.answered = true;
 	}
 
-	/** A delivery of the commands, or a turn it started, saved `message`. */
-	noteMessage(message: AgentMessage): void {
+	/** A delivery of the commands, or a turn it started, saved `message` to `session`. */
+	noteMessage(session: object, message: AgentMessage): void {
 		if (this.sessions === undefined) return;
-		this.answer = message;
-		if (message.role === "assistant") this.reply = message;
+		const reply = message.role === "assistant" ? message : this.answers.get(session)?.reply;
+		this.answers.set(session, { answer: message, reply });
 	}
 
 	/**
@@ -85,8 +89,7 @@ export class CommandDeliveries {
 		while (this.pending.size > 0) await Promise.allSettled([...this.pending]);
 		const outcome = {
 			answered: this.answered,
-			answer: this.answer,
-			reply: this.reply,
+			answers: this.answers,
 			// A command that caught a failed send and answered with another one answered.
 			lost: this.failed && !this.answered,
 			// A turn that failed before its message was admitted fails that send with the same error, already reported.
@@ -99,8 +102,7 @@ export class CommandDeliveries {
 	/** Joins nothing more and lets go of what was joined: a late callback of the command keeps none of it. */
 	close(): void {
 		this.sessions = undefined;
-		this.answer = undefined;
-		this.reply = undefined;
+		this.answers = new WeakMap();
 		this.pending.clear();
 		this.sendErrors.clear();
 		this.turnErrors.length = 0;
@@ -183,12 +185,12 @@ function joinable(session: object): CommandDeliveries | undefined {
 export function noteCommandAnswer(session: object, message: AgentMessage): void {
 	const deliveries = joinable(session);
 	deliveries?.noteAnswer();
-	deliveries?.noteMessage(message);
+	deliveries?.noteMessage(session, message);
 }
 
 /** Notes that `session` saved `message` in a turn a command's message started: the latest of its answer. */
 export function noteCommandTurnMessage(session: object, message: AgentMessage): void {
-	joinable(session)?.noteMessage(message);
+	joinable(session)?.noteMessage(session, message);
 }
 
 /** Settles the ticket of a deferred turn that never ran, by the action that would have started it. */
