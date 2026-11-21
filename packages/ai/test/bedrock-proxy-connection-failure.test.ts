@@ -3,7 +3,9 @@ import { execFile } from "node:child_process";
 import diagnosticsChannel from "node:diagnostics_channel";
 import { type ClientRequest, type Server as HttpServer, createServer as createHttpServer } from "node:http";
 import { type Server as NetServer, createServer as createNetServer, type Socket } from "node:net";
-import { afterEach, describe, it } from "vitest";
+import { Readable } from "node:stream";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+import { afterEach, describe, it, vi } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
@@ -187,6 +189,65 @@ describe("a Bedrock failure that is not its connection's", () => {
 			assert.equal(message.stopReason, "error");
 			assert.equal(message.errorMessage, "Application preparation stopped", code);
 			assert.equal(isRetryableAssistantError(message), false, code);
+		}
+	});
+
+	it("does not take a hook's error for the connection's because an earlier request's connection failed with that object", async () => {
+		// The HTTP handler fails the first request with an error object that a hook throws again in the next one.
+		const shared = Object.assign(new Error("Transport stopped"), { code: "ECONNRESET" });
+		const handle = vi.spyOn(NodeHttpHandler.prototype, "handle").mockRejectedValue(shared);
+		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const turn = (hooks: { onPayload?: () => Promise<undefined> }) =>
+			streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+				cacheRetention: "none",
+				maxRetries: 0,
+				env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+				...hooks,
+			}).result();
+		try {
+			const first = await turn({});
+			assert.equal(handle.mock.calls.length, 1);
+			assert.equal(first.errorMessage, "Transport stopped (ECONNRESET)");
+			assert.equal(isRetryableAssistantError(first), true);
+
+			const second = await turn({
+				onPayload: async () => {
+					throw shared;
+				},
+			});
+			assert.equal(handle.mock.calls.length, 1);
+			assert.equal(second.errorMessage, "Transport stopped");
+			assert.equal(isRetryableAssistantError(second), false);
+		} finally {
+			handle.mockRestore();
+		}
+	});
+
+	it("does not take a hook's error for the connection's because an earlier attempt's connection failed with that object", async () => {
+		// The HTTP handler fails the first attempt with an error object; the retry gets an answer, and the onResponse hook
+		// throws that object again.
+		const shared = Object.assign(new Error("Transport stopped"), { code: "ECONNRESET" });
+		const handle = vi
+			.spyOn(NodeHttpHandler.prototype, "handle")
+			.mockRejectedValueOnce(shared)
+			.mockResolvedValueOnce({
+				response: { statusCode: 400, reason: "Bad Request", headers: {}, body: Readable.from([]) },
+			} as Awaited<ReturnType<NodeHttpHandler["handle"]>>);
+		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		try {
+			const message = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+				cacheRetention: "none",
+				maxRetries: 1,
+				env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+				onResponse: async () => {
+					throw shared;
+				},
+			}).result();
+			assert.equal(handle.mock.calls.length, 2);
+			assert.equal(message.errorMessage, "Transport stopped");
+			assert.equal(isRetryableAssistantError(message), false);
+		} finally {
+			handle.mockRestore();
 		}
 	});
 

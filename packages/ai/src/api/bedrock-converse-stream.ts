@@ -184,6 +184,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		};
 
 		const openBlocks: OpenBlocks = new Map();
+		// What this request's last attempt failed with at its own HTTP handler, if it did: see `ConnectionFailure`.
+		const connection: ConnectionFailure = {};
 
 		// A profile explicitly configured through pi's auth flow (the `profile`
 		// option or scoped `AWS_PROFILE` on the stored credential's env) must win
@@ -284,7 +286,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		try {
 			const supportsStrictMode = model.compat?.supportsStrictMode ?? false;
 			const client = new BedrockRuntimeClient(config);
-			addTransportFailureMiddleware(client);
+			addTransportFailureMiddleware(client, connection);
 			let observedRawResponse = false;
 			if (options.onResponse) {
 				addResponseHeadersMiddleware(client, options.onResponse, model, () => {
@@ -428,7 +430,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		} catch (error) {
 			flushOpenBlocks(openBlocks, output);
 			output.stopReason = options.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = formatBedrockError(error);
+			output.errorMessage = formatBedrockError(error, connection);
 			output.retryAfterMs =
 				typeof error === "object" && error !== null ? getProviderRetryAfterMs(error) : undefined;
 			if (output.stopReason === "error") {
@@ -473,7 +475,7 @@ const BEDROCK_DATA_RETENTION_DOCS_URL = "https://docs.aws.amazon.com/bedrock/lat
  * human-readable prefix so downstream consumers (retry logic, context-overflow
  * detection) can distinguish error categories via simple string matching.
  */
-function formatBedrockError(error: unknown): string {
+function formatBedrockError(error: unknown, connection: ConnectionFailure): string {
 	const norm = normalizeProviderError(error);
 	// Surface the raw HTTP body (with status) when the SDK did not fold it into
 	// the message; otherwise fall back to the message. This is what stops a
@@ -489,27 +491,35 @@ function formatBedrockError(error: unknown): string {
 		const prefix = BEDROCK_ERROR_PREFIXES[error.name] ?? error.name;
 		return `${prefix}: ${core}${dataRetentionHint}`;
 	}
-	return `${withConnectionCode(core, error, norm.status)}${dataRetentionHint}`;
+	return `${withConnectionCode(core, error, norm.status, connection)}${dataRetentionHint}`;
 }
 
 /**
- * What Bedrock's HTTP handler rejected a request with, below every response: the request's own connection failures. A
- * hook, a credential source or a response that fails never comes from there.
+ * What one request's latest attempt failed with at Bedrock's HTTP handler, below every response: the request's own
+ * connection failure. Cleared as each attempt starts, so an error a hook, a credential source or a later response
+ * throws is never taken for it, even when it is the same object.
  */
-const connectionFailures = new WeakSet<object>();
+interface ConnectionFailure {
+	failure?: object;
+}
 
 /** A connection error's code, such as `ECONNRESET`, as Node.js and Bun name them. */
 const CONNECTION_ERROR_CODE = /^(?:E[A-Z]+|ERR_SOCKET_[A-Z_]+)$/;
 
 /**
  * `message` with the code of the connection error it reports, when it does not name it, for a failure of the request's
- * own connection only (`connectionFailures`): the HTTP handler's errors carry their reason in the code, such as
- * `ECONNRESET` for a connection reset during a TLS handshake or before a proxy answered, which is what the retry rules
- * read. Bun reports a connection closed under the request as its socket being closed (`ERR_SOCKET_CLOSED`), which is
- * named as the reset it is.
+ * own connection only (`connection`): the HTTP handler's errors carry their reason in the code, such as `ECONNRESET`
+ * for a connection reset during a TLS handshake or before a proxy answered, which is what the retry rules read. Bun
+ * reports a connection closed under the request as its socket being closed (`ERR_SOCKET_CLOSED`), which is named as the
+ * reset it is.
  */
-function withConnectionCode(message: string, error: unknown, status: number | undefined): string {
-	if (status !== undefined || typeof error !== "object" || error === null || !connectionFailures.has(error))
+function withConnectionCode(
+	message: string,
+	error: unknown,
+	status: number | undefined,
+	connection: ConnectionFailure,
+): string {
+	if (status !== undefined || typeof error !== "object" || error === null || connection.failure !== error)
 		return message;
 	const code = (error as { code?: unknown }).code;
 	if (typeof code !== "string" || !CONNECTION_ERROR_CODE.test(code)) return message;
@@ -739,8 +749,9 @@ class ProxyHopHttpAgent extends HttpProxyAgent<string> {
  * Reports what the HTTP handler rejects with, below every response, as the request's own transport failure for its
  * host, so only a refused certificate on that connection is read as one (#6114).
  */
-function addTransportFailureMiddleware(client: BedrockRuntimeClient): void {
+function addTransportFailureMiddleware(client: BedrockRuntimeClient, connection: ConnectionFailure): void {
 	const middleware: DeserializeMiddleware<object, MetadataBearer> = (next) => async (args) => {
+		connection.failure = undefined;
 		try {
 			return await next(args);
 		} catch (error) {
@@ -751,7 +762,7 @@ function addTransportFailureMiddleware(client: BedrockRuntimeClient): void {
 						`${request.protocol ?? "https:"}//${request.hostname}${request.port ? `:${request.port}` : ""}`,
 					)
 				: error;
-			if (typeof failure === "object" && failure !== null) connectionFailures.add(failure);
+			if (typeof failure === "object" && failure !== null) connection.failure = failure;
 			throw failure;
 		}
 	};
