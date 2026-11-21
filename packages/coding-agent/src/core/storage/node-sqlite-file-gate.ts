@@ -595,18 +595,75 @@ const UNSAFE_NAMES = ["changes", "total_changes", "last_insert_rowid", "load_ext
 /** An INSERT, UPDATE or DELETE, possibly after a WITH clause: listing its plan resets `changes()`. */
 const CHANGING_STATEMENT = /^(?:INSERT|REPLACE|UPDATE|DELETE|WITH)\b/i;
 /**
- * A string literal or a comment, which names nothing; or a name, bare (SQLite reads any character past ASCII as part of
- * one) or quoted.
+ * Whether a name starts with the UTF-16 code unit `code`: a letter, `_`, or any character past ASCII, which SQLite reads
+ * as part of a name (both halves of a surrogate pair, and a lone one, are past ASCII).
  */
-const WORD =
-	/'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|"((?:[^"]|"")*)"|\[([^\]]*)\]|`((?:[^`]|``)*)`|([A-Za-z_\u0080-\u{10FFFF}][\w$\u0080-\u{10FFFF}]*)/gu;
+function startsName(code: number): boolean {
+	return code >= 0x80 || code === 0x5f || (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
+}
 
-/** The names `sql` uses, bare or quoted, in lower case: outside its string literals and comments. */
+/** Whether a bare name goes on with the UTF-16 code unit `code`: what starts one, a digit, or `$`. */
+function continuesName(code: number): boolean {
+	return startsName(code) || (code >= 0x30 && code <= 0x39) || code === 0x24;
+}
+
+/**
+ * Where a string literal or a quoted name that opens with `quote` at `start` ends, past its closing quote, or -1 when
+ * no quote after `start` closes it. A doubled quote stands for the quote itself; when the text ends inside, the first
+ * quote of the last doubled one closes it.
+ */
+function quotedEnd(sql: string, start: number, quote: string): number {
+	let lastDoubled = -1;
+	for (let from = start + 1; ; ) {
+		const at = sql.indexOf(quote, from);
+		if (at === -1) return lastDoubled === -1 ? -1 : lastDoubled + 1;
+		if (sql[at + 1] !== quote) return at + 1;
+		lastDoubled = at;
+		from = at + 2;
+	}
+}
+
+/**
+ * The names `sql` uses, bare or quoted (`"…"`, `[…]`, `` `…` ``), in lower case: outside its string literals and
+ * comments, in one pass over the text. A quote or `[` that nothing closes counts as a character of its own, and the
+ * text after it is read as usual.
+ */
 function namesIn(sql: string): Set<string> {
 	const names = new Set<string>();
-	for (const [, double, bracket, backtick, bare] of sql.matchAll(WORD)) {
-		const name = double?.replaceAll('""', '"') ?? bracket ?? backtick?.replaceAll("``", "`") ?? bare;
-		if (name !== undefined) names.add(name.toLowerCase());
+	// A `[` after the last `]` closes no name: knowing it at once keeps each such `[` from reading to the end again.
+	const lastBracket = sql.lastIndexOf("]");
+	for (let index = 0; index < sql.length; ) {
+		const char = sql[index]!;
+		if (char === "'" || char === '"' || char === "`") {
+			const end = quotedEnd(sql, index, char);
+			if (end === -1) index += 1;
+			else {
+				// A string literal names nothing; a quoted name stands for its text, each doubled quote for one.
+				if (char !== "'") {
+					const name = sql.slice(index + 1, end - 1).replaceAll(char + char, char);
+					names.add(name.toLowerCase());
+				}
+				index = end;
+			}
+		} else if (char === "[") {
+			if (index < lastBracket) {
+				const end = sql.indexOf("]", index + 1);
+				names.add(sql.slice(index + 1, end).toLowerCase());
+				index = end + 1;
+			} else index += 1;
+		} else if (char === "-" && sql[index + 1] === "-") {
+			const end = sql.indexOf("\n", index + 2);
+			index = end === -1 ? sql.length : end;
+		} else if (char === "/" && sql[index + 1] === "*") {
+			// Left open, the comment runs to the end of the text.
+			const end = sql.indexOf("*/", index + 2);
+			index = end === -1 ? sql.length : end + 2;
+		} else if (startsName(sql.charCodeAt(index))) {
+			let end = index + 1;
+			while (end < sql.length && continuesName(sql.charCodeAt(end))) end += 1;
+			names.add(sql.slice(index, end).toLowerCase());
+			index = end;
+		} else index += 1;
 	}
 	return names;
 }
