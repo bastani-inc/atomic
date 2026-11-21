@@ -16,7 +16,7 @@ type AskCloser = Pick<ExtensionAPI, "appendEntry"> & {
   readonly events: { emit(eventName: string, payload: unknown): void };
 };
 
-/** Refusals that say the sender has no live session; Subagents decides whether its asking attempt is over. */
+/** Refusals that say the sender has no live session; Subagents decides whether the sender ended. */
 const SENDER_GONE_CODES: ReadonlySet<string> = new Set([
   "session_not_found",
   "recipient_completed",
@@ -60,9 +60,9 @@ function preview(context: IntercomContext): string {
 }
 
 /**
- * #6168: after a restart, close the asks this session holds unanswered whose sender is one of its subagents and whose
- * asking attempt is over: no reply can reach them, and they would otherwise stay pending for good. Returns the recovery notice naming them, if any were closed. An ask whose
- * close is not saved stays pending, and the next resume decides about it again.
+ * #6168: after a restart, close the asks this session holds unanswered whose sender is one of its subagents that has
+ * ended: no reply can reach them, and they would otherwise stay pending for good. Returns the recovery notice naming
+ * them, if any were closed. An ask whose close is not saved stays pending, and the next resume decides about it again.
  */
 export async function closeFinishedChildAsks(
   pi: AskCloser,
@@ -97,7 +97,7 @@ export async function closeFinishedChildAsks(
     (context) => `- ${context.message.id} from \`${context.from.name ?? context.from.id}\`: ${preview(context)}`,
   );
   return [
-    `Closed ${closed.length === 1 ? "1 unanswered ask" : `${closed.length} unanswered asks`} from subagents whose run that asked ${closed.length === 1 ? "it" : "them"} has ended: no reply can reach ${closed.length === 1 ? "it" : "them"} any more.\n${lines.join("\n")}`,
+    `Closed ${closed.length === 1 ? "1 unanswered ask" : `${closed.length} unanswered asks`} from subagents that have ended: no reply can reach ${closed.length === 1 ? "it" : "them"} any more.\n${lines.join("\n")}`,
   ];
 }
 
@@ -109,8 +109,8 @@ export interface RefusedReply {
 
 /**
  * #6168: close the ask `messageId` when its reply was refused in a way no later reply can get past: Intercom refuses
- * every reply to it (its route expired, or it was answered), or its sender is a subagent of this session whose asking
- * attempt is over. A refusal that may pass, such as a sender Intercom cannot find right now, keeps the ask pending.
+ * every reply to it (its route expired, or it was answered), or its sender is a subagent of this session that has
+ * ended. A refusal that may pass, such as a sender Intercom cannot find right now, keeps the ask pending.
  * Returns the sentence that tells the caller the ask is closed, or `undefined` when it stays pending.
  */
 export async function closeRefusedAsk(
@@ -131,5 +131,5 @@ export async function closeRefusedAsk(
   if (reason === undefined || !(await closeInboundAsk(pi, tracker, messageId, reason))) return undefined;
   return reason === "route-expired"
     ? `Ask ${messageId} is closed: Intercom refuses every reply to it, so it no longer shows as pending. Send a plain message if its sender still needs the answer.`
-    : `Ask ${messageId} is closed: the run of the subagent that asked it has ended, so no reply can reach that question and it no longer shows as pending. Send a plain message if the subagent still needs the answer.`;
+    : `Ask ${messageId} is closed: the subagent that asked it has ended, so no reply can reach it and it no longer shows as pending. Send a plain message if the subagent still needs the answer.`;
 }

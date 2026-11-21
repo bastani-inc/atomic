@@ -135,7 +135,7 @@ describe("an ask no reply can reach is closed (#6168)", () => {
 		assert.deepEqual(closedEntries(h.appended), [{ messageId: "ask-1", reason: "route-expired" }]);
 	});
 
-	test("a reply to a subagent whose asking attempt is over closes the ask (#6168)", async () => {
+	test("a reply to a subagent that has ended closes the ask (#6168)", async () => {
 		const h = owner({ reason: "Session not found", reasonCode: "session_not_found" }, ["ask-1"]);
 
 		const result = await h.reply();
@@ -267,7 +267,7 @@ function writer(manager: SessionManager, events: { emit(eventName: string, paylo
 	};
 }
 
-describe("a restart closes the asks of subagent attempts that are over (#6168)", () => {
+describe("a restart closes the asks of subagents that have ended (#6168)", () => {
 	test("closes, once, only the asks Subagents says no reply can reach (#6168)", async () => {
 		const manager = await askedOwner(["ask-ended", "ask-live"]);
 		const subagents = subagentsAnswering(["ask-ended"]);
@@ -282,7 +282,7 @@ describe("a restart closes the asks of subagent attempts that are over (#6168)",
 			],
 		);
 		assert.equal(notices.length, 1);
-		assert.match(notices[0]!, /Closed 1 unanswered ask from subagents whose run that asked it has ended/);
+		assert.match(notices[0]!, /Closed 1 unanswered ask from subagents that have ended/);
 		assert.match(notices[0]!, /ask-ended from `subagent-worker-run1-1`: question ask-ended/);
 		assert.deepEqual(pendingAfterRestart(manager), ["ask-live"]);
 

@@ -157,8 +157,8 @@ export const SUBAGENT_RELEASE_RESTORING_CHILD_EVENT = "subagent:release-restorin
  */
 export const SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT = "subagent:restored-intercom-peers";
 /**
- * #6168: Intercom asks Subagents which of the asks this session holds unanswered came from an attempt of one of its
- * children that is over, so no reply can reach it. Payload: {@link FinishedAsksRequest}.
+ * #6168: Intercom asks Subagents which of the asks this session holds unanswered came from one of its children that
+ * has ended, so no reply can reach it. Payload: {@link FinishedAsksRequest}.
  */
 export const SUBAGENT_FINISHED_ASKS_EVENT = "subagent:finished-asks";
 
@@ -177,7 +177,7 @@ export interface FinishedAsksRequest {
 	completion?: Promise<readonly string[]>;
 }
 
-/** The ids of `asks` whose asking attempt Subagents knows is over; none without a Subagents extension. */
+/** The ids of `asks` whose sender Subagents knows has ended; none without a Subagents extension. */
 export async function finishedChildAsks(
 	events: { emit(eventName: string, payload: unknown): void },
 	ownerSessionId: string,

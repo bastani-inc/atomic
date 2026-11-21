@@ -13,7 +13,7 @@ export const INTERCOM_ASK_CLOSED_ENTRY = "intercom_ask_closed";
 export interface ClosedInboundAsk {
   readonly messageId: string;
   /**
-   * `sender-ended`: the sender's attempt that asked it is over; `route-expired`: Intercom refuses every reply to it;
+   * `sender-ended`: its sender, a subagent of this session, has ended; `route-expired`: Intercom refuses every reply to it;
    * `closed`: this session chose to close it without a reply.
    */
   readonly reason: "sender-ended" | "route-expired" | "closed";

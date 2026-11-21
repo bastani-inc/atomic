@@ -72,8 +72,8 @@ export function answerIntercomChildrenRequests(
 }
 
 /**
- * #6168: Intercom asks which of the asks this session holds unanswered came from an attempt of one of its children that
- * is over, so no reply can reach it. `completion` resolves to their message ids.
+ * #6168: Intercom asks which of the asks this session holds unanswered came from one of its children that has ended,
+ * so no reply can reach it. `completion` resolves to their message ids.
  */
 export const SUBAGENT_FINISHED_ASKS_EVENT = "subagent:finished-asks";
 
@@ -92,7 +92,10 @@ export interface SubagentFinishedAsksRequest {
 	completion?: Promise<readonly string[]>;
 }
 
-/** Stopped children whose messages are kept for them until they continue: an answer can still reach them. */
+/**
+ * Stopped children an answer still reaches: a released child is woken by a reply to any of its asks, also one no call
+ * waits for any more (#4751), and a paused or quit child's messages are kept for it until it continues.
+ */
 const HELD_FOR_STATUSES: ReadonlySet<string | undefined> = new Set([SUBAGENT_CHILD_RELEASED_STATUS, "paused", "quit"]);
 
 /**
@@ -116,31 +119,19 @@ function askingChild(
 }
 
 /**
- * Whether the attempt of `child` that asked `ask` is over, so no reply can reach it: the child ended, or it was
- * released waiting on other calls, or it ran in an earlier owner process, whose attempts ended with it. A child released
- * waiting on that question, one paused or quit (its messages are kept for it), one this process still runs a question
- * for, and one running in this process keep the ask: a running attempt is not told apart from the one that asked.
+ * Whether `child` ended, so no reply to an ask of its can reach it: it is settled, and neither released (a reply wakes
+ * it), paused nor quit (its messages are kept for it), nor running a question in this process. A running child keeps
+ * its asks, also one relaunched after a restart: a reply to an ask of its earlier run can still reach it.
  */
-function askOutlivedItsAttempt(child: SubagentChildRecord | SubagentChildStanding, ask: SubagentHeldAsk): boolean {
+function askerEnded(child: SubagentChildRecord | SubagentChildStanding): boolean {
 	const record: Partial<SubagentChildRecord> = child;
 	const runningHere = (record.stillRunning ?? []).some(
 		(call) => call.ownerGeneration === SUBAGENT_OWNER_GENERATION && SUBAGENT_QUESTION_TOOLS.has(call.toolName),
 	);
-	if (runningHere) return false;
-	if (child.state === "running")
-		return record.ownerGeneration !== undefined && record.ownerGeneration !== SUBAGENT_OWNER_GENERATION;
-	if (child.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) {
-		if (record.waitingOn === undefined) return false;
-		return !record.waitingOn.some(
-			(call) =>
-				call.replyWait?.questionId === ask.messageId ||
-				(call.replyWait === undefined && SUBAGENT_QUESTION_TOOLS.has(call.toolName)),
-		);
-	}
-	return !HELD_FOR_STATUSES.has(child.terminalStatus);
+	return !runningHere && child.state === "terminal" && !HELD_FOR_STATUSES.has(child.terminalStatus);
 }
 
-/** The ids of `asks` that came from an attempt of a child of `ownerSessionId` that is over. */
+/** The ids of `asks` that came from a child of `ownerSessionId` that has ended. */
 export async function finishedSubagentAsks(
 	ownerSessionId: string,
 	asks: readonly SubagentHeldAsk[],
@@ -150,7 +141,7 @@ export async function finishedSubagentAsks(
 	const children = subagentChildStandingsOf(ownerSessionId);
 	return asks.flatMap((ask) => {
 		const child = askingChild(children, ask);
-		return child !== undefined && askOutlivedItsAttempt(child, ask) ? [ask.messageId] : [];
+		return child !== undefined && askerEnded(child) ? [ask.messageId] : [];
 	});
 }
 
