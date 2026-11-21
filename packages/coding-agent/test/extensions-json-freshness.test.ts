@@ -159,6 +159,31 @@ export default function () {
 		assert.equal((await second.imported()).default, second.required);
 	});
 
+	it("are one value per load whether named by path or through a workspace package linked in", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-extension-json-"));
+		roots.push(root);
+		const shared = path.join(root, "packages", "shared");
+		const extension = path.join(root, "packages", "extension");
+		fs.mkdirSync(shared, { recursive: true });
+		fs.mkdirSync(path.join(extension, "node_modules", "@ws"), { recursive: true });
+		fs.writeFileSync(path.join(shared, "package.json"), JSON.stringify({ name: "@ws/shared", main: "index.ts" }));
+		fs.writeFileSync(path.join(shared, "data.json"), JSON.stringify({ value: "shared", seen: 0 }));
+		fs.writeFileSync(
+			path.join(shared, "index.ts"),
+			`import data from "./data.json";\ndata.seen += 1;\nexport default data;\n`,
+		);
+		fs.symlinkSync(shared, path.join(extension, "node_modules", "@ws", "shared"), "junction");
+		const entry = path.join(extension, "extension.ts");
+		fs.writeFileSync(
+			entry,
+			`import shared from "@ws/shared";\nimport bare from "@ws/shared/data.json";\nexport default function () {\n\treturn { same: bare === shared, seen: bare.seen };\n}\n`,
+		);
+
+		const loaded = (await load(entry, path.join(root, "agent"))) as unknown as { same: boolean; seen: number };
+
+		assert.deepEqual(loaded, { same: true, seen: 1 });
+	});
+
 	it("leave JSON in a package the extension depends on to the runtime, as before", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-extension-json-"));
 		roots.push(root);

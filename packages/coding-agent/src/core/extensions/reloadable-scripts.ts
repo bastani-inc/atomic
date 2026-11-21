@@ -150,9 +150,37 @@ interface OwnFile {
 
 function ownFile(id: string, require: Jiti, context: LoadContext): OwnFile | undefined {
 	const resolved = path.normalize(require.resolve(id.startsWith("file:") ? fileURLToPath(id) : id));
-	const kind = isReloadableScriptPath(resolved) ? "script" : path.extname(resolved) === ".json" ? "json" : undefined;
-	if (kind === undefined || packageRootOf(resolved) !== context.packageRoot) return undefined;
-	return { kind, filename: resolved };
+	if (isReloadableScriptPath(resolved)) {
+		return packageRootOf(resolved) === context.packageRoot ? { kind: "script", filename: resolved } : undefined;
+	}
+	const json = path.extname(resolved) === ".json" ? ownJson(resolved, context) : undefined;
+	return json === undefined ? undefined : { kind: "json", filename: json };
+}
+
+/**
+ * The real path of JSON file `resolved` when it lies in the load's own package, so that every specifier naming the
+ * file, by path or by a package name linked into the load's package, reads the one value of the load.
+ */
+function ownJson(resolved: string, context: LoadContext): string | undefined {
+	let real: string;
+	try {
+		real = path.normalize(fsExports.realpathSync(resolved));
+	} catch {
+		return undefined;
+	}
+	return packageRootOf(real) === context.packageRoot ? real : undefined;
+}
+
+/** {@link ownJson} for a bare specifier that names a `.json` file, such as one in a workspace package linked in. */
+function ownJsonByName(id: string, require: Jiti, context: LoadContext): string | undefined {
+	if (path.extname(id) !== ".json") return undefined;
+	let resolved: string;
+	try {
+		resolved = require.resolve(id);
+	} catch {
+		return undefined;
+	}
+	return path.extname(resolved) === ".json" ? ownJson(resolved, context) : undefined;
 }
 
 /**
@@ -223,6 +251,9 @@ function bindReloadableScriptLoaders(
 				if (own === undefined) return Reflect.apply(target, thisArg, args);
 				return own.kind === "json" ? readJson(own.filename, target, context) : load(own.filename, false);
 			}
+			const context = loadContextOf(module);
+			const json = ownJsonByName(id, target, context);
+			if (json !== undefined) return readJson(json, target, context);
 			if (!resolvesBareByRuntime) return Reflect.apply(target, thisArg, args);
 			const runtimeRequire = createRequire(module.filename);
 			try {
@@ -245,6 +276,9 @@ function bindReloadableScriptLoaders(
 				jitiImport(id)
 			);
 		}
+		const context = loadContextOf(module);
+		const json = ownJsonByName(id, require, context);
+		if (json !== undefined) return readJson(json, require, context);
 		if (!resolvesBareByRuntime) return jitiImport(id);
 		let target: string;
 		try {
