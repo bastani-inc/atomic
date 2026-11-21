@@ -18,7 +18,8 @@ const BROKER_IDLE_SHUTDOWN_GRACE_MS = 2_000;
 const BROKER_IDLE_SHUTDOWN_WINDOW_MS = BROKER_IDLE_SHUTDOWN_MS + BROKER_IDLE_SHUTDOWN_GRACE_MS;
 /** Real broker child, jiti startup, and the idle shutdown window. */
 const REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS = 30_000;
-const BROKER_STARTUP_MS = 10_000;
+/** How much earlier than its window a timer may fire, as the broker measures it. */
+const TIMER_EARLY_FIRE_TOLERANCE_MS = 50;
 /** Unix unlink-and-rebind is the only eviction path; a live Windows named pipe returns EADDRINUSE. */
 const unixEvictionTest = process.platform === "win32" ? test.skip : test;
 
@@ -42,11 +43,18 @@ afterEach(async () => {
 	}
 });
 
+/** Reports which timeout windows the broker asked for, when they fire (see the helper). */
+const TIMER_DELAY_PROBE = join(repoRoot, "test/helpers/timer-delay-probe.cjs");
+
 function spawnBroker(agentDir: string): ChildProcess {
-	const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
-		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
-		stdio: ["ignore", "pipe", "pipe"],
-	});
+	const broker = spawn(
+		process.execPath,
+		["--require", TIMER_DELAY_PROBE, getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")],
+		{
+			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	);
 	brokerStdout.set(broker, "");
 	broker.stdout?.on("data", (chunk: Buffer) => {
 		brokerStdout.set(broker, `${brokerStdout.get(broker) ?? ""}${chunk.toString()}`);
@@ -55,42 +63,77 @@ function spawnBroker(agentDir: string): ChildProcess {
 	return broker;
 }
 
-/** The pid file is written before the socket listens (#4409), so the broker is ready once it has also logged its start. */
-async function waitForBrokerPid(agentDir: string, broker: ChildProcess): Promise<number> {
-	const pidPath = getBrokerPidPath(agentDir);
-	const deadline = Date.now() + BROKER_STARTUP_MS;
-	while (Date.now() < deadline) {
+/** Resolves once `broker`'s stdout satisfies `ready`, checked on every chunk; rejects if it exits first. */
+function waitForOutput(broker: ChildProcess, ready: (stdout: string) => boolean, awaited: string): Promise<void> {
+	return new Promise((resolveReady, reject) => {
+		const check = () => {
+			if (!ready(brokerStdout.get(broker) ?? "")) return;
+			broker.off("exit", onExit);
+			broker.stdout?.off("data", check);
+			resolveReady();
+		};
+		const onExit = () => {
+			broker.stdout?.off("data", check);
+			reject(new Error(`Broker exited with code ${broker.exitCode} signal ${broker.signalCode} before ${awaited}`));
+		};
+		broker.once("exit", onExit);
+		broker.stdout?.on("data", check);
+		check();
 		if (broker.exitCode !== null || broker.signalCode !== null) {
-			throw new Error(`Broker exited during startup with code ${broker.exitCode} signal ${broker.signalCode}`);
+			broker.off("exit", onExit);
+			onExit();
 		}
-		if (
-			existsSync(pidPath) &&
-			broker.pid !== undefined &&
-			brokerStdout.get(broker)?.includes("Intercom broker started")
-		) {
-			const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-			if (pid === broker.pid) return pid;
-		}
-		await sleep(20);
-	}
-	throw new Error("Broker pid file did not appear");
+	});
 }
 
-function waitForExit(broker: ChildProcess, timeoutMs: number): Promise<number | null> {
+/**
+ * The pid file is written before the socket listens (#4409), and the broker logs that it started only once its socket
+ * listens, so the broker is ready once it has logged it. No clock decides: a broker that does not start exits.
+ */
+async function waitForBrokerPid(agentDir: string, broker: ChildProcess): Promise<number> {
+	await waitForOutput(broker, (stdout) => stdout.includes("Intercom broker started"), "it started");
+	const pid = Number.parseInt(readFileSync(getBrokerPidPath(agentDir), "utf8").trim(), 10);
+	assert.equal(pid, broker.pid);
+	return pid;
+}
+
+/** Resolves with the broker's exit code once it exits; the test's own timeout bounds the wait. */
+function waitForExit(broker: ChildProcess): Promise<number | null> {
 	if (broker.exitCode !== null || broker.signalCode !== null) {
 		return Promise.resolve(broker.exitCode);
 	}
-	return new Promise((resolveExit, reject) => {
-		const timer = setTimeout(() => {
-			broker.off("exit", onExit);
-			reject(new Error(`Broker did not exit within ${timeoutMs}ms`));
-		}, timeoutMs);
-		const onExit = (code: number | null) => {
-			clearTimeout(timer);
-			resolveExit(code);
-		};
-		broker.once("exit", onExit);
-	});
+	return new Promise((resolveExit) => broker.once("exit", (code: number | null) => resolveExit(code)));
+}
+
+/**
+ * What the broker reported when it retired idle: the timeout window it had asked for (reported by the timer probe as
+ * that timer fired, just before the broker logged its retirement), and the idle time its own clock measured from its
+ * last connection, or from when it listened. Neither depends on how late a loaded machine ran the timer or reported
+ * the exit.
+ */
+function reportedRetirement(broker: ChildProcess): { readonly windowMs: number; readonly idleMs: number } {
+	const stdout = brokerStdout.get(broker) ?? "";
+	const retired = /No sessions connected for (\d+)ms since the last connection/.exec(stdout);
+	assert.ok(retired, `broker did not report its idle retirement:\n${stdout}`);
+	const fired = [
+		...stdout.slice(0, retired.index).matchAll(new RegExp(`\\[timer-probe ${broker.pid}\\] fired (\\d+)`, "g")),
+	];
+	const window = fired.at(-1);
+	assert.ok(window, `no timeout fired before the broker retired:\n${stdout}`);
+	return { windowMs: Number(window[1]), idleMs: Number(retired[1]) };
+}
+
+/** The broker retired when its idle window of five seconds ran out, and not before. */
+async function assertRetiredWhenIdle(broker: ChildProcess): Promise<void> {
+	assert.equal(await waitForExit(broker), 0);
+	const stdout = broker.stdout;
+	if (stdout && !stdout.readableEnded) await new Promise((resolveEnded) => stdout.once("end", resolveEnded));
+	const { windowMs, idleMs } = reportedRetirement(broker);
+	assert.equal(windowMs, BROKER_IDLE_SHUTDOWN_MS, "the broker retired on another timer than its idle window");
+	assert.ok(
+		idleMs >= BROKER_IDLE_SHUTDOWN_MS - TIMER_EARLY_FIRE_TOLERANCE_MS,
+		`broker retired ${idleMs}ms after its last connection, inside the ${BROKER_IDLE_SHUTDOWN_MS}ms idle window`,
+	);
 }
 
 function isBrokerAlive(broker: ChildProcess): boolean {
@@ -111,19 +154,17 @@ async function connect(agentDir: string): Promise<net.Socket> {
 
 async function waitRegistered(socket: net.Socket): Promise<void> {
 	await new Promise<void>((resolveRegistered, reject) => {
-		const timer = setTimeout(() => reject(new Error("timed out waiting for registered")), BROKER_STARTUP_MS);
 		const reader = createMessageReader(
 			(message) => {
 				if (typeof message === "object" && message !== null && "type" in message && message.type === "registered") {
-					clearTimeout(timer);
+					socket.off("close", onClose);
 					resolveRegistered();
 				}
 			},
-			(error) => {
-				clearTimeout(timer);
-				reject(error);
-			},
+			(error) => reject(error),
 		);
+		const onClose = () => reject(new Error("the connection closed before it registered"));
+		socket.once("close", onClose);
 		socket.on("data", reader);
 	});
 }
@@ -135,14 +176,8 @@ test(
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-none-"));
 		const broker = spawnBroker(agentDir);
 		await waitForBrokerPid(agentDir, broker);
-		const armedAt = Date.now();
 
-		const code = await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS);
-		assert.equal(code, 0);
-		assert.ok(
-			Date.now() - armedAt <= BROKER_IDLE_SHUTDOWN_WINDOW_MS,
-			"idle broker exceeded the shutdown window after listen armed the check",
-		);
+		await assertRetiredWhenIdle(broker);
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
@@ -166,7 +201,7 @@ test(
 		const broker = spawnBroker(agentDir);
 		await waitForBrokerPid(agentDir, broker);
 
-		assert.equal(await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS), 0);
+		assert.equal(await waitForExit(broker), 0);
 		assertOnlyReleasedMarker(agentDir);
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
@@ -179,7 +214,7 @@ test(
 		for (let cycle = 0; cycle < IDLE_OUT_CYCLES; cycle++) {
 			const broker = spawnBroker(agentDir);
 			await waitForBrokerPid(agentDir, broker);
-			assert.equal(await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS), 0);
+			assert.equal(await waitForExit(broker), 0);
 			assertOnlyReleasedMarker(agentDir);
 		}
 	},
@@ -200,13 +235,7 @@ test(
 			socket.destroy();
 		});
 
-		const closedAt = Date.now();
-		const code = await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS);
-		assert.equal(code, 0);
-		assert.ok(
-			Date.now() - closedAt <= BROKER_IDLE_SHUTDOWN_WINDOW_MS,
-			"pre-register disconnect exceeded the shutdown window",
-		);
+		await assertRetiredWhenIdle(broker);
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
@@ -244,15 +273,9 @@ test(
 	async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-probe-"));
 		const broker = spawnBroker(agentDir);
-		let brokerOutput = "";
-		broker.stdout?.on("data", (chunk: Buffer) => {
-			brokerOutput += chunk.toString();
-		});
 		await waitForBrokerPid(agentDir, broker);
 		const probeIntervalMs = 500;
 		const probeUntil = Date.now() + BROKER_IDLE_SHUTDOWN_MS + 1_000;
-		const retirementWaitMs = 12_000;
-		const timerEarlyFireToleranceMs = 50;
 		let probesAccepted = 0;
 
 		while (Date.now() < probeUntil && isBrokerAlive(broker)) {
@@ -269,17 +292,7 @@ test(
 			await sleep(probeIntervalMs);
 		}
 		assert.ok(probesAccepted > 0, "no liveness probe reached the broker");
-		assert.equal(await waitForExit(broker, retirementWaitMs), 0);
-		const stdout = broker.stdout;
-		if (stdout && !stdout.readableEnded) await new Promise((resolveEnded) => stdout.once("end", resolveEnded));
-
-		const reported = /No sessions connected for (\d+)ms since the last connection/.exec(brokerOutput);
-		assert.ok(reported, `broker did not report its idle retirement:\n${brokerOutput}`);
-		const idleMs = Number(reported[1]);
-		assert.ok(
-			idleMs >= BROKER_IDLE_SHUTDOWN_MS - timerEarlyFireToleranceMs,
-			`broker retired ${idleMs}ms after its last connection, inside the ${BROKER_IDLE_SHUTDOWN_MS}ms idle window`,
-		);
+		await assertRetiredWhenIdle(broker);
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
@@ -312,7 +325,7 @@ unixEvictionTest(
 		});
 		await registered;
 
-		const code = await waitForExit(incumbent, BROKER_IDLE_SHUTDOWN_WINDOW_MS);
+		const code = await waitForExit(incumbent);
 		assert.equal(code, 0);
 		assert.equal(isBrokerAlive(successor), true, "successor broker exited when the incumbent shut down");
 		assert.equal(Number.parseInt(readFileSync(getBrokerPidPath(agentDir), "utf8").trim(), 10), successorPid);
