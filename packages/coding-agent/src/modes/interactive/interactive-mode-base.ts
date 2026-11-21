@@ -80,6 +80,7 @@ import {
 import { dockScene, navigationShown } from "./navigation-scene.js";
 import { type BlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
 import { screenHoldOf } from "./screen-hold.ts";
+import { startupShellTerminal } from "./startup-shell.ts";
 
 /** Move the transcript and nothing else: what a reserving overlay may release. */
 const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
@@ -763,7 +764,8 @@ export class InteractiveModeBase {
 		this.renderer = createInteractiveTui({
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 			logDirectory: runtimeHost.services.agentDir,
-			terminal: options.terminal,
+			// The early editor's terminal, still set up, when it is drawing: this interface takes it over on start.
+			terminal: options.terminal ?? startupShellTerminal(),
 			copyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 			wheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
 			onRightClickPaste: this.onRightClickPaste,

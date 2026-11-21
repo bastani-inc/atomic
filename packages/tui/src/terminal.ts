@@ -93,6 +93,20 @@ export interface Terminal {
 	stop(): void;
 
 	/**
+	 * Hand the running terminal to the renderer that starts on it next: its modes stay as they are, and input that
+	 * arrives meanwhile is held for the handlers that next `start()` binds, which receive it first, in order, after
+	 * `held`: input the previous owner had already received and kept for them.
+	 */
+	handOff?(held?: readonly string[]): void;
+
+	/**
+	 * Whether another renderer handed this terminal off, from the hand-off through the start that follows it until a
+	 * stop: its screen still shows that renderer's last frame, so the new renderer paints over it rather than entering
+	 * or clearing a screen.
+	 */
+	readonly continuedFromHandOff?: boolean;
+
+	/**
 	 * Synchronously restore terminal modes from a process `exit` handler when stop() did not run.
 	 * Writes `before`, then this terminal's own mode resets, then `after`.
 	 */
@@ -222,6 +236,15 @@ export class ProcessTerminal implements Terminal {
 	/** The support query was sent and its DA1 sentinel has not arrived yet. */
 	private programStatusQueryPending = false;
 	private writeLog = createWriteLog(getTuiEnvValue("TUI_WRITE_LOG") || "");
+	/** Input held for the next owner's handlers, in order of arrival; undefined while input is delivered. */
+	private heldInput: string[] | undefined;
+	/** Handed to the next owner: its modes are still set up, so the next start() only binds its handlers. */
+	private handedOff = false;
+	private _continuedFromHandOff = false;
+
+	get continuedFromHandOff(): boolean {
+		return this.handedOff || this._continuedFromHandOff;
+	}
 
 	get kittyProtocolActive(): boolean {
 		return this._kittyProtocolActive;
@@ -231,9 +254,33 @@ export class ProcessTerminal implements Terminal {
 		return this._modifyOtherKeysActive;
 	}
 
+	handOff(held: readonly string[] = []): void {
+		this.heldInput = [...held, ...(this.heldInput ?? [])];
+		this.handedOff = true;
+		this.inputHandler = undefined;
+		if (this.resizeHandler) {
+			process.stdout.removeListener("resize", this.resizeHandler);
+			this.resizeHandler = undefined;
+		}
+	}
+
 	start(onInput: (data: string) => void, onResize: () => void): void {
 		this.inputHandler = onInput;
 		this.resizeHandler = onResize;
+		this._continuedFromHandOff = this.handedOff;
+		if (this.handedOff) {
+			// Raw input, bracketed paste and the keyboard protocol are still set up: bind the new handlers, then give
+			// them what was held, before anything that arrives later.
+			this.handedOff = false;
+			process.stdout.on("resize", onResize);
+			refreshTerminalDimensions();
+			queueMicrotask(() => {
+				const held = this.heldInput ?? [];
+				this.heldInput = undefined;
+				for (const input of held) this.inputHandler?.(input);
+			});
+			return;
+		}
 
 		// Save previous state and enable raw mode
 		this.wasRaw = process.stdin.isRaw || false;
@@ -299,9 +346,7 @@ export class ProcessTerminal implements Terminal {
 
 		// Re-wrap paste content with bracketed paste markers for existing editor handling
 		this.stdinBuffer.on("paste", (content) => {
-			if (this.inputHandler) {
-				this.inputHandler(`\x1b[200~${content}\x1b[201~`);
-			}
+			this.deliverInput(`\x1b[200~${content}\x1b[201~`);
 		});
 
 		// Handler that pipes stdin data through the buffer
@@ -428,8 +473,17 @@ export class ProcessTerminal implements Terminal {
 		this.keyboardProtocolBufferFlushTimer = undefined;
 	}
 
+	/** Gives `input` to the input handler, or holds it for the next owner's. */
+	private deliverInput(input: string): void {
+		if (this.heldInput !== undefined) {
+			this.heldInput.push(input);
+			return;
+		}
+		this.inputHandler?.(input);
+	}
+
 	private forwardInputSequence(sequence: string): void {
-		if (!this.inputHandler) return;
+		if (!this.inputHandler && this.heldInput === undefined) return;
 		const shouldDetectNativeShiftEnter =
 			isNativeShiftEnterCandidate(sequence) && (isAppleTerminalSession() || process.platform === "win32");
 		const input = normalizeNativeShiftEnterInput(
@@ -437,7 +491,7 @@ export class ProcessTerminal implements Terminal {
 			shouldDetectNativeShiftEnter,
 			shouldDetectNativeShiftEnter && isNativeModifierPressed("shift"),
 		);
-		this.inputHandler(input);
+		this.deliverInput(input);
 	}
 
 	private enableModifyOtherKeys(): void {
@@ -506,6 +560,9 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	stop(): void {
+		this.heldInput = undefined;
+		this.handedOff = false;
+		this._continuedFromHandOff = false;
 		if (this.clearProgressInterval()) {
 			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
