@@ -216,6 +216,10 @@ test.runIf(process.platform === "win32")(
 	},
 );
 
+test.runIf(process.platform === "win32")("no reader starts when the user sets Node's I/O pool size", () => {
+	assert.equal(startPrefetchIn([], { UV_THREADPOOL_SIZE: "1" }), undefined);
+});
+
 test.skipIf(process.platform === "win32")("no reader starts outside Windows", () => {
 	assert.equal(startPrefetchIn(), undefined);
 });
