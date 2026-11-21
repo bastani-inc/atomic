@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { type ChildProcess, spawn } from "node:child_process";
 import { write } from "node:fs";
 import { mkdir, open, readFile } from "node:fs/promises";
@@ -6,6 +5,7 @@ import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { waitForChildProcess } from "../../../utils/child-process.ts";
 import { killChildProcessTree } from "../../../utils/shell.ts";
+import { asyncScope } from "../../async-scope.ts";
 import { containProcessTree, type ProcessTreeContainment, processTreeEnded } from "../../process-tree-containment.ts";
 
 /** A step's log file, open for appending: the child processes of the step write their output to `fd`. */
@@ -42,9 +42,9 @@ export interface LoggedProcessOptions {
  * Told of each process a step starts (`running` true) and of its end, for the build that runs the step: a build records
  * them so a later process can stop them when this one dies without stopping them (#4748).
  */
-export const stepProcessWatcher = new AsyncLocalStorage<(pid: number, running: boolean) => void>();
+export const stepProcessWatcher = asyncScope<(pid: number, running: boolean) => void>();
 
-export const stepStartingWatcher = new AsyncLocalStorage<() => void>();
+export const stepStartingWatcher = asyncScope<() => void>();
 
 export function buildProcessStarting(): void {
 	stepStartingWatcher.getStore()?.();

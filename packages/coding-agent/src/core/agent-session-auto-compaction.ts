@@ -1,6 +1,8 @@
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { isContextOverflow, isRecoverableLength } from "@bastani/atomic-ai/compat";
-import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
+import { automaticBoundaryText, emitSessionCompactFailed } from "./agent-session-compaction.ts";
 import type {
 	AgentSessionInternalSurface as AgentSession,
 	AutoCompactionRunOutcome,
@@ -13,6 +15,7 @@ import {
 	shouldCompact,
 } from "./compaction/index.ts";
 import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
+import { clearsForResumedBudget } from "./resume-cache-checkpoint.ts";
 import { type ContextEditEntry, getLatestCompactionBoundaryEntry } from "./session-manager.ts";
 
 /**
@@ -528,6 +531,7 @@ export async function _runAutoCompaction(
 	reason: "overflow" | "threshold",
 	willRetry: boolean,
 	urgency: CompactionUrgency = reason === "overflow" ? "load_bearing" : "recoverable",
+	coveredThroughEntryId?: string,
 ): Promise<AutoCompactionRunOutcome> {
 	if (
 		this._compactionAbortController !== undefined ||
@@ -582,6 +586,7 @@ export async function _runAutoCompaction(
 
 		const result = await this._applyVerbatimCompaction({
 			abortController: controller,
+			...(coveredThroughEntryId ? { coveredThroughEntryId } : {}),
 			backupLabel: urgency === "load_bearing" ? "overflow-auto-compact" : "auto-compact",
 			reason,
 			onCompactionSource: (value) => {
@@ -683,6 +688,57 @@ export async function _compactBeforeContinuation(this: AgentSession): Promise<bo
 }
 
 /**
+ * Clear the context before the first prompt after a resume when what only the resume added (blueprint context,
+ * notices, the prompt `update` the resume brings) would otherwise lower the thinking budget the restored history was
+ * sent with ({@link clearsForResumedBudget}). Runs once per resume, once the prompt's `input` and `update` are final,
+ * through the automatic compaction, whose boundary covers the restored history only. Resolves whether it cleared.
+ */
+export async function _compactBeforeResumedPrompt(
+	this: AgentSession,
+	update: AgentMessage | undefined,
+	input: readonly AgentMessage[],
+): Promise<boolean> {
+	const checkpoint = this._resumeBudgetCheckpoint;
+	this._resumeBudgetCheckpoint = undefined;
+	const model = this.model;
+	if (!checkpoint || !model || !this.settingsManager.getCompactionSettings(model).enabled) return false;
+	if (
+		this._compactionAbortController !== undefined ||
+		this._manualCompactionPromise !== undefined ||
+		this._autoCompactionAbortController !== undefined
+	)
+		return false;
+	// A forced system prompt or an extension's context handler changes what the request sends from what the
+	// transcript holds, so the transcript cannot tell what the resume's additions cost.
+	const forced = this._runSystemPromptOptions?.forceSystemPrompt ?? this._baseSystemPromptOptions.forceSystemPrompt;
+	const runner = this._extensionRunner;
+	if (forced !== undefined || runner.hasHandlers("context") || runner.hasHandlers("context_with_system")) return false;
+	const messages = this.agent.state.messages;
+	const at = messages.indexOf(checkpoint);
+	const entryId = at === -1 ? undefined : this._findPersistedMessageEntryId(checkpoint);
+	if (entryId === undefined) return false;
+	const history = messages.slice(0, at + 1);
+	const unsent = messages.slice(at + 1);
+	// The boundary records the prompt and tools as they are; a later prompt change would then count twice.
+	if (unsent.some((message) => message.role === "system")) return false;
+	const added = update ? [...unsent, update] : unsent;
+	const head = getCurrentSystemMessage(history);
+	const boundary: AgentMessage = { role: "user", content: automaticBoundaryText(this), timestamp: 0 };
+	const clears = clearsForResumedBudget({
+		model,
+		thinkingLevel: this.thinkingLevel,
+		thinkingBudgets: this.agent.thinkingBudgets,
+		blockImages: this.settingsManager.getBlockImages(),
+		history,
+		resumeOnly: added,
+		prompt: input,
+		cleared: [...(head ? [head] : []), boundary, ...added],
+	});
+	// The boundary covers the restored history only, so what the resume added stays in the context as it was.
+	return clears && (await this._runAutoCompaction("threshold", false, "recoverable", entryId)) === "compacted";
+}
+
+/**
  * Continue the agent after the pre-request check. After a clear, queued input is the next request's prompt, as a new
  * prompt would be, rather than waiting behind a turn over the cleared context.
  */
@@ -693,6 +749,7 @@ export async function _continueAgentAfterCompactionCheck(this: AgentSession): Pr
 
 export const agentSessionAutoCompactionMethods = {
 	_compactBeforeContinuation,
+	_compactBeforeResumedPrompt,
 	_continueAgentAfterCompactionCheck,
 	_awaitPendingPostCompactionContinuation,
 	_checkCompaction,

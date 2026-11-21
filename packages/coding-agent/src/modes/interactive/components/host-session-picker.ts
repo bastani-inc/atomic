@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { asyncScope } from "../../../core/async-scope.ts";
 import type {
 	ExtensionUIContext,
 	HostSessionPickerHandle,
@@ -8,7 +8,7 @@ import type {
 import type { SessionInfo } from "../../../core/session-manager.ts";
 import { SessionSelectorComponent } from "./session-selector.ts";
 
-const localDeleteContext = new AsyncLocalStorage<{
+const localDeleteContext = asyncScope<{
 	pickerId: symbol;
 	path: string;
 	deleteRequestId: number;
