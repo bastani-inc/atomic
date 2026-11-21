@@ -158,6 +158,11 @@ export interface SubagentChildRecord {
 	readonly childSessionId?: string;
 	/** Present only for file-backed (JSONL) child sessions; database-backed sessions have no session file. */
 	readonly childSessionFile?: string;
+	/**
+	 * When the child's own session last recorded a worktree snapshot a turn captured, as of its latest run: its owner's
+	 * resume restores a checkout from it when it is newer than the owner's own snapshot of that checkout.
+	 */
+	readonly worktreeCapturedAt?: string;
 	/** The model (`provider/id`) and thinking level the child actually started on, once its session was created. */
 	readonly launchModel?: string;
 	readonly launchThinkingLevel?: string;
