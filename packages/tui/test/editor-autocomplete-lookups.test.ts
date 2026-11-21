@@ -381,6 +381,91 @@ describe("Editor completion lookups", () => {
 			assert.equal(applied, row);
 		});
 
+		it("continues a menu not drawn yet through edits made before the rows for the first edit came", async () => {
+			const files = ["main.ts", "mod.ts", "model.ts", "notes.md"];
+			for (const variant of ["chars", "left", "slashLeft"] as const) {
+				const waiting: Array<() => void> = [];
+				let slow = false;
+				const editor = createEditor();
+				editor.setAutocompleteProvider(
+					provider(async (text, { force }) => {
+						if (slow) await new Promise<void>((resolve) => waiting.push(resolve));
+						const command = /^\/(\S*)$/.exec(text);
+						if (command && !force) {
+							const items = ["/model", "/mode", "/help"].filter((name) => name.startsWith(text));
+							return items.length === 0 ? null : answer(text, ...items);
+						}
+						const token = /(\S*)$/.exec(text)?.[1] ?? "";
+						const items = files.filter((name) => name.startsWith(token));
+						return force && items.length > 0 ? answer(token, ...items) : null;
+					}),
+				);
+				if (variant === "slashLeft") {
+					type(editor, "/mo");
+					await settle();
+					slow = true;
+					// The rows for "/mo" came but were not drawn: the edits go on as they would on a drawn menu.
+					editor.handleInput("d");
+					await settle();
+					editor.handleInput("\x1b[D");
+				} else {
+					type(editor, "cat ");
+					editor.handleInput("\t");
+					await settle();
+					slow = true;
+					editor.handleInput("m");
+					await settle();
+					editor.handleInput(variant === "left" ? "\x1b[D" : "o");
+				}
+				slow = false;
+				for (const resolve of waiting.splice(0)) resolve();
+				await settle();
+				await settle();
+				const expected = { chars: "❯ mod.ts", left: "❯ main.ts", slashLeft: "❯ /model" }[variant];
+				assert.ok(rows(editor).includes(expected), `${variant}: ${rows(editor).join(" | ")}`);
+			}
+		});
+
+		it("continues, with an edit, rows that came for a text the screen shows nothing for", async () => {
+			let found = false;
+			const editor = createEditor();
+			editor.setAutocompleteProvider(
+				provider(async (text) => {
+					if (text === "/z") return answer("/z", "/zap", "/zzq");
+					if (text === "/zz" && found) return answer("/zz", "/zzq");
+					return null;
+				}),
+			);
+			type(editor, "/zz");
+			await settle();
+			assert.equal(rows(editor).length > 0 && editor.isShowingAutocomplete(), false);
+			found = true;
+			editor.handleInput("x");
+			await settle();
+			editor.handleInput("\x7f");
+			await settle();
+			// "/zz" now has rows, not drawn yet; moving the cursor goes on from them, as from a menu on screen.
+			editor.handleInput("\x1b[D");
+			await settle();
+			assert.ok(rows(editor).includes("❯ /zap"), rows(editor).join(" | "));
+		});
+
+		it("stops, with Esc, a lookup that continues a menu not drawn yet", async () => {
+			const late = Promise.withResolvers<AutocompleteSuggestions>();
+			const editor = createEditor();
+			editor.setAutocompleteProvider(
+				provider((text) => (text === "/m" ? Promise.resolve(answer("/m", "/model", "/mode")) : late.promise)),
+			);
+			type(editor, "/m");
+			await settle();
+			editor.handleInput("o");
+			editor.handleInput("\x1b");
+			late.resolve(answer("/mo", "/model", "/mode"));
+			await settle();
+			assert.equal(editor.isShowingAutocomplete(), false);
+			assert.ok(!rows(editor).some((line) => line.includes("/model")));
+		});
+
 		it("chooses nothing with a press on rows replaced since they were painted", async () => {
 			const editor = createEditor();
 			editor.setAutocompleteProvider(

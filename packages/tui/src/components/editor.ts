@@ -322,6 +322,8 @@ interface AutocompleteRequestOptions {
 	force: boolean;
 	explicitTab: boolean;
 	catalogRetry?: boolean;
+	/** An edit continues a menu not shown yet (its answer was held for the render): the menu goes on while this runs. */
+	continued?: boolean;
 }
 
 interface LayoutLine {
@@ -2962,7 +2964,10 @@ export class Editor implements Component, Focusable {
 		this.emptyAutocomplete = undefined;
 		this.heldAnswer = undefined;
 		this.cancelMenuRefresh();
-		if (this.pendingAutocomplete?.catalogRetry && !this.autocompleteState) this.cancelAutocompleteRequest();
+		// Esc stops a lookup the editor started on its own, or one that continues a menu not shown yet (as it closes that
+		// menu when answers show the moment they come).
+		const pending = this.pendingAutocomplete;
+		if ((pending?.catalogRetry || pending?.continued) && !this.autocompleteState) this.cancelAutocompleteRequest();
 	}
 
 	private isCurrentQuery(query: LookupQuery): boolean {
@@ -3142,7 +3147,11 @@ export class Editor implements Component, Focusable {
 	private updateAutocomplete(): void {
 		const menu = this.menuForEdit();
 		if (!menu || !this.autocompleteProvider) return;
-		this.requestAutocomplete({ force: menu === "force", explicitTab: false });
+		this.requestAutocomplete({
+			force: menu === "force",
+			explicitTab: false,
+			...(this.autocompleteState ? {} : { continued: true }),
+		});
 	}
 
 	/** The menu an edit continues: the one the menu keys act on (see menuForKeys), as when answers showed at once. */
@@ -3150,14 +3159,17 @@ export class Editor implements Component, Focusable {
 		return this.editMenuState !== undefined ? this.editMenuState : this.autocompleteState;
 	}
 
+	/**
+	 * The menu an edit continues, as when answers showed the moment they came: the answer that came for the text before
+	 * the edit, else no menu where an open one answers other text and nothing is coming, else the open menu, else one
+	 * an earlier edit continued while its lookup runs.
+	 */
 	private menuForEdits(): "regular" | "force" | null {
-		switch (this.menuForKeys()) {
-			case "held":
-				return this.heldAnswer?.menu ? (this.heldAnswer.force ? "force" : "regular") : null;
-			case "close":
-				return null;
-			default:
-				return this.autocompleteState;
-		}
+		const held = this.heldAnswer;
+		if (held && this.isCurrentQuery(held.query)) return held.menu ? (held.force ? "force" : "regular") : null;
+		if (this.menuForKeys() === "close") return null;
+		if (this.autocompleteState) return this.autocompleteState;
+		const pending = this.pendingAutocomplete;
+		return pending?.continued ? (pending.force ? "force" : "regular") : null;
 	}
 }
