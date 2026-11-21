@@ -65,6 +65,11 @@ export interface SubagentChildHeldMessages {
 	 * Absent in records written before, which may hold one (see `withoutLegacyLateMessages`).
 	 */
 	readonly withoutLateResults?: true;
+	/**
+	 * No message is Atomic's own continuation (after a restart, or of a resume): written since a child reads those in its
+	 * resume note. Absent in records written before, whose messages with a continuation's text are that continuation.
+	 */
+	readonly withoutContinuations?: true;
 }
 
 /** The held messages a finished child attempt reports, in the form `recordChild` takes them. */
@@ -73,6 +78,7 @@ export interface SubagentChildPendingMessages {
 	readonly taskExpands: boolean;
 	readonly withoutWakePrompt?: true;
 	readonly withoutLateResults?: true;
+	readonly withoutContinuations?: true;
 }
 
 /**
@@ -94,6 +100,7 @@ export function pendingMessagesOfResult(result: {
 		taskExpands: result.pendingTaskExpands === true,
 		withoutWakePrompt: true,
 		withoutLateResults: true,
+		withoutContinuations: true,
 	};
 }
 
@@ -659,8 +666,10 @@ export async function holdSubagentChildMessages(
 					messages: [...messagesSent(held), ...messages],
 					taskExpands: held?.taskExpands ?? false,
 					withoutWakePrompt: true,
-					// Messages an earlier build held may include its copies of late results: they keep saying so.
+					// Messages an earlier build held may include its copies of late results or its continuations: they keep
+					// saying so.
 					...(held === undefined || held.withoutLateResults === true ? { withoutLateResults: true } : {}),
+					...(held === undefined || held.withoutContinuations === true ? { withoutContinuations: true } : {}),
 				},
 			}),
 		);

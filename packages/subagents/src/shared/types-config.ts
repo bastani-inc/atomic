@@ -157,6 +157,8 @@ export interface RunSyncOptions {
 	resumeLateToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
 	/** Notices of finished background tasks held for the child: each delivered as a notice with its next turn. */
 	resumeNotices?: readonly import("../runs/foreground/subagent-child-records.js").SubagentChildHeldNotice[];
+	/** Why the child runs again, when Atomic says so rather than a message: read with its turn, never as a message. */
+	resumeNote?: import("../runs/foreground/resume-note.js").SubagentResumeNote;
 	/** A wake that only hands back tool results: the continued turn is the whole run and the task is not prompted. */
 	skipTaskPrompt?: boolean;
 	/**

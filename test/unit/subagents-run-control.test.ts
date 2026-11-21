@@ -502,7 +502,9 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 		const noticeTurn =
 			options.skipTaskPrompt === true &&
 			!options.resumeToolResults?.length &&
-			((options.resumeLateToolResults?.length ?? 0) > 0 || (options.resumeNotices?.length ?? 0) > 0);
+			((options.resumeLateToolResults?.length ?? 0) > 0 ||
+				(options.resumeNotices?.length ?? 0) > 0 ||
+				options.resumeNote !== undefined);
 		const result = await runSync(parentCwd, agents, agentName, task, {
 			...options,
 			...(noticeTurn ? { skipTaskPrompt: false } : {}),
@@ -759,19 +761,16 @@ test(
 		);
 		assert.equal(final.terminalStatus, "ok");
 		assert.equal(final.childSessionId, record.childSessionId);
+		assert.equal(relaunch.options.resumeFollowUps, undefined, "nothing is queued behind the steer");
 		assert.deepEqual(
-			relaunch.options.resumeFollowUps,
-			[SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT],
-			"the paused turn continues after the steer",
+			relaunch.options.resumeNote,
+			{ kind: "resume", text: SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT },
+			"the paused turn continues with the steer, as its resume note says",
 		);
 		const childTranscript = transcript(final);
 		assert.equal(occurrences(childTranscript, message), 1);
 		assert.equal(occurrences(childTranscript, JSON.stringify(ORIGINAL_TASK)), 1);
 		assert.equal(occurrences(childTranscript, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT), 1);
-		assert.ok(
-			childTranscript.indexOf(message) < childTranscript.indexOf(SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT),
-			"the steer is delivered before the continuation",
-		);
 	},
 	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
 );
@@ -796,7 +795,11 @@ test(
 		assert.equal(resumed.details.runControl?.message, undefined);
 		const newTaskId = resumedTaskId(resumed);
 		await settled(h, newTaskId);
-		assert.equal(h.runs.at(-1)?.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+		assert.deepEqual(h.runs.at(-1)?.options.resumeNote, {
+			kind: "resume",
+			text: SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
+		});
+		assert.equal(h.runs.at(-1)?.task, "", "no message from the user continues it");
 		assert.equal(h.runs.at(-1)?.options.supervisorAuthorization?.capability, "fresh-capability-1");
 		assert.deepEqual(
 			h.startHolds,
@@ -825,7 +828,7 @@ test(
 		assert.notEqual(resumed.isError, true, text(resumed));
 		await settled(h, resumedTaskId(resumed));
 		assert.match(
-			h.runs.at(-1)?.task ?? "",
+			h.runs.at(-1)?.options.resumeNote?.text ?? "",
 			/^Continue where you left off\. If a pause interrupted a command or step you were running, redo or continue that step as needed\./,
 		);
 	},
@@ -974,7 +977,8 @@ test(
 		await settled(h, resumedTaskId(first));
 		const completed = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
 
-		assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, [SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT]);
+		assert.equal(h.runs.at(-1)?.options.resumeFollowUps, undefined);
+		assert.equal(h.runs.at(-1)?.options.resumeNote?.text, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
 
 		h.settleAs = "error";
 		const second = await h.call({ action: "resume", id: record.childId, message: "try the edge case" });
@@ -1022,7 +1026,8 @@ test(
 		const result = await h.call({ action: "resume", id: record.childId });
 		assert.notEqual(result.isError, true, text(result));
 		await settled(h, resumedTaskId(result));
-		assert.equal(h.runs.at(-1)?.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+		assert.equal(h.runs.at(-1)?.options.resumeNote?.text, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+		assert.equal(h.runs.at(-1)?.task, "");
 		assert.equal(h.runs.at(-1)?.options.resumeFollowUps, undefined);
 		assert.equal(h.runs.at(-1)?.options.sessionManager?.getSessionId(), record.childSessionId);
 	},
@@ -4188,12 +4193,15 @@ test("pause keeps the steering and follow-up messages a running child queued, an
 	);
 	assert.equal(finished.terminalStatus, "ok");
 	const delivered = transcript(finished);
-	const order = [steer, followUp, "then wrap up", SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT].map((message) =>
-		delivered.indexOf(message),
-	);
+	const order = [steer, followUp, "then wrap up"].map((message) => delivered.indexOf(message));
 	assert.ok(
 		order.every((position, index) => position >= 0 && (index === 0 || position > order[index - 1]!)),
-		`held messages first, in order, then the message and the continuation: ${order.join(", ")}`,
+		`held messages first, in order, then the message: ${order.join(", ")}`,
+	);
+	assert.equal(
+		occurrences(delivered, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT),
+		1,
+		"its resume note says to continue, once",
 	);
 
 	await settled(h, resumedTaskId(await h.call({ action: "resume", id: record.childId })));
@@ -4463,7 +4471,8 @@ test(
 		assert.equal(resumed.terminalStatus, "ok");
 		assert.equal(resumed.childSessionId, quit.childSessionId);
 		const relaunch = h.runs.at(-1)!;
-		assert.equal(relaunch.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+		assert.equal(relaunch.options.resumeNote?.text, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+		assert.equal(relaunch.task, "");
 		assert.equal(relaunch.options.resumeSession, true);
 		assert.equal(relaunch.options.sessionManager?.getSessionId(), quit.childSessionId);
 		assert.equal(ui.notices.length, 1);
@@ -4589,10 +4598,8 @@ test("a held original task the child never read is prompted as its launch would 
 		const relaunch = h.runs.at(-1)!;
 		assert.equal(relaunch.task, unreadTask);
 		assert.equal(relaunch.options.resumeTaskLiteral, taskExpands === false ? true : undefined, String(taskExpands));
-		assert.deepEqual(relaunch.options.resumeFollowUps, [
-			"/review src/held.ts",
-			SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
-		]);
+		assert.deepEqual(relaunch.options.resumeFollowUps, ["/review src/held.ts"]);
+		assert.equal(relaunch.options.resumeNote?.text, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
 	}
 });
 
@@ -4660,6 +4667,7 @@ test("a queued child stopped while it waits for its run's capacity is restored w
 /** What a run gives the child to read: its task, then the late results and notices it delivers with its turn. */
 function readsOf(run: { readonly task: string; readonly options: RunSyncOptions }): string {
 	return [
+		run.options.resumeNote?.text ?? "",
 		run.task,
 		...(run.options.resumeLateToolResults ?? []).map(lateToolResultText),
 		...(run.options.resumeNotices ?? []).map((notice) => notice.content),
@@ -4879,7 +4887,8 @@ test("a tool result wakes a released child through the dispatcher once, and a pa
 	await settled(h, resumedTaskId(resumed));
 	assert.ok(readsLate(h.runs.at(-1), late), "resume delivers the held result in its notice");
 	assert.equal(h.runs.at(-1)?.task, "go on");
-	assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, [SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT]);
+	assert.equal(h.runs.at(-1)?.options.resumeFollowUps, undefined);
+	assert.equal(h.runs.at(-1)?.options.resumeNote?.text, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
 	const cleared = await h.waitForLatest(
 		"release4b:0",
 		(record) =>
@@ -4900,7 +4909,8 @@ test("an Intercom wake restores a released child with the wake prompt; a live or
 	const key = subagentWakeKey(h.sessionManager.getSessionId(), "release5:0");
 
 	await dispatcher.deliver(key, { id: "intercom:1", kind: "intercom" });
-	assert.equal(h.runs.at(-1)?.task, SUBAGENT_RELEASED_WAKE_PROMPT);
+	assert.deepEqual(h.runs.at(-1)?.options.resumeNote, { kind: "wake", text: SUBAGENT_RELEASED_WAKE_PROMPT });
+	assert.equal(h.runs.at(-1)?.task, "");
 	await h.waitForLatest("release5:0", (record) => record.terminalStatus === "ok");
 	const runs = h.runs.length;
 	await dispatcher.deliver(key, { id: "intercom:2", kind: "intercom" });
@@ -5303,6 +5313,7 @@ test("messages a released child had queued and not read are delivered once, in o
 		taskExpands: false,
 		withoutWakePrompt: true,
 		withoutLateResults: true,
+		withoutContinuations: true,
 	});
 	const green = waitResult("CI green");
 
@@ -7121,7 +7132,8 @@ test("quit with all: true keeps a result held for a paused child while a sibling
 	const run = h.runs.at(-1);
 	assert.deepEqual(run?.options.resumeLateToolResults, [green, deployed], "resume delivers each held result once");
 	assert.equal(run?.task, "go on");
-	assert.deepEqual(run?.options.resumeFollowUps, [SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT]);
+	assert.equal(run?.options.resumeFollowUps, undefined);
+	assert.equal(run?.options.resumeNote?.text, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
 });
 
 test("a child woken from its release and then paused while it waits on nothing is stopped, not parked at the broker (#4845)", async () => {
