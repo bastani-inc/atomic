@@ -175,16 +175,17 @@ export class ReplyTracker {
  * #4751: after a restart, the asks this session was sent and has not answered can still be answered. Their cards are
  * on the branch; a reply this session sent (`intercom_sent` with `replyTo`) marks one answered. Only cards that arrived
  * after this session first registered with Intercom count: a fork inherits its parent's cards, not its asks.
- * `answeredOutsideWindow` names the asks answered in entries a resumed window left out (#6168).
+ * `answeredOutsideWindow` names the asks answered in entries a resumed window left out (#6168); it is read only when
+ * the branch holds an ask.
  */
 export function restorePendingInboundAsks(
   tracker: ReplyTracker,
   entries: Iterable<SessionEntry>,
   sessionId: string,
-  answeredOutsideWindow: Iterable<string> = [],
+  answeredOutsideWindow: () => Iterable<string> | undefined = () => undefined,
 ): void {
   const asks = new Map<string, IntercomContext>();
-  const answered = new Set<string>(answeredOutsideWindow);
+  const answered = new Set<string>();
   const closed = new Set<string>();
   let registered = false;
   for (const entry of entries) {
@@ -208,6 +209,7 @@ export function restorePendingInboundAsks(
       if (typeof replyTo === "string") answered.add(replyTo);
     }
   }
+  if (asks.size > 0) for (const id of answeredOutsideWindow() ?? []) answered.add(id);
   for (const [id, context] of asks) {
     if (!answered.has(id) && !closed.has(id)) tracker.recordIncomingMessage(context.from, context.message, context.receivedAt);
   }

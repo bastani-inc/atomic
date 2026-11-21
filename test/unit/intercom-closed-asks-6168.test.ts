@@ -253,7 +253,7 @@ function pendingAfterRestart(manager: SessionManager): string[] {
 		tracker,
 		manager.getBranch(),
 		manager.getSessionId(),
-		manager.getSessionRecoveryState().answeredInboundIds,
+		() => manager.getSessionRecoveryState().answeredInboundIds,
 	);
 	return tracker.listPending().map((context) => context.message.id);
 }

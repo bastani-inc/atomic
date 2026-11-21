@@ -75,7 +75,7 @@ export async function closeFinishedChildAsks(
       pending,
       ctx.sessionManager.getBranch(),
       sessionId,
-      ctx.sessionManager.getSessionRecoveryState?.().answeredInboundIds,
+      () => ctx.sessionManager.getSessionRecoveryState?.().answeredInboundIds,
     );
   } catch {
     return [];

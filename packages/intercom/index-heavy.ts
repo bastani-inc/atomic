@@ -1687,7 +1687,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           replyTracker,
           ctx.sessionManager.getBranch(),
           ctx.sessionManager.getSessionId(),
-          ctx.sessionManager.getSessionRecoveryState?.().answeredInboundIds,
+          () => ctx.sessionManager.getSessionRecoveryState?.().answeredInboundIds,
         );
       } catch {
         // A session without a readable branch has no earlier asks to restore.

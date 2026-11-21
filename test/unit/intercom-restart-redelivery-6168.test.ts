@@ -135,3 +135,37 @@ describe.each(stores)("Intercom restart recovery from %s (#6168)", (_name, open)
 		assert.equal(askState(manager), "answered");
 	});
 });
+
+test("what a resumed window reports it already took names only entries the window holds (#6168)", async () => {
+	const manager = SessionManager.inMemory();
+	await manager.appendMessage({ role: "user", content: [{ type: "text", text: "earlier work" }], timestamp: 1 });
+	for (let index = 0; index < 200; index++) {
+		const id = await manager.appendCustomMessageEntry(
+			"intercom_message",
+			"note",
+			true,
+			{
+				from: peer,
+				message: { id: `note-${index}`, timestamp: 1, content: { text: "note" } },
+			},
+			true,
+			{ delivery: "steer" },
+		);
+		await manager.appendCustomMessageEntry(
+			"atomic:protected-streaming-reconciliation",
+			"note",
+			false,
+			{
+				protectedReconciliationOf: id,
+			},
+			true,
+		);
+	}
+	await askAnswered(manager, true);
+
+	const recovery = manager.getSessionRecoveryState();
+
+	assert.equal(recovery.reconciledCardIds, undefined, "settled cards the window left out are not listed");
+	assert.deepEqual(recovery.intercomTakenIds, ["reply-1"]);
+	assert.equal(recovery.answeredInboundIds, undefined);
+});
