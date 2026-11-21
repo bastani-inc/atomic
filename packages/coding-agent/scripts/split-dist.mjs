@@ -393,6 +393,8 @@ for (const path of new Set([...bundledModules, ...compiledModules, ...threadModu
 		if (removedSet.has(target))
 			throw new Error(`split-dist: ${path} names ${match[1]}, whose compiled file the split removes`);
 	}
+}
+
 // The packages bundled in are the inlined ones, and each one's own dependencies are bundled too: a dependency left
 // external would resolve from the shared file, not from the package that depends on it.
 const inlined = new Map();
