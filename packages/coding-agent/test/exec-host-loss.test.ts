@@ -196,6 +196,15 @@ describe("whether the engine's host is gone", () => {
 		);
 	});
 
+	test("not, and without waiting, while the host is still the engine's parent and the channel to it is open", () => {
+		const clock = pausedClock();
+		assert.equal(
+			hostIsGone(4242, false, false, () => 4242, clock.pause, clock.now),
+			false,
+		);
+		assert.deepEqual(clock.pauses, [], "an engine whose host lives and still reads it waited at its exit");
+	});
+
 	test("once the channel to the host closed and the engine is given another parent soon after, as while a killed host exits", () => {
 		// The system closes a killed host's pipes before it gives the host's children another parent, and the engine can
 		// get to its exit in between.
