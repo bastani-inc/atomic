@@ -175,11 +175,13 @@ describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
 				["generate_report.py", [loopOutput(box), "--skill-name", "reports"], "<title>reports \u2014 "],
 				["quick_validate.py", [box.skill], "Skill is valid!\n"],
 			];
-			// Python 3.11's safe path, and runpy from another program: nothing puts the script's folder on the path.
+			// An isolated interpreter, Python 3.11's safe path, and runpy from another program: nothing puts the
+			// script's folder on the module path.
 			const runpy = "import runpy, sys\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')";
 			for (const [script, args, expected] of runs) {
 				const path = join(skillCreatorDir, "scripts", script);
 				for (const command of [
+					["-I", path, ...args],
 					[path, ...args],
 					["-c", runpy, path, ...args],
 				]) {
@@ -191,6 +193,66 @@ describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
 					assert.equal(result.exitCode, 0, `${script}: ${result.stderr.toString()}`);
 					assert.ok(stdout.includes(expected), `${script}: ${stdout}`);
 				}
+			}
+		},
+	);
+
+	test.skipIf(!pyyaml)(
+		"each script run with its output captured in place, as by runpy, writes its output there",
+		() => {
+			const box = sandbox();
+			const iteration = benchmarkFolder(box, "iteration-1");
+			const evalSet = box.writeEvalSet([{ query: "make a report", should_trigger: true }]);
+			const results = join(box.dir, "results.json");
+			writeFileSync(
+				results,
+				JSON.stringify({
+					description: "Use this skill for sample reports.",
+					summary: { passed: 0, failed: 1, total: 1 },
+					results: [{ query: "make a report", should_trigger: true, pass: false, triggers: 0, runs: 1 }],
+				}),
+			);
+			const loop = ["--model", "local/model", "--max-iterations", "1", "--holdout", "0", "--report", "none"];
+			const runs: [script: string, args: string[], expected: string, scenario?: string][] = [
+				["aggregate_benchmark.py", [iteration], "Generated: "],
+				["generate_report.py", [loopOutput(box), "--skill-name", "reports"], "<title>reports \u2014 "],
+				["quick_validate.py", [box.skill], "Skill is valid!"],
+				["package_skill.py", [box.skill, join(box.dir, "dist")], "Successfully packaged skill to: "],
+				["run_eval.py", ["--eval-set", evalSet, "--skill-path", box.skill, "--runs-per-query", "1"], '"passed": 1'],
+				[
+					"run_loop.py",
+					["--eval-set", evalSet, "--skill-path", box.skill, "--runs-per-query", "1", ...loop],
+					'"best_description"',
+				],
+				[
+					"improve_description.py",
+					["--eval-results", results, "--skill-path", box.skill, "--model", "local/model"],
+					"Use this skill for fake work.",
+					"improve",
+				],
+			];
+			// Standard output replaced by a StringIO, which has no encoding to set up; standard error stays the real one.
+			const program = [
+				"import contextlib, io, runpy, sys",
+				"captured = io.StringIO()",
+				"sys.argv = sys.argv[1:]",
+				"status = 0",
+				"with contextlib.redirect_stdout(captured):",
+				"    try:",
+				"        runpy.run_path(sys.argv[0], run_name='__main__')",
+				"    except SystemExit as exit:",
+				"        status = exit.code or 0",
+				"sys.stdout.buffer.write(f'{status}\\n{captured.getvalue()}'.encode('utf-8'))",
+			].join("\n");
+			for (const [script, args, expected, scenario = "read-skill"] of runs) {
+				const result = spawnSyncCollect(
+					[python ?? "python3", "-c", program, join(skillCreatorDir, "scripts", script), ...args],
+					{ cwd: box.project, env: box.env({ FAKE_ATOMIC_SCENARIO: scenario }) },
+				);
+				const [status, ...captured] = result.stdout.toString().replaceAll("\r\n", "\n").split("\n");
+				assert.equal(result.exitCode, 0, `${script}: ${result.stderr.toString()}`);
+				assert.equal(status, "0", `${script}: ${result.stderr.toString()}`);
+				assert.ok(captured.join("\n").includes(expected), `${script}: ${captured.join("\n")}`);
 			}
 		},
 	);
