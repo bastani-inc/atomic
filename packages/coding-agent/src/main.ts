@@ -167,8 +167,8 @@ import {
 	showDeprecationWarnings,
 } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
+import { shouldUseFullscreenTui } from "./modes/interactive/fullscreen-environment.ts";
 import { isUnknownModel } from "./modes/interactive/interactive-mode-helpers.ts";
-import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
@@ -443,6 +443,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	const onlyAtomicMarksBundled =
 		options?.builtinPackagePaths === undefined &&
 		!(options?.extensionFactories ?? []).some((input) => typeof input !== "function" && input.bundled === true);
+	// The same mapping as applyOfflineEnvironment in utils/startup-environment.ts, which applies it before a prewarmed
+	// engine starts. Written here again so that main's code imports no new name from code an earlier session holds.
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
 	if (offlineMode) {
 		setEnvValue(ENV_OFFLINE, "1");
