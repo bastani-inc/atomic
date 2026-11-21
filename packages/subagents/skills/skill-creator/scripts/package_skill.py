@@ -11,9 +11,13 @@ Example:
 """
 
 import fnmatch
+import os
+import secrets
+import stat
 import sys
 import zipfile
 from pathlib import Path
+from scripts.atomic_cli import remove_file
 from scripts.quick_validate import validate_skill
 from scripts.utils import write_output_in_utf8
 
@@ -38,6 +42,27 @@ def should_exclude(rel_path: Path) -> bool:
     if name in EXCLUDE_FILES:
         return True
     return any(fnmatch.fnmatch(name, pat) for pat in EXCLUDE_GLOBS)
+
+
+def creation_mode(target: Path) -> int:
+    """The permissions to create a file standing in for target with: target's own when it exists (the umask can
+    only narrow them), so its contents are never readable by more than target's were; a new file's otherwise."""
+    try:
+        return stat.S_IMODE(os.stat(target).st_mode)
+    except OSError:
+        return 0o666
+
+
+def create_temporary(target: Path) -> tuple[Path, int]:
+    """A new, empty file next to target, open for writing, with the permissions creation_mode gives."""
+    for _ in range(100):
+        path = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        try:
+            return path, os.open(path, flags, creation_mode(target))
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"no free temporary name next to {target}")
 
 
 def package_skill(skill_path, output_dir=None):
@@ -87,12 +112,18 @@ def package_skill(skill_path, output_dir=None):
 
     skill_filename = output_path / f"{skill_name}.skill"
 
-    # Create the .skill file (zip format)
+    # Create the .skill file (zip format) under a temporary name next to it, and give it its name only once it is
+    # complete: a failure or an interruption leaves no partial file, and an earlier .skill file as it was.
+    temporary = None
     try:
-        with zipfile.ZipFile(skill_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        temporary, handle = create_temporary(skill_filename)
+        with os.fdopen(handle, "wb") as archive, zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zipf:
             # Walk through the skill directory, excluding build artifacts
             for file_path in skill_path.rglob('*'):
                 if not file_path.is_file():
+                    continue
+                # Never the archive itself, when it is written inside the skill folder.
+                if file_path in (temporary, skill_filename):
                     continue
                 arcname = file_path.relative_to(skill_path.parent)
                 if should_exclude(arcname):
@@ -101,12 +132,20 @@ def package_skill(skill_path, output_dir=None):
                 zipf.write(file_path, arcname)
                 print(f"  Added: {arcname}")
 
+        if skill_filename.exists():
+            # A .skill file it replaces keeps exactly its permissions, as when it was written over before.
+            os.chmod(temporary, creation_mode(skill_filename))
+        os.replace(temporary, skill_filename)
+        temporary = None
         print(f"\n✅ Successfully packaged skill to: {skill_filename}")
         return skill_filename
 
     except Exception as e:
         print(f"❌ Error creating .skill file: {e}")
         return None
+    finally:
+        if temporary is not None:
+            remove_file(temporary)
 
 
 def main():

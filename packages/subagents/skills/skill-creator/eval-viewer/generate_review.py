@@ -15,15 +15,22 @@ No dependencies beyond the Python stdlib are required.
 import argparse
 import base64
 import codecs
+import contextlib
+import glob
+import hashlib
 import io
 import json
 import mimetypes
 import os
 import re
+import secrets
 import socket
+import stat
 import sys
+import time
 import webbrowser
 from functools import partial
+from typing import NamedTuple
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -82,6 +89,29 @@ def _find_runs_recursive(root: Path, current: Path, runs: list[dict]) -> None:
             _find_runs_recursive(root, child, runs)
 
 
+def read_text(path: Path) -> str | None:
+    """A text file of the workspace, or None when it cannot be read.
+
+    As a browser reads a page: UTF-8, with or without a byte order mark, and a replacement mark for
+    anything that is not UTF-8, so a file saved in another encoding still shows rather than failing.
+    """
+    try:
+        return path.read_bytes().decode("utf-8-sig", errors="replace")
+    except OSError:
+        return None
+
+
+def read_json(path: Path):
+    """A JSON file of the workspace, or None when it cannot be read or is not JSON (or nested too deeply)."""
+    text = read_text(path)
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+
+
 def build_run(root: Path, run_dir: Path) -> dict | None:
     """Build a run dict with prompt, outputs, and grading data."""
     prompt = ""
@@ -90,12 +120,11 @@ def build_run(root: Path, run_dir: Path) -> dict | None:
     # Try eval_metadata.json
     for candidate in [run_dir / "eval_metadata.json", run_dir.parent / "eval_metadata.json"]:
         if candidate.exists():
-            try:
-                metadata = json.loads(candidate.read_text(encoding="utf-8"))
+            metadata = read_json(candidate)
+            if isinstance(metadata, dict):
                 prompt = metadata.get("prompt", "")
+                prompt = prompt if isinstance(prompt, str) else ""
                 eval_id = metadata.get("eval_id")
-            except (json.JSONDecodeError, OSError):
-                pass
             if prompt:
                 break
 
@@ -103,13 +132,10 @@ def build_run(root: Path, run_dir: Path) -> dict | None:
     if not prompt:
         for candidate in [run_dir / "transcript.md", run_dir / "outputs" / "transcript.md"]:
             if candidate.exists():
-                try:
-                    text = candidate.read_text(encoding="utf-8")
-                    match = re.search(r"## Eval Prompt\n\n([\s\S]*?)(?=\n##|$)", text)
-                    if match:
-                        prompt = match.group(1).strip()
-                except OSError:
-                    pass
+                text = read_text(candidate)
+                match = re.search(r"## Eval Prompt\n\n([\s\S]*?)(?=\n##|$)", text or "")
+                if match:
+                    prompt = match.group(1).strip()
                 if prompt:
                     break
 
@@ -130,10 +156,9 @@ def build_run(root: Path, run_dir: Path) -> dict | None:
     grading = None
     for candidate in [run_dir / "grading.json", run_dir.parent / "grading.json"]:
         if candidate.exists():
-            try:
-                grading = json.loads(candidate.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
+            grading = read_json(candidate)
+            if not isinstance(grading, dict):
+                grading = None
             if grading:
                 break
 
@@ -210,26 +235,22 @@ def embed_file(path: Path) -> dict:
         }
 
 
-def load_previous_iteration(workspace: Path) -> dict[str, dict]:
+def load_previous_iteration(workspace: Path, notices: list[str] | None = None) -> dict[str, dict]:
     """Load previous iteration's feedback and outputs.
 
-    Returns a map of run_id -> {"feedback": str, "outputs": list[dict]}.
+    Returns a map of run_id -> {"feedback": str, "outputs": list[dict]}. When its feedback.json, or part of it,
+    cannot be read, what can is shown, and a notice saying so is added to notices; the file is never written.
     """
     result: dict[str, dict] = {}
 
     # Load feedback
-    feedback_map: dict[str, str] = {}
-    feedback_path = workspace / "feedback.json"
-    if feedback_path.exists():
-        try:
-            data = json.loads(feedback_path.read_text(encoding="utf-8"))
-            feedback_map = {
-                r["run_id"]: r["feedback"]
-                for r in data.get("reviews", [])
-                if r.get("feedback", "").strip()
-            }
-        except (json.JSONDecodeError, OSError, KeyError):
-            pass
+    feedback = read_feedback(workspace / "feedback.json")
+    feedback_map = {run_id: text for run_id, text in feedback.reviews.items() if text.strip()}
+    if feedback.problem is not None and notices is not None:
+        if feedback.reviews:
+            notices.append(f"Not all of the previous iteration's feedback could be read ({feedback.problem}), so only what could is shown.")
+        else:
+            notices.append(f"The previous iteration's feedback could not be read ({feedback.problem}), so it is not shown.")
 
     # Load runs (to get outputs)
     prev_runs = find_runs(workspace)
@@ -247,32 +268,202 @@ def load_previous_iteration(workspace: Path) -> dict[str, dict]:
     return result
 
 
-def load_saved_feedback(feedback_path: Path) -> dict[str, str]:
-    """The feedback already saved for the workspace under review, by run ID.
+def creation_mode(path: Path) -> int:
+    """The permissions to create a file standing in for path with: path's own when it exists (the umask can only
+    narrow them), so its contents are never readable by more than path's were; a new file's otherwise."""
+    try:
+        return stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        return 0o666
 
-    The page starts from it, so reopening or reloading the page, or starting the viewer again, shows
-    it, and the next save keeps it. A missing or unreadable file means no feedback yet.
+
+class Feedback(NamedTuple):
+    """A feedback.json as read: the reviews that could be read, the file's bytes (None when it is missing or cannot be
+    read), and why any of it could not be read (None when all of it could)."""
+
+    reviews: dict[str, str]
+    raw: bytes | None
+    problem: str | None
+
+
+def read_feedback(path: Path) -> Feedback:
+    """A feedback.json: every review with a run ID and feedback text.
+
+    Read as the page's own request read it before: UTF-8, with or without a byte order mark (as Windows
+    PowerShell 5 and older Notepad save it), and a replacement mark for what is not UTF-8.
     """
     try:
-        raw = feedback_path.read_bytes()
-    except OSError:
-        return {}
-    # As the page's own request read it before: UTF-8, with or without a byte order mark (as Windows
-    # PowerShell 5 and older Notepad save it), and a replacement mark for what is not UTF-8.
-    text = raw.decode("utf-8-sig", errors="replace")
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return Feedback({}, None, None)
+    except OSError as error:
+        return Feedback({}, None, error.strerror or str(error))
     try:
-        data = json.loads(text)
+        data = json.loads(raw.decode("utf-8-sig", errors="replace"))
     except (ValueError, RecursionError):
-        # Not JSON, or nested too deeply to read.
-        return {}
+        return Feedback({}, raw, "it is not JSON")
     reviews = data.get("reviews") if isinstance(data, dict) else None
     if not isinstance(reviews, list):
-        return {}
-    return {
+        return Feedback({}, raw, 'it has no "reviews" list')
+    readable = {
         review["run_id"]: review["feedback"]
         for review in reviews
         if isinstance(review, dict) and isinstance(review.get("run_id"), str) and isinstance(review.get("feedback"), str)
     }
+    problem = None if len(readable) == len(reviews) else "some reviews have no run ID or feedback text"
+    return Feedback(readable, raw, problem)
+
+
+def revision_of(raw: bytes | None) -> str:
+    """The revision of feedback.json with these bytes (None: no file), which a save names as the one it was made from."""
+    return "absent" if raw is None else "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+# A page made from a feedback.json that could not be read sends this as the revision it was made from, which is
+# never a file's: nothing is saved over that file.
+UNREADABLE = "unreadable"
+
+
+def keep_copy(path: Path, raw: bytes) -> str:
+    """Keep the bytes of a feedback.json that could not be read in a new file next to it, and return its name.
+
+    A copy already kept with the same bytes is reused, so reloading the page keeps one copy. The copy is
+    a new file: an existing file or link of that name is never written through.
+    """
+    for existing in sorted(path.parent.glob(glob.escape(path.name) + ".corrupt-*")):
+        with contextlib.suppress(OSError):
+            if not existing.is_symlink() and existing.is_file() and existing.read_bytes() == raw:
+                return existing.name
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for attempt in range(100):
+        name = f"{path.name}.corrupt-{stamp}" + (f"-{attempt}" if attempt else "")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        try:
+            handle = os.open(path.with_name(name), flags, creation_mode(path))
+        except FileExistsError:
+            continue
+        with os.fdopen(handle, "wb") as copy:
+            copy.write(raw)
+        return name
+    raise FileExistsError(f"no free name for a copy of {path.name}")
+
+
+class SavedFeedback(NamedTuple):
+    """What a served page starts from: the workspace's saved reviews, the revision of feedback.json they were read
+    from, and notices for the page about what could not be read."""
+
+    reviews: dict[str, str]
+    revision: str
+    notices: list[str]
+
+
+def load_saved_feedback(feedback_path: Path) -> SavedFeedback:
+    """The feedback already saved for the workspace under review, for the page to start from.
+
+    Reopening or reloading the page, or starting the viewer again, shows it, and the next save keeps it.
+    When it, or part of it, cannot be read, the page starts from what can, says so once, and keeps the
+    file's bytes in a copy first, so the next save, which replaces the file, loses nothing. Viewing a
+    page writes nothing otherwise.
+    """
+    feedback = read_feedback(feedback_path)
+    name = feedback_path.name
+    if feedback.problem is None:
+        return SavedFeedback(feedback.reviews, revision_of(feedback.raw), [])
+    if feedback.raw is None:
+        return SavedFeedback({}, UNREADABLE, [
+            f"{name} could not be read ({feedback.problem}), so this page starts with no feedback and saves nothing over it."
+        ])
+    try:
+        copy = keep_copy(feedback_path, feedback.raw)
+    except OSError as error:
+        return SavedFeedback(feedback.reviews, UNREADABLE, [
+            f"Not all of {name} could be read ({feedback.problem}), and a copy of it could not be kept "
+            f"({error.strerror or error}), so this page shows what could be read and saves nothing over it."
+        ])
+    return SavedFeedback(feedback.reviews, revision_of(feedback.raw), [
+        f"Not all of {name} could be read ({feedback.problem}), so this page shows only what could. The file was "
+        f"kept as {copy}, and your next save here replaces {name}."
+    ])
+
+
+def file_revision(path: Path) -> str:
+    """The revision of the file now there; raises OSError when it cannot be read."""
+    try:
+        return revision_of(path.read_bytes())
+    except FileNotFoundError:
+        return revision_of(None)
+
+
+# How long a save waits for another viewer's save of the same workspace before it fails.
+LOCK_WAIT_SECONDS = 10
+
+
+@contextlib.contextmanager
+def feedback_lock(feedback_path: Path):
+    """Hold the workspace's save lock: viewers serving the same workspace check and write feedback.json one at a time.
+
+    A save waits at most LOCK_WAIT_SECONDS for another viewer's, then fails with OSError, so a viewer that stopped
+    in the middle of a save never stops this one from answering.
+    """
+    with open(feedback_path.with_name(f".{feedback_path.name}.lock"), "a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+
+            def acquire() -> None:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+
+            def release() -> None:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            def acquire() -> None:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def release() -> None:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                acquire()
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise OSError(f"another viewer of this workspace has been saving for {LOCK_WAIT_SECONDS} s") from None
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            release()
+
+
+def write_replacing(path: Path, content: bytes) -> None:
+    """Replace a file with content in one step: written whole under another name next to it, then renamed, so a
+    failure leaves the old file as it was and no one reads half a file. It keeps the old file's permissions."""
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    mode = creation_mode(path)
+    handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), mode)
+    try:
+        with os.fdopen(handle, "wb") as file:
+            file.write(content)
+        if path.exists():
+            # Exactly the old file's permissions, which the umask may have narrowed at creation.
+            os.chmod(temporary, mode)
+        for attempt in range(20):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                # On Windows a program reading the file can hold it for a moment.
+                if os.name != "nt" or attempt == 19:
+                    raise
+                time.sleep(0.05)
+    finally:
+        with contextlib.suppress(OSError):
+            temporary.unlink(missing_ok=True)
 
 
 def generate_html(
@@ -280,12 +471,13 @@ def generate_html(
     skill_name: str,
     previous: dict[str, dict] | None = None,
     benchmark: dict | None = None,
-    saved_feedback: dict[str, str] | None = None,
+    saved: SavedFeedback | None = None,
+    notices: list[str] | None = None,
 ) -> str:
     """Generate the complete standalone HTML page with embedded data.
 
-    saved_feedback is the reviewed workspace's own feedback, which the served page starts from; a
-    static page has none.
+    saved is the reviewed workspace's own feedback, which the served page starts from; a static page has
+    none. notices are shown at the top of the page.
     """
     template_path = Path(__file__).parent / "viewer.html"
     template = template_path.read_text(encoding="utf-8")
@@ -305,7 +497,10 @@ def generate_html(
         "runs": runs,
         "previous_feedback": previous_feedback,
         "previous_outputs": previous_outputs,
-        "saved_feedback": saved_feedback or {},
+        "saved_feedback": saved.reviews if saved else {},
+        # The revision every save names as the one it was made from; a static page saves nowhere.
+        "saved_revision": saved.revision if saved else None,
+        "notices": [*(notices or []), *(saved.notices if saved else [])],
     }
     if benchmark:
         embedded["benchmark"] = benchmark
@@ -358,6 +553,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
         feedback_path: Path,
         previous: dict[str, dict],
         benchmark_path: Path | None,
+        notices: list[str],
         *args,
         **kwargs,
     ):
@@ -366,20 +562,16 @@ class ReviewHandler(BaseHTTPRequestHandler):
         self.feedback_path = feedback_path
         self.previous = previous
         self.benchmark_path = benchmark_path
+        self.notices = notices
         super().__init__(*args, **kwargs)
 
     def do_GET(self) -> None:
         if self.path == "/" or self.path == "/index.html":
             # Regenerate HTML on each request (re-scans workspace for new outputs)
             runs = find_runs(self.workspace)
-            benchmark = None
-            if self.benchmark_path and self.benchmark_path.exists():
-                try:
-                    benchmark = json.loads(self.benchmark_path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    pass
+            benchmark = read_benchmark(self.benchmark_path)
             html = generate_html(
-                runs, self.skill_name, self.previous, benchmark, load_saved_feedback(self.feedback_path)
+                runs, self.skill_name, self.previous, benchmark, load_saved_feedback(self.feedback_path), self.notices
             )
             content = html.encode("utf-8")
             self.send_response(200)
@@ -403,29 +595,55 @@ class ReviewHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
-        if self.path == "/api/feedback":
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            try:
-                data = json.loads(body)
-                if not isinstance(data, dict) or "reviews" not in data:
-                    raise ValueError("Expected JSON object with 'reviews' key")
-                self.feedback_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-                resp = b'{"ok":true}'
-                self.send_response(200)
-            except (json.JSONDecodeError, OSError, ValueError) as e:
-                resp = json.dumps({"error": str(e)}).encode()
-                self.send_response(500)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(resp)))
-            self.end_headers()
-            self.wfile.write(resp)
-        else:
+        if self.path != "/api/feedback":
             self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        try:
+            data = json.loads(body)
+            if not isinstance(data, dict) or "reviews" not in data:
+                raise ValueError("Expected JSON object with 'reviews' key")
+        except (ValueError, RecursionError) as e:
+            self.answer(500, {"error": str(e)})
+            return
+        # The page names the revision of feedback.json it made this save from; a save made from another one than
+        # the file now there (another tab's or program's save came between) is refused, so it never overwrites
+        # feedback it did not show. A request naming none is saved as before.
+        expected = self.headers.get("If-Match")
+        content = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+        try:
+            with feedback_lock(self.feedback_path):
+                current = file_revision(self.feedback_path)
+                if expected is not None and expected != f'"{current}"':
+                    self.answer(412, {"error": "feedback.json changed since this page was loaded", "revision": current})
+                    return
+                write_replacing(self.feedback_path, content)
+        except OSError as e:
+            self.answer(500, {"error": str(e)})
+            return
+        revision = revision_of(content)
+        self.answer(200, {"ok": True, "revision": revision}, {"ETag": f'"{revision}"'})
+
+    def answer(self, status: int, body: dict, headers: dict[str, str] | None = None) -> None:
+        content = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(content)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(content)
 
     def log_message(self, format: str, *args: object) -> None:
         # Suppress request logging to keep terminal clean
         pass
+
+
+def read_benchmark(path: Path | None) -> dict | None:
+    """benchmark.json for the Benchmark tab, or None when there is none or it cannot be read."""
+    benchmark = read_json(path) if path else None
+    return benchmark if isinstance(benchmark, dict) else None
 
 
 def main() -> None:
@@ -461,25 +679,21 @@ def main() -> None:
     feedback_path = workspace / "feedback.json"
 
     previous: dict[str, dict] = {}
+    notices: list[str] = []
     if args.previous_workspace:
-        previous = load_previous_iteration(args.previous_workspace.resolve())
+        previous = load_previous_iteration(args.previous_workspace.resolve(), notices)
 
     benchmark_path = args.benchmark.resolve() if args.benchmark else None
-    benchmark = None
-    if benchmark_path and benchmark_path.exists():
-        try:
-            benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
+    benchmark = read_benchmark(benchmark_path)
 
     if args.static:
-        html = generate_html(runs, skill_name, previous, benchmark)
+        html = generate_html(runs, skill_name, previous, benchmark, notices=notices)
         args.static.parent.mkdir(parents=True, exist_ok=True)
         args.static.write_text(html, encoding="utf-8")
         print(f"\n  Static viewer written to: {args.static}\n")
         sys.exit(0)
 
-    handler = partial(ReviewHandler, workspace, skill_name, feedback_path, previous, benchmark_path)
+    handler = partial(ReviewHandler, workspace, skill_name, feedback_path, previous, benchmark_path, notices)
     server = start_server(args.port, handler)
     port = server.server_address[1]
 
@@ -507,8 +721,8 @@ def main() -> None:
 if __name__ == "__main__":
     # The output usually goes to a pipe or a file that an agent reads, in the ANSI code page on Windows:
     # write UTF-8, one line at a time, so the URL can be read as soon as the server is up. There is no
-    # output to set up under pythonw or with standard output closed; print() then writes nothing.
-    if sys.stdout is not None:
+    # output to set up under pythonw, with standard output closed, or when a stream replaced it.
+    if isinstance(sys.stdout, io.TextIOWrapper):
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
     # Errors in UTF-8 too, unless they already are or go to a stream that replaced the standard one.
     if isinstance(sys.stderr, io.TextIOWrapper) and codecs.lookup(sys.stderr.encoding).name != "utf-8":

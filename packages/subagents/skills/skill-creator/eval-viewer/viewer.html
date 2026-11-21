@@ -253,6 +253,18 @@
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
     }
+    .notices .notice {
+      margin: 0.5rem 1.5rem 0;
+      padding: 0.6rem 0.9rem;
+      border: 1px solid #e0b252;
+      border-radius: 6px;
+      background: #fdf6e3;
+      color: #6b4e00;
+      font-size: 0.85rem;
+    }
+    .notices .notice[hidden] {
+      display: none;
+    }
     .feedback-status {
       font-size: 0.75rem;
       color: var(--text-muted);
@@ -550,6 +562,11 @@
       <div class="progress" id="progress"></div>
     </div>
 
+    <!-- Notices: a feedback file that could not be read, a save that was refused -->
+    <div class="notices" id="notices">
+      <div class="notice" id="save-problem" hidden></div>
+    </div>
+
     <!-- View tabs (only shown when benchmark data exists) -->
     <div class="view-tabs" id="view-tabs" style="display:none;">
       <button class="view-tab active" onclick="switchView('outputs')">Outputs</button>
@@ -653,6 +670,8 @@
     // so reopening or reloading it, or starting the viewer again, keeps that feedback, and the next save
     // includes it. A static page starts empty.
     let feedbackMap = { ...(EMBEDDED_DATA.saved_feedback || {}) };
+    // The feedback box's pending save, 800 ms after the last key.
+    let saveTimeout = null;
     let currentIndex = 0;
     let visitedRuns = new Set();
 
@@ -661,9 +680,17 @@
       document.getElementById("skill-name").textContent = EMBEDDED_DATA.skill_name;
       showRun(0);
 
+      // Notices from the server, such as a feedback file that could not be read.
+      const notices = document.getElementById("notices");
+      for (const notice of EMBEDDED_DATA.notices || []) {
+        const item = document.createElement("div");
+        item.className = "notice";
+        item.textContent = notice;
+        notices.appendChild(item);
+      }
+
       // Wire up feedback auto-save
       const textarea = document.getElementById("feedback");
-      let saveTimeout = null;
       textarea.addEventListener("input", () => {
         clearTimeout(saveTimeout);
         document.getElementById("feedback-status").textContent = "";
@@ -978,73 +1005,144 @@
     }
 
     // ---- Feedback (saved to server -> feedback.json) ----
-    function saveCurrentFeedback() {
+    // The revision of feedback.json this page last read or saved. Every save names it, and the server refuses a
+    // save made from an older one, so this page never overwrites feedback another tab or program saved since.
+    // null in a static page, which saves nowhere.
+    let savedRevision = EMBEDDED_DATA.saved_revision ?? null;
+    // Saving, as a state machine:
+    //   idle    --save-->            sending (one request at a time)
+    //   sending --save-->            sending, with the latest wanted save waiting as `next`
+    //   sending --answer-->          idle, or sending `next`, from the revision the answer returned
+    //   any     --refused (412)-->   conflict: nothing more is sent; the page says to reload
+    // A save is built when it is sent, from the feedback as it is then.
+    let saving = { state: "idle" };
+
+    // The feedback box's text into the map.
+    function keepCurrentFeedback() {
       const run = EMBEDDED_DATA.runs[currentIndex];
       const text = document.getElementById("feedback").value;
-
       if (text.trim() === "") {
         delete feedbackMap[run.id];
       } else {
         feedbackMap[run.id] = text;
       }
+    }
 
-      // Build reviews array from map
-      const reviews = [];
-      for (const [run_id, feedback] of Object.entries(feedbackMap)) {
-        if (feedback.trim()) {
-          reviews.push({ run_id, feedback, timestamp: new Date().toISOString() });
-        }
+    function saveCurrentFeedback() {
+      clearTimeout(saveTimeout);
+      saveTimeout = null;
+      keepCurrentFeedback();
+      requestSave("in_progress");
+    }
+
+    // status "in_progress" saves the runs with feedback; "complete" saves every run, so the model can tell
+    // "no feedback" (looks good) from "not reviewed", and then shows the done dialog.
+    function requestSave(status) {
+      if (saving.state === "conflict") {
+        showSaveProblem(CONFLICT_MESSAGE);
+        return;
       }
+      if (saving.state === "sending") {
+        saving.next = status;
+        return;
+      }
+      sendSave(status);
+    }
 
-      fetch("/api/feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reviews, status: "in_progress" }),
-      }).then(() => {
-        document.getElementById("feedback-status").textContent = "Saved";
-      }).catch(() => {
-        // Static mode or server unavailable — no-op on auto-save,
-        // feedback will be downloaded on final submit
-        document.getElementById("feedback-status").textContent = "Will download on submit";
+    function savePayload(status) {
+      const reviews = [];
+      const ts = new Date().toISOString();
+      if (status === "complete") {
+        for (const r of EMBEDDED_DATA.runs) {
+          reviews.push({ run_id: r.id, feedback: feedbackMap[r.id] || "", timestamp: ts });
+        }
+        return JSON.stringify({ reviews, status }, null, 2);
+      }
+      for (const [run_id, feedback] of Object.entries(feedbackMap)) {
+        if (feedback.trim()) reviews.push({ run_id, feedback, timestamp: ts });
+      }
+      return JSON.stringify({ reviews, status });
+    }
+
+    const CONFLICT_MESSAGE = "The saved feedback changed after this page was loaded (in another tab, or by another "
+      + "program), so what you typed here since was not saved. Copy anything you want to keep, then reload the "
+      + "page to see the saved feedback.";
+
+    function sendSave(status) {
+      saving = { state: "sending", next: null };
+      const payload = savePayload(status);
+      const headers = { "Content-Type": "application/json" };
+      if (savedRevision !== null) headers["If-Match"] = '"' + savedRevision + '"';
+      fetch("/api/feedback", { method: "POST", headers, body: payload }).then(async (response) => {
+        let answer = {};
+        try { answer = await response.json(); } catch { /* no JSON answer */ }
+        if (response.ok) {
+          if (typeof answer.revision === "string") savedRevision = answer.revision;
+          saved(status);
+        } else if (response.status === 412) {
+          saving = { state: "conflict" };
+          showSaveProblem(CONFLICT_MESSAGE);
+          setFeedbackStatus("Not saved");
+        } else {
+          finishSave();
+          showSaveProblem("Not saved: " + (answer.error || response.statusText || "error " + response.status));
+          setFeedbackStatus("Not saved");
+        }
+      }, () => {
+        // Static mode or server unavailable: the feedback is downloaded on final submit.
+        finishSave();
+        if (status === "complete") downloadFeedback(payload);
+        else setFeedbackStatus("Will download on submit");
       });
+    }
+
+    function saved(status) {
+      const next = finishSave();
+      if (status === "complete") document.getElementById("done-overlay").classList.add("visible");
+      // "Saved" only when what the box shows is what was saved, and nothing waits to be.
+      const run = EMBEDDED_DATA.runs[currentIndex];
+      const text = document.getElementById("feedback").value;
+      if (next === null && saveTimeout === null && (feedbackMap[run.id] || "") === (text.trim() === "" ? "" : text)) {
+        setFeedbackStatus("Saved");
+      }
+    }
+
+    // Back to idle, then the save that waited, if any; returns it.
+    function finishSave() {
+      const next = saving.state === "sending" ? saving.next : null;
+      saving = { state: "idle" };
+      if (next !== null) sendSave(next);
+      return next;
+    }
+
+    function setFeedbackStatus(text) {
+      document.getElementById("feedback-status").textContent = text;
+    }
+
+    function showSaveProblem(message) {
+      const element = document.getElementById("save-problem");
+      element.textContent = message;
+      element.hidden = false;
+    }
+
+    function downloadFeedback(payload) {
+      const blob = new Blob([payload], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "feedback.json";
+      a.click();
+      URL.revokeObjectURL(url);
+      document.getElementById("done-overlay").classList.add("visible");
     }
 
     // ---- Done ----
     function showDoneDialog() {
-      // Save current textarea to feedbackMap (but don't POST yet)
-      const run = EMBEDDED_DATA.runs[currentIndex];
-      const text = document.getElementById("feedback").value;
-      if (text.trim() === "") {
-        delete feedbackMap[run.id];
-      } else {
-        feedbackMap[run.id] = text;
-      }
-
-      // POST once with status: complete — include ALL runs so the model
-      // can distinguish "no feedback" (looks good) from "not reviewed"
-      const reviews = [];
-      const ts = new Date().toISOString();
-      for (const r of EMBEDDED_DATA.runs) {
-        reviews.push({ run_id: r.id, feedback: feedbackMap[r.id] || "", timestamp: ts });
-      }
-      const payload = JSON.stringify({ reviews, status: "complete" }, null, 2);
-      fetch("/api/feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: payload,
-      }).then(() => {
-        document.getElementById("done-overlay").classList.add("visible");
-      }).catch(() => {
-        // Server not available (static mode) — download as file
-        const blob = new Blob([payload], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "feedback.json";
-        a.click();
-        URL.revokeObjectURL(url);
-        document.getElementById("done-overlay").classList.add("visible");
-      });
+      // A save the box was waiting to make is made by this one.
+      clearTimeout(saveTimeout);
+      saveTimeout = null;
+      keepCurrentFeedback();
+      requestSave("complete");
     }
 
     function closeDoneDialog() {
