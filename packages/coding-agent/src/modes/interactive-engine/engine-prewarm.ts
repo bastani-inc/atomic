@@ -199,7 +199,9 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 		launch =
 			options.launch ?? engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
 		// Off Windows a host waits for its engine's exit as it quits, the exit-time write of a cold compile cache included;
-		// a fresh engine would have started from the host's written cache instead (Windows ends an engine without it).
+		// a fresh engine would have started from the host's written cache instead (a Windows host limits how long it waits
+		// for its engine's exit work).
+		// The write-cache flag follows the no-database marker, which the engine reads as its second argument.
 		const writeCache = options.basis === "derived" && process.platform !== "win32";
 		// The no-database marker stays the second argument: the engine reads it there.
 		const prewarmArgs = [
