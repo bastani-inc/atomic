@@ -33,7 +33,7 @@ function processExists(pid: number): boolean {
  */
 const STAND_IN_BROKER = `const fs = require("node:fs");
 const net = require("node:net");
-const [socketPath, pidPath, logPath] = process.argv.slice(1);
+const [socketPath, pidPath, logPath, pidless] = process.argv.slice(1);
 if (logPath) fs.openSync(logPath, "a");
 const frame = (message) => {
 	const payload = Buffer.from(JSON.stringify(message));
@@ -50,7 +50,7 @@ net.createServer((socket) => {
 			const message = JSON.parse(buffer.subarray(4, 4 + buffer.readUInt32BE(0)).toString("utf8"));
 			buffer = buffer.subarray(4 + buffer.readUInt32BE(0));
 			if (message.type !== "broker_status") continue;
-			const report = { pid: process.pid, sessions: 0, multiNode: { status: "off" } };
+			const report = pidless === "pidless" ? {} : { pid: process.pid, sessions: 0, multiNode: { status: "off" } };
 			socket.write(frame({ type: "broker_status", requestId: message.requestId, report }));
 		}
 	});
@@ -64,17 +64,20 @@ function started(child: ReturnType<typeof spawnProcess>) {
 	return { pid, kill: (signal: NodeJS.Signals) => child.kill(signal), exited: child.exited };
 }
 
-function startStandInBroker(agentDir: string, { holdLog = false }: { readonly holdLog?: boolean } = {}) {
+function startStandInBroker(
+	agentDir: string,
+	{ holdLog = false, pidless = false }: { readonly holdLog?: boolean; readonly pidless?: boolean } = {},
+) {
 	const intercomDir = join(agentDir, "intercom");
-	const args = [getBrokerSocketPath(process.platform, agentDir), join(intercomDir, "broker.pid")];
+	const args = [
+		getBrokerSocketPath(process.platform, agentDir),
+		join(intercomDir, "broker.pid"),
+		holdLog ? join(intercomDir, "broker.log") : "",
+		pidless ? "pidless" : "",
+	];
 	return started(
 		spawnProcess({
-			cmd: [
-				process.execPath,
-				"-e",
-				STAND_IN_BROKER,
-				...(holdLog ? [...args, join(intercomDir, "broker.log")] : args),
-			],
+			cmd: [process.execPath, "-e", STAND_IN_BROKER, ...args],
 			stdin: "ignore",
 			stdout: "ignore",
 			stderr: "ignore",
@@ -156,6 +159,26 @@ test("stopDetachedBroker never signals a process a leftover broker.pid names whe
 	} finally {
 		unrelated.kill("SIGKILL");
 		await unrelated.exited;
+		await removeTempRootReleasingBroker(root, agentDir);
+	}
+});
+
+test("stopDetachedBroker never signals the process broker.pid names when the answer there states no pid (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-pidless-");
+	const agentDir = join(root, "agent");
+	const pidPath = join(agentDir, "intercom", "broker.pid");
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	const listener = startStandInBroker(agentDir, { pidless: true });
+	const unrelated = startUnrelatedProcess();
+	try {
+		await waitForFile(pidPath);
+		writeTextSync(pidPath, String(unrelated.pid));
+		await stopDetachedBroker(agentDir);
+		assert.equal(processExists(unrelated.pid), true, "the cleanup killed a process no broker vouched for");
+	} finally {
+		unrelated.kill("SIGKILL");
+		listener.kill("SIGKILL");
+		await Promise.all([unrelated.exited, listener.exited]);
 		await removeTempRootReleasingBroker(root, agentDir);
 	}
 });
