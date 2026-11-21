@@ -19,9 +19,10 @@ export interface BrokerProcess {
 	 * Windows: whether that process wrote `broker.pid`, which names it. `yes`: it was created before `broker.pid` was last
 	 * written, so it held the pid then and is the broker that wrote it (a process keeps its pid for life, and two
 	 * processes never hold one pid at once). `no`: it was created well after that write, so the pid was given to a later
-	 * process. Both assume the system clock was not set back in between. `unavailable`: the volume keeps write times too
-	 * coarsely to tell (FAT, exFAT), and maybe in local time, so the pid is taken as the broker's, as before. `unknown`
-	 * elsewhere, where either time could not be read, or when they are too close to tell.
+	 * process. Both assume the system clock was not set back in between. `unavailable`: the write time is a whole number
+	 * of 10 ms, as a volume that keeps write times too coarsely to tell (FAT, exFAT, maybe in local time) keeps them, so
+	 * the pid is taken as the broker's, as before. `unknown` elsewhere, where either time could not be read, or when they
+	 * are too close to tell.
 	 */
 	readonly wroteBrokerPid: "yes" | "no" | "unknown" | "unavailable";
 }
@@ -235,24 +236,21 @@ const UNANSWERED_BROKER_STOP_WAIT_MS = 5_000;
 /**
  * End a broker that did not acknowledge its shutdown request, only while its pid still names it, and only the broker
  * itself, never a process it started:
- * - Windows: through a handle to the process created at `broker.started`, if that process wrote `broker.pid`. Where the
- *   volume's write times cannot tell (`unavailable`), the pid is taken as the broker's, as before, but it is still ended
- *   only through a handle to the process it named when the broker was found; by the pid alone only when that process's
- *   creation time could not be read.
+ * - Windows: through a handle to the process created at `broker.started`, if that process wrote `broker.pid`, or where
+ *   the volume's write times cannot tell (`unavailable`), in which case the pid is taken as the broker's, as before.
+ *   Without a creation time nothing is ended.
  * - Linux: with SIGTERM while the pid's start token is still `broker.started`, read just before the signal.
  * - macOS: with SIGTERM to the pid, as before.
  */
 export async function endUnansweredBroker(broker: BrokerProcess): Promise<void> {
 	if (process.platform === "win32") {
+		if (broker.started === undefined) return;
 		if (broker.wroteBrokerPid !== "yes" && broker.wroteBrokerPid !== "unavailable") return;
-		if (broker.started !== undefined) {
-			await stopWindowsProcess(broker.pid, broker.started, {
-				waitMs: UNANSWERED_BROKER_STOP_WAIT_MS,
-				descendants: false,
-			});
-			return;
-		}
-		if (broker.wroteBrokerPid === "yes") return;
+		await stopWindowsProcess(broker.pid, broker.started, {
+			waitMs: UNANSWERED_BROKER_STOP_WAIT_MS,
+			descendants: false,
+		});
+		return;
 	}
 	// Linux: the check and the signal run in one turn of the event loop, with no await between them.
 	if (process.platform === "linux" && (broker.started === undefined || processStartToken(broker.pid) !== broker.started)) {

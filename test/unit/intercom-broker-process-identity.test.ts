@@ -72,6 +72,14 @@ describe.skipIf(!READS_PROCESS_STARTS)("a broker pid that names a later process"
 		assert.equal(await stillRuns(recorded), true);
 	});
 
+	test("a broker that did not answer is not ended by its pid alone when its creation time could not be read", async () => {
+		const { recorded } = await liveProcess();
+
+		// broker.pid's write time could not tell either way, and no start was read for the pid.
+		await endUnansweredBroker({ pid: recorded.pid, started: undefined, wroteBrokerPid: "unavailable" });
+		assert.equal(await stillRuns(recorded), true);
+	});
+
 	test("a broker that did not answer is ended while its pid names it, and only the broker, not a process it started", async () => {
 		// The stand-in broker starts a child of its own and reports its pid. Detached, so that on Windows it is outside the
 		// job object that ends a process's other children with it, as a broker's own detached helpers are.
