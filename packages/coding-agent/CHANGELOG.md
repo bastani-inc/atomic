@@ -5,6 +5,7 @@
 ### Changed
 
 - Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
+- Starting Atomic runs fewer processes before you can type: the check that fd, rg and git are ready (`fd`, `fdfind`, `rg` and `git --version`) now starts once the editor takes input, or before a prompt given on the command line runs, and the notice of tools a resumed session was using that are not available no longer runs `git --version`. `/tools` still reports which git Atomic uses.
 
 ### Fixed
 
