@@ -2778,3 +2778,188 @@ export function registerReturningSessionConformance(
 		});
 	});
 }
+
+/**
+ * #5607: an Intercom id has at most one owning registration: another registration of the same session takes it only
+ * once the owner released it, its broker was retired, or it went unrenewed past the stale age.
+ */
+export function registerIdOwnerConformance(
+	runner: MultiNodeConformanceRunner,
+	name: string,
+	open: OpenSharedStoreFixture<KnownSessionStore>,
+): void {
+	const check = withShared(runner, `${name} id owners`, open);
+	const ID = "owned-session";
+	const ADDRESS = "owned-address";
+	const owner = (token: string, brokerId = `broker-${token}`, staleAfterMs = LIVE_MS) => ({
+		token,
+		brokerId,
+		staleAfterMs,
+	});
+	const owners = (store: KnownSessionStore) => {
+		assert.ok(store.owners !== undefined, "the store keeps owners");
+		return store.owners;
+	};
+
+	check(
+		"one registration owns an id; another of the same session takes it once the first released it (#5607)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			assert.deepEqual(await a.bind(ID, ADDRESS, LIVE_MS, undefined, owner("first")), { status: "bound" });
+			assert.deepEqual(
+				await a.bind(ID, ADDRESS, LIVE_MS, "claim", owner("first")),
+				{ status: "bound" },
+				"its own again",
+			);
+			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), {
+				status: "held",
+				ownerBroker: "broker-first",
+			});
+			assert.deepEqual(await b.bind(ID, "another-address", LIVE_MS, undefined, owner("third")), {
+				status: "refused",
+				returnAddress: ADDRESS,
+			});
+			// A release with another token, and a bind without an owner, leave the owner as it is.
+			await owners(b).release({ intercomSessionId: ID, token: "second" });
+			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS), { status: "bound" });
+			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), {
+				status: "held",
+				ownerBroker: "broker-first",
+			});
+			await owners(a).release({ intercomSessionId: ID, token: "first" });
+			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), { status: "bound" });
+			assert.deepEqual(await a.bind(ID, ADDRESS, LIVE_MS, undefined, owner("first")), {
+				status: "held",
+				ownerBroker: "broker-second",
+			});
+		},
+	);
+
+	check(
+		"a known session is found by the other id it answers to, until it is recorded without one (#5607)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const record = {
+				targetIdentity: JSON.stringify(["return", ADDRESS, "team"]),
+				intercomSessionId: "fresh-id",
+				atomicSessionId: ADDRESS,
+				group: "team",
+				groups: ["team"],
+			};
+			assert.deepEqual(await a.record({ ...record, aliasSessionId: "awaited-id" }), { status: "recorded" });
+			const found = await b.lookup("awaited-id", LIVE_MS);
+			assert.deepEqual(
+				found.status === "found"
+					? found.sessions.map((session) => [session.intercomSessionId, session.aliasSessionId])
+					: found,
+				[["fresh-id", "awaited-id"]],
+			);
+			assert.deepEqual(await a.record(record), { status: "recorded" });
+			assert.deepEqual(await b.lookup("awaited-id", LIVE_MS), { status: "found", sessions: [] });
+		},
+	);
+
+	check(
+		"an owner its broker no longer renews is taken once stale; a retired broker's owners at once (#5607)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			assert.deepEqual(await a.bind(ID, ADDRESS, LIVE_MS, undefined, owner("first", "broker-a")), {
+				status: "bound",
+			});
+			await sleep(RENEWAL_GAP_MS);
+			assert.deepEqual(
+				await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second", "broker-b", RENEWAL_GAP_MS / 2)),
+				{ status: "bound" },
+			);
+			// Renewed by its broker, an owner holds past that age.
+			assert.deepEqual(await owners(b).renew([{ intercomSessionId: ID, token: "second" }]), [
+				{ intercomSessionId: ID, token: "second" },
+			]);
+			assert.deepEqual(
+				await a.bind(ID, ADDRESS, LIVE_MS, undefined, owner("first", "broker-a", RENEWAL_GAP_MS / 2)),
+				{ status: "held", ownerBroker: "broker-b" },
+			);
+			// A renewal of a token that no longer owns the id brings nothing back, and says so.
+			assert.deepEqual(await owners(a).renew([{ intercomSessionId: ID, token: "first" }]), []);
+			await owners(a).retireBroker("broker-b");
+			assert.deepEqual(await a.bind(ID, ADDRESS, LIVE_MS, undefined, owner("first", "broker-a")), {
+				status: "bound",
+			});
+		},
+	);
+
+	check(
+		"a renewal names back exactly the pairs still owned, never an id another registration owns under a shared token (#5607)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			assert.deepEqual(await a.bind("id-1", ADDRESS, LIVE_MS, undefined, owner("token-1")), { status: "bound" });
+			assert.deepEqual(await a.bind("id-2", ADDRESS, LIVE_MS, undefined, owner("token-2")), { status: "bound" });
+			assert.deepEqual(await b.bind("id-3", "other-address", LIVE_MS, undefined, owner("token-3")), {
+				status: "bound",
+			});
+			await owners(b).release({ intercomSessionId: "id-2", token: "token-2" });
+			const renewed = await owners(a).renew([
+				{ intercomSessionId: "id-1", token: "token-1" },
+				{ intercomSessionId: "id-2", token: "token-2" },
+				// A token that owns another id renews only that id.
+				{ intercomSessionId: "id-1", token: "token-3" },
+			]);
+			assert.deepEqual(renewed, [{ intercomSessionId: "id-1", token: "token-1" }]);
+		},
+	);
+
+	check(
+		"an unanswered claim keeps its id only for its own owner, and gives a grant it does not use back (#5607)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const reclaim = a.reclaim;
+			assert.ok(reclaim !== undefined, "the store reclaims ids");
+			const request = (claim: string, freshId: string, token: string) => ({
+				intercomSessionId: ID,
+				returnAddress: ADDRESS,
+				claim,
+				retentionMs: LIVE_MS,
+				brokerId: "broker-a",
+				presenceStaleAfterMs: LIVE_MS,
+				freshId,
+				owner: owner(token, "broker-a"),
+			});
+			// The claim's write landed: the id is kept for its owner.
+			assert.deepEqual(await a.bind(ID, ADDRESS, LIVE_MS, "claim-1", owner("first", "broker-a")), {
+				status: "bound",
+			});
+			assert.deepEqual(await reclaim(request("claim-1", "fresh-1", "first")), { status: "kept" });
+			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), {
+				status: "held",
+				ownerBroker: "broker-a",
+			});
+			// Another live registration owns it: not kept, and the fresh id is bound to this registration's owner.
+			await owners(a).release({ intercomSessionId: ID, token: "first" });
+			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, "claim-2", owner("second")), { status: "bound" });
+			assert.deepEqual(await a.bind(ID, ADDRESS, LIVE_MS, "claim-3", owner("third", "broker-a")), {
+				status: "held",
+				ownerBroker: "broker-second",
+			});
+			assert.deepEqual(await reclaim(request("claim-2", "fresh-2", "third")), {
+				status: "fresh",
+				binding: { status: "bound" },
+			});
+			assert.deepEqual(await owners(a).renew([{ intercomSessionId: "fresh-2", token: "third" }]), [
+				{ intercomSessionId: "fresh-2", token: "third" },
+			]);
+			assert.deepEqual(await owners(b).renew([{ intercomSessionId: ID, token: "second" }]), [
+				{ intercomSessionId: ID, token: "second" },
+			]);
+			// A claim whose own write took the id but is not kept (another broker presents the session) gives it back.
+			await owners(b).release({ intercomSessionId: ID, token: "second" });
+			assert.deepEqual(await a.bind(ID, ADDRESS, LIVE_MS, "claim-4", owner("fourth", "broker-a")), {
+				status: "bound",
+			});
+			assert.deepEqual(await reclaim({ ...request("claim-4", "fresh-3", "fourth"), claim: "not-this-claim" }), {
+				status: "fresh",
+				binding: { status: "bound" },
+			});
+			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("fifth")), { status: "bound" });
+		},
+	);
+}

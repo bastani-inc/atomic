@@ -19,6 +19,7 @@
 - A subagent launched again without knowing where its session ended, or on a model without a thinking level, is no longer restored with that position or level from its earlier launch.
 - When Atomic itself continues a background subagent (after a restart, when you resume it without a message, or when something it waited for arrived), the subagent gets a short note in its chat saying why (`Continuing after Atomic restarted`, `Continuing where it left off`, `Woken: what it waited for arrived`) instead of a message from you. Resuming a paused subagent with a message no longer queues a `Follow-up: Continue where you left off…` row behind your message: the subagent reads your message and the note in one request.
 - A background subagent resumed with a message while it waited for its run's turn, after a restart while it waited on a background call, keeps your message until that call finishes and reads it then, instead of losing it.
+- The `git` that prepares and checks a subagent's worktree runs only from the absolute directories in your PATH; the working directory counts only when PATH names it.
 
 ## [0.10.3] - 2026-11-21
 

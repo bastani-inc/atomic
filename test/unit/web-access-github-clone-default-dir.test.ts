@@ -20,6 +20,13 @@ type Callback = (error: Error | null, stdout?: string) => void;
 /** `gh`/`git` launches are faked: the fake clone only writes inside the per-test directory. */
 const boundary = vi.hoisted(() => ({ configPath: "", sandbox: "", calls: [] as string[][] }));
 
+// The faked `gh` and `git` are found under their own names, as programs on PATH would be.
+vi.mock("@bastani/atomic-tui", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@bastani/atomic-tui")>()),
+	findHelperExecutableAsync: async (name: string) => name,
+	helperLaunchAsync: async (name: string) => ({ file: name }),
+}));
+
 vi.mock("node:child_process", async (importOriginal) => {
 	// Everything else stays real (the Windows ownership check reads ACLs through it).
 	const actual = await importOriginal<typeof import("node:child_process")>();
