@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-codemode`. Its history up t
 
 ## [Unreleased]
 
+### Changed
+
+- The package no longer includes declaration maps (`.d.ts.map`). They pointed at TypeScript sources that the package does not include, so editors could not follow them. The declarations themselves are unchanged.
+
 ### Fixed
 
 - Fixed `CodemodeSandbox` failing every script with a sandbox error in a Node process started with `--input-type=module` written another way Node accepts: `--input_type=module` on the command line, or in `NODE_OPTIONS` in quotes (`"--input-type=module"`), with an escape (`"--input\-type=module"`) or as `--input_type=module`, and in a process that removes `NODE_OPTIONS` after starting with it. A `NODE_OPTIONS` that names `--input-type` where Node does not read it, such as inside a quoted `--title` value, no longer changes how the sandbox starts its worker ([#6170](https://github.com/bastani-inc/atomic/pull/6170))

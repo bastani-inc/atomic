@@ -434,6 +434,60 @@ function thinkingLevelForSession(session: AgentSession | undefined): string | un
 	return typeof thinking === "string" ? thinking : undefined;
 }
 
+/**
+ * Settles once the attempt is aborted or interrupted, until `dispose` removes what listens for that: call it once the
+ * wait it races is over, so a signal that outlives the attempt keeps nothing of it.
+ */
+function attemptStopped(signals: AttemptSignals): { readonly stopped: Promise<void>; dispose(): void } {
+	let dispose = (): void => {};
+	const stopped = new Promise<void>((resolve) => {
+		if (signals.abort.aborted || signals.interrupt.aborted) return resolve();
+		const stop = () => resolve();
+		signals.abort.addEventListener("abort", stop, { once: true });
+		signals.interrupt.addEventListener("abort", stop, { once: true });
+		dispose = () => {
+			signals.abort.removeEventListener("abort", stop);
+			signals.interrupt.removeEventListener("abort", stop);
+		};
+	});
+	return { stopped, dispose: () => dispose() };
+}
+
+/** The model and thinking level a child's session records last on its branch. */
+function recordedSettings(sessionManager: SessionManager): { model?: string; thinking?: string } {
+	if (typeof sessionManager.getLatestBranchSettings === "function") {
+		const { model, thinkingLevel } = sessionManager.getLatestBranchSettings();
+		return {
+			...(model ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
+			...(thinkingLevel ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
+		};
+	}
+	const context = sessionManager.buildSessionContext();
+	return {
+		...(context.model ? { model: `${context.model.provider}/${context.model.modelId}` } : {}),
+		thinking: context.thinkingLevel,
+	};
+}
+
+/**
+ * What writes the model and thinking level `session` starts on into its own session, as `/model` does, where the
+ * session records others; undefined when there is nothing to write. A new session recorded them as it started, and
+ * one that already runs on them needs nothing.
+ */
+function launchSettingsWrite(sessionManager: SessionManager, session: AgentSession): (() => Promise<void>) | undefined {
+	const model = session.model;
+	const thinking = thinkingLevelForSession(session);
+	if (model === undefined && thinking === undefined) return undefined;
+	const recorded = recordedSettings(sessionManager);
+	const writeModel = model !== undefined && recorded.model !== `${model.provider}/${model.id}`;
+	const writeThinking = thinking !== undefined && recorded.thinking !== thinking;
+	if (!writeModel && !writeThinking) return undefined;
+	return async () => {
+		if (writeModel) await sessionManager.appendModelChange(model.provider, model.id);
+		if (writeThinking) await sessionManager.appendThinkingLevelChange(thinking);
+	};
+}
+
 function initialThinkingForAttempt(
 	model: string | undefined,
 	configuredThinking: string | undefined,
@@ -2794,6 +2848,19 @@ export class SubagentControlRuntime {
 				thinkingLevelForSession(session) ?? initialThinkingForAttempt(candidateModelId, configuredThinking);
 			attemptedModels = initialModelId ? [initialModelId] : [];
 			onModelChange?.(effectiveModelId, effectiveThinking);
+			// A restart restores the child on the model and thinking level its own session records. Those a launch applies
+			// without an entry (a fork's or a relaunch's own model, a resumed session's other effort) are recorded now,
+			// before its first request, so a restart finds them whatever its record in its owner's session says yet.
+			const writeLaunchSettings = launchSettingsWrite(sessionManager, session);
+			if (writeLaunchSettings !== undefined) {
+				// A stop does not wait for that write: the attempt stops before it runs, as below.
+				const stop = attemptStopped(signals);
+				try {
+					await beforeStartDeadline(Promise.race([writeLaunchSettings(), stop.stopped]));
+				} finally {
+					stop.dispose();
+				}
+			}
 			const currentLeafId = sessionManager.getLeafId();
 			const childLaunch = {
 				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,

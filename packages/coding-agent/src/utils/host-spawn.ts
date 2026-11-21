@@ -30,6 +30,11 @@ export interface HostSpawnOptions {
 	/** Starts the child in a session (and process group) of its own on POSIX, as `child_process`'s `detached`. */
 	readonly detached?: boolean;
 	readonly windowsHide?: boolean;
+	/**
+	 * Ends the child with `SIGKILL` when this process ends, however it ends, where the child starts through the native
+	 * module (Linux); not the processes the child starts. Not for a detached child.
+	 */
+	readonly endWithParent?: boolean;
 }
 
 /** The part of `ChildProcess` both ways of starting a host process provide. */
@@ -221,6 +226,7 @@ class NativeChildProcess extends EventEmitter implements HostChildProcess {
 					pipeStdout: output === "pipe",
 					pipeStderr: error === "pipe",
 					detached: options.detached === true,
+					endWithParent: options.endWithParent === true,
 				},
 				(event) => this.#event(event),
 			);
