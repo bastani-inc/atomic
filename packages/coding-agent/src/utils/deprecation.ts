@@ -48,8 +48,18 @@ export interface DeprecationOptions {
 	label?: string;
 }
 
-/** Where warnings are shown while a UI owns the terminal. `once` identifies a notice shown once across starts. */
-export type DeprecationWarningSink = (message: string, notice: { once?: string }) => void;
+/**
+ * How a warning was raised, for a sink that passes it on (the interactive engine sends it to its host): `once`
+ * identifies a notice shown once across starts; `label` and `showInUi` are the {@link DeprecationOptions} it was raised with.
+ */
+export interface DeprecationNotice {
+	once?: string;
+	label?: string;
+	showInUi?: boolean;
+}
+
+/** Where warnings are shown while a UI owns the terminal. */
+export type DeprecationWarningSink = (message: string, notice: DeprecationNotice) => void;
 
 interface ShownNotices {
 	path: string;
@@ -61,7 +71,7 @@ type DeprecationRegistry = typeof globalThis & {
 	[EMITTED_KEY]?: Set<string>;
 	[SINK_KEY]?: DeprecationWarningSink;
 	/** Warnings written to stderr (or deferred) that the next sink shows again; `once` is recorded when it does. */
-	[UI_PENDING_KEY]?: { message: string; once?: string; printed: boolean }[];
+	[UI_PENDING_KEY]?: ({ message: string; printed: boolean } & DeprecationNotice)[];
 	[HELD_KEY]?: Map<string, { message: string; options: DeprecationOptions }[]>;
 	[DEFERRED_KEY]?: boolean;
 	[WARN_KEY]?: (message: string, options?: DeprecationOptions) => void;
@@ -90,22 +100,32 @@ export function warnDeprecation(message: string, options: DeprecationOptions = {
 	state[EMITTED_KEY] ??= new Set<string>();
 	if (state[EMITTED_KEY].has(message)) return;
 	state[EMITTED_KEY].add(message);
+	const notice: DeprecationNotice = {
+		...(once === undefined ? {} : { once }),
+		...(options.label === undefined ? {} : { label: options.label }),
+		...(options.showInUi === undefined ? {} : { showInUi: options.showInUi }),
+	};
 	const sink = state[SINK_KEY];
 	if (sink !== undefined) {
-		sink(message, { once });
+		sink(message, notice);
 		recordShown(once, message);
 		return;
 	}
 	const deferred = state[DEFERRED_KEY] === true;
-	if (!deferred) console.warn(chalk.yellow(`${options.label ?? "Deprecation warning"}: ${message}`));
+	if (!deferred) printWarning(message, notice);
 	// A notice shown once across starts must reach the UI too, which clears what was printed before it started.
 	if (deferred || options.showInUi || once !== undefined) {
 		state[UI_PENDING_KEY] ??= [];
-		state[UI_PENDING_KEY].push({ message, once, printed: !deferred });
+		state[UI_PENDING_KEY].push({ message, ...notice, printed: !deferred });
 	}
 }
 
 registry()[WARN_KEY] = warnDeprecation;
+
+/** Write a warning no UI shows to stderr, called what it was raised as. */
+function printWarning(message: string, notice: DeprecationNotice): void {
+	console.warn(chalk.yellow(`${notice.label ?? "Deprecation warning"}: ${message}`));
+}
 
 /** Record a notice shown once across starts as shown, now that it was delivered. */
 function recordShown(once: string | undefined, message: string): void {
@@ -126,9 +146,9 @@ export function setDeprecationWarningSink(sink: DeprecationWarningSink): () => v
 	const state = registry();
 	const previous = state[SINK_KEY];
 	state[SINK_KEY] = sink;
-	for (const { message, once } of state[UI_PENDING_KEY]?.splice(0) ?? []) {
-		sink(message, { once });
-		recordShown(once, message);
+	for (const { message, printed: _printed, ...notice } of state[UI_PENDING_KEY]?.splice(0) ?? []) {
+		sink(message, notice);
+		recordShown(notice.once, message);
 	}
 	return () => {
 		if (state[SINK_KEY] === sink) state[SINK_KEY] = previous;
@@ -203,7 +223,7 @@ export function finishDeprecationWarningsAtExit(): void {
 	if (state[DEFERRED_KEY] === true && state[SINK_KEY] === undefined) {
 		for (const pending of state[UI_PENDING_KEY] ?? []) {
 			if (pending.printed) continue;
-			console.warn(chalk.yellow(`Deprecation warning: ${pending.message}`));
+			printWarning(pending.message, pending);
 			pending.printed = true;
 		}
 	}
