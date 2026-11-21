@@ -80,6 +80,7 @@ test("a released child holds each completion of a shell task it launched, in ord
 		taskId: "task-1",
 		messages: ["build finished", "tests finished"],
 		taskExpands: false,
+		withoutWakePrompt: true,
 	});
 	assert.deepEqual(
 		wakes.map((wake) => [wake.id, wake.kind]),

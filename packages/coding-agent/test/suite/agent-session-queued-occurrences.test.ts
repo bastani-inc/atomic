@@ -276,4 +276,24 @@ describe("queued messages", () => {
 			assert.equal(h.getPendingResponseCount(), 1, "one request");
 		});
 	}
+
+	it("the queue is announced once as a message is queued and once as a turn takes it", async () => {
+		const waiting = waitingTool();
+		const h = await harness([waiting.tool]);
+		h.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("answered"),
+		]);
+		const listings: string[] = [];
+		h.session.subscribe((event) => {
+			if (event.type === "queue_update") listings.push(`${event.steering.join(",")}/${event.followUp.join(",")}`);
+		});
+		const run = h.session.prompt("first");
+		await waiting.started;
+		await h.session.steer("taken");
+		waiting.release();
+		await run;
+
+		assert.deepEqual(listings, ["taken/", "/"]);
+	});
 });

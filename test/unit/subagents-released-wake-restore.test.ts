@@ -592,14 +592,16 @@ test("messages held after an earlier version's held wake prompt are all read, an
 	const h = harness();
 	const record = await endedOnPendingCall(h, "wake-held-mixed");
 	assert.ok(record.taskId);
-	await appendRecord(h, {
+	const legacy: SubagentChildRecord = {
 		...record,
 		heldMessages: {
 			taskId: record.taskId,
 			messages: [SUBAGENT_RELEASED_WAKE_PROMPT, "held before"],
 			taskExpands: false,
 		},
-	});
+	};
+	await appendRecord(h, legacy);
+	observeSubagentChildRecord(legacy);
 	assert.equal(
 		await holdSubagentChildMessages(h.deps.pi, record.owner.sessionId, record.childId, [
 			SUBAGENT_RELEASED_WAKE_PROMPT,
@@ -1742,3 +1744,15 @@ for (const saved of [false, true])
 			"told once",
 		);
 	});
+
+test("a wake by a result its child's transcript already holds prompts nothing, not even the wake prompt (#5012)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "wake-saved-result");
+
+	const run = await restored(h, record.childId, { ...MESSAGE_WAKE, toolResults: [], promptless: true });
+
+	assert.deepEqual(run.resumeToolResults, []);
+	assert.equal(run.skipTaskPrompt, true, "nothing to continue and nothing to read: no request");
+	assert.equal(run.resumeTaskFallback, undefined);
+	assert.notEqual(run.task, SUBAGENT_RELEASED_WAKE_PROMPT);
+});

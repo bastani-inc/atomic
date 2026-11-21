@@ -296,15 +296,18 @@ export function summarizeSubagentTask(task: string): string {
 }
 
 /** The task a record keeps for a launch with these options; a resumed child keeps none, since its message is not a task. */
-export function subagentChildTask(task: string, options: RunSyncOptions): Pick<SubagentChildRecord, "task" | "title"> {
-	if (options.resumeSession === true || task.trim() === "") return {};
-	const title = firstLine(task);
-	return {
-		task: summarizeSubagentTask(task),
-		...(title === undefined
-			? {}
-			: { title: title.length > TASK_SUMMARY_LIMIT ? `${sliceHead(title, TASK_SUMMARY_LIMIT - 1)}…` : title }),
-	};
+export function subagentChildTask(task: string, options: RunSyncOptions): Pick<SubagentChildRecord, "task"> {
+	return options.resumeSession === true || task.trim() === "" ? {} : { task: summarizeSubagentTask(task) };
+}
+
+/**
+ * The label a record keeps for a launch with these options: its task's first line, as its task is labelled. A resumed
+ * child keeps none: its message is not its task, and its launch's label stays the record's.
+ */
+export function subagentChildTitle(task: string, options: RunSyncOptions): Pick<SubagentChildRecord, "title"> {
+	const title = options.resumeSession === true ? undefined : firstLine(task);
+	if (title === undefined) return {};
+	return { title: title.length > TASK_SUMMARY_LIMIT ? `${sliceHead(title, TASK_SUMMARY_LIMIT - 1)}…` : title };
 }
 
 /** The first line of `text` with anything other than white space on it, as a task's label is. */

@@ -573,8 +573,8 @@ function withoutEach(after: readonly string[], before: readonly string[]): strin
 /**
  * An isolated engine that is lost and replaced takes its queue with it. The messages the main chat showed as queued
  * come back to its editor, as Alt+Up would restore them, with a notice, unless the replacement's history shows the
- * lost engine delivered them. What it had already taken and was delivering, or showed without saving it, may have been
- * saved: a notice gives each in full, as unconfirmed. (What a shown subagent had queued is listed by
+ * lost engine delivered them. What it had already taken from its queue and the chat never saw saved (being delivered,
+ * or shown without its save) may have been saved: a notice gives each in full, as unconfirmed. (What a shown subagent had queued is listed by
  * `attachLostAgentQueueNotices`.) Nothing is sent again. A deliberate replacement or stop, or a session the engine
  * retires, changes nothing.
  */
@@ -585,30 +585,13 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 	let knownAtLoss: string[] | undefined;
 	/** What the lost engine was delivering, steering first, each lane in order, while its replacement is pending. */
 	let deliveringAtLoss: string[] = [];
-	/** User messages whose row the chat showed and whose save (`message_end`) it has not heard of, oldest first. */
-	let shownUnsaved: string[] = [];
-	let shownUnsavedAtLoss: string[] = [];
-	const stopShown = this.session.subscribe((event) => {
-		if (event.type === "message_start" && event.message.role === "user") {
-			const text = textOfUserMessage(event.message.content);
-			if (text !== undefined) shownUnsaved.push(text);
-		} else if (event.type === "message_end" && event.message.role === "user") {
-			const text = textOfUserMessage(event.message.content);
-			const index = text === undefined ? -1 : shownUnsaved.indexOf(text);
-			if (index >= 0) shownUnsaved.splice(index, 1);
-		} else if (event.type === "agent_end") shownUnsaved = [];
-	});
 	const stopEnded = runtime.onGenerationEnded((event) => {
-		if (event.expected) {
-			shownUnsaved = [];
-			return;
-		}
+		if (event.expected) return;
 		mainSteering(this).loseTarget();
 		runtime.discardLostQueue();
+		// What it took from its queue and the chat never saw saved: being delivered, or shown without its save.
 		const delivering = runtime.takeDeliveringAtLoss();
 		if (delivering !== undefined) deliveringAtLoss.push(...delivering.steering, ...delivering.followUp);
-		shownUnsavedAtLoss.push(...shownUnsaved);
-		shownUnsaved = [];
 		knownAtLoss ??= userMessageTexts(this.session.messages);
 		this.updatePendingMessagesDisplay();
 		this.ui.requestRender();
@@ -621,10 +604,8 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 	const stopRecovered = runtime.onEngineRecovered((replaced) => {
 		const known = knownAtLoss;
 		const delivering = deliveringAtLoss;
-		const shown = shownUnsavedAtLoss;
 		knownAtLoss = undefined;
 		deliveringAtLoss = [];
-		shownUnsavedAtLoss = [];
 		if (known === undefined) return;
 		void (async () => {
 			let delivered: string[] | undefined;
@@ -635,12 +616,12 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 					// The replacement could not say what it holds: give everything back, nothing is resent.
 				}
 			}
-			// What the lost engine had taken from its queue may have been saved, and answered, whatever its replacement's
-			// history shows (a compaction can leave it out, and the engine may have saved it after the chat's last line):
-			// it is listed in full as unconfirmed, neither given back nor sent again. So is a message whose row was shown
-			// but whose save the chat never heard of. The replacement's history only accounts for what the chat still listed.
-			const remaining = delivered === undefined ? undefined : withoutEach(delivered, [...shown, ...delivering]);
-			const unconfirmed = [...shown, ...delivering];
+			// What the lost engine had taken from its queue and the chat never saw saved may have been saved, and answered,
+			// whatever its replacement's history shows (a compaction can leave it out, and the engine may have saved it after
+			// the chat's last line): it is listed in full as unconfirmed, neither given back nor sent again. The replacement's
+			// history only accounts for what the chat still listed.
+			const remaining = delivered === undefined ? undefined : withoutEach(delivered, delivering);
+			const unconfirmed = delivering;
 			const messages = mainSteering(this).recoverTarget(remaining ?? []) ?? [];
 			if (unconfirmed.length > 0) this.showWarning(engineLossUnconfirmedNotice(unconfirmed));
 			if (messages.length === 0) {
@@ -656,7 +637,6 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 		})();
 	});
 	return () => {
-		stopShown();
 		stopEnded();
 		stopForgotten();
 		stopRecovered();
