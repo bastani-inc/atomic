@@ -35,6 +35,7 @@ import {
 	holdsSessionId,
 	KNOWN_SESSION_RETENTION_MS,
 	type KnownSession,
+	type KnownSessionBindResult,
 	type KnownSessionState,
 	type Lease,
 	type LeaseState,
@@ -54,6 +55,7 @@ import {
 	reservationKeyFor,
 	returnAddressOf,
 	type SentMessageReservation,
+	type SessionIdReclaimResult,
 } from "./multinode-state-store.js";
 import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
@@ -167,6 +169,31 @@ const MAX_SUPERSEDED_HOPS = 8;
  */
 export const KNOWN_SESSION_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const TARGET_GROUP_REFUSAL = "Target session is in a different intercom group";
+
+/** How a registration's claim of its preferred id ended (`MultiNodeRouter.claimSessionId`). */
+export type SessionIdClaim =
+	| { readonly status: "granted" }
+	| { readonly status: "refused" }
+	/** #5607: the shared database did not answer in time; see `SessionIdReclaimRequest`. */
+	| { readonly status: "unanswered"; readonly unanswered: UnansweredSessionIdClaim };
+
+/** #5607: a claim the shared database did not answer in time: the id it asked for, and the value it wrote with it. */
+export interface UnansweredSessionIdClaim {
+	readonly sessionId: string;
+	readonly claim: string;
+}
+
+/**
+ * #5607: given to `sessionRegistered` for a session whose claim went unanswered. The session is not registered on this
+ * broker yet: `settle` registers it, once, under the claimed id (`keep`) or the fresh one its registration started
+ * with, and reports whether it kept the claimed id. It cannot keep it once its registration has been answered or a
+ * session here holds that id, and does nothing after the first call.
+ */
+export interface SessionIdReclaimRequest extends UnansweredSessionIdClaim {
+	readonly settle: (keep: boolean) => boolean;
+	/** Whether `settle` is still to be called: false once the registration settled without it, as when it was answered. */
+	readonly unsettled: () => boolean;
+}
 
 /** What the broker uses of `open-broker-state.ts`, which it loads lazily (replaceable in tests). */
 export interface BrokerStateOpener<Source> {
@@ -421,6 +448,14 @@ function outboxFullReason(full: { readonly limit: number; readonly byteLimit: nu
 	} MiB); this message was not queued. Messages already queued for it are kept. Try again after it returns and receives them.`;
 }
 
+/**
+ * #5607: what an enqueue for a recipient the sender found offline (`hostBrokerId` absent) also does: wake the broker
+ * holding the recipient's live presence as the row is written, should it have registered meanwhile.
+ */
+function offlineHost(hostBrokerId: string | undefined): Pick<OutboxEnqueueRequest, "wakeHostWithinMs"> {
+	return hostBrokerId === undefined ? { wakeHostWithinMs: BROKER_LEASE_STALE_AFTER_MS } : {};
+}
+
 function queuedFrame(messageId: string, attemptId: string | undefined, position: number): BrokerOutboundFrame {
 	return {
 		type: "queued",
@@ -608,27 +643,76 @@ export class MultiNodeRouter {
 	/**
 	 * Whether a registration with `returnAddress` may take the Intercom id `sessionId`, binding the id to it when free.
 	 * In multi-node mode an id carries authority (shared ask routes and known sessions name sessions by id), so only the
-	 * session that registered it gets it back. False when the shared store does not answer in time.
+	 * session that registered it gets it back. `unanswered` when the shared store does not answer in time: the session
+	 * registers under a fresh id, and its registration's binding write tries once more to keep this one (#5607).
 	 */
-	async claimSessionId(sessionId: string, returnAddress: string): Promise<boolean> {
-		if (this.closed) return false;
+	async claimSessionId(sessionId: string, returnAddress: string): Promise<SessionIdClaim> {
+		if (this.closed) return { status: "refused" };
+		// #5607: written with the binding, so a later write can tell whether the binding is still this claim's.
+		const claim = randomUUID();
 		let bound: ReturnType<typeof setTimeout> | undefined;
 		try {
-			return await Promise.race([
+			return await Promise.race<SessionIdClaim>([
 				this.state.knownSessions
-					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS)
-					.then((result) => result.status === "bound"),
-				new Promise<boolean>((resolve) => {
-					bound = setTimeout(() => resolve(false), SESSION_ID_CLAIM_BOUND_MS);
+					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS, claim)
+					.then((result) => ({ status: result.status === "bound" ? "granted" : "refused" })),
+				new Promise<SessionIdClaim>((resolve) => {
+					bound = setTimeout(
+						() => resolve({ status: "unanswered", unanswered: { sessionId, claim } }),
+						SESSION_ID_CLAIM_BOUND_MS,
+					);
 					bound.unref?.();
 				}),
 			]);
 		} catch (error) {
 			this.report(error);
-			return false;
+			return { status: "refused" };
 		} finally {
 			clearTimeout(bound);
 		}
+	}
+
+	/**
+	 * #5607: the binding write of a registration whose claim of its preferred id went unanswered, in the slot today's
+	 * fresh-id binding takes. One write keeps the preferred id when the binding is still the one that claim wrote and no
+	 * other broker holds the session's live presence; otherwise it binds the fresh id. The session is then registered
+	 * here under the id the write chose, or under the fresh id when the claimed one can no longer be given (its
+	 * registration was answered meanwhile, or a session here holds it), which is then bound as today.
+	 */
+	private async reclaimOrBind(
+		session: BrokerConnectedSession,
+		reclaim: SessionIdReclaimRequest,
+	): Promise<KnownSessionBindResult> {
+		const { knownSessions } = this.state;
+		const returnAddress = session.registrationReturnAddress ?? "";
+		const freshId = session.info.id;
+		const bindFresh = () => {
+			reclaim.settle(false);
+			return knownSessions.bind(freshId, returnAddress, KNOWN_SESSION_RETENTION_MS);
+		};
+		if (knownSessions.reclaim === undefined || !reclaim.unsettled()) return bindFresh();
+		let reclaimed: SessionIdReclaimResult;
+		try {
+			reclaimed = await knownSessions.reclaim({
+				intercomSessionId: reclaim.sessionId,
+				returnAddress,
+				claim: reclaim.claim,
+				retentionMs: KNOWN_SESSION_RETENTION_MS,
+				targetIdentity: deliveryTargetIdentity(session),
+				brokerId: this.brokerId,
+				presenceStaleAfterMs: BROKER_LEASE_STALE_AFTER_MS,
+				freshId,
+			});
+		} catch (error) {
+			reclaim.settle(false);
+			throw error;
+		}
+		if (reclaimed.status === "fresh") {
+			reclaim.settle(false);
+			return reclaimed.binding;
+		}
+		if (reclaimed.status === "kept" && reclaim.settle(true)) return { status: "bound" };
+		return bindFresh();
 	}
 
 	private holdsSessionId(sessionId: string, returnAddress: string | undefined): Promise<boolean> {
@@ -643,6 +727,7 @@ export class MultiNodeRouter {
 	sessionRegistered(
 		session: BrokerConnectedSession,
 		consumed?: ConsumedReservation,
+		reclaim?: SessionIdReclaimRequest,
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = {};
@@ -657,11 +742,14 @@ export class MultiNodeRouter {
 			this.serial(identity, async () => {
 				try {
 					// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
-					const binding = await this.state.knownSessions.bind(
-						session.info.id,
-						session.registrationReturnAddress ?? "",
-						KNOWN_SESSION_RETENTION_MS,
-					);
+					const binding =
+						reclaim === undefined
+							? await this.state.knownSessions.bind(
+									session.info.id,
+									session.registrationReturnAddress ?? "",
+									KNOWN_SESSION_RETENTION_MS,
+								)
+							: await this.reclaimOrBind(session, reclaim);
 					if (binding.status === "refused") {
 						entry.unbound = true;
 						return;
@@ -948,6 +1036,7 @@ export class MultiNodeRouter {
 				digest: crossNodeDigest(JSON.stringify(frame)),
 				frame,
 				owed: true,
+				...offlineHost(owner.hostBrokerId),
 			});
 			if (enqueued.status === "invalid" || enqueued.status === "full") continue;
 			if (enqueued.status === "inserted" && owner.hostBrokerId !== undefined) {
@@ -1055,6 +1144,7 @@ export class MultiNodeRouter {
 				digest: crossNodeDigest(JSON.stringify(frame)),
 				frame,
 				owed: true,
+				...offlineHost(hosted?.holderId),
 			});
 			// Not queued: the ask stays marked ended, so a later sweep tries again.
 			if (enqueued.status === "full" || enqueued.status === "invalid") continue;
@@ -1974,7 +2064,13 @@ export class MultiNodeRouter {
 		const { owner, frame } = decision;
 		const digest = crossNodeDigest(request.signature);
 		const enqueued = await this.state.outbox
-			.enqueue({ targetIdentity: owner.identity, originBrokerId: this.brokerId, digest, frame })
+			.enqueue({
+				targetIdentity: owner.identity,
+				originBrokerId: this.brokerId,
+				digest,
+				frame,
+				...offlineHost(owner.hostBrokerId),
+			})
 			.catch((error: Error) => this.reopenAfter(decision, error));
 		if (enqueued.status === "conflict") {
 			await this.reopenQuestion(decision);
@@ -2253,7 +2349,7 @@ export class MultiNodeRouter {
 					? { questionRoute: { targetSessionId: target.sessionId, senderGroupIdentity: senderGroupIdentity(from) } }
 					: {}),
 			},
-			{ targetIdentity: target.identity, originBrokerId: this.brokerId, digest, frame },
+			{ targetIdentity: target.identity, originBrokerId: this.brokerId, digest, frame, ...offlineHost(target.hostBrokerId) },
 		);
 		if (enqueued.status === "conflict") {
 			this.failConflict(request);

@@ -69,10 +69,34 @@ function toRow(record: OutboxRecord): OutboxRow {
 
 const isSettled = (record: OutboxRecord): boolean => record.state === "delivered" || record.state === "failed";
 
+/**
+ * #5607: the wake-up hint written with an offline recipient's row failed, so neither was written. The hint is only a
+ * hint: the caller writes the row again without it (`enqueueIn` asks for none from then on).
+ */
+export class OutboxWakeFailedError extends Error {
+	constructor(cause: unknown) {
+		super("The wake-up hint for a queued message could not be written", { cause });
+		this.name = "OutboxWakeFailedError";
+	}
+}
+
 /** The SQL outbox, which can also enqueue inside a transaction the caller holds. */
 export interface SqlOutboxStore extends OutboxStore {
-	/** `enqueue`, as part of `executor`'s transaction: the row is written only when that transaction commits. */
+	/**
+	 * `enqueue`, as part of `executor`'s transaction: the row is written only when that transaction commits. It throws
+	 * `OutboxWakeFailedError` when only the optional wake-up hint failed; run the transaction again then.
+	 */
 	enqueueIn(executor: SqliteExecutor, request: OutboxEnqueueRequest): Promise<OutboxEnqueueResult>;
+}
+
+/** #5607: runs `write`, and once more when only an enqueue's optional wake-up hint failed it, as `enqueueIn` asks. */
+export async function withoutFailedWake<T>(write: () => Promise<T>): Promise<T> {
+	try {
+		return await write();
+	} catch (error) {
+		if (!(error instanceof OutboxWakeFailedError)) throw error;
+		return write();
+	}
 }
 
 /**
@@ -120,6 +144,12 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		CASE WHEN saving_at IS NULL THEN NULL ELSE ${ageSince("saving_at")} END AS saving_age`;
 	const select = (executor: SqliteExecutor, messageId: string) =>
 		executor.get<OutboxRecord>(`SELECT ${columns} FROM ${table} WHERE message_id = ?`, messageId);
+	// #5607: the lease store's table, whose presence leases name the broker hosting a recipient, and the wake-up bus's
+	// hint log. The broker opens both before it enqueues anything.
+	const leases = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_leases`;
+	const wakeups = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_wakeups`;
+	// Cleared once a hint could not be written (a role without the privilege, a missing hint log): rows go on without one.
+	let wakeHints = true;
 	const undelivered = (executor: SqliteExecutor, targetIdentity: string, limit?: number) =>
 		limit === undefined
 			? executor.all<OutboxRecord>(
@@ -212,18 +242,42 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		) {
 			return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES } as const;
 		}
-		await executor.run(
-			`INSERT INTO ${table}(message_id, target_identity, origin_broker_id, digest, frame_json, state, queued_at,
+		const insert = `INSERT INTO ${table}(message_id, target_identity, origin_broker_id, digest, frame_json, state, queued_at,
 				frame_bytes)
-			VALUES (?, ?, ?, ?, ?, 'queued', ${nowMs}, ?)`,
-			messageId,
+			VALUES (?, ?, ?, ?, ?, 'queued', ${nowMs}, ?)`;
+		const values = [messageId, request.targetIdentity, request.originBrokerId, request.digest, frameJson, frameBytes];
+		if (request.wakeHostWithinMs === undefined || !wakeHints) {
+			await executor.run(insert, ...values);
+			return { status: "inserted", row: toRow((await select(executor, messageId))!) } as const;
+		}
+		// #5607: the row comes back from its insert, with the broker holding the recipient's live presence, read in this
+		// transaction: a presence lease committed before it is seen here; one committed after it was written after this row,
+		// and the registration that wrote it looks for the row next. Only when there is one does a second statement write
+		// its wake-up hint, in this transaction too.
+		const inserted = (await executor.get<OutboxRecord & { readonly presence_holder: string | null }>(
+			`${insert} RETURNING ${columns}, (
+				SELECT presence.holder_id FROM ${leases} presence
+				WHERE presence.kind = 'presence' AND presence.key = ? AND presence.holder_id IS NOT NULL
+					AND ${greatest("0", `${nowMs} - presence.renewed_at`)} <= ?
+			) AS presence_holder`,
+			...values,
 			request.targetIdentity,
-			request.originBrokerId,
-			request.digest,
-			frameJson,
-			frameBytes,
-		);
-		return { status: "inserted", row: toRow((await select(executor, messageId))!) } as const;
+			request.wakeHostWithinMs,
+		))!;
+		const host = inserted.presence_holder;
+		if (host !== null) {
+			await executor
+				.run(
+					`INSERT INTO ${wakeups}(broker_id, reason, version, created_at) VALUES (?, 'outbox', ?, ${nowMs})`,
+					host,
+					Number(inserted.sequence),
+				)
+				.catch((cause: unknown) => {
+					wakeHints = false;
+					throw new OutboxWakeFailedError(cause);
+				});
+		}
+		return { status: "inserted", row: toRow(inserted), ...(host === null ? {} : { woke: host }) } as const;
 	};
 
 	return {
@@ -232,7 +286,7 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			if (request.targetIdentity.length === 0) return invalid("empty-target-identity");
 			if (request.originBrokerId.length === 0) return invalid("empty-broker-id");
 			if (request.frame.message.id.length === 0) return invalid("empty-message-id");
-			return database.transaction((executor) => enqueueIn(executor, request));
+			return withoutFailedWake(() => database.transaction((executor) => enqueueIn(executor, request)));
 		},
 
 		async claim(request) {

@@ -2586,3 +2586,140 @@ export function registerCrossNodeHeldRoundTripConformance(
 		assert.deepEqual(await a.outbox.read("held-gone"), { status: "missing" });
 	});
 }
+
+/**
+ * One broker's handles on the stores a returning session's registration and a queued row use, and its wake-up bus, on
+ * one database.
+ */
+export interface ReturningSessionStores {
+	readonly leases: BrokerLeaseStore;
+	readonly knownSessions: KnownSessionStore;
+	readonly outbox: OutboxStore;
+	readonly bus: WakeUpBus;
+}
+
+/**
+ * #5607: what the stores give a returning session whose broker stalled. A row queued for an offline recipient reports
+ * the broker its presence names as the row is written, and a claim that went unanswered keeps its id only while the
+ * binding is still the claim's and no other broker holds the session's live presence.
+ */
+export function registerReturningSessionConformance(
+	runner: MultiNodeConformanceRunner,
+	name: string,
+	open: OpenSharedStoreFixture<ReturningSessionStores>,
+): void {
+	const opened = withShared(runner, `${name} returning sessions`, open);
+	// Every handle's wake-up bus is closed with the test, whatever it used.
+	const check = (label: string, body: (connect: () => Promise<ReturningSessionStores>) => Promise<void>) =>
+		opened(label, async (connect) => {
+			const handles: ReturningSessionStores[] = [];
+			try {
+				await body(async () => {
+					const handle = await connect();
+					handles.push(handle);
+					return handle;
+				});
+			} finally {
+				await Promise.all(handles.map((handle) => handle.bus.close()));
+			}
+		});
+	const RETURN_ADDRESS = "recipient-address";
+	const reclaimOf = (claim: string, freshId: string, brokerId = "broker-a") => ({
+		intercomSessionId: "recipient-session",
+		returnAddress: RETURN_ADDRESS,
+		claim,
+		retentionMs: LIVE_MS,
+		targetIdentity: RECIPIENT,
+		brokerId,
+		presenceStaleAfterMs: LIVE_MS,
+		freshId,
+	});
+
+	check("an enqueue for an offline recipient wakes the broker holding its live presence (#5607)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		{
+			const onB = await subscribe(b.bus, "broker-b");
+			await onB.recorder.next((event) => event.kind === "resync");
+			const enqueue = (id: string, overrides: Partial<OutboxEnqueueRequest>) =>
+				a.outbox.enqueue(request(frameFor(id, id), overrides)).then((result) => expectStatus(result, "inserted"));
+			const before = await enqueue("m1", { wakeHostWithinMs: LIVE_MS });
+			assert.equal(before.woke, undefined, "no broker holds its presence yet");
+			expectStatus(await b.leases.acquire(presence(RECIPIENT), "broker-b", LIVE_MS), "acquired");
+			const after = await enqueue("m2", { wakeHostWithinMs: LIVE_MS });
+			assert.equal(after.woke, "broker-b");
+			assert.deepEqual(await onB.recorder.next(isHintFor("broker-b", "outbox")), {
+				kind: "hint",
+				hint: { brokerId: "broker-b", reason: "outbox", version: after.row.sequence },
+			});
+			const stale = await enqueue("m3", { wakeHostWithinMs: EXPIRED_MS });
+			assert.equal(stale.woke, undefined, "a lease past the bound names no broker");
+			const unasked = await enqueue("m4", {});
+			assert.equal("woke" in unasked, false, "a sender that found its recipient online wakes nobody here");
+			const listed = expectStatus(await a.outbox.listUndelivered(RECIPIENT), "listed");
+			assert.deepEqual(
+				[before, after, stale, unasked].map((inserted) => inserted.row),
+				listed.rows,
+				"the rows read back as a plain enqueue writes them",
+			);
+		}
+	});
+
+	check("an unanswered claim keeps its id while the binding is still its own (#5607)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		const reclaim = a.knownSessions.reclaim;
+		assert.ok(reclaim !== undefined, "the store reclaims ids");
+		expectStatus(await a.knownSessions.bind("recipient-session", RETURN_ADDRESS, LIVE_MS, "claim-1"), "bound");
+		assert.deepEqual(await reclaim(reclaimOf("claim-1", "fresh-1")), { status: "kept" });
+		assert.deepEqual(await b.knownSessions.binding("fresh-1", LIVE_MS), { status: "unbound" }, "nothing else bound");
+
+		// A later registration of the same session claimed it since: this claim's answer is no longer the binding's.
+		expectStatus(await b.knownSessions.bind("recipient-session", RETURN_ADDRESS, LIVE_MS, "claim-2"), "bound");
+		assert.deepEqual(await reclaim(reclaimOf("claim-1", "fresh-2")), {
+			status: "fresh",
+			binding: { status: "bound" },
+		});
+		assert.deepEqual(await b.knownSessions.binding("fresh-2", LIVE_MS), {
+			status: "bound",
+			returnAddress: RETURN_ADDRESS,
+		});
+		// So is a binding refreshed without a claim, as a registered session's broker refreshes it.
+		expectStatus(await b.knownSessions.bind("recipient-session", RETURN_ADDRESS, LIVE_MS), "bound");
+		expectStatus(await reclaim(reclaimOf("claim-2", "fresh-3")), "fresh");
+	});
+
+	check("an unanswered claim does not keep an id another broker's live session presents (#5607)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		const reclaim = a.knownSessions.reclaim;
+		assert.ok(reclaim !== undefined, "the store reclaims ids");
+		expectStatus(await a.knownSessions.bind("recipient-session", RETURN_ADDRESS, LIVE_MS, "claim-1"), "bound");
+		expectStatus(await a.leases.acquire(presence(RECIPIENT), "broker-a", LIVE_MS), "acquired");
+		assert.deepEqual(await reclaim(reclaimOf("claim-1", "fresh-1")), { status: "kept" }, "its own broker's presence");
+		// Another broker's session takes the presence over: the id is live there.
+		await a.leases.retireHolder("broker-a");
+		expectStatus(await b.leases.acquire(presence(RECIPIENT), "broker-b", LIVE_MS), "acquired");
+		expectStatus(await reclaim(reclaimOf("claim-1", "fresh-2")), "fresh");
+		assert.deepEqual(await reclaim({ ...reclaimOf("claim-1", "fresh-3"), presenceStaleAfterMs: EXPIRED_MS }), {
+			status: "kept",
+		});
+	});
+
+	check("an unanswered claim of an id bound to another return address gets the fresh id (#5607)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		const reclaim = a.knownSessions.reclaim;
+		assert.ok(reclaim !== undefined, "the store reclaims ids");
+		expectStatus(await b.knownSessions.bind("recipient-session", "someone-else", LIVE_MS, "theirs"), "bound");
+		expectStatus(await a.knownSessions.bind("recipient-session", RETURN_ADDRESS, LIVE_MS, "claim-1"), "refused");
+		assert.deepEqual(await reclaim(reclaimOf("claim-1", "fresh-1")), {
+			status: "fresh",
+			binding: { status: "bound" },
+		});
+		assert.deepEqual(await reclaim({ ...reclaimOf("theirs", "fresh-2") }), {
+			status: "fresh",
+			binding: { status: "bound" },
+		});
+		assert.deepEqual(await b.knownSessions.binding("recipient-session", LIVE_MS), {
+			status: "bound",
+			returnAddress: "someone-else",
+		});
+	});
+}

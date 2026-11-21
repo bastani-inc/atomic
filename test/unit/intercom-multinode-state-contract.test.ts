@@ -11,6 +11,7 @@ import {
 	registerPendingAskStoreConformance,
 	registerReleasedAskStoreConformance,
 	registerRestoringReservationStoreConformance,
+	registerReturningSessionConformance,
 	registerSentMessageAuthorityConformance,
 	registerWakeUpBusConformance,
 } from "../helpers/intercom-multinode-contract.js";
@@ -38,6 +39,24 @@ registerReleasedAskStoreConformance(test, "memory reference", openMemoryReleased
 registerSentMessageAuthorityConformance(test, "memory reference", openMemorySentMessageFixture);
 registerWakeUpBusConformance(test, "memory reference", openMemoryWakeUpBusFixture);
 registerKnownSessionStoreConformance(test, "memory reference", openMemoryKnownSessionFixture);
+registerReturningSessionConformance(test, "memory reference", async () => {
+	const leases = await openMemoryLeaseStoreFixture();
+	const bus = await openMemoryWakeUpBusFixture();
+	const wakes = await bus.connect();
+	const knownSessions = await openMemoryKnownSessionFixture(leases.presenceHolder);
+	const outbox = await openMemoryOutboxFixture(leases.presenceHolder, (brokerId, version) =>
+		wakes.publish({ brokerId, reason: "outbox", version }),
+	);
+	return {
+		connect: async () => ({
+			leases: await leases.connect(),
+			knownSessions: await knownSessions.connect(),
+			outbox: await outbox.connect(),
+			bus: await bus.connect(),
+		}),
+		close: () => bus.close(),
+	};
+});
 registerCrossNodeRoundTripConformance(test, "memory reference", {
 	openOutbox: openMemoryOutboxFixture,
 	openPendingAsks: openMemoryPendingAskFixture,

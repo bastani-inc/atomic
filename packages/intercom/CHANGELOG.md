@@ -4,6 +4,11 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- With multi-node routing, a session that comes back on another broker keeps its Intercom ID, and with it the asks it had open, when that broker stalls for a few seconds while the shared database confirms the ID. The broker still gives a fresh ID when the database has not written the ID for that session within the registration's usual time, or when a session on another broker presents the ID; registration takes no longer than before. A PostgreSQL runtime role without permission to change tables keeps the earlier behavior until `atomic storage migrate` is run as the owner role ([#5607](https://github.com/bastani-inc/atomic/issues/5607)).
+- With multi-node routing, a message queued for a session that was offline, such as the failure of an ask whose recipient ended, now reaches that session at once when it registered on another broker just before the message was written, instead of after up to 30 seconds ([#5607](https://github.com/bastani-inc/atomic/issues/5607)).
+
 ## [0.10.2] - 2026-11-20
 
 ### Fixed
