@@ -28,7 +28,7 @@ import {
 import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
 import { ranOnModelLine } from "../core/tasks/completion.js";
 import { reportDiagnostics } from "../main-stdio.ts";
-import { startedWithHangupIgnored } from "../utils/inherited-hangup.ts";
+import { startedWithHangupIgnored } from "../utils/inherited-hangup.js";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 

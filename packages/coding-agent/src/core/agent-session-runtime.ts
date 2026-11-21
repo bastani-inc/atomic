@@ -17,7 +17,7 @@ import type {
 	SessionStartEvent,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { interactiveQuitOf } from "./interactive-quit.ts";
+import { interactiveQuitOf } from "./interactive-quit.js";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { SessionTrustDecisions } from "./project-trust-state.ts";
 import type { AuthStatus } from "./provider-composer.ts";

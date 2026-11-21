@@ -13,7 +13,7 @@ import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../s
 import type { AgentSessionServices } from "../src/core/agent-session-services.ts";
 import type { ExecResult } from "../src/core/exec.ts";
 import type { ExtensionAPI } from "../src/core/extensions/types.ts";
-import { quitAsInteractiveApp } from "../src/core/interactive-quit.ts";
+import { quitAsInteractiveApp } from "../src/core/interactive-quit.js";
 import { createHarness, type Harness } from "./suite/harness.js";
 
 /**

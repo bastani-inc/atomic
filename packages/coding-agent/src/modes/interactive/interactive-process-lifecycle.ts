@@ -1,6 +1,6 @@
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
-import { quitAsInteractiveApp } from "../../core/interactive-quit.ts";
+import { quitAsInteractiveApp } from "../../core/interactive-quit.js";
 import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
 import {
 	gracefullyStoppedEnginePids,
