@@ -8,6 +8,9 @@ import { CONFIG_DIR_NAME } from "../src/config.ts";
 import { DefaultPackageManager, type ResolvedResource } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
+/** How long a command's start may wait for its program's lookup on PATH. */
+const GIT_LOOKUP_BUDGET_MS = 20_000;
+
 function normalizeForMatch(value: string): string {
 	return value.replace(/\\/g, "/");
 }
@@ -240,13 +243,16 @@ describe("DefaultPackageManager", () => {
 				): Promise<string>;
 			};
 			const child = new MockSpawnedProcess();
-			vi.spyOn(managerWithInternals, "spawnCaptureCommand").mockReturnValue(child);
+			const spawned = vi.spyOn(managerWithInternals, "spawnCaptureCommand").mockReturnValue(child);
 
 			let settled = false;
 			const capturePromise = managerWithInternals.runCommandCapture("git", ["rev-parse", "HEAD"]).then((value) => {
 				settled = true;
 				return value;
 			});
+			// The command starts once git is looked up on PATH, which does not block the event loop and, on a loaded
+			// machine, may take a while.
+			await vi.waitFor(() => expect(spawned).toHaveBeenCalledOnce(), { timeout: GIT_LOOKUP_BUDGET_MS });
 
 			child.emit("exit", 0, null);
 			await Promise.resolve();

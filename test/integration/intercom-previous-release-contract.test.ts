@@ -24,7 +24,7 @@ const { createMessageReader } = await import("../../packages/intercom/broker/fra
 const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 const { queryIntercomBroker } = await import("../../packages/intercom/broker/control.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
-const { PROTOCOL_2_FRAME_TYPES, PROTOCOL_3_FRAME_TYPES, PROTOCOL_4_FRAME_TYPES } = await import(
+const { ID_HANDOFF_FRAME_TYPES, PROTOCOL_2_FRAME_TYPES, PROTOCOL_3_FRAME_TYPES, PROTOCOL_4_FRAME_TYPES } = await import(
 	"../../packages/intercom/broker/socket-writes.js"
 );
 
@@ -214,13 +214,15 @@ describe("the 0.9.71 Intercom client against this version's broker (#4538)", () 
 		);
 	});
 
-	test("every frame type this version's broker writes is one the 0.9.71 client handles, or one of protocol 2, 3 or 4 it is never sent (#4642, #5352)", () => {
+	test("every frame type this version's broker writes is one the 0.9.71 client handles, or one of protocol 2, 3 or 4 or an id hand-over, which it is never sent (#4642, #5352, #5607)", () => {
 		const written = unionTypes(join(repoRoot, "packages/intercom/types.ts"), "BrokerMessage");
 		const answeredOnlyToTheBrokerWatchdogOrAControlClient = new Set(["health", "shutdown_ack"]);
+		// An id hand-over is written only to a client that registered saying it takes ids back, which 0.9.71 never says.
 		const newer: ReadonlySet<string> = new Set([
 			...PROTOCOL_2_FRAME_TYPES,
 			...PROTOCOL_3_FRAME_TYPES,
 			...PROTOCOL_4_FRAME_TYPES,
+			...ID_HANDOFF_FRAME_TYPES,
 		]);
 		assert.ok(written.size > 20, [...written].join(", "));
 		assert.deepEqual(
