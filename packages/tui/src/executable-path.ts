@@ -49,9 +49,15 @@ const DEFAULT_POSIX_PATH = "/usr/bin:/bin";
 /** What Windows starts without a shell. */
 const DIRECT_EXTENSIONS = new Set([".com", ".exe"]);
 
+/**
+ * The value of variable `name` a program started with `env` gets. Windows reads names in any letter case, and of several
+ * spellings of one name Node passes the first in sorted order.
+ */
 function envValue(env: NodeJS.ProcessEnv, name: string, windows: boolean): string | undefined {
 	if (!windows) return env[name];
-	const key = Object.keys(env).find((candidate) => candidate.toUpperCase() === name);
+	const key = Object.keys(env)
+		.filter((candidate) => candidate.toUpperCase() === name)
+		.sort()[0];
 	return key === undefined ? undefined : env[key];
 }
 
@@ -88,8 +94,11 @@ function searchFor(name: string, options: HelperExecutableOptions): Search | und
 		const first = path.resolve(options.searchFirst);
 		if (!sameDirectory(first)) directories.push(first);
 	}
-	// Without PATH, a start by name searches the system's default directories elsewhere, and nothing on Windows.
-	for (const raw of (envValue(env, "PATH", windows) ?? (windows ? "" : DEFAULT_POSIX_PATH)).split(path.delimiter)) {
+	// Without PATH, a start by name searches the system's default directories, and on Windows this process's PATH,
+	// which the start gives the program.
+	const searched =
+		envValue(env, "PATH", windows) ?? (windows ? (envValue(process.env, "PATH", true) ?? "") : DEFAULT_POSIX_PATH);
+	for (const raw of searched.split(path.delimiter)) {
 		const entry = windows ? raw.trim().replace(/^"(.*)"$/, "$1") : raw;
 		// Empty and relative entries name the working directory, or a directory under it.
 		if (entry === "" || !path.isAbsolute(entry)) continue;

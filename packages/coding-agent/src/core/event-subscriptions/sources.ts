@@ -631,9 +631,12 @@ class GitHubResponseError extends Error {
 /** `gh` exits with this status when it needs a login (`gh help exit-codes`). */
 const GH_EXIT_AUTH_REQUIRED = 4;
 
-/** True when PATH's absolute directories hold an executable `gh`, the one the default runner starts. */
+/**
+ * True when PATH is set and its absolute directories hold an executable `gh`, the one the default runner starts.
+ * Without PATH, `gh` counts as missing.
+ */
 function ghOnPath(): boolean {
-	return findHelperExecutable("gh") !== undefined;
+	return process.env.PATH !== undefined && findHelperExecutable("gh") !== undefined;
 }
 
 /**
