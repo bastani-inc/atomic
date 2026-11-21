@@ -146,7 +146,8 @@ export async function execCommand(
 	/**
 	 * Ends the command and the processes it started: on POSIX those below it in its process group, read while it still
 	 * runs, get SIGTERM with it; on Windows its process tree ends. Resolves whether it did: a command that ended on its
-	 * own first leaves the processes it started, as one that ended before.
+	 * own first, during the few milliseconds the read or Windows's tree kill takes, leaves the processes it started, as
+	 * one that ended before.
 	 */
 	const endTree = (): Promise<boolean> => {
 		treeStop ??= (async () => {
@@ -171,10 +172,12 @@ export async function execCommand(
 		return treeStop;
 	};
 
-	const killProcess = () => {
+	const killProcess = (startedAborted = false) => {
 		if (killed) return;
 		killed = true;
-		void endTree();
+		// A command started with its abort already signalled has started nothing: it ends at once, as it always did.
+		if (startedAborted) proc.kill("SIGTERM");
+		else void endTree();
 		forceKillId = setTimeout(() => {
 			// `proc.killed` only says a signal was sent, so check whether the child actually exited.
 			if (!exited()) {
@@ -204,16 +207,17 @@ export async function execCommand(
 	};
 	const stopOnQuit = onQuit?.(stopForQuit);
 
+	const abort = () => killProcess();
 	if (options?.signal) {
 		if (options.signal.aborted) {
-			killProcess();
+			killProcess(true);
 		} else {
-			options.signal.addEventListener("abort", killProcess, { once: true });
+			options.signal.addEventListener("abort", abort, { once: true });
 		}
 	}
 
 	if (options?.timeout && options.timeout > 0) {
-		timeoutId = setTimeout(killProcess, options.timeout);
+		timeoutId = setTimeout(abort, options.timeout);
 	}
 
 	// Keep only bytes within the combined cap (#11360). Close both pipes on overflow so writing
@@ -254,7 +258,7 @@ export async function execCommand(
 		if (!stderr) stderr = error.message;
 	} finally {
 		clearTimeout(timeoutId);
-		options?.signal?.removeEventListener("abort", killProcess);
+		options?.signal?.removeEventListener("abort", abort);
 		stopOnQuit?.();
 		quitStoppableCommands.delete(proc);
 		await quitStop;

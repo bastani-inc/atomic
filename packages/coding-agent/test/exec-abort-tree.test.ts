@@ -20,6 +20,8 @@ const KILL_SEEN_MS = 1_000;
 const COMMAND_TIMEOUT_MS = 8_000;
 /** How long a process that ignores SIGTERM has before SIGKILL, as `pi.exec` documents. */
 const FORCE_KILL_DELAY_MS = 5_000;
+/** Longer than a process takes to end on SIGTERM, however loaded the machine, and well before that SIGKILL. */
+const TERM_SEEN_MS = 3_000;
 
 const directories: string[] = [];
 const processes: RecordedProcess[] = [];
@@ -72,7 +74,11 @@ describe("a pi.exec command ended by Atomic ends with the processes it started",
 
 			assert.equal(result.killed, true);
 			assert.equal(result.code, 143, "the command itself reports SIGTERM");
-			assert.equal(await waitUntilGone(started, GONE_MS), true, "the process the command started outlived it");
+			assert.equal(
+				await waitUntilGone(started, TERM_SEEN_MS),
+				true,
+				"the process the command started did not end on SIGTERM",
+			);
 		});
 	}
 
@@ -90,7 +96,22 @@ describe("a pi.exec command ended by Atomic ends with the processes it started",
 		const result = await running;
 
 		assert.equal(result.truncated, true);
-		assert.equal(await waitUntilGone(started, GONE_MS), true, "the process the command started outlived it");
+		assert.equal(
+			await waitUntilGone(started, TERM_SEEN_MS),
+			true,
+			"the process the command started did not end on SIGTERM",
+		);
+	});
+
+	test("a command started with its abort already signalled ends at once with SIGTERM, as before", async () => {
+		const [command, args] =
+			process.platform === "win32"
+				? [process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "ping -n 2 127.0.0.1 > nul"]]
+				: ["sleep", ["1"]];
+		const result = await execCommand(command, args, process.cwd(), { signal: AbortSignal.abort() });
+
+		// A command that ran to its end reports 0.
+		assert.deepEqual({ killed: result.killed, code: result.code }, { killed: true, code: 143 });
 	});
 
 	// On Windows the command's process tree ends at once.
