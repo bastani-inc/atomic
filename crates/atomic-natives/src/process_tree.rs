@@ -6,10 +6,11 @@
 //! where it cannot be read, that process is not taken.
 use napi_derive::napi;
 
-/// The processes below a running process, each held through a handle of its own, as `holdProcessDescendants` found them:
-/// while held, none of their ids can be given to another process.
+/// A running process and the processes below it, each held through a handle of its own, as `holdProcessDescendants`
+/// found them: while held, none of their ids can be given to another process.
 #[napi]
 pub struct HeldProcessDescendants {
+	root: Option<Held>,
 	held: Vec<Held>,
 }
 
@@ -20,50 +21,67 @@ type Held = ();
 
 #[napi]
 impl HeldProcessDescendants {
-	/// How many processes it holds.
+	/// How many processes below it it holds.
 	#[napi(getter)]
 	pub fn count(&self) -> u32 {
 		self.held.len() as u32
 	}
 
-	/// Ends every process it holds, through its handle, and lets go of them; returns how many it ended.
-	#[napi]
-	pub fn terminate(&mut self) -> u32 {
-		#[cfg(windows)]
-		{
-			use std::os::windows::io::AsRawHandle;
-			use windows_sys::Win32::System::Threading::TerminateProcess;
-			let ended = self
-				.held
-				.iter()
-				.filter(|process| unsafe { TerminateProcess(process.as_raw_handle(), 1) } != 0)
-				.count();
-			self.held.clear();
-			ended as u32
-		}
-		#[cfg(not(windows))]
-		{
-			self.held.clear();
-			0
-		}
+	/// Ends the process they are below, and then them, only if it ended that process: one that exited by itself first
+	/// leaves them running. Lets go of all of them; returns whether it ended that process.
+	#[napi(js_name = "endAll")]
+	pub fn end_all(&mut self) -> bool {
+		let ended = match self.root.as_ref() {
+			Some(root) => end_root_then_held(root, &self.held, end),
+			None => false,
+		};
+		self.release();
+		ended
 	}
 
 	/// Lets go of the processes it holds without ending them.
 	#[napi]
 	pub fn release(&mut self) {
+		self.root = None;
 		self.held.clear();
 	}
 }
 
-/// Holds the processes that running process `pid` started, and those they started, each through a handle, so that the
-/// caller can end `pid` first and then them, only if it ended `pid`. `null` once `pid` has exited, off Windows, and
-/// where Windows does not give the order in which processes started. The caller must hold `pid`'s own handle (a child
-/// it has not reaped), so that `pid` names that process. A process whose parent ended before the call is not found.
+/// Ends `root` and then each of `held`, only if `end` ended `root`; returns whether it did. `end` fails for a process
+/// that already exited, so a root that exited by itself leaves `held` running.
+pub(crate) fn end_root_then_held<H>(root: &H, held: &[H], mut end: impl FnMut(&H) -> bool) -> bool {
+	if !end(root) {
+		return false;
+	}
+	for process in held {
+		end(process);
+	}
+	true
+}
+
+/// Ends `process` through its handle; fails for one that already exited or is exiting by itself.
+#[cfg(windows)]
+fn end(process: &Held) -> bool {
+	use std::os::windows::io::AsRawHandle;
+	use windows_sys::Win32::System::Threading::TerminateProcess;
+	unsafe { TerminateProcess(process.as_raw_handle(), 1) != 0 }
+}
+#[cfg(not(windows))]
+fn end(_process: &Held) -> bool {
+	false
+}
+
+/// Holds running process `pid` and the processes it started, and those they started, each through a handle, so that
+/// the caller can end `pid` and then them, only if it ended `pid` (`endAll`). `null` once `pid` has exited, off
+/// Windows, and where Windows does not give the order in which processes started. The caller must hold `pid`'s own
+/// handle (a child whose exit it has not seen), so that `pid` names that process. A process whose parent ended before
+/// the call is not found.
 #[napi(js_name = "holdProcessDescendants")]
 pub fn hold_process_descendants(pid: u32) -> Option<HeldProcessDescendants> {
 	#[cfg(windows)]
 	{
-		windows::hold_descendants(pid).map(|held| HeldProcessDescendants { held })
+		windows::hold_descendants(pid)
+			.map(|(root, held)| HeldProcessDescendants { root: Some(root), held })
 	}
 	#[cfg(not(windows))]
 	{
@@ -150,17 +168,19 @@ mod windows {
 		PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, WaitForSingleObject,
 	};
 
-	pub(super) fn hold_descendants(root: u32) -> Option<Vec<OwnedHandle>> {
-		let root_process = open(root, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE)?;
+	pub(super) fn hold_descendants(root: u32) -> Option<(OwnedHandle, Vec<OwnedHandle>)> {
+		let root_process =
+			open(root, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE)?;
 		let root_started = started(&root_process)?;
 		if !running(&root_process) {
 			return None;
 		}
 		let table = process_table();
-		Some(walk(root, root_started, &table, |pid| {
+		let held = walk(root, root_started, &table, |pid| {
 			let process = open(pid, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION)?;
 			Some(Opened { parent: parent_of(&process)?, started: started(&process)?, handle: process })
-		}))
+		});
+		Some((root_process, held))
 	}
 
 	fn running(process: &OwnedHandle) -> bool {
@@ -266,7 +286,7 @@ mod tests {
 
 	#[cfg(windows)]
 	#[test]
-	fn holds_and_ends_a_ping_that_a_running_cmd_started() {
+	fn ends_a_running_cmd_and_then_the_ping_it_started() {
 		// The ping runs 30 seconds at most if nothing ends it.
 		let mut cmd = std::process::Command::new("cmd.exe")
 			.args(["/d", "/c", "ping -n 30 127.0.0.1 > nul"])
@@ -278,12 +298,30 @@ mod tests {
 			std::thread::sleep(std::time::Duration::from_millis(100));
 			held = super::hold_process_descendants(cmd.id()).filter(|held| held.count() > 0);
 		}
-		let _ = cmd.kill();
-		let _ = cmd.wait();
-		// The ping, and a console host cmd.exe may have started.
 		let mut held = held.expect("nothing cmd.exe started was held");
-		assert!(held.terminate() >= 1, "nothing cmd.exe started was ended");
+		assert!(held.end_all(), "cmd.exe was not ended");
+		let status = cmd.wait().expect("cmd.exe exits");
+		assert_eq!(status.code(), Some(1), "cmd.exe ended with its own status");
 		assert_eq!(held.count(), 0, "it lets go once it ended them");
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn ends_nothing_below_a_cmd_that_exited_while_held() {
+		// The ping runs 3 seconds; cmd.exe exits once it ends.
+		let mut cmd = std::process::Command::new("cmd.exe")
+			.args(["/d", "/c", "ping -n 3 127.0.0.1 > nul"])
+			.spawn()
+			.expect("cmd.exe starts");
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+		let mut held = None;
+		while held.is_none() && std::time::Instant::now() < deadline {
+			std::thread::sleep(std::time::Duration::from_millis(100));
+			held = super::hold_process_descendants(cmd.id()).filter(|held| held.count() > 0);
+		}
+		let mut held = held.expect("nothing cmd.exe started was held");
+		cmd.wait().expect("cmd.exe exits by itself");
+		assert!(!held.end_all(), "a cmd.exe that exited by itself was taken as ended");
 	}
 
 	#[cfg(windows)]
@@ -312,6 +350,24 @@ mod tests {
 		structure[5] = 0;
 		assert_eq!(super::sequence_number(&structure, 196), None);
 		assert_eq!(super::sequence_number(&[96], 196), None);
+	}
+
+	#[test]
+	fn ends_the_root_first_and_what_is_below_it_only_if_it_ended_it() {
+		let ended = std::cell::RefCell::new(Vec::new());
+		assert!(super::end_root_then_held(&1, &[2, 3], |process| {
+			ended.borrow_mut().push(*process);
+			true
+		}));
+		assert_eq!(*ended.borrow(), vec![1, 2, 3]);
+
+		// A root that exited by itself: ending it fails, and what is below it keeps running.
+		ended.borrow_mut().clear();
+		assert!(!super::end_root_then_held(&1, &[2, 3], |process| {
+			ended.borrow_mut().push(*process);
+			*process != 1
+		}));
+		assert_eq!(*ended.borrow(), vec![1]);
 	}
 
 	#[test]

@@ -17,7 +17,7 @@ import {
 	signalIfSame,
 	signalIfSameNow,
 } from "./process-descendants.js";
-import { endCommandThenHeld, holdProcessDescendants } from "./process-tree-containment.ts";
+import { holdProcessDescendants } from "./process-tree-containment.ts";
 
 const DEFAULT_EXEC_MAX_BUFFER = Math.min(256 * 1024 * 1024, bufferConstants.MAX_STRING_LENGTH);
 const FORCE_KILL_DELAY_MS = 5000;
@@ -282,11 +282,13 @@ export async function execCommand(
 
 	/** The processes the command had started when it was stopped, read while it still ran. */
 	let stoppedDescendants: readonly IdentifiedProcess[] = [];
+	/** Whether the command was ended with the processes below it on Windows, where it then exits with status 1. */
+	let windowsTreeEnded = false;
 	let treeStop: Promise<boolean> | undefined;
 	/**
 	 * Ends the command and the processes it started: on POSIX those below it in its process group, read while it still
-	 * runs, get SIGTERM with it; on Windows those below it are held, each through a handle of its own, the command ends
-	 * through its handle, and then they end at once. Resolves whether it did: a command that ended on its own first, during the
+	 * runs, get SIGTERM with it; on Windows the command and those below it are held, each through a handle of its own,
+	 * and the command ends first, then they at once. Resolves whether it did: a command that ended on its own first, during the
 	 * few milliseconds the read takes, leaves the processes it started, as one that ended before.
 	 */
 	const endTree = (): Promise<boolean> => {
@@ -294,8 +296,12 @@ export async function execCommand(
 			const pid = proc.pid;
 			if (pid === undefined || exited()) return false;
 			if (process.platform === "win32") {
-				// This process has not seen the command exit, so it still holds its handle and `pid` names it.
-				endCommandThenHeld(holdProcessDescendants(pid), () => proc.kill("SIGTERM"));
+				// This process has not seen the command exit, so it still holds its handle and `pid` names it. The
+				// command ends first, so that one waiting on what it started cannot exit by itself in between; what it
+				// started ends only if that ended the command.
+				const held = holdProcessDescendants(pid);
+				if (held === undefined) proc.kill("SIGTERM");
+				else windowsTreeEnded = held.endAll();
 				return true;
 			}
 			// Read before the command is signalled: once it exits, the processes it started are no longer below it.
@@ -419,7 +425,12 @@ export async function execCommand(
 		stderr += stderrDecoder.end();
 	}
 
-	const exitCode = code ?? (proc.signalCode ? 128 + (osConstants.signals[proc.signalCode] ?? 0) : 1);
+	// Ended on Windows with the processes below it, the command exits with status 1; report SIGTERM's code, as for a
+	// command ended through its own handle.
+	const endedWithTree = windowsTreeEnded && code === 1 && proc.signalCode === null;
+	const exitCode = endedWithTree
+		? 128 + osConstants.signals.SIGTERM
+		: (code ?? (proc.signalCode ? 128 + (osConstants.signals[proc.signalCode] ?? 0) : 1));
 	return {
 		stdout,
 		stderr,

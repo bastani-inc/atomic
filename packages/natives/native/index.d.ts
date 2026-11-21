@@ -19,14 +19,17 @@ export declare class AdvisoryLock {
 }
 
 /**
- * The processes below a running process, each held through a handle of its own, as `holdProcessDescendants` found them:
- * while held, none of their ids can be given to another process.
+ * A running process and the processes below it, each held through a handle of its own, as `holdProcessDescendants`
+ * found them: while held, none of their ids can be given to another process.
  */
 export declare class HeldProcessDescendants {
-  /** How many processes it holds. */
+  /** How many processes below it it holds. */
   get count(): number
-  /** Ends every process it holds, through its handle, and lets go of them; returns how many it ended. */
-  terminate(): number
+  /**
+   * Ends the process they are below, and then them, only if it ended that process: one that exited by itself first
+   * leaves them running. Lets go of all of them; returns whether it ended that process.
+   */
+  endAll(): boolean
   /** Lets go of the processes it holds without ending them. */
   release(): void
 }
@@ -564,10 +567,11 @@ export interface GrepResult {
 export declare function hasMatch(content: string | Uint8Array, pattern: string | Uint8Array, ignoreCase?: boolean | undefined | null, multiline?: boolean | undefined | null): boolean
 
 /**
- * Holds the processes that running process `pid` started, and those they started, each through a handle, so that the
- * caller can end `pid` first and then them, only if it ended `pid`. `null` once `pid` has exited, off Windows, and
- * where Windows does not give the order in which processes started. The caller must hold `pid`'s own handle (a child
- * it has not reaped), so that `pid` names that process. A process whose parent ended before the call is not found.
+ * Holds running process `pid` and the processes it started, and those they started, each through a handle, so that
+ * the caller can end `pid` and then them, only if it ended `pid` (`endAll`). `null` once `pid` has exited, off
+ * Windows, and where Windows does not give the order in which processes started. The caller must hold `pid`'s own
+ * handle (a child whose exit it has not seen), so that `pid` names that process. A process whose parent ended before
+ * the call is not found.
  */
 export declare function holdProcessDescendants(pid: number): HeldProcessDescendants | null
 
