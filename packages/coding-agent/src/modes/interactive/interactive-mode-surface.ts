@@ -69,10 +69,11 @@ declare module "./interactive-mode-base.ts" {
 		createBaseAutocompleteProvider(): AutocompleteProvider;
 		buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
 		/**
-		 * `refreshCommandMenu`, with `preserveSelection`: an open menu of command names whose first match is still
-		 * selected shows the new provider's answer for its text (see Editor.setAutocompleteProvider).
+		 * Rebuilds main's completion provider. An open menu stays open and shows the new provider's rows unless a row was
+		 * chosen in it, and a lookup under way asks the new provider (see Editor.setAutocompleteProvider); `closeMenu`
+		 * closes the menu instead, for a folder whose resources were just withheld.
 		 */
-		setupAutocompleteProvider(options?: { preserveSelection?: boolean; refreshCommandMenu?: boolean }): void;
+		setupAutocompleteProvider(options?: { closeMenu?: boolean }): void;
 		showStartupNoticesIfNeeded(targetContainer?: Container): void;
 		reportModelCatalogWarning(targetContainer?: Container): void;
 		reportedModelCatalogWarning: string | undefined;
