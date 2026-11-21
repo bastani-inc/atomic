@@ -152,6 +152,30 @@ describe("adopting a prewarmed engine child", () => {
 		detached: false,
 	});
 
+	test("tells a child prewarmed for a --no-session host, at its start, that it opens no session database", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-prewarm-"));
+		tempDirs.push(dir);
+		const script = join(dir, "engine.mjs");
+		writeFileSync(
+			script,
+			`import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(join(dir, "argv"))}, JSON.stringify(process.argv.slice(2)));\nprocess.stdin.resume();\n`,
+		);
+		const argvFile = join(dir, "argv");
+		const startedArgv = async (hostArgs: string[]): Promise<string[]> => {
+			prewarmInteractiveEngine(hostArgs, { host: terminal, launch: standIn(script) });
+			await vi.waitFor(() => assert.ok(existsSync(argvFile)), { timeout: ENGINE_START_OR_EXIT_WAIT_MS });
+			const argv = JSON.parse(readFileSync(argvFile, "utf8")) as string[];
+			discardPrewarmedEngine();
+			rmSync(argvFile);
+			return argv;
+		};
+		assert.deepEqual(await startedArgv(["--no-session"]), [
+			"--internal-engine-prewarm",
+			"--internal-engine-prewarm-no-database",
+		]);
+		assert.deepEqual(await startedArgv([]), ["--internal-engine-prewarm"]);
+	});
+
 	test("adopts the child prewarmed with the very launch the host would start, and runs it as the host's engine", async () => {
 		const script = writeEngineScript();
 		const prewarmed = standIn(script);
