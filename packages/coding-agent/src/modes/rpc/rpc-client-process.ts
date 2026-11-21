@@ -182,6 +182,10 @@ function guardianStopFile(path: string): { write(): void; remove(): Promise<void
  * {@link ENGINE_KILL_STEP_MS} to exit and otherwise ended alone, rather than waited for while the runtime does its
  * own exit work, such as writing a compile cache, which can take seconds on Windows.
  *
+ * `hostSignaled` stops an engine because its host was signalled or lost its terminal. On Linux and macOS the ask is
+ * then SIGHUP, the hangup of the host it serves: such an engine, in a session of its own with no terminal, runs the
+ * same shutdown and then ends its own process group, as a hangup ends a terminal's job.
+ *
  * Temporary files never hold the stop up for longer than one step's window, so a stalled or failing temporary
  * directory can neither keep the engine running nor keep the stop from returning.
  */
@@ -190,6 +194,7 @@ export async function terminateRpcClientProcess(
 	processTree: boolean,
 	graceful = false,
 	shutdownComplete?: Promise<void>,
+	hostSignaled = false,
 ): Promise<void> {
 	const bootstrap = bootstrapHandles.get(child);
 	if (bootstrap) await settlesWithin(removeOwnedInteractiveEngineBootstrapAsync(bootstrap), ENGINE_KILL_STEP_MS);
@@ -204,7 +209,7 @@ export async function terminateRpcClientProcess(
 	const inputClosed = graceful && processTree && process.platform === "win32" && child.stdin !== null;
 	const stop = async (): Promise<void> => {
 		if (inputClosed) child.stdin?.end();
-		else child.kill("SIGTERM");
+		else child.kill(hostSignaled && processTree && process.platform !== "win32" ? "SIGHUP" : "SIGTERM");
 		let shutDown = false;
 		const ended =
 			inputClosed && shutdownComplete

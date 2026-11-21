@@ -27,7 +27,11 @@ import { startInteractiveEngineLiveness } from "../interactive-engine/engine-chi
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import { EngineProjectTrustService } from "../interactive-engine/engine-project-trust.js";
-import { EngineQuitIntent, reportShutdownCompleteAtExit } from "../interactive-engine/engine-quit-intent.ts";
+import {
+	EngineQuitIntent,
+	endProcessGroupAtExit,
+	reportShutdownCompleteAtExit,
+} from "../interactive-engine/engine-quit-intent.ts";
 import { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
@@ -253,6 +257,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		// once the shutdown has run, so it does not also wait for the runtime's own exit work.
 		if (interactiveEngineChild && cause === "input-end" && process.platform === "win32")
 			reportShutdownCompleteAtExit();
+		// SIGHUP is the hangup of the host this engine serves, which asks with it when it was itself signalled: the
+		// engine has no terminal of its own. It then ends its process group, as a hangup ends a terminal's job.
+		if (interactiveEngineChild && signal === "SIGHUP" && endsProcessOnly(cause)) endProcessGroupAtExit();
 		process.exit(exitCode);
 	}
 

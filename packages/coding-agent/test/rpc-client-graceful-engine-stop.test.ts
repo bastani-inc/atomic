@@ -18,7 +18,8 @@ type EngineBehavior =
 	| "never-ready"
 	| "reports-then-lingers"
 	| "ignores-sigterm"
-	| "shuts-down-on-sigterm";
+	| "shuts-down-on-sigterm"
+	| "names-its-signal";
 
 const tempDirs: string[] = [];
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -50,6 +51,14 @@ writeFileSync(${JSON.stringify(started)}, JSON.parse(readFileSync(bootstrap, "ut
 if (${JSON.stringify(behavior)} === "ignores-sigterm") {
 	// As an engine busy in a tool that does not end on SIGTERM; in place before the engine says it is ready.
 	process.on("SIGTERM", () => appendFileSync(${JSON.stringify(record)}, "SIGTERM ignored\\n"));
+}
+if (${JSON.stringify(behavior)} === "names-its-signal") {
+	for (const signal of ["SIGTERM", "SIGHUP"]) {
+		process.on(signal, () => {
+			appendFileSync(${JSON.stringify(record)}, signal + "\\n");
+			process.exit(0);
+		});
+	}
 }
 if (${JSON.stringify(behavior)} === "shuts-down-on-sigterm") {
 	// As an engine whose extensions take a moment to shut down.
@@ -217,6 +226,18 @@ describe.skipIf(process.platform === "win32")("RpcClient engine stop on Linux an
 		for (const key of TEMP_ENV_KEYS) process.env[key] = temporary;
 		return temporary;
 	}
+
+	test("a stop because the host was signalled asks a ready engine with SIGHUP, any other stop with SIGTERM (#6104)", async () => {
+		const signalled = startEngine("names-its-signal");
+		await signalled.client.start();
+		await signalled.client.stop({ hostSignaled: true });
+		const other = startEngine("names-its-signal");
+		await other.client.start();
+		await other.client.stop();
+
+		assert.equal(readRecord(signalled.record), "SIGHUP\n");
+		assert.equal(readRecord(other.record), "SIGTERM\n");
+	});
 
 	test("an engine a stop is still ending stays the ready engine until it has exited (#6104)", async () => {
 		const { client } = startEngine("shuts-down-on-sigterm");

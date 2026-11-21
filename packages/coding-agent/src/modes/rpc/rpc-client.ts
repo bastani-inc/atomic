@@ -305,12 +305,19 @@ export class RpcClient extends RpcClientApi {
 	 * shutdown, including extensions' `session_shutdown` handlers, for up to five seconds
 	 * on every platform. Without it a Windows engine is ended at once, because Windows
 	 * has no signal a process can handle for this.
+	 *
+	 * With `hostSignaled`, the engine is stopped because its host was itself signalled or lost its terminal. On Linux
+	 * and macOS it is then asked with SIGHUP rather than SIGTERM, and once its shutdown has run it ends its whole
+	 * process group, as a host signal ending that group at once always did.
 	 */
-	stop(options?: { graceful?: boolean }): Promise<void> {
+	stop(options?: { graceful?: boolean; hostSignaled?: boolean }): Promise<void> {
 		this.restartRevision += 1;
 		if (this.stopPromise) return this.stopPromise;
 		if (!this.process) return Promise.resolve();
-		const stopPromise = this.stopCurrentGeneration(options?.graceful === true).finally(() => {
+		const stopPromise = this.stopCurrentGeneration(
+			options?.graceful === true,
+			options?.hostSignaled === true,
+		).finally(() => {
 			if (this.stopPromise === stopPromise) this.stopPromise = undefined;
 		});
 		this.stopPromise = stopPromise;
@@ -323,7 +330,7 @@ export class RpcClient extends RpcClientApi {
 	 * stdout settles, so an ownership frame it already sent still reaches its
 	 * request; only then is the generation retired (see RpcTerminalDrain).
 	 */
-	private async stopCurrentGeneration(graceful = false): Promise<void> {
+	private async stopCurrentGeneration(graceful = false, hostSignaled = false): Promise<void> {
 		const child = this.process;
 		if (!child) return;
 		const endedGeneration = this.generation;
@@ -358,7 +365,13 @@ export class RpcClient extends RpcClientApi {
 		// deliberate stop; an exit that already claimed keeps its own error.
 		this.terminalDrain.claim(endedGeneration, stopError);
 		try {
-			await terminateRpcClientProcess(child, terminateTree, graceful && engineReady, shutdownComplete.promise);
+			await terminateRpcClientProcess(
+				child,
+				terminateTree,
+				graceful && engineReady,
+				shutdownComplete.promise,
+				hostSignaled,
+			);
 		} finally {
 			if (this.stoppingEngine === child) this.stoppingEngine = undefined;
 		}
