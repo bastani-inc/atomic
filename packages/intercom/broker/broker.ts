@@ -74,6 +74,7 @@ type ReleasedAskerReplyRouter,
 } from "./send-handler.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import { DurableEndedQueue, type KeptFailure, isRestoredSend, type RestoredEndedQueues } from "./durable-ended-queue.js";
+import type * as EndedChildQueueStoreModule from "./sql-ended-child-queue-store.js";
 import type { EndedChildQueueStore } from "./sql-ended-child-queue-store.js";
 import { ReturnPaths } from "./return-paths.js";
 import {
@@ -339,6 +340,20 @@ function holdSenderOf(from: ConnectedSession, answersAsk?: true): HoldSender {
 	};
 }
 
+let endedChildQueueStoreModule: Promise<typeof EndedChildQueueStoreModule> | undefined;
+
+/**
+ * #5999 durable wake queue: the store's code, loaded when a session first registers or as a broker warms it, once; a
+ * load that failed is tried again.
+ */
+function loadEndedChildQueueStore(): Promise<typeof EndedChildQueueStoreModule> {
+  endedChildQueueStoreModule ??= import("./sql-ended-child-queue-store.js").catch((error: unknown) => {
+    endedChildQueueStoreModule = undefined;
+    throw error;
+  });
+  return endedChildQueueStoreModule;
+}
+
 class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
   /** #5146: presence frames gathered per recipient, so they grow with the changes, not their square. */
@@ -555,7 +570,18 @@ class IntercomBroker {
       this.lastConnectionAt = performance.now();
       this.scheduleShutdownCheck();
       if (this.boundSocketInode !== undefined) this.watchSocketOwnership();
+      this.warmEndedQueueStore();
     });
+  }
+
+  /**
+   * #5999 durable wake queue: a broker taking over the local store an earlier broker left loads the store's code as it
+   * starts. The first registration waits a bounded time for the store, and on a busy machine loading that code alone
+   * could use it up, so the earlier broker's messages were kept in memory only and lost. Nothing is opened here.
+   */
+  private warmEndedQueueStore(): void {
+    if (this.sharedStorageSetting !== undefined || !existsSync(getBrokerEndedChildQueuePath())) return;
+    loadEndedChildQueueStore().catch(() => {});
   }
 
   /**
@@ -2226,7 +2252,7 @@ class IntercomBroker {
     };
     let store: EndedChildQueueStore | undefined;
     if (this.sharedStorageSetting === undefined) {
-      const { openLocalEndedChildQueueStore } = await import("./sql-ended-child-queue-store.js");
+      const { openLocalEndedChildQueueStore } = await loadEndedChildQueueStore();
       store = await openLocalEndedChildQueueStore(getBrokerEndedChildQueuePath(), this.instanceId, retire, continuity);
     } else {
       await this.multiNodeFirstAttempt;

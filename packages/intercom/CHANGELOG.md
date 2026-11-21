@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- A broker restarted after a crash on a busy machine no longer drops the messages the earlier broker kept for subagents that ended when loading the store's code takes up the first session's short wait for the store: a broker that finds such a store loads that code as it starts ([#6126](https://github.com/bastani-inc/atomic/issues/6126)).
+
 ## [0.10.2] - 2026-11-20
 
 ### Fixed
