@@ -93,6 +93,11 @@ export interface StopDetachedBrokerOptions {
 /**
  * Terminate and await the broker recorded at `{agentDir}/intercom/broker.pid`, if it is the broker that answers there.
  * Returns whether it was signalled.
+ *
+ * Bounds: until the broker answers, every read of the process's start and every status request shares one answer window
+ * (`answerWindowMs`, on a monotonic clock); nothing that comes after it is waited for or taken, and the broker is then
+ * not signalled. Once it has answered, the start is read again before each signal, each read bounded by its own timeout,
+ * and its exit is waited for up to {@link BROKER_EXIT_TIMEOUT_MS}.
  */
 export async function stopDetachedBroker(
 	agentDir: string,
