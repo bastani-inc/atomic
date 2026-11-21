@@ -36,7 +36,12 @@ function loadedFrom(entries: readonly string[]): Set<string> {
 		const file = pending.pop() as string;
 		if (seen.has(file)) continue;
 		seen.add(file);
-		const source = fs.readFileSync(join(dist, file), "utf8");
+		// Comment lines are not code: a bundled dependency's documentation may name an import.
+		const source = fs
+			.readFileSync(join(dist, file), "utf8")
+			.split("\n")
+			.filter((line) => !/^\s*(?:\*|\/\/|\/\*)/.test(line))
+			.join("\n");
 		for (const match of source.matchAll(/(?:from|import\()\s*"(\.{1,2}\/[^"]+)"/g)) {
 			pending.push(posix.normalize(posix.join(posix.dirname(file), match[1] as string)));
 		}
@@ -139,6 +144,42 @@ test(
 		);
 		assert.equal(probe.status, 0, probe.stderr);
 		assert.match(probe.stdout, /src[\\/]cli[\\/]args\.ts:\d+:\d+/, probe.stdout);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"the dependencies bundled into the shared files load from there, and their licenses ship beside them",
+	() => {
+		const { atomic } = installedLayout();
+		const notices = fs.readFileSync(join(atomic, "dist", "THIRD_PARTY_NOTICES.md"), "utf8");
+		const inlined = [...notices.matchAll(/^## (\S+) \S+$/gm)].map((match) => match[1] as string);
+		assert.ok(inlined.includes("yaml") && inlined.includes("semver"), notices.slice(0, 400));
+		const probe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { registerHooks } from "node:module";
+				const packages = new Set();
+				registerHooks({ load(url, context, next) {
+					const match = /\\/node_modules\\/((?:@[^/]+\\/)?[^/]+)\\//.exec(decodeURIComponent(url).replaceAll("\\\\", "/"));
+					if (match) packages.add(match[1]);
+					return next(url, context);
+				} });
+				await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "main.js")).href)});
+				console.log(JSON.stringify([...packages]));`,
+			],
+			{ encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS },
+		);
+		assert.equal(probe.status, 0, probe.stderr);
+		const loaded = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
+		// A dependency that stays external still loads from node_modules, as the probe sees.
+		assert.ok(loaded.includes("undici"), loaded.join(", "));
+		assert.deepEqual(
+			loaded.filter((name) => inlined.includes(name)),
+			[],
+		);
 	},
 	LAYOUT_TIMEOUT_MS,
 );
