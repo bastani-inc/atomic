@@ -159,10 +159,12 @@ async function delegate(session: AgentSession): Promise<ChildRecord> {
 	return record;
 }
 
-/** Every session file under `directory`, at any depth. */
+/** Every session file under `directory`, at any depth; a run's artifacts (its `run-history.jsonl`) are not sessions. */
 function sessionFilesUnder(directory: string): string[] {
 	if (!existsSync(directory)) return [];
-	return readdirSync(directory, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".jsonl"));
+	return readdirSync(directory, { recursive: true, encoding: "utf8" }).filter(
+		(name) => name.endsWith(".jsonl") && !name.split(/[\\/]/).includes("artifacts"),
+	);
 }
 
 test(
