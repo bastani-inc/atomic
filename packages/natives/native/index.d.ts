@@ -578,6 +578,11 @@ export interface HostProcessOptions {
   pipeStderr: boolean
   /** Starts the process in a session of its own, as Node's `detached` does. */
   detached: boolean
+  /**
+   * Ends the process with `SIGKILL` when this process ends, however it ends; not the processes it starts. Not for a
+   * detached process.
+   */
+  endWithParent?: boolean
 }
 
 export type InputData =

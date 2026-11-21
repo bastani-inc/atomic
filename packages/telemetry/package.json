@@ -9,16 +9,22 @@
 		".": {
 			"source": "./src/index.ts",
 			"types": "./dist/index.d.ts",
+			"module": "./dist/_modules/index.js",
+			"browser": "./dist/_modules/index.js",
 			"import": "./dist/index.js"
 		},
 		"./render": {
 			"source": "./src/render.ts",
 			"types": "./dist/render.d.ts",
+			"module": "./dist/_modules/render.js",
+			"browser": "./dist/_modules/render.js",
 			"import": "./dist/render.js"
 		},
 		"./testing": {
 			"source": "./src/testing/index.ts",
 			"types": "./dist/testing/index.d.ts",
+			"module": "./dist/_modules/testing/index.js",
+			"browser": "./dist/_modules/testing/index.js",
 			"import": "./dist/testing/index.js"
 		}
 	},
@@ -33,7 +39,9 @@
 		"clean": "node ../../scripts/package-files.mjs clean dist",
 		"build": "tsc -p tsconfig.build.json",
 		"test": "vitest --run",
-		"prepublishOnly": "npm run clean && npm run build"
+		"prepublishOnly": "npm run clean && npm run build",
+		"build:bundle": "node ../../scripts/bundle-package-dist.mjs",
+		"prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\""
 	},
 	"keywords": [
 		"telemetry",

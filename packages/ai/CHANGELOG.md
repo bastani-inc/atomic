@@ -4,9 +4,14 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Added
+
+- `resolveHttpsFallbackProxyUrl()` returns the http proxy an `https://` request takes when no https proxy is set, as Atomic's HTTP dispatcher on Node.js takes it (`http_proxy`, else `HTTP_PROXY`), for runtimes whose own HTTP client sends such a request direct, such as Bun. It is undefined when `NO_PROXY` exempts the host or an https proxy or an `http://`/`https://` `ALL_PROXY` is set ([#6233](https://github.com/bastani-inc/atomic/pull/6233))
+
 ### Changed
 
 - The package no longer includes declaration maps (`.d.ts.map`). They pointed at TypeScript sources that the package does not include, so editors could not follow them. The declarations themselves are unchanged.
+
 
 ### Fixed
 
@@ -15,6 +20,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 - `declarationsEqual()`, `getToolStateChanges()` and `jsonSchemasEqual()` treat a schema's list of `type`s and the names `dependentRequired` and `dependencies` list as sets, so a tool that lists them in another order is no longer declared again.
 - On Node.js, an OpenAI Codex WebSocket refused for its TLS certificate now fails at once with the certificate message, as on Bun, instead of first falling back to SSE and remembering that fallback for the session. Node.js's WebSocket names no certificate on its error, so the connection's own failure is read instead; a reset, an upgrade the server refuses and other failures still fall back to SSE ([#6171](https://github.com/bastani-inc/atomic/pull/6171))
 - A model request refused for the TLS certificate of the `https://` proxy it goes through now names that proxy, by its host, and the fix for a proxy, instead of naming the endpoint, which the proxy never reached. This applies to Amazon Bedrock's proxy and to any proxy connection whose failures are recorded with the new `recordProxyConnectionFailure()`. A certificate refused by the endpoint behind the proxy is still named as the endpoint's ([#6208](https://github.com/bastani-inc/atomic/pull/6208))
+- On Bun, the OpenAI Codex WebSocket goes through `HTTP_PROXY` for an `https://` endpoint when no https proxy is set, as its requests over fetch do, instead of connecting directly ([#6233](https://github.com/bastani-inc/atomic/pull/6233))
 
 ## [0.10.3] - 2026-11-21
 

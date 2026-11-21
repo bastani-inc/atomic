@@ -7,7 +7,8 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 ### Added
 
 - `TuiAltScreen.onViewportChange(listener)` calls the listener after each input, late single click and painted frame, so a caller can wait for `isPointerIdle()` without polling ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
-- `Editor.setAutocompleteProvider(provider, { preserveSelection: true, refreshCommandMenu: true })` shows the new provider's commands in an open slash-command menu in which nothing was chosen ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- `Editor.setAutocompleteProvider(provider, { preserveSelection: true, refreshMenu: true })` shows the new provider's rows in an open menu in which nothing was chosen, whether it lists commands, arguments or files ([#6183](https://github.com/bastani-inc/atomic/pull/6183), [#6213](https://github.com/bastani-inc/atomic/pull/6213))
+- `EditorComponent.setAutocompleteProvider` takes the same optional second argument, so an editor built on `Editor` keeps its menu when its host replaces the provider ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
 
 ### Changed
 
@@ -16,6 +17,9 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 ### Fixed
 
 - A lookup that `setAutocompleteProvider(..., { preserveSelection: true })` retries for the new provider no longer raises an unhandled rejection when the provider fails, and later lookups still run ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- A completion lookup whose provider throws or rejects finds nothing instead of raising an unhandled rejection and stopping every later lookup, and a provider that ignores its abort signal holds the next lookup for at most 100 ms instead of indefinitely ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
+- `setAutocompleteProvider(..., { preserveSelection: true })` asks the new provider for a lookup still under way also when a menu is open, so the rows that follow come from the new provider ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
+- A lookup's answer shows at the next render. Keys pressed before then act on the menu as it was drawn while it answers the prompt's text, so an answer that reorders the rows, or that the replacement of a provider brings, no longer changes which row Enter or Tab takes or opens a menu the user has not seen; a press or click on rows that changed since they were drawn chooses nothing ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
 
 ## [0.10.3] - 2026-11-21
 

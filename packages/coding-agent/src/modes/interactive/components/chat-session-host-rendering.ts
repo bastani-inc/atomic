@@ -42,6 +42,7 @@ import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
+import { keptTaskId } from "./kept-task.ts";
 import { clickableKeyTextHint } from "./nav-keys.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import { retrySecondsLeft, retryWaitMessage } from "./retry-status-line.ts";
@@ -663,7 +664,21 @@ export function transcriptCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 		streaming && state.bodyViewport.getScrollFromBottom() === 0,
 		...(message === undefined ? [] : inPlaceKeyParts(message)),
 		message?.kind === "tool" && drawnApart(state, message),
+		message?.kind === "tool" && keptTaskActionOf(state, message),
 	];
+}
+
+/**
+ * What the chat offers for the task a call's result left running, when the chat decides that: the call's block is drawn
+ * again when it changes, as when the chat's `/tasks` gains or loses the task.
+ */
+function keptTaskActionOf<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: Extract<ChatMessageEntry, { kind: "tool" }>,
+): string | undefined {
+	if (state.keptTaskAction === undefined) return undefined;
+	const taskId = keptTaskId(entry);
+	return taskId === undefined ? undefined : (state.keptTaskAction(taskId as TaskId) ?? "none");
 }
 
 /** The key of an entry that changes only by being replaced: the same array for every such entry at a revision. */
@@ -739,6 +754,7 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
 			return store?.getTask(taskId) ?? inherited?.getTaskRecord?.(taskId);
 		},
+		...(state.keptTaskAction === undefined ? {} : { keptTaskAction: state.keptTaskAction }),
 		hasTaskTranscript: (taskId: TaskId) => {
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);

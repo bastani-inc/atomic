@@ -11,7 +11,9 @@
 		"build:native:linux": "native/linux/build.sh",
 		"build:native:win32": "node native/win32/build.mjs",
 		"test": "node --test --test-reporter=dot --test-reporter-destination=stdout test/*.test.ts",
-		"prepublishOnly": "npm run clean && npm run build"
+		"prepublishOnly": "npm run clean && npm run build",
+		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --standalone=native-modifiers.js,native-platform.js,native-module-path.js",
+		"prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\""
 	},
 	"files": [
 		"dist/**/*",
