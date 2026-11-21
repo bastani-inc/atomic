@@ -9,7 +9,7 @@
 		"skipLibCheck": true,
 		"types": ["bun", "node"],
 		"typeRoots": ["../../node_modules/@types"],
-		"lib": ["ESNext"],
+		"lib": ["ESNext", "DOM"],
 		"allowImportingTsExtensions": true,
 		"allowArbitraryExtensions": true,
 		"noEmit": true,

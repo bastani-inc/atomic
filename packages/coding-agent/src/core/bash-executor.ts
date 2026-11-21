@@ -135,7 +135,10 @@ export async function executeBashWithOperations(
 		}
 	};
 
-	const decoders: Record<BashOutputChannel, TextDecoder> = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+	const decoders: Record<BashOutputChannel, InstanceType<typeof TextDecoder>> = {
+		stdout: new TextDecoder(),
+		stderr: new TextDecoder(),
+	};
 	// Escape sequences, control strings and control characters (7-bit and 8-bit) are removed with
 	// state carried across chunks, so a sequence split between chunks is removed whole.
 	const sanitizers: Record<BashOutputChannel, TerminalTextSanitizer> = {

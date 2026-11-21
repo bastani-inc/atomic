@@ -185,6 +185,11 @@ export function gracefullyStoppedEnginePids(runtime: AgentSessionRuntime): Reado
 	return new Set(pid === undefined ? [] : [pid]);
 }
 
+/** Whether the session runs in an interactive engine process rather than in this one. */
+export function runsInteractiveEngine(runtime: AgentSessionRuntime): boolean {
+	return runtime instanceof IsolatedInteractiveRuntime;
+}
+
 /**
  * Command catalog the engine child exposes to the isolated host. Returns an
  * empty list for non-isolated runtimes so callers can merge unconditionally.
