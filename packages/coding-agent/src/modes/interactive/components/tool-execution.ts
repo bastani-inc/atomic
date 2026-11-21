@@ -73,10 +73,14 @@ const SUBAGENT_RESULT_ANIMATION_TIMER_KEY = "subagentResultAnimationTimer";
 const SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY = "subagentResultAnimationCleanup";
 
 let statusMarkPrefix: RegExp | undefined;
+/** Marks earlier versions drew for a stopped and a paused block; a renderer built with them still draws them. */
+const EARLIER_STATUS_MARKS = ["◼", "⏸"];
 /** A block's header row opens with its status mark, any of the shared marks, then a space. */
 function blockStatusMarkPrefix(): RegExp {
 	if (statusMarkPrefix === undefined) {
-		const marks = [...new Set(Object.values(STATUS_MARKERS).map((marker) => marker.glyph))].join("");
+		const marks = [
+			...new Set([...Object.values(STATUS_MARKERS).map((marker) => marker.glyph), ...EARLIER_STATUS_MARKS]),
+		].join("");
 		statusMarkPrefix = new RegExp(`^ *[${marks.replace(/[\\\]^-]/g, "\\$&")}] `, "u");
 	}
 	return statusMarkPrefix;

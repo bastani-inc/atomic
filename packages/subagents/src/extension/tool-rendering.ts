@@ -11,6 +11,7 @@ import {
 	navEntryKeys,
 	slashCommandHint,
 	spanElapsedMs,
+	TASK_MARKS,
 	type TaskId,
 	type TaskRecord,
 	ToolBlock,
@@ -184,6 +185,10 @@ function ensureGlobalTheme(): void {
 
 class OneLine implements Component {
 	constructor(private readonly text: string | (() => string)) {}
+	/** A live line (its text read at each render, such as a running child's elapsed time) keeps the working clock. */
+	isWorking(): boolean {
+		return typeof this.text === "function";
+	}
 	invalidate(): void {}
 	render(width: number): string[] {
 		return width < 1 ? [] : [truncateToWidth(typeof this.text === "string" ? this.text : this.text(), width, "…")];
@@ -610,7 +615,8 @@ function buildExpandedDetails(input: {
 	readonly cacheId?: string;
 	readonly hydratedRef?: unknown;
 	readonly statusLine: string | (() => string);
-	readonly status: ToolBlockStatus;
+	/** The child is running: its unfinished tool calls are still working, and an empty result reads `Running…`. */
+	readonly running: boolean;
 	readonly promptText: string;
 	readonly buildToolBlocks: () => readonly Component[];
 	readonly toolCallsUnavailable?: string;
@@ -623,7 +629,7 @@ function buildExpandedDetails(input: {
 		cacheId,
 		hydratedRef,
 		statusLine,
-		status,
+		running,
 		promptText,
 		buildToolBlocks,
 		toolCallsUnavailable,
@@ -632,7 +638,7 @@ function buildExpandedDetails(input: {
 		theme,
 	} = input;
 	const cleanPrompt = unwrapSubagentPrompt(promptText);
-	const runningKey = status === "running" ? "1" : "0";
+	const runningKey = running ? "1" : "0";
 	const key = `${runningKey}\u0000${cleanPrompt}\u0000${toolCallsUnavailable ?? ""}\u0000${resultText ?? ""}\u0000${failureText ?? ""}`;
 	if (state && cacheId) {
 		let cache = expandedSectionCaches.get(state);
@@ -662,7 +668,7 @@ function buildExpandedDetails(input: {
 					? new ToolBlockMarkdown(resultText)
 					: failureText
 						? new Text(theme.fg("error", displayText(failureText)), 0, 0)
-						: new Text(theme.fg("dim", status === "running" ? "Running…" : "(no output)"), 0, 0),
+						: new Text(theme.fg("dim", running ? "Running…" : "(no output)"), 0, 0),
 			),
 		];
 		cache.set(cacheId, { key, hydratedRef, sections });
@@ -687,7 +693,7 @@ function buildExpandedDetails(input: {
 				? new ToolBlockMarkdown(resultText)
 				: failureText
 					? new Text(theme.fg("error", displayText(failureText)), 0, 0)
-					: new Text(theme.fg("dim", status === "running" ? "Running…" : "(no output)"), 0, 0),
+					: new Text(theme.fg("dim", running ? "Running…" : "(no output)"), 0, 0),
 		),
 	]);
 }
@@ -740,7 +746,7 @@ function buildOutcomeToolBlock(input: {
 				details: expanded
 					? buildExpandedDetails({
 							statusLine,
-							status: "failure",
+							running: false,
 							promptText,
 							buildToolBlocks: () => [],
 							failureText: outcome.reason.error.message,
@@ -753,13 +759,13 @@ function buildOutcomeToolBlock(input: {
 		}
 		const statusLine = statJoin(theme, ["Stopped"]);
 		const block = new ToolBlock({
-			status: "stopped",
+			status: "task-stopped",
 			title: "Agent",
 			args,
 			details: expanded
 				? buildExpandedDetails({
 						statusLine,
-						status: "stopped",
+						running: false,
 						promptText,
 						buildToolBlocks: () => [],
 						theme,
@@ -842,7 +848,7 @@ function buildOutcomeToolBlock(input: {
 		let statusLine: string;
 
 		if (task?.attention.kind === "input-needed") {
-			status = "warning";
+			status = "input";
 			const questionFirstLine = firstDisplayLine(task.attention.prompt || "");
 			const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });
 			statusLine = statJoin(theme, [
@@ -866,15 +872,16 @@ function buildOutcomeToolBlock(input: {
 				status = "waiting";
 				statusLine = statJoin(theme, [waitingText(releasedWaitingTools(taskSettled)), elapsedText]);
 			} else if (subagentTaskResultLabel(taskSettled) === "paused · awaiting resume") {
-				status = "paused";
+				// Paused or quit until it is resumed: stopped, as the agent panel and /tasks show it.
+				status = "task-stopped";
 				statusLine = statJoin(theme, ["Paused · awaiting resume", elapsedText]);
 			} else {
-				status = "stopped";
+				status = "task-stopped";
 				statusLine = statJoin(theme, ["Stopped", elapsedText]);
 			}
 		} else if (record) {
 			if (record.state === "running") {
-				status = "running";
+				status = "agent-running";
 				const manageKey =
 					outcome.kind !== "sdk-handoff" && hasPanelRow(task, observation)
 						? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
@@ -897,7 +904,7 @@ function buildOutcomeToolBlock(input: {
 					);
 					statusLine = theme.fg("error", ["Failed", elapsedText, reason].filter(Boolean).join(" · "));
 				} else if (terminal === "paused" || terminal === "quit") {
-					status = "paused";
+					status = "task-stopped";
 					const label = terminal === "quit" ? "Quit · paused · awaiting resume" : "Paused · awaiting resume";
 					statusLine = statJoin(theme, [label, elapsedText]);
 				} else if (terminal === SUBAGENT_CHILD_RELEASED_STATUS) {
@@ -907,12 +914,12 @@ function buildOutcomeToolBlock(input: {
 						elapsedText,
 					]);
 				} else {
-					status = "stopped";
+					status = "task-stopped";
 					statusLine = statJoin(theme, ["Stopped", elapsedText]);
 				}
 			}
 		} else if (observation.kind === "yielded") {
-			status = "running";
+			status = "agent-running";
 			const manageKey = hasPanelRow(task, observation)
 				? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
 				: "";
@@ -933,14 +940,14 @@ function buildOutcomeToolBlock(input: {
 			status = "waiting";
 			statusLine = statJoin(theme, [waitingText(releasedWaitingTools(observation.result)), elapsedText]);
 		} else if (subagentTaskResultLabel(observation.result) === "paused · awaiting resume") {
-			status = "paused";
+			status = "task-stopped";
 			statusLine = statJoin(theme, ["Paused · awaiting resume", elapsedText]);
 		} else {
-			status = "stopped";
+			status = "task-stopped";
 			statusLine = statJoin(theme, ["Stopped", elapsedText]);
 		}
 
-		const working = status === "running";
+		const working = status === "agent-running";
 
 		if (!expanded) {
 			return {
@@ -978,12 +985,10 @@ function buildOutcomeToolBlock(input: {
 					cacheId: activeTaskId,
 					hydratedRef: hydrated?.toolCalls,
 					statusLine,
-					status,
+					running: working,
 					promptText,
 					buildToolBlocks: () =>
-						(hydrated?.toolCalls ?? []).map((entry) =>
-							innerToolBlockFromEntry(entry, status === "running", theme, context),
-						),
+						(hydrated?.toolCalls ?? []).map((entry) => innerToolBlockFromEntry(entry, working, theme, context)),
 					toolCallsUnavailable,
 					resultText,
 					failureText: failure,
@@ -1034,9 +1039,11 @@ function buildForegroundChildToolBlock(input: {
 
 	let status: ToolBlockStatus;
 	let statusLine: string | (() => string);
+	/** The child is running here: its live status line and its unfinished tool calls keep working. */
+	let live = false;
 
 	if (taskRecord?.attention.kind === "input-needed") {
-		status = "warning";
+		status = "input";
 		const questionFirstLine = firstDisplayLine(taskRecord.attention.prompt || "");
 		const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });
 		statusLine = statJoin(theme, [
@@ -1048,7 +1055,8 @@ function buildForegroundChildToolBlock(input: {
 		status = "paused";
 		statusLine = statJoin(theme, ["Paused", elapsedText]);
 	} else if (isRunning) {
-		status = "running";
+		status = "agent-running";
+		live = true;
 		const manageKey = hasPanelRow(taskRecord)
 			? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
 			: "";
@@ -1068,21 +1076,23 @@ function buildForegroundChildToolBlock(input: {
 			]);
 		};
 	} else if (!child) {
-		status = "stopped";
+		status = "task-stopped";
 		statusLine = statJoin(theme, ["Stopped", elapsedText]);
 	} else if (child.status === "error") {
 		status = "failure";
 		const reason = firstDisplayLine(child.error ?? (firstOutputLine(output) || "failed"));
 		statusLine = theme.fg("error", ["Failed", elapsedText, reason].filter(Boolean).join(" · "));
+	} else if (child.detached || child.status === "continued") {
+		// It continued on its own and still runs; its own card and the agent panel follow it.
+		status = "agent-running";
+		statusLine = statJoin(theme, ["Continued", elapsedText]);
 	} else if (
-		child.detached ||
 		child.interrupted ||
 		child.status === "killed" ||
 		child.status === "interrupted" ||
-		child.status === "skipped" ||
-		child.status === "continued"
+		child.status === "skipped"
 	) {
-		status = "stopped";
+		status = "task-stopped";
 		statusLine = statJoin(theme, ["Stopped", elapsedText]);
 	} else {
 		status = "success";
@@ -1102,7 +1112,7 @@ function buildForegroundChildToolBlock(input: {
 	const messageEntries = toolEntriesFromMessages(child?.messages);
 	const toolBlocks: readonly Component[] =
 		messageEntries.length > 0
-			? messageEntries.map((entry) => innerToolBlockFromEntry(entry, status === "running", theme, context))
+			? messageEntries.map((entry) => innerToolBlockFromEntry(entry, live, theme, context))
 			: toolBlocksFromSummaries(child?.toolCalls, activeProgress);
 
 	return new ToolBlock({
@@ -1111,7 +1121,7 @@ function buildForegroundChildToolBlock(input: {
 		args,
 		details: buildExpandedDetails({
 			statusLine,
-			status,
+			running: live,
 			promptText: rawTask,
 			buildToolBlocks: () => toolBlocks,
 			resultText: output || undefined,
@@ -1199,13 +1209,17 @@ export function renderSubagentToolResult(
 				0,
 			);
 		const lines = runControl.children.map((child) => {
-			const state =
+			// Running again or still finishing its worktree, it runs; paused or quit until it is resumed, it is stopped.
+			const mark =
+				child.state === "running" || child.state === "finishing" ? TASK_MARKS.running : TASK_MARKS.stopped;
+			const words =
 				child.state === "running"
-					? theme.fg("success", `✓ Resumed · ${displayText(child.agent)}`)
+					? theme.fg("success", `Resumed · ${displayText(child.agent)}`)
 					: theme.fg(
 							"muted",
-							`${child.state === "finishing" ? "Finishing worktree cleanup" : child.state === "paused" ? "⏸ Paused" : "◼ Quit (resumable)"} · ${displayText(child.agent)}`,
+							`${child.state === "finishing" ? "Finishing worktree cleanup" : child.state === "paused" ? "Paused" : "Quit (resumable)"} · ${displayText(child.agent)}`,
 						);
+			const state = `${theme.fg(mark.color, mark.glyph)} ${words}`;
 			const identity = theme.fg(
 				"dim",
 				`\n   ${displayText(child.childId)}${child.intercomTarget ? ` · ${displayText(child.intercomTarget)}` : ""}${options.expanded && child.taskId ? ` · ${displayText(child.taskId)}` : ""}`,

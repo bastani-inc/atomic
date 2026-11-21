@@ -4,6 +4,7 @@ import {
 	agentViewBridge,
 	setAgentViewBridge,
 } from "../interactive/agent-view/agent-view-bridge.ts";
+import { agentPanelReturnsOnShow } from "./agent-panel-bridge.ts";
 import type { EngineAgentViewContext } from "./agent-view-rpc.ts";
 import type { AgentViewRpcCommand } from "./agent-view-rpc-types.ts";
 import { createRpcSuccessResponse } from "./rpc-responses.ts";
@@ -28,12 +29,16 @@ export function installEngineAgentViewBridge(context: EngineAgentViewContext): (
 	const listeners = new Set<() => void>();
 	const bridge: EngineAgentViewBridge = {
 		viewedTaskId: () => viewed,
-		requestView: (taskId, options) =>
+		requestView: (taskId, options) => {
+			const keepScreen = options?.keepScreen === true;
 			context.send({
 				type: "engine_view_agent",
 				taskId: taskId ?? null,
-				...(options?.keepScreen === true ? { keepScreen: true as const } : {}),
-			}),
+				...(keepScreen ? { keepScreen: true as const } : {}),
+				// What keeps the screen (`/tasks`) hid the panel; the host waits for it when it opens again as that closes.
+				...(keepScreen && taskId !== undefined && agentPanelReturnsOnShow(session) ? { panel: true as const } : {}),
+			});
+		},
 		subscribe(listener) {
 			listeners.add(listener);
 			return () => {

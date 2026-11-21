@@ -246,6 +246,7 @@ export {
 	noticeLineText,
 } from "./modes/interactive/components/notice-line.ts";
 export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactive/components/task-list.js";
+export { TASK_MARKS, type TaskMark, type TaskMarkState } from "./modes/interactive/components/task-marks.ts";
 export { TaskRow } from "./modes/interactive/components/task-row.js";
 export {
 	collapseToolBlockLines,

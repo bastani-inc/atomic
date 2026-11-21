@@ -4,6 +4,16 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Added
+
+- `fittedThinkingBudget()` returns the thinking budget a budget-based Claude request asks for and the budget it sends once fitted under the context window. Amazon Bedrock replies now record `thinkingBudgetTokens`, as Anthropic replies do ([#6117](https://github.com/bastani-inc/atomic/issues/6117)).
+
+### Fixed
+
+- Fixed a turn that adds 20 or more content blocks, such as many parallel tool calls and their results, missing the prompt cache on Anthropic, Amazon Bedrock and OpenAI-compatible Claude routes: Claude looks back only 20 positions from a breakpoint. The request now also puts a breakpoint where the previous request put its newest one. OAuth requests give up the identity block's breakpoint for it, and an Anthropic message thread keeps continuing across such a request ([#6103](https://github.com/bastani-inc/atomic/issues/6103)).
+- Fixed an Anthropic request with a `cacheBreakpoint` hint on tool results that later text joins, as a resumed session's prompt update and input do, putting the breakpoint after the joined text instead of after the tool results ([#6103](https://github.com/bastani-inc/atomic/issues/6103)).
+- Fixed fitting a budget-based Claude thinking budget under the context window counting a tool declared again unchanged, or a removed tool, as new input on requests that declare their tools at the top ([#6117](https://github.com/bastani-inc/atomic/issues/6117)).
+
 ## [0.10.2] - 2026-11-20
 
 ### Added

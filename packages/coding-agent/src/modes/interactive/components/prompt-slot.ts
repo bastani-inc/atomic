@@ -25,13 +25,27 @@ function awaitsFirstContent(component: Component): boolean {
 /** A command that opens a view holds the prompt's slot; `settle` says the command is done. */
 export interface PromptSlotHold {
 	settle(): void;
+	/**
+	 * Another change on the screen ends the hold before the command did: the slot shows live from the next frame, unless
+	 * the command mounts a view with nothing to draw yet before it. Answers whether this ended the hold.
+	 */
+	endEarly(): boolean;
 }
 
-const SETTLED: PromptSlotHold = { settle: () => {} };
+const SETTLED: PromptSlotHold = { settle: () => {}, endEarly: () => false };
+
+export interface PromptSlotHoldOptions {
+	/**
+	 * The command's view can mount at any time, also after the hold ends (an extension command, which nothing waits
+	 * for). A view it mounts with nothing to draw yet, while held or before the first frame after the hold ended,
+	 * keeps the rows on screen until it draws, for one more bound from when it is first drawn.
+	 */
+	readonly lateView?: boolean;
+}
 
 /** Keep `slot` as it is on screen until the view the running command opens is up, when it is the prompt's slot. */
-export function holdPromptSlot(slot: Container): PromptSlotHold {
-	return slot instanceof PromptSlot ? slot.hold() : SETTLED;
+export function holdPromptSlot(slot: Container, options?: PromptSlotHoldOptions): PromptSlotHold {
+	return slot instanceof PromptSlot ? slot.hold(options) : SETTLED;
 }
 
 /**
@@ -64,19 +78,46 @@ interface Drawn {
 	readonly statusEpoch: number;
 }
 
+type HeldSlot = {
+	readonly kind: "held";
+	/**
+	 * What the rows wait for: the view a command opens (`lateView`: an extension command's, which waits for its first
+	 * frame once mounted, and can also mount after the hold ends), or the first frame of a view mounted with nothing to
+	 * draw yet.
+	 */
+	readonly awaits: "view" | "lateView" | "firstContent";
+	/** Which hold this is. */
+	readonly token: object;
+	/** The rows the slot drew last, at `width`, with their key hints and links made plain text: they run nothing. */
+	readonly rows: readonly string[];
+	readonly width: number;
+	/** The slot's children as they were when the hold began, counted by `generation`. */
+	readonly generation: number;
+	/** Shows the slot live again. */
+	readonly end: () => void;
+	/** Ends the hold at its bound, or at another extension's change: a `lateView` hold leaves its rows to the next frame. */
+	readonly endEarly: () => boolean;
+};
+
 type PromptSlotState =
 	| { readonly kind: "live" }
+	| HeldSlot
 	| {
-			readonly kind: "held";
-			/** Which hold this is. */
+			/**
+			 * A `lateView` hold ended at its bound, or at another extension's change, and no frame was drawn since: the
+			 * screen still shows its rows. The slot's next render gives them, once, to a view the command mounted with
+			 * nothing to draw yet, and otherwise draws live. The screen is not held meanwhile: another part of it can be.
+			 */
+			readonly kind: "handoff";
 			readonly token: object;
-			/** The rows the slot drew last, at `width`, with their key hints and links made plain text: they run nothing. */
 			readonly rows: readonly string[];
 			readonly width: number;
-			/** The slot's children as they were when the hold began, counted by `generation`. */
 			readonly generation: number;
-			readonly end: () => void;
+			/** The user's key presses counted when the hold ended (`ScreenHold.keyPresses`): a key since shows it live. */
+			readonly keys: number;
 	  };
+
+const LIVE: PromptSlotState = { kind: "live" };
 
 /**
  * Where the prompt is drawn, or the selector or panel that takes its place. A slash command that opens a view clears
@@ -153,27 +194,39 @@ export class PromptSlot extends Container {
 	}
 
 	/** Keep showing what the slot drew last until the view a command opens is up or the command settles. */
-	hold(): PromptSlotHold {
+	hold(options?: PromptSlotHoldOptions): PromptSlotHold {
+		// Rows an earlier command left for its view are not this command's.
+		if (this.state.kind === "handoff") this.state = LIVE;
 		const generation = this.generation;
 		let token: object | undefined;
 		this.screen.begin("prompt", (ended) => {
 			const drawn = this.drawn;
 			if (drawn === undefined || !this.mayHold()) return undefined;
-			const held = this.beginHold(drawn, drawn.width, generation, ended);
+			const awaits = options?.lateView === true ? "lateView" : "view";
+			const held = this.beginHold(awaits, drawn.rows.map(inertRow), drawn.width, generation, ended, drawn);
 			token = held.token;
 			return held.end;
 		});
 		if (token === undefined) return SETTLED;
 		const own = token;
+		/** This command's hold, or the rows it left for its view, with nothing mounted since it began. */
+		const unchanged = () => {
+			const state = this.state;
+			return state.kind !== "live" && state.token === own && this.generation === generation ? state : undefined;
+		};
 		return {
 			// A command that ends with nothing mounted shows the slot as it is; a mounted view decides for itself. The
 			// handle keeps only the hold's token, not its rows: a command can keep it until its view closes.
 			settle: () => {
-				const state = this.state;
-				if (state.kind === "held" && state.token === own && this.generation === generation) {
-					state.end();
-					this.ui.requestRender();
-				}
+				const state = unchanged();
+				if (state === undefined) return;
+				if (state.kind === "held") state.end();
+				else this.state = LIVE;
+				this.ui.requestRender();
+			},
+			endEarly: () => {
+				const state = unchanged();
+				return state?.kind === "held" && state.endEarly();
 			},
 		};
 	}
@@ -184,8 +237,38 @@ export class PromptSlot extends Container {
 		const state = this.state;
 		const previous = this.drawn;
 		if (state.kind === "held") {
-			if (this.showsHeldRows(state, width)) rows = state.rows;
-			else state.end();
+			if (!this.showsHeldRows(state, width)) state.end();
+			else if (
+				state.awaits === "lateView" &&
+				state.generation !== this.generation &&
+				this.children.some(awaitsFirstContent)
+			) {
+				// The command's view mounted with nothing to draw yet: its first frame, not the command's bound, ends the wait
+				// now, for one bound from here.
+				state.end();
+				this.screen.begin("prompt", (ended) => {
+					const held = this.beginHold("firstContent", state.rows, width, state.generation, ended);
+					rows = held.rows;
+					return held.end;
+				});
+			} else rows = state.rows;
+		} else if (state.kind === "handoff") {
+			this.state = LIVE;
+			if (
+				state.keys === this.screen.keyPresses &&
+				state.width === width &&
+				state.generation !== this.generation &&
+				this.children.some(awaitsFirstContent) &&
+				!this.showsRunStatus()
+			) {
+				// The command's view mounted after its hold ended, before this frame, with nothing to draw yet: the rows
+				// still on screen stay until it draws, for one more bound, and are not kept again after that.
+				this.screen.begin("prompt", (ended) => {
+					const held = this.beginHold("firstContent", state.rows, width, state.generation, ended);
+					rows = held.rows;
+					return held.end;
+				});
+			}
 		} else if (
 			previous?.live === true &&
 			!previous.runStatus &&
@@ -196,7 +279,14 @@ export class PromptSlot extends Container {
 		) {
 			// A view mounted with nothing to draw yet, as an engine panel before its first frame: the rows stay.
 			this.screen.begin("prompt", (ended) => {
-				const held = this.beginHold(previous, width, previous.generation, ended);
+				const held = this.beginHold(
+					"firstContent",
+					previous.rows.map(inertRow),
+					width,
+					previous.generation,
+					ended,
+					previous,
+				);
 				rows = held.rows;
 				return held.end;
 			});
@@ -219,42 +309,50 @@ export class PromptSlot extends Container {
 		return this.showingHeldRows ? undefined : super.handleMouse(event);
 	}
 
-	private showsHeldRows(state: Extract<PromptSlotState, { kind: "held" }>, width: number): boolean {
+	private showsHeldRows(state: HeldSlot, width: number): boolean {
 		if (width !== state.width || this.showsRunStatus()) return false;
 		return this.generation === state.generation || this.children.some(awaitsFirstContent);
 	}
 
-	/** Hold the rows `seed` drew, the slot's last render. */
+	/**
+	 * Hold `rows`: those `seed` drew, the slot's last render, or those a command's hold left for its view. A `lateView`
+	 * hold that reaches its bound, or ends at another change, leaves them to the next frame (`handoff`); any other end
+	 * shows the slot live.
+	 */
 	private beginHold(
-		seed: Drawn,
+		awaits: HeldSlot["awaits"],
+		rows: readonly string[],
 		width: number,
 		generation: number,
 		ended: () => void,
-	): Extract<PromptSlotState, { kind: "held" }> {
+		seed?: Drawn,
+	): HeldSlot {
 		let over = false;
-		const end = () => {
-			if (over) return;
+		const finish = (next: PromptSlotState) => {
 			over = true;
 			clearTimeout(timer);
-			if (this.state === held) this.state = { kind: "live" };
+			if (this.state === held) this.state = next;
 			// Nothing drawn since the hold began: its rows were kept once, and no later hold keeps them again.
-			if (this.drawn === seed) this.drawn = { ...seed, live: false };
+			if (seed !== undefined && this.drawn === seed) this.drawn = { ...seed, live: false };
 			ended();
 		};
+		const end = () => {
+			if (!over) finish(LIVE);
+		};
+		const endEarly = () => {
+			if (over) return false;
+			finish(
+				awaits === "lateView"
+					? { kind: "handoff", token: held.token, rows, width, generation, keys: this.screen.keyPresses }
+					: LIVE,
+			);
+			return true;
+		};
 		const timer = setTimeout(() => {
-			if (over) return;
-			end();
-			this.ui.requestRender();
+			if (endEarly()) this.ui.requestRender();
 		}, PROMPT_SLOT_HOLD_MS);
 		timer.unref?.();
-		const held = {
-			kind: "held",
-			token: {},
-			rows: seed.rows.map(inertRow),
-			width,
-			generation,
-			end,
-		} as const;
+		const held: HeldSlot = { kind: "held", awaits, token: {}, rows, width, generation, end, endEarly };
 		this.state = held;
 		return held;
 	}

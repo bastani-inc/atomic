@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - The web search activity shortcut (Ctrl+Shift+W by default) shows the activity widget and hides it again. It failed with "content is not a function" when Atomic runs extensions in the terminal process, and showed only a warning that the widget is unavailable otherwise ([#6131](https://github.com/bastani-inc/atomic/issues/6131)).
+- Fixed reading Chromium cookies failing in a Node process whose `NODE_OPTIONS` contains `--input-type=module` ([#6110](https://github.com/bastani-inc/atomic/issues/6110))
 
 ## [0.10.2] - 2026-11-20
 
