@@ -231,6 +231,84 @@ test(
 );
 
 test(
+	"a subagent running when Atomic restarted is continued after the restart by a note, never a message from the user, in one request",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-restart" })], { stopReason: "toolUse" }),
+		]);
+		const parent = parentSession(env.root);
+		const runId = "restart-note";
+		const childId = `${runId}:0`;
+		const liveOptions = env.options(runId);
+		const launchOptions = (options: RunSyncOptions): RunSyncOptions => ({
+			...options,
+			testSession: false,
+			getChildSessionOptions: liveOptions.getChildSessionOptions,
+		});
+		const before = taskHost("before-restart");
+		const launched = await runAgentTask({
+			host: before,
+			cwd: env.root,
+			agents: [agent],
+			agent: "worker",
+			task: "run until Atomic stops",
+			options: { ...liveOptions, index: 0, sessionDir: join(env.root, "children", runId) },
+			recordChild: createSubagentChildRecordSink(parent.pi, parent.ctx(before)),
+			runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+		});
+		assert.equal(launched.kind, "admitted");
+		const firstTask = launched.kind === "admitted" ? launched.observation.taskId : "";
+		await until(() => env.blockStarted() && transcriptOf(before, firstTask) !== undefined, LIVE_CHILD_START_WAIT_MS);
+		await before.close("session-close");
+		await until(() => parent.latest(childId)?.state === "running");
+
+		const inputs: string[] = [];
+		env.faux.setResponses([
+			(context) => {
+				inputs.push(newInput(context));
+				return fauxAssistantMessage("continued after the restart");
+			},
+		]);
+		const after = taskHost("after-restart");
+		try {
+			const deps: SubagentChildRestoreDeps = {
+				pi: parent.pi,
+				config: {},
+				discoverAgents: () => ({ agents: [agent] }),
+				runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+			};
+			const [outcome] = await restoreSubagentChildren(deps, parent.ctx(after));
+			assert.equal(outcome?.kind, "restored");
+			const restoredTask = outcome?.kind === "restored" ? outcome.taskId : "";
+			await after.waitForTask(restoredTask as TaskId);
+			await until(() => inputs.length > 0);
+			await pause(RESTART_WINDOW_MS);
+
+			assert.equal(inputs.length, 1, "one request continues it");
+			assert.equal(inputs[0]?.split("Atomic restarted while you were working").length - 1, 1, "told once");
+			const record = parent.latest(childId);
+			assert.ok(record?.childSessionFile);
+			const entries = (await SessionManager.open(record.childSessionFile, undefined, record.cwd)).getBranch();
+			const continuations = entries.filter(
+				(entry) =>
+					entry.type === "message" &&
+					entry.message.role === "user" &&
+					JSON.stringify(entry.message.content).includes("Atomic restarted while you were working"),
+			);
+			assert.deepEqual(continuations, [], "no message from the user tells it");
+			assert.ok(
+				entries.some((entry) => entry.type === "custom_message" && entry.customType === "subagent-resume-note"),
+				"its chat shows the note",
+			);
+		} finally {
+			await after.close("session-close");
+		}
+	},
+	LIVE_RESTORE_TIMEOUT_MS,
+);
+
+test(
 	"a subagent paused before it read a late result's notice comes back paused after a restart: the notice starts no request, and the reader's send reads it once",
 	async () => {
 		const env = await liveChildEnvironment(cleanups);
