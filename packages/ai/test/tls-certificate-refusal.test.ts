@@ -288,12 +288,14 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 			assert.ok(address !== null && typeof address === "object");
 			return `http://127.0.0.1:${address.port}`;
 		};
-		const turns: [string, Promise<AssistantMessage>][] = [
+		// Each with whether main retries its message: a provider error in other words than a transport failure is not.
+		const turns: [string, Promise<AssistantMessage>, boolean][] = [
 			[
 				"pi-messages 502",
 				answering(502, "application/json", JSON.stringify({ error: relayed })).then((baseUrl) =>
 					streamPiMessages(createModel("pi-messages", baseUrl), context, { apiKey: "test-key" }).result(),
 				),
+				true,
 			],
 			[
 				"OpenAI Completions stream error event",
@@ -303,6 +305,48 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 						maxRetries: 0,
 					}).result(),
 				),
+				true,
+			],
+			[
+				"OpenAI Codex response.failed in the runtime's own words",
+				answering(
+					200,
+					"text/event-stream",
+					`data: ${JSON.stringify({
+						type: "response.failed",
+						response: {
+							status: "failed",
+							error: { code: "CERT_HAS_EXPIRED", message: "certificate has expired" },
+						},
+					})}\n\n`,
+				).then((baseUrl) =>
+					streamOpenAICodexResponses(createModel("openai-codex-responses", baseUrl), context, {
+						apiKey: CODEX_TOKEN,
+						transport: "sse",
+					}).result(),
+				),
+				false,
+			],
+			[
+				"OpenAI Responses response.failed in the runtime's own words",
+				answering(
+					200,
+					"text/event-stream",
+					`data: ${JSON.stringify({
+						type: "response.failed",
+						sequence_number: 0,
+						response: {
+							status: "failed",
+							error: { code: "CERT_HAS_EXPIRED", message: "certificate has expired" },
+						},
+					})}\n\n`,
+				).then((baseUrl) =>
+					streamOpenAIResponses(createModel("openai-responses", `${baseUrl}/v1`), context, {
+						apiKey: "test-key",
+						maxRetries: 0,
+					}).result(),
+				),
+				false,
 			],
 			[
 				"OpenAI Responses stream error event",
@@ -316,9 +360,10 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 						maxRetries: 0,
 					}).result(),
 				),
+				true,
 			],
 		];
-		for (const [label, turn] of turns) {
+		for (const [label, turn, retried] of turns) {
 			const message = await turn;
 			assert.equal(message.stopReason, "error", label);
 			assert.deepEqual(tlsDiagnostics(message), [], `${label}: ${message.errorMessage}`);
@@ -327,7 +372,12 @@ describe("failures that are not a refused certificate keep their retries (#6114)
 				false,
 				`${label}: ${message.errorMessage}`,
 			);
-			assert.equal(isRetryableAssistantError(message), true, `${label}: ${message.errorMessage}`);
+			assert.equal(
+				message.errorMessage?.startsWith("The TLS certificate"),
+				false,
+				`${label}: ${message.errorMessage}`,
+			);
+			assert.equal(isRetryableAssistantError(message), retried, `${label}: ${message.errorMessage}`);
 		}
 	});
 

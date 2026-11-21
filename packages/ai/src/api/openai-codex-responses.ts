@@ -585,7 +585,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			appendProviderResponseFailureDiagnostic(output, error);
-			recordTlsCertificateRefusal(output, error, model.baseUrl);
+			// Codex's own error events, protocol errors and stream event callbacks are not the connection's TLS (#6114).
+			if (!isCodexNonTransportError(error)) recordTlsCertificateRefusal(output, error, model.baseUrl);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
