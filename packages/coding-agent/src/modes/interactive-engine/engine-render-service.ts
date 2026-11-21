@@ -11,6 +11,7 @@ import { taskTranscriptSource } from "../../core/tasks/supervisor.js";
 import { readTaskCompletionHistory } from "../../core/tasks/task-completion-history.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
+import type { KeptTaskAction } from "../interactive/components/kept-task.ts";
 import { disposeRenderer, runRendererCleanup } from "../interactive/components/renderer-disposal.js";
 import { ToolBlock } from "../interactive/components/tool-block.ts";
 import { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
@@ -26,6 +27,12 @@ import {
 
 type ToolRenderCommand = Extract<InteractiveEngineCommand, { type: "engine_tool_render" }>;
 type MessageRenderCommand = Extract<InteractiveEngineCommand, { type: "engine_message_render" }>;
+
+/** What the host's chat offers for the task `command`'s result left running, which the host decided. */
+function keptTaskActionOf(command: ToolRenderCommand): () => KeptTaskAction | undefined {
+	const action = command.keptTaskAction;
+	return () => (action === "none" ? undefined : action);
+}
 
 /**
  * Cached per-componentId render state. Records are REUSED across render
@@ -47,6 +54,7 @@ type RenderRecord = { runner: AgentSession["extensionRunner"]; terminal: RenderT
 			component: ToolExecutionComponent;
 			toolOwner: object;
 			rendererTaskId?: string;
+			keptTaskAction?: "tasks" | "ownTasks" | "openWaited" | "none";
 			stopOwnerWatch?: () => void;
 	  }
 );
@@ -259,7 +267,8 @@ export class EngineRenderService {
 			record?.kind !== "tool" ||
 			record.runner !== this.session?.extensionRunner ||
 			record.toolOwner !== scope.identity ||
-			record.rendererTaskId !== command.rendererTaskId
+			record.rendererTaskId !== command.rendererTaskId ||
+			record.keptTaskAction !== command.keptTaskAction
 		) {
 			const session = this.boundSession();
 			this.disposeRecord(command.componentId);
@@ -279,6 +288,8 @@ export class EngineRenderService {
 					imageWidthCells: command.imageWidthCells,
 					outputPad: command.outputPad,
 					getTaskRecord: (taskId) => getOwnerTaskStore(scope.session)?.getTask(taskId),
+					// The host's chat knows what it offers for the task this call's result left running, and says so.
+					...(command.keptTaskAction === undefined ? {} : { keptTaskAction: keptTaskActionOf(command) }),
 					getToolDefinition: scope.resolve,
 				},
 				scope.resolve(command.toolName),
@@ -294,6 +305,7 @@ export class EngineRenderService {
 				runner: session.extensionRunner,
 				toolOwner: scope.identity,
 				rendererTaskId: command.rendererTaskId,
+				keptTaskAction: command.keptTaskAction,
 			};
 			this.records.set(command.componentId, record);
 			if (scope.watchedTask) {
