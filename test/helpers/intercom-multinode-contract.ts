@@ -2703,6 +2703,30 @@ export function registerReturningSessionConformance(
 		});
 	});
 
+	check(
+		"an unanswered claim's fresh id is bound as `bind` binds it, also over a session recorded under it (#5607)",
+		async (connect) => {
+			const [a] = [await connect()];
+			const reclaim = a.knownSessions.reclaim;
+			assert.ok(reclaim !== undefined, "the store reclaims ids");
+			// A record from before bindings existed holds the id for its own return address.
+			assert.deepEqual(
+				await a.knownSessions.record({
+					targetIdentity: OTHER_RECIPIENT,
+					intercomSessionId: "recorded-session",
+					atomicSessionId: "someone-else",
+					group: "team",
+					groups: ["team"],
+				}),
+				{ status: "recorded" },
+			);
+			assert.deepEqual(await reclaim(reclaimOf("never-written", "recorded-session")), {
+				status: "fresh",
+				binding: { status: "refused", returnAddress: "someone-else" },
+			});
+		},
+	);
+
 	check("an unanswered claim of an id bound to another return address gets the fresh id (#5607)", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		const reclaim = a.knownSessions.reclaim;

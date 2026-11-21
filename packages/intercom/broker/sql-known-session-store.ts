@@ -172,12 +172,16 @@ export async function openSqlKnownSessionStore({
 				);
 				if (changes === 1) return { status: "kept" } as const;
 				// A fresh id, made at random for this registration, has no binding or record yet: one write binds it, and only an
-				// id already there takes `bind`'s whole way.
+				// id already there, bound or recorded, takes `bind`'s whole way.
 				const inserted = await tx.run(
-					`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at) VALUES (?, ?, ${nowMs})
+					`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at)
+					 SELECT ?, ?, ${nowMs}
+					 WHERE NOT EXISTS (SELECT 1 FROM ${table} WHERE intercom_session_id = ? AND ${age} <= ?)
 					 ON CONFLICT(intercom_session_id) DO NOTHING`,
 					request.freshId,
 					request.returnAddress,
+					request.freshId,
+					request.retentionMs,
 				);
 				const binding =
 					inserted.changes === 1
