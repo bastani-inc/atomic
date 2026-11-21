@@ -123,3 +123,22 @@ test("answers counted before a newer message was handed over stay with the older
 		assert.equal(broker.send("stage", "launcher", `answer-${index}`)?.type, "delivered");
 	assert.equal(broker.send("stage", "launcher", "answer-over")?.type, "delivery_failed");
 });
+
+test("a retried answer keeps the time it was first counted, so a newer message handed over before the retry still allows its own answers", () => {
+	const broker = brokerHoldingWritesTo(
+		"stage",
+		session("launcher", "launch", createReachPolicy("launch", ["stages"])),
+		session("stage", "stages"),
+	);
+	broker.send("launcher", "stage", "first-note");
+	broker.completeWrites();
+	assert.equal(broker.send("stage", "launcher", "answer-to-first")?.type, "delivered");
+	broker.send("launcher", "stage", "second-note");
+	// The answer to the first note is sent again before the second note's delivery completes: the same answer.
+	assert.equal(broker.send("stage", "launcher", "answer-to-first")?.type, "delivered");
+	broker.completeWrites();
+
+	for (let index = 1; index <= RETURN_PATH_MESSAGE_LIMIT; index++)
+		assert.equal(broker.send("stage", "launcher", `answer-${index}`)?.type, "delivered");
+	assert.equal(broker.send("stage", "launcher", "answer-over")?.type, "delivery_failed");
+});
