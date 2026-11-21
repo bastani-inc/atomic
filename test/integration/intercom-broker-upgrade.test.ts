@@ -652,11 +652,13 @@ describe("replacing an older broker (#4538)", () => {
 			assert.deepEqual([error.cause.pid, error.cause.timeoutMs], [legacy.pid, 2_000]);
 			assert.equal(legacy.shutdownRequests(), 1);
 			const lockPath = join(agentDir, "intercom", "broker.spawn.lock");
-			// The lock names the broker's pid, as earlier versions read it, and where starts are read, when it started.
-			assert.equal(
-				readFileSync(lockPath, "utf8").trim().split("\n")[2],
-				READS_PROCESS_STARTS ? `${legacy.pid} ${found.started}` : String(legacy.pid),
-			);
+			// The lock names the broker's pid, as earlier versions read it, and where starts are read, when it started:
+			// never another process's start. Linux reads it at once; Windows records it once its read finished within the
+			// stop bound, and otherwise names the pid alone, as before.
+			const handed = readFileSync(lockPath, "utf8").trim().split("\n")[2];
+			const recordable = READS_PROCESS_STARTS ? `${legacy.pid} ${found.started}` : String(legacy.pid);
+			if (process.platform === "win32") assert.ok([recordable, String(legacy.pid)].includes(handed ?? ""), handed);
+			else assert.equal(handed, recordable);
 			assert.equal(
 				isSpawnLockStale(lockPath),
 				false,
