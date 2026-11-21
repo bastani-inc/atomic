@@ -4,9 +4,9 @@
 
 ### Fixed
 
-- Fixed image resizing running on the calling thread in a Node process started with `--input-type=module` written another way Node accepts: `--input_type=module` on the command line, or in `NODE_OPTIONS` in quotes (`"--input-type=module"`), with an escape (`"--input\-type=module"`) or as `--input_type=module`. A `NODE_OPTIONS` that names `--input-type` where Node does not read it, such as inside a quoted `--title` value, no longer changes how Atomic starts its worker threads.
-- Fixed the interactive engine and headless runs on Node not getting their larger heap when `NODE_OPTIONS` names `--max-old-space-size` where Node does not apply it: after a tab, which Node does not treat as a separator, or after a word that ends Node's reading of `NODE_OPTIONS`. A heap size that Node applies still takes precedence.
-- Fixed Atomic ending on an unrelated unhandled promise rejection after an agent panel source failed, although `NODE_OPTIONS` sets `--unhandled-rejections` to `warn` or `none` in quotes or as `--unhandled_rejections`.
+- Fixed image resizing running on the calling thread in a Node process started with `--input-type=module` written another way Node accepts: `--input_type=module` on the command line, or in `NODE_OPTIONS` in quotes (`"--input-type=module"`), with an escape (`"--input\-type=module"`) or as `--input_type=module`. A `NODE_OPTIONS` that names `--input-type` where Node does not read it, such as inside a quoted `--title` value, no longer changes how Atomic starts its worker threads ([#6170](https://github.com/bastani-inc/atomic/pull/6170))
+- Fixed the interactive engine and headless runs on Node not getting their larger heap when `NODE_OPTIONS` names `--max-old-space-size` where Node does not apply it: after a tab, which Node does not treat as a separator, or after a word that ends Node's reading of `NODE_OPTIONS`. A heap size that Node applies still takes precedence ([#6170](https://github.com/bastani-inc/atomic/pull/6170))
+- Fixed Atomic ending on an unrelated unhandled promise rejection after an agent panel source failed, although `NODE_OPTIONS` sets `--unhandled-rejections` to `warn` or `none` in quotes or as `--unhandled_rejections` ([#6170](https://github.com/bastani-inc/atomic/pull/6170))
 
 ## [0.10.3] - 2026-11-21
 
