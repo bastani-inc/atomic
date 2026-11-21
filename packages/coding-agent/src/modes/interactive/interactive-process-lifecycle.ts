@@ -3,6 +3,7 @@ import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { quitAsInteractiveApp } from "../../core/interactive-quit.js";
 import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
 import { exitWithStatus } from "../../utils/process-exit-status.js";
+import { isModuleLoadFailure, UpdatedInstallError, updatedInstallError } from "../../utils/updated-install.ts";
 import { CONSOLE_CLOSED_EXIT_CODE, CONSOLE_CLOSED_SHUTDOWN_MS } from "../../utils/windows-console-close.js";
 import {
 	gracefullyStoppedEnginePids,
@@ -424,7 +425,17 @@ InteractiveModeBase.prototype.registerSignalHandlers = function (this: Interacti
 	// Restore the terminal before the process dies on any uncaught throw.
 	// Without this, an unhandled exception from extension code (or anywhere
 	// in pi) leaves the terminal in raw mode with no cursor.
-	const uncaughtExceptionHandler = (error: Error) => this.uncaughtCrash(error);
+	// A feature whose code an update replaced while this session runs, and that no longer loads, fails alone: the
+	// session goes on and says to restart instead of exiting.
+	const uncaughtExceptionHandler = (error: Error) => {
+		if (this.isShuttingDown || !(error instanceof UpdatedInstallError || isModuleLoadFailure(error))) {
+			return this.uncaughtCrash(error);
+		}
+		void updatedInstallError(error, "this feature").then(
+			(updated) => (updated && !this.isShuttingDown ? this.showError(updated.message) : this.uncaughtCrash(error)),
+			() => this.uncaughtCrash(error),
+		);
+	};
 	process.prependListener("uncaughtException", uncaughtExceptionHandler);
 	this.signalCleanupHandlers.push(() => process.off("uncaughtException", uncaughtExceptionHandler));
 };

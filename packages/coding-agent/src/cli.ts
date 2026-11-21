@@ -29,6 +29,7 @@ import {
 } from "./utils/interactive-engine-bootstrap.ts";
 import { isPlainInteractiveSessionInvocation } from "./utils/interactive-invocation.ts";
 import { startStartupPrefetch } from "./utils/startup-prefetch.js";
+import { updatedInstallError } from "./utils/updated-install.ts";
 
 installLifecycleTraceFromEnv();
 markLifecycleTiming("process-entry");
@@ -132,5 +133,13 @@ if (heapArgs.length > 0) {
 		.then(([[{ configureHttpDispatcher }, { main }, { exitOnDecisionConfigError }], runArgs]) => {
 			configureHttpDispatcher();
 			main(runArgs).catch(exitOnDecisionConfigError);
+		})
+		// An update that replaced the installation while this process started leaves modules that no longer load: say
+		// to start again instead of failing with the runtime's error. Any other failure stays the runtime's own.
+		.catch(async (error: unknown) => {
+			const updated = await updatedInstallError(error, APP_NAME);
+			if (!updated) throw error;
+			console.error(updated.message);
+			process.exit(1);
 		});
 }
