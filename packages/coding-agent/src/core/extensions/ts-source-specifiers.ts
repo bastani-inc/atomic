@@ -126,6 +126,12 @@ interface MetaPropertyPath {
 	replaceWith(node: object): void;
 }
 
+interface IdentifierPath {
+	node: { name?: string };
+	scope: { hasBinding(name: string): boolean };
+	isReferencedIdentifier(): boolean;
+}
+
 interface ProgramPath {
 	scope: { hasBinding(name: string): boolean };
 	unshiftContainer(key: "body", node: object): void;
@@ -148,28 +154,50 @@ const IMPORT_META = "__atomicImportMeta";
  * destructures it.
  */
 function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) {
-	const url = pathToFileURL(options.filename).href;
-	const dirname = path.dirname(options.filename);
-	const file = path.basename(options.filename);
+	// The file's path as the platform writes it: jiti names it with forward slashes on Windows too.
+	const filename = path.resolve(options.filename);
+	const url = pathToFileURL(filename).href;
+	const dirname = path.dirname(filename);
+	const file = path.basename(filename);
+	type State = { usesImportMeta?: boolean; usesFileGlobals?: boolean };
 	return {
 		name: "atomic-module-import-meta",
 		visitor: {
-			MetaProperty(nodePath: MetaPropertyPath, state: { usesImportMeta?: boolean }) {
+			MetaProperty(nodePath: MetaPropertyPath, state: State) {
 				if (nodePath.node.meta?.name !== "import" || nodePath.node.property?.name !== "meta") return;
 				nodePath.replaceWith(babel.types.identifier(IMPORT_META));
 				state.usesImportMeta = true;
 			},
+			Identifier(nodePath: IdentifierPath, state: State) {
+				const name = nodePath.node.name;
+				if ((name === "__filename" || name === "__dirname") && nodePath.isReferencedIdentifier()) {
+					if (!nodePath.scope.hasBinding(name)) state.usesFileGlobals = true;
+				}
+			},
 			Program: {
-				exit(nodePath: ProgramPath, state: { usesImportMeta?: boolean }) {
+				exit(nodePath: ProgramPath, state: State) {
+					if (
+						state.usesFileGlobals &&
+						!nodePath.scope.hasBinding("__filename") &&
+						!nodePath.scope.hasBinding("__dirname")
+					) {
+						// Under Bun, as a natively imported module has them; jiti's stay under Node, as before.
+						nodePath.unshiftContainer(
+							"body",
+							babel.template.statement.ast(
+								`if (process.versions.bun !== undefined) { __filename = ${JSON.stringify(filename)}; __dirname = ${JSON.stringify(dirname)}; }`,
+							),
+						);
+					}
 					if (!state.usesImportMeta) return;
 					// jiti's `require` for the module, unless the module declares its own at the top level.
 					const require = nodePath.scope.hasBinding("require") ? "" : ", require";
-					const bun = `path: ${JSON.stringify(options.filename)}, dir: ${JSON.stringify(dirname)}, file: ${JSON.stringify(file)}, main: false${require}`;
+					const bun = `path: ${JSON.stringify(filename)}, dir: ${JSON.stringify(dirname)}, file: ${JSON.stringify(file)}, main: false${require}`;
 					// `env` as jiti gave `import.meta.env` before, under Node too.
 					nodePath.unshiftContainer(
 						"body",
 						babel.template.statement.ast(
-							`const ${IMPORT_META} = { url: ${JSON.stringify(url)}, filename: ${JSON.stringify(options.filename)}, dirname: ${JSON.stringify(dirname)}, resolve: jitiESMResolve, env: process.env, ...(process.versions.bun === undefined ? {} : { ${bun} }) };`,
+							`const ${IMPORT_META} = { url: ${JSON.stringify(url)}, filename: ${JSON.stringify(filename)}, dirname: ${JSON.stringify(dirname)}, resolve: jitiESMResolve, env: process.env, ...(process.versions.bun === undefined ? {} : { ${bun} }) };`,
 						),
 					);
 				},

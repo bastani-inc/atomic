@@ -191,7 +191,6 @@ it(
 		destructuredFilename: filename,
 		resolved: meta.resolve("./extension.ts"),
 		bunDir: meta.dir,
-		dirnameGlobal: __dirname,
 	});
 }
 `,
@@ -217,7 +216,6 @@ it(
 					resolved: pathToFileURL(entry).href,
 					// Node's `import.meta` has no Bun properties.
 					bunDir: undefined,
-					dirnameGlobal: root,
 				});
 			}
 		} finally {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 // Under Bun the extension loader transforms an extension on its first load too, as on every reload and under Node.
 // Its `typebox` imports reach Atomic's copy, which tool validation reads, even when it has a `typebox` package of its
@@ -59,14 +60,15 @@ export default function (pi) {
 			main: import.meta.main,
 			dirnameGlobal: __dirname,
 			filenameGlobal: __filename,
-			required: require.resolve("./a.ts"),
+			// jiti's require names paths with forward slashes on Windows.
+			required: join(require.resolve("./a.ts")),
 			aliasedDir: meta.dir,
 			computedDir: import.meta[key],
 			destructuredDir,
 			resolved: import.meta.resolve("./a.ts"),
 			aliasedResolved: meta.resolve("./a.ts"),
-			metaRequired: import.meta.require.resolve("./a.ts"),
-			destructuredRequired: destructuredRequire.resolve("./a.ts"),
+			metaRequired: join(import.meta.require.resolve("./a.ts")),
+			destructuredRequired: join(destructuredRequire.resolve("./a.ts")),
 		},
 		asset: readFileSync(join(import.meta.dir, "asset.txt"), "utf8"),
 	});
@@ -97,7 +99,7 @@ export default function (pi) {
 			assert.deepEqual(
 				observed.meta,
 				{
-					url: `file://${entry}`,
+					url: pathToFileURL(entry).href,
 					filename: entry,
 					dirname: extensionDir,
 					path: entry,
@@ -110,8 +112,8 @@ export default function (pi) {
 					aliasedDir: extensionDir,
 					computedDir: extensionDir,
 					destructuredDir: extensionDir,
-					resolved: `file://${path.join(extensionDir, "a.ts")}`,
-					aliasedResolved: `file://${path.join(extensionDir, "a.ts")}`,
+					resolved: pathToFileURL(path.join(extensionDir, "a.ts")).href,
+					aliasedResolved: pathToFileURL(path.join(extensionDir, "a.ts")).href,
 					metaRequired: path.join(extensionDir, "a.ts"),
 					destructuredRequired: path.join(extensionDir, "a.ts"),
 				},
