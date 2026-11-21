@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import { startPtyProgram } from "../helpers/pty-program.js";
-import { removeTempDirectory, sleep, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import { moduleDir, removeTempDirectory, sleep, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 import {
 	createScriptSandbox,
 	processRuns,
@@ -18,6 +18,12 @@ const STOP_ESCALATION_MS = 10_000;
 // A real Python interpreter per script and per fake Atomic; a few seconds under load.
 const START_MS = 15_000;
 const STALLED_TEST_MS = START_MS + STOP_ESCALATION_MS + 15_000;
+// STATUS_CONTROL_C_EXIT: how Windows reports a console program ended by Ctrl+C, Ctrl+Break or closing its console.
+const WINDOWS_CONSOLE_INTERRUPTED = 0xc000013a;
+// The console-close harness waits this long for the queries to start and then for the script to exit.
+const CLOSE_HARNESS_S = START_MS / 1_000 + 10;
+const CLOSE_TEST_MS = 2 * CLOSE_HARNESS_S * 1_000 + 15_000;
+const consoleClose = join(moduleDir(import.meta.url), "../fixtures/skill-creator/console-close.py");
 
 const sandboxes: ScriptSandbox[] = [];
 afterEach(() => {
@@ -310,6 +316,35 @@ print(json.dumps({"result": outcome.get("result"), "handlers_kept": before == af
 		);
 	},
 );
+
+describe.skipIf(python === undefined || process.platform !== "win32")("skill-creator scripts stop on Windows", () => {
+	test(
+		"closing the console stops every Atomic the script started and exits with the console-interrupt status, reporting no results",
+		async () => {
+			const box = sandbox();
+			// Starts the script on a console of its own and closes that console once both queries' Atomic run.
+			const result = spawnSyncCollect(
+				[
+					python ?? "python",
+					consoleClose,
+					box.log,
+					"2",
+					`${CLOSE_HARNESS_S}`,
+					python ?? "python",
+					...evalArgs(box, ["one", "two"]),
+				],
+				{ cwd: box.project, env: box.env({ FAKE_ATOMIC_SCENARIO: "hold-child" }) },
+			);
+			assert.equal(result.exitCode, 0, result.stderr.toString());
+			const closed = JSON.parse(result.stdout.toString()) as { status: number | null; screen: string };
+			assert.equal(closed.status, WINDOWS_CONSOLE_INTERRUPTED, closed.screen);
+			assert.doesNotMatch(closed.screen, /query failed|"results"/u, "a closed console reports no query as failed");
+			await waitUntilGone(startedPids(box.records()), 5_000);
+			assert.deepEqual(readdirSync(box.temp), []);
+		},
+		CLOSE_TEST_MS,
+	);
+});
 
 async function waitFor(condition: () => boolean, what: string): Promise<void> {
 	const deadline = Date.now() + START_MS;
