@@ -403,6 +403,8 @@ interface Inflight {
 	readonly identity: string;
 	/** #4386: a released asker's reply; only the owner's answer to this handoff settles the row. */
 	readonly released?: ReleasedReplyHandoff;
+	/** When the frame was handed to the recipient: its answers from then on count toward the return path it opens. */
+	readonly handedOverAt?: number;
 }
 
 interface ReleasedReplyHandoff {
@@ -4321,7 +4323,14 @@ export class MultiNodeRouter {
 				if (failed.status === "failed") await this.wakeOrigin(row);
 				continue;
 			}
-			const inflight: Inflight = { claim, row, session, identity };
+			const handedOverAt = this.host.returnPaths?.handOverTime();
+			const inflight: Inflight = {
+				claim,
+				row,
+				session,
+				identity,
+				...(handedOverAt === undefined ? {} : { handedOverAt }),
+			};
 			this.inflight.set(row.messageId, inflight);
 			const delivery = messageFrameFor(session, frame.from, frame.message, frame.channel);
 			this.host.writeConfirmed(session.socket, delivery, (written) => {
@@ -4421,6 +4430,8 @@ export class MultiNodeRouter {
 				{ sessionId: frame.from.id, identity: frame.senderIdentity },
 				frame.from,
 				frame.message.id,
+				undefined,
+				inflight.handedOverAt,
 			);
 			await this.wakeOrigin(inflight.row);
 		})().catch((error: Error) => {
