@@ -14,6 +14,7 @@ import {
 	FORKED_PACKAGE_WORKSPACE_DIRS,
 	type ForkedPackageManifest,
 	forkedPackageExportAliases,
+	TYPEBOX_SUBPATHS,
 	withLegacyPackageNames,
 } from "./forked-package-names.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
@@ -53,7 +54,14 @@ const transpileCachePrunes = new Map<string, Promise<void>>();
 function getCreateJiti(): Promise<typeof createJiti> {
 	createJitiPromise ??= (
 		isBunBinary || isBundledBuild ? import("./jiti-static-loader.ts") : import("./jiti-loader.ts")
-	).then((module) => module.createJiti);
+	).then((module) =>
+		// jiti imports a module natively first under Bun, and Bun then resolves the module's own imports itself, so an
+		// extension's `typebox` or Atomic package imports could reach other copies than the host's. Every load is
+		// transformed instead, as under Node: each import goes through the host's modules and aliases.
+		process.versions.bun === undefined
+			? module.createJiti
+			: (((id, options) => module.createJiti(id, { tryNative: false, ...options })) as typeof createJiti),
+	);
 	return createJitiPromise;
 }
 
@@ -571,10 +579,6 @@ async function computeAliases(): Promise<Record<string, string>> {
 	const __dirname = currentModuleDir();
 	const packageIndex = path.resolve(__dirname, "../..", "index.js");
 
-	const typeboxEntry = require.resolve("typebox");
-	const typeboxCompileEntry = require.resolve("typebox/compile");
-	const typeboxValueEntry = require.resolve("typebox/value");
-
 	const packagesRoot = path.resolve(__dirname, "../../../../");
 	const resolveWorkspaceOrImport = async (workspaceRelativePath: string, packageName: string): Promise<string> => {
 		const workspacePath = path.join(packagesRoot, workspaceRelativePath);
@@ -693,13 +697,25 @@ async function computeAliases(): Promise<Record<string, string>> {
 		"@bastani/atomic-ai/api/anthropic-assistant-content": piAiAnthropicAssistantContentEntry,
 		"@bastani/atomic-ai/api/transform-messages": piAiTransformMessagesEntry,
 		"@bastani/atomic-ai": piAiEntry,
-		typebox: typeboxEntry,
-		"typebox/compile": typeboxCompileEntry,
-		"typebox/value": typeboxValueEntry,
-		"@sinclair/typebox": typeboxEntry,
-		"@sinclair/typebox/compile": typeboxCompileEntry,
-		"@sinclair/typebox/value": typeboxValueEntry,
+		...typeboxAliases(forkedPackageAliases, path.resolve(__dirname, "../..", "typebox")),
 	});
+}
+
+/**
+ * Every `typebox` specifier, the SDK's re-exports of it (`@bastani/atomic/typebox`), and TypeBox 0.x's name for the
+ * subpaths TypeBox 1 shares with it, as the files of Atomic's one copy of TypeBox in `@bastani/atomic-schema`.
+ */
+function typeboxAliases(forkedPackageAliases: Record<string, string>, sdkTypeboxDir: string): Record<string, string> {
+	const aliases: Record<string, string> = {};
+	for (const subpath of TYPEBOX_SUBPATHS) {
+		const target = forkedPackageAliases[`@bastani/atomic-schema/typebox${subpath}`];
+		if (target === undefined) throw new Error(`@bastani/atomic-schema does not export ./typebox${subpath}`);
+		aliases[`typebox${subpath}`] = target;
+		aliases[`@bastani/atomic/typebox${subpath}`] = path.join(sdkTypeboxDir, `${subpath.slice(1) || "index"}.js`);
+	}
+	for (const subpath of ["", "/compile", "/value"])
+		aliases[`@sinclair/typebox${subpath}`] = aliases[`typebox${subpath}`]!;
+	return aliases;
 }
 
 /**
@@ -837,8 +853,8 @@ async function importExtensionModule(
 	} else {
 		module = await importEntry();
 	}
-	// jiti tries native imports first under Bun; under Node it transforms, except on Windows where re-loads keep
-	// using the transformed path and its retained-evaluation reuse.
+	// jiti transforms every load (see getCreateJiti); on Windows re-loads keep using the transformed path and its
+	// retained-evaluation reuse.
 	if ((isWindows || jiti.options.tryNative) && !forceTransformedImports) {
 		nativelyImportedPaths.add(extensionPath);
 	}
@@ -936,11 +952,11 @@ export async function loadExtensionModule(
 	// module instances baked into the build, so virtualModules is used instead
 	// (which requires jiti's transformed-import path).
 	// Every editable path retains the existing jiti/virtualModules behavior.
-	// First-load fast path: native import() (jiti's default tryNative under Bun)
-	// skips per-launch transpilation of the extension module graph. Re-loads of
-	// the same path fall back to transformed imports for fresh evaluation.
+	// A first load is transformed like any other (see getCreateJiti), from
+	// the persistent transpile cache when it holds the module. On Windows,
+	// re-loads of the same path take the retained-evaluation path below.
 	//
-	// That fallback is not free. Measured on Windows CI, a transformed re-import
+	// A transformed re-import is not free. Measured on Windows CI, a transformed re-import
 	// costs ~15 ms per module file in the extension's transitive graph, so a
 	// reload of all five builtin packages (621 files) takes ~10.7 s cold and
 	// ~2.5 s against a warm jiti fsCache, against ~40 ms on Linux and macOS. The

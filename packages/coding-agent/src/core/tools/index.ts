@@ -130,7 +130,7 @@ export {
 } from "./write.ts";
 
 import type { AgentTool } from "@bastani/atomic-agent-core";
-import type { TSchema } from "typebox";
+import type { TSchema } from "@bastani/atomic-schema/typebox";
 import { isPowerShellAvailable, isPowerShellAvailableAsync } from "../../utils/shell.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import {

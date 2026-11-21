@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
+import { Type } from "@bastani/atomic-schema/typebox";
 import { Text } from "@bastani/atomic-tui";
-import { Type } from "typebox";
 import { expect, it } from "vitest";
 import { bunExecutable, moduleDir, spawnSyncCollect } from "../../../test/helpers/runtime.js";
 import { createEventBus } from "../src/core/event-bus.js";
@@ -163,6 +164,61 @@ export default function (pi) {
 			expect(observations).toHaveLength(2);
 		} finally {
 			tui.setKeybindings(original);
+			fs.rmSync(root, { recursive: true, force: true });
+			clearExtensionCache();
+		}
+	},
+	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+);
+
+// The loader evaluates an extension's transformed code, but each module's `import.meta` still describes its own file,
+// as when the module is imported natively.
+it(
+	"an extension's import.meta names its own file, on its first load and after a reload",
+	async () => {
+		const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-import-meta-"));
+		const entry = path.join(root, "extension.ts");
+		fs.writeFileSync(
+			entry,
+			`export default function (pi) {
+	const meta = import.meta;
+	const { filename } = import.meta;
+	pi.events.emit("meta-probe", {
+		url: import.meta.url,
+		filename: import.meta.filename,
+		dirname: import.meta.dirname,
+		aliasedDirname: meta.dirname,
+		destructuredFilename: filename,
+		resolved: meta.resolve("./extension.ts"),
+		bunDir: meta.dir,
+	});
+}
+`,
+		);
+		const bus = createEventBus();
+		const observations: object[] = [];
+		bus.on("meta-probe", (value) => observations.push(value as object));
+		try {
+			for (const load of ["first", "reload"]) {
+				clearExtensionCache();
+				const factory =
+					load === "first"
+						? await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry)
+						: await extensionLoaderTestHooks.loadTransformedExtensionModule(entry);
+				expect(factory).toBeTypeOf("function");
+				await loadExtensionFromFactory(factory!, root, bus, createExtensionRuntime(), entry);
+				expect(observations.at(-1)).toEqual({
+					url: pathToFileURL(entry).href,
+					filename: entry,
+					dirname: root,
+					aliasedDirname: root,
+					destructuredFilename: entry,
+					resolved: pathToFileURL(entry).href,
+					// Node's `import.meta` has no Bun properties.
+					bunDir: undefined,
+				});
+			}
+		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 			clearExtensionCache();
 		}

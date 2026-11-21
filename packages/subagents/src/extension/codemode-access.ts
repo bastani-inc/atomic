@@ -6,7 +6,7 @@ import {
 	type ToolScriptAccess,
 } from "@bastani/atomic";
 import type { JsonValue } from "@bastani/atomic-ai";
-import { Type } from "typebox";
+import { Type } from "@bastani/atomic-schema/typebox";
 import { admittedSubagentChild } from "../runs/foreground/released-child-resume.js";
 import {
 	currentChildWorktreeNote,

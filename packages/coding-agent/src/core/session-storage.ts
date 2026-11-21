@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { Value } from "typebox/value";
+import { Value } from "@bastani/atomic-schema/typebox/value";
 import { getAgentDir, getProjectConfigPaths } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";

@@ -31,13 +31,15 @@ Atomic finds its bundled resources and native modules relative to its installed 
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["@bastani/atomic", "@bastani/atomic-natives", "@bastani/atomic-ai", "typebox"],
+  serverExternalPackages: ["@bastani/atomic", "@bastani/atomic-natives", "@bastani/atomic-ai"],
 };
 
 export default nextConfig;
 ```
 
-Atomic's own dependencies load from `node_modules` once `@bastani/atomic` is external. The other entries cover packages your app may import directly, such as `typebox` for tool schemas, so your code and Atomic share one copy. Add any other Atomic dependency you import yourself.
+Atomic's own dependencies load from `node_modules` once `@bastani/atomic` is external. The other entries cover packages your app may import directly. Add any other Atomic dependency you import yourself.
+
+Import TypeBox for tool schemas from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format` and TypeBox's other subpaths) rather than from `typebox`. Atomic ships its own copy of TypeBox, and formats, settings or a locale your app registers reach Atomic's validation only through that copy.
 
 Every route that imports Atomic must use the Node.js runtime:
 
