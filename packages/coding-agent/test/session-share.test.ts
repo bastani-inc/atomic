@@ -38,12 +38,35 @@ type ShareContext = {
 /** The first line of an exported session `id`. */
 const header = (id: string) => `${JSON.stringify({ type: "session", id })}\n`;
 
+/**
+ * Waits for a state of the share that a step of it reaches, looked at again whenever such a step happens: never for a
+ * fixed time, which a loaded machine can take for the share's own file and process work.
+ */
+function steps() {
+	const waiting = new Set<{ readonly reached: () => boolean; readonly resolve: () => void }>();
+	return {
+		/** A step happened: wakes every wait whose state it reached. */
+		happened(): void {
+			for (const wait of [...waiting]) {
+				if (!wait.reached()) continue;
+				waiting.delete(wait);
+				wait.resolve();
+			}
+		},
+		until(reached: () => boolean): Promise<void> {
+			if (reached()) return Promise.resolve();
+			return new Promise((resolve) => waiting.add({ reached, resolve }));
+		},
+	};
+}
+
 describe("InteractiveMode /share", () => {
 	beforeAll(() => initTheme("dark"));
 
 	it("keeps concurrent session exports isolated", async () => {
 		const processes: ShareProcess[] = [];
 		const uploadPaths: string[] = [];
+		const uploads = steps();
 		childProcessMocks.spawn.mockImplementation((_command: string, args: string[]) => {
 			if (args[0] === "auth") {
 				const auth = new EventEmitter();
@@ -58,6 +81,7 @@ describe("InteractiveMode /share", () => {
 				kill: vi.fn(),
 			});
 			processes.push(child);
+			uploads.happened();
 			return child;
 		});
 
@@ -90,7 +114,7 @@ describe("InteractiveMode /share", () => {
 		const shareA = handleShareCommand.call(context("A"));
 		const shareB = handleShareCommand.call(context("B"));
 
-		await vi.waitFor(() => assert.equal(uploadPaths.length, 2));
+		await uploads.until(() => uploadPaths.length === 2);
 		assert.notEqual(uploadPaths[0], uploadPaths[1]);
 		assert.deepEqual(uploadPaths.map((path) => readFileSync(path, "utf8")).sort(), [header("A"), header("B")]);
 		for (const [index, child] of processes.entries()) {
@@ -115,9 +139,11 @@ describe("InteractiveMode /share", () => {
 		/** A share whose gh children and export the test drives, on a prompt slot that counts the prompt's returns. */
 		function share(exportToJsonl: (path: string) => Promise<string>) {
 			const spawned: Array<{ args: string[]; child: Child }> = [];
+			const progress = steps();
 			childProcessMocks.spawn.mockImplementation((_command: string, args: string[]) => {
 				const spawnedChild = child();
 				spawned.push({ args, child: spawnedChild });
+				progress.happened();
 				return spawnedChild;
 			});
 			const editor = new Container();
@@ -132,7 +158,14 @@ describe("InteractiveMode /share", () => {
 			const statuses: string[] = [];
 			const errors: string[] = [];
 			const context: ShareContext = {
-				session: { exportToJsonl: (path) => exportToJsonl(path), sessionManager: { getSessionId: () => "A" } },
+				session: {
+					exportToJsonl: (path) => {
+						const exporting = exportToJsonl(path);
+						progress.happened();
+						return exporting;
+					},
+					sessionManager: { getSessionId: () => "A" },
+				},
 				ui: { setFocus() {}, requestRender() {} },
 				editorContainer,
 				editor,
@@ -142,11 +175,18 @@ describe("InteractiveMode /share", () => {
 			const handleShareCommand = (
 				InteractiveMode.prototype as unknown as { handleShareCommand(this: ShareContext): Promise<void> }
 			).handleShareCommand;
-			const done = handleShareCommand.call(context);
+			let finished = false;
+			const done = handleShareCommand.call(context).finally(() => {
+				finished = true;
+				progress.happened();
+			});
 			const loader = editorContainer.children[0];
 			return {
 				context,
 				done,
+				finished: () => finished,
+				/** Settles once `reached` holds, after any step of the share: a gh child started, an export or the end. */
+				until: (reached: () => boolean) => progress.until(reached),
 				spawned,
 				statuses,
 				errors,
@@ -163,7 +203,8 @@ describe("InteractiveMode /share", () => {
 		it("shows the loader in the prompt's place before gh is asked anything", async () => {
 			const run = share(async (path) => path);
 			assert.ok(run.loader instanceof BorderedLoader, "the loader is up as the command starts");
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			assert.deepEqual(run.spawned[0]?.args, ["auth", "status"]);
 			run.spawned[0]?.child.emit("close", 1);
 			await run.done;
@@ -178,7 +219,8 @@ describe("InteractiveMode /share", () => {
 				exported.push(path);
 				return path;
 			});
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			run.cancel();
 			assert.equal(run.spawned[0]?.child.kill.mock.calls.length, 1);
 			assert.ok(run.showsPrompt(), "the prompt is back at once");
@@ -193,7 +235,8 @@ describe("InteractiveMode /share", () => {
 
 		it("a cancelled gh that keeps running is killed after a grace period", async () => {
 			const run = share(async (path) => path);
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			const auth = run.spawned[0]?.child;
 			assert.ok(auth);
 			Object.assign(auth, { exitCode: null, signalCode: null });
@@ -223,7 +266,8 @@ describe("InteractiveMode /share", () => {
 				writeFileSync(path, header("A"));
 				return path;
 			});
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			run.spawned[0]?.child.emit("close", 0);
 			const path = await exporting.promise;
 			run.cancel();
@@ -247,9 +291,11 @@ describe("InteractiveMode /share", () => {
 				writeFileSync(path, header("A"));
 				return path;
 			});
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			run.spawned[0]?.child.emit("close", 0);
-			await vi.waitFor(() => assert.equal(run.spawned.length, 2));
+			await run.until(() => run.finished() || run.spawned.length >= 2);
+			assert.equal(run.spawned.length, 2);
 			const gist = run.spawned[1]?.child;
 			assert.ok(gist);
 			run.cancel();
@@ -271,7 +317,8 @@ describe("InteractiveMode /share", () => {
 				exported.push("A");
 				return path;
 			});
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			run.context.session = {
 				exportToJsonl: async (path) => {
 					exported.push("B");
@@ -280,11 +327,7 @@ describe("InteractiveMode /share", () => {
 				sessionManager: { getSessionId: () => "B" },
 			};
 			run.spawned[0]?.child.emit("close", 0);
-			let finished = false;
-			void run.done.then(() => {
-				finished = true;
-			});
-			await vi.waitFor(() => assert.ok(finished || exported.length > 0 || run.spawned.length > 1));
+			await run.until(() => run.finished() || exported.length > 0 || run.spawned.length > 1);
 			assert.deepEqual(exported, []);
 			assert.equal(run.spawned.length, 1, "no gist is created");
 			await run.done;
@@ -296,7 +339,8 @@ describe("InteractiveMode /share", () => {
 
 		it("a session replaced while gh is checked says so, whatever gh then answers", async () => {
 			const run = share(async (path) => path);
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			run.context.session = { exportToJsonl: async (path) => path, sessionManager: { getSessionId: () => "B" } };
 			run.spawned[0]?.child.emit("close", 1);
 			await run.done;
@@ -312,14 +356,11 @@ describe("InteractiveMode /share", () => {
 				return path;
 			});
 			run.context.session.sessionManager = { getSessionId: () => current };
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			current = "B";
 			run.spawned[0]?.child.emit("close", 0);
-			let finished = false;
-			void run.done.then(() => {
-				finished = true;
-			});
-			await vi.waitFor(() => assert.ok(finished || exported.length > 0 || run.spawned.length > 1));
+			await run.until(() => run.finished() || exported.length > 0 || run.spawned.length > 1);
 			assert.deepEqual(exported, []);
 			assert.equal(run.spawned.length, 1, "no gist is created");
 			await run.done;
@@ -337,16 +378,13 @@ describe("InteractiveMode /share", () => {
 				return path;
 			});
 			run.context.session.sessionManager = { getSessionId: () => current };
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			run.spawned[0]?.child.emit("close", 0);
 			await started.promise;
 			current = "B";
 			exporting.resolve();
-			let finished = false;
-			void run.done.then(() => {
-				finished = true;
-			});
-			await vi.waitFor(() => assert.ok(finished || run.spawned.length > 1));
+			await run.until(() => run.finished() || run.spawned.length > 1);
 			assert.equal(run.spawned.length, 1, "no gist is created");
 			await run.done;
 			assert.deepEqual(run.statuses, ["Share cancelled: the session changed"]);
@@ -358,9 +396,11 @@ describe("InteractiveMode /share", () => {
 				writeFileSync(path, `${JSON.stringify({ type: "session", cwd: "x".repeat(70_000), id: "A" })}\n{}\n`);
 				return path;
 			});
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			run.spawned[0]?.child.emit("close", 0);
-			await vi.waitFor(() => assert.equal(run.spawned.length, 2), "the gist is created");
+			await run.until(() => run.finished() || run.spawned.length >= 2);
+			assert.equal(run.spawned.length, 2, "the gist is created");
 			const gist = run.spawned[1]?.child;
 			gist?.stdout.end("https://gist.github.com/test/1\n");
 			gist?.stderr.end();
@@ -377,13 +417,10 @@ describe("InteractiveMode /share", () => {
 				writeFileSync(path, header("B"));
 				return path;
 			});
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			run.spawned[0]?.child.emit("close", 0);
-			let finished = false;
-			void run.done.then(() => {
-				finished = true;
-			});
-			await vi.waitFor(() => assert.ok(finished || run.spawned.length > 1));
+			await run.until(() => run.finished() || run.spawned.length > 1);
 			assert.equal(run.spawned.length, 1, "no gist is created");
 			await run.done;
 			assert.deepEqual(run.statuses, ["Share cancelled: the session changed"]);
@@ -396,7 +433,8 @@ describe("InteractiveMode /share", () => {
 				exportedPath = path;
 				throw new Error("disk full");
 			});
-			await vi.waitFor(() => assert.equal(run.spawned.length, 1));
+			await run.until(() => run.finished() || run.spawned.length >= 1);
+			assert.equal(run.spawned.length, 1);
 			run.spawned[0]?.child.emit("close", 0);
 			await run.done;
 			assert.deepEqual(run.errors, ["Failed to export session: disk full"]);

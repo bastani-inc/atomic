@@ -19,7 +19,7 @@ import { AgentTaskHost } from "../src/core/tasks/agent-adapter.js";
 import type { TaskResult } from "../src/core/tasks/contracts.js";
 import { deriveSessionActivity } from "../src/extensions/herdr/activity.js";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
-import { arg, fakeHerdr } from "./helpers/herdr.js";
+import { arg, FAKE_HERDR_CHILD_TIMEOUT_MS, FAKE_HERDR_WAIT_MS, fakeHerdr } from "./helpers/herdr.js";
 import { createHarnessWithExtensions } from "./test-harness.js";
 
 test("independent subagents keep Herdr working while the parent is settled or awaiting approval", () => {
@@ -45,7 +45,7 @@ test("Herdr observes overlapping owner tasks and reattaches without losing runni
 		authorizeLaunch() {},
 	});
 	const extension = await loadExtensionFromFactory(
-		createHerdrExtension({ env: fake.env, enabled: () => true }),
+		createHerdrExtension({ env: fake.env, enabled: () => true, timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS }),
 		fake.dir,
 		createEventBus(),
 		runtime,
@@ -98,7 +98,7 @@ test("Herdr observes overlapping owner tasks and reattaches without losing runni
 				assert.ok(calls.length > reloadCalls.length);
 				assert.equal(arg(calls.at(-1)!.args, "--state"), "idle");
 			},
-			{ timeout: 5_000 },
+			{ timeout: FAKE_HERDR_WAIT_MS },
 		);
 	} finally {
 		finishFirst?.({ kind: "cancelled", cause: "shutdown" });
@@ -175,7 +175,7 @@ test.each(["need_decision", "interview_request"] as const)(
 		const supervisor = await createHarnessWithExtensions({
 			responses: ["Considering the worker's question."],
 			extensionFactories: [
-				createHerdrExtension({ env: fake.env, enabled: () => true }),
+				createHerdrExtension({ env: fake.env, enabled: () => true, timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS }),
 				observePrompts,
 				(pi) => {
 					deliver = createIncomingMessageSender({
@@ -262,13 +262,20 @@ test.each(["need_decision", "interview_request"] as const)(
 					const calls = (await fake.calls()).filter((call) => call.phase === "end");
 					assert.equal(arg(calls.at(-1)!.args, "--state"), "working");
 				},
-				{ timeout: 5_000 },
+				{ timeout: FAKE_HERDR_WAIT_MS },
 			);
+			// The supervisor's turn on the question settles in its own time: the test waits for that, not for a second.
+			const settled = Promise.withResolvers<void>();
+			const unsubscribeSettled = supervisor.session.subscribe((event) => {
+				if (event.type === "agent_settled") settled.resolve();
+			});
 			begin.resolve();
 			await delivered.promise;
 			assert.ok(request);
 			assert.equal(waiters.pending().length, 1, "the child is waiting for its supervisor, not the user");
-			await vi.waitFor(() => assert.equal(supervisor.eventsOfType("agent_settled").length, 1));
+			await settled.promise;
+			unsubscribeSettled();
+			assert.equal(supervisor.eventsOfType("agent_settled").length, 1);
 			const incoming = supervisor.session.messages.find(
 				(message) => message.role === "custom" && message.customType === "intercom_message",
 			);
@@ -317,10 +324,13 @@ test.each(["need_decision", "interview_request"] as const)(
 			assert.equal(arg((await fake.waitFor(2)).at(-1)!.args, "--state"), "working");
 			finish.resolve({ kind: "cancelled", cause: "user" });
 			await host.waitForTask(started.value.taskId);
-			await vi.waitFor(async () => {
-				const calls = (await fake.calls()).filter((call) => call.phase === "end");
-				assert.equal(arg(calls.at(-1)!.args, "--state"), "idle");
-			});
+			await vi.waitFor(
+				async () => {
+					const calls = (await fake.calls()).filter((call) => call.phase === "end");
+					assert.equal(arg(calls.at(-1)!.args, "--state"), "idle");
+				},
+				{ timeout: FAKE_HERDR_WAIT_MS },
+			);
 			await supervisor.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 			const reports = (await fake.calls()).filter((call) => call.phase === "end" && call.args[1] === "report-agent");
 			assert.ok(reports.length > 2);
