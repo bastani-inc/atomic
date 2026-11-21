@@ -24,6 +24,7 @@ import {
 	evaluateReloadableScript,
 	installReloadableScripts,
 	isReloadableScriptPath,
+	observeJsonReads,
 	withReloadableScriptPrologue,
 } from "./reloadable-scripts.ts";
 import {
@@ -184,12 +185,20 @@ function createGraphRecorder(cacheDir: string | undefined): GraphRecorder {
 function recordObservedRead(target: Parameters<typeof fs.readFileSync>[0], content: string | Buffer): void {
 	if (typeof target !== "string" || !path.isAbsolute(target)) return;
 	if (!graphManifestFileExtensions.has(path.extname(target).toLowerCase())) return;
+	recordObservedDigest(target, () => sha256Hex(content));
+}
+
+/** A digest that no file's content has: a reload never finds the file unchanged. */
+const CHANGED_WHILE_READ = "changed-while-read";
+
+/** Records `digest` for `target` in every graph being recorded, except a recorder's own transpile cache. */
+function recordObservedDigest(target: string, digest: string | (() => string)): void {
 	const normalizedTarget = path.normalize(target);
 	const comparableTarget = normalizedTarget.toLowerCase();
 	let hash: string | undefined;
 	for (const recorder of activeGraphRecorders) {
 		if (recorder.cachePrefix && comparableTarget.startsWith(recorder.cachePrefix)) continue;
-		hash ??= sha256Hex(content);
+		hash ??= typeof digest === "string" ? digest : digest();
 		recorder.files.set(normalizedTarget, hash);
 	}
 }
@@ -420,9 +429,14 @@ function recordLateModule(
 	filename: string | undefined,
 	source: string,
 ): void {
-	if (filename === undefined || retainedTransformedLoads.get(extensionPath) !== owner) return;
+	if (filename === undefined) return;
+	recordLateDigest(extensionPath, owner, filename, sha256Hex(source));
+}
+
+/** {@link recordLateModule} with the digest of what the evaluation read. */
+function recordLateDigest(extensionPath: string, owner: RetainedTransformedLoad, filename: string, hash: string): void {
+	if (retainedTransformedLoads.get(extensionPath) !== owner) return;
 	const file = path.normalize(filename);
-	const hash = sha256Hex(source);
 	if (owner.manifest.files[file] === hash) return;
 	owner.manifest.files[file] = hash;
 	if (lateReadWrites.has(owner)) return;
@@ -788,6 +802,20 @@ async function importExtensionModule(
 		// the live host instead of re-evaluating its graph through source aliases.
 		virtualModules: await getVirtualModules(),
 		...(!isSingleFileBuild ? { alias: await getAliases() } : {}),
+	});
+	// A JSON file the evaluation reads joins its graph, also after the graph was recorded, as a module it evaluates then
+	// does. One whose parsed content the load cannot vouch for is recorded with a digest no content has, so a reload
+	// evaluates the extension again.
+	observeJsonReads(jiti, (file, content) => {
+		if (retained)
+			recordLateDigest(
+				extensionPath,
+				retained,
+				file,
+				content === undefined ? CHANGED_WHILE_READ : sha256Hex(content),
+			);
+		// While the graph is recorded, the recording took the content from the read itself.
+		else if (content === undefined) recordObservedDigest(file, CHANGED_WHILE_READ);
 	});
 	if (sourceBuiltin) registerSourceBuiltinLoad(jiti, { createJiti: createJitiImpl, cacheDir });
 	const specifier = extensionImportSpecifier(importPath, cacheToken);
