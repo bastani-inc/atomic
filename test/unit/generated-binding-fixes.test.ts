@@ -228,6 +228,31 @@ test("a Windows binary that fails to load is named by its package, though Window
 	);
 });
 
+test("on macOS the package for the Mac's architecture is named, not the universal build the loader tries first", async () => {
+	assert.equal(
+		await loadWithoutBinding({
+			host: { platform: "darwin", arch: "x64" },
+			optionalDependencies: PUBLISHED_PLATFORM_PACKAGES,
+		}),
+		"Atomic's native module is not installed: this install of Atomic omitted optional dependencies, which leaves out " +
+			"@bastani/atomic-natives-darwin-x64. Reinstall Atomic with optional dependencies: npm install -g @bastani/atomic, " +
+			"pnpm add -g @bastani/atomic or bun add -g @bastani/atomic, without --omit=optional (npm, Bun) or --no-optional " +
+			"(pnpm); in a project, run its install without those options.",
+	);
+	// A runtime may throw a frozen error: what the loader tried is recorded beside it.
+	const invalid = Object.freeze(
+		Object.assign(new Error("LoadLibrary failed: not a valid Mach-O file"), { code: "ERR_DLOPEN_FAILED" }),
+	);
+	assert.equal(
+		await loadWithoutBinding({
+			host: { platform: "darwin", arch: "arm64" },
+			optionalDependencies: PUBLISHED_PLATFORM_PACKAGES,
+			installed: { "@bastani/atomic-natives-darwin-arm64": invalid },
+		}),
+		"Cannot load Atomic's native module from @bastani/atomic-natives-darwin-arm64: LoadLibrary failed: not a valid Mach-O file",
+	);
+});
+
 test("a platform package that cannot be looked up is not called left out", async () => {
 	assert.equal(
 		await loadWithoutBinding({ optionalDependencies: PUBLISHED_PLATFORM_PACKAGES, unreadable: [LINUX_PACKAGE] }),
