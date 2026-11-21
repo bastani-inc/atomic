@@ -52,6 +52,9 @@ const SHARED_INPUTS = [
 /** Compiles a staged step's package into a staging directory and moves the changed files into its dist. */
 const STAGED_DIST_REFRESH = "scripts/refresh-package-dist.mjs";
 
+/** Bundles each forked package's compiled modules into a few shared files (see the script). */
+const BUNDLER = "scripts/bundle-package-dist.mjs";
+
 /** @param {string} relative */
 const isGeneratedModelSource = (relative) =>
 	relative.startsWith("packages/ai/src/providers/data/") ||
@@ -83,7 +86,7 @@ export const BUILD_STEPS = [
 	{
 		name: "schema",
 		packageDir: "packages/schema",
-		inputs: ["packages/schema/src", "packages/schema/package.json", "packages/schema/tsconfig.build.json"],
+		inputs: ["packages/schema/src", "packages/schema/package.json", "packages/schema/tsconfig.build.json", BUNDLER],
 		outputs: ["packages/schema/dist"],
 		scripts: [],
 		staged: true,
@@ -91,7 +94,12 @@ export const BUILD_STEPS = [
 	{
 		name: "telemetry",
 		packageDir: "packages/telemetry",
-		inputs: ["packages/telemetry/src", "packages/telemetry/package.json", "packages/telemetry/tsconfig.build.json"],
+		inputs: [
+			"packages/telemetry/src",
+			"packages/telemetry/package.json",
+			"packages/telemetry/tsconfig.build.json",
+			BUNDLER,
+		],
 		outputs: ["packages/telemetry/dist"],
 		scripts: [],
 		staged: true,
@@ -128,6 +136,7 @@ export const BUILD_STEPS = [
 			"packages/ai/tsconfig.base.json",
 			"packages/ai/tsconfig.build.json",
 			"packages/ai/tsconfig.json",
+			BUNDLER,
 		],
 		outputs: ["packages/ai/dist"],
 		// The data the ai-models step left is checked as is: a stale catalog fails the build rather than being fetched again.
@@ -138,7 +147,7 @@ export const BUILD_STEPS = [
 	{
 		name: "tui",
 		packageDir: "packages/tui",
-		inputs: ["packages/tui/src", "packages/tui/package.json", "packages/tui/tsconfig.build.json"],
+		inputs: ["packages/tui/src", "packages/tui/package.json", "packages/tui/tsconfig.build.json", BUNDLER],
 		outputs: ["packages/tui/dist"],
 		scripts: [],
 		staged: true,
@@ -146,7 +155,7 @@ export const BUILD_STEPS = [
 	{
 		name: "agent",
 		packageDir: "packages/agent",
-		inputs: ["packages/agent/src", "packages/agent/package.json", "packages/agent/tsconfig.build.json"],
+		inputs: ["packages/agent/src", "packages/agent/package.json", "packages/agent/tsconfig.build.json", BUNDLER],
 		outputs: ["packages/agent/dist"],
 		scripts: [],
 		staged: true,
@@ -191,7 +200,7 @@ export const BUILD_STEPS = [
 			"packages/intercom",
 		],
 		outputs: ["packages/coding-agent/dist"],
-		scripts: [{ script: "build:tsc", tsc: true }, { script: "build:assets" }],
+		scripts: [{ script: "build:tsc", tsc: true }, { script: "build:declarations" }, { script: "build:assets" }],
 		toolchains: ["bun"],
 		after: ["ai", "tui", "agent", "codemode", "natives"],
 	},
