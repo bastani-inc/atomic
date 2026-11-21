@@ -17,7 +17,7 @@ const switchers = new WeakMap<InteractiveModeBase, AgentViewSwitcher>();
  */
 export function agentViewSwitcher(
 	mode: InteractiveModeBase,
-	openPort: OpenAgentViewPort = (taskId) => openAgentViewPort(mode, taskId),
+	openPort: OpenAgentViewPort = (taskId, options) => openAgentViewPort(mode, taskId, options),
 ): AgentViewSwitcher {
 	let switcher = switchers.get(mode);
 	if (switcher === undefined) {
@@ -51,6 +51,7 @@ export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 				if (message.type !== "engine_view_agent") return;
 				switcher.requestView(message.taskId === null ? undefined : (message.taskId as TaskId), {
 					keepScreen: message.keepScreen === true,
+					panel: message.panel === true,
 				});
 			}),
 			runtime.onGenerationEnded(() => switcher.reset("generation-lost")),

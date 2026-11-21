@@ -113,11 +113,14 @@ InteractiveModeBase.prototype.createWorkingLoader = function (this: InteractiveM
 };
 
 InteractiveModeBase.prototype.clearWorkingLoader = function (this: InteractiveModeBase): void {
+	const shown = this.loadingAnimation !== undefined;
 	this.loadingAnimation?.stop();
 	this.loadingAnimation = undefined;
 	this.workingIndicatorEmbedded = false;
 	this.setEditorWorkingStatusIndicator?.(undefined);
 	this.statusContainer.clear();
+	// The stopped row no longer asks for frames: without one now, it stays on screen until something else draws.
+	if (shown) this.ui.requestRender();
 };
 
 function stopLoader(mode: InteractiveModeBase): void {

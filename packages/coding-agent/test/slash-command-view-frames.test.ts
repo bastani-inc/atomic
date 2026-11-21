@@ -107,6 +107,9 @@ async function expectStraightToView(
 	}
 }
 
+/** The working row a run or a command's turn shows above the prompt. */
+const WORKING_ROW = /Working…/;
+
 /** Type `command` with its suggestions closed, so Enter submits it as typed. */
 async function typeClosed(chat: MainChatTerminal, command: string): Promise<RegExp> {
 	const typed = new RegExp(`❯ ${command.replace("/", "\\/")}`);
@@ -361,6 +364,39 @@ describe.each(["in-process", "isolated"] as const)("a slash command that opens a
 			assert.doesNotMatch(screen, /❯ \/slow/);
 			assert.equal(screenHoldOf(chat.mode).region, undefined);
 			release.resolve();
+		},
+		INTERACTIVE_CASE_TIMEOUT_MS,
+	);
+
+	test(
+		"the working row leaves the screen when an extension command ends after its view closed, with no key pressed (#6134)",
+		async () => {
+			const chat = await start(host, [
+				(pi) =>
+					pi.registerCommand("panel", {
+						handler: async (_args, ctx) => {
+							await ctx.ui.custom<void>((_tui, _theme, _keys, done) => ({
+								render: () => ["panel view"],
+								invalidate: () => {},
+								handleInput: (data) => {
+									if (data === ESCAPE) done();
+								},
+							}));
+						},
+					}),
+			]);
+			chat.press("/panel");
+			await chat.settled(/❯ \/panel/);
+			await pressEnter(chat);
+			await chat.settled(/panel view/);
+			assert.match((await chat.screen()).join("\n"), WORKING_ROW, "the command's turn shows its working row");
+			chat.press(ESCAPE);
+			// Esc draws its own frame while the command still runs; the command's turn ends after it.
+			await vi.waitFor(() =>
+				assert.ok(chat.mode.promptTurn === undefined && chat.mode.loadingAnimation === undefined),
+			);
+			const screen = (await chat.settled(/^❯\s*$/m)).join("\n");
+			assert.doesNotMatch(screen, WORKING_ROW, `the screen after the command ended:\n${screen}`);
 		},
 		INTERACTIVE_CASE_TIMEOUT_MS,
 	);

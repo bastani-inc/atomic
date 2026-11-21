@@ -4,7 +4,14 @@
  * The engine side and the host side talk through the real engine protocol lines.
  */
 import assert from "node:assert/strict";
-import { getKeybindings, hyperlink, setKeybindings, type Text, type TuiMouseEvent } from "@bastani/atomic-tui";
+import {
+	type Component,
+	getKeybindings,
+	hyperlink,
+	setKeybindings,
+	type Text,
+	type TuiMouseEvent,
+} from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import type { ExtensionUIContext } from "../src/core/extensions/index.ts";
@@ -14,6 +21,7 @@ import { AgentViewSwitcher } from "../src/modes/interactive/agent-view/agent-vie
 import {
 	FIRST_FRAME_TIMEOUT_MS,
 	openRemoteAgentViewPort,
+	PANEL_FIRST_FRAME_TIMEOUT_MS,
 	type RemoteAgentViewPort,
 } from "../src/modes/interactive/agent-view/remote-port.ts";
 import { holdTranscriptDock } from "../src/modes/interactive/agent-view/transcript-slot.ts";
@@ -27,6 +35,7 @@ import {
 	serializeInteractiveEngineFrame,
 } from "../src/modes/interactive-engine/protocol.ts";
 import { RemoteComponentController } from "../src/modes/interactive-engine/remote-component.ts";
+import { AGENT_PANEL_WIDGET_KEY } from "../src/modes/rpc/agent-panel-bridge.ts";
 import { bindEngineAgentView, handleAgentViewCommand } from "../src/modes/rpc/agent-view-rpc.ts";
 import type { AgentViewRpcCommandBody } from "../src/modes/rpc/agent-view-rpc-types.ts";
 import { engineAgentViews } from "../src/modes/rpc/agent-view-rpc-view.ts";
@@ -75,6 +84,8 @@ function enginePair(ui: ReturnType<typeof mainScreen>, sub: Awaited<ReturnType<t
 	const requests: AgentViewRpcCommandBody[] = [];
 	// While held, the host's commands wait to reach the engine, as they do while the engine is busy.
 	let held: InteractiveEngineCommand[] | undefined;
+	/** The engine's widgets as the host mounted them, by key. */
+	const widgets = new Map<string, Component>();
 	const deliver = (command: InteractiveEngineCommand) => child.handleLine(serializeInteractiveEngineFrame(command));
 	const runtime = {
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
@@ -102,14 +113,24 @@ function enginePair(ui: ReturnType<typeof mainScreen>, sub: Awaited<ReturnType<t
 		runtime as never,
 		{
 			requestRender: () => ui.tui.requestRender(),
-			setWidget: () => {},
+			setWidget: (key: string, factory: ((tui: unknown) => Component) | undefined) => {
+				if (factory === undefined) widgets.delete(key);
+				else widgets.set(key, factory(ui.tui));
+			},
 			custom: () => new Promise(() => {}),
 			onWidgetRelease: () => () => {},
 		} as unknown as ExtensionUIContext,
 		{ isFullscreen: () => true, onRendererReplaced: () => () => {} },
 	);
 	const switcher = new AgentViewSwitcher(
-		(taskId) => openRemoteAgentViewPort(runtime as never, taskId, { width: ui.terminal.columns, rows: 16 }),
+		// As openAgentViewPort does on the isolated host.
+		(taskId, options) =>
+			openRemoteAgentViewPort(
+				runtime as never,
+				taskId,
+				{ width: ui.terminal.columns, rows: 16 },
+				{ panel: options?.keepScreen === true && options.panel === true },
+			),
 		(message) => ui.notices.push(`switcher: ${message}`),
 		// As installAgentView wires it: /tasks keeps the dock as painted while the subagent is on its way.
 		() => holdTranscriptDock(ui.mode, FIRST_FRAME_TIMEOUT_MS),
@@ -123,10 +144,40 @@ function enginePair(ui: ReturnType<typeof mainScreen>, sub: Awaited<ReturnType<t
 		holdCommands: () => {
 			held ??= [];
 		},
-		releaseCommands: () => {
+		/** Deliver the held commands `which` picks, or all of them, which ends holding. */
+		releaseCommands: (which?: (command: InteractiveEngineCommand) => boolean) => {
 			const waiting = held ?? [];
-			held = undefined;
-			for (const command of waiting) deliver(command);
+			if (which === undefined) held = undefined;
+			else held = waiting.filter((command) => !which(command));
+			for (const command of waiting) if (which === undefined || which(command)) deliver(command);
+		},
+		/** The engine opens the agent panel's widget, drawing `rows`. */
+		openPanel: (rows: string[]) => {
+			child.setWidget(AGENT_PANEL_WIDGET_KEY, () => ({ render: () => rows, invalidate: () => {} }), "belowEditor");
+		},
+		/** The engine closes the agent panel's widget. */
+		closePanel: () => child.setWidget(AGENT_PANEL_WIDGET_KEY, undefined),
+		/** The host's agent panel, drawn as a paint of the dock draws it; undefined while none is mounted. */
+		panelRows: () => widgets.get(AGENT_PANEL_WIDGET_KEY)?.render(ui.terminal.columns),
+		/** The id of the panel widget the host mounted last. */
+		panelId: () => {
+			const opened = engineMessages.filter(
+				(message) => message.type === "engine_custom_open" && message.widgetKey === AGENT_PANEL_WIDGET_KEY,
+			);
+			const last = opened.at(-1);
+			return last?.type === "engine_custom_open" ? last.componentId : undefined;
+		},
+		/** The subagent's transcript has its first frame from the engine. */
+		transcriptFramed: () => {
+			const open = engineMessages.find(
+				(message) => message.type === "engine_custom_open" && message.placement === "transcript",
+			);
+			return (
+				open?.type === "engine_custom_open" &&
+				engineMessages.some(
+					(message) => message.type === "engine_custom_frame" && message.componentId === open.componentId,
+				)
+			);
 		},
 		loseEngine: () => {
 			generation++;
@@ -542,6 +593,103 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 			view.engine.releaseCommands();
 			await vi.waitFor(() => assert.equal(view.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
 		} finally {
+			await view.dispose();
+		}
+	});
+	test("a subagent opened from /tasks is shown once the panel /tasks hid has drawn again, never without its rows (#6123)", async () => {
+		const view = await tasksOpen();
+		try {
+			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true, panel: true });
+			view.closeTasks();
+			// /tasks closed in the engine: the panel opens again, and has rows to draw once the host asks for them.
+			view.engine.openPanel(["◯ main", "● worker"]);
+			await vi.waitFor(() => assert.ok(view.engine.transcriptFramed()), FRAME_WAIT);
+			await flush();
+			assert.equal(view.engine.switcher.viewed.kind, "main", "the subagent waits for the panel's first frame");
+			assert.deepEqual(view.engine.panelRows(), [], "the panel has not drawn yet; this paint asks for its frame");
+			await vi.waitFor(() => assert.equal(view.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
+			assert.deepEqual(view.engine.panelRows(), ["◯ main", "● worker"]);
+		} finally {
+			await view.dispose();
+		}
+	});
+
+	test("a panel the engine opens again in its place while the subagent is on its way is waited for in turn (#6123)", async () => {
+		const view = await tasksOpen();
+		try {
+			view.engine.holdCommands();
+			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true, panel: true });
+			view.closeTasks();
+			view.engine.openPanel(["◯ main", "◯ worker"]);
+			await vi.waitFor(() => assert.ok(view.engine.panelId() !== undefined), FRAME_WAIT);
+			const first = view.engine.panelId();
+			view.engine.panelRows();
+			view.engine.releaseCommands(
+				(command) => command.type === "engine_custom_render" && command.componentId === first,
+			);
+			await vi.waitFor(() => assert.deepEqual(view.engine.panelRows(), ["◯ main", "◯ worker"]), FRAME_WAIT);
+			// It opens again before the subagent's transcript has drawn: the new one has nothing to draw yet.
+			view.engine.openPanel(["◯ main", "● worker"]);
+			await vi.waitFor(() => assert.notEqual(view.engine.panelId(), first), FRAME_WAIT);
+			view.engine.releaseCommands(
+				(command) => command.type !== "engine_custom_render" || command.componentId !== first,
+			);
+			await vi.waitFor(() => assert.ok(view.engine.transcriptFramed()), FRAME_WAIT);
+			await flush();
+			assert.equal(view.engine.switcher.viewed.kind, "main", "the new panel's first frame is waited for");
+			view.engine.releaseCommands();
+			view.engine.panelRows();
+			await vi.waitFor(() => assert.equal(view.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
+			assert.deepEqual(view.engine.panelRows(), ["◯ main", "● worker"]);
+		} finally {
+			await view.dispose();
+		}
+	});
+
+	test("a panel that closes again before it drew, or a request that does not bring the panel back, waits for no panel (#6123)", async () => {
+		const closed = await tasksOpen();
+		try {
+			closed.engine.switcher.requestView(closed.sub.taskId, { keepScreen: true, panel: true });
+			closed.closeTasks();
+			closed.engine.openPanel(["◯ main"]);
+			await vi.waitFor(() => assert.ok(closed.engine.panelId() !== undefined), FRAME_WAIT);
+			closed.engine.closePanel();
+			await vi.waitFor(() => assert.equal(closed.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
+			assert.equal(closed.engine.panelRows(), undefined);
+		} finally {
+			await closed.dispose();
+		}
+		const plain = await tasksOpen();
+		try {
+			// Without the engine saying the panel comes back (an older engine), the subagent is shown with its transcript.
+			plain.engine.switcher.requestView(plain.sub.taskId, { keepScreen: true });
+			plain.closeTasks();
+			plain.engine.openPanel(["◯ main"]);
+			await vi.waitFor(() => assert.equal(plain.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
+			assert.ok(plain.engine.transcriptFramed());
+		} finally {
+			await plain.dispose();
+		}
+	});
+
+	test("a panel that never opens again holds the subagent back for its bound at most (#6123)", async () => {
+		const view = await tasksOpen();
+		try {
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true, panel: true });
+			view.closeTasks();
+			for (let turn = 0; turn < 20 && !view.engine.transcriptFramed(); turn++) await flush();
+			assert.ok(view.engine.transcriptFramed());
+			await flush();
+			assert.equal(view.engine.switcher.viewed.kind, "main");
+			vi.advanceTimersByTime(PANEL_FIRST_FRAME_TIMEOUT_MS - 1);
+			await flush();
+			assert.equal(view.engine.switcher.viewed.kind, "main");
+			vi.advanceTimersByTime(1);
+			await flush();
+			assert.equal(view.engine.switcher.viewed.kind, "agent", "shown without the panel once its bound passed");
+		} finally {
+			vi.useRealTimers();
 			await view.dispose();
 		}
 	});
