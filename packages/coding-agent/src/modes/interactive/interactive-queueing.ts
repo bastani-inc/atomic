@@ -18,6 +18,7 @@ import { QueuedMessagesView, queuedMessageRows } from "./components/queued-messa
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { theme } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage } from "./interactive-mode-types.ts";
+import { awaitsStartedRunMessage } from "./interactive-render-chat.ts";
 import {
 	restoredQueue,
 	type SteeringEditorQueue,
@@ -463,32 +464,27 @@ async function sendHeldInput(mode: InteractiveModeBase): Promise<void> {
 	while (mode.compactionQueuedMessages.length > 0) {
 		const message = takeNextCompactionMessage(mode);
 		if (!message) return;
-		const echoed = !message.text.startsWith("/");
-		if (echoed) mode.renderDeferredUserInput(message.text);
+		// The echo is this message's own: a discard of it never takes an earlier message's echo of the same text.
+		const echo = message.text.startsWith("/") ? undefined : mode.renderDeferredUserInput(message.text);
 		const shownBefore = mode.userMessagesShownBySession;
 		const refused = await promptUntilAccepted(
 			mode,
 			message,
-			echoed
+			echo
 				? (disposition) => {
 						if (disposition === "queued" || disposition === "handled")
-							mode.discardDeferredRenderedUserInput(message.text);
-						if (disposition === "started") mode.expectStartedUserInput(message.text, shownBefore);
+							mode.discardDeferredRenderedUserInput(message.text, echo);
+						if (disposition === "started") mode.expectStartedUserInput(message.text, shownBefore, echo);
 					}
 				: undefined,
 		);
 		if (refused !== undefined) {
-			if (echoed) mode.discardDeferredRenderedUserInput(message.text);
+			if (echo) mode.discardDeferredRenderedUserInput(message.text, echo);
 			returnCompactionMessage(mode, message, refused.error);
 			return;
 		}
 		// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
-		if (
-			echoed &&
-			mode.startedDeferredUserInput === message.text &&
-			mode.deferredRenderedUserInputs?.includes(message.text) === true
-		)
-			mode.discardDeferredRenderedUserInput(message.text);
+		if (echo && awaitsStartedRunMessage(mode, echo)) mode.discardDeferredRenderedUserInput(message.text, echo);
 	}
 }
 

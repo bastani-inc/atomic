@@ -221,6 +221,60 @@ describe.each(["local", "isolated"] as const)("a message an input hook rewrites 
 		assertShownOnceAsSent(rig, chat, [rewritten("first"), rewritten("steered"), rewritten("followed up")]);
 	});
 
+	if (wiring === "isolated") {
+		test("sent twice with the same text while the first run prepares, is shown once each, as sent", async () => {
+			const preparing = createGate();
+			const shown = createGate();
+			const holdFirstRun: ExtensionFactory = (pi) => {
+				let prepare = true;
+				let show = true;
+				pi.on("before_agent_start", async () => {
+					if (!prepare) return;
+					prepare = false;
+					preparing.entered.resolve();
+					await preparing.release.promise;
+				});
+				pi.on("message_start", async (event) => {
+					if (event.message.role !== "user" || !show) return;
+					show = false;
+					shown.entered.resolve();
+					await shown.release.promise;
+				});
+			};
+			const rig = await createRig(wiring, "quiet", { extensions: [rewriteInput, holdFirstRun] });
+			rigs.push(rig);
+			const chat = showUserMessagesInChat(rig.host);
+			await rig.pair?.runtime.waitUntilResourcesReady();
+			rig.engine.setResponses([
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage("second answer"),
+				fauxAssistantMessage("unexpected extra reply"),
+			]);
+
+			const first = rig.host.defaultEditor.onSubmit?.("hello");
+			await preparing.entered.promise;
+			// The host holds the second until the first is answered, then sends it while the first run is under way.
+			const second = rig.host.defaultEditor.onSubmit?.("hello");
+			await waitFor("the host to hold the second message", () => rig.host.compactionQueuedMessages.length === 1);
+			preparing.release.resolve();
+			await shown.entered.promise;
+			await waitFor(
+				"the session to queue the second message",
+				() => rig.engine.session.getSteeringMessages().length === 1,
+			);
+			await settle(rig);
+			shown.release.resolve();
+			await Promise.all([first, second]);
+			await waitFor(
+				"both messages to be answered",
+				() => getUserTexts(rig.engine).length === 2 && isIdleAfterAnswering(rig.engine),
+			);
+			await settle(rig);
+
+			assertShownOnceAsSent(rig, chat, [rewritten("hello"), rewritten("hello")]);
+		});
+	}
+
 	test("held during compaction is shown once, as it was sent (#4277)", async () => {
 		const { rig, chat } = await createRewritingRig(wiring);
 		rig.engine.setResponses([fauxAssistantMessage("answer"), fauxAssistantMessage("unexpected extra reply")]);

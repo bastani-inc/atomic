@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The same message sent twice in quick succession, which an `input` extension rewrites, no longer leaves a copy of the typed text in the chat
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.

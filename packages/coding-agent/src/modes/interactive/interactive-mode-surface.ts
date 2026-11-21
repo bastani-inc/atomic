@@ -296,10 +296,12 @@ declare module "./interactive-mode-base.ts" {
 		attachStartupNoticesContainer(options?: { resetDetached?: boolean }): void;
 		getUserInput(): Promise<InteractiveSubmission>;
 		runUserPromptTurn(submission: InteractiveSubmission | string): Promise<void>;
-		renderDeferredUserInput(text: string): void;
+		/** Draws the echo of a sent message, into `echo` when it is drawn again; answers the echo. */
+		renderDeferredUserInput(text: string, echo?: DeferredUserInputEcho): DeferredUserInputEcho;
 		consumeDeferredRenderedUserInput(text: string): boolean;
-		discardDeferredRenderedUserInput(text: string): void;
-		expectStartedUserInput(text: string, shownBefore: number): void;
+		/** Removes the echo `echo` of `text`, or the oldest echo of `text` when none is named. */
+		discardDeferredRenderedUserInput(text: string, echo?: DeferredUserInputEcho): void;
+		expectStartedUserInput(text: string, shownBefore: number, echo?: DeferredUserInputEcho): void;
 		showSessionUserMessage(message: Message): void;
 		ensureDeferredStartupComplete(): Promise<void>;
 		rebuildChatFromMessages(options?: {
