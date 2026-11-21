@@ -1,4 +1,5 @@
 import { inspect, types } from "node:util";
+import { startupNodeOptions } from "@bastani/atomic-codemode/node-options";
 import { graphemeAt, sanitizeTerminalText } from "../../utils/terminal-text.ts";
 import type { ExtensionError } from "../extensions/runtime-types.ts";
 import { waitingReleasedTools, withoutSupersededAttempts } from "./completion.js";
@@ -600,12 +601,9 @@ function hasUnhandledRejectionOwner(
 }
 
 function shouldThrowUnhandledRejection(reason: unknown): boolean {
-	const args = [...(process.env.NODE_OPTIONS ?? "").split(/\s+/), ...process.execArgv];
 	let mode = "throw";
-	for (let index = 0; index < args.length; index += 1) {
-		const arg = args[index] ?? "";
-		if (arg.startsWith("--unhandled-rejections=")) mode = arg.slice("--unhandled-rejections=".length);
-		else if (arg === "--unhandled-rejections" && args[index + 1] !== undefined) mode = args[index + 1] ?? mode;
+	for (const option of startupNodeOptions()) {
+		if (option.name === "--unhandled-rejections" && option.value !== undefined) mode = option.value;
 	}
 	if (mode === "none" || mode === "warn") return false;
 	if (mode === "warn-with-error-code") {

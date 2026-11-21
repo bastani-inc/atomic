@@ -316,15 +316,37 @@ if (!isMainThread) registerHooks({ load(url, context, nextLoad) {
 	return nextLoad(url, context);
 } });`;
 
-test("image resizing runs on its worker thread in a process started with --input-type=module (#6079)", () => {
-	const result = runNode(
-		["--import", dataUrl(RECORD_WORKER_LOADS), "--input-type=module"],
-		`
-		import { resizeImage } from ${sourceUrl("utils/image-resize.ts")};
-		const resized = await resizeImage(Buffer.from(${JSON.stringify(TINY_PNG)}, "base64"), "image/png");
-		process.stdout.write(JSON.stringify({ wasResized: resized.wasResized, width: resized.width, height: resized.height }));
-	`,
+const RESIZE_SCRIPT = `
+	import { resizeImage } from ${sourceUrl("utils/image-resize.ts")};
+	const resized = await resizeImage(Buffer.from(${JSON.stringify(TINY_PNG)}, "base64"), "image/png");
+	process.stdout.write(JSON.stringify({ wasResized: resized.wasResized, width: resized.width, height: resized.height }));
+`;
+
+function assertResizedOnWorker(result: SpawnSyncReturns<string>, child: string): void {
+	assert.deepEqual(output(result, child), { wasResized: false, width: 2, height: 2 });
+	assert.match(
+		readFileSync(preloadLog, "utf-8"),
+		/image-resize-worker\.ts\n/,
+		`${child}: the resize ran on the calling thread`,
 	);
-	assert.deepEqual(output(result), { wasResized: false, width: 2, height: 2 });
-	assert.match(readFileSync(preloadLog, "utf-8"), /image-resize-worker\.ts\n/, "the resize ran on the calling thread");
+}
+
+test("image resizing runs on its worker thread in a process started with --input-type=module (#6079)", () => {
+	const result = runNode(["--import", dataUrl(RECORD_WORKER_LOADS), "--input-type=module"], RESIZE_SCRIPT);
+	assertResizedOnWorker(result, "the child");
 });
+
+test("image resizing runs on its worker thread in a process started with --input_type=module", () => {
+	const result = runNode(["--import", dataUrl(RECORD_WORKER_LOADS), "--input_type=module"], RESIZE_SCRIPT);
+	assertResizedOnWorker(result, "the child with --input_type=module");
+});
+
+test.each(['"--input-type=module"', '"--input\\-type=module"', "--input_type=module"])(
+	"image resizing runs on its worker thread in a process whose NODE_OPTIONS holds %s",
+	(nodeOptions) => {
+		const result = runNode(["--import", dataUrl(RECORD_WORKER_LOADS)], RESIZE_SCRIPT, dir, {
+			NODE_OPTIONS: nodeOptions,
+		});
+		assertResizedOnWorker(result, `the child with NODE_OPTIONS=${nodeOptions}`);
+	},
+);

@@ -546,3 +546,43 @@ test("strict Bun child contains rejected promises, species-hostile promises, and
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	assert.match(result.stdout.toString(), /FIELD_SWEEP_OK/u);
 });
+
+test("the panel's rejection guard keeps an --unhandled-rejections mode that NODE_OPTIONS spells as Node reads it", () => {
+	// A source that throws a promise the panel cannot attach to installs the guard; the unrelated rejection after it
+	// is the guard's to report as the mode says.
+	const script = `
+		const { AgentPanelSourceHub, agentPanelItems } = await import("./packages/coding-agent/src/core/tasks/agent-panel-source.ts");
+		class Bad extends Promise {
+			static get [Symbol.species]() {
+				throw new Error("species getter");
+			}
+		}
+		const hub = new AgentPanelSourceHub();
+		hub.register({
+			items: () => {
+				throw Object.freeze(Bad.reject(new Error("rejected:frozen-species")));
+			},
+			subscribe: () => () => {},
+		});
+		agentPanelItems({ extensionRunner: { getAgentPanelSourceHub: () => hub } });
+		await new Promise((r) => setTimeout(r, 20));
+		void Promise.reject(new Error("UNRELATED_REJECTION"));
+		await new Promise((r) => setTimeout(r, 40));
+		console.log("SURVIVED");
+	`;
+	for (const nodeOptions of [
+		'"--unhandled-rejections=warn"',
+		"--unhandled_rejections=none",
+		"--unhandled-rejections none",
+	]) {
+		const result = spawnSyncCollect([bunExecutable(), "-e", script], {
+			cwd: REPO_ROOT,
+			env: { ...process.env, NODE_OPTIONS: nodeOptions },
+		});
+		assert.equal(result.exitCode, 0, `NODE_OPTIONS=${nodeOptions}: ${result.stderr.toString()}`);
+		assert.match(result.stdout.toString(), /SURVIVED/u);
+	}
+	const thrown = spawnSyncCollect([bunExecutable(), "-e", script], { cwd: REPO_ROOT });
+	assert.notEqual(thrown.exitCode, 0, "the guard throws an unrelated rejection by default");
+	assert.match(thrown.stderr.toString(), /UNRELATED_REJECTION/u);
+});
