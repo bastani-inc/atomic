@@ -1102,25 +1102,34 @@ async function ownerlessRelaunched(
 	supervisorAuthorization: ChildTargetHold["authorization"] | undefined,
 	intercomGroup: string | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
-	const reported = launched.result.then(
-		(child) => {
-			// Pause and quit report through their own results.
-			if (!child.interrupted)
-				notifyDetachedForegroundChildExit({
-					pi: deps.pi,
-					runId: record.runId,
-					mode: "single",
-					index: record.index,
-					result: child,
-					notificationId: `subagent-resume-${launched.launchId}`,
-					noticeLabel: "Resumed subagent task",
-				});
-		},
-		() => {},
-	);
-	// However it ends, also stopped before it started, which its result reports only once its run's slot frees: the
-	// restoration is over.
-	void Promise.race([reported, launched.ended]).then(() => {
+	void launched.result
+		.then(
+			(child) => {
+				// Pause and quit report through their own results.
+				if (!child.interrupted)
+					notifyDetachedForegroundChildExit({
+						pi: deps.pi,
+						runId: record.runId,
+						mode: "single",
+						index: record.index,
+						result: child,
+						notificationId: `subagent-resume-${launched.launchId}`,
+						noticeLabel: "Resumed subagent task",
+					});
+			},
+			() => {},
+		)
+		// A report that fails ends nothing else.
+		.catch(() => {});
+	// The restoration is over once the launch ended, however it ends, also stopped before it started, which its result
+	// reports only once its run's slot frees. A result handed off while the launch still runs is no end of it.
+	void Promise.race([
+		launched.ended,
+		launched.result.then(
+			(child) => (child.detached ? launched.ended : undefined),
+			() => undefined,
+		),
+	]).then(() => {
 		release();
 		// Normally the child consumed the hold when it registered; one that never did must not keep it.
 		void hold?.release();
