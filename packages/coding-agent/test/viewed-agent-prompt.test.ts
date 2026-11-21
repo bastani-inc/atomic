@@ -794,11 +794,43 @@ describe("the main prompt while a subagent is shown", () => {
 	);
 
 	test(
+		"an extension editor's own shortcut on ← keeps the key while a subagent is shown (#6135)",
+		async () => {
+			let setEditor: ((factory: EditorFactory) => void) | undefined;
+			screen = await mainScreen([
+				(pi) =>
+					pi.on("session_start", (_event, ctx) => {
+						setEditor = (factory) => ctx.ui.setEditorComponent(factory);
+					}),
+			]);
+			worker();
+			let pressed = 0;
+			await until(() => setEditor !== undefined);
+			setEditor?.((tui, theme, keybindings) => {
+				const editor = new (class extends CustomEditor {})(tui, theme, keybindings);
+				editor.onExtensionShortcut = (data) => {
+					if (data !== LEFT) return false;
+					pressed++;
+					return true;
+				};
+				return editor;
+			});
+			await settle();
+			await view(WORKER);
+			await screen.press(LEFT);
+			assert.equal(pressed, 1);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
 		"the back key follows keybindings.json, and Esc bound to it still only pauses the subagent (#6135)",
 		async () => {
-			// Ctrl+[ sends what Esc sends, and ↓ focuses the agent panel: neither is a way back.
+			// Ctrl+[ sends what Esc sends, and ↓ focuses the agent panel: neither is a way back, nor is Esc once
+			// another key interrupts.
 			screen = await mainScreen([], {
-				keybindings: { "app.nav.back": ["escape", "ctrl+[", "down", "ctrl+b"] },
+				keybindings: { "app.nav.back": ["escape", "ctrl+[", "down", "ctrl+b"], "app.interrupt": "f2" },
 			});
 			const port = worker({ busy: true });
 			await view(WORKER);
