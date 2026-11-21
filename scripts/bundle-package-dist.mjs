@@ -489,7 +489,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 
 /**
  * Writes the package's compiled modules, one file each as tsc wrote them, under `dist/_modules/`, beside the files
- * they read (the package's other files in `dist`, copied), without source maps.
+ * they read (the package's other files in `dist`, copied), each with its source map inline.
  * @param {string} dist
  * @param {string} compiledDir The saved compiled modules.
  * @param {Set<string>} standalone
@@ -510,14 +510,26 @@ function writeModulesCopy(dist, compiledDir, standalone) {
 				copy(path);
 				continue;
 			}
-			// Declarations stay in dist; source maps name sources the package does not ship, so the copy has none.
+			// Declarations stay in dist. A module's source map goes inline, so the copy adds no files.
 			if (/\.d\.ts$|\.map$/.test(entry.name)) continue;
 			const target = join(modules, rel);
 			const isModule = entry.name.endsWith(".js") && !standalone.has(path);
+			const source = isModule ? join(compiledDir, rel) : path;
 			/** @type {string | Buffer} */
-			let contents = readFileSync(isModule ? join(compiledDir, rel) : path);
+			let contents = readFileSync(source);
 			if (entry.name.endsWith(".js")) {
-				contents = contents.toString("utf8").replace(/\n\/\/# sourceMappingURL=[^\r\n]*\s*$/, "\n");
+				const mapFile = `${source}.map`;
+				const map = existsSync(mapFile) ? readFileSync(mapFile, "utf8") : "";
+				let inline = "";
+				if (map !== "") {
+					const parsed = JSON.parse(map);
+					// Its sources are named relative to the module, one directory deeper now.
+					parsed.sources = parsed.sources.map((/** @type {string} */ name) =>
+						isAbsolute(name) ? name : `../${name}`,
+					);
+					inline = `//# sourceMappingURL=data:application/json;base64,${Buffer.from(JSON.stringify(parsed)).toString("base64")}\n`;
+				}
+				contents = contents.toString("utf8").replace(/\n\/\/# sourceMappingURL=[^\r\n]*\s*$/, "\n") + inline;
 			}
 			mkdirSync(dirname(target), { recursive: true });
 			writeFileSync(`${target}.bundle`, contents);
