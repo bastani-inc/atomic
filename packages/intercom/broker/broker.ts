@@ -1251,8 +1251,16 @@ class IntercomBroker {
             (typeof clientMessage.registrationGroup === "string"
               ? normalizeGroup(clientMessage.registrationGroup)
               : normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value));
+          // #5607: a client that takes ids back is told which id it awaits; a hand-over it presents takes one.
+          const takesIdHandoff = clientMessage.takesIdHandoff === true;
+          const idHandoff = typeof clientMessage.idHandoff === "string" ? clientMessage.idHandoff : undefined;
           void multiNode
-            .claimSessionId(preferred, returnAddress, JSON.stringify(["return", returnAddress, normalizeGroup(home)]))
+            .claimSessionId(
+              preferred,
+              returnAddress,
+              JSON.stringify(["return", returnAddress, normalizeGroup(home)]),
+              idHandoff,
+            )
             .then((claimed) => {
               this.claimingSessionIds.delete(socket);
               // #5607: the id granted is the one asked for, or one held here for this session since it awaited it. An id
@@ -1290,8 +1298,8 @@ class IntercomBroker {
                 setId,
                 claimed.status === "unanswered" ? claimed.unanswered : undefined,
                 granted,
-                // #5607: held by another registration of this session: it awaits the id.
-                claimed.status === "held" ? preferred : undefined,
+                // #5607: held by another registration of this session: a client that takes ids back awaits it.
+                claimed.status === "held" && takesIdHandoff ? preferred : undefined,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
@@ -2123,7 +2131,7 @@ class IntercomBroker {
                 dispatch: (socket, clientMessage, senderId) => this.dispatchSend(socket, clientMessage, senderId),
                 revokeReleasedReservation: (key, ownerSessionId) => this.revokeReleasedReservation(key, ownerSessionId),
                 holdsReservation: (key, ownerSessionId) => this.restoringRecipients.holds(key, ownerSessionId),
-                fence: (session, reason) => this.fenceSession(session, reason),
+                fence: (session, reason, handoff) => this.fenceSession(session, reason, handoff),
               },
             });
           } catch (error) {
@@ -2965,7 +2973,11 @@ class IntercomBroker {
    * #5607: another live registration of the same session owns this session's id across nodes: it leaves here as if its
    * connection dropped, and its client reconnects and gets a fresh id. A hosted session goes alone; its host stays.
    */
-  private fenceSession(session: BrokerConnectedSession, reason: "lost" | "reclaimed" = "lost"): void {
+  private fenceSession(
+    session: BrokerConnectedSession,
+    reason: "lost" | "reclaimed" = "lost",
+    handoff?: { readonly sessionId: string; readonly handoff: string },
+  ): void {
     const id = session.info.id;
     if (this.sessions.get(id) !== session) return;
     console.error(
@@ -2974,7 +2986,13 @@ class IntercomBroker {
         : `Intercom session ${id} reconnects to take back the id it asked for, which its earlier registration no longer holds`,
     );
     this.disconnectSession(id);
-    if (session.hostedBy === undefined) session.socket.destroy();
+    if (session.hostedBy === undefined) {
+      // #5607: a session moved back to the id it awaited is given the hand-over that takes it, then disconnected.
+      if (handoff !== undefined) {
+        writeMessageIfOpen(session.socket, { type: "id_handoff", sessionId: handoff.sessionId, handoff: handoff.handoff });
+        session.socket.end();
+      } else session.socket.destroy();
+    }
     this.scheduleShutdownCheck();
   }
 

@@ -235,6 +235,20 @@ export interface IntercomClientOptions {
 	readonly reach?: () => IntercomReachPolicy | undefined;
 	/** #5999: shared by the session's clients across reconnects; see {@link EndedQueueMemory}. */
 	readonly endedQueue?: EndedQueueMemory;
+	/**
+	 * #5607: with multi-node routing, this client takes its id back when the broker hands it over: a registration that
+	 * gets a fresh id only while another registration of the session holds the one it asked for is told which id it
+	 * awaits, and later reconnects with the hand-over the broker gives it (`idHandoff`, `IntercomIdHandoff`).
+	 */
+	readonly takesIdHandoff?: true;
+	/** #5607: the hand-over its previous connection was given, presented once with this registration. */
+	readonly idHandoff?: IntercomIdHandoff;
+}
+
+/** #5607: an id the broker holds for this session, and the one-use value that takes it on the next registration. */
+export interface IntercomIdHandoff {
+	readonly sessionId: string;
+	readonly handoff: string;
 }
 
 export interface ReleasedChildReply {
@@ -449,6 +463,8 @@ type ObserveReleaseReply = (stamp: ReleaseStamp, error?: Error) => void;
 export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
 	private readonly preferredSessionId: string | undefined;
+	private readonly takesIdHandoff: boolean;
+	private readonly idHandoff: IntercomIdHandoff | undefined;
 	private readonly acknowledgesReceipt: boolean;
 	private readonly connectTimeoutMs: number;
 	private readonly explicitBrokerSocketPath: string | undefined;
@@ -564,7 +580,9 @@ export class IntercomClient extends EventEmitter {
 		super();
 		if (returnAddress.length === 0) throw new Error("Intercom return address must not be empty");
 		this.returnAddress = returnAddress;
-		this.preferredSessionId = options.preferredSessionId;
+		this.preferredSessionId = options.idHandoff?.sessionId ?? options.preferredSessionId;
+		this.takesIdHandoff = options.takesIdHandoff === true || options.idHandoff !== undefined;
+		this.idHandoff = options.idHandoff;
 		this.acknowledgesReceipt = options.acknowledgesReceipt === true;
 		this.connectTimeoutMs = options.connectTimeoutMs ?? BROKER_CONNECT_TIMEOUT_MS;
 		this.explicitBrokerSocketPath = options.brokerSocketPath;
@@ -866,6 +884,8 @@ export class IntercomClient extends EventEmitter {
 			returnAddress: this.returnAddress,
 			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),
 			...(this.acknowledgesReceipt ? { acknowledgesReceipt: true as const } : {}),
+			...(this.takesIdHandoff ? { takesIdHandoff: true as const } : {}),
+			...(this.idHandoff === undefined ? {} : { idHandoff: this.idHandoff.handoff }),
             ...(supervisor ? { supervisor } : {}),
             ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
           });
@@ -1414,6 +1434,14 @@ export class IntercomClient extends EventEmitter {
           peerSessionId,
           ...(peerName !== undefined ? { peerName } : {}),
         });
+        break;
+      }
+      case "id_handoff": {
+        // #5607: the id this session awaited is held for it; it takes it by registering again with this hand-over.
+        const { sessionId, handoff } = brokerMessage;
+        if (typeof sessionId !== "string" || typeof handoff !== "string") throw new Error("Invalid id_handoff message");
+        const idHandoff: IntercomIdHandoff = { sessionId, handoff };
+        this.emit("id_handoff", idHandoff);
         break;
       }
       case "peer_rebound": {

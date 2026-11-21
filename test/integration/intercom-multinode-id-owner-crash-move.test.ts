@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, test, vi } from "vitest";
-import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client.js";
+import { BROKER_CONNECT_TIMEOUT_MS, type IntercomIdHandoff } from "../../packages/intercom/broker/client.js";
 import { BROKER_LEASE_STALE_AFTER_MS } from "../../packages/intercom/broker/multinode-state-store.js";
 import {
 	type TwoBrokerClient,
@@ -94,10 +94,12 @@ test.skipIf(process.platform === "win32")(
 			preferredSessionId: moving.id,
 			returnAddress: moving.returnAddress,
 			connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			takesIdHandoff: true,
 		});
 		const fresh = moved.sessionId;
 		assert.notEqual(fresh, moving.id);
 		const awaited = moved.client.awaitedSessionId;
+		const handedOver = new Promise<IntercomIdHandoff>((resolve) => moved.client.once("id_handoff", resolve));
 		const switched = disconnectedOnce(moved);
 
 		await sleep(Math.max(0, stoppedAt + 5_000 - performance.now()));
@@ -109,10 +111,13 @@ test.skipIf(process.platform === "win32")(
 		// Once the hold lapses, "b" takes the id back for the session and has it register again under it.
 		await within(switched, AFTER_THE_HOLD_LAPSES_MS, "the move back to the id");
 		assert.equal(awaited, moving.id, "it was told which id it awaited, so it asks for that one again");
+		const idHandoff = await handedOver;
+		assert.equal(idHandoff.sessionId, moving.id);
 		const back = await harness.connect("b", moving.name, {
-			preferredSessionId: moving.id,
 			returnAddress: moving.returnAddress,
 			connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			takesIdHandoff: true,
+			idHandoff,
 		});
 		assert.equal(back.sessionId, moving.id);
 

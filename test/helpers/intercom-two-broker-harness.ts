@@ -10,7 +10,7 @@ import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storag
 import { defaultSharedStoragePath } from "../../packages/coding-agent/src/core/storage/file-identity.js";
 import { loadStorageAdapter } from "../../packages/coding-agent/src/core/storage/provider.js";
 import { selectStorage } from "../../packages/coding-agent/src/core/storage/selection.js";
-import { IntercomClient } from "../../packages/intercom/broker/client.js";
+import { IntercomClient, type IntercomIdHandoff } from "../../packages/intercom/broker/client.js";
 import { queryIntercomBroker } from "../../packages/intercom/broker/control.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
@@ -73,6 +73,10 @@ export interface TwoBrokerConnectOptions {
 	/** How long to wait for the broker to answer the registration; default `CLIENT_REGISTRATION_TIMEOUT_MS`. */
 	readonly connectTimeoutMs?: number;
 	readonly preferredSessionId?: string;
+	/** #5607: take an id back when the broker hands it over, as a current session does (see `IntercomClientOptions`). */
+	readonly takesIdHandoff?: true;
+	/** #5607: the hand-over the session's previous connection was given. */
+	readonly idHandoff?: IntercomIdHandoff;
 	/** Default true: confirm each saved message (#3761), as a real session does. */
 	readonly acknowledgeReceipts?: boolean;
 	readonly supervisor?: SupervisorRegistration;
@@ -561,6 +565,8 @@ export class TwoBrokerHarness {
 		const client = new IntercomClient(returnAddress, {
 			brokerSocketPath: options.socketPath ?? getBrokerSocketPath(process.platform, state.fixture.agentDir),
 			...(options.preferredSessionId === undefined ? {} : { preferredSessionId: options.preferredSessionId }),
+			...(options.takesIdHandoff === undefined ? {} : { takesIdHandoff: options.takesIdHandoff }),
+			...(options.idHandoff === undefined ? {} : { idHandoff: options.idHandoff }),
 			acknowledgesReceipt: true,
 			connectTimeoutMs: options.connectTimeoutMs ?? CLIENT_REGISTRATION_TIMEOUT_MS,
 			...(options.reachable === undefined

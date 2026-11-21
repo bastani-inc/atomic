@@ -55,6 +55,7 @@ import {
 	EndedQueueMemory,
 	type LostEndedQueuedMessage,
 	IntercomClient,
+	type IntercomIdHandoff,
 	IntercomReachUnsupportedError,
 	type ExpectedRouting,
 	type ReleasedChildReply,
@@ -216,6 +217,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let reconnectPromise: Promise<IntercomClient> | null = null;
   let reconnectPromiseGeneration: number | null = null;
   let reconnectAttempt = 0;
+  /** #5607: the hand-over of an id the broker holds for this session, for its next registration only. */
+  let pendingIdHandoff: IntercomIdHandoff | undefined;
   /**
    * Whether anything other than the startup join has asked for a connection. Only then does a failed attempt keep
    * reconnecting in the background: a session that only joined at startup and never used Intercom stays lazy.
@@ -1245,6 +1248,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         await outboundAsks.settle(record.ask.askId, "failed");
       }).catch(() => {});
     });
+    // #5607: the broker holds the id this session awaited; the next registration takes it with this hand-over.
+    nextClient.on("id_handoff", (handoff: IntercomIdHandoff) => {
+      if (client === nextClient) pendingIdHandoff = handoff;
+    });
     nextClient.on("peer_rebound", (notice: { replyTo: string; previousSessionId: string; sessionId: string }) => {
       if (client !== nextClient) return;
       replyWaiters.rebind(notice.replyTo, notice.previousSessionId, notice.sessionId);
@@ -1341,9 +1348,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       let retiringDeadline: number | undefined;
       try {
         for (;;) {
+		const idHandoff = pendingIdHandoff;
+		pendingIdHandoff = undefined;
 		const nextClient = new IntercomClient(sessionIdAtStart, {
 			preferredSessionId,
 			acknowledgesReceipt: true,
+			takesIdHandoff: true,
+			...(idHandoff === undefined ? {} : { idHandoff }),
 			connectTimeoutMs: testOverrides.connectTimeoutMs?.(sessionIdAtStart),
 			reach: currentReachPolicy,
 			// #5999: what a lost broker kept for subagents that ended is known to the next connection.

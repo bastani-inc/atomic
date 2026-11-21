@@ -129,6 +129,8 @@ interface Node {
 	readonly dispatched: string[];
 	/** #5607: the sessions disconnected here because another registration owns their id. */
 	readonly fenced: BrokerConnectedSession[];
+	/** #5607: the hand-overs given to sessions moved back to the id they awaited. */
+	readonly handoffs: { readonly sessionId: string; readonly handoff: string }[];
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -290,6 +292,7 @@ async function startNode(
 	);
 	const dispatched: string[] = [];
 	const fenced: BrokerConnectedSession[] = [];
+	const handoffs: { readonly sessionId: string; readonly handoff: string }[] = [];
 	const router: MultiNodeRouter = await MultiNodeRouter.start({
 		...options.process,
 		state,
@@ -313,8 +316,9 @@ async function startNode(
 			revokeReleasedReservation: () => {},
 			holdsReservation: () => true,
 			// #5607: as the broker does: the session leaves here, as if its connection dropped.
-			fence: (session) => {
+			fence: (session, _reason, handoff) => {
 				fenced.push(session);
+				if (handoff !== undefined) handoffs.push(handoff);
 				if (sessions.get(session.info.id) === session) sessions.delete(session.info.id);
 				router.sessionLeft(session, undefined, false);
 			},
@@ -322,7 +326,7 @@ async function startNode(
 	});
 	cleanups.push(() => router.close());
 	await flush();
-	return { router, sessions, state, published, spied, dispatched, fenced };
+	return { router, sessions, state, published, spied, dispatched, fenced, handoffs };
 }
 
 function reserve(
@@ -2620,6 +2624,17 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		return { shared, stopped, here, live, fresh };
 	}
 
+	/**
+	 * Time passes, a second at a time, until `node` has taken back the id `session` awaited and disconnected it to register
+	 * again: once the stopped broker's ownership lapsed, within a renewal.
+	 */
+	async function untilMovedBack(node: Node, session: BrokerConnectedSession): Promise<void> {
+		for (let waited = 0; !node.fenced.includes(session); waited += 1_000) {
+			assert.ok(waited <= BROKER_LEASE_STALE_AFTER_MS + 2 * BROKER_LEASE_RENEW_INTERVAL_MS, "the id was taken back");
+			await vi.advanceTimersByTimeAsync(1_000);
+		}
+	}
+
 	test("a session that got a fresh id while a stopped broker still owned the one it asked for takes that id back once that ownership lapses, and keeps the fresh one as an alias (#5607)", async () => {
 		const { shared, here, live, fresh } = await awaitingWhileStopped();
 		const id = live.info.id;
@@ -2633,14 +2648,15 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		);
 		assert.deepEqual(here.fenced, []);
 
-		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 2 * BROKER_LEASE_RENEW_INTERVAL_MS);
+		await untilMovedBack(here, fresh);
 		assert.deepEqual(here.fenced, [fresh], "it registers again to take the id back");
 
-		// A client that kept the fresh id asks for that one: it is given the id it awaited, and keeps the fresh one too.
+		// It registers again with the hand-over it was given: it gets the id it awaited, and keeps the fresh one too.
 		const claim = await here.router.claimSessionId(
-			fresh.info.id,
+			id,
 			fresh.registrationReturnAddress!,
 			deliveryTargetIdentity(fresh),
+			here.handoffs[0]!.handoff,
 		);
 		assert.ok(claim.status === "granted");
 		assert.equal(claim.grant.sessionId, id);
@@ -2659,12 +2675,13 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 	});
 
 	test("a send from another broker to an alias another registration took meanwhile does not reach the session that held it (#5607)", async () => {
-		const { shared, here, fresh } = await awaitingWhileStopped();
-		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 2 * BROKER_LEASE_RENEW_INTERVAL_MS);
+		const { shared, here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
 		const claim = await here.router.claimSessionId(
-			fresh.info.id,
+			live.info.id,
 			fresh.registrationReturnAddress!,
 			deliveryTargetIdentity(fresh),
+			here.handoffs[0]!.handoff,
 		);
 		assert.ok(claim.status === "granted" && claim.grant.aliasToken !== undefined);
 		const back: BrokerConnectedSession = {
@@ -2715,12 +2732,13 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			if (args[0] === id && binding.status === "bound" && delayed-- > 0) await late.promise;
 			return binding;
 		});
-		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 3 * BROKER_LEASE_RENEW_INTERVAL_MS);
+		await untilMovedBack(here, fresh);
 		assert.deepEqual(here.fenced, [fresh], "a later attempt took the id back");
 		const claim = await here.router.claimSessionId(
 			id,
 			fresh.registrationReturnAddress!,
 			deliveryTargetIdentity(fresh),
+			here.handoffs[0]!.handoff,
 		);
 		assert.ok(claim.status === "granted");
 		const back: BrokerConnectedSession = { ...fresh, socket: fakeSocket(), info: { ...fresh.info, id } };
@@ -2737,9 +2755,37 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.equal((await taken).status, "held", "the session that came back still owns the id");
 	});
 
-	test("an id taken back for an awaiting session is taken only by a registration of the same identity, and given back unused after a while (#5607)", async () => {
+	test("an id taken back for an awaiting session is not taken by another registration of the same identity without its hand-over (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		assert.deepEqual(here.fenced, [fresh]);
+		const { handoff } = here.handoffs[0]!;
+
+		// Another restore of the same session, in the same group, asks for the id before the moved session comes back.
+		const twin = twinOf(live, "twin");
+		for (const presented of [undefined, randomUUID()]) {
+			const other = here.router.claimSessionId(
+				live.info.id,
+				twin.registrationReturnAddress!,
+				deliveryTargetIdentity(twin),
+				presented,
+			);
+			await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+			assert.notEqual((await other).status, "granted");
+		}
+		const claim = await here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		assert.ok(claim.status === "granted", "the moved session still takes it with its hand-over");
+		assert.equal(claim.grant.alias, fresh.info.id);
+	});
+
+	test("an id taken back for an awaiting session is not taken by a registration of another identity, and is given back unused after a while (#5607)", async () => {
 		const { shared, here, live, fresh } = await awaitingWhileStopped();
-		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 2 * BROKER_LEASE_RENEW_INTERVAL_MS);
+		await untilMovedBack(here, fresh);
 		assert.deepEqual(here.fenced, [fresh]);
 
 		// Another registration of the same session, in another group, does not take what was held for this one.

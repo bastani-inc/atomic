@@ -157,10 +157,11 @@ export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
  */
 const SESSION_ID_OWNER_RETRY_MS = [50, 100, 200, 400, 800] as const;
 /**
- * #5607: how long an id taken back for a session that awaited it is held for that session to register again under it
- * (its client reconnects within a second or two), before it is given back unused.
+ * #5607: how long an id taken back for a session that awaited it is held for that session to register again under it,
+ * with the hand-over it was given: no longer than the client's own wait for a registration. Its client reconnects
+ * within a second or two; past this the id is given back unused, for any registration to claim as usual.
  */
-const RESERVED_ID_HOLD_MS = 2 * BROKER_LEASE_RENEW_INTERVAL_MS;
+const RESERVED_ID_HOLD_MS = 10_000;
 /**
  * #5607: how long after the last write that confirmed it (counted from just before that write was sent) a registration's
  * id is taken as still its own without asking the shared database again. Another registration may take an id only once
@@ -333,7 +334,11 @@ export interface MultiNodeHost {
 	 * #5607: another live registration of the same session owns this session's id: disconnect it here, leaving what is
 	 * shared under the id alone, so it reconnects and gets a fresh id.
 	 */
-	fence(session: BrokerConnectedSession, reason?: "lost" | "reclaimed"): void;
+	fence(
+		session: BrokerConnectedSession,
+		reason?: "lost" | "reclaimed",
+		handoff?: { readonly sessionId: string; readonly handoff: string },
+	): void;
 }
 
 export interface MultiNodeRouterOptions {
@@ -482,6 +487,8 @@ function adoption(token: string): Adoption {
 interface ReservedId {
 	readonly id: string;
 	readonly token: string;
+	/** The one-use value given to the session only, which its next registration presents to take the id. */
+	readonly handoff: string;
 	/** The id the session had meanwhile, which stays an alias of it, and the token that keeps owning it meanwhile. */
 	readonly alias: string;
 	readonly aliasToken?: string;
@@ -902,13 +909,19 @@ export class MultiNodeRouter {
 	 * does not answer in time: the session registers under a fresh id, and its registration's binding write tries once
 	 * more to keep this one (#5607).
 	 */
-	async claimSessionId(asked: string, returnAddress: string, identity?: string): Promise<SessionIdClaim> {
+	async claimSessionId(
+		asked: string,
+		returnAddress: string,
+		identity?: string,
+		handoff?: string,
+	): Promise<SessionIdClaim> {
 		if (this.closed) return { status: "refused" };
 		// #5607: written with the binding, so a later write can tell whether the binding is still this claim's.
 		const claim = randomUUID();
 		// #5607: an id held here for this session since it awaited it is taken with the token that holds it, by the
-		// registration of the same delivery identity (return address and home group) only.
-		const reserved = identity === undefined ? undefined : this.takeReservedId(asked, identity);
+		// registration that presents the hand-over the session was given, of the same delivery identity, only.
+		const reserved =
+			identity === undefined || handoff === undefined ? undefined : this.takeReservedId(asked, identity, handoff);
 		const sessionId = reserved?.id ?? asked;
 		const owner = this.newOwner(reserved?.token);
 		if (reserved !== undefined) this.consumingTokens.add(reserved.token);
@@ -1229,7 +1242,7 @@ export class MultiNodeRouter {
 	private async renewOwners(): Promise<void> {
 		const owners = this.state.knownSessions.owners;
 		if (owners === undefined) return;
-		await this.releaseExpiredReservations();
+		this.releaseExpiredReservations();
 		const reserved = [...this.reservedIds.entries()];
 		const held = [...this.presence].flatMap(([session, entry]) =>
 			entry.fenced === true
@@ -1352,15 +1365,17 @@ export class MultiNodeRouter {
 			const earlier = this.reservedIds.get(identity);
 			// Its own id stays owned through the move, for the registration that comes back to keep as an alias.
 			entry.handsOver = true;
+			const handoff = randomUUID();
 			this.reservedIds.set(identity, {
 				id: awaits.id,
 				token: owner.token,
+				handoff,
 				alias: session.info.id,
 				...(entry.owner === undefined ? {} : { aliasToken: entry.owner.token }),
 				confirmed,
 				until: performance.now() + RESERVED_ID_HOLD_MS,
 			});
-			this.host.fence(session, "reclaimed");
+			this.host.fence(session, "reclaimed", { sessionId: awaits.id, handoff });
 			if (earlier !== undefined) await this.releaseOwner({ intercomSessionId: earlier.id, token: earlier.token });
 			return;
 		}
@@ -1372,25 +1387,35 @@ export class MultiNodeRouter {
 	}
 
 	/**
-	 * #5607: the id held here for the session of delivery identity `identity` that registers again asking for it, or for
-	 * the id it had meanwhile (a client that kept that one): taken once.
+	 * #5607: the id held here for the session of delivery identity `identity` that registers again asking for it with the
+	 * hand-over it was given: taken once, and only before the hold ends.
 	 */
-	private takeReservedId(sessionId: string, identity: string): ReservedId | undefined {
+	private takeReservedId(sessionId: string, identity: string, handoff: string): ReservedId | undefined {
 		const reserved = this.reservedIds.get(identity);
-		if (reserved === undefined || (sessionId !== reserved.id && sessionId !== reserved.alias)) return undefined;
+		if (reserved === undefined || reserved.handoff !== handoff || sessionId !== reserved.id) return undefined;
 		this.reservedIds.delete(identity);
+		// A hand-over presented too late takes nothing: the id is given back, for any registration to claim as usual.
+		if (performance.now() > reserved.until) {
+			void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
+			if (reserved.aliasToken !== undefined)
+				void this.releaseOwner({ intercomSessionId: reserved.alias, token: reserved.aliasToken });
+			return undefined;
+		}
 		return reserved;
 	}
 
-	/** #5607: ids held for sessions that did not register again in time are given back. */
-	private async releaseExpiredReservations(): Promise<void> {
+	/**
+	 * #5607: ids held for sessions that did not register again in time are given back. They stop being held at once; their
+	 * release runs on its own, so a release the store is slow to answer holds up no renewal.
+	 */
+	private releaseExpiredReservations(): void {
 		const now = performance.now();
 		for (const [identity, reserved] of [...this.reservedIds]) {
-			if (reserved.until > now || this.reservedIds.get(identity) !== reserved) continue;
+			if (reserved.until > now) continue;
 			this.reservedIds.delete(identity);
-			await this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
+			void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
 			if (reserved.aliasToken !== undefined)
-				await this.releaseOwner({ intercomSessionId: reserved.alias, token: reserved.aliasToken });
+				void this.releaseOwner({ intercomSessionId: reserved.alias, token: reserved.aliasToken });
 		}
 	}
 

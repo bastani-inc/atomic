@@ -317,11 +317,11 @@ export async function openSqlKnownSessionStore({
 			if (session.intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
 			if (session.group.length === 0) return { status: "invalid", reason: "empty-group" };
 			await database.run(
-				`INSERT INTO ${table}(target_identity, intercom_session_id${aliasColumn}, name_json, name_key, atomic_session_id,
-					group_name, groups_json, recipient_purpose, reply_capability, recorded_at)
-				 VALUES (?, ?${aliased ? ", ?" : ""}, ?, ?, ?, ?, ?, ?, ?, ${nowMs})
+				`INSERT INTO ${table}(target_identity, intercom_session_id, name_json, name_key, atomic_session_id,
+					group_name, groups_json, recipient_purpose, reply_capability, recorded_at${aliasColumn})
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${nowMs}${aliased ? ", ?" : ""})
 				 ON CONFLICT(target_identity) DO UPDATE SET
-					intercom_session_id = excluded.intercom_session_id,${aliased ? "\n\t\t\t\t\talias_id = excluded.alias_id," : ""}
+					intercom_session_id = excluded.intercom_session_id,
 					name_json = excluded.name_json,
 					name_key = excluded.name_key,
 					atomic_session_id = excluded.atomic_session_id,
@@ -329,11 +329,10 @@ export async function openSqlKnownSessionStore({
 					groups_json = excluded.groups_json,
 					recipient_purpose = excluded.recipient_purpose,
 					reply_capability = excluded.reply_capability,
-					recorded_at = excluded.recorded_at,
+					recorded_at = excluded.recorded_at,${aliased ? "\n\t\t\t\t\talias_id = excluded.alias_id," : ""}
 					lost_at = NULL`,
 				session.targetIdentity,
 				session.intercomSessionId,
-				...(aliased ? [session.aliasSessionId ?? null] : []),
 				session.name === undefined ? null : JSON.stringify(session.name),
 				session.name === undefined ? null : JSON.stringify(session.name.toLowerCase()),
 				session.atomicSessionId ?? null,
@@ -341,6 +340,8 @@ export async function openSqlKnownSessionStore({
 				JSON.stringify([...session.groups]),
 				session.recipientPurpose ?? null,
 				session.replyCapability ?? null,
+				// #5607: last, so every earlier value keeps its place.
+				...(aliased ? [session.aliasSessionId ?? null] : []),
 			);
 			return { status: "recorded" };
 		},
