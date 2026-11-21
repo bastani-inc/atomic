@@ -337,51 +337,40 @@ test("what a sequence keeps for its signal goes with the signal (#6106)", async 
 	);
 });
 
-test("a signal shared by sequences running at once on two databases stops the second after the first returned (#6106)", async () => {
-	const count = 2;
-	const databases = await Promise.all(Array.from({ length: count }, () => openFile()));
+test("a signal shared by two sequences running at once stops the second after the first returned (#6106)", async () => {
+	const database = await openFile();
 	const controller = new AbortController();
 	const reason = new Error("stopped");
-	// Each request waits until both were sent, so both sequences watch the signal at once. The first one then runs and
-	// returns; the signal aborts while the second one's request is on its way to its thread.
-	let sent = 0;
-	let allSent!: () => void;
-	const everySent = new Promise<void>((resolve) => {
-		allSent = resolve;
-	});
 	let firstReturned!: () => void;
 	const firstDone = new Promise<void>((resolve) => {
 		firstReturned = resolve;
 	});
-	// Before the databases close, so a request still held here goes on if the test ends early.
-	cleanups.push(() => {
-		allSent();
-		firstReturned();
-	});
+	// Before the database closes, so a request still held here goes on if the test ends early.
+	cleanups.push(() => firstReturned());
+	// The second sequence's request waits until the first sequence returned; the signal then aborts while that request is
+	// on its way to the thread.
 	watchSequences(async (request, send) => {
-		if (++sent === count) allSent();
-		await everySent;
-		if (request.statements[0]?.params[0] === "v0") return send();
+		if (request.statements[0]?.params[0] === "first") return send();
 		await firstDone;
 		controller.abort(reason);
 		return send();
 	});
-	const outcomes = await Promise.all(
-		databases.map((database, index) =>
-			database.transaction(async (tx) => {
-				const failure = await runnerOf(tx)({ statements: [insert(`v${index}`)], signal: controller.signal }).then(
-					() => undefined,
-					(error: unknown) => error,
-				);
-				if (index === 0) firstReturned();
-				return { failure, rows: await values(tx) };
-			}),
-		),
-	);
-	assert.deepEqual(outcomes, [
-		{ failure: undefined, rows: ["v0"] },
-		{ failure: reason, rows: [] },
-	]);
+	const { outcomes, rows } = await database.transaction(async (tx) => {
+		const run = runnerOf(tx);
+		const settled = (sequence: Promise<number>) =>
+			sequence.then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+		// Both watch the signal from here on: the second starts before the first returns.
+		const first = settled(run({ statements: [insert("first")], signal: controller.signal }));
+		const second = settled(run({ statements: [insert("second")], signal: controller.signal }));
+		const firstOutcome = await first;
+		firstReturned();
+		return { outcomes: [firstOutcome, await second], rows: await values(tx) };
+	});
+	assert.deepEqual(outcomes, [undefined, reason]);
+	assert.deepEqual(rows, ["first"]);
 });
 
 test("a sequence reports the failing statement's error, not the abort, when its signal aborts after the statement failed (#6082)", async () => {
