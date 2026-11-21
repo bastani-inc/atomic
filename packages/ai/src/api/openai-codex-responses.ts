@@ -2,7 +2,6 @@ import type * as NodeZlib from "node:zlib";
 import type { Tool as OpenAITool, ResponseInput, ResponseStreamEvent } from "openai/resources/responses/responses.js";
 
 import { clampThinkingLevel } from "../models.ts";
-import { getProviderRetryAfterMs, getRetryAfterMs } from "../utils/retry-hints.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
@@ -27,17 +26,18 @@ import {
 	formatProviderError,
 	normalizeProviderError,
 } from "../utils/error-body.ts";
-import { findTlsCertificateRefusal, recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { admitFetch } from "../utils/request-admission.ts";
+import { getProviderRetryAfterMs, getRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "../utils/retry-sleep.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
+import { findTlsCertificateRefusal, recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
 import {
 	getDeclaredTools,
 	getInitialSystemMessage,
@@ -59,8 +59,8 @@ import {
 	isServiceTierRejection,
 	processResponsesStream,
 	type ResponsesServiceTier,
-	resolveRequestedServiceTier,
 	resolveChatGPTBackendServiceTier,
+	resolveRequestedServiceTier,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -488,10 +488,10 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						const info = await parseErrorResponse(fakeResponse);
 						// Keep the HTTP status in the text, as the other providers' `<status>: <body>` does, so a 402
 						// (exhausted quota) or 5xx is still recognizable once only the message survives.
-						throw Object.assign(
-							new Error(info.friendlyMessage || `${response.status}: ${info.message}`),
-							{ status: response.status, retryAfterMs: getRetryAfterMs(response.headers, errorText) },
-						);
+						throw Object.assign(new Error(info.friendlyMessage || `${response.status}: ${info.message}`), {
+							status: response.status,
+							retryAfterMs: getRetryAfterMs(response.headers, errorText),
+						});
 					} catch (error) {
 						if (error instanceof RetryDeadlineError) throw error;
 						if (error instanceof Error) {
@@ -1341,11 +1341,28 @@ async function acquireWebSocket(
 	};
 }
 
+/**
+ * How Bun's WebSocket reports a handshake its TLS refused: the runtime's reason after its own prefix, with the
+ * certificate's code on the event's error (#6114).
+ */
+const WEBSOCKET_TLS_HANDSHAKE_FAILURE = /^WebSocket connection to '[^']*' failed: TLS handshake failed: (.+)$/s;
+
+/** The certificate a WebSocket's own error event says its TLS refused, as an error with the runtime's reason. */
+function webSocketCertificateRefusal(error: Error): Error | undefined {
+	if (findTlsCertificateRefusal(error) !== undefined) return error;
+	const reason = WEBSOCKET_TLS_HANDSHAKE_FAILURE.exec(error.message)?.[1];
+	const code = (error as { code?: unknown }).code;
+	if (reason === undefined || typeof code !== "string") return undefined;
+	const refusal = Object.assign(new Error(reason, { cause: error }), { code });
+	return findTlsCertificateRefusal(refusal) === undefined ? undefined : refusal;
+}
+
 function extractWebSocketError(event: unknown): Error {
 	if (event && typeof event === "object") {
 		const nestedError = "error" in event ? (event as { error?: unknown }).error : undefined;
 		// Bun's event carries the refused certificate's code on its error only (#6114).
-		if (nestedError instanceof Error && findTlsCertificateRefusal(nestedError) !== undefined) return nestedError;
+		const refusal = nestedError instanceof Error ? webSocketCertificateRefusal(nestedError) : undefined;
+		if (refusal !== undefined) return refusal;
 
 		const message = "message" in event ? (event as { message?: unknown }).message : undefined;
 		if (typeof message === "string" && message.length > 0) {

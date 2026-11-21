@@ -144,17 +144,17 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 	);
 
 	it("OpenAI Codex over WebSocket does not fall back to SSE for a certificate the WebSocket refused (#6114)", async () => {
-		// Bun reports the refused certificate on the error event's `error`, with its code.
+		// Bun's WebSocket error event: the runtime's reason after its own prefix, and the code on the event's error.
+		const failure =
+			"WebSocket connection to 'wss://chatgpt.test/backend-api/codex/responses' failed: TLS handshake failed: self signed certificate";
 		class RefusedWebSocket extends EventTarget {
 			constructor() {
 				super();
 				queueMicrotask(() =>
 					this.dispatchEvent(
 						Object.assign(new Event("error"), {
-							message: "self signed certificate",
-							error: Object.assign(new TypeError("self signed certificate"), {
-								code: "DEPTH_ZERO_SELF_SIGNED_CERT",
-							}),
+							message: failure,
+							error: Object.assign(new Error(failure), { code: "DEPTH_ZERO_SELF_SIGNED_CERT" }),
 						}),
 					),
 				);
@@ -183,6 +183,42 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 			(message.diagnostics ?? []).map((diagnostic) => diagnostic.type),
 			["provider_tls_certificate_refused"],
 		);
+	});
+
+	it("OpenAI Codex still falls back to SSE for a WebSocket handshake failure that names no certificate code (#6114)", async () => {
+		// Node's WebSocket reports the failure without the certificate's code; a reason in other words is not the runtime's.
+		for (const error of [
+			new Error("WebSocket connection to 'wss://chatgpt.test/backend-api/codex/responses' failed"),
+			Object.assign(
+				new Error(
+					"WebSocket connection to 'wss://chatgpt.test/backend-api/codex/responses' failed: TLS handshake failed: upstream says its certificate has expired",
+				),
+				{ code: "CERT_HAS_EXPIRED" },
+			),
+		]) {
+			class FailedWebSocket extends EventTarget {
+				constructor() {
+					super();
+					queueMicrotask(() =>
+						this.dispatchEvent(Object.assign(new Event("error"), { message: error.message, error })),
+					);
+				}
+				send(): void {}
+				close(): void {}
+			}
+			const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+			vi.stubGlobal("WebSocket", FailedWebSocket);
+
+			const message = await streamOpenAICodexResponses(
+				createModel("openai-codex-responses", "https://chatgpt.test/backend-api"),
+				context,
+				{ apiKey: CODEX_TOKEN, transport: "auto", fetch, sessionId: `codex-${error.message.length}` },
+			).result();
+
+			assert.equal(message.stopReason, "error");
+			assert.equal(fetch.mock.calls.length, 1, error.message);
+			assert.deepEqual(tlsDiagnostics(message), [], message.errorMessage);
+		}
 	});
 
 	it("a failed assistant message read back from JSON is still not retried (#6114)", async () => {
