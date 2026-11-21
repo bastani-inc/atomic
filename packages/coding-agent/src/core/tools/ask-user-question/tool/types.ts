@@ -1,4 +1,4 @@
-import { type Static, Type } from "typebox";
+import { type Static, Type } from "@bastani/atomic-schema/typebox";
 import { LABELS_BY_KIND, ROW_INTENT_META } from "../state/row-intent.ts";
 
 export const MAX_QUESTIONS = 4;

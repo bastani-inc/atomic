@@ -53,6 +53,8 @@ const HOST_PROVIDED_EXTERNALS = [
 	"@bastani/atomic-ai/api/cloudflare-gateway-binding",
 	"@earendil-works/*",
 	"@mariozechner/*",
+	"@bastani/atomic-schema/typebox",
+	"@bastani/atomic-schema/typebox/*",
 	"typebox",
 	"typebox/*",
 	"@sinclair/typebox",

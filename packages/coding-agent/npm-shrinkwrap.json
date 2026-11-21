@@ -11,6 +11,7 @@
 			"dependencies": {
 				"@bastani/atomic-natives": "0.0.0",
 				"@bastani/atomic-ai": "0.0.0",
+				"@bastani/atomic-schema": "0.0.0",
 				"@bastani/atomic-agent-core": "0.0.0",
 				"@bastani/atomic-codemode": "0.0.0",
 				"@bastani/atomic-tui": "0.0.0",
@@ -669,6 +670,9 @@
 			"version": "0.0.0",
 			"resolved": "https://registry.npmjs.org/@bastani/atomic-schema/-/atomic-schema-0.0.0.tgz",
 			"license": "MIT",
+			"dependencies": {
+				"typebox": "1.3.27"
+			},
 			"engines": {
 				"node": ">=22.19.0"
 			}

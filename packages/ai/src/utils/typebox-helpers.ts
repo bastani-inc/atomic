@@ -1,4 +1,4 @@
-import { type TUnsafe, Type } from "typebox";
+import { type TUnsafe, Type } from "@bastani/atomic-schema/typebox";
 
 /**
  * Creates a string enum schema compatible with Google's API and other providers

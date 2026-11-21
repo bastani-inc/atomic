@@ -43,6 +43,22 @@ export function withLegacyPackageNames<T>(modules: Record<string, T>): Record<st
 	return result;
 }
 
+/**
+ * TypeBox's public subpaths. Atomic bundles one copy of TypeBox in `@bastani/atomic-schema/typebox`, and every
+ * `typebox` specifier an extension imports resolves to it.
+ */
+export const TYPEBOX_SUBPATHS = [
+	"",
+	"/compile",
+	"/error",
+	"/format",
+	"/guard",
+	"/schema",
+	"/system",
+	"/type",
+	"/value",
+] as const;
+
 /** Workspace directory under `packages/` of each forked package. */
 export const FORKED_PACKAGE_WORKSPACE_DIRS: Readonly<Record<string, string>> = {
 	"@bastani/atomic-ai": "ai",

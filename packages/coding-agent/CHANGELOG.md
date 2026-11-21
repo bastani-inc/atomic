@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Atomic now uses its own copy of TypeBox instead of the `typebox` package. Code that imports the `typebox` package itself and shared Atomic's installed copy before, such as an SDK app installed with Bun or with pnpm hoisting (with npm it already did not share it), or a package an extension depends on that imports `typebox` itself, no longer shares it: schemas built with it still validate, but formats, settings or a locale registered through it no longer reach Atomic's tool validation. To share Atomic's copy, import TypeBox from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format`, `/system` and TypeBox's other subpaths) instead of `typebox`. An extension's own `typebox` imports resolve to Atomic's copy.
+- Under Bun, Atomic now loads an extension's modules through its extension loader on the first load too, as it always did under Node and on every reload, instead of letting Bun import them natively. An extension's imports of `typebox`, Atomic's packages and their legacy names then reach Atomic's own copies from its first load, and the extension's own modules are evaluated once per load. The first start after an extension changes compiles it; later starts read the compiled modules from the transpile cache.
+
+### Added
+
+- `@bastani/atomic/typebox` and its subpaths (`/compile`, `/error`, `/format`, `/guard`, `/schema`, `/system`, `/type`, `/value`) export the copy of TypeBox Atomic uses, for SDK apps that register formats or settings for their tool schemas.
+
 ### Changed
 
 - Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
@@ -10,9 +19,13 @@
 - Interactive sessions reach the editor sooner: the thread that opens the session database starts while Atomic loads instead of after it, the native clipboard module loads the first time you copy or paste instead of at every start, and the `models.json` checker is built only when a `models.json` exists. With `--no-mcp`, the interactive window no longer loads the subagent and web tools that only its engine runs.
 - Atomic starts faster from an npm or Bun install: the package now loads its own code from about 160 files instead of about 1,050. On Windows the prompt takes input about 0.9 s sooner with Node 22 (3.0 s to 2.1 s), about 1.1 s sooner with Bun (2.1 s to 1.1 s), and about 11 s sooner on the first start after a reboot with antivirus scanning every file (39.5 s to 28.8 s); on Linux about 0.2 s sooner. The SDK's export paths and the classes extensions share with Atomic are unchanged, also for a session still running when the install is updated in place. The standalone binary is unchanged.
 - Atomic starts faster again: the package's own dependencies for YAML, Markdown and HTML conversion, diffs, version ranges, glob patterns, JSON streaming and starting commands load from its shared files instead of about 260 files of their own. Their licenses are in `dist/THIRD_PARTY_NOTICES.md`.
+- Atomic starts faster, most of all on Windows: the packages it ships for models, the terminal UI, the agent loop, schemas and telemetry (`@bastani/atomic-ai`, `-tui`, `-agent-core`, `-schema`, `-telemetry`) now load from a few files each instead of one file per module, so a start reads about 290 fewer files. Their import paths, deep paths included, are unchanged. A bundler (esbuild, Vite, webpack, rolldown) that bundles `@bastani/atomic-ai`, `-agent-core`, `-schema` or `-telemetry` into an app still gets one file per module and leaves out what the app does not use. One that bundles `@bastani/atomic-tui` gets its modules in the shared files and can no longer leave the unused ones out: importing only `visibleWidth` grows from about 198 KB to 345 KB minified.
+- Atomic starts faster again: TypeBox loads from one file instead of about 670.
 
 ### Fixed
 
+- An extension's `typebox/format`, `typebox/system` and TypeBox's other subpaths besides `typebox/compile` and `typebox/value` now resolve to Atomic's copy of TypeBox, so a format an extension registers with `Format.Set()` applies to its tools' validation.
+- An extension module's `import.meta` now describes its own file, as when the module is imported natively, however the module reads it (`import.meta.dirname`, `const meta = import.meta`, destructuring): `filename` and `dirname`, and under Bun `path`, `dir`, `file`, `main` and `require`. Under Node `filename` and `dirname` were undefined, and under Bun they named a `data:` URL after a `/reload`.
 - After a restart, a long session no longer replays an Intercom message, reply or ask that it had already taken in a turn, or an ask it had already answered, once a compaction had left the entry that recorded this out of the reopened session. Such a message came back as a new turn when its sender was still connected, and as history otherwise, after every restart ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
 - Fixed the first run after a resume near the context window lowering the thinking budget when an extension starts it, or a queued message or session recovery continues it: like a typed prompt, it now compacts once first when only what the resume added would lower the budget. What an extension adds after the session opened counts as the conversation's, as in a session that kept running, so it no longer causes that compaction.
 - A subagent whose own prompt replaces the default now names the project's session folder in a section at the end of its prompt, so its Session memory section reads the same in every project. A session recorded with the folder in Session memory keeps it there.

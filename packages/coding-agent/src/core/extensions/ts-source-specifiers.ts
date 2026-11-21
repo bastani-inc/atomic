@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { createJiti } from "jiti";
 
 type CreateJiti = typeof createJiti;
@@ -8,7 +9,8 @@ type JitiTransform = NonNullable<NonNullable<Parameters<CreateJiti>[1]>["transfo
 type JitiTransformOptions = Parameters<JitiTransform>[0];
 
 // 2: a stored transform starts with a line listing the module's static imports.
-const TRANSFORM_CACHE_FORMAT = 2;
+// 3: `import.meta` is an object of the module's own file (see `moduleImportMetaPlugin`).
+const TRANSFORM_CACHE_FORMAT = 3;
 const RELATIVE_SCRIPT_SPECIFIER = /["'](\.\.?\/[^"'\r\n]*?\.[cm]?jsx?)["']/g;
 const SCRIPT_EXTENSION = /\.[cm]?jsx?$/;
 const TYPESCRIPT_EXTENSION_FOR: Readonly<Record<string, string>> = {
@@ -114,6 +116,91 @@ function typeScriptSourceSpecifierPlugin(_babel: object, options: PluginOptions)
 			},
 			CallExpression(nodePath: NodePath<CallNode>) {
 				if (isModuleLoadCall(nodePath)) rewriteSource(nodePath.node.arguments?.[0], options.rewrites);
+			},
+		},
+	};
+}
+
+interface MetaPropertyPath {
+	node: { meta?: { name?: string }; property?: { name?: string } };
+	replaceWith(node: object): void;
+}
+
+interface IdentifierPath {
+	node: { name?: string };
+	scope: { hasBinding(name: string): boolean };
+	isReferencedIdentifier(): boolean;
+}
+
+interface ProgramPath {
+	scope: { hasBinding(name: string): boolean };
+	unshiftContainer(key: "body", node: object): void;
+}
+
+interface BabelApi {
+	types: { identifier(name: string): object };
+	template: { statement: { ast(code: string): object } };
+}
+
+/** The name the transformed module gives its `import.meta` object. */
+const IMPORT_META = "__atomicImportMeta";
+
+/**
+ * jiti replaces a module's `import.meta.url` and `import.meta.resolve`, and leaves the rest of `import.meta` to the code
+ * it evaluates: under Node that names no file at all, under Bun a `data:` module. This gives each module an
+ * `import.meta` object of its own file instead, the one a natively imported module has: `url`, `filename`, `dirname`
+ * and `resolve`, under Bun also `path`, `dir`, `file`, `main` and `require`, and `env`, as jiti gave it before. Every
+ * use of `import.meta` reads that object, whether it names a property directly, keeps the object in a variable, or
+ * destructures it.
+ */
+function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) {
+	// The file's path as the platform writes it: jiti names it with forward slashes on Windows too.
+	const filename = path.resolve(options.filename);
+	const url = pathToFileURL(filename).href;
+	const dirname = path.dirname(filename);
+	const file = path.basename(filename);
+	type State = { usesImportMeta?: boolean; usesFileGlobals?: boolean };
+	return {
+		name: "atomic-module-import-meta",
+		visitor: {
+			MetaProperty(nodePath: MetaPropertyPath, state: State) {
+				if (nodePath.node.meta?.name !== "import" || nodePath.node.property?.name !== "meta") return;
+				nodePath.replaceWith(babel.types.identifier(IMPORT_META));
+				state.usesImportMeta = true;
+			},
+			Identifier(nodePath: IdentifierPath, state: State) {
+				const name = nodePath.node.name;
+				if ((name === "__filename" || name === "__dirname") && nodePath.isReferencedIdentifier()) {
+					if (!nodePath.scope.hasBinding(name)) state.usesFileGlobals = true;
+				}
+			},
+			Program: {
+				exit(nodePath: ProgramPath, state: State) {
+					if (
+						state.usesFileGlobals &&
+						!nodePath.scope.hasBinding("__filename") &&
+						!nodePath.scope.hasBinding("__dirname")
+					) {
+						// Under Bun, as a natively imported module has them; jiti's stay under Node, as before.
+						nodePath.unshiftContainer(
+							"body",
+							babel.template.statement.ast(
+								`if (process.versions.bun !== undefined) { __filename = ${JSON.stringify(filename)}; __dirname = ${JSON.stringify(dirname)}; }`,
+							),
+						);
+					}
+					if (!state.usesImportMeta) return;
+					// jiti's `require` for the module, unless the module declares its own at the top level.
+					const require = nodePath.scope.hasBinding("require") ? "" : ", require";
+					const bun = `path: ${JSON.stringify(filename)}, dir: ${JSON.stringify(dirname)}, file: ${JSON.stringify(file)}, main: false${require}`;
+					// `env` as jiti gave `import.meta.env` before, under Node too.
+					nodePath.unshiftContainer(
+						"body",
+						babel.template.statement.ast(
+							`const ${IMPORT_META} = { url: ${JSON.stringify(url)}, filename: ${JSON.stringify(filename)}, dirname: ${JSON.stringify(dirname)}, resolve: jitiESMResolve, env: process.env, ...(process.versions.bun === undefined ? {} : { ${bun} }) };`,
+						),
+					);
+				},
 			},
 		},
 	};
@@ -225,7 +312,14 @@ export function createTypeScriptSourceSpecifierTransform(
 		const imports: string[] = [];
 		const code = babelHost.transform({
 			...options,
-			babel: { ...options.babel, plugins: [...plugins, [typeScriptSourceSpecifierPlugin, { rewrites, imports }]] },
+			babel: {
+				...options.babel,
+				plugins: [
+					...plugins,
+					[typeScriptSourceSpecifierPlugin, { rewrites, imports }],
+					[moduleImportMetaPlugin, { filename: options.filename }],
+				],
+			},
 		});
 		const transformed: TransformedModule = { code, imports };
 		if (cached && !code.includes("__JITI_ERROR__")) {
