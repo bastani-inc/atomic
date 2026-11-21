@@ -632,6 +632,100 @@ describe("PostgreSQL certificates reported as UNSPECIFIED (#6112)", () => {
 	});
 });
 
+describe("a password source's own failure is not the server's certificate (#6112)", () => {
+	/**
+	 * Opens a database on a loopback server that asks every connection for a cleartext password, over a connection without
+	 * TLS, with `password` as the password source; resolves with how many connections were made and the error the open
+	 * ended in.
+	 */
+	async function openWithPasswordSource(
+		password: () => Promise<string>,
+	): Promise<{ connections: number; error: Error }> {
+		let connections = 0;
+		const server = createServer((socket) => {
+			connections++;
+			socket.on("error", () => {});
+			// AuthenticationCleartextPassword, in answer to the startup message.
+			socket.once("data", () => socket.write(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 3])));
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		assert.ok(address !== null && typeof address === "object");
+		try {
+			const error = await openPostgresDatabase({
+				url: `postgresql://atomic@127.0.0.1:${address.port}/atomic?sslmode=disable`,
+				password,
+			}).then(
+				async (database) => {
+					await database.close();
+					return assert.fail("the database opened");
+				},
+				(caught: Error) => caught,
+			);
+			return { connections, error };
+		} finally {
+			server.close();
+		}
+	}
+
+	const messages = (error: Error): string[] => {
+		const chain: string[] = [];
+		for (let current: unknown = error; current instanceof Error; current = current.cause) chain.push(current.message);
+		return chain;
+	};
+
+	test("a password source that fails with a certificate code is retried as any failure of the source, without the server's wording (#6112)", async () => {
+		// What the source's own HTTPS request to a secret store could fail with.
+		const expired = () => Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" });
+		const shared = expired();
+		const sealed = new Error("the secret store is sealed");
+		const [plain, ...coded] = await Promise.all([
+			openWithPasswordSource(async () => {
+				throw sealed;
+			}),
+			openWithPasswordSource(async () => {
+				throw expired();
+			}),
+			// Thrown before the source returns a promise.
+			openWithPasswordSource(() => {
+				throw expired();
+			}),
+			// As a fetch reports it: the code on a cause.
+			openWithPasswordSource(async () => {
+				throw new TypeError("fetch failed", {
+					cause: Object.assign(new Error("self-signed certificate"), { code: "DEPTH_ZERO_SELF_SIGNED_CERT" }),
+				});
+			}),
+			openWithPasswordSource(async () => {
+				throw Object.assign(new Error("key usage does not include certificate signing"), { code: "UNSPECIFIED" });
+			}),
+			// The same error object on every connection.
+			openWithPasswordSource(async () => {
+				throw shared;
+			}),
+		]);
+		assert.ok(plain !== undefined && plain.connections > 1, String(plain?.error));
+		assert.equal(plain.error.name, "StorageTransientError");
+		// A failure without a certificate code reaches the connection failure as the source threw it.
+		assert.equal((plain.error.cause as Error | undefined)?.cause, sealed);
+		for (const { connections, error } of coded) {
+			const chain = messages(error);
+			assert.equal(error.name, "StorageTransientError", chain.join(" <- "));
+			assert.equal(connections, plain.connections, chain.join(" <- "));
+			assert.equal(
+				chain.some((message) => message.includes("TLS certificate") || message.includes("sslrootcert")),
+				false,
+				chain.join(" <- "),
+			);
+		}
+		// The source's own error stays in the causes, with its message.
+		assert.equal(messages(coded[4]?.error ?? plain.error).includes("certificate has expired"), true);
+		let cause: unknown = coded[4]?.error;
+		while (cause instanceof Error && cause !== shared) cause = cause.cause;
+		assert.equal(cause, shared);
+	});
+});
+
 test("the adapter refuses the certificates model requests refuse: the same codes and UNSPECIFIED reasons (#6112)", () => {
 	assert.deepEqual([...TLS_VERIFICATION_CODES].sort(), [...MODEL_REQUEST_CODES].sort());
 	assert.deepEqual([...UNSPECIFIED_CERTIFICATE_REASONS].sort(), [...MODEL_REQUEST_REASONS].sort());

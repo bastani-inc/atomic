@@ -67,6 +67,7 @@ const customFields: Fields = {
 	intercom_received: { message: protocolMessage, messageId: true },
 	intercom_inbox_handled: { messageId: true },
 	intercom_ask: { askId: true },
+	intercom_ask_closed: { messageId: true },
 	intercom_ask_settled: { askId: true },
 	intercom_sent: { message: protocolMessage },
 	intercom_reply_wait: { toolCallId: true },

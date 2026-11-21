@@ -1488,6 +1488,9 @@ export async function main(argv: string[], options?: MainOptions) {
 		stopAnnouncingWaits?.();
 		if (opened === "cancelled") process.exit(0);
 		sessionManager = opened.sessionManager;
+		// The session the host started for this engine is the engine's new session, not one it resumed.
+		if (engineEnv.startedSessionId !== undefined && sessionManager.getSessionId() === engineEnv.startedSessionId)
+			sessionManager.markSessionStarted();
 		worktreeRestoreDiagnostics = opened.notices;
 		// The host that started this engine may still be building the resumed session's blueprints.
 		if (engineEnv.child === "1" && engineEnv.hostPid !== undefined) {

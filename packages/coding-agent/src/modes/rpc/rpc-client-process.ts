@@ -42,6 +42,7 @@ const bootstrapHandles = new WeakMap<ChildProcess, InteractiveEngineBootstrapHan
 export async function prepareRpcClientBootstrap(
 	interactiveEngineApiKey?: string,
 	trustDecisions?: SessionTrustDecisions,
+	startedSessionId?: string,
 	startupExtensionCheck?: StartupExtensionCheck,
 ): Promise<PreparedRpcClientBootstrap> {
 	const guardianFile = join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`);
@@ -52,6 +53,7 @@ export async function prepareRpcClientBootstrap(
 		queuedDeliveries: true,
 		...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
 		...(trustDecisions ? { trustDecisions } : {}),
+		...(startedSessionId !== undefined ? { startedSessionId } : {}),
 		...(startupExtensionCheck ? { startupExtensionCheck } : {}),
 	});
 	return { guardianFile, bootstrap };

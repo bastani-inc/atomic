@@ -354,7 +354,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	abortSessionSummary(): void;
 	_maybeGenerateSessionSummary(): Promise<void>;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
-	_compactBeforeContinuation(): Promise<boolean>;
+	_compactBeforeContinuation(input?: readonly AgentMessage[]): Promise<boolean>;
 	_compactBeforeResumedPrompt(update: AgentMessage | undefined, input: readonly AgentMessage[]): Promise<boolean>;
 	_continueAgentAfterCompactionCheck(): Promise<void>;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): Promise<void>;

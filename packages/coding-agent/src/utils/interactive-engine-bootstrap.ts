@@ -46,6 +46,11 @@ export interface InteractiveEngineBootstrap {
 	startupExtensionCheck?: StartupExtensionCheck;
 	/** The host draws the queued messages the main session is delivering, from changes on the engine's event lines. */
 	queuedDeliveries?: true;
+	/**
+	 * The session the host started, as a new session or a fork, for this engine to open: the engine's new session, not
+	 * one it resumes. Only the first engine of that session is given it.
+	 */
+	startedSessionId?: string;
 }
 
 /**
@@ -175,6 +180,7 @@ export function readInteractiveEngineBootstrap(path: string): InteractiveEngineB
 			...(parsed.projectResourceWithdrawals === true ? { projectResourceWithdrawals: true } : {}),
 			...(startupExtensionCheck ? { startupExtensionCheck } : {}),
 			...(parsed.queuedDeliveries === true ? { queuedDeliveries: true } : {}),
+			...(typeof parsed.startedSessionId === "string" ? { startedSessionId: parsed.startedSessionId } : {}),
 		};
 	} catch {
 		return undefined;

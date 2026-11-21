@@ -38,6 +38,9 @@ export async function createIsolatedInteractiveRuntime(options: {
 			// Handed to the child through the protected bootstrap file so it never
 			// enters an environment the child's own subprocesses can inherit.
 			...(options.parsed.apiKey ? { apiKey: options.parsed.apiKey } : {}),
+			...(options.sessionManager.isPersisted() && options.sessionManager.startedSession()
+				? { startedSessionId: options.sessionManager.getSessionId() }
+				: {}),
 			...(options.startupExtensionCheck ? { startupExtensionCheck: options.startupExtensionCheck } : {}),
 		},
 	});
