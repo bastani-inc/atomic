@@ -243,18 +243,22 @@ const agentDir = () => join(dir, "agent");
  * (`stay`) keeps running.
  */
 function prefetchFixture(stay: boolean): string {
+	// A record an earlier start's reader left would end the parent's wait before this start's reader has recorded.
+	rmSync(marker(), { force: true });
 	const packageDir = join(dir, "package");
 	file(join(packageDir, "dist", "startup-files.json"), "{}");
 	file(
 		join(packageDir, "dist", "utils", "startup-prefetch-reader.js"),
-		`import { writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(marker())}, JSON.stringify({
+		`import { renameSync, writeFileSync } from "node:fs";
+// Written beside it, then renamed into place: the parent stops waiting once the record exists, and reads it whole.
+writeFileSync(${JSON.stringify(`${marker()}.tmp`)}, JSON.stringify({
 	priority: (await import("node:os")).getPriority(),
 	argv: process.argv.slice(2),
 	threads: process.env.UV_THREADPOOL_SIZE,
 	nodeOptions: process.env.NODE_OPTIONS,
 	pid: process.pid,
 }));
+renameSync(${JSON.stringify(`${marker()}.tmp`)}, ${JSON.stringify(marker())});
 // Ends only when its standard input does, as the real reader does once its parent is gone.
 process.stdin.on("end", () => process.exit(0));
 process.stdin.resume();
