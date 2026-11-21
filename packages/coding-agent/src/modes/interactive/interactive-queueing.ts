@@ -512,10 +512,10 @@ export function queuedMessagesReturnedNotice(count: number): string {
 }
 
 /** How long a lost engine's replacement may take to say which of its queued messages it saved. */
-const RECEIPT_LOOKUP_TIMEOUT_MS = 2_000;
+export const RECEIPT_LOOKUP_TIMEOUT_MS = 2_000;
 
 /** What `work` resolves with if it does so within `ms`; undefined if it rejects or takes longer. */
-async function settledWithin<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+export async function settledWithin<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const late = new Promise<undefined>((resolve) => {
 		timer = setTimeout(() => resolve(undefined), ms);

@@ -60,6 +60,82 @@ function cachedEntries(agentDir: string): string[] {
 	return fs.readdirSync(cacheDir).filter((entry) => /\.(c|m)js$/.test(entry));
 }
 
+/** The extension command that imports a module after the extension has started. */
+const LATE_IMPORT_COMMAND = "late-import";
+
+function sessionFolders(prefix: string): { agentDir: string; cwd: string } {
+	const root = tempDir(prefix);
+	const cwd = path.join(root, "project");
+	fs.mkdirSync(cwd, { recursive: true });
+	return { agentDir: path.join(root, "agent"), cwd };
+}
+
+/** A session whose extension imports `late.ts` when its {@link LATE_IMPORT_COMMAND} command runs. */
+async function sessionWithLateImport(agentDir: string, cwd: string) {
+	const extensionDir = path.join(agentDir, "extensions", "probe");
+	if (!fs.existsSync(extensionDir)) {
+		fs.mkdirSync(extensionDir, { recursive: true });
+		fs.writeFileSync(path.join(extensionDir, "late.ts"), "export const late: string = 'late';\n");
+		fs.writeFileSync(
+			path.join(extensionDir, "index.ts"),
+			`export default function (pi: { registerCommand(name: string, options: object): void }): void {
+	pi.registerCommand(${JSON.stringify(LATE_IMPORT_COMMAND)}, {
+		description: "Import a module late",
+		handler: async () => {
+			await import("./late.ts");
+		},
+	});
+}
+`,
+		);
+	}
+	const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+	const { session, extensionsResult } = await createAgentSession({
+		cwd,
+		agentDir,
+		settingsManager,
+		sessionManager: SessionManager.inMemory(cwd),
+		model: getModel("anthropic", "claude-sonnet-4-5")!,
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
+	});
+	sessions.push(session);
+	assert.deepEqual(extensionsResult.errors, []);
+	return { session, settingsManager };
+}
+
+/**
+ * A slow disk under `agentDir`'s transpile cache: a write into it waits until {@link release} lets it finish, or
+ * {@link abandon} makes it fail without writing anything.
+ */
+function slowTranspileCache(agentDir: string) {
+	const cacheDir = path.resolve(getExtensionTranspileCacheDir(agentDir));
+	let settle!: (outcome: "write" | "fail") => void;
+	const outcome = new Promise<"write" | "fail">((resolve) => {
+		settle = resolve;
+	});
+	const events: string[] = [];
+	let held = 0;
+	const writeFile = fs.promises.writeFile;
+	const spy = vi.spyOn(fs.promises, "writeFile").mockImplementation(async (...args) => {
+		if (path.dirname(path.resolve(String(args[0]))) !== cacheDir) return writeFile(...args);
+		held += 1;
+		try {
+			if ((await outcome) === "fail") throw new Error("the disk went away");
+			await writeFile(...args);
+			events.push("transform stored");
+		} finally {
+			held -= 1;
+		}
+	});
+	return {
+		events,
+		held: () => held,
+		release: () => settle("write"),
+		abandon: () => settle("fail"),
+		restore: () => spy.mockRestore(),
+	};
+}
+
 async function loadUnderCurrentAgentDir(entry: string): Promise<void> {
 	const factory = await extensionLoaderTestHooks.loadTransformedExtensionModule(entry);
 	assert.equal(typeof factory, "function", "extension factory did not load");
@@ -291,6 +367,66 @@ describe("extension transpile cache follows the agent directory", () => {
 			() => assert.ok(fs.statSync(cacheDir).mtimeMs > Date.now() - 60_000, "the cache in use must be marked used"),
 			{ timeout: PRUNE_WAIT_MS, interval: 20 },
 		);
+	});
+
+	it("closing a session waits for the transform its extension stores for a module it imported later", async () => {
+		const { agentDir, cwd } = sessionFolders("atomic-cache-settle-");
+		const { session, settingsManager } = await sessionWithLateImport(agentDir, cwd);
+		const disk = slowTranspileCache(agentDir);
+		// Storing the late module's transform finishes only after closing the session flushed its settings.
+		const flushSettings = settingsManager.flush.bind(settingsManager);
+		const flush = vi.spyOn(settingsManager, "flush").mockImplementation(async () => {
+			await flushSettings();
+			disk.release();
+		});
+		try {
+			await session.prompt(`/${LATE_IMPORT_COMMAND}`);
+			assert.equal(disk.held(), 1, "the late module's transform must still be being stored");
+			await session.dispose();
+			disk.events.push("disposed");
+		} finally {
+			disk.release();
+			flush.mockRestore();
+			disk.restore();
+		}
+
+		assert.deepEqual(disk.events, ["transform stored", "disposed"]);
+		fs.rmSync(agentDir, { recursive: true });
+	});
+
+	it("closing an idle session does not wait for another session's transpile cache writes", async () => {
+		const { agentDir, cwd } = sessionFolders("atomic-cache-settle-two-");
+		const idle = await sessionWithLateImport(agentDir, cwd);
+		const busy = await sessionWithLateImport(agentDir, cwd);
+		const disk = slowTranspileCache(agentDir);
+		try {
+			await busy.session.prompt(`/${LATE_IMPORT_COMMAND}`);
+			assert.equal(disk.held(), 1, "the busy session's transform must still be being stored");
+
+			await idle.session.dispose();
+			assert.equal(disk.held(), 1, "the idle session must close while the other session's write is still running");
+
+			disk.release();
+			await busy.session.dispose();
+			assert.deepEqual(disk.events, ["transform stored"]);
+		} finally {
+			disk.release();
+			disk.restore();
+		}
+	});
+
+	it("closing a session gives up on a transpile cache write that never finishes", async () => {
+		const { agentDir, cwd } = sessionFolders("atomic-cache-settle-hung-");
+		const { session } = await sessionWithLateImport(agentDir, cwd);
+		const disk = slowTranspileCache(agentDir);
+		try {
+			await session.prompt(`/${LATE_IMPORT_COMMAND}`);
+			await session.dispose();
+			assert.equal(disk.held(), 1, "the write must still be running when the session has closed");
+		} finally {
+			disk.abandon();
+			disk.restore();
+		}
 	});
 
 	it("puts an SDK session's cache under its agentDir option (#4728)", async () => {
