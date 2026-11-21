@@ -970,6 +970,29 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		assert.ok(run[1]!.includes(HELPER_SNIPPET), "the tool turned on is not described");
 	});
 
+	test("after an interrupt's run turned a tool on, the next prompt still sends the new instructions after the clear", async () => {
+		const { hooks, factory } = interrupter();
+		const { installation, sessionId } = await nearWindowSession({}, [factory, helperTools]);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const before = server.requests.length;
+		server.reply({ toolUse: { name: "enable_helper", input: {} } }, { text: "done" });
+		await hooks.interrupt();
+		await runRequests(resumed, before, 2);
+
+		const prompted = await send(resumed, "four");
+		assert.equal(budgetOf(prompted), 8192);
+		assert.equal(compactions(resumed), 1);
+		const sent = JSON.stringify(prompted);
+		assert.ok(sent.includes("Keep each change reviewed."), "the new instructions are not sent");
+		assert.equal(sent.split(HELPER_SNIPPET).length - 1, 1, "the tool turned on is not described once");
+		assert.equal(
+			JSON.stringify(prompted.messages).split('"enabled"').length - 1,
+			1,
+			"the tool result is not sent once",
+		);
+		assert.ok(!sent.includes("answer to one"), "the cleared history is still sent");
+	});
+
 	for (const [name, first] of [
 		["an interrupt", (_runtime: AgentSessionRuntime, interrupt: () => Promise<void>) => interrupt()],
 		["a message steered while idle", (runtime: AgentSessionRuntime) => runtime.session.steer("go on")],

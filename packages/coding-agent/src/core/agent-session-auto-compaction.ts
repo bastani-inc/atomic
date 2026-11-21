@@ -755,9 +755,9 @@ export async function _compactBeforeResumedPrompt(
 	const entryId = at === -1 ? undefined : this._findPersistedMessageEntryId(checkpoint);
 	if (entryId === undefined) return false;
 	const history = messages.slice(0, at + 1);
+	// The boundary records the prompt as the restored history ends; a prompt change after it replays after it and
+	// counts with the conversation's own input.
 	const unsent = messages.slice(at + 1);
-	// The boundary records the prompt and tools as they are; a later prompt change would then count twice.
-	if (unsent.some((message) => message.role === "system")) return false;
 	const resumeOnly = unsent.filter(isAddedByResume);
 	const added = update ? [...resumeOnly, update] : resumeOnly;
 	const head = getCurrentSystemMessage(history);

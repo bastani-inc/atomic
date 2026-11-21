@@ -1538,7 +1538,9 @@ export class SessionManager {
 				this.leafId,
 				coveredThroughEntryId,
 			);
-			const projected = this.buildSessionProjection().messages;
+			// A boundary that covers the history only through an earlier entry carries the prompt as of that entry; the
+			// entries after it, prompt changes among them, replay after the boundary.
+			const projected = this.buildSessionProjection("model", coveredThroughEntryId ?? this.leafId).messages;
 			const systemMessage = getCurrentSystemMessage(projected);
 			const transformedPrompt = carriedTransformedPrompt(projected);
 			if (systemMessage) {
