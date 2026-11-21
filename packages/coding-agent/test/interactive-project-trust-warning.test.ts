@@ -173,7 +173,7 @@ async function runFailedDeferredStartup(failure: {
 				return true;
 			},
 		},
-		session: { getToolStatusAsync: () => ({ missing: [] }) },
+		session: { _getToolStatusWithoutGit: () => ({ missing: [] }) },
 		sessionManager: {
 			getSessionId: () => "session-1",
 			getEntries: () => [],

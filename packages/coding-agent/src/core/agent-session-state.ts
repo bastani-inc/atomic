@@ -107,7 +107,15 @@ export async function getToolStatusAsync(this: AgentSession): Promise<ToolStatus
 	return toolStatusReport(this, git);
 }
 
-function toolStatusReport(session: AgentSession, git: GitToolStatus): ToolStatusReport {
+/**
+ * The same report without its Git section, which only running git can fill: for the startup notice of unavailable
+ * tools, which reads nothing else than `missing`.
+ */
+export function _getToolStatusWithoutGit(this: AgentSession): ToolStatusReport {
+	return toolStatusReport(this, undefined);
+}
+
+function toolStatusReport(session: AgentSession, git: GitToolStatus | undefined): ToolStatusReport {
 	const source = toolSelectionSource(session);
 	const modifiers = [...session._defaultToolModifiers];
 	return buildToolStatusReport({
@@ -598,6 +606,7 @@ export const agentSessionStateMethods = {
 	getToolDefinition,
 	getToolStatus,
 	getToolStatusAsync,
+	_getToolStatusWithoutGit,
 	setActiveToolsByName,
 	_setActiveTools,
 	setScopedModels,
