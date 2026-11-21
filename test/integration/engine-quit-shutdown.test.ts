@@ -37,6 +37,43 @@ const ENGINE_SHUTDOWN_GRACE_MS = 5_000;
  */
 const BOUNDED_SHUTDOWN_MS = 6 * ENGINE_SHUTDOWN_GRACE_MS;
 
+/**
+ * The extension every session here loads. Its source never changes: it reads what to do, and the files to record
+ * into, from `fixture.json` beside it.
+ */
+const SHUTDOWN_EXTENSION = `import { spawn } from "node:child_process";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+const fixture = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixture.json"), "utf8"));
+export default (pi) => {
+	pi.on("session_start", () => {
+		if (fixture.groupChild) {
+			// A process the extension starts in the engine's process group, neither detached nor stopped at shutdown.
+			const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+			child.unref();
+			writeFileSync(fixture.files.groupChild, String(child.pid));
+		}
+		if (fixture.execGrandchild) {
+			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1] + ".root", String(process.pid)); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
+			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild], fixture.execTimeoutMs === undefined ? {} : { timeout: fixture.execTimeoutMs });
+		}
+		if (fixture.execLeftover) {
+			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); child.unref(); require("node:fs").writeFileSync(process.argv[1], String(child.pid));';
+			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild]);
+		}
+		writeFileSync(fixture.files.started, String(process.pid));
+	});
+	pi.on("session_shutdown", async (event) => {
+		const call = { pid: process.pid, reason: event.reason, fromSignal: event.fromSignal };
+		appendFileSync(fixture.files.shutdown, JSON.stringify({ ...call, finished: false }) + "\\n");
+		if (fixture.waitForRelease) {
+			while (!existsSync(fixture.files.released)) await new Promise((resolve) => setTimeout(resolve, fixture.pollMs));
+		} else await new Promise((resolve) => setTimeout(resolve, fixture.handlerWorkMs));
+		appendFileSync(fixture.files.shutdown, JSON.stringify({ ...call, finished: true }) + "\\n");
+	});
+};`;
+
 interface ShutdownRecord {
 	readonly pid: number;
 	readonly reason: string;
@@ -117,37 +154,19 @@ async function endSession(
 		prepareInstalledPackage(PACKAGE, installed);
 		mkdirSync(project, { recursive: true });
 		writeFileSync(
-			extension,
-			`import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
-export default (pi) => {
-	pi.on("session_start", () => {
-		if (${options.groupChild === true}) {
-			// A process the extension starts in the engine's process group, neither detached nor stopped at shutdown.
-			const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-			child.unref();
-			writeFileSync(${JSON.stringify(groupChild)}, String(child.pid));
-		}
-		if (${options.execGrandchild === true}) {
-			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1] + ".root", String(process.pid)); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
-			void pi.exec(process.execPath, ["-e", command, ${JSON.stringify(execChild)}], ${JSON.stringify(options.execTimeoutMs === undefined ? {} : { timeout: options.execTimeoutMs })});
-		}
-		if (${options.execLeftover === true}) {
-			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); child.unref(); require("node:fs").writeFileSync(process.argv[1], String(child.pid));';
-			void pi.exec(process.execPath, ["-e", command, ${JSON.stringify(execChild)}]);
-		}
-		writeFileSync(${JSON.stringify(started)}, String(process.pid));
-	});
-	pi.on("session_shutdown", async (event) => {
-		const call = { pid: process.pid, reason: event.reason, fromSignal: event.fromSignal };
-		appendFileSync(${JSON.stringify(shutdown)}, JSON.stringify({ ...call, finished: false }) + "\\n");
-		if (${options.waitForRelease === true}) {
-			while (!existsSync(${JSON.stringify(released)})) await new Promise((resolve) => setTimeout(resolve, ${RECORD_POLL_MS}));
-		} else await new Promise((resolve) => setTimeout(resolve, ${handlerWorkMs}));
-		appendFileSync(${JSON.stringify(shutdown)}, JSON.stringify({ ...call, finished: true }) + "\\n");
-	});
-};`,
+			join(root, "fixture.json"),
+			JSON.stringify({
+				groupChild: options.groupChild === true,
+				execGrandchild: options.execGrandchild === true,
+				execTimeoutMs: options.execTimeoutMs,
+				execLeftover: options.execLeftover === true,
+				waitForRelease: options.waitForRelease === true,
+				pollMs: RECORD_POLL_MS,
+				handlerWorkMs,
+				files: { started, shutdown, groupChild, execChild, released },
+			}),
 		);
+		writeFileSync(extension, SHUTDOWN_EXTENSION);
 		program = startPtyProgram({
 			executable: process.execPath,
 			args: [
@@ -207,9 +226,9 @@ export default (pi) => {
 		}
 		await end({
 			program,
-			hostPid: host.pid,
 			...(execRootProcess ? { execRoot: execRootProcess } : {}),
 			...(execChildProcess ? { execChild: execChildProcess } : {}),
+			hostPid: host.pid,
 			handlerStarted: () => fileExistsSync(shutdown),
 			release: () => writeFileSync(released, ""),
 		});

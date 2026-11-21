@@ -49,6 +49,7 @@ const OWNER_SESSION_ID = "released-index-owner";
 const PAYLOAD_KEYS = [
 	"launch",
 	"heldMessages",
+	"heldNotices",
 	"heldToolResults",
 	"inherited",
 	"waitingOn",
@@ -216,7 +217,13 @@ async function releaseChild(at: Owner, index: number, finishes = false): Promise
 	const holds = large ? 6 : 1;
 	for (let hold = 0; hold < holds; hold++)
 		assert.equal(
-			await at.sink.holdMessages?.(childId, [large ? "m".repeat(LARGE_PAYLOAD_CHARS) : "ping"]),
+			await at.sink.holdNotices?.(childId, [
+				{
+					customType: "task-completion",
+					content: large ? "m".repeat(LARGE_PAYLOAD_CHARS) : "ping",
+					details: { completionId: `completion-${id}-${hold}` },
+				},
+			]),
 			"released",
 		);
 	await recordSubagentChildHeldToolResults(at.pi, at.sessionManager.getSessionId(), childId, [
