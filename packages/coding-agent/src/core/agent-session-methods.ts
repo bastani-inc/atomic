@@ -232,6 +232,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	/** Explain which tools are active, which are not (and why), and which selected names nothing registered. */
 	getToolStatus(): ToolStatusReport;
 	getToolStatusAsync(): Promise<ToolStatusReport>;
+	/** The tool status without its Git section, so without running git. */
+	_getToolStatusWithoutGit(): ToolStatusReport;
 	setActiveToolsByName(toolNames: string[]): void;
 	_setActiveTools(toolNames: string[]): void;
 	setScopedModels(scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>): void;
