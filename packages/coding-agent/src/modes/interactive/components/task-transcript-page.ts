@@ -435,15 +435,19 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private keptTaskAction(taskId: TaskId): KeptTaskAction | undefined {
 		if (this.keptTasks === "openWaited") return taskId === this.waitedShell ? "openWaited" : undefined;
 		// `/tasks` runs only where the chat takes what is typed.
-		if (this.source.sendTaskMessage === undefined || this.readOnlyReason() !== undefined) return undefined;
+		if (!this.takesTyping) return undefined;
 		return this.chat.listsTask(taskId) ? "ownTasks" : undefined;
 	}
 	/**
-	 * Where the waited-shell key opens a shell, notes the newest shell the released subagent waits on, which it opens:
-	 * once per frame, so each of the chat's blocks only compares its task with it.
+	 * Notes once per frame what the chat's blocks offer depends on, so each block only compares its task with it: where
+	 * the waited-shell key opens a shell, the newest shell the released subagent waits on; elsewhere, whether the chat
+	 * takes what is typed, so its own `/tasks` runs.
 	 */
-	private noteWaitedShell(): void {
-		if (this.keptTasks !== "openWaited") return;
+	private noteKeptTaskFacts(): void {
+		if (this.keptTasks !== "openWaited") {
+			this.takesTyping = this.source.sendTaskMessage !== undefined && this.readOnlyReason() === undefined;
+			return;
+		}
 		const task = this.liveTask();
 		this.waitedShell =
 			task === undefined
@@ -497,6 +501,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly showKeys: (() => void) | undefined;
 	private readonly keptTasks: "ownTasks" | "openWaited";
 	private waitedShell: TaskId | undefined;
+	private takesTyping = false;
 
 	/**
 	 * `reportLate` shows the reason a message failed after the reader left this transcript; `showKeys` opens the chat's
@@ -957,7 +962,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	 * prompt opens, which keeps its rows first.
 	 */
 	renderView(width: number, rows: number): string[] {
-		this.noteWaitedShell();
+		this.noteKeptTaskFacts();
 		let remaining = Math.max(0, rows);
 		this.bodyRows = 0;
 		this.viewLayout = undefined;
@@ -1067,7 +1072,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	/** The chat box of a subagent's chat: the transcript, then pending, working, usage, the named editor and the footer. */
 	render(width: number, rows: number): string[] {
-		this.noteWaitedShell();
+		this.noteKeptTaskFacts();
 		const viewport = Math.max(1, rows);
 		this.bodyRows = 0;
 		if (this.chat.hasTaskInspector) {

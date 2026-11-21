@@ -328,3 +328,56 @@ test("a subagent's task page names /tasks only while typing it there opens the s
 	);
 	readOnly.page.dispose();
 });
+
+test("a subagent's chat reads its task list as often for many background commands as for one", async () => {
+	initTheme("dark");
+	/** Task-list reads in a frame that changed nothing, for a chat showing `receipts` background commands. */
+	const readsPerFrame = async (receipts: number) => {
+		const shells = Array.from({ length: receipts }, (_, index) => shell(`shell-${index}`, `job ${index}`, agent));
+		const tasks = [{ ...taskRecord(agent), agentName: "worker" }, ...shells];
+		const commands = shells.map((task, index) => ({
+			callId: `call-${index}`,
+			command: `job ${index}`,
+			taskId: task.ref.taskId,
+		}));
+		const byId = new Map(tasks.map((task) => [task.ref.taskId, task]));
+		let reads = 0;
+		const source = transcriptOnlySource({
+			readTaskTranscript: () => ({ ok: true, value: { messages: transcript(commands) } }),
+			followTaskTranscript: () => undefined,
+			sendTaskMessage: async () => {},
+			taskReadOnlyReason: () => {
+				reads++;
+				return undefined;
+			},
+			// One task by its id, as a session's task store answers it.
+			taskRecord: (id) => byId.get(id),
+		});
+		for (const name of ["tasks", "ownerTasks"])
+			Object.defineProperty(source, name, {
+				get: () => {
+					reads++;
+					return tasks;
+				},
+			});
+		const page = new TaskAgentTranscriptPage(
+			source,
+			agent,
+			taskTranscriptEnvironment({ keybindings: new KeybindingsManager() }),
+			() => {},
+		);
+		await page.load();
+		page.renderView(100, 40);
+		const rows = plain(page.renderView(100, 40));
+		assert.ok(
+			rows.some((row) => row.includes("/tasks to manage")),
+			rows.join("\n"),
+		);
+		reads = 0;
+		page.renderView(100, 40);
+		const counted = reads;
+		page.dispose();
+		return counted;
+	};
+	assert.equal(await readsPerFrame(16), await readsPerFrame(1));
+});
