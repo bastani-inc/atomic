@@ -482,6 +482,10 @@ export class RpcClient extends RpcClientApi {
 	getEnginePid(): number | undefined {
 		return this.enginePid;
 	}
+	/** The process ID of the engine child this client runs, once that child has reported ready; its stop ends it. */
+	getReadyEngineChildPid(): number | undefined {
+		return this.enginePid === undefined ? undefined : this.process?.pid;
+	}
 	getGeneration(): number {
 		return this.generation;
 	}

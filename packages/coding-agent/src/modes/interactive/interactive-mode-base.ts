@@ -875,6 +875,12 @@ export class InteractiveModeBase {
 	 * repaint the final frame while the process is exiting.
 	 */
 	isShuttingDown = false;
+	/** SIGTERM and SIGHUP signals received. Only a repeated one ends every child at once. */
+	hostSignals = 0;
+	/** Set once the terminal is gone: the shutdown restores nothing and Atomic exits with status 129. */
+	terminalLost = false;
+	/** Resolves when the terminal is gone, so a shutdown stops waiting on output that can no longer be written. */
+	readonly terminalLoss = Promise.withResolvers<void>();
 	writeExitOutputInSlices = false;
 	exitOutputWritten: Promise<void> | undefined;
 	installChangeWarningShown = false;

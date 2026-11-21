@@ -1,4 +1,4 @@
-import { markEventLoopStartupComplete } from "../../core/event-loop-monitor.ts";
+import { markEventLoopShutdown, markEventLoopStartupComplete } from "../../core/event-loop-monitor.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 
 /**
@@ -224,6 +224,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
+		// An engine stopped by a signal, as when its host was, records its shutdown as an explicit quit does.
+		if (interactiveEngineChild && cause === "signal") markEventLoopShutdown();
 		detachInput();
 		process.stdin.pause();
 		await handleCommand.disposeActiveBash();

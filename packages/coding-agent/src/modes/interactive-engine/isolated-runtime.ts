@@ -823,6 +823,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	getEnginePid(): number | undefined {
 		return this.client.getEnginePid();
 	}
+	/** The process ID of the ready engine child, which this runtime's disposal stops within a bounded window. */
+	getReadyEngineChildPid(): number | undefined {
+		return this.client.getReadyEngineChildPid();
+	}
 	getEngineGeneration(): number {
 		return this.client.getGeneration();
 	}

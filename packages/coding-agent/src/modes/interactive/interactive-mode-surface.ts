@@ -308,6 +308,7 @@ declare module "./interactive-mode-base.ts" {
 		interruptActiveOperation(): boolean;
 		handleCtrlD(): void;
 		shutdown(options?: { fromSignal?: boolean }): Promise<void>;
+		handleTerminalLost(): void;
 		emergencyTerminalExit(): never;
 		uncaughtCrash(error: Error): never;
 		getCrashExtensionHint(error: unknown): string | undefined;

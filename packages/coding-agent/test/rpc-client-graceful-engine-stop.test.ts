@@ -12,7 +12,7 @@ import { ENGINE_SHUTDOWN_GRACE_MS } from "../src/modes/rpc/rpc-client-process.js
  * A signal therefore ends them at once, which is what every signal does to a process on Windows: on Linux and macOS
  * these tests reproduce the Windows behaviour under a Windows `process.platform`.
  */
-type EngineBehavior = "shuts-down" | "hangs-in-shutdown" | "never-ready" | "reports-then-lingers";
+type EngineBehavior = "shuts-down" | "hangs-in-shutdown" | "never-ready" | "reports-then-lingers" | "ignores-sigterm";
 
 const tempDirs: string[] = [];
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -41,6 +41,10 @@ const bootstrap = process.argv[process.argv.indexOf("--internal-engine-bootstrap
 writeFileSync(${JSON.stringify(started)}, JSON.parse(readFileSync(bootstrap, "utf8")).guardFile);
 if (${JSON.stringify(behavior)} !== "never-ready") {
 	process.stdout.write(JSON.stringify({ type: "engine_ready", protocolVersion: 4, pid: process.pid }) + "\\n");
+}
+if (${JSON.stringify(behavior)} === "ignores-sigterm") {
+	// As an engine busy in a tool that does not end on SIGTERM.
+	process.on("SIGTERM", () => appendFileSync(${JSON.stringify(record)}, "SIGTERM ignored\\n"));
 }
 process.stdin.on("end", () => {
 	appendFileSync(${JSON.stringify(record)}, "shutdown started\\n");
@@ -190,4 +194,61 @@ describe("RpcClient graceful engine stop on Windows", () => {
 			}
 		},
 	);
+});
+
+// A signal ends a child on Windows, so an engine there cannot outlast its grace period by ignoring SIGTERM.
+describe.skipIf(process.platform === "win32")("RpcClient engine stop on Linux and macOS", () => {
+	/** A temporary directory whose removal makes the guardian's stop file impossible to write. */
+	function useRemovableTemporaryDirectory(): string {
+		const temporary = mkdtempSync(join(realTmpdir, "atomic-engine-stop-tmp-"));
+		tempDirs.push(temporary);
+		for (const key of TEMP_ENV_KEYS) process.env[key] = temporary;
+		return temporary;
+	}
+
+	test("a stop ends an engine that outlasts its grace period when the guardian's stop file cannot be written (#6115)", async () => {
+		const temporary = useRemovableTemporaryDirectory();
+		const { client, record } = startEngine("ignores-sigterm");
+		await client.start();
+		rmSync(temporary, { recursive: true, force: true });
+
+		const startedAt = performance.now();
+		await client.stop();
+		const elapsedMs = performance.now() - startedAt;
+
+		assert.equal(readRecord(record), "SIGTERM ignored\n");
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS + ESCALATION_BOUND_MS, `stop took ${elapsedMs} ms`);
+	});
+
+	// A FIFO with no reader holds the write that creates the guardian's stop file, as a stalled disk would.
+	test("a stop is not held by a stop file that is still being written, which is removed once written (#6115)", async () => {
+		useRemovableTemporaryDirectory();
+		const { client, record, started } = startEngine("ignores-sigterm");
+		await client.start();
+		const stopFile = readFileSync(started, "utf8");
+		assert.equal(spawnSync("mkfifo", [stopFile]).status, 0);
+		let reader: number | undefined;
+		try {
+			const stopping = client.stop().then(() => "stopped" as const);
+			const outcome = await Promise.race([
+				stopping,
+				new Promise<"held">((resolve) =>
+					setTimeout(() => resolve("held"), ENGINE_SHUTDOWN_GRACE_MS + ESCALATION_BOUND_MS),
+				),
+			]);
+
+			assert.equal(outcome, "stopped", "the stop waited on the stop file's write");
+			assert.equal(readRecord(record), "SIGTERM ignored\n");
+			// Let the write finish: the stop file is then removed.
+			reader = openSync(stopFile, constants.O_RDONLY | constants.O_NONBLOCK);
+			const deadline = performance.now() + ESCALATION_BOUND_MS;
+			while (existsSync(stopFile) && performance.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+			}
+			assert.equal(existsSync(stopFile), false, "the stop file is removed once its write settles");
+		} finally {
+			reader ??= existsSync(stopFile) ? openSync(stopFile, constants.O_RDONLY | constants.O_NONBLOCK) : undefined;
+			if (reader !== undefined) closeSync(reader);
+		}
+	});
 });

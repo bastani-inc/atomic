@@ -1,7 +1,8 @@
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
-import { terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
+import { gracefullyStoppedEnginePids, terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
+import { ENGINE_SHUTDOWN_GRACE_MS } from "../rpc/rpc-client-process.ts";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
 import {
 	dequeueViewedAgent,
@@ -22,6 +23,13 @@ import { isWindowsSubshellActive, openWindowsSubshell } from "./interactive-wind
 const CTRL_C_EXIT_WINDOW_MS = 800;
 const SHUTDOWN_INPUT_DRAIN_MAX_MS = 250;
 const SHUTDOWN_INPUT_DRAIN_IDLE_MS = 50;
+/** Exit status once the terminal is gone, as for a process ended by SIGHUP. */
+const TERMINAL_LOST_EXIT_CODE = 129;
+/**
+ * Once the terminal is gone, the longest the session's shutdown may take before Atomic ends anyway: the interactive
+ * engine's grace period, then its guardian's and its tree kill's windows.
+ */
+const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
 
 /**
  * Ctrl+C, in order: text in the editor is cleared; otherwise running work stops at once (as Escape does); otherwise
@@ -122,29 +130,63 @@ InteractiveModeBase.prototype.shutdown = async function (
 
 	if (options?.fromSignal) {
 		await this.runtimeHost.dispose({ fromSignal: true });
-		this.themeController.disableAutoSync();
-		// Drain any in-flight Kitty key release events briefly before stopping.
-		// Keep this bounded so Ctrl+C exits do not feel stalled on Windows.
-		await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
-		this.stop();
-		process.exit(0);
+		// A terminal that is gone is not restored.
+		if (!this.terminalLost) {
+			this.themeController.disableAutoSync();
+			// Drain any in-flight Kitty key release events briefly before stopping.
+			// Keep this bounded so Ctrl+C exits do not feel stalled on Windows.
+			await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
+			stopTerminal(this);
+		}
+		process.exit(this.terminalLost ? TERMINAL_LOST_EXIT_CODE : 0);
 	}
 
 	// Drain any in-flight Kitty key release events briefly before stopping.
 	// Keep this bounded so Ctrl+C exits do not feel stalled on Windows.
 	this.themeController.disableAutoSync();
-	await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
+	if (!this.terminalLost) {
+		await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
+	}
 
-	await chatHistoryBuilt(this.chatContainer);
+	// Output for a terminal that is gone is never written, so its end is not waited for.
+	await Promise.race([chatHistoryBuilt(this.chatContainer), this.terminalLoss.promise]);
 	this.writeExitOutputInSlices = true;
-	this.stop();
-	await this.exitOutputWritten;
+	stopTerminal(this);
+	await Promise.race([this.exitOutputWritten, this.terminalLoss.promise]);
 	await this.runtimeHost.dispose();
+	if (this.terminalLost) process.exit(TERMINAL_LOST_EXIT_CODE);
 	const resumeCommand = await formatResumeCommand(this.sessionManager);
 	if (resumeCommand) {
 		process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 	}
 	process.exit(0);
+};
+
+/** Stop the TUI. When the terminal turns out to be gone, the shutdown goes on without restoring it. */
+function stopTerminal(mode: InteractiveModeBase): void {
+	try {
+		mode.stop();
+	} catch (error) {
+		if (!isDeadTerminalError(error)) throw error;
+		mode.handleTerminalLost();
+	}
+}
+
+/**
+ * The terminal is gone, as when its window is closed. The session shuts down as it does on SIGHUP, which a closing
+ * terminal sends too, so the interactive engine (or, without one, the session's own extensions) still runs its
+ * shutdown. Other children end at once, nothing is drawn or restored, and Atomic exits with status 129 once the
+ * session has shut down, or after {@link TERMINAL_LOST_SHUTDOWN_MS} at the latest.
+ */
+InteractiveModeBase.prototype.handleTerminalLost = function (this: InteractiveModeBase): void {
+	if (this.terminalLost) return;
+	this.terminalLost = true;
+	this.terminalLoss.resolve();
+	killTrackedDetachedChildren(gracefullyStoppedEnginePids(this.runtimeHost));
+	killSupervisedProcessTrees();
+	setTimeout(() => this.emergencyTerminalExit(), TERMINAL_LOST_SHUTDOWN_MS);
+	// A quit or a signal that is already shutting the session down goes on as it started.
+	void this.shutdown({ fromSignal: true });
 };
 
 InteractiveModeBase.prototype.emergencyTerminalExit = function (this: InteractiveModeBase): never {
@@ -154,7 +196,7 @@ InteractiveModeBase.prototype.emergencyTerminalExit = function (this: Interactiv
 	killSupervisedProcessTrees();
 	// The terminal is gone. Do not run normal shutdown because TUI and
 	// extension cleanup can write restore sequences and re-trigger EIO.
-	process.exit(129);
+	process.exit(TERMINAL_LOST_EXIT_CODE);
 };
 
 InteractiveModeBase.prototype.uncaughtCrash = function (this: InteractiveModeBase, error: Error): never {
@@ -213,7 +255,10 @@ InteractiveModeBase.prototype.registerSignalHandlers = function (this: Interacti
 
 	for (const signal of signals) {
 		const handler = () => {
-			killTrackedDetachedChildren();
+			this.hostSignals += 1;
+			// The first signal leaves the interactive engine to the shutdown, which gives it the bounded window a quit
+			// gives it to run its extensions' shutdown. A repeated signal ends every child at once.
+			killTrackedDetachedChildren(this.hostSignals > 1 ? undefined : gracefullyStoppedEnginePids(this.runtimeHost));
 			void this.shutdown({ fromSignal: true });
 		};
 		process.prependListener(signal, handler);
@@ -227,10 +272,8 @@ InteractiveModeBase.prototype.registerSignalHandlers = function (this: Interacti
 	this.signalCleanupHandlers.push(() => process.off("SIGINT", sigintHandler));
 
 	const terminalErrorHandler = (error: Error) => {
-		if (isDeadTerminalError(error)) {
-			this.emergencyTerminalExit();
-		}
-		throw error;
+		if (!isDeadTerminalError(error)) throw error;
+		this.handleTerminalLost();
 	};
 	for (const stream of [process.stdin, process.stdout, process.stderr]) {
 		stream.on("error", terminalErrorHandler);

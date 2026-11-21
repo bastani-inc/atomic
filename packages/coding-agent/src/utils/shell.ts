@@ -484,8 +484,13 @@ export function untrackDetachedChildPid(pid: number): void {
 	detachedChildGuardian?.postMessage({ action: "untrack", pid });
 }
 
-export function killTrackedDetachedChildren(): void {
+/**
+ * Kill every tracked detached child and its tree, except those in `spare`, which stay tracked: their owner stops them
+ * itself, and a later call without `spare` still kills them.
+ */
+export function killTrackedDetachedChildren(spare?: ReadonlySet<number>): void {
 	for (const [pid, exited] of trackedDetachedChildPids) {
+		if (spare?.has(pid)) continue;
 		if (!exited) killProcessTree(pid);
 		else if (process.platform !== "win32") {
 			try {
@@ -493,8 +498,8 @@ export function killTrackedDetachedChildren(): void {
 			} catch {}
 		}
 		detachedChildGuardian?.postMessage({ action: "untrack", pid });
+		trackedDetachedChildPids.delete(pid);
 	}
-	trackedDetachedChildPids.clear();
 }
 
 /**
