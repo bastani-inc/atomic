@@ -102,7 +102,7 @@ export function spawnProcess(
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess;
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess {
 	// Through a shell `command` is a command line the shell reads, as it always was.
-	if (options.shell) return spawnLaunchedProcess({ file: command }, args, options);
+	if (options.shell) return spawnChild(command, args, options);
 	const cwd = typeof options.cwd === "string" ? options.cwd : options.cwd?.pathname;
 	return spawnLaunchedProcess(processLaunch(command, { cwd, env: options.env }), args, options);
 }
@@ -113,7 +113,7 @@ export function spawnProcessSync(
 	args: string[],
 	options: SpawnSyncOptionsWithStringEncoding,
 ): SpawnSyncReturns<string> {
-	if (options.shell) return spawnLaunchedProcessSync({ file: command }, args, options);
+	if (options.shell) return spawnChildSync(command, args, options);
 	const cwd = typeof options.cwd === "string" ? options.cwd : options.cwd?.pathname;
 	return spawnLaunchedProcessSync(processLaunch(command, { cwd, env: options.env }), args, options);
 }
@@ -137,17 +137,24 @@ export function spawnLaunchedProcess(
 ): ChildProcessByStdio<null, Readable, Readable>;
 export function spawnLaunchedProcess(launch: HelperLaunch, args: string[], options: SpawnOptions): ChildProcess;
 export function spawnLaunchedProcess(launch: HelperLaunch, args: string[], options: SpawnOptions): ChildProcess {
-	launch = shellReadable(launch, options.shell);
-	const childOptions = {
+	// A program no allowed directory holds fails as a missing one does; cross-spawn would look in the working directory.
+	if (launch.missing !== undefined) {
+		return nodeSpawn(launch.file, args, { ...childEnvironment(options), ...missingHelperOptions(launch) });
+	}
+	return spawnChild(shellReadable(launch, options.shell).file, args, options);
+}
+
+/** `file` with Atomic's child environment, through cross-spawn on Windows. */
+function spawnChild(file: string, args: string[], options: SpawnOptions): ChildProcess {
+	const childOptions = childEnvironment(options);
+	return process.platform === "win32" ? crossSpawn(file, args, childOptions) : nodeSpawn(file, args, childOptions);
+}
+
+function childEnvironment<T extends { env?: NodeJS.ProcessEnv }>(options: T): T {
+	return {
 		...options,
 		env: options.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
 	};
-	// A program no allowed directory holds fails as a missing one does; cross-spawn would look in the working directory.
-	if (launch.missing !== undefined)
-		return nodeSpawn(launch.file, args, { ...childOptions, ...missingHelperOptions(launch) });
-	return process.platform === "win32"
-		? crossSpawn(launch.file, args, childOptions)
-		: nodeSpawn(launch.file, args, childOptions);
 }
 
 /** The synchronous {@link spawnLaunchedProcess}. */
@@ -156,16 +163,21 @@ export function spawnLaunchedProcessSync(
 	args: string[],
 	options: SpawnSyncOptionsWithStringEncoding,
 ): SpawnSyncReturns<string> {
-	launch = shellReadable(launch, options.shell);
-	const childOptions = {
-		...options,
-		env: options.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
-	};
-	if (launch.missing !== undefined)
-		return nodeSpawnSync(launch.file, args, { ...childOptions, ...missingHelperOptions(launch) });
+	if (launch.missing !== undefined) {
+		return nodeSpawnSync(launch.file, args, { ...childEnvironment(options), ...missingHelperOptions(launch) });
+	}
+	return spawnChildSync(shellReadable(launch, options.shell).file, args, options);
+}
+
+function spawnChildSync(
+	file: string,
+	args: string[],
+	options: SpawnSyncOptionsWithStringEncoding,
+): SpawnSyncReturns<string> {
+	const childOptions = childEnvironment(options);
 	return process.platform === "win32"
-		? crossSpawn.sync(launch.file, args, childOptions)
-		: nodeSpawnSync(launch.file, args, childOptions);
+		? crossSpawn.sync(file, args, childOptions)
+		: nodeSpawnSync(file, args, childOptions);
 }
 
 export function isWindowsProcessAlive(pid: number): boolean {

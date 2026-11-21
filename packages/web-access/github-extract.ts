@@ -134,7 +134,10 @@ async function execClone(args: string[], paths: ClonePaths, timeoutMs: number, s
 		if (signal?.aborted || expired.aborted) return removeOwnedClone(paths).then(() => null);
 		throw error;
 	}
-	const remainingMs = Math.max(0, timeoutMs - (performance.now() - startedAt));
+	// A cancellation or the time limit that came as the lookup finished still starts nothing.
+	if (signal?.aborted || expired.aborted) return removeOwnedClone(paths).then(() => null);
+	// Whole milliseconds, as spawn's `timeout` takes them, and never 0, which spawn reads as no limit.
+	const remainingMs = Math.max(1, Math.ceil(timeoutMs - (performance.now() - startedAt)));
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		let exited = false;

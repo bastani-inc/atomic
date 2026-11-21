@@ -2069,6 +2069,9 @@ async function runProvisionStep(
 		if (timeout.aborted) return timedOut(error);
 		throw error;
 	}
+	// A cancellation or the time limit that came as the lookup finished still starts nothing.
+	if (options.signal.aborted) throw options.signal.reason;
+	if (timeout.aborted) return timedOut(timeout.reason);
 	return new Promise((resolvePromise, rejectPromise) => {
 		execFile(
 			launch.file,

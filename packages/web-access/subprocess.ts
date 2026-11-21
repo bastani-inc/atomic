@@ -78,6 +78,13 @@ export async function runBunSubprocess(
 		}
 		throw error;
 	}
+	// A cancellation or the deadline that came as the lookup finished still starts nothing.
+	if (options.signal?.aborted) {
+		throw new AsyncSubprocessError(`${command} aborted`, { code: "ABORT_ERR", killed: true });
+	}
+	if (performance.now() >= deadline) {
+		throw new AsyncSubprocessError(`${command} timed out`, { code: "ETIMEDOUT", killed: true });
+	}
 	let primaryError: AsyncSubprocessError | undefined;
 	let escalation: ReturnType<typeof setTimeout> | undefined;
 	const proc = spawn(

@@ -685,6 +685,8 @@ const runGh: GitHubCommandRunner = async (args, signal) => {
 	} catch (error) {
 		throw new GitHubCommandError(undefined, signal.aborted ? "ABORT_ERR" : errnoCode(error), "", error);
 	}
+	// A cancellation that came as the lookup finished still starts nothing.
+	if (signal.aborted) throw new GitHubCommandError(undefined, "ABORT_ERR", "", signal.reason);
 	return new Promise((resolve, reject) => {
 		execFile(
 			launch.file,

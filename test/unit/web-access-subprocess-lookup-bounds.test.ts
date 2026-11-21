@@ -67,3 +67,14 @@ test("the run's time limit covers looking the command up", async () => {
 	await assert.rejects(run, { code: "ETIMEDOUT", killed: true });
 	assert.ok(held.checks > 0);
 });
+
+test("a cancellation that comes as the lookup finishes still starts nothing", async () => {
+	const controller = new AbortController();
+	const run = runBunSubprocess(process.execPath, ["-e", "setTimeout(() => {}, 150)"], {
+		timeoutMs: NEVER_MS,
+		maxStdoutBytes: 1024,
+		signal: controller.signal,
+	});
+	queueMicrotask(() => controller.abort());
+	await assert.rejects(run, { code: "ABORT_ERR", killed: true });
+});

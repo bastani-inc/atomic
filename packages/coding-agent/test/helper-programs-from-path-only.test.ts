@@ -88,6 +88,17 @@ describe("helper programs Atomic starts come only from PATH, never from the proj
 		assert.deepEqual(runs(), []);
 	});
 
+	test.skipIf(windows)("spawnProcess through a shell still passes its command line to the shell", async () => {
+		const { spawnProcessSync } = await import("../src/utils/child-process.ts");
+		const result = spawnProcessSync(`${process.execPath} -e "process.stdout.write('ordinary')"`, [], {
+			shell: true,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		assert.equal(result.stdout, "ordinary", result.stderr);
+		assert.equal(result.status, 0);
+	});
+
 	test("the same programs in a PATH directory are found by their absolute path and run", async () => {
 		const bin = join(root, "bin");
 		mkdirSync(bin);
