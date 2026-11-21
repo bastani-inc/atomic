@@ -4,6 +4,7 @@ import { afterEach, test, vi } from "vitest";
 import {
 	awaitFirstContent,
 	holdPromptSlot,
+	markNavigationView,
 	PROMPT_SLOT_HOLD_MS,
 	PromptSlot,
 	promptSlotDrewLive,
@@ -480,4 +481,87 @@ test("an extension command's view mounted before the bound with no frame drawn s
 	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
 	panel.ready();
 	assert.deepEqual(slot.render(40), ["Agents"]);
+});
+
+/** The slot drawing a navigation view (`/tasks`), with the prompt's editor that takes its place again as it closes. */
+function slotWithNavigationView(width = 40) {
+	const requestRender = vi.fn();
+	const screen = new ScreenHold();
+	const slot = new PromptSlot({ requestRender }, () => false, screen);
+	const editor = rows("❯ ");
+	const view = rows("Tasks  2 working", "  esc/← close");
+	markNavigationView(view, true);
+	slot.addChild(view);
+	assert.deepEqual(slot.render(width), ["Tasks  2 working", "  esc/← close"]);
+	const close = () => {
+		markNavigationView(view, false);
+		slot.clear();
+		slot.addChild(editor);
+	};
+	return { slot, requestRender, editor, view, screen, close };
+}
+
+test("a navigation view that closes stays on screen, as a picture, until what it hid is back, then the prompt shows", async () => {
+	const { slot, requestRender, editor, close } = slotWithNavigationView();
+	let panelBack!: () => void;
+	slot.holdUntil(
+		new Promise<void>((resolve) => {
+			panelBack = resolve;
+		}),
+		editor,
+	);
+	close();
+	assert.deepEqual(slot.render(40), ["Tasks  2 working", "  esc/← close"]);
+	assert.deepEqual(slot.heldPicture(40), { navigation: true });
+	panelBack();
+	await Promise.resolve();
+	assert.equal(requestRender.mock.calls.length, 1);
+	assert.deepEqual(slot.render(40), ["❯ "]);
+	assert.equal(slot.heldPicture(40), undefined);
+});
+
+test("a navigation view's picture ends at its bound, at a key, or when anything but the prompt takes its place", () => {
+	vi.useFakeTimers();
+	const never = new Promise<void>(() => {});
+	{
+		const { slot, editor, close } = slotWithNavigationView();
+		slot.holdUntil(never, editor);
+		close();
+		assert.deepEqual(slot.render(40), ["Tasks  2 working", "  esc/← close"]);
+		vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS);
+		assert.deepEqual(slot.render(40), ["❯ "]);
+	}
+	{
+		const { slot, editor, screen, close } = slotWithNavigationView();
+		slot.holdUntil(never, editor);
+		close();
+		screen.noteInput("x");
+		assert.deepEqual(slot.render(40), ["❯ "]);
+	}
+	{
+		// A question mounts where the prompt would come back: it shows at once, before any key could answer it.
+		const { slot, editor, close } = slotWithNavigationView();
+		slot.holdUntil(never, editor);
+		close();
+		slot.clear();
+		slot.addChild(rows("Permission: Enter accepts write"));
+		assert.deepEqual(slot.render(40), ["Permission: Enter accepts write"]);
+	}
+	{
+		// Only a navigation view is kept: a prompt drawn last is not.
+		const { slot, editor } = slotWithPrompt();
+		slot.holdUntil(never, editor);
+		assert.equal(slot.heldPicture(40), undefined);
+	}
+});
+
+test("the prompt's picture held for a navigation view on its way is not a navigation view's", () => {
+	const { slot } = slotWithPrompt();
+	holdPromptSlot(slot);
+	assert.deepEqual(slot.heldPicture(40), { navigation: false });
+	const tasks = rows("Tasks");
+	markNavigationView(tasks, true);
+	mountView(slot, tasks);
+	assert.equal(slot.heldPicture(40), undefined);
+	assert.deepEqual(slot.render(40), ["Tasks"]);
 });

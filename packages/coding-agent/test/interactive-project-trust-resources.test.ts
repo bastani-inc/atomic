@@ -757,3 +757,60 @@ test(
 		}),
 	3 * STARTUP_TIMEOUT_MS,
 );
+
+test(
+	"an open command menu that nothing was chosen in offers the approved exact command (#5693)",
+	() =>
+		withPendingProject(async (cli, approveProject) => {
+			cli.write("/global");
+			await cli.waitForScreen((screen) => /❯ (globalone|globaltwo)\s/.test(screen), STARTUP_TIMEOUT_MS, "the menu");
+			await approveProject();
+			await cli.waitForScreen(
+				(screen) => /❯ global\s/.test(screen) && screen.includes("Project exact match"),
+				STARTUP_TIMEOUT_MS,
+				"the approved exact command, selected",
+			);
+			cli.write("\t");
+			await cli.waitForScreen(
+				(screen) => screen.split("\n").some((line) => line.trim() === "❯ /global"),
+				STARTUP_TIMEOUT_MS,
+				"the approved command in the editor",
+			);
+		}),
+	3 * STARTUP_TIMEOUT_MS,
+);
+
+test(
+	"keeps the mounted resource list while text in the chat is selected, and lists the approval once the selection ends (#5693)",
+	() =>
+		withPendingProject(async (cli, approveProject) => {
+			const rowOf = (text: string) =>
+				cli
+					.screen()
+					.split("\n")
+					.findIndex((line) => line.trim() === text) + 1;
+			const prompts = rowOf("[Prompts]");
+			assert.ok(prompts > 0);
+			cli.write(`\x1b[<0;5;${prompts}M\x1b[<0;5;${prompts}m`);
+			await cli.waitForScreen((screen) => /\[Prompts\]\s+user\s/.test(screen), STARTUP_TIMEOUT_MS, "the prompts");
+			const extensions = rowOf("[Extensions]");
+			assert.ok(extensions > 0);
+			// Select part of a row: the selection holds the rows where they are.
+			cli.write(`\x1b[<0;2;${extensions}M\x1b[<32;9;${extensions}M\x1b[<0;9;${extensions}m`);
+			await approveProject();
+			assert.doesNotMatch(cli.screen(), /\/projectapproved/);
+			// A click on the prompt ends the selection.
+			const editor =
+				cli
+					.screen()
+					.split("\n")
+					.findLastIndex((line) => line.startsWith("❯")) + 1;
+			cli.write(`\x1b[<0;4;${editor}M\x1b[<0;4;${editor}m`);
+			await cli.waitForScreen(
+				(screen) => screen.split("\n").some((line) => line.trim() === "/projectapproved"),
+				STARTUP_TIMEOUT_MS,
+				"the approved prompt in the list",
+			);
+		}),
+	3 * STARTUP_TIMEOUT_MS,
+);

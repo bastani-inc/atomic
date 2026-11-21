@@ -399,6 +399,43 @@ describe("running a logged process (#4588)", () => {
 		},
 	);
 
+	test.skipIf(!refusesHeldPrograms)(
+		"a program that stays refused is tried every 50 ms for half a second, then after half the time spent, until two seconds (#6124)",
+		async () => {
+			const held = heldNode();
+			// The step's clocks and timers are fake, so each try is made exactly when its wait ends, however long a refused
+			// start takes on a busy machine.
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+			try {
+				const start = Date.now();
+				const triedAt: number[] = [];
+				let settled = false;
+				const outcome = counting(
+					() => execute(held.run('console.log("started")')),
+					() => triedAt.push(Date.now() - start),
+				).finally(() => {
+					settled = true;
+				});
+				while (!settled) {
+					for (let turn = 0; !settled && vi.getTimerCount() === 0 && turn < UNTIL_WAITING_TURNS; turn++)
+						await new Promise((resolve) => setImmediate(resolve));
+					if (settled) break;
+					assert.equal(vi.getTimerCount(), 1, `the step waits to try again after try ${triedAt.length}`);
+					await vi.advanceTimersToNextTimerAsync();
+				}
+				const { result, tries } = await outcome;
+				assert.deepEqual(triedAt, [0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 675, 1_012, 1_412, 1_812, 2_000]);
+				assert.equal(tries, 15);
+				assert.equal((result.exit.spawnError as NodeJS.ErrnoException).code, held.refusal);
+				assert.equal(result.exit.elapsedMs, 2_000);
+				assert.equal(result.output, "");
+			} finally {
+				vi.useRealTimers();
+				held.release();
+			}
+		},
+	);
+
 	test.skipIf(process.platform !== "win32")(
 		"a program Windows keeps refusing to start with EPERM resolves with the refusal within about two seconds (#5608, #6124)",
 		async () => {

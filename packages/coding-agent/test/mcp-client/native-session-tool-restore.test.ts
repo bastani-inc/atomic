@@ -29,6 +29,14 @@ import { createHarness, getMessageText, type Harness } from "../suite/harness.ts
 import { createTestExtensionsResult, createTestResourceLoader } from "../utilities.ts";
 import { createTestUiContext } from "./native-test-ui.ts";
 
+/**
+ * How long a session may take to show what a server listed once it connects. The in-memory server answers at once or
+ * after its set delay, but the session's own work around the listing can take seconds on a loaded machine, more than
+ * vi.waitFor's default of one second.
+ */
+const SERVER_SETTLED_TIMEOUT_MS = 10_000;
+const untilServerSettled = (assertion: () => void) => vi.waitFor(assertion, { timeout: SERVER_SETTLED_TIMEOUT_MS });
+
 /** `initialize` is answered after `initializeDelay` ms, or once that promise settles. */
 function createFakeServer(initializeDelay: number | Promise<unknown>) {
 	const pair = createInMemoryTransportPair();
@@ -179,7 +187,9 @@ describe("AgentSession MCP tools after resume and reload", () => {
 		await loadDocsSearch(first.harness);
 
 		const second = await setup(first.harness.sessionManager);
-		await vi.waitFor(() => expect(second.harness.session.getActiveToolNames()).toContain("mcp__docs__search"));
+		await untilServerSettled(() =>
+			expect(second.harness.session.getActiveToolNames()).toContain("mcp__docs__search"),
+		);
 		second.harness.setResponses([
 			fauxAssistantMessage([fauxToolCall("mcp__docs__search", { query: "again" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
@@ -209,7 +219,7 @@ describe("AgentSession MCP tools after resume and reload", () => {
 				pi.on("session_start", () => pi.setActiveTools(loadout ? [...loadout] : [...pi.getActiveTools(), "read"]));
 			};
 			const second = await setup(first.harness.sessionManager, [setLoadout]);
-			await vi.waitFor(() =>
+			await untilServerSettled(() =>
 				expect(second.harness.session.getAllTools().some((tool) => tool.name === "mcp__docs__search")).toBe(true),
 			);
 
@@ -234,7 +244,7 @@ describe("AgentSession MCP tools after resume and reload", () => {
 		const first = await setup(undefined, [dropLoader]);
 		await loadDocsSearch(first.harness);
 		const second = await setup(first.harness.sessionManager, [dropLoader]);
-		await vi.waitFor(() =>
+		await untilServerSettled(() =>
 			expect(second.harness.session.getAllTools().some((tool) => tool.name === "mcp__docs__search")).toBe(true),
 		);
 		expect(second.harness.session.getActiveToolNames()).toContain("mcp__docs__search");
@@ -245,8 +255,8 @@ describe("AgentSession MCP tools after resume and reload", () => {
 		const { harness, connected } = await setup(undefined, [dropLoader]);
 		await loadDocsSearch(harness);
 		await harness.session.reload();
-		await vi.waitFor(() => expect(connected).toEqual(["docs", "docs"]));
-		await vi.waitFor(() => expect(harness.session.getActiveToolNames()).toContain("mcp__docs__search"));
+		await untilServerSettled(() => expect(connected).toEqual(["docs", "docs"]));
+		await untilServerSettled(() => expect(harness.session.getActiveToolNames()).toContain("mcp__docs__search"));
 		expect(harness.session.getActiveToolNames()).not.toContain("loader");
 	});
 
@@ -258,7 +268,7 @@ describe("AgentSession MCP tools after resume and reload", () => {
 		second.harness.setResponses([fauxAssistantMessage("done")]);
 		await second.harness.session.prompt("go");
 		expect(second.harness.session.getActiveToolNames()).toContain("mcp__docs__search");
-		await vi.waitFor(() =>
+		await untilServerSettled(() =>
 			expect(second.harness.session.getAllTools().find((tool) => tool.name === "mcp__docs__search")).toBeDefined(),
 		);
 
@@ -271,8 +281,8 @@ describe("AgentSession MCP tools after resume and reload", () => {
 
 		await harness.session.reload();
 
-		await vi.waitFor(() => expect(connected).toEqual(["docs", "docs"]));
-		await vi.waitFor(() => expect(harness.session.getActiveToolNames()).toContain("mcp__docs__search"));
+		await untilServerSettled(() => expect(connected).toEqual(["docs", "docs"]));
+		await untilServerSettled(() => expect(harness.session.getActiveToolNames()).toContain("mcp__docs__search"));
 	});
 });
 
@@ -443,7 +453,9 @@ describe("AgentSession MCP tools after resuming a file-backed session through cr
 				"mcp__docs__search",
 			);
 			connectServer();
-			await vi.waitFor(() => expect(resumed.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search"));
+			await untilServerSettled(() =>
+				expect(resumed.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search"),
+			);
 			expect(resumed.getActiveToolNames()).toContain("mcp__docs__search");
 			fixture.faux.setResponses([
 				fauxAssistantMessage([fauxToolCall("mcp__docs__search", { query: "again" })], { stopReason: "toolUse" }),
@@ -469,7 +481,9 @@ describe("AgentSession MCP tools after resuming a file-backed session through cr
 			sessionOptions: { noTools: "builtin" },
 		});
 		connectServer();
-		await vi.waitFor(() => expect(resumed.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search"));
+		await untilServerSettled(() =>
+			expect(resumed.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search"),
+		);
 
 		// The stored transcript declared read and bash; the flag, not the transcript, decides them.
 		const active = resumed.getActiveToolNames();

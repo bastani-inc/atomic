@@ -481,7 +481,7 @@ test.each([
 	{ result: { kind: "cancelled", cause: "user" }, line: /^ ◯ Task "npm test" was stopped by the user$/ },
 	{
 		result: { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 300_000 },
-		line: /^ ! Background command "npm test" timed out after 300 seconds$/,
+		line: /^ ◯ Background command "npm test" timed out after 300 seconds$/,
 	},
 	{
 		result: { kind: "cancelled", cause: "owner-close", ownerClose: "session-close" },

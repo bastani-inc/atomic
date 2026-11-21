@@ -3,6 +3,7 @@ import {
 	isHintActivation,
 	type OverlayHandle,
 	type OverlayOptions,
+	stripHintMarkers,
 	type TUI,
 	type TuiMode,
 	type TuiMouseEvent,
@@ -11,8 +12,9 @@ import {
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
-import { awaitFirstContent } from "../interactive/components/prompt-slot.ts";
+import { awaitFirstContent, PROMPT_SLOT_HOLD_MS } from "../interactive/components/prompt-slot.ts";
 import { isSingleLeftClick } from "../interactive/components/single-click.ts";
+import { AGENT_PANEL_WIDGET_KEY } from "../rpc/agent-panel-bridge.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type {
 	EngineBlockedStatus,
@@ -31,6 +33,11 @@ export type RemoteComponentRuntime = Pick<
 >;
 
 export type RemoteComponentUI = Pick<ExtensionUIContext, "custom" | "requestRender" | "setWidget" | "onWidgetRelease">;
+
+/** A frame line as a picture: what it shows, without key hints or links a click could run. */
+function inertLine(line: string): string {
+	return stripHintMarkers(line).replace(/\x1b\]8;[^;\x07\x1b]*;[^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
+}
 
 interface MountedRemoteComponent {
 	component: RemoteComponent;
@@ -129,6 +136,11 @@ class RemoteComponent implements Component {
 	}
 
 	render(width: number): string[] {
+		if (this.retiredShowing !== undefined) {
+			// Only the picture it was painted as, at that width.
+			const picture = this.retiredPicture;
+			return this.retiredShowing() && picture?.width === width ? [...picture.lines] : [];
+		}
 		const rows = this.getRows();
 		// A renderer switch in the host changes the mode the engine component lays itself out for.
 		const hostMode = this.getHostMode();
@@ -151,7 +163,10 @@ class RemoteComponent implements Component {
 		this.paintedFrame = this.frame;
 		this.paintedRowKeys = this.rowKeys;
 		this.paintedFrameLayout = this.layout;
-		return this.frameClamp.clamp(this.lines, width);
+		const lines = this.frameClamp.clamp(this.lines, width);
+		this.paintedLines = lines;
+		this.paintedWidth = width;
+		return lines;
 	}
 
 	/** How the frame the last `render` returned laid out its rows, when the engine said. */
@@ -170,7 +185,8 @@ class RemoteComponent implements Component {
 	 * and what the component left for that moment runs.
 	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (this.disposed || !isSingleLeftClick(event) || this.paintedFrame === undefined) return undefined;
+		if (this.disposed || this.retiredShowing !== undefined || !isSingleLeftClick(event)) return undefined;
+		if (this.paintedFrame === undefined) return undefined;
 		const rowKey = this.paintedRowKeys?.[Math.floor(event.y)];
 		const clickId = ++this.clickId;
 		this.runtime.sendEngineCommand({
@@ -186,7 +202,7 @@ class RemoteComponent implements Component {
 			height: Math.max(0, Math.floor(event.height)),
 		});
 		const finish = (type: "engine_custom_click_settle" | "engine_custom_click_cancel") => {
-			if (this.disposed) return;
+			if (this.disposed || this.retiredShowing !== undefined) return;
 			try {
 				this.runtime.sendEngineCommand({ type, componentId: this.componentId, clickId });
 			} catch {
@@ -201,7 +217,7 @@ class RemoteComponent implements Component {
 	}
 
 	handleInput(data: string): Promise<boolean | undefined> {
-		if (this.disposed) return Promise.resolve(undefined);
+		if (this.disposed || this.retiredShowing !== undefined) return Promise.resolve(undefined);
 		const requestId = ++this.inputRequestId;
 		const frameRequestId = this.width > 0 ? this.requestId + 1 : undefined;
 		const result = new Promise<boolean | undefined>((resolve) => {
@@ -293,6 +309,29 @@ class RemoteComponent implements Component {
 	invalidate(): void {
 		this.dirty = true;
 	}
+
+	/**
+	 * Closed by the engine while what replaces it is not on screen yet: it keeps showing its last frame, as a picture that
+	 * takes no clicks and asks for no frames, while `showing` answers true, and draws nothing after that.
+	 */
+	retire(showing: () => boolean): boolean {
+		const painted = this.paintedLines;
+		if (painted === undefined || painted.length === 0) return false;
+		this.retiredShowing = showing;
+		this.retiredPicture = { width: this.paintedWidth, lines: painted.map(inertLine) };
+		// What was painted takes no click from now on.
+		this.paintedFrame = undefined;
+		this.paintedRowKeys = undefined;
+		this.clickId++;
+		for (const requestId of [...this.pendingInputs.keys()]) this.resolveInput(requestId, undefined);
+		return true;
+	}
+
+	private retiredShowing: (() => boolean) | undefined;
+	/** What the last render returned, at its width: the picture a retired component keeps showing. */
+	private paintedLines: readonly string[] | undefined;
+	private paintedWidth = 0;
+	private retiredPicture: { readonly width: number; readonly lines: readonly string[] } | undefined;
 
 	/** Nothing to draw yet: the engine has not sent its first frame. */
 	awaitingFirstContent(): boolean {
@@ -514,6 +553,13 @@ export interface TuiRendererLifecycle {
 	onRendererReplaced(listener: () => void): () => void;
 	/** What the host's own chat shows; transcripts the engine paints in its overlays and widgets follow it. */
 	chatRenderSettings?(): EngineHostRenderSettings;
+	/**
+	 * A navigation view began and the prompt's slot still shows the prompt: what it hides is still on screen until the
+	 * view draws.
+	 */
+	navigationPending?(): boolean;
+	/** Keep the navigation view the prompt's slot shows on screen until `ready` settles, as it closes. */
+	keepPromptUntil?(ready: Promise<unknown>): void;
 }
 
 export class RemoteComponentController {
@@ -527,6 +573,12 @@ export class RemoteComponentController {
 	private readonly ui: RemoteComponentUI;
 	private readonly copyText: (text: string) => Promise<void>;
 	private readonly tuiRendererLifecycle: TuiRendererLifecycle;
+	/** The agent panel closed while a navigation view was on its way, still showing until that view draws. */
+	private retiredPanel: RemoteComponent | undefined;
+	/** The engine's second clear of the retired panel's slot, over the dialog channel, is still to come. */
+	private retiredClearPending = false;
+	/** The waits for the agent panel's first frame as a view that hid it closes (`engine_custom_done.panel`). */
+	private readonly panelReturns = new Set<() => void>();
 
 	constructor(
 		runtime: RemoteComponentRuntime,
@@ -657,6 +709,9 @@ export class RemoteComponentController {
 	 * host mounts alone: the TUI is already stopping and must not repaint.
 	 */
 	private disposeAll(reason: "generation-lost" | "host-shutdown"): void {
+		for (const stop of [...this.panelReturns]) stop();
+		// Its engine closed it already, and a replacement engine reuses component ids: no message about it.
+		this.releaseRetiredPanel(undefined, false);
 		const records = [...this.mounted.entries()].reverse();
 		this.mounted.clear();
 		for (const [componentId, record] of records) {
@@ -712,6 +767,8 @@ export class RemoteComponentController {
 					message.layout,
 				);
 				if (record?.widgetKey !== undefined) this.checkWidgetFrames();
+				// The view the retired panel gave way to draws now: the panel leaves with the same paint.
+				else if (this.retiredPanel !== undefined) this.releaseRetiredPanelWhenDrawn();
 				break;
 			}
 			case "engine_custom_input_result":
@@ -744,7 +801,16 @@ export class RemoteComponentController {
 				const record = this.mounted.get(message.componentId);
 				if (record) {
 					record.engineDone = true;
+					// The agent panel this view hid opens again as it closes: the view stays on screen until it draws.
+					if (
+						message.panel === true &&
+						record.widgetKey === undefined &&
+						record.transcript === undefined &&
+						record.handle === undefined
+					)
+						this.keepPromptForPanel();
 					record.done(message.result);
+					this.releaseRetiredPanelWhenDrawn();
 				}
 				break;
 			}
@@ -799,12 +865,22 @@ export class RemoteComponentController {
 			});
 			for (const watch of widgetFrameWatches.get(this.runtime) ?? [])
 				if (watch.widgetKey === widgetKey) watch.opened = true;
+			// The panel opened again replaces the one still showing.
+			if (widgetKey === AGENT_PANEL_WIDGET_KEY && this.retiredPanel !== undefined) {
+				this.retiredPanel.dispose();
+				this.retiredPanel = undefined;
+				this.retiredClearPending = false;
+			}
 			this.ui.setWidget(
 				widgetKey,
 				(tui) => {
 					component.hostColorDepth = tui.terminal?.colorDepth;
 					getRows = () => tui.terminal.rows;
 					paintNow = () => tui.requestImmediateRender();
+					// The view that hid the agent panel stays on screen until the panel draws: ask for its frame now, as
+					// nothing paints it before then.
+					if (widgetKey === AGENT_PANEL_WIDGET_KEY && this.panelReturns.size > 0)
+						component.prime(Math.max(1, tui.terminal.columns), tui.terminal.rows);
 					return component;
 				},
 				{ placement: widgetPlacement, ...(widgetScroll ? { scroll: widgetScroll } : {}) },
@@ -865,10 +941,91 @@ export class RemoteComponentController {
 		this.terminalModes.onUnmount(componentId);
 		this.mounted.delete(componentId);
 		record.unsubscribeWidgetRelease?.();
+		if (this.retirePanel(record)) {
+			if (record.widgetKey !== undefined) this.checkWidgetFrames();
+			return;
+		}
 		if (record.transcript) this.closeTranscript(record.transcript);
 		else if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
 		record.component.dispose();
 		if (record.widgetKey !== undefined) this.checkWidgetFrames();
+	}
+
+	/**
+	 * The agent panel the engine closed as a navigation view opens in the prompt's place: until that view draws, the
+	 * panel's last frame stays on screen with the prompt, so the screen goes from both to the view in one frame. Answers
+	 * whether it kept it.
+	 */
+	private retirePanel(record: MountedRemoteComponent): boolean {
+		const pending = this.tuiRendererLifecycle.navigationPending;
+		if (record.widgetKey !== AGENT_PANEL_WIDGET_KEY || pending === undefined || !pending()) return false;
+		this.releaseRetiredPanel();
+		const component = record.component;
+		const retired = component.retire(() => {
+			if (this.retiredPanel === component && pending()) return true;
+			queueMicrotask(() => this.releaseRetiredPanel(component));
+			return false;
+		});
+		// Never painted: nothing of it is on screen to keep.
+		if (!retired) return false;
+		this.retiredPanel = component;
+		this.retiredClearPending = true;
+		this.ui.requestRender();
+		return true;
+	}
+
+	/**
+	 * Whether a clear of widget `key` from the dialog channel is the engine's echo of closing the retired agent panel,
+	 * which this controller removes itself once the view it gave way to draws: once, for that panel only.
+	 */
+	takeRetiredWidgetClear(key: string): boolean {
+		if (key !== AGENT_PANEL_WIDGET_KEY || this.retiredPanel === undefined || !this.retiredClearPending) return false;
+		this.retiredClearPending = false;
+		return true;
+	}
+
+	/** Widget `key` was written by another channel: a retired agent panel there is replaced, and leaves as it is. */
+	supersedeRetiredWidget(key: string): void {
+		if (key !== AGENT_PANEL_WIDGET_KEY || this.retiredPanel === undefined) return;
+		this.retiredPanel.dispose();
+		this.retiredPanel = undefined;
+		this.retiredClearPending = false;
+	}
+
+	/** Remove the retired agent panel once navigation is no longer pending: the view it gave way to draws, or is gone. */
+	private releaseRetiredPanelWhenDrawn(): void {
+		if (this.retiredPanel === undefined) return;
+		if (this.tuiRendererLifecycle.navigationPending?.() !== true) this.releaseRetiredPanel();
+	}
+
+	/** Remove the retired agent panel (or only `component`, when it is still the retired one) from the screen. */
+	private releaseRetiredPanel(component?: RemoteComponent, notifyEngine = true): void {
+		const retired = this.retiredPanel;
+		if (retired === undefined || (component !== undefined && component !== retired)) return;
+		this.retiredPanel = undefined;
+		this.retiredClearPending = false;
+		retired.dispose(notifyEngine);
+		// A panel the engine opened since replaced it under the same key: that one stays.
+		if (![...this.mounted.values()].some((record) => record.widgetKey === AGENT_PANEL_WIDGET_KEY))
+			this.ui.setWidget(AGENT_PANEL_WIDGET_KEY, undefined);
+		this.ui.requestRender();
+	}
+
+	/** A view that hid the agent panel closes: the prompt's slot keeps it until the panel's first frame, bounded. */
+	private keepPromptForPanel(): void {
+		const keep = this.tuiRendererLifecycle.keepPromptUntil;
+		if (keep === undefined) return;
+		const watch = watchWidgetFrames(this.runtime, AGENT_PANEL_WIDGET_KEY);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const stop = () => {
+			clearTimeout(timer);
+			this.panelReturns.delete(stop);
+			watch.stop();
+		};
+		this.panelReturns.add(stop);
+		timer = setTimeout(stop, PROMPT_SLOT_HOLD_MS);
+		timer.unref?.();
+		keep(watch.drawn().finally(stop));
 	}
 
 	/**

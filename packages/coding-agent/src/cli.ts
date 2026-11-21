@@ -13,7 +13,8 @@ import { APP_NAME, VERSION } from "./config.js";
 import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import { COMPILE_CACHE_ENGINE_WARMUP_ENV, enablePersistentCompileCache } from "./utils/compile-cache.ts";
-import { headlessHeapRelaunchArgs, relaunchWithHeap } from "./utils/heap-relaunch.ts";
+import { headlessHeapRelaunchArgs, isHeadlessInvocation, relaunchWithHeap } from "./utils/heap-relaunch.ts";
+import { noteInheritedHangup } from "./utils/inherited-hangup.js";
 import {
 	hasInteractiveEngineBootstrapArg,
 	INTERACTIVE_ENGINE_PREWARM_FLAG,
@@ -50,6 +51,8 @@ if (args[0] === "--version" || args[0] === "-v") {
 	process.exit(0);
 }
 
+// A run without a terminal started under `nohup` keeps SIGHUP ignored; read that before anything listens for it.
+if (!prewarmedEngine && isHeadlessInvocation(args, terminal)) noteInheritedHangup();
 const heapArgs = prewarmedEngine ? [] : headlessHeapRelaunchArgs(args);
 if (heapArgs.length > 0) {
 	relaunchWithHeap(heapArgs, args);

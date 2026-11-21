@@ -112,10 +112,10 @@ export async function loadIntercomBrokerControl(): Promise<IntercomBrokerControl
 		import("./extensions/loader-host-modules.js"),
 	]);
 	const hostModules = await getStorageAdapterHostModules();
-	// From the package root, the control's module graph uses only `ProjectGroupError` (`project-group.ts`) and the
-	// broker stop and upgrade errors (`broker-stop.ts`, `control.ts`). Outside a bundled build, where the host modules
-	// hold no package root, map the root to the host's own module of those errors, so loading the control does not load
-	// the whole package root again, and the errors stay the host's classes.
+	// From the package root, the control's module graph uses only `ProjectGroupError` (`project-group.ts`), the
+	// broker stop and upgrade errors (`broker-stop.ts`, `control.ts`) and the process start reads (`broker-process.ts`).
+	// Outside a bundled build, where the host modules hold no package root, map the root to the host's own module of
+	// those, so loading the control does not load the whole package root again, and the errors stay the host's classes.
 	if (!("@bastani/atomic" in hostModules))
 		hostModules["@bastani/atomic"] = await import("./intercom-broker-control-host.ts");
 	const loader = await createHostModuleJiti(pathToFileURL(modulePath).href, hostModules);
