@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A message sent again while the chat had not yet shown the previous send's run is shown once. When that run stopped without a reply, for example because another process wrote to the session, a second copy of the message could stay in the chat ([#6126](https://github.com/bastani-inc/atomic/issues/6126))
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.

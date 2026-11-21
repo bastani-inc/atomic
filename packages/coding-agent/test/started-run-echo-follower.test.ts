@@ -10,7 +10,7 @@ import { followStartedRunEcho } from "../src/modes/interactive/interactive-rende
  * still going when the message was sent come before the answer.
  */
 
-function chat(options: { earlierRunGoing: boolean }) {
+function chat(options: { earlierRunGoing: boolean; echoes?: string[] }) {
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	const discarded: string[] = [];
 	let loaderStops = 0;
@@ -23,10 +23,11 @@ function chat(options: { earlierRunGoing: boolean }) {
 				return () => listeners.delete(listener);
 			},
 		},
-		deferredRenderedUserInputs: ["hello"],
+		deferredRenderedUserInputs: options.echoes ?? ["hello"],
 		discardDeferredRenderedUserInput(text: string) {
 			discarded.push(text);
-			mode.deferredRenderedUserInputs = mode.deferredRenderedUserInputs.filter((shown) => shown !== text);
+			const index = mode.deferredRenderedUserInputs.indexOf(text);
+			if (index !== -1) mode.deferredRenderedUserInputs.splice(index, 1);
 		},
 		workingRunMeter: { snapshot: () => undefined, stop() {} },
 		stopWorkingLoader() {
@@ -36,6 +37,10 @@ function chat(options: { earlierRunGoing: boolean }) {
 	};
 	return {
 		mode: mode as unknown as InteractiveModeBase,
+		/** The host saw a run start, which has not settled yet. */
+		seeRunGoing: () => {
+			mode.session.turnStartedAt = 2_000;
+		},
 		emit: (...events: object[]) => {
 			for (const event of events) for (const listener of [...listeners]) listener(event as AgentSessionEvent);
 		},
@@ -88,4 +93,39 @@ test("a send whose answer never comes stops listening when closed", () => {
 	follower.close();
 	assert.equal(host.listening(), 0);
 	assert.deepEqual(host.discarded, []);
+});
+
+test("a run's message is taken by one sent message, though the same text was sent again before the host saw it (#6126)", () => {
+	const host = chat({ earlierRunGoing: false, echoes: ["hello", "hello"] });
+	const first = followStartedRunEcho(host.mode, "hello", { sendShowsWorkingRow: true });
+	first.answer(true);
+	// The same text is sent again before the host sees the first one's run, whose start the host sees before the second
+	// send's turn begins.
+	host.emit({ type: "agent_start" });
+	host.seeRunGoing();
+	const second = followStartedRunEcho(host.mode, "hello", { sendShowsWorkingRow: true });
+	host.emit(
+		{ type: "turn_start" },
+		{ type: "message_start", message: { role: "user", content: "hello" } },
+		{ type: "agent_end", messages: [] },
+		{ type: "agent_settled" },
+	);
+	assert.deepEqual(host.discarded, [], "the first echo stays as the first run's message");
+	second.answer(true);
+	// The second run repeats input the chat already shows, so it shows no message of its own (#5135).
+	host.emit({ type: "agent_start" }, { type: "turn_start" }, { type: "agent_end", messages: [] });
+	assert.deepEqual(host.discarded, ["hello"], "the second echo goes");
+	assert.deepEqual(host.mode.deferredRenderedUserInputs, ["hello"], "the first run's message is shown once");
+	assert.equal(host.listening(), 0);
+});
+
+test("a run getting past its prompt reaches every sent message still waiting for its own run (#6126)", () => {
+	const host = chat({ earlierRunGoing: false, echoes: ["hello", "again"] });
+	const first = followStartedRunEcho(host.mode, "hello", { sendShowsWorkingRow: true });
+	const second = followStartedRunEcho(host.mode, "again", { sendShowsWorkingRow: true });
+	first.answer(true);
+	second.answer(true);
+	host.emit({ type: "agent_start" }, { type: "message_start", message: { role: "assistant", content: [] } });
+	assert.deepEqual(host.discarded, ["hello", "again"]);
+	assert.equal(host.listening(), 0);
 });
