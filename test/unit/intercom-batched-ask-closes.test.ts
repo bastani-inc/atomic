@@ -6,8 +6,13 @@ import type { SessionEntry } from "@bastani/atomic";
 import { afterEach, describe, test } from "vitest";
 import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import type { SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
+import {
+	SESSION_TABLES,
+	SqlSessionStore,
+} from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { CLOSED_ASKS_LISTED, closeFinishedChildAsks } from "../../packages/intercom/finished-asks.js";
 import {
 	INTERCOM_ASK_CLOSED_ENTRY,
@@ -15,6 +20,7 @@ import {
 	restorePendingInboundAsks,
 } from "../../packages/intercom/reply-tracker.js";
 import { SUBAGENT_FINISHED_ASKS_EVENT } from "../../packages/intercom/session-recovery.js";
+import { storageBackends } from "../helpers/storage-backends.js";
 
 /**
  * A restart closes the asks of subagents that ended (#6168). It records them in a few entries, not one per ask, so a
@@ -214,43 +220,91 @@ test("a reopened session reads asks closed one at a time and asks closed togethe
 });
 
 /**
- * Moving back to an entry before the latest compaction reopens the session from a resume index rebuilt from its saved
- * entries. Asks recorded together, closed or answered, stay out of that rebuilt window too.
+ * A SQL store rebuilds a session's resume index from its saved entries when it reopens it for an entry before the latest
+ * compaction, or when the index it saved cannot be used (one another version saved, say). Asks recorded together, closed
+ * or answered, stay out of that rebuilt window too, on every SQL backend that runs here.
  */
-test("asks recorded together stay out of a window rebuilt for an entry before the latest compaction", async () => {
-	const { manager, reopen } = await sqliteSession();
-	await ownerHolding(manager, 3);
-	await closeFinishedChildAsks(closer(manager), { sessionManager: manager });
-	await manager.appendCustomEntry("intercom_ask", {
-		askId: "outbound-1",
-		sessionId: manager.getSessionId(),
-		to: child.name,
-		recipientId: child.id,
-		question: "status?",
-		askedAt: 1,
-	});
-	await manager.appendCustomEntry("intercom_ask_settled", { askIds: ["outbound-1"], state: "answered" });
-	await manager.appendMessage({ role: "user", content: [{ type: "text", text: "A" }], timestamp: 2 });
-	await manager.appendCompaction("summary", null, 100, COMPACTION);
-	const kept = await manager.appendMessage({ role: "user", content: [{ type: "text", text: "B" }], timestamp: 3 });
-	await manager.appendCompaction("summary 2", null, 100, COMPACTION);
-	await manager.appendMessage({ role: "user", content: [{ type: "text", text: "D" }], timestamp: 4 });
+describe.each(storageBackends)("a resume window rebuilt on $name", (backend) => {
+	const run = backend.skipReason === undefined ? test : test.skip;
 
-	const moved = await reopen();
-	await moved.recordBranch(kept);
-	const reopened = await reopen();
+	async function recordedTogether() {
+		const scope = await backend.openScope();
+		const database = await scope.connect();
+		const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+		cleanups.push(async () => {
+			await store.close();
+			await scope.close();
+		});
+		const manager = await SessionManager.create(store, "/repo");
+		await ownerHolding(manager, 3);
+		await closeFinishedChildAsks(closer(manager), { sessionManager: manager });
+		await manager.appendCustomEntry("intercom_ask", {
+			askId: "outbound-1",
+			sessionId: manager.getSessionId(),
+			to: child.name,
+			recipientId: child.id,
+			question: "status?",
+			askedAt: 1,
+		});
+		await manager.appendCustomEntry("intercom_ask_settled", { askIds: ["outbound-1"], state: "answered" });
+		await manager.appendMessage({ role: "user", content: [{ type: "text", text: "A" }], timestamp: 2 });
+		await manager.appendCompaction("summary", null, 100, COMPACTION);
+		const kept = await manager.appendMessage({ role: "user", content: [{ type: "text", text: "B" }], timestamp: 3 });
+		await manager.appendCompaction("summary 2", null, 100, COMPACTION);
+		await manager.appendMessage({ role: "user", content: [{ type: "text", text: "D" }], timestamp: 4 });
+		const reopen = () => SessionManager.open(store, manager.getSessionId(), undefined, { history: "tail" });
+		/** Forget the resume index the store saved, as one it cannot use. */
+		const forgetIndex = async () => {
+			const sessions = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).sessions;
+			const row = await database.get<SqliteRow & { summary_state: string }>(
+				`SELECT summary_state FROM ${sessions} WHERE id = ?`,
+				manager.getSessionId(),
+			);
+			const {
+				resume: _resume,
+				windowResume: _window,
+				...state
+			} = JSON.parse(row!.summary_state) as Record<string, unknown>;
+			await database.run(
+				`UPDATE ${sessions} SET summary_state = ? WHERE id = ?`,
+				JSON.stringify(state),
+				manager.getSessionId(),
+			);
+		};
+		return { kept, reopen, forgetIndex };
+	}
 
-	for (const session of [moved, reopened]) {
+	function assertLeftOut(session: SessionManager): void {
 		assert.deepEqual(pendingIds(session), []);
 		assert.equal(
 			session
 				.getBranch()
 				.some((entry) => entry.type === "custom_message" && entry.customType === "intercom_message"),
 			false,
+			"the window still holds a closed ask",
 		);
 		assert.equal(
 			session.getBranch().some((entry) => entry.type === "custom" && entry.customType === "intercom_ask"),
 			false,
+			"the window still holds an answered ask",
 		);
 	}
+
+	run("for an entry before the latest compaction", async () => {
+		const { kept, reopen } = await recordedTogether();
+
+		const moved = await reopen();
+		await moved.recordBranch(kept);
+
+		assertLeftOut(moved);
+		assertLeftOut(await reopen());
+	});
+
+	run("when the saved index cannot be used", async () => {
+		const { reopen, forgetIndex } = await recordedTogether();
+		await forgetIndex();
+
+		assertLeftOut(await reopen());
+		assertLeftOut(await reopen());
+	});
 });
