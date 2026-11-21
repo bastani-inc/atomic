@@ -1,12 +1,13 @@
-"""Windows: run a command in a console of its own, then close that console as closing its window does.
+"""Windows: run a command in a console of its own, then press Ctrl+C in it or close it.
 
-usage: python console-close.py <records folder> <count> <key> <start seconds> <exit seconds> <command...>
+usage: python console-event.py <ctrl-c|close> <records folder> <count> <key> <start seconds> <exit seconds> <command...>
 
 The command starts on a pseudoconsole. Once the folder holds <count> .json records that each have
-<key> (any record when <key> is "-"), or <start seconds> have passed, the console is closed, which
-sends CTRL_CLOSE_EVENT to every process attached to it. Prints one JSON object: how many such records
-there were at the close, the command's exit status (null if it still ran <exit seconds> after the
-close, when it is ended), the seconds it took to exit, and what it wrote to the console.
+<key> (any record when <key> is "-"), or <start seconds> have passed, Ctrl+C is typed into the
+console, which sends CTRL_C_EVENT to the processes attached to it, or the console is closed, as
+closing its window does, which sends them CTRL_CLOSE_EVENT. Prints one JSON object: how many such
+records there were then, the command's exit status (null if it still ran <exit seconds> later, when
+it is ended), the seconds it took to exit, and what it wrote to the console.
 """
 
 import ctypes
@@ -18,9 +19,9 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-records, count, key = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
-start_seconds, exit_seconds = float(sys.argv[4]), float(sys.argv[5])
-command = subprocess.list2cmdline(sys.argv[6:])
+action, records, count, key = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+start_seconds, exit_seconds = float(sys.argv[5]), float(sys.argv[6])
+command = subprocess.list2cmdline(sys.argv[7:])
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 
@@ -102,6 +103,8 @@ kernel32.CreateProcessW.argtypes = (
     ctypes.POINTER(ProcessInformation),
 )
 kernel32.ReadFile.argtypes = (wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p)
+kernel32.WriteFile.argtypes = (wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p)
+kernel32.SetConsoleCtrlHandler.argtypes = (ctypes.c_void_p, wintypes.BOOL)
 kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
 kernel32.WaitForSingleObject.restype = wintypes.DWORD
 kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
@@ -144,6 +147,8 @@ startup.StartupInfo.dwFlags = 0x100
 startup.StartupInfo.hStdInput = startup.StartupInfo.hStdOutput = startup.StartupInfo.hStdError = wintypes.HANDLE(-1)
 startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
 process = ProcessInformation()
+# The command inherits whether Ctrl+C is ignored; this process may have been started with it ignored.
+kernel32.SetConsoleCtrlHandler(None, False)
 extended_startup_info, unicode_environment = 0x80000, 0x400
 assert kernel32.CreateProcessW(
     None,
@@ -174,9 +179,13 @@ deadline = time.monotonic() + start_seconds
 while ready() < count and time.monotonic() < deadline:
     time.sleep(0.05)
 started = ready()
-closed = time.monotonic()
-# ClosePseudoConsole can wait for the console's processes; the command's exit is what is measured.
-threading.Thread(target=kernel32.ClosePseudoConsole, args=(console,), daemon=True).start()
+sent = time.monotonic()
+if action == "ctrl-c":
+    written = wintypes.DWORD()
+    assert kernel32.WriteFile(input_write, b"\x03", 1, ctypes.byref(written), None)
+else:
+    # ClosePseudoConsole can wait for the console's processes; the command's exit is what is measured.
+    threading.Thread(target=kernel32.ClosePseudoConsole, args=(console,), daemon=True).start()
 status = None
 if kernel32.WaitForSingleObject(process.hProcess, int(exit_seconds * 1000)) == 0:
     code = wintypes.DWORD()
@@ -184,5 +193,5 @@ if kernel32.WaitForSingleObject(process.hProcess, int(exit_seconds * 1000)) == 0
     status = code.value
 else:
     kernel32.TerminateProcess(process.hProcess, 1)
-seconds = time.monotonic() - closed
+seconds = time.monotonic() - sent
 print(json.dumps({"ready": started, "status": status, "seconds": seconds, "screen": screen.decode("utf-8", errors="replace")}))

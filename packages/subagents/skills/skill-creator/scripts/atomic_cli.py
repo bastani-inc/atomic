@@ -670,33 +670,45 @@ def _on_stop_signal(signum: int, _frame: object) -> None:
 
 
 def _install_stop_handlers() -> None:
+    handled = set()
     for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
         signum = getattr(signal, name, None)
         # A signal the shell left ignored (nohup, or a background job's SIGINT) stays ignored.
         if signum is None or signal.getsignal(signum) == signal.SIG_IGN:
             continue
         signal.signal(signum, _on_stop_signal)
+        handled.add(signum)
     if hasattr(signal, "SIGCHLD"):
         # A child stays unreaped, so its process ID keeps naming it, until this process waits for
         # it, even when SIGCHLD came in ignored.
         signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     if os.name == "nt":
-        _install_console_close_handler()
+        _install_console_handler(handled)
 
 
-def _install_console_close_handler() -> None:
-    """Closing the console, logging off or shutting down: clean up during the time Windows allows."""
+def _install_console_handler(handled: set[int]) -> None:
+    """Ctrl+C, Ctrl+Break, closing the console, logging off or shutting down: cancel the run at once.
+
+    Python runs a signal's handler on the main thread, and only once that thread wakes; on Windows a
+    thread waiting for the queries does not wake for a signal. This handler runs on a thread of its
+    own, so the queries stop as soon as the console asks.
+    """
     import ctypes
     from ctypes import wintypes
 
     global _console_handler
+    # CTRL_C_EVENT and CTRL_BREAK_EVENT, unless their signals were left ignored.
+    interrupts = {event: signum for event, signum in ((0, signal.SIGINT), (1, signal.SIGBREAK)) if signum in handled}
     close_events = {2, 5, 6}  # CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
     def handler(event: int) -> bool:
+        # With nothing to clean up, the stop handler exits at once with the console-interrupt status.
+        if event in interrupts:
+            _on_stop_signal(interrupts[event], None)
+            return True
         if event not in close_events:
-            return False  # Ctrl+C and Ctrl+Break reach the SIGINT and SIGBREAK handlers.
-        # With nothing to clean up, this exits at once with the console-interrupt status.
+            return False
         _on_stop_signal(signal.SIGINT, None)
         # Windows ends the process about five seconds after a close event: exit with the
         # console-interrupt status once the cleanup is done, before Windows ends it with another.

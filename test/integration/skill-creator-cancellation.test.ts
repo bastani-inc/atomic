@@ -20,17 +20,46 @@ const START_MS = 15_000;
 const STALLED_TEST_MS = START_MS + STOP_ESCALATION_MS + 15_000;
 // STATUS_CONTROL_C_EXIT: how Windows reports a console program ended by Ctrl+C, Ctrl+Break or closing its console.
 const WINDOWS_CONSOLE_INTERRUPTED = 0xc000013a;
-// The console-close harness closes the console once the queries have started, then gives the script this long to exit;
-// Windows itself ends a console program about five seconds after the close.
-const CLOSE_EXIT_S = 10;
-const CLOSE_TEST_MS = START_MS + CLOSE_EXIT_S * 1_000 + 15_000;
-const consoleClose = join(moduleDir(import.meta.url), "../fixtures/skill-creator/console-close.py");
+// The console harness types Ctrl+C into the script's console, or closes it, once the queries have started, then gives
+// the script this long to exit; Windows itself ends a console program about five seconds after a close. A query's own
+// timeout is 30 s, so a script that waits for its queries to end on their own does not exit in time.
+const EVENT_EXIT_S = 10;
+const EVENT_TEST_MS = START_MS + EVENT_EXIT_S * 1_000 + 15_000;
+const consoleEvent = join(moduleDir(import.meta.url), "../fixtures/skill-creator/console-event.py");
 
-/** What the console-close harness reports: records ready at the close, the exit status, the console's text. */
-interface CloseOutcome {
+/** What the console harness reports: records ready at the event, the exit status, the console's text. */
+interface ConsoleOutcome {
 	readonly ready: number;
 	readonly status: number | null;
 	readonly screen: string;
+}
+
+/** Runs `command` on a console of its own and sends `action` once `count` records with `key` exist. */
+function runOnConsole(
+	box: ScriptSandbox,
+	action: "ctrl-c" | "close",
+	count: number,
+	key: string,
+	command: readonly string[],
+	env: Record<string, string> = {},
+): ConsoleOutcome {
+	const result = spawnSyncCollect(
+		[
+			python ?? "python",
+			consoleEvent,
+			action,
+			box.log,
+			`${count}`,
+			key,
+			`${START_MS / 1_000}`,
+			`${EVENT_EXIT_S}`,
+			python ?? "python",
+			...command,
+		],
+		{ cwd: box.project, env: box.env(env) },
+	);
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	return JSON.parse(result.stdout.toString()) as ConsoleOutcome;
 }
 
 const sandboxes: ScriptSandbox[] = [];
@@ -326,36 +355,25 @@ print(json.dumps({"result": outcome.get("result"), "handlers_kept": before == af
 );
 
 describe.skipIf(python === undefined || process.platform !== "win32")("skill-creator scripts stop on Windows", () => {
-	test(
-		"closing the console stops every Atomic the script started and exits with the console-interrupt status, reporting no results",
-		async () => {
-			const box = sandbox();
-			// Starts the script on a console of its own and closes that console once both queries' Atomic run.
-			const result = spawnSyncCollect(
-				[
-					python ?? "python",
-					consoleClose,
-					box.log,
-					"2",
-					// A fake Atomic records itself, then again with its helper and that helper's child.
-					"grandchild",
-					`${START_MS / 1_000}`,
-					`${CLOSE_EXIT_S}`,
-					python ?? "python",
-					...evalArgs(box, ["one", "two"]),
-				],
-				{ cwd: box.project, env: box.env({ FAKE_ATOMIC_SCENARIO: "hold-child" }) },
-			);
-			assert.equal(result.exitCode, 0, result.stderr.toString());
-			const closed = JSON.parse(result.stdout.toString()) as CloseOutcome;
-			assert.equal(closed.ready, 2, "both queries' Atomic and their processes ran when the console closed");
-			assert.equal(closed.status, WINDOWS_CONSOLE_INTERRUPTED, closed.screen);
-			assert.doesNotMatch(closed.screen, /query failed|"results"/u, "a closed console reports no query as failed");
-			await waitUntilGone(startedPids(box.records()), 5_000);
-			assert.deepEqual(readdirSync(box.temp), []);
-		},
-		CLOSE_TEST_MS,
-	);
+	for (const action of ["ctrl-c", "close"] as const) {
+		const event = action === "ctrl-c" ? "Ctrl+C in the console" : "closing the console";
+		test(
+			`${event} stops every Atomic the script started at once and exits with the console-interrupt status, reporting no query`,
+			async () => {
+				const box = sandbox();
+				// A fake Atomic records itself, then again with its helper and that helper's child.
+				const outcome = runOnConsole(box, action, 2, "grandchild", evalArgs(box, ["one", "two"]), {
+					FAKE_ATOMIC_SCENARIO: "hold-child",
+				});
+				assert.equal(outcome.ready, 2, "both queries' Atomic and their processes ran");
+				assert.equal(outcome.status, WINDOWS_CONSOLE_INTERRUPTED, outcome.screen);
+				assert.doesNotMatch(outcome.screen, /query failed|"results"/u, "no query is reported");
+				await waitUntilGone(startedPids(box.records()), 5_000);
+				assert.deepEqual(readdirSync(box.temp), []);
+			},
+			EVENT_TEST_MS,
+		);
+	}
 
 	test(
 		"closing the console while the script has nothing running exits with the console-interrupt status",
@@ -370,28 +388,11 @@ describe.skipIf(python === undefined || process.platform !== "win32")("skill-cre
 				"    time.sleep(60)",
 				"run_main(main)",
 			].join("\n");
-			const result = spawnSyncCollect(
-				[
-					python ?? "python",
-					consoleClose,
-					box.log,
-					"1",
-					"-",
-					`${START_MS / 1_000}`,
-					`${CLOSE_EXIT_S}`,
-					python ?? "python",
-					"-c",
-					program,
-					box.log,
-				],
-				{ cwd: box.project, env: box.env() },
-			);
-			assert.equal(result.exitCode, 0, result.stderr.toString());
-			const closed = JSON.parse(result.stdout.toString()) as CloseOutcome;
-			assert.equal(closed.ready, 1, "the script ran when the console closed");
-			assert.equal(closed.status, WINDOWS_CONSOLE_INTERRUPTED, closed.screen);
+			const outcome = runOnConsole(box, "close", 1, "-", ["-c", program, box.log]);
+			assert.equal(outcome.ready, 1, "the script ran");
+			assert.equal(outcome.status, WINDOWS_CONSOLE_INTERRUPTED, outcome.screen);
 		},
-		CLOSE_TEST_MS,
+		EVENT_TEST_MS,
 	);
 });
 
