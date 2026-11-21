@@ -6,7 +6,8 @@
  * and moves the code the entries share into `dist/_shared/`, so each module is still evaluated once per process, by
  * whichever entry loads it first: the CLI, the SDK (`@bastani/atomic`, `/rpc-entry`), an extension, or the extension
  * loader's aliases, which name those same entries. Other packages, TypeBox and Atomic's forked packages among them,
- * stay external and keep their own files and identities.
+ * stay external and keep their own files and identities, but for the few dependencies in `INLINED_PACKAGES`, whose
+ * code goes into the shared files too (their licenses go into `dist/THIRD_PARTY_NOTICES.md`).
  *
  * `@bastani/atomic/storage` and `/storage/testing`, whose classes the SDK entry exports too, keep the modules they load
  * as compiled files at their own paths; bundled code imports those by their paths. A process that loaded them from
@@ -23,8 +24,8 @@
  * Source maps chain to the TypeScript sources through the compiled files' maps.
  */
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, posix, relative, sep } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, transform } from "esbuild";
 
@@ -62,6 +63,40 @@ const RUN_BY_PATH = {
 };
 /** Where shared code goes, below `dist`. */
 export const SHARED_DIRECTORY = "_shared";
+/**
+ * Dependencies bundled into the shared files instead of loaded from `node_modules`: packages only this package's own
+ * code imports by name (the extension loader hands none of them to extensions, and Atomic's other packages do not import
+ * them), with no state another copy would need to share, that read no file beside their own. The build checks that each
+ * one's own dependencies are bundled too. Kept out: `highlight.js` (code that registers a language or plugin in the
+ * installed package changes what the SDK's `highlightCode` does), `undici` (its fetch tells its own frames in error
+ * stacks by its file name) and `chalk` (it reads the terminal's color support when it loads).
+ */
+export const INLINED_PACKAGES = [
+	"@isaacs/nonrecursive-glob-match",
+	"@mixmark-io/domino",
+	"balanced-match",
+	"brace-expansion",
+	"cross-spawn",
+	"diff",
+	"fast-sha256",
+	"hosted-git-info",
+	"ignore",
+	"isexe",
+	"lovely-mermaid",
+	"lru-cache",
+	"minimatch",
+	"path-key",
+	"semver",
+	"shebang-command",
+	"shebang-regex",
+	"stream-chain",
+	"stream-json",
+	"turndown",
+	"which",
+	"yaml",
+];
+/** The package a bare specifier names: `name` of `name/sub` or `@scope/name` of `@scope/name/sub`. */
+const packageOf = (specifier) => specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
 /**
  * Marks a path below `dist` in the bundle: once the files are named, each marked path becomes the path from the file
  * holding it, so it names the same file wherever the package is installed. Bundled code imports a compiled module or an
@@ -251,8 +286,11 @@ const result = await build({
 	format: "esm",
 	platform: "node",
 	target: "node22",
-	packages: "external",
 	keepNames: true,
+	// A bundled CommonJS dependency's `require` of a built-in module needs a `require` in the module scope.
+	banner: {
+		js: 'import { createRequire as __atomicCreateRequire } from "node:module";\nconst require = __atomicCreateRequire(import.meta.url);',
+	},
 	sourcemap: "linked",
 	sourcesContent: false,
 	chunkNames: `${SHARED_DIRECTORY}/[name]-[hash]`,
@@ -265,6 +303,12 @@ const result = await build({
 				// A module a compiled public entry loads is imported from its compiled file, not bundled.
 				// An owner module is imported from its own entry file, never bundled into another file.
 				const owners = new Set(OWNER_ENTRIES.map((entry) => `${entry}.js`));
+				// Every package but an inlined one stays external, its subpaths included.
+				context.onResolve({ filter: /^[^./]/ }, ({ path, kind }) =>
+					kind === "entry-point" || isAbsolute(path) || INLINED_PACKAGES.includes(packageOf(path))
+						? undefined
+						: { path, external: true },
+				);
 				context.onResolve({ filter: /^\.{1,2}\// }, ({ path, resolveDir, kind }) => {
 					if (kind === "entry-point") return undefined;
 					const target = relative(dist, join(resolveDir, path)).split(sep).join("/");
@@ -351,6 +395,27 @@ for (const path of new Set([...bundledModules, ...compiledModules, ...threadModu
 	}
 }
 
+// The packages bundled in are the inlined ones, and each one's own dependencies are bundled too: a dependency left
+// external would resolve from the shared file, not from the package that depends on it.
+const inlined = new Map();
+for (const input of Object.keys(result.metafile.inputs)) {
+	const match = /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(input.replace(/.*\/node_modules\//, "node_modules/"));
+	if (!match) continue;
+	if (!INLINED_PACKAGES.includes(match[1])) throw new Error(`split-dist: ${input} is bundled, but ${match[1]} is not inlined`);
+	inlined.set(match[1], join(packageDir, input.slice(0, input.lastIndexOf(`node_modules/${match[1]}/`) + `node_modules/${match[1]}`.length)));
+}
+const notices = [];
+for (const [name, directory] of [...inlined].sort(([a], [b]) => (a < b ? -1 : 1))) {
+	const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
+	for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+		if (!INLINED_PACKAGES.includes(dependency))
+			throw new Error(`split-dist: ${name} is inlined, but its dependency ${dependency} is not`);
+	}
+	const licenseFile = readdirSync(directory).find((file) => /^(licen[sc]e|copying)(\.|$)/i.test(file));
+	const license = licenseFile ? readFileSync(join(directory, licenseFile), "utf8").trim() : `License: ${manifest.license}`;
+	notices.push(`## ${name} ${manifest.version}\n\n${license}\n`);
+}
+
 // A shared file is named by the first of the modules it holds, by path (or, for one that only re-exports a dynamic
 // import, by that import's module), not by its content: an install updated in place keeps the path of every shared
 // file whose first module stays first, so a process still running from the earlier install resolves the new entries to
@@ -369,7 +434,10 @@ for (const [output, meta] of Object.entries(result.metafile.outputs)) {
 	const match = /^(.*\/)?([^/]+)-([A-Z2-7]{8})\.js$/.exec(output);
 	if (!output.startsWith(`dist/${SHARED_DIRECTORY}/`) || match === null) continue;
 	// A file that only re-exports a dynamically imported module holds no module of its own: that module names it.
-	const members = Object.keys(meta.inputs).sort();
+	// The package's own modules first: an inlined dependency's update must not rename a file.
+	const inputs = Object.keys(meta.inputs).sort();
+	const own = inputs.filter((input) => input.startsWith("dist/"));
+	const members = own.length > 0 ? own : inputs;
 	const renamed = `${match[2]}-${groupName(members.length > 0 ? `module:${members[0]}` : `entry:${meta.entryPoint ?? output}`)}.js`;
 	if ([...renames.values()].includes(renamed)) throw new Error(`split-dist: two shared files would be named ${renamed}`);
 	renames.set(`${match[2]}-${match[3]}.js`, renamed);
@@ -399,6 +467,10 @@ for (const file of ordered) {
 	renameSync(`${file.path}.split`, file.path);
 }
 for (const entry of ["cli", "rpc-entry"]) chmodSync(join(dist, `${entry}.js`), 0o755);
+writeFileSync(
+	join(dist, "THIRD_PARTY_NOTICES.md"),
+	`# Third-party notices\n\nThe shared files in \`dist/${SHARED_DIRECTORY}/\` include code from these packages.\n\n${notices.join("\n")}`,
+);
 mkdirSync(STATE_DIRECTORY, { recursive: true });
 writeFileSync(
 	STATE_FILE,

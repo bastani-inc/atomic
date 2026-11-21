@@ -25,6 +25,7 @@
 - An interactive session shows its editor and takes typing as soon as Atomic starts, before the rest of the session has loaded, so you can start typing at once, also on a slow first start. The header, the footer and the chat appear on the same screen when the session is ready, with what you typed, its cursor and any paste kept. Keys that do more than edit the prompt, such as Enter, a command or Esc, wait and then act in the order you pressed them, exactly once; Ctrl+C clears the prompt or, pressed twice on an empty one, exits, and Ctrl+D on an empty prompt exits. Startup is as before when something must come first: a question about the folder's trust, the first-run setup, an argument such as `--resume`, or settings that change how the editor looks.
 - While Atomic loads at start, the editor it shows echoes what you type as you type it, instead of all at once when loading has finished: the rest of Atomic loads in steps with room to answer keys between them, in the same order as before.
 - An npm or Bun install of Atomic writes about 2,170 fewer files of its own: the package no longer includes the separate compiled copies of the code it bundles (about 4,480 files and 70 MB unpacked with them, 2,300 files and 40 MB now).
+- Atomic starts faster again: the package's own dependencies for YAML, Markdown and HTML conversion, diffs, version ranges, glob patterns, JSON streaming and starting commands load from its shared files instead of about 260 files of their own. Their licenses are in `dist/THIRD_PARTY_NOTICES.md`.
 
 ### Fixed
 
