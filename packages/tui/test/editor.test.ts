@@ -2846,6 +2846,204 @@ describe("Editor component", () => {
 			assert.equal(submitted, "/global");
 		});
 
+		describe("an open command menu when an approval replaces the provider", () => {
+			const commands = (...values: string[]) => ({
+				prefix: "/global",
+				items: values.map((value) => ({ value, label: value })),
+			});
+			const catalog = (...values: string[]): AutocompleteProvider => ({
+				getSuggestions: async () => commands(...values),
+				applyCompletion,
+			});
+			const approved = { preserveSelection: true, refreshCommandMenu: true } as const;
+			const openMenu = async () => {
+				const editor = new Editor(createTestTUI(), defaultEditorTheme);
+				editor.setAutocompleteProvider(catalog("/globalone", "/globaltwo"));
+				for (const ch of "/global") editor.handleInput(ch);
+				await flushAutocomplete();
+				assert.ok(editor.render(80).some((line) => line.includes("/globaltwo")));
+				return editor;
+			};
+			const rows = (editor: Editor) => editor.render(80).map((line) => stripVTControlCharacters(line).trim());
+
+			it("shows the approved commands, the exact match first, while nothing in it was chosen", async () => {
+				const editor = await openMenu();
+				editor.setAutocompleteProvider(catalog("/globalone", "/global", "/globaltwo"), approved);
+				await flushAutocomplete();
+				assert.ok(rows(editor).includes("❯ /global"));
+				editor.handleInput("\t");
+				assert.equal(editor.getText(), "/global");
+			});
+
+			it("keeps a menu whose row was chosen with the keys, the wheel or the pointer", async () => {
+				for (const choose of ["keys", "wheel", "press"] as const) {
+					for (const when of ["before", "during"] as const) {
+						const editor = await openMenu();
+						const answer = Promise.withResolvers<ReturnType<typeof commands>>();
+						const choice = () => {
+							if (choose === "keys") editor.handleInput("\x1b[B");
+							else {
+								const y = editor.render(80).findIndex((line) => line.includes("/globaltwo"));
+								const at = { button: "left" as const, x: 2, y, screenX: 2, screenY: y, width: 80, height: 24 };
+								const modifiers = { shift: false, alt: false, ctrl: false };
+								editor.handleMouse(
+									choose === "wheel"
+										? { ...at, ...modifiers, type: "wheel", wheelDelta: 1 }
+										: { ...at, ...modifiers, type: "press" },
+								);
+							}
+						};
+						if (when === "before") choice();
+						editor.setAutocompleteProvider({ getSuggestions: () => answer.promise, applyCompletion }, approved);
+						if (when === "during") choice();
+						answer.resolve(commands("/globalone", "/global", "/globaltwo"));
+						await flushAutocomplete();
+						assert.ok(!rows(editor).some((line) => line.endsWith(" /global")), `${choose} ${when}`);
+						editor.handleInput("\t");
+						assert.equal(editor.getText(), "/globaltwo", `${choose} ${when}`);
+					}
+				}
+			});
+
+			it("keeps the menu when the new provider throws, rejects, has nothing, cannot be read or never answers", async () => {
+				const unhandled: unknown[] = [];
+				const onUnhandled = (reason: unknown) => unhandled.push(reason);
+				process.on("unhandledRejection", onUnhandled);
+				try {
+					const answers: AutocompleteProvider["getSuggestions"][] = [
+						() => {
+							throw new Error("lookup failed at once");
+						},
+						async () => {
+							throw new Error("lookup failed later");
+						},
+						async () => null,
+						async () => commands(),
+						async () => ({
+							prefix: "/global",
+							get items(): ReturnType<typeof commands>["items"] {
+								throw new Error("catalog no longer readable");
+							},
+						}),
+						() => new Promise(() => {}),
+					];
+					for (const getSuggestions of answers) {
+						const editor = await openMenu();
+						editor.setAutocompleteProvider({ getSuggestions, applyCompletion }, approved);
+						await flushAutocomplete();
+						assert.ok(rows(editor).some((line) => line.includes("/globaltwo")));
+						editor.handleInput("\t");
+						assert.equal(editor.getText(), "/globalone");
+					}
+					await new Promise((resolve) => setImmediate(resolve));
+					assert.deepEqual(unhandled, []);
+				} finally {
+					process.off("unhandledRejection", onUnhandled);
+				}
+			});
+
+			it("does not hold a later lookup behind an answer that never comes", async () => {
+				const editor = await openMenu();
+				editor.setAutocompleteProvider({ getSuggestions: () => new Promise(() => {}), applyCompletion }, approved);
+				editor.setAutocompleteProvider(catalog("/globalone", "/globaltwo", "/globalthree"));
+				editor.handleInput("t");
+				await flushAutocomplete();
+				assert.ok(rows(editor).some((line) => line.includes("/globalthree")));
+			});
+
+			it("drops an answer for a menu that was closed, retyped or changed before it came", async () => {
+				for (const change of ["escape", "retype", "tab"] as const) {
+					const editor = await openMenu();
+					const answer = Promise.withResolvers<ReturnType<typeof commands>>();
+					editor.setAutocompleteProvider(
+						{
+							getSuggestions: ([text]) =>
+								text === "/global" && change !== "retype"
+									? answer.promise
+									: Promise.resolve(text === "/global" ? answer.promise : null),
+							applyCompletion,
+						},
+						approved,
+					);
+					if (change === "escape") editor.handleInput("\x1b");
+					if (change === "retype") {
+						editor.handleInput("x");
+						editor.handleInput("\x7f");
+					}
+					if (change === "tab") editor.handleInput("\t");
+					const text = editor.getText();
+					answer.resolve(commands("/globalone", "/global", "/globaltwo"));
+					await flushAutocomplete();
+					editor.render(80);
+					if (change === "escape") assert.equal(editor.isShowingAutocomplete(), false);
+					if (change === "tab") assert.equal(text, "/globalone");
+					assert.equal(editor.getText(), text, change);
+				}
+			});
+
+			it("lands a press made before the approved rows are painted on the row that was painted", async () => {
+				const editor = await openMenu();
+				const y = editor.render(80).findIndex((line) => line.includes("/globaltwo"));
+				editor.setAutocompleteProvider(catalog("/global", "/globalone", "/globaltwo"), approved);
+				await flushAutocomplete();
+				// The answer has come but the editor has not rendered it: the screen still shows the first rows.
+				const at = { button: "left" as const, x: 2, y, screenX: 2, screenY: y, width: 80, height: 24 };
+				const modifiers = { shift: false, alt: false, ctrl: false };
+				editor.handleMouse({ ...at, ...modifiers, type: "press" });
+				editor.handleMouse({ ...at, ...modifiers, type: "click" });
+				assert.equal(editor.getText(), "/globaltwo");
+			});
+
+			it("keeps later lookups working when the approval's retry of a lookup that found nothing fails", async () => {
+				const unhandled: unknown[] = [];
+				const onUnhandled = (reason: unknown) => unhandled.push(reason);
+				process.on("unhandledRejection", onUnhandled);
+				try {
+					const editor = new Editor(createTestTUI(), defaultEditorTheme);
+					editor.setAutocompleteProvider({ getSuggestions: async () => null, applyCompletion });
+					for (const ch of "/global") editor.handleInput(ch);
+					await flushAutocomplete();
+					assert.equal(editor.isShowingAutocomplete(), false);
+					editor.setAutocompleteProvider(
+						{
+							getSuggestions: async () => {
+								throw new Error("source offline");
+							},
+							applyCompletion,
+						},
+						approved,
+					);
+					await flushAutocomplete();
+					await new Promise((resolve) => setImmediate(resolve));
+					assert.deepEqual(unhandled, []);
+					editor.setAutocompleteProvider(catalog("/globalone", "/globaltwo"));
+					editor.handleInput("\t");
+					await flushAutocomplete();
+					assert.ok(rows(editor).includes("❯ /globalone"));
+				} finally {
+					process.off("unhandledRejection", onUnhandled);
+				}
+			});
+
+			it("leaves a file menu as it is", async () => {
+				const editor = new Editor(createTestTUI(), defaultEditorTheme);
+				const files = (...values: string[]): AutocompleteProvider => ({
+					getSuggestions: async () => ({
+						prefix: "@demo",
+						items: values.map((value) => ({ value, label: value })),
+					}),
+					applyCompletion,
+				});
+				editor.setAutocompleteProvider(files("@demo1.txt", "@demo2.txt"));
+				editor.setText("@demo");
+				editor.handleInput("\t");
+				await flushAutocomplete();
+				editor.setAutocompleteProvider(files("@demo0.txt", "@demo1.txt", "@demo2.txt"), approved);
+				await flushAutocomplete();
+				assert.ok(!rows(editor).some((line) => line.includes("demo0")));
+			});
+		});
+
 		it("does not carry navigation from an earlier prefix into a pending new lookup (#5693)", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			const old = Promise.withResolvers<null>();

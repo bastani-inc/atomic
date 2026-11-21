@@ -4,6 +4,7 @@ import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntime,
 } from "../../core/agent-session-runtime.ts";
+import type { StartupExtensionCheck } from "../../core/project-trust-state.ts";
 import type { SessionManager } from "../../core/session-manager.ts";
 import { canIsolateSessionStore } from "../../core/session-storage.js";
 import { RpcClient } from "../rpc/rpc-client.ts";
@@ -18,6 +19,7 @@ export async function createIsolatedInteractiveRuntime(options: {
 	parsed: Args;
 	sessionManager: SessionManager;
 	resources: InteractiveEngineResourcePaths;
+	startupExtensionCheck?: StartupExtensionCheck;
 }): Promise<IsolatedInteractiveRuntime> {
 	let isolatedRuntime: IsolatedInteractiveRuntime | undefined;
 	const pendingDiagnostics: ActivityWatchdogDiagnostic[] = [];
@@ -36,6 +38,7 @@ export async function createIsolatedInteractiveRuntime(options: {
 			// Handed to the child through the protected bootstrap file so it never
 			// enters an environment the child's own subprocesses can inherit.
 			...(options.parsed.apiKey ? { apiKey: options.parsed.apiKey } : {}),
+			...(options.startupExtensionCheck ? { startupExtensionCheck: options.startupExtensionCheck } : {}),
 		},
 	});
 	// The host paints and takes input while the engine child loads: its readiness gates only what needs the engine.
@@ -60,6 +63,8 @@ export async function createRuntimeForMode(
 	parsed: Args,
 	resources: InteractiveEngineResourcePaths,
 	interactive: boolean,
+	/** What the host's startup found when it checked its extensions, once its own runtime exists (see main.ts). */
+	startupExtensionCheck?: () => Promise<StartupExtensionCheck | undefined>,
 ): Promise<AgentSessionRuntime> {
 	isolateInteractiveHost &&= canIsolateSessionStore(sessionManager.getSessionStore());
 	if (isolateInteractiveHost && hasInlineExtensionFactories) {
@@ -71,5 +76,12 @@ export async function createRuntimeForMode(
 	if (!isolateInteractiveHost) discardPrewarmedEngine();
 	const localRuntime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager, interactive });
 	if (!isolateInteractiveHost) return localRuntime;
-	return createIsolatedInteractiveRuntime({ localRuntime, createRuntime, parsed, sessionManager, resources });
+	return createIsolatedInteractiveRuntime({
+		localRuntime,
+		createRuntime,
+		parsed,
+		sessionManager,
+		resources,
+		startupExtensionCheck: await startupExtensionCheck?.(),
+	});
 }

@@ -400,6 +400,59 @@ function createScrollBorder(direction: "↑" | "↓", hiddenLineCount: number, w
 	return sliceByColumn(indicator, 0, indicatorWidth, true) + ellipsis;
 }
 
+/** A lookup that offers an open command menu the commands of a provider that replaced the one it came from. */
+interface CommandMenuRefresh {
+	readonly abort: AbortController;
+	/** What the provider's promise reaches the editor through; let go when the lookup is. */
+	readonly route: CommandMenuRoute;
+	readonly provider: AutocompleteProvider;
+	/** The menu, text and cursor the lookup is for. */
+	readonly list: SelectList;
+	readonly text: string;
+	readonly line: number;
+	readonly col: number;
+	/** Its answer, shown when the editor next renders, if the menu is still the one it is for then. */
+	staged?: AutocompleteSuggestions;
+}
+
+/** Whether `name` is an own data property of `item` holding a string (or absent, when `optional`). */
+function plainField(item: object, name: string, optional = false): boolean {
+	const field = Object.getOwnPropertyDescriptor(item, name);
+	return field === undefined ? optional : "value" in field && (typeof field.value === "string" || optional);
+}
+
+/**
+ * A non-empty answer with its fields read once into a plain object, keeping the rows as offered, or undefined when it has
+ * no rows, a row is not plain data, or reading it fails: a menu nobody asked to change must not fail when it reads the
+ * answer again later.
+ */
+function plainSuggestions(suggestions: AutocompleteSuggestions | null): AutocompleteSuggestions | undefined {
+	try {
+		if (!suggestions) return undefined;
+		const { items, prefix, completeOnConfirm } = suggestions;
+		if (!Array.isArray(items) || items.length === 0 || typeof prefix !== "string") return undefined;
+		const rows = [...items];
+		const plain = rows.every(
+			(item) =>
+				typeof item === "object" &&
+				item !== null &&
+				plainField(item, "value") &&
+				plainField(item, "label") &&
+				plainField(item, "description", true),
+		);
+		return plain
+			? { items: rows, prefix, ...(completeOnConfirm === undefined ? {} : { completeOnConfirm }) }
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Holds the editor only weakly, and not at all once the lookup is let go: a promise that never settles keeps nothing. */
+interface CommandMenuRoute {
+	editor?: WeakRef<Editor>;
+}
+
 export class Editor implements Component, Focusable {
 	private state: EditorState = {
 		lines: [""],
@@ -445,7 +498,11 @@ export class Editor implements Component, Focusable {
 	private autocompletePrefix: string = "";
 	private autocompleteCompleteOnConfirm = true;
 	private autocompleteSelectionMoved = false;
+	/** The user chose the open menu's selected row (keys, wheel or pointer), rather than taking its first match. */
+	private autocompleteSelectionChosen = false;
 	private menuProvider?: AutocompleteProvider;
+	/** A lookup that offers an open command menu a replaced provider's commands (see setAutocompleteProvider). */
+	private menuRefresh?: CommandMenuRefresh;
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
@@ -536,9 +593,23 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
-	setAutocompleteProvider(provider: AutocompleteProvider, options?: { preserveSelection?: boolean }): void {
+	setAutocompleteProvider(
+		provider: AutocompleteProvider,
+		options?: {
+			preserveSelection?: boolean;
+			/**
+			 * With `preserveSelection`: an open menu of command names whose first match is still selected asks `provider` for
+			 * the same text and shows its answer. A choice made in the menu, an answer that fails or comes too late, keeps the
+			 * menu as it was.
+			 */
+			refreshCommandMenu?: boolean;
+		},
+	): void {
 		// A painted menu owns its rows and the provider that offered them. If no menu has opened yet, a still-current
 		// lookup (including an empty result) can open one using the newly available commands and the original Tab intent.
+		this.cancelMenuRefresh();
+		if (options?.preserveSelection && options.refreshCommandMenu && provider !== this.autocompleteProvider)
+			this.refreshCommandMenu(provider);
 		const empty = this.emptyAutocomplete;
 		const retry =
 			options?.preserveSelection &&
@@ -759,6 +830,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
+		this.showMenuRefresh();
 		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
 		const paddingX = Math.min(this.paddingX, maxPadding);
 		const contentWidth = Math.max(1, width - paddingX * 2);
@@ -891,6 +963,7 @@ export class Editor implements Component, Focusable {
 				width: contentWidth,
 				height: this.renderedAutocompleteHeight,
 			});
+			if (result?.handled) this.autocompleteSelectionChosen = true;
 			return result ? { ...result, focus: true } : undefined;
 		}
 
@@ -1013,6 +1086,7 @@ export class Editor implements Component, Focusable {
 				kb.matches(data, "tui.select.pageDown")
 			) {
 				this.autocompleteSelectionMoved = true;
+				this.autocompleteSelectionChosen = true;
 				this.autocompleteList.handleInput(data);
 				return;
 			}
@@ -2606,6 +2680,10 @@ export class Editor implements Component, Focusable {
 					options,
 					provider,
 				);
+			} catch (error) {
+				// A lookup the replacement of a provider started on its own leaves the prompt as it was when it fails, and
+				// the lookups after it still run.
+				if (!options.catalogRetry) throw error;
 			} finally {
 				if (startToken === this.autocompleteStartToken) this.pendingAutocomplete = undefined;
 			}
@@ -2710,6 +2788,7 @@ export class Editor implements Component, Focusable {
 		this.autocompletePrefix = suggestions.prefix;
 		this.autocompleteCompleteOnConfirm = suggestions.completeOnConfirm !== false;
 		this.autocompleteSelectionMoved = false;
+		this.autocompleteSelectionChosen = false;
 		this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
 		const bestMatchIndex = this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
 		if (bestMatchIndex >= 0) this.autocompleteList.setSelectedIndex(bestMatchIndex);
@@ -2722,7 +2801,103 @@ export class Editor implements Component, Focusable {
 		if (this.pendingAutocomplete?.catalogRetry && !this.autocompleteState) this.cancelAutocompleteRequest();
 	}
 
+	/**
+	 * Asks `provider` for the open command menu's text, off the queue of the editor's own lookups so that a slow answer
+	 * holds none of them. Only a list of commands for unchanged text is kept; any other answer, a thrown error or a
+	 * rejection leaves the menu as it is.
+	 */
+	private refreshCommandMenu(provider: AutocompleteProvider): void {
+		const list = this.autocompleteList;
+		const line = this.state.cursorLine;
+		const col = this.state.cursorCol;
+		const beforeCursor = (this.state.lines[line] ?? "").slice(0, col);
+		if (
+			this.autocompleteState !== "regular" ||
+			!list ||
+			this.autocompleteSelectionChosen ||
+			!this.autocompletePrefix.startsWith("/") ||
+			!this.isInSlashCommandContext(beforeCursor) ||
+			/\s/.test(beforeCursor.trimStart())
+		)
+			return;
+		const refresh: CommandMenuRefresh = {
+			abort: new AbortController(),
+			route: { editor: new WeakRef(this) },
+			provider,
+			list,
+			text: this.getText(),
+			line,
+			col,
+		};
+		this.menuRefresh = refresh;
+		let lookup: Promise<AutocompleteSuggestions | null>;
+		try {
+			lookup = Promise.resolve(
+				provider.getSuggestions(this.state.lines, line, col, { signal: refresh.abort.signal, force: false }),
+			);
+		} catch {
+			this.cancelMenuRefresh();
+			return;
+		}
+		Editor.observeMenuRefresh(lookup, refresh.route);
+	}
+
+	/** Passes the answer on through `route` alone, so that the promise holds nothing of the editor or its menu. */
+	private static observeMenuRefresh(lookup: Promise<AutocompleteSuggestions | null>, route: CommandMenuRoute): void {
+		lookup.then(
+			(suggestions) => route.editor?.deref()?.receiveMenuRefresh(route, suggestions),
+			() => route.editor?.deref()?.receiveMenuRefresh(route, null),
+		);
+	}
+
+	private receiveMenuRefresh(route: CommandMenuRoute, suggestions: AutocompleteSuggestions | null): void {
+		const refresh = this.menuRefresh;
+		if (refresh?.route !== route) return;
+		route.editor = undefined;
+		const answer = this.isMenuRefreshCurrent(refresh) ? plainSuggestions(suggestions) : undefined;
+		if (!answer) {
+			this.menuRefresh = undefined;
+			return;
+		}
+		refresh.staged = answer;
+		this.tui.requestRender();
+	}
+
+	/** Whether the menu, its text and its cursor are as they were when `refresh` began, with nothing chosen in it. */
+	private isMenuRefreshCurrent(refresh: CommandMenuRefresh): boolean {
+		return (
+			this.menuRefresh === refresh &&
+			this.autocompleteState === "regular" &&
+			this.autocompleteList === refresh.list &&
+			!this.autocompleteSelectionChosen &&
+			this.getText() === refresh.text &&
+			this.state.cursorLine === refresh.line &&
+			this.state.cursorCol === refresh.col
+		);
+	}
+
+	/** Shows a staged command menu refresh while its menu is still the one painted and nothing in it was chosen. */
+	private showMenuRefresh(): void {
+		const refresh = this.menuRefresh;
+		const staged = refresh?.staged;
+		if (!refresh || !staged) return;
+		const current = this.isMenuRefreshCurrent(refresh);
+		this.menuRefresh = undefined;
+		if (!current) return;
+		this.menuProvider = refresh.provider;
+		this.applyAutocompleteSuggestions(staged, { force: false, explicitTab: false });
+	}
+
+	private cancelMenuRefresh(): void {
+		const refresh = this.menuRefresh;
+		if (!refresh) return;
+		this.menuRefresh = undefined;
+		refresh.route.editor = undefined;
+		refresh.abort.abort();
+	}
+
 	private cancelAutocompleteRequest(): void {
+		this.cancelMenuRefresh();
 		this.emptyAutocomplete = undefined;
 		this.pendingAutocomplete = undefined;
 		this.autocompleteStartToken += 1;

@@ -1,4 +1,4 @@
-import type { SessionTrustDecisions } from "../core/project-trust-state.ts";
+import type { SessionTrustDecisions, StartupExtensionCheck } from "../core/project-trust-state.ts";
 import type { InteractiveEngineBootstrap } from "./interactive-engine-bootstrap.ts";
 
 /**
@@ -26,6 +26,8 @@ export interface InteractiveEngineStartupEnv {
 	/** Trust decisions of this host session, handed to an engine started to replace one that stopped. */
 	readonly trustDecisions?: SessionTrustDecisions;
 	readonly projectResourceWithdrawals?: true;
+	/** What the host's startup found when it checked whether an extension could decide its folder's trust. */
+	readonly startupExtensionCheck?: StartupExtensionCheck;
 	/** The host draws the queued messages the main session is delivering (see `QueuedDeliveryRelay`). */
 	readonly queuedDeliveries?: true;
 }
@@ -67,6 +69,7 @@ export function captureInteractiveEngineStartupEnv(
 					apiKey: bootstrap.apiKey,
 					...(bootstrap.trustDecisions ? { trustDecisions: bootstrap.trustDecisions } : {}),
 					...(bootstrap.projectResourceWithdrawals ? { projectResourceWithdrawals: true as const } : {}),
+					...(bootstrap.startupExtensionCheck ? { startupExtensionCheck: bootstrap.startupExtensionCheck } : {}),
 					...(bootstrap.queuedDeliveries ? { queuedDeliveries: true as const } : {}),
 				}
 			: {

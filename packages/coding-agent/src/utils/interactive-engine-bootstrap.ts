@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "no
 import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SessionTrustDecisions } from "../core/project-trust-state.ts";
+import type { SessionTrustDecisions, StartupExtensionCheck } from "../core/project-trust-state.ts";
 
 /**
  * Private startup channel for the isolated interactive engine.
@@ -42,6 +42,8 @@ export interface InteractiveEngineBootstrap {
 	trustDecisions?: SessionTrustDecisions;
 	/** The host accepts a pending withdrawal, distinct from a settled trust decision. */
 	projectResourceWithdrawals?: true;
+	/** What the host's startup found when it checked whether an extension could decide its folder's trust. */
+	startupExtensionCheck?: StartupExtensionCheck;
 	/** The host draws the queued messages the main session is delivering, from changes on the engine's event lines. */
 	queuedDeliveries?: true;
 }
@@ -163,6 +165,7 @@ export function readInteractiveEngineBootstrap(path: string): InteractiveEngineB
 		if (parsed.version !== INTERACTIVE_ENGINE_BOOTSTRAP_VERSION) return undefined;
 		if (typeof parsed.hostPid !== "number" || typeof parsed.guardFile !== "string") return undefined;
 		const trustDecisions = readTrustDecisions(parsed.trustDecisions);
+		const startupExtensionCheck = readStartupExtensionCheck(parsed.startupExtensionCheck);
 		return {
 			version: parsed.version,
 			hostPid: parsed.hostPid,
@@ -170,11 +173,21 @@ export function readInteractiveEngineBootstrap(path: string): InteractiveEngineB
 			...(typeof parsed.apiKey === "string" ? { apiKey: parsed.apiKey } : {}),
 			...(trustDecisions ? { trustDecisions } : {}),
 			...(parsed.projectResourceWithdrawals === true ? { projectResourceWithdrawals: true } : {}),
+			...(startupExtensionCheck ? { startupExtensionCheck } : {}),
 			...(parsed.queuedDeliveries === true ? { queuedDeliveries: true } : {}),
 		};
 	} catch {
 		return undefined;
 	}
+}
+
+/** The host's startup extension check of a bootstrap record, or undefined when it is missing or malformed. */
+function readStartupExtensionCheck(value: unknown): StartupExtensionCheck | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const { cwd, extensionsCanDecide } = value as Record<string, unknown>;
+	return typeof cwd === "string" && typeof extensionsCanDecide === "boolean"
+		? { cwd, extensionsCanDecide }
+		: undefined;
 }
 
 /** The trust decisions of a bootstrap record: only true or false values by path; anything else is left out. */

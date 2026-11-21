@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
 import { receiveChatReceipt } from "../../core/chat-receipts.js";
-import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
+import type { SessionTrustDecisions, StartupExtensionCheck } from "../../core/project-trust-state.ts";
 import { type QueuedDeliveryChange, takeQueuedDeliveryChange } from "../../core/queued-message-delivery.ts";
 import type { BashOutputChannel } from "../../core/tools/bash.js";
 import { removeOwnedInteractiveEngineBootstrapAsync } from "../../utils/interactive-engine-bootstrap.ts";
@@ -80,6 +80,8 @@ export interface RpcClientOptions {
 		 * decisions it is given.
 		 */
 		trustDecisions?: SessionTrustDecisions;
+		/** The host's startup extension check, delivered through the bootstrap file to every engine it starts. */
+		startupExtensionCheck?: StartupExtensionCheck;
 	};
 }
 
@@ -176,6 +178,7 @@ export class RpcClient extends RpcClientApi {
 				? await prepareRpcClientBootstrap(
 						this.options.interactiveEngine.apiKey,
 						this.options.interactiveEngine.trustDecisions,
+						this.options.interactiveEngine.startupExtensionCheck,
 					)
 				: undefined;
 			if (this.stopPromise) {

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- An extension installed while Atomic starts no longer decides the trust of a folder whose saved **Trust** startup already applied: the folder is decided with the extensions Atomic found when it started, and the new extension loads after the decision
+- Resuming another folder's session from a folder whose own settings choose its session store loads the bundled extensions once, and shuts down the extensions that decided the first folder before the session's own load; a shutdown that does not finish within about five seconds no longer holds the session back and is named in a warning
+- When a folder is approved after the chat is on screen, an open menu of command names in which you have not chosen a row shows the approved commands, with an exact match selected; a completion provider that fails or never answers leaves the menu as it was
+- The resource list at the top of the chat shows an approval as soon as a selection, click, drag or search that held it ends, instead of checking again every 250 ms
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.

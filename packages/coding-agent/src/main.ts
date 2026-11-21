@@ -62,8 +62,9 @@ import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { inheritsDebugSetting, setDebugSetting } from "./core/debug-setting.ts";
 import { DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
 import { startEventLoopMonitor, waitForEventLoopMonitorReady } from "./core/event-loop-monitor.ts";
+import { recordFactoryAcquisitions } from "./core/extensions/loader-rollback.ts";
 import { watchFirstProjectTrustHandler } from "./core/extensions/startup-trust-inventory.ts";
-import type { LoadExtensionsResult } from "./core/extensions/types.ts";
+import type { Extension, LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
@@ -74,7 +75,7 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
-import { extensionsCanDecideProjectTrust } from "./core/project-trust-electorate.js";
+import { engineExtensionsCanDecide, extensionsCanDecideProjectTrust } from "./core/project-trust-electorate.js";
 import {
 	pendingProjectResourcesTrusted,
 	projectTrustedBeforeExtensions,
@@ -172,6 +173,7 @@ import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
 import { IsolatedInteractiveRuntime } from "./modes/interactive-engine/isolated-runtime.js";
 import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
+import { ENGINE_SHUTDOWN_GRACE_MS } from "./modes/rpc/rpc-client-process.js";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { canonicalizePath, canonicalizePathAsync } from "./utils/canonical-path.ts";
@@ -436,6 +438,10 @@ export async function main(argv: string[], options?: MainOptions) {
 	);
 	resetTimings();
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
+	// Whether everything the loader takes for bundled is Atomic's own: no custom builtin packages or bundled factories.
+	const onlyAtomicMarksBundled =
+		options?.builtinPackagePaths === undefined &&
+		!(options?.extensionFactories ?? []).some((input) => typeof input !== "function" && input.bundled === true);
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
 	if (offlineMode) {
 		setEnvValue(ENV_OFFLINE, "1");
@@ -588,18 +594,21 @@ export async function main(argv: string[], options?: MainOptions) {
 	const startupGlobalSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const startupDefaultProjectTrust = startupGlobalSettingsManager.getDefaultProjectTrust();
 	// Read once from the configuration: whether an extension that loads before a folder's trust is decided could answer
-	// `project_trust` ahead of its saved decision. Until the decision, such a folder is not trusted yet (#5693).
+	// `project_trust` ahead of its saved decision. Until the decision, such a folder is not trusted yet (#5693). An engine
+	// started for the folder its host checked uses the host's answer, so both decide with the same extensions.
 	let extensionsCanDecideTrust: Promise<boolean> | undefined;
 	const extensionsCanDecide = (): Promise<boolean> =>
-		(extensionsCanDecideTrust ??= extensionsCanDecideProjectTrust({
-			cliExtensionPaths: parsed.extensions,
-			sdkExtensionFactoryCount: options?.extensionFactories?.length ?? 0,
-			customBuiltinPackagePaths: options?.builtinPackagePaths,
-			noExtensions: parsed.noExtensions === true,
-			globalExtensions: startupGlobalSettingsManager.getGlobalSettings().extensions,
-			globalPackages: startupGlobalSettingsManager.getGlobalSettings().packages,
-			agentDir,
-		}));
+		(extensionsCanDecideTrust ??= engineExtensionsCanDecide(engineEnv.startupExtensionCheck, cwd, () =>
+			extensionsCanDecideProjectTrust({
+				cliExtensionPaths: parsed.extensions,
+				sdkExtensionFactoryCount: options?.extensionFactories?.length ?? 0,
+				customBuiltinPackagePaths: options?.builtinPackagePaths,
+				noExtensions: parsed.noExtensions === true,
+				globalExtensions: startupGlobalSettingsManager.getGlobalSettings().extensions,
+				globalPackages: startupGlobalSettingsManager.getGlobalSettings().packages,
+				agentDir,
+			}),
+		));
 	const trustedBeforeExtensions = async (folder: { hasTrustInputs: boolean; saved: boolean | null }) => {
 		const savedPositive = folder.saved ?? startupDefaultProjectTrust === "always";
 		return projectTrustedBeforeExtensions({
@@ -769,20 +778,44 @@ export async function main(argv: string[], options?: MainOptions) {
 	// build that waits for it starts then (#5693).
 	const { promise: startupTrustDecided, resolve: settleStartupTrust } = Promise.withResolvers<void>();
 	let startupRuntime: AgentSessionRuntime | undefined;
-	// A startup that decides its folder's trust before it opens the session prepares that folder's services first, and
-	// binds them to the session it then opens there, so the extensions load once (#5693).
+	// A startup that decides its folder's trust before it opens the session prepares that folder's services first, with
+	// only the extensions that can decide it, and binds them to the session it then opens there, so the extensions load
+	// once (#5693). A session it opens in another folder gets that folder's own extensions; the ones that decided are
+	// shut down first.
 	let preparedBeforeOpen:
-		| { readonly cwd: string; readonly bind: (sessionManager: SessionManager) => RuntimeContinuation }
+		| {
+				readonly cwd: string;
+				readonly bind: (sessionManager: SessionManager) => RuntimeContinuation;
+				/**
+				 * Shuts the extensions down, waiting up to the bound. Resolves with what was still shutting down then: the
+				 * extension whose cleanup had begun, if one had.
+				 */
+				readonly discard: (
+					sessionManager: SessionManager,
+				) => Promise<{ readonly extension?: Extension } | undefined>;
+		  }
 		| undefined;
+	// Shown with the resumed session's notices: what the startup folder's extensions left when a session in another folder
+	// opened.
+	const preOpenNotices: ResumeNotice[] = [];
 	const createRuntime: CreateAgentSessionRuntimeFactory = async (options) => {
 		const prepared = preparedBeforeOpen;
 		preparedBeforeOpen = undefined;
-		if (
-			prepared &&
-			options.sessionStartEvent === undefined &&
-			(await canonicalizePathAsync(options.cwd)) === (await canonicalizePathAsync(prepared.cwd))
-		)
-			return prepared.bind(options.sessionManager)();
+		if (prepared && options.sessionStartEvent === undefined) {
+			if ((await canonicalizePathAsync(options.cwd)) === (await canonicalizePathAsync(prepared.cwd)))
+				return prepared.bind(options.sessionManager)();
+			const unfinished = await prepared.discard(options.sessionManager);
+			if (unfinished) {
+				const seconds = Math.round(ENGINE_SHUTDOWN_GRACE_MS / 1000);
+				const what = unfinished.extension
+					? `Extension "${unfinished.extension.path}" did not`
+					: "The extensions that decided its trust did not";
+				preOpenNotices.push({
+					type: "warning",
+					message: `${what} finish shutting down for ${prepared.cwd} within ${seconds} seconds; this session opened without waiting for it.`,
+				});
+			}
+		}
 		return (await prepareRuntime(options))();
 	};
 	const prepareRuntime: NonNullable<CreateAgentSessionRuntimeFactory["prepareResume"]> = async (options) =>
@@ -810,8 +843,15 @@ export async function main(argv: string[], options?: MainOptions) {
 			hasTrustInputs,
 		});
 		// A saved "Trust" that an extension's project_trust handler could still overturn is not trusted yet (#5693).
-		const initialProjectTrusted =
-			startupTrust.trusted && !(startupTrust.decide && interactiveStartup && (await extensionsCanDecide()));
+		const checkedExtensions =
+			startupTrust.decide &&
+			interactiveStartup &&
+			(storedProjectTrust ?? startupDefaultProjectTrust === "always") === true;
+		const extensionsCouldDecide = checkedExtensions && (await extensionsCanDecide());
+		const initialProjectTrusted = startupTrust.trusted && !extensionsCouldDecide;
+		// A startup that trusted the folder because the check found no extension decides with what the check found: an
+		// extension added since then loads after the decision, and does not vote on it.
+		const electorateFromStartupCheck = checkedExtensions && !extensionsCouldDecide && sessionStartEvent === undefined;
 		const shouldResolveProjectTrust = !isolateInteractiveHost && startupTrust.decide;
 		const runtimeSettingsManager = await SettingsManager.createAsync(cwd, agentDir, {
 			projectTrusted: initialProjectTrusted,
@@ -917,6 +957,11 @@ export async function main(argv: string[], options?: MainOptions) {
 				? { deferExtensions: true, deferResources: true }
 				: shouldResolveProjectTrust || (!isolateInteractiveHost && (resolvedExtensionPaths?.length ?? 0) > 0)
 					? {
+							...(electorateFromStartupCheck
+								? { preTrustExtensions: "bundled" as const }
+								: decideBeforeOpen && onlyAtomicMarksBundled
+									? { preTrustExtensions: "voters" as const }
+									: {}),
 							deferProjectTrust: deferStartupTrust
 								? (complete) => {
 										completeStartupReload = complete;
@@ -1351,10 +1396,46 @@ export async function main(argv: string[], options?: MainOptions) {
 	) {
 		isolateInteractiveHost = false;
 		if (parsed.continue || parsed.resume || parsed.session !== undefined || parsed.fork !== undefined) {
-			const bind = await sessionLifecycleCreation.run({ scope: {} }, () =>
-				prepareRuntimeServices({ cwd, agentDir }, undefined, true),
+			// The factories the decision runs are recorded, so the ones a session in another folder does not use can be
+			// shut down as a failed creation's are.
+			const {
+				result: bind,
+				release,
+				rollback,
+			} = await recordFactoryAcquisitions(() =>
+				sessionLifecycleCreation.run({ scope: {} }, () =>
+					prepareRuntimeServices({ cwd, agentDir }, undefined, true),
+				),
 			);
-			preparedBeforeOpen = { cwd, bind };
+			preparedBeforeOpen = {
+				cwd,
+				// The session in this folder keeps them.
+				bind: (opened) => {
+					release();
+					return bind(opened);
+				},
+				// They shut down before the session's own extensions load, but a cleanup that hangs holds the session back
+				// only for as long as a quit waits for one.
+				discard: async (opened) => {
+					let cleaning: Extension | undefined;
+					const shutDown = rollback({ reason: "resume", targetSessionId: opened.getSessionId() }, (extension) => {
+						cleaning = extension;
+					});
+					let bound: NodeJS.Timeout | undefined;
+					const failures = await Promise.race([
+						shutDown,
+						new Promise<undefined>((resolve) => {
+							bound = setTimeout(() => resolve(undefined), ENGINE_SHUTDOWN_GRACE_MS);
+							bound.unref?.();
+						}),
+					]);
+					clearTimeout(bound);
+					// What fails later is part of the shutdown already reported as unfinished.
+					if (failures === undefined) return cleaning ? { extension: cleaning } : {};
+					for (const failure of failures) console.error(chalk.yellow(`Warning: ${String(failure)}`));
+					return undefined;
+				},
+			};
 			await startupSettingsManager.setProjectTrustedAsync(projectTrustByCwd.get(cwd) === true);
 		}
 	}
@@ -1477,6 +1558,12 @@ export async function main(argv: string[], options?: MainOptions) {
 			themes: resolvedThemePaths,
 		},
 		appMode === "interactive" || engineEnv.child === "1",
+		// When this startup used the check, the engine decides the folder's trust with the extensions it found.
+		async () =>
+			extensionsCanDecideTrust && {
+				cwd: sessionManager.getCwd(),
+				extensionsCanDecide: await extensionsCanDecideTrust,
+			},
 	);
 	endTimingSpan(runtimeCreationSpan);
 	markLifecycleTiming("runtime-created");
@@ -1587,7 +1674,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			startupDiagnostics,
-			resumeNotices: worktreeRestoreDiagnostics,
+			resumeNotices: [...worktreeRestoreDiagnostics, ...preOpenNotices],
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
 			holdTuiForStartupTrust: isolateInteractiveHost && startupTrustPromptPossible,

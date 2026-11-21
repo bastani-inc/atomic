@@ -68,7 +68,11 @@ declare module "./interactive-mode-base.ts" {
 		getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner): ResourceDiagnostic[];
 		createBaseAutocompleteProvider(): AutocompleteProvider;
 		buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
-		setupAutocompleteProvider(options?: { preserveSelection?: boolean }): void;
+		/**
+		 * `refreshCommandMenu`, with `preserveSelection`: an open menu of command names whose first match is still
+		 * selected shows the new provider's answer for its text (see Editor.setAutocompleteProvider).
+		 */
+		setupAutocompleteProvider(options?: { preserveSelection?: boolean; refreshCommandMenu?: boolean }): void;
 		showStartupNoticesIfNeeded(targetContainer?: Container): void;
 		reportModelCatalogWarning(targetContainer?: Container): void;
 		reportedModelCatalogWarning: string | undefined;
