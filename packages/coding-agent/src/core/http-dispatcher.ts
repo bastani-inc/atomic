@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { resolveHttpsFallbackProxyUrl } from "@bastani/atomic-ai/utils/node-http-proxy";
+import { recordProxyConnectionFailure } from "@bastani/atomic-ai/utils/tls-certificate";
 import * as undici from "undici";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
@@ -124,7 +125,7 @@ export function createHttpDispatcherOptions(
 		connectTimeout: 0,
 		bodyTimeout: timeoutMs,
 		headersTimeout: timeoutMs,
-		clientFactory: createUndiciClient,
+		clientFactory: createUndiciProxyClient,
 		factory: createUndiciOriginDispatcher,
 	};
 }
@@ -143,6 +144,22 @@ function withUndiciErrorListener<T extends undici.Dispatcher>(dispatcher: T): T 
 
 function createUndiciClient(origin: string | URL, options: object): undici.Dispatcher {
 	return withUndiciErrorListener(new undici.Client(origin, options as undici.Client.Options));
+}
+
+/**
+ * The client a proxy agent builds for the proxy itself, with the connector that reaches the proxy: an error that
+ * connector fails with, such as a certificate the proxy showed, is the proxy's, not the endpoint's, which the proxy never
+ * reached. Each one is recorded as the proxy's, so a refused certificate names the proxy.
+ */
+function createUndiciProxyClient(proxy: string | URL, options: object): undici.Dispatcher {
+	const { connect } = options as undici.Client.Options;
+	if (typeof connect !== "function") return createUndiciClient(proxy, options);
+	const connectToProxy: undici.buildConnector.connector = (connectOptions, callback) =>
+		connect(connectOptions, (...result) => {
+			if (result[0] !== null) recordProxyConnectionFailure(result[0], proxy);
+			callback(...result);
+		});
+	return createUndiciClient(proxy, { ...options, connect: connectToProxy });
 }
 
 function createUndiciOriginDispatcher(origin: string | URL, options: object): undici.Dispatcher {
