@@ -445,7 +445,7 @@ async function writeCapturedTree(
 		}
 		const state = await writeTreeThrough(working, checkout, settings, policy, options, {
 			refresh: true,
-			forceAdded: () => ignoredAdditionsToHead(checkout, signal),
+			forceAdded: () => ignoredAdditionsToHead(checkout, userIndexPath, scratch, signal),
 		});
 		const written: IndexRecord = {
 			version: CAPTURE_INDEX_VERSION,
@@ -611,19 +611,49 @@ async function ignoredStagedOutsideSeed(
 }
 
 /**
- * Files staged in the user's index as additions to HEAD that an ignore rule matches (`git add -f`): one listing of the
- * staged additions, then the ignore rules on those paths alone.
+ * The files staged as additions to HEAD in each user's index this process listed, by index path: the hash of the
+ * index's bytes and the HEAD they were listed against, with the listing, which follows from those two alone.
  */
-async function ignoredAdditionsToHead(checkout: Checkout, signal?: AbortSignal): Promise<string[]> {
+const stagedAdditions = new Map<string, { readonly key: string; readonly added: readonly string[] }>();
+
+/**
+ * Files staged in the user's index at `userIndexPath` as additions to HEAD that an ignore rule matches (`git add -f`):
+ * the staged additions, then the ignore rules on those paths alone. The additions are listed again only when the
+ * index's bytes or HEAD changed since the last listing, and then from a copy, in `scratch`, of exactly the bytes the
+ * listing is kept for: the user's index can change meanwhile.
+ */
+async function ignoredAdditionsToHead(
+	checkout: Checkout,
+	userIndexPath: string,
+	scratch: string,
+	signal?: AbortSignal,
+): Promise<string[]> {
 	const { root, head } = checkout;
-	const added = nulFields(
-		(
-			await runGit(["diff-index", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=A", head], {
-				cwd: root,
-				signal,
-			})
-		).stdout,
-	);
+	let bytes: Buffer | null;
+	try {
+		bytes = await readFile(userIndexPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
+		bytes = null;
+	}
+	const key = `${bytes === null ? "none" : sha256Hex(bytes)}\0${head}`;
+	const listed = stagedAdditions.get(userIndexPath);
+	let added = listed?.key === key ? listed.added : undefined;
+	if (added === undefined) {
+		// A checkout without an index lists from an absent copy, as Git lists from its absent index: nothing.
+		const copy = join(scratch, "user-index");
+		if (bytes !== null) await writeFile(copy, bytes);
+		added = nulFields(
+			(
+				await runGit(["diff-index", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=A", head], {
+					cwd: root,
+					env: { GIT_INDEX_FILE: copy },
+					signal,
+				})
+			).stdout,
+		);
+		stagedAdditions.set(userIndexPath, { key, added });
+	}
 	if (added.length === 0) return [];
 	const ignored = await runGit(["check-ignore", "--no-index", "--stdin", "-z"], {
 		cwd: root,

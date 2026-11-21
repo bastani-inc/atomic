@@ -25,13 +25,14 @@ useTemporaryAgentDir();
 /**
  * Git processes one turn may start to learn that its checkout did not change: one `rev-parse` locates the checkout,
  * its Git directory, its index and HEAD; the tree is then computed through the private index with `read-tree`,
- * `update-index --refresh`, `diff-files`, `diff-index` (files staged despite an ignore rule), `ls-files --others`,
- * `update-index --stdin` (the files that differ from HEAD), the `config` lookup of the modes Git trusts, and
- * `write-tree`. The session ref already names the snapshot's commit, so it is not written again. Every turn that calls
- * a file-writing tool pays this, in every session of a host: before this budget an unchanged turn started 14, and a
- * host with many agents about 5 Git processes a second.
+ * `update-index --refresh`, `diff-files`, `ls-files --others`, `update-index --stdin` (the files that differ from
+ * HEAD), the `config` lookup of the modes Git trusts, and `write-tree`. The files staged in the user's index despite an
+ * ignore rule (`diff-index`) were listed by the turn before, from the same index and HEAD. The session ref already names
+ * the snapshot's commit, so it is not written again. Every turn that calls a file-writing tool pays this, in every
+ * session of a host: before this budget an unchanged turn started 14, and a host with many agents about 5 Git
+ * processes a second.
  */
-const UNCHANGED_TURN_GIT_PROCESSES = 9;
+const UNCHANGED_TURN_GIT_PROCESSES = 8;
 
 /**
  * The `diff-index` that gives changed files the executable or link mode their recorded tree holds, which a capture
@@ -181,10 +182,10 @@ describe("captures of one checkout requested together", () => {
 		const resumed = new Promise<void>((resolve) => {
 			resume = resolve;
 		});
-		// The first capture's sixth Git process, the lookup of the modes Git trusts, runs after its tree computation
-		// listed the changed and untracked files, and before it writes the tree.
+		// The first capture's fifth Git process, `write-tree`, runs after its tree computation listed the changed and
+		// untracked files (the files staged despite an ignore rule were listed by the capture before, from the same index).
 		countGitProcesses(async (started) => {
-			if (started !== 6) return;
+			if (started !== 5) return;
 			reading();
 			await resumed;
 		});
