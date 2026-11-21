@@ -226,6 +226,100 @@ it(
 	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 );
 
+// What the loader adds to an extension's code reads none of the extension's own bindings, whatever their names, and
+// works while an import cycle runs the extension's code before its own top level has run.
+it(
+	"an extension's own bindings never stand in for its import.meta or file globals",
+	async () => {
+		const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-import-meta-hygiene-"));
+		const write = (name: string, source: string) => fs.writeFileSync(path.join(root, name), source);
+		write(
+			"process-const.ts",
+			`const process = { label: "mine" };
+export const probe = () => ({ label: process.label, dirname: __dirname, filename: import.meta.filename });
+`,
+		);
+		write(
+			"process-var.ts",
+			`var process = { versions: {} };
+export const probe = () => ({ hasVersion: process.versions.node !== undefined, filename: __filename });
+`,
+		);
+		write(
+			"own-names.ts",
+			`const _importMeta = "mine";
+const __atomicImportMeta = "also mine";
+const jitiESMResolve = (specifier) => "mine:" + specifier;
+const load = (jitiImport) => import("./helper.ts").then((helper) => [jitiImport, helper.value]);
+export const probe = async () => ({
+	own: [_importMeta, __atomicImportMeta, jitiESMResolve("x")],
+	nested: ((_importMeta) => [_importMeta, import.meta.filename])("nested"),
+	resolved: import.meta.resolve("./helper.ts"),
+	loaded: await load("mine"),
+});
+`,
+		);
+		write("helper.ts", `export const value = "helper";\n`);
+		write(
+			"cycle.ts",
+			`import { seen } from "./cycle-back.ts";
+export function ownFile() {
+	return import.meta.filename;
+}
+export const probe = () => ({ seen });
+`,
+		);
+		write("cycle-back.ts", `import { ownFile } from "./cycle.ts";\nexport const seen = ownFile();\n`);
+		const entry = path.join(root, "extension.ts");
+		write(
+			"extension.ts",
+			`import * as processConst from "./process-const.ts";
+import * as processVar from "./process-var.ts";
+import * as ownNames from "./own-names.ts";
+import * as cycle from "./cycle.ts";
+export default async function (pi) {
+	pi.events.emit("hygiene-probe", {
+		processConst: processConst.probe(),
+		processVar: processVar.probe(),
+		ownNames: await ownNames.probe(),
+		cycle: cycle.probe(),
+	});
+}
+`,
+		);
+		const file = (name: string) => path.join(root, name);
+		const bus = createEventBus();
+		const observations: object[] = [];
+		bus.on("hygiene-probe", (value) => observations.push(value as object));
+		try {
+			for (const load of ["first", "reload"]) {
+				clearExtensionCache();
+				const factory =
+					load === "first"
+						? await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry)
+						: await extensionLoaderTestHooks.loadTransformedExtensionModule(entry);
+				expect(factory).toBeTypeOf("function");
+				await loadExtensionFromFactory(factory!, root, bus, createExtensionRuntime(), entry);
+				expect(observations.at(-1)).toEqual({
+					processConst: { label: "mine", dirname: root, filename: file("process-const.ts") },
+					processVar: { hasVersion: false, filename: file("process-var.ts") },
+					ownNames: {
+						own: ["mine", "also mine", "mine:x"],
+						nested: ["nested", file("own-names.ts")],
+						resolved: pathToFileURL(file("helper.ts")).href,
+						loaded: ["mine", "helper"],
+					},
+					cycle: { seen: file("cycle.ts") },
+				});
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			clearExtensionCache();
+		}
+	},
+	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+);
+
 // #2963: supported aliases must stay interchangeable when native first load becomes a transformed reload.
 it(
 	"keeps coding-agent aliases interchangeable when first load becomes an edited reload",

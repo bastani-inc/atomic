@@ -9,6 +9,7 @@ import {
 	discardPrewarmedEngine,
 	type EngineLaunch,
 	engineLaunch,
+	type PrewarmLaunchBasis,
 	prewarmInteractiveEngine,
 	sameEngineLaunch,
 	shouldPrewarmInteractiveEngine,
@@ -122,8 +123,8 @@ describe("adopting a prewarmed engine child", () => {
 
 	const terminal = { stdinIsTTY: true, stdoutIsTTY: true, cpus: 8 };
 	/** Prewarms the stand-in engine as `launch` starts it, and returns its pid once it runs. */
-	async function prewarm(script: string, launch: EngineLaunch): Promise<number> {
-		prewarmInteractiveEngine([], { host: terminal, launch });
+	async function prewarm(script: string, launch: EngineLaunch, basis?: PrewarmLaunchBasis): Promise<number> {
+		prewarmInteractiveEngine([], { host: terminal, launch, basis });
 		const pidFile = join(script, "..", "pid");
 		await vi.waitFor(() => assert.ok(existsSync(pidFile) && readFileSync(pidFile, "utf8")), {
 			timeout: ENGINE_START_OR_EXIT_WAIT_MS,
@@ -176,13 +177,28 @@ describe("adopting a prewarmed engine child", () => {
 		const script = writeEngineScript();
 		const prewarmed = standIn(script);
 		const pid = await prewarm(script, prewarmed);
-		const child = adoptPrewarmedEngine({ ...prewarmed, env: { ...prewarmed.env } }, ["--mode", "rpc"]);
+		const bases: PrewarmLaunchBasis[] = [];
+		const child = adoptPrewarmedEngine({ ...prewarmed, env: { ...prewarmed.env } }, ["--mode", "rpc"], (basis) =>
+			bases.push(basis),
+		);
 		assert.ok(child, "the prewarmed child is adopted");
 		children.push(child);
+		assert.deepEqual(bases, ["unchanged"]);
 		assert.equal(child.pid, pid);
 		const output = readLines(child, 2);
 		child.stdin!.write('{"id":"1"}\n');
 		assert.deepEqual(await output, [{ args: ["--mode", "rpc"], argv: ["--mode", "rpc"] }, { line: '{"id":"1"}' }]);
+	});
+
+	test("tells its host that the prewarm carried environment the arguments or settings add", async () => {
+		const script = writeEngineScript();
+		const prewarmed = standIn(script);
+		await prewarm(script, prewarmed, "derived");
+		const bases: PrewarmLaunchBasis[] = [];
+		const child = adoptPrewarmedEngine(prewarmed, ["--mode", "rpc"], (basis) => bases.push(basis));
+		assert.ok(child, "the prewarmed child is adopted");
+		children.push(child);
+		assert.deepEqual(bases, ["derived"]);
 	});
 
 	// The host's environment may change between the prewarm at its first line and the engine it settles on. A child

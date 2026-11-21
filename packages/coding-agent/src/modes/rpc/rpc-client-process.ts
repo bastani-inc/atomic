@@ -16,7 +16,7 @@ import {
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
 import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
 import { sleep } from "../../utils/sleep.ts";
-import { adoptPrewarmedEngine, engineLaunch } from "../interactive-engine/engine-prewarm.ts";
+import { adoptPrewarmedEngine, engineLaunch, type PrewarmLaunchBasis } from "../interactive-engine/engine-prewarm.ts";
 
 export interface PreparedRpcClientBootstrap {
 	readonly guardianFile: string;
@@ -86,11 +86,19 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 		if (options.interactiveEngine) markLifecycleTiming("interactive-engine-spawn");
 		const launch = engineLaunch(options);
 		// A child prewarmed exactly as this one would start has already loaded the application.
-		const prewarmed = options.interactiveEngine ? adoptPrewarmedEngine(launch, cliArgs) : undefined;
-		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache. On
-		// Windows, where writing a cold cache takes seconds, a host that adopted its prewarmed engine writes its cache now
-		// too, while the engine starts, so that quitting never waits for it.
-		if (options.interactiveEngine && (!prewarmed || process.platform === "win32")) flushPersistentCompileCache();
+		// An earlier version of the prewarm module, still loaded beside this one after an update, reports no basis.
+		const adoption: { basis: PrewarmLaunchBasis } = { basis: "unchanged" };
+		const prewarmed = options.interactiveEngine
+			? adoptPrewarmedEngine(launch, cliArgs, (adopted) => {
+					adoption.basis = adopted;
+				})
+			: undefined;
+		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache. So does
+		// a host running an engine prewarmed with environment its arguments or settings add: without that environment it
+		// would have written the cache here and started a fresh engine, and otherwise the write waits for its quit, where
+		// a cold cache takes seconds on Windows.
+		const writesCache = !prewarmed || adoption.basis === "derived";
+		if (options.interactiveEngine && writesCache) flushPersistentCompileCache();
 		child =
 			prewarmed ??
 			spawn(launch.command, [...launch.args, ...cliArgs], {

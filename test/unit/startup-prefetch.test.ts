@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, constants, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
@@ -37,9 +37,19 @@ test("the reader finds each package where Node would and reads every listed file
 	file(join(atomic, "node_modules", "dep", "inner.js"));
 	file(join(nodeModules, "dep", "outer.js"));
 	file(join(nodeModules, "@scope", "pkg", "lib", "index.mjs"));
-	// A native addon whose build for this platform is a package of its own beside it.
+	// A native addon that ships every platform's build, and a platform package with this one's: Node loads only the
+	// package's own build for this platform.
 	file(join(nodeModules, "@bastani", "atomic-natives", "native", "index.js"));
-	file(join(nodeModules, "@bastani", "atomic-natives-test-x64", "atomic_natives.test-x64.node"));
+	for (const build of ["win32-x64-msvc", "win32-arm64-msvc", "linux-x64-gnu", "darwin-arm64"])
+		file(join(nodeModules, "@bastani", "atomic-natives", "native", `atomic_natives.${build}.node`));
+	const platformPackage = join(nodeModules, "@bastani", `atomic-natives-win32-${process.arch}-msvc`);
+	file(
+		join(platformPackage, "package.json"),
+		JSON.stringify({ main: `atomic_natives.win32-${process.arch}-msvc.node` }),
+	);
+	file(join(platformPackage, `atomic_natives.win32-${process.arch}-msvc.node`));
+	// A package above the installation's own node_modules, where Node could look but the reader never does.
+	file(join(dir, "node_modules", "outside", "index.js"));
 	// Nothing outside a package, and no FIFO a different install could name where a file was.
 	file(join(nodeModules, "@bastani", "escape.js"));
 	if (process.platform !== "win32") {
@@ -49,9 +59,16 @@ test("the reader finds each package where Node would and reads every listed file
 	const list = file(
 		join(atomic, "dist", "startup-files.json"),
 		JSON.stringify({
-			version: 1,
+			version: 2,
 			self: "@bastani/atomic",
-			packages: ["@bastani/atomic", "dep", "@scope/pkg", "absent", "@bastani/atomic-natives"],
+			packages: [
+				["@bastani/atomic", -1],
+				["dep", 0],
+				["@scope/pkg", 0],
+				["absent", 0],
+				["@bastani/atomic-natives", 0],
+				["outside", 0],
+			],
 			files: [
 				[0, "dist/main.js"],
 				[1, "inner.js"],
@@ -62,18 +79,84 @@ test("the reader finds each package where Node would and reads every listed file
 				[0, "../escape.js"],
 				[0, "dist/fifo.js"],
 				[4, "native/index.js"],
+				[5, "index.js"],
 			],
 		}),
 	);
 
-	// main.js, dep/inner.js from the nearer copy, @scope/pkg, the natives' index.js and its platform addon.
-	assert.equal(await readStartupFiles(list, atomic), 5);
+	// main.js, dep/inner.js from the nearer copy, @scope/pkg, the natives' index.js and, on Windows (the only platform
+	// the reader runs on), the one build of the addon Node loads there, an x64 or arm64 one.
+	const nativeBuild = process.platform === "win32" && (process.arch === "x64" || process.arch === "arm64") ? 1 : 0;
+	assert.equal(await readStartupFiles(list, atomic), 4 + nativeBuild);
+});
+
+test.runIf(process.platform === "win32" && (process.arch === "x64" || process.arch === "arm64"))(
+	"without its own build for this platform, the reader reads the addon's platform package's build, and no other",
+	async () => {
+		const nodeModules = join(dir, "app", "node_modules");
+		const atomic = join(nodeModules, "@bastani", "atomic");
+		file(join(nodeModules, "@bastani", "atomic-natives", "native", "index.js"));
+		file(join(nodeModules, "@bastani", "atomic-natives", "native", "atomic_natives.linux-x64-gnu.node"));
+		const platformPackage = join(nodeModules, "@bastani", `atomic-natives-win32-${process.arch}-msvc`);
+		file(
+			join(platformPackage, "package.json"),
+			JSON.stringify({ main: `atomic_natives.win32-${process.arch}-msvc.node` }),
+		);
+		file(join(platformPackage, `atomic_natives.win32-${process.arch}-msvc.node`));
+		const list = file(
+			join(atomic, "dist", "startup-files.json"),
+			JSON.stringify({
+				version: 2,
+				self: "@bastani/atomic",
+				packages: [["@bastani/atomic-natives", -1]],
+				files: [],
+			}),
+		);
+		assert.equal(await readStartupFiles(list, atomic), 1);
+	},
+);
+
+test("the reader reads nothing above the installation's own node_modules", async () => {
+	const atomic = join(dir, "app", "node_modules", "@bastani", "atomic");
+	file(join(dir, "node_modules", "outside", "index.js"));
+	const list = file(
+		join(atomic, "dist", "startup-files.json"),
+		JSON.stringify({ version: 2, self: "@bastani/atomic", packages: [["outside", -1]], files: [[0, "index.js"]] }),
+	);
+	assert.equal(await readStartupFiles(list, atomic), 0);
+});
+
+test("the reader finds a package from the package that imports it, as Node does: a copy nested there first", async () => {
+	const atomic = join(dir, "app", "node_modules", "@bastani", "atomic");
+	// proper-lockfile's own copy of retry, and another version of retry beside Atomic's other packages.
+	file(join(atomic, "node_modules", "proper-lockfile", "index.js"));
+	file(join(atomic, "node_modules", "proper-lockfile", "node_modules", "retry", "nested.js"));
+	file(join(atomic, "node_modules", "retry", "hoisted.js"));
+	const list = file(
+		join(atomic, "dist", "startup-files.json"),
+		JSON.stringify({
+			version: 2,
+			self: "@bastani/atomic",
+			packages: [
+				["@bastani/atomic", -1],
+				["proper-lockfile", 0],
+				["retry", 1],
+			],
+			files: [
+				[1, "index.js"],
+				[2, "nested.js"],
+				[2, "hoisted.js"],
+			],
+		}),
+	);
+	// proper-lockfile's index.js and its own retry's nested.js; never the other retry's file.
+	assert.equal(await readStartupFiles(list, atomic), 2);
 });
 
 test("a list of another version reads nothing", async () => {
 	const list = file(
 		join(dir, "startup-files.json"),
-		JSON.stringify({ version: 2, self: "x", packages: [], files: [] }),
+		JSON.stringify({ version: 3, self: "x", packages: [], files: [] }),
 	);
 	assert.equal(await readStartupFiles(list, dir), 0);
 });
@@ -82,16 +165,19 @@ test("the built list names files that this build loads, and the reader finds eve
 	const listPath = new URL("dist/startup-files.json", codingAgent);
 	const list = JSON.parse(readFileSync(listPath, "utf8")) as {
 		self: string;
-		packages: string[];
+		packages: [string, number][];
 		files: [number, string][];
 	};
 	assert.equal(list.self, "@bastani/atomic");
-	assert.ok(list.files.some(([index, path]) => list.packages[index] === "@bastani/atomic" && path === "dist/main.js"));
+	assert.ok(
+		list.files.some(([index, path]) => list.packages[index]?.[0] === "@bastani/atomic" && path === "dist/main.js"),
+	);
 	const read = await readStartupFiles(fileURLToPath(listPath), fileURLToPath(codingAgent));
 	assert.ok(read >= list.files.length, `read ${read} of ${list.files.length}`);
 });
 
 interface ReaderStart {
+	readonly priority: number;
 	readonly argv: string[];
 	readonly threads: string | undefined;
 	readonly nodeOptions: string | undefined;
@@ -112,6 +198,7 @@ function prefetchFixture(stay: boolean): string {
 		join(packageDir, "dist", "utils", "startup-prefetch-reader.js"),
 		`import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(marker())}, JSON.stringify({
+	priority: (await import("node:os")).getPriority(),
 	argv: process.argv.slice(2),
 	threads: process.env.UV_THREADPOOL_SIZE,
 	nodeOptions: process.env.NODE_OPTIONS,
@@ -175,9 +262,12 @@ test.runIf(process.platform === "win32")(
 		assert.ok(start, "a reader started");
 		const packageDir = join(dir, "package");
 		assert.deepEqual(start.argv, [join(packageDir, "dist", "startup-files.json"), packageDir]);
-		// The reader's I/O pool is its own, and nothing of the user's NODE_OPTIONS runs in it.
-		assert.equal(start.threads, "32");
+		// The reader's I/O pool is its own, sized by the CPUs, and nothing of the user's NODE_OPTIONS runs in it.
+		const threads = Number(start.threads);
+		assert.ok(threads >= 4 && threads <= Math.min(32, Math.max(4, 4 * availableParallelism())), `${threads} threads`);
 		assert.equal(start.nodeOptions, "");
+		// It runs below Atomic's own priority.
+		assert.equal(start.priority, constants.priority.PRIORITY_BELOW_NORMAL);
 		await expectGone(start.pid);
 	},
 );

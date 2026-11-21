@@ -110,9 +110,18 @@ export function interactiveEngineClientOptions(cwd: string): {
 	};
 }
 
+/**
+ * How a prewarmed engine's launch compares with the one a host prewarmed before it gave the prewarm the environment
+ * `main()` derives from the arguments and the global settings: `"unchanged"` when that environment added nothing, so
+ * such a host would have run the prewarmed engine too, and `"derived"` when it added something, so such a host would
+ * have discarded it and started a second engine.
+ */
+export type PrewarmLaunchBasis = "unchanged" | "derived";
+
 interface Prewarm {
 	readonly launch: EngineLaunch;
 	readonly child: ChildProcess;
+	readonly basis: PrewarmLaunchBasis;
 }
 
 const PREWARM_KEY = Symbol.for("@bastani/atomic/engine-prewarm");
@@ -129,6 +138,8 @@ export interface PrewarmHost {
 export interface PrewarmOptions {
 	readonly host?: PrewarmHost;
 	readonly launch?: EngineLaunch;
+	/** `"unchanged"` unless given. */
+	readonly basis?: PrewarmLaunchBasis;
 }
 
 /**
@@ -162,10 +173,12 @@ function setReferenced(child: ChildProcess, referenced: boolean): void {
  */
 export async function prewarmInteractiveEngineForArgs(args: readonly string[]): Promise<void> {
 	if (prewarmState[PREWARM_KEY] || !shouldPrewarmInteractiveEngine(args)) return;
+	const unchanged = engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
 	await applyArgumentEnvironment(args);
 	const settingsEnv = await settingsEnvironmentForEarlyChild(getAgentDir());
-	const launch = engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
-	prewarmInteractiveEngine(args, { launch: { ...launch, env: { ...launch.env, ...settingsEnv } } });
+	const derived = engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
+	const launch = { ...derived, env: { ...derived.env, ...settingsEnv } };
+	prewarmInteractiveEngine(args, { launch, basis: sameEngineLaunch(unchanged, launch) ? "unchanged" : "derived" });
 }
 
 /** Start the engine child this interactive host will most likely run, before the host has loaded its own code. */
@@ -192,7 +205,7 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 	child.on("error", () => {});
 	child.stdin?.on("error", () => {});
 	setReferenced(child, false);
-	prewarmState[PREWARM_KEY] = { launch, child };
+	prewarmState[PREWARM_KEY] = { launch, child, basis: options.basis ?? "unchanged" };
 	process.once("exit", discardPrewarmedEngine);
 }
 
@@ -212,9 +225,15 @@ export function discardPrewarmedEngine(): void {
 
 /**
  * The prewarmed child started as `launch` would start, now running with `engineArgs`; or undefined, after discarding
- * any prewarmed child, when there is none or it would differ from a fresh one.
+ * any prewarmed child, when there is none or it would differ from a fresh one. `onBasis` learns the adopted child's
+ * {@link PrewarmLaunchBasis}. A callback, rather than another return value or export, so that a host whose module of an
+ * earlier version is still loaded beside a later one keeps working either way: an earlier version ignores it.
  */
-export function adoptPrewarmedEngine(launch: EngineLaunch, engineArgs: readonly string[]): ChildProcess | undefined {
+export function adoptPrewarmedEngine(
+	launch: EngineLaunch,
+	engineArgs: readonly string[],
+	onBasis?: (basis: PrewarmLaunchBasis) => void,
+): ChildProcess | undefined {
 	const prewarm = prewarmState[PREWARM_KEY];
 	if (!prewarm) return undefined;
 	const { child } = prewarm;
@@ -227,6 +246,7 @@ export function adoptPrewarmedEngine(launch: EngineLaunch, engineArgs: readonly 
 	process.off("exit", discardPrewarmedEngine);
 	setReferenced(child, true);
 	child.stdin?.write(`${JSON.stringify({ args: engineArgs })}\n`);
+	onBasis?.(prewarm.basis ?? "unchanged");
 	return child;
 }
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
@@ -150,63 +150,98 @@ test.each([
 	REAL_STARTUP_TEST_TIMEOUT_MS,
 );
 
-test(
-	"a host that runs its prewarmed engine quits at once when its compile cache was cold",
-	async () => {
-		const root = makeTempDirectory("prewarmed-engine-quit-");
-		const agentDir = join(root, "agent");
-		const packageDir = join(root, "package");
-		const project = join(root, "project");
-		const trace = join(root, "startup.jsonl");
-		let program: PtyProgram | undefined;
-		try {
-			mkdirSync(project, { recursive: true });
-			prepareAgentDir(agentDir, "http://127.0.0.1:9");
-			prepareInstalledPackage(PACKAGE, packageDir);
-			for (const name of ["ATOMIC_OFFLINE", "PI_OFFLINE", "ATOMIC_DEBUG", "PI_DEBUG", "ATOMIC_DEBUG_SETTING"])
-				vi.stubEnv(name, undefined);
-			program = startPtyProgram({
-				executable: process.execPath,
-				args: [CLI, "--offline", "--no-session", "--approve"],
-				cwd: project,
-				env: {
-					ATOMIC_CODING_AGENT_DIR: agentDir,
-					ATOMIC_PACKAGE_DIR: packageDir,
-					ATOMIC_TELEMETRY: "0",
-					ATOMIC_STARTUP_TRACE: trace,
-					// A cache of its own, which the host and its engine both fill from nothing, as on its first run.
-					NODE_COMPILE_CACHE: join(root, "compile-cache"),
-					TERM: "xterm-256color",
-					CI: "0",
-				},
-				timeoutMs: REAL_STARTUP_TIMEOUT_MS,
-				cols: 120,
-				rows: 40,
-			});
-			await program.waitForScreen((screen) => screen.includes("❯"), REAL_STARTUP_TIMEOUT_MS, "the prompt");
-			const deadline = Date.now() + REAL_STARTUP_TIMEOUT_MS;
-			while (!(existsSync(trace) && readTrace(trace).some((line) => line.label === "engine-resources-ready"))) {
-				assert.ok(Date.now() < deadline, "the engine never finished loading its resources");
-				await sleep(50);
-			}
-			program.write("/quit");
-			await program.waitForScreen(
-				(screen) => screen.includes("❯ /quit"),
-				REAL_STARTUP_TIMEOUT_MS,
-				"the quit command",
-			);
-			const quitAt = performance.now();
-			program.write("\r");
-			const exited = await program.exited;
-			const quitMs = performance.now() - quitAt;
-			assert.equal(exited.exitCode, 0, program.screen());
-			assert.equal(engineChildren(readTrace(trace)).length, 1, "the host ran the engine it prewarmed");
-			assert.ok(quitMs < QUIT_BOUND_MS, `quitting took ${Math.round(quitMs)} ms`);
-		} finally {
-			program?.kill();
-			vi.unstubAllEnvs();
-			await removeTempRootReleasingBroker(root, agentDir);
+/** Every file below `directory`, or none when it does not exist. */
+function filesBelow(directory: string): number {
+	if (!existsSync(directory)) return 0;
+	return readdirSync(directory, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).length;
+}
+
+interface QuitRun {
+	readonly lines: TraceLine[];
+	/** The files in the session's compile cache once its engine has loaded its resources, before the quit. */
+	readonly cacheFilesBeforeQuit: number;
+	readonly quitMs: number;
+}
+
+/**
+ * Starts the real interactive CLI with `args` and `env` and a compile cache of its own that is still empty, as on its
+ * first run, which the host and its engine both fill; waits until the engine has loaded its resources, then quits.
+ */
+async function quitWithEmptyCompileCache(args: readonly string[], env: Record<string, string>): Promise<QuitRun> {
+	const root = makeTempDirectory("prewarmed-engine-quit-");
+	const agentDir = join(root, "agent");
+	const packageDir = join(root, "package");
+	const project = join(root, "project");
+	const trace = join(root, "startup.jsonl");
+	const cache = join(root, "compile-cache");
+	let program: PtyProgram | undefined;
+	try {
+		mkdirSync(project, { recursive: true });
+		prepareAgentDir(agentDir, "http://127.0.0.1:9");
+		prepareInstalledPackage(PACKAGE, packageDir);
+		for (const name of ["ATOMIC_OFFLINE", "PI_OFFLINE", "ATOMIC_DEBUG", "PI_DEBUG", "ATOMIC_DEBUG_SETTING"])
+			vi.stubEnv(name, undefined);
+		program = startPtyProgram({
+			executable: process.execPath,
+			args: [CLI, ...args, "--no-session", "--approve"],
+			cwd: project,
+			env: {
+				ATOMIC_CODING_AGENT_DIR: agentDir,
+				ATOMIC_PACKAGE_DIR: packageDir,
+				ATOMIC_TELEMETRY: "0",
+				ATOMIC_STARTUP_TRACE: trace,
+				NODE_COMPILE_CACHE: cache,
+				...env,
+				TERM: "xterm-256color",
+				CI: "0",
+			},
+			timeoutMs: REAL_STARTUP_TIMEOUT_MS,
+			cols: 120,
+			rows: 40,
+		});
+		await program.waitForScreen((screen) => screen.includes("❯"), REAL_STARTUP_TIMEOUT_MS, "the prompt");
+		const deadline = Date.now() + REAL_STARTUP_TIMEOUT_MS;
+		while (!(existsSync(trace) && readTrace(trace).some((line) => line.label === "engine-resources-ready"))) {
+			assert.ok(Date.now() < deadline, "the engine never finished loading its resources");
+			await sleep(50);
 		}
+		const cacheFilesBeforeQuit = filesBelow(cache);
+		program.write("/quit");
+		await program.waitForScreen((screen) => screen.includes("❯ /quit"), REAL_STARTUP_TIMEOUT_MS, "the quit command");
+		const quitAt = performance.now();
+		program.write("\r");
+		const exited = await program.exited;
+		const quitMs = performance.now() - quitAt;
+		assert.equal(exited.exitCode, 0, program.screen());
+		return { lines: readTrace(trace), cacheFilesBeforeQuit, quitMs };
+	} finally {
+		program?.kill();
+		vi.unstubAllEnvs();
+		await removeTempRootReleasingBroker(root, agentDir);
+	}
+}
+
+// A host that would have run its prewarmed engine before that engine carried what main() derives from the arguments and
+// settings keeps its cache as it was: written as it quits. One that runs the engine only because it now carries that
+// environment would have written its cache before starting a second engine; it still writes it then, so its quit does
+// not wait for a cold cache.
+test(
+	"a host running an engine prewarmed for --offline writes a cold compile cache at the handover and quits at once",
+	async () => {
+		const run = await quitWithEmptyCompileCache(["--offline"], {});
+		assert.equal(engineChildren(run.lines).length, 1, "the host ran the engine it prewarmed");
+		assert.ok(run.cacheFilesBeforeQuit > 0, "the host wrote its cache at the handover");
+		assert.ok(run.quitMs < QUIT_BOUND_MS, `quitting took ${Math.round(run.quitMs)} ms`);
+	},
+	REAL_STARTUP_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a host whose prewarmed engine needed no added environment leaves a cold compile cache to its quit",
+	async () => {
+		const run = await quitWithEmptyCompileCache([], { ATOMIC_OFFLINE: "1", ATOMIC_SKIP_VERSION_CHECK: "1" });
+		assert.equal(engineChildren(run.lines).length, 1, "the host ran the engine it prewarmed");
+		assert.equal(run.cacheFilesBeforeQuit, 0, "nothing wrote the cache before the quit");
 	},
 	REAL_STARTUP_TEST_TIMEOUT_MS,
 );

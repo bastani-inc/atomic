@@ -131,3 +131,17 @@ it(
 	},
 	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 );
+
+// Atomic's own packages in a source checkout import the host's TypeBox, so under Bun they load as Bun imports them,
+// with nothing transformed, as before every other extension was transformed there.
+it(
+	"under Bun, Atomic's own packages in a source checkout load without being transformed",
+	() => {
+		const result = spawnSyncCollect(
+			[bunExecutable(), path.join(moduleDir(import.meta.url), "fixtures/extensions-source-builtin-bun.ts")],
+			{ timeout: REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS },
+		);
+		expect(result.exitCode, result.stdout.toString() + result.stderr.toString()).toBe(0);
+	},
+	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+);
