@@ -1131,7 +1131,12 @@ function knownSessionStore(
 				return { status: "refused", returnAddress: holder };
 			}
 			const current = bindings.get(intercomSessionId)?.owner;
-			if (owner !== undefined && current !== undefined && current.token !== owner.token && isLive(current.renewedAt, owner.staleAfterMs))
+			if (
+				owner !== undefined &&
+				current !== undefined &&
+				current.token !== owner.token &&
+				isLive(current.renewedAt, owner.staleAfterMs)
+			)
 				return { status: "held" };
 			bindings.set(intercomSessionId, {
 				returnAddress,
@@ -1197,7 +1202,13 @@ function knownSessionStore(
 						if (owner !== undefined && held?.owner?.token === owner.token) delete held.owner;
 						return {
 							status: "fresh",
-							binding: await store.bind(request.freshId, request.returnAddress, request.retentionMs, undefined, owner),
+							binding: await store.bind(
+								request.freshId,
+								request.returnAddress,
+								request.retentionMs,
+								undefined,
+								owner,
+							),
 						};
 					},
 				}),

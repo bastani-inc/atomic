@@ -420,10 +420,10 @@ interface PresenceEntry {
 	/** #5607: the id this registration owns in the shared store, renewed while it is live and released as it leaves. */
 	owner?: OwnedSessionId;
 	/**
-	 * #5607: a session registered while routing was still opening: its first binding write, while it is in flight.
-	 * Nothing confirmed its id is its own before that write answers.
+	 * #5607: a session registered while routing was still opening, until it has taken its id: the owner token it takes
+	 * the id with, and the write doing so, while in flight. Nothing confirms its id is its own before then.
 	 */
-	adopting?: Promise<OwnerVerdict>;
+	adoption?: { readonly token: string; checking?: OwnerCheck; attempts?: number; inFlight?: number[] };
 	/**
 	 * #5607: another live registration owns its id: it was disconnected here to reconnect for a fresh id, and its
 	 * departure leaves what is shared under the id to that registration.
@@ -434,7 +434,11 @@ interface PresenceEntry {
 /** #5607: what a check of a registration's id found: still its own, another registration's, or no answer. */
 type OwnerVerdict = "own" | "lost" | "unknown";
 
-/** #5607: the checks of a send's sender and local recipient. */
+/** #5607: the checks of a send's sender and local recipient, and what they found. */
+interface SendOwnerChecks {
+	readonly sender?: OwnerCheck;
+	readonly target?: OwnerCheck;
+}
 interface SendOwnerVerdicts {
 	readonly sender: OwnerVerdict;
 	readonly target: OwnerVerdict;
@@ -445,19 +449,62 @@ interface OwnedSessionId extends KnownSessionOwnership {
 	/** Just before the last write that found the id this registration's was sent. */
 	confirmed: ClockMark;
 	/** The one conditional renewal of this id alone that routing for it waits for, while it is in flight. */
-	checking?: Promise<OwnerVerdict>;
+	checking?: OwnerCheck;
+	/** When `checking` was sent. */
+	checkingSince?: ClockMark;
+	/** When the checks of this id still in flight were sent. */
+	inFlight?: number[];
 }
 
-/** `promise`'s value, or `fallback` once `boundMs` passed first; the promise keeps running either way. */
-function withinBound<T, F>(promise: Promise<T>, boundMs: number, fallback: F): Promise<T | F> {
-	let bound: ReturnType<typeof setTimeout> | undefined;
-	return Promise.race([
-		promise,
-		new Promise<F>((resolve) => {
-			bound = setTimeout(() => resolve(fallback), boundMs);
+/**
+ * #5607: a check of a registration's id: the write in flight, and its verdict once the store answers it. Whoever routes
+ * waits with a bound of its own and is let go at that bound, so a write the store never answers holds on to nobody.
+ */
+class OwnerCheck {
+	private verdict: OwnerVerdict | undefined;
+	private readonly waiters = new Set<(verdict: OwnerVerdict) => void>();
+
+	constructor(written: Promise<OwnerVerdict>) {
+		void written.then(
+			(verdict) => this.settle(verdict),
+			() => this.settle("unknown"),
+		);
+	}
+
+	static settled(verdict: OwnerVerdict): OwnerCheck {
+		return new OwnerCheck(Promise.resolve(verdict));
+	}
+
+	private settle(verdict: OwnerVerdict): void {
+		this.verdict = verdict;
+		for (const waiter of this.waiters) waiter(verdict);
+		this.waiters.clear();
+	}
+
+	/** The verdict, or `fallback` once `boundMs` passed first. */
+	within<F>(boundMs: number, fallback: F): Promise<OwnerVerdict | F> {
+		const { verdict } = this;
+		if (verdict !== undefined) return Promise.resolve(verdict);
+		return new Promise((resolve) => {
+			const waiter = (answered: OwnerVerdict): void => {
+				clearTimeout(bound);
+				resolve(answered);
+			};
+			const bound = setTimeout(() => {
+				this.waiters.delete(waiter);
+				resolve(fallback);
+			}, boundMs);
 			bound.unref?.();
-		}),
-	]).finally(() => clearTimeout(bound));
+			this.waiters.add(waiter);
+		});
+	}
+
+	/** The verdict, whenever the store answers. */
+	answered(): Promise<OwnerVerdict> {
+		const { verdict } = this;
+		if (verdict !== undefined) return Promise.resolve(verdict);
+		return new Promise((resolve) => this.waiters.add(resolve));
+	}
 }
 
 /** #5607: the later of two marks. Both are this process's, so the monotonic clock orders them. */
@@ -688,6 +735,10 @@ export class MultiNodeRouter {
 	private readonly settling = new Set<Promise<void>>();
 	/** #5607: sessions registered before routing turned on, until `sessionRegistered` takes them up. */
 	private readonly adopting = new WeakSet<BrokerConnectedSession>();
+	/** #5607: when the renewals of owned ids still in flight were sent. */
+	private readonly ownerRenewals: number[] = [];
+	/** #5607: when the shared store last answered one of this broker's statements. */
+	private storeAnsweredAt = Number.NEGATIVE_INFINITY;
 	private readonly timers: ReturnType<typeof setInterval>[] = [];
 	private checkingOutcomes: { again: boolean } | undefined;
 	private closed = false;
@@ -736,8 +787,16 @@ export class MultiNodeRouter {
 			.then(() => router.sweepLostRecipients())
 			.catch((error: Error) => router.report(error));
 		router.every(MULTI_NODE_OUTCOME_POLL_INTERVAL_MS, () => router.outcomePoll());
-		// #5607: renewed apart from the leases, so neither waits for the other's statements.
-		router.every(BROKER_LEASE_RENEW_INTERVAL_MS, () => router.renewOwners());
+		// #5607: renewed apart from the leases, so neither waits for the other's statements, and each renewal on its own:
+		// one the store never answers does not hold up the next.
+		const ownerRenewals = setInterval(() => {
+			if (router.closed) return;
+			router.retryAdoptions();
+			if (router.mayWrite(router.ownerRenewals))
+				void router.tracked(router.ownerRenewals, () => router.renewOwners()).catch((error: Error) => router.report(error));
+		}, BROKER_LEASE_RENEW_INTERVAL_MS);
+		ownerRenewals.unref?.();
+		router.timers.push(ownerRenewals);
 		for (const session of options.host.sessions.values()) {
 			router.adopting.add(session);
 			void router.sessionRegistered(session);
@@ -875,21 +934,31 @@ export class MultiNodeRouter {
 	 * store answers it (or the first binding write of a session registered while routing was opening). On `lost` the
 	 * session has been disconnected here.
 	 */
-	private ownerCheck(session: BrokerConnectedSession): Promise<OwnerVerdict> | undefined {
+	private ownerCheck(session: BrokerConnectedSession): OwnerCheck | undefined {
 		const entry = this.presence.get(session);
 		if (entry === undefined) return undefined;
-		if (entry.fenced === true) return Promise.resolve("lost");
-		if (entry.adopting !== undefined) return entry.adopting;
+		if (entry.fenced === true) return OwnerCheck.settled("lost");
+		if (entry.adoption !== undefined) return this.adoptionCheck(session, entry);
 		const owned = entry.owner;
 		if (owned === undefined || elapsedSince(owned.confirmed) < SESSION_ID_OWNER_SAFE_MS) return undefined;
-		if (owned.checking === undefined) {
-			const checking = this.checkOwner(session, entry, owned);
+		// A check still unanswered after a renewal interval is followed by a new one, should the store answer anything else
+		// meanwhile; either may act on a lost id.
+		const inFlight = (owned.inFlight ??= []);
+		const followed =
+			owned.checking !== undefined &&
+			elapsedSince(owned.checkingSince ?? owned.confirmed) >= BROKER_LEASE_RENEW_INTERVAL_MS &&
+			this.mayWrite(inFlight);
+		if ((owned.checking === undefined && inFlight.length < 2) || followed) {
+			owned.checkingSince = clockMark();
+			const written = this.tracked(inFlight, () => this.checkOwner(session, entry, owned));
+			const checking = new OwnerCheck(written);
 			owned.checking = checking;
-			void checking.finally(() => {
+			void written.finally(() => {
 				if (owned.checking === checking) delete owned.checking;
 			});
 		}
-		return owned.checking;
+		// Two checks in flight that the store has not answered: nothing is known until it does.
+		return owned.checking ?? OwnerCheck.settled("unknown");
 	}
 
 	/**
@@ -903,6 +972,7 @@ export class MultiNodeRouter {
 		let renewed: KnownSessionOwnership[];
 		try {
 			renewed = await owners.renew([{ intercomSessionId: owned.intercomSessionId, token: owned.token }]);
+			this.storeAnswered();
 		} catch (error) {
 			this.report(error);
 			return "unknown";
@@ -933,6 +1003,75 @@ export class MultiNodeRouter {
 		return "lost";
 	}
 
+	/**
+	 * #5607: a session registered while routing was opening takes its id, in one conditional write that names its own
+	 * token: it owns the id from then on, or the id is another registration's (or bound to another session), and it is
+	 * disconnected to reconnect for a fresh id. A write that fails leaves the adoption to the next check.
+	 */
+	private adoptionCheck(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		again = false,
+	): OwnerCheck {
+		const adoption = entry.adoption;
+		if (adoption === undefined) return OwnerCheck.settled(entry.fenced === true ? "lost" : "own");
+		// `again` (at a renewal): a write still unanswered is followed by a new one, should the store answer anything else
+		// meanwhile; the earlier one's answer, should it come, decides nothing.
+		const inFlight = (adoption.inFlight ??= []);
+		if (
+			(adoption.checking === undefined && inFlight.length < 2) ||
+			(again && adoption.checking !== undefined && this.mayWrite(inFlight))
+		) {
+			const attempt = (adoption.attempts ?? 0) + 1;
+			adoption.attempts = attempt;
+			const written = this.tracked(inFlight, () => this.adopt(session, entry, adoption, attempt));
+			const checking = new OwnerCheck(written);
+			adoption.checking = checking;
+			void written.finally(() => {
+				if (adoption.checking === checking) delete adoption.checking;
+			});
+		}
+		// Two writes in flight that the store has not answered: nothing is known until it does.
+		return adoption.checking ?? OwnerCheck.settled("unknown");
+	}
+
+	private async adopt(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		adoption: NonNullable<PresenceEntry["adoption"]>,
+		attempt: number,
+	): Promise<OwnerVerdict> {
+		const confirmed = clockMark();
+		let binding: KnownSessionBindResult;
+		try {
+			binding = await this.state.knownSessions.bind(
+				session.info.id,
+				session.registrationReturnAddress ?? "",
+				KNOWN_SESSION_RETENTION_MS,
+				undefined,
+				this.newOwner(adoption.token),
+			);
+			this.storeAnswered();
+		} catch (error) {
+			this.report(error);
+			return "unknown";
+		}
+		if (entry.fenced === true) return "lost";
+		if (this.presence.get(session) !== entry || entry.adoption !== adoption) return "unknown";
+		// Superseded by a later write: that one's answer is the verdict.
+		if (adoption.attempts !== attempt) return adoption.checking?.answered() ?? "unknown";
+		if (binding.status === "bound") {
+			delete entry.adoption;
+			entry.owner = { intercomSessionId: session.info.id, token: adoption.token, confirmed };
+			return "own";
+		}
+		if (binding.status === "held" || binding.status === "refused") {
+			this.lostSessionId(session, entry);
+			return "lost";
+		}
+		return "unknown";
+	}
+
 	/** #5607: every owned id renewed in one write per batch; one the store no longer names for its registration is lost. */
 	private async renewOwners(): Promise<void> {
 		const owners = this.state.knownSessions.owners;
@@ -945,9 +1084,46 @@ export class MultiNodeRouter {
 		const renewed = await owners.renew(
 			held.map(({ owned }) => ({ intercomSessionId: owned.intercomSessionId, token: owned.token })),
 		);
+		this.storeAnswered();
 		const still = new Set(renewed.map(ownershipKey));
 		for (const { session, entry, owned } of held)
 			this.settleOwned(session, entry, owned, still.has(ownershipKey(owned)), confirmed);
+	}
+
+	/**
+	 * #5607: a session registered while routing was opening whose id is still to be taken tries again at each renewal,
+	 * with a new write even when an earlier one never answered (should the store answer anything else meanwhile).
+	 */
+	private retryAdoptions(): void {
+		if (this.state.knownSessions.owners === undefined) return;
+		for (const [session, entry] of this.presence)
+			if (entry.adoption !== undefined && entry.fenced !== true) void this.adoptionCheck(session, entry, true);
+	}
+
+	/** #5607: the shared store answered a statement of this broker's. */
+	private storeAnswered(): void {
+		this.storeAnsweredAt = performance.now();
+	}
+
+	/**
+	 * #5607: whether another owner write may be sent for a purpose whose writes `inFlight` were sent at: always when none
+	 * is in flight; otherwise at most two in flight, and the second only once the store answered something after the
+	 * first was sent. A store that answers nothing never piles up writes, and one that lost a write while it answers
+	 * others still gets a new one.
+	 */
+	private mayWrite(inFlight: readonly number[]): boolean {
+		if (inFlight.length === 0) return true;
+		return inFlight.length < 2 && this.storeAnsweredAt > Math.min(...inFlight);
+	}
+
+	/** #5607: `write`, counted in `inFlight` until it settles. */
+	private tracked<T>(inFlight: number[], write: () => Promise<T>): Promise<T> {
+		const sentAt = performance.now();
+		inFlight.push(sentAt);
+		return write().finally(() => {
+			const at = inFlight.indexOf(sentAt);
+			if (at !== -1) inFlight.splice(at, 1);
+		});
 	}
 
 	/** #5607: another registration owns `session`'s id: it is disconnected here, once, to reconnect for a fresh id. */
@@ -961,11 +1137,22 @@ export class MultiNodeRouter {
 	 * #5607: the checks a send waits for: its sender's and its local recipient's ids, where either needs one. Undefined on
 	 * the healthy path.
 	 */
-	private sendOwnerChecks(request: RemoteSendRequest): Promise<SendOwnerVerdicts> | undefined {
+	private sendOwnerChecks(request: RemoteSendRequest): SendOwnerChecks | undefined {
 		const sender = this.ownerCheck(request.from);
 		const target = request.localTarget === undefined ? undefined : this.ownerCheck(request.localTarget);
 		if (sender === undefined && target === undefined) return undefined;
-		return Promise.all([sender ?? "own", target ?? "own"]).then(([from, to]) => ({ sender: from, target: to }));
+		return { ...(sender === undefined ? {} : { sender }), ...(target === undefined ? {} : { target }) };
+	}
+
+	/** #5607: what a send's checks found within `boundMs`; one not answered by then is `unknown`. */
+	private async sendVerdicts(checks: SendOwnerChecks, boundMs: number): Promise<SendOwnerVerdicts> {
+		const own: OwnerVerdict = "own";
+		const unknown: OwnerVerdict = "unknown";
+		const [sender, target] = await Promise.all([
+			checks.sender?.within(boundMs, unknown) ?? own,
+			checks.target?.within(boundMs, unknown) ?? own,
+		]);
+		return { sender, target };
 	}
 
 	private holdsSessionId(sessionId: string, returnAddress: string | undefined): Promise<boolean> {
@@ -991,16 +1178,9 @@ export class MultiNodeRouter {
 		if (grant !== undefined && this.state.knownSessions.owners !== undefined)
 			entry.owner = { intercomSessionId: session.info.id, token: owner.token, confirmed: grant.confirmed };
 		// #5607: a session registered while routing was still opening got its id with nothing shared to check it against:
-		// until its first binding write answers, nothing is routed for it as that id's owner.
-		const adopted = this.adopting.delete(session);
-		let bindingAnswered: (verdict: OwnerVerdict) => void = () => {};
-		if (adopted && this.state.knownSessions.owners !== undefined)
-			entry.adopting = new Promise<OwnerVerdict>((answered) => {
-				bindingAnswered = (verdict) => {
-					delete entry.adopting;
-					answered(verdict);
-				};
-			});
+		// it has yet to take the id, and nothing is routed for it as the id's owner until it has.
+		if (this.adopting.delete(session) && this.state.knownSessions.owners !== undefined)
+			entry.adoption = { token: owner.token };
 		this.presence.set(session, entry);
 		const identity = deliveryTargetIdentity(session);
 		// #4488: read as the registration begins, so a reservation a release of the child makes from here on is newer.
@@ -1011,44 +1191,49 @@ export class MultiNodeRouter {
 			bound.unref?.();
 			this.serial(identity, async () => {
 				try {
-					// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
-					const confirmed = clockMark();
-					let binding: KnownSessionBindResult;
-					try {
-						binding =
-							reclaim === undefined
-								? await this.state.knownSessions.bind(
-										session.info.id,
-										session.registrationReturnAddress ?? "",
-										KNOWN_SESSION_RETENTION_MS,
-										undefined,
-										owner,
-									)
-								: await this.reclaimOrBind(session, reclaim, owner);
-					} catch (error) {
-						bindingAnswered("unknown");
-						throw error;
+					// #5607: a session registered while routing was opening takes its id now, or reconnects for a fresh one. A
+					// write that fails leaves it to take the id at the next check (`renewOwners`).
+					if (entry.adoption !== undefined) {
+						if ((await this.adoptionCheck(session, entry).answered()) !== "own") return;
+					} else {
+						// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
+						const confirmed = clockMark();
+						let binding: KnownSessionBindResult;
+						try {
+							binding =
+								reclaim === undefined
+									? await this.state.knownSessions.bind(
+											session.info.id,
+											session.registrationReturnAddress ?? "",
+											KNOWN_SESSION_RETENTION_MS,
+											undefined,
+											owner,
+										)
+									: await this.reclaimOrBind(session, reclaim, owner);
+						} catch (error) {
+							// #5607: the id this session was given (and answered under) is not confirmed its own: it takes it at the
+							// next check, as a session registered while routing was opening does.
+							if (this.state.knownSessions.owners !== undefined && this.presence.get(session) === entry)
+								entry.adoption = { token: owner.token };
+							throw error;
+						}
+						if (binding.status === "refused") {
+							entry.unbound = true;
+							return;
+						}
+						// #5607: another live registration of the same session owns the id (it took it once this registration's
+						// went unrenewed): that registration keeps it, and this one reconnects for a fresh id.
+						if (binding.status === "held") {
+							this.lostSessionId(session, entry);
+							return;
+						}
+						if (binding.status === "bound" && this.state.knownSessions.owners !== undefined)
+							entry.owner = {
+								intercomSessionId: session.info.id,
+								token: owner.token,
+								confirmed: laterMark(entry.owner?.confirmed, confirmed),
+							};
 					}
-					if (binding.status === "refused") {
-						bindingAnswered("unknown");
-						entry.unbound = true;
-						return;
-					}
-					// #5607: another live registration of the same session owns the id (it registered on another broker while
-					// this one was opening its shared routing, or took the id once this one's went unrenewed): that registration
-					// keeps it, and this one reconnects for a fresh id.
-					if (binding.status === "held") {
-						bindingAnswered("lost");
-						this.lostSessionId(session, entry);
-						return;
-					}
-					if (binding.status === "bound" && this.state.knownSessions.owners !== undefined)
-						entry.owner = {
-							intercomSessionId: session.info.id,
-							token: owner.token,
-							confirmed: laterMark(entry.owner?.confirmed, confirmed),
-						};
-					bindingAnswered("own");
 					await this.recordKnown(session, entry);
 					for (let attempt = 0; ; attempt++) {
 						await this.acquirePresence(session, entry);
@@ -1656,7 +1841,10 @@ export class MultiNodeRouter {
 		// disconnected before the list is answered. Without an answer it is listed, as the local list never depends on the
 		// shared database.
 		const owners = [...this.host.sessions.values()].flatMap((session) => this.ownerCheck(session) ?? []);
-		const checked = owners.length === 0 ? undefined : withinBound(Promise.all(owners), REMOTE_SESSIONS_BOUND_MS, undefined);
+		const checked =
+			owners.length === 0
+				? undefined
+				: Promise.all(owners.map((owner) => owner.within(REMOTE_SESSIONS_BOUND_MS, "unknown" as const)));
 		return Promise.all([checked, this.listRemoteSessions(remote)]).then(([, listed]) => {
 			for (const id of [...listed.keys()]) if (this.host.sessions.has(id)) listed.delete(id);
 			return listed;
@@ -2056,12 +2244,8 @@ export class MultiNodeRouter {
 	 * the sender's; it needs the store anyway. A store that does not answer within `SESSION_ID_CLAIM_BOUND_MS` fails it as
 	 * an unreachable store does; a sender that lost its id was disconnected here, and nothing goes out for it.
 	 */
-	private async senderOwns(request: RemoteSendRequest, owners: Promise<SendOwnerVerdicts>): Promise<boolean> {
-		const verdict = await withinBound(
-			owners.then((verdicts) => verdicts.sender),
-			SESSION_ID_CLAIM_BOUND_MS,
-			"unknown" as const,
-		);
+	private async senderOwns(request: RemoteSendRequest, owners: SendOwnerChecks): Promise<boolean> {
+		const verdict = (await this.sendVerdicts(owners, SESSION_ID_CLAIM_BOUND_MS)).sender;
 		if (verdict === "own") return true;
 		if (verdict === "unknown")
 			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
@@ -2494,9 +2678,13 @@ export class MultiNodeRouter {
 	private async answerLocalRetry(
 		request: RemoteSendRequest,
 		target: BrokerConnectedSession,
-		owners?: Promise<SendOwnerVerdicts>,
+		owners?: SendOwnerChecks,
 	): Promise<void> {
 		const lookup = this.state.outbox.read(request.message.id);
+		// #5607: a lookup that fails while an owner check is still answering is reported when it is awaited below, not
+		// left unobserved meanwhile. The checks are waited for within the lookup's own bound, counted from now.
+		if (owners !== undefined) lookup.catch(() => {});
+		const verdicts = owners === undefined ? undefined : this.sendVerdicts(owners, LOCAL_RETRY_LOOKUP_BOUND_MS);
 		const released = this.movedReleasedAsk(request, target).catch((error: Error) => {
 			this.report(error);
 			return undefined;
@@ -2509,13 +2697,13 @@ export class MultiNodeRouter {
 		try {
 			// #5607: checked within the same bound as the lookup. Without an answer the send takes the local path, which
 			// never depends on the shared database (spec §8); the check keeps running, and acts on a lost id when it answers.
-			if (owners !== undefined) {
-				const verdicts = await Promise.race([owners, expired]);
-				if (verdicts !== "expired" && (verdicts.sender === "lost" || verdicts.target === "lost")) {
+			if (verdicts !== undefined) {
+				const found = await verdicts;
+				if (found.sender === "lost" || found.target === "lost") {
 					lookup.catch((error: Error) => this.report(error));
 					// A sender disconnected here has nothing to be answered; a recipient disconnected here is looked for
 					// wherever its id lives now.
-					if (verdicts.sender !== "lost") request.notFound();
+					if (found.sender !== "lost") request.notFound();
 					return;
 				}
 			}
@@ -3126,7 +3314,7 @@ export class MultiNodeRouter {
 		// #5607: rows sent to its id across nodes are taken for it only while the store confirms the id is its own; a later
 		// scan takes them once it does.
 		const owner = this.ownerCheck(recipient);
-		if (owner !== undefined && (await withinBound(owner, SESSION_ID_CLAIM_BOUND_MS, "unknown")) !== "own") return;
+		if (owner !== undefined && (await owner.within(SESSION_ID_CLAIM_BOUND_MS, "unknown" as const)) !== "own") return;
 		const claimed = await this.state.outbox.claim({
 			claimantId: this.brokerId,
 			targetIdentity: identity,
@@ -3543,6 +3731,7 @@ export class MultiNodeRouter {
 	private async renew(): Promise<void> {
 		if (this.membership !== undefined) {
 			const renewed = await this.state.leases.renew(this.membership);
+			this.storeAnswered();
 			if (renewed.status !== "renewed") this.membership = undefined;
 		}
 		if (this.membership === undefined) {
@@ -3568,7 +3757,8 @@ export class MultiNodeRouter {
 				}
 			} else {
 				this.serial(deliveryTargetIdentity(session), async () => {
-					if (this.presence.get(session) !== entry || entry.unbound === true) return;
+					// #5607: a session still to take its id is not presented across nodes before it has.
+					if (this.presence.get(session) !== entry || entry.unbound === true || entry.adoption !== undefined) return;
 					await this.acquirePresence(session, entry);
 					const { rebind } = entry;
 					if (entry.lease !== undefined && rebind !== undefined) {

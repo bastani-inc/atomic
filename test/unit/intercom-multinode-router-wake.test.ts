@@ -5,11 +5,15 @@ import { AgentWakeDispatcher, type ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import {
+	LOCAL_RETRY_LOOKUP_BOUND_MS,
 	MULTI_NODE_OUTCOME_POLL_INTERVAL_MS,
 	MultiNodeRouter,
+	PRESENCE_REGISTRATION_BOUND_MS,
 	type ReservationOptions,
 	SESSION_ID_CLAIM_BOUND_MS,
+	SESSION_ID_OWNER_SAFE_MS,
 	type SessionIdClaim,
+	type SessionIdGrant,
 	type UnansweredSessionIdClaim,
 } from "../../packages/intercom/broker/multinode-router.js";
 import {
@@ -122,6 +126,8 @@ interface Node {
 	readonly spied: Spied;
 	/** The held sends this broker routed again as their sender. */
 	readonly dispatched: string[];
+	/** #5607: the sessions disconnected here because another registration owns their id. */
+	readonly fenced: BrokerConnectedSession[];
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -194,6 +200,8 @@ async function startNode(
 		readonly enqueueGate?: Promise<void>;
 		/** The first reservation consumes fail, as on a transient database error. */
 		readonly consumeFailures?: number;
+		/** #5607: sessions registered on this broker before its routing across nodes turned on. */
+		readonly registeredBefore?: readonly BrokerConnectedSession[];
 	} = {},
 ): Promise<Node> {
 	const inner = await shared.connectState();
@@ -274,9 +282,12 @@ async function startNode(
 		subscribe: (brokerId, listener) => innerBus.subscribe(brokerId, listener),
 		close: () => innerBus.close(),
 	};
-	const sessions = new Map<string, BrokerConnectedSession>();
+	const sessions = new Map<string, BrokerConnectedSession>(
+		(options.registeredBefore ?? []).map((registered) => [registered.info.id, registered]),
+	);
 	const dispatched: string[] = [];
-	const router = await MultiNodeRouter.start({
+	const fenced: BrokerConnectedSession[] = [];
+	const router: MultiNodeRouter = await MultiNodeRouter.start({
 		state,
 		bus,
 		host: {
@@ -297,11 +308,17 @@ async function startNode(
 			},
 			revokeReleasedReservation: () => {},
 			holdsReservation: () => true,
+			// #5607: as the broker does: the session leaves here, as if its connection dropped.
+			fence: (session) => {
+				fenced.push(session);
+				if (sessions.get(session.info.id) === session) sessions.delete(session.info.id);
+				router.sessionLeft(session, undefined, false);
+			},
 		},
 	});
 	cleanups.push(() => router.close());
 	await flush();
-	return { router, sessions, state, published, spied, dispatched };
+	return { router, sessions, state, published, spied, dispatched, fenced };
 }
 
 function reserve(
@@ -2148,7 +2165,7 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		const live = session("live");
 		await registeredLive(first, live);
 		// Its broker stops, as a crashed one does: nothing renews or releases what it owned.
-		vi.spyOn(first.state.knownSessions.owners!, "renew").mockResolvedValue(undefined);
+		vi.spyOn(first.state.knownSessions.owners!, "renew").mockReturnValue(new Promise(() => {}));
 
 		const early = second.router.claimSessionId(live.info.id, live.registrationReturnAddress!);
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
@@ -2170,26 +2187,6 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		const claim = second.router.claimSessionId(live.info.id, live.registrationReturnAddress!);
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
 		assert.equal(granted(await claim), false);
-	});
-
-	test("an id a claim takes after it gave up is given back, so the session can take it again (#5607)", async () => {
-		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
-		const node = await startNode(await cluster());
-		const id = randomUUID();
-		const knownSessions = node.state.knownSessions;
-		const bind = knownSessions.bind.bind(knownSessions);
-		const answered = Promise.withResolvers<void>();
-		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
-			await answered.promise;
-			return bind(...args);
-		});
-		const claim = node.router.claimSessionId(id, "return-1");
-		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
-		assert.equal(granted(await claim), false);
-		answered.resolve();
-		await flush();
-
-		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), true, "nothing still owns it");
 	});
 
 	/**
@@ -2241,6 +2238,22 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		});
 		return { target, freshId, settles, registered };
 	}
+
+	test("an id an unanswered claim took is given back when its registration does not keep it (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const claim = await unansweredClaim(node, id, "return-1");
+
+		// Answered meanwhile: the session keeps the fresh id its registration was answered with.
+		const back = registerUnanswered(node, claim, "return-1", true);
+		await back.registered;
+
+		assert.equal(back.target.info.id, back.freshId);
+		const again = node.router.claimSessionId(id, "return-1");
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await again), true, "nothing still owns it");
+	});
 
 	test("a returning session whose claim went unanswered keeps the id when the binding is still the one its claim wrote (#5607)", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
@@ -2520,5 +2533,214 @@ describe("a row queued for an offline session that registered meanwhile (#5607)"
 		written.resolve();
 		await flush();
 		assert.deepEqual(messageIds(back), [send.id]);
+	});
+});
+
+describe("one live registration per Intercom id across brokers (#5607)", () => {
+	// The wall clock alone moves a session's id window on: its elapsed time is the larger of the two clocks'.
+	const ADVANCE = ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] as const;
+
+	/** Another registration of `original`'s session: the same id and return address, a connection of its own. */
+	function twinOf(original: BrokerConnectedSession, name = "twin"): BrokerConnectedSession {
+		const twin = session(name);
+		return {
+			...twin,
+			info: { ...twin.info, id: original.info.id },
+			registrationReturnAddress: original.registrationReturnAddress!,
+		};
+	}
+
+	async function registeredOn(node: Node, target: BrokerConnectedSession, grant?: SessionIdGrant): Promise<void> {
+		node.sessions.set(target.info.id, target);
+		await node.router.sessionRegistered(target, undefined, undefined, grant);
+		await flush();
+	}
+
+	/** A send from `from` to the session `to` registered on the same broker; `local` counts its local-path answers. */
+	function localSend(from: BrokerConnectedSession, to: BrokerConnectedSession) {
+		const send = remoteSend(from, to.info.id, false);
+		const local = { answers: 0 };
+		return { request: { ...send.request, localTarget: to, notFound: () => void local.answers++ }, local };
+	}
+
+	/**
+	 * `live` registered on `paused`, none of whose renewals then reach the store for longer than the stale age (its
+	 * broker is paused), and the same session registered again on `other`, which took the id. Returns the paused broker's
+	 * id renewal spy, still failing every renewal, and `resume`, after which its renewals reach the store again.
+	 */
+	async function tookOverWhilePaused() {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const [paused, other] = [await startNode(shared), await startNode(shared)];
+		const live = session("live");
+		await registeredOn(paused, live);
+		const owners = paused.state.knownSessions.owners!;
+		const renew = owners.renew.bind(owners);
+		const stopped = new Error("the broker is paused");
+		const held = vi.spyOn(owners, "renew").mockRejectedValue(stopped);
+		const leases = vi.spyOn(paused.state.leases, "renew").mockRejectedValue(stopped);
+		const resume = () => leases.mockRestore();
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+		const twin = twinOf(live);
+		const claimed = other.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(0);
+		const claim = await claimed;
+		assert.ok(claim.status === "granted", "the id went stale, so the other registration takes it");
+		const registered = registeredOn(other, twin, claim.grant);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered;
+		return { paused, other, live, twin, held, renew, resume };
+	}
+
+	test("a session registered while routing was opening is disconnected once routing is on, when another broker's live registration owns its id (#5607)", async () => {
+		const shared = await cluster();
+		const elsewhere = await startNode(shared);
+		const live = session("live");
+		await registeredOn(elsewhere, live);
+		const early = twinOf(live, "early");
+
+		const opening = await startNode(shared, { registeredBefore: [early] });
+
+		await vi.waitFor(() => assert.deepEqual(opening.fenced, [early]), { timeout: 5_000, interval: 10 });
+		assert.equal(opening.sessions.has(live.info.id), false);
+		assert.deepEqual(elsewhere.fenced, [], "the registration that owns the id keeps it");
+		const again = await opening.router.claimSessionId(live.info.id, live.registrationReturnAddress!);
+		assert.equal(again.status, "refused", "while it is live, the id stays the other registration's");
+	});
+
+	test("a session registered while routing was opening keeps its id once routing is on when no other registration owns it (#5607)", async () => {
+		const shared = await cluster();
+		const early = session("early");
+
+		const opening = await startNode(shared, { registeredBefore: [early] });
+		await flush();
+
+		assert.deepEqual(opening.fenced, []);
+		const elsewhere = await startNode(shared);
+		const twin = twinOf(early);
+		const claimed = elsewhere.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+		assert.equal((await claimed).status, "refused", "the adopted session owns its id now");
+	});
+
+	test("a session whose first binding write failed as routing turned on takes its id at the next renewal, or is disconnected (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const elsewhere = await startNode(shared);
+		const live = session("live");
+		await registeredOn(elsewhere, live);
+		const early = twinOf(live, "early");
+		// The broker that opens next fails its first binding write, then the store answers again.
+		const opening = await startNode(
+			{
+				...shared,
+				async connectState() {
+					const state = await shared.connectState();
+					const bind = state.knownSessions.bind.bind(state.knownSessions);
+					let failures = 1;
+					state.knownSessions.bind = async (...args) => {
+						if (failures-- > 0) throw new Error("the shared database is busy");
+						return bind(...args);
+					};
+					return state;
+				},
+			},
+			{ registeredBefore: [early] },
+		);
+		assert.deepEqual(opening.fenced, [], "a failed write proves nothing");
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		assert.deepEqual(opening.fenced, [early]);
+		assert.deepEqual(elsewhere.fenced, []);
+	});
+
+	test("a broker paused past the stale age disconnects its session once the store answers it again, and the registration that took the id keeps it (#5607)", async () => {
+		const { paused, other, live, held, renew, resume } = await tookOverWhilePaused();
+		assert.deepEqual(paused.fenced, [], "nothing is known while the store does not answer");
+
+		resume();
+		held.mockImplementation(renew);
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		assert.deepEqual(paused.fenced, [live]);
+		assert.deepEqual(other.fenced, []);
+	});
+
+	test("a send to a session whose id may have passed to another registration is answered locally while its check is unanswered, and the session is disconnected once the check answers (#5607)", async () => {
+		const { paused, live, held, renew, resume } = await tookOverWhilePaused();
+		resume();
+		const sender = session("sender");
+		await registeredOn(paused, sender);
+		const answered = Promise.withResolvers<void>();
+		held.mockImplementation(async (ownerships) => {
+			await answered.promise;
+			return renew(ownerships);
+		});
+
+		const first = localSend(sender, live);
+		paused.router.routeSend(first.request);
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		assert.equal(first.local.answers, 1, "local delivery does not wait for the shared database past its bound");
+		assert.deepEqual(paused.fenced, []);
+
+		answered.resolve();
+		await vi.advanceTimersByTimeAsync(0);
+		await flush();
+		assert.deepEqual(paused.fenced, [live], "the check still answers, and the session is disconnected then");
+	});
+
+	test("a send to a session whose id passed to another registration is not delivered to it once the store says so (#5607)", async () => {
+		const { paused, live, held, renew, resume } = await tookOverWhilePaused();
+		resume();
+		const sender = session("sender");
+		await registeredOn(paused, sender);
+		held.mockImplementation(renew);
+		let fencedAtAnswer: readonly BrokerConnectedSession[] | undefined;
+		const send = localSend(sender, live);
+		paused.router.routeSend({
+			...send.request,
+			notFound: () => {
+				fencedAtAnswer = [...paused.fenced];
+			},
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		await flush();
+
+		assert.deepEqual(fencedAtAnswer, [live], "the send is looked for again only once the session is gone here");
+	});
+
+	test("a broker that renews on time routes without checking its sessions' ids (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const node = await startNode(await cluster());
+		const [sender, recipient] = [session("sender"), session("recipient")];
+		await registeredOn(node, sender);
+		await registeredOn(node, recipient);
+		const renew = vi.spyOn(node.state.knownSessions.owners!, "renew");
+		for (let round = 0; round < 3; round++) {
+			await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+			const calls = renew.mock.calls.length;
+			const send = localSend(sender, recipient);
+			node.router.routeSend(send.request);
+			await vi.advanceTimersByTimeAsync(0);
+			await flush();
+			assert.equal(send.local.answers, 1);
+			assert.equal(renew.mock.calls.length, calls, "no statement beyond the renewal itself");
+		}
+		assert.ok(SESSION_ID_OWNER_SAFE_MS > BROKER_LEASE_RENEW_INTERVAL_MS);
+		assert.deepEqual(node.fenced, []);
+	});
+
+	test("a send from a session whose id cannot be checked fails as the shared database being unavailable when it goes to another node (#5607)", async () => {
+		const { paused, live, held, resume } = await tookOverWhilePaused();
+		resume();
+		held.mockReturnValue(new Promise(() => {}));
+		const send = remoteSend(live, "someone-elsewhere", false);
+		paused.router.routeSend(send.request);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		await flush();
+
+		const failure = (live.socket as FakeSocket).frames.find(
+			(frame) => frame.type === "delivery_failed" && frame.messageId === send.id,
+		);
+		assert.ok(failure !== undefined && failure.type === "delivery_failed");
+		assert.match(failure.reason, /could not reach the shared storage/);
 	});
 });

@@ -6,9 +6,8 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
 
-const { crossNodeDigest, LOCAL_RETRY_LOOKUP_BOUND_MS, MultiNodeRouter, REGISTRATION_STEP_ATTEMPTS } = await import(
-	"../../packages/intercom/broker/multinode-router.js"
-);
+const { clockMark, crossNodeDigest, LOCAL_RETRY_LOOKUP_BOUND_MS, MultiNodeRouter, REGISTRATION_STEP_ATTEMPTS } =
+	await import("../../packages/intercom/broker/multinode-router.js");
 const { PendingQuestionIndex } = await import("../../packages/intercom/broker/pending-question-index.js");
 const { SupervisorChannelCache } = await import("../../packages/intercom/broker/supervisor-channel.js");
 const { releasedReservationKey } = await import("../../packages/intercom/broker/released-children.js");
@@ -113,7 +112,7 @@ async function startNode(
 	const sessions = new Map<string, Session>();
 	const deferred: Array<(written: boolean) => void> = [];
 	const pendingQuestions = new PendingQuestionIndex();
-	const router = await MultiNodeRouter.start({
+	const router: Router = await MultiNodeRouter.start({
 		state,
 		bus: await shared.connectBus(),
 		host: {
@@ -133,6 +132,11 @@ async function startNode(
 			dispatch: () => {},
 			revokeReleasedReservation: () => {},
 			holdsReservation: () => true,
+			// #5607: as the broker does: the session leaves here, as if its connection dropped.
+			fence: (session) => {
+				if (sessions.get(session.info.id) === session) sessions.delete(session.info.id);
+				router.sessionLeft(session, undefined, false);
+			},
 		},
 	});
 	cleanups.push(() => router.close());
@@ -178,10 +182,24 @@ function reconnected(previous: Session, id = previous.info.id): Session {
 	});
 }
 
-async function register(node: Node, target: Session): Promise<void> {
+/** `ownerToken`: the token its id is owned with, as a claim granted it (#5607), so a test can give the id up. */
+async function register(node: Node, target: Session, ownerToken?: string): Promise<void> {
 	node.sessions.set(target.info.id, target);
-	await node.router.sessionRegistered(target);
+	await node.router.sessionRegistered(
+		target,
+		undefined,
+		undefined,
+		ownerToken === undefined ? undefined : { token: ownerToken, confirmed: clockMark() },
+	);
 	await flush();
+}
+
+/**
+ * #5607: `previous`'s broker gives its id up, as the first step of its departure does, so a registration of the same
+ * session can take the id (on this broker or another) before the rest of that departure has run.
+ */
+async function giveIdUp(node: Node, previous: Session, ownerToken: string): Promise<void> {
+	await node.router.releaseOwner({ intercomSessionId: previous.info.id, token: ownerToken });
 }
 
 async function leave(node: Node, target: Session): Promise<void> {
@@ -256,6 +274,9 @@ interface ReleasedScene {
  * Owner and its supervised children on node A, the replier on node B. Each child asked the replier through the
  * outbox (its shared pending ask is recorded), the owner reserved it released, and it left A.
  */
+/** #5607: the token the scene's owner holds its id with. */
+const OWNER_TOKEN = "owner-token";
+
 async function releasedScene(
 	options: {
 		childNames?: readonly string[];
@@ -268,7 +289,7 @@ async function releasedScene(
 	const a = await startNode(shared, options.wrapA, options.writesA);
 	const b = await startNode(shared, options.wrapB);
 	const owner = session("owner");
-	await register(a, owner);
+	await register(a, owner, OWNER_TOKEN);
 	const replier = session("replier");
 	await register(b, replier);
 	const children: Array<{ child: Session; questionId: string }> = [];
@@ -1241,6 +1262,7 @@ describe("released-asker replies under races and faults (#4386)", () => {
 		const unwritten = only(handoffsTo(owner), "the handoff that was not written");
 		assert.equal(a.router.releasedReplyAcknowledged(owner, sent.id, unwritten.handoffId, true), false);
 		refuseWrites = false;
+		await giveIdUp(a, owner, OWNER_TOKEN);
 		const returned = reconnected(owner);
 		await register(a, returned);
 		await vi.waitFor(() => assert.equal(handoffsTo(returned).length, 1), waitFor);
@@ -1702,6 +1724,7 @@ describe("a released asker's question is never held by a reply that cannot settl
 			frame: { ...frame, message: { ...frame.message, id: randomUUID() } },
 		});
 		assert.equal(late.status, "inserted");
+		await giveIdUp(scene.a, scene.owner, OWNER_TOKEN);
 		const returned = reconnected(scene.owner);
 		await register(scene.a, returned);
 		await vi.waitFor(async () => {
@@ -1964,7 +1987,9 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 			const sender = session("sender");
 			await register(b, sender);
 			const previous = session("worker");
-			await register(b, previous);
+			await register(b, previous, "previous-token");
+			// #5607: its departure from b gives its id up first; it registers on c before the rest of that departure runs.
+			await giveIdUp(b, previous, "previous-token");
 			const returned = reconnected(previous);
 			await register(c, returned);
 			await leave(b, previous);
@@ -2001,8 +2026,10 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 			const shared = await cluster();
 			const [b, c] = [await startNode(shared), await startNode(shared)];
 			const previous = session("owner");
-			await register(b, previous);
-			// The broker it left still holds its presence: this connection never takes it.
+			await register(b, previous, "previous-token");
+			// The broker it left still holds its presence: this connection never takes it. #5607: that broker gave its id
+			// up, as the first step of its departure does.
+			await giveIdUp(b, previous, "previous-token");
 			const returned = reconnected(previous);
 			await register(c, returned);
 			const key = releasedReservationKey("worker");
