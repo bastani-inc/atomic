@@ -190,6 +190,12 @@ function guardConstructor(sqlite: { DatabaseSync: GuardedDatabaseSync }): GuardS
 }
 
 /**
+ * An evaluated worker source that loads `node:sqlite`: through `require`, or through the `builtin` loader that Atomic's
+ * worker sources use to load Node's modules whether Node evaluates them as CommonJS or as a module (#6110).
+ */
+const LOADS_NODE_SQLITE = /\b(?:require|builtin)\("node:sqlite"\)/u;
+
+/**
  * The node-sqlite adapter opens a connection to a file on a worker thread of its own (#5376), which loads
  * `node:sqlite` there, out of reach of the constructor replaced above. Such a thread is refused the same way when the
  * path it is sent to open is under a protected root, before it opens it.
@@ -205,7 +211,7 @@ function guardConnectionThreads(
 		construct(target, args: ConstructorParameters<typeof import("node:worker_threads").Worker>, newTarget) {
 			const [source, options] = args;
 			const worker = Reflect.construct(target, args, newTarget) as import("node:worker_threads").Worker;
-			if (options?.eval !== true || !String(source).includes('require("node:sqlite")')) return worker;
+			if (options?.eval !== true || !LOADS_NODE_SQLITE.test(String(source))) return worker;
 			const post = worker.postMessage.bind(worker);
 			worker.postMessage = (message: unknown, transfer?: Parameters<typeof post>[1]) => {
 				const open = message as { kind?: unknown; path?: unknown } | undefined;

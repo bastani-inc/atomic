@@ -30,6 +30,16 @@ const openBrokerStatePath = join(repoRoot, "packages/intercom/broker/open-broker
  */
 const endedChildQueueStorePath = join(repoRoot, "packages/intercom/broker/sql-ended-child-queue-store.ts");
 const lazyMultiNode = new Set([openBrokerStatePath, endedChildQueueStorePath]);
+/**
+ * #6133: the one package the broker may load at runtime. Asked by its parent on Windows, the broker reads its own
+ * creation time through Atomic's native module as it announces itself, so the parent can tell it from a later process
+ * given its pid. The module ships beside the broker in every layout (npm, Bun and standalone archives), unlike the host
+ * package, and the broker loads it only then, inside a `try`: where it cannot be loaded the broker announces itself as
+ * before and starts all the same.
+ */
+const startAnnouncementPath = join(repoRoot, "packages/intercom/broker/start-announcement.ts");
+const allowedExternal = (entry: GraphViolation) =>
+	entry.importer === startAnnouncementPath && entry.description === "@bastani/atomic-natives";
 
 function describeViolations(violations: readonly GraphViolation[]): string[] {
 	return violations.map((entry) => `${relative(repoRoot, entry.importer)} -> ${entry.description}`);
@@ -51,7 +61,15 @@ describe("intercom broker runtime module graph", () => {
 
 		assert.deepEqual(describeViolations(walk.unresolved), []);
 		assert.deepEqual(describeViolations(walk.dynamic), []);
-		assert.deepEqual(describeViolations(walk.externals), []);
+		assert.deepEqual(describeViolations(walk.externals.filter((entry) => !allowedExternal(entry))), []);
+	});
+
+	test("the native module is the broker's only package, and it is reached from the announcement alone (#6133)", () => {
+		const walk = walkRuntimeGraph(brokerEntrypoint, lazyMultiNode);
+
+		assert.deepEqual(describeViolations(walk.externals.filter(allowedExternal)), [
+			`${relative(repoRoot, startAnnouncementPath)} -> @bastani/atomic-natives`,
+		]);
 	});
 
 	test("the walk actually reaches group.ts and never reaches parent-side spawn.ts", () => {

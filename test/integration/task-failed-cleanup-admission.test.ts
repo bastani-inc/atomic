@@ -6,6 +6,7 @@ import type { ResourceAdmission, ResourcePermit } from "../../packages/coding-ag
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { OperationId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { QUARANTINED_ADMISSION_WAIT_MS } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import {
 	fileExistsSync,
 	makeTempDirectory,
@@ -78,20 +79,6 @@ function pidFile(dir: string, name: string): number | undefined {
 	return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-function processExists(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		assert.equal((error as NodeJS.ErrnoException).code, "ESRCH");
-		return false;
-	}
-}
-
-function killIfAlive(pid: number | undefined): void {
-	if (pid !== undefined && processExists(pid)) process.kill(pid, "SIGKILL");
-}
-
 async function waitFor<T>(poll: () => T | undefined, limitMs: number, failure: string): Promise<T> {
 	const deadline = Date.now() + limitMs;
 	for (;;) {
@@ -135,12 +122,19 @@ test.runIf(process.platform === "linux")(
 				randomUUID() as OperationId,
 				AbortSignal.timeout(BLOCKED_LAUNCH_LIMIT_MS),
 			);
+		// #6125: the group's leader and the holder, recorded while they wait to be released, so the cleanup never
+		// signals a later process given one of their pids.
+		let leader: RecordedProcess | undefined;
+		let holder: RecordedProcess | undefined;
 		try {
 			const first = await launch(leaderStaysRunningCommand(dir));
 			assert.ok(first.ok);
 			const taskId = supervisor.taskReference(first.value).taskId;
 			const group = await waitFor(() => pidFile(dir, "group"), PID_FILE_LIMIT_MS, "the command recorded no group");
-			await waitFor(() => pidFile(dir, "holder"), PID_FILE_LIMIT_MS, "the command started no holder");
+			leader = await recordProcess(group);
+			holder = await recordProcess(
+				await waitFor(() => pidFile(dir, "holder"), PID_FILE_LIMIT_MS, "the command started no holder"),
+			);
 
 			const cancelled = await supervisor.cancelTask(first.value, "user");
 			assert.ok(cancelled.ok);
@@ -174,9 +168,8 @@ test.runIf(process.platform === "linux")(
 			assert.equal(admission.acquired, 1);
 		} finally {
 			writeTextSync(`${dir}/release`, "");
-			killIfAlive(pidFile(dir, "holder"));
-			const group = pidFile(dir, "group");
-			if (group !== undefined && processExists(-group)) process.kill(-group, "SIGKILL");
+			if (holder !== undefined) await signalRecordedProcess(holder);
+			if (leader !== undefined) await signalRecordedProcess(leader, "SIGKILL", { group: true });
 			try {
 				const closed = await within(
 					host.close("session-close"),

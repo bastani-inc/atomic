@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, test } from "vitest";
+import { isGone, recordProcess, signalRecordedProcess } from "../../../test/helpers/recorded-process.js";
 import { sleep } from "../../../test/helpers/runtime.js";
 import { GitSandbox, gitConfigPath } from "../../../test/helpers/worktree-snapshot.js";
 import { renameWithRetry } from "../src/core/rename-retry.ts";
@@ -44,16 +45,15 @@ test.skipIf(process.platform !== "win32")(
 		const running = runGit(["-c", alias, "hold"], { cwd: checkout, signal: controller.signal });
 		running.catch(() => {});
 		for (let waited = 0; !existsSync(pidFile) && waited < 30_000; waited += 20) await sleep(20);
-		const held = Number(readFileSync(pidFile, "utf8"));
+		// #6125: recorded while it holds the file, so neither the assertion nor the cleanup takes a later process for it.
+		const held = await recordProcess(Number(readFileSync(pidFile, "utf8")));
 		try {
 			controller.abort(new Error("stopped"));
 			await assert.rejects(running, /stopped/);
-			assert.throws(() => process.kill(held, 0), "the process left holding a file in the checkout has ended");
+			assert.equal(await isGone(held), true, "the process left holding a file in the checkout has ended");
 			await renameWithRetry(checkout, sandbox.path("checkout-moved"), { budgetMs: 10_000 });
 		} finally {
-			try {
-				process.kill(held);
-			} catch {}
+			await signalRecordedProcess(held, "SIGTERM");
 		}
 	},
 );

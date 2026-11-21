@@ -7,6 +7,7 @@ import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-
 import type { OperationId, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { FINISHED_TASK_RETENTION } from "../../packages/coding-agent/src/core/tasks/eviction-error.js";
 import { taskHostStateSizesForTesting } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import { fileExists, readJson, sleep } from "../helpers/runtime.js";
 
 /** Long enough for the drain window that quarantines a stopped command and for its later confirmation. */
@@ -32,7 +33,9 @@ test.runIf(process.platform !== "win32")(
 			authorizeLaunch() {},
 		});
 		const { supervisor, owner } = host.ownerBinding;
-		let holder: number | undefined;
+		// #6125: recorded while it holds the output open, so neither the test nor its cleanup signals a later process
+		// given its pid.
+		let holder: RecordedProcess | undefined;
 		const cleanup = () => {
 			const watched = host.watchOwnerTasks();
 			assert.ok(watched.ok);
@@ -53,10 +56,10 @@ test.runIf(process.platform !== "win32")(
 			assert.ok(started.ok);
 			assert.ok((await supervisor.initialObservation(started.value, { kind: "background" })).ok);
 			await until(() => fileExists(identities), "the holder started");
-			holder = (await readJson<{ holder: number }>(identities)).holder;
+			holder = await recordProcess((await readJson<{ holder: number }>(identities)).holder);
 			assert.ok((await supervisor.cancelTask(started.value, "user")).ok);
 			await until(() => taskHostStateSizesForTesting(owner).quarantinedTasks === 1, "the stop quarantined");
-			process.kill(holder, "SIGKILL");
+			assert.equal(await signalRecordedProcess(holder), true, "the escaped holder is not running");
 			holder = undefined;
 			await until(() => cleanup()[0] === "reaped", "the quarantined cleanup was confirmed");
 			for (let index = 0; index < FINISHED_TASK_RETENTION; index++) {
@@ -77,7 +80,7 @@ test.runIf(process.platform !== "win32")(
 			);
 			assert.equal(cleanup().length, FINISHED_TASK_RETENTION);
 		} finally {
-			if (holder !== undefined) process.kill(holder, "SIGKILL");
+			if (holder !== undefined) await signalRecordedProcess(holder);
 			await host.close("session-close");
 			await rm(directory, { recursive: true, force: true });
 		}

@@ -71,7 +71,9 @@ describe("issue #6596 taskkill spawn failures", () => {
 		expect(guardian).not.toBeNull();
 
 		const workerSource: string = (guardian as RegExpExecArray)[1] as string;
-		expect(workerSource).toContain('require("node:path")');
+		// Node's modules load through the worker sources' `builtin` loader (#6110).
+		expect(workerSource).toMatch(/^\s*\$\{EVAL_WORKER_BUILTIN\}\n/u);
+		expect(workerSource).toContain('builtin("node:path")');
 		expect(workerSource).toContain('"System32", "taskkill.exe"');
 		expect(workerSource).toMatch(/child\.once\("error"/u);
 		expect(workerSource).toContain("windowsHide: true");
