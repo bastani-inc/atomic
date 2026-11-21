@@ -82,6 +82,7 @@ import {
 	abortStartupShell,
 	handOverStartupShell,
 	releaseStartupShellSignals,
+	startupShellTerminal,
 	whenStartupShellCanHandOver,
 } from "./startup-shell.ts";
 import { watchWindowsSessionEnd } from "./windows-session-end.js";
@@ -406,7 +407,8 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// still stay behind the engine-bound gate below.
 	markLifecycleTiming("tui-start");
 	// The early editor stops drawing and hands over its terminal and prompt; the keys it held reach this interface first.
-	if (this.options.terminal === undefined) await whenStartupShellCanHandOver();
+	// Only while it draws: without it, init reaches the interface's start without waiting, as it always did.
+	if (this.options.terminal === undefined && startupShellTerminal() !== undefined) await whenStartupShellCanHandOver();
 	const earlyEditor = this.options.terminal === undefined ? handOverStartupShell() : undefined;
 	this.ui.start();
 	if (earlyEditor) {

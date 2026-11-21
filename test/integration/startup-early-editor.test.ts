@@ -225,6 +225,23 @@ for (const [host, trust] of [
 		);
 
 		test(
+			"a sequence no key means anything to does not hold the keys after it until the session",
+			async () => {
+				const program = startCli([trust]);
+				await program.waitForScreen((screen) => screen.includes("❯"), CLI_TIMEOUT_MS, "the prompt");
+				// What some terminals send as a program starts (here a function key's encoding no key of Atomic's has).
+				program.write("\x1b[[C");
+				program.write("abc");
+				await program.waitForScreen(
+					(screen) => promptLine(screen) === "❯ abc" && !screen.includes(SESSION_HEADER),
+					CLI_TIMEOUT_MS,
+					"the typing in the early editor",
+				);
+			},
+			REAL_CLI_TEST_TIMEOUT_MS,
+		);
+
+		test(
 			"a command typed with Enter before Atomic has even set up the terminal runs once the session is ready",
 			async () => {
 				const program = startCli([trust]);

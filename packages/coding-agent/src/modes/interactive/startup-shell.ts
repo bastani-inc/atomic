@@ -175,6 +175,9 @@ class StartupShell {
 				!(EMPTY_PROMPT_ACTIONS.has(id) && !promptEmpty) &&
 				this.keybindings.matches(data, id as never),
 		);
+		// A sequence no key of Atomic's means anything to (some terminals send one as they start) is not kept, as the
+		// startup input capture keeps no sequence; holding it would hold every key after it.
+		if (actions.length === 0 && data.startsWith("\x1b")) return { consume: true };
 		const promptEdit = actions.length === 0 ? isTypedText(data) : actions.every((id) => PROMPT_EDIT_ACTIONS.has(id));
 		if (promptEdit) {
 			this.lastCtrlC = 0;
