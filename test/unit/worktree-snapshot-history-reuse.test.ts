@@ -106,7 +106,35 @@ describe("unpushed history a capture left out", () => {
 		assert.equal(historyWork(trace), 0);
 	});
 
-	test("a new process takes an over-cap omission from the previous snapshot instead of bundling again", async () => {
+	test("a commit on top that adds a denied path has the history checked again", async () => {
+		const { clone, commit } = await cloneWithUnpushedData();
+		const settings = { maxSnapshotBytes: SMALL_CAP };
+		const first = captured(await captureWorktreeSnapshot(clone, { settings }));
+		assert.ok(historyOmissions(first.snapshot.omitted)[0]?.reason === "bundle-over-cap");
+
+		sandbox.write(join(clone, "id_rsa"), "PRIVATE KEY\n");
+		const leaking = await sandbox.commitAll(clone, "add a key");
+		const second = captured(await captureWorktreeSnapshot(clone, { settings, previous: first.snapshot }));
+		assert.deepEqual(historyOmissions(second.snapshot.omitted), [
+			{ reason: "unpushed-history-denied", commits: [leaking], paths: ["id_rsa"] },
+		]);
+		assert.notEqual(leaking, commit);
+	});
+
+	test("a repack has history over the cap bundled again, as it can make the bundle smaller", async () => {
+		const { clone } = await cloneWithUnpushedData();
+		const settings = { maxSnapshotBytes: SMALL_CAP };
+		captured(await captureWorktreeSnapshot(clone, { settings }));
+		await sandbox.git(clone, "repack", "-a", "-d", "-q");
+
+		const trace = sandbox.traceGitProcesses();
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const second = captured(await captureWorktreeSnapshot(clone, { settings }));
+		assert.equal(historyOmissions(second.snapshot.omitted)[0]?.reason, "bundle-over-cap");
+		assert.ok(historyWork(trace) >= 2, "the commits are checked and bundled again");
+	});
+
+	test("a new process bundles history over the cap again rather than take the previous snapshot's size", async () => {
 		const { clone } = await cloneWithUnpushedData();
 		const settings = { maxSnapshotBytes: SMALL_CAP };
 		const first = captured(await captureWorktreeSnapshot(clone, { settings }));
@@ -116,8 +144,8 @@ describe("unpushed history a capture left out", () => {
 		const { capture, trace } = await inNewProcess();
 		sandbox.write(join(clone, "edit.txt"), "edit\n");
 		const second = captured(await capture(clone, { settings, previous: first.snapshot }));
-		assert.deepEqual(historyOmissions(second.snapshot.omitted), [omission]);
-		assert.equal(historyWork(trace), 0);
+		assert.equal(historyOmissions(second.snapshot.omitted)[0]?.reason, "bundle-over-cap");
+		assert.ok(historyWork(trace) >= 2, "the commits are checked and bundled again");
 	});
 
 	test("a new process bundles again when the previous snapshot left out other unpushed commits", async () => {
