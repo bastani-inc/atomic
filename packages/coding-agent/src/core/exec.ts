@@ -300,9 +300,13 @@ export async function execCommand(
 				// command ends first, so that one waiting on what it started cannot exit by itself in between; what it
 				// started ends only if that ended the command.
 				const held = holdProcessDescendants(pid);
-				if (held === undefined) proc.kill("SIGTERM");
-				else windowsTreeEnded = held.endAll();
-				return true;
+				if (held === undefined) {
+					proc.kill("SIGTERM");
+					return true;
+				}
+				// A command that exited by itself meanwhile keeps its result and leaves what it started running.
+				windowsTreeEnded = held.endAll();
+				return windowsTreeEnded;
 			}
 			// Read before the command is signalled: once it exits, the processes it started are no longer below it.
 			const descendants = await descendantsOf(pid);
