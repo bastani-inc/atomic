@@ -1,8 +1,8 @@
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { join, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { Text } from "@bastani/atomic-tui";
-import { type Static, Type } from "typebox";
 import { isPathInside } from "../../utils/path-inside.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
