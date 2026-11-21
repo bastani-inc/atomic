@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
+	chmodSync,
 	closeSync,
 	existsSync,
 	mkdirSync,
@@ -149,7 +150,7 @@ test("a changed output is never written while a reader has the old file open: th
 	assert.match(readFileSync(output, "utf8"), /answer = 43;\nexport const question = "unknown";/);
 });
 
-test("outputs whose source was removed stay, while a mirrored directory loses files its source no longer has", (t) => {
+test("a replaced file keeps its permissions, outputs whose source was removed stay, and a mirrored directory loses files its source no longer has", (t) => {
 	const directory = workspace(t);
 	const staged = join(directory, "staged");
 	const dist = join(directory, "dist");
@@ -157,6 +158,9 @@ test("outputs whose source was removed stay, while a mirrored directory loses fi
 	mkdirSync(join(dist, "data"), { recursive: true });
 	writeFileSync(join(staged, "index.js"), "same");
 	writeFileSync(join(dist, "index.js"), "same");
+	writeFileSync(join(staged, "changed.js"), "new output");
+	writeFileSync(join(dist, "changed.js"), "old output");
+	chmodSync(join(dist, "changed.js"), 0o640);
 	writeFileSync(join(dist, "removed-source.js"), "stale output");
 	writeFileSync(join(staged, "data", "kept.json"), "{}");
 	writeFileSync(join(staged, "data", "added.json"), '{"added":true}');
@@ -165,7 +169,14 @@ test("outputs whose source was removed stay, while a mirrored directory loses fi
 
 	const result = moveChangedFiles(staged, dist, ["data"]);
 
-	assert.deepEqual(result, { files: 3, replaced: ["data/added.json"], removed: ["data/dropped.json"] });
+	assert.deepEqual(result, {
+		files: 4,
+		replaced: ["changed.js", "data/added.json"],
+		removed: ["data/dropped.json"],
+	});
+	assert.equal(readFileSync(join(dist, "changed.js"), "utf8"), "new output");
+	// The replacement keeps the replaced file's permissions, as a build that rewrote it in place did.
+	if (process.platform !== "win32") assert.equal(statSync(join(dist, "changed.js")).mode & 0o777, 0o640);
 	assert.equal(readFileSync(join(dist, "removed-source.js"), "utf8"), "stale output");
 	assert.equal(readFileSync(join(dist, "data", "added.json"), "utf8"), '{"added":true}');
 	assert.equal(existsSync(join(dist, "data", "dropped.json")), false);

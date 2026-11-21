@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createGitEnvironment } from "@bastani/atomic";
 import { describe, test } from "vitest";
 import {
@@ -51,12 +52,25 @@ function git(args: string[], cwd = repoRoot): string {
 	});
 }
 
+/** Every local tag that names a commit. */
+function localTags(cwd: string): ReadonlySet<string> {
+	const tags = new Set<string>();
+	const format = "--format=%(objecttype) %(*objecttype) %(refname:strip=2)";
+	for (const line of git(["for-each-ref", format, "refs/tags"], cwd).split("\n")) {
+		const [type, peeled, name] = line.split(" ");
+		if (name && (type === "commit" || peeled === "commit")) tags.add(name);
+	}
+	return tags;
+}
+
 /**
  * The tags of the repository checked out at `cwd`: those whose history contains one of HEAD's root commits. A clone
  * that also fetched another remote's tags, such as upstream pi's `v0.10.2`, has tags from an unrelated history; they
- * share no commit with HEAD, so they are left out.
+ * share no commit with HEAD, so they are left out. A shallow clone, such as one that fetched its tags with
+ * `--depth 1`, lacks the history that tells them apart, so there every local tag counts, as it always did.
  */
 function repositoryTags(cwd = repoRoot): ReadonlySet<string> {
+	if (git(["rev-parse", "--is-shallow-repository"], cwd).trim() === "true") return localTags(cwd);
 	const tags = new Set<string>();
 	for (const rootCommit of git(["rev-list", "--max-parents=0", "HEAD"], cwd).split("\n").filter(Boolean)) {
 		for (const tag of git(["tag", "--list", "--contains", rootCommit], cwd).split("\n").filter(Boolean))
@@ -223,37 +237,45 @@ describe("changelog parsing", () => {
 	});
 });
 
-// AGENTS.md: "A released section (`## [0.12.2]`) is immutable" and "New entries go under
-// `## [Unreleased]`". Once a version is tagged, its published notes are fixed, so the
-// released tail of every package changelog must still read exactly as it did at that tag.
+/** Git settings for the repositories the tests below make: no signing, a fixed author, local file clones allowed. */
+const TEST_GIT_SETTINGS = [
+	"user.name=Atomic Test",
+	"user.email=test@example.invalid",
+	"commit.gpgSign=false",
+	"tag.gpgSign=false",
+	"protocol.file.allow=always",
+].flatMap((setting) => ["-c", setting]);
+
+/**
+ * A repository at `directory` with this repository's kinds of release tags (a `v`-prefixed one on the main line, a
+ * bare one on a commit off it) and an unrelated history whose tags stand for another remote's.
+ */
+function createReleaseHistory(directory: string): void {
+	const inRepository = (args: string[]) => git([...TEST_GIT_SETTINGS, ...args], directory);
+	inRepository(["init", "--quiet", "--initial-branch=main"]);
+	inRepository(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "first"]);
+	// A release before 0.8.24, tagged on the main line with a `v` prefix.
+	inRepository(["tag", "v0.8.23"]);
+	// A release tags a commit off the main line that only stamps the version.
+	inRepository(["checkout", "--quiet", "--detach"]);
+	inRepository(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "Release 0.10.3"]);
+	inRepository(["tag", "0.10.3"]);
+	// Tags fetched from an unrelated upstream remote.
+	inRepository(["checkout", "--quiet", "--orphan", "upstream"]);
+	inRepository(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "Release v0.10.4"]);
+	inRepository(["tag", "v0.10.4"]);
+	inRepository(["tag", "0.10.5"]);
+	inRepository(["checkout", "--quiet", "main"]);
+	inRepository(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "later work"]);
+}
+
 describe("release tags", () => {
 	test("only tags from this repository's history anchor a changelog, not another remote's tags", () => {
-		const clone = mkdtempSync(join(tmpdir(), "atomic-changelog-tags-"));
-		const settings = [
-			"user.name=Atomic Test",
-			"user.email=test@example.invalid",
-			"commit.gpgSign=false",
-			"tag.gpgSign=false",
-		];
-		const inClone = (args: string[]) => git([...settings.flatMap((setting) => ["-c", setting]), ...args], clone);
+		const repository = mkdtempSync(join(tmpdir(), "atomic-changelog-tags-"));
 		try {
-			inClone(["init", "--quiet", "--initial-branch=main"]);
-			inClone(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "first"]);
-			// A release before 0.8.24, tagged on the main line with a `v` prefix.
-			inClone(["tag", "v0.8.23"]);
-			// A release tags a commit off the main line that only stamps the version.
-			inClone(["checkout", "--quiet", "--detach"]);
-			inClone(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "Release 0.10.3"]);
-			inClone(["tag", "0.10.3"]);
-			// Tags fetched from an unrelated upstream remote.
-			inClone(["checkout", "--quiet", "--orphan", "upstream"]);
-			inClone(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "Release v0.10.4"]);
-			inClone(["tag", "v0.10.4"]);
-			inClone(["tag", "0.10.5"]);
-			inClone(["checkout", "--quiet", "main"]);
-			inClone(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "later work"]);
+			createReleaseHistory(repository);
 
-			const tags = repositoryTags(clone);
+			const tags = repositoryTags(repository);
 			assert.deepEqual([...tags].sort(), ["0.10.3", "v0.8.23"]);
 			// A section prepared for 0.10.4 or 0.10.5 before its tag exists is not anchored on the upstream tags.
 			assert.equal(resolveTag("0.10.5", tags), null);
@@ -261,11 +283,33 @@ describe("release tags", () => {
 			assert.equal(resolveTag("0.10.3", tags), "0.10.3");
 			assert.equal(resolveTag("0.8.23", tags), "v0.8.23");
 		} finally {
-			rmSync(clone, { recursive: true, force: true });
+			rmSync(repository, { recursive: true, force: true });
+		}
+	});
+
+	test("a shallow clone with its tags fetched at depth 1 counts every local tag, as it always did", () => {
+		const repository = mkdtempSync(join(tmpdir(), "atomic-changelog-tags-"));
+		const shallow = mkdtempSync(join(tmpdir(), "atomic-changelog-shallow-"));
+		try {
+			createReleaseHistory(repository);
+			const url = pathToFileURL(repository).href;
+			git([...TEST_GIT_SETTINGS, "clone", "--quiet", "--depth=1", url, shallow], repository);
+			git([...TEST_GIT_SETTINGS, "fetch", "--quiet", "--depth=1", "origin", "+refs/tags/*:refs/tags/*"], shallow);
+
+			const tags = repositoryTags(shallow);
+			assert.deepEqual([...tags].sort(), ["0.10.3", "0.10.5", "v0.10.4", "v0.8.23"]);
+			assert.equal(resolveTag("0.10.3", tags), "0.10.3");
+			assert.equal(resolveTag("0.8.23", tags), "v0.8.23");
+		} finally {
+			rmSync(repository, { recursive: true, force: true });
+			rmSync(shallow, { recursive: true, force: true });
 		}
 	});
 });
 
+// AGENTS.md: "A released section (`## [0.12.2]`) is immutable" and "New entries go under
+// `## [Unreleased]`". Once a version is tagged, its published notes are fixed, so the
+// released tail of every package changelog must still read exactly as it did at that tag.
 describe("released changelog sections", () => {
 	const changelogPaths = packageChangelogPaths();
 	let tags: ReadonlySet<string> | undefined;

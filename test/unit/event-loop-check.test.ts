@@ -334,6 +334,37 @@ describe("event-loop check", () => {
 	});
 });
 
+describe("the interactive host's analysis settings", () => {
+	test(
+		"treat an AbortSignal abort listener registered at startup as interactive, so a blocking call in it is reported",
+		() => {
+			// The fixture takes its compiler settings from the analysis tsconfig. Abort listeners are found by their
+			// declaration in lib.dom.d.ts, which those settings have to include.
+			const fixture = join(REPO_ROOT, "test", "fixtures", "event-loop-analysis-settings");
+			const policy: EventLoopPolicy = {
+				...fixturePolicy,
+				processEntries: [{ file: "src/abort.ts", name: "<module>" }],
+				startupModules: ["src/abort.ts"],
+				interfaceRoots: [],
+				interactiveRoots: [],
+				ownedElsewhere: [],
+				startupOnly: [],
+				durableRecords: [],
+				guardedCalls: [],
+			};
+			const built = buildCallGraph(policy, join(fixture, "tsconfig.json"), fixture);
+			try {
+				const analyzed = analyzeEventLoop(built.graph, policy);
+				assert.deepEqual(found(analyzed), ["src/abort.ts checkCatalog fs.existsSync"]);
+				assert.deepEqual(analyzed.policyErrors, []);
+			} finally {
+				built.close();
+			}
+		},
+		COMPILER_START_TIMEOUT_MS,
+	);
+});
+
 describe("the interactive host's analysis program", () => {
 	test(
 		"contains every declaration file a sink names, so the callbacks registered through it are followed",
