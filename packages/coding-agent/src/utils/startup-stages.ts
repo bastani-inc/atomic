@@ -5,8 +5,9 @@
  *
  * The build writes the stages (`scripts/write-startup-stages.mjs`) next to this build's modules, in `startup-stages/`:
  * loading them in order, then the session's entry modules, runs every module exactly once and in the order the runtime
- * runs them for the entry modules alone. None of them awaits at its top level (the build checks it), so waiting for a
- * stage never waits for a later one.
+ * runs them for the entry modules alone. None of them awaits at its top level in this build (the build checks it), so
+ * each stage has run in full by the turn after it; a stage that has not (an installed package awaiting at its top level)
+ * ends the stages there, so that nothing waits on a later stage.
  */
 import { readFileSync } from "node:fs";
 import { startupNodeOptions } from "@bastani/atomic-codemode/node-options";
@@ -29,6 +30,10 @@ const RESOLUTION_OPTIONS = new Set([
 	"--preserve-symlinks",
 	"--preserve-symlinks-main",
 	"--experimental-policy",
+	// Conditions choose which file of a package a name resolves to.
+	"--conditions",
+	"-C",
+	"--no-addons",
 ]);
 
 /** Where this build's stages are: beside its own modules, found as this module's own imports are. */
@@ -44,10 +49,10 @@ function readStageCount(): number {
 }
 
 /**
- * Loads the stages one at a time, with a turn of the event loop after each. A stage that fails ends the stages: the
- * session's own imports then fail the same way, where they always reported it. Without stages (a source checkout,
- * a build without them), or with a preload, a module loader or another option that changes how modules resolve,
- * nothing loads here.
+ * Loads the stages one at a time, with a turn of the event loop after each. A stage that fails, or has not run in full
+ * by the turn after it, ends the stages: the session's own imports then take the rest as before, and report a failure
+ * where they always did. Without stages (a source checkout, a build without them), or with a preload, a module loader
+ * or another option that changes how modules resolve, nothing loads here.
  */
 export async function loadStartupStages(): Promise<void> {
 	// Bun loads a module graph across turns of the event loop already, in an order that varies from run to run.
@@ -56,11 +61,16 @@ export async function loadStartupStages(): Promise<void> {
 	const count = readStageCount();
 	for (let stage = 0; stage < count; stage++) {
 		// Each stage has run in full before the next one starts: the order of the modules depends on it.
-		const loaded = await import(new URL(`${stage}.js`, STAGES_DIR).href).then(
-			() => true,
-			() => false,
+		const run: { outcome: "running" | "loaded" | "failed" } = { outcome: "running" };
+		import(new URL(`${stage}.js`, STAGES_DIR).href).then(
+			() => {
+				run.outcome = "loaded";
+			},
+			() => {
+				run.outcome = "failed";
+			},
 		);
-		if (!loaded) return;
 		await new Promise<void>((resolve) => setImmediate(resolve));
+		if (run.outcome !== "loaded") return;
 	}
 }

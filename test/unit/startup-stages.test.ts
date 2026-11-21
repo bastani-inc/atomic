@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "vitest";
@@ -109,6 +109,64 @@ describe("startup stages", () => {
 			const preload = join(dir, "preload.mjs");
 			writeFileSync(preload, "");
 			const staged = runChild("staged", `--import ${JSON.stringify(pathToFileURL(preload).href)}`);
+			assert.equal(staged.ranWhenTimerFired, staged.total, "no turn of the event loop while the modules loaded");
+		},
+		WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
+	);
+
+	test(
+		"a stage that has not run in full by the turn after it, as one awaiting another stage would, ends the stages",
+		() => {
+			// The stage loader with two stages of its own: the first awaits what the second releases.
+			const dir = makeTempDirectory("atomic-startup-stages-await-");
+			dirs.push(dir);
+			const dist = join(dir, "dist");
+			mkdirSync(join(dist, "utils"), { recursive: true });
+			mkdirSync(join(dist, "startup-stages"));
+			copyFileSync(join(DIST, "utils", "startup-stages.js"), join(dist, "utils", "startup-stages.js"));
+			symlinkSync(join(DIST, "..", "..", "..", "node_modules"), join(dir, "node_modules"), "junction");
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+			writeFileSync(
+				join(dist, "startup-stages", "0.js"),
+				'globalThis.ran.push("awaits");\nawait globalThis.released;\nglobalThis.ran.push("released");\n',
+			);
+			writeFileSync(
+				join(dist, "startup-stages", "1.js"),
+				'globalThis.ran.push("releases");\nglobalThis.release();\n',
+			);
+			writeFileSync(join(dist, "startup-stages", "stages.json"), JSON.stringify({ version: 1, stages: 2 }));
+			const script = join(dir, "child.mjs");
+			writeFileSync(
+				script,
+				`globalThis.ran = [];
+globalThis.released = new Promise((resolve) => { globalThis.release = resolve; });
+const { loadStartupStages } = await import(${JSON.stringify(pathToFileURL(join(dist, "utils", "startup-stages.js")).href)});
+await loadStartupStages();
+const afterStages = [...globalThis.ran];
+// What the session's own imports then do: they reach the second stage's module, which releases the first.
+await import(${JSON.stringify(pathToFileURL(join(dist, "startup-stages", "1.js")).href)});
+await import(${JSON.stringify(pathToFileURL(join(dist, "startup-stages", "0.js")).href)});
+process.stdout.write(JSON.stringify({ afterStages, ran: globalThis.ran }));
+process.exit(0);
+`,
+			);
+			const result = spawnSyncCollect([process.execPath, script], {
+				env: { ...process.env, NODE_OPTIONS: "" },
+				timeout: WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
+			});
+			assert.equal(result.exitCode, 0, result.stderr.toString());
+			assert.deepEqual(JSON.parse(result.stdout.toString()), {
+				afterStages: ["awaits"],
+				ran: ["awaits", "releases", "released"],
+			});
+		},
+		WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
+	);
+
+	test(
+		"no stages load with custom package conditions, which can choose other files for the same names",
+		() => {
+			const staged = runChild("staged", "--conditions=atomic-test-condition");
 			assert.equal(staged.ranWhenTimerFired, staged.total, "no turn of the event loop while the modules loaded");
 		},
 		WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
