@@ -155,14 +155,18 @@ export async function startupFilePaths(
 	return { modules, binaries };
 }
 
-/** Modules read first and timed, to tell whether the files are already in memory: the last ones startup loads. */
-const WARM_PROBE_FILES = 32;
+/**
+ * Modules read one at a time and timed, to tell whether the files are already in memory: the last ones startup loads,
+ * since Atomic itself may already have loaded (and so made fast) the first ones.
+ */
+const WARM_PROBE_FILES = 16;
 /**
  * A median read faster than this found its files in memory: a warm start, where reading the rest ahead of the module
- * loader gains nothing and only takes CPU and memory from Atomic's own start. A first read after a restart, an install
- * or an upgrade waits for the disk and, on Windows, for the antivirus to scan the file.
+ * loader gains nothing and only takes CPU and memory from Atomic's own start. Measured one at a time, a read of a
+ * file in memory takes well under 1 ms (0.45-1 ms even on a heavily loaded machine), and a first read after a restart
+ * on Windows waits for the antivirus to scan the file: about 12 ms on average there, up to 190 ms.
  */
-const WARM_READ_MS = 2;
+const WARM_READ_MS = 3;
 
 /** Whether reads that took these times (ms) found their files already in memory, by their median. */
 export function readsFoundFilesInMemory(timesMs: readonly number[]): boolean {
@@ -185,8 +189,8 @@ async function readOne(path: string): Promise<boolean> {
 }
 
 /**
- * Reads the files many at once and returns how many it read. Meanwhile it times reads of the last modules on the list,
- * which startup reaches last: when those were already in memory, so are the others, and it stops.
+ * Reads the files many at once and returns how many it read. Meanwhile it times reads, one at a time, of the last
+ * modules on the list, which startup reaches last: when those were already in memory, so are the others, and it stops.
  */
 export async function readStartupFiles(listPath: string, packageDir: string): Promise<number> {
 	const { modules, binaries } = await startupFilePaths(listPath, packageDir);
@@ -195,13 +199,13 @@ export async function readStartupFiles(listPath: string, packageDir: string): Pr
 	let warm = false;
 	const probe = async () => {
 		if (modules.length <= 2 * WARM_PROBE_FILES) return;
-		const times = await Promise.all(
-			modules.slice(-WARM_PROBE_FILES).map(async (path) => {
-				const started = performance.now();
-				if (await readOne(path)) read++;
-				return performance.now() - started;
-			}),
-		);
+		const times: number[] = [];
+		// One at a time: a read's own time, not its wait behind the others.
+		for (const path of modules.slice(-WARM_PROBE_FILES)) {
+			const started = performance.now();
+			if (await readOne(path)) read++;
+			times.push(performance.now() - started);
+		}
 		warm = readsFoundFilesInMemory(times);
 	};
 	let next = 0;
