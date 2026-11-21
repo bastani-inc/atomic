@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Node 22, where `AsyncLocalStorage` runs on promise hooks, each scope Atomic used and each session it ran made every `await` in the process slower, in an SDK host's own code too. Atomic now keeps all of its async context in one store, so the cost no longer grows: after a 300-prompt SDK session, 3 million awaits take about half as long as before. Node 24 and Bun were not affected. See [Node 22 hosts](docs/sdk.md#node-22-hosts) for the Node flag that removes the remaining cost ([#6111](https://github.com/bastani-inc/atomic/issues/6111)).
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.

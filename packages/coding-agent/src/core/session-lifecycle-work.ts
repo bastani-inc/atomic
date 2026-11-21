@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { asyncScope } from "./async-scope.ts";
 import type { SessionStore } from "./storage/session/types.js";
 import { withWindowsDirectorySecurityOwner } from "./tools/windows-directory-security.ts";
 
@@ -6,7 +6,7 @@ export const ownedSessionStores = new WeakMap<object, SessionStore>();
 export const ownedSessionPermits = new WeakMap<object, () => Promise<void>>();
 export const ownedSessionManagerStores = new WeakMap<object, SessionStore>();
 
-const currentWork = new AsyncLocalStorage<ReadonlySet<Promise<void>>>();
+const currentWork = asyncScope<ReadonlySet<Promise<void>>>();
 const reloads = new WeakMap<object, Promise<void>>();
 const reloadCleanupFailures = new WeakMap<object, unknown[]>();
 const reloadRetirements = new WeakMap<object, Set<Promise<void>>>();
