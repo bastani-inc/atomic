@@ -210,7 +210,9 @@ describe("captures of one checkout requested together", () => {
 	/** A checkout edited after each of `count` captures, each from the one before, and edited once more. */
 	async function checkoutWithEarlierSnapshots(count: number, fileMode: boolean) {
 		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "run.sh": "echo\n" });
-		if (!fileMode) await sandbox.git(clone, "config", "core.filemode", "false");
+		// Git for Windows writes both as false into a new repository's config: the test says which it trusts.
+		await sandbox.git(clone, "config", "core.filemode", String(fileMode));
+		await sandbox.git(clone, "config", "core.symlinks", String(fileMode));
 		const blobs = new MemorySnapshotBlobStore();
 		const earlier: WorktreeSnapshotCapture[] = [];
 		for (let index = 0; index < count; index++) {
