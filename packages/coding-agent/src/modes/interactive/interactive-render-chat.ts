@@ -2,6 +2,7 @@ import { isProxy } from "node:util/types";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { type HistoryLeaf, type TUI, WindowedContainer } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
+import type { AgentSessionEvent } from "../../core/agent-session.js";
 import {
 	advanceCacheHistory,
 	cacheMissAfter,
@@ -496,7 +497,15 @@ export function followStartedRunEcho(
 	options: { readonly sendShowsWorkingRow: boolean },
 ): StartedRunEchoFollower {
 	let state = STARTED_RUN_ECHO_SENT;
-	const stops: Array<() => void> = [];
+	const followers = echoFollowers.get(mode) ?? { count: 0, echoes: new WeakMap(), taken: new WeakSet() };
+	followers.count += 1;
+	echoFollowers.set(mode, followers);
+	const stops: Array<() => void> = [
+		() => {
+			followers.count -= 1;
+			if (followers.count === 0 && echoFollowers.get(mode) === followers) echoFollowers.delete(mode);
+		},
+	];
 	const stop = (): void => {
 		for (const release of stops.splice(0)) release();
 	};
@@ -527,7 +536,8 @@ export function followStartedRunEcho(
 		}
 	};
 	// A run the host saw start and not settle before the send ends before this message's run can start: until it
-	// settles, its events are not this run's. A user message shown meanwhile still counts, as it always did.
+	// settles, its events are not this run's. A user message shown meanwhile still counts, as it always did, unless an
+	// earlier send takes it (see `takeUserMessage`).
 	let earlierRun = mode.session.turnStartedAt !== undefined;
 	stops.push(
 		mode.session.subscribe((event) => {
@@ -536,7 +546,21 @@ export function followStartedRunEcho(
 				return;
 			}
 			const echoEvent = startedRunEchoEvent(event);
-			if (echoEvent && (!earlierRun || echoEvent.type === "user-message")) apply(echoEvent);
+			if (echoEvent === undefined || (earlierRun && echoEvent.type !== "user-message")) return;
+			if (
+				echoEvent.type === "user-message" &&
+				event.type === "message_start" &&
+				!takeUserMessage(followers, event, text)
+			) {
+				// Another send's message: the run showing it is an earlier one, though the host had not seen it start. What
+				// that run did so far is not this message's run's.
+				if (state.kind === "awaiting-answer" && !state.userMessageShown) {
+					state = STARTED_RUN_ECHO_SENT;
+					earlierRun = true;
+				}
+				return;
+			}
+			apply(echoEvent);
 		}),
 	);
 	return {
@@ -551,17 +575,48 @@ export function followStartedRunEcho(
 	};
 }
 
+/**
+ * What a chat's live echo followers share while any is following: the text of the echo each user message shown
+ * meanwhile took the place of (null when it took none), and the events whose message a follower took.
+ */
+interface EchoFollowers {
+	count: number;
+	readonly echoes: WeakMap<object, string | null>;
+	readonly taken: WeakSet<object>;
+}
+const echoFollowers = new WeakMap<object, EchoFollowers>();
+
+/**
+ * Whether the follower of a message sent as `text` takes the user message `event` shows. A shown message is one sent
+ * message's: the first follower still waiting for it takes it, so another send of the same text, whose run may show no
+ * message of its own (#5135), still decides its own echo (#6126). A message shown in place of another text's echo is
+ * that send's.
+ */
+function takeUserMessage(
+	followers: EchoFollowers,
+	event: Extract<AgentSessionEvent, { type: "message_start" }>,
+	text: string,
+): boolean {
+	const replaced = followers.echoes.get(event.message);
+	if (typeof replaced === "string" && replaced !== text) return false;
+	if (followers.taken.has(event)) return false;
+	followers.taken.add(event);
+	return true;
+}
+
 /** Show a user message from the session: in place of its echo, or of the echo of the run it started, or as new. */
 InteractiveModeBase.prototype.showSessionUserMessage = function (this: InteractiveModeBase, message: Message): void {
 	const text = this.getUserMessageText(message);
 	const echo = this.deferredRenderedUserInputComponents?.get(text)?.[0];
 	if (this.consumeDeferredRenderedUserInput(text)) {
+		echoFollowers.get(this)?.echoes.set(message, text);
 		// The echo stays as the session's message: its rows are that message's rows.
 		for (const component of echo ?? []) noteRowSource(component, { message, part: 0 });
 		return;
 	}
 	const started = this.startedDeferredUserInput;
 	if (started !== undefined) {
+		echoFollowers.get(this)?.echoes.set(message, started);
 		const renderer = this.ui as AltScreenMessageCounterHost;
 		const following = renderer.isFollowingOutput !== false;
 		const countedBefore = countChatMessages(this.chatContainer);
@@ -579,6 +634,7 @@ InteractiveModeBase.prototype.showSessionUserMessage = function (this: Interacti
 		this.ui.requestRender();
 		return;
 	}
+	echoFollowers.get(this)?.echoes.set(message, null);
 	this.userMessagesShownBySession += 1;
 	this.addMessageToChat(message);
 };

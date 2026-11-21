@@ -22,6 +22,7 @@ import { delimiter, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
 import { longestMainThreadBlockMs } from "../../../test/helpers/main-thread-work.ts";
+import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../../../test/helpers/recorded-process.js";
 import {
 	bunExecutable,
 	moduleDir,
@@ -912,11 +913,8 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 			assert.equal(stdout, "its ownership is still being verified");
 		}
 		await waitFor(() => fake?.launches().length === 2);
-		for (const { pid } of fake.launches()) {
-			try {
-				process.kill(pid);
-			} catch {}
-		}
+		// #6125: each hung read, recorded while it hangs, and ended only while its pid still names it.
+		for (const { pid } of fake.launches()) await signalRecordedProcess(await recordProcess(pid), "SIGTERM");
 	});
 
 	it.skipIf(isWindows)(
@@ -1345,6 +1343,7 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 				].join("\n"),
 			);
 			const child = spawnProcess([...NODE_SOURCE_RUNTIME, probe], { stdout: "pipe", stderr: "pipe" });
+			const reads: RecordedProcess[] = [];
 			try {
 				const output = Promise.all([readStreamText(child.stdout), readStreamText(child.stderr)]);
 				const exitedInTime = await Promise.race([
@@ -1358,12 +1357,10 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 				assert.equal(child.exitCode, 0, stderr);
 				assert.ok(stdout.endsWith(`${sep}short-lived-session`));
 				await waitFor(() => (fake?.launches().length ?? 0) >= 1);
+				// #6125: each read, recorded while it hangs, so the cleanup never ends a later process given its pid.
+				for (const { pid } of fake.launches()) reads.push(await recordProcess(pid));
 			} finally {
-				for (const { pid } of fake.launches()) {
-					try {
-						process.kill(pid);
-					} catch {}
-				}
+				for (const read of reads) await signalRecordedProcess(read, "SIGTERM");
 			}
 		},
 	);

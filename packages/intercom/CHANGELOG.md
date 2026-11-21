@@ -4,6 +4,13 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- When the session that kept a released subagent lets it go, a session whose question to that subagent was still open is told `Session "<subagent>" ended before replying`. It used to get a malformed failure that closed its Intercom connection, or a notice that did not name the subagent ([#6131](https://github.com/bastani-inc/atomic/issues/6131)).
+- Fixed the broker watchdog not starting in a broker whose `NODE_OPTIONS` contains `--input-type=module` ([#6110](https://github.com/bastani-inc/atomic/issues/6110))
+- A broker restarted after a crash on a busy machine no longer drops the messages the earlier broker kept for subagents that ended when loading the store's code takes up the first session's short wait for the store: a broker that finds such a store loads that code as it starts ([#6126](https://github.com/bastani-inc/atomic/issues/6126)).
+- Fixed closing a session on Windows while its Intercom broker was still starting ending an unrelated process: Windows can give the pid of a broker that has exited to another process within seconds, and the broker was stopped by its pid alone. The broker now records when it was created, and is stopped only through a handle to the process created then, with the processes it started; a pid that names another process counts as a broker that has already exited, so closing no longer waits for it either ([#6133](https://github.com/bastani-inc/atomic/issues/6133)).
+
 ## [0.10.2] - 2026-11-20
 
 ### Fixed

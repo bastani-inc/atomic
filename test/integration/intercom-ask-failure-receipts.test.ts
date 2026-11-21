@@ -360,6 +360,81 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
+/** A subagent asked while it runs, released by its owner, gone, and then dropped by its owner: its ask is parked. */
+async function askReleasedSubagentThenDropIt(
+	label: string,
+	asker: Session,
+): Promise<{ childName: string; questionId: string }> {
+	const childName = `subagent-${label}`;
+	const owner = await connect(`owner-${label}`, { returnAddress: randomUUID(), ownerToken: randomUUID() });
+	const child = await connect(childName, {
+		returnAddress: randomUUID(),
+		supervisor: await owner.client.authorizeSupervisorChild(childName),
+	});
+	const childId = idOf(child.client);
+	const questionId = randomUUID();
+	const asked = await asker.client.send(childName, { messageId: questionId, text: "which port?", expectsReply: true });
+	assert.equal(asked.delivered, true, asked.reason);
+	await vi.waitFor(() => assert.ok(child.received.some((message) => message.id === questionId)), WAIT);
+	await owner.client.reserveReleasedChildren([{ childName, wake: false }]);
+	await child.client.disconnect();
+	await vi.waitFor(
+		async () => assert.ok(!(await owner.client.listSessions()).some((session) => session.id === childId)),
+		WAIT,
+	);
+	await owner.client.dropReleasedChildren([childName], { gone: "its session file was deleted" });
+	return { childName, questionId };
+}
+
+test(
+	"an asker whose ask to a released subagent ends when the owner drops the subagent gets one failure naming it, and stays connected (#6131)",
+	async () => {
+		const label = "dropped-parked-6131";
+		const askerAddress = { name: `asker-${label}`, returnAddress: randomUUID() };
+		const asker = await connect(askerAddress.name, askerAddress);
+		const askerId = idOf(asker.client);
+		const protocolErrors: string[] = [];
+		asker.client.on("error", (error: Error) => protocolErrors.push(error.message));
+		const { childName, questionId } = await askReleasedSubagentThenDropIt(label, asker);
+
+		await vi.waitFor(() => assert.equal(failuresOf(asker, questionId).length, 1), WAIT);
+		const [failureId] = failuresOf(asker, questionId);
+		assert.equal(
+			asker.received.find((message) => message.id === failureId)?.replyError,
+			`Session "${childName}" ended before replying`,
+		);
+		await sleep(SETTLE_MS);
+		assert.deepEqual(protocolErrors, []);
+		assert.equal(asker.client.sessionId, askerId, "the asker is still registered");
+
+		// It was saved: back again, the asker is not sent it again.
+		await asker.client.disconnect({ resumable: true });
+		await sleep(SETTLE_MS);
+		const back = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
+		await sleep(SETTLE_MS);
+		assert.deepEqual(failuresOf(back, questionId), []);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"an asker that does not confirm saves is told the dropped released subagent it asked has gone, by name (#6131)",
+	async () => {
+		const label = "dropped-parked-old-client-6131";
+		const asker = await connect(`asker-${label}`, { returnAddress: randomUUID(), acknowledgesReceipt: false });
+		const notices: { replyTo: string; peerName?: string }[] = [];
+		asker.client.on("peer_disconnected", (notice: { replyTo: string; peerName?: string }) => notices.push(notice));
+		const { childName, questionId } = await askReleasedSubagentThenDropIt(label, asker);
+
+		await vi.waitFor(() => assert.deepEqual(failuresOf(asker, questionId), ["peer_disconnected"]), WAIT);
+		assert.deepEqual(
+			notices.map((notice) => ({ replyTo: notice.replyTo, peerName: notice.peerName })),
+			[{ replyTo: questionId, peerName: childName }],
+		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
 /** The recipient answers `questionId` on the ask's own reply route, as the `reply` action does. */
 function replyTo(recipient: Session, askerId: string, questionId: string) {
 	return recipient.client.send(askerId, {

@@ -134,7 +134,7 @@ export function estimateContextTokens(context: TranscriptContext | readonly Mess
 	return { tokens, usageTokens: 0, trailingTokens: tokens, lastUsageIndex: null };
 }
 
-function estimateToolsTokens(tools: readonly unknown[] | undefined): number {
+export function estimateToolsTokens(tools: readonly unknown[] | undefined): number {
 	if (!tools || tools.length === 0) return 0;
 	return estimateTextTokens(safeJsonStringify(tools));
 }

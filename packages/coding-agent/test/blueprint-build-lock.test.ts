@@ -15,6 +15,13 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import {
+	isGone,
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	stillRuns,
+} from "../../../test/helpers/recorded-process.js";
 import { takeTakeoverMutex } from "../src/core/lock-takeover.js";
 import {
 	setNativeProcessCreationTimeForTesting,
@@ -618,7 +625,7 @@ describe("blueprint build locks (#4748)", () => {
 	 */
 	async function stepThatLeftAnOrphan(keepId = false): Promise<{
 		step: { pid: number; start?: string; at: number };
-		orphan: number;
+		orphan: RecordedProcess;
 		releaseId: () => Promise<void>;
 	}> {
 		const at = Date.now();
@@ -630,8 +637,12 @@ describe("blueprint build locks (#4748)", () => {
 			],
 			{ stdio: ["pipe", "pipe", "ignore"] },
 		);
-		const orphan = await new Promise<number>((resolve) =>
-			step.stdout!.once("data", (data) => resolve(Number(String(data).trim()))),
+		// #6125: recorded while it runs, so neither the assertions nor the cleanups take a later process given its pid
+		// for it.
+		const orphan = await recordProcess(
+			await new Promise<number>((resolve) =>
+				step.stdout!.once("data", (data) => resolve(Number(String(data).trim()))),
+			),
 		);
 		const recorded = { pid: step.pid!, start: processStartToken(step.pid!), at };
 		const releaseId = keepId ? await keepProcessId(step.pid!) : async () => {};
@@ -640,28 +651,19 @@ describe("blueprint build locks (#4748)", () => {
 		return { step: recorded, orphan, releaseId };
 	}
 
-	const runs = (pid: number) => {
-		try {
-			process.kill(pid, 0);
-			return true;
-		} catch {
-			return false;
-		}
-	};
-
 	test.skipIf(process.platform !== "win32" || processStartToken(process.pid) === undefined)(
 		"on Windows, the orphaned child of a dead build's ended step is stopped before the next build, and nothing else",
 		async () => {
 			const { step, orphan } = await stepThatLeftAnOrphan();
 			const bystander = sleeper();
 			try {
-				assert.equal(runs(orphan), true, "the step's child outlived it");
+				assert.equal(await stillRuns(orphan), true, "the step's child outlived it");
 				writeLock({ ...(await deadProcess()), steps: [step] });
 				assert.deepEqual(await settle([root()]), []);
-				assert.equal(runs(orphan), false, "the orphan had ended when the wait returned");
+				assert.equal(await isGone(orphan), true, "the orphan had ended when the wait returned");
 				assert.equal(bystander.exitCode, null, "a process that is no child of the step still runs");
 			} finally {
-				if (runs(orphan)) process.kill(orphan);
+				await signalRecordedProcess(orphan);
 			}
 		},
 	);
@@ -676,10 +678,10 @@ describe("blueprint build locks (#4748)", () => {
 				writeLock({ ...(await deadProcess()), steps: [{ pid: step.pid, at: step.at }] });
 				const warnings = await settle([root()], { waitMs: 300 });
 				assert.match(warnings[0] ?? "", /could not be identified/);
-				assert.equal(runs(orphan), true, "an orphan of an unproven step still runs");
+				assert.equal(await stillRuns(orphan), true, "an orphan of an unproven step still runs");
 			} finally {
 				await releaseId();
-				if (runs(orphan)) process.kill(orphan);
+				await signalRecordedProcess(orphan);
 			}
 		},
 	);
@@ -707,9 +709,9 @@ describe("blueprint build locks (#4748)", () => {
 			try {
 				writeLock({ ...(await deadProcess()), steps: [{ ...step, at: step.at + 60_000 }] });
 				await settle([root()], { waitMs: 300 });
-				assert.equal(runs(orphan), true);
+				assert.equal(await stillRuns(orphan), true);
 			} finally {
-				if (runs(orphan)) process.kill(orphan);
+				await signalRecordedProcess(orphan);
 			}
 		},
 	);

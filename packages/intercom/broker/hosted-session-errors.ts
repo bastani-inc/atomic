@@ -73,6 +73,7 @@ export class HostedSessionRequestError extends IntercomHostedSessionError {
 /** The session named to send as, or to remove, is not hosted by this connection. */
 export class NotHostedSessionError extends IntercomHostedSessionError {
 	override readonly name = NOT_HOSTED_NAME;
+	declare readonly code: "not_hosted_by_connection";
 	constructor(fields: IntercomHostedSessionErrorFields, options?: { readonly cause?: Error }) {
 		super("not_hosted_by_connection", fields, options);
 	}

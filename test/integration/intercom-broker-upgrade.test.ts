@@ -8,6 +8,7 @@ import type { ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
+import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import { type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
 import { temporaryAgentDir, useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -593,7 +594,9 @@ describe("replacing an older broker (#4538)", () => {
 			const fresh = temporaryAgentDir(process.env.ATOMIC_TEST_RUN_DIR);
 			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", fresh);
 			vi.resetModules();
-			cleanups.push(() => stopDetachedBroker(fresh));
+			cleanups.push(async () => {
+				await stopDetachedBroker(fresh);
+			});
 			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
 			assert.equal(await upgradeBroker("bun", [], 30_000), "started");
 			const { queryIntercomBroker } = await control();
@@ -691,11 +694,10 @@ describe("replacing an older broker (#4538)", () => {
 			const legacy = await startFakeLegacyBroker();
 			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
 			const lockPath = join(agentDir, "intercom", "broker.spawn.lock");
-			cleanups.push(() => {
-				const named = existsSync(lockPath)
-					? Number.parseInt(readFileSync(lockPath, "utf8").split("\n")[2] ?? "", 10)
-					: Number.NaN;
-				if (Number.isSafeInteger(named) && isAlive(named)) process.kill(named, "SIGKILL");
+			// #6125: the successor is recorded while it is still starting, and the cleanup signals only that process.
+			let successor: RecordedProcess | undefined;
+			cleanups.push(async () => {
+				if (successor !== undefined) await signalRecordedProcess(successor);
 				rmSync(lockPath, { force: true });
 			});
 			const error = await upgradeBroker(process.execPath, ["-e", "setInterval(() => {}, 1000)"], 1_500).catch(
@@ -711,6 +713,7 @@ describe("replacing an older broker (#4538)", () => {
 				Number.isSafeInteger(pid) && isAlive(pid),
 				`the lock names the still-starting successor: ${startingPid}`,
 			);
+			successor = await recordProcess(pid);
 		},
 		UPGRADE_TEST_TIMEOUT_MS,
 	);

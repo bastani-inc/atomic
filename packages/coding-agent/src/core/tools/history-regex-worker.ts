@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads";
-import { evalWorkerExecArgv } from "../../utils/worker-threads.js";
+import { EVAL_WORKER_BUILTIN, evalWorkerExecArgv } from "../../utils/worker-threads.js";
 
 export type WorkerOutlineKind = "user" | "compaction" | "branch summary";
 
@@ -27,7 +27,8 @@ export interface MultilineSpan {
 }
 
 const WORKER_SCRIPT = `
-const { parentPort } = require("node:worker_threads");
+${EVAL_WORKER_BUILTIN}
+const { parentPort } = builtin("node:worker_threads");
 const LINE_WIDTH = 4000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

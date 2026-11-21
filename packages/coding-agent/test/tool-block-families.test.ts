@@ -426,7 +426,7 @@ test("Bash and Wait families render running tail, collapsed tail, preserved inde
 		}),
 	);
 	assert.deepEqual(backgroundRows, [
-		" ● Bash(npm test) · background",
+		" ⧗ Bash(npm test) · background",
 		"   ⎿  Running in background · /tasks to manage",
 	]);
 
@@ -457,7 +457,7 @@ test("Bash and Wait families render running tail, collapsed tail, preserved inde
 	);
 	assert.deepEqual(waitRows, [
 		" ● Wait(task-1-0-3) · 12s",
-		"   ⎿  ✓ completed · exit 0",
+		"   ⎿  ● completed · exit 0",
 		"      line 1",
 		"      line 2",
 	]);

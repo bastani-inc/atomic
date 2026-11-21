@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, test } from "vitest";
+import { stopDetachedBroker } from "../helpers/detached-broker.js";
 
 /**
  * The Node broker path used to resolve tsx first and fall back to jiti. tsx is the only thing
@@ -38,16 +39,9 @@ beforeAll(async () => {
 	spawnModule = await import("../../packages/intercom/broker/spawn.js");
 });
 
-afterAll(() => {
-	const pidPath = pathsModule.getBrokerPidPath();
-	if (!existsSync(pidPath)) return;
-	const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-	if (!Number.isFinite(pid)) return;
-	try {
-		process.kill(pid, "SIGTERM");
-	} catch {
-		// The broker already exited.
-	}
+afterAll(async () => {
+	// #6125: only the broker that answers in this suite's agent dir.
+	await stopDetachedBroker(agentDir);
 });
 
 function collectTypeScriptFiles(directory: string, found: string[]): void {

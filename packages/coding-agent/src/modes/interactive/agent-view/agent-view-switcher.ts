@@ -13,8 +13,14 @@ export type PendingListener = (
 /** Why the screen still shows what it showed after a request for a subagent. */
 export const NOT_SHOWN = "That subagent can no longer be shown.";
 
-/** Opens the port of the subagent `taskId` is an attempt of; undefined when there is no such subagent to show. */
-export type OpenAgentViewPort = (taskId: TaskId) => Promise<AgentViewPort | undefined>;
+/**
+ * Opens the port of the subagent `taskId` is an attempt of; undefined when there is no such subagent to show. `options`
+ * are the request's.
+ */
+export type OpenAgentViewPort = (
+	taskId: TaskId,
+	options?: AgentViewRequestOptions,
+) => Promise<AgentViewPort | undefined>;
 
 /** Keeps what the screen shows below its transcript as painted until the answer runs; answers that release. */
 export type HoldAgentViewScreen = () => () => void;
@@ -92,7 +98,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		if (options?.keepScreen === true && this.releaseScreen === undefined) this.releaseScreen = this.holdScreen?.();
 		let landed = false;
 		try {
-			landed = await this.open(request, taskId);
+			landed = await this.open(request, taskId, options);
 			return landed;
 		} finally {
 			if (request === this.request) this.setPending(undefined, landed ? "shown" : "failed");
@@ -106,10 +112,10 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		this.setPending(undefined, "superseded");
 	}
 
-	private async open(request: number, taskId: TaskId): Promise<boolean> {
+	private async open(request: number, taskId: TaskId, options: AgentViewRequestOptions | undefined): Promise<boolean> {
 		let port: AgentViewPort | undefined;
 		try {
-			port = await this.openPort(taskId);
+			port = await this.openPort(taskId, options);
 		} catch (error) {
 			if (request === this.request && !this.disposed)
 				this.notify(error instanceof Error ? error.message : String(error));

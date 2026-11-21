@@ -7,6 +7,7 @@ import { ChatSessionHost } from "../components/chat-session-host.ts";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../components/task-transcript-page.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { getEditorTheme } from "../theme/theme.js";
+import type { AgentViewRequestOptions } from "./agent-view-bridge.ts";
 import type { AgentViewPort } from "./contracts.ts";
 import { openLocalAgentViewPort } from "./local-port.ts";
 import { openRemoteAgentViewPort } from "./remote-port.ts";
@@ -31,17 +32,27 @@ export function mainTranscriptEnvironment(mode: InteractiveModeBase): TaskTransc
 
 /**
  * Open the port of the subagent `taskId` is an attempt of: over the owner's task view in this process, or through the
- * isolated engine. Undefined when there is no such subagent.
+ * isolated engine. Undefined when there is no such subagent. In this process the panel draws as it opens; the engine's
+ * is awaited when the request says it opens again (`options.panel`).
  */
-export async function openAgentViewPort(mode: InteractiveModeBase, taskId: TaskId): Promise<AgentViewPort | undefined> {
+export async function openAgentViewPort(
+	mode: InteractiveModeBase,
+	taskId: TaskId,
+	options?: AgentViewRequestOptions,
+): Promise<AgentViewPort | undefined> {
 	const runtime = mode.runtimeHost;
 	if (runtime instanceof IsolatedInteractiveRuntime) {
 		const terminal = mode.ui.terminal;
-		return openRemoteAgentViewPort(runtime, taskId, {
-			width: Math.max(1, terminal.columns),
-			rows: transcriptSlotRows(mode),
-			...(terminal.colorDepth === undefined ? {} : { colorDepth: terminal.colorDepth }),
-		});
+		return openRemoteAgentViewPort(
+			runtime,
+			taskId,
+			{
+				width: Math.max(1, terminal.columns),
+				rows: transcriptSlotRows(mode),
+				...(terminal.colorDepth === undefined ? {} : { colorDepth: terminal.colorDepth }),
+			},
+			{ panel: options?.keepScreen === true && options.panel === true },
+		);
 	}
 	const session = mode.session;
 	const store = getOwnerTaskStore(session);

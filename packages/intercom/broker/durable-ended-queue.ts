@@ -30,6 +30,17 @@ import { PRESENCE_REGISTRATION_BOUND_MS } from "./multinode-router.js";
  * shared `storage`, it counts from when multi-node routing has started: the store opens in its database.
  */
 export const ENDED_QUEUE_OPEN_WAIT_MS = 2_000;
+/** Test-only override of {@link ENDED_QUEUE_OPEN_WAIT_MS} for the decision at the first registration, in milliseconds. */
+export const ENDED_QUEUE_OPEN_WAIT_ENV = "ATOMIC_INTERCOM_ENDED_QUEUE_OPEN_WAIT_MS";
+/** The longest delay a timer takes as given. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** The wait a broker gives its store at the first registration: the default, unless a test overrides it. */
+export function endedQueueOpenWaitMs(env: NodeJS.ProcessEnv = process.env): number {
+	const value = env[ENDED_QUEUE_OPEN_WAIT_ENV];
+	const parsed = value === undefined || value.trim() === "" ? Number.NaN : Number(value);
+	return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= MAX_TIMER_MS ? parsed : ENDED_QUEUE_OPEN_WAIT_MS;
+}
 /**
  * With a shared `storage`, the longest that wait lasts in all, multi-node routing's start included (on a cold start its
  * storage modules compile, and a remote database takes its time to answer): as long as a registration waits for its
@@ -205,12 +216,13 @@ export class DurableEndedQueue {
 			timer.unref();
 			timers.push(timer);
 		};
+		const openWaitMs = endedQueueOpenWaitMs();
 		const routing = this.host.routingStarted();
-		if (routing === undefined) wait(ENDED_QUEUE_OPEN_WAIT_MS);
+		if (routing === undefined) wait(openWaitMs);
 		else {
 			wait(ENDED_QUEUE_ROUTING_WAIT_MS);
 			void routing.then(() => {
-				if (!this.decidedNow) wait(ENDED_QUEUE_OPEN_WAIT_MS);
+				if (!this.decidedNow) wait(openWaitMs);
 			});
 		}
 		let finishLoad: () => void = () => {};

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test, vi } from "vitest";
-import { removeTempRootReleasingBroker, stopDetachedBroker } from "../helpers/detached-broker.js";
+import {
+	type DetachedBrokerProbe,
+	removeTempRootReleasingBroker,
+	stopDetachedBroker,
+} from "../helpers/detached-broker.js";
 import {
 	fileExistsSync,
 	makeDirectorySync,
@@ -12,6 +16,7 @@ import {
 	spawnProcess,
 	writeTextSync,
 } from "../helpers/runtime.js";
+import { startStandInBroker } from "../helpers/stand-in-broker.js";
 
 function processExists(pid: number): boolean {
 	try {
@@ -20,6 +25,41 @@ function processExists(pid: number): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/** A started process whose pid is known. */
+function started(child: ReturnType<typeof spawnProcess>) {
+	const pid = child.pid;
+	assert.ok(pid !== undefined, "the process did not start");
+	return { pid, kill: (signal: NodeJS.Signals) => child.kill(signal), exited: child.exited };
+}
+
+/** A process that is no broker, as a later process given a crashed broker's pid is. */
+function startUnrelatedProcess() {
+	return started(
+		spawnProcess({
+			cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+			stdin: "ignore",
+			stdout: "ignore",
+			stderr: "ignore",
+		}),
+	);
+}
+
+async function waitForFile(path: string): Promise<void> {
+	const deadline = Date.now() + 10_000;
+	while (!fileExistsSync(path) && Date.now() < deadline) await sleep(20);
+	assert.ok(fileExistsSync(path), `${path} was never written`);
+}
+
+/** Models the OS boundary through a mocked `process.kill`: the recorded pid is the broker while the mock says it runs. */
+function mockedBroker(pid: number): DetachedBrokerProbe {
+	return {
+		record: async (recorded) => ({ pid: recorded, started: undefined }),
+		stillRuns: async (recorded) => processExists(recorded.pid),
+		isGone: async (recorded) => !processExists(recorded.pid),
+		answeringPid: async () => pid,
+	};
 }
 
 test("stopDetachedBroker is a no-op when no broker pid is recorded", async () => {
@@ -38,31 +78,157 @@ test("removeTempRootReleasingBroker deletes a disposable agent tree", async () =
 	assert.equal(fileExistsSync(root), false);
 });
 
-test("stopDetachedBroker terminates the pid recorded under the agent dir", async () => {
+test("stopDetachedBroker terminates the broker that answers on the agent dir's socket with the recorded pid", async () => {
 	const root = makeTempDirectory("atomic-broker-teardown-pid-");
 	const agentDir = join(root, "agent");
 	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
-	const child = spawnProcess({
-		cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	const pid = child.pid;
+	const broker = startStandInBroker(agentDir);
 	try {
-		assert.ok(pid !== undefined);
-		writeTextSync(join(agentDir, "intercom", "broker.pid"), String(pid));
-		assert.equal(processExists(pid), true);
+		await waitForFile(join(agentDir, "intercom", "broker.pid"));
+		assert.equal(readTextSync(join(agentDir, "intercom", "broker.pid"), "utf8"), String(broker.pid));
 		await stopDetachedBroker(agentDir);
-		assert.equal(processExists(pid), false);
+		assert.equal(processExists(broker.pid), false);
 	} finally {
-		if (pid !== undefined && processExists(pid)) {
-			try {
-				process.kill(pid, "SIGKILL");
-			} catch {
-				// Already reaped.
-			}
+		broker.kill("SIGKILL");
+		await broker.exited;
+		await removeTempRootReleasingBroker(root, agentDir);
+	}
+});
+
+test("stopDetachedBroker stops its broker that recorded its pid before it answers (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-late-");
+	const agentDir = join(root, "agent");
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	// A real broker writes broker.pid before it listens; cleanup can come in between.
+	const broker = startStandInBroker(agentDir, { listenAfterMs: 1_000 });
+	try {
+		await waitForFile(join(agentDir, "intercom", "broker.pid"));
+		assert.equal(await stopDetachedBroker(agentDir), true, "the broker was not signalled");
+		assert.equal(processExists(broker.pid), false);
+	} finally {
+		broker.kill("SIGKILL");
+		await broker.exited;
+		await removeTempRootReleasingBroker(root, agentDir);
+	}
+});
+
+test("stopDetachedBroker takes no answer that comes after its answer window, though it names the pid (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-window-");
+	const agentDir = join(root, "agent");
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	// Every answer comes 1.5 s after its request, past the whole 1 s window, so none may be waited for.
+	const broker = startStandInBroker(agentDir, { replyAfterMs: 1_500 });
+	try {
+		await waitForFile(join(agentDir, "intercom", "broker.pid"));
+		assert.equal(await stopDetachedBroker(agentDir, { answerWindowMs: 1_000 }), false);
+		assert.equal(processExists(broker.pid), true, "a process that answered too late was signalled");
+	} finally {
+		broker.kill("SIGKILL");
+		await broker.exited;
+		await removeTempRootReleasingBroker(root, agentDir);
+	}
+});
+
+test("stopDetachedBroker gives up when reading the process's start outlasts its answer window (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-slow-read-");
+	const agentDir = join(root, "agent");
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	writeTextSync(join(agentDir, "intercom", "broker.pid"), "123456");
+	const never = new Promise<never>(() => {});
+	const kill = vi.spyOn(process, "kill").mockImplementation(() => assert.fail("a process was signalled"));
+	try {
+		for (const stalled of ["record", "stillRuns"] as const) {
+			const probe: DetachedBrokerProbe = {
+				record: stalled === "record" ? () => never : async (pid) => ({ pid, started: "now" }),
+				stillRuns: stalled === "stillRuns" ? () => never : async () => true,
+				isGone: async () => true,
+				answeringPid: async () => 123456,
+			};
+			assert.equal(await stopDetachedBroker(agentDir, { answerWindowMs: 200, probe }), false, stalled);
 		}
+		assert.equal(kill.mock.calls.length, 0);
+	} finally {
+		kill.mockRestore();
+		removePathSync(root, { recursive: true, force: true });
+	}
+});
+
+test("stopDetachedBroker never signals a process a leftover broker.pid names when no broker answers there (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-reused-");
+	const agentDir = join(root, "agent");
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	// A broker that crashed left its pid file; its pid now names another process.
+	const unrelated = startUnrelatedProcess();
+	try {
+		writeTextSync(join(agentDir, "intercom", "broker.pid"), String(unrelated.pid));
+		await stopDetachedBroker(agentDir);
+		assert.equal(processExists(unrelated.pid), true, "the cleanup killed a process that is not the broker");
+	} finally {
+		unrelated.kill("SIGKILL");
+		await unrelated.exited;
+		await removeTempRootReleasingBroker(root, agentDir);
+	}
+});
+
+test("stopDetachedBroker never signals the process broker.pid names when the answer there states no pid (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-pidless-");
+	const agentDir = join(root, "agent");
+	const pidPath = join(agentDir, "intercom", "broker.pid");
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	const listener = startStandInBroker(agentDir, { pidless: true });
+	const unrelated = startUnrelatedProcess();
+	try {
+		await waitForFile(pidPath);
+		writeTextSync(pidPath, String(unrelated.pid));
+		await stopDetachedBroker(agentDir);
+		assert.equal(processExists(unrelated.pid), true, "the cleanup killed a process no broker vouched for");
+	} finally {
+		unrelated.kill("SIGKILL");
+		listener.kill("SIGKILL");
+		await Promise.all([unrelated.exited, listener.exited]);
+		await removeTempRootReleasingBroker(root, agentDir);
+	}
+});
+
+test("stopDetachedBroker only touches the agent dir it is given, never the one the environment names (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-scope-");
+	const outerDir = join(root, "outer");
+	const agentDir = join(root, "agent");
+	makeDirectorySync(join(outerDir, "intercom"), { recursive: true });
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	// The profile the environment names has a live broker; the suite's own agent dir has none.
+	const outerBroker = startStandInBroker(outerDir);
+	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
+	try {
+		await waitForFile(join(outerDir, "intercom", "broker.pid"));
+		process.env.ATOMIC_CODING_AGENT_DIR = outerDir;
+		await stopDetachedBroker(agentDir);
+		assert.equal(processExists(outerBroker.pid), true, "the cleanup stopped the broker of another agent dir");
+	} finally {
+		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+		outerBroker.kill("SIGKILL");
+		await outerBroker.exited;
+		removePathSync(root, { recursive: true, force: true });
+	}
+});
+
+test("stopDetachedBroker never signals the process broker.pid names when the broker answering there is another (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-other-");
+	const agentDir = join(root, "agent");
+	const pidPath = join(agentDir, "intercom", "broker.pid");
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	const broker = startStandInBroker(agentDir);
+	const unrelated = startUnrelatedProcess();
+	try {
+		await waitForFile(pidPath);
+		writeTextSync(pidPath, String(unrelated.pid));
+		await stopDetachedBroker(agentDir);
+		assert.equal(processExists(unrelated.pid), true, "the cleanup killed a process that is not the broker");
+	} finally {
+		unrelated.kill("SIGKILL");
+		broker.kill("SIGKILL");
+		await Promise.all([unrelated.exited, broker.exited]);
 		await removeTempRootReleasingBroker(root, agentDir);
 	}
 });
@@ -73,25 +239,9 @@ test("agent-tree cleanup waits for the broker process to exit", async () => {
 	const agentDir = join(root, "custom agent dir");
 	const intercomDir = join(agentDir, "intercom");
 	makeDirectorySync(intercomDir, { recursive: true });
-	const child = spawnProcess({
-		cmd: [
-			process.execPath,
-			"-e",
-			`const fs = require("node:fs");
-			fs.openSync("broker.log", "a");
-			fs.writeFileSync("broker.pid", String(process.pid));
-			setInterval(() => {}, 1000);`,
-		],
-		cwd: intercomDir,
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
+	const child = startStandInBroker(agentDir, { holdLog: true });
 	try {
-		assert.ok(child.pid !== undefined);
-		const deadline = Date.now() + 5_000;
-		while (!fileExistsSync(join(intercomDir, "broker.pid")) && Date.now() < deadline) await sleep(20);
-		assert.ok(fileExistsSync(join(intercomDir, "broker.pid")), "the file-holding broker must be ready");
+		await waitForFile(join(intercomDir, "broker.pid"));
 		await removeTempRootReleasingBroker(root, agentDir);
 		assert.equal(processExists(child.pid), false, "cleanup returned before the broker exited");
 		assert.equal(fileExistsSync(root), false);
@@ -117,7 +267,7 @@ test("agent-tree cleanup retains files until a pending termination is observed",
 		if (exited) throw Object.assign(new Error("no such process"), { code: "ESRCH" });
 		return true;
 	});
-	const cleanup = removeTempRootReleasingBroker(root);
+	const cleanup = removeTempRootReleasingBroker(root, join(root, "agent"), { probe: mockedBroker(pid) });
 	try {
 		await sleep(0);
 		assert.ok(fileExistsSync(logPath), "do not delete files while the broker still exists");
@@ -155,7 +305,7 @@ test("agent-tree cleanup rejects at the broker deadline and preserves diagnostic
 	});
 	try {
 		const started = Date.now();
-		await assert.rejects(removeTempRootReleasingBroker(root, agentDir), {
+		await assert.rejects(removeTempRootReleasingBroker(root, agentDir, { probe: mockedBroker(pid) }), {
 			message: `Broker ${pid} did not exit; keeping ${agentDir}`,
 		});
 		assert.ok(Date.now() - started >= 5_000, "the live broker must get the full exit grace period");

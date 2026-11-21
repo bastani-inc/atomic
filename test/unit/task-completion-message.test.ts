@@ -478,14 +478,14 @@ test.each([
 		result: { kind: "failed", code: "exit", message: "exit 1", exitCode: 1 },
 		line: /^ ✗ Background command "npm test" failed \(exit code 1\)/,
 	},
-	{ result: { kind: "cancelled", cause: "user" }, line: /^ ◼ Task "npm test" was stopped by the user$/ },
+	{ result: { kind: "cancelled", cause: "user" }, line: /^ ◯ Task "npm test" was stopped by the user$/ },
 	{
 		result: { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 300_000 },
 		line: /^ ! Background command "npm test" timed out after 300 seconds$/,
 	},
 	{
 		result: { kind: "cancelled", cause: "owner-close", ownerClose: "session-close" },
-		line: /^ ◼ Background command "npm test" was stopped \(session closed\)$/,
+		line: /^ ◯ Background command "npm test" was stopped \(session closed\)$/,
 	},
 ] as const)("a shell notice reads how it ended: $line", ({ result, line }) => {
 	initTheme("dark");
@@ -519,7 +519,7 @@ test("notices joined in one message show one line each", () => {
 	assert.deepEqual(rows, [
 		' ● Background command "build" completed (exit code 0)',
 		"",
-		' ◼ Task "sleep 300" was stopped by the user',
+		' ◯ Task "sleep 300" was stopped by the user',
 	]);
 });
 
@@ -612,7 +612,7 @@ test("agent completion notices render agent-name finished/failed/stopped with el
 	);
 	assert.deepEqual(
 		new TaskCompletionMessage(stopped, false).render(80).map((row) => stripVTControlCharacters(row)),
-		[" ◼ debugger stopped · 12s"],
+		[" ◯ debugger stopped · 12s"],
 	);
 
 	setKeybindings(new KeybindingsManager({ "app.tools.expand": "ctrl+e" }));

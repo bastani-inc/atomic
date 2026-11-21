@@ -118,3 +118,54 @@ test("a typed message sent again while the host still shows the stopped run work
 		"no echo of the message may be left to show again",
 	);
 });
+
+test("a typed message sent again before the host reads the first send's run is shown once, with no echo left behind (#6126)", async () => {
+	const rig = await createRig("isolated", "quiet", {});
+	rigs.push(rig);
+	const pair = rig.pair;
+	assert.ok(pair);
+	await pair.runtime.waitUntilResourcesReady();
+	const chat = showUserMessagesInChat(rig.host);
+	const session = rig.engine.session;
+	const otherProcess = await SessionManager.open(
+		session.sessionManager.getSessionStore(),
+		session.sessionManager.getSessionId(),
+	);
+	const repeated = "repeated unsaved input";
+	let conflicts = 0;
+	session.subscribe((event) => {
+		if (event.type === "agent_end" && session.getPersistenceFailure()?.conflict !== undefined) conflicts += 1;
+	});
+	const send = async (attempt: number): Promise<Promise<void>> => {
+		await otherProcess.appendMessage({ role: "user", content: `other ${attempt}`, timestamp: Date.now() });
+		rig.engine.setResponses([fauxAssistantMessage("never requested")]);
+		const failuresBefore = conflicts;
+		const submitted = Promise.resolve(rig.host.defaultEditor.onSubmit?.(repeated));
+		await waitFor(
+			"the engine to stop the run on the other writer's entries",
+			() => conflicts > failuresBefore && !session.isStreaming,
+		);
+		return submitted;
+	};
+
+	// The host reads the engine's answer to the first send, then nothing of its run until both sends ended in the engine:
+	// both runs reach the host in one read after the second send.
+	pair.holdHostTrafficFrom((record) => record.type === "agent_start");
+	const first = await send(0);
+	await waitFor("the host to read the first send's answer", () => Reflect.get(rig.host, "promptTurn") === undefined);
+	const second = await send(1);
+	await pair.releaseHostTraffic();
+	await Promise.all([first, second]);
+	await pair.drain();
+
+	assert.deepEqual(
+		chat().filter((line) => line === repeated),
+		[repeated],
+		"the chat must show the message once",
+	);
+	assert.deepEqual(
+		Reflect.get(rig.host, "deferredRenderedUserInputs"),
+		[],
+		"no echo of the message may be left to show again",
+	);
+});
