@@ -142,8 +142,9 @@ async function settlesWithin(pending: Promise<void>, ms: number): Promise<boolea
 
 /**
  * The stop file that tells an engine's guardian to end it. Writing it never holds a stop up: a stop goes on to its
- * kill whether the file was written, could not be, or not yet. Removing it waits at most one step's window, and a
- * write still in progress is not waited for: the file is removed once that write settles.
+ * kill whether the file was written, could not be, or not yet. A write still in progress when the stop ends is not
+ * waited for: the file is removed once that write settles. Otherwise removing it waits at most one step's window and
+ * reports a failure within it.
  */
 function guardianStopFile(path: string): { write(): void; remove(): Promise<void> } {
 	let written: Promise<void> | undefined;
@@ -157,8 +158,13 @@ function guardianStopFile(path: string): { write(): void; remove(): Promise<void
 			written = writeFile(path, "stop").then(settled, settled);
 		},
 		async remove() {
-			const removed = (written ?? Promise.resolve()).then(() => rm(path, { force: true })).catch(() => {});
-			if (!writing) await settlesWithin(removed, ENGINE_KILL_STEP_MS);
+			if (writing) {
+				void written?.then(() => rm(path, { force: true })).catch(() => {});
+				return;
+			}
+			const removed = rm(path, { force: true });
+			removed.catch(() => {});
+			await settlesWithin(removed, ENGINE_KILL_STEP_MS);
 		},
 	};
 }
@@ -195,7 +201,7 @@ export async function terminateRpcClientProcess(
 	const guardianFile = guardianFiles.get(child);
 	const stopFile = guardianFile === undefined ? undefined : guardianStopFile(guardianFile);
 	const inputClosed = graceful && processTree && process.platform === "win32" && child.stdin !== null;
-	try {
+	const stop = async (): Promise<void> => {
 		if (inputClosed) child.stdin?.end();
 		else child.kill("SIGTERM");
 		let shutDown = false;
@@ -235,9 +241,15 @@ export async function terminateRpcClientProcess(
 		if (!(await settlesWithin(exited, reportMs))) {
 			throw new Error(`Agent process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
 		}
-	} finally {
-		await stopFile?.remove();
+	};
+	try {
+		await stop();
+	} catch (error) {
+		// The stop's own failure is the one reported.
+		await stopFile?.remove().catch(() => {});
+		throw error;
 	}
+	await stopFile?.remove();
 }
 
 export function createInteractiveJsonlOptions(enabled: boolean): { maxBytesPerTurn?: number } {
