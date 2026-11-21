@@ -44,6 +44,7 @@ import {
 	transportFailure,
 	transportFetch,
 } from "../utils/tls-certificate.ts";
+import { observeWebSocketTransport } from "../utils/websocket-transport.ts";
 import {
 	getDeclaredTools,
 	getInitialSystemMessage,
@@ -1088,7 +1089,7 @@ function recordWebSocketFailure(sessionId: string | undefined, error: unknown): 
 
 type WebSocketConstructor = new (
 	url: string,
-	protocols?: string | string[] | { headers?: Record<string, string> },
+	protocols?: string | string[] | { headers?: Record<string, string>; dispatcher?: object },
 ) => WebSocketLike;
 
 let _cachedWebsocket: WebSocketConstructor | null = null;
@@ -1193,8 +1194,13 @@ async function connectWebSocket(
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 		let socket: WebSocketLike;
 
+		// Bun's WebSocket names a refused certificate on its error event; Node.js's does not, so its connection is observed.
+		const transport = typeof process !== "undefined" && process.versions?.bun ? undefined : observeWebSocketTransport();
 		try {
-			socket = new WebSocketCtor(url, { headers: wsHeaders });
+			socket = new WebSocketCtor(url, {
+				headers: wsHeaders,
+				...(transport === undefined ? {} : { dispatcher: transport.dispatcher }),
+			});
 		} catch (error) {
 			reject(error instanceof Error ? error : new Error(String(error)));
 			return;
@@ -1226,8 +1232,15 @@ async function connectWebSocket(
 			resolve(socket);
 		};
 		const onError: WebSocketListener = (event) => {
-			// The connection to this URL failed before it opened: its own transport failure (#6114).
-			fail(transportFailure(extractWebSocketError(event), url) as Error);
+			// The connection to this URL failed before it opened: its own transport failure (#6114). On Node.js, a refused
+			// certificate is what the connection itself failed with; the event names none.
+			const failed = transport?.failure();
+			const refusal = failed === undefined ? undefined : transportFailure(failed, url);
+			fail(
+				(refusal !== undefined && findTlsCertificateRefusal(refusal) !== undefined
+					? refusal
+					: transportFailure(extractWebSocketError(event), url)) as Error,
+			);
 		};
 		const onClose: WebSocketListener = (event) => {
 			fail(extractWebSocketCloseError(event));
