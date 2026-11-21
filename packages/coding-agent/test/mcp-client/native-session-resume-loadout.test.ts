@@ -202,6 +202,8 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		overrides?: Record<string, string>;
 		/** The servers `mcp.json` defines; all of them by default. The others are for extensions to register. */
 		configured?: string[];
+		/** `toolExposure` of every server: the exposure of single tools that differs from the server's. */
+		toolExposure?: Record<string, McpExposure>;
 	}
 
 	/** What `atomic --resume` does for a stored session: file-backed manager, the MCP servers from mcp.json, same model. */
@@ -212,6 +214,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 			config: {
 				...(options.commands?.[name] ?? { url: options.urls?.[name] ?? `http://${name}.invalid/mcp` }),
 				exposure: options.exposure ?? "direct",
+				...(options.toolExposure ? { toolExposure: options.toolExposure } : {}),
 				...(options.descriptions?.[name] === undefined ? {} : { description: options.descriptions[name] }),
 			},
 			source: "test",
@@ -1031,6 +1034,36 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 			entry("b", [{ server: "docs", summary: "" }]),
 		]);
 		expect([...records.summaries.keys()]).toEqual(["wiki"]);
+	});
+
+	it("records the tools a prompt declares together with the summary its section shows (#6108)", async () => {
+		const fixture = await createFixture();
+		// The server is listed in the section for codemode and its tools are declared directly.
+		const options = {
+			exposure: "codemode" as const,
+			toolExposure: { search: "direct" as const, fetch: "direct" as const },
+		};
+		const script = (ready?: Promise<unknown>): ServerScript => ({
+			tools: [SEARCH, FETCH],
+			instructions: DOCS_INSTRUCTIONS,
+			...(ready ? { ready } : {}),
+			calls: [],
+		});
+		const { sessionFile, control } = await liveSession(fixture, { servers: { docs: script() }, ...options });
+		expect(toolNames(control)).toEqual(expect.arrayContaining(["mcp__docs__fetch", "mcp__docs__search"]));
+		expect(recordedSummaries(readFileSync(sessionFile, "utf8")).map((record) => record.server)).toEqual(["docs"]);
+
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, { servers: { docs: script(server.ready) }, ...options });
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		expect(fixture.requests.at(-1)).toBe(control);
+		server.release();
+		await settled(resumed);
+		await promptReply(fixture, resumed, "after reconnect");
+		expect(fixture.requests.at(-1)).toBe(control);
+		expect(toolChanges(resumed, before)).toEqual([]);
+		expect(sectionUpdates(resumed, before)).toEqual([]);
 	});
 
 	it("records a summary for the server that showed it, not for one registered under its name meanwhile (#6108)", async () => {
