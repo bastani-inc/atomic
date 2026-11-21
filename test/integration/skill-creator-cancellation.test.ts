@@ -344,6 +344,40 @@ describe.skipIf(python === undefined || process.platform !== "win32")("skill-cre
 		},
 		CLOSE_TEST_MS,
 	);
+
+	test(
+		"closing the console while the script has nothing running exits with the console-interrupt status",
+		() => {
+			const box = sandbox();
+			const program = [
+				"import sys, time",
+				"from pathlib import Path",
+				"from scripts.atomic_cli import run_main",
+				"def main():",
+				"    Path(sys.argv[1], 'ready.json').write_text('{}')",
+				"    time.sleep(60)",
+				"run_main(main)",
+			].join("\n");
+			const result = spawnSyncCollect(
+				[
+					python ?? "python",
+					consoleClose,
+					box.log,
+					"1",
+					`${CLOSE_HARNESS_S}`,
+					python ?? "python",
+					"-c",
+					program,
+					box.log,
+				],
+				{ cwd: box.project, env: box.env() },
+			);
+			assert.equal(result.exitCode, 0, result.stderr.toString());
+			const closed = JSON.parse(result.stdout.toString()) as { status: number | null; screen: string };
+			assert.equal(closed.status, WINDOWS_CONSOLE_INTERRUPTED, closed.screen);
+		},
+		CLOSE_TEST_MS,
+	);
 });
 
 async function waitFor(condition: () => boolean, what: string): Promise<void> {
