@@ -58,6 +58,21 @@ function startViewer(box: ScriptSandbox, args: readonly string[]): Promise<strin
 	return startViewerFor(box, args, viewers);
 }
 
+/** Another program holding a file open for reading, as Python and Node open files, until the test ends. */
+function holdOpen(box: ScriptSandbox, path: string) {
+	const holder = spawnProcess(
+		[
+			python ?? "python3",
+			"-c",
+			"import sys, time\nfile = open(sys.argv[1], 'rb')\nprint('open', flush=True)\ntime.sleep(120)",
+			path,
+		],
+		{ cwd: box.dir, env: box.env(), stdout: "pipe" },
+	);
+	viewers.push(holder);
+	return { ready: readUntil(holder.stdout, /(open)\r?\n/u) };
+}
+
 /** The copies of feedback.json kept next to it. */
 function keptCopies(folder: string): string[] {
 	return readdirSync(folder).filter((name) => name.startsWith("feedback.json.corrupt-"));
@@ -545,6 +560,24 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 		},
 	);
 
+	test.runIf(windows)(
+		"a feedback.json another program has open is still saved, written in place as before",
+		async () => {
+			const box = sandbox();
+			const current = iteration(box, "iteration-1", ["eval-1", "eval-2"], []);
+			const url = await startViewer(box, [current]);
+			const page = await openServedPage(url);
+			// Opened as Python and Node open a file on Windows: it can be written but not replaced while open.
+			const reader = holdOpen(box, join(current, "feedback.json"));
+			await reader.ready;
+			page.type("the title is missing");
+			page.press("ArrowRight");
+			await page.settled();
+			assert.deepEqual(page.notices(), []);
+			assert.deepEqual(savedReviews(current), [{ run_id: "eval-1-with_skill", feedback: "the title is missing" }]);
+		},
+	);
+
 	test("a run's prompt is read from a transcript.md with Windows line endings, as before", async () => {
 		const box = sandbox();
 		const current = iteration(box, "iteration-1", ["eval-1"]);
@@ -693,6 +726,19 @@ describe.skipIf(!pyyaml)("skill-creator's package_skill", () => {
 			/Error creating \.skill file: \[Errno 13\] Permission denied: '[^']*skill\.skill'/u,
 		);
 		assert.equal(readFileSync(join(output, "skill.skill"), "utf8"), "an earlier archive");
+		assert.deepEqual(readdirSync(output), ["skill.skill"]);
+	});
+
+	test.runIf(windows)("a .skill file another program has open is still written, in place as before", async () => {
+		const box = sandbox();
+		const output = join(box.dir, "dist");
+		mkdirSync(output);
+		writeFileSync(join(output, "skill.skill"), "an earlier archive");
+		const reader = holdOpen(box, join(output, "skill.skill"));
+		await reader.ready;
+		const result = packageSkill(box, output);
+		assert.equal(result.exitCode, 0, result.stdout.toString());
+		assert.equal(readFileSync(join(output, "skill.skill")).subarray(0, 2).toString(), "PK");
 		assert.deepEqual(readdirSync(output), ["skill.skill"]);
 	});
 
