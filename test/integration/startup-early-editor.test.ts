@@ -198,8 +198,10 @@ for (const [host, trust] of [
 				await sleep(SPLIT_PASTE_GAP_MS);
 				program.write("👩‍💻\x1b[201~!");
 				await program.waitForScreen((screen) => screen.includes(SESSION_HEADER), CLI_TIMEOUT_MS, "the session");
+				// Windows' pseudo console draws the joined emoji wider than one character pair, which can push the
+				// prompt's border onto its line: only blanks and border may follow the text.
 				await program.waitForScreen(
-					(screen) => promptLine(screen) === "❯ A界👩‍💻!",
+					(screen) => /^❯ A界👩‍💻![\s─]*$/u.test(promptLine(screen) ?? ""),
 					CLI_TIMEOUT_MS,
 					"the whole paste",
 				);
