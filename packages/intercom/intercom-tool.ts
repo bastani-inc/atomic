@@ -33,8 +33,9 @@ import {
   getErrorMessage,
   toError,
 } from "./intercom-utils.js";
-import type { ReplyTracker } from "./reply-tracker.js";
+import type { IntercomContext, ReplyTracker } from "./reply-tracker.js";
 import { awaitSubagentChildRestoration } from "./session-recovery.js";
+import { closeInboundAsk, closeRefusedAsk } from "./finished-asks.js";
 import { resolveSessionTarget, resolveSessionTargetId, resolveSessionTargetIdIn, sessionTargetFailureReason } from "./session-target.js";
 import { createConcurrencyGate } from "./route-connect-gate.js";
 import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, RETURN_PATH_TOOL_NOTE, validateRuntimeGroup } from "./group.js";
@@ -468,7 +469,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       wait: Type.Optional(askWaitSchema),
       askId: Type.Optional(askIdSchema),
       replyTo: Type.Optional(Type.String({
-        description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender",
+        description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender. With 'cancel', closes that ask sent to you without replying",
       })),
       group: Type.Optional(Type.String({
         description: "Group name for 'join' or optional targeted 'leave'; read-only group filter for 'list'/'status'. 'send'/'ask' use shared memberships.",
@@ -1444,18 +1445,23 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               const retryLater = result.reasonCode === "route_unavailable"
                 ? { reasonCode: result.reasonCode, retryLater: true as const }
                 : {};
+              // #6168: an ask no reply can reach any more is closed, so it does not stay pending for good.
+              const closed = route.expectsReply
+                ? await closeRefusedAsk(pi, activeReplyTracker(), toolSessionId, route.messageId, result)
+                : undefined;
               return {
                 content: [{
                   type: "text",
-                  text: `Reply to "${displayTarget}" was not delivered: ${errorText}`,
+                  text: `Reply to "${displayTarget}" was not delivered: ${errorText}${closed === undefined ? "" : `\n${closed}`}`,
                 }],
                 isError: true,
                 details: retryToken === undefined
-                  ? { messageId: result.id, delivered: false, reason: result.reason, ...retryLater }
+                  ? { messageId: result.id, delivered: false, reason: result.reason, ...retryLater, ...(closed === undefined ? {} : { askClosed: true }) }
                   : {
                       delivered: false,
                       reason: result.reason,
                       ...retryLater,
+                      ...(closed === undefined ? {} : { askClosed: true }),
                       ...(retained.retryToken === undefined ? {} : { retryToken: retained.retryToken }),
                     },
               };
@@ -1548,8 +1554,45 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 
         case "cancel": {
           const requested = typeof params.askId === "string" ? params.askId.trim() : "";
+          const closing = typeof replyTo === "string" ? replyTo.trim() : "";
+          if (!requested && closing) {
+            // #6168: close an ask this session was sent, without replying; nothing is sent to its sender.
+            let context: IntercomContext;
+            try {
+              context = activeReplyTracker().resolveReplyTarget({ replyTo: closing });
+            } catch (error) {
+              return { content: [{ type: "text", text: getErrorMessage(error) }], isError: true, details: { error: true } };
+            }
+            if (context.message.expectsReply !== true || !activeReplyTracker().listPending().includes(context)) {
+              return {
+                content: [{ type: "text", text: `No pending ask "${closing}" sent to you` }],
+                isError: true,
+                details: { error: true },
+              };
+            }
+            const sender = context.from.name || context.from.id;
+            if (!(await closeInboundAsk(pi, activeReplyTracker(), context.message.id, "closed"))) {
+              return {
+                content: [{ type: "text", text: `Ask ${context.message.id} from ${sender} was not closed: its close could not be saved to the session. It is still pending; try again.` }],
+                isError: true,
+                details: { error: true, replyTo: context.message.id },
+              };
+            }
+            return {
+              content: [{
+                type: "text",
+                text: `Closed ask ${context.message.id} from ${sender} without replying; nothing was sent to ${sender}.`,
+              }],
+              isError: false,
+              details: { replyTo: context.message.id, closed: true },
+            };
+          }
           if (!requested) {
-            return { content: [{ type: "text", text: "Missing 'askId' parameter" }], isError: true, details: { error: true } };
+            return {
+              content: [{ type: "text", text: "Missing 'askId' (one of your asks) or 'replyTo' (an ask sent to you)" }],
+              isError: true,
+              details: { error: true },
+            };
           }
           const matches = outboundAsks().pending().filter(({ askId }) => askId === requested || askId.startsWith(requested));
           const exact = matches.find(({ askId }) => askId === requested);

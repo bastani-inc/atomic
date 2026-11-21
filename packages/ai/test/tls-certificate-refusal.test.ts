@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer, type Server } from "node:https";
 import { createServer as createNetServer, type Server as NetServer, type Socket } from "node:net";
-import { connect as connectTls } from "node:tls";
+import tls, { type ConnectionOptions, connect as connectTls, type TLSSocket } from "node:tls";
 import { afterEach, describe, it, vi } from "vitest";
 import { createTestCertificate } from "../../../test/helpers/tls-certificates.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
@@ -11,7 +11,10 @@ import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamGoogleGenerativeAI } from "../src/api/google-generative-ai.ts";
 import { stream as streamGoogleVertex } from "../src/api/google-vertex.ts";
 import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
-import { stream as streamOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
+import {
+	getOpenAICodexWebSocketDebugStats,
+	stream as streamOpenAICodexResponses,
+} from "../src/api/openai-codex-responses.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
 import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
@@ -19,6 +22,7 @@ import { getModel } from "../src/compat.ts";
 import type { Api, AssistantMessage, Model } from "../src/types.ts";
 import { retryProviderRequest } from "../src/utils/provider-retry.ts";
 import { transportFailure } from "../src/utils/tls-certificate.ts";
+import { observeWebSocketTransport } from "../src/utils/websocket-transport.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -109,7 +113,7 @@ const TURNS: Readonly<Record<string, Turn>> = {
 	},
 };
 
-const servers: (Server | NetServer | import("node:http").Server)[] = [];
+const servers: (Server | NetServer | import("node:http").Server | tls.Server)[] = [];
 
 afterEach(async () => {
 	vi.unstubAllGlobals();
@@ -207,6 +211,132 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 		);
 	});
 
+	it("OpenAI Codex over the runtime's own WebSocket reports a certificate its connection refused without falling back to SSE (#6114)", async () => {
+		// Node.js's WebSocket reports the refusal as an empty error; the connection's own failure names the certificate.
+		const endpoint = await selfSignedEndpoint();
+		const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+
+		const message = await streamOpenAICodexResponses(
+			createModel("openai-codex-responses", endpoint.baseUrl),
+			context,
+			{ apiKey: CODEX_TOKEN, transport: "auto", fetch, sessionId: "codex-native-websocket-refused" },
+		).result();
+
+		assert.equal(message.stopReason, "error");
+		assert.equal(fetch.mock.calls.length, 0, `the request was sent again over SSE: ${message.errorMessage}`);
+		assert.equal(endpoint.connections(), 1);
+		assert.ok(
+			message.errorMessage?.startsWith(
+				`The TLS certificate for ${new URL(endpoint.baseUrl).host} was not accepted (DEPTH_ZERO_SELF_SIGNED_CERT: self-signed certificate`,
+			),
+			message.errorMessage,
+		);
+		assert.deepEqual(
+			(message.diagnostics ?? []).map((diagnostic) => diagnostic.type),
+			["provider_tls_certificate_refused"],
+		);
+	});
+
+	it("OpenAI Codex's WebSocket connects through the dispatcher the runtime's WebSocket uses by default (#6114)", async () => {
+		// Each global dispatcher undici keeps, wrapped to record the requests sent through it. Which one the WebSocket uses
+		// when it is given none (a proxy agent, say) is up to the runtime's undici; Codex's connection must use the same.
+		const NativeWebSocket = globalThis.WebSocket;
+		interface Dispatcher {
+			dispatch(options: object, handler: object): boolean;
+		}
+		const globals = globalThis as { [key: symbol]: Dispatcher | undefined };
+		const used: string[] = [];
+		const restore: (() => void)[] = [];
+		for (const name of ["undici.globalDispatcher.1", "undici.globalDispatcher.2"]) {
+			const key = Symbol.for(name);
+			const real = globals[key];
+			if (real === undefined) continue;
+			globals[key] = Object.assign(Object.create(real) as Dispatcher, {
+				dispatch(options: object, handler: object) {
+					used.push(name);
+					return real.dispatch(options, handler);
+				},
+			});
+			restore.push(() => {
+				globals[key] = real;
+			});
+		}
+		try {
+			const endpoint = await selfSignedEndpoint();
+			const wss = endpoint.baseUrl.replace("https:", "wss:");
+			await new Promise<void>((resolve) => {
+				// Node.js 22's WebSocket reports a failed handshake with an error event and no close event.
+				new NativeWebSocket(wss).addEventListener("error", () => resolve());
+			});
+			const byDefault = used.splice(0);
+			assert.equal(byDefault.length, 1, byDefault.join());
+
+			const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+			await streamOpenAICodexResponses(createModel("openai-codex-responses", endpoint.baseUrl), context, {
+				apiKey: CODEX_TOKEN,
+				transport: "websocket",
+				fetch,
+				sessionId: "codex-native-websocket-dispatcher",
+			}).result();
+			assert.deepEqual(used, byDefault);
+		} finally {
+			for (const undo of restore) undo();
+		}
+	});
+
+	it("OpenAI Codex over the runtime's own WebSocket still falls back to SSE for a reset, a refused connection or an upgrade the server refused, reporting the WebSocket's error as before (#6114)", async () => {
+		// A TLS endpoint that resets each connection during the handshake, a port nothing listens on, and a plain endpoint
+		// that answers the upgrade with 502.
+		const reset = createNetServer((socket: Socket) => {
+			socket.on("error", () => {});
+			socket.once("data", () => socket.resetAndDestroy());
+		});
+		const refusing = createHttpServer((_request, response) => response.writeHead(502).end());
+		refusing.on("upgrade", (_request, socket: Socket) => socket.end("HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n"));
+		servers.push(reset, refusing);
+		for (const server of [reset, refusing]) await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const portOf = (server: NetServer | import("node:http").Server) => {
+			const address = server.address();
+			assert.ok(address !== null && typeof address === "object");
+			return address.port;
+		};
+
+		const closed = createNetServer();
+		await new Promise<void>((resolve) => closed.listen(0, "127.0.0.1", resolve));
+		const closedPort = portOf(closed);
+		await new Promise<void>((resolve) => closed.close(() => resolve()));
+
+		for (const baseUrl of [
+			`https://localhost:${portOf(reset)}`,
+			`https://127.0.0.1:${closedPort}`,
+			`http://127.0.0.1:${portOf(refusing)}`,
+		]) {
+			const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+			const sessionId = `codex-native-websocket-${baseUrl}`;
+			const message = await streamOpenAICodexResponses(createModel("openai-codex-responses", baseUrl), context, {
+				apiKey: CODEX_TOKEN,
+				transport: "auto",
+				fetch,
+				sessionId,
+			}).result();
+
+			// The WebSocket's own error, as Node.js 22 and Node.js 24 and later word it, not the connection's failure.
+			assert.match(
+				getOpenAICodexWebSocketDebugStats(sessionId)?.lastWebSocketError ?? "",
+				/^(?:WebSocket error|Received network error or non-101 status code\.)$/,
+				baseUrl,
+			);
+
+			assert.equal(message.stopReason, "error");
+			assert.equal(fetch.mock.calls.length, 1, `${baseUrl}: ${message.errorMessage}`);
+			assert.deepEqual(tlsDiagnostics(message), [], message.errorMessage);
+			assert.ok(
+				(message.diagnostics ?? []).some((diagnostic) => diagnostic.type === "provider_transport_failure"),
+				JSON.stringify(message.diagnostics),
+			);
+		}
+	});
+
 	it("OpenAI Codex still falls back to SSE for a WebSocket handshake failure that names no certificate code (#6114)", async () => {
 		// Node's WebSocket reports the failure without the certificate's code; a reason in other words is not the runtime's.
 		for (const error of [
@@ -297,6 +427,88 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 		assert.deepEqual(tlsDiagnostics(hooked), [], hooked.errorMessage);
 	});
 
+	it("a refused certificate on a default endpoint names the host the request was sent to (#6114)", async () => {
+		// The model has no base URL of its own: the SDK resolves the endpoint from the project, resource or region. Each
+		// request is sent on to a local endpoint whose certificate is self-signed.
+		const endpoint = await selfSignedEndpoint();
+		const requested: string[] = [];
+		const redirect: typeof fetch = Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+			const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+			requested.push(url.host);
+			return globalThis.fetch(`${endpoint.baseUrl}${url.pathname}${url.search}`, init);
+		}, globalThis.fetch);
+		// Bedrock's SDK speaks HTTP/2 unless told otherwise: an endpoint that offers it, with the same certificate.
+		const certificate = createTestCertificate({ subject: "localhost", altNames: ["localhost"] });
+		const bedrockEndpoint = tls.createServer({ cert: certificate.cert, key: certificate.key, ALPNProtocols: ["h2", "http/1.1"] });
+		bedrockEndpoint.on("tlsClientError", () => {});
+		servers.push(bedrockEndpoint);
+		await new Promise<void>((resolve) => bedrockEndpoint.listen(0, "127.0.0.1", resolve));
+		const bedrockAddress = bedrockEndpoint.address();
+		assert.ok(bedrockAddress !== null && typeof bedrockAddress === "object");
+		const bedrockPort = bedrockAddress.port;
+		const connect = tls.connect;
+		// Amazon Bedrock's SDK has its own HTTP handler: its TLS connections to AWS are sent on instead.
+		// Called as `connect(options)` (HTTP/1.1) or `connect(port, host, options)` (HTTP/2).
+		vi.spyOn(tls, "connect").mockImplementation(((...args: (ConnectionOptions | string | number)[]) => {
+			const options = (args.find((arg) => typeof arg === "object") ?? {}) as ConnectionOptions;
+			const host = typeof args[1] === "string" ? args[1] : options.host;
+			const name = options.servername || host || "";
+			if (name.endsWith(".amazonaws.com")) {
+				requested.push(name);
+				return connect({ ...options, host: "127.0.0.1", port: bedrockPort, servername: name });
+			}
+			// Nothing leaves this machine.
+			if (name !== "localhost" && name !== "127.0.0.1") throw new Error(`unexpected connection to ${name}`);
+			return (connect as (...forwarded: unknown[]) => TLSSocket)(...args);
+		}) as typeof tls.connect);
+		try {
+			const bedrock = getModel(
+				"amazon-bedrock",
+				"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+			) as Model<"bedrock-converse-stream">;
+			const bedrockTurn = (http1: string) =>
+				streamBedrock(bedrock, context, {
+					cacheRetention: "none",
+					maxRetries: 0,
+					env: { AWS_BEDROCK_FORCE_HTTP1: http1, AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "eu-west-1" },
+				}).result();
+			const turns: [string, () => Promise<AssistantMessage>][] = [
+				[
+					"aiplatform.googleapis.com",
+					() =>
+						streamGoogleVertex(getModel("google-vertex", "gemini-2.5-flash") as Model<"google-vertex">, context, {
+							apiKey: "test-key",
+							fetch: redirect,
+							maxRetries: 0,
+						}).result(),
+				],
+				[
+					"my-resource.openai.azure.com",
+					() =>
+						streamAzureOpenAIResponses(
+							getModel("azure-openai-responses", "gpt-4.1") as Model<"azure-openai-responses">,
+							context,
+							{ apiKey: "test-key", azureResourceName: "my-resource", fetch: redirect, maxRetries: 0 },
+						).result(),
+				],
+				["bedrock-runtime.eu-west-1.amazonaws.com", () => bedrockTurn("1")],
+				["bedrock-runtime.eu-west-1.amazonaws.com", () => bedrockTurn("0")],
+			];
+			for (const [host, turn] of turns) {
+				const message = await turn();
+				assert.deepEqual(requested.splice(0), [host], `${host}: ${message.errorMessage}`);
+				assert.ok(
+					message.errorMessage?.startsWith(
+						`The TLS certificate for ${host} was not accepted (DEPTH_ZERO_SELF_SIGNED_CERT: self-signed certificate`,
+					),
+					message.errorMessage,
+				);
+			}
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
+
 	it("a failed assistant message read back from JSON is still not retried (#6114)", async () => {
 		const endpoint = await selfSignedEndpoint();
 		const message = await TURNS["OpenAI Completions"](endpoint.baseUrl);
@@ -308,6 +520,64 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 });
 
 describe("failures that are not a refused certificate keep their retries (#6114)", () => {
+	it("a WebSocket's connection failure counts only from its last dispatch, before any response (#6114)", () => {
+		// Global dispatchers that fail or answer each request as told: an intermediary may dispatch a connection more
+		// than once, and only the last attempt's outcome is the connection's.
+		type Handler = { [callback: string]: ((...args: unknown[]) => unknown) | undefined };
+		const outcomes: ((handler: Handler) => void)[] = [];
+		const answering = { dispatch: (_options: object, handler: Handler) => (outcomes.shift()?.(handler), true) };
+		const keys = [Symbol.for("undici.globalDispatcher.1"), Symbol.for("undici.globalDispatcher.2")];
+		const globals = globalThis as { [key: symbol]: object | undefined };
+		// undici defines them writable but not configurable; one not defined yet is defined for the test only.
+		const saved = keys.map((key) => [key, key in globalThis, globals[key]] as const);
+		for (const key of keys)
+			if (key in globalThis) globals[key] = answering;
+			else Object.defineProperty(globalThis, key, { value: answering, writable: true, configurable: true });
+		try {
+			const refused = Object.assign(new Error("self-signed certificate"), { code: "DEPTH_ZERO_SELF_SIGNED_CERT" });
+			const run = (...steps: ((handler: Handler) => void)[]) => {
+				const transport = observeWebSocketTransport();
+				assert.ok(transport !== undefined);
+				const dispatcher = transport.dispatcher as typeof answering;
+				for (const step of steps) {
+					outcomes.push(step);
+					// As undici 8's fetch dispatches, and as undici 6 and 7 do.
+					dispatcher.dispatch({}, { onRequestStart() {}, onResponseStart() {}, onResponseError() {} });
+				}
+				return transport.failure();
+			};
+			const fail = (handler: Handler) => handler.onResponseError?.({}, refused);
+			const answer = (handler: Handler) => handler.onResponseStart?.({}, 403, {}, "Forbidden");
+			const answerThenFail = (handler: Handler) => {
+				answer(handler);
+				handler.onResponseError?.({}, refused);
+			};
+			assert.equal(run(fail), refused);
+			assert.equal(run(fail, answer), undefined);
+			const reset = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+			assert.equal(
+				run(fail, (handler) => handler.onResponseError?.({}, reset)),
+				reset,
+			);
+			assert.equal(run(answerThenFail), undefined);
+			assert.equal(run(answer, fail), refused);
+			// A dispatch that has not reported yet has not failed.
+			assert.equal(
+				run(fail, () => {}),
+				undefined,
+			);
+			// The earlier callbacks undici 6 and 7 dispatch with.
+			const legacy = observeWebSocketTransport();
+			outcomes.push((handler) => handler.onError?.(refused));
+			(legacy?.dispatcher as typeof answering).dispatch({}, { onConnect() {}, onHeaders() {}, onError() {} });
+			assert.equal(legacy?.failure(), refused);
+		} finally {
+			for (const [key, defined, value] of saved) {
+				if (defined) globals[key] = value;
+				else delete globals[key];
+			}
+		}
+	});
 	it("a connection reset during the TLS handshake is retried, at the SDK and by the session (#6114)", async () => {
 		let connections = 0;
 		const server = createNetServer((socket: Socket) => {

@@ -525,12 +525,13 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		settings: Record<string, unknown> = {},
 		factories: ExtensionFactory[] = [],
 		instructions = MORE_INSTRUCTIONS,
+		inputTokens = NEAR_WINDOW_INPUT,
 	) {
 		const installation = await install(BUDGET_MODEL, "install", {
 			settings: { defaultThinkingLevel: "medium", ...settings },
 			factories,
 		});
-		server.inputTokens = NEAR_WINDOW_INPUT;
+		server.inputTokens = inputTokens;
 		const live = await start(installation);
 		await send(live, "one");
 		const lastBeforeExit = await send(live, "two");
@@ -674,6 +675,96 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		assert.equal(compactions(resumed), 0);
 		assert.ok(JSON.stringify(firstAfterResume.messages).includes("answer to one"), "the history is not sent");
 		assert.deepEqual(firstAfterResume.thinking, lastBeforeExit.thinking);
+	});
+
+	const budgetOf = (request: AnthropicRequestBody) =>
+		(request.thinking as { budget_tokens?: number } | undefined)?.budget_tokens ?? 0;
+	/** The first request sent after `before` requests, once the run that sent it has ended. */
+	async function firstRequestAfter(runtime: AgentSessionRuntime, before: number): Promise<AnthropicRequestBody> {
+		await until(
+			() =>
+				server.requests.length > before &&
+				!runtime.session.isStreaming &&
+				runtime.session.messages.at(-1)?.role === "assistant",
+		);
+		return server.requests[before]!.json;
+	}
+
+	test("a run an extension starts first after the resume clears first too", async () => {
+		let kick = (): void => {};
+		const starter: ExtensionFactory = (pi) => {
+			kick = () => {
+				void pi.sendMessage({ customType: "kick", content: "Carry on.", display: true }, { triggerTurn: true });
+			};
+		};
+		const { installation, sessionId } = await nearWindowSession({}, [starter]);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const before = server.requests.length;
+		kick();
+		const firstAfterResume = await firstRequestAfter(resumed, before);
+
+		assert.equal(budgetOf(firstAfterResume), 8192);
+		assert.equal(compactions(resumed), 1);
+		const sent = JSON.stringify(firstAfterResume.messages);
+		assert.ok(sent.includes("Keep each change reviewed."), "the new instructions are not sent");
+		assert.ok(sent.includes("Carry on."), "the extension's message is not sent");
+		assert.ok(!sent.includes("answer to one"), "the cleared history is still sent");
+	});
+
+	/**
+	 * With the high level's 16,384-token budget, replies that report 172,000 input tokens leave room for it, and about
+	 * 8,000 tokens more do not, while the context stays below the automatic compaction trigger.
+	 */
+	const HIGH_NEAR_WINDOW_INPUT = 172_000;
+	const RECOVERY_NOTICE = `Restored. ${"Keep each change reviewed. ".repeat(1185)}`;
+
+	for (const queue of ["steer", "followUp"] as const)
+		test(`a ${queue} message that continues the resumed session clears first when the recovery notice would lower the budget`, async () => {
+			const recovering: ExtensionFactory = (pi) => {
+				pi.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
+			};
+			const { installation, sessionId, lastBeforeExit } = await nearWindowSession(
+				{ defaultThinkingLevel: "high" },
+				[recovering],
+				"Prefer small changes.\n",
+				HIGH_NEAR_WINDOW_INPUT,
+			);
+			assert.equal(budgetOf(lastBeforeExit), 16_384);
+			const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+			await resumed.session.startPendingRecovery("resume");
+			const before = server.requests.length;
+			await resumed.session[queue]("three");
+			const firstAfterResume = await firstRequestAfter(resumed, before);
+
+			assert.equal(budgetOf(firstAfterResume), 16_384);
+			assert.equal(compactions(resumed), 1);
+			const sent = JSON.stringify(firstAfterResume.messages);
+			assert.ok(sent.includes("Session recovery after restart"), "the recovery notice is not sent");
+			assert.ok(!sent.includes("answer to one"), "the cleared history is still sent");
+			// A continued turn takes steering input first; follow-up input waits for the turn after it, as it would have.
+			assert.equal(sent.includes("three"), queue === "steer");
+		});
+
+	test("what an extension adds after the session opened counts as the conversation's, so it does not clear", async () => {
+		let addTask = (): void => {};
+		const tasks: ExtensionFactory = (pi) => {
+			addTask = () => {
+				void pi.sendMessage(
+					{ customType: "task", content: `Task: ${"Keep each change reviewed. ".repeat(520)}`, display: true },
+					{ triggerTurn: false },
+				);
+			};
+		};
+		const { installation, sessionId } = await nearWindowSession({}, [tasks], "Prefer small changes.\n");
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		addTask();
+		await until(() => resumed.session.messages.some((message) => message.role === "custom"));
+		const firstAfterResume = await send(resumed, "three");
+
+		// A session that kept running would have sent the task with the history and a lower budget too.
+		assert.equal(compactions(resumed), 0);
+		assert.ok(JSON.stringify(firstAfterResume.messages).includes("answer to one"), "the history is not sent");
+		assert.ok(budgetOf(firstAfterResume) < 8192, `budget ${budgetOf(firstAfterResume)}`);
 	});
 
 	test("with automatic compaction off, the request lowers the budget to fit as before", async () => {
