@@ -19,6 +19,8 @@ const windows = process.platform === "win32";
 
 /** Where Linux and macOS keep bash: hidden by the first test, which looks for a shell where no bash is installed there. */
 const hiddenPaths = vi.hoisted(() => new Set<string>());
+/** Folders whose real path is read without an answer, as on a network share that stopped responding. */
+const heldRealpaths = vi.hoisted(() => new Set<string>());
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
 	const accessSync: typeof actual.accessSync = (path, mode) => {
@@ -33,7 +35,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		hiddenPaths.has(String(path))
 			? Promise.reject(Object.assign(new Error(`ENOENT: ${String(path)}`), { code: "ENOENT" }))
 			: actual.access(path, mode);
-	return { ...actual, access, default: { ...actual, access } };
+	const realpath = ((path: string, options?: BufferEncoding) =>
+		heldRealpaths.has(String(path))
+			? new Promise(() => {})
+			: actual.realpath(path, options)) as typeof actual.realpath;
+	return { ...actual, access, realpath, default: { ...actual, access, realpath } };
 });
 
 /**
@@ -86,6 +92,7 @@ beforeEach(() => {
 afterEach(() => {
 	process.chdir(previousCwd);
 	hiddenPaths.clear();
+	heldRealpaths.clear();
 	vi.unstubAllEnvs();
 	rmSync(root, { recursive: true, force: true });
 });
@@ -220,6 +227,28 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 			await transport.close();
 		},
 	);
+
+	test("an MCP server closed while its folder is compared with the project folder never starts", async () => {
+		const elsewhere = join(root, "elsewhere");
+		mkdirSync(elsewhere);
+		heldRealpaths.add(elsewhere);
+		const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
+		const { McpConnectionClosedError } = await import("../src/extensions/mcp/client/protocol/jsonrpc.ts");
+		const transport = new StdioTransport({ command: "atomic-test-mcp-server", cwd: elsewhere, projectCwd: project });
+		// The comparison is made where Windows would look in the server's folder first.
+		const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+		Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+		let started: Promise<void>;
+		try {
+			started = transport.start();
+		} finally {
+			Object.defineProperty(process, "platform", platform);
+		}
+
+		await transport.close();
+		await assert.rejects(started, McpConnectionClosedError);
+		assert.equal(transport.pid, undefined);
+	});
 
 	test("an MCP server closed while its program is looked up never starts", async () => {
 		const bin = join(root, "bin");

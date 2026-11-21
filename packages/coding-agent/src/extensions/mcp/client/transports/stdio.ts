@@ -69,6 +69,25 @@ function serverEnvironment(inherited: NodeJS.ProcessEnv, configured: Record<stri
 	return { ...Object.fromEntries(kept), ...configured };
 }
 
+/** `work`'s result, or `signal`'s reason as soon as it aborts, whatever `work` still waits for. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		work.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
 /**
  * Whether `directory` is certainly outside the project folder, with links and other spellings of either resolved: only
  * there may a program be looked up by name. Not when either cannot be read.
@@ -142,12 +161,15 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		const { cwd } = this.options;
 		let launch: HelperLaunch;
 		try {
-			// Windows looks in a program's working directory first: one configured outside the project folder.
+			// Windows looks in a program's working directory first: one configured outside the project folder, for a
+			// program given by name.
 			const searchFirst =
 				process.platform === "win32" &&
+				!/[\\/:]/.test(this.options.command) &&
 				cwd !== undefined &&
 				projectCwd !== undefined &&
-				(await outsideProject(cwd, projectCwd))
+				cwd !== projectCwd &&
+				(await untilAborted(outsideProject(cwd, projectCwd), this.lookup.signal))
 					? cwd
 					: undefined;
 			launch = await helperLaunchAsync(this.options.command, {
