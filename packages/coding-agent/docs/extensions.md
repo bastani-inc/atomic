@@ -240,7 +240,7 @@ To share extensions via npm or git as Atomic packages, see [Atomic packages](/pa
 | Package | Purpose |
 |---------|---------|
 | `@bastani/atomic` | Extension types (`ExtensionAPI`, `ExtensionContext`, events) |
-| `typebox` | Schema definitions for tool parameters |
+| `typebox` | Schema definitions for tool parameters. Every `typebox` import, subpaths such as `typebox/format` included, gets Atomic's own copy, so formats registered with `Format.Set()` apply to tool validation |
 | [`@bastani/atomic-ai`](/libraries/ai) | AI utilities (`StringEnum` for Google-compatible enums) |
 | [`@bastani/atomic-tui`](/libraries/tui) | TUI components for custom rendering |
 | [`@bastani/atomic-agent-core`](/libraries/agent-core) | Agent loop types and helpers |

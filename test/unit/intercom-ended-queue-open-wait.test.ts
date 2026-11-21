@@ -99,6 +99,30 @@ test("a broker whose local store's code never loads keeps the queue in memory wi
 	assert.equal(outcome.retired, true);
 });
 
+test("a broker whose local store's code has loaded but which never opens keeps the queue in memory after the open wait (#6126)", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	cleanups.push(() => {
+		vi.useRealTimers();
+	});
+	const { queue, outcome } = queueWith({
+		storeCodeLoaded: () => Promise.resolve(),
+		openStore: async () => new Promise<never>(() => {}),
+	});
+	let decided = false;
+	void queue
+		.decide(() => {})
+		.then(() => {
+			decided = true;
+		});
+
+	await vi.advanceTimersByTimeAsync(ENDED_QUEUE_OPEN_WAIT_MS - 1);
+	assert.equal(decided, false, "the first registration waits for the store to open");
+	await vi.advanceTimersByTimeAsync(1);
+	assert.equal(decided, true, "and no longer than the open wait once the code has loaded");
+	assert.equal(queue.durable, false);
+	assert.equal(outcome.retired, true);
+});
+
 test("a test's longer open wait also holds while multi-node routing starts, so a slow start keeps the shared store", async () => {
 	const openWaitMs = 4 * ENDED_QUEUE_TOTAL_WAIT_MS;
 	const previous = process.env[ENDED_QUEUE_OPEN_WAIT_ENV];

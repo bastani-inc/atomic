@@ -443,6 +443,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	const onlyAtomicMarksBundled =
 		options?.builtinPackagePaths === undefined &&
 		!(options?.extensionFactories ?? []).some((input) => typeof input !== "function" && input.bundled === true);
+	// The same mapping as applyOfflineEnvironment in utils/startup-environment.ts, which applies it before a prewarmed
+	// engine starts. Written here again so that main's code imports no new name from code an earlier session holds.
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
 	if (offlineMode) {
 		setEnvValue(ENV_OFFLINE, "1");

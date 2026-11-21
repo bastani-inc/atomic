@@ -9,10 +9,13 @@ import {
 	discardPrewarmedEngine,
 	type EngineLaunch,
 	engineLaunch,
+	INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG,
+	type PrewarmLaunchBasis,
 	prewarmInteractiveEngine,
 	sameEngineLaunch,
 	shouldPrewarmInteractiveEngine,
 } from "../src/modes/interactive-engine/engine-prewarm.ts";
+import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../src/utils/interactive-engine-bootstrap.ts";
 
 /** How long a stand-in engine may take to start, or to be gone once stopped, on a loaded runner. */
 const ENGINE_START_OR_EXIT_WAIT_MS = 30_000;
@@ -40,6 +43,7 @@ function writeEngineScript(): string {
 		path,
 		`import { writeFileSync } from "node:fs";\n` +
 			`writeFileSync(${JSON.stringify(join(dir, "pid"))}, String(process.pid));\n` +
+			`writeFileSync(${JSON.stringify(join(dir, "prewarm-argv"))}, JSON.stringify(process.argv.slice(2)));\n` +
 			`import { readPrewarmedEngineArgs } from ${JSON.stringify(prewarm)};\n` +
 			`import { attachJsonlLineReader } from ${JSON.stringify(jsonl)};\n` +
 			"const args = await readPrewarmedEngineArgs();\n" +
@@ -122,8 +126,8 @@ describe("adopting a prewarmed engine child", () => {
 
 	const terminal = { stdinIsTTY: true, stdoutIsTTY: true, cpus: 8 };
 	/** Prewarms the stand-in engine as `launch` starts it, and returns its pid once it runs. */
-	async function prewarm(script: string, launch: EngineLaunch): Promise<number> {
-		prewarmInteractiveEngine([], { host: terminal, launch });
+	async function prewarm(script: string, launch: EngineLaunch, basis?: PrewarmLaunchBasis): Promise<number> {
+		prewarmInteractiveEngine([], { host: terminal, launch, basis });
 		const pidFile = join(script, "..", "pid");
 		await vi.waitFor(() => assert.ok(existsSync(pidFile) && readFileSync(pidFile, "utf8")), {
 			timeout: ENGINE_START_OR_EXIT_WAIT_MS,
@@ -157,8 +161,8 @@ describe("adopting a prewarmed engine child", () => {
 			`import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(join(dir, "argv"))}, JSON.stringify(process.argv.slice(2)));\nprocess.stdin.resume();\n`,
 		);
 		const argvFile = join(dir, "argv");
-		const startedArgv = async (hostArgs: string[]): Promise<string[]> => {
-			prewarmInteractiveEngine(hostArgs, { host: terminal, launch: standIn(script) });
+		const startedArgv = async (hostArgs: string[], basis?: PrewarmLaunchBasis): Promise<string[]> => {
+			prewarmInteractiveEngine(hostArgs, { host: terminal, launch: standIn(script), basis });
 			await vi.waitFor(() => assert.ok(existsSync(argvFile)), { timeout: ENGINE_START_OR_EXIT_WAIT_MS });
 			const argv = JSON.parse(readFileSync(argvFile, "utf8")) as string[];
 			discardPrewarmedEngine();
@@ -170,19 +174,55 @@ describe("adopting a prewarmed engine child", () => {
 			"--internal-engine-prewarm-no-database",
 		]);
 		assert.deepEqual(await startedArgv([]), ["--internal-engine-prewarm"]);
+		// The engine reads the no-database marker as its second argument; the cache flag comes after it.
+		assert.deepEqual(
+			await startedArgv(["--no-session"], "derived"),
+			process.platform === "win32"
+				? ["--internal-engine-prewarm", "--internal-engine-prewarm-no-database"]
+				: [
+						"--internal-engine-prewarm",
+						"--internal-engine-prewarm-no-database",
+						"--internal-engine-prewarm-write-cache",
+					],
+		);
 	});
 
 	test("adopts the child prewarmed with the very launch the host would start, and runs it as the host's engine", async () => {
 		const script = writeEngineScript();
 		const prewarmed = standIn(script);
 		const pid = await prewarm(script, prewarmed);
-		const child = adoptPrewarmedEngine({ ...prewarmed, env: { ...prewarmed.env } }, ["--mode", "rpc"]);
+		const bases: PrewarmLaunchBasis[] = [];
+		const child = adoptPrewarmedEngine({ ...prewarmed, env: { ...prewarmed.env } }, ["--mode", "rpc"], (basis) =>
+			bases.push(basis),
+		);
 		assert.ok(child, "the prewarmed child is adopted");
 		children.push(child);
+		assert.deepEqual(bases, ["unchanged"]);
+		assert.deepEqual(JSON.parse(readFileSync(join(script, "..", "prewarm-argv"), "utf8")), [
+			INTERACTIVE_ENGINE_PREWARM_FLAG,
+		]);
 		assert.equal(child.pid, pid);
 		const output = readLines(child, 2);
 		child.stdin!.write('{"id":"1"}\n');
 		assert.deepEqual(await output, [{ args: ["--mode", "rpc"], argv: ["--mode", "rpc"] }, { line: '{"id":"1"}' }]);
+	});
+
+	test("tells its host that the prewarm carried environment the arguments or settings add", async () => {
+		const script = writeEngineScript();
+		const prewarmed = standIn(script);
+		await prewarm(script, prewarmed, "derived");
+		const bases: PrewarmLaunchBasis[] = [];
+		const child = adoptPrewarmedEngine(prewarmed, ["--mode", "rpc"], (basis) => bases.push(basis));
+		assert.ok(child, "the prewarmed child is adopted");
+		children.push(child);
+		assert.deepEqual(bases, ["derived"]);
+		// Off Windows its host waits for its exit, so it writes its compile cache before that if it can.
+		assert.deepEqual(
+			JSON.parse(readFileSync(join(script, "..", "prewarm-argv"), "utf8")),
+			process.platform === "win32"
+				? [INTERACTIVE_ENGINE_PREWARM_FLAG]
+				: [INTERACTIVE_ENGINE_PREWARM_FLAG, INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG],
+		);
 	});
 
 	// The host's environment may change between the prewarm at its first line and the engine it settles on. A child

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "vitest";
+import { ENGINE_SHUTDOWN_GRACE_MS } from "../../packages/coding-agent/src/modes/rpc/rpc-client-process.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { startPtyProgram } from "../helpers/pty-program.js";
 import {
@@ -16,8 +17,15 @@ import { startScriptedChatServer } from "../helpers/scripted-chat-server.js";
 
 const CLI = join(moduleDir(import.meta.url), "../../packages/coding-agent/dist/cli.js");
 const CLI_START_TIMEOUT_MS = 60_000;
-/** Quitting a session whose Intercom has not started yet takes about 0.2 s; a waited-for broker start takes seconds. */
-const EXIT_BOUND_MS = 3_000;
+/**
+ * How long each host's quit may take. Its shutdown handlers get ENGINE_SHUTDOWN_GRACE_MS: a quit that waited for the
+ * broker start is cut there and leaves the broker running, which the broker check catches on both hosts. In the
+ * in-process terminal the quit stops the start as it begins and ends well within the grace (under 0.3 s on an idle
+ * Linux machine, under 4 s on a loaded Windows one). An isolated terminal's quit also ends its engine and then exits
+ * the host, which on a loaded Windows machine can take past the grace on its own, with or without a broker; this test
+ * does not bound that, and holds it only to the CLI's step bound, so a quit that hangs still fails.
+ */
+const EXIT_BOUND_MS = { "in-process": ENGINE_SHUTDOWN_GRACE_MS, isolated: CLI_START_TIMEOUT_MS } as const;
 const BROKER_GONE_BOUND_MS = 2_000;
 
 /** A broker that starts, announces itself as a real one does (with when it was created, when asked), and never listens. */
@@ -187,11 +195,14 @@ describe("quitting a session whose startup join is waiting for a broker that nev
 					session.write("\r");
 					assert.equal((await session.exited).exitCode, 0);
 					const exitMs = performance.now() - quitAt;
-					assert.ok(exitMs < EXIT_BOUND_MS, `quitting waited ${Math.round(exitMs)} ms for the broker start`);
 					assert.equal(
 						await waitUntilGone(broker, BROKER_GONE_BOUND_MS, 50),
 						true,
 						"the broker the session started outlived it",
+					);
+					assert.ok(
+						exitMs < EXIT_BOUND_MS[host],
+						`quitting took ${Math.round(exitMs)} ms of its ${EXIT_BOUND_MS[host]} ms`,
 					);
 				} finally {
 					session.kill();
