@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test, vi } from "vitest";
-import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import {
 	type DetachedBrokerProbe,
 	removeTempRootReleasingBroker,
@@ -17,6 +16,7 @@ import {
 	spawnProcess,
 	writeTextSync,
 } from "../helpers/runtime.js";
+import { startStandInBroker } from "../helpers/stand-in-broker.js";
 
 function processExists(pid: number): boolean {
 	try {
@@ -27,62 +27,11 @@ function processExists(pid: number): boolean {
 	}
 }
 
-/**
- * A stand-in broker: it listens on the agent dir's broker socket, answers `broker_status` with its own pid as a broker
- * does, records its pid in `broker.pid` once it listens, and with `holdLog` keeps `broker.log` open.
- */
-const STAND_IN_BROKER = `const fs = require("node:fs");
-const net = require("node:net");
-const [socketPath, pidPath, logPath, pidless] = process.argv.slice(1);
-if (logPath) fs.openSync(logPath, "a");
-const frame = (message) => {
-	const payload = Buffer.from(JSON.stringify(message));
-	const header = Buffer.alloc(4);
-	header.writeUInt32BE(payload.length);
-	return Buffer.concat([header, payload]);
-};
-net.createServer((socket) => {
-	socket.on("error", () => {});
-	let buffer = Buffer.alloc(0);
-	socket.on("data", (chunk) => {
-		buffer = Buffer.concat([buffer, chunk]);
-		while (buffer.length >= 4 && buffer.length >= 4 + buffer.readUInt32BE(0)) {
-			const message = JSON.parse(buffer.subarray(4, 4 + buffer.readUInt32BE(0)).toString("utf8"));
-			buffer = buffer.subarray(4 + buffer.readUInt32BE(0));
-			if (message.type !== "broker_status") continue;
-			const report = pidless === "pidless" ? {} : { pid: process.pid, sessions: 0, multiNode: { status: "off" } };
-			socket.write(frame({ type: "broker_status", requestId: message.requestId, report }));
-		}
-	});
-}).listen(socketPath, () => fs.writeFileSync(pidPath, String(process.pid)));
-setInterval(() => {}, 1000);`;
-
 /** A started process whose pid is known. */
 function started(child: ReturnType<typeof spawnProcess>) {
 	const pid = child.pid;
 	assert.ok(pid !== undefined, "the process did not start");
 	return { pid, kill: (signal: NodeJS.Signals) => child.kill(signal), exited: child.exited };
-}
-
-function startStandInBroker(
-	agentDir: string,
-	{ holdLog = false, pidless = false }: { readonly holdLog?: boolean; readonly pidless?: boolean } = {},
-) {
-	const intercomDir = join(agentDir, "intercom");
-	const args = [
-		getBrokerSocketPath(process.platform, agentDir),
-		join(intercomDir, "broker.pid"),
-		holdLog ? join(intercomDir, "broker.log") : "",
-		pidless ? "pidless" : "",
-	];
-	return started(
-		spawnProcess({
-			cmd: [process.execPath, "-e", STAND_IN_BROKER, ...args],
-			stdin: "ignore",
-			stdout: "ignore",
-			stderr: "ignore",
-		}),
-	);
 }
 
 /** A process that is no broker, as a later process given a crashed broker's pid is. */
@@ -138,6 +87,23 @@ test("stopDetachedBroker terminates the broker that answers on the agent dir's s
 		await waitForFile(join(agentDir, "intercom", "broker.pid"));
 		assert.equal(readTextSync(join(agentDir, "intercom", "broker.pid"), "utf8"), String(broker.pid));
 		await stopDetachedBroker(agentDir);
+		assert.equal(processExists(broker.pid), false);
+	} finally {
+		broker.kill("SIGKILL");
+		await broker.exited;
+		await removeTempRootReleasingBroker(root, agentDir);
+	}
+});
+
+test("stopDetachedBroker stops its broker that recorded its pid before it answers (#6125)", async () => {
+	const root = makeTempDirectory("atomic-broker-teardown-late-");
+	const agentDir = join(root, "agent");
+	makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+	// A real broker writes broker.pid before it listens; cleanup can come in between.
+	const broker = startStandInBroker(agentDir, { listenAfterMs: 1_000 });
+	try {
+		await waitForFile(join(agentDir, "intercom", "broker.pid"));
+		assert.equal(await stopDetachedBroker(agentDir), true, "the broker was not signalled");
 		assert.equal(processExists(broker.pid), false);
 	} finally {
 		broker.kill("SIGKILL");

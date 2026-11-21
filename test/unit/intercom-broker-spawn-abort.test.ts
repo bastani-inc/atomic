@@ -19,6 +19,7 @@ import {
 	type RecordedProcess,
 	recordProcess,
 	signalRecordedProcess,
+	stillRuns,
 	waitUntilGone,
 } from "../helpers/recorded-process.js";
 import { sleep } from "../helpers/runtime.ts";
@@ -389,6 +390,21 @@ for (const witness of ["none", "other"] as const) {
 		2 * READY_TIMEOUT_MS,
 	);
 }
+
+windowsLauncherTest(
+	"a disposed start leaves running a broker that announced no creation time (#6133)",
+	async () => {
+		const markerPath = join(agentDir, "..", "witnessless-broker.pid");
+		// An older broker, or one that could not load the native module, announces only its token and pid.
+		const broker = await abandonAnnouncedStart(
+			markerPath,
+			announcedNeverReadyBrokerCommand(markerPath, { witness: "none" }),
+		);
+
+		assert.equal(await stillRuns(broker), true, "the disposed start stopped a broker it could not identify");
+	},
+	2 * READY_TIMEOUT_MS,
+);
 
 windowsLauncherTest(
 	"a disposed start stops the broker that announced when it was created, and what it started (#6133)",

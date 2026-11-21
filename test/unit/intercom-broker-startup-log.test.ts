@@ -26,6 +26,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -381,16 +382,31 @@ describe("a broker announces its own pid", () => {
 	});
 
 	/** A real broker, spawned as the parent spawns it, asked to announce itself in `announced`, in the agent directory `dir`. */
-	function spawnRealBroker(dir: string, announced: { path: string; token: string }) {
+	function spawnRealBroker(
+		dir: string,
+		announced: { path: string; token: string },
+		packageDir = join(process.cwd(), "packages/intercom"),
+	) {
 		const options = spawnModule.getBrokerSpawnOptions(join(process.cwd(), "packages/intercom"), "ignore", announced);
 		return spawn(
 			process.execPath,
-			[
-				spawnModule.getJitiCliPath(join(process.cwd(), "packages/intercom")),
-				join(process.cwd(), "packages/intercom/broker/broker.ts"),
-			],
+			[spawnModule.getJitiCliPath(join(process.cwd(), "packages/intercom")), join(packageDir, "broker/broker.ts")],
 			{ env: { ...options.env, ATOMIC_CODING_AGENT_DIR: dir }, stdio: "ignore" },
 		);
+	}
+
+	/** Starts a broker from `packageDir` that finds a live broker on its socket, and waits until it has yielded. */
+	async function yieldingBroker(dir: string, announced: { path: string; token: string }, packageDir?: string) {
+		mkdirSync(pathsModule.getIntercomDirPath(dir), { recursive: true });
+		const incumbent = net.createServer((socket) => socket.on("error", () => {}));
+		await new Promise<void>((resolve) =>
+			incumbent.listen(pathsModule.getBrokerSocketPath(process.platform, dir), resolve),
+		);
+		const broker = spawnRealBroker(dir, announced, packageDir);
+		const code = await exitCodeOf(broker).finally(
+			() => new Promise<void>((resolve) => incumbent.close(() => resolve())),
+		);
+		return { broker, code };
 	}
 
 	/** The broker's exit code, whether it exits after this is called or already has. */
@@ -423,6 +439,13 @@ describe("a broker announces its own pid", () => {
 
 				assert.equal(code, 0, "the broker did not yield to the live one");
 				assert.equal(readBrokerStartAnnouncement(announced)?.pid, broker.pid);
+				// #6133: asked for it, a broker on Windows says when it was created, through the native module it loads from
+				// its own location; elsewhere it has nothing to say.
+				assert.equal(
+					readBrokerStartAnnouncement(announced)?.started !== undefined,
+					process.platform === "win32",
+					readFileSync(announced.path, "utf8"),
+				);
 				assert.equal(
 					existsSync(pathsModule.getBrokerPidPath(dir)),
 					false,
@@ -432,6 +455,35 @@ describe("a broker announces its own pid", () => {
 				await stopRealBroker(broker);
 				await new Promise<void>((resolve) => incumbent.close(() => resolve()));
 				removeTestDirectory(dir, { retries: 20, retryDelayMs: 50 });
+			}
+		},
+		REAL_BROKER_STARTUP_TIMEOUT_MS * 2,
+	);
+
+	test(
+		"a real broker that cannot load the native module announces exactly its token and pid, as before (#6133)",
+		async () => {
+			// The broker's own package, alone, where no Atomic native module can be resolved from it.
+			const copy = mkdtempSync(join(tmpdir(), "icnonative-"));
+			const packageDir = join(copy, "intercom");
+			cpSync(join(process.cwd(), "packages/intercom"), packageDir, {
+				recursive: true,
+				filter: (source) => !source.split(/[\\/]/u).includes("node_modules"),
+			});
+			assert.throws(
+				() => createRequire(join(packageDir, "broker/start-announcement.ts")).resolve("@bastani/atomic-natives"),
+				"the native module resolves from the copy, so this proves nothing",
+			);
+			const dir = mkdtempSync(join(tmpdir(), "icann-"));
+			const announced = { path: join(dir, "announced.starting"), token };
+			try {
+				const { broker, code } = await yieldingBroker(dir, announced, packageDir);
+
+				assert.equal(code, 0, "the broker did not start and yield to the live one");
+				assert.equal(readFileSync(announced.path, "utf8"), `${token} ${broker.pid}\n`);
+			} finally {
+				removeTestDirectory(dir, { retries: 20, retryDelayMs: 50 });
+				removeTestDirectory(copy, { retries: 20, retryDelayMs: 50 });
 			}
 		},
 		REAL_BROKER_STARTUP_TIMEOUT_MS * 2,

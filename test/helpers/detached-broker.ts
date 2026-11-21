@@ -8,7 +8,8 @@
  * #6125: a broker that crashed leaves `broker.pid` behind, and Windows gives its pid to another process within seconds.
  * So the pid is signalled only while it names the broker that answers on the agent dir's socket: its start is read
  * first, the broker is then asked for its pid, and each signal and wait checks that the pid still names a process that
- * started then (`recorded-process.ts`). A pid no broker answers for is never signalled.
+ * started then (`recorded-process.ts`). A process that does not answer yet is asked again until it answers or exits,
+ * for a bounded time; a pid no broker answers for is never signalled.
  */
 import { join } from "node:path";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "../../packages/intercom/broker/control-request.js";
@@ -17,6 +18,12 @@ import { isGone, type RecordedProcess, recordProcess, stillRuns } from "./record
 import { fileExistsSync, readTextSync, removePath, sleep } from "./runtime.js";
 
 const BROKER_EXIT_TIMEOUT_MS = 5_000;
+/**
+ * How long a process `broker.pid` names is given to answer as that broker, or to exit: a broker records its pid before
+ * it listens, and stops answering while it shuts down.
+ */
+const BROKER_ANSWER_TIMEOUT_MS = 5_000;
+const BROKER_ANSWER_POLL_MS = 50;
 
 /** How the helper tells the agent dir's broker apart from another process; tests of this helper replace it. */
 export interface DetachedBrokerProbe {
@@ -74,8 +81,13 @@ export async function stopDetachedBroker(
 	if (pid === undefined) return false;
 	// Read before the broker answers: a process that started after its answer cannot be taken for it.
 	const recorded = await probe.record(pid);
-	if (!(await probe.stillRuns(recorded))) return false;
-	if ((await probe.answeringPid(agentDir)) !== pid) return false;
+	const answerBy = Date.now() + BROKER_ANSWER_TIMEOUT_MS;
+	for (;;) {
+		if (!(await probe.stillRuns(recorded))) return false;
+		if ((await probe.answeringPid(agentDir)) === pid) break;
+		if (Date.now() >= answerBy) return false;
+		await sleep(BROKER_ANSWER_POLL_MS);
+	}
 	let signalled = false;
 	for (const signal of signals) {
 		if (!(await probe.stillRuns(recorded))) break;
