@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, test } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { readProcessCreationTime } from "../../packages/coding-agent/src/core/process-start-token.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import {
@@ -23,6 +23,18 @@ import {
 	waitUntilGone,
 } from "../helpers/recorded-process.js";
 import { sleep } from "../helpers/runtime.ts";
+
+/** The programs this process starts, as `spawn` is called with them. */
+const started = vi.hoisted(() => [] as string[]);
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	const spawn = ((...start: Parameters<typeof actual.spawn>) => {
+		started.push(String(start[0]));
+		return Reflect.apply(actual.spawn, actual, start);
+	}) as typeof actual.spawn;
+	return { ...actual, spawn, default: { ...actual, spawn } };
+});
 
 /** Far longer than an aborted wait may take, so a wait that ignores its signal fails the test instead of passing late. */
 const READY_TIMEOUT_MS = 20_000;
@@ -402,6 +414,31 @@ windowsLauncherTest(
 		);
 
 		assert.equal(await stillRuns(broker), true, "the disposed start stopped a broker it could not identify");
+	},
+	2 * READY_TIMEOUT_MS,
+);
+
+windowsLauncherTest(
+	"a disposed start stops the broker that announced when it was created at once, starting no process to stop it",
+	async () => {
+		const markerPath = join(agentDir, "..", "quickly-stopped-broker.pid");
+		let disposedAt = 0;
+		const broker = await abandonAnnouncedStart(
+			markerPath,
+			announcedNeverReadyBrokerCommand(markerPath, { startsChild: true }),
+			async () => {
+				started.length = 0;
+				disposedAt = performance.now();
+			},
+		);
+		const stoppingMs = Math.round(performance.now() - disposedAt);
+
+		assert.deepEqual(
+			started.filter((program) => /powershell/iu.test(program)),
+			[],
+			`stopping the broker started PowerShell and took ${stoppingMs} ms`,
+		);
+		assert.equal(await gone(broker), true, "the broker is still running after the start settled");
 	},
 	2 * READY_TIMEOUT_MS,
 );

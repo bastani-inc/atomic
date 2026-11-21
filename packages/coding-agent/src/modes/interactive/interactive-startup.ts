@@ -7,6 +7,7 @@ import { consumeStartupInput } from "../../main-early-input.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { compileCacheDeferral } from "../../utils/compile-cache.ts";
 import { setDeprecationWarningSink } from "../../utils/deprecation.js";
+import { findHelperExecutableAsync } from "../../utils/helper-command.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
 import { shortenHomePath } from "../../utils/paths.ts";
@@ -78,6 +79,13 @@ import { holdTuiForStartupTrust } from "./interactive-startup-trust.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
 import { showSessionNotices } from "./session-notices.ts";
+import {
+	abortStartupShell,
+	handOverStartupShell,
+	releaseStartupShellSignals,
+	startupShellTerminal,
+	whenStartupShellCanHandOver,
+} from "./startup-shell.ts";
 import { watchWindowsSessionEnd } from "./windows-session-end.js";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
@@ -285,6 +293,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	if (this.isInitialized) return;
 
 	if (this.options.holdTuiForStartupTrust) await holdTuiForStartupTrust(this);
+	releaseStartupShellSignals();
 	this.registerSignalHandlers();
 
 	// Keep the transcript in its own viewport and reserve the bottom chrome in a
@@ -371,6 +380,9 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.ui.requestRender();
 	});
 
+	// Where the folder's trust may still be asked, nothing typed before the question may answer it or be sent after it:
+	// the early editor ends, and what was typed there is held in the prompt with a notice, as the capture holds it.
+	if (this.options.startupTrustPromptPossible) abortStartupShell();
 	const startupInput = consumeStartupInput(this.options.startupInputCapture, {
 		startupDecisionPending: this.options.startupTrustPromptPossible,
 	});
@@ -391,7 +403,16 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// The editor remains local and responsive; session binding and provider work
 	// still stay behind the engine-bound gate below.
 	markLifecycleTiming("tui-start");
+	// The early editor stops drawing and hands over its terminal and prompt; the keys it held reach this interface first.
+	// Only while it draws: without it, init reaches the interface's start without waiting, as it always did.
+	if (this.options.terminal === undefined && startupShellTerminal() !== undefined) await whenStartupShellCanHandOver();
+	const earlyEditor = this.options.terminal === undefined ? handOverStartupShell() : undefined;
 	this.ui.start();
+	if (earlyEditor) {
+		this.defaultEditor.restoreDraft(earlyEditor.draft);
+		// A first Ctrl+C on the empty prompt still counts: a second one in time exits, as it would have there.
+		if (earlyEditor.ctrlCAt > 0) this.lastSigintTime = earlyEditor.ctrlCAt;
+	}
 	markEventLoopStartupComplete();
 	this.programStatus.report();
 	ensurePngTranscoder(() => {
@@ -647,13 +668,14 @@ InteractiveModeBase.prototype.checkTmuxKeyboardSetup = async function (
 	this: InteractiveModeBase,
 ): Promise<string | undefined> {
 	if (!process.env.TMUX) return undefined;
+	const env = createChildProcessEnvironment();
+	const tmux = await findHelperExecutableAsync("tmux", { env });
+	// If tmux cannot be found, don't warn
+	if (tmux === undefined) return undefined;
 
 	const runTmuxShow = (option: string): Promise<string | undefined> => {
 		return new Promise((resolve) => {
-			const proc = spawn("tmux", ["show", "-gv", option], {
-				stdio: ["ignore", "pipe", "ignore"],
-				env: createChildProcessEnvironment(),
-			});
+			const proc = spawn(tmux, ["show", "-gv", option], { stdio: ["ignore", "pipe", "ignore"], env });
 			let stdout = "";
 			const timer = setTimeout(() => {
 				proc.kill();

@@ -167,8 +167,8 @@ import {
 	showDeprecationWarnings,
 } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
+import { shouldUseFullscreenTui } from "./modes/interactive/fullscreen-environment.ts";
 import { isUnknownModel } from "./modes/interactive/interactive-mode-helpers.ts";
-import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";

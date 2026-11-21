@@ -31,6 +31,8 @@ export interface PtyProgram {
 	readonly exited: Promise<PtyExit>;
 	write(data: string): void;
 	screen(): string;
+	/** Everything the program wrote to the terminal so far, in order, as it arrived. */
+	output(): string;
 	waitForScreen(predicate: (screen: string) => boolean, timeoutMs: number, what: string): Promise<void>;
 	kill(): void;
 }
@@ -76,6 +78,7 @@ export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 		}
 	});
 	const [command = "", ...leading] = [...options.args].reverse();
+	const outputChunks: string[] = [];
 	const exited = session
 		.start(
 			{
@@ -91,7 +94,10 @@ export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 				closeStdinAfterCommand: false,
 			},
 			(error, chunk) => {
-				if (error === null && chunk) terminal.write(chunk);
+				if (error === null && chunk) {
+					outputChunks.push(chunk);
+					terminal.write(chunk);
+				}
 			},
 		)
 		.then((result) => ({ exitCode: result.exitCode, timedOut: result.timedOut === true }))
@@ -115,6 +121,7 @@ export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 			session.write(data);
 		},
 		screen,
+		output: () => outputChunks.join(""),
 		async waitForScreen(predicate, timeoutMs, what) {
 			const deadline = Date.now() + timeoutMs;
 			while (!predicate(screen())) {

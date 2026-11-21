@@ -17,6 +17,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
+import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { dumpLegacyWorkflowTables, LEGACY_STORE, seedLegacyStore } from "../helpers/legacy-store-0990.js";
 import {
 	openPostgresAdmin,
@@ -603,6 +604,49 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 				new RegExp(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA atomic TO "${roles.runtime}"`),
 			);
 			assert.doesNotMatch(noTables, /storage migrate/);
+		});
+	});
+
+	test("a runtime role binds Intercom ids as before on a schema from before id owners, and owns them once migrate adds the columns, without DDL (#5607)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const row = await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema");
+			// As an earlier release left the table: without the owner columns.
+			await ownerDatabase.exec(
+				`ALTER TABLE ${row?.schema}.${PREFIX}intercom_session_bindings
+				 DROP COLUMN owner_token, DROP COLUMN owner_broker, DROP COLUMN owner_renewed_at`,
+			);
+			await grantRuntime(ownerDatabase, roles);
+			const owner = (token: string) => ({ token, brokerId: `broker-${token}`, staleAfterMs: 60_000 });
+			const before = await openSqlKnownSessionStore({ database: await roles.open("runtime"), prefix: PREFIX });
+			assert.equal(before.owners, undefined, "without the columns the store keeps no owners");
+			assert.deepEqual(await before.bind("owned-id", "address", 60_000, undefined, owner("first")), {
+				status: "bound",
+			});
+			assert.deepEqual(
+				await before.bind("owned-id", "address", 60_000, undefined, owner("second")),
+				{ status: "bound" },
+				"bound by return address alone, as before",
+			);
+
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			const statements: string[] = [];
+			const after = await openSqlKnownSessionStore({
+				database: recording(await roles.open("runtime"), statements),
+				prefix: PREFIX,
+			});
+			assert.ok(after.owners !== undefined, "the store keeps owners once the columns are there");
+			assert.deepEqual(await after.bind("owned-id", "address", 60_000, undefined, owner("third")), {
+				status: "bound",
+			});
+			assert.deepEqual(await after.bind("owned-id", "address", 60_000, undefined, owner("fourth")), {
+				status: "held",
+				ownerBroker: "broker-third",
+			});
+			assert.deepEqual(statements.flatMap(ddl), [], "the runtime role ran no DDL");
 		});
 	});
 

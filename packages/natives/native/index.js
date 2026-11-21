@@ -913,6 +913,7 @@ module.exports.renameNoReplaceAsync = nativeBinding.renameNoReplaceAsync
 module.exports.search = nativeBinding.search
 module.exports.signalIgnored = nativeBinding.signalIgnored
 module.exports.startHostProcess = nativeBinding.startHostProcess
+module.exports.terminateProcessCreatedAt = nativeBinding.terminateProcessCreatedAt
 module.exports.TerminationCause = nativeBinding.TerminationCause
 module.exports.tryAdvisoryLock = nativeBinding.tryAdvisoryLock
 module.exports.tryAdvisoryLockAsync = nativeBinding.tryAdvisoryLockAsync
