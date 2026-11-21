@@ -1377,6 +1377,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		if (!(error instanceof NativeModuleUnavailableError)) throw error;
 		startupEarlyInputCapture?.consume();
 		console.error(chalk.red(`Error: ${error.message}`));
+		// A pipe may not have taken the message yet: exiting now would lose it.
+		await drainProcessStdio();
 		process.exit(1);
 	}
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
