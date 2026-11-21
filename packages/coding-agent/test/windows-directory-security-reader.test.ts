@@ -8,6 +8,12 @@ import { afterEach, beforeEach, test, vi } from "vitest";
 
 const { spawn, nativeReader } = vi.hoisted(() => ({ spawn: vi.fn(), nativeReader: vi.fn() }));
 
+// Each PowerShell is the mocked child process, so every candidate is found under its own name.
+vi.mock("../src/utils/helper-command.ts", () => ({
+	helperLaunchAsync: async (name: string) => ({ file: name }),
+	missingHelperOptions: () => ({}),
+}));
+
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	return { ...actual, spawn };

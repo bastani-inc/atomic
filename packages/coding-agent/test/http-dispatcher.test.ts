@@ -547,6 +547,30 @@ describe("the standalone binary's fetch (Bun)", () => {
 	);
 
 	it(
+		"lets a request's own timeout: false keep waiting past httpIdleTimeoutMs",
+		async () => {
+			const servers = await silentServers();
+			try {
+				const printed = await runUnderBun(
+					[
+						`configureHttpDispatcher(1_000);`,
+						`const options = { timeout: false };`,
+						`console.log(JSON.stringify(await Promise.all([outcome(fetch(${JSON.stringify(servers.headers)}, options)), outcome(fetch(${JSON.stringify(servers.body)}, options))])));`,
+					].join("\n"),
+					{},
+				);
+				const outcomes = (JSON.parse(printed) as { error?: string; text?: string }[]).map(
+					(outcome) => outcome.text ?? outcome.error,
+				);
+				expect(outcomes).toEqual(["late headers", "first chunk, late chunk"]);
+			} finally {
+				await servers.close();
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
+
+	it(
 		"passes a request's own options as Bun reads them: inherited, not enumerable, frozen, getters left unread, and a Request's",
 		async () => {
 			const echo = http.createServer(async (request, response) => {
