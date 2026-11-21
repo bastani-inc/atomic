@@ -23,14 +23,16 @@ if (process.argv[2] !== "--trace") {
 		env: { ...process.env, NODE_OPTIONS: "" },
 	});
 	if (traced.status !== 0) throw new Error(`Tracing the startup files failed with status ${traced.status}`);
-	const files = JSON.parse(readFileSync(traceFile, "utf8"));
+	const { files, importers } = JSON.parse(readFileSync(traceFile, "utf8"));
 	rmSync(traceFile);
-	writeFileSync(output, `${JSON.stringify(toEntries(files))}\n`);
+	writeFileSync(output, `${JSON.stringify(toEntries(files, new Map(importers)))}\n`);
 	console.log(`Recorded ${files.length} startup files -> ${relative(packageRoot, output)}`);
 } else {
 	const { registerHooks } = await import("node:module");
 	const seen = new Set();
 	const files = [];
+	// For each file, the file whose import first resolved to it.
+	const importers = new Map();
 	const record = (url) => {
 		if (!url.startsWith("file:")) return;
 		const path = fileURLToPath(url);
@@ -39,6 +41,12 @@ if (process.argv[2] !== "--trace") {
 		files.push(path);
 	};
 	registerHooks({
+		resolve(specifier, context, nextResolve) {
+			const result = nextResolve(specifier, context);
+			if (result.url.startsWith("file:") && context.parentURL?.startsWith("file:") && !importers.has(result.url))
+				importers.set(result.url, context.parentURL);
+			return result;
+		},
 		load(url, context, nextLoad) {
 			record(url);
 			return nextLoad(url, context);
@@ -69,13 +77,20 @@ if (process.argv[2] !== "--trace") {
 		const path = join(builtin, bundle);
 		if (existsSync(path)) record(pathToFileURL(path).href);
 	}
-	writeFileSync(process.argv[3], JSON.stringify(files));
+	writeFileSync(
+		process.argv[3],
+		JSON.stringify({
+			files,
+			importers: [...importers].map(([url, parent]) => [fileURLToPath(url), fileURLToPath(parent)]),
+		}),
+	);
 	process.exit(0);
 }
 
 /**
- * The package a file belongs to and its path inside it: the package under the last `node_modules` in its path, or the
- * workspace package it is in (bundled extensions under `dist/builtin` belong to Atomic's own package).
+ * The package a file belongs to, its directory and the file's path inside it: the package under the last
+ * `node_modules` in its path, or the workspace package it is in (bundled extensions under `dist/builtin` belong to
+ * Atomic's own package).
  */
 function packagePathOf(path) {
 	const parts = path.split(sep);
@@ -83,7 +98,11 @@ function packagePathOf(path) {
 	if (last !== -1) {
 		const nameParts = parts[last + 1]?.startsWith("@") ? 2 : 1;
 		const name = parts.slice(last + 1, last + 1 + nameParts).join("/");
-		return { name, path: parts.slice(last + 1 + nameParts).join("/") };
+		return {
+			name,
+			root: parts.slice(0, last + 1 + nameParts).join(sep),
+			path: parts.slice(last + 1 + nameParts).join("/"),
+		};
 	}
 	const inWorkspace = relative(join(workspaceRoot, "packages"), path).split(sep);
 	if (inWorkspace[0] === ".." || inWorkspace.length < 2) return undefined;
@@ -93,23 +112,31 @@ function packagePathOf(path) {
 		name = JSON.parse(readFileSync(join(workspaceRoot, "packages", dir, "package.json"), "utf8")).name;
 		workspacePackages.set(dir, name);
 	}
-	return { name, path: inWorkspace.slice(1).join("/") };
+	return { name, root: join(workspaceRoot, "packages", dir), path: inWorkspace.slice(1).join("/") };
 }
 
-function toEntries(files) {
+/**
+ * The list: each package as its name and the package it is imported from (the index of an earlier one; -1 for none),
+ * as the reader finds it where Node would, from that package; each file as its package and its path inside it.
+ */
+function toEntries(files, importers) {
+	const self = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).name;
 	const packages = [];
-	const indexes = new Map();
+	const indexes = new Map(); // package directory -> index
 	const entries = [];
+	const indexOf = (found, importer) => {
+		let index = indexes.get(found.root);
+		if (index !== undefined) return index;
+		const from = importer === undefined ? undefined : packagePathOf(importer);
+		const fromIndex = from === undefined || from.root === found.root ? -1 : (indexes.get(from.root) ?? -1);
+		index = packages.push([found.name, found.name === self ? -1 : fromIndex]) - 1;
+		indexes.set(found.root, index);
+		return index;
+	};
 	for (const file of files) {
 		const found = packagePathOf(file);
 		if (found === undefined) continue;
-		let index = indexes.get(found.name);
-		if (index === undefined) {
-			index = packages.push(found.name) - 1;
-			indexes.set(found.name, index);
-		}
-		entries.push([index, found.path]);
+		entries.push([indexOf(found, importers.get(file)), found.path]);
 	}
-	const self = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).name;
-	return { version: 1, self, packages, files: entries };
+	return { version: 2, self, packages, files: entries };
 }
