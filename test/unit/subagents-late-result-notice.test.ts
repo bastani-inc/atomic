@@ -12,6 +12,7 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agent-type
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import {
+	lateToolResultNoticeKey,
 	renderLateToolResultNotice,
 	SUBAGENT_LATE_TOOL_RESULT_TYPE,
 } from "../../packages/subagents/src/runs/foreground/late-tool-result-notice.js";
@@ -255,3 +256,20 @@ test(
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );
+
+test("a late result notice's admission key is the same for the same results, and differs for any other result of a call id (#3274)", () => {
+	const late = (text: string, isError = false) => ({
+		toolCallId: "functions.bash:0",
+		toolName: "bash",
+		result: { content: [{ type: "text" as const, text }], details: undefined },
+		isError,
+	});
+	const issuedBy = (entryId: string) => new Map([["functions.bash:0", entryId]]);
+	const key = lateToolResultNoticeKey([late("exit 0")], issuedBy("entry-1"));
+	// Saved again, after a restart, it adds nothing.
+	assert.equal(lateToolResultNoticeKey([late("exit 0")], issuedBy("entry-1")), key);
+	// A later call's result is another notice: issued by another entry, even with the same output, or with other output.
+	assert.notEqual(lateToolResultNoticeKey([late("exit 0")], issuedBy("entry-2")), key);
+	assert.notEqual(lateToolResultNoticeKey([late("exit 1")], issuedBy("entry-1")), key);
+	assert.notEqual(lateToolResultNoticeKey([late("exit 0", true)], issuedBy("entry-1")), key);
+});

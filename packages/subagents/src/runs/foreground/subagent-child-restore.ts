@@ -50,7 +50,7 @@ import {
 	pendingToolCalls,
 	planReleasedChildWake,
 	SUBAGENT_OWNER_GENERATION,
-	savedToolResultIds,
+	savedToolResultIdsInHistory,
 } from "./released-children.js";
 import type { SubagentResumeNote } from "./resume-note.js";
 import { boundedWorktreeReply, resumeRunWorktree, WORKTREE_REPLY_WAIT_MS } from "./run-worktrees.js";
@@ -803,10 +803,14 @@ async function relaunchChild(
 		);
 	// Read again: the owner's wakes may have held them first, after `record` was read. `record` when it cannot be read.
 	const latest = readableSubagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
-	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012).
+	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012). Also
+	// when a compaction since took it out of the transcript's context.
 	const saved =
 		sessionManager && !fresh
-			? savedToolResultIds(sessionManager, [...(latest.heldToolResults ?? []), ...(resume?.toolResults ?? [])])
+			? await savedToolResultIdsInHistory(sessionManager, [
+					...(latest.heldToolResults ?? []),
+					...(resume?.toolResults ?? []),
+				])
 			: [];
 	await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
 	const unsaved = (results: readonly DetachedToolResult[]) =>
