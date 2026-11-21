@@ -5,17 +5,25 @@
  * no native module, and outside the installation, so an upgrade or an uninstall never finds a file of it in use.
  *
  * Only one helper warms a build at a time: it holds the build's lock file open in exclusive sharing mode while it
- * runs, and the system closes that handle when the helper ends, however it ends. It ends without writing anything more
- * when its stdin ends (its session is gone) and when it runs out of time.
+ * runs, and the system closes that handle when the helper ends, however it ends. It does not stop with its session;
+ * it ends when it is done, starting the next helper of its plan first, and after five minutes at most, without writing
+ * anything more.
  *
- * Argument: the build id.
+ * Arguments: the build id and the plan (`compile-cache-warmup-host.ts`).
  */
 import { closeSync, existsSync, constants as fsConstants, mkdirSync, openSync } from "node:fs";
 import nodeModule from "node:module";
 import { constants, setPriority } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BUILTIN_PACKAGE_DIR_NAMES, INSTALLED_EXTENSION_ENTRIES } from "../core/builtin-install-layout.ts";
 import { compileCacheBaseDir, currentCompileCacheWarmMarker } from "./compile-cache.ts";
+import {
+	type CompileCacheWarmupPlan,
+	compileCacheHelperLaunch,
+	decodeCompileCacheWarmupPlan,
+	startCompileCacheHelper,
+} from "./compile-cache-warmup-host.ts";
 import {
 	COMPILE_CACHE_WARMUP_BUSY,
 	COMPILE_CACHE_WARMUP_DONE,
@@ -60,26 +68,29 @@ function stop(): never {
 	process.exit(1);
 }
 
-/** Open the build's lock so that no other helper can until this one ends; false when another helper holds it. */
-function holdBuildLock(buildId: string): boolean {
+/**
+ * Open the build's lock so that no other helper can until this one closes it or ends; undefined when another helper
+ * holds it.
+ */
+function holdBuildLock(buildId: string): number | undefined {
 	const dir = compileCacheBaseDir();
 	mkdirSync(dir, { recursive: true });
 	try {
-		// Kept open until this process ends.
-		openSync(
+		return openSync(
 			join(dir, `atomic-warmup-${buildId}.lock`),
 			fsConstants.O_RDWR | fsConstants.O_CREAT | (process.platform === "win32" ? WINDOWS_EXCLUSIVE_OPEN_FLAG : 0),
 		);
-		return true;
 	} catch {
-		return false;
+		return undefined;
 	}
 }
 
-async function warm(buildId: string): Promise<number> {
-	const marker = currentCompileCacheWarmMarker(buildId);
+let lock: number | undefined;
+
+async function warm(buildId: string, plan: CompileCacheWarmupPlan, marker: string): Promise<number> {
 	if (existsSync(marker)) return COMPILE_CACHE_WARMUP_DONE;
-	if (!holdBuildLock(buildId)) return COMPILE_CACHE_WARMUP_BUSY;
+	lock = holdBuildLock(buildId);
+	if (lock === undefined) return COMPILE_CACHE_WARMUP_BUSY;
 	// Another helper may have finished between the first look and the lock.
 	if (existsSync(marker)) return COMPILE_CACHE_WARMUP_DONE;
 	try {
@@ -93,18 +104,36 @@ async function warm(buildId: string): Promise<number> {
 		if (!(await load(specifier))) return 1;
 	}
 	for (const specifier of LATER_MODULES) await load(specifier);
+	// An earlier helper's cache that is gone again (a cleanup of the temporary directory) leaves this one unmarked.
+	if (!plan.required.every((earlier) => existsSync(earlier))) return 1;
 	mkdirSync(dirname(marker), { recursive: true });
 	closeSync(openSync(marker, "w"));
 	return COMPILE_CACHE_WARMUP_DONE;
 }
 
-const buildId = process.argv[2];
+/** Hand over to the next helper of the plan: release the lock, then start it. */
+function startNext(buildId: string, plan: CompileCacheWarmupPlan, marker: string): void {
+	const [next, ...rest] = plan.next;
+	if (!next) return;
+	if (lock !== undefined) closeSync(lock);
+	const script = fileURLToPath(import.meta.url);
+	startCompileCacheHelper(
+		compileCacheHelperLaunch(next, buildId, script, process.env, {
+			next: rest,
+			required: [...plan.required, marker],
+		}),
+	);
+}
+
+const [buildId, encodedPlan] = process.argv.slice(2);
 if (!buildId) process.exit(1);
-process.stdin.on("end", stop);
-process.stdin.on("error", stop);
-process.stdin.resume();
 setTimeout(stop, COMPILE_CACHE_WARMUP_TIME_LIMIT_MS).unref();
-warm(buildId).then(
-	(code) => process.exit(code),
+const plan = decodeCompileCacheWarmupPlan(encodedPlan);
+const marker = currentCompileCacheWarmMarker(buildId);
+warm(buildId, plan, marker).then(
+	(code) => {
+		if (code === COMPILE_CACHE_WARMUP_DONE) startNext(buildId, plan, marker);
+		process.exit(code);
+	},
 	() => process.exit(1),
 );

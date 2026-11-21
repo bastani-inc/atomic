@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import {
 	closeSync,
 	constants,
@@ -9,6 +9,7 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -32,6 +33,8 @@ const CLI_TIMEOUT_MS = 90_000;
 /** How long the helper may take to load and write the module graph on a loaded runner. */
 const HELPER_WAIT_MS = 120_000;
 const POLL_MS = 50;
+/** Longer than a session takes after its first frame to start a helper for a cold cache. */
+const WARM_SESSION_HELPER_WINDOW_MS = 3_000;
 const windows = process.platform === "win32";
 /** The sessions run the CLI with this runtime, and the compile cache handling they check is Node's. */
 const onNode = !("bun" in process.versions);
@@ -115,6 +118,39 @@ async function waitForWarmCache(cacheBase: string, report: SessionReport): Promi
 				`No warm compile cache within ${HELPER_WAIT_MS} ms: ${[...cacheFiles(cacheBase).keys()].length} files`,
 			);
 		}
+		await sleep(POLL_MS);
+	}
+}
+
+/** Compile-cache helpers running on this machine, by their command line. */
+function helperProcesses(): number {
+	const query = spawnSync(
+		"powershell.exe",
+		[
+			"-NoProfile",
+			"-Command",
+			"@(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -like '*compile-cache-warmup*' }).Count",
+		],
+		{ encoding: "utf8", timeout: 60_000 },
+	);
+	assert.equal(query.status, 0, query.stderr);
+	return Number(query.stdout.trim());
+}
+
+/** Wait until no helper runs: a helper starts the next one of its chain before it ends, so none means all ended. */
+async function waitForNoHelper(): Promise<void> {
+	const deadline = Date.now() + HELPER_WAIT_MS;
+	while (helperProcesses() > 0) {
+		if (Date.now() >= deadline) throw new Error(`A compile-cache helper still runs after ${HELPER_WAIT_MS} ms`);
+		await sleep(500);
+	}
+}
+
+/** Wait until a helper holds the build lock. */
+async function waitForWarmupStart(cacheBase: string): Promise<void> {
+	const deadline = Date.now() + HELPER_WAIT_MS;
+	while (!warmupRunning(cacheBase)) {
+		if (Date.now() >= deadline) throw new Error(`No compile-cache helper started within ${HELPER_WAIT_MS} ms`);
 		await sleep(POLL_MS);
 	}
 }
@@ -232,6 +268,48 @@ describe.skipIf(!onNode)("the compile cache of an interactive session", () => {
 			} finally {
 				program?.kill();
 				await program?.exited;
+				if (windows) await waitForNoHelper();
+				await removeTempRootReleasingBroker(fixture.root, fixture.agentDir);
+			}
+		},
+		SESSIONS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!windows)(
+		"a session that quits as soon as its helper starts still leaves the cache warm, and a warm session starts no helper (#6132)",
+		async () => {
+			const fixture = sessionFixture("atomic-compile-cache-short-");
+			let program: PtyProgram | undefined;
+			try {
+				program = fixture.start(["--no-approve"]);
+				await program.waitForScreen(
+					(screen) => screen.includes("❯") && fixture.readReports().length === 1,
+					CLI_TIMEOUT_MS,
+					"the first session",
+				);
+				const [first] = fixture.readReports();
+				assert.equal(first?.cacheDir, null, "a session with a cold cache runs without it");
+				await waitForWarmupStart(fixture.cacheBase);
+				await quit(program);
+				// The helper goes on after its session and finishes warming the cache.
+				await waitForWarmCache(fixture.cacheBase, first!);
+				await waitForNoHelper();
+
+				program = fixture.start(["--no-approve"]);
+				await program.waitForScreen(
+					(screen) => screen.includes("❯") && fixture.readReports().length === 2,
+					CLI_TIMEOUT_MS,
+					"the second session",
+				);
+				assert.notEqual(fixture.readReports()[1]?.cacheDir ?? null, null, "the next session reads the warm cache");
+				// Past the point where a session with a cold cache starts its helper.
+				await sleep(WARM_SESSION_HELPER_WINDOW_MS);
+				assert.equal(helperProcesses(), 0, "a session with a warm cache starts no helper");
+				await quit(program);
+			} finally {
+				program?.kill();
+				await program?.exited;
+				if (windows) await waitForNoHelper();
 				await removeTempRootReleasingBroker(fixture.root, fixture.agentDir);
 			}
 		},
@@ -258,6 +336,8 @@ describe.skipIf(!onNode)("the compile cache of an interactive session", () => {
 			} finally {
 				program?.kill();
 				await program?.exited;
+				// A helper may still finish the cache this session left cold.
+				if (windows) await waitForNoHelper();
 				await removeTempRootReleasingBroker(fixture.root, fixture.agentDir);
 			}
 		},
@@ -328,9 +408,9 @@ test.skipIf(!onNode)(
 /** An upgrade replaces a few hundred files; the helper loads the module graph from them meanwhile. */
 const UPGRADE_DURING_WARMUP_TIMEOUT_MS = 180_000;
 
-test.skipIf(!windows || !onNode)(
-	"an upgrade or an uninstall while the compile cache warms succeeds (#6132)",
-	async () => {
+test.skipIf(!windows || !onNode).each(["an uninstall", "an upgrade"])(
+	"%s while the compile cache warms succeeds (#6132)",
+	async (change) => {
 		const root = makeTempDirectory("atomic-compile-cache-upgrade-");
 		const installation = join(root, "installation");
 		const temp = join(root, "temp");
@@ -360,9 +440,17 @@ test.skipIf(!windows || !onNode)(
 				}
 				await sleep(POLL_MS);
 			}
-			// An uninstall removes every file of the installation, the native module included.
-			rmSync(installation, { recursive: true });
-			assert.equal(existsSync(installation), false);
+			if (change === "an uninstall") {
+				// An uninstall removes every file of the installation, the native module included.
+				rmSync(installation, { recursive: true });
+				assert.equal(existsSync(installation), false);
+			} else {
+				// An upgrade moves the installation aside, puts the new one in its place and removes the old one.
+				renameSync(installation, `${installation}.old`);
+				copyInstallation(installation);
+				rmSync(`${installation}.old`, { recursive: true });
+				assert.equal(existsSync(`${installation}.old`), false);
+			}
 			helper.kill();
 			await exited;
 		} finally {

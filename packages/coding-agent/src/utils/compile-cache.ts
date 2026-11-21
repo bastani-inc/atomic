@@ -14,9 +14,9 @@
  * alone: it runs without it (after an install there is nothing to read; after an
  * upgrade it gives up the entries of files the upgrade left unchanged), and a
  * helper process that owns nothing else loads the same modules and writes the
- * cache while the session runs (`compile-cache-warmup-host.ts`). The helper marks
- * the cache warm for this Atomic build when it is done, and later sessions use the
- * cache as before. Elsewhere the exit-time write takes a fraction of a second and
+ * cache (`compile-cache-warmup-host.ts`), finishing after the session if the
+ * session ends first. The helper marks the cache warm for this Atomic build when
+ * it is done, and later sessions use the cache as before. Elsewhere the exit-time write takes a fraction of a second and
  * the cache works as it always did.
  */
 import { existsSync } from "node:fs";
@@ -40,6 +40,8 @@ export const COMPILE_CACHE_ENGINE_WARMUP_ENV = "ATOMIC_INTERNAL_COMPILE_CACHE_WA
 /** What decides how a process starts with the compile cache. */
 export interface CompileCacheStartInput {
 	readonly platform: NodeJS.Platform;
+	/** Running under CI: no helper starts there. */
+	readonly ci: boolean;
 	/** Bun keeps its own cache: nothing here applies. */
 	readonly runtimeIsBun: boolean;
 	/** This Node has no compile cache API. */
@@ -62,9 +64,16 @@ export interface CompileCacheStartInput {
  * keep the cache as it was.
  */
 export function compileCacheStartMode(input: CompileCacheStartInput): "enable" | "defer" {
-	if (input.platform !== "win32" || input.runtimeIsBun || input.unsupported) return "enable";
+	if (input.platform !== "win32" || input.ci || input.runtimeIsBun || input.unsupported) return "enable";
 	if (input.alreadyEnabled || input.disabled || !input.interactive || !input.helperRuntime) return "enable";
 	return input.warm() ? "enable" : "defer";
+}
+
+/** Whether `CI` names a CI run, as the fullscreen TUI reads it: any value but empty, `0` and `false`. */
+export function isCiValue(value: string | undefined): boolean {
+	if (value === undefined) return false;
+	const normalized = value.trim().toLowerCase();
+	return normalized !== "" && normalized !== "0" && normalized !== "false";
 }
 
 /** The only runtime flag a helper keeps: the heap size, which the engine gets from its host. */
@@ -176,6 +185,7 @@ export function enablePersistentCompileCache(options: { interactive?: boolean; b
 		const buildId = compileCacheBuildId(`${import.meta.url}\0${options.build ?? ""}`);
 		const mode = compileCacheStartMode({
 			platform: process.platform,
+			ci: isCiValue(process.env.CI),
 			runtimeIsBun: "bun" in process.versions,
 			unsupported: typeof compileCacheApi.enableCompileCache !== "function",
 			alreadyEnabled: compileCacheApi.getCompileCacheDir?.() !== undefined,
