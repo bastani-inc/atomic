@@ -36,8 +36,11 @@ interface ReturnPath {
 	senderId: string;
 	/** When the opening message reached the responder, on the broker's monotonic clock. */
 	openedAt: number;
-	/** Answers counted against this opening: distinct message ids, so a retried answer counts once. */
-	used: Set<string>;
+	/**
+	 * Answers counted against this opening, with when each was counted: distinct message ids, so a retried answer counts
+	 * once.
+	 */
+	used: Map<string, number>;
 }
 
 /**
@@ -75,8 +78,16 @@ export class ReturnPaths {
 	 * The inbound message `operationId` from `sender` reached `responder`, which shares none of its groups. The same
 	 * message reaching it again (a retry, a replay, a re-forward) changes nothing. `since` is the {@link mark} taken when
 	 * the message was handed over: when every registration of the sender has ended for good since, it opens nothing.
+	 * `handedOverAt` is the {@link handOverTime} taken then: the responder may have read the message, and answered,
+	 * before it was known to have reached it, so answers counted on the path since then count toward the new opening.
 	 */
-	open(responder: ReturnPathParty, sender: ReturnPathParty, operationId: string, since?: number): void {
+	open(
+		responder: ReturnPathParty,
+		sender: ReturnPathParty,
+		operationId: string,
+		since?: number,
+		handedOverAt?: number,
+	): void {
 		if (responder.identity === undefined || sender.identity === undefined) return;
 		if (responder.identity === sender.identity) return;
 		if (since !== undefined && this.endedSince(sender.identity, since)) return;
@@ -85,13 +96,17 @@ export class ReturnPaths {
 		if (this.seen.has(opening)) return;
 		this.seen.set(opening, true);
 		this.bound(this.seen, RETURN_PATH_SEEN_OPENINGS);
+		const earlier = this.paths.get(key);
+		const used = new Map<string, number>();
+		if (earlier !== undefined && handedOverAt !== undefined)
+			for (const [messageId, countedAt] of earlier.used) if (countedAt >= handedOverAt) used.set(messageId, countedAt);
 		this.deletePath(key);
 		this.paths.set(key, {
 			responderIdentity: responder.identity,
 			senderIdentity: sender.identity,
 			senderId: sender.sessionId,
 			openedAt: this.now(),
-			used: new Set(),
+			used,
 		});
 		index(this.byResponder, responder.identity, key);
 		index(this.bySender, sender.identity, key);
@@ -117,7 +132,7 @@ export class ReturnPaths {
 	use(responder: ReturnPathParty, sender: ReturnPathParty, messageId: string): boolean {
 		const path = this.path(responder, sender);
 		if (path === undefined || !this.allowsOn(path, messageId)) return false;
-		path.used.add(messageId);
+		if (!path.used.has(messageId)) path.used.set(messageId, this.now());
 		return true;
 	}
 
@@ -158,6 +173,11 @@ export class ReturnPaths {
 	/** A mark for {@link open}: a message handed over now opens nothing once every registration of its sender ended. */
 	mark(): number {
 		return this.ends;
+	}
+
+	/** The time for {@link open} of a message handed over now: answers counted from then on count toward its opening. */
+	handOverTime(): number {
+		return this.now();
 	}
 
 	private endedSince(identity: string, mark: number): boolean {

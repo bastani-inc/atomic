@@ -251,14 +251,16 @@ runTest(
 		assert.ok(nodeExe, "real node executable must be resolved before the smoke runs");
 		// Exercise emitted JavaScript: source-runtime tests hid a constructor-precedence
 		// regression that wrapped the native exports object and failed on the second host.
+		// Each AgentTaskHost the SDK exports constructs the package's own TaskSupervisor.
 		const supervisorProbe = spawnSync(
 			nodeExe,
 			[
 				"--input-type=module",
 				"-e",
-				`import { TaskSupervisor } from "./dist/core/tasks/supervisor.js";
-				for (let i = 0; i < 3; i++) new TaskSupervisor();
-				console.log("repeated supervisor construction passed");`,
+				`import { AgentTaskHost } from "@bastani/atomic";
+				for (let i = 0; i < 3; i++) new AgentTaskHost({ scope: { kind: "session", sessionId: "probe-" + i }, authorizeLaunch() {} });
+				console.log("repeated supervisor construction passed");
+				process.exit(0);`,
 			],
 			{ cwd: atomicDest, encoding: "utf8", timeout: 30_000 },
 		);

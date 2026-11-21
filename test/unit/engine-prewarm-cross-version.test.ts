@@ -7,6 +7,16 @@ import { makeTempDirectory, moduleDir, removeTempDirectory, spawnSyncCollect } f
 
 const ROOT = join(moduleDir(import.meta.url), "../..");
 const DIST = join(ROOT, "packages/coding-agent/dist");
+/** Where the package build keeps the compiled code of the modules it bundles: entries and the files it removes. */
+const COMPILED = join(ROOT, "packages/coding-agent/node_modules/.cache/atomic-split-dist/compiled");
+
+/** The compiled file of the module at `path` in `dist`: the file there, unless the bundle replaced or removed it. */
+function compiledFile(path: string): string {
+	const built = join(DIST, path);
+	const saved = join(COMPILED, path);
+	if (existsSync(built) && !readFileSync(built, "utf8").includes("/_shared/")) return built;
+	return existsSync(saved) ? saved : built;
+}
 /** One child process that loads the prewarm module: structural, not a slow test. */
 const CHILD_TIMEOUT_MS = 60_000;
 
@@ -23,18 +33,25 @@ function relativeImports(source: string): string[] {
 }
 
 test("a session started before an update loads the updated engine prewarm module beside its earlier bootstrap module", () => {
-	// This build's prewarm module and everything it imports, at the same places, as an update leaves them on disk.
+	// This build's compiled prewarm module and everything it imports, at the same places, as an update leaves them on
+	// disk: a session of a version that shipped the compiled modules holds the bootstrap module's compiled file.
 	const dir = makeTempDirectory("atomic-prewarm-cross-version-");
 	dirs.push(dir);
 	const dist = join(dir, "dist");
 	const copy = (path: string) => {
-		const target = join(dist, relative(DIST, path));
+		const target = join(dist, path);
 		if (existsSync(target)) return;
 		mkdirSync(dirname(target), { recursive: true });
-		copyFileSync(path, target);
-		for (const specifier of relativeImports(readFileSync(path, "utf8"))) copy(join(dirname(path), specifier));
+		const source = compiledFile(path);
+		copyFileSync(source, target);
+		for (const specifier of relativeImports(readFileSync(source, "utf8")))
+			copy(
+				relative(dist, join(dirname(target), specifier))
+					.split("\\")
+					.join("/"),
+			);
 	};
-	const prewarm = join(DIST, "modes/interactive-engine/engine-prewarm.js");
+	const prewarm = "modes/interactive-engine/engine-prewarm.js";
 	copy(prewarm);
 	symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "junction");
 	writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
@@ -52,7 +69,7 @@ writeFileSync(${JSON.stringify(bootstrap)}, ${JSON.stringify(earlier)});
 await import(${JSON.stringify(pathToFileURL(bootstrap).href)});
 // The update replaces the installation's files; the session keeps the bootstrap module it loaded.
 writeFileSync(${JSON.stringify(bootstrap)}, ${JSON.stringify(current)});
-const { prewarmInteractiveEngine } = await import(${JSON.stringify(pathToFileURL(join(dist, relative(DIST, prewarm))).href)});
+const { prewarmInteractiveEngine } = await import(${JSON.stringify(pathToFileURL(join(dist, prewarm)).href)});
 process.stdout.write(typeof prewarmInteractiveEngine);
 `,
 	);
