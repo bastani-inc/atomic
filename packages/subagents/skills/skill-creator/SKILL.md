@@ -239,18 +239,16 @@ Put each with_skill version before its baseline counterpart.
 
 3. **Do an analyst pass** — read the benchmark data and surface patterns the aggregate stats might hide. See `agents/analyzer.md` (the "Analyzing Benchmark Results" section) for what to look for — things like assertions that always pass regardless of skill (non-discriminating), high-variance evals (possibly flaky), and time/token tradeoffs.
 
-4. **Launch the viewer** with both qualitative outputs and quantitative data:
+4. **Launch the viewer** with both qualitative outputs and quantitative data. Start it as a background shell, `bash` with `wait: { kind: "background" }`, so it keeps serving after the call returns (a process started with `&` stops when the call that started it ends). The shell's timeout also stops the viewer, so pass the longest, `timeout: 3600`:
    ```bash
-   nohup python <skill-creator-path>/eval-viewer/generate_review.py \
+   python <skill-creator-path>/eval-viewer/generate_review.py \
      <workspace>/iteration-N \
      --skill-name "my-skill" \
-     --benchmark <workspace>/iteration-N/benchmark.json \
-     > /dev/null 2>&1 &
-   VIEWER_PID=$!
+     --benchmark <workspace>/iteration-N/benchmark.json
    ```
    For iteration 2+, also pass `--previous-workspace <workspace>/iteration-<N-1>`.
 
-   The viewer serves on port 3117, or on a free port when another program uses 3117; open the URL it prints.
+   The viewer serves on port 3117, or on a free port when another program uses 3117, and prints its URL once it serves. Read the URL from the shell's output with `bash({ action: "wait", id: <task id> })` and give it to the user.
 
    **Headless environments:** If `webbrowser.open()` is not available or the environment has no display (for example on a remote server), use `--static <output_path>` to write a standalone HTML file instead of starting a server. Feedback will be downloaded as a `feedback.json` file when the user clicks "Submit All Reviews". After download, copy `feedback.json` into the workspace directory for the next iteration to pick up.
 
@@ -289,11 +287,7 @@ When the user tells you they're done, read `feedback.json`:
 
 Empty feedback means the user thought it was fine. Focus your improvements on the test cases where the user had specific complaints.
 
-Kill the viewer server when you're done with it:
-
-```bash
-kill $VIEWER_PID 2>/dev/null
-```
+Stop the viewer when you're done with it, with `kill({ id: <task id> })`.
 
 ---
 

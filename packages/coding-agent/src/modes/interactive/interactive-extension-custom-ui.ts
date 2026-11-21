@@ -1,3 +1,4 @@
+import { markNavigationView } from "./components/prompt-slot.ts";
 import {
 	ReservedBottomOverlay,
 	type TranscriptOverlayIntersection,
@@ -172,6 +173,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 			if (isOverlay) {
 				removeOverlay();
 			} else if (inlineMount) {
+				markNavigationView(inlineMount, false);
 				const dialogs = this.extensionDialogs;
 				const index = dialogs.findIndex((dialog) => dialog.component === inlineMount);
 				if (index === -1) return;
@@ -403,6 +405,8 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 					}
 				} else {
 					inlineMount = component;
+					// A navigation view hides the footer's hints and the widgets from the frame the prompt's slot draws it.
+					if (options?.purpose === "navigation") markNavigationView(component, true);
 					const deferFocus = this.shouldDeferInlineCustomUiFocus();
 					this.pushExtensionDialog(component, options?.blocked, !deferFocus, releaseHostCustomUi);
 					if (deferFocus) {

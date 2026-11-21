@@ -39,6 +39,8 @@ export async function resolvePackageResourcePaths(
 		useLoadedSettings?: true;
 		includeCliProjectLocalResources?: boolean;
 		trustedBorrowedProjectLocalSources?: Set<string>;
+		/** Leave out what the settings and the extensions folders configure, which also installs nothing. */
+		withoutConfigured?: true;
 	},
 ): Promise<{
 	resolvedPaths: PackageDiscovery;
@@ -47,7 +49,7 @@ export async function resolvePackageResourcePaths(
 }> {
 	const state = resourceInternals(loader);
 	if (!options?.useLoadedSettings) await state.settingsManager.reload();
-	const resolvedPaths = await state.packageManager.resolve();
+	const resolvedPaths = options?.withoutConfigured ? emptyResolvedPaths() : await state.packageManager.resolve();
 	const includeCliProjectLocalResources = options?.includeCliProjectLocalResources ?? true;
 	let cliExtensionPaths = await state.packageManager.resolveExtensionSources(state.additionalExtensionPaths, {
 		temporary: true,

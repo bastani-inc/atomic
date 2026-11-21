@@ -1,4 +1,5 @@
 import { showStartupInput, showStartupSelector } from "../../cli/startup-ui.ts";
+import { agentsFocusForwarder } from "./agent-panel-focus.js";
 import { navBackForwarder } from "./agent-view/viewed-keys.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { isTrustDecision, safeTrustChoiceIndex, TrustDecisionSelector } from "./components/trust-decision-selector.ts";
@@ -237,6 +238,10 @@ InteractiveModeBase.prototype.setCustomEditorComponent = function (
 			// While a subagent is shown, ← on its empty prompt leads back to main here too.
 			if (!customEditor.onNavBack) {
 				customEditor.onNavBack = navBackForwarder(this);
+			}
+			// ↓ on its empty prompt focuses the agent panel, once the editor leaves the key to its base.
+			if (!customEditor.onAgentsFocus) {
+				customEditor.onAgentsFocus = agentsFocusForwarder(this);
 			}
 			// Copy action handlers (clear, suspend, model switching, etc.)
 			for (const [action, handler] of this.defaultEditor.actionHandlers) {

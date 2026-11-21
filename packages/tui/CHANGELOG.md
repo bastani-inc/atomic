@@ -4,6 +4,15 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- `TuiAltScreen.onViewportChange(listener)` calls the listener after each input, late single click and painted frame, so a caller can wait for `isPointerIdle()` without polling ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- `Editor.setAutocompleteProvider(provider, { preserveSelection: true, refreshCommandMenu: true })` shows the new provider's commands in an open slash-command menu in which nothing was chosen ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+
+### Fixed
+
+- A lookup that `setAutocompleteProvider(..., { preserveSelection: true })` retries for the new provider no longer raises an unhandled rejection when the provider fails, and later lookups still run ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+
 ## [0.10.3] - 2026-11-21
 
 ### Added

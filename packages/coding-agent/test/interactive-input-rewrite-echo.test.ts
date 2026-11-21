@@ -5,6 +5,7 @@ import { afterEach, describe, test, vi } from "vitest";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.js";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import type { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import {
 	createGate,
 	createRig,
@@ -99,6 +100,21 @@ function holdCompaction(rig: Rig): () => void {
 	heldCompactions.push(releaseCompaction);
 	return releaseCompaction;
 }
+
+test("two sends of the same text whose runs both started before either showed its message replace their own echoes", async () => {
+	const { rig, chat } = await createRewritingRig("local");
+	const mode = rig.host as unknown as InteractiveModeBase;
+	// The host read both sends' answers ("started") before either run's message, as when a compaction holds events.
+	const first = mode.renderDeferredUserInput("hello");
+	const second = mode.renderDeferredUserInput("hello");
+	mode.expectStartedUserInput("hello", 0, first);
+	mode.expectStartedUserInput("hello", 0, second);
+	for (const _run of [first, second])
+		mode.showSessionUserMessage({ role: "user", content: rewritten("hello"), timestamp: Date.now() });
+
+	assert.deepEqual(chat(), [rewritten("hello"), rewritten("hello")], "each run's message took its own echo's place");
+	assert.deepEqual(Reflect.get(rig.host, "deferredRenderedUserInputs"), []);
+});
 
 describe.each(["local", "isolated"] as const)("a message an input hook rewrites (%s host)", (wiring) => {
 	test("sent with Enter is shown once, as it was sent (#4277)", async () => {
@@ -220,6 +236,60 @@ describe.each(["local", "isolated"] as const)("a message an input hook rewrites 
 
 		assertShownOnceAsSent(rig, chat, [rewritten("first"), rewritten("steered"), rewritten("followed up")]);
 	});
+
+	if (wiring === "isolated") {
+		test("sent twice with the same text while the first run prepares, is shown once each, as sent", async () => {
+			const preparing = createGate();
+			const shown = createGate();
+			const holdFirstRun: ExtensionFactory = (pi) => {
+				let prepare = true;
+				let show = true;
+				pi.on("before_agent_start", async () => {
+					if (!prepare) return;
+					prepare = false;
+					preparing.entered.resolve();
+					await preparing.release.promise;
+				});
+				pi.on("message_start", async (event) => {
+					if (event.message.role !== "user" || !show) return;
+					show = false;
+					shown.entered.resolve();
+					await shown.release.promise;
+				});
+			};
+			const rig = await createRig(wiring, "quiet", { extensions: [rewriteInput, holdFirstRun] });
+			rigs.push(rig);
+			const chat = showUserMessagesInChat(rig.host);
+			await rig.pair?.runtime.waitUntilResourcesReady();
+			rig.engine.setResponses([
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage("second answer"),
+				fauxAssistantMessage("unexpected extra reply"),
+			]);
+
+			const first = rig.host.defaultEditor.onSubmit?.("hello");
+			await preparing.entered.promise;
+			// The host holds the second until the first is answered, then sends it while the first run is under way.
+			const second = rig.host.defaultEditor.onSubmit?.("hello");
+			await waitFor("the host to hold the second message", () => rig.host.compactionQueuedMessages.length === 1);
+			preparing.release.resolve();
+			await shown.entered.promise;
+			await waitFor(
+				"the session to queue the second message",
+				() => rig.engine.session.getSteeringMessages().length === 1,
+			);
+			await settle(rig);
+			shown.release.resolve();
+			await Promise.all([first, second]);
+			await waitFor(
+				"both messages to be answered",
+				() => getUserTexts(rig.engine).length === 2 && isIdleAfterAnswering(rig.engine),
+			);
+			await settle(rig);
+
+			assertShownOnceAsSent(rig, chat, [rewritten("hello"), rewritten("hello")]);
+		});
+	}
 
 	test("held during compaction is shown once, as it was sent (#4277)", async () => {
 		const { rig, chat } = await createRewritingRig(wiring);
