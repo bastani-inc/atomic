@@ -1320,6 +1320,7 @@ function applyAnthropicCacheControl(
 	tools: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined,
 	cacheControl: OpenAICompatCacheControl,
 ): void {
+	const system = messages.some((message) => message.role === "system" || message.role === "developer");
 	addCacheControlToSystemPrompt(messages, cacheControl);
 	addCacheControlToLastTool(tools, cacheControl);
 	// Where the request the last reply answered put its newest breakpoint, by the same rule.
@@ -1327,13 +1328,31 @@ function applyAnthropicCacheControl(
 	const previous = replyAt === undefined ? undefined : lastCacheablePart(messages, replyAt);
 	const newest = lastCacheablePart(messages, messages.length);
 	if (newest) addCacheControlToMessage(messages[newest.index]!, cacheControl);
-	// The fourth and last breakpoint Claude allows.
-	const checkpoint = cacheCheckpoints.get(messages);
+	// Claude allows four breakpoints; these are what the system prompt, the tools and the newest input leave.
+	let spare = 4 - (system ? 1 : 0) - (tools?.length ? 1 : 0) - (newest ? 1 : 0);
+	const mark = (part: CacheablePart): void => {
+		if (spare > 0 && part.index !== newest?.index && addCacheControlToMessage(messages[part.index]!, cacheControl))
+			spare--;
+	};
+	const checkpointMessage = cacheCheckpoints.get(messages);
+	// The request that ended at the hinted message put its newest breakpoint where this rule puts it.
+	const checkpoint =
+		checkpointMessage === undefined
+			? undefined
+			: lastCacheablePart(messages, messages.indexOf(checkpointMessage) + 1);
 	if (checkpoint) {
-		if (checkpoint !== messages.at(-1)) addCacheControlToMessage(checkpoint, cacheControl);
+		// That request got no reply, so its prefix may never have been cached. When it is too far past the last answered
+		// request's breakpoint to find that request's prefix, that breakpoint is kept too, and first when only one fits.
+		if (
+			previous &&
+			previous.index < checkpoint.index &&
+			positionsBetween(messages, previous, checkpoint) >= CACHE_LOOKBACK_POSITIONS
+		)
+			mark(previous);
+		mark(checkpoint);
 	} else if (previous && newest && positionsBetween(messages, previous, newest) >= CACHE_LOOKBACK_POSITIONS) {
 		// One turn added so many blocks that the newest breakpoint no longer reaches back to the previous request's.
-		addCacheControlToMessage(messages[previous.index]!, cacheControl);
+		mark(previous);
 	}
 }
 
@@ -1707,10 +1726,11 @@ export function convertMessages(
 				content !== null &&
 				content !== undefined &&
 				(typeof content === "string" ? content.length > 0 : content.length > 0);
+			// A reply that sends nothing still answered the request before it.
+			replyAt = params.length;
 			if (!hasContent && !assistantMsg.tool_calls) {
 				continue;
 			}
-			replyAt = params.length;
 			params.push(assistantMsg);
 		} else if (msg.role === "toolResult") {
 			const imageBlocks: Array<{ type: "image_url"; image_url: { url: string } }> = [];
