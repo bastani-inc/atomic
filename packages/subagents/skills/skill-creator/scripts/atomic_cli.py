@@ -177,7 +177,7 @@ class AtomicProcess:
         command = list(command) if command is not None else atomic_command()
         _check_batch_arguments(command, arguments)
         argv = [*command, *arguments]
-        environment = {**os.environ, **CHILD_ENVIRONMENT, OWNER_VARIABLE: _owner_token}
+        environment = {**os.environ, **CHILD_ENVIRONMENT}
         self._stderr_path = stderr_path
         self._stderr = open(stderr_path, "wb")
         self._job: _WindowsJob | None = None
@@ -187,7 +187,8 @@ class AtomicProcess:
             if os.name == "nt":
                 self._job = _WindowsJob()
                 self.process = subprocess.Popen(
-                    [sys.executable, "-I", "-c", _WINDOWS_GATE, *argv],
+                    # -I -S: no environment variables, user site or site hooks act before the gate.
+                    [sys.executable, "-I", "-S", "-c", _WINDOWS_GATE, *argv],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=self._stderr,
@@ -316,14 +317,11 @@ class AtomicProcess:
 # the lock held, around the start of a child, so a child is never seen unregistered.
 _children_lock = threading.Lock()
 _owned_pids: set[int] = set()
-# Set when a script runs as a command on Linux: orphans of a killed Atomic become this process's
-# children instead of init's, so they can be found and ended.
+# A script run as a command on Linux adopts orphans from its first Atomic on: orphans of a killed
+# Atomic become its children instead of init's, so they can be found and ended. It starts nothing
+# else from then on, so every child it adopts descends from one of its Atomic processes.
+_run_as_command = False
 _adopts_orphans = False
-# Every Atomic this process starts, and what those start, inherit this variable unless they replace
-# their environment. An adopted orphan is ended only if it carries it, or if the leader of its
-# session or process group did, so the browser run_loop.py opens for its report is never signalled.
-OWNER_VARIABLE = "SKILL_CREATOR_EVALUATION"
-_owner_token = f"{os.getpid()}-{os.urandom(8).hex()}"
 
 
 def _start_in_job(argv: list[str], cwd, environment: dict[str, str], stderr) -> subprocess.Popen[bytes]:
@@ -338,6 +336,8 @@ def _start_in_job(argv: list[str], cwd, environment: dict[str, str], stderr) -> 
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTSTP})
     try:
         with _children_lock:
+            if _run_as_command and not _adopts_orphans:
+                _adopt_orphans()
             process = subprocess.Popen(
                 argv,
                 stdin=subprocess.PIPE,
@@ -408,46 +408,16 @@ def _child_pids() -> set[int]:
     return pids
 
 
-def _started_by_us(pid: int) -> bool:
-    try:
-        environment = Path(f"/proc/{pid}/environ").read_bytes()
-    except OSError:
-        return False
-    return f"{OWNER_VARIABLE}={_owner_token}".encode() in environment.split(b"\0")
-
-
-def _group_and_session(pid: int) -> tuple[int, int] | None:
-    try:
-        # The fields after the parenthesized command name: state, parent, group, session.
-        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        return int(fields[2]), int(fields[3])
-    except (OSError, IndexError, ValueError):
-        return None
-
-
 def _end_orphans() -> None:
     """Kill and reap the orphans this process adopted from its Atomic processes, then theirs.
 
-    An orphan is Atomic's when it carries this process's owner variable, or when it belongs to
-    the session or process group of one that does (a process Atomic started in its own session
-    may start others with an environment of their own). Runs only when this process adopts
-    orphans. Each one is an unreaped child of this process while the lock is held, so its process
-    ID still names it when it is signalled.
+    Runs only when this process adopts orphans. Each one is an unreaped child of this process while
+    the lock is held, so its process ID still names it when it is signalled.
     """
     if not _adopts_orphans:
         return
     with _children_lock:
-        owners: set[int] = set()
-        while True:
-            adopted = _child_pids() - _owned_pids
-            owners.update(pid for pid in adopted if _started_by_us(pid))
-            orphans = {
-                pid
-                for pid in adopted
-                if pid in owners or not owners.isdisjoint(_group_and_session(pid) or ())
-            }
-            if not orphans:
-                return
+        while orphans := _child_pids() - _owned_pids:
             for pid in orphans:
                 os.kill(pid, signal.SIGCONT)
                 os.kill(pid, signal.SIGKILL)
@@ -459,7 +429,10 @@ def _end_orphans() -> None:
 
 
 def _adopt_orphans() -> None:
-    """Make this process the reaper of its descendants' orphans (Linux, scripts run as commands)."""
+    """Make this process the reaper of its descendants' orphans (Linux, scripts run as commands).
+
+    Called with the lock held, before the first Atomic starts.
+    """
     global _adopts_orphans
     if not sys.platform.startswith("linux") or not Path("/proc/self/task").is_dir():
         return
@@ -623,6 +596,16 @@ def _install_console_close_handler() -> None:
     ctypes.WinDLL("kernel32").SetConsoleCtrlHandler(handler, True)
 
 
+def open_in_browser(url: str) -> None:
+    """Open a page in the user's browser, as webbrowser.open does, from a separate process.
+
+    The browser is the user's: it is left open when the script ends or is stopped. Opening it
+    from a process that has exited before the first Atomic starts keeps the browser outside
+    the processes the script adopts and ends.
+    """
+    subprocess.run([sys.executable, "-I", "-c", "import sys, webbrowser; webbrowser.open(sys.argv[1])", url])
+
+
 def _exit_by_signal(signum: int, flush: bool = True) -> None:
     if flush:
         sys.stdout.flush()
@@ -643,8 +626,9 @@ def run_main(main: Callable[[], None]) -> None:
     temporary files removed, then the script exits with that signal's status.
     Importing a script never installs these handlers.
     """
+    global _run_as_command
     _install_stop_handlers()
-    _adopt_orphans()
+    _run_as_command = True
     try:
         main()
     except Cancelled:

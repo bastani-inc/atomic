@@ -62,8 +62,12 @@ describe.skipIf(python === undefined || process.platform === "win32")(
 				const box = sandbox();
 				const script = spawnProcess([python ?? "python3", ...evalArgs(box, ["stalled"])], {
 					cwd: box.project,
-					// The helper's own child does not inherit the evaluation's environment.
-					env: box.env({ FAKE_ATOMIC_SCENARIO: "stalled-child", FAKE_ATOMIC_CLEAN_GRANDCHILD: "1" }),
+					// The helper's own child has an environment of its own and outlives the helper.
+					env: box.env({
+						FAKE_ATOMIC_SCENARIO: "stalled-child",
+						FAKE_ATOMIC_CLEAN_GRANDCHILD: "1",
+						FAKE_ATOMIC_HELPER_EXITS: "1",
+					}),
 				});
 				const records = await box.waitForRecords(1, START_MS);
 				const stoppedAt = Date.now();

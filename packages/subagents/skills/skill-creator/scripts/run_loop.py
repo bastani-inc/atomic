@@ -12,10 +12,9 @@ import random
 import sys
 import tempfile
 import time
-import webbrowser
 from pathlib import Path
 
-from scripts.atomic_cli import Cancellation, run_main
+from scripts.atomic_cli import Cancellation, open_in_browser, run_main
 from scripts.generate_report import generate_html
 from scripts.improve_description import improve_description
 from scripts.run_eval import find_project_root, run_eval
@@ -286,7 +285,7 @@ def main():
             live_report_path = Path(args.report)
         # Open the report immediately so the user can watch
         live_report_path.write_text("<html><body><h1>Starting optimization loop...</h1><meta http-equiv='refresh' content='5'></body></html>")
-        webbrowser.open(str(live_report_path))
+        open_in_browser(str(live_report_path))
     else:
         live_report_path = None
 

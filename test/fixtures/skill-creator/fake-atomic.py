@@ -19,7 +19,8 @@ FAKE_ATOMIC_PLAN (a JSON object of prompt -> scenario) or FAKE_ATOMIC_SCENARIO n
   hold-child        the same, after starting a process in its own session with a child of its own
                     (like a credential command), which it ends when asked to stop, as Atomic does
   stalled-child     the same, but it does not act on SIGTERM; with FAKE_ATOMIC_CLEAN_GRANDCHILD
-                    set, the helper starts its child with an environment of its own
+                    set, the helper starts its child with an environment of its own, and with
+                    FAKE_ATOMIC_HELPER_EXITS set the helper exits at once, leaving its child
   exit:<status>     exit at once with a status and a stderr line
   improve           text mode: an answer with <new_description> tags
 """
@@ -127,7 +128,7 @@ elif scenario in ("hold-child", "stalled-child"):
         "    environment = {key: value for key, value in os.environ.items() if key == 'PATH'}\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time\\nwhile True: time.sleep(1)'], env=environment)\n"
         "print(child.pid, flush=True)\n"
-        "while True: time.sleep(1)"
+        "while not os.environ.get('FAKE_ATOMIC_HELPER_EXITS'): time.sleep(1)"
     )
     helper = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, start_new_session=os.name != "nt")
     record["child"] = helper.pid
