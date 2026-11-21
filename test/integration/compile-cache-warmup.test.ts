@@ -33,6 +33,8 @@ const CLI_TIMEOUT_MS = 90_000;
 const HELPER_WAIT_MS = 120_000;
 const POLL_MS = 50;
 const windows = process.platform === "win32";
+/** The sessions run the CLI with this runtime, and the compile cache handling they check is Node's. */
+const onNode = !("bun" in process.versions);
 
 interface SessionReport {
 	readonly cacheDir: string | null;
@@ -187,7 +189,7 @@ async function quit(program: PtyProgram): Promise<void> {
 	assert.equal(exit.exitCode, 0, program.screen());
 }
 
-describe("the compile cache of an interactive session", () => {
+describe.skipIf(!onNode)("the compile cache of an interactive session", () => {
 	test(
 		"the first session after an install writes no compile cache when it quits, and the next one reads it (#6132)",
 		async () => {
@@ -285,7 +287,7 @@ function copyInstallation(target: string): string {
 /** A copied installation and a helper that loads the whole module graph from it. */
 const HELPER_RUN_TIMEOUT_MS = 180_000;
 
-test(
+test.skipIf(!onNode)(
 	"a helper that cannot load the session's modules leaves the cache unmarked (#6132)",
 	async () => {
 		const root = makeTempDirectory("atomic-compile-cache-partial-");
@@ -326,7 +328,7 @@ test(
 /** An upgrade replaces a few hundred files; the helper loads the module graph from them meanwhile. */
 const UPGRADE_DURING_WARMUP_TIMEOUT_MS = 180_000;
 
-test.skipIf(!windows)(
+test.skipIf(!windows || !onNode)(
 	"an upgrade or an uninstall while the compile cache warms succeeds (#6132)",
 	async () => {
 		const root = makeTempDirectory("atomic-compile-cache-upgrade-");

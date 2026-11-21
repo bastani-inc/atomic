@@ -92,7 +92,8 @@ describe("the runtime a compile-cache helper repeats", () => {
 	});
 });
 
-describe("the compile cache's warm marker", () => {
+// It starts this runtime as Node; under Bun there is no Node directory to compare with.
+describe.skipIf("bun" in process.versions)("the compile cache's warm marker", () => {
 	test("lies in the directory Node itself caches into for the same runtime flags (#6132)", () => {
 		const probe = [
 			"const m = require('node:module');",
