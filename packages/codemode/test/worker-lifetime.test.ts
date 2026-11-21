@@ -228,6 +228,13 @@ describe("worker lifetime", () => {
 	});
 });
 
+/**
+ * How soon a stopped run settles. The fixture's script runs a search that takes the sandbox 6 to 8 s on an idle machine,
+ * and longer on a loaded one; a run that waited for it would settle that late. A run that does not settles within
+ * milliseconds when idle, and within about a second and a half on a loaded Windows machine running Bun.
+ */
+const SETTLE_BOUND_MS = 3_000;
+
 const runtimes = [
 	{ name: "Node", command: process.execPath, available: true },
 	{ name: "Bun", command: "bun", available: spawnSync("bun", ["--version"], { timeout: 5000 }).status === 0 },
@@ -248,7 +255,7 @@ describe.each(runtimes)("$name process lifetime", ({ name, command, available })
 			expect(result).toMatchObject({ type: "result", kind: how === "timeout" ? "timeout" : "aborted" });
 			expect(exit.type).toBe("exit");
 			// Timed from the abort, the close or the end of the timeout: starting the worker before it is not part of it.
-			expect(result.settledMs).toBeLessThan(1000);
+			expect(result.settledMs).toBeLessThan(SETTLE_BOUND_MS);
 			if (name === "Node") expect(exit.elapsedMs - result.elapsedMs).toBeLessThan(1000);
 		},
 		25000,

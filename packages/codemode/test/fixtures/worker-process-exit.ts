@@ -34,13 +34,19 @@ const sandbox = new CodemodeSandbox({
 		},
 	],
 });
+// The timeout's end: a timer of the same delay, set just before the run's own, runs in the same turn just before it, so
+// a main thread that was busy (Bun starts the worker on it) delays both alike.
+const timeoutEnded =
+	how === "timeout"
+		? setTimeout(() => {
+				stoppedAt = performance.now();
+			}, TIMEOUT_MS)
+		: undefined;
 try {
-	const executedAt = performance.now();
 	const result = await sandbox.execute(
 		"await tools.ready(); return 'a'.repeat(300000).indexOf('a'.repeat(10000) + 'b')",
 		{ signal: controller.signal, timeoutMs: how === "timeout" ? TIMEOUT_MS : Number.POSITIVE_INFINITY },
 	);
-	if (how === "timeout") stoppedAt = executedAt + TIMEOUT_MS;
 	const settledMs = stoppedAt === undefined ? Number.NaN : performance.now() - stoppedAt;
 	if (result.ok) throw new Error("The script completed instead of being cancelled");
 	await sandbox.close();
@@ -55,6 +61,7 @@ try {
 	);
 } finally {
 	clearTimeout(timer);
+	clearTimeout(timeoutEnded);
 	await sandbox.close();
 }
 // Bun keeps a process alive until a terminated worker's busy loop ends, which takes seconds and grows with the load on
