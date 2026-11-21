@@ -200,6 +200,8 @@ export default (pi) => pi.on("session_start", () => {
 		TMPDIR: temp,
 		// The default location, where an interactive session decides about the cache itself.
 		NODE_COMPILE_CACHE: "",
+		// A terminal adds the runner's environment to these, and no helper starts under CI.
+		CI: "0",
 		...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
 		...(process.env.PATH ? { PATH: process.env.PATH } : {}),
 	};
