@@ -352,7 +352,7 @@ export function recordPromptSections(session: AgentSession, options: NormalizedB
 		(name) => (sections[name] || undefined) !== (base[name] || undefined),
 	);
 	session._promptSectionNames =
-		names.length > 0 ? { runner: session._extensionRunner, names: new Set(names) } : undefined;
+		names.length > 0 ? { runner: new WeakRef(session._extensionRunner), names: new Set(names) } : undefined;
 }
 
 /**
@@ -363,7 +363,7 @@ export function recordPromptSections(session: AgentSession, options: NormalizedB
 function withPromptSections(session: AgentSession): NormalizedBuildSystemPromptOptions {
 	const base = session._baseSystemPromptOptions;
 	const recorded = session._promptSectionNames;
-	if (!recorded || recorded.runner !== session._extensionRunner) return base;
+	if (!recorded || recorded.runner.deref() !== session._extensionRunner) return base;
 	const current = getCurrentSystemMessage(session.agent.state.messages)?.sections ?? {};
 	const sections: Record<string, string> = { ...base.sections };
 	for (const name of recorded.names) {
