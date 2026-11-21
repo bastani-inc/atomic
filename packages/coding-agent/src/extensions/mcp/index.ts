@@ -22,7 +22,8 @@
  *
  * The session records each declared MCP tool's listing (tool-records.ts). A resumed session declares those tools
  * from their records while their servers reconnect, so its requests keep the tool list the provider cached; a call
- * waits for the server and runs only if the server lists the same tool again.
+ * waits for the server and runs only if the server lists the same tool again. It also records the summary the
+ * `mcp_servers` section showed for each server, and shows it while the server reconnects.
  *
  * Problems found at startup (config errors, failed connections, servers that need a sign-in) are
  * reported once. `/mcp` opens a manager to sign in, reconnect, enable or disable servers, and change
@@ -35,6 +36,7 @@ import type { SelectItem } from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.js";
 import type {
+	BuildSystemPromptOptions,
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
@@ -70,15 +72,17 @@ import {
 	isRecordedToolName,
 	MCP_TOOL_RECORD_ENTRY_TYPE,
 	type McpResourceServerRecord,
+	type McpServerSummaryRecord,
 	type McpToolRecord,
 	type McpToolRecordData,
 	type McpToolRecords,
 	RESOURCE_TOOL_NAMES,
 	readToolRecords,
 	recordableTool,
+	recordMatchesServer,
 	sameListedTool,
 	sameToolRecord,
-	transportFingerprint,
+	serverIdentity,
 } from "./tool-records.ts";
 import { createMcpToolDefinition, createMcpToolName, createMcpToolRenderers, type McpToolDetails } from "./tools.ts";
 import { type McpMenu, type McpUi, showMcpManager } from "./ui.ts";
@@ -207,12 +211,22 @@ function truncate(text: string, max: number): string {
 export interface McpServerListing {
 	entry: McpServerEntry;
 	connection?: { instructions?: string };
+	/** The summary the session recorded for the server, shown instead of its instructions while it reconnects. */
+	recordedSummary?: string;
 }
 
-/** First line of the configured description, or of the server instructions once connected. */
+/** First line of the configured description, else the recorded summary, else the first line of the instructions. */
 function serverSummary(server: McpServerListing): string {
-	const text = server.entry.config.description?.trim() || server.connection?.instructions || "";
+	const description = server.entry.config.description?.trim();
+	if (!description && server.recordedSummary !== undefined) return server.recordedSummary;
+	const text = description || server.connection?.instructions || "";
 	return (text.split("\n", 1)[0] ?? "").trim();
+}
+
+/** The section's text, and the summary it shows for each server whose line has room for one, as shown. */
+interface ServersSection {
+	text: string;
+	summarized: { listing: McpServerListing; summary: string }[];
 }
 
 /**
@@ -221,6 +235,10 @@ function serverSummary(server: McpServerListing): string {
  * codemode nor tool_search lists them. Undefined when there are no such servers.
  */
 export function renderServersSection(servers: readonly McpServerListing[]): string | undefined {
+	return layOutServersSection(servers)?.text;
+}
+
+function layOutServersSection(servers: readonly McpServerListing[]): ServersSection | undefined {
 	const listed = servers
 		.filter((server) => isEnabled(server) && hasIndirectTools(server.entry))
 		.sort((a, b) => a.entry.name.localeCompare(b.entry.name));
@@ -241,11 +259,14 @@ export function renderServersSection(servers: readonly McpServerListing[]): stri
 		kept === 0
 			? 0
 			: Math.min(MAX_SERVER_DESCRIPTION_CHARS, Math.floor((MAX_SERVERS_SECTION_CHARS - size(kept)) / kept) - 2);
-	const lines = listed.slice(0, kept).map((server, index) => {
-		const summary = perServer > 0 ? truncate(serverSummary(server), perServer) : "";
-		return summary ? `${heads[index]}: ${summary}` : heads[index];
-	});
-	return [intro, ...lines, ...omitted(listed.length - kept)].join("\n");
+	const summarized =
+		perServer > 0
+			? listed.slice(0, kept).map((listing) => ({ listing, summary: truncate(serverSummary(listing), perServer) }))
+			: [];
+	const lines = listed
+		.slice(0, kept)
+		.map((_, index) => (summarized[index]?.summary ? `${heads[index]}: ${summarized[index].summary}` : heads[index]));
+	return { text: [intro, ...lines, ...omitted(listed.length - kept)].join("\n"), summarized };
 }
 
 /**
@@ -434,7 +455,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		 */
 		const recordedOnly = new Set<string>();
 		/** The latest records on the session's branch. */
-		let toolRecords: McpToolRecords = { tools: new Map(), resourceServers: undefined };
+		let toolRecords: McpToolRecords = { tools: new Map(), resourceServers: undefined, summaries: new Map() };
 		/** Tool records being appended, by name, and the resource servers being appended, as JSON. */
 		const recordingTools = new Map<string, McpToolRecord>();
 		let recordingResources: string | undefined;
@@ -445,6 +466,18 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		 * since it started. The resource tools stay declared for them meanwhile.
 		 */
 		const pendingResourceServers = new Set<string>();
+		/**
+		 * Servers whose recorded summary the `mcp_servers` section shows: their record matched them when the session
+		 * started (see recordMatchesServer), and their connection attempt has not settled since.
+		 */
+		const pendingSummaries = new Set<string>();
+		/**
+		 * The section the prompt being started shows, the options it was set in, and the summaries it shows that the
+		 * records do not have yet.
+		 */
+		let unrecordedSummaries:
+			| { options: BuildSystemPromptOptions; text: string; summaries: McpServerSummaryRecord[] }
+			| undefined;
 
 		// Render resumed MCP calls even when their server has not connected or never connects.
 		pi.registerToolRenderer((toolName, next) => {
@@ -553,6 +586,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const entry = findServer(server)?.entry ?? connection.entry;
 			const previous = serverTools.get(server) ?? new Set<string>();
 			const current = new Set<string>();
+			// The connection's instructions replace the recorded summary.
+			pendingSummaries.delete(server);
 			// Like Codex, all tools whose names sanitize to the same name get the hash suffix, so which
 			// one would keep the plain name does not depend on the order of the list.
 			const plain = [...new Set(connection.tools.map((tool) => tool.name))].map((tool) =>
@@ -592,6 +627,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 
 		/** Make a disabled server's tools unreachable. */
 		const hideTools = (server: string) => {
+			pendingSummaries.delete(server);
 			for (const name of serverTools.get(server) ?? []) withdrawTool(name);
 			serverTools.set(server, new Set());
 			syncResourceTools();
@@ -611,7 +647,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				const record: McpToolRecord = {
 					name,
 					server: listed.server,
-					transport: transportFingerprint(entry),
+					...serverIdentity(entry),
 					tool: recordableTool(listed.tool),
 				};
 				const known = [records.tools.get(name), recordingTools.get(name)];
@@ -622,7 +658,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			let resourceServers: McpResourceServerRecord[] | undefined;
 			if (pendingResourceServers.size === 0 && [...RESOURCE_TOOL_NAMES].some((name) => declaredNames.has(name))) {
 				const current = serversWithResources()
-					.map((server) => ({ server: server.entry.name, transport: transportFingerprint(server.entry) }))
+					.map((server) => ({ server: server.entry.name, ...serverIdentity(server.entry) }))
 					.sort((a, b) => (a.server < b.server ? -1 : a.server > b.server ? 1 : 0));
 				const json = JSON.stringify(current);
 				const known = [JSON.stringify(records.resourceServers), recordingResources];
@@ -685,7 +721,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				const record = toolRecords.tools.get(name);
 				if (!record) continue;
 				const server = findServer(record.server);
-				if (!server || !isEnabled(server) || transportFingerprint(server.entry) !== record.transport) continue;
+				if (!server || !isEnabled(server) || !recordMatchesServer(server.entry, record)) continue;
 				if (exposureFor(server.entry, record.tool.name, name) === "hidden") continue;
 				const definition = defineTool(server.entry, record.tool, name, undefined, record.tool);
 				definitions.set(name, definition);
@@ -697,13 +733,56 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			}
 			// The resource tools stay declared while a server that had resources reconnects.
 			if ([...RESOURCE_TOOL_NAMES].some((name) => declaredNames.has(name))) {
-				for (const { server: name, transport } of toolRecords.resourceServers ?? []) {
-					const server = findServer(name);
-					if (server && isEnabled(server) && transportFingerprint(server.entry) === transport) {
-						pendingResourceServers.add(name);
+				for (const record of toolRecords.resourceServers ?? []) {
+					const server = findServer(record.server);
+					if (server && isEnabled(server) && recordMatchesServer(server.entry, record)) {
+						pendingResourceServers.add(record.server);
 					}
 				}
 				syncResourceTools();
+			}
+			// The `mcp_servers` section shows a server's recorded summary while the server reconnects.
+			for (const record of toolRecords.summaries.values()) {
+				const server = findServer(record.server);
+				if (server && isEnabled(server) && recordMatchesServer(server.entry, record))
+					pendingSummaries.add(record.server);
+			}
+		};
+
+		/** The recorded summary of a server whose connection attempt has not settled since the session started. */
+		const pendingSummary = (server: McpServer): string | undefined => {
+			const record = pendingSummaries.has(server.entry.name)
+				? toolRecords.summaries.get(server.entry.name)
+				: undefined;
+			return record && recordMatchesServer(server.entry, record) ? record.summary : undefined;
+		};
+
+		/**
+		 * The summaries a section shows from servers' instructions, as shown, that differ from the branch's records. A
+		 * missing record counts as no summary. Servers with a configured description or a recorded summary shown while
+		 * they reconnect add nothing new.
+		 */
+		const summariesToRecord = (summarized: ServersSection["summarized"]): McpServerSummaryRecord[] => {
+			const changed: McpServerSummaryRecord[] = [];
+			for (const { listing, summary } of summarized) {
+				const { entry } = listing;
+				const server = findServer(entry.name);
+				if (!server || server.entry.config.description?.trim() || pendingSummary(server) !== undefined) continue;
+				const record = toolRecords.summaries.get(entry.name);
+				const recorded = record && recordMatchesServer(server.entry, record) ? record.summary : "";
+				if (summary !== recorded) changed.push({ server: entry.name, ...serverIdentity(server.entry), summary });
+			}
+			return changed;
+		};
+
+		/** Append summary records; a failed write is tried again with the next prompt, which finds them changed still. */
+		const recordSummaries = async (summaries: McpServerSummaryRecord[]): Promise<void> => {
+			const records = toolRecords;
+			try {
+				await pi.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, { tools: [], summaries });
+				if (toolRecords === records) for (const record of summaries) records.summaries.set(record.server, record);
+			} catch {
+				// Without the record, a later resume shows the server without a summary until it connects, as before.
 			}
 		};
 
@@ -887,6 +966,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					if (isCurrent()) {
 						withdrawUnlistedRecords(server.entry.name);
 						if (pendingResourceServers.delete(server.entry.name)) syncResourceTools();
+						// A server that did not connect shows no summary, as when it never connected.
+						pendingSummaries.delete(server.entry.name);
 					}
 				}
 			})();
@@ -1473,9 +1554,17 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		pi.on("before_agent_start", async (event, ctx) => {
 			await waitForDirectServers(ctx);
 			const { sections } = event.systemPromptOptions;
-			const section = renderServersSection(servers);
-			if (section) sections[MCP_SERVERS_SECTION] = section;
+			const section = layOutServersSection(
+				servers.map((server) => ({ ...server, recordedSummary: pendingSummary(server) })),
+			);
+			if (section) sections[MCP_SERVERS_SECTION] = section.text;
 			else delete sections[MCP_SERVERS_SECTION];
+			// Recorded once the prompt sends its first message, and only if no later handler replaced the section.
+			const summaries = section ? summariesToRecord(section.summarized) : [];
+			unrecordedSummaries =
+				section && summaries.length > 0
+					? { options: event.systemPromptOptions, text: section.text, summaries }
+					: undefined;
 		});
 
 		// A codemode script waits for the servers it names, or for every server when it searches or
@@ -1501,8 +1590,23 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		});
 
 		// Keep track of the MCP tools the transcript declares, and record the ones whose listing was not recorded yet.
+		// Record the summaries the prompt's section shows once its first message ends (the section update, or the
+		// prompt itself when the section did not change), so the records hold only what the conversation shows: not
+		// when a later handler replaced the section or the prompt, nor when a reply comes first, as the prompt then
+		// sent nothing.
 		pi.on("message_end", async (event) => {
 			const { message } = event;
+			if (unrecordedSummaries) {
+				const { options, text, summaries } = unrecordedSummaries;
+				unrecordedSummaries = undefined;
+				if (
+					(message.role === "system" || message.role === "user" || message.role === "custom") &&
+					options.forceSystemPrompt === undefined &&
+					options.sections?.[MCP_SERVERS_SECTION] === text
+				) {
+					await recordSummaries(summaries);
+				}
+			}
 			if (message.role !== "system" || (!message.toolsAdded && !message.toolsRemoved)) return;
 			for (const tool of message.toolsRemoved ?? []) declaredNames.delete(tool.name);
 			for (const tool of message.toolsAdded ?? []) if (isRecordedToolName(tool.name)) declaredNames.add(tool.name);
@@ -1564,10 +1668,12 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			toolOwners.clear();
 			listedTools.clear();
 			recordedOnly.clear();
-			toolRecords = { tools: new Map(), resourceServers: undefined };
+			toolRecords = { tools: new Map(), resourceServers: undefined, summaries: new Map() };
 			recordingTools.clear();
 			recordingResources = undefined;
 			pendingResourceServers.clear();
+			pendingSummaries.clear();
+			unrecordedSummaries = undefined;
 			declaredNames = new Set();
 			tokensAtSignIn.clear();
 			resourceToolsExposure = undefined;

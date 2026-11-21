@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Context, resolveTranscriptTools } from "@bastani/atomic-ai";
+import { type Context, getCurrentSystemMessage, resolveTranscriptTools } from "@bastani/atomic-ai";
 import {
 	fauxAssistantMessage,
 	fauxToolCall,
@@ -13,6 +13,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../../src/core/agent-session.ts";
 import { AuthStorage, InMemoryAuthStorageBackend } from "../../src/core/auth-storage.ts";
+import type { ExtensionFactory } from "../../src/core/extensions/types.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "../../src/core/models-store.ts";
 import { DefaultResourceLoader } from "../../src/core/resource-loader.ts";
@@ -27,7 +28,7 @@ import {
 } from "../../src/extensions/mcp/client/index.ts";
 import { createInMemoryTransportPair } from "../../src/extensions/mcp/client/testing/index.ts";
 import type { McpExposure, McpServerEntry } from "../../src/extensions/mcp/config.ts";
-import { createMcpExtension } from "../../src/extensions/mcp/index.ts";
+import { createMcpExtension, MCP_SERVERS_SECTION } from "../../src/extensions/mcp/index.ts";
 import { McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.ts";
 import { MCP_TOOL_RECORD_ENTRY_TYPE, transportFingerprint } from "../../src/extensions/mcp/tool-records.ts";
 import { createMcpToolName } from "../../src/extensions/mcp/tools.ts";
@@ -59,6 +60,8 @@ interface ServerScript {
 	needsSignIn?: boolean;
 	/** Resources the server lists; a server without them does not offer resources. */
 	resources?: { uri: string; name: string }[];
+	/** The instructions the server sends with its `initialize` answer. */
+	instructions?: string;
 	calls: string[];
 }
 
@@ -74,6 +77,7 @@ function createFakeServer(script: ServerScript) {
 					protocolVersion: LATEST_PROTOCOL_VERSION,
 					capabilities: { tools: {}, ...(script.resources ? { resources: {} } : {}) },
 					serverInfo: { name: "docs", version: "1.0.0" },
+					...(script.instructions === undefined ? {} : { instructions: script.instructions }),
 				};
 				if (!script.ready) queueMicrotask(() => answer(result));
 				else
@@ -182,6 +186,16 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		startupWaitMs?: number;
 		/** Server URLs, by server name; `http://<name>.invalid/mcp` by default. */
 		urls?: Record<string, string>;
+		/** Servers started as a command instead of a URL, by server name. */
+		commands?: Record<string, { command: string; args?: string[] }>;
+		/** Configured descriptions, by server name. */
+		descriptions?: Record<string, string>;
+		/** Extensions loaded after the MCP integration. */
+		extensions?: ExtensionFactory[];
+		/** Where each server is defined, by server name; none by default. */
+		scopes?: Record<string, "global" | "project">;
+		/** Project `mcp.json` overrides of global servers, by server name. */
+		overrides?: Record<string, string>;
 	}
 
 	/** What `atomic --resume` does for a stored session: file-backed manager, the MCP servers from mcp.json, same model. */
@@ -189,8 +203,14 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		const settingsManager = SettingsManager.inMemory();
 		const entries: McpServerEntry[] = Object.keys(options.servers).map((name) => ({
 			name,
-			config: { url: options.urls?.[name] ?? `http://${name}.invalid/mcp`, exposure: options.exposure ?? "direct" },
+			config: {
+				...(options.commands?.[name] ?? { url: options.urls?.[name] ?? `http://${name}.invalid/mcp` }),
+				exposure: options.exposure ?? "direct",
+				...(options.descriptions?.[name] === undefined ? {} : { description: options.descriptions[name] }),
+			},
 			source: "test",
+			...(options.scopes?.[name] === undefined ? {} : { scope: options.scopes[name] }),
+			...(options.overrides?.[name] === undefined ? {} : { override: options.overrides[name] }),
 		}));
 		const resourceLoader = new DefaultResourceLoader({
 			cwd: fixture.cwd,
@@ -217,6 +237,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 					credentials: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()),
 					startupWaitMs: options.startupWaitMs,
 				}),
+				...(options.extensions ?? []),
 			],
 		});
 		await resourceLoader.reload();
@@ -707,5 +728,453 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 			expect(stored).not.toContain(secret);
 			for (const hash of hashes(secret)) expect(stored).not.toContain(hash);
 		}
+	});
+
+	/** The `mcp_servers` section of every prompt update after `from`, in order. */
+	function sectionUpdates(session: AgentSession, from: number): (string | null)[] {
+		return session.messages
+			.slice(from)
+			.flatMap((message) =>
+				message.role === "system" && message.sections && MCP_SERVERS_SECTION in message.sections
+					? [message.sections[MCP_SERVERS_SECTION] ?? null]
+					: [],
+			);
+	}
+
+	/** The `mcp_servers` section the model has now. */
+	function currentSection(session: AgentSession): string | undefined {
+		return getCurrentSystemMessage(session.messages)?.sections?.[MCP_SERVERS_SECTION];
+	}
+
+	/** Wait until every server's connection attempt settled: `/mcp` without a terminal waits for them. */
+	async function settled(session: AgentSession): Promise<void> {
+		await session.prompt("/mcp");
+	}
+
+	/** The server lines of an `mcp_servers` section. */
+	function serverLines(section: string | null | undefined): string[] {
+		return (section ?? "").split("\n").filter((line) => line.startsWith("- "));
+	}
+
+	const DOCS_INSTRUCTIONS = "Search and fetch the product docs.\nCall search before fetch.";
+	const docsLine = (summary?: string) => `- mcp__docs (codemode)${summary ? `: ${summary}` : ""}`;
+
+	/** A first process whose prompts list the codemode servers once connected; it quits after two prompts. */
+	async function liveCodemodeSession(fixture: Fixture, options: StartOptions) {
+		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
+		const live = await startSession(fixture, manager, { exposure: "codemode", ...options });
+		await settled(live);
+		fixture.faux.setResponses([fixture.reply("one")]);
+		await live.prompt("first");
+		fixture.faux.setResponses([fixture.reply("two")]);
+		await live.prompt("second");
+		const section = currentSection(live);
+		await live.dispose();
+		return { sessionFile: manager.getSessionFile()!, section };
+	}
+
+	async function promptReply(fixture: Fixture, session: AgentSession, text: string) {
+		fixture.faux.setResponses([fixture.reply(text)]);
+		await session.prompt(text);
+	}
+
+	it("keeps a reconnecting server's summary in the mcp_servers section of a resumed session (#6108)", async () => {
+		const fixture = await createFixture();
+		const { sessionFile, section } = await liveCodemodeSession(fixture, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+		});
+		expect(serverLines(section)).toEqual([docsLine("Search and fetch the product docs.")]);
+
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, ready: server.ready, calls: [] } },
+			exposure: "codemode",
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+
+		server.release();
+		await settled(resumed);
+		await promptReply(fixture, resumed, "after reconnect");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+		expect(currentSection(resumed)).toBe(section);
+	});
+
+	it("drops a recorded server summary once the server fails to reconnect (#6108)", async () => {
+		const fixture = await createFixture();
+		const { sessionFile, section } = await liveCodemodeSession(fixture, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+		});
+
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, ready: server.ready, calls: [] } },
+			exposure: "codemode",
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+
+		server.fail(new Error("server crashed"));
+		await settled(resumed);
+		await promptReply(fixture, resumed, "after the failure");
+		expect(sectionUpdates(resumed, before)).toEqual([
+			section?.replace(docsLine("Search and fetch the product docs."), docsLine()),
+		]);
+	});
+
+	it.each([
+		{
+			change: "other instructions",
+			instructions: "Search the docs, version 2.",
+			line: docsLine("Search the docs, version 2."),
+		},
+		{ change: "no instructions", instructions: undefined, line: docsLine() },
+	])(
+		"shows what a reconnected server sends when it sends $change, and keeps that at the next resume (#6108)",
+		async ({ instructions, line }) => {
+			const fixture = await createFixture();
+			const { sessionFile, section } = await liveCodemodeSession(fixture, {
+				servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+			});
+
+			const server = held();
+			const resumed = await resume(fixture, sessionFile, {
+				servers: { docs: { tools: [SEARCH], instructions, ready: server.ready, calls: [] } },
+				exposure: "codemode",
+			});
+			const before = resumed.messages.length;
+			await promptReply(fixture, resumed, "after resume");
+			expect(sectionUpdates(resumed, before)).toEqual([]);
+			server.release();
+			await settled(resumed);
+			await promptReply(fixture, resumed, "after reconnect");
+			const changed = section?.replace(docsLine("Search and fetch the product docs."), line);
+			expect(sectionUpdates(resumed, before)).toEqual([changed]);
+			await resumed.dispose();
+
+			// The next resume shows what the server sent last while it reconnects again.
+			const again = held();
+			const third = await resume(fixture, sessionFile, {
+				servers: { docs: { tools: [SEARCH], instructions, ready: again.ready, calls: [] } },
+				exposure: "codemode",
+			});
+			const start = third.messages.length;
+			await promptReply(fixture, third, "after the second resume");
+			again.release();
+			await settled(third);
+			await promptReply(fixture, third, "after the second reconnect");
+			expect(sectionUpdates(third, start)).toEqual([]);
+			expect(currentSection(third)).toBe(changed);
+		},
+	);
+
+	it.each([
+		{
+			change: "now has a description",
+			options: { descriptions: { docs: "Product docs." } },
+			line: docsLine("Product docs."),
+		},
+		{
+			change: "now points to another URL",
+			options: { urls: { docs: "http://elsewhere.invalid/mcp" } },
+			line: docsLine(),
+		},
+		{
+			change: "is now started as a command",
+			options: { commands: { docs: { command: "docs-server" } } },
+			line: docsLine(),
+		},
+	])("does not show a recorded summary for a server that $change (#6108)", async ({ options, line }) => {
+		const fixture = await createFixture();
+		const { sessionFile } = await liveCodemodeSession(fixture, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+		});
+
+		const resumed = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, ready: held().ready, calls: [] } },
+			exposure: "codemode",
+			...options,
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		expect(sectionUpdates(resumed, before).map((update) => serverLines(update))).toEqual([[line]]);
+	});
+
+	/** The summaries the session's records hold, in the order they were recorded. */
+	function recordedSummaries(stored: string): { server: string; summary: string }[] {
+		return stored
+			.split("\n")
+			.filter((line) => line.includes(MCP_TOOL_RECORD_ENTRY_TYPE))
+			.flatMap(
+				(line) =>
+					(JSON.parse(line) as { data: { summaries?: { server: string; summary: string }[] } }).data.summaries ??
+					[],
+			);
+	}
+
+	it("records each server's summary once, as the section shows it (#6108)", async () => {
+		const fixture = await createFixture();
+		// Enough servers that each summary gets less room than the most the section gives one (250 characters).
+		const names = Array.from({ length: 20 }, (_, index) => `docs${index}`);
+		const firstLine = (index: number) =>
+			`Docs ${index}: ${"search and fetch the product docs, ".repeat(6)}hidden-6108 ${"and more ".repeat(20)}`.trim();
+		const script = (index: number, ready?: Promise<unknown>): ServerScript => ({
+			tools: [],
+			instructions: `${firstLine(index)}\nSecond line of docs ${index}.`,
+			...(ready ? { ready } : {}),
+			calls: [],
+		});
+		const { sessionFile, section } = await liveCodemodeSession(fixture, {
+			servers: Object.fromEntries(names.map((name, index) => [name, script(index)])),
+		});
+		const lines = serverLines(section);
+		expect(lines).toHaveLength(20);
+		expect(section).not.toContain("hidden-6108");
+
+		const stored = readFileSync(sessionFile, "utf8");
+		const recorded = recordedSummaries(stored);
+		expect(recorded.map((record) => `- mcp__${record.server} (codemode): ${record.summary}`).sort()).toEqual(
+			[...lines].sort(),
+		);
+		expect(stored).not.toContain("hidden-6108");
+		expect(stored).not.toContain("Second line of docs");
+
+		const ready = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: Object.fromEntries(names.map((name, index) => [name, script(index, ready.ready)])),
+			exposure: "codemode",
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		ready.release();
+		await settled(resumed);
+		await promptReply(fixture, resumed, "after reconnect");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+		expect(currentSection(resumed)).toBe(section);
+		await resumed.dispose();
+		expect(recordedSummaries(readFileSync(sessionFile, "utf8"))).toHaveLength(20);
+	});
+
+	it("records no summary the conversation never showed (#6108)", async () => {
+		const fixture = await createFixture();
+		const replaceSection: ExtensionFactory = (pi) => {
+			pi.on("before_agent_start", (event) => {
+				event.systemPromptOptions.sections[MCP_SERVERS_SECTION] = "The application lists its own servers.";
+			});
+		};
+		const { sessionFile, section } = await liveCodemodeSession(fixture, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+			extensions: [replaceSection],
+		});
+		expect(section).toContain("The application lists its own servers.");
+
+		const stored = readFileSync(sessionFile, "utf8");
+		expect(recordedSummaries(stored)).toEqual([]);
+		expect(stored).not.toContain("Search and fetch the product docs.");
+	});
+
+	it("records no summary of a prompt that ended before it sent anything (#6108)", async () => {
+		const fixture = await createFixture();
+		const gate = { held: undefined as ReturnType<typeof held> | undefined, entered: held() };
+		const holdPrompt: ExtensionFactory = (pi) => {
+			pi.on("before_agent_start", async () => {
+				if (!gate.held) return;
+				gate.entered.release();
+				await gate.held.ready;
+			});
+		};
+		const server = held();
+		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
+		const live = await startSession(fixture, manager, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, ready: server.ready, calls: [] } },
+			exposure: "codemode",
+			extensions: [holdPrompt],
+		});
+		await promptReply(fixture, live, "first");
+		const section = currentSection(live);
+		expect(serverLines(section)).toEqual([docsLine()]);
+		server.release();
+		await settled(live);
+		// The next prompt shows the summary, but the session closes before the prompt sends anything.
+		gate.held = held();
+		const prompt = live.prompt("closed before it was sent").catch(() => undefined);
+		await gate.entered.ready;
+		const disposed = live.dispose();
+		gate.held.release();
+		await Promise.all([prompt, disposed]);
+		expect(recordedSummaries(readFileSync(manager.getSessionFile()!, "utf8"))).toEqual([]);
+
+		const resumed = await resume(fixture, manager.getSessionFile()!, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, ready: held().ready, calls: [] } },
+			exposure: "codemode",
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+		expect(currentSection(resumed)).toBe(section);
+	});
+
+	const stdio = (args: string[]) => ({ docs: { command: "docs-server", args } });
+
+	it("keeps a resumed session's tools declared when a stdio server's token argument changed (#6109)", async () => {
+		const fixture = await createFixture();
+		const { sessionFile, control } = await liveSession(fixture, {
+			servers: { docs: { tools: [SEARCH], calls: [] } },
+			commands: stdio(["--token", "abc"]),
+		});
+
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], ready: server.ready, calls: [] } },
+			commands: stdio(["--token", "def"]),
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		expect(fixture.requests.at(-1)).toBe(control);
+		server.release();
+		await settled(resumed);
+		await promptReply(fixture, resumed, "after reconnect");
+		expect(fixture.requests.at(-1)).toBe(control);
+		expect(toolChanges(resumed, before)).toEqual([]);
+	});
+
+	it("stores nothing derived from a stdio server's arguments in the session (#6109)", async () => {
+		const fixture = await createFixture();
+		const args = ["--api-key", "sk-secret-6109", "--token=tok-6109", "positional-6109"];
+		const { sessionFile } = await liveSession(fixture, {
+			servers: { docs: { tools: [SEARCH], calls: [] } },
+			commands: stdio(args),
+		});
+
+		const stored = readFileSync(sessionFile, "utf8");
+		const transports = stored
+			.split("\n")
+			.filter((line) => line.includes(MCP_TOOL_RECORD_ENTRY_TYPE))
+			.flatMap((line) => (JSON.parse(line) as { data: { tools: { transport: string }[] } }).data.tools)
+			.map((tool) => tool.transport);
+		// The fingerprint of `docs-server` without arguments, as 0.10.2 recorded it.
+		expect(transports).toEqual(["4bc6c60d855bcca8"]);
+		const hashes = (text: string) => {
+			const hex = createHash("sha256").update(text).digest("hex");
+			return [hex, hex.slice(0, 16)];
+		};
+		for (const secret of [JSON.stringify({ command: "docs-server", args }), JSON.stringify(args), ...args]) {
+			expect(stored).not.toContain(secret);
+			for (const hash of hashes(secret)) expect(stored).not.toContain(hash);
+		}
+	});
+
+	/** A copy of the stored session whose tool records carry `transport` and no scope, as 0.10.2 recorded them. */
+	async function withTransport(fixture: Fixture, sessionFile: string, transport: string): Promise<string> {
+		const stored = await SessionManager.open(sessionFile, undefined, fixture.cwd);
+		const copy = await SessionManager.create(fixture.cwd, join(fixture.cwd, "earlier"));
+		for (const entry of stored.getBranch()) {
+			if (entry.type === "message") await copy.appendMessage(entry.message);
+			else if (entry.type === "custom" && entry.customType === MCP_TOOL_RECORD_ENTRY_TYPE) {
+				const data = entry.data as { tools: { transport: string; scope?: string | null }[] };
+				await copy.appendCustomEntry(MCP_TOOL_RECORD_ENTRY_TYPE, {
+					...data,
+					tools: data.tools.map(({ scope: _scope, ...tool }) => ({ ...tool, transport })),
+				});
+			}
+		}
+		return copy.getSessionFile()!;
+	}
+
+	it.each([
+		{ args: ["--token", "abc"], kept: true },
+		{ args: ["--token", "def"], kept: false },
+	])(
+		"restores the tools a 0.10.2 session recorded for a stdio server only with the same arguments (#6109): $args",
+		async ({ args, kept }) => {
+			const fixture = await createFixture();
+			const { sessionFile, control } = await liveSession(fixture, {
+				servers: { docs: { tools: [SEARCH], calls: [] } },
+				commands: stdio(["--token", "abc"]),
+			});
+			// 0.10.2 hashed `{"command":"docs-server","args":["--token","abc"]}`.
+			const earlier = await withTransport(fixture, sessionFile, "c0879d833ebf5879");
+
+			const resumed = await resume(fixture, earlier, {
+				servers: { docs: { tools: [SEARCH], ready: held().ready, calls: [] } },
+				commands: stdio(args),
+			});
+			const before = resumed.messages.length;
+			await promptReply(fixture, resumed, "after resume");
+			if (kept) {
+				expect(fixture.requests.at(-1)).toBe(control);
+				expect(toolChanges(resumed, before)).toEqual([]);
+			} else {
+				expect(toolChanges(resumed, before)).toEqual([{ added: [], removed: ["mcp__docs__search"] }]);
+			}
+		},
+	);
+
+	it.each([
+		{
+			change: "is now defined globally, as when the project is no longer trusted",
+			kept: false,
+			options: { scopes: { docs: "global" as const } },
+		},
+		{
+			change: "keeps its global definition with a project override",
+			kept: true,
+			options: { scopes: { docs: "global" as const }, overrides: { docs: "project mcp.json" } },
+		},
+	])(
+		"keeps the recorded tools of a server that $change only for the same definition (#6109)",
+		async ({ kept, options }) => {
+			const fixture = await createFixture();
+			const first = kept ? { scopes: { docs: "global" as const } } : { scopes: { docs: "project" as const } };
+			const { sessionFile, control } = await liveSession(fixture, {
+				servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+				commands: stdio(["--package", "project-docs"]),
+				...first,
+			});
+
+			const resumed = await resume(fixture, sessionFile, {
+				servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, ready: held().ready, calls: [] } },
+				commands: stdio(kept ? ["--package", "project-docs"] : ["--package", "global-docs"]),
+				...options,
+			});
+			const before = resumed.messages.length;
+			await promptReply(fixture, resumed, "after resume");
+			if (kept) {
+				expect(fixture.requests.at(-1)).toBe(control);
+				expect(toolChanges(resumed, before)).toEqual([]);
+			} else {
+				expect(toolChanges(resumed, before)).toEqual([{ added: [], removed: ["mcp__docs__search"] }]);
+			}
+		},
+	);
+
+	it("does not show the recorded summary of a project's server for a global server of the same name (#6108)", async () => {
+		const fixture = await createFixture();
+		const { sessionFile } = await liveCodemodeSession(fixture, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+			commands: stdio(["--package", "project-docs"]),
+			scopes: { docs: "project" },
+		});
+
+		const resumed = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], instructions: "Global docs.", ready: held().ready, calls: [] } },
+			exposure: "codemode",
+			commands: stdio(["--package", "global-docs"]),
+			scopes: { docs: "global" },
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		expect(sectionUpdates(resumed, before).map((update) => serverLines(update))).toEqual([[docsLine()]]);
+	});
+
+	it("keeps the fingerprints 0.10.2 recorded for URL servers and for commands without arguments (#6109)", () => {
+		expect(
+			transportFingerprint({ name: "docs", config: { url: "https://mcp.example.com:8443/v1/mcp" }, source: "test" }),
+		).toBe("51c7cf36bf9e812c");
+		expect(transportFingerprint({ name: "docs", config: { command: "docs-server" }, source: "test" })).toBe(
+			"4bc6c60d855bcca8",
+		);
 	});
 });
