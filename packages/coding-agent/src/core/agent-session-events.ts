@@ -56,6 +56,7 @@ import type {
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./extensions/stale-context.ts";
+import { transpileCacheWritesSettled } from "./extensions/transpile-cache-writes.js";
 import type { SessionShutdownEvent } from "./extensions/types.ts";
 import { hostNoticeForEvent } from "./host-notices.js";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
@@ -902,6 +903,9 @@ export function closeAgentSession(
 			await session.settingsManager.flush();
 			assertSettingsWrites(session);
 		});
+		// A module an extension imported after it started stores its transform after the import settled: nothing the
+		// session's extensions started still writes into the agent directory once dispose() resolves.
+		await attempt("extension transpile cache", () => transpileCacheWritesSettled());
 		await attempt("snapshot collection", () => session._worktreeSnapshots.scheduleCollection());
 		await attempt("pooled worktrees", () => session._worktreeSnapshots.releaseWorktrees());
 		if (ownedSettingsManagers.get(session.settingsManager) === session)

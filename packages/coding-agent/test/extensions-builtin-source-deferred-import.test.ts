@@ -25,6 +25,7 @@ import {
 import { resetNativeBuiltinExtensionEntriesForTest } from "../src/core/extensions/native-builtin-entries.ts";
 import { prepareSourceEntries, transformTemplate } from "../src/core/extensions/source-builtin-imports.ts";
 import { moduleTransformOptions } from "../src/core/extensions/transform-graph.ts";
+import { transpileCacheWritesSettled } from "../src/core/extensions/transpile-cache-writes.ts";
 import { createTypeScriptSourceSpecifierTransform } from "../src/core/extensions/ts-source-specifiers.ts";
 import type { ExtensionFactory } from "../src/core/extensions/types.ts";
 
@@ -42,13 +43,21 @@ const REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS = 120_000;
 // The main thread stores a transform after the import that needed it has settled.
 const STORED_TRANSFORM_TIMEOUT_MS = 30_000;
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => void | Promise<void>> = [];
 
-afterEach(() => {
-	for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 	clearExtensionCache();
 	resetNativeBuiltinExtensionEntriesForTest();
 });
+
+/** Removes a test's folder once nothing still stores a transform or a graph into it. */
+function removeWhenWritesSettle(root: string): () => Promise<void> {
+	return async () => {
+		await transpileCacheWritesSettled();
+		rmSync(root, { recursive: true, force: true });
+	};
+}
 
 function replaceEnvironmentVariable(name: string, value: string): void {
 	const previous = process.env[name];
@@ -90,7 +99,7 @@ function replaceKeepingSizeAndTime(file: string, from: string, to: string): void
  */
 function sourceCheckout(files: Record<string, string>) {
 	const root = mkdtempSync(join(tmpdir(), "atomic-builtin-deferred-"));
-	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	cleanups.push(removeWhenWritesSettle(root));
 	const packageDir = join(root, "coding-agent");
 	writeFile(join(packageDir, "src", "main.ts"), "");
 	const intercomDir = join(root, "intercom");
@@ -112,7 +121,7 @@ function sourceCheckout(files: Record<string, string>) {
  */
 function installedLayout(files: Record<string, string>) {
 	const root = mkdtempSync(join(tmpdir(), "atomic-builtin-installed-"));
-	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	cleanups.push(removeWhenWritesSettle(root));
 	const packageDir = join(root, "app");
 	const intercomDir = join(packageDir, "dist", "builtin", "intercom");
 	writeFile(
@@ -141,7 +150,7 @@ function countWorkers(): () => number {
 /** The same files as an extension the user installed in the agent directory. */
 function userExtension(files: Record<string, string>) {
 	const root = mkdtempSync(join(tmpdir(), "atomic-user-deferred-"));
-	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	cleanups.push(removeWhenWritesSettle(root));
 	const agentDir = join(root, "agent");
 	const dir = join(agentDir, "extensions", "probe");
 	for (const [file, content] of Object.entries(files)) writeFile(join(dir, file), content);

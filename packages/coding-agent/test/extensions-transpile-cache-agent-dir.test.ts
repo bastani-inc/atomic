@@ -293,6 +293,67 @@ describe("extension transpile cache follows the agent directory", () => {
 		);
 	});
 
+	it("closing a session waits for the transform its extension stores for a module it imported later", async () => {
+		const root = tempDir("atomic-cache-settle-");
+		const agentDir = path.join(root, "agent");
+		const cwd = path.join(root, "project");
+		fs.mkdirSync(cwd, { recursive: true });
+		const extensionDir = path.join(agentDir, "extensions", "probe");
+		fs.mkdirSync(extensionDir, { recursive: true });
+		fs.writeFileSync(path.join(extensionDir, "late.ts"), "export const late: string = 'late';\n");
+		const lateImport = "__atomicCacheSettleLateImport";
+		const host = globalThis as { [lateImport]?: () => Promise<unknown> };
+		fs.writeFileSync(
+			path.join(extensionDir, "index.ts"),
+			`export default function (): void {
+	(globalThis as { ${lateImport}?: () => Promise<unknown> }).${lateImport} = () => import("./late.ts");
+}
+`,
+		);
+		const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+		const { session, extensionsResult } = await createAgentSession({
+			cwd,
+			agentDir,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
+		});
+		assert.deepEqual(extensionsResult.errors, []);
+		const cacheDir = path.resolve(getExtensionTranspileCacheDir(agentDir));
+		// A slow disk: storing the late module's transform finishes only after closing the session flushed its settings.
+		let releaseWrite!: () => void;
+		const writeReleased = new Promise<void>((resolve) => {
+			releaseWrite = resolve;
+		});
+		const flushSettings = settingsManager.flush.bind(settingsManager);
+		const flush = vi.spyOn(settingsManager, "flush").mockImplementation(async () => {
+			await flushSettings();
+			releaseWrite();
+		});
+		const order: string[] = [];
+		const writeFile = fs.promises.writeFile;
+		const writes = vi.spyOn(fs.promises, "writeFile").mockImplementation(async (...args) => {
+			if (path.dirname(path.resolve(String(args[0]))) !== cacheDir) return writeFile(...args);
+			await writeReleased;
+			await writeFile(...args);
+			order.push("transform stored");
+		});
+		try {
+			await host[lateImport]?.();
+			await session.dispose();
+			order.push("disposed");
+		} finally {
+			releaseWrite();
+			flush.mockRestore();
+			writes.mockRestore();
+			delete host[lateImport];
+		}
+
+		assert.deepEqual(order, ["transform stored", "disposed"]);
+		fs.rmSync(agentDir, { recursive: true });
+	});
+
 	it("puts an SDK session's cache under its agentDir option (#4728)", async () => {
 		const root = tempDir("atomic-4728-sdk-");
 		const sessionAgentDir = path.join(root, "session-agent");
