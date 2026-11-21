@@ -28,7 +28,6 @@ import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import {
 	childOfAttempt,
 	latestSubagentAttempt,
-	releasedWaitingOn,
 	waitingReleasedShells,
 	waitingReleasedTools,
 } from "../../../core/tasks/completion.js";
@@ -82,6 +81,7 @@ import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
 import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import type { ParkedTaskRows } from "./parked-rows.ts";
+import { ReleasedWaitCard, releasedWaitLine } from "./released-wait-card.ts";
 import { dismissedTasks } from "./task-dismissal.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
 import { pagedNotices, TaskTranscriptNotices } from "./task-transcript-notices.ts";
@@ -404,19 +404,18 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
 	get status(): string {
-		return [this.loadStatus, this.releasedNote() ?? "", this.readOnlyReason() ?? ""].filter(Boolean).join(" · ");
+		return [this.loadStatus, this.readOnlyReason() ?? ""].filter(Boolean).join(" · ");
 	}
 	/**
-	 * What a subagent released while it waits waits on, that it wakes by itself, and the shells it launched that still
-	 * run, with the key that opens the newest one's output. Its transcript is its saved session, read without waking it.
+	 * A subagent released while it waits, after its transcript as a block of its own: the main chat's notice line of the
+	 * release, then that it wakes by itself and the shells it launched that still run, with the key that opens the newest
+	 * one's output. Its transcript is its saved session, read without waking it.
 	 */
-	private releasedNote(): string | undefined {
+	private releasedCard(): ReleasedWaitCard | undefined {
 		const task = this.liveTask();
-		const waitingOn =
-			task?.execution.kind === "settled" && waitingReleasedTools(task) !== undefined
-				? releasedWaitingOn(task.execution.result)
-				: undefined;
-		if (task === undefined || waitingOn === undefined) return undefined;
+		if (task === undefined || waitingReleasedTools(task) === undefined) return undefined;
+		const line = releasedWaitLine(task);
+		if (line === undefined) return undefined;
 		const shells = waitingReleasedShells(task, this.source.ownerTasks ?? this.source.tasks);
 		const openKey = navActionText(getKeybindings(), "app.tasks.openWaited");
 		const opens = openKey ? clickableKeyTextHint(openKey, " opens") : "/tasks opens";
@@ -426,7 +425,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				: shells.length === 1
 					? ` · its shell ${taskDisplayText(shortTaskTitle(shells[0]!.title || "shell"))} is running · ${opens} it`
 					: ` · ${shells.length} of its shells are running · ${opens} ${openKey ? "the newest" : "them"}`;
-		return `Waiting on ${taskDisplayText(waitingOn)} · wakes by itself when it finishes${shellNote}`;
+		return new ReleasedWaitCard(line, `Wakes by itself when it finishes${shellNote}`);
 	}
 	set status(value: string) {
 		this.loadStatus = value;
@@ -563,6 +562,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			onNearBottom: () => this.loadAdjacent("newer"),
 			// A subagent's `/tasks` lists the tasks it launched.
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
+			transcriptEndBlock: () => this.releasedCard(),
 			// The completion the subagent's chat offers, from its own cwd and skills.
 			autocompleteProvider: createSessionSkillAutocompleteProvider(async () => {
 				const commands = await source.taskCommands?.(this.liveTaskId());
@@ -921,8 +921,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	/**
 	 * The transcript alone, `rows` rows tall, as the single chat screen draws it where the main transcript is: the body,
-	 * then the page's notes (loading, read failures, what a released subagent waits on, why it is read-only) in dim
-	 * rows, then the question form a held prompt opens, which keeps its rows first.
+	 * then the page's notes (loading, read failures, why it is read-only) in dim rows, then the question form a held
+	 * prompt opens, which keeps its rows first.
 	 */
 	renderView(width: number, rows: number): string[] {
 		let remaining = Math.max(0, rows);
