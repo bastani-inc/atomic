@@ -255,7 +255,9 @@ function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) 
 										try {
 											return jitiResolve(specifier, parent);
 										} catch (error) {
-											if (!/^(?:\\.{0,2}\\/|[a-zA-Z][a-zA-Z\\d+.-]*:)/.test(specifier)) {
+											// Bun throws for a Windows path with a drive it cannot find; Node reads the drive as a URL scheme.
+											const missingDrivePath = nodeProcess.versions.bun !== undefined && /^[a-zA-Z]:[\\\\/]/.test(specifier);
+											if (missingDrivePath || !/^(?:\\.{0,2}\\/|[a-zA-Z][a-zA-Z\\d+.-]*:)/.test(specifier)) {
 												if (error?.code !== "MODULE_NOT_FOUND") throw error;
 												throw Object.assign(new Error(error.message, { cause: error }), { code: "ERR_MODULE_NOT_FOUND" });
 											}

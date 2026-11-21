@@ -239,6 +239,52 @@ it(
 	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 );
 
+// A path to a file that does not exist resolves as it does for a module the runtime imports itself, whose answer differs
+// between Node and Bun and between platforms: an absolute path on Windows is one (#6199).
+it(
+	"an extension's import.meta.resolve() answers a path to a missing file as a native module's does",
+	async () => {
+		const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-import-meta-resolve-"));
+		const entry = path.join(root, "extension.ts");
+		const probe = `const answer = (specifier) => {
+	try {
+		return import.meta.resolve(specifier);
+	} catch (error) {
+		return "throws " + error.code;
+	}
+};
+const answers = [${JSON.stringify(path.join(root, "absent.ts"))}, "./missing.js", "../missing.js"].map(answer);`;
+		fs.writeFileSync(path.join(root, "native.mjs"), `${probe}\nconsole.log(JSON.stringify(answers));\n`);
+		fs.writeFileSync(
+			entry,
+			`export default function (pi) {\n${probe}\npi.events.emit("resolve-probe", answers);\n}\n`,
+		);
+		const native = spawnSyncCollect([process.execPath, path.join(root, "native.mjs")], {
+			timeout: REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+		});
+		expect(native.exitCode, native.stderr.toString()).toBe(0);
+		const expected = JSON.parse(native.stdout.toString()) as string[];
+		const bus = createEventBus();
+		const observations: string[][] = [];
+		bus.on("resolve-probe", (value) => observations.push(value as string[]));
+		try {
+			for (const load of ["first", "reload"]) {
+				clearExtensionCache();
+				const factory =
+					load === "first"
+						? await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry)
+						: await extensionLoaderTestHooks.loadTransformedExtensionModule(entry);
+				await loadExtensionFromFactory(factory!, root, bus, createExtensionRuntime(), entry);
+				expect(observations.at(-1), load).toEqual(expected);
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			clearExtensionCache();
+		}
+	},
+	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+);
+
 // What the loader adds to an extension's code reads none of the extension's own bindings, whatever their names, and
 // works while an import cycle runs the extension's code before its own top level has run.
 it(
