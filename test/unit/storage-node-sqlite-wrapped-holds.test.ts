@@ -28,6 +28,12 @@ const WRAPPED_BUSY_TIMEOUT_MS = 2_000;
 const HOLD_MS = 300;
 /** The longest the event loop may go without running: half the busy timeout leaves room for a loaded machine. */
 const MAX_EVENT_LOOP_STALL_MS = WRAPPED_BUSY_TIMEOUT_MS / 2;
+/**
+ * How many `[` that no `]` closes the statement of unclosed `[` holds, one per two characters. Read once, its text takes
+ * milliseconds. Reading on to the end again from each `[` holds the event loop for about 16 s on an idle machine: far
+ * past `MAX_EVENT_LOOP_STALL_MS`, and short enough that the test fails in seconds, not minutes.
+ */
+const UNCLOSED_BRACKETS = 144 * 1024;
 
 const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -721,6 +727,67 @@ test("a wrapped call SQLite cannot prepare fails at once with its own error duri
 	assert.deepEqual(await values(threaded), ["a", "b"]);
 });
 
+test("a wrapped statement of many `[` that no `]` closes fails at once with SQLite's own error during a threaded transaction, without stalling the event loop", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped } = await openWrapped(path, 150);
+	// Reading each `[` as the start of a name to the end of the text made the decision how to run the statement take
+	// time growing with the square of its length.
+	const sql = `SELECT ${"[\\".repeat(UNCLOSED_BRACKETS)}`;
+	const reference = new DatabaseSync(path);
+	cleanups.push(() => reference.close());
+	const expected = (() => {
+		try {
+			reference.prepare(sql);
+		} catch (error) {
+			return error as Error & { errcode?: number };
+		}
+		throw new Error("SQLite prepared the unclosed `[`");
+	})();
+	const { committed, settled } = await holdLock(threaded, 600);
+	const { value: failure, stallMs } = await longestStall(() =>
+		wrapped.get(sql).then(
+			() => undefined,
+			(error: unknown) => error,
+		),
+	);
+	assert.ok(failure instanceof StorageUnavailableError, `expected a storage failure, got ${String(failure)}`);
+	const cause = failure.cause as Error & { errcode?: number };
+	assert.equal(cause.message, expected.message);
+	assert.equal(cause.errcode, expected.errcode);
+	assert.ok(stallMs < MAX_EVENT_LOOP_STALL_MS, `the event loop stalled for ${Math.round(stallMs)} ms`);
+	assert.equal(settled(), false, "it waited for the transaction");
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b"]);
+});
+
+test("a wrapped statement whose text ends inside a quote, a `[` or a comment reads the names in it as before during a threaded transaction", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped, prepared } = await openWrapped(path, 150);
+	// Each statement, and whether it names `changes()`, which runs it as before without listing its plan first. A quote
+	// or `[` that nothing closes counts as a character of its own and the text after it is read as usual; a quote doubled
+	// at the end of the text closes what the quote before it opened; a comment left open runs to the end.
+	const statements: readonly (readonly [sql: string, namesChanges: boolean])[] = [
+		["SELECT 1, 'changes", true],
+		['SELECT 1, "changes', true],
+		["SELECT 1, `changes", true],
+		["SELECT 1, [changes", true],
+		["SELECT [x] [changes", true],
+		["SELECT 'x changes''", false],
+		['SELECT "x changes""', false],
+		["SELECT `x changes``", false],
+		["SELECT 1 /* changes", false],
+		["SELECT 1 -- changes", false],
+	];
+	const { committed, settled } = await holdLock(threaded, 600);
+	for (const [sql] of statements) await outcome(wrapped.get(sql));
+	assert.equal(settled(), false, "a call waited for the transaction");
+	await committed;
+	assert.deepEqual(
+		statements.map(([sql]) => [sql, !prepared.includes(`EXPLAIN ${sql}`)]),
+		statements.map(([sql, namesChanges]) => [sql, namesChanges]),
+	);
+});
+
 test("a read or a call SQLite cannot prepare does not wait behind calls still queued after a threaded transaction (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
 	const { wrapped: writer } = await openWrapped(path);
@@ -1042,11 +1109,25 @@ test("a wrapped statement that reads the change counters during a threaded trans
 	// A function of yours that reads the counters through the connection.
 	raw.function("read_prior", () => Number(raw.prepare("SELECT changes() AS n").get()?.n));
 	const { committed, settled } = await holdLock(threaded);
-	for (const call of ["changes()", '"changes"()', "[changes]()", "`changes`()", "read_prior()", '"read_prior"()']) {
+	// SQLite reads a function's name in any case, quoted or not.
+	const calls = [
+		"changes()",
+		'"changes"()',
+		"[changes]()",
+		"`changes`()",
+		"CHANGES()",
+		"Changes()",
+		'"CHANGES"()',
+		"[Changes]()",
+		"read_prior()",
+		'"read_prior"()',
+		"READ_PRIOR()",
+	];
+	for (const call of calls) {
 		await wrapped.run("INSERT INTO scratch VALUES (1), (2), (3)");
 		assert.deepEqual(await wrapped.get(`INSERT INTO scratch VALUES (${call}) RETURNING x`), { x: 3 }, call);
 	}
-	assert.deepEqual(await wrapped.get("SELECT changes() AS n, total_changes() AS total"), { n: 1, total: 24 });
+	assert.deepEqual(await wrapped.get("SELECT changes() AS n, total_changes() AS total"), { n: 1, total: 44 });
 	assert.equal(settled(), false, "a call waited for the transaction");
 	await committed;
 });
