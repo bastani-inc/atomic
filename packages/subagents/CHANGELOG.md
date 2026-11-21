@@ -11,6 +11,7 @@
 - `skill-creator`'s `run_loop.py --holdout 0` finishes and writes its report, instead of failing after its first iteration when a report is written (the default).
 - `skill-creator`'s review viewer prints its URL as soon as it serves when its output goes to a pipe or a file, and on Windows no longer fails before serving when that output is not the console. `SKILL.md` now starts the viewer as a background shell that keeps serving after the call that started it, and reads the URL from its output.
 - `skill-creator`'s scripts write `feedback.json`, `benchmark.json`, `benchmark.md` and the improvement transcripts as UTF-8, and read grading, timing and eval metadata files and `SKILL.md` as UTF-8, falling back to the system's encoding for files saved in it. On Windows, `aggregate_benchmark.py` no longer fails or garbles non-ASCII text.
+- On Windows, `skill-creator`'s `package_skill.py`, `aggregate_benchmark.py`, `generate_report.py` and `quick_validate.py` no longer fail when their output goes to a pipe or a file, as it does when Atomic runs them: `package_skill.py` failed on its first line, and the others on a path, name or mark outside the system's code page. The scripts and the review viewer now write their output and errors as UTF-8, so the evaluation's progress lines also show non-ASCII descriptions and queries as written. Output that is already UTF-8, such as a console's, is unchanged.
 
 ## [0.10.3] - 2026-11-21
 
