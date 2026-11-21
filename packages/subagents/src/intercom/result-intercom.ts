@@ -94,6 +94,13 @@ async function citedChildPath(
 	return existingArtifactPath(pathValue);
 }
 
+/** A child's session as cited: its session file while it exists, or its history URL, a session in the store. */
+function citedChildSession(child: SubagentResultIntercomChild): Promise<string | undefined> {
+	return child.sessionPath !== undefined && child.sessionPath === child.sessionUrl
+		? Promise.resolve(child.sessionUrl)
+		: citedChildPath(child, child.sessionPath);
+}
+
 export interface GroupedResultIntercomMessageInput {
 	to: string;
 	runId: string;
@@ -136,7 +143,7 @@ async function formatSubagentResultIntercomMessage(input: {
 		lines.push("", `${index + 1}. ${child.agent} — ${presentCancelledStatus(child.status, child.cause)}`);
 		if (child.intercomTarget) lines.push(`Run intercom target: ${child.intercomTarget}`);
 		if (await citedChildPath(child, child.artifactPath)) lines.push(`Output artifact: ${child.artifactPath}`);
-		if (await citedChildPath(child, child.sessionPath)) lines.push(`Session: ${child.sessionPath}`);
+		if (await citedChildSession(child)) lines.push(`Session: ${child.sessionPath}`);
 		lines.push("Summary:", child.summary);
 	}
 
@@ -320,7 +327,7 @@ export async function formatSubagentResultReceipt(input: {
 
 	const sessions: SubagentResultIntercomChild[] = [];
 	for (const child of input.payload.children) {
-		if (await citedChildPath(child, child.sessionPath)) sessions.push(child);
+		if (await citedChildSession(child)) sessions.push(child);
 	}
 	if (sessions.length > 0) {
 		lines.push("Sessions:");

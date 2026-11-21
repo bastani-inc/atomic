@@ -7,6 +7,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 ### Added
 
 - `resolveHttpsFallbackProxyUrl()` returns the http proxy an `https://` request takes when no https proxy is set, as Atomic's HTTP dispatcher on Node.js takes it (`http_proxy`, else `HTTP_PROXY`), for runtimes whose own HTTP client sends such a request direct, such as Bun. It is undefined when `NO_PROXY` exempts the host or an https proxy or an `http://`/`https://` `ALL_PROXY` is set ([#6233](https://github.com/bastani-inc/atomic/pull/6233))
+- `@bastani/atomic-ai/utils/typebox/index` and the modules beside it (`/compile`, `/error`, `/format`, `/guard`, `/schema`, `/system`, `/type`, `/value`) export TypeBox 1.3.27, bundled in this package. Atomic and the extensions it loads use this one copy; the package's own TypeBox imports, `Type` included, load it too.
 
 ### Changed
 
@@ -22,6 +23,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 - A model request refused for the TLS certificate of the `https://` proxy it goes through now names that proxy, by its host, and the fix for a proxy, instead of naming the endpoint, which the proxy never reached. This applies to Amazon Bedrock's proxy and to any proxy connection whose failures are recorded with the new `recordProxyConnectionFailure()`. A certificate refused by the endpoint behind the proxy is still named as the endpoint's ([#6208](https://github.com/bastani-inc/atomic/pull/6208))
 - On Bun, the OpenAI Codex WebSocket goes through `HTTP_PROXY` for an `https://` endpoint when no https proxy is set, as its requests over fetch do, instead of connecting directly ([#6233](https://github.com/bastani-inc/atomic/pull/6233))
 - Amazon Bedrock through an `https://` proxy that closes the connection before its TLS handshake no longer ends the process with an unhandled error. A Bedrock request whose connection to its proxy, or whose TLS handshake, is reset or closed before an answer now fails as a reset connection and is retried, as on the other adapters, instead of failing at once. A Bedrock connection error's message now ends with its code, such as `ECONNRESET`, when it does not name it ([#6237](https://github.com/bastani-inc/atomic/pull/6237))
+- An Amazon Bedrock answer the SDK has no Bedrock exception for, such as a gateway's or a proxy's 503, now names the HTTP response's own status (`Unknown: 503: unavailable` instead of `Unknown: unavailable`), never a `status` or `statusCode` its body gives. `isRetryableAssistantError()` and `retryAssistantCall()` therefore retry it when the status is one they retry for the other adapters: 429, 500, 502, 503, 504, 520–524 or 529. A 413 whose body is not JSON reads `413: …`, which `isContextOverflow()` reads as a context overflow. Bedrock's own exceptions read as before ([#6259](https://github.com/bastani-inc/atomic/pull/6259))
 
 ## [0.10.3] - 2026-11-21
 

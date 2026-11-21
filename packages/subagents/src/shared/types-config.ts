@@ -2,7 +2,7 @@
  * Configuration, execution option, display, and event bus types.
  */
 
-import type { AgentSessionEvent, SessionManager } from "@bastani/atomic";
+import type { AgentSessionEvent, SessionManager, SessionStore } from "@bastani/atomic";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { CwdVerdict } from "./launch-cwd.js";
 import type { CandidateModelResolver } from "./model-resolution.js";
@@ -140,6 +140,8 @@ export interface RunSyncOptions {
 	runId: string;
 	index?: number;
 	sessionDir?: string;
+	/** Create the child's own session in this store, its parent's, rather than as a file in `sessionDir`. */
+	sessionStore?: SessionStore;
 	sessionManager?: SessionManager;
 	/** Reopen `sessionManager` as this child's own interrupted session rather than a fork. */
 	resumeSession?: boolean;

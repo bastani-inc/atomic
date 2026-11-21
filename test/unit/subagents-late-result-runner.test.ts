@@ -21,6 +21,7 @@ import { SUBAGENT_RESUME_CONTINUATION_PROMPT } from "../../packages/subagents/sr
 import { SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-run-control.ts";
 import { queuedResumeStart } from "../../packages/subagents/src/runs/foreground/task-execution.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
+import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -273,6 +274,91 @@ test(
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );
+
+for (const compacted of [false, true])
+	test(
+		`a late result for a call that reused an earlier call's id reaches the child after the earlier call's late result did${compacted ? ", across a compaction" : ""} (#3274)`,
+		async () => {
+			const env = await liveChildEnvironment(cleanups);
+			const store = new MemorySessionStore();
+			const childSession = await SessionManager.create(store, env.root);
+			const sessionId = childSession.getSessionId();
+			// A provider numbering each response's calls from 0 gives both background calls one id.
+			const waitCall = (run: string) =>
+				fauxAssistantMessage([fauxToolCall("wait_for_ci", { run }, { id: "ci-1" })], { stopReason: "toolUse" });
+			const run = async (task: string, extra: Partial<RunSyncOptions>) =>
+				runSingleInProcess(env.root, agent, task, {
+					...env.options("reused-late", {
+						sessionManager: await SessionManager.open(store, sessionId),
+						resumeSession: true,
+						releaseWhenWaiting: { afterMs: 0 },
+						...extra,
+					}),
+				});
+			env.faux.setResponses([waitCall("7")]);
+			assert.ok((await run("watch CI", {})).released, "released waiting on its first call");
+			// Told the call still runs, it finishes its turn; the call's late result then wakes it.
+			env.faux.setResponses([fauxAssistantMessage("Waiting.")]);
+			await run("", { resumeToolResults: [result("ci-1", SUBAGENT_STILL_RUNNING_RESULT)], skipTaskPrompt: true });
+			env.faux.setResponses([fauxAssistantMessage("Run 7 done.")]);
+			const first = await run("", {
+				resumeLateToolResults: [result("ci-1", "FIRST-RUN-OUTPUT")],
+				skipTaskPrompt: true,
+			});
+			assert.equal(first.status, "ok");
+			// It starts a second background call, which its provider gives the same id, and is told it still runs.
+			const transcript = await SessionManager.open(store, sessionId);
+			if (compacted)
+				await transcript.appendCompaction("summary", null, 100, {
+					strategy: "verbatim-lines",
+					promptVersion: 7,
+					parameters: { query: "" },
+					stats: {
+						linesBefore: 3,
+						linesDeleted: 3,
+						linesKept: 0,
+						rangeCount: 1,
+						tokensBefore: 100,
+						tokensAfter: 10,
+						percentReduction: 90,
+					},
+					form: "cleared",
+				});
+			await transcript.appendMessage({ role: "user", content: "now run 8", timestamp: Date.now() });
+			await transcript.appendMessage(waitCall("8"));
+			await transcript.appendMessage({
+				role: "toolResult",
+				toolCallId: "ci-1",
+				toolName: "wait_for_ci",
+				content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }],
+				isError: false,
+				timestamp: Date.now(),
+			});
+			await transcript.appendMessage(fauxAssistantMessage("Waiting on run 8."));
+			const requests: Context["messages"][] = [];
+			env.faux.setResponses([
+				(context) => {
+					requests.push(context.messages);
+					return fauxAssistantMessage("Run 8 done.");
+				},
+			]);
+			const saved: string[] = [];
+
+			const woken = await run("", {
+				resumeLateToolResults: [result("ci-1", "SECOND-RUN-OUTPUT")],
+				skipTaskPrompt: true,
+				taskExecution: taskExecution(new AbortController().signal, {
+					toolResultsSaved: (ids) => void saved.push(...ids),
+				}),
+			});
+
+			assert.equal(woken.status, "ok");
+			assert.equal(requests.length, 1, "the second call's result starts a turn");
+			assert.equal(count(requests[0] ?? [], "SECOND-RUN-OUTPUT"), 1);
+			assert.deepEqual(saved, ["ci-1"]);
+		},
+		LIVE_CHILD_TIMEOUT_MS,
+	);
 
 test(
 	"a child resumed with a message reads it and its resume note in one request, and no message from the user carries the note",
