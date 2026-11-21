@@ -866,6 +866,7 @@ class IntercomBroker {
     unanswered?: UnansweredSessionIdClaim,
     grant?: SessionIdGrant,
     awaits?: string,
+    recovery?: string,
   ): void {
         let id = grantedId;
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
@@ -1074,6 +1075,7 @@ class IntercomBroker {
           settled || unanswered === undefined ? undefined : { ...unanswered, settle, unsettled: () => !settled },
           grant,
           awaits,
+          recovery,
         );
         // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
         // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS, and by ENDED_QUEUE_ROUTING_WAIT_MS with a shared `storage`).
@@ -1293,6 +1295,11 @@ class IntercomBroker {
                 return;
               }
               if (claimed.status === "granted" && granted === undefined) giveBack();
+              // #5607: a hand-over whose hold lapsed that could not take the id this time (or whose claim went unanswered
+              // and is not kept) leaves the session awaiting it too.
+              const awaited =
+                takesIdHandoff &&
+                (claimed.status === "held" || (claimed.status === "unanswered" && claimed.unanswered.recovery !== undefined));
               this.completeSessionRegistration(
                 socket,
                 registration,
@@ -1304,7 +1311,8 @@ class IntercomBroker {
                 // #5607: held by another registration of this session (or for this one, by a hand-over that did not take
                 // it this time): a client that takes ids back awaits it, and keeps asking for it rather than saving the
                 // fresh one.
-                claimed.status === "held" && takesIdHandoff ? preferred : undefined,
+                awaited ? preferred : undefined,
+                !awaited ? undefined : claimed.status === "held" ? claimed.recovery : claimed.unanswered.recovery,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
