@@ -721,6 +721,39 @@ test("a wrapped call SQLite cannot prepare fails at once with its own error duri
 	assert.deepEqual(await values(threaded), ["a", "b"]);
 });
 
+test("a wrapped statement of a megabyte of `[` that no `]` closes fails at once with SQLite's own error during a threaded transaction, without stalling the event loop", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped } = await openWrapped(path, 150);
+	// One `[` per two characters, none closed: reading each as the start of a name to the end of the text made the
+	// decision how to run the statement take time growing with the square of its length.
+	const sql = `SELECT ${"[\\".repeat(512 * 1024)}`;
+	const reference = new DatabaseSync(path);
+	cleanups.push(() => reference.close());
+	const expected = (() => {
+		try {
+			reference.prepare(sql);
+		} catch (error) {
+			return error as Error & { errcode?: number };
+		}
+		throw new Error("SQLite prepared the unclosed `[`");
+	})();
+	const { committed, settled } = await holdLock(threaded, 600);
+	const { value: failure, stallMs } = await longestStall(() =>
+		wrapped.get(sql).then(
+			() => undefined,
+			(error: unknown) => error,
+		),
+	);
+	assert.ok(failure instanceof StorageUnavailableError, `expected a storage failure, got ${String(failure)}`);
+	const cause = failure.cause as Error & { errcode?: number };
+	assert.equal(cause.message, expected.message);
+	assert.equal(cause.errcode, expected.errcode);
+	assert.ok(stallMs < MAX_EVENT_LOOP_STALL_MS, `the event loop stalled for ${Math.round(stallMs)} ms`);
+	assert.equal(settled(), false, "it waited for the transaction");
+	await committed;
+	assert.deepEqual(await values(threaded), ["a", "b"]);
+});
+
 test("a read or a call SQLite cannot prepare does not wait behind calls still queued after a threaded transaction (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
 	const { wrapped: writer } = await openWrapped(path);

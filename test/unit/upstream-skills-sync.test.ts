@@ -781,6 +781,21 @@ describe("synced upstream skill trees", () => {
 		assert.doesNotMatch(session, /Math\.random\(/u, "a session id helper fell back to Math.random");
 	});
 
+	test("keeps the synced live overlay loading its helper scripts from the origin that served live.js", () => {
+		const live = readFileSync(join(subagentSkills, "impeccable/scripts/live-browser.js"), "utf8");
+		// Upstream sets the src of the detector and screenshot scripts the overlay adds to `'http://localhost:' + PORT`.
+		// Atomic resolves both against the origin the page loaded live.js from, so no script URL is written out with
+		// plain http and both load from the origin the page's script-src already allows for live.js.
+		assert.match(live, /const LIVE_SCRIPT = document\.currentScript;/u, "live.js no longer reads its own script");
+		assert.match(live, /helperScriptUrl\('\/detect\.js'\)/u, "the detector script lost the helper origin");
+		assert.match(
+			live,
+			/helperScriptUrl\('\/modern-screenshot\.js'\)/u,
+			"the screenshot script lost the helper origin",
+		);
+		assert.doesNotMatch(live, /\.src = ['"`]http:/u, "a script src is written out with plain http");
+	});
+
 	test("keeps the vendored Impeccable launchers offline by default", () => {
 		const posix = readFileSync(join(subagentSkills, "impeccable/scripts/impeccable"), "utf8");
 		const windows = readFileSync(join(subagentSkills, "impeccable/scripts/impeccable.cmd"), "utf8");

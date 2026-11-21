@@ -30,6 +30,25 @@
     window.__IMPECCABLE_LIVE_INIT__ = false; // reset so the real load can init
     return;
   }
+  // The <script> element running this code: live.js, as the helper served
+  // it. Read now; it is null once this code has run.
+  const LIVE_SCRIPT = document.currentScript;
+
+  // Atomic adaptation, keep it on upstream syncs: the URL of `path` on the
+  // helper, at the origin the page loaded live.js from (this script's, or that
+  // of a live.js script on PORT). A script the overlay adds then loads from the
+  // origin the page's script-src already allows for live.js, and no script URL
+  // is written out with plain http. Null when the page has no such script.
+  function helperScriptUrl(path) {
+    const scripts = [LIVE_SCRIPT, ...document.querySelectorAll('script[src]')];
+    for (const script of scripts) {
+      if (!script || !script.src) continue;
+      let url;
+      try { url = new URL(script.src); } catch { continue; }
+      if (url.pathname === '/live.js' && url.port === String(PORT)) return new URL(path, url.origin).href;
+    }
+    return null;
+  }
 
   //
   // Design tokens
@@ -8707,9 +8726,11 @@
   function loadModernScreenshot() {
     if (window.modernScreenshot) return Promise.resolve(window.modernScreenshot);
     if (msLoadPromise) return msLoadPromise;
+    const src = helperScriptUrl('/modern-screenshot.js');
+    if (!src) return Promise.reject(new Error('modern-screenshot failed to load'));
     msLoadPromise = new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = 'http://localhost:' + PORT + '/modern-screenshot.js';
+      s.src = src;
       s.onload = () => resolve(window.modernScreenshot);
       s.onerror = () => { msLoadPromise = null; reject(new Error('modern-screenshot failed to load')); };
       uiAppendStyle(s);
@@ -12561,9 +12582,11 @@ void main() {
 
   function loadDetectScript() {
     if (detectScriptLoaded) return;
+    const src = helperScriptUrl('/detect.js');
+    if (!src) return;
     detectScriptLoaded = true;
     const s = document.createElement('script');
-    s.src = 'http://localhost:' + PORT + '/detect.js';
+    s.src = src;
     s.dataset.impeccableExtension = 'true';
     document.head.appendChild(s);
   }
