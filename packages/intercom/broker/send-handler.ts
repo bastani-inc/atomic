@@ -134,7 +134,8 @@ export interface ReturnPathAuthority {
 	/**
 	 * The message `operationId` from `from` reached `recipient`: opens its path back when they share no group. `since`
 	 * is the {@link mark} taken when the message was handed over; a sender whose registrations all ended for good since
-	 * then gets no path, however late the recipient confirmed it.
+	 * then gets no path, however late the recipient confirmed it. `handedOverAt` is the {@link handOverTime} taken then:
+	 * answers the recipient sent from then on count toward the path this message opens.
 	 */
 	delivered(
 		recipient: BrokerConnectedSession,
@@ -142,9 +143,12 @@ export interface ReturnPathAuthority {
 		fromInfo: SessionInfo,
 		operationId: string,
 		since?: number,
+		handedOverAt?: number,
 	): void;
 	/** A mark to pass to {@link delivered} for a message handed over now. */
 	mark(): number;
+	/** The time to pass to {@link delivered} for a message handed over now. */
+	handOverTime(): number;
 }
 
 /** The broker's return paths, over the sessions it serves. */
@@ -171,12 +175,13 @@ export function createReturnPathAuthority(
 		},
 		use: (sender, target, messageId) => paths.use(returnPathParty(sender), target, messageId),
 		closed: (sender, target) => paths.closed(returnPathParty(sender), target),
-		delivered: (recipient, from, fromInfo, operationId, since) => {
+		delivered: (recipient, from, fromInfo, operationId, since, handedOverAt) => {
 			// A recipient that can already reach the sender needs no path; one with a reach policy never uses one.
 			if (recipient.reach === undefined && !reachesSession(recipient, fromInfo))
-				paths.open(returnPathParty(recipient), from, operationId, since);
+				paths.open(returnPathParty(recipient), from, operationId, since, handedOverAt);
 		},
 		mark: () => paths.mark(),
+		handOverTime: () => paths.handOverTime(),
 	};
 }
 
@@ -938,8 +943,10 @@ export function handleBrokerSend(
 	}
 	if (message.expectsReply === true && clientMessage.resolveReplyTarget === true && attemptId !== undefined)
 		write(socket, { type: "question_target", messageId: message.id, attemptId, sessionId: target.info.id });
-    // Taken as the message is handed over: its receipt opens nothing once every registration of the sender ended since.
+    // Taken as the message is handed over: its receipt opens nothing once every registration of the sender ended since,
+    // and the recipient's answers from then on count toward the path it opens, however late it is confirmed.
     const handedOver = returnPaths?.mark();
+    const handedOverAt = returnPaths?.handOverTime();
     const finishDelivery = (recipient: BrokerConnectedSession, sender: ReceiptSender | undefined, paused?: true): void => {
 	  const notify = (frame: BrokerMessage): void => {
 		if (sender !== undefined) write(sender.socket, frame);
@@ -991,7 +998,7 @@ export function handleBrokerSend(
       if (message.replyTo !== undefined)
         pendingQuestions.releaseHeldFailures(message.replyTo, fromSession.info.id, recipient.registrationReturnAddress);
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
-      returnPaths?.delivered(recipient, returnPathParty(fromSession), fromSession.info, message.id, handedOver);
+      returnPaths?.delivered(recipient, returnPathParty(fromSession), fromSession.info, message.id, handedOver, handedOverAt);
       // #5999: a subagent whose turn its user paused saved the message and keeps it until it is continued. Only a sender
       // that understands that answer (it asked to wake an ended recipient) is told so; any other gets `delivered`, as
       // before: an older client takes `queued` for an ask as a send it may forget.
