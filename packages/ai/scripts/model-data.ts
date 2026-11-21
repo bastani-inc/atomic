@@ -358,7 +358,11 @@ export function validateModelDataDirectory(structure: ModelDataStructure, dataDi
 	if (errors.length > 0) throwValidationErrors(errors);
 }
 
-export function validateGeneratedModelData(packageRoot: string): void {
-	const structure = readModelDataStructure(packageRoot);
-	validateModelDataDirectory(structure, join(packageRoot, "src", "providers", "data"), modelDataInputsHash(packageRoot));
+/**
+ * Validates the generated catalog: the aggregator, the provider shards and the model data under `catalogRoot`'s `src`,
+ * by default the package's own, against the generator sources of the package at `packageRoot`.
+ */
+export function validateGeneratedModelData(packageRoot: string, catalogRoot = packageRoot): void {
+	const structure = readModelDataStructure(catalogRoot);
+	validateModelDataDirectory(structure, join(catalogRoot, "src", "providers", "data"), modelDataInputsHash(packageRoot));
 }
