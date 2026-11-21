@@ -251,6 +251,16 @@ abstract class RemoteRenderer implements Component {
 		this.requestRender();
 	}
 
+	/**
+	 * Gives the engine this row's latest state at the width it was last drawn, also while the screen does not draw the
+	 * row (its chat is hidden, or its group folded): the engine draws a call it last saw running as running, and keeps
+	 * animating it, until a frame request tells it the call settled.
+	 */
+	protected sendLatestState(): void {
+		if (this.requestId === 0 || !this.dirty) return;
+		RemoteRenderer.prototype.render.call(this, this.width);
+	}
+
 	private readonly cancelClickChecks = (): void => {
 		this.clearClickChecks();
 		this.requestRender();
@@ -391,6 +401,7 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.result = result;
 		this.isPartial = isPartial;
 		this.changed();
+		if (!isPartial) this.sendLatestState();
 	}
 	getGroupRole(): ToolGroupRole {
 		return this.groupRole;

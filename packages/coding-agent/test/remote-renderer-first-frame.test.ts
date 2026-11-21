@@ -50,3 +50,38 @@ test("an engine-rendered row draws nothing until its first frame arrives, not a 
 	assert.deepEqual(tool.render(80), ["rendered"]);
 	assert.deepEqual(notice.render(80), ["rendered"]);
 });
+
+test("a call that settles while its row is not drawn tells the engine at once, so the engine stops drawing it as running", () => {
+	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
+	const commands: InteractiveEngineCommand[] = [];
+	const runtime = {
+		onEngineMessage(listener: (message: InteractiveEngineMessage) => void) {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		sendEngineCommand(command: InteractiveEngineCommand) {
+			commands.push(command);
+		},
+	} as unknown as IsolatedInteractiveRuntime;
+	const partial = (command: InteractiveEngineCommand | undefined) =>
+		command?.type === "engine_tool_render" ? command.isPartial : undefined;
+	const tool = new RemoteToolExecutionComponent("bash", "hidden-tool", { command: "sleep 1" }, {}, runtime, () => {});
+	tool.render(80);
+	assert.equal(partial(commands.at(-1)), true);
+	// The screen stops drawing the row (its chat is hidden); the call finishes there.
+	commands.length = 0;
+	tool.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+	assert.deepEqual(
+		commands.map((command) => [command.type, partial(command)]),
+		[["engine_tool_render", false]],
+	);
+	// Drawn again, the row asks for nothing new: the engine has its last state.
+	tool.render(80);
+	assert.equal(commands.length, 1);
+
+	// A call never drawn asks for nothing when it settles.
+	const unseen = new RemoteToolExecutionComponent("bash", "unseen-tool", { command: "ls" }, {}, runtime, () => {});
+	commands.length = 0;
+	unseen.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+	assert.deepEqual(commands, []);
+});
