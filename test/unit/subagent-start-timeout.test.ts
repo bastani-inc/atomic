@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { AsyncLocalStorage, createHook } from "node:async_hooks";
+import { AsyncLocalStorage, createHook, executionAsyncId } from "node:async_hooks";
 import { pbkdf2, pbkdf2Sync } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,26 +56,29 @@ import { sleep } from "../helpers/runtime.js";
 const REAL_CHILD_SESSION_TIMEOUT_MS = 90_000;
 
 /**
- * How long each saturated loop turn runs other work, as busy pooled roots on the same thread do: long enough that
- * every fs request a start makes completes within the turn it waits through, so the count is the start's own turns.
+ * How long each saturated loop turn runs other work, as busy pooled roots on the same thread do. On an idle host every
+ * fs request a start makes completes within the turn it waits through, so its turns are about its steps; a loaded host
+ * holds requests for more turns, which adds turns but not steps.
  */
 const SATURATED_TURN_MS = 20;
 /**
- * The loop turns a child takes from its launch to its first provider request on a saturated thread. Measured on
- * this fixture: 713 before #4319 (one fs read per header byte, two writes for the initial model and thinking level)
- * and about 110 after it. Independent ancestor probes run together (#5514), so directory depth adds requests but not
- * turns; the bound leaves room for scheduling noise but not for a per-byte or per-entry regression.
+ * The loop turns a child's steps take one after another from its launch to its first provider request, which is what a
+ * saturated thread multiplies: 713 turns before #4319 (one fs read per header byte, two writes for the initial model
+ * and thinking level) and 135 steps after it on this fixture, at any load. Independent ancestor probes run together
+ * (#5514), so directory depth adds requests but not steps; the bound leaves room for changes to the start but not for a
+ * per-byte or per-entry regression.
  */
 const START_LOOP_TURN_BOUND = 200;
 /**
  * How many directories below the fixture's own a nested child starts. A start that walks its parent directories one
- * request at a time spends a loop turn on each of them, in each of its two resource loads; one that checks them
- * together spends the same turns at any depth. Fewer extra turns than levels tells the two apart.
+ * request at a time takes a step for each of them; one that checks them together takes the same steps at any depth.
+ * Fewer extra steps than levels tells the two apart: walking them one at a time adds about ten steps a level.
  */
 const NESTED_CWD_LEVELS = 12;
 /**
  * How long other work holds the thread pool a nested child's file-system requests run on, as a loaded host can: twice
- * the extra turns the depth comparison allows, so a count that took the turns the start waits for as its own fails it.
+ * the extra steps the depth comparison allows in saturated turns, so a count that took the turns the start waits for as
+ * its own steps fails it.
  */
 const HELD_THREAD_POOL_MS = 2 * NESTED_CWD_LEVELS * SATURATED_TURN_MS;
 /** The fs requests a child's start makes up to its first provider request: 861 before #4319. */
@@ -485,15 +488,58 @@ async function holdThreadPool(ms: number): Promise<void> {
 
 /** A child's start from its launch to its first provider request, on a main thread saturated meanwhile. */
 interface SaturatedStart {
-	/** The loop turns it took. */
+	/** The loop turns it took, which a loaded host adds turns to by holding its requests. */
 	readonly turns: number;
-	/**
-	 * The loop turns in which it ran work of its own: one of its file-system requests completed, or a promise it awaits
-	 * settled. A turn in which it only waited, for a request the host had not completed yet, is not one: a loaded host
-	 * holds a request for as many turns as it likes, at any depth. Nor is a turn in which only one of its timers fired:
-	 * the start budget's probe fires on time whether the start runs or waits.
-	 */
-	readonly workTurns: number;
+	/** The loop turns its steps take one after another: see {@link stepsOf}. */
+	readonly steps: number;
+}
+
+/** Async resources whose callbacks run in the turn that queued them: promise reactions, ticks and microtasks. */
+const SAME_TURN_RESOURCES: ReadonlySet<string> = new Set(["PROMISE", "TickObject", "Microtask"]);
+
+/**
+ * Follows the steps of work started in `launched`: each callback of a file-system request, timer or other resource
+ * that answers in a later loop turn runs one step after the code that started it, and a promise reaction runs at the
+ * later of the step that awaited the promise and the step that settled it. `current` is the step of the code running
+ * now: the longest chain of turns, one waiting for the one before, that led to it. A request a loaded host holds for
+ * many turns is still one step, and requests made together are one step however the host completes them, so load
+ * changes the turns a start takes but never its steps.
+ */
+function stepsOf(launched: AsyncLocalStorage<true>): {
+	readonly enable: () => void;
+	readonly disable: () => void;
+	readonly current: () => number;
+} {
+	const stepOf = new Map<number, number>();
+	const promiseMadeAt = new Map<number, number>();
+	const promiseSettledAt = new Map<number, number>();
+	const follows = new Map<number, number>();
+	const current = () => stepOf.get(executionAsyncId()) ?? 0;
+	const hook = createHook({
+		init(asyncId, type, triggerAsyncId) {
+			if (!launched.getStore()) return;
+			if (type !== "PROMISE") stepOf.set(asyncId, current() + (SAME_TURN_RESOURCES.has(type) ? 0 : 1));
+			else {
+				promiseMadeAt.set(asyncId, current());
+				follows.set(asyncId, triggerAsyncId);
+			}
+		},
+		promiseResolve(asyncId) {
+			const step = current();
+			if (step > 0) promiseSettledAt.set(asyncId, step);
+		},
+		before(asyncId) {
+			const madeAt = promiseMadeAt.get(asyncId);
+			if (madeAt === undefined) return;
+			const awaited = follows.get(asyncId);
+			const settledAt = Math.max(
+				promiseSettledAt.get(asyncId) ?? 0,
+				awaited === undefined ? 0 : (promiseSettledAt.get(awaited) ?? 0),
+			);
+			stepOf.set(asyncId, Math.max(madeAt, settledAt));
+		},
+	});
+	return { enable: () => hook.enable(), disable: () => hook.disable(), current };
 }
 
 async function saturatedStart(
@@ -505,33 +551,20 @@ async function saturatedStart(
 	const loop = saturate(SATURATED_TURN_MS);
 	const load = hostLoad?.();
 	const launched = new AsyncLocalStorage<true>();
-	const startWork = new Set<number>();
-	const workTurns = new Set<number>();
-	const hook = createHook({
-		init(asyncId, type) {
-			if (type !== "Timeout" && launched.getStore()) startWork.add(asyncId);
-		},
-		before(asyncId) {
-			if (startWork.has(asyncId)) workTurns.add(loop.turns());
-		},
-	});
-	let turnsToFirstRequest: number | undefined;
-	fixture.onFirstRequest(() => {
-		turnsToFirstRequest = loop.turns();
-	});
+	const steps = stepsOf(launched);
+	let firstRequest: SaturatedStart | undefined;
 	const startTurns = loop.turns();
-	hook.enable();
+	fixture.onFirstRequest(() => {
+		firstRequest = { turns: loop.turns() - startTurns, steps: steps.current() };
+	});
+	steps.enable();
 	try {
 		const result = await launched.run(true, () => fixture.launch(runId, undefined, options));
 		assert.equal(result.status, "ok", JSON.stringify(result));
-		assert.ok(turnsToFirstRequest !== undefined, "the child reached its provider");
-		const firstRequest = turnsToFirstRequest;
-		return {
-			turns: firstRequest - startTurns,
-			workTurns: [...workTurns].filter((turn) => turn > startTurns && turn <= firstRequest).length,
-		};
+		assert.ok(firstRequest !== undefined, "the child reached its provider");
+		return firstRequest;
 	} finally {
-		hook.disable();
+		steps.disable();
 		loop.stop();
 		await load;
 	}
@@ -541,8 +574,11 @@ test(
 	"a child on a saturated main thread reaches its provider within a bounded number of loop turns (#4319)",
 	async () => {
 		const fixture = await startFixture();
-		const { turns } = await saturatedStart(fixture, "start-saturated");
-		assert.ok(turns <= START_LOOP_TURN_BOUND, `the start took ${turns} saturated loop turns`);
+		const { steps, turns } = await saturatedStart(fixture, "start-saturated");
+		assert.ok(
+			steps <= START_LOOP_TURN_BOUND,
+			`the start took ${steps} steps one after another, in ${turns} saturated loop turns`,
+		);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
@@ -556,14 +592,14 @@ test(
 		// Both measured starts find what the first one loaded and compiled already in place.
 		await saturatedStart(fixture, "start-warm-up");
 		const shallow = await saturatedStart(fixture, "start-shallow-cwd");
-		// The nested start's requests wait for other work first, as on a loaded host: waiting is not a turn of its own.
+		// The nested start's requests wait for other work first, as on a loaded host: waiting is not a step of its own.
 		const deep = await saturatedStart(fixture, "start-nested-cwd", { cwd: nested }, () =>
 			holdThreadPool(HELD_THREAD_POOL_MS),
 		);
 
 		assert.ok(
-			deep.workTurns - shallow.workTurns < NESTED_CWD_LEVELS,
-			`the start ran in ${shallow.workTurns} of its ${shallow.turns} loop turns in ${fixture.cwd} and in ${deep.workTurns} of its ${deep.turns} ${NESTED_CWD_LEVELS} directories below it`,
+			deep.steps - shallow.steps < NESTED_CWD_LEVELS,
+			`the start took ${shallow.steps} steps (${shallow.turns} loop turns) in ${fixture.cwd} and ${deep.steps} steps (${deep.turns} loop turns) ${NESTED_CWD_LEVELS} directories below it`,
 		);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
