@@ -401,11 +401,46 @@ export function _currentRunSystemPromptOptions(this: AgentSession): NormalizedBu
  */
 export async function _recordSystemPromptForModelSwitch(this: AgentSession): Promise<void> {
 	const options = this._currentRunSystemPromptOptions();
-	const update = this._preparePromptAndToolLoadout(options);
+	const update = withoutResumeUpdate(this, this._preparePromptAndToolLoadout(options));
 	if (this._runSystemPromptOptions) this._runSystemPromptOptions = options;
 	if (!update) return;
 	await this.sessionManager.appendMessage(update);
 	this._refreshFinalizedContext();
+}
+
+/**
+ * The prompt update a resume needs while the session's prompt differs from the conversation's beyond removals (which
+ * lower no thinking budget), as the turns of the current run would prepare it; undefined when nothing else is pending.
+ */
+export function pendingResumeUpdate(session: AgentSession): SystemMessageWithTransformedPrompt | undefined {
+	const pending = session._preparePromptAndToolLoadout(session._currentRunSystemPromptOptions());
+	if (!pending) return undefined;
+	const changes = Object.values(pending.sections ?? {}).some((text) => text !== null);
+	return changes || pending.transformedPrompt ? pending : undefined;
+}
+
+/**
+ * `update` without the parts of the prompt that the resume's held update (`_resumeHeldUpdate`, what was pending when a
+ * run that does not send the session's prompt started) changes, while the resume's budget check is pending: those parts
+ * wait for the request that sends the session's prompt through the check. A change made during the run, such as a
+ * tool turned on, goes out as it would. Undefined when nothing else is left.
+ */
+export function withoutResumeUpdate(
+	session: AgentSession,
+	update: SystemMessageWithTransformedPrompt | undefined,
+): SystemMessageWithTransformedPrompt | undefined {
+	const held = session._resumeHeldUpdate;
+	if (!update || !held || !session._resumeBudgetCheckpoint) return update;
+	const heldSections = held.sections ?? {};
+	const sections = Object.entries(update.sections ?? {}).filter(([name]) => !Object.hasOwn(heldSections, name));
+	const transformedPrompt = held.transformedPrompt ? undefined : update.transformedPrompt;
+	if (sections.length === 0 && !transformedPrompt) return undefined;
+	const { sections: _sections, transformedPrompt: _transformed, ...message } = update;
+	return {
+		...message,
+		...(sections.length > 0 ? { sections: Object.fromEntries(sections) } : {}),
+		...(transformedPrompt ? { transformedPrompt } : {}),
+	};
 }
 
 /** Diff structured prompt state; executable tool changes are declared by the agent loop. */
@@ -413,7 +448,7 @@ export function _preparePromptAndToolLoadout(
 	this: AgentSession,
 	options: NormalizedBuildSystemPromptOptions,
 	messages: AgentMessage[] = this.agent.state.messages,
-): SystemMessage | undefined {
+): SystemMessageWithTransformedPrompt | undefined {
 	const current = getCurrentSystemMessage(messages);
 	options.sessionFolderInGuidelines = namesSessionFolderInGuidelines(current, Boolean(options.customPrompt));
 	const selected = [...new Set(options.selectedTools)].filter((name) => this._toolRegistry.has(name));

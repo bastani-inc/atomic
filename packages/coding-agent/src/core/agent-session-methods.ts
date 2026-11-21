@@ -63,6 +63,7 @@ import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import type { ToolStatusReport } from "./tool-status.js";
 import type { BashOperations } from "./tools/bash.js";
 import type { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
+import type { SystemMessageWithTransformedPrompt } from "./transformed-system-prompt.ts";
 import type { WorktreeRootMapping } from "./worktree-snapshot/types.ts";
 
 export interface SessionCompactOptions {
@@ -243,7 +244,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_preparePromptAndToolLoadout(
 		options: NormalizedBuildSystemPromptOptions,
 		messages?: AgentMessage[],
-	): import("@bastani/atomic-ai").SystemMessage | undefined;
+	): SystemMessageWithTransformedPrompt | undefined;
 	_restoreToolsFromTranscript(options?: { startup?: boolean }): void;
 	_refreshBaseSystemPromptFromActiveTools(): void;
 	_currentRunSystemPromptOptions(): NormalizedBuildSystemPromptOptions;
@@ -369,7 +370,11 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_maybeGenerateSessionSummary(): Promise<void>;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
 	_compactBeforeContinuation(input?: readonly AgentMessage[]): Promise<boolean>;
-	_compactBeforeResumedPrompt(update: AgentMessage | undefined, input: readonly AgentMessage[]): Promise<boolean>;
+	_compactBeforeResumedPrompt(
+		update: AgentMessage | undefined,
+		input: readonly AgentMessage[],
+		sendsPrompt?: boolean,
+	): Promise<boolean>;
 	_continueAgentAfterCompactionCheck(): Promise<void>;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): Promise<void>;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
@@ -763,6 +768,19 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_requestContextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	/** The restored history's last message until the first request after a resume; see `_compactBeforeResumedPrompt`. */
 	_resumeBudgetCheckpoint?: AgentMessage;
+	/**
+	 * What the check of `_resumeBudgetCheckpoint` for a run that sends the session's prompt as it is now (a prompt, or a
+	 * run an extension starts) found that prompt to need: its update, or null when the prompt was current. Undefined
+	 * until such a run is checked. A conversation request retires the checkpoint once the transcript it sends holds that
+	 * update, at once when it is null; see `_compactBeforeResumedPrompt`.
+	 */
+	_resumePromptUpdate?: AgentMessage | null;
+	/**
+	 * The prompt update a resume needs, as the first check of a run that does not send the session's prompt (an
+	 * interrupt, queued input) found it while one was pending. Until the checkpoint retires, a later turn of such a run
+	 * leaves out what it changes or adds; see `withoutResumeUpdate`.
+	 */
+	_resumeHeldUpdate?: SystemMessageWithTransformedPrompt;
 	_runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 	/**
 	 * The prompt sections that the latest sent prompt's `before_agent_start` handlers set, replaced or removed relative

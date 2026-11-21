@@ -11,6 +11,7 @@ import {
 } from "../../intercom/intercom-bridge.js";
 import { ownIntercomSessionId } from "../../intercom/own-intercom-session.js";
 import { getArtifactsDir } from "../../shared/artifacts.js";
+import { childSessionStore } from "../../shared/child-session-store.js";
 import { createForkContextResolver } from "../../shared/fork-context.js";
 import { resolveCurrentSessionId } from "../../shared/session-identity.js";
 import { buildReadInstruction } from "../../shared/settings.js";
@@ -176,8 +177,12 @@ export async function prepareExecutionContext(input: {
 			: deps.getSubagentSessionRoot(parentSessionFile, parentSessionId);
 		sessionRoot = path.join(baseSessionRoot, runId);
 	}
+	// A directory chosen for the run's sessions keeps them in files there; otherwise a fresh child's session is created in
+	// its parent's store, and the run needs no directory.
+	const sessionStore =
+		effectiveParams.sessionDir || deps.config.defaultSessionDir ? undefined : childSessionStore(ctx.sessionManager);
 	try {
-		await mkdir(sessionRoot, { recursive: true });
+		if (sessionStore === undefined) await mkdir(sessionRoot, { recursive: true });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return {
@@ -205,6 +210,7 @@ export async function prepareExecutionContext(input: {
 		shareEnabled,
 		sessionRoot,
 		sessionDirForIndex,
+		...(sessionStore === undefined ? {} : { sessionStore }),
 		sessionManagerForIndex,
 		artifactConfig,
 		artifactsDir,
