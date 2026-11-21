@@ -1250,12 +1250,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const replyAttachments = replyMessage.content.attachments?.length
               ? formatAttachments(replyMessage.content.attachments)
               : "";
-            await appendEntryUnlessReleased(pi, "intercom_received", {
+            const receipt = await appendEntryUnlessReleased(pi, "intercom_received", {
               from: to,
               message: { text: replyText, attachments: replyMessage.content.attachments },
               messageId: replyMessage.id,
               timestamp: replyMessage.timestamp,
             });
+            if (receipt === "appended") await outboundAsks().recordAnswered(questionId);
             if (replyMessage.replyError !== undefined) {
               return {
                 content: [{ type: "text", text: `Failed: ${replyMessage.replyError}` }],
