@@ -1,4 +1,4 @@
-import type { AgentsFocusInput, CustomEditor } from "./components/custom-editor.js";
+import type { AgentsFocusInput, CustomEditor } from "./components/custom-editor.ts";
 
 type FocusAgentPanel = (input: AgentsFocusInput) => boolean;
 

@@ -1,4 +1,4 @@
-import { markNavigationView } from "./components/prompt-slot.js";
+import { markNavigationView } from "./components/prompt-slot.ts";
 import {
 	ReservedBottomOverlay,
 	type TranscriptOverlayIntersection,

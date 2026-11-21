@@ -1,5 +1,5 @@
 import type { Component, Container } from "@bastani/atomic-tui";
-import { PromptSlot } from "./components/prompt-slot.js";
+import { PromptSlot } from "./components/prompt-slot.ts";
 
 /**
  * What the footer's hints and the widgets around the prompt show in a frame: `live`; `inert` while a navigation view is
