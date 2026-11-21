@@ -12,36 +12,51 @@
 import { APP_NAME, VERSION } from "./config.js";
 import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
-import { enablePersistentCompileCache } from "./utils/compile-cache.ts";
+import { COMPILE_CACHE_ENGINE_WARMUP_ENV, enablePersistentCompileCache } from "./utils/compile-cache.ts";
 import { headlessHeapRelaunchArgs, relaunchWithHeap } from "./utils/heap-relaunch.ts";
-import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "./utils/interactive-engine-bootstrap.ts";
+import {
+	hasInteractiveEngineBootstrapArg,
+	INTERACTIVE_ENGINE_PREWARM_FLAG,
+} from "./utils/interactive-engine-bootstrap.ts";
+import { isPlainInteractiveSessionInvocation } from "./utils/interactive-invocation.ts";
 
 installLifecycleTraceFromEnv();
 markLifecycleTiming("process-entry");
 
-enablePersistentCompileCache();
+const args = process.argv.slice(2);
+// A prewarmed engine child loads the application now and learns its arguments from its host afterwards.
+const prewarmedEngine = args[0] === INTERACTIVE_ENGINE_PREWARM_FLAG;
+const terminal = { stdinIsTTY: process.stdin.isTTY === true, stdoutIsTTY: process.stdout.isTTY === true };
+
+const engineCacheWarmedByHost = process.env[COMPILE_CACHE_ENGINE_WARMUP_ENV] === "1";
+delete process.env[COMPILE_CACHE_ENGINE_WARMUP_ENV];
+// An interactive session, and the engine of one that warms the engine's cache, leave a cold compile cache to a helper
+// instead of writing it when they exit.
+enablePersistentCompileCache({
+	interactive:
+		prewarmedEngine || hasInteractiveEngineBootstrapArg(args)
+			? engineCacheWarmedByHost
+			: isPlainInteractiveSessionInvocation(args, terminal),
+	build: VERSION,
+});
 
 process.title = APP_NAME;
 process.env[`${APP_NAME.toUpperCase()}_CODING_AGENT`] = "true";
 process.env.AI_AGENT = ATOMIC_AI_AGENT;
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
-const args = process.argv.slice(2);
-
 if (args[0] === "--version" || args[0] === "-v") {
 	console.log(VERSION);
 	process.exit(0);
 }
 
-// A prewarmed engine child loads the application now and learns its arguments from its host afterwards.
-const prewarmedEngine = args[0] === INTERACTIVE_ENGINE_PREWARM_FLAG;
 const heapArgs = prewarmedEngine ? [] : headlessHeapRelaunchArgs(args);
 if (heapArgs.length > 0) {
 	relaunchWithHeap(heapArgs, args);
 } else {
 	// An interactive host starts its engine child first, so the child loads the application while this process does;
 	// a prewarmed child loads it while it waits for its arguments.
-	const interactiveHost = !prewarmedEngine && process.stdin.isTTY === true && process.stdout.isTTY === true;
+	const interactiveHost = !prewarmedEngine && terminal.stdinIsTTY && terminal.stdoutIsTTY;
 	const prewarm =
 		prewarmedEngine || interactiveHost ? import("./modes/interactive-engine/engine-prewarm.ts") : undefined;
 	const started = interactiveHost
