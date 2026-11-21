@@ -22,6 +22,7 @@
 - The `git` that prepares and checks a subagent's worktree runs only from the absolute directories in your PATH; the working directory counts only when PATH names it.
 - A background subagent woken by a result it had already read before a compaction took that part of its conversation out of its context no longer gets the result a second time.
 - A background subagent whose model's provider gives a later tool call the id of an earlier one (as Kimi does) gets the late result of that later call, including when the earlier call's result arrived late too, instead of losing it as if it had already read the earlier call's result.
+- Resuming a background subagent again after its earlier resume was paused while it waited for its run's turn, or after its resumed run failed, no longer waits forever (or, without a task host, until the subagent's run had a free slot): the subagent starts again with the message you resume it with.
 
 ## [0.10.3] - 2026-11-21
 
