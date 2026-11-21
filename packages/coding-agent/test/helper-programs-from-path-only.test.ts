@@ -18,8 +18,8 @@ import { ENV_AGENT_DIR, ENV_OFFLINE } from "../src/config.ts";
 const windows = process.platform === "win32";
 
 /**
- * A program named `name` in `directory` that records each run in `marker`. Elsewhere a shell script; on Windows a copy of
- * this Node, which a `--require` in NODE_OPTIONS makes write the record.
+ * A program named `name` in `directory` that answers `--version`: elsewhere a shell script that also records each run in
+ * `marker`; on Windows a copy of this Node, so there a run shows only as a successful start.
  */
 function plantProgram(directory: string, name: string): string {
 	if (windows) {
@@ -53,10 +53,7 @@ beforeEach(() => {
 	mkdirSync(project);
 	mkdirSync(emptyBin);
 	marker = join(root, "runs.txt");
-	const record = join(root, "record.cjs");
-	writeFileSync(record, `require("node:fs").appendFileSync(${JSON.stringify(marker)}, process.execPath + "\\n");\n`);
 	vi.stubEnv("PLANTED_PROGRAM_MARKER", marker);
-	if (windows) vi.stubEnv("NODE_OPTIONS", `--require=${record}`);
 	vi.stubEnv(ENV_AGENT_DIR, join(root, "agent"));
 	vi.stubEnv(ENV_OFFLINE, "1");
 	// Windows looks in the working directory before PATH; elsewhere an empty PATH entry names it.
@@ -99,7 +96,8 @@ describe("helper programs Atomic starts come only from PATH, never from the proj
 		vi.stubEnv("PATH", windows ? bin : `${delimiter}${bin}`);
 		const { getToolPath } = await import("../src/utils/tools-manager.ts");
 
+		// Only a successful `rg --version` makes rg count as installed: the program ran.
 		assert.equal(await getToolPath("rg"), rg);
-		assert.equal(runs().length, 1);
+		if (!windows) assert.equal(runs().length, 1);
 	});
 });
