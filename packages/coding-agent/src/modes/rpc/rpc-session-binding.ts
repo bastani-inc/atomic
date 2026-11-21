@@ -6,7 +6,11 @@ import { chatReceipt } from "../../core/chat-receipts.js";
 import type { ProjectTrustContext } from "../../core/extensions/index.js";
 import { FooterDataProvider } from "../../core/footer-data-provider.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
-import { type QueuedDeliveryRelay, withQueuedDeliveryChange } from "../../core/queued-message-delivery.ts";
+import {
+	keepDroppedQueuedMessages,
+	type QueuedDeliveryRelay,
+	withQueuedDeliveryChange,
+} from "../../core/queued-message-delivery.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
@@ -48,6 +52,8 @@ export class RpcSessionBinding {
 	private session: AgentSession;
 	private boundRunner: AgentSession["extensionRunner"] | undefined;
 	private unsubscribe?: () => void;
+	/** Ends this binding's taking of what the bound session's runs drop from its queue (see `keepDroppedQueuedMessages`). */
+	private releaseDroppedQueuedMessages?: () => void;
 	private unsubscribeBackpressure?: () => void;
 	private unsubscribeTasks?: () => void;
 	private stopAgentView?: () => void;
@@ -134,6 +140,8 @@ export class RpcSessionBinding {
 	/** The bound session is being replaced: its later events tell the host nothing about queued messages. */
 	retireQueuedDeliveries(): void {
 		this.queuedDeliveries?.retire(this.session);
+		this.releaseDroppedQueuedMessages?.();
+		this.releaseDroppedQueuedMessages = undefined;
 	}
 
 	async rebindSession(): Promise<void> {
@@ -264,6 +272,10 @@ export class RpcSessionBinding {
 				}),
 			);
 		}
+		// The host gives back to its editor what the session's runs drop from its queue.
+		this.releaseDroppedQueuedMessages?.();
+		this.releaseDroppedQueuedMessages =
+			this.queuedDeliveries === undefined ? undefined : keepDroppedQueuedMessages(session);
 		this.unsubscribe = session.subscribe((event) => {
 			// A finished message carries its save receipt, so a host can tell which saved entry its rows show.
 			const saved = event.type === "message_end" ? session.entryReceipt?.(event.message) : undefined;
@@ -299,6 +311,8 @@ export class RpcSessionBinding {
 	disposeSubscriptions(): void {
 		this.boundRunner = undefined;
 		this.unsubscribe?.();
+		this.releaseDroppedQueuedMessages?.();
+		this.releaseDroppedQueuedMessages = undefined;
 		this.unsubscribeBackpressure?.();
 		this.unsubscribeTasks?.();
 		this.unsubscribeTasks = undefined;

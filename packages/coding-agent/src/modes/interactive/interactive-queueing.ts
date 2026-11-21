@@ -3,6 +3,7 @@ import {
 	NO_QUEUED_MESSAGES,
 	type QueuedMessageLanes,
 	queuedMessagesUnderWay,
+	takeQueuedMessagesDroppedAt,
 } from "../../core/queued-message-delivery.ts";
 import { parseSlashCommand } from "../../core/slash-commands.js";
 import {
@@ -499,6 +500,42 @@ InteractiveModeBase.prototype.flushPendingBashComponents = function (this: Inter
 /** `count` queued message(s), with the verb agreeing. */
 function queuedMessagesPhrase(count: number): string {
 	return count === 1 ? "1 queued message" : `${count} queued messages`;
+}
+
+/** The notice the main chat shows when queued messages that were never sent come back to its editor. */
+export function queuedMessagesReturnedNotice(count: number): string {
+	return `${queuedMessagesPhrase(count)} ${count === 1 ? "wasn't" : "weren't"} sent and ${count === 1 ? "is" : "are"} back in the editor`;
+}
+
+/** Per main chat, the messages run ends gave back to its editor, as the editor's text starts with them. */
+const returnedToEditor = new WeakMap<InteractiveModeBase, string>();
+
+/**
+ * A run of the main chat's session ended with `event`, its `agent_end`, after it took queued messages and lost them a
+ * second time before sending them. They are no longer queued and are never sent again by themselves, so they come back
+ * to the main chat's editor, as Alt+Up would give them back, as typed, steering first, with a notice.
+ */
+export function returnDroppedQueuedMessages(mode: InteractiveModeBase, event: object): void {
+	const dropped = takeQueuedMessagesDroppedAt(event);
+	if (dropped === undefined || dropped.length === 0) return;
+	const messages = [
+		...dropped.flatMap((message) => (message.lane === "steer" ? [message.text] : [])),
+		...dropped.flatMap((message) => (message.lane === "followUp" ? [message.text] : [])),
+	];
+	// Main's prompt, whatever the screen shows.
+	const prompt = promptHandle(mode, "main");
+	const current = prompt.getExpandedText();
+	// Messages an earlier run's end gave back were queued before these: they stay first while the editor still starts
+	// with them as given back.
+	const earlier = returnedToEditor.get(mode);
+	const kept =
+		earlier !== undefined && (current === earlier || current.startsWith(`${earlier}\n\n`)) ? earlier : undefined;
+	const returned = kept === undefined ? messages : [kept, ...messages];
+	const typed = kept === undefined ? current : current.slice(kept.length + 2);
+	prompt.setText(combineQueuedMessagesForEditor(returned, typed));
+	returnedToEditor.set(mode, returned.join("\n\n"));
+	mode.showWarning(queuedMessagesReturnedNotice(messages.length));
+	mode.ui.requestRender();
 }
 
 /** The notice the main chat shows when a lost engine's queued messages come back to its editor. */

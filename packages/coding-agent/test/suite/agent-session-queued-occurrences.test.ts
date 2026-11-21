@@ -3,7 +3,7 @@ import type { AgentTool } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, it } from "vitest";
-import { queuedMessagesUnderWay } from "../../src/core/queued-message-delivery.ts";
+import { queuedMessagesUnderWay, takeQueuedMessagesDroppedAt } from "../../src/core/queued-message-delivery.ts";
 import { createHarness, getMessageText, getUserTexts, type Harness, type HarnessOptions } from "./harness.ts";
 
 /**
@@ -206,6 +206,10 @@ describe("queued messages", () => {
 				throw new Error("refused at start");
 			}
 		});
+		const runEnds: object[] = [];
+		h.session.subscribe((event) => {
+			if (event.type === "agent_end") runEnds.push(event);
+		});
 		const run = h.session.prompt("first");
 		await waiting.started;
 		await h.session.followUp("again");
@@ -221,6 +225,12 @@ describe("queued messages", () => {
 		assert.equal(refusals, 2, "taken twice, then dropped: no run repeats it");
 		assert.deepEqual(h.session.getFollowUpMessages(), [], "not left listed");
 		assert.deepEqual(getUserTexts(h), ["first"]);
+		// Without a chat to give it back to, a run's end that a listener keeps keeps nothing of it.
+		assert.ok(runEnds.length > 0);
+		assert.deepEqual(
+			runEnds.map((event) => takeQueuedMessagesDroppedAt(event)),
+			runEnds.map(() => undefined),
+		);
 	});
 
 	it("a prompt with the text of a queued message leaves that message queued: both are sent, each once", async () => {

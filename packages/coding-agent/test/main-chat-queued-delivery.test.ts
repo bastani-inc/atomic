@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { afterEach, beforeAll, describe, test } from "vitest";
+import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { waitFor } from "./helpers/busy-submission-rig.js";
@@ -161,6 +161,96 @@ describe.each(["in-process", "isolated"] as const)(
 				chat.gate.release.resolve();
 				const replied = await chat.settled(/answer 2/);
 				assert.deepEqual(shown(replied, "later one"), { echoes: 0, rows: 0 }, replied.join("\n"));
+			},
+			MAIN_CHAT_TEST_TIMEOUT_MS,
+		);
+
+		test(
+			"taken and lost twice before it is sent, it comes back to the editor as typed, with a notice",
+			async () => {
+				const chat = await busyChat(host);
+				const session = chat.pair?.engine.session ?? chat.mode.session;
+				const agent = session.agent;
+				// The turn after the tool call fails while it prepares, and from then on every run fails as it starts,
+				// before the queued message does: taken and lost once (queued again), then a second time (dropped).
+				const prepare = agent.prepareNextTurnWithContext;
+				let failedPreparation = false;
+				agent.prepareNextTurnWithContext = async (context, signal) => {
+					if (!failedPreparation) {
+						failedPreparation = true;
+						throw new Error("turn preparation failed");
+					}
+					return prepare?.(context, signal);
+				};
+				let refusals = 0;
+				const stopRefusing = agent.subscribe((event) => {
+					if (event.type === "agent_start" && failedPreparation) {
+						refusals++;
+						throw new Error("refused at start");
+					}
+				});
+				cleanups.push(stopRefusing);
+				chat.press("later one");
+				chat.press("\r");
+				await chat.settled(/Steering: later one/);
+
+				chat.gate.release.resolve();
+				const returned = await chat.settled(/1 queued message wasn't sent and is back in the editor/);
+				// Lost as its turn failed to prepare, queued again, and lost as the next run started: no run tries it again.
+				assert.equal(refusals, 1);
+				assert.equal(chat.mode.editor.getText(), "later one", returned.join("\n"));
+				assert.deepEqual(shown(returned, "later one"), { echoes: 0, rows: 0 }, returned.join("\n"));
+				assert.equal(
+					chat.requests.filter((request) => request.includes("later one")).length,
+					0,
+					chat.requests.join("\n"),
+				);
+			},
+			MAIN_CHAT_TEST_TIMEOUT_MS,
+		);
+
+		test(
+			"two messages each lost twice come back in the order they were queued, ahead of what is being typed",
+			async () => {
+				const chat = await busyChat(host, { settings: { steeringMode: "one-at-a-time" } });
+				const session = chat.pair?.engine.session ?? chat.mode.session;
+				const agent = session.agent;
+				// As above, for each message in turn: the first loss as its turn fails to prepare or its run starts, the
+				// second as the next run starts.
+				const prepare = agent.prepareNextTurnWithContext;
+				let failedPreparation = false;
+				agent.prepareNextTurnWithContext = async (context, signal) => {
+					if (!failedPreparation) {
+						failedPreparation = true;
+						throw new Error("turn preparation failed");
+					}
+					return prepare?.(context, signal);
+				};
+				cleanups.push(
+					agent.subscribe((event) => {
+						if (event.type === "agent_start" && failedPreparation) throw new Error("refused at start");
+					}),
+				);
+				chat.press("first steer");
+				chat.press("\r");
+				chat.press("second steer");
+				chat.press("\r");
+				await chat.settled(/Steering: second steer/);
+				chat.press("unfinished draft");
+
+				chat.gate.release.resolve();
+				await vi.waitFor(() => assert.match(chat.mode.editor.getText(), /second steer/), { timeout: 20_000 });
+				const returned = await chat.settled();
+				assert.equal(
+					chat.mode.editor.getText(),
+					"first steer\n\nsecond steer\n\nunfinished draft",
+					returned.join("\n"),
+				);
+				assert.equal(
+					chat.requests.filter((request) => request.includes("steer")).length,
+					0,
+					chat.requests.join("\n"),
+				);
 			},
 			MAIN_CHAT_TEST_TIMEOUT_MS,
 		);

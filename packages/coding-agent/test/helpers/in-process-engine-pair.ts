@@ -2,6 +2,7 @@ import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../src/core/keybindings.ts";
 import {
+	keepDroppedQueuedMessages,
 	type QueuedDeliveryChange,
 	QueuedDeliveryRelay,
 	takeQueuedDeliveryChange,
@@ -471,6 +472,8 @@ export async function createEngineHostPair(
 	// A replacement engine starts telling the host afresh.
 	const newRelay = () => (options.queuedDeliveries === false ? undefined : new QueuedDeliveryRelay());
 	let relay = newRelay();
+	// As the engine's session binding does for a host that asked about queued messages.
+	const releaseDropped = relay === undefined ? () => {} : keepDroppedQueuedMessages(engine.session);
 	const unsubscribe = engine.session.subscribe((event) =>
 		client.engineOutput(
 			withQueuedDeliveryChange(toJsonEvent(event), relay?.note(engine.session, event)) as JsonAgentSessionEvent,
@@ -519,6 +522,7 @@ export async function createEngineHostPair(
 		},
 		cleanup: async () => {
 			unsubscribe();
+			releaseDropped();
 			customUi?.dispose();
 			// The host runtime listens to process-wide settings until it is disposed; left undisposed, it keeps both
 			// harnesses alive for the rest of the file.

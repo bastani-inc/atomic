@@ -61,6 +61,7 @@ import { hostNoticeForEvent } from "./host-notices.js";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
 import {
+	carryDroppedQueuedMessages,
 	endQueuedMessageDelivery,
 	noteQueueUpdateDeliveries,
 	type QueuedMessageDelivery,
@@ -231,7 +232,7 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 		}
 	}
 	// What the run took from the queue and never started is queued again before anything settles on the queue.
-	if (event.type === "agent_end") requeueQueuedMessagesNotStarted(this);
+	if (event.type === "agent_end") requeueQueuedMessagesNotStarted(this, event);
 	const awaitProtectedPersistence =
 		event.type === "message_end" && event.message.role === "custom"
 			? markProtectedStreamingCustomMessageConsumed(this, event.message)
@@ -387,8 +388,11 @@ export async function _processAgentEvent(
 	try {
 		await this._emitExtensionEvent(event);
 		if (event.type === "agent_start") this._undeliveredAgentStarts -= 1;
-		if (event.type === "agent_end" && this.isRetrying) this._emit({ ...event, retryPending: true });
-		else if (event.type !== "message_end" && !repeatsShownInput(this, event)) {
+		if (event.type === "agent_end" && this.isRetrying) {
+			const retrying = { ...event, retryPending: true as const };
+			carryDroppedQueuedMessages(event, retrying);
+			this._emit(retrying);
+		} else if (event.type !== "message_end" && !repeatsShownInput(this, event)) {
 			// A queued message leaves the queue its chat shows as its own row reaches the listeners.
 			endQueuedMessageDelivery(this, delivery);
 			this._emit(event);

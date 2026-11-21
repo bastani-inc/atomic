@@ -18,6 +18,7 @@ import type { ExtensionError } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import {
+	noteQueuedMessagesDropped,
 	type QueuedDeliveryEnd,
 	type QueuedDeliveryEntry,
 	QueuedDeliveryView,
@@ -349,6 +350,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.onEvent((event) => this.observeEvent(event));
 		// Read with the queue it changes: a queue_update that no longer lists a message names it as being delivered.
 		this.client.onQueuedDeliveryChange?.((change, event) => {
+			// What a run's end dropped goes with that event to the chat, which gives it back to the user.
+			if (change.dropped !== undefined) noteQueuedMessagesDropped(event, change.dropped);
 			const end = this.queuedDeliveries.receive(change);
 			// The messages it ended leave when the event reaches the chat, with the row it draws.
 			if (end === undefined) return;

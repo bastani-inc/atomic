@@ -53,6 +53,9 @@ import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import {
 	beginQueuedMessageDelivery,
 	endQueuedMessageDelivery,
+	keepsDroppedQueuedMessages,
+	noteQueuedMessagesDropped,
+	type QueuedDeliveryEntry,
 	type QueuedMessageDelivery,
 } from "./queued-message-delivery.ts";
 import { withOwnResourceAdmission } from "./resource-admission-scope.ts";
@@ -299,18 +302,19 @@ export function startQueuedMessage(
 }
 
 /**
- * The run ended: queued messages it took and never started (its turn preparation failed, or it stopped first) are
- * queued again, at the front of their lanes in the order they were queued, with the text that was submitted for them,
- * so they are delivered or taken back like any other queued message: the queue goes on as it does after any failed
- * run. One that a run already took and lost once is not queued again but dropped, as it always was, so a run that
- * keeps failing before it starts it never repeats it.
+ * The run ended (`runEnd` is its `agent_end`): queued messages it took and never started (its turn preparation failed,
+ * or it stopped first) are queued again, at the front of their lanes in the order they were queued, with the text that
+ * was submitted for them, so they are delivered or taken back like any other queued message: the queue goes on as it
+ * does after any failed run. One that a run already took and lost once is not queued again but dropped, so a run that
+ * keeps failing before it starts it never repeats it; `runEnd` tells which, as submitted, for a chat to give back.
  */
-export function requeueQueuedMessagesNotStarted(session: AgentSession): void {
+export function requeueQueuedMessagesNotStarted(session: AgentSession, runEnd?: object): void {
 	const pending = takenNotStarted.get(session);
 	if (pending === undefined) return;
 	takenNotStarted.delete(session);
 	const back: Record<QueueLane, AgentMessage[]> = { steer: [], followUp: [] };
 	const typed: TypedQueuedText[] = [];
+	const dropped: QueuedDeliveryEntry[] = [];
 	for (const message of pending) {
 		const occurrence = queuedOccurrences.get(message);
 		if (occurrence?.taken === undefined) continue;
@@ -320,12 +324,16 @@ export function requeueQueuedMessagesNotStarted(session: AgentSession): void {
 		// Taken and lost once already, or no longer listed when it was taken: not queued again.
 		if (occurrence.requeued || !listed) {
 			queuedOccurrences.delete(message);
+			// Never started, so never saved: a chat can give it back to be sent again by hand.
+			if (listed) dropped.push({ lane: occurrence.lane, text: occurrence.typed.typed });
 			continue;
 		}
 		occurrence.requeued = true;
 		back[occurrence.lane].push(message);
 		typed.push(occurrence.typed);
 	}
+	if (runEnd !== undefined && dropped.length > 0 && keepsDroppedQueuedMessages(session))
+		noteQueuedMessagesDropped(runEnd, dropped);
 	if (back.steer.length === 0 && back.followUp.length === 0) return;
 	const textsOf = (messages: readonly AgentMessage[]) =>
 		messages.map((message) => queuedOccurrences.get(message)?.text ?? "");
