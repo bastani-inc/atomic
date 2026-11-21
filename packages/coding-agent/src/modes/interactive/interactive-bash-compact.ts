@@ -188,6 +188,8 @@ InteractiveModeBase.prototype.stop = function (
 	if (this.isInitialized) {
 		this.stopInteractiveTui(fullscreenExitOutput);
 		this.isInitialized = false;
+		// A mode started again checks fd, rg and git again: what it found may have changed while it was stopped.
+		this.managedToolReadiness = "on-init";
 	}
 	this.unregisterSignalHandlers();
 };
