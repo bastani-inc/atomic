@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -38,7 +38,19 @@ function fixture() {
 			name: "fixture",
 			type: "module",
 			main: "./dist/index.js",
-			exports: { ".": "./dist/index.js", "./extra": "./dist/extra.js", "./deep/*": "./dist/deep/*.js" },
+			exports: {
+				".": { module: "./dist/_modules/index.js", browser: "./dist/_modules/index.js", import: "./dist/index.js" },
+				"./extra": {
+					module: "./dist/_modules/extra.js",
+					browser: "./dist/_modules/extra.js",
+					import: "./dist/extra.js",
+				},
+				"./deep/*": {
+					module: "./dist/_modules/deep/*.js",
+					browser: "./dist/_modules/deep/*.js",
+					import: "./dist/deep/*.js",
+				},
+			},
 		}),
 		"pkg/dist/log.js": `export function log(name) {\n\t(globalThis.order ??= []).push(name);\n}\n`,
 		"pkg/dist/types.js": "export {};\n",
@@ -62,6 +74,15 @@ function fixture() {
 		"pkg/dist/heavy-user.js": `import "heavy-pkg";\nimport { log } from "./log.js";\nimport { shared } from "./shared.js";\nlog("heavy-user");\nexport const sharedFromHeavy = shared;\n`,
 		"pkg/dist/fs-user.js": `import { existsSync } from "node:fs";\nexport const exists = existsSync;\n`,
 		"pkg/dist/nested/asset-user.js": `export const nestedAssetUrl = new URL("./data.txt", import.meta.url).href;\n`,
+		"loads.mjs": [
+			`import { registerHooks } from "node:module";`,
+			`globalThis.urls = [];`,
+			`registerHooks({ load(url, context, next) { globalThis.urls.push(url); return next(url, context); } });`,
+			`await import("fixture");`,
+			`await import("fixture/extra");`,
+			`await import("fixture/deep/thing");`,
+			"",
+		].join("\n"),
 		"pkg/dist/deep/thing.js": `import { log } from "../log.js";\nlog("deep-thing");\nexport const thingUrl = import.meta.url;\n`,
 	});
 	return { root, pkg: join(root, "pkg") };
@@ -74,6 +95,8 @@ function inChild(module, script) {
 }
 
 const bundle = (pkg) => bundlePackageDist(pkg, { standalone: ["standalone.js"], log: () => {} });
+/** Makes the fixture package importable by its name from `root`. */
+const linkPackage = (root, pkg) => symlinkSync(pkg, join(root, "node_modules", "fixture"), "junction");
 const sharedFiles = (pkg) =>
 	readdirSync(join(pkg, "dist")).filter((name) => name.startsWith("_") && name.endsWith(".js"));
 
@@ -168,6 +191,58 @@ test("a module that reaches no Node built-in module still bundles for a browser"
 	});
 	assert.deepEqual(result.errors, []);
 	assert.match(result.outputFiles[0]?.text ?? "", /data\.txt/);
+});
+
+test("bundlers get the package's compiled modules, one file each, and Node never loads them", async () => {
+	const { root, pkg } = fixture();
+	const unbundled = join(root, "unbundled");
+	cpSync(pkg, unbundled, { recursive: true });
+	await bundle(pkg);
+	linkPackage(root, pkg);
+	const esbuild = await import("esbuild");
+	/** The bundled output of `export { names } from "<specifier>"` as a bundler targeting `platform` builds it. */
+	const bundleImport = async (specifier, names, platform) => {
+		const result = await esbuild.build({
+			stdin: { contents: `export { ${names} } from ${JSON.stringify(specifier)};`, resolveDir: root, loader: "js" },
+			bundle: true,
+			minify: true,
+			platform,
+			format: "esm",
+			write: false,
+			logLevel: "silent",
+			external: ["light-pkg", "heavy-pkg"],
+		});
+		return result.outputFiles[0]?.text ?? "";
+	};
+	for (const platform of ["browser", "node"]) {
+		const viaPackage = await bundleImport("fixture/extra", "Shared", platform);
+		assert.equal(viaPackage, await bundleImport(join(unbundled, "dist/extra.js"), "Shared", platform), platform);
+		assert.doesNotMatch(viaPackage, /__esmMin|init_/);
+	}
+	const loaded = inChild(
+		join(root, "loads.mjs"),
+		"process.stdout.write(JSON.stringify(globalThis.urls.filter((url) => url.includes('/dist/_modules/'))));",
+	);
+	assert.deepEqual(loaded, []);
+});
+
+test("a package whose exports do not name its compiled modules for bundlers is not bundled", async () => {
+	const { pkg } = fixture();
+	const manifestPath = join(pkg, "package.json");
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+	manifest.exports["."] = {
+		import: "./dist/index.js",
+		module: "./dist/_modules/index.js",
+		browser: "./dist/_modules/index.js",
+	};
+	writeFileSync(manifestPath, JSON.stringify(manifest));
+	await assert.rejects(
+		bundle(pkg),
+		/export "\." must name \.\/dist\/_modules\/index\.js as "module", before "import"/,
+	);
+	manifest.exports["."] = "./dist/index.js";
+	writeFileSync(manifestPath, JSON.stringify(manifest));
+	await assert.rejects(bundle(pkg), /export "\." must name its compiled module for bundlers/);
 });
 
 test("shared files are named by their group and first module, the same in every build", async () => {

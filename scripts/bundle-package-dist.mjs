@@ -21,6 +21,11 @@
  * - A module named with `--standalone=<path below dist>,...` keeps its compiled file and code: the release build of
  *   the single-file binary copies such files beside the binary and loads them from there.
  *
+ * A package with an exports map also keeps its compiled modules, one file each, under `dist/_modules/`, and each of its
+ * exports names them with the `module` and `browser` conditions, ahead of `import`. Bundlers resolve those conditions
+ * and keep shaking unused modules out as before; Node and Bun resolve neither, so a process loads only the bundled
+ * files. The build checks every export for this.
+ *
  * The compiled files the build replaces are kept under `node_modules/.cache/atomic-bundle-dist`: an incremental
  * `tsc` writes only what changed, and the next bundle reads the others from there.
  */
@@ -38,6 +43,8 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
+/** Where a package with an exports map keeps its compiled modules for bundlers, below `dist`. */
+export const MODULES_DIRECTORY = "_modules";
 /** A shared file's name: `dist/_<group>-<eight base32 characters>.js`. */
 const SHARED_FILE = /^_[a-zA-Z0-9.-]+-[A-Z2-7]{8}\.js$/;
 const MODULE_URL = "__atomicModuleUrl";
@@ -64,8 +71,9 @@ function compiledFiles(dist, directory = dist) {
 	const files = [];
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		const path = join(directory, entry.name);
-		if (entry.isDirectory()) files.push(...compiledFiles(dist, path));
-		else if (entry.name.endsWith(".js") && !(directory === dist && SHARED_FILE.test(entry.name))) files.push(path);
+		if (entry.isDirectory()) {
+			if (!(directory === dist && entry.name === MODULES_DIRECTORY)) files.push(...compiledFiles(dist, path));
+		} else if (entry.name.endsWith(".js") && !(directory === dist && SHARED_FILE.test(entry.name))) files.push(path);
 	}
 	return files;
 }
@@ -228,6 +236,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 	const esbuild = await import("esbuild");
 	const dist = join(packageDir, "dist");
 	const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+	if (manifest.exports) checkExports(manifest.exports);
 	const cacheDir = options.cacheDir ?? join(packageDir, "node_modules", ".cache", "atomic-bundle-dist");
 	const stateFile = join(cacheDir, "state.json");
 	const compiledDir = join(cacheDir, "compiled");
@@ -469,12 +478,87 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		if (mode !== undefined && (mode & 0o111) !== 0) chmodSync(path, statSync(path).mode | (mode & 0o111));
 		if (item.type === "chunk" && item.isEntry) facades[item.fileName] = digest(readFileSync(path));
 	}
+	if (manifest.exports) writeModulesCopy(dist, compiledDir, standalone);
 	mkdirSync(cacheDir, { recursive: true });
 	writeFileSync(stateFile, JSON.stringify({ facades }));
 	const shared = chunks.filter((chunk) => !chunk.isEntry).length;
 	(options.log ?? console.log)(
 		`bundle-package-dist: ${manifest.name}: ${sources.size} modules into ${shared} shared files`,
 	);
+}
+
+/**
+ * Writes the package's compiled modules, one file each as tsc wrote them, under `dist/_modules/`, beside the files
+ * they read (the package's other files in `dist`, copied).
+ * @param {string} dist
+ * @param {string} compiledDir The saved compiled modules.
+ * @param {Set<string>} standalone
+ */
+function writeModulesCopy(dist, compiledDir, standalone) {
+	const modules = join(dist, MODULES_DIRECTORY);
+	/** @param {string} directory */
+	const copy = (directory) => {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const path = join(directory, entry.name);
+			const rel = relative(dist, path);
+			if (
+				directory === dist &&
+				(entry.name === MODULES_DIRECTORY || SHARED_FILE.test(entry.name.replace(/\.map$/, "")))
+			)
+				continue;
+			if (entry.isDirectory()) {
+				copy(path);
+				continue;
+			}
+			if (/\.d\.ts(\.map)?$/.test(entry.name)) continue;
+			const target = join(modules, rel);
+			const compiled = join(compiledDir, rel);
+			const isModule = entry.name.endsWith(".js") && !standalone.has(path);
+			const isModuleMap = entry.name.endsWith(".js.map") && !standalone.has(path.slice(0, -4));
+			// A facade's source map stands for no compiled module's: the module's own, if tsc wrote one, goes instead.
+			if (isModuleMap && !existsSync(compiled)) continue;
+			/** @type {string | Buffer} */
+			let contents = readFileSync(isModule || isModuleMap ? compiled : path);
+			if ((isModuleMap || entry.name.endsWith(".js.map")) && contents.length > 0) {
+				// A source map names its sources relative to itself, one directory deeper now.
+				const map = JSON.parse(contents.toString("utf8"));
+				map.sources = map.sources.map((/** @type {string} */ source) =>
+					isAbsolute(source) ? source : `../${source}`,
+				);
+				contents = JSON.stringify(map);
+			}
+			if (isModuleMap && contents.length === 0) continue;
+			mkdirSync(dirname(target), { recursive: true });
+			writeFileSync(`${target}.bundle`, contents);
+			renameSync(`${target}.bundle`, target);
+		}
+	};
+	copy(dist);
+}
+
+/**
+ * Checks that each export of the package names its compiled module under `dist/_modules/` with the `module` and
+ * `browser` conditions, ahead of `import`, which names the bundled file.
+ * @param {Record<string, string | Record<string, string>>} exportsMap
+ */
+function checkExports(exportsMap) {
+	for (const [key, value] of Object.entries(exportsMap)) {
+		if (typeof value === "string") {
+			if (value.startsWith("./dist/"))
+				throw new Error(`bundle-package-dist: export "${key}" must name its compiled module for bundlers`);
+			continue;
+		}
+		if (!value.import?.startsWith("./dist/")) continue;
+		const expected = `./dist/${MODULES_DIRECTORY}/${value.import.slice("./dist/".length)}`;
+		const names = Object.keys(value);
+		for (const condition of ["module", "browser"]) {
+			if (value[condition] !== expected || names.indexOf(condition) > names.indexOf("import")) {
+				throw new Error(
+					`bundle-package-dist: export "${key}" must name ${expected} as "${condition}", before "import"`,
+				);
+			}
+		}
+	}
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {

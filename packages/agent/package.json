@@ -8,6 +8,8 @@
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",
+			"module": "./dist/_modules/index.js",
+			"browser": "./dist/_modules/index.js",
 			"import": "./dist/index.js"
 		},
 		"./package.json": "./package.json"

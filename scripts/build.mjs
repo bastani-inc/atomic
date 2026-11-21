@@ -154,14 +154,9 @@ export const BUILD_STEPS = [
 	{
 		name: "codemode",
 		packageDir: "packages/codemode",
-		inputs: [
-			"packages/codemode/src",
-			"packages/codemode/package.json",
-			"packages/codemode/tsconfig.build.json",
-			BUNDLER,
-		],
+		inputs: ["packages/codemode/src", "packages/codemode/package.json", "packages/codemode/tsconfig.build.json"],
 		outputs: ["packages/codemode/dist"],
-		scripts: [{ script: "build", tsc: true }, { script: "build:bundle" }],
+		scripts: [{ script: "build", tsc: true }],
 	},
 	{
 		name: "natives",

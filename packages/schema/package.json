@@ -9,11 +9,15 @@
 		".": {
 			"source": "./src/index.ts",
 			"types": "./dist/index.d.ts",
+			"module": "./dist/_modules/index.js",
+			"browser": "./dist/_modules/index.js",
 			"import": "./dist/index.js"
 		},
 		"./formats": {
 			"source": "./src/formats/index.ts",
 			"types": "./dist/formats/index.d.ts",
+			"module": "./dist/_modules/formats/index.js",
+			"browser": "./dist/_modules/formats/index.js",
 			"import": "./dist/formats/index.js"
 		}
 	},
