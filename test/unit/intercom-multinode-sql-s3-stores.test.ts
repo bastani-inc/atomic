@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
 import { test } from "vitest";
+import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import type { IntercomBrokerStateOptions } from "../../packages/intercom/broker/multinode-state-store.js";
+import { borrowedDatabase } from "../../packages/intercom/broker/open-broker-state.js";
 import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
+import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
+import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
 import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-store.js";
 import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pending-ask-store.js";
 import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
@@ -12,12 +16,14 @@ import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-
 import { useFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
 import {
 	type OpenSharedStoreFixture,
+	type ReturningSessionStores,
 	registerCrossNodeHeldRoundTripConformance,
 	registerCrossNodeRoundTripConformance,
 	registerHeldSendStoreConformance,
 	registerPendingAskStoreConformance,
 	registerReleasedAskStoreConformance,
 	registerRestoringReservationStoreConformance,
+	registerReturningSessionConformance,
 	registerSentMessageAuthorityConformance,
 	type SharedStoreFixture,
 } from "../helpers/intercom-multinode-contract.js";
@@ -54,6 +60,17 @@ function sharedFileFixture<Store>(
 
 const fixtureAdapter = useFixtureStorageAdapter();
 
+/** The stores in the order a broker opens them, then its wake-up bus on the same connection (#5607). */
+const openReturningSessionStores: OpenStore<ReturningSessionStores> = async (options) => ({
+	leases: await openSqlBrokerLeaseStore(options),
+	knownSessions: await openSqlKnownSessionStore(options),
+	outbox: await openSqlOutboxStore(options),
+	bus: await openDatabaseWakeUpBus({
+		openDatabase: async () => borrowedDatabase(options.database),
+		prefix: options.prefix,
+	}),
+});
+
 const nodeSqlite: OpenConnection = (directory) => openNodeSqliteDatabase(join(directory, "intercom.sqlite"));
 
 const moduleSelectedAdapter: OpenConnection = async (directory) => {
@@ -85,6 +102,11 @@ for (const [name, openConnection, prefix] of [
 		openOutbox: openMemoryOutboxFixture,
 		openBus: openMemoryWakeUpBusFixture,
 	});
+	registerReturningSessionConformance(
+		test,
+		name,
+		sharedFileFixture(openConnection, openReturningSessionStores, prefix),
+	);
 	registerCrossNodeRoundTripConformance(test, `${name} (SQL outbox and pending asks)`, {
 		openOutbox: sharedFileFixture(openConnection, openSqlOutboxStore, prefix),
 		openPendingAsks: sharedFileFixture(openConnection, openSqlPendingAskStore, prefix),

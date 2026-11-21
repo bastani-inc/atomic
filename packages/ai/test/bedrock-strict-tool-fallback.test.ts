@@ -53,7 +53,7 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 import { BedrockRuntimeServiceException } from "@aws-sdk/client-bedrock-runtime";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.js";
 import { cleanupSessionResources } from "../src/session-resources.js";
-import type { Model, StreamOptions, Tool } from "../src/types.js";
+import type { Model, StreamOptions, Tool, TranscriptContext } from "../src/types.js";
 import { normalizeContext } from "../src/utils/transcript.js";
 
 const model: Model<"bedrock-converse-stream"> = {
@@ -186,6 +186,33 @@ describe("Bedrock preferred strict tool fallback (earendil-works/pi#11416)", () 
 		await run([tool("preferred", "prefer")]);
 
 		assert.deepEqual(strictFlags(), [[true], [undefined], [true]]);
+	});
+
+	it("sends preferred tools non-strict right away when the system message a compaction replays records the rejection (#6119)", async () => {
+		bedrockMock.respond = () => successResponse();
+		const resumed = (strictToolsDisabled?: true) =>
+			streamBedrock(
+				model,
+				{
+					messages: [
+						{
+							role: "system",
+							content: "Be brief.",
+							toolsAdded: [tool("preferred", "prefer")],
+							...(strictToolsDisabled ? { strictToolsDisabled } : {}),
+							timestamp: 1,
+						},
+						{ role: "user", content: "[compacted conversation]", timestamp: 2 },
+					],
+				} as TranscriptContext,
+				{ cacheRetention: "none", sessionId: strictToolsDisabled ? "compacted" : "fresh" },
+			).result();
+
+		const compacted = await resumed(true);
+		await resumed();
+
+		assert.equal(compacted.strictToolsDisabled, true);
+		assert.deepEqual(strictFlags(), [[undefined], [true]]);
 	});
 
 	it("sends preferred tools non-strict right away on later requests of a rejected session (#11626)", async () => {

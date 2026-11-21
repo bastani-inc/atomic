@@ -7,6 +7,7 @@ import {
 	formatProviderError,
 	normalizeProviderError,
 } from "../utils/error-body.ts";
+import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
@@ -157,6 +158,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatAzureOpenAIError(error);
 			appendProviderResponseFailureDiagnostic(output, error);
+			recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -205,7 +207,7 @@ function createClient(model: Model<"azure-openai-responses">, apiKey: string, op
 			apiKey,
 			apiVersion,
 			dangerouslyAllowBrowser: true,
-			fetch: getFetchAdmission(options?.fetch)?.fetch ?? options?.fetch,
+			fetch: transportFetch(getFetchAdmission(options?.fetch)?.fetch ?? options?.fetch),
 			defaultHeaders: headers,
 			baseURL: baseUrl,
 		}),

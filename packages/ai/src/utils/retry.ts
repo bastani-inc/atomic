@@ -2,6 +2,7 @@ import { getGitHubCopilotError } from "../providers/github-copilot-errors.ts";
 import type { AssistantMessage, RetryDeadline } from "../types.ts";
 import { DEFAULT_MAX_RETRY_DELAY_MS } from "./provider-retry.ts";
 import { retryDeadlineReached } from "./retry-sleep.ts";
+import { getTlsCertificateRefusal } from "./tls-certificate.ts";
 
 function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
 	return new RegExp(patterns.join("|"), "i");
@@ -319,7 +320,8 @@ export async function retryAssistantCall(
  * or transport error, so callers can decide if the last assistant turn should be
  * restarted.
  *
- * A GitHub Copilot failure carries its typed error, whose `retryable` decides.
+ * A GitHub Copilot failure carries its typed error, whose `retryable` decides. A request refused for its TLS
+ * certificate (a `provider_tls_certificate_refused` diagnostic) is never retried.
  *
  * This does not implement retry policy. Callers should first handle context
  * overflow separately, then apply their own retry budget, backoff, and reporting
@@ -327,6 +329,8 @@ export async function retryAssistantCall(
  */
 export function isRetryableAssistantError(message: RetryFailure): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
+	// The certificate the endpoint showed is refused again by the next attempt (#6114).
+	if (getTlsCertificateRefusal(message) !== undefined) return false;
 	const copilotError = getGitHubCopilotError(message);
 	if (copilotError !== undefined) return copilotError.retryable;
 	const errorMessage = message.errorMessage;

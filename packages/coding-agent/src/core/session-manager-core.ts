@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import { isProxy } from "node:util/types";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
+import { recordsStrictToolLimits } from "@bastani/atomic-ai/api/strict-tool-limits";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
@@ -1461,8 +1462,10 @@ export class SessionManager {
 			const systemMessage = getCurrentSystemMessage(projected);
 			const transformedPrompt = carriedTransformedPrompt(projected);
 			if (systemMessage) {
+				// The replies that recorded a strict-tool fallback leave the context; the replayed message keeps the record.
 				const carried: SystemMessageWithTransformedPrompt = {
 					...systemMessage,
+					...(recordsStrictToolLimits(projected) ? { strictToolsDisabled: true } : {}),
 					...(transformedPrompt ? { transformedPrompt } : {}),
 					timestamp: new Date(entry.timestamp).getTime(),
 				};

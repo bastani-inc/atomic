@@ -74,6 +74,7 @@ describe("system prompt updates", () => {
 				"docs",
 				"model",
 				"cwd",
+				"session_folder",
 				"date",
 			]);
 			expect(head.toolsAdded?.map((tool) => tool.name)).toEqual(harness.session.getActiveToolNames());
