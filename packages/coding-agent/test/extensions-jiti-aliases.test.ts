@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, normalize } from "node:path";
 import { createJiti } from "jiti";
 import { afterEach, test } from "vitest";
 import { normalizeJitiAliases } from "../src/core/extensions/jiti-aliases.ts";
@@ -78,7 +78,7 @@ test("jiti uses the normalized aliases as they are instead of normalizing them a
 
 	aliases.target = join(root, "second.js");
 
-	assert.equal(jiti.resolve("target"), join(root, "second.js"));
+	assert.equal(normalize(jiti.resolve("target")), join(root, "second.js"));
 });
 
 test("the extension loader gives jiti host aliases it does not normalize again for every module", async () => {
@@ -89,7 +89,7 @@ test("the extension loader gives jiti host aliases it does not normalize again f
 	assert.ok(original);
 	try {
 		aliases["@bastani/atomic"] = join(root, "replacement.js");
-		assert.equal(jiti.resolve("@bastani/atomic"), join(root, "replacement.js"));
+		assert.equal(normalize(jiti.resolve("@bastani/atomic")), join(root, "replacement.js"));
 	} finally {
 		aliases["@bastani/atomic"] = original;
 	}
