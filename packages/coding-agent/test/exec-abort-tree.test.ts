@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -153,3 +154,169 @@ describe("a pi.exec command ended by Atomic ends with the processes it started",
 		},
 	);
 });
+
+/** A number no other process's command line is likely to hold, which a test's command passes to what it starts. */
+function uniqueMarker(): string {
+	return String(1_000_000 + Math.floor(Math.random() * 8_999_999));
+}
+
+/** How long a Windows test's processes run when nothing ends them: bounded, well past any test. */
+const WINDOWS_FIXTURE_SECONDS = 120;
+
+interface WindowsProcess {
+	readonly pid: number;
+	readonly parent: number;
+	readonly image: string;
+	readonly commandLine: string;
+}
+
+function windowsProcesses(): WindowsProcess[] {
+	const output = execFileSync(
+		"powershell.exe",
+		[
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			"Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress",
+		],
+		{ encoding: "utf8", timeout: GONE_MS * 4, maxBuffer: 64 * 1024 * 1024 },
+	);
+	const rows = JSON.parse(output) as {
+		ProcessId: number;
+		ParentProcessId: number;
+		Name: string | null;
+		CommandLine: string | null;
+	}[];
+	return rows.map((row) => ({
+		pid: row.ProcessId,
+		parent: row.ParentProcessId,
+		image: (row.Name ?? "").toLowerCase(),
+		commandLine: row.CommandLine ?? "",
+	}));
+}
+
+/**
+ * The `image` processes below this test process whose command line holds `marker`, once they run, recorded with when
+ * they started, so that a test and its cleanup only ever signal those processes.
+ */
+async function windowsProcessesStarted(image: string, marker: string): Promise<RecordedProcess[]> {
+	const deadline = Date.now() + GONE_MS * 4;
+	let found: number[] = [];
+	while (found.length === 0 && Date.now() <= deadline) {
+		const table = windowsProcesses();
+		const parents = new Map(table.map((row) => [row.pid, row.parent]));
+		const descendsFromTest = (pid: number): boolean => {
+			for (let current = parents.get(pid), hops = 0; current !== undefined && hops < 8; hops++) {
+				if (current === process.pid) return true;
+				current = parents.get(current);
+			}
+			return false;
+		};
+		found = table
+			.filter(
+				(row) =>
+					row.image === image && new RegExp(`\\b${marker}\\b`).test(row.commandLine) && descendsFromTest(row.pid),
+			)
+			.map((row) => row.pid);
+		if (found.length === 0) await new Promise((resolve) => setTimeout(resolve, POLL_MS * 10));
+	}
+	const recorded = await Promise.all(found.map((pid) => recordProcess(pid)));
+	processes.push(...recorded);
+	return recorded;
+}
+
+// What a Windows command starts leaves the job Node.js starts it in, which ended only the command itself; the processes
+// below it now end through handles of their own.
+describe.runIf(process.platform === "win32")(
+	"on Windows, a pi.exec command an abort ends takes its tree with it",
+	() => {
+		test("a ping cmd.exe started", async () => {
+			const marker = uniqueMarker();
+			const controller = new AbortController();
+			const running = execCommand(
+				process.env.ComSpec ?? "cmd.exe",
+				["/d", "/s", "/c", `ping -n ${WINDOWS_FIXTURE_SECONDS} -w ${marker} 127.0.0.1 > nul`],
+				process.cwd(),
+				{ signal: controller.signal },
+			);
+			const started = await windowsProcessesStarted("ping.exe", marker);
+			assert.ok(started.length > 0, "the command started nothing");
+
+			controller.abort();
+
+			assert.equal((await running).code, 143);
+			for (const ping of started)
+				assert.equal(await waitUntilGone(ping, GONE_MS), true, "the ping outlived the abort");
+		});
+
+		test("a program PowerShell's Start-Process started", async () => {
+			const file = pidFile();
+			const controller = new AbortController();
+			const running = execCommand(
+				"powershell.exe",
+				[
+					"-NoProfile",
+					"-NonInteractive",
+					"-Command",
+					`$p = Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${WINDOWS_FIXTURE_SECONDS}','127.0.0.1' -PassThru; Set-Content -NoNewline -Path '${file.replace(/'/g, "''")}' -Value $p.Id; Start-Sleep ${WINDOWS_FIXTURE_SECONDS}`,
+				],
+				process.cwd(),
+				{ signal: controller.signal },
+			);
+			const ping = await recordedFrom(file);
+
+			controller.abort();
+
+			assert.equal((await running).code, 143);
+			assert.equal(await waitUntilGone(ping, GONE_MS), true, "the program PowerShell started outlived the abort");
+		});
+
+		test("a program a Git Bash background job started", async () => {
+			const file = pidFile();
+			// The program records its own process ID, and ends by itself after the fixture's bound.
+			const program = `require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, ${WINDOWS_FIXTURE_SECONDS * 1000});`;
+			const controller = new AbortController();
+			const running = execCommand(
+				"bash",
+				["-c", '"$0" -e "$1" "$2" & wait', process.execPath.replace(/\\/g, "/"), program, file],
+				process.cwd(),
+				{ signal: controller.signal },
+			);
+			const started = await recordedFrom(file);
+
+			controller.abort();
+
+			assert.equal((await running).code, 143);
+			assert.equal(await waitUntilGone(started, GONE_MS), true, "the program Git Bash started outlived the abort");
+		});
+
+		test("an abort after the command ended ends nothing, so a process given its number is left alone", async () => {
+			const unrelated = await recordProcess(
+				Number(
+					execFileSync(
+						"powershell.exe",
+						[
+							"-NoProfile",
+							"-NonInteractive",
+							"-Command",
+							`(Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${WINDOWS_FIXTURE_SECONDS}','127.0.0.1' -PassThru).Id`,
+						],
+						{ encoding: "utf8", timeout: GONE_MS * 4 },
+					).trim(),
+				),
+			);
+			processes.push(unrelated);
+			const controller = new AbortController();
+			const result = await execCommand(
+				process.env.ComSpec ?? "cmd.exe",
+				["/d", "/s", "/c", "exit 0"],
+				process.cwd(),
+				{ signal: controller.signal },
+			);
+			controller.abort();
+
+			assert.equal(result.code, 0);
+			assert.equal(await waitUntilGone(unrelated, KILL_SEEN_MS), false, "an unrelated process was ended");
+		});
+	},
+);
