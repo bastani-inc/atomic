@@ -40,15 +40,16 @@ import { recordProcess, signalRecordedProcess, stillRuns } from "../helpers/reco
  */
 
 /**
- * A broker start, readiness, shutdown and multi-node opening on a local SQLite file; far above a healthy run. A start
- * compiles the broker, which has taken more than 15 s on a loaded Windows machine; other real-broker tests allow 30 s too.
+ * A broker start, readiness, shutdown and multi-node opening on a local SQLite file; far above a healthy run (1-3 s). A
+ * start compiles the broker from source, which has taken about 25 s on a Windows machine running the Intercom suite twice
+ * at once.
  */
-const BROKER_WAIT_MS = 30_000;
+const BROKER_WAIT_MS = 60_000;
 /**
  * Each scenario starts and stops real broker processes, up to two starts and a stop in one, and on Windows keeping a pid
  * starts PowerShell, which can take about 20 s on a loaded machine.
  */
-const BROKER_SCENARIO_TIMEOUT_MS = 120_000;
+const BROKER_SCENARIO_TIMEOUT_MS = 180_000;
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
