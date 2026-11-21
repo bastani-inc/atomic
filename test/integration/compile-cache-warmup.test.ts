@@ -42,28 +42,50 @@ interface SessionReport {
 	readonly uid: number | null;
 }
 
-/** Files under the compile cache directory, with when each was last written. */
+/** Files under the compile cache directory, with when each was last written; a file removed meanwhile is left out. */
 function cacheFiles(cacheBase: string): Map<string, number> {
 	const files = new Map<string, number>();
+	const record = (path: string) => {
+		try {
+			files.set(path, statSync(path).mtimeMs);
+		} catch (error) {
+			// A temporary file Node renamed into place after the listing.
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	};
 	if (!existsSync(cacheBase)) return files;
 	for (const entry of readdirSync(cacheBase, { withFileTypes: true })) {
 		const path = join(cacheBase, entry.name);
-		if (!entry.isDirectory()) files.set(path, statSync(path).mtimeMs);
-		else for (const name of readdirSync(path)) files.set(join(path, name), statSync(join(path, name)).mtimeMs);
+		if (!entry.isDirectory()) record(path);
+		else for (const name of readdirSync(path)) record(join(path, name));
 	}
 	return files;
 }
 
-/** Whether a helper holds the build lock: it keeps the file open in exclusive sharing mode while it runs. */
+/** How many entries the cache directories hold, by name only. */
+function cacheEntryCount(cacheBase: string): number {
+	if (!existsSync(cacheBase)) return 0;
+	return readdirSync(cacheBase, { withFileTypes: true })
+		.filter((entry) => entry.isDirectory())
+		.reduce((count, entry) => count + readdirSync(join(cacheBase, entry.name)).length, 0);
+}
+
+/** Whether a helper holds a build lock: it keeps the file open in exclusive sharing mode while it runs. */
 function warmupRunning(cacheBase: string): boolean {
-	const lock = [...cacheFiles(cacheBase).keys()].find((path) => path.endsWith(".lock"));
+	if (!existsSync(cacheBase)) return false;
+	const lock = readdirSync(cacheBase).find((name) => name.endsWith(".lock"));
 	if (!lock) return false;
 	try {
-		closeSync(openSync(lock, constants.O_RDWR | WINDOWS_EXCLUSIVE_OPEN_FLAG));
+		closeSync(openSync(join(cacheBase, lock), constants.O_RDWR | WINDOWS_EXCLUSIVE_OPEN_FLAG));
 		return false;
 	} catch {
 		return true;
 	}
+}
+
+/** Files added or rewritten between two listings. */
+function writtenBetween(before: Map<string, number>, after: Map<string, number>): string[] {
+	return [...after].filter(([path, mtime]) => before.get(path) !== mtime).map(([path]) => path);
 }
 
 /** The directory Node caches into for the session that sent `report`, as Atomic names its marker there. */
@@ -189,10 +211,13 @@ describe("the compile cache of an interactive session", () => {
 				}
 				assert.equal(first.cacheDir, null, "a session with a cold cache runs without it");
 				await waitForWarmCache(fixture.cacheBase, first);
-				const beforeQuit = Date.now();
+				const beforeQuit = cacheFiles(fixture.cacheBase);
 				await quit(program);
-				const writtenAtExit = [...cacheFiles(fixture.cacheBase).values()].filter((mtime) => mtime >= beforeQuit);
-				assert.deepEqual(writtenAtExit, [], "quitting wrote compile cache files");
+				assert.deepEqual(
+					writtenBetween(beforeQuit, cacheFiles(fixture.cacheBase)),
+					[],
+					"quitting wrote compile cache files",
+				);
 
 				program = fixture.start(["--no-approve"]);
 				await program.waitForScreen(
@@ -285,7 +310,7 @@ test.skipIf(!windows)(
 			const cacheBase = join(temp, "node-compile-cache");
 			const deadline = Date.now() + HELPER_WAIT_MS;
 			// Wait until it holds the build lock and has compiled part of the graph.
-			while (!warmupRunning(cacheBase) || cacheFiles(cacheBase).size < 100) {
+			while (!warmupRunning(cacheBase) || cacheEntryCount(cacheBase) < 100) {
 				if (helper.exitCode !== null || Date.now() >= deadline) {
 					throw new Error(`The helper did not start warming: exit ${helper.exitCode}`);
 				}
