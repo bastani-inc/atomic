@@ -52,9 +52,6 @@ afterEach(() => {
 });
 
 type TerminalLossThis = FatalThis & {
-	hostSignals: number;
-	terminalLost: boolean;
-	terminalLoss: PromiseWithResolvers<void>;
 	runtimeHost: object;
 	signalCleanupHandlers: Array<() => void>;
 	shutdown: (options?: { fromSignal?: boolean }) => Promise<void>;
@@ -109,9 +106,6 @@ test.runIf(process.platform !== "win32").each<Ending>(["uncaughtCrash", "emergen
 				// The terminal's window closed: a write to it fails. The session shuts down first, but the shell ends now.
 				const context: TerminalLossThis = {
 					isShuttingDown: false,
-					hostSignals: 0,
-					terminalLost: false,
-					terminalLoss: Promise.withResolvers<void>(),
 					runtimeHost: {},
 					signalCleanupHandlers: [],
 					shutdown: vi.fn(() => new Promise<void>(() => {})),

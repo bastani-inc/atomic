@@ -20,8 +20,6 @@ import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode
 
 type ShutdownThis = {
 	isShuttingDown: boolean;
-	terminalLost: boolean;
-	terminalLoss: PromiseWithResolvers<void>;
 	unregisterSignalHandlers: () => void;
 	runtimeHost: { dispose: (options?: { fromSignal?: boolean }) => Promise<void> };
 	ui: { terminal: { drainInput: (ms: number) => Promise<void> } };
@@ -75,8 +73,6 @@ function restoreStdoutIsTTY(): void {
 function createContext(order: string[], sessionManager = createSessionManager()): ShutdownThis {
 	return {
 		isShuttingDown: false,
-		terminalLost: false,
-		terminalLoss: Promise.withResolvers<void>(),
 		unregisterSignalHandlers: vi.fn(),
 		runtimeHost: {
 			dispose: vi.fn(async () => {
@@ -222,9 +218,6 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 
 type HandlerContext = {
 	isShuttingDown: boolean;
-	hostSignals: number;
-	terminalLost: boolean;
-	terminalLoss: PromiseWithResolvers<void>;
 	runtimeHost: object;
 	signalCleanupHandlers: Array<() => void>;
 	shutdown: (options?: { fromSignal?: boolean }) => Promise<void>;
@@ -249,9 +242,6 @@ test("unrelated uncaught EIO and ENOTTY restore the terminal and report a crash 
 	const stop = vi.fn();
 	const context: HandlerContext = {
 		isShuttingDown: false,
-		hostSignals: 0,
-		terminalLost: false,
-		terminalLoss: Promise.withResolvers<void>(),
 		runtimeHost: {},
 		signalCleanupHandlers: [],
 		shutdown: vi.fn(async () => {}),
@@ -290,20 +280,22 @@ test("unrelated uncaught EIO and ENOTTY restore the terminal and report a crash 
 
 test("dead stdin and uncaught terminal errors exit quietly while other errors still crash (#3429)", () => {
 	vi.useFakeTimers();
-	const context: HandlerContext = {
-		isShuttingDown: false,
-		hostSignals: 0,
-		terminalLost: false,
-		terminalLoss: Promise.withResolvers<void>(),
-		runtimeHost: {},
-		signalCleanupHandlers: [],
-		shutdown: vi.fn(async () => {}),
-		unregisterSignalHandlers: () => handlerPrototype.unregisterSignalHandlers.call(context),
-		handleTerminalLost: () => handlerPrototype.handleTerminalLost.call(context),
-		emergencyTerminalExit: () => handlerPrototype.emergencyTerminalExit.call(context),
-		uncaughtCrash: (error) => handlerPrototype.uncaughtCrash.call(context, error),
-		getCrashExtensionHint: () => undefined,
-		ui: { stop: vi.fn() },
+	const contexts: HandlerContext[] = [];
+	const createHandlerContext = (): HandlerContext => {
+		const context: HandlerContext = {
+			isShuttingDown: false,
+			runtimeHost: {},
+			signalCleanupHandlers: [],
+			shutdown: vi.fn(async () => {}),
+			unregisterSignalHandlers: () => handlerPrototype.unregisterSignalHandlers.call(context),
+			handleTerminalLost: () => handlerPrototype.handleTerminalLost.call(context),
+			emergencyTerminalExit: () => handlerPrototype.emergencyTerminalExit.call(context),
+			uncaughtCrash: (error) => handlerPrototype.uncaughtCrash.call(context, error),
+			getCrashExtensionHint: () => undefined,
+			ui: { stop: vi.fn() },
+		};
+		contexts.push(context);
+		return context;
 	};
 	const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
 		throw new Error(`exit ${code}`);
@@ -312,9 +304,7 @@ test("dead stdin and uncaught terminal errors exit quietly while other errors st
 	const before = process.stdin.listenerCount("error");
 	try {
 		for (const code of ["EIO", "ENOTTY"]) {
-			context.isShuttingDown = false;
-			context.terminalLost = false;
-			vi.mocked(context.shutdown).mockClear();
+			const context = createHandlerContext();
 			handlerPrototype.registerSignalHandlers.call(context);
 			assert.equal(process.stdin.listenerCount("error"), before + 1);
 			// The session shuts down as on SIGHUP first (#6104); one that never ends is cut short.
@@ -331,7 +321,7 @@ test("dead stdin and uncaught terminal errors exit quietly while other errors st
 			);
 			assert.equal(report.mock.calls.length, 0);
 		}
-		context.isShuttingDown = false;
+		const context = createHandlerContext();
 		handlerPrototype.registerSignalHandlers.call(context);
 		const error = Object.assign(new Error("read ECONNREFUSED"), { code: "ECONNREFUSED" });
 		assert.throws(
@@ -341,7 +331,7 @@ test("dead stdin and uncaught terminal errors exit quietly while other errors st
 		assert.throws(() => context.uncaughtCrash(error), /exit 1/);
 		assert.ok(report.mock.calls.length > 0);
 	} finally {
-		context.unregisterSignalHandlers();
+		for (const context of contexts) context.unregisterSignalHandlers();
 		exit.mockRestore();
 		report.mockRestore();
 		vi.useRealTimers();

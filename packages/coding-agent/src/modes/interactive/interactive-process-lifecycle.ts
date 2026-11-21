@@ -2,7 +2,7 @@ import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
 import { gracefullyStoppedEnginePids, terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
-import { ENGINE_SHUTDOWN_GRACE_MS } from "../rpc/rpc-client-process.ts";
+import { ENGINE_SHUTDOWN_GRACE_MS } from "../rpc/rpc-client-process.js";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
 import {
 	dequeueViewedAgent,
@@ -30,6 +30,29 @@ const TERMINAL_LOST_EXIT_CODE = 129;
  * engine's grace period, then its guardian's and its tree kill's windows.
  */
 const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
+
+/** How an interactive host is ending, beyond whether it has started to shut down. */
+interface HostEnding {
+	/** SIGTERM signals received. Only a repeated one ends every child at once. */
+	sigterms: number;
+	/** Set once the terminal is gone: the shutdown restores nothing and Atomic exits with status 129. */
+	terminalLost: boolean;
+	/** Settles when the terminal is gone, so a shutdown stops waiting on output that can no longer be written. */
+	readonly terminalLoss: Promise<void>;
+	readonly settleTerminalLoss: () => void;
+}
+
+const hostEndings = new WeakMap<InteractiveModeBase, HostEnding>();
+
+function hostEnding(mode: InteractiveModeBase): HostEnding {
+	let ending = hostEndings.get(mode);
+	if (!ending) {
+		const { promise, resolve } = Promise.withResolvers<void>();
+		ending = { sigterms: 0, terminalLost: false, terminalLoss: promise, settleTerminalLoss: () => resolve() };
+		hostEndings.set(mode, ending);
+	}
+	return ending;
+}
 
 /**
  * Ctrl+C, in order: text in the editor is cleared; otherwise running work stops at once (as Escape does); otherwise
@@ -128,33 +151,34 @@ InteractiveModeBase.prototype.shutdown = async function (
 	// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
 	// dispatch and re-sends the signal if only its own listeners remain.
 
+	const ending = hostEnding(this);
 	if (options?.fromSignal) {
 		await this.runtimeHost.dispose({ fromSignal: true });
 		// A terminal that is gone is not restored.
-		if (!this.terminalLost) {
+		if (!ending.terminalLost) {
 			this.themeController.disableAutoSync();
 			// Drain any in-flight Kitty key release events briefly before stopping.
 			// Keep this bounded so Ctrl+C exits do not feel stalled on Windows.
 			await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 			stopTerminal(this);
 		}
-		process.exit(this.terminalLost ? TERMINAL_LOST_EXIT_CODE : 0);
+		process.exit(ending.terminalLost ? TERMINAL_LOST_EXIT_CODE : 0);
 	}
 
 	// Drain any in-flight Kitty key release events briefly before stopping.
 	// Keep this bounded so Ctrl+C exits do not feel stalled on Windows.
 	this.themeController.disableAutoSync();
-	if (!this.terminalLost) {
+	if (!ending.terminalLost) {
 		await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 	}
 
 	// Output for a terminal that is gone is never written, so its end is not waited for.
-	await Promise.race([chatHistoryBuilt(this.chatContainer), this.terminalLoss.promise]);
+	await Promise.race([chatHistoryBuilt(this.chatContainer), ending.terminalLoss]);
 	this.writeExitOutputInSlices = true;
 	stopTerminal(this);
-	await Promise.race([this.exitOutputWritten, this.terminalLoss.promise]);
+	await Promise.race([this.exitOutputWritten, ending.terminalLoss]);
 	await this.runtimeHost.dispose();
-	if (this.terminalLost) process.exit(TERMINAL_LOST_EXIT_CODE);
+	if (ending.terminalLost) process.exit(TERMINAL_LOST_EXIT_CODE);
 	const resumeCommand = await formatResumeCommand(this.sessionManager);
 	if (resumeCommand) {
 		process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
@@ -179,9 +203,10 @@ function stopTerminal(mode: InteractiveModeBase): void {
  * session has shut down, or after {@link TERMINAL_LOST_SHUTDOWN_MS} at the latest.
  */
 InteractiveModeBase.prototype.handleTerminalLost = function (this: InteractiveModeBase): void {
-	if (this.terminalLost) return;
-	this.terminalLost = true;
-	this.terminalLoss.resolve();
+	const ending = hostEnding(this);
+	if (ending.terminalLost) return;
+	ending.terminalLost = true;
+	ending.settleTerminalLoss();
 	killTrackedDetachedChildren(gracefullyStoppedEnginePids(this.runtimeHost));
 	killSupervisedProcessTrees();
 	setTimeout(() => this.emergencyTerminalExit(), TERMINAL_LOST_SHUTDOWN_MS);
@@ -255,10 +280,12 @@ InteractiveModeBase.prototype.registerSignalHandlers = function (this: Interacti
 
 	for (const signal of signals) {
 		const handler = () => {
-			this.hostSignals += 1;
-			// The first signal leaves the interactive engine to the shutdown, which gives it the bounded window a quit
-			// gives it to run its extensions' shutdown. A repeated signal ends every child at once.
-			killTrackedDetachedChildren(this.hostSignals > 1 ? undefined : gracefullyStoppedEnginePids(this.runtimeHost));
+			const ending = hostEnding(this);
+			if (signal === "SIGTERM") ending.sigterms += 1;
+			// The interactive engine is left to the shutdown, which gives it the bounded window a quit gives it to run
+			// its extensions' shutdown. A closing terminal sends SIGHUP more than once, as the shell in it passes one on
+			// and the kernel sends another when that shell exits, so only a repeated SIGTERM ends every child at once.
+			killTrackedDetachedChildren(ending.sigterms > 1 ? undefined : gracefullyStoppedEnginePids(this.runtimeHost));
 			void this.shutdown({ fromSignal: true });
 		};
 		process.prependListener(signal, handler);
@@ -279,6 +306,13 @@ InteractiveModeBase.prototype.registerSignalHandlers = function (this: Interacti
 		stream.on("error", terminalErrorHandler);
 		this.signalCleanupHandlers.push(() => stream.off("error", terminalErrorHandler));
 	}
+	// A terminal's input ends only when the terminal is gone: a key never ends it in raw mode. It ends before the
+	// closing terminal's signals arrive, and a session with nothing else to do would otherwise end at once.
+	const terminalInputEndHandler = () => {
+		if (process.stdin.isTTY) this.handleTerminalLost();
+	};
+	process.stdin.on("end", terminalInputEndHandler);
+	this.signalCleanupHandlers.push(() => process.stdin.off("end", terminalInputEndHandler));
 
 	// Restore the terminal before the process dies on any uncaught throw.
 	// Without this, an unhandled exception from extension code (or anywhere
