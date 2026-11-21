@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setTimeout as realDelay } from "node:timers/promises";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -258,6 +259,19 @@ async function elapse(ms: number): Promise<void> {
 	}
 }
 
+/**
+ * Real time a join that has started may take to load Intercom and register on a loaded machine. The fake clock does not
+ * move meanwhile, so only a join already due by the clock can register.
+ */
+const JOIN_REAL_TIME_BUDGET_MS = 15_000;
+const JOIN_POLL_MS = 10;
+
+/** Waits in real time, with the fake clock where it is, until `registrations` holds `count` registrations. */
+async function untilRegistered(registrations: readonly Registration[], count: number): Promise<void> {
+	const deadline = performance.now() + JOIN_REAL_TIME_BUDGET_MS;
+	while (registrations.length < count && performance.now() < deadline) await realDelay(JOIN_POLL_MS);
+}
+
 describe("what the startup join leaves to the session", () => {
 	test("it saves the Intercom id it joined under, so a resumed session asks for the same id", async () => {
 		const session = intercomSession();
@@ -285,6 +299,7 @@ describe("what the startup join leaves to the session", () => {
 			assert.equal(session.registrations.length, 0, "no join while the folder's trust may still be undecided");
 			trusted = true;
 			await elapse(5_000);
+			await untilRegistered(session.registrations, 1);
 			assert.equal(session.registrations.length, 1);
 		} finally {
 			await session.shutdown(ctx);
@@ -306,6 +321,7 @@ describe("a session whose folder stays untrusted", () => {
 			assert.equal(idle.registrations.length, 0, "no other session can reach it before its folder is trusted");
 			await idle.firstTurn(idleCtx);
 			await elapse(5_000);
+			await untilRegistered(idle.registrations, 1);
 			assert.equal(idle.registrations.length, 1);
 		} finally {
 			await idle.shutdown(idleCtx);
@@ -317,6 +333,7 @@ describe("a session whose folder stays untrusted", () => {
 			await early.start(earlyCtx);
 			await early.firstTurn(earlyCtx);
 			await elapse(5_000);
+			await untilRegistered(early.registrations, 1);
 			assert.equal(
 				early.registrations.length,
 				1,
@@ -378,13 +395,15 @@ describe("quitting while the startup join is still loading Intercom", () => {
 describe("turning the startup join off", () => {
 	afterEach(() => vi.useRealTimers());
 
-	async function joinsWithin(ms: number): Promise<boolean> {
+	/** `waitForJoin`: give a join that the clock started real time to register (see {@link untilRegistered}). */
+	async function joinsWithin(ms: number, waitForJoin = false): Promise<boolean> {
 		useBackoffClock();
 		const session = intercomSession();
 		const ctx = sessionContext({ mode: "tui" }, []);
 		try {
 			await session.start(ctx);
 			await elapse(ms);
+			if (waitForJoin) await untilRegistered(session.registrations, 1);
 			return session.registrations.length > 0;
 		} finally {
 			await session.shutdown(ctx);
@@ -411,7 +430,7 @@ describe("turning the startup join off", () => {
 		intercomConfig.joinAtStartup = false;
 		assert.equal(await joinsWithin(10_000), false);
 		process.env[JOIN_ENV] = "1";
-		assert.equal(await joinsWithin(10_000), true);
+		assert.equal(await joinsWithin(10_000, true), true);
 	});
 });
 
@@ -458,6 +477,7 @@ describe("a startup join that cannot reach the broker", () => {
 			assert.equal(session.registrations.length, 0, "the join and its first retry met no broker");
 			brokerDown = false;
 			await elapse(3_000);
+			await untilRegistered(session.registrations, 1);
 			assert.equal(session.registrations.length, 1);
 		} finally {
 			await session.shutdown(ctx);

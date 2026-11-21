@@ -13,7 +13,6 @@ import type { BrokerMessage } from "../../packages/intercom/types.js";
 const GROUP = "registration-group";
 
 const BROKER_FRAME_TIMEOUT_MS = 5_000;
-const BROKER_STARTUP_TIMEOUT_MS = 10_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -27,6 +26,13 @@ delete process.env.PI_CODING_AGENT_DIR;
 const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
+/**
+ * The broker starts here as Atomic starts it, compiling its modules through jiti on a fresh worker, so it gets the wait
+ * Atomic gives a starting broker, which covers a cold start on a loaded machine.
+ */
+const { BROKER_READY_TIMEOUT_MS } = await import("../../packages/intercom/broker/startup-timeout.js");
+/** Structural: the broker's start, plus the spawn and the hook's own work. */
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_READY_TIMEOUT_MS + 10_000;
 
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 
@@ -48,8 +54,8 @@ async function waitForBroker(child: ChildProcess): Promise<void> {
 			finish(new Error(`Intercom broker exited before readiness (code=${String(code)}, signal=${String(signal)})`));
 		};
 		const timer = setTimeout(
-			() => finish(new Error(`Intercom broker did not become ready within ${BROKER_STARTUP_TIMEOUT_MS}ms`)),
-			BROKER_STARTUP_TIMEOUT_MS,
+			() => finish(new Error(`Intercom broker did not become ready within ${BROKER_READY_TIMEOUT_MS}ms`)),
+			BROKER_READY_TIMEOUT_MS,
 		);
 		child.stdout?.on("data", onStdout);
 		child.once("exit", onExit);
@@ -221,7 +227,7 @@ async function stopBroker(): Promise<void> {
 	});
 }
 
-beforeAll(startBroker);
+beforeAll(startBroker, BROKER_START_HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
 	await Promise.all([...rawClients].map((client) => client.close()));
