@@ -16,6 +16,7 @@ import { checkResumeStoragePreconditions, type ResumePreflightIo } from "./core/
 import {
 	type DirtyCheckoutChoice,
 	type DirtyCheckoutPrompt,
+	type PrepareSessionResumeOptions,
 	parentHistoryNotices,
 	prepareSessionResume,
 	type ResumeNotice,
@@ -607,6 +608,8 @@ export interface OpenCliSessionOptions {
 	readonly interactive?: boolean;
 	/** Shows the slow steps of opening and preparing the session; told `done()` once the session is ready. */
 	readonly progress?: StartupProgress;
+	/** Restored worktrees whose blueprint build waits for the session's own trust decision (#5693). */
+	readonly trustDecidedLater?: PrepareSessionResumeOptions["trustDecidedLater"];
 	/** Entries from which a history is announced before it loads. Default {@link EAGER_HISTORY_ENTRIES}. */
 	readonly eagerHistoryEntries?: number;
 	/**
@@ -693,6 +696,7 @@ export async function openCliSession(
 				return choose(prompt);
 			}),
 		io: options.io,
+		trustDecidedLater: options.trustDecidedLater,
 		blueprints: resuming || parsed.fork !== undefined ? options.blueprints : "skip",
 		onProgress: options.progress?.phase,
 	})

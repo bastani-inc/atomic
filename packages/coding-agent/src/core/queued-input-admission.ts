@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { asyncScope } from "./async-scope.ts";
 
 export type QueuedInputLane = "steer" | "followUp";
 
@@ -27,7 +27,7 @@ function createReservation(): Reservation {
 }
 
 const lanes = new WeakMap<object, Map<QueuedInputLane, Reservation[]>>();
-const insideInputHook = new AsyncLocalStorage<true>();
+const insideInputHook = asyncScope<true>();
 
 export const UNORDERED_ADMISSION: QueuedInputAdmission = {
 	waitForTurn: () => undefined,

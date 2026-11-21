@@ -619,6 +619,10 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		}
 		const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
 		this._runSystemPromptOptions = result.systemPromptOptions;
+		if (this._resumeBudgetCheckpoint) {
+			await this._compactBeforeResumedPrompt(updateMessage, messages);
+			assertCurrent();
+		}
 		if (updateMessage) messages.unshift(updateMessage);
 	} catch (error) {
 		if (preparingRun) this._isPreparingRun = false;

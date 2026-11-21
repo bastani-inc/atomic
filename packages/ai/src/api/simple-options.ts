@@ -10,7 +10,8 @@ import type {
 	ThinkingLevel,
 	TranscriptContext,
 } from "../types.ts";
-import { estimateContextTokens } from "../utils/estimate.ts";
+import { estimateContextTokens, estimateToolsTokens } from "../utils/estimate.ts";
+import { getCurrentTools } from "../utils/transcript.ts";
 
 const CONTEXT_SAFETY_TOKENS = 4096;
 // OpenRouter counts the input with its own tokenizer and rejects input + max_tokens above the
@@ -25,7 +26,10 @@ const MIN_MAX_TOKENS = 1;
 /** Fit maxTokens into the context window, leaving room for the input being counted higher than estimated. */
 export function clampMaxTokensToContext(model: Model<Api>, context: TranscriptContext, maxTokens: number): number {
 	if (model.contextWindow <= 0) return Math.max(MIN_MAX_TOKENS, maxTokens);
-	const input = estimateContextTokens(context).tokens;
+	return clampMaxTokensToInput(model, estimateContextTokens(context).tokens, maxTokens);
+}
+
+function clampMaxTokensToInput(model: Model<Api>, input: number, maxTokens: number): number {
 	const margin = Math.max(CONTEXT_SAFETY_TOKENS, Math.ceil(input * CONTEXT_SAFETY_RATIO));
 	let room = model.contextWindow - input - margin;
 	if (room < MIN_OUTPUT_WITH_RATIO_MARGIN) {
@@ -81,6 +85,40 @@ export function buildBaseOptions(
 	};
 }
 
+/**
+ * The context estimate, counting tool changes after the last reply as the request sends them. Anthropic models with
+ * mid-conversation tool changes send each change after the conversation, as estimated. Other requests declare the
+ * current tools at the top instead: a removal only shortens that list, and a definition the last reply's request
+ * already declared byte for byte is not new there. Every other definition counts in full.
+ */
+function estimateSentInputTokens(model: Model<Api>, context: TranscriptContext): number {
+	const estimate = estimateContextTokens(context);
+	const messages = context.messages;
+	const compat = model.compat as { supportsMidConvoSystemMessages?: boolean; supportsMidConvoToolChanges?: boolean };
+	if (
+		model.api === "anthropic-messages" &&
+		compat?.supportsMidConvoSystemMessages === true &&
+		compat.supportsMidConvoToolChanges === true &&
+		getCurrentTools(messages.slice(0, 1)).length > 0
+	)
+		return estimate.tokens;
+	const start = estimate.lastUsageIndex === null ? 0 : estimate.lastUsageIndex + 1;
+	const changes = messages
+		.slice(start)
+		.filter((message) => message.role === "system" && (message.toolsAdded?.length || message.toolsRemoved?.length));
+	if (changes.length === 0) return estimate.tokens;
+	const declared = new Map(getCurrentTools(messages.slice(0, start)).map((tool) => [tool.name, JSON.stringify(tool)]));
+	let unsent = 0;
+	for (const message of changes) {
+		if (message.role !== "system") continue;
+		const added = message.toolsAdded ?? [];
+		const changed = added.filter((tool) => declared.get(tool.name) !== JSON.stringify(tool));
+		unsent +=
+			estimateToolsTokens(message.toolsRemoved) + estimateToolsTokens(added) - estimateToolsTokens(changed);
+	}
+	return estimate.tokens - unsent;
+}
+
 /** Tokens always left for the answer when a thinking budget shares the response ceiling. */
 export const MIN_ANSWER_TOKENS = 1024;
 
@@ -122,12 +160,36 @@ export function fitThinkingBudget(
 	maxTokens: number,
 	thinkingBudget: number,
 ): { maxTokens: number; thinkingBudget: number } | undefined {
-	const clamped = clampMaxTokensToContext(model, context, maxTokens);
+	const clamped =
+		model.contextWindow <= 0
+			? Math.max(MIN_MAX_TOKENS, maxTokens)
+			: clampMaxTokensToInput(model, estimateSentInputTokens(model, context), maxTokens);
 	// A budget that fits is sent as configured, even one below the minimum, which some compatible endpoints accept.
 	if (thinkingBudget <= clamped - MIN_ANSWER_TOKENS) return { maxTokens: clamped, thinkingBudget };
 	const budget = clamped - MIN_ANSWER_TOKENS;
 	if (budget < MIN_THINKING_BUDGET) return undefined;
 	return { maxTokens: clamped, thinkingBudget: budget };
+}
+
+/**
+ * The thinking budget a budget-based request at `reasoning` asks for, and the budget it sends once fitted under the
+ * context window as the Anthropic and Bedrock stream functions fit it: undefined when it goes without thinking.
+ */
+export function fittedThinkingBudget(
+	model: Model<Api>,
+	context: TranscriptContext,
+	options: { reasoning: ThinkingLevel; thinkingBudgets?: ThinkingBudgets; maxTokens?: number },
+): { requested: number; sent: number | undefined } {
+	const adjusted = adjustMaxTokensForThinking(
+		clampMaxTokensToContext(model, context, options.maxTokens ?? model.maxTokens),
+		model.maxTokens,
+		options.reasoning,
+		options.thinkingBudgets,
+	);
+	return {
+		requested: adjusted.thinkingBudget,
+		sent: fitThinkingBudget(model, context, adjusted.maxTokens, adjusted.thinkingBudget)?.thinkingBudget,
+	};
 }
 
 export function adjustMaxTokensForThinking(

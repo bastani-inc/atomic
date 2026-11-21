@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { type AsyncScope, asyncScope } from "../async-scope.ts";
 import type { Extension, ExtensionRuntime } from "./types.ts";
 
 type Callback = (...args: never[]) => unknown;
@@ -80,8 +80,8 @@ interface Invocation {
 }
 // Built/source loaders can coexist. This is invocation context, not a session cache.
 const key = Symbol.for("atomic.extension-invocation.v1");
-const host = globalThis as typeof globalThis & { [key]?: AsyncLocalStorage<Invocation> };
-host[key] ??= new AsyncLocalStorage<Invocation>();
+const host = globalThis as typeof globalThis & { [key]?: AsyncScope<Invocation> };
+host[key] ??= asyncScope<Invocation>();
 const invocation = host[key];
 
 export function resolveInvocationRuntime(runtime: ExtensionRuntime): ExtensionRuntime {

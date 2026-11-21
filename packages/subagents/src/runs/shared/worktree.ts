@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -15,6 +14,7 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "@bastani/atomic";
+import { asyncScope } from "../../shared/async-scope.js";
 import { pathExists } from "../../shared/path-exists.js";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
@@ -237,8 +237,8 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
  * checkout, a setup hook or a user's fetch, which run to completion however long they take.
  */
 const STALLED_CHECK_GIT_TIMEOUT_MS = 10_000;
-const stalledCheck = new AsyncLocalStorage<() => void>();
-const finishing = new AsyncLocalStorage<boolean>();
+const stalledCheck = asyncScope<() => void>();
+const finishing = asyncScope<boolean>();
 
 /** A filter invoked by a child’s directory cleanup must not wait for that child's terminal notification. */
 export function withFinishingWorktree<T>(work: () => T): T {
