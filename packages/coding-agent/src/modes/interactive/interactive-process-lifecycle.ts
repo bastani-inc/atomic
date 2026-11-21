@@ -30,6 +30,15 @@ const TERMINAL_LOST_EXIT_CODE = 129;
  * engine's grace period, then its guardian's and its tree kill's windows.
  */
 const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
+/** Exit status once the Windows console is closed: STATUS_CONTROL_C_EXIT, which Windows gives a process it ends then. */
+const CONSOLE_CLOSED_EXIT_CODE = 0xc000013a;
+/** How long Windows lets a process run after its console was closed before it ends the process itself. */
+const CONSOLE_CLOSE_TIMEOUT_MS = 5_000;
+/**
+ * Once the Windows console is closed, the longest the session's shutdown may take: Atomic ends its children and exits
+ * then, leaving the rest of Windows's timeout for its own exit.
+ */
+const CONSOLE_CLOSED_SHUTDOWN_MS = CONSOLE_CLOSE_TIMEOUT_MS - 1_000;
 
 /** How an interactive host is ending, beyond whether it has started to shut down. */
 interface HostEnding {
@@ -37,6 +46,8 @@ interface HostEnding {
 	sigterms: number;
 	/** Set once the terminal is gone: the shutdown restores nothing and Atomic exits with status 129. */
 	terminalLost: boolean;
+	/** Set once the Windows console is closed: Atomic exits with {@link CONSOLE_CLOSED_EXIT_CODE} instead of 129. */
+	consoleClosed: boolean;
 	/** Settles when the terminal is gone, so a shutdown stops waiting on output that can no longer be written. */
 	readonly terminalLoss: Promise<void>;
 	readonly settleTerminalLoss: () => void;
@@ -48,10 +59,42 @@ function hostEnding(mode: InteractiveModeBase): HostEnding {
 	let ending = hostEndings.get(mode);
 	if (!ending) {
 		const { promise, resolve } = Promise.withResolvers<void>();
-		ending = { sigterms: 0, terminalLost: false, terminalLoss: promise, settleTerminalLoss: () => resolve() };
+		ending = {
+			sigterms: 0,
+			terminalLost: false,
+			consoleClosed: false,
+			terminalLoss: promise,
+			settleTerminalLoss: () => resolve(),
+		};
 		hostEndings.set(mode, ending);
 	}
 	return ending;
+}
+
+/** The exit status of a host whose terminal is gone. */
+function terminalLostExitCode(ending: HostEnding): number {
+	return ending.consoleClosed ? CONSOLE_CLOSED_EXIT_CODE : TERMINAL_LOST_EXIT_CODE;
+}
+
+/**
+ * The Windows console was closed. Windows reports that as SIGHUP, and nothing else, then ends the process
+ * {@link CONSOLE_CLOSE_TIMEOUT_MS} later. The session shuts down as when its terminal is gone, within a bound that
+ * ends before Windows's, and Atomic exits with the status Windows gives a process its console's close ended.
+ */
+function consoleClosed(mode: InteractiveModeBase): void {
+	const ending = hostEnding(mode);
+	if (ending.consoleClosed) return;
+	ending.consoleClosed = true;
+	setTimeout(() => mode.emergencyTerminalExit(), CONSOLE_CLOSED_SHUTDOWN_MS);
+	mode.handleTerminalLost();
+}
+
+/** On Windows, shut the session down when its console is closed, until the handlers are unregistered. */
+function listenForConsoleClose(mode: InteractiveModeBase): void {
+	if (process.platform !== "win32") return;
+	const handler = () => consoleClosed(mode);
+	process.prependListener("SIGHUP", handler);
+	mode.signalCleanupHandlers.push(() => process.off("SIGHUP", handler));
 }
 
 /**
@@ -170,7 +213,7 @@ InteractiveModeBase.prototype.shutdown = async function (
 			await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 			stopTerminal(this);
 		}
-		process.exit(ending.terminalLost ? TERMINAL_LOST_EXIT_CODE : 0);
+		process.exit(ending.terminalLost ? terminalLostExitCode(ending) : 0);
 	}
 
 	// Drain any in-flight Kitty key release events briefly before stopping.
@@ -184,10 +227,15 @@ InteractiveModeBase.prototype.shutdown = async function (
 	await Promise.race([chatHistoryBuilt(this.chatContainer), ending.terminalLoss]);
 	this.writeExitOutputInSlices = true;
 	stopTerminal(this);
+	// Stopping the screen unregistered the handlers. A console closed while the session shuts down still ends it
+	// within Windows's timeout and with its status.
+	listenForConsoleClose(this);
 	await Promise.race([this.exitOutputWritten, ending.terminalLoss]);
 	await this.runtimeHost.dispose();
-	if (ending.terminalLost) process.exit(TERMINAL_LOST_EXIT_CODE);
+	if (ending.terminalLost) process.exit(terminalLostExitCode(ending));
 	const resumeCommand = await formatResumeCommand(this.sessionManager);
+	// The terminal can be lost while the hint is being looked up; then it is not written.
+	if (ending.terminalLost) process.exit(terminalLostExitCode(ending));
 	if (resumeCommand) {
 		process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 	}
@@ -229,7 +277,7 @@ InteractiveModeBase.prototype.emergencyTerminalExit = function (this: Interactiv
 	killSupervisedProcessTrees();
 	// The terminal is gone. Do not run normal shutdown because TUI and
 	// extension cleanup can write restore sequences and re-trigger EIO.
-	process.exit(TERMINAL_LOST_EXIT_CODE);
+	process.exit(terminalLostExitCode(hostEnding(this)));
 };
 
 InteractiveModeBase.prototype.uncaughtCrash = function (this: InteractiveModeBase, error: Error): never {
@@ -322,6 +370,8 @@ InteractiveModeBase.prototype.registerSignalHandlers = function (this: Interacti
 	};
 	process.stdin.on("end", terminalInputEndHandler);
 	this.signalCleanupHandlers.push(() => process.stdin.off("end", terminalInputEndHandler));
+
+	listenForConsoleClose(this);
 
 	// Restore the terminal before the process dies on any uncaught throw.
 	// Without this, an unhandled exception from extension code (or anywhere

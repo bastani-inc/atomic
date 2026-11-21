@@ -91,7 +91,10 @@ setTimeout(() => process.exit(0), ${CHILD_LIFETIME_MS});
 	return { client, record, started };
 }
 
-async function stopOnWindows(client: RpcClient, options?: { graceful?: boolean }): Promise<number> {
+async function stopOnWindows(
+	client: RpcClient,
+	options?: { graceful?: boolean; hostSignaled?: boolean },
+): Promise<number> {
 	Object.defineProperty(process, "platform", { ...platform, value: "win32" });
 	const startedAt = performance.now();
 	try {
@@ -153,6 +156,29 @@ describe("RpcClient graceful engine stop on Windows", () => {
 		while (!existsSync(started)) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
 
 		const elapsedMs = await stopOnWindows(client, { graceful: true });
+
+		await assert.rejects(starting);
+		assert.equal(readRecord(record), "", "the engine was ended without being asked to shut down");
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
+	});
+
+	test("a stop because the console was closed lets a ready engine run its shutdown before it exits", async () => {
+		const { client, record } = startEngine("shuts-down");
+		await client.start();
+
+		const elapsedMs = await stopOnWindows(client, { hostSignaled: true });
+
+		assert.equal(readRecord(record), "shutdown started\nshutdown finished\n");
+		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
+	});
+
+	test("a stop because the console was closed ends an engine that is not ready yet at once", async () => {
+		const { client, record, started } = startEngine("never-ready");
+		const starting = client.start();
+		starting.catch(() => {});
+		while (!existsSync(started)) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+
+		const elapsedMs = await stopOnWindows(client, { hostSignaled: true });
 
 		await assert.rejects(starting);
 		assert.equal(readRecord(record), "", "the engine was ended without being asked to shut down");

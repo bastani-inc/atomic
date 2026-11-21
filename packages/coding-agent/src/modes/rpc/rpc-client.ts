@@ -306,9 +306,10 @@ export class RpcClient extends RpcClientApi {
 	 * on every platform. Without it a Windows engine is ended at once, because Windows
 	 * has no signal a process can handle for this.
 	 *
-	 * With `hostSignaled`, the engine is stopped because its host was itself signalled or lost its terminal. On Linux
-	 * and macOS it is then asked with SIGHUP rather than SIGTERM, and once its shutdown has run it ends its whole
-	 * process group, as a host signal ending that group at once always did.
+	 * With `hostSignaled`, the engine is stopped because its host was itself signalled, lost its terminal or, on
+	 * Windows, had its console closed. A ready engine then runs its own shutdown too. On Linux and macOS it is asked
+	 * with SIGHUP rather than SIGTERM, and once its shutdown has run it ends its whole process group, as a host signal
+	 * ending that group at once always did.
 	 */
 	stop(options?: { graceful?: boolean; hostSignaled?: boolean }): Promise<void> {
 		this.restartRevision += 1;
@@ -368,7 +369,7 @@ export class RpcClient extends RpcClientApi {
 			await terminateRpcClientProcess(
 				child,
 				terminateTree,
-				graceful && engineReady,
+				(graceful || hostSignaled) && engineReady,
 				shutdownComplete.promise,
 				hostSignaled,
 			);
