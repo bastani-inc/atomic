@@ -68,6 +68,7 @@ import {
 	createWorktrees,
 	type WorktreeSetup,
 } from "../../packages/subagents/src/runs/shared/worktree.js";
+import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 
 const PROCESS_START_WAIT_MS = 20_000;
 
@@ -92,10 +93,9 @@ async function waitForTermination(): Promise<{ pid: number; events: string[] }> 
 	return terminatedTrees()[0]!;
 }
 
-function kill(pid: number): void {
-	try {
-		process.kill(pid, "SIGKILL");
-	} catch {}
+/** #6125: the process the fake job was asked to end, recorded while it runs (the fake ends nothing). */
+async function terminatedProcess(): Promise<RecordedProcess> {
+	return recordProcess((await waitForTermination()).pid);
 }
 
 // The command goes through the configured POSIX shell, which `exec` replaces, so the contained root is the command.
@@ -120,7 +120,7 @@ test("a blueprint step stopped by its timeout and then aborted has its process t
 	containment.endsOnTerminate = false;
 	const directory = realpathSync(mkdtempSync(join(tmpdir(), "process-tree-once-step-")));
 	const log = await openStepLog(join(directory, "step.log"));
-	let rootPid = 0;
+	let root: RecordedProcess | undefined;
 	try {
 		const controller = new AbortController();
 		const reason = new Error("resume cancelled");
@@ -129,16 +129,16 @@ test("a blueprint step stopped by its timeout and then aborted has its process t
 			log,
 			{ timeoutMs: 100, signal: controller.signal },
 		);
-		rootPid = (await waitForTermination()).pid;
+		root = await terminatedProcess();
 		controller.abort(reason);
-		kill(rootPid);
+		await signalRecordedProcess(root);
 		await assert.rejects(pending, (error: unknown) => error === reason);
 		assert.deepEqual(
 			terminatedTrees().map((tree) => tree.events),
 			[["contain", "terminate", "close"]],
 		);
 	} finally {
-		if (rootPid > 0) kill(rootPid);
+		if (root !== undefined) await signalRecordedProcess(root);
 		await log.close();
 		rmSync(directory, { recursive: true, force: true });
 	}
@@ -163,7 +163,7 @@ test.skipIf(process.platform === "win32")(
 		writeFileSync(hook, "#!/bin/sh\nhead -c 67108865 /dev/zero\nexec sleep 60\n");
 		chmodSync(hook, 0o755);
 		let setup: WorktreeSetup | undefined;
-		let hookPid = 0;
+		let hookProcess: RecordedProcess | undefined;
 		containment.enabled = true;
 		// The fake job ends nothing here, so the hook still runs when its timeout comes.
 		containment.endsOnTerminate = false;
@@ -178,10 +178,10 @@ test.skipIf(process.platform === "win32")(
 				},
 				() => {},
 			);
-			hookPid = (await waitForTermination()).pid;
+			hookProcess = await terminatedProcess();
 			await vi.advanceTimersByTimeAsync(30_000);
 			vi.useRealTimers();
-			kill(hookPid);
+			await signalRecordedProcess(hookProcess);
 			await assert.rejects(creating, /ENOBUFS/);
 			assert.deepEqual(
 				terminatedTrees().map((tree) => tree.events),
@@ -189,7 +189,7 @@ test.skipIf(process.platform === "win32")(
 			);
 		} finally {
 			vi.useRealTimers();
-			if (hookPid > 0) kill(hookPid);
+			if (hookProcess !== undefined) await signalRecordedProcess(hookProcess);
 			if (setup) await cleanupWorktrees(setup);
 			rmSync(root, { recursive: true, force: true });
 		}

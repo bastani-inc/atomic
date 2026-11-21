@@ -319,6 +319,8 @@ test("a watch that fails while the writer waits leaves it polling instead (#4316
 	while (warnings.length === 0) await turn();
 	// The wait in progress still ends at its 250 ms recheck; from then on the writer retries every 20 ms.
 	await vi.advanceTimersByTimeAsync(250);
+	// The recheck's own file and lock checks run in real time: once it found the lock still held, the writer waits again.
+	await untilWaiting();
 	holder.exec("COMMIT");
 	await vi.advanceTimersByTimeAsync(20);
 	await write;

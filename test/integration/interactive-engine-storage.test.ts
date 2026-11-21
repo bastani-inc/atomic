@@ -20,6 +20,7 @@ import { formatResumeCommand } from "../../packages/coding-agent/src/modes/inter
 import { buildInteractiveEngineArgs } from "../../packages/coding-agent/src/modes/interactive-engine/engine-args.js";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.js";
 import { getShellConfig } from "../../packages/coding-agent/src/utils/shell.js";
+import { isGone, type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 
 // A real built CLI child loads all startup resources and serves RPC over pipes.
 const BUILT_ENGINE_RPC_TIMEOUT_MS = 90_000;
@@ -58,40 +59,31 @@ function recordEnginePid(directory: string): { preload: string; pidFile: string 
 	return { preload, pidFile };
 }
 
-function isRunning(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "ESRCH";
-	}
+/**
+ * The processes `recordEnginePid` captured (the launcher and the engine it relaunched), recorded while the session
+ * answers, so they run (#6125). Each session of a test starts its own engine; never read this one's pids for the next.
+ */
+async function recordEngines(pidFile: string): Promise<RecordedProcess[]> {
+	const pids = readFileSync(pidFile, "utf8").split("\n").filter(Boolean).map(Number);
+	rmSync(pidFile, { force: true });
+	return Promise.all(pids.map(recordProcess));
 }
 
 /**
- * Resolves once every process `recordEnginePid` captured (the launcher and the engine it relaunched) has exited and
- * released its working directory.
+ * Resolves once every recorded engine process has exited and released its working directory. Past the bound each one
+ * still running is ended, only while its pid still names it, and the wait fails.
  */
-async function waitForEngineExit(pidFile: string): Promise<void> {
-	let pids: number[];
-	try {
-		pids = readFileSync(pidFile, "utf8").split("\n").filter(Boolean).map(Number);
-	} catch {
-		// The engine never started, so nothing holds the project directory.
-		return;
-	}
-	// Each session of a test starts its own engine; never read this one's pids for the next.
-	rmSync(pidFile, { force: true });
+async function waitForEngineExit(engines: readonly RecordedProcess[]): Promise<void> {
 	const deadline = performance.now() + ENGINE_EXIT_TIMEOUT_MS;
-	for (let running = pids.filter(isRunning); running.length > 0; running = running.filter(isRunning)) {
+	for (;;) {
+		const running: RecordedProcess[] = [];
+		for (const engine of engines) if (!(await isGone(engine))) running.push(engine);
+		if (running.length === 0) return;
 		if (performance.now() > deadline) {
-			for (const pid of running) {
-				try {
-					process.kill(pid, "SIGKILL");
-				} catch {
-					// It exited just now; the deadline still passed.
-				}
-			}
-			throw new Error(`engine ${running.join(", ")} still running ${ENGINE_EXIT_TIMEOUT_MS} ms after client.stop()`);
+			for (const engine of running) await signalRecordedProcess(engine);
+			throw new Error(
+				`engine ${running.map(({ pid }) => pid).join(", ")} still running ${ENGINE_EXIT_TIMEOUT_MS} ms after client.stop()`,
+			);
 		}
 		await sleep(ENGINE_EXIT_POLL_MS);
 	}
@@ -224,9 +216,11 @@ test(
 					],
 					env: { ATOMIC_CODING_AGENT_DIR: agentDir, ANTHROPIC_API_KEY: "test-only-no-requests" },
 				});
+				let engines: RecordedProcess[] = [];
 				try {
 					await client.start();
 					const state = await client.getState();
+					engines = await recordEngines(pidFile);
 					assert.equal(state.sessionId, id);
 					assert.equal(state.sessionName, "conversation from A");
 					assert.equal(
@@ -235,7 +229,7 @@ test(
 					);
 				} finally {
 					await client.stop();
-					await waitForEngineExit(pidFile);
+					await waitForEngineExit(engines);
 				}
 			}
 		} finally {
@@ -293,14 +287,16 @@ test.runIf(process.platform === "win32")(
 					runtimeArgs: ["/d", "/c", script],
 					env: { ATOMIC_CODING_AGENT_DIR: agentDir, ANTHROPIC_API_KEY: "test-only-no-requests" },
 				});
+				let engines: RecordedProcess[] = [];
 				try {
 					await client.start();
 					const state = await client.getState();
+					engines = await recordEngines(pidFile);
 					assert.equal(state.sessionId, id);
 					assert.equal(state.sessionName, "conversation from A");
 				} finally {
 					await client.stop();
-					await waitForEngineExit(pidFile);
+					await waitForEngineExit(engines);
 				}
 			}
 		} finally {

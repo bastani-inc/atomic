@@ -2,8 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `skill-creator`'s description optimization runs Atomic: `run_eval.py`, `run_loop.py` and `improve_description.py` start `atomic -p` with your Atomic models and credentials, and never start `claude`. Each trigger query loads the candidate description as a temporary skill, with only the read tool and no extensions or MCP servers, so the model has no tool that runs commands or edits files, and nothing is written into your project. A query counts as triggered when the model's first tool call reads that skill's `SKILL.md`. `--model` takes an Atomic model pattern such as `provider/id` ([#5625](https://github.com/bastani-inc/atomic/issues/5625)).
+
 ### Fixed
 
+- Stopping `skill-creator`'s description scripts with Ctrl+C, `kill` or by closing the terminal (on Windows Ctrl+C, Ctrl+Break or closing the console) stops every evaluation process (each `atomic` they started and whatever that started), removes their temporary files and exits with that signal's status; the report left open in your browser is not touched. Ctrl+Z, `fg` and `bg` pause and continue the evaluation together with the script. Importing the scripts leaves your signal handlers alone, and `scripts.atomic_cli.cancel()` stops an evaluation in progress. Queries now run on Windows, and the review viewer picks a free port instead of stopping the program that listens on port 3117 ([#5625](https://github.com/bastani-inc/atomic/issues/5625)).
+- Subagent result rows, status lists, launch cards and `pause`, `quit` and `resume` results use the agent panel's marks: a running subagent shows a still grey `◯` instead of `∀` or a pulsing dot, a finished one a green `●`, and an interrupted, killed, paused or quit one a red `◯`. A subagent waiting for an answer shows `◆` and one paused with Esc `‖`. A foreground subagent that continued on its own reads `Continued` with the running mark instead of `Stopped` ([#6122](https://github.com/bastani-inc/atomic/issues/6122)).
 - A subagent woken while it waited no longer gets "You were released while you waited…" queued behind the turn it continues, nor a request just to read it: the results that wake it continue its turn, and messages sent to it arrive as their own. It is prompted with that text only when nothing else starts its turn.
 - A woken or resumed subagent keeps its original task as its label in heartbeats, completion notices, `/tasks` and the agent panel, whatever it continues with.
 

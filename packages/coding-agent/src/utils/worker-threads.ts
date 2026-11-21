@@ -1,16 +1,24 @@
 import { Worker, type WorkerOptions } from "node:worker_threads";
 
 /**
- * The `execArgv` for a worker thread that evaluates Atomic's own CommonJS source (`new Worker(source, { eval: true })`).
+ * The `execArgv` for a worker thread that evaluates Atomic's own source (`new Worker(source, { eval: true })`).
  *
- * None of the process's command-line flags: a host started with `--input-type=module` would make that source a module,
- * which fails at its first `require`, and the host's `--import`/`--require` preloads would run again in every worker
- * (#6079). Under Node's permission model a worker is restricted only by the flags it starts with, so there it keeps the
+ * None of the process's command-line flags: the host's `--import`/`--require` preloads would run again in every worker,
+ * and its `--input-type=module` would make the source a module (#6079). Under Node's permission model a worker is restricted only by the flags it starts with, so there it keeps the
  * process's flags (`undefined` inherits them) and stays as restricted as the process.
  */
 export function evalWorkerExecArgv(): string[] | undefined {
 	return process.permission === undefined ? [] : undefined;
 }
+
+/**
+ * The first line of a worker's evaluated source, which then loads Node's built-in modules with `builtin(id)` instead of
+ * `require(id)`. Node evaluates the source as an ES module, which has no `require`, when `--input-type=module` reaches
+ * the worker: from `NODE_OPTIONS`, which Node parses again for every worker whatever its `execArgv`, or from the
+ * process's own flags under the permission model (#6110). Elsewhere `builtin` is that `require`.
+ */
+export const EVAL_WORKER_BUILTIN =
+	'const builtin = typeof require === "function" ? require : (id) => process.getBuiltinModule(id);';
 
 /** Whether the process was started with `--input-type`, on its command line or in `NODE_OPTIONS`. */
 function startedWithInputType(): boolean {

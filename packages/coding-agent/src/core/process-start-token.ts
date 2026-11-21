@@ -35,6 +35,19 @@ export async function processStartTokenAsync(pid: number): Promise<string | unde
 	return readProcessStartToken(pid);
 }
 
+/**
+ * When Windows process `pid` was created, as the decimal count of 100-nanosecond intervals since 1601-01-01 UTC, read
+ * now: never an answer remembered from an earlier read, which may describe an earlier process given the same id (#6133).
+ * Read by the native module, or where that is not available by a bounded PowerShell query. Undefined where it cannot be
+ * read: on platforms other than Windows, once the process is gone, or when the query fails.
+ */
+export async function readProcessCreationTime(pid: number): Promise<string | undefined> {
+	if (process.platform !== "win32") return undefined;
+	const native = nativeCreationTime();
+	if (native !== null) return nativeCreation(native, pid);
+	return (await queryCreationTime(pid)).created;
+}
+
 export function processStartTokenForSynchronousTakeover(pid: number): string | undefined {
 	if (process.platform !== "win32") return procStartToken(pid);
 	const native = nativeCreationTime();

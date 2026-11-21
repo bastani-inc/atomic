@@ -7,7 +7,11 @@ import {
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 } from "../../packages/intercom/broker/multinode-state-store.js";
-import { TWO_BROKER_STORAGE_PREFIX, TwoBrokerHarness } from "../helpers/intercom-two-broker-harness.js";
+import {
+	TWO_BROKER_STORAGE_PREFIX,
+	type TwoBrokerClient,
+	TwoBrokerHarness,
+} from "../helpers/intercom-two-broker-harness.js";
 import { sleep } from "../helpers/runtime.js";
 
 /**
@@ -39,6 +43,20 @@ const PENDING_ASKS_TABLE = `${TWO_BROKER_STORAGE_PREFIX}intercom_pending_asks`;
 
 let harness: TwoBrokerHarness;
 
+/**
+ * An asker reaches a recipient on the other broker once that broker has recorded the recipient in the shared storage,
+ * which can come after the recipient's own registration was answered.
+ */
+async function untilListed(asker: TwoBrokerClient, recipient: TwoBrokerClient): Promise<void> {
+	await vi.waitFor(async () => {
+		const listed = await asker.client.listSessions(asker.group);
+		assert.ok(
+			listed.some((session) => session.id === recipient.sessionId),
+			"the asker's broker lists the recipient",
+		);
+	}, WAIT);
+}
+
 beforeAll(async () => {
 	harness = await TwoBrokerHarness.start({
 		databaseCallDelayMs: DATABASE_CALL_DELAY_MS,
@@ -54,6 +72,7 @@ test(
 		const group = `crash-${randomUUID().slice(0, 8)}`;
 		const asker = await harness.connect("a", "asker", { group });
 		const recipient = await harness.connect("b", "recipient", { group });
+		await untilListed(asker, recipient);
 		const askId = randomUUID();
 		const sent = await asker.client.send(recipient.sessionId, {
 			messageId: askId,
@@ -96,6 +115,7 @@ test(
 		const group = `crash-${randomUUID().slice(0, 8)}`;
 		const asker = await harness.connect("a", "asker", { group });
 		const recipient = await harness.connect("b", "recipient", { group });
+		await untilListed(asker, recipient);
 		const askId = randomUUID();
 		const sent = await asker.client.send(recipient.sessionId, {
 			messageId: askId,
@@ -146,6 +166,7 @@ for (const killAfterMs of [300, 800]) {
 			const group = `crash-${randomUUID().slice(0, 8)}`;
 			const asker = await harness.connect("a", "asker", { group });
 			const recipient = await harness.connect("b", "recipient", { group });
+			await untilListed(asker, recipient);
 			const askId = randomUUID();
 			const sent = await asker.client.send(recipient.sessionId, {
 				messageId: askId,

@@ -164,7 +164,7 @@ describe("shell task results are friendly (#3828)", () => {
 					assert.equal((outcome.result.details as BashToolDetails).exitCode, 0);
 					assert.equal((outcome.result.details as BashToolDetails).observation?.kind, "settled");
 					const lines = row(tool, args, outcome);
-					assert.deepEqual(lines, [`Wait(${id})`, "✓ completed · exit 0", "hello"]);
+					assert.deepEqual(lines, [`Wait(${id})`, "● completed · exit 0", "hello"]);
 					for (const line of lines) assert.doesNotMatch(line, FORBIDDEN_IN_UI);
 				} finally {
 					await owner.close("session-close");
@@ -209,7 +209,7 @@ describe("shell task results are friendly (#3828)", () => {
 					assert.equal((outcome.result.details as BashToolDetails).observation?.kind, "yielded");
 					assert.deepEqual(row(tool, args, outcome), [
 						`Wait(${id})`,
-						"● still running · showing output so far",
+						"⧗ still running · showing output so far",
 						"compiling",
 					]);
 					await release(owner, id);
@@ -233,7 +233,7 @@ describe("shell task results are friendly (#3828)", () => {
 					waitText(outcome.result as ShellResult),
 					`started\n\n\nTask ${id} was cancelled (stop requested).`,
 				);
-				assert.deepEqual(row(tool, args, outcome), [`Wait(${id})`, "◼ cancelled", "started"]);
+				assert.deepEqual(row(tool, args, outcome), [`Wait(${id})`, "◯ cancelled", "started"]);
 			} finally {
 				await owner.close("session-close");
 			}
@@ -312,7 +312,7 @@ describe("shell task results are friendly (#3828)", () => {
 					`(no output)\n\nTask ${id} completed with exit code 0.`,
 				);
 				const plain = row(tool, args, outcome);
-				assert.deepEqual(plain, [`Wait(${id})`, "✓ completed · exit 0", "(no output)"]);
+				assert.deepEqual(plain, [`Wait(${id})`, "● completed · exit 0", "(no output)"]);
 				const raw = row(tool, args, outcome, { raw: true });
 				assert.ok(raw.some((line) => line.includes(theme.fg("muted", "(no output)"))));
 			} finally {
@@ -348,7 +348,7 @@ describe("shell task results are friendly (#3828)", () => {
 				// Wide enough for the path alone, too narrow for the path beside its label.
 				const width = fullOutputPath.length + 6;
 				const plain = row(tool, args, outcome, { width });
-				assert.equal(plain[1], "✓ completed · exit 0");
+				assert.equal(plain[1], "● completed · exit 0");
 				assert.ok(plain.some((line) => line.includes("earlier lines")));
 				const truncation = plain.findIndex((line) => line.startsWith("Truncated:"));
 				assert.ok(truncation !== -1, plain.join("\n"));
@@ -359,7 +359,7 @@ describe("shell task results are friendly (#3828)", () => {
 				assert.ok(raw[truncation + 1]!.includes(theme.getFgAnsi("dim")), JSON.stringify(raw[truncation + 1]));
 				assert.doesNotMatch(plain.join("\n"), /\[Full output|\[Output truncated/);
 				const expanded = row(tool, args, outcome, { expanded: true });
-				assert.equal(expanded[1], "✓ completed · exit 0");
+				assert.equal(expanded[1], "● completed · exit 0");
 				assert.ok(!expanded.some((line) => line.includes("earlier lines")));
 				assert.ok(expanded.includes("3500"));
 			} finally {
@@ -402,11 +402,11 @@ describe("shell task results are friendly (#3828)", () => {
 						component.dispose();
 					}
 				};
-				assert.ok(statusLine(done, ok).includes(theme.fg("success", "✓ completed")));
-				assert.ok(statusLine(failed, bad).includes(theme.fg("error", "✗ exited 3")));
+				assert.ok(statusLine(done, ok).includes(`${theme.fg("success", "●")} ${theme.fg("success", "completed")}`));
+				assert.ok(statusLine(failed, bad).includes(`${theme.fg("error", "✗")} ${theme.fg("error", "exited 3")}`));
 				vi.stubEnv("NO_COLOR", "1");
 				for (const [outcome, id, text] of [
-					[done, ok, "✓ completed · exit 0"],
+					[done, ok, "● completed · exit 0"],
 					[failed, bad, "✗ exited 3"],
 				] as const) {
 					const line = statusLine(outcome, id);
@@ -509,13 +509,13 @@ describe("kill results are friendly (#3828)", () => {
 			"cancellation requested",
 			receipt({ kind: "cancelling", cause: "user" }, "cancellation-requested", { kind: "active" }),
 			(id) => `Cancellation requested for task ${id}; it has not stopped yet. Cleanup: active.`,
-			["● stopping · cancellation requested"],
+			["◼ stopping · cancellation requested"],
 		],
 		[
 			"already completed",
 			receipt({ kind: "settled", result: { kind: "completed", output, exitCode: 0 } }, "already-settled"),
 			(id) => `Task ${id} had already finished; nothing to stop. It completed with exit code 0. Cleanup: reaped.`,
-			["✓ already completed · exit 0"],
+			["● already completed · exit 0"],
 		],
 		[
 			"already exited",
@@ -527,7 +527,7 @@ describe("kill results are friendly (#3828)", () => {
 			"stopped",
 			receipt({ kind: "settled", result: { kind: "cancelled", cause: "user", output } }, "cancellation-requested"),
 			(id) => `Task ${id} was cancelled (stop requested). Cleanup: reaped.`,
-			["○ cancelled"],
+			["◯ cancelled"],
 		],
 	];
 
@@ -562,7 +562,7 @@ describe("kill results are friendly (#3828)", () => {
 			);
 			assert.deepEqual(row(kill, { id }, outcome), [
 				`kill ${id}`,
-				"● stopping · cancellation requested",
+				"◼ stopping · cancellation requested",
 				"✗ cleanup failed · process-group:77: cleanup denied",
 			]);
 		},

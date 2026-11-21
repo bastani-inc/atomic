@@ -230,8 +230,11 @@ interface CookieDatabaseResult {
 	rows: Array<Record<string, unknown>> | null;
 }
 
+// Node evaluates this source as an ES module, which has no require, when --input-type=module reaches the worker (from
+// NODE_OPTIONS, or the process's flags under the permission model) (#6110); `builtin` loads Node's modules either way.
 const COOKIE_SQLITE_WORKER_SOURCE = `
-const { parentPort, workerData } = require("node:worker_threads");
+const builtin = typeof require === "function" ? require : (id) => process.getBuiltinModule(id);
+const { parentPort, workerData } = builtin("node:worker_threads");
 
 const origEmitWarning = process.emitWarning.bind(process);
 process.emitWarning = (warning, ...args) => {
@@ -282,7 +285,7 @@ function queryCookieRows(sqlite, dbPath, where, opts) {
 
 let sqlite = null;
 try {
-	sqlite = require("node:sqlite");
+	sqlite = builtin("node:sqlite");
 } catch {
 	sqlite = null;
 }
@@ -336,9 +339,9 @@ function readCookieDatabase(dbPath: string, hosts: string[]): Promise<CookieData
 		try {
 			const worker = new Worker(COOKIE_SQLITE_WORKER_SOURCE, {
 				eval: true,
-				// None of the process's flags: an `--input-type=module` would make this CommonJS source a module, and the
-				// process's preloads would run again in the worker. Under Node's permission model a worker is restricted
-				// only by the flags it starts with, so there it keeps them.
+				// None of the process's flags: the process's preloads would run again in the worker, and its
+				// `--input-type=module` would make the source a module. Under Node's permission model a worker is
+				// restricted only by the flags it starts with, so there it keeps them.
 				execArgv: process.permission === undefined ? [] : undefined,
 				workerData: { dbPath, where },
 			});
