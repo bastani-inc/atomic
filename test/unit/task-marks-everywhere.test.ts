@@ -342,6 +342,29 @@ test("subagent result rows and status lists read with the agent panel's marks (#
 	assert.ok(continued?.includes("<warning>Continued</>"), continued);
 });
 
+test("pause, quit and resume results mark each child with the agent panel's mark (#6122)", () => {
+	const children = (["running", "finishing", "paused", "quit"] as const).map((state, index) => ({
+		childId: `run:${index}`,
+		runId: "run",
+		index,
+		agent: `worker${index}`,
+		state,
+	}));
+	const rows = renderSubagentToolResult(
+		{
+			content: [{ type: "text", text: "" }],
+			details: { mode: "management", results: [], runControl: { action: "resume", children } } as unknown as Details,
+		},
+		{ expanded: false, isPartial: false },
+		theme,
+		{ toolCallId: "run-control", state: {}, invalidate() {} } as never,
+	).render(120);
+	markOf("resumed", rows, /Resumed · worker0/, RUNNING);
+	markOf("finishing its worktree", rows, /Finishing worktree cleanup · worker1/, RUNNING);
+	markOf("paused until resumed", rows, /Paused · worker2/, STOPPED);
+	markOf("quit until resumed", rows, /Quit \(resumable\) · worker3/, STOPPED);
+});
+
 test("a foreground subagent's card keeps its clock while it runs, and one that continued on its own reads running without one (#6122)", () => {
 	const child = (change: Partial<Details["results"][number]>) =>
 		({
