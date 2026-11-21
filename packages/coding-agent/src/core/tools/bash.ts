@@ -221,7 +221,7 @@ export function createLocalBashOperations(options?: {
 					if (!message.includes("Native PTY") && !message.includes("PtySession")) throw error;
 				}
 			}
-			const shellConfig = await getShellConfigAsync(options?.shellPath, cwd);
+			const shellConfig = await getShellConfigAsync(options?.shellPath);
 			try {
 				const cwdStat = await fsStat(cwd);
 				if (!cwdStat.isDirectory()) throw new Error(`Working directory is not a directory: ${cwd}`);

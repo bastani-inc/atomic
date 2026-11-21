@@ -151,12 +151,12 @@ async function startStep(
 	if (runsInPowerShell(context.shell, context.platform)) {
 		const evaluated = await evaluateEnvrc(context.envrcPath, context.environment);
 		return runLoggedProcess(
-			powerShellProcess(step, context, await getPowerShellConfigAsync(context.cwd), evaluated),
+			powerShellProcess(step, context, await getPowerShellConfigAsync(), evaluated),
 			log,
 			options,
 		);
 	}
-	return runLoggedProcess(bashProcess(step, context, await getShellConfigAsync(undefined, context.cwd)), log, options);
+	return runLoggedProcess(bashProcess(step, context, await getShellConfigAsync()), log, options);
 }
 
 function describeExit(exit: ProcessExit, timeoutMs: number): string {

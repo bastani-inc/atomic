@@ -1,11 +1,11 @@
 import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import { lstat, stat } from "node:fs/promises";
-import { delimiter, join, posix, win32 } from "node:path";
+import { delimiter, join, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
 import { type ChildProcess, spawn } from "child_process";
 import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
-import { findHelperExecutable, findHelperExecutableAsync, type HelperExecutableOptions } from "./helper-command.ts";
+import { findHelperExecutable, findHelperExecutableAsync } from "./helper-command.ts";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
 import { EVAL_WORKER_BUILTIN, evalWorkerExecArgv } from "./worker-threads.js";
@@ -84,77 +84,57 @@ interface ExecutableLookup {
 
 const executablePathLookups = new Map<string, ExecutableLookup>();
 
-/**
- * A shell found before is reused while a lookup in its directory alone still finds it there: it is still a program, and
- * its directory is still neither working directory, however either is spelled now.
- */
-function rechecked(found: string, workingDirectory: string | undefined): [string, HelperExecutableOptions] {
-	const path = process.platform === "win32" ? win32 : posix;
-	return [path.basename(found), { ...lookupOptions(workingDirectory), env: { PATH: path.dirname(found) } }];
+function isReusableLookup(lookup: ExecutableLookup): boolean {
+	return lookup.path === null
+		? Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS
+		: executableCandidateExists(lookup.path);
 }
 
-function isReusableLookup(lookup: ExecutableLookup, workingDirectory: string | undefined): boolean {
-	if (lookup.path === null) return Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS;
-	return findHelperExecutable(...rechecked(lookup.path, workingDirectory)) === lookup.path;
+async function isReusableLookupAsync(lookup: ExecutableLookup): Promise<boolean> {
+	return lookup.path === null
+		? Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS
+		: executableCandidateExistsAsync(lookup.path);
 }
 
-async function isReusableLookupAsync(lookup: ExecutableLookup, workingDirectory: string | undefined): Promise<boolean> {
-	if (lookup.path === null) return Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS;
-	return (await findHelperExecutableAsync(...rechecked(lookup.path, workingDirectory))) === lookup.path;
-}
-
-/**
- * A lookup holds for one name, PATH, working directory (none when it was removed) and the directory the shell runs a
- * command in, neither of which it ever finds a shell in.
- */
-function lookupKey(executable: string, workingDirectory: string | undefined): string {
-	let cwd = "";
-	try {
-		cwd = process.cwd();
-	} catch {}
-	return `${executable}\0${process.env.PATH ?? ""}\0${cwd}\0${workingDirectory ?? ""}`;
+/** A lookup holds for one name and PATH: it reads only PATH's absolute directories. */
+function lookupKey(executable: string): string {
+	return `${executable}\0${process.env.PATH ?? ""}`;
 }
 
 /**
  * Find an executable on PATH (cross-platform), memoized per PATH value.
  * A missing executable is looked up again once its result is 30 seconds old.
  */
-function findExecutableOnPath(executable: string, workingDirectory?: string): string | null {
-	const key = lookupKey(executable, workingDirectory);
+function findExecutableOnPath(executable: string): string | null {
+	const key = lookupKey(executable);
 	const cached = executablePathLookups.get(key);
-	if (cached && isReusableLookup(cached, workingDirectory)) return cached.path;
-	const path = lookupExecutableOnPath(executable, workingDirectory);
+	if (cached && isReusableLookup(cached)) return cached.path;
+	const path = lookupExecutableOnPath(executable);
 	executablePathLookups.set(key, { path, checkedAt: Date.now() });
 	return path;
 }
 
-async function findExecutableOnPathAsync(executable: string, workingDirectory?: string): Promise<string | null> {
-	const key = lookupKey(executable, workingDirectory);
+async function findExecutableOnPathAsync(executable: string): Promise<string | null> {
+	const key = lookupKey(executable);
 	const cached = executablePathLookups.get(key);
-	if (cached && (await isReusableLookupAsync(cached, workingDirectory))) return cached.path;
-	const path = await lookupExecutableOnPathAsync(executable, workingDirectory);
+	if (cached && (await isReusableLookupAsync(cached))) return cached.path;
+	const path = await lookupExecutableOnPathAsync(executable);
 	executablePathLookups.set(key, { path, checkedAt: Date.now() });
 	return path;
 }
 
 /**
- * The shell's absolute path in PATH's absolute directories, never in the project folder or this process's working
- * directory: a shell found there would run whatever a project put in its place.
+ * The shell's absolute path in PATH's absolute directories, never through Windows' search of the working directory or
+ * an empty or relative PATH entry: a shell found there would run whatever a project put in its place.
  */
-function lookupOptions(workingDirectory: string | undefined): HelperExecutableOptions {
-	return {
-		exact: true,
-		platform: process.platform,
-		...(workingDirectory === undefined ? {} : { cwd: workingDirectory }),
-	};
+const LOOKUP_OPTIONS = { exact: true } as const;
+
+function lookupExecutableOnPath(executable: string): string | null {
+	return findHelperExecutable(executable, { ...LOOKUP_OPTIONS, platform: process.platform }) ?? null;
 }
 
-function lookupExecutableOnPath(executable: string, workingDirectory?: string): string | null {
-	return findHelperExecutable(executable, lookupOptions(workingDirectory)) ?? null;
-}
-
-async function lookupExecutableOnPathAsync(executable: string, workingDirectory?: string): Promise<string | null> {
-	return (await findHelperExecutableAsync(executable, lookupOptions(workingDirectory))) ?? null;
+async function lookupExecutableOnPathAsync(executable: string): Promise<string | null> {
+	return (await findHelperExecutableAsync(executable, { ...LOOKUP_OPTIONS, platform: process.platform })) ?? null;
 }
 
 /** A configured shell given by name alone is looked up as any shell is; a path is taken as written. */
@@ -168,15 +148,13 @@ function isShellName(shellPath: string): boolean {
  * 1. User-specified shellPath
  * 2. On Windows: Git Bash in known locations, then bash on PATH
  * 3. On Unix: /bin/bash, then bash on PATH, then fallback to sh
- * A shell on PATH comes only from its absolute directories: never Atomic's working directory, nor `workingDirectory`,
- * where the shell runs commands.
+ * A shell on PATH comes only from its absolute directories, never from Windows' search of the working directory or an
+ * empty or relative PATH entry.
  */
-export function getShellConfig(customShellPath?: string, workingDirectory?: string): ShellConfig {
+export function getShellConfig(customShellPath?: string): ShellConfig {
 	// 1. Check user-specified shell path
 	if (customShellPath) {
-		const shell = isShellName(customShellPath)
-			? findExecutableOnPath(customShellPath, workingDirectory)
-			: customShellPath;
+		const shell = isShellName(customShellPath) ? findExecutableOnPath(customShellPath) : customShellPath;
 		if (shell !== null && executableCandidateExists(shell)) {
 			return getBashShellConfig(shell);
 		}
@@ -202,7 +180,7 @@ export function getShellConfig(customShellPath?: string, workingDirectory?: stri
 		}
 
 		// 3. Fallback: search bash.exe on PATH (Cygwin, MSYS2, WSL, etc.)
-		const bashOnPath = findExecutableOnPath("bash.exe", workingDirectory);
+		const bashOnPath = findExecutableOnPath("bash.exe");
 		if (bashOnPath) {
 			return getBashShellConfig(bashOnPath);
 		}
@@ -221,19 +199,17 @@ export function getShellConfig(customShellPath?: string, workingDirectory?: stri
 		return getBashShellConfig("/bin/bash");
 	}
 
-	const bashOnPath = findExecutableOnPath("bash", workingDirectory);
+	const bashOnPath = findExecutableOnPath("bash");
 	if (bashOnPath) {
 		return getBashShellConfig(bashOnPath);
 	}
 
-	return { shell: findExecutableOnPath("sh", workingDirectory) ?? "/bin/sh", args: ["-c"] };
+	return { shell: findExecutableOnPath("sh") ?? "/bin/sh", args: ["-c"] };
 }
 
-export async function getShellConfigAsync(customShellPath?: string, workingDirectory?: string): Promise<ShellConfig> {
+export async function getShellConfigAsync(customShellPath?: string): Promise<ShellConfig> {
 	if (customShellPath) {
-		const shell = isShellName(customShellPath)
-			? await findExecutableOnPathAsync(customShellPath, workingDirectory)
-			: customShellPath;
+		const shell = isShellName(customShellPath) ? await findExecutableOnPathAsync(customShellPath) : customShellPath;
 		if (shell !== null && (await executableCandidateExistsAsync(shell))) {
 			return getBashShellConfig(shell);
 		}
@@ -257,7 +233,7 @@ export async function getShellConfigAsync(customShellPath?: string, workingDirec
 			}
 		}
 
-		const bashOnPath = await findExecutableOnPathAsync("bash.exe", workingDirectory);
+		const bashOnPath = await findExecutableOnPathAsync("bash.exe");
 		if (bashOnPath) {
 			return getBashShellConfig(bashOnPath);
 		}
@@ -275,19 +251,19 @@ export async function getShellConfigAsync(customShellPath?: string, workingDirec
 		return getBashShellConfig("/bin/bash");
 	}
 
-	const bashOnPath = await findExecutableOnPathAsync("bash", workingDirectory);
+	const bashOnPath = await findExecutableOnPathAsync("bash");
 	if (bashOnPath) {
 		return getBashShellConfig(bashOnPath);
 	}
 
-	return { shell: (await findExecutableOnPathAsync("sh", workingDirectory)) ?? "/bin/sh", args: ["-c"] };
+	return { shell: (await findExecutableOnPathAsync("sh")) ?? "/bin/sh", args: ["-c"] };
 }
 
 export const POWERSHELL_ARGS = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"] as const;
 
-export function getPowerShellConfig(workingDirectory?: string): ShellConfig {
+export function getPowerShellConfig(): ShellConfig {
 	if (process.platform !== "win32") throw new Error("The powershell tool is only available on Windows.");
-	let shell = findExecutableOnPath("pwsh.exe", workingDirectory);
+	let shell = findExecutableOnPath("pwsh.exe");
 	// Installation directories may be on any drive and need not be on PATH.
 	const programFiles = process.env.ProgramFiles;
 	if (!shell && programFiles) {
@@ -295,7 +271,7 @@ export function getPowerShellConfig(workingDirectory?: string): ShellConfig {
 		if (executableCandidateExists(pwsh7)) shell = pwsh7;
 	}
 
-	shell ??= findExecutableOnPath("powershell.exe", workingDirectory);
+	shell ??= findExecutableOnPath("powershell.exe");
 	const systemRoot = process.env.SystemRoot;
 	if (!shell && systemRoot) {
 		const windowsPowerShell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -306,16 +282,16 @@ export function getPowerShellConfig(workingDirectory?: string): ShellConfig {
 	return { shell, args: [...POWERSHELL_ARGS] };
 }
 
-export async function getPowerShellConfigAsync(workingDirectory?: string): Promise<ShellConfig> {
+export async function getPowerShellConfigAsync(): Promise<ShellConfig> {
 	if (process.platform !== "win32") throw new Error("The powershell tool is only available on Windows.");
-	let shell = await findExecutableOnPathAsync("pwsh.exe", workingDirectory);
+	let shell = await findExecutableOnPathAsync("pwsh.exe");
 	const programFiles = process.env.ProgramFiles;
 	if (!shell && programFiles) {
 		const pwsh7 = win32.join(programFiles, "PowerShell", "7", "pwsh.exe");
 		if (await executableCandidateExistsAsync(pwsh7)) shell = pwsh7;
 	}
 
-	shell ??= await findExecutableOnPathAsync("powershell.exe", workingDirectory);
+	shell ??= await findExecutableOnPathAsync("powershell.exe");
 	const systemRoot = process.env.SystemRoot;
 	if (!shell && systemRoot) {
 		const windowsPowerShell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -326,19 +302,18 @@ export async function getPowerShellConfigAsync(workingDirectory?: string): Promi
 	return { shell, args: [...POWERSHELL_ARGS] };
 }
 
-/** Whether the powershell tool finds PowerShell for commands that run in `workingDirectory`. */
-export function isPowerShellAvailable(workingDirectory?: string): boolean {
+export function isPowerShellAvailable(): boolean {
 	try {
-		getPowerShellConfig(workingDirectory);
+		getPowerShellConfig();
 		return true;
 	} catch {
 		return false;
 	}
 }
 
-export async function isPowerShellAvailableAsync(workingDirectory?: string): Promise<boolean> {
+export async function isPowerShellAvailableAsync(): Promise<boolean> {
 	try {
-		await getPowerShellConfigAsync(workingDirectory);
+		await getPowerShellConfigAsync();
 		return true;
 	} catch {
 		return false;

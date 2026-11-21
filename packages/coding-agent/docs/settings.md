@@ -312,7 +312,7 @@ Explicit JSON values for `terminal.hyperlinks`, `terminal.images`, and `terminal
 
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
-| `shellPath` | string | - | Custom Bash path; a name without a directory, such as `bash`, is looked up on `PATH`, never in the project folder (does not change PowerShell used on native Windows `!`/`!!`) |
+| `shellPath` | string | - | Custom Bash path; a name without a directory, such as `bash`, is looked up in the absolute directories on `PATH` (does not change PowerShell used on native Windows `!`/`!!`) |
 | `shellCommandPrefix` | string | - | Prefix prepended to shell commands (PowerShell syntax on native Windows interactive shells; Bash syntax elsewhere, e.g. `"shopt -s expand_aliases"`) |
 | `search.contextBefore` | number | `1` | Context lines before each `search` match |
 | `search.contextAfter` | number | `3` | Context lines after each `search` match |

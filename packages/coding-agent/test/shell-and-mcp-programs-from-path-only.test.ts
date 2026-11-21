@@ -110,31 +110,6 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 		}
 	});
 
-	test.skipIf(windows)(
-		"a shell found before is not taken again once the folder its commands run in is the shell's directory",
-		async () => {
-			hiddenPaths.add("/bin/bash");
-			const tools = join(root, "tools");
-			const elsewhere = join(root, "elsewhere");
-			mkdirSync(tools);
-			mkdirSync(elsewhere);
-			const bash = plantProgram(tools, "bash");
-			// The folder commands run in, under one name that comes to mean the shell's directory.
-			const folder = join(root, "folder");
-			symlinkSync(elsewhere, folder);
-			vi.stubEnv("PATH", tools);
-			const { getShellConfig, getShellConfigAsync } = await import("../src/utils/shell.ts");
-			assert.equal(getShellConfig(undefined, folder).shell, bash);
-			assert.equal((await getShellConfigAsync(undefined, folder)).shell, bash);
-
-			rmSync(folder);
-			symlinkSync(tools, folder);
-
-			assert.equal(getShellConfig(undefined, folder).shell, "/bin/sh");
-			assert.equal((await getShellConfigAsync(undefined, folder)).shell, "/bin/sh");
-		},
-	);
-
 	test.skipIf(!windows)(
 		"the bash and PowerShell tools never take a bash or PowerShell from the project folder",
 		async () => {
