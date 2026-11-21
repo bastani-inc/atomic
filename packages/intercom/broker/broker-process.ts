@@ -19,10 +19,11 @@ export interface BrokerProcess {
 	 * Windows: whether that process wrote `broker.pid`, which names it. `yes`: it was created before `broker.pid` was last
 	 * written, so it held the pid then and is the broker that wrote it (a process keeps its pid for life, and two
 	 * processes never hold one pid at once). `no`: it was created well after that write, so the pid was given to a later
-	 * process. `unknown` in between (the two times are as precise as the clock and the volume record them), elsewhere, or
-	 * where either could not be read. Both assume the system clock was not set back in between.
+	 * process. Both assume the system clock was not set back in between. `unavailable`: the volume keeps write times too
+	 * coarsely to tell (FAT, exFAT), and maybe in local time, so the pid is taken as the broker's, as before. `unknown`
+	 * elsewhere, where either time could not be read, or when they are too close to tell.
 	 */
-	readonly wroteBrokerPid: "yes" | "no" | "unknown";
+	readonly wroteBrokerPid: "yes" | "no" | "unknown" | "unavailable";
 }
 
 /** Windows file times count 100 ns intervals from 1601-01-01 UTC; Node reports times from 1970-01-01 UTC. */
@@ -33,15 +34,24 @@ function windowsCreationNs(created: string): bigint {
 }
 
 /**
- * How much earlier than the write a volume may record a file's write time: FAT records it to 2 s, rounded down. NTFS
- * records it to 100 ns.
+ * The step of the write times of a volume too coarse to compare with a creation time. NTFS and ReFS keep write times in
+ * UTC to 100 ns. FAT keeps them in local time, rounded up to 2 s, so after the clocks change they read an hour off;
+ * exFAT keeps them to 10 ms. A write time that is a whole number of these steps comes from such a volume (on NTFS, one
+ * write in 100,000 does too, and is then treated the same way).
  */
-const COARSEST_WRITE_TIME_NS = 2_000_000_000n;
+const COARSE_WRITE_TIME_NS = 10_000_000n;
+
+/**
+ * How much later than the write a process must have been created to be taken for a later process given the pid, so
+ * that a small correction of the system clock does not make the broker that wrote it look like one.
+ */
+const LATER_PROCESS_MARGIN_NS = 2_000_000_000n;
 
 /** Whether a process created at `createdNs` wrote a file last written at `writtenNs` (see {@link BrokerProcess}). */
-export function wroteFileAt(createdNs: bigint, writtenNs: bigint): "yes" | "no" | "unknown" {
+export function wroteFileAt(createdNs: bigint, writtenNs: bigint): "yes" | "no" | "unknown" | "unavailable" {
+	if (writtenNs % COARSE_WRITE_TIME_NS === 0n) return "unavailable";
 	if (createdNs < writtenNs) return "yes";
-	return createdNs >= writtenNs + COARSEST_WRITE_TIME_NS ? "no" : "unknown";
+	return createdNs >= writtenNs + LATER_PROCESS_MARGIN_NS ? "no" : "unknown";
 }
 
 /**
@@ -76,9 +86,9 @@ export function identifyBrokerProcess(pid: number, pidPath: string): Promise<Bro
 	const reading = readProcessStart(pid);
 	const record = process.platform === "win32" ? readBrokerPidRecord(pidPath) : undefined;
 	return reading.then((started) => {
-		if (started === undefined || record === undefined || record.pid !== pid) {
-			return { pid, started, wroteBrokerPid: "unknown" };
-		}
+		if (record === undefined || record.pid !== pid) return { pid, started, wroteBrokerPid: "unknown" };
+		if (record.writtenNs % COARSE_WRITE_TIME_NS === 0n) return { pid, started, wroteBrokerPid: "unavailable" };
+		if (started === undefined) return { pid, started, wroteBrokerPid: "unknown" };
 		return { pid, started, wroteBrokerPid: wroteFileAt(windowsCreationNs(started), record.writtenNs) };
 	});
 }
@@ -223,16 +233,26 @@ export async function stopWindowsProcess(
 const UNANSWERED_BROKER_STOP_WAIT_MS = 5_000;
 
 /**
- * End a broker that did not acknowledge its shutdown request, only while its pid still names it: on Windows through a
- * handle to the process created at `broker.started`, and only if that process wrote `broker.pid`; on Linux with SIGTERM
- * while the pid's start token is still `broker.started`, read just before the signal; on macOS with SIGTERM to the pid.
- * Only the broker itself is ended, never a process it started.
+ * End a broker that did not acknowledge its shutdown request, only while its pid still names it, and only the broker
+ * itself, never a process it started:
+ * - Windows: through a handle to the process created at `broker.started`, if that process wrote `broker.pid`. Where the
+ *   volume's write times cannot tell (`unavailable`), the pid is taken as the broker's, as before, but it is still ended
+ *   only through a handle to the process it named when the broker was found; by the pid alone only when that process's
+ *   creation time could not be read.
+ * - Linux: with SIGTERM while the pid's start token is still `broker.started`, read just before the signal.
+ * - macOS: with SIGTERM to the pid, as before.
  */
 export async function endUnansweredBroker(broker: BrokerProcess): Promise<void> {
 	if (process.platform === "win32") {
-		if (broker.wroteBrokerPid !== "yes" || broker.started === undefined) return;
-		await stopWindowsProcess(broker.pid, broker.started, { waitMs: UNANSWERED_BROKER_STOP_WAIT_MS, descendants: false });
-		return;
+		if (broker.wroteBrokerPid !== "yes" && broker.wroteBrokerPid !== "unavailable") return;
+		if (broker.started !== undefined) {
+			await stopWindowsProcess(broker.pid, broker.started, {
+				waitMs: UNANSWERED_BROKER_STOP_WAIT_MS,
+				descendants: false,
+			});
+			return;
+		}
+		if (broker.wroteBrokerPid === "yes") return;
 	}
 	// Linux: the check and the signal run in one turn of the event loop, with no await between them.
 	if (process.platform === "linux" && (broker.started === undefined || processStartToken(broker.pid) !== broker.started)) {

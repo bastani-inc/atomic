@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
 import { describe, onTestFinished, test } from "vitest";
-import { endUnansweredBroker } from "../../packages/intercom/broker/broker-process.js";
+import { endUnansweredBroker, wroteFileAt } from "../../packages/intercom/broker/broker-process.js";
 import { waitForBrokerExit } from "../../packages/intercom/broker/broker-stop.js";
 import {
 	currentProcessStart,
@@ -88,5 +88,34 @@ describe.skipIf(!READS_PROCESS_STARTS)("a broker pid that names a later process"
 		await endUnansweredBroker({ pid: recorded.pid, started: recorded.started, wroteBrokerPid: "yes" });
 		assert.equal(await waitUntilGone(recorded, GONE_WITHIN_MS), true, "the broker was not ended");
 		assert.equal(await isGone(grandchild), false, "a process the broker started was ended too");
+	});
+});
+
+describe("telling the broker that wrote broker.pid by its write time", () => {
+	/** A process creation time, in nanoseconds since 1970 UTC. */
+	const created = 1_795_000_000_000_000_000n;
+	const SECOND_NS = 1_000_000_000n;
+	const HOUR_NS = 3_600n * SECOND_NS;
+
+	test("a write time a FAT volume kept, rounded up to 2 s in local time, proves nothing either way", () => {
+		// broker.pid written 100 ms after the broker started; FAT keeps it rounded up to 2 s, in local time, so read back
+		// after the clocks changed it is an hour off one way or the other.
+		const kept = ((created + 100_000_000n + 2n * SECOND_NS - 1n) / (2n * SECOND_NS)) * (2n * SECOND_NS);
+		for (const readBack of [kept, kept - HOUR_NS, kept + HOUR_NS]) {
+			assert.equal(wroteFileAt(created, readBack), "unavailable", String(readBack - created));
+		}
+	});
+
+	test("a write time an exFAT volume kept, to 10 ms, proves nothing either way", () => {
+		assert.equal(wroteFileAt(created, created + 120_000_000n), "unavailable");
+		assert.equal(wroteFileAt(created, created - HOUR_NS + 10_000_000n), "unavailable");
+	});
+
+	test("a precise write time tells the broker that wrote it from a process created after it", () => {
+		const written = created + 123_456_700n;
+		assert.equal(wroteFileAt(created, written), "yes");
+		assert.equal(wroteFileAt(written, written), "unknown");
+		assert.equal(wroteFileAt(written + SECOND_NS, written), "unknown");
+		assert.equal(wroteFileAt(written + 2n * SECOND_NS, written), "no");
 	});
 });

@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -392,6 +402,8 @@ test(
 
 /** How long before a process's start broker.pid is dated when a test stands in for a broker that wrote it and exited. */
 const WRITTEN_BEFORE_ITS_PID_WAS_GIVEN_AGAIN_MS = 60_000;
+/** A part of a second no write time a FAT or exFAT volume keeps has (they keep 2 s and 10 ms steps). */
+const SUB_MILLISECOND_S = 0.000_345_6;
 
 // Windows gives the pid of an exited process to another within seconds; elsewhere a pid is given out again only after
 // the whole range has been used, and the restart's check there is the start token it read when it found the broker.
@@ -411,10 +423,11 @@ test.skipIf(process.platform !== "win32")(
 		onTestFinished(async () => {
 			await signalRecordedProcess(recorded);
 		});
-		// broker.pid as the broker that held this pid wrote it, a minute before the pid was given to `later`.
+		// broker.pid as the broker that held this pid wrote it, a minute before the pid was given to `later`, on a volume
+		// that keeps write times to 100 ns (the sub-millisecond part keeps it off the coarse steps FAT and exFAT keep).
 		const pidPath = getBrokerPidPath(agentDir);
 		writeFileSync(pidPath, String(later.pid));
-		const written = new Date(Date.now() - WRITTEN_BEFORE_ITS_PID_WAS_GIVEN_AGAIN_MS);
+		const written = (Date.now() - WRITTEN_BEFORE_ITS_PID_WAS_GIVEN_AGAIN_MS) / 1_000 + SUB_MILLISECOND_S;
 		utimesSync(pidPath, written, written);
 
 		assert.deepEqual(await queryIntercomBroker(agentDir), { state: "stopped" });
@@ -422,6 +435,56 @@ test.skipIf(process.platform !== "win32")(
 			status: "not-running",
 		});
 		assert.equal(await stillRuns(recorded), true, "restart ended the process that now has the broker's pid");
+	},
+	BROKER_SCENARIO_TIMEOUT_MS,
+);
+
+/** How far off local time read back as UTC is after the clocks went forward. */
+const CLOCK_CHANGE_MS = 3_600_000;
+
+test(
+	"restart stops a broker whose broker.pid write time a FAT volume kept in local time, as it stopped it before",
+	async () => {
+		const agentDir = agentDirectory("fat-volume");
+		const socketPath = getBrokerSocketPath(process.platform, agentDir);
+		// A broker that predates broker_status: it drops a connection whose first frame is not `register`, and shuts down
+		// on SIGTERM.
+		const legacy = spawn(
+			process.execPath,
+			[
+				"-e",
+				`const net = require("node:net");
+				const fs = require("node:fs");
+				const server = net.createServer((socket) => socket.on("data", () => socket.destroy()));
+				server.listen(process.argv[1], () => fs.writeFileSync(process.argv[2], String(process.pid)));
+				process.on("SIGTERM", () => server.close(() => process.exit(0)));`,
+				socketPath,
+				getBrokerPidPath(agentDir),
+			],
+			{ stdio: "ignore" },
+		);
+		const fixture = fixtureFor(agentDir);
+		fixture.trackBroker(legacy);
+		assert.ok(legacy.pid !== undefined);
+		onTestFinished(await keepProcessPid(legacy));
+		await vi.waitFor(
+			async () => {
+				fixture.assertRunning();
+				if (!(await socketAnswers(agentDir))) throw new Error("legacy broker is not answering yet");
+				if (readFileSync(getBrokerPidPath(agentDir), "utf8") !== String(legacy.pid)) throw new Error("no pid yet");
+			},
+			{ timeout: BROKER_WAIT_MS, interval: 20 },
+		);
+		// FAT keeps the write time rounded up to 2 s, in local time: after the clocks went forward, it reads an hour earlier
+		// than the broker started.
+		const pidPath = getBrokerPidPath(agentDir);
+		const kept = (Math.ceil(statSync(pidPath).mtimeMs / 2_000) * 2_000 - CLOCK_CHANGE_MS) / 1_000;
+		utimesSync(pidPath, kept, kept);
+
+		assert.deepEqual(await queryIntercomBroker(agentDir), { state: "legacy", pid: legacy.pid });
+		const outcome = await restartIntercomBroker(agentDir, { reconnectTimeoutMs: 200 });
+		assert.deepEqual(outcome, { status: "stopped", previous: { pid: legacy.pid } });
+		await exited(legacy);
 	},
 	BROKER_SCENARIO_TIMEOUT_MS,
 );
