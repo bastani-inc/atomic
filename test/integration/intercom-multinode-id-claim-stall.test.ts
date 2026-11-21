@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import {
+	SHARED_LEASES_TABLE,
 	TWO_BROKER_STORAGE_PREFIX,
 	type TwoBrokerClient,
 	TwoBrokerHarness,
@@ -42,9 +44,37 @@ afterAll(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 
 const unique = (label: string): string => `${label}-${randomUUID().slice(0, 8)}`;
 
+let sharedDatabase: SqliteDatabase | undefined;
+
+/**
+ * Resolves once no broker holds the presence lease of a session with `returnAddress` in the shared database. A departing
+ * session's broker gives up the session's id before it releases that lease, so a registration that brings it back
+ * finds the id free. Another node's `list` cannot tell: when the database is slow to answer, it answers without any
+ * remote session.
+ */
+async function presenceReleased(returnAddress: string): Promise<void> {
+	sharedDatabase ??= await harness.openSharedStorage("b");
+	const database = sharedDatabase;
+	// The start of every delivery identity of that session, whatever its group, as the presence lease's key writes it.
+	const identities = `${JSON.stringify(["return", returnAddress]).slice(0, -1)},`;
+	await vi.waitFor(
+		async () => {
+			const row = await database.get<{ live: number | bigint }>(
+				`SELECT count(*) AS live FROM "${SHARED_LEASES_TABLE}"
+				 WHERE kind = 'presence' AND holder_id IS NOT NULL AND substr(key, 1, length(?)) = ?`,
+				identities,
+				identities,
+			);
+			assert.equal(Number(row?.live ?? 0), 0, "a broker still presents the session that left");
+		},
+		{ timeout: 15_000 },
+	);
+}
+
 /**
  * `original` leaves as a session that will return, and this resolves once its broker has finished its departure (its
- * presence is gone from `observer`'s list), so the registration that brings it back does not queue behind that work.
+ * presence is gone from `observer`'s list and from the shared database), so the registration that brings it back does
+ * not queue behind that work.
  */
 async function leaveAway(original: TwoBrokerClient, observer: TwoBrokerClient): Promise<string> {
 	const id = original.sessionId;
@@ -54,6 +84,7 @@ async function leaveAway(original: TwoBrokerClient, observer: TwoBrokerClient): 
 		async () => assert.ok(!(await observer.client.listSessions()).some((session) => session.id === id)),
 		{ timeout: 15_000 },
 	);
+	await presenceReleased(original.returnAddress);
 	return id;
 }
 
@@ -136,6 +167,7 @@ for (const group of [undefined, "other"] as const) {
 			const id = original.sessionId;
 			await original.client.disconnect({ resumable: true });
 			original.disconnected = true;
+			await presenceReleased(original.returnAddress);
 			// The same session is back on the other broker first, and stays connected there.
 			const live = await harness.connect("b", original.name, {
 				...(group === undefined ? {} : { group: unique(group) }),
@@ -204,6 +236,7 @@ async function reconnectWithSlowWrite(slowWrite: SlowWrite, socketPath?: string)
 		},
 		{ timeout: 15_000 },
 	);
+	await presenceReleased(original.returnAddress);
 	if (slowWrite === "serial bindings")
 		harness.stallIdClaim(original.returnAddress, 3_500, undefined, 3_050, slowWrite);
 	else harness.stallIdClaim(original.returnAddress, 2_800, 3_200, 3_050, slowWrite);
