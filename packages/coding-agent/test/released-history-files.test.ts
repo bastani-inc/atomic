@@ -3,7 +3,7 @@ import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as os from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import psFixtures from "./fixtures/ps-lstart.json" with { type: "json" };
@@ -18,8 +18,10 @@ vi.mock("node:fs/promises", async (original) => {
 		...actual,
 		copyFile: vi.fn(actual.copyFile),
 		opendir: vi.fn(actual.opendir),
+		readdir: vi.fn(actual.readdir),
 		readFile: vi.fn(actual.readFile),
 		readlink: vi.fn(actual.readlink),
+		rm: vi.fn(actual.rm),
 	};
 });
 vi.mock("node:os", async (original) => {
@@ -664,6 +666,56 @@ test("under Bun only an absent released-history directory skips the boot lookup"
 		assert.equal(vi.mocked(fsPromises.opendir).mock.calls.length, 0, "and never listed by the check");
 	} finally {
 		delete (process.versions as { bun?: string }).bun;
+		Object.defineProperty(process, "platform", platform);
+	}
+});
+
+test("a host directory another tool renamed to other letter case is still swept where names ignore case", async () => {
+	const caseRoot = join(root, "recased-host");
+	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+	Object.defineProperty(process, "platform", { value: "win32" });
+	vi.mocked(os.hostname).mockReturnValue("this-host");
+	vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+		const callback = args.at(-1) as (error: unknown, stdout: string, stderr: string) => void;
+		callback(null, "123456789", "");
+		return {} as childProcess.ChildProcess;
+	});
+	vi.spyOn(process, "kill").mockImplementation(() => {
+		throw Object.assign(new Error("gone"), { code: "ESRCH" });
+	});
+	try {
+		vi.resetModules();
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(() => "5000");
+		const first = await import("../src/core/storage/session/released-history-files.js");
+		const directory = await first.releasedHistoryFiles(caseRoot).createDirectory();
+		assert.ok(!(directory instanceof Error));
+		const host = dirname(dirname(directory.path));
+		fs.mkdirSync(join(host, "2147483647-1000"));
+		await directory.remove();
+		const recased = join(dirname(host), basename(host).toUpperCase());
+		fs.renameSync(host, recased);
+		// As on Windows and macOS: a path names a directory whatever the case of its letters.
+		const onDisk = (path: unknown): string => {
+			const text = String(path);
+			if (!text.startsWith(caseRoot)) return text;
+			let current = caseRoot;
+			for (const part of relative(caseRoot, text).split(sep).filter(Boolean)) {
+				const names = fs.existsSync(current) ? fs.readdirSync(current) : [];
+				current = join(current, names.find((name) => name.toLowerCase() === part.toLowerCase()) ?? part);
+			}
+			return current;
+		};
+		const actual = await vi.importActual<typeof fsPromises>("node:fs/promises");
+		vi.mocked(fsPromises.opendir).mockImplementation((path, options) => actual.opendir(onDisk(path), options));
+		vi.mocked(fsPromises.readdir).mockImplementation(((path: string, options: undefined) =>
+			actual.readdir(onDisk(path), options)) as typeof fsPromises.readdir);
+		vi.mocked(fsPromises.rm).mockImplementation((path, options) => actual.rm(onDisk(path), options));
+		vi.resetModules();
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(() => "5000");
+		const next = await import("../src/core/storage/session/released-history-files.js");
+		await next.sweepReleasedHistory(caseRoot);
+		assert.equal(fs.existsSync(join(recased, "2147483647-1000")), false, "the dead owner's directory is gone");
+	} finally {
 		Object.defineProperty(process, "platform", platform);
 	}
 });
