@@ -40,6 +40,8 @@ interface SubagentResult {
 	timestamp: number;
 	durationMs?: number;
 	sessionFile?: string;
+	/** The child's `history://sessions/<id>` URL, when its session has no file of its own. */
+	sessionUrl?: string;
 	shareUrl?: string;
 	gistUrl?: string;
 	shareError?: string;
@@ -234,7 +236,9 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 				? `Session share error: ${result.shareError}`
 				: result.sessionFile
 					? `Session file: ${result.sessionFile}`
-					: undefined;
+					: result.sessionUrl
+						? `Session: ${result.sessionUrl}`
+						: undefined;
 
 		const displaySummary = summary.trim() ? summary : "(no output)";
 		const noticeLabel =

@@ -179,6 +179,7 @@ export function notifyDetachedForegroundChildExit(input: {
 			timestamp: Date.now(),
 			...(result.progressSummary?.durationMs !== undefined ? { durationMs: result.progressSummary.durationMs } : {}),
 			...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
+			...(result.sessionUrl ? { sessionUrl: result.sessionUrl } : {}),
 			...(input.totalTasks !== undefined && input.totalTasks > 1
 				? { taskIndex: index, totalTasks: input.totalTasks }
 				: {}),
@@ -215,7 +216,8 @@ async function emitForegroundResultIntercom(input: {
 						index,
 						...(result.cause ? { cause: result.cause } : {}),
 						artifactPath: result.artifactPaths?.outputPath,
-						sessionPath: result.sessionFile,
+						sessionPath: result.sessionFile ?? result.sessionUrl,
+						...(result.sessionFile === undefined && result.sessionUrl ? { sessionUrl: result.sessionUrl } : {}),
 						intercomTarget: resolveSubagentIntercomTarget(input.runId, result.agent, index),
 					},
 				],

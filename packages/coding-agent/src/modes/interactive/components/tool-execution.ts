@@ -22,6 +22,7 @@ import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { CodeHighlighter, theme } from "../theme/theme.js";
 import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
+import type { KeptTaskAction } from "./kept-task.ts";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { clickableKeyTextHint } from "./nav-keys.ts";
 import { STATUS_MARKERS } from "./notice-line.ts";
@@ -53,6 +54,12 @@ export interface ToolExecutionOptions {
 	imageWidthCells?: number;
 	outputPad?: number;
 	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
+	/**
+	 * What the chat showing this block offers for a task its call left running, such as a subagent's chat whose `/tasks`
+	 * lists the tasks it launched. Given, it alone decides the block's hint; without it, a task `getTaskRecord` reads is
+	 * offered to `/tasks`.
+	 */
+	keptTaskAction?: (taskId: TaskId) => KeptTaskAction | undefined;
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
 }
 
@@ -101,6 +108,7 @@ export class ToolExecutionComponent extends Container {
 	private contentContainer: Container;
 	private readonly codeHighlighter = new CodeHighlighter();
 	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
+	private readonly keptTaskAction: ToolExecutionOptions["keptTaskAction"];
 	private readonly toolRendererReader: ToolExecutionOptions["getToolDefinition"];
 	private stopWorkingClock: (() => void) | undefined;
 	private disposed = false;
@@ -154,6 +162,7 @@ export class ToolExecutionComponent extends Container {
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.outputPad = options.outputPad ?? 1;
 		this.taskRecordReader = options.getTaskRecord;
+		this.keptTaskAction = options.keptTaskAction;
 		this.toolRendererReader = options.getToolDefinition;
 		this.ui = ui;
 		this.cwd = cwd;
@@ -541,6 +550,9 @@ export class ToolExecutionComponent extends Container {
 			elapsedMs: this.currentElapsedMs(),
 			highlighter: this.codeHighlighter,
 			canManageTask: (taskId) => this.taskRecordReader?.(taskId as TaskId) !== undefined,
+			...(this.keptTaskAction === undefined
+				? {}
+				: { keptTaskAction: (taskId: string) => this.keptTaskAction?.(taskId as TaskId) }),
 		});
 		const canonicalCall = presentation !== undefined && (!callRenderer || isBuiltinToolCallRenderer(callRenderer));
 		const canonicalResult =

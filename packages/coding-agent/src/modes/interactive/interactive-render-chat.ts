@@ -809,6 +809,7 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 							imageWidthCells: context?.imageWidthCells ?? this.settingsManager.getImageWidthCells(),
 							outputPad: context?.outputPad ?? this.outputPad,
 							rendererTaskId: entry.rendererTaskId,
+							...(context?.keptTaskAction === undefined ? {} : { keptTaskAction: context.keptTaskAction }),
 						},
 						this.runtimeHost as IsolatedInteractiveRuntime,
 						context?.requestRender ?? (() => this.ui.requestRender()),

@@ -104,6 +104,17 @@ export interface RecipientPresenceSubject {
 	/** Stable recipient authority (`deliveryTargetIdentity`), which survives reconnects. */
 	readonly targetIdentity: string;
 	readonly session: SessionInfo;
+	/**
+	 * #5607: ids the session also owns, as aliases: a plain send to one reaches it while the shared store's owner of the
+	 * id is still the registration that published it. Absent from older brokers, which ignore it.
+	 */
+	readonly aliases?: readonly PresenceAlias[];
+}
+
+/** #5607: an id a session owns as an alias, and a digest of the owner token its registration holds it with. */
+export interface PresenceAlias {
+	readonly id: string;
+	readonly owner: string;
 }
 
 export type LeaseSubject = BrokerMembershipSubject | RecipientPresenceSubject;
@@ -816,6 +827,11 @@ export interface KnownSession {
 	readonly targetIdentity: string;
 	/** The Intercom session id it last registered with. */
 	readonly intercomSessionId: string;
+	/**
+	 * #5607: the other id it answers to: the one it asked for and awaits while it has a fresh one, or the fresh one it
+	 * had meanwhile once it has its own again. Absent from older brokers' records.
+	 */
+	readonly aliasSessionId?: string;
 	/** Verbatim. */
 	readonly name?: string;
 	/** The host (Atomic) session id: the registration's return address. */
@@ -844,7 +860,30 @@ export type KnownSessionRecordResult = { readonly status: "recorded" } | Invalid
 export type KnownSessionBindResult =
 	| { readonly status: "bound" }
 	| { readonly status: "refused"; readonly returnAddress: string }
+	/**
+	 * #5607: bound to this return address, but another live registration of it owns the id (`KnownSessionOwner`), on the
+	 * broker `ownerBroker`.
+	 */
+	| { readonly status: "held"; readonly ownerBroker?: string }
 	| InvalidStateInput;
+
+/**
+ * #5607: the registration taking an id: a value unique to it, and its broker. An id has at most one owner: a
+ * registration takes it only while no other registration owns it, or its owner went unrenewed for `staleAfterMs`. The
+ * owner's broker renews it while the registration is live and releases it when the registration leaves.
+ */
+export interface KnownSessionOwner {
+	readonly token: string;
+	readonly brokerId: string;
+	readonly staleAfterMs: number;
+}
+
+/** #5607: an id and the token of the registration that owns it. */
+export interface KnownSessionOwnership {
+	readonly intercomSessionId: string;
+	readonly token: string;
+}
+
 /** #5607: see `KnownSessionStore.reclaim`. */
 export interface SessionIdReclaim {
 	readonly intercomSessionId: string;
@@ -858,6 +897,11 @@ export interface SessionIdReclaim {
 	readonly presenceStaleAfterMs: number;
 	/** The id bound instead when the id is not kept. */
 	readonly freshId: string;
+	/**
+	 * The owner the registration's `bind` was given, on a store that keeps owners: the id is kept only when it takes
+	 * the id for that registration too, as `bind` would.
+	 */
+	readonly owner?: KnownSessionOwner;
 }
 
 export type SessionIdReclaimResult =
@@ -889,13 +933,17 @@ export interface KnownSessionStore {
 	 * authority: it is granted, and delivered to, only the session it is bound to. An id with no binding yet is bound
 	 * first to the return address its earliest known-session record has, so a record kept from before bindings existed
 	 * still holds it. #5607: `claim`, a value unique to this registration, is recorded as the binding's latest claim
-	 * when it binds, so `reclaim` can tell later whether the binding is still the one this registration wrote.
+	 * when it binds, so `reclaim` can tell later whether the binding is still the one this registration wrote. With
+	 * `owner`, on a store that keeps owners, it also takes the id for that registration, unless another live
+	 * registration owns it (`held`); without it, ownership is left as it is. `bound` then means the binding names that
+	 * owner.
 	 */
 	bind(
 		intercomSessionId: string,
 		returnAddress: string,
 		retentionMs: number,
 		claim?: string,
+		owner?: KnownSessionOwner,
 	): Promise<KnownSessionBindResult>;
 	/**
 	 * #5607: the one write a returning registration makes when its `bind` did not answer in time. It keeps the id when
@@ -904,6 +952,28 @@ export interface KnownSessionStore {
 	 * it binds `freshId` as `bind` does. Optional: without it such a registration gets a fresh id, bound as `bind` binds it.
 	 */
 	reclaim?(request: SessionIdReclaim): Promise<SessionIdReclaimResult>;
+	/**
+	 * #5607: whether the store keeps id owners. A store without it (an older schema a role may not change) binds as
+	 * before and has none of the owner methods.
+	 */
+	readonly owners?: {
+		/** The registration with `token` gives the id up; an owner with another token is left as it is. */
+		release(ownership: KnownSessionOwnership): Promise<void>;
+		/**
+		 * Renew each of these ids that its registration still owns, resetting its binding's age with it, and return
+		 * those: an id missing from the result is owned by another registration now, or by none.
+		 */
+		renew(ownerships: readonly KnownSessionOwnership[]): Promise<KnownSessionOwnership[]>;
+		/** Every id the broker `brokerId` owns is given up: that broker instance is gone. */
+		retireBroker(brokerId: string): Promise<void>;
+		/**
+		 * The registration that owns the id (its token and broker), and store-clock milliseconds since it renewed it; none
+		 * when no owner.
+		 */
+		ownerOf(
+			intercomSessionId: string,
+		): Promise<{ readonly token: string; readonly brokerId: string; readonly ageMs: number } | undefined>;
+	};
 	/** The return address the id is bound to, if a binding recorded within `retentionMs` holds it. */
 	binding(intercomSessionId: string, retentionMs: number): Promise<KnownSessionBindingResult>;
 	/** Delete records and bindings last recorded more than `olderThanMs` ago; returns the count of records. */

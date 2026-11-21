@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { DetachedToolResult } from "@bastani/atomic";
+import type { DetachedToolResult, SessionEntry } from "@bastani/atomic";
 import { type Context, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -8,11 +8,20 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agent-type
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
 	lateToolResultNotice,
+	lateToolResultNoticeIds,
 	lateToolResultNoticeKey,
 	SUBAGENT_LATE_TOOL_RESULT_TYPE,
 } from "../../packages/subagents/src/runs/foreground/late-tool-result-notice.ts";
-import { SUBAGENT_STILL_RUNNING_RESULT } from "../../packages/subagents/src/runs/foreground/released-children.ts";
+import {
+	SUBAGENT_RELEASED_WAKE_PROMPT,
+	SUBAGENT_STILL_RUNNING_RESULT,
+} from "../../packages/subagents/src/runs/foreground/released-children.ts";
+import { resumeNoteMessage } from "../../packages/subagents/src/runs/foreground/resume-note.ts";
+import { SUBAGENT_RESUME_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.ts";
+import { SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-run-control.ts";
+import { queuedResumeStart } from "../../packages/subagents/src/runs/foreground/task-execution.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
+import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -58,7 +67,7 @@ type TaskExecution = NonNullable<Parameters<typeof runSingleInProcess>[3]["taskE
 /** The hooks a task host gives a run, with the ones a test listens to. */
 function taskExecution(
 	signal: AbortSignal,
-	hooks: Pick<TaskExecution, "toolResultsSaved" | "reportTurnPaused"> = {},
+	hooks: Pick<TaskExecution, "toolResultsSaved" | "reportTurnPaused" | "bindTranscript"> = {},
 ): TaskExecution {
 	return { signal, reportActivity() {}, onExecution() {}, ...hooks };
 }
@@ -109,16 +118,35 @@ test(
 			},
 		]);
 		const saved: string[] = [];
+		const reportedUnsaved: string[] = [];
+		const childSession = await SessionManager.open(store, sessionId);
+		// The entries of the session the run writes, as its task's transcript reads them.
+		let entries: () => readonly SessionEntry[] = () => [];
+		// What the child's session holds of each result when the run reports it saved: the owner lets it go then (#5012).
+		const holds = (toolCallId: string) =>
+			entries().some(
+				(entry) =>
+					(entry.type === "message" &&
+						entry.message.role === "toolResult" &&
+						entry.message.toolCallId === toolCallId) ||
+					(entry.type === "custom_message" && lateToolResultNoticeIds(entry).includes(toolCallId)),
+			);
 
 		const woken = await runSingleInProcess(env.root, agent, "", {
 			...env.options("late-continued", {
-				sessionManager: await SessionManager.open(store, sessionId),
+				sessionManager: childSession,
 				resumeSession: true,
 				resumeToolResults: [result("ci-2", "lint clean")],
 				resumeLateToolResults: [result("ci-1", "tests green"), result("ci-0", "build broke", true)],
 				skipTaskPrompt: true,
 				taskExecution: taskExecution(new AbortController().signal, {
-					toolResultsSaved: (ids) => void saved.push(...ids),
+					bindTranscript: (source) => {
+						entries = () => source.getEntries() as readonly SessionEntry[];
+					},
+					toolResultsSaved: (ids) => {
+						saved.push(...ids);
+						reportedUnsaved.push(...ids.filter((id) => !holds(id)));
+					},
 				}),
 			}),
 		});
@@ -133,6 +161,11 @@ test(
 		const noticeAt = request.findIndex((message) => textOf(message).includes("tests green"));
 		assert.ok(noticeAt > resultAt, "the late results come after the call's result");
 		assert.ok(saved.includes("ci-1") && saved.includes("ci-0"), "the late results are reported saved");
+		assert.deepEqual(
+			reportedUnsaved,
+			[],
+			`each is reported saved only once the child's session holds it: ${JSON.stringify(reportedUnsaved)} ${JSON.stringify(saved)}`,
+		);
 		const transcript = await SessionManager.open(store, sessionId);
 		const userTexts = transcript
 			.getBranch()
@@ -238,6 +271,207 @@ test(
 		await restored;
 
 		assert.equal(requests, 0, "the unread notice does not run the paused child");
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+for (const compacted of [false, true])
+	test(
+		`a late result for a call that reused an earlier call's id reaches the child after the earlier call's late result did${compacted ? ", across a compaction" : ""} (#3274)`,
+		async () => {
+			const env = await liveChildEnvironment(cleanups);
+			const store = new MemorySessionStore();
+			const childSession = await SessionManager.create(store, env.root);
+			const sessionId = childSession.getSessionId();
+			// A provider numbering each response's calls from 0 gives both background calls one id.
+			const waitCall = (run: string) =>
+				fauxAssistantMessage([fauxToolCall("wait_for_ci", { run }, { id: "ci-1" })], { stopReason: "toolUse" });
+			const run = async (task: string, extra: Partial<RunSyncOptions>) =>
+				runSingleInProcess(env.root, agent, task, {
+					...env.options("reused-late", {
+						sessionManager: await SessionManager.open(store, sessionId),
+						resumeSession: true,
+						releaseWhenWaiting: { afterMs: 0 },
+						...extra,
+					}),
+				});
+			env.faux.setResponses([waitCall("7")]);
+			assert.ok((await run("watch CI", {})).released, "released waiting on its first call");
+			// Told the call still runs, it finishes its turn; the call's late result then wakes it.
+			env.faux.setResponses([fauxAssistantMessage("Waiting.")]);
+			await run("", { resumeToolResults: [result("ci-1", SUBAGENT_STILL_RUNNING_RESULT)], skipTaskPrompt: true });
+			env.faux.setResponses([fauxAssistantMessage("Run 7 done.")]);
+			const first = await run("", {
+				resumeLateToolResults: [result("ci-1", "FIRST-RUN-OUTPUT")],
+				skipTaskPrompt: true,
+			});
+			assert.equal(first.status, "ok");
+			// It starts a second background call, which its provider gives the same id, and is told it still runs.
+			const transcript = await SessionManager.open(store, sessionId);
+			if (compacted)
+				await transcript.appendCompaction("summary", null, 100, {
+					strategy: "verbatim-lines",
+					promptVersion: 7,
+					parameters: { query: "" },
+					stats: {
+						linesBefore: 3,
+						linesDeleted: 3,
+						linesKept: 0,
+						rangeCount: 1,
+						tokensBefore: 100,
+						tokensAfter: 10,
+						percentReduction: 90,
+					},
+					form: "cleared",
+				});
+			await transcript.appendMessage({ role: "user", content: "now run 8", timestamp: Date.now() });
+			await transcript.appendMessage(waitCall("8"));
+			await transcript.appendMessage({
+				role: "toolResult",
+				toolCallId: "ci-1",
+				toolName: "wait_for_ci",
+				content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }],
+				isError: false,
+				timestamp: Date.now(),
+			});
+			await transcript.appendMessage(fauxAssistantMessage("Waiting on run 8."));
+			const requests: Context["messages"][] = [];
+			env.faux.setResponses([
+				(context) => {
+					requests.push(context.messages);
+					return fauxAssistantMessage("Run 8 done.");
+				},
+			]);
+			const saved: string[] = [];
+
+			const woken = await run("", {
+				resumeLateToolResults: [result("ci-1", "SECOND-RUN-OUTPUT")],
+				skipTaskPrompt: true,
+				taskExecution: taskExecution(new AbortController().signal, {
+					toolResultsSaved: (ids) => void saved.push(...ids),
+				}),
+			});
+
+			assert.equal(woken.status, "ok");
+			assert.equal(requests.length, 1, "the second call's result starts a turn");
+			assert.equal(count(requests[0] ?? [], "SECOND-RUN-OUTPUT"), 1);
+			assert.deepEqual(saved, ["ci-1"]);
+		},
+		LIVE_CHILD_TIMEOUT_MS,
+	);
+
+test(
+	"a child resumed with a message reads it and its resume note in one request, and no message from the user carries the note",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const child = await SessionManager.create(store, env.root);
+		await child.appendMessage({ role: "user", content: "watch CI", timestamp: Date.now() });
+		await child.appendMessage(fauxAssistantMessage("Stopped for now."));
+		const requests: Context["messages"][] = [];
+		env.faux.setResponses([
+			(context) => {
+				requests.push(context.messages);
+				return fauxAssistantMessage("Wrapped up.");
+			},
+		]);
+
+		const resumed = await runSingleInProcess(env.root, agent, "then wrap up", {
+			...env.options("note-with-message", {
+				sessionManager: await SessionManager.open(store, child.getSessionId()),
+				resumeSession: true,
+				resumeTaskLiteral: true,
+				resumeNote: { kind: "resume", text: SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT },
+			}),
+		});
+
+		assert.equal(resumed.status, "ok");
+		assert.equal(requests.length, 1, "one request reads both");
+		const request = requests[0] ?? [];
+		assert.equal(count(request, "then wrap up"), 1);
+		assert.equal(count(request, "Continue where you left off."), 1);
+		const users = (await SessionManager.open(store, child.getSessionId()))
+			.getBranch()
+			.flatMap((entry) =>
+				entry.type === "message" && entry.message.role === "user" ? [textOf(entry.message)] : [],
+			);
+		assert.deepEqual(users, ["watch CI", "then wrap up"], "the note is never a message from the user");
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a child whose session holds a resume note no turn read yet is told it once, not again by its next run",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const child = await SessionManager.create(store, env.root);
+		await child.appendMessage({ role: "user", content: "watch CI", timestamp: Date.now() });
+		await child.appendMessage(fauxAssistantMessage("Working."));
+		const note = resumeNoteMessage({ kind: "restart", text: SUBAGENT_RESUME_CONTINUATION_PROMPT });
+		// Saved as its delivery saves it, before a restart stopped the run whose turn would have read it.
+		await child.appendCustomMessageEntry(note.customType, note.content, true, note.details, true, {
+			delivery: "steer",
+		});
+		const requests: Context["messages"][] = [];
+		env.faux.setResponses([
+			(context) => {
+				requests.push(context.messages);
+				return fauxAssistantMessage("Continued.");
+			},
+		]);
+
+		const restored = await runSingleInProcess(env.root, agent, "", {
+			...env.options("note-unread", {
+				sessionManager: await SessionManager.open(store, child.getSessionId()),
+				resumeSession: true,
+				skipTaskPrompt: true,
+				resumeNote: { kind: "restart", text: SUBAGENT_RESUME_CONTINUATION_PROMPT },
+			}),
+		});
+
+		assert.equal(restored.status, "ok");
+		assert.equal(requests.length, 1);
+		assert.equal(count(requests[0] ?? [], "Atomic restarted while you were working"), 1, "told once");
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a woken child stopped while it waited for its run's slot and resumed with a message reads the message as written, and is not told it was woken (#6161)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const child = await SessionManager.create(store, env.root);
+		await child.appendMessage({ role: "user", content: "watch CI", timestamp: Date.now() });
+		await child.appendMessage(fauxAssistantMessage("Waiting on CI."));
+		const requests: Context["messages"][] = [];
+		env.faux.setResponses([
+			(context) => {
+				requests.push(context.messages);
+				return fauxAssistantMessage("Checked.");
+			},
+		]);
+		const message = "Check this edge first.\nKeep  both  spaces.";
+		// Its wake had nothing else to start its turn, so its note would have; the user's message now does.
+		const start = queuedResumeStart(
+			"",
+			env.options("slot-wake-message", {
+				sessionManager: await SessionManager.open(store, child.getSessionId()),
+				resumeSession: true,
+				skipTaskPrompt: true,
+				resumeNote: { kind: "wake", text: SUBAGENT_RELEASED_WAKE_PROMPT },
+			}),
+			message,
+		);
+
+		const resumed = await runSingleInProcess(env.root, agent, start.task, start.options);
+
+		assert.equal(resumed.status, "ok");
+		assert.equal(requests.length, 1);
+		const request = requests[0] ?? [];
+		assert.equal(count(request, message), 1, "the message, as written");
+		assert.equal(count(request, SUBAGENT_RELEASED_WAKE_PROMPT), 0, "never told it was woken");
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );

@@ -38,6 +38,12 @@ import {
 } from "./git-errors.ts";
 import { gitInstallCommand, type OsRelease, readOsRelease, readOsReleaseAsync } from "./git-install-command.ts";
 import {
+	findHelperExecutableAsync,
+	type HelperLaunch,
+	helperLaunchAsync,
+	missingHelperOptions,
+} from "./helper-command.ts";
+import {
 	isManagedToolError,
 	ManagedToolDownloadError,
 	type ManagedToolError,
@@ -99,11 +105,17 @@ const TOOLS: Record<string, ToolConfig> = {
 	},
 };
 
-// Check if a command exists in PATH by trying to run it
-function commandExists(cmd: string): Promise<boolean> {
+/**
+ * The absolute path of `cmd` in PATH's absolute directories (never the working directory), when it runs
+ * `cmd --version` successfully; null otherwise.
+ */
+async function systemCommandPath(cmd: string): Promise<string | null> {
+	const env = createChildProcessEnvironment();
+	const file = await findHelperExecutableAsync(cmd, { env });
+	if (file === undefined) return null;
 	return new Promise((resolvePromise) => {
-		execFile(cmd, ["--version"], { env: createChildProcessEnvironment() }, (error) => {
-			resolvePromise(error === null || error === undefined);
+		execFile(file, ["--version"], { env }, (error) => {
+			resolvePromise(error === null || error === undefined ? file : null);
 		});
 	});
 }
@@ -122,12 +134,11 @@ export async function getToolPath(tool: "fd" | "rg" | "git", options?: ResolveGi
 		return localPath;
 	}
 
-	// Check system PATH - if found, just return the command name (it's in PATH)
+	// Then PATH: the tool's absolute path there, so it never starts from the working directory.
 	const systemBinaryNames = config.systemBinaryNames ?? [config.binaryName];
 	for (const systemBinaryName of systemBinaryNames) {
-		if (await commandExists(systemBinaryName)) {
-			return systemBinaryName;
-		}
+		const systemPath = await systemCommandPath(systemBinaryName);
+		if (systemPath !== null) return systemPath;
 	}
 
 	return null;
@@ -268,15 +279,21 @@ function runExtractionCommand(
 	args: string[],
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<string | null> {
-	return new Promise((resolvePromise) => {
-		execFile(command, args, { env: createChildProcessEnvironment(undefined, env) }, (error, stdout, stderr) => {
-			if (!error) {
-				resolvePromise(null);
-				return;
-			}
-			resolvePromise(`${command}: ${formatExecFileFailure(error, String(stdout ?? ""), String(stderr ?? ""))}`);
-		});
-	});
+	const childEnv = createChildProcessEnvironment(undefined, env);
+	return helperLaunchAsync(command, { env: childEnv }).then(
+		(launch) =>
+			new Promise((resolvePromise) => {
+				execFile(launch.file, args, { env: childEnv, ...missingHelperOptions(launch) }, (error, stdout, stderr) => {
+					if (!error) {
+						resolvePromise(null);
+						return;
+					}
+					resolvePromise(
+						`${command}: ${formatExecFileFailure(error, String(stdout ?? ""), String(stderr ?? ""))}`,
+					);
+				});
+			}),
+	);
 }
 
 async function extractTarGzArchive(archivePath: string, extractDir: string, assetName: string): Promise<void> {
@@ -1615,10 +1632,26 @@ export async function getGitShellEnvironmentAsync(
 	}
 }
 
+/**
+ * Tells every caller of the shared git download a status. `starts` marks a status that describes the step now under
+ * way, which a caller joining later is told first; `ends` marks the last one the download tells about its progress.
+ * Other statuses, such as warnings about leftovers, are told only to the callers waiting then.
+ */
+type GitProvisionEmit = (status: ToolStatus, step?: "starts" | "ends") => void;
+
+/** What a caller joining the shared git download is told first: the status of the step under way, if one is. */
+type GitProvisionProgress =
+	| { readonly kind: "starting" }
+	| { readonly kind: "in-progress"; readonly status: ToolStatus }
+	| { readonly kind: "ended" };
+
 interface SharedGitProvision {
 	readonly promise: Promise<ProvisionedGit>;
 	readonly controller: AbortController;
 	readonly listeners: Map<(status: ToolStatus) => void, number>;
+	progress: GitProvisionProgress;
+	/** The status being told to the listeners now, if one is. */
+	telling: ToolStatus | undefined;
 	waiters: number;
 }
 
@@ -1627,19 +1660,31 @@ let sharedGitProvision: SharedGitProvision | undefined;
 function startGitProvision(target: GitDistributionTarget, system: SystemGitProbe) {
 	const controller = new AbortController();
 	const listeners = new Map<(status: ToolStatus) => void, number>();
-	const emit = (status: ToolStatus): void => {
-		for (const listener of listeners.keys()) listener(status);
+	const emit: GitProvisionEmit = (status, step) => {
+		if (step === "starts") shared.progress = { kind: "in-progress", status };
+		else if (step === "ends") shared.progress = { kind: "ended" };
+		// A caller joining from a listener meanwhile is told this status by this loop, which visits listeners added during it.
+		shared.telling = status;
+		try {
+			for (const listener of listeners.keys()) listener(status);
+		} finally {
+			shared.telling = undefined;
+		}
 	};
 	const shared: SharedGitProvision = {
 		controller,
 		listeners,
+		progress: { kind: "starting" },
+		telling: undefined,
 		waiters: 0,
 		promise: installGitDistribution(target, system, controller.signal, emit).then(
 			(provisioned) => {
+				shared.progress = { kind: "ended" };
 				lastProvisionFailure = undefined;
 				return provisioned;
 			},
 			(error) => {
+				shared.progress = { kind: "ended" };
 				if (isGitProvisionError(error)) lastProvisionFailure = error;
 				throw error;
 			},
@@ -1656,10 +1701,22 @@ function clearSharedGitProvision(shared: SharedGitProvision): void {
 	if (sharedGitProvision === shared) sharedGitProvision = undefined;
 }
 
+/**
+ * Wait for the shared download. A caller joining it while a step is under way, such as the download itself, is told
+ * that step's status first and then each later one; a callback already told by an earlier call is not told again.
+ */
 function joinExistingGitProvision(shared: SharedGitProvision, options: ResolveGitOptions): Promise<ProvisionedGit> {
 	const { signal, onStatus } = options;
 	if (signal?.aborted) return Promise.reject(signal.reason);
-	if (onStatus !== undefined) shared.listeners.set(onStatus, (shared.listeners.get(onStatus) ?? 0) + 1);
+	const told = onStatus === undefined ? 0 : (shared.listeners.get(onStatus) ?? 0);
+	const current =
+		onStatus !== undefined &&
+		told === 0 &&
+		shared.progress.kind === "in-progress" &&
+		shared.progress.status !== shared.telling
+			? shared.progress.status
+			: undefined;
+	if (onStatus !== undefined) shared.listeners.set(onStatus, told + 1);
 	shared.waiters += 1;
 	return new Promise<ProvisionedGit>((resolvePromise, rejectPromise) => {
 		let joined = true;
@@ -1690,6 +1747,14 @@ function joinExistingGitProvision(shared: SharedGitProvision, options: ResolveGi
 				rejectPromise(error);
 			},
 		);
+		if (onStatus !== undefined && current !== undefined) {
+			try {
+				onStatus(current);
+			} catch (error) {
+				leave();
+				rejectPromise(error);
+			}
+		}
 	});
 }
 
@@ -1875,7 +1940,7 @@ async function acquireGitInstallLock(
 	target: GitDistributionTarget,
 	layout: GitDistributionLayout,
 	signal: AbortSignal,
-	emit: (status: ToolStatus) => void,
+	emit: GitProvisionEmit,
 ): Promise<GitInstallLock> {
 	const binDir = dirname(layout.root);
 	const lockPath = join(binDir, GIT_INSTALL_LOCK_NAME);
@@ -1930,7 +1995,10 @@ async function acquireGitInstallLock(
 			});
 		if (!announced) {
 			announced = true;
-			emit({ type: "info", message: "Another Atomic process is installing git. Waiting for it to finish..." });
+			emit(
+				{ type: "info", message: "Another Atomic process is installing git. Waiting for it to finish..." },
+				"starts",
+			);
 		}
 		await delay(gitProvisionSettings.lockPollMs, undefined, { signal });
 	}
@@ -2017,7 +2085,7 @@ function firstLine(text: string): string {
 }
 
 /** Run a provisioning step; cancellation rejects with `signal.reason`, the time limit with a typed timeout. */
-function runProvisionStep(
+async function runProvisionStep(
 	command: string,
 	args: readonly string[],
 	options: {
@@ -2029,30 +2097,49 @@ function runProvisionStep(
 ): Promise<BoundedRunResult> {
 	const startedAt = Date.now();
 	const timeout = AbortSignal.timeout(options.timeoutMs);
+	const timedOut = async (cause: unknown): Promise<never> => {
+		throw new GitProvisionTimeoutError(
+			{
+				phase: options.phase,
+				timeoutMs: options.timeoutMs,
+				elapsedMs: Date.now() - startedAt,
+				...(await installCommandFieldAsync()),
+			},
+			{ cause },
+		);
+	};
+	let launch: HelperLaunch;
+	try {
+		// The lookup counts against the step's time limit and ends with its cancellation; then nothing starts.
+		launch = await helperLaunchAsync(command, {
+			env: options.env,
+			signal: AbortSignal.any([options.signal, timeout]),
+		});
+	} catch (error) {
+		if (options.signal.aborted) throw options.signal.reason;
+		if (timeout.aborted) return timedOut(error);
+		throw error;
+	}
+	// A cancellation or the time limit that came as the lookup finished still starts nothing.
+	if (options.signal.aborted) throw options.signal.reason;
+	if (timeout.aborted) return timedOut(timeout.reason);
 	return new Promise((resolvePromise, rejectPromise) => {
 		execFile(
-			command,
+			launch.file,
 			[...args],
-			{ env: options.env, maxBuffer: 16 * 1024 * 1024, signal: AbortSignal.any([options.signal, timeout]) },
+			{
+				env: options.env,
+				maxBuffer: 16 * 1024 * 1024,
+				signal: AbortSignal.any([options.signal, timeout]),
+				...missingHelperOptions(launch),
+			},
 			(error, stdout, stderr) => {
 				if (options.signal.aborted) {
 					rejectPromise(options.signal.reason);
 					return;
 				}
 				if (timeout.aborted) {
-					void installCommandFieldAsync().then((installField) =>
-						rejectPromise(
-							new GitProvisionTimeoutError(
-								{
-									phase: options.phase,
-									timeoutMs: options.timeoutMs,
-									elapsedMs: Date.now() - startedAt,
-									...installField,
-								},
-								{ cause: error },
-							),
-						),
-					);
+					timedOut(error).catch(rejectPromise);
 					return;
 				}
 				if (error === null) {
@@ -2210,7 +2297,7 @@ async function installGitDistribution(
 	target: GitDistributionTarget,
 	system: SystemGitProbe,
 	signal: AbortSignal,
-	emit: (status: ToolStatus) => void,
+	emit: GitProvisionEmit,
 ): Promise<ProvisionedGit> {
 	const layout = currentGitLayout();
 	const binDir = dirname(layout.root);
@@ -2270,7 +2357,7 @@ async function installUnderLock(
 	layout: GitDistributionLayout,
 	system: SystemGitProbe,
 	signal: AbortSignal,
-	emit: (status: ToolStatus) => void,
+	emit: GitProvisionEmit,
 ): Promise<ProvisionedGit> {
 	const binDir = dirname(layout.root);
 	let staging: string;
@@ -2283,10 +2370,13 @@ async function installUnderLock(
 	}
 	let primary: unknown;
 	try {
-		emit({
-			type: "info",
-			message: `${describeSystemGitForStatus(system)} Downloading portable git ${gitProvisionSettings.release.version}...`,
-		});
+		emit(
+			{
+				type: "info",
+				message: `${describeSystemGitForStatus(system)} Downloading portable git ${gitProvisionSettings.release.version}...`,
+			},
+			"starts",
+		);
 		const archive = await downloadGitArchive(target, signal);
 		const actualSha256 = createHash("sha256").update(archive).digest("hex");
 		if (actualSha256 !== target.sha256)
@@ -2320,7 +2410,7 @@ async function installUnderLock(
 		if ("winner" in publication) return publication.winner;
 		const { published } = publication;
 		provisionedGitVersions.set(published.executable, version);
-		emit({ type: "info", message: `git ${version} installed to ${published.root}` });
+		emit({ type: "info", message: `git ${version} installed to ${published.root}` }, "ends");
 		return { layout: published, version };
 	} catch (error) {
 		primary = error;

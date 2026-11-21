@@ -6,8 +6,14 @@ import { constants as bufferConstants } from "node:buffer";
 import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
-import { spawnHostProcess } from "../utils/host-spawn.ts";
-import { descendantsOf, type IdentifiedProcess, signalIfSame } from "./process-descendants.js";
+import { type HostChildProcess, spawnHostProcess } from "../utils/host-spawn.ts";
+import {
+	descendantsOf,
+	descendantsOfNow,
+	type IdentifiedProcess,
+	signalIfSame,
+	signalIfSameNow,
+} from "./process-descendants.js";
 
 const DEFAULT_EXEC_MAX_BUFFER = Math.min(256 * 1024 * 1024, bufferConstants.MAX_STRING_LENGTH);
 const FORCE_KILL_DELAY_MS = 5000;
@@ -16,6 +22,36 @@ const FORCE_KILL_DELAY_MS = 5000;
  * session's shutdown handlers still have most of the quit's grace period once every such command has ended.
  */
 const QUIT_FORCE_KILL_DELAY_MS = 1000;
+
+/**
+ * The commands running now that their session's quit would stop, each until it exits: those started with `onQuit`
+ * (see {@link execCommand}).
+ */
+const quitStoppableCommands = new Set<HostChildProcess>();
+
+/** Whether a command its session's quit would stop is running in this process. */
+export function hasQuitStoppableCommands(): boolean {
+	return quitStoppableCommands.size > 0;
+}
+
+/**
+ * Ends at once, with `SIGKILL`, every running command that its session's quit would stop, and the processes it
+ * started (as the quit reads them), for a process about to exit that can no longer wait, such as an engine whose host
+ * is gone. Each of these is signalled only while it is the process recorded; the command itself through its own
+ * handle. Not on Windows, where they end with the process that started them.
+ */
+export function killQuitStoppableCommandsNow(): void {
+	if (process.platform === "win32") return;
+	for (const proc of quitStoppableCommands) {
+		const pid = proc.pid;
+		if (pid === undefined || proc.exitCode !== null || proc.signalCode !== null) continue;
+		// Read while the command still runs: once it ends, the processes it started are no longer below it.
+		const descendants = descendantsOfNow(pid);
+		proc.kill("SIGKILL");
+		signalIfSameNow(descendants, "SIGKILL");
+	}
+	quitStoppableCommands.clear();
+}
 
 /**
  * Options for executing shell commands.
@@ -56,7 +92,8 @@ export interface ExecResult {
  * ends a command still running so that it cannot hold the session's shutdown: it and the processes it started get
  * SIGTERM, and those still running after {@link QUIT_FORCE_KILL_DELAY_MS}, or once the command exited, SIGKILL; output
  * its descendants still hold open is then no longer waited for. The processes it started are the ones running when the
- * stop starts (on Windows they end with this process instead). A command that already exited is left as it is.
+ * stop starts (on Windows they end with this process instead). A command that already exited is left as it is. Such a
+ * command is also one that {@link killQuitStoppableCommandsNow} ends while it runs.
  */
 export async function execCommand(
 	command: string,
@@ -80,7 +117,11 @@ export async function execCommand(
 		// Atomic's child attribution in the same explicit environment.
 		env: createChildProcessEnvironment(),
 		stdio: ["ignore", "pipe", "pipe"],
+		// A command a quit would stop must not outlive this process when it is killed instead.
+		endWithParent: onQuit !== undefined,
 	});
+	// Until it settles; one that exited by then is left alone (see killQuitStoppableCommandsNow).
+	if (onQuit !== undefined && proc.pid !== undefined) quitStoppableCommands.add(proc);
 
 	let stdout = "";
 	let stderr = "";
@@ -96,39 +137,62 @@ export async function execCommand(
 	let quitCutId: NodeJS.Timeout | undefined;
 	const exited = () => proc.exitCode !== null || proc.signalCode !== null;
 
-	const killProcess = () => {
+	/** The processes the command had started when it was stopped, read while it still ran. */
+	let stoppedDescendants: readonly IdentifiedProcess[] = [];
+	let treeStop: Promise<boolean> | undefined;
+	/**
+	 * Ends the command and, on POSIX, the processes it started below it in its process group, read while it still runs,
+	 * which get SIGTERM with it. On Windows only the command itself ends, through its own handle, as it always did.
+	 * Resolves whether it did: a command that ended on its own first, during the few milliseconds the read takes, leaves
+	 * the processes it started, as one that ended before.
+	 */
+	const endTree = (): Promise<boolean> => {
+		treeStop ??= (async () => {
+			const pid = proc.pid;
+			if (pid === undefined || exited()) return false;
+			if (process.platform === "win32") {
+				proc.kill("SIGTERM");
+				return true;
+			}
+			// Read before the command is signalled: once it exits, the processes it started are no longer below it.
+			const descendants = await descendantsOf(pid);
+			if (exited()) return false;
+			stoppedDescendants = descendants;
+			proc.kill("SIGTERM");
+			await signalIfSame(stoppedDescendants, "SIGTERM");
+			return true;
+		})();
+		return treeStop;
+	};
+
+	const killProcess = (startedAborted = false) => {
 		if (killed) return;
 		killed = true;
-		proc.kill("SIGTERM");
+		// A command started with its abort already signalled has started nothing: it ends at once, as it always did.
+		if (startedAborted) proc.kill("SIGTERM");
+		else void endTree();
 		forceKillId = setTimeout(() => {
 			// `proc.killed` only says a signal was sent, so check whether the child actually exited.
 			if (!exited()) {
 				proc.kill("SIGKILL");
 			}
+			void signalIfSame(stoppedDescendants, "SIGKILL");
 		}, FORCE_KILL_DELAY_MS);
 	};
 
-	/** The processes the command had started when the quit stopped it, read while it still ran. */
-	let quitDescendants: readonly IdentifiedProcess[] = [];
 	let quitStop: Promise<void> | undefined;
 	const stopForQuit = () => {
 		// A command that never started has nothing to end; its start failure settles it. One that already exited keeps
 		// its result, and the output its descendants still write is waited for as before.
-		const pid = proc.pid;
-		if (pid === undefined || exited() || quitStop !== undefined) return;
+		if (proc.pid === undefined || exited() || quitStop !== undefined) return;
 		quitStop = (async () => {
-			// Read before the command is signalled: once it exits, the processes it started are no longer below it.
-			const descendants = await descendantsOf(pid);
-			// A command that ended on its own meanwhile leaves the processes it started, as one that ended before.
-			if (exited()) return;
-			quitDescendants = descendants;
+			if (!(await endTree())) return;
 			killProcess();
-			await signalIfSame(quitDescendants, "SIGTERM");
 			// The command has a short window to end; then it gets SIGKILL, also when its caller already stopped it, and
 			// output its descendants still hold open is no longer waited for.
 			quitCutId = setTimeout(() => {
 				if (!exited()) proc.kill("SIGKILL");
-				void signalIfSame(quitDescendants, "SIGKILL");
+				void signalIfSame(stoppedDescendants, "SIGKILL");
 				proc.stdout?.destroy();
 				proc.stderr?.destroy();
 			}, QUIT_FORCE_KILL_DELAY_MS);
@@ -136,16 +200,17 @@ export async function execCommand(
 	};
 	const stopOnQuit = onQuit?.(stopForQuit);
 
+	const abort = () => killProcess();
 	if (options?.signal) {
 		if (options.signal.aborted) {
-			killProcess();
+			killProcess(true);
 		} else {
-			options.signal.addEventListener("abort", killProcess, { once: true });
+			options.signal.addEventListener("abort", abort, { once: true });
 		}
 	}
 
 	if (options?.timeout && options.timeout > 0) {
-		timeoutId = setTimeout(killProcess, options.timeout);
+		timeoutId = setTimeout(abort, options.timeout);
 	}
 
 	// Keep only bytes within the combined cap (#11360). Close both pipes on overflow so writing
@@ -186,13 +251,21 @@ export async function execCommand(
 		if (!stderr) stderr = error.message;
 	} finally {
 		clearTimeout(timeoutId);
-		clearTimeout(forceKillId);
-		options?.signal?.removeEventListener("abort", killProcess);
+		options?.signal?.removeEventListener("abort", abort);
 		stopOnQuit?.();
+		quitStoppableCommands.delete(proc);
 		await quitStop;
+		await treeStop;
 		clearTimeout(quitCutId);
-		// The command the quit stopped has exited: the processes it started that outlived SIGTERM end now.
-		await signalIfSame(quitDescendants, "SIGKILL");
+		if (quitStop !== undefined || stoppedDescendants.length === 0) {
+			clearTimeout(forceKillId);
+			// The command the quit stopped has exited: the processes it started that outlived SIGTERM end now.
+			if (quitStop !== undefined) await signalIfSame(stoppedDescendants, "SIGKILL");
+		} else {
+			// Those an abort, a timeout or the output limit stopped keep the rest of their window before SIGKILL, also
+			// once the command itself has exited.
+			forceKillId?.unref();
+		}
 	}
 
 	// On truncation, discard any incomplete UTF-8 suffix buffered by either decoder.

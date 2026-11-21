@@ -24,6 +24,7 @@ import {
 	evaluateReloadableScript,
 	installReloadableScripts,
 	isReloadableScriptPath,
+	observeJsonReads,
 	withReloadableScriptPrologue,
 } from "./reloadable-scripts.ts";
 import {
@@ -39,7 +40,7 @@ import type { ExtensionFactory } from "./types.ts";
 
 export { getVirtualModules } from "./loader-host-modules.js";
 
-const require = createRequire(import.meta.url);
+const requireFromHere = createRequire(import.meta.url);
 let _aliases: Promise<Record<string, string>> | null = null;
 let createJitiPromise: Promise<typeof createJiti> | undefined;
 // A transpile cache directory nothing has used for this long is removed by the next process that sets up another one.
@@ -163,7 +164,7 @@ function sha256Hex(content: string | NodeJS.ArrayBufferView): string {
 // sees the complete transitive graph. The observer records into every active
 // recorder; unrelated reads that interleave only over-record, which at worst
 // forces a redundant re-evaluation later — never a stale one.
-const fsExports = require("node:fs") as typeof fs;
+const fsExports = requireFromHere("node:fs") as typeof fs;
 
 /** Files read by one evaluation; reads of its own transpile cache are not part of the graph. */
 interface GraphRecorder {
@@ -184,12 +185,20 @@ function createGraphRecorder(cacheDir: string | undefined): GraphRecorder {
 function recordObservedRead(target: Parameters<typeof fs.readFileSync>[0], content: string | Buffer): void {
 	if (typeof target !== "string" || !path.isAbsolute(target)) return;
 	if (!graphManifestFileExtensions.has(path.extname(target).toLowerCase())) return;
+	recordObservedDigest(target, () => sha256Hex(content));
+}
+
+/** A digest that no file's content has: a reload never finds the file unchanged. */
+const CHANGED_WHILE_READ = "changed-while-read";
+
+/** Records `digest` for `target` in every graph being recorded, except a recorder's own transpile cache. */
+function recordObservedDigest(target: string, digest: string | (() => string)): void {
 	const normalizedTarget = path.normalize(target);
 	const comparableTarget = normalizedTarget.toLowerCase();
 	let hash: string | undefined;
 	for (const recorder of activeGraphRecorders) {
 		if (recorder.cachePrefix && comparableTarget.startsWith(recorder.cachePrefix)) continue;
-		hash ??= sha256Hex(content);
+		hash ??= typeof digest === "string" ? digest : digest();
 		recorder.files.set(normalizedTarget, hash);
 	}
 }
@@ -420,9 +429,14 @@ function recordLateModule(
 	filename: string | undefined,
 	source: string,
 ): void {
-	if (filename === undefined || retainedTransformedLoads.get(extensionPath) !== owner) return;
+	if (filename === undefined) return;
+	recordLateDigest(extensionPath, owner, filename, sha256Hex(source));
+}
+
+/** {@link recordLateModule} with the digest of what the evaluation read. */
+function recordLateDigest(extensionPath: string, owner: RetainedTransformedLoad, filename: string, hash: string): void {
+	if (retainedTransformedLoads.get(extensionPath) !== owner) return;
 	const file = path.normalize(filename);
-	const hash = sha256Hex(source);
 	if (owner.manifest.files[file] === hash) return;
 	owner.manifest.files[file] = hash;
 	if (lateReadWrites.has(owner)) return;
@@ -540,7 +554,7 @@ function extensionImportSpecifier(extensionPath: string, cacheToken: ExtensionCa
  * the same node_modules chain Node would, without exports-map encapsulation.
  */
 async function findPackageRoot(packageName: string, searchPaths?: string[]): Promise<string> {
-	for (const base of searchPaths ?? require.resolve.paths(packageName) ?? []) {
+	for (const base of searchPaths ?? requireFromHere.resolve.paths(packageName) ?? []) {
 		const candidate = path.join(base, packageName);
 		if (await pathExists(path.join(candidate, "package.json"))) {
 			return candidate;
@@ -571,9 +585,9 @@ async function computeAliases(): Promise<Record<string, string>> {
 	const __dirname = currentModuleDir();
 	const packageIndex = path.resolve(__dirname, "../..", "index.js");
 
-	const typeboxEntry = require.resolve("typebox");
-	const typeboxCompileEntry = require.resolve("typebox/compile");
-	const typeboxValueEntry = require.resolve("typebox/value");
+	const typeboxEntry = requireFromHere.resolve("typebox");
+	const typeboxCompileEntry = requireFromHere.resolve("typebox/compile");
+	const typeboxValueEntry = requireFromHere.resolve("typebox/value");
 
 	const packagesRoot = path.resolve(__dirname, "../../../../");
 	const resolveWorkspaceOrImport = async (workspaceRelativePath: string, packageName: string): Promise<string> => {
@@ -788,6 +802,20 @@ async function importExtensionModule(
 		// the live host instead of re-evaluating its graph through source aliases.
 		virtualModules: await getVirtualModules(),
 		...(!isSingleFileBuild ? { alias: await getAliases() } : {}),
+	});
+	// A JSON file the evaluation reads joins its graph, also after the graph was recorded, as a module it evaluates then
+	// does. One whose parsed content the load cannot vouch for is recorded with a digest no content has, so a reload
+	// evaluates the extension again.
+	observeJsonReads(jiti, (file, content) => {
+		if (retained)
+			recordLateDigest(
+				extensionPath,
+				retained,
+				file,
+				content === undefined ? CHANGED_WHILE_READ : sha256Hex(content),
+			);
+		// While the graph is recorded, the recording took the content from the read itself.
+		else if (content === undefined) recordObservedDigest(file, CHANGED_WHILE_READ);
 	});
 	if (sourceBuiltin) registerSourceBuiltinLoad(jiti, { createJiti: createJitiImpl, cacheDir });
 	const specifier = extensionImportSpecifier(importPath, cacheToken);

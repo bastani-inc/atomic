@@ -24,6 +24,7 @@ import {
 	isSubagentChildRecord,
 	isUnsavedSubagentChildRecord,
 	loadSubagentChildRecord,
+	mergeSubagentChildRecord,
 	observeSubagentChildRecord,
 	pendingSubagentChildWrites,
 	registerSubagentChildRecordReader,
@@ -65,6 +66,11 @@ export interface SubagentChildHeldMessages {
 	 * Absent in records written before, which may hold one (see `withoutLegacyLateMessages`).
 	 */
 	readonly withoutLateResults?: true;
+	/**
+	 * No message is Atomic's own continuation (after a restart, or of a resume): written since a child reads those in its
+	 * resume note. Absent in records written before, whose messages with a continuation's text are that continuation.
+	 */
+	readonly withoutContinuations?: true;
 }
 
 /** The held messages a finished child attempt reports, in the form `recordChild` takes them. */
@@ -73,6 +79,7 @@ export interface SubagentChildPendingMessages {
 	readonly taskExpands: boolean;
 	readonly withoutWakePrompt?: true;
 	readonly withoutLateResults?: true;
+	readonly withoutContinuations?: true;
 }
 
 /**
@@ -94,6 +101,7 @@ export function pendingMessagesOfResult(result: {
 		taskExpands: result.pendingTaskExpands === true,
 		withoutWakePrompt: true,
 		withoutLateResults: true,
+		withoutContinuations: true,
 	};
 }
 
@@ -362,6 +370,11 @@ export interface SubagentChildLaunch {
 	 * starts on: its id, in the owner's session store, and its file when that store keeps one.
 	 */
 	readonly forkSession?: { readonly id: string; readonly file?: string };
+	/**
+	 * A fresh child whose session is created in its owner's session store once it starts, rather than as a file in
+	 * `sessionDir`, which is kept for releases that do not read this.
+	 */
+	readonly ownerStore?: true;
 	readonly sessionDir?: string;
 	readonly modelOverride?: string;
 	readonly skills?: readonly string[];
@@ -390,6 +403,7 @@ export function subagentChildLaunch(
 					},
 				}
 			: {}),
+		...(options.sessionStore && !forkSession ? { ownerStore: true as const } : {}),
 		...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
 		...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
 		...(options.skills ? { skills: options.skills } : {}),
@@ -659,8 +673,10 @@ export async function holdSubagentChildMessages(
 					messages: [...messagesSent(held), ...messages],
 					taskExpands: held?.taskExpands ?? false,
 					withoutWakePrompt: true,
-					// Messages an earlier build held may include its copies of late results: they keep saying so.
+					// Messages an earlier build held may include its copies of late results or its continuations: they keep
+					// saying so.
 					...(held === undefined || held.withoutLateResults === true ? { withoutLateResults: true } : {}),
+					...(held === undefined || held.withoutContinuations === true ? { withoutContinuations: true } : {}),
 				},
 			}),
 		);
@@ -1025,7 +1041,7 @@ export function readSubagentChildRecords(
 		const data = entry.data as SubagentChildRecord;
 		if (ownerSessionId !== undefined && data.owner?.sessionId !== ownerSessionId) continue;
 		const previous = records.get(data.childId);
-		records.set(data.childId, visibleWorktreeRecord(previous ? { ...previous, ...data } : data));
+		records.set(data.childId, visibleWorktreeRecord(previous ? mergeSubagentChildRecord(previous, data) : data));
 	}
 	return records;
 }

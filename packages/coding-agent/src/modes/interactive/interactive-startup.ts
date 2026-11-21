@@ -7,6 +7,7 @@ import { consumeStartupInput } from "../../main-early-input.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { compileCacheDeferral } from "../../utils/compile-cache.ts";
 import { setDeprecationWarningSink } from "../../utils/deprecation.js";
+import { findHelperExecutableAsync } from "../../utils/helper-command.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
 import { shortenHomePath } from "../../utils/paths.ts";
@@ -346,14 +347,10 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// changes (initial bind, engine restart, reload, new/resume/fork). Subscribed
 	// before bind so the first async catalog fetch can never be missed. No-op when
 	// the host is not isolated.
-	onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, (_commands, forNextView) => {
-		// The engine's commands can arrive after the folder's approval: an open menu of command names that nothing was
-		// chosen in offers them too, as it does the approved commands this process loaded.
-		this.setupAutocompleteProvider(
-			forNextView
-				? { preserveSelection: true, refreshCommandMenu: this.settingsManager.isProjectTrusted() }
-				: undefined,
-		);
+	onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, () => {
+		// The engine's commands can arrive while the user types, also after the folder's approval: an open menu that
+		// nothing was chosen in offers them too.
+		this.setupAutocompleteProvider();
 	});
 	attachInteractiveEngineResourceExtensionRefresh(this);
 	onInteractiveEngineProjectTrustChanged(this.runtimeHost, (resourcesChanged) => {
@@ -368,12 +365,12 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 			if (this.isInitialized) {
 				// Withholding resources removes any preliminary project data. Approval lists the approved resources in the
 				// mounted resource list in place, once nothing on screen depends on where its rows are (#5693). An open menu
-				// of command names whose first match is still selected offers the approved commands too.
+				// nothing was chosen in offers the approved commands too; withholding closes it.
 				if (!trusted) {
 					cancelApprovedResourceListing(this);
 					refreshResourceDisclosure(this);
 				} else listApprovedResources(this);
-				this.setupAutocompleteProvider(trusted ? { preserveSelection: true, refreshCommandMenu: true } : undefined);
+				this.setupAutocompleteProvider(trusted ? undefined : { closeMenu: true });
 			}
 		}
 		this.refreshProjectTrustWarning();
@@ -671,13 +668,14 @@ InteractiveModeBase.prototype.checkTmuxKeyboardSetup = async function (
 	this: InteractiveModeBase,
 ): Promise<string | undefined> {
 	if (!process.env.TMUX) return undefined;
+	const env = createChildProcessEnvironment();
+	const tmux = await findHelperExecutableAsync("tmux", { env });
+	// If tmux cannot be found, don't warn
+	if (tmux === undefined) return undefined;
 
 	const runTmuxShow = (option: string): Promise<string | undefined> => {
 		return new Promise((resolve) => {
-			const proc = spawn("tmux", ["show", "-gv", option], {
-				stdio: ["ignore", "pipe", "ignore"],
-				env: createChildProcessEnvironment(),
-			});
+			const proc = spawn(tmux, ["show", "-gv", option], { stdio: ["ignore", "pipe", "ignore"], env });
 			let stdout = "";
 			const timer = setTimeout(() => {
 				proc.kill();

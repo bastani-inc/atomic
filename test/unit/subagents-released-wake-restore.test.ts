@@ -534,17 +534,18 @@ test("a message that wakes a released child waiting on a call continues that tur
 	assert.notEqual(run.task, SUBAGENT_RELEASED_WAKE_PROMPT);
 });
 
-test("a message that wakes a released child with nothing to continue starts its turn with the wake prompt, never queued", async () => {
+test("a message that wakes a released child with nothing to continue starts its turn with its wake note, never a message or a queued one", async () => {
 	const h = harness();
 	const record = await releasedChild(h, "wake-message-alone");
 
 	const run = await wokenBy(h, record, { id: "intercom:1", kind: "intercom" });
 
 	assert.deepEqual(run.resumeToolResults, [], "nothing to continue");
-	assert.equal(run.task, SUBAGENT_RELEASED_WAKE_PROMPT, "the wake prompt is the turn's own prompt");
-	assert.equal(run.skipTaskPrompt, undefined);
+	assert.deepEqual(run.resumeNote, { kind: "wake", text: SUBAGENT_RELEASED_WAKE_PROMPT }, "its note starts the turn");
+	assert.equal(run.task, "", "not a message from the user");
+	assert.equal(run.skipTaskPrompt, true);
 	assert.equal(run.resumeFollowUps, undefined);
-	assert.equal(run.resumeTaskFallback, true, "it only starts a turn when none runs, and is never handed back");
+	assert.equal(run.resumeTaskFallback, undefined);
 });
 
 test("a woken child keeps its original task as its task's label, whatever it is woken with", async () => {
@@ -943,7 +944,7 @@ test("a paused child whose latest record is in a copy of its owner's session no 
 	assert.equal(run.task, "carry on");
 });
 
-test("a child restored after a restart reads the results held for it in a notice with its continuation prompt (#4326)", async () => {
+test("a child restored after a restart reads the results held for it in a notice with its restart note (#4326)", async () => {
 	const h = harness();
 	h.original = "waits";
 	await h.admit("restart-held");
@@ -964,11 +965,11 @@ test("a child restored after a restart reads the results held for it in a notice
 	await settled(h, outcome.taskId);
 	const run = h.runs.at(-1);
 	assert.deepEqual(run?.options.resumeLateToolResults, [held]);
-	assert.equal(run?.task, SUBAGENT_RESUME_CONTINUATION_PROMPT);
+	assert.deepEqual(run?.options.resumeNote, { kind: "restart", text: SUBAGENT_RESUME_CONTINUATION_PROMPT });
+	assert.equal(run?.task, "", "no message from the user continues it");
 	assert.equal(run?.options.resumeFollowUps, undefined);
-	assert.equal(run?.options.resumeTaskLiteral, true);
 	assert.deepEqual(run?.options.resumeToolResults, []);
-	assert.equal(run?.options.skipTaskPrompt, undefined);
+	assert.equal(run?.options.skipTaskPrompt, true);
 });
 
 test("a restart's restore whose read of a child's history fails in a way that passes leaves the child as it was, for the next restore (#4502)", async () => {
@@ -1860,6 +1861,88 @@ test("a result for a call the child was told is still running still reaches it, 
 	assert.deepEqual(run.resumeLateToolResults, [late]);
 	assert.equal(lateTimes(run, late), 1);
 });
+
+test("a late result the child read before a compaction took it out of its context is not given to it again (#5012)", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "late-read-compacted");
+	await saveIntoTranscript(record, [stillRunning]);
+	const late = waitResult("/deploy now");
+	assert.ok(record.childSessionFile);
+	const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+	await session.appendMessage({ role: "user", content: legacyLateToolResultMessage(late), timestamp: Date.now() });
+	await session.appendCompaction("summary", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "" },
+		stats: {
+			linesBefore: 1,
+			linesDeleted: 1,
+			linesKept: 0,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+		form: "cleared",
+	});
+	await session.appendMessage({ role: "user", content: "after compaction", timestamp: Date.now() });
+	// A later run of the child launched after it read the result.
+	const leaf = session.getLeafId();
+	assert.ok(leaf);
+	const relaunched = { ...record, launchLeafId: leaf, launchLeafSeq: session.getEntrySeq(leaf) };
+	await appendRecord(h, relaunched);
+	observeSubagentChildRecord(relaunched);
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
+
+	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+	assert.doesNotMatch(told(run), /deploy now/);
+	assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], []);
+});
+
+for (const compacted of [false, true])
+	test(`a late result for a call that reused an earlier call's id reaches the child once${compacted ? ", after a compaction" : ""} (#3274)`, async () => {
+		const h = harness();
+		const record = await releasedChild(h, `reused-call-id-${compacted}`);
+		assert.ok(record.childSessionFile);
+		// An earlier call under the same id (a provider numbering each response's calls from 0), answered with its own
+		// result.
+		await endSessionOnPendingCall(record);
+		const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+		await session.appendMessage({
+			role: "toolResult",
+			toolCallId: WAIT_CALL.toolCallId,
+			toolName: WAIT_CALL.toolName,
+			content: [{ type: "text", text: "run 6 passed" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		await session.appendMessage({ role: "user", content: "now watch run 7", timestamp: Date.now() });
+		if (compacted)
+			await session.appendCompaction("summary", null, 100, {
+				strategy: "verbatim-lines",
+				promptVersion: 7,
+				parameters: { query: "" },
+				stats: {
+					linesBefore: 1,
+					linesDeleted: 1,
+					linesKept: 0,
+					rangeCount: 1,
+					tokensBefore: 100,
+					tokensAfter: 10,
+					percentReduction: 90,
+				},
+				form: "cleared",
+			});
+		await endSessionOnPendingCall(record);
+		await saveIntoTranscript(record, [stillRunning]);
+		const late = waitResult("run 7 deployed");
+		await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
+
+		const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+		assert.equal(lateTimes(run, late), 1, "the result it never read reaches it once");
+	});
 
 test("a late result the child already read as a message is not given to it again (#5012)", async () => {
 	const h = harness();

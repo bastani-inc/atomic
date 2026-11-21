@@ -16,6 +16,13 @@ import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts
 import { isPlainInteractiveSessionInvocation } from "../../utils/interactive-invocation.ts";
 import { engineHeapRuntimeArgsForHost } from "./engine-heap.ts";
 
+/**
+ * `INTERACTIVE_ENGINE_PREWARM_NO_DATABASE` of `interactive-engine-bootstrap.ts`, made here from the one flag every
+ * version of that module exports: a process that loaded an earlier version of it, before an update replaced the
+ * installation, loads this module from the new one, and a name that earlier version lacks would fail to link.
+ */
+const PREWARM_NO_DATABASE = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-no-database`;
+
 /** Everything that decides how an engine child process starts, apart from its engine arguments. */
 export interface EngineLaunch {
 	readonly command: string;
@@ -159,7 +166,10 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 	try {
 		launch =
 			options.launch ?? engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
-		child = spawn(launch.command, [...launch.args, INTERACTIVE_ENGINE_PREWARM_FLAG], {
+		const prewarmArgs = args.includes("--no-session")
+			? [INTERACTIVE_ENGINE_PREWARM_FLAG, PREWARM_NO_DATABASE]
+			: [INTERACTIVE_ENGINE_PREWARM_FLAG];
+		child = spawn(launch.command, [...launch.args, ...prewarmArgs], {
 			cwd: launch.cwd,
 			env: launch.env,
 			detached: launch.detached,

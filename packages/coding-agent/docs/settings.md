@@ -176,6 +176,19 @@ Use `--debug` or `ATOMIC_DEBUG=1` for a single run (displays a `debug` badge in 
 { "httpProxy": "http://127.0.0.1:7890" }
 ```
 
+Both the npm-installed `atomic` and the standalone binary send an `https://` request through `HTTP_PROXY` when `HTTPS_PROXY` is unset, and skip the hosts `NO_PROXY` names. The binary sends requests with Bun's own HTTP client, which reads the proxy variables differently in these cases:
+
+| Setup | npm-installed `atomic` | Standalone binary |
+| --- | --- | --- |
+| `ALL_PROXY` naming an `http://` or `https://` proxy | Not read | Used when the request's own variable is unset |
+| An empty lowercase variable (`http_proxy=""`, `no_proxy=""`) with the uppercase one set | The empty value counts: no proxy, no exemptions | The uppercase value is used |
+| An address block in `NO_PROXY` (`10.0.0.0/8`) | Not matched | Exempts the addresses in it |
+| Proxy variables changed while Atomic runs | Read at startup and when `httpIdleTimeoutMs` changes | Read for each request |
+| An `http://` endpoint through a proxy | Sent through a `CONNECT` tunnel | Sent to the proxy with the full URL |
+| A SOCKS proxy (`socks5://`) in `HTTP_PROXY` or `HTTPS_PROXY` | Used | Requests fail with `UnsupportedProxyProtocol` |
+
+The OpenAI Codex WebSocket takes the same proxy as the install's other requests. In the binary it also reads the proxy variables of a credential's [`env`](/providers#auth-file), and an `ALL_PROXY` naming a SOCKS proxy leaves it unused: those requests are sent over SSE instead.
+
 ### Warnings
 
 | Setting | Type | Default | Description |
@@ -279,7 +292,7 @@ See [Worktree snapshots](/worktree-snapshots).
 | --- | --- | --- | --- |
 | `httpIdleTimeoutMs` | number or string | `600000` | Global HTTP dispatcher idle timeout in ms, duration string (`"30s"`, `"5m"`, `"1h"`), or `"disabled"`/`0`. |
 
-Applies to `fetch`, provider SDK HTTP clients, and the default total wall-clock budget for one [structured decision](/sdk/structured-decisions#cancellation-and-failures) (`structured_output`, `generateStructuredOutput()`, `decide()`). `/settings` presets: `30 sec` (`30000`), `1 min` (`60000`), `5 min` (`300000`), `10 min` (`600000`), `30 min` (`1800000`), `Disabled` (`"disabled"` / `0`).
+Applies to `fetch`, provider SDK HTTP clients, and the default total wall-clock budget for one [structured decision](/sdk/structured-decisions#cancellation-and-failures) (`structured_output`, `generateStructuredOutput()`, `decide()`). `/settings` presets: `30 sec` (`30000`), `1 min` (`60000`), `5 min` (`300000`), `10 min` (`600000`), `30 min` (`1800000`), `Disabled` (`"disabled"` / `0`). The standalone binary checks the timeout on a coarse timer, so it ends a silent request up to about 8 seconds after the timeout runs out, or up to about two minutes after it for timeouts longer than four minutes.
 
 ### Message Delivery
 
@@ -312,7 +325,7 @@ Explicit JSON values for `terminal.hyperlinks`, `terminal.images`, and `terminal
 
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
-| `shellPath` | string | - | Custom Bash path (does not change PowerShell used on native Windows `!`/`!!`) |
+| `shellPath` | string | - | Custom Bash path; a name without a directory, such as `bash`, is looked up in the absolute directories on `PATH` (does not change PowerShell used on native Windows `!`/`!!`) |
 | `shellCommandPrefix` | string | - | Prefix prepended to shell commands (PowerShell syntax on native Windows interactive shells; Bash syntax elsewhere, e.g. `"shopt -s expand_aliases"`) |
 | `search.contextBefore` | number | `1` | Context lines before each `search` match |
 | `search.contextAfter` | number | `3` | Context lines after each `search` match |

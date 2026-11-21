@@ -48,6 +48,7 @@ import type {
 	BranchSummaryEntry,
 	ContextEditEntry,
 	FileEntry,
+	ModelChangeEntry,
 	ModelFallbackRecord,
 	NewSessionOptions,
 	SessionContext,
@@ -59,6 +60,7 @@ import type {
 	SessionOpenOptions,
 	SessionProjection,
 	SessionTreeNode,
+	ThinkingLevelChangeEntry,
 	UsageEntry,
 	WorktreeRestoreHostWarning,
 } from "./session-manager-types.ts";
@@ -857,6 +859,32 @@ export class SessionManager {
 		};
 	}
 
+	/**
+	 * @internal The latest model change and the latest thinking-level change on the active branch after position
+	 * `afterSeq`, each with its position; one the branch has none of after it is absent. Answered from memory, never
+	 * from the store. A session holding only part of its history still holds both: the resume plan that opened it, and
+	 * each compaction that released an earlier window, keep the latest of each on the active branch (the `setting:`
+	 * state of the resume index). A subagent's restore relies on that to continue on the model and level it last ran.
+	 */
+	getLatestBranchSettings(afterSeq = 0): {
+		readonly model?: { readonly entry: ModelChangeEntry; readonly seq: number };
+		readonly thinkingLevel?: { readonly entry: ThinkingLevelChangeEntry; readonly seq: number };
+	} {
+		let model: { readonly entry: ModelChangeEntry; readonly seq: number } | undefined;
+		let thinkingLevel: { readonly entry: ThinkingLevelChangeEntry; readonly seq: number } | undefined;
+		const branch = this.getBranch();
+		// Positions grow along a branch: walking it back from the leaf, the first of each kind is its latest.
+		for (let index = branch.length - 1; index >= 0 && (model === undefined || thinkingLevel === undefined); index--) {
+			const entry = branch[index]!;
+			const seq = this.entrySeqs.get(entry.id);
+			if (seq === undefined) continue;
+			if (seq <= afterSeq) break;
+			if (entry.type === "model_change") model ??= { entry, seq };
+			else if (entry.type === "thinking_level_change") thinkingLevel ??= { entry, seq };
+		}
+		return { ...(model ? { model } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) };
+	}
+
 	getOmittedHistoryTotals(): SessionHistoryTotals | undefined {
 		return this.omittedTotals;
 	}
@@ -893,7 +921,13 @@ export class SessionManager {
 		if (options?.id !== undefined) assertValidSessionId(options.id);
 		this.sessionId = options?.id ?? createSessionId();
 		this.fileEntries = [
-			createSessionHeader(this.sessionId, this.cwd, new Date().toISOString(), options?.parentSession),
+			createSessionHeader(
+				this.sessionId,
+				this.cwd,
+				new Date().toISOString(),
+				options?.parentSession,
+				options?.internal,
+			),
 		];
 		this.lastSeq = 0;
 		this.childArchive = new ChildCatalog();
@@ -962,6 +996,7 @@ export class SessionManager {
 				this.cwd,
 				new Date().toISOString(),
 				options?.parentSession,
+				options?.internal,
 			);
 			const record = this.recordHeader(header);
 			const store = await this.storeForNewSession();
@@ -1538,7 +1573,14 @@ export class SessionManager {
 				this.leafId,
 				coveredThroughEntryId,
 			);
-			const projected = this.buildSessionProjection().messages;
+			// A boundary that covers the history only through an earlier entry of the current branch carries the prompt as
+			// of that entry; the entries after it, prompt changes among them, replay after the boundary. Any other boundary
+			// carries the prompt as it is now.
+			const covered =
+				coveredThroughEntryId !== undefined && this.getBranch().some((entry) => entry.id === coveredThroughEntryId)
+					? coveredThroughEntryId
+					: this.leafId;
+			const projected = this.buildSessionProjection("model", covered).messages;
 			const systemMessage = getCurrentSystemMessage(projected);
 			const transformedPrompt = carriedTransformedPrompt(projected);
 			if (systemMessage) {

@@ -14,7 +14,11 @@ import type {
 	InteractiveEngineGenerationEndKind,
 } from "../interactive-engine/engine-generation.ts";
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
-import { HostListenerFailures, type HostListenerInput } from "../interactive-engine/host-listener-failures.ts";
+import {
+	HostListenerFailures,
+	type HostListenerInput,
+	reportContained,
+} from "../interactive-engine/host-listener-failures.js";
 import {
 	type EngineKeybindingState,
 	type InteractiveEngineCommand,
@@ -211,8 +215,9 @@ export class RpcClient extends RpcClientApi {
 		this.activeActivityIds.clear();
 		this.enginePid = undefined;
 		this.engineMonitor = this.options.interactiveEngine
-			? new InteractiveEngineMonitor(this.options.interactiveEngine.onDiagnostic, (message) =>
-					this.observeInteractiveEngineMessage(message, generation),
+			? new InteractiveEngineMonitor(
+					(diagnostic) => this.reportDiagnostic(diagnostic),
+					(message) => this.observeInteractiveEngineMessage(message, generation),
 				)
 			: undefined;
 		this.eventBuffer = this.engineMonitor ? new RpcEventBuffer((event) => this.emitEvent(event)) : undefined;
@@ -241,7 +246,7 @@ export class RpcClient extends RpcClientApi {
 		const reportStderr = createStderrReporter((message) => {
 			if (generation !== this.generation) return;
 			if (this.options.interactiveEngine) {
-				this.options.interactiveEngine.onDiagnostic({
+				this.reportDiagnostic({
 					activity: undefined,
 					elapsedMs: 0,
 					level: "blocking",
@@ -633,7 +638,13 @@ export class RpcClient extends RpcClientApi {
 				// Older tool updates the buffer still holds reach their listeners first, with the queue they were sent with.
 				this.eventBuffer?.flush();
 				for (const listener of [...this.queuedDeliveryListeners])
-					this.notify((change: QueuedDeliveryChange) => listener(change, event), queuedDeliveries, "event", event);
+					this.notify(
+						(change: QueuedDeliveryChange) => listener(change, event),
+						queuedDeliveries,
+						"event",
+						event,
+						listener,
+					);
 			}
 			if (this.eventBuffer) this.eventBuffer.enqueue(event);
 			else this.emitEvent(event);
@@ -676,8 +687,14 @@ export class RpcClient extends RpcClientApi {
 	 * Call one of the host's listeners with `value`, about `about` (by default the value itself): see
 	 * HostListenerFailures. A raw client calls it as it always has.
 	 */
-	private notify<T>(listener: (value: T) => void, value: T, input: HostListenerInput, about: unknown = value): void {
-		if (this.listenerFailures) this.listenerFailures.call(listener, value, input, about);
+	private notify<T>(
+		listener: (value: T) => void,
+		value: T,
+		input: HostListenerInput,
+		about: unknown = value,
+		key: object = listener,
+	): void {
+		if (this.listenerFailures) this.listenerFailures.call(listener, value, input, about, key);
 		else listener(value);
 	}
 	/** Tell the host whether the engine is running one of its callbacks, while handling `message` or the engine's end. */
@@ -689,6 +706,7 @@ export class RpcClient extends RpcClientApi {
 				active,
 				message ? "message" : "end",
 				message,
+				engine.onActivityChange,
 			);
 	}
 	private emitInteractiveEngineMessage(message: InteractiveEngineMessage, generation: number): void {
@@ -725,7 +743,7 @@ export class RpcClient extends RpcClientApi {
 		if (generation !== this.generation || generation <= this.lastEndedGeneration) return;
 		const engine = this.options.interactiveEngine;
 		if (message.type === "engine_heartbeat" && engine?.onHeartbeat)
-			this.notify(() => engine.onHeartbeat?.(), message, "message");
+			this.notify(() => engine.onHeartbeat?.(), message, "message", message, engine.onHeartbeat);
 		if (message.type === "engine_ready") this.enginePid = message.pid;
 		if (message.type === "engine_bound") {
 			this.boundGeneration = generation;
@@ -781,13 +799,21 @@ export class RpcClient extends RpcClientApi {
 		for (const listener of [...this.generationEndedListeners]) this.notify(listener, event, "end");
 	}
 	private failTransport(rawError: Error): void {
-		this.options.interactiveEngine?.onDiagnostic({
+		this.reportDiagnostic({
 			activity: undefined,
 			elapsedMs: 0,
 			level: "unresponsive",
 			message: rawError.message,
 		});
 		this.failGeneration(rawError, this.generation, "transport-error");
+	}
+	/**
+	 * Tell the interactive engine's host about `diagnostic`. What its reporter throws, or rejects with, goes no further:
+	 * a report never ends the process or stops what reported it, such as failing a generation after a malformed line.
+	 */
+	private reportDiagnostic(diagnostic: ActivityWatchdogDiagnostic): void {
+		const engine = this.options.interactiveEngine;
+		if (engine) reportContained(() => engine.onDiagnostic(diagnostic));
 	}
 	private requireWriter(): QueuedWriter {
 		if (!this.stdinWriter) throw rpcTransportError("Agent process stdin is not writable");
@@ -796,7 +822,7 @@ export class RpcClient extends RpcClientApi {
 	private bestEffort(operation: Promise<void>, label: string): void {
 		void operation.catch((error: Error) => {
 			if (!this.process || this.exitError) return;
-			this.options.interactiveEngine?.onDiagnostic({
+			this.reportDiagnostic({
 				activity: undefined,
 				elapsedMs: 0,
 				level: "unresponsive",

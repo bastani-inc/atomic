@@ -41,7 +41,16 @@ import {
   takeTakeoverMutex,
   takeTakeoverMutexAsync,
 } from "@bastani/atomic";
-import { type BrokerProcess, laterProcessProbe, stopWindowsProcess } from "./broker-process.js";
+import {
+  type BrokerProcess,
+  identifyBrokerProcessAsync,
+  laterProcessProbe,
+  nativeProcessCreationTime,
+  processStartToken,
+  readProcessStartToken,
+  readProcessStartWithoutProcess,
+  stopWindowsProcess,
+} from "./broker-process.js";
 import { isBrokerStatusReport } from "./broker-status.js";
 import { BROKER_UPGRADE_STOP_TIMEOUT_MS, requestBrokerShutdown, waitForBrokerExit } from "./broker-stop.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
@@ -268,7 +277,7 @@ export function getBrokerLaunchSpec(
     const launcherPath = getWindowsHiddenLauncherPath(intercomDir);
     return {
       kind: "windows-launcher",
-      command: "wscript.exe",
+      command: join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", "wscript.exe"),
       args: [launcherPath],
       launcherPath,
       launcherCommandLine: getWindowsStderrRedirectCommandLine(
@@ -682,7 +691,14 @@ async function spawnBrokerHoldingLock(
         // spawner can judge it stale and replace it while this one may still release it.
         // The Windows launcher hides the broker's pid, so its lock could only follow this live spawner and would
         // block every later spawn; there the broker's own live-socket check is what prevents a takeover.
-        keepLock = starting && (await handSpawnLockToBrokerAsync(child.pid, lockOwner));
+        // The child has not been reaped, so its pid still names it: its start is read now.
+        keepLock =
+          starting &&
+          (await handSpawnLockToBrokerAsync(
+            child.pid,
+            lockOwner,
+            child.pid === undefined ? undefined : await lockProcessStartAsync(child.pid),
+          ));
         reject(toError(error));
       });
     });
@@ -810,18 +826,34 @@ export async function upgradeBroker(
     // successor whatever happens, so the broker's other sessions have one to reconnect to. Only a successor that then
     // misses its startup timeout is stopped once the upgrade is cancelled.
     signal?.throwIfAborted();
+    // Started before the shutdown request, which does not wait for it: the broker removes broker.pid when it exits. The
+    // wait ends once the pid names a later process, and a broker still running at the bound keeps the lock only while
+    // its pid names it.
+    const found = identifyBrokerProcessAsync(report.pid, getBrokerPidPath());
+    let foundStart: string | undefined;
+    void found.then((broker) => {
+      foundStart = foundBrokerStart(broker);
+    });
     if ((await requestBrokerShutdown(socketPath)) === "unanswered") throw failed("stop");
     let lockLost = false;
     try {
-      await waitForBrokerExit(report.pid, stopTimeoutMs, async () => {
-        if (lockLost) return;
-        const renewed = await renewSpawnLockAsync(lockOwner);
-        if (renewed === undefined) lockLost = true;
-        else lockOwner = renewed;
-      });
+      await waitForBrokerExit(
+        report.pid,
+        stopTimeoutMs,
+        async () => {
+          if (lockLost) return;
+          const renewed = await renewSpawnLockAsync(lockOwner);
+          if (renewed === undefined) lockLost = true;
+          else lockOwner = renewed;
+        },
+        found,
+        // Polls read the pid's start only where that starts no process; elsewhere broker.pid's verdict and liveness decide.
+        readProcessStartWithoutProcess,
+      );
     } catch (error) {
       if (isIntercomBrokerStopTimeoutError(error)) {
-        lockPassedOn = await handSpawnLockToBrokerAsync(report.pid, lockOwner);
+        // Only a start read while this broker held its pid names it; without one the lock follows the pid, as before.
+        lockPassedOn = await handSpawnLockToBrokerAsync(report.pid, lockOwner, foundStart);
         throw failed("stop", error);
       }
       throw error;
@@ -880,14 +912,18 @@ async function checkSocketConnectable(): Promise<boolean> {
   return isSocketAnswering(await getBrokerSocketPathAsync());
 }
 
-/** Records the still-starting broker on the lock so staleness follows that process instead of the spawner. */
-async function handSpawnLockToBrokerAsync(pid: number | undefined, owner: string): Promise<boolean> {
+/**
+ * Records the still-starting broker on the lock so staleness follows that process instead of the spawner: its pid, and
+ * when it started where that was read while it held the pid, so the lock does not follow a later process the OS gives
+ * the pid. Without `started` the lock follows the pid alone.
+ */
+async function handSpawnLockToBrokerAsync(pid: number | undefined, owner: string, started: string | undefined): Promise<boolean> {
   if (pid === undefined) return false;
   const lockPath = getBrokerSpawnLockPath();
   return underSpawnLockMutexAsync(lockPath, false, async () => {
     if (!(await ownsSpawnLockAsync(owner, lockPath))) return false;
     try {
-      await appendFile(lockPath, `${pid}\n`);
+      await appendFile(lockPath, `${lockProcessLine(pid, started)}\n`);
       return true;
     } catch {
       return false;
@@ -931,7 +967,7 @@ export function renewSpawnLock(
     const current = readFileOrUndefined(lockPath);
     if (current === undefined) return existsSync(lockPath) ? owner : undefined;
     if (!current.startsWith(owner)) return undefined;
-    const renewed = `${process.pid}\n${nowMs}\n`;
+    const renewed = `${ownLockProcessLine()}\n${nowMs}\n`;
     const staged = `${lockPath}.${process.pid}.renew`;
     try {
       writeFileSync(staged, renewed);
@@ -957,7 +993,7 @@ export async function renewSpawnLockAsync(
     const current = await readFileOrUndefinedAsync(lockPath);
     if (current === undefined) return (await pathExists(lockPath)) ? owner : undefined;
     if (!current.startsWith(owner)) return undefined;
-    const renewed = `${process.pid}\n${nowMs}\n`;
+    const renewed = `${await ownLockProcessLineAsync()}\n${nowMs}\n`;
     const staged = `${lockPath}.${process.pid}.renew`;
     try {
       await writeFile(staged, renewed);
@@ -1023,7 +1059,7 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
   const maxRetries = 5;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const writtenAt = Date.now();
-    const owner = `${process.pid}\n${writtenAt}\n`;
+    const owner = `${ownLockProcessLine()}\n${writtenAt}\n`;
     if (createLockFile(lockPath, owner)) {
       const ownership = readOwnership(owner, lockPath);
       if (ownership === "owned") {
@@ -1047,9 +1083,10 @@ export async function acquireSpawnLockAsync(
   lockPath: string = getBrokerSpawnLockPath(),
 ): Promise<string | undefined> {
   const maxRetries = 5;
+  const ownLine = await ownLockProcessLineAsync();
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const writtenAt = Date.now();
-    const owner = `${process.pid}\n${writtenAt}\n`;
+    const owner = `${ownLine}\n${writtenAt}\n`;
     if (await createLockFileAsync(lockPath, owner)) {
       const ownership = await readOwnershipAsync(owner, lockPath);
       if (ownership === "owned") {
@@ -1079,7 +1116,7 @@ function isSpawnLockReplaceable(written: string | undefined, lockPath: string): 
 
 async function isSpawnLockReplaceableAsync(written: string | undefined, lockPath: string): Promise<boolean> {
   const content = completeLines(written) ?? "";
-  if (!isSpawnLockContentStale(content)) return false;
+  if (!(await isSpawnLockContentStaleAsync(content))) return false;
   const writer = (await writerStateAsync(lockPath, written)) ?? (recordsSpawner(content) ? "abandoned" : "unknown");
   if (writer === "unknown" && (await unknownHolderWaitedOutAsync(lockPath, written))) {
     await warnUnknownSpawnLockHolderAsync(lockPath);
@@ -1134,6 +1171,7 @@ function isProcessAlive(pid: number): boolean {
 /**
  * A lock is stale once the broker it recorded is gone, or, while no broker is recorded, once its
  * spawner is gone. A live broker keeps the lock even if its spawner died, until the age backstop.
+ * A process is gone also when its pid names a process with another start than the lock recorded for it.
  */
 export function isSpawnLockStale(lockPath: string = getBrokerSpawnLockPath(), nowMs: number = Date.now()): boolean {
   if (!existsSync(lockPath)) {
@@ -1148,14 +1186,90 @@ function recordsSpawner(content: string): boolean {
 }
 
 function isSpawnLockContentStale(content: string, nowMs: number = Date.now()): boolean {
+  const named = lockedProcessLine(content, nowMs);
+  return named === undefined || lockProcessGone(named, lockProcessStart);
+}
+
+async function isSpawnLockContentStaleAsync(content: string, nowMs: number = Date.now()): Promise<boolean> {
+  const named = lockedProcessLine(content, nowMs);
+  return named === undefined || lockProcessGone(named, await startReaderAsync(named));
+}
+
+/** The line of the process a lock follows (its broker, else its spawner), or undefined for a malformed or aged lock. */
+function lockedProcessLine(content: string, nowMs: number): string | undefined {
   const [spawnerLine = "", createdAtLine = "", brokerLine = ""] = content.split("\n");
   const spawnerPid = Number.parseInt(spawnerLine, 10);
   const createdAt = Number.parseInt(createdAtLine, 10);
   const brokerPid = Number.parseInt(brokerLine, 10);
 
-  if (!Number.isFinite(spawnerPid) || !Number.isFinite(createdAt)) return true;
-  if (nowMs - createdAt > BROKER_SPAWN_LOCK_MAX_AGE_MS) return true;
-  return !isProcessAlive(Number.isFinite(brokerPid) ? brokerPid : spawnerPid);
+  if (!Number.isFinite(spawnerPid) || !Number.isFinite(createdAt)) return undefined;
+  if (nowMs - createdAt > BROKER_SPAWN_LOCK_MAX_AGE_MS) return undefined;
+  return Number.isFinite(brokerPid) ? brokerLine : spawnerLine;
+}
+
+/**
+ * The start the spawn lock records beside a pid: read without starting a process (Linux `/proc`, the Windows native
+ * module), so taking the lock never waits on one; undefined elsewhere, or with a host that has no such reader, where the
+ * lock follows the pid alone.
+ */
+function lockProcessStart(pid: number): string | undefined {
+  if (process.platform === "linux") return processStartToken(pid);
+  if (process.platform === "win32") return nativeProcessCreationTime(pid);
+  return undefined;
+}
+
+/** {@link lockProcessStart} without blocking the event loop. */
+async function lockProcessStartAsync(pid: number): Promise<string | undefined> {
+  if (process.platform === "linux") return readProcessStartToken(pid);
+  if (process.platform === "win32") return nativeProcessCreationTime(pid);
+  return undefined;
+}
+
+/** A reader answering with the start of the process `line` names, read ahead without blocking the event loop. */
+async function startReaderAsync(line: string): Promise<(pid: number) => string | undefined> {
+  const pid = Number.parseInt(line, 10);
+  const started = line.includes(" ") ? await lockProcessStartAsync(pid) : undefined;
+  return () => started;
+}
+
+/**
+ * A process as the spawn lock names it: `<pid>` or `<pid> <start>`. Spawners of earlier versions read the leading pid
+ * and ignore the start.
+ */
+function lockProcessLine(pid: number, started: string | undefined): string {
+  return started === undefined ? String(pid) : `${pid} ${started}`;
+}
+
+let ownLine: string | undefined;
+
+function ownLockProcessLine(): string {
+  ownLine ??= lockProcessLine(process.pid, lockProcessStart(process.pid));
+  return ownLine;
+}
+
+async function ownLockProcessLineAsync(): Promise<string> {
+  ownLine ??= lockProcessLine(process.pid, await lockProcessStartAsync(process.pid));
+  return ownLine;
+}
+
+/** The start a found broker is recorded with: only one read while that broker held its pid. */
+function foundBrokerStart(found: BrokerProcess): string | undefined {
+  if (process.platform === "linux") return found.started;
+  if (process.platform === "win32" && found.wroteBrokerPid === "yes") return found.started;
+  return undefined;
+}
+
+/**
+ * Whether the process a lock line names is gone: its pid is not alive, or names a process whose start, where it can be
+ * read, is not the one recorded. A start that cannot be read, or none recorded, leaves the pid's liveness to decide.
+ */
+function lockProcessGone(line: string, readStart: (pid: number) => string | undefined): boolean {
+  const pid = Number.parseInt(line, 10);
+  if (!isProcessAlive(pid)) return true;
+  const recorded = line.slice(line.indexOf(" ") + 1);
+  if (!line.includes(" ") || recorded === "") return false;
+  const current = readStart(pid);
+  return current !== undefined && current !== recorded;
 }
 
 /** Removes the lock only while it is still the one `owner` wrote; a spawner that replaced a stale lock keeps its own. */

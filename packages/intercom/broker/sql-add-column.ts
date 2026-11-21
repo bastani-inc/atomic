@@ -32,9 +32,11 @@ export async function addOptionalColumn(
 	table: string,
 	column: string,
 	definition: string,
+	/** Run once with the column's addition, in its transaction, as an index on it. */
+	withColumn?: string,
 ): Promise<boolean> {
 	try {
-		await addMissingColumns(database, table, { [column]: definition });
+		await addMissingColumns(database, table, { [column]: definition }, withColumn);
 		return true;
 	} catch (error) {
 		if (isMissingPrivilege(error)) return false;
@@ -51,6 +53,7 @@ export async function addMissingColumns(
 	database: SqliteDatabase,
 	table: string,
 	columns: Readonly<Record<string, string>>,
+	withColumn?: string,
 ): Promise<void> {
 	const dialect = dialectOf(database);
 	for (const [column, definition] of Object.entries(columns)) {
@@ -59,6 +62,7 @@ export async function addMissingColumns(
 			await database.transaction(async (tx) => {
 				if ((await tx.all(probe.sql, ...probe.params)).length > 0) return;
 				await tx.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+				if (withColumn !== undefined) await tx.exec(withColumn);
 			});
 		} catch (error) {
 			if (!isDuplicateColumn(error)) throw error;

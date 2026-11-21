@@ -578,6 +578,11 @@ export interface HostProcessOptions {
   pipeStderr: boolean
   /** Starts the process in a session of its own, as Node's `detached` does. */
   detached: boolean
+  /**
+   * Ends the process with `SIGKILL` when this process ends, however it ends; not the processes it starts. Not for a
+   * detached process.
+   */
+  endWithParent?: boolean
 }
 
 export type InputData =
@@ -947,6 +952,16 @@ export type TaskResult =
   | { kind: 'completed'; output: OutputRef; exitCode?: number }
   | { kind: 'failed'; code: string; message: string; output?: OutputRef; exitCode?: number }
   | { kind: 'cancelled'; cause: CancelCause; output?: OutputRef }
+
+/**
+ * Ends running process `pid` if it was created at `created`, as `processCreationTime` reads it, and with
+ * `descendants` every process it started, directly or through others, that still runs. Each is ended through a handle
+ * opened and checked before anything is ended, so a later process given one of their ids is never ended: the process
+ * `pid` names must have been created at `created`, and a descendant after the process that started it and before the
+ * processes were listed. Returns how many were ended, or `null` where `pid` does not name that process (it is gone, is
+ * another process, or this process may not end it), and off Windows.
+ */
+export declare function terminateProcessCreatedAt(pid: number, created: string, descendants: boolean): number | null
 
 /**
  * Explicit termination causes. Timer/idle/wall-clock causes are intentionally
