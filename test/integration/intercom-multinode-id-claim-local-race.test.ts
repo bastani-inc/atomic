@@ -10,9 +10,9 @@ import {
 } from "../helpers/intercom-two-broker-harness.js";
 
 /**
- * #5607: a returning session whose claim of its id went unanswered loses that id to a session on the same broker that
- * claimed it meanwhile. It is answered under its fresh id within its registration's usual time, and listed under it
- * once that id's binding is written.
+ * #5607: a returning session whose claim of its id went unanswered keeps the id its binding write took, even while
+ * another session of it on the same broker asks for that id meanwhile: one live registration per id, so that other one
+ * gets a fresh id. The returning session is answered within its registration's usual time, and listed under its id.
  */
 
 const HARNESS_OPTIONS: TwoBrokerHarnessOptions = {
@@ -31,7 +31,7 @@ beforeAll(async () => {
 afterAll(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 
 test(
-	"a returning session whose id a session on the same broker took while its claim went unanswered is answered under its fresh id in time, and listed once that id is bound (#5607)",
+	"a returning session whose claim went unanswered keeps the id its binding write took, and another session of it asking for that id on the same broker meanwhile gets a fresh id (#5607)",
 	async () => {
 		assert.equal(harness.multiNodeRouting, true);
 		const marker = `${harness.sharedDatabasePath}.race`;
@@ -58,23 +58,23 @@ test(
 				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
 			});
 			returning.catch(() => {});
-			// Its binding write has kept the id; before that write answers, another session of it takes the id here.
+			// Its binding write has kept the id; before that write answers, another session of it asks for the id here.
 			await vi.waitFor(() => assert.ok(existsSync(`${marker}.selected`)), WAIT);
 			const other = await harness.connect("a", "other", {
 				group: "two",
 				returnAddress: original.returnAddress,
 				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
 			});
-			assert.equal(other.sessionId, id);
+			assert.notEqual(other.sessionId, id, "the id is the returning session's");
 			writeFileSync(`${marker}.resume`, "");
 
 			const back = await returning;
 			assert.ok(performance.now() - started < BROKER_CONNECT_TIMEOUT_MS, "answered within its client's own wait");
-			assert.notEqual(back.sessionId, id);
+			assert.equal(back.sessionId, id);
 			writeFileSync(`${marker}.allow-fresh`, "");
 			await vi.waitFor(
-				async () =>
-					assert.ok((await watcher.client.listSessions()).some((session) => session.id === back.sessionId)),
+				async () => assert.ok((await watcher.client.listSessions()).some((session) => session.id === id)),
 				WAIT,
 			);
 		} finally {
