@@ -1,4 +1,5 @@
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import {
 	type Component,
 	Container,
@@ -12,7 +13,6 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@bastani/atomic-tui";
-import type { TSchema } from "typebox";
 import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
