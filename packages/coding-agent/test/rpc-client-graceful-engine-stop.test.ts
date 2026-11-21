@@ -19,7 +19,8 @@ type EngineBehavior =
 	| "reports-then-lingers"
 	| "ignores-sigterm"
 	| "shuts-down-on-sigterm"
-	| "names-its-signal";
+	| "names-its-signal"
+	| "console-closes-in-shutdown";
 
 const tempDirs: string[] = [];
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -70,6 +71,11 @@ if (${JSON.stringify(behavior)} !== "never-ready") {
 process.stdin.on("end", () => {
 	appendFileSync(${JSON.stringify(record)}, "shutdown started\\n");
 	if (${JSON.stringify(behavior)} === "hangs-in-shutdown") return;
+	if (${JSON.stringify(behavior)} === "console-closes-in-shutdown") {
+		// As an engine whose Windows console closes while a quit stops it: it says so, then exits.
+		process.stdout.write(JSON.stringify({ type: "engine_console_closed" }) + "\\n", () => process.exit(0));
+		return;
+	}
 	appendFileSync(${JSON.stringify(record)}, "shutdown finished\\n");
 	if (${JSON.stringify(behavior)} === "reports-then-lingers") {
 		// As an engine whose runtime still writes its compile cache after its last exit handler.
@@ -183,6 +189,17 @@ describe("RpcClient graceful engine stop on Windows", () => {
 		await assert.rejects(starting);
 		assert.equal(readRecord(record), "", "the engine was ended without being asked to shut down");
 		assert.ok(elapsedMs < ENGINE_SHUTDOWN_GRACE_MS, `stop took ${elapsedMs} ms`);
+	});
+
+	test("an engine whose console is closed while a quit stops it still tells the host", async () => {
+		const { client } = startEngine("console-closes-in-shutdown");
+		await client.start();
+		const messages: string[] = [];
+		client.onInteractiveEngineMessage((message) => messages.push(message.type));
+
+		await stopOnWindows(client, { graceful: true });
+
+		assert.ok(messages.includes("engine_console_closed"), JSON.stringify(messages));
 	});
 
 	test("a quit ends an engine whose shutdown hangs within the bound (#6075)", async () => {
