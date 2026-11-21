@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.3-alpha.1] - 2026-11-21
+
 ### Added
 
 - `fittedThinkingBudget()` returns the thinking budget a budget-based Claude request asks for and the budget it sends once fitted under the context window. Amazon Bedrock replies now record `thinkingBudgetTokens`, as Anthropic replies do ([#6117](https://github.com/bastani-inc/atomic/issues/6117)).

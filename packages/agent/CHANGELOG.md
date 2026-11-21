@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-agent-core`. Its history up
 
 ## [Unreleased]
 
+## [0.10.3-alpha.1] - 2026-11-21
+
 ### Added
 
 - `Agent.onQueuedMessagesTaken` is called with the steering or follow-up messages a run takes from its queue, as it takes them, before their `message_start`.

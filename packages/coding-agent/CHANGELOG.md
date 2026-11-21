@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.3-alpha.1] - 2026-11-21
+
 ### Added
 
 - `ToolBlock` and `NoticeLine` take the states `agent-running`, `shell-running`, `input` and `task-stopped`, which draw a subagent's or background task's state with the marks of the agent panel and `/tasks`, and `TASK_MARKS` gives those marks for text an extension draws itself ([#6122](https://github.com/bastani-inc/atomic/issues/6122)).
