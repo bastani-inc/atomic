@@ -146,7 +146,7 @@ class StartupShell {
 		} catch (error) {
 			this.restoreOutput();
 			try {
-				this.tui.stop();
+				this.tui.stop({ preserveScreen: true });
 			} catch {
 				// The terminal never started.
 			}
@@ -259,7 +259,9 @@ class StartupShell {
 		this.state = "aborted";
 		this.restoreOutput();
 		typed.text = this.editor.getExpandedText();
-		this.tui.stop();
+		// Leave the alternate screen without writing the editor's frame onto the screen it returns to: what comes next
+		// (the message, the question) is all the user sees, as without the early editor.
+		this.tui.stop({ preserveScreen: true });
 		for (const key of this.held) applyEarlyInputChunk(typed, key);
 		return typed;
 	}

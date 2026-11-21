@@ -16,6 +16,7 @@ import {
 	INTERCOM_BROKER_BUNDLE_ENTRY,
 	type BuiltinPackageDirName,
 } from "../src/core/builtin-install-layout.ts";
+import { codeStringLiteral } from "./code-string-literal.js";
 import {
 	deriveImportClosure,
 	INSTALLED_IMPORT_CLOSURE_ROOTS,
@@ -313,7 +314,7 @@ function deferredHostStorageModule(names: readonly string[]): string {
 		`export let ${bindings};`,
 		"let loading;",
 		"export function loadHostStorage() {",
-		`\tloading ??= import(${JSON.stringify(HOST_STORAGE)}).then(`,
+		`\tloading ??= import(${codeStringLiteral(HOST_STORAGE)}).then(`,
 		`\t\t(storage) => { ({ ${bindings} } = storage); },`,
 		"\t\t(error) => { loading = undefined; throw error; },",
 		"\t);",
@@ -325,15 +326,15 @@ function deferredHostStorageModule(names: readonly string[]): string {
 
 function loadStorageBeforeStores(source: string): string {
 	// Imported last, so the broker's first imports still run first.
-	const loader = `import { loadHostStorage as __loadHostStorage } from ${JSON.stringify(DEFERRED_HOST_STORAGE)};`;
+	const loader = `import { loadHostStorage as __loadHostStorage } from ${codeStringLiteral(DEFERRED_HOST_STORAGE)};`;
 	let rewritten = `${source}\n${loader}\n`;
 	for (const root of BROKER_STORAGE_ROOTS) {
-		const dynamicImport = `import(${JSON.stringify(root)})`;
-		const parts = rewritten.split(dynamicImport);
+		// As broker.ts spells it.
+		const parts = rewritten.split(`import("${root}")`);
 		if (parts.length !== 2) {
 			throw new Error(`Expected broker.ts to import ${root} dynamically once, found ${parts.length - 1}`);
 		}
-		rewritten = parts.join(`__loadHostStorage().then(() => ${dynamicImport})`);
+		rewritten = parts.join(`__loadHostStorage().then(() => import(${codeStringLiteral(root)}))`);
 	}
 	return rewritten;
 }

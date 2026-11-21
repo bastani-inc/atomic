@@ -9,12 +9,23 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { ChatRecord } from "../../packages/coding-agent/src/core/storage/session/chat-records.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
-import { MAIN_THREAD_LAG_LIMIT_MS } from "./event-loop-lag.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "./runtime.js";
 import { holdSqliteWriteLock } from "./sqlite-lock-holder.js";
 
-/** How long the other process keeps the lock: far past the lag limit, well short of the 5 s busy timeout. */
-const LOCK_HELD_MS = 1_000;
+/**
+ * How long the other process keeps the lock, short of the 5 s busy timeout so that the write waits for it and then
+ * commits, and the longest event-loop turn a write may take meanwhile. A write that waited for the lock on this thread
+ * would stop the event loop until the busy timeout ran out. On a loaded Windows runner the event loop goes up to about
+ * 1.4 s without a turn on Bun and 0.5 s on Node while another process holds the lock, whether or not anything is
+ * being written.
+ */
+const LOCK_HELD_MS = 3_000;
+const LONGEST_TURN_MS = 2_000;
+/**
+ * Each case opens a session store in a new database, then holds the lock twice and starts a lock holder process for
+ * each hold. On a loaded Windows runner a case took up to 57 s, 45 s of it opening the store.
+ */
+export const CHAT_RECORD_LOCK_CASE_BUDGET_MS = 120_000;
 
 export const CHAT_RECORD_LOCK_CASES = [
 	"the first diagnostic, which creates its table",
@@ -84,7 +95,7 @@ export async function assertChatRecordWaitsWithoutStoppingTheEventLoop(which: Ch
 		);
 		assert.equal(tree.failure, undefined);
 		assert.ok(
-			tree.longestTurnMs < MAIN_THREAD_LAG_LIMIT_MS,
+			tree.longestTurnMs < LONGEST_TURN_MS,
 			`main's append stopped the event loop for ${Math.round(tree.longestTurnMs)} ms`,
 		);
 
@@ -94,7 +105,7 @@ export async function assertChatRecordWaitsWithoutStoppingTheEventLoop(which: Ch
 				: { kind: "line", level: "error", text: "Error: Retry failed after 1 attempts: Retry cancelled" };
 		const side = await whileAnotherProcessHoldsTheLock(path, () => scope.store.append(scope.owner, anchor, record));
 		assert.ok(
-			side.longestTurnMs < MAIN_THREAD_LAG_LIMIT_MS,
+			side.longestTurnMs < LONGEST_TURN_MS,
 			`saving ${which} stopped the event loop for ${Math.round(side.longestTurnMs)} ms (main's append: ${Math.round(tree.longestTurnMs)} ms)`,
 		);
 		assert.equal(side.failure, undefined);

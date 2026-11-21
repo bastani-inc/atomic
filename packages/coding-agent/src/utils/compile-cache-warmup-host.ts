@@ -10,7 +10,8 @@
 import { spawn } from "node:child_process";
 import { parse } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type CompileCacheHelperRuntime, compileCacheDeferral } from "./compile-cache.ts";
+import type { CompileCacheHelperRuntime } from "./compile-cache.ts";
+import { processCompileCacheDeferral } from "./compile-cache-deferral.ts";
 
 /** What a helper does after its own cache: the helpers still to run, and the markers that must still stand. */
 export interface CompileCacheWarmupPlan {
@@ -90,7 +91,7 @@ let warmupStarted = false;
  * build, or fails, ends the chain; the next session that finds the cache cold starts it again.
  */
 export function warmCompileCache(engineExecArgv: readonly string[]): void {
-	const deferral = compileCacheDeferral();
+	const deferral = processCompileCacheDeferral();
 	if (!deferral?.helper || warmupStarted) return;
 	warmupStarted = true;
 	const own = deferral.runtime;

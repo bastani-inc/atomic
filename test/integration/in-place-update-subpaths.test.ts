@@ -32,7 +32,8 @@ function resolvedIn0103(name: string, subpath: string): string | null {
 	if (key in exportsMap) return "";
 	for (const [pattern, target] of Object.entries(exportsMap)) {
 		if (!pattern.endsWith("*") || !key.startsWith(pattern.slice(0, -1))) continue;
-		return target.replace("*", key.slice(pattern.length - 1)).replace(/^\.\//, "");
+		// Node puts the matched text in place of every `*` of the target.
+		return target.replaceAll("*", key.slice(pattern.length - 1)).replace(/^\.\//, "");
 	}
 	return null;
 }

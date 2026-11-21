@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { resolvePath } from "../../utils/paths.ts";
+import { updatedInstallError } from "../../utils/updated-install.ts";
 import { createEventBus, type EventBus } from "../event-bus.js";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "../mandatory-runtime-tools.ts";
 import {
@@ -219,7 +220,10 @@ async function loadExtension(
 	} catch (err) {
 		// Ordinary discovery failures remain diagnostics; failed cleanup must reject creation.
 		if (err instanceof Error && "code" in err && err.code === "ShutdownFailed") throw err;
-		const message = err instanceof Error ? err.message : String(err);
+		// An extension whose code an update replaced while this session runs, as on /reload, says to restart.
+		const label = getBuiltinExtensionEntryLabel(resolvedPath) ?? extensionPath;
+		const failure = (await updatedInstallError(err, `the ${label} extension`)) ?? err;
+		const message = failure instanceof Error ? failure.message : String(failure);
 		return { extension: null, error: `Failed to load extension: ${message}` };
 	}
 }
