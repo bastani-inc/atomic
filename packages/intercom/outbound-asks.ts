@@ -1,13 +1,20 @@
-import type { SessionEntry } from "@bastani/atomic";
+import type { ExtensionAPI, SessionEntry } from "@bastani/atomic";
 import { isMessage, isSessionInfo } from "./broker/client-message-validation.js";
-import { INTERCOM_INBOX_ENTRY } from "./durable-inbox.js";
+import { consumedIntercomMessageIds, INTERCOM_INBOX_ENTRY, INTERCOM_INBOX_HANDLED_ENTRY } from "./durable-inbox.js";
 import type { InboundMessageEntry } from "./intercom-utils.js";
 import type { Message, SessionInfo } from "./types.js";
 
 /** #4751: custom session entry recording an `ask` this session sent, so its reply is recognized after a restart. */
 export const OUTBOUND_ASK_ENTRY = "intercom_ask";
-/** #4751: custom session entry recording how an outbound ask ended: answered, cancelled, or failed. */
+/**
+ * #4751: custom session entry recording how an outbound ask ended: answered, cancelled, or failed. `{ askId, state }`
+ * records one ask; `{ askIds, state: "answered" }` records several answered asks at once. A reopened session keeps
+ * neither the ask nor the messages that answered it once its outcome is recorded.
+ */
 export const OUTBOUND_ASK_SETTLED_ENTRY = "intercom_ask_settled";
+
+/** The most asks one record of answered asks names, so the record stays small. */
+export const SETTLED_ASKS_PER_RECORD = 500;
 
 export interface OutboundAsk {
 	readonly askId: string;
@@ -26,6 +33,11 @@ export type OutboundAskState = "pending" | "answered" | "cancelled" | "failed";
 export interface OutboundAskRecord {
 	readonly ask: OutboundAsk;
 	readonly state: OutboundAskState;
+}
+
+interface HeldAskRecord extends OutboundAskRecord {
+	/** Whether the session holds a record of how it ended, rather than only the messages saved for it. */
+	readonly recorded: boolean;
 }
 
 interface OutboundAsksOptions {
@@ -107,6 +119,22 @@ export class OutboundAsks {
 			.sort((left, right) => left.askedAt - right.askedAt);
 	}
 
+	/**
+	 * Record that a reply answered `askId`, once the session has saved that it took it: a reopened session then keeps
+	 * neither the ask nor its reply. Only an answer is recorded this way: after it, the broker routes no other reply and
+	 * the session shows no failure for the ask, so nothing that arrives later needs the ask. A record that is not saved
+	 * is written at a later resume.
+	 */
+	async recordAnswered(askId: string): Promise<void> {
+		const record = this.records().get(askId);
+		if (record?.state !== "answered" || record.recorded) return;
+		try {
+			await this.options.append(OUTBOUND_ASK_SETTLED_ENTRY, { askId, state: "answered" });
+		} catch {
+			// Unsaved, the ask and its reply stay in a reopened session, which records the answer then.
+		}
+	}
+
 	/** Record how a pending ask ended; an ask that already ended keeps its first outcome. */
 	async settle(askId: string, state: Exclude<OutboundAskState, "pending">): Promise<boolean> {
 		const record = this.find(askId);
@@ -120,27 +148,18 @@ export class OutboundAsks {
 		return true;
 	}
 
-	private records(): Map<string, OutboundAskRecord> {
+	private records(entries: readonly SessionEntry[] = this.branch()): Map<string, HeldAskRecord> {
 		const asks = new Map<string, OutboundAsk>();
 		const states = new Map<string, Exclude<OutboundAskState, "pending">>();
-		let entries: SessionEntry[] = [];
-		try {
-			entries = [...this.options.entries()];
-		} catch {
-			entries = [];
-		}
 		const owner = this.options.sessionId();
 		for (const entry of entries) {
 			if (entry.type !== "custom") continue;
 			if (entry.customType === OUTBOUND_ASK_ENTRY && isOutboundAsk(entry.data) && entry.data.sessionId === owner)
 				asks.set(entry.data.askId, entry.data);
-			if (entry.customType === OUTBOUND_ASK_SETTLED_ENTRY) {
-				const data = entry.data as { askId?: unknown; state?: unknown } | undefined;
-				if (typeof data?.askId === "string" && isSettledState(data.state) && !states.has(data.askId)) {
-					states.set(data.askId, data.state);
-				}
-			}
+			if (entry.customType === OUTBOUND_ASK_SETTLED_ENTRY)
+				for (const [askId, state] of settledOutcomes(entry.data)) if (!states.has(askId)) states.set(askId, state);
 		}
+		const recorded = new Set(states.keys());
 		for (const [askId, ask] of this.opened) if (!asks.has(askId)) asks.set(askId, ask);
 		for (const [askId, state] of this.settled) if (!states.has(askId)) states.set(askId, state);
 		// A saved reply or failed-ask message settles its ask even when the settle record was never written (a crash
@@ -151,9 +170,89 @@ export class OutboundAsks {
 			if (ask === undefined || !answeredByRecipient(ask, from)) continue;
 			states.set(ask.askId, message.replyError === undefined ? "answered" : "failed");
 		}
-		const records = new Map<string, OutboundAskRecord>();
-		for (const [askId, ask] of asks) records.set(askId, { ask, state: states.get(askId) ?? "pending" });
+		const records = new Map<string, HeldAskRecord>();
+		for (const [askId, ask] of asks)
+			records.set(askId, { ask, state: states.get(askId) ?? "pending", recorded: recorded.has(askId) });
 		return records;
+	}
+
+	/**
+	 * After a restart, record in one entry the asks whose answer this session took without recording it: a reply taken
+	 * in a call, as earlier versions saved them, or shown as a message. A later reopened session then keeps neither those
+	 * asks nor their replies. `taken` names the messages the session took in entries a resumed window left out (#6168).
+	 * An ask is recorded only once every message saved for it was taken, so a reply still to be shown keeps its ask. A
+	 * message naming an ask this session does not hold, such as the supervisor's reply to a subagent's question, is
+	 * recorded the same way. Nothing is written when there are none; a record not saved is tried at the next restart.
+	 */
+	async recordTakenAnswers(taken: Iterable<string> = []): Promise<void> {
+		const askIds = this.answeredUnrecorded(taken).slice(0, SETTLED_ASKS_PER_RECORD);
+		if (askIds.length === 0) return;
+		try {
+			await this.options.append(OUTBOUND_ASK_SETTLED_ENTRY, { askIds, state: "answered" });
+		} catch {
+			// Unsaved, the asks and their replies stay in a reopened session, which records them then.
+		}
+	}
+
+	private branch(): SessionEntry[] {
+		try {
+			return [...this.options.entries()];
+		} catch {
+			return [];
+		}
+	}
+
+	private answeredUnrecorded(taken: Iterable<string>): string[] {
+		const entries = this.branch();
+		const records = this.records(entries);
+		const takenIds = new Set(taken);
+		for (const id of consumedIntercomMessageIds(entries)) takenIds.add(id);
+		const recordedIds = new Set<string>();
+		const replies = new Map<string, boolean>();
+		for (const entry of entries) {
+			if (entry.type === "custom" && entry.customType === OUTBOUND_ASK_SETTLED_ENTRY)
+				for (const [askId] of settledOutcomes(entry.data)) recordedIds.add(askId);
+			if (entry.type === "custom" && (entry.customType === "intercom_received" || entry.customType === INTERCOM_INBOX_HANDLED_ENTRY)) {
+				const id = (entry.data as { messageId?: unknown } | undefined)?.messageId;
+				if (typeof id === "string") takenIds.add(id);
+			}
+		}
+		for (const { message } of savedArrivals(entries)) {
+			if (message.replyTo === undefined || message.expectsReply === true) continue;
+			replies.set(message.replyTo, (replies.get(message.replyTo) ?? true) && takenIds.has(message.id));
+		}
+		const answered: string[] = [];
+		for (const [askId, allTaken] of replies) {
+			if (!allTaken || recordedIds.has(askId)) continue;
+			const record = records.get(askId);
+			if (record !== undefined && (record.state !== "answered" || record.recorded)) continue;
+			answered.push(askId);
+		}
+		return answered;
+	}
+}
+
+/** The outcomes an `intercom_ask_settled` entry records: one ask's, or several answered asks'. */
+function* settledOutcomes(value: unknown): Generator<[string, Exclude<OutboundAskState, "pending">]> {
+	const data = value as { askId?: unknown; askIds?: unknown; state?: unknown } | undefined;
+	if (!isSettledState(data?.state)) return;
+	if (typeof data.askId === "string") yield [data.askId, data.state];
+	if (data.state === "answered" && Array.isArray(data.askIds))
+		for (const askId of data.askIds) if (typeof askId === "string") yield [askId, "answered"];
+}
+
+/**
+ * Record that a question this session asked without an outbound ask record, such as a subagent's question to its
+ * supervisor, was answered, once the reply is saved as taken: a reopened session then keeps none of its replies.
+ */
+export async function recordAnsweredQuestion(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	questionId: string,
+): Promise<void> {
+	try {
+		await pi.appendEntry(OUTBOUND_ASK_SETTLED_ENTRY, { askId: questionId, state: "answered" });
+	} catch {
+		// Unsaved, the reply stays in a reopened session, which records the answer then.
 	}
 }
 
