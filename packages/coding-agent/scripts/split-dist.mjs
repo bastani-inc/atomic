@@ -28,6 +28,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, transform } from "esbuild";
+import { sharedFileName } from "./split-dist-names.mjs";
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(packageDir, "dist");
@@ -375,6 +376,8 @@ const removedModules = [...bundledModules].filter(
 	(path) => !SPLIT_ENTRIES.includes(path.replace(/\.js$/, "")) && !threadModules.has(path),
 );
 const removedSet = new Set(removedModules);
+/** The files of this package that a module names by its path. */
+const named = new Set();
 for (const path of new Set([...bundledModules, ...compiledModules, ...threadModules])) {
 	const source = compiledSource(path);
 	const computed = /\bnew URL\(\s*`\.{1,2}\/|\bimport\(\s*`/;
@@ -390,6 +393,7 @@ for (const path of new Set([...bundledModules, ...compiledModules, ...threadModu
 		throw new Error(`split-dist: ${path} computes the path of a file of this package; list it in RUN_BY_PATH`);
 	for (const match of code.matchAll(/["'`](\.{1,2}\/[^"'`\r\n]*\.js)["'`]/g)) {
 		const target = relativeImport(path, match[1]);
+		named.add(target);
 		if (removedSet.has(target))
 			throw new Error(`split-dist: ${path} names ${match[1]}, whose compiled file the split removes`);
 	}
@@ -417,29 +421,12 @@ for (const [name, directory] of [...inlined].sort(([a], [b]) => (a < b ? -1 : 1)
 	notices.push(`## ${name} ${manifest.version}\n\n${license}\n`);
 }
 
-// A shared file is named by the first of the modules it holds, by path (or, for one that only re-exports a dynamic
-// import, by that import's module), not by its content: an install updated in place keeps the path of every shared
-// file whose first module stays first, so a process still running from the earlier install resolves the new entries to
-// the modules it already loaded, as it did when each compiled module had a file of its own. Modules a release adds
-// after the first, or moves out of it, keep the name. esbuild names it by content; the name keeps esbuild's form and
-// length, so no source map shifts.
-const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-const groupName = (key) => {
-	const bytes = createHash("sha256").update(key).digest();
-	let name = "";
-	for (let index = 0; index < 8; index++) name += BASE32[(bytes[index] ?? 0) % 32];
-	return name;
-};
+// Each shared file is named by its first module and its exports (see `split-dist-names.mjs`).
 const renames = new Map();
 for (const [output, meta] of Object.entries(result.metafile.outputs)) {
 	const match = /^(.*\/)?([^/]+)-([A-Z2-7]{8})\.js$/.exec(output);
 	if (!output.startsWith(`dist/${SHARED_DIRECTORY}/`) || match === null) continue;
-	// A file that only re-exports a dynamically imported module holds no module of its own: that module names it.
-	// The package's own modules first: an inlined dependency's update must not rename a file.
-	const inputs = Object.keys(meta.inputs).sort();
-	const own = inputs.filter((input) => input.startsWith("dist/"));
-	const members = own.length > 0 ? own : inputs;
-	const renamed = `${match[2]}-${groupName(members.length > 0 ? `module:${members[0]}` : `entry:${meta.entryPoint ?? output}`)}.js`;
+	const renamed = sharedFileName(match[2], meta, output);
 	if ([...renames.values()].includes(renamed)) throw new Error(`split-dist: two shared files would be named ${renamed}`);
 	renames.set(`${match[2]}-${match[3]}.js`, renamed);
 }
@@ -481,18 +468,41 @@ writeFileSync(
 );
 
 // Each removed file is saved first, so a later split without a fresh compile still bundles it.
-for (const path of removedModules) {
+const removeCompiled = (path) => {
 	const file = join(dist, path);
-	if (!existsSync(file)) continue;
+	if (!existsSync(file)) return;
 	const saved = join(COMPILED_ENTRIES, path);
 	mkdirSync(dirname(saved), { recursive: true });
 	for (const suffix of ["", ".map"]) {
 		if (existsSync(`${file}${suffix}`)) renameSync(`${file}${suffix}`, `${saved}${suffix}`);
 		else rmSync(`${saved}${suffix}`, { force: true });
 	}
+};
+for (const path of removedModules) removeCompiled(path);
+
+// A compiled file nothing loads, that imports a removed one (a module of the standalone binary's own entry, an unused
+// module), could not load either: it goes too, and so on, so that every file the package keeps finds what it imports.
+const written = new Set(outputFiles.map((file) => relative(dist, file.path).split(sep).join("/")));
+const leftovers = () =>
+	readdirSync(dist, { recursive: true })
+		.map((file) => String(file).split(sep).join("/"))
+		.filter((file) => file.endsWith(".js") && !file.startsWith(`${SHARED_DIRECTORY}/`) && !file.startsWith("builtin/"))
+		.filter((file) => !written.has(file));
+const unloadable = [];
+for (let changed = true; changed; ) {
+	changed = false;
+	for (const path of leftovers()) {
+		const { static: imports, dynamic } = importsOf(path, readFileSync(join(dist, path), "utf8"));
+		if ([...imports, ...dynamic].every((target) => existsSync(join(dist, target)))) continue;
+		if (compiledModules.has(path) || threadModules.has(path) || named.has(path))
+			throw new Error(`split-dist: ${path}, which the package loads, imports a file the split removes`);
+		removeCompiled(path);
+		unloadable.push(path);
+		changed = true;
+	}
 }
 
 const outputs = Object.keys(result.metafile.outputs).filter((output) => output.endsWith(".js"));
 console.log(
-	`split-dist: ${Object.keys(result.metafile.inputs).length} modules into ${SPLIT_ENTRIES.length} entries and ${outputs.length - SPLIT_ENTRIES.length} shared files; ${removedModules.length} compiled files removed`,
+	`split-dist: ${Object.keys(result.metafile.inputs).length} modules into ${SPLIT_ENTRIES.length} entries and ${outputs.length - SPLIT_ENTRIES.length} shared files; ${removedModules.length} compiled files removed, ${unloadable.length} more that could not load`,
 );

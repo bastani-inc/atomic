@@ -175,6 +175,28 @@ test(
 );
 
 test(
+	"every module the package ships finds the files it imports in the package",
+	() => {
+		const paths = packedPaths();
+		const missing: string[] = [];
+		for (const path of paths) {
+			if (!/^dist\/.*\.m?js$/.test(path) || path.startsWith("dist/builtin/")) continue;
+			const source = fs.readFileSync(join(packageDir, path), "utf8");
+			for (const match of source.matchAll(
+				/(?:^|\n)\s*(?:import|export)\b[^;]*?\bfrom\s*["'](\.{1,2}\/[^"']+)["']|(?:^|\n)\s*import\s*["'](\.{1,2}\/[^"']+)["']|\bimport\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/g,
+			)) {
+				const target = posix.normalize(
+					posix.join(posix.dirname(path), (match[1] ?? match[2] ?? match[3]) as string),
+				);
+				if (!paths.has(target)) missing.push(`${path} -> ${target}`);
+			}
+		}
+		assert.deepEqual(missing, []);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
 	"a stack thrown in the package names its TypeScript source, also where it is installed",
 	() => {
 		const { atomic } = installedLayout();
@@ -446,7 +468,8 @@ function compiledPackage(target: string): void {
 	fs.mkdirSync(target, { recursive: true });
 	fs.copyFileSync(join(packageDir, "package.json"), join(target, "package.json"));
 	fs.mkdirSync(join(target, "scripts"), { recursive: true });
-	fs.copyFileSync(join(packageDir, "scripts", "split-dist.mjs"), join(target, "scripts", "split-dist.mjs"));
+	for (const script of ["split-dist.mjs", "split-dist-names.mjs"])
+		fs.copyFileSync(join(packageDir, "scripts", script), join(target, "scripts", script));
 	copyTree(dist, join(target, "dist"), (source) => !source.includes(join("dist", "_shared")));
 	const state = join(packageDir, "node_modules", ".cache", "atomic-split-dist");
 	const bundled = Object.keys(
