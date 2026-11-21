@@ -10,6 +10,21 @@ import { resolveSessionTarget, sessionTargetFailureReason } from "./session-targ
  */
 export const INTERCOM_ASK_CLOSED_ENTRY = "intercom_ask_closed";
 
+/** Several asks closed at once, for one reason: one entry instead of one per ask (a restart can close many). */
+export interface ClosedInboundAsks {
+  readonly messageIds: readonly string[];
+  readonly reason: ClosedInboundAsk["reason"];
+}
+
+/** The ids an `intercom_ask_closed` entry closes: one ask's, or several asks'. */
+export function closedAskIds(data: unknown): string[] {
+  const closed = data as { messageId?: unknown; messageIds?: unknown } | undefined;
+  return [
+    ...(typeof closed?.messageId === "string" ? [closed.messageId] : []),
+    ...(Array.isArray(closed?.messageIds) ? closed.messageIds.filter((id): id is string => typeof id === "string") : []),
+  ];
+}
+
 export interface ClosedInboundAsk {
   readonly messageId: string;
   /**
@@ -190,8 +205,7 @@ export function restorePendingInboundAsks(
   let registered = false;
   for (const entry of entries) {
     if (entry.type === "custom" && entry.customType === INTERCOM_ASK_CLOSED_ENTRY) {
-      const messageId = (entry.data as { messageId?: unknown } | undefined)?.messageId;
-      if (typeof messageId === "string") closed.add(messageId);
+      for (const messageId of closedAskIds(entry.data)) closed.add(messageId);
       continue;
     }
     if (!registered) {
