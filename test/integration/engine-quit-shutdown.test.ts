@@ -37,6 +37,9 @@ const ENGINE_SHUTDOWN_GRACE_MS = 5_000;
  */
 const BOUNDED_SHUTDOWN_MS = 6 * ENGINE_SHUTDOWN_GRACE_MS;
 
+/** How long a Windows test's processes run when nothing ends them: bounded, well past any test. */
+const WINDOWS_FIXTURE_SECONDS = 120;
+
 /**
  * The extension every session here loads. Its source never changes: it reads what to do, and the files to record
  * into, from `fixture.json` beside it.
@@ -57,6 +60,12 @@ export default (pi) => {
 		if (fixture.execGrandchild) {
 			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1] + ".root", String(process.pid)); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
 			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild], fixture.execTimeoutMs === undefined ? {} : { timeout: fixture.execTimeoutMs });
+		}
+		if (fixture.execLeftoverTree) {
+			// PowerShell starts a program that Node did not start, in no job of Node's, and then the command ends.
+			const file = fixture.files.execChild.replace(/'/g, "''");
+			const script = "$p = Start-Process -WindowStyle Hidden ping -ArgumentList '-n','" + fixture.fixtureSeconds + "','127.0.0.1' -PassThru; Set-Content -NoNewline -Path '" + file + "' -Value $p.Id";
+			void pi.exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]).then(() => writeFileSync(fixture.files.execChild + ".done", ""));
 		}
 		if (fixture.execLeftover) {
 			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); child.unref(); require("node:fs").writeFileSync(process.argv[1], String(child.pid));';
@@ -84,6 +93,8 @@ interface ShutdownRecord {
 interface SessionEnd {
 	readonly program: PtyProgram;
 	readonly hostPid: number;
+	/** The process the session runs in: the engine, or the host itself in the in-process host. */
+	readonly sessionPid: number;
 	/** With `execGrandchild`, the running `pi.exec` command and the process it started. */
 	readonly execRoot?: RecordedProcess;
 	readonly execChild?: RecordedProcess;
@@ -118,6 +129,8 @@ interface SessionOptions {
 	readonly execTimeoutMs?: number;
 	/** The extension runs a `pi.exec` command that starts a process of its own, which it leaves running, and exits. */
 	readonly execLeftover?: boolean;
+	/** As `execLeftover`, on Windows: the command is PowerShell, and the process it leaves running a ping. */
+	readonly execLeftoverTree?: boolean;
 	/** Run the session in the host process, as for a project left untrusted. */
 	readonly inProcess?: boolean;
 	/** The handler works until the test calls `release()` rather than for a time. */
@@ -160,6 +173,8 @@ async function endSession(
 				execGrandchild: options.execGrandchild === true,
 				execTimeoutMs: options.execTimeoutMs,
 				execLeftover: options.execLeftover === true,
+				execLeftoverTree: options.execLeftoverTree === true,
+				fixtureSeconds: WINDOWS_FIXTURE_SECONDS,
 				waitForRelease: options.waitForRelease === true,
 				pollMs: RECORD_POLL_MS,
 				handlerWorkMs,
@@ -213,12 +228,16 @@ async function endSession(
 			groupChildProcess = await recordProcess(Number(readTextSync(groupChild, "utf8")));
 			assert.ok(await stillRuns(groupChildProcess), "the extension started its process");
 		}
-		if (options.execGrandchild || options.execLeftover) {
+		if (options.execGrandchild || options.execLeftover || options.execLeftoverTree) {
 			while (!(fileExistsSync(execChild) && readTextSync(execChild, "utf8") !== "") && Date.now() < deadline)
 				await sleep(RECORD_POLL_MS);
 			// The command, and so the process it started, is running: the pid names that process.
 			execChildProcess = await recordProcess(Number(readTextSync(execChild, "utf8")));
 			assert.ok(await stillRuns(execChildProcess), "the command started its process");
+			if (options.execLeftoverTree) {
+				while (!fileExistsSync(`${execChild}.done`) && Date.now() < deadline) await sleep(RECORD_POLL_MS);
+				assert.ok(fileExistsSync(`${execChild}.done`), "the command finished");
+			}
 			if (options.execGrandchild) {
 				execRootProcess = await recordProcess(Number(readTextSync(`${execChild}.root`, "utf8")));
 				assert.ok(await stillRuns(execRootProcess), "the command runs");
@@ -229,6 +248,7 @@ async function endSession(
 			...(execRootProcess ? { execRoot: execRootProcess } : {}),
 			...(execChildProcess ? { execChild: execChildProcess } : {}),
 			hostPid: host.pid,
+			sessionPid,
 			handlerStarted: () => fileExistsSync(shutdown),
 			release: () => writeFileSync(released, ""),
 		});
@@ -617,3 +637,36 @@ describe.skipIf(process.platform === "win32")(
 		);
 	},
 );
+
+// Node.js starts the command in a job of its own that ends with the process running it, and what the command starts
+// leaves that job: a program a finished command left running outlives Atomic, as on Linux and macOS after you quit.
+for (const how of ["quit", "kill"] as const) {
+	test.runIf(process.platform === "win32")(
+		`on Windows, a program a finished pi.exec command left running keeps running after ${how === "quit" ? "you quit" : "the host is killed"}`,
+		async () => {
+			let keptRunning: boolean | undefined;
+			await endSession(
+				async ({ program, hostPid, sessionPid, execChild }) => {
+					assert.ok(execChild !== undefined);
+					try {
+						const host = await recordProcess(hostPid);
+						const session = await recordProcess(sessionPid);
+						if (how === "quit") program.write("/quit\r");
+						else await signalRecordedProcess(host, "SIGKILL");
+						assert.equal(await waitUntilGone(host, CLI_TIMEOUT_MS), true, "the host kept running");
+						assert.equal(await waitUntilGone(session, CLI_TIMEOUT_MS), true, "the session kept running");
+						keptRunning = !(await waitUntilGone(execChild, GROUP_CHILD_GONE_MS));
+					} finally {
+						// Ended before the session's terminal is waited for.
+						await signalRecordedProcess(execChild);
+					}
+				},
+				HANDLER_WORK_MS,
+				{ execLeftoverTree: true },
+			);
+
+			assert.equal(keptRunning, true, "the program the command left running ended with Atomic");
+		},
+		CLI_TIMEOUT_MS * 2 + 10_000,
+	);
+}

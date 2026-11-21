@@ -7,6 +7,7 @@ mod glob_util;
 pub mod grep;
 pub mod host_process;
 pub mod process_start;
+pub mod process_tree;
 pub mod pty;
 pub mod session_end;
 pub mod signal_disposition;

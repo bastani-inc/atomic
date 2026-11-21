@@ -879,6 +879,7 @@ module.exports.renameNoReplaceAsync = nativeBinding.renameNoReplaceAsync
 module.exports.search = nativeBinding.search
 module.exports.signalIgnored = nativeBinding.signalIgnored
 module.exports.startHostProcess = nativeBinding.startHostProcess
+module.exports.terminateProcessDescendants = nativeBinding.terminateProcessDescendants
 module.exports.TerminationCause = nativeBinding.TerminationCause
 module.exports.tryAdvisoryLock = nativeBinding.tryAdvisoryLock
 module.exports.tryAdvisoryLockAsync = nativeBinding.tryAdvisoryLockAsync

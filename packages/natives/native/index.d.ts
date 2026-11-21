@@ -954,6 +954,13 @@ export type TaskResult =
   | { kind: 'cancelled'; cause: CancelCause; output?: OutputRef }
 
 /**
+ * Ends the processes that running process `pid` started, and those they started, each through a handle; returns how
+ * many it ended. Not `pid` itself. The caller must hold `pid`'s own handle (a child it has not reaped), so that `pid`
+ * names that process. A process whose parent ended before the call is not found. Nothing off Windows.
+ */
+export declare function terminateProcessDescendants(pid: number): number
+
+/**
  * Explicit termination causes. Timer/idle/wall-clock causes are intentionally
  * absent, making timer-driven termination unrepresentable.
  */
