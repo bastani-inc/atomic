@@ -115,16 +115,36 @@ function renderProjectContext(contextFiles: Array<{ path: string; content: strin
 
 /** How prompts recorded before the `session_folder` section name the project's session folder in their guidelines. */
 const SESSION_FOLDER_IN_GUIDELINES = "Older or JSONL-selected sessions of this project are in `";
+/** How the Session memory guideline starts. */
+const SESSION_MEMORY_GUIDELINE = "**Session memory**: Atomic records past sessions,";
 
 /**
  * Whether a recorded system prompt names the project's session folder in its guidelines, rather than in a
  * `session_folder` section; see {@link BuildSystemPromptOptions.sessionFolderInGuidelines}. Only the guidelines count,
- * not text that quotes them elsewhere. A session that moved to another folder still has the folder in its guidelines.
+ * not text that quotes them elsewhere: with `ownPrompt`, a prompt that replaces the default, the Session memory section
+ * a subagent has instead. A session that moved to another folder still has the folder in its guidelines.
  */
-export function namesSessionFolderInGuidelines(prompt: SystemMessage | undefined): boolean {
+export function namesSessionFolderInGuidelines(prompt: SystemMessage | undefined, ownPrompt = false): boolean {
 	const sections = prompt?.sections;
 	if (!sections || typeof sections.session_folder === "string") return false;
-	return typeof sections.rules === "string" && sections.rules.includes(SESSION_FOLDER_IN_GUIDELINES);
+	if (!ownPrompt) return typeof sections.rules === "string" && sections.rules.includes(SESSION_FOLDER_IN_GUIDELINES);
+	const memory = sections.session_memory;
+	return (
+		typeof memory === "string" &&
+		memory.startsWith(`<session_memory>\n- ${SESSION_MEMORY_GUIDELINE}`) &&
+		memory.includes(SESSION_FOLDER_IN_GUIDELINES)
+	);
+}
+
+/**
+ * Whether `section` is the Session memory section a subagent whose own prompt replaces the default gets, as it refers
+ * to the `session_folder` section, with any of the tools it can name.
+ */
+function refersToSessionFolderSection(section: string | undefined, cwd: string): boolean {
+	if (section === undefined) return false;
+	return [["read"], ["read", "search"], ["read", "bash"], ["read", "search", "bash"]].some(
+		(tools) => section === `- ${buildSessionMemoryGuideline(tools, cwd, "section")}`,
+	);
 }
 
 /**
@@ -273,10 +293,14 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 
 	const declaredTools = tools.filter((name) => !options.hiddenTools.includes(name));
 	// The session folder differs between projects, so a section near the end names it, after everything that can be
-	// cached across projects. A prompt recorded with it in the guidelines keeps it there.
+	// cached across projects. A prompt recorded with it in the guidelines keeps it there. A subagent whose own prompt
+	// replaces the guidelines has Session memory as a section of its own, which refers to that section too.
 	const sessionFolder = options.sessionFolderInGuidelines ? "guideline" : "section";
 	const sessionFolderSection =
-		!customPrompt && sessionFolder === "section" && buildSessionMemoryGuideline(declaredTools, cwd) !== undefined;
+		sessionFolder === "section" &&
+		(customPrompt
+			? refersToSessionFolderSection(customSections.session_memory, cwd)
+			: buildSessionMemoryGuideline(declaredTools, cwd) !== undefined);
 	const promptSections: Record<string, string> = {};
 	if (customPrompt) {
 		promptSections.preamble = customPrompt;

@@ -17,10 +17,12 @@ import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { bindBundledHintCommands, setKeybindings } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { quitAsInteractiveApp } from "../../core/interactive-quit.js";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
 import { QueuedDeliveryRelay } from "../../core/queued-message-delivery.ts";
 import { onBlueprintBuildFinished, onBlueprintBuildWaiting } from "../../core/resume/blueprint/barrier.ts";
+import { startedWithHangupIgnored } from "../../utils/inherited-hangup.js";
 import { interactiveEngineStartupEnv, isInteractiveEngineChild } from "../../utils/interactive-engine-env.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
@@ -242,6 +244,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		inputForm?.dispose();
 		projectTrust?.dispose();
 		outputBuffer.dispose();
+		// An interactive engine quits as the interactive app does; its host bounds the handlers.
+		if (interactiveEngineChild) quitAsInteractiveApp(runtimeHost);
 		try {
 			await runtimeHost.dispose({ fromSignal: endsProcessOnly(cause) });
 		} catch (error) {
@@ -280,7 +284,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	const registerSignalHandlers = (): void => {
 		const signals: NodeJS.Signals[] = ["SIGTERM"];
 		if (process.platform !== "win32") {
-			signals.push("SIGHUP");
+			// An interactive engine's SIGHUP is its host asking it to stop. A standalone run started with SIGHUP
+			// ignored, as under `nohup`, goes on when its terminal closes.
+			if (interactiveEngineChild || !startedWithHangupIgnored()) signals.push("SIGHUP");
 		}
 
 		for (const signal of signals) {

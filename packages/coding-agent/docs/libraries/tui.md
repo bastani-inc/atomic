@@ -276,6 +276,8 @@ The TUI appends a full SGR reset and OSC 8 reset at the end of each rendered lin
 
 `TuiAltScreen` normalizes SGR mouse input and hit-tests components and overlays. Events contain component-local `x`/`y`, absolute `screenX`/`screenY`, bounds, button, modifiers, click count, and wheel delta. `TuiMainScreen` does not capture mouse input because the terminal owns its scrollback.
 
+`isPointerIdle()` is true while no text selection, press, drag, pending single click or search depends on where rows are on screen. To wait for that without polling, `onViewportChange(listener)` calls the listener after each input the screen receives, each single click it delivers late and each frame it paints, once per turn of the event loop; it returns a function that stops the calls.
+
 ```typescript
 import type { TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 
@@ -722,7 +724,7 @@ const provider = new CombinedAutocompleteProvider(
 editor.setAutocompleteProvider(provider);
 ```
 
-Replacing the built-in editor's provider normally closes its menu. To keep the current menu and use the new provider for the next lookup, call `editor.setAutocompleteProvider(provider, { preserveSelection: true })`. An open menu keeps the provider that offered its rows. If no menu has opened yet, a still-current lookup can retry with the new provider, preserving whether the user pressed Tab. Extension-provided editors receive the usual single provider argument.
+Replacing the built-in editor's provider normally closes its menu. To keep the current menu and use the new provider for the next lookup, call `editor.setAutocompleteProvider(provider, { preserveSelection: true })`. An open menu keeps the provider that offered its rows. If no menu has opened yet, a still-current lookup can retry with the new provider, preserving whether the user pressed Tab; if that retry fails, the prompt stays as it was and later lookups still run. Add `refreshCommandMenu: true` to also ask the new provider for an open menu of slash-command names in which the user has not chosen a row: a non-empty answer for the same text replaces the rows at the next render, with an exact match selected. A choice made in the menu, a thrown or rejected lookup, an empty answer, or one that arrives after the text changed leaves the menu as it was; such a lookup never delays the editor's own lookups. Extension-provided editors receive the usual single provider argument.
 
 **Features:**
 - Type `/` to see slash commands

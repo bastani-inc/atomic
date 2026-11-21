@@ -15,6 +15,7 @@ import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core
 import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
 import { SUBAGENT_OWNER_GENERATION } from "./owner-generation.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
+import { SUBAGENT_QUESTION_TOOLS } from "./released-child-questions.js";
 import {
 	releasedReplyTimeoutId,
 	scheduleReleasedReplyTimeouts,
@@ -127,7 +128,9 @@ export function interruptedStillRunningResult(call: Pick<SubagentChildStillRunni
 
 /**
  * Hold the interrupted result of each call a child was told is still running by an earlier owner process (#5014), and
- * wake a child that ended on its own for it; any other child takes it when it is restored, woken or resumed.
+ * wake a child that ended on its own for it; any other child takes it when it is restored, woken or resumed. A question
+ * lost with that process is no reason to relaunch a child that already finished (#6168): its next wake or resume tells
+ * it once, so a child that ended is woken only when one of those calls was not a question.
  */
 export function reportInterruptedStillRunningCalls(
 	pi: Parameters<typeof holdInterruptedStillRunningCalls>[0],
@@ -135,25 +138,26 @@ export function reportInterruptedStillRunningCalls(
 	ownerSessionId: string,
 	records: readonly SubagentChildRecord[],
 ): void {
-	for (const record of records)
-		if (record.stillRunning?.length)
-			void holdInterruptedStillRunningCalls(
-				pi,
-				ownerSessionId,
-				record.childId,
-				SUBAGENT_OWNER_GENERATION,
-				interruptedStillRunningResult,
-			)
-				.then((held) => {
-					// A child released by an earlier process is woken as it always is, which hands these over too.
-					if (held !== undefined && !releasedByEarlierProcess(held))
-						wakeReleasedChildWithHeldResults(
-							dispatcher,
-							subagentWakeKey(ownerSessionId, record.childId),
-							`interrupted:${SUBAGENT_OWNER_GENERATION}`,
-						);
-				})
-				.catch((error: Error) => observeChildRecordFailure(ownerSessionId, wakeFailureOf(error, record.childId)));
+	for (const record of records) {
+		if (!record.stillRunning?.length) continue;
+		// Read from the calls the hold actually reports, in its own read of the child's latest record.
+		let reportsOtherThanQuestions = false;
+		void holdInterruptedStillRunningCalls(pi, ownerSessionId, record.childId, SUBAGENT_OWNER_GENERATION, (call) => {
+			if (!SUBAGENT_QUESTION_TOOLS.has(call.toolName)) reportsOtherThanQuestions = true;
+			return interruptedStillRunningResult(call);
+		})
+			.then((held) => {
+				// A child released by an earlier process is woken as it always is, which hands these over too.
+				if (held === undefined || releasedByEarlierProcess(held)) return;
+				if (held.state === "terminal" && !reportsOtherThanQuestions) return;
+				wakeReleasedChildWithHeldResults(
+					dispatcher,
+					subagentWakeKey(ownerSessionId, record.childId),
+					`interrupted:${SUBAGENT_OWNER_GENERATION}`,
+				);
+			})
+			.catch((error: Error) => observeChildRecordFailure(ownerSessionId, wakeFailureOf(error, record.childId)));
+	}
 }
 
 export function needsRedispatch(record: SubagentChildRecord): boolean {

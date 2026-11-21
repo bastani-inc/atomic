@@ -4,6 +4,21 @@ import { INTERCOM_SESSION_IDENTITY_ENTRY } from "./session-identity.js";
 import type { Message, SessionInfo } from "./types.js";
 import { resolveSessionTarget, sessionTargetFailureReason } from "./session-target.js";
 
+/**
+ * #6168: custom session entry recording that this session closed an ask it was sent without replying, because no reply
+ * could reach its sender any more. Data: {@link ClosedInboundAsk}.
+ */
+export const INTERCOM_ASK_CLOSED_ENTRY = "intercom_ask_closed";
+
+export interface ClosedInboundAsk {
+  readonly messageId: string;
+  /**
+   * `sender-ended`: its sender, a subagent of this session, has ended; `route-expired`: Intercom refuses every reply to it;
+   * `closed`: this session chose to close it without a reply.
+   */
+  readonly reason: "sender-ended" | "route-expired" | "closed";
+}
+
 export interface IntercomContext {
   from: SessionInfo;
   message: Message;
@@ -160,12 +175,25 @@ export class ReplyTracker {
  * #4751: after a restart, the asks this session was sent and has not answered can still be answered. Their cards are
  * on the branch; a reply this session sent (`intercom_sent` with `replyTo`) marks one answered. Only cards that arrived
  * after this session first registered with Intercom count: a fork inherits its parent's cards, not its asks.
+ * `answeredOutsideWindow` names the asks answered in entries a resumed window left out (#6168); it is read only when
+ * the branch holds an ask.
  */
-export function restorePendingInboundAsks(tracker: ReplyTracker, entries: Iterable<SessionEntry>, sessionId: string): void {
+export function restorePendingInboundAsks(
+  tracker: ReplyTracker,
+  entries: Iterable<SessionEntry>,
+  sessionId: string,
+  answeredOutsideWindow: () => Iterable<string> | undefined = () => undefined,
+): void {
   const asks = new Map<string, IntercomContext>();
   const answered = new Set<string>();
+  const closed = new Set<string>();
   let registered = false;
   for (const entry of entries) {
+    if (entry.type === "custom" && entry.customType === INTERCOM_ASK_CLOSED_ENTRY) {
+      const messageId = (entry.data as { messageId?: unknown } | undefined)?.messageId;
+      if (typeof messageId === "string") closed.add(messageId);
+      continue;
+    }
     if (!registered) {
       registered = entry.type === "custom" && entry.customType === INTERCOM_SESSION_IDENTITY_ENTRY &&
         (entry.data as { sessionId?: unknown } | undefined)?.sessionId === sessionId;
@@ -181,7 +209,10 @@ export function restorePendingInboundAsks(tracker: ReplyTracker, entries: Iterab
       if (typeof replyTo === "string") answered.add(replyTo);
     }
   }
+  if (asks.size > 0) for (const id of answeredOutsideWindow() ?? []) answered.add(id);
   for (const [id, context] of asks) {
-    if (!answered.has(id)) tracker.recordIncomingMessage(context.from, context.message, context.receivedAt);
+    if (!answered.has(id) && !closed.has(id)) tracker.recordIncomingMessage(context.from, context.message, context.receivedAt);
   }
+  // A tracker that already held an ask this session closed since lets it go.
+  for (const id of closed) tracker.markReplied(id);
 }

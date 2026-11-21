@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Context, getCurrentSystemMessage, resolveTranscriptTools } from "@bastani/atomic-ai";
@@ -266,16 +266,18 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 	}
 
 	/**
-	 * How long a first process may take to list its server's tools. The in-memory server answers at once, but the
-	 * session's startup work before the listing can take seconds on a loaded machine.
+	 * How long a session may take to show what a server listed once it connects, or that it failed to. The in-memory
+	 * server answers at once, but the session's own work around the listing can take seconds on a loaded machine, more
+	 * than vi.waitFor's default of one second.
 	 */
-	const TOOLS_LISTED_TIMEOUT_MS = 10_000;
+	const SERVER_SETTLED_TIMEOUT_MS = 10_000;
+	const untilServerSettled = (assertion: () => void) => vi.waitFor(assertion, { timeout: SERVER_SETTLED_TIMEOUT_MS });
 
 	/** A first process that declared the server's tools; it sends one more request (the control) and quits. */
 	async function liveSession(fixture: Fixture, options: StartOptions, tool = "mcp__docs__search") {
 		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
 		const live = await startSession(fixture, manager, options);
-		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain(tool), { timeout: TOOLS_LISTED_TIMEOUT_MS });
+		await untilServerSettled(() => expect(live.getActiveToolNames()).toContain(tool));
 		fixture.faux.setResponses([fixture.reply("one")]);
 		await live.prompt("first");
 		// The control: the request the same process sends next, without a resume.
@@ -329,7 +331,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(fixture.requests.at(-1)).toBe(control);
 
 		server.release();
-		await vi.waitFor(() =>
+		await untilServerSettled(() =>
 			expect(resumed.getAllTools().find((tool) => tool.name === "mcp__docs__search")?.sourceInfo).toBeDefined(),
 		);
 		fixture.faux.setResponses([fixture.reply("four")]);
@@ -524,7 +526,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		const unrecorded = await withoutRecords(fixture, sessionFile, "unrecorded");
 
 		const inTime = await resume(fixture, unrecorded, { servers: { docs: { tools: [SEARCH], calls: [] } } });
-		await vi.waitFor(() =>
+		await untilServerSettled(() =>
 			expect(
 				inTime.sessionManager
 					.getBranch()
@@ -550,7 +552,9 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 			servers: { docs: { tools: [SEARCH], calls: [] } },
 			exposure: "deferred",
 		});
-		await vi.waitFor(() => expect(live.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search"));
+		await untilServerSettled(() =>
+			expect(live.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search"),
+		);
 		fixture.faux.setResponses([
 			(context: Context) => {
 				fixture.requests.push(flatTools(context));
@@ -595,9 +599,9 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 				a__b: { tools: [lookUp("c")], ready: later.ready, calls: [] },
 			},
 		});
-		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain("mcp__a__b__c"));
+		await untilServerSettled(() => expect(live.getActiveToolNames()).toContain("mcp__a__b__c"));
 		later.release();
-		await vi.waitFor(() =>
+		await untilServerSettled(() =>
 			expect(live.getActiveToolNames().filter((name) => name.startsWith("mcp__a__b__c"))).toHaveLength(2),
 		);
 		fixture.faux.setResponses([fixture.reply("one")]);
@@ -613,7 +617,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		const before = resumed.messages.length;
 		// `a__b` keeps the name it was declared under in the first process.
 		const aBName = createMcpToolName("a__b", "c", (name) => name === "mcp__a__b__c");
-		await vi.waitFor(() => expect(resumed.getAllTools().map((tool) => tool.name)).toContain(aBName));
+		await untilServerSettled(() => expect(resumed.getAllTools().map((tool) => tool.name)).toContain(aBName));
 		await promptCalling(fixture, resumed, "mcp__a__b__c", () => slowA.release());
 
 		expect(a.calls).toEqual(["b__c"]);
@@ -638,9 +642,9 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 			},
 		});
 		const aBName = createMcpToolName("a__b", "c", (name) => name === "mcp__a__b__c");
-		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain("mcp__a__b__c"));
+		await untilServerSettled(() => expect(live.getActiveToolNames()).toContain("mcp__a__b__c"));
 		later.release();
-		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain(aBName));
+		await untilServerSettled(() => expect(live.getActiveToolNames()).toContain(aBName));
 		fixture.faux.setResponses([fixture.reply("one")]);
 		await live.prompt("first");
 		// The user turns `a`'s tool off; `a__b`'s keeps the hashed name it got when `a`'s had the plain one.
@@ -669,7 +673,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		const firstRequest = async (tools: ListedTool[], dir: string) => {
 			const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, dir));
 			const session = await startSession(fixture, manager, { servers: { docs: { tools, calls: [] } } });
-			await vi.waitFor(() => expect(session.getActiveToolNames()).toContain("mcp__docs__fetch"));
+			await untilServerSettled(() => expect(session.getActiveToolNames()).toContain("mcp__docs__fetch"));
 			fixture.faux.setResponses([fixture.reply("one")]);
 			await session.prompt("first");
 			await session.dispose();
@@ -725,7 +729,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(fixture.requests.at(-1)).toBe(control);
 
 		server.fail(new Error("server crashed"));
-		await vi.waitFor(() => expect(resumed.getActiveToolNames()).not.toContain("list_mcp_resources"));
+		await untilServerSettled(() => expect(resumed.getActiveToolNames()).not.toContain("list_mcp_resources"));
 		fixture.faux.setResponses([fixture.reply("four")]);
 		await resumed.prompt("after the failure");
 		expect(toolChanges(resumed, before)).toEqual([
@@ -849,6 +853,91 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		await promptReply(fixture, resumed, "after reconnect");
 		expect(sectionUpdates(resumed, before)).toEqual([]);
 		expect(currentSection(resumed)).toBe(section);
+	});
+
+	it("keeps the summaries of servers whose instructions hold other line separators", async () => {
+		const fixture = await createFixture();
+		const servers = (ready?: Promise<void>) => ({
+			docs: { tools: [SEARCH], instructions: "Part A\u2028Part B\nmore", ready, calls: [] },
+			wiki: { tools: [SEARCH], instructions: "Unchanged server", ready, calls: [] },
+		});
+		const { sessionFile, section } = await liveCodemodeSession(fixture, { servers: servers() });
+		expect(serverLines(section)).toEqual([
+			docsLine("Part A\u2028Part B"),
+			"- mcp__wiki (codemode): Unchanged server",
+		]);
+
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, { servers: servers(server.ready), exposure: "codemode" });
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		server.release();
+		await settled(resumed);
+		await promptReply(fixture, resumed, "after reconnect");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+	});
+
+	/**
+	 * A session whose server showed its summary, then reconnected without instructions; the record that its line shows
+	 * no summary is lost, as when that write fails. Returns the session file and the entry of the reply before.
+	 */
+	async function lostRetirement(fixture: Fixture) {
+		const { sessionFile } = await liveCodemodeSession(fixture, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+		});
+		const first = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], instructions: undefined, calls: [] } },
+			exposure: "codemode",
+		});
+		const shown = first.sessionManager
+			.getBranch()
+			.findLast((entry) => entry.type === "message" && entry.message.role === "assistant")!.id;
+		await settled(first);
+		await promptReply(fixture, first, "after reconnect");
+		expect(serverLines(currentSection(first))).toEqual([docsLine()]);
+		await first.dispose();
+		const stored = readFileSync(sessionFile, "utf8").split("\n");
+		const retired = stored.findLastIndex(
+			(line) => line.includes(MCP_TOOL_RECORD_ENTRY_TYPE) && line.includes('"summary":""'),
+		);
+		expect(retired).toBeGreaterThan(-1);
+		const entry = JSON.parse(stored[retired]!) as { data: { summaries?: unknown[] } };
+		stored[retired] = JSON.stringify({ ...entry, data: { ...entry.data, summaries: [] } });
+		writeFileSync(sessionFile, stored.join("\n"));
+		return { sessionFile, shown };
+	}
+
+	it("does not show a recorded summary the conversation no longer showed when its replacement was not written", async () => {
+		const fixture = await createFixture();
+		const { sessionFile } = await lostRetirement(fixture);
+
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], instructions: undefined, ready: server.ready, calls: [] } },
+			exposure: "codemode",
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after the second resume");
+		server.release();
+		await settled(resumed);
+		await promptReply(fixture, resumed, "after the second reconnect");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+	});
+
+	it("shows the recorded summary of a branch the session moves to while the server reconnects", async () => {
+		const fixture = await createFixture();
+		const { sessionFile, shown } = await lostRetirement(fixture);
+
+		const resumed = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, ready: held().ready, calls: [] } },
+			exposure: "codemode",
+		});
+		// That branch's last section showed the summary its record holds.
+		await resumed.navigateTree(shown, { summarize: false });
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "on the earlier branch");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+		expect(serverLines(currentSection(resumed))).toEqual([docsLine("Search and fetch the product docs.")]);
 	});
 
 	it("drops a recorded server summary once the server fails to reconnect (#6108)", async () => {

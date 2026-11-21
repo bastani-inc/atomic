@@ -42,7 +42,7 @@ Atomic reads primary `.atomic` locations first and legacy `.pi` locations for co
 - Custom models (`models.json`)
 - Credentials (`auth.json`)
 - Sessions (`sessions/`)
-- The TypeScript extension transpile cache (`cache/jiti/`)
+- The TypeScript extension transpile cache (`cache/transpile/`, one directory per Atomic version; a version's directory is removed once no Atomic has used it for a week)
 
 `agentDir` is per session, not per process. Each session's extension loads cache their transpiled output under that session's `agentDir`. Without the option, a session uses `ATOMIC_CODING_AGENT_DIR` as set when it is created. Sessions in one process can use different agent directories. Extension loads never create the agent directory: when it doesn't exist, including after you remove it while the process runs, loads skip the cache.
 

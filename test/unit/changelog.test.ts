@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createGitEnvironment } from "@bastani/atomic";
 import { describe, test } from "vitest";
 import {
@@ -41,9 +42,9 @@ const GIT_OUTPUT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
 // Sanitize the Git environment: under a hook runner (e.g. prek) Git exports
 // GIT_DIR/GIT_WORK_TREE, which it honors over cwd (see git-env.ts).
-function git(args: string[]): string {
+function git(args: string[], cwd = repoRoot): string {
 	return execFileSync("git", args, {
-		cwd: repoRoot,
+		cwd,
 		encoding: "utf-8",
 		env: createGitEnvironment(),
 		stdio: ["ignore", "pipe", "pipe"],
@@ -51,16 +52,38 @@ function git(args: string[]): string {
 	});
 }
 
-/** The release tag for a changelog version, or null when no such tag exists locally. */
-function resolveTag(version: string): string | null {
-	// Atomic tags are bare (`0.9.11-alpha.9`); inherited upstream tags carry a `v` prefix.
+/** Every local tag that names a commit. */
+function localTags(cwd: string): ReadonlySet<string> {
+	const tags = new Set<string>();
+	const format = "--format=%(objecttype) %(*objecttype) %(refname:strip=2)";
+	for (const line of git(["for-each-ref", format, "refs/tags"], cwd).split("\n")) {
+		const [type, peeled, name] = line.split(" ");
+		if (name && (type === "commit" || peeled === "commit")) tags.add(name);
+	}
+	return tags;
+}
+
+/**
+ * The tags of the repository checked out at `cwd`: those whose history contains one of HEAD's root commits. A clone
+ * that also fetched another remote's tags, such as upstream pi's `v0.10.2`, has tags from an unrelated history; they
+ * share no commit with HEAD, so they are left out. A shallow clone, such as one that fetched its tags with
+ * `--depth 1`, lacks the history that tells them apart, so there every local tag counts, as it always did.
+ */
+function repositoryTags(cwd = repoRoot): ReadonlySet<string> {
+	if (git(["rev-parse", "--is-shallow-repository"], cwd).trim() === "true") return localTags(cwd);
+	const tags = new Set<string>();
+	for (const rootCommit of git(["rev-list", "--max-parents=0", "HEAD"], cwd).split("\n").filter(Boolean)) {
+		for (const tag of git(["tag", "--list", "--contains", rootCommit], cwd).split("\n").filter(Boolean))
+			tags.add(tag);
+	}
+	return tags;
+}
+
+/** The release tag for a changelog version among `tags`, or null when there is none. */
+function resolveTag(version: string, tags: ReadonlySet<string>): string | null {
+	// Atomic tags are bare (`0.9.11-alpha.9`); its releases before 0.8.24 carry a `v` prefix.
 	for (const candidate of [version, `v${version}`]) {
-		try {
-			git(["rev-parse", "--verify", "--quiet", `refs/tags/${candidate}^{commit}`]);
-			return candidate;
-		} catch {
-			// try the next spelling
-		}
+		if (tags.has(candidate)) return candidate;
 	}
 	return null;
 }
@@ -214,11 +237,86 @@ describe("changelog parsing", () => {
 	});
 });
 
+/** Git settings for the repositories the tests below make: no signing, a fixed author, local file clones allowed. */
+const TEST_GIT_SETTINGS = [
+	"user.name=Atomic Test",
+	"user.email=test@example.invalid",
+	"commit.gpgSign=false",
+	"tag.gpgSign=false",
+	"protocol.file.allow=always",
+].flatMap((setting) => ["-c", setting]);
+
+/**
+ * A repository at `directory` with this repository's kinds of release tags (a `v`-prefixed one on the main line, a
+ * bare one on a commit off it) and an unrelated history whose tags stand for another remote's.
+ */
+function createReleaseHistory(directory: string): void {
+	const inRepository = (args: string[]) => git([...TEST_GIT_SETTINGS, ...args], directory);
+	inRepository(["init", "--quiet", "--initial-branch=main"]);
+	inRepository(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "first"]);
+	// A release before 0.8.24, tagged on the main line with a `v` prefix.
+	inRepository(["tag", "v0.8.23"]);
+	// A release tags a commit off the main line that only stamps the version.
+	inRepository(["checkout", "--quiet", "--detach"]);
+	inRepository(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "Release 0.10.3"]);
+	inRepository(["tag", "0.10.3"]);
+	// Tags fetched from an unrelated upstream remote.
+	inRepository(["checkout", "--quiet", "--orphan", "upstream"]);
+	inRepository(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "Release v0.10.4"]);
+	inRepository(["tag", "v0.10.4"]);
+	inRepository(["tag", "0.10.5"]);
+	inRepository(["checkout", "--quiet", "main"]);
+	inRepository(["commit", "--quiet", "--no-verify", "--allow-empty", "--message", "later work"]);
+}
+
+describe("release tags", () => {
+	test("only tags from this repository's history anchor a changelog, not another remote's tags", () => {
+		const repository = mkdtempSync(join(tmpdir(), "atomic-changelog-tags-"));
+		try {
+			createReleaseHistory(repository);
+
+			const tags = repositoryTags(repository);
+			assert.deepEqual([...tags].sort(), ["0.10.3", "v0.8.23"]);
+			// A section prepared for 0.10.4 or 0.10.5 before its tag exists is not anchored on the upstream tags.
+			assert.equal(resolveTag("0.10.5", tags), null);
+			assert.equal(resolveTag("0.10.4", tags), null);
+			assert.equal(resolveTag("0.10.3", tags), "0.10.3");
+			assert.equal(resolveTag("0.8.23", tags), "v0.8.23");
+		} finally {
+			rmSync(repository, { recursive: true, force: true });
+		}
+	});
+
+	test("a shallow clone with its tags fetched at depth 1 counts every local tag, as it always did", () => {
+		const repository = mkdtempSync(join(tmpdir(), "atomic-changelog-tags-"));
+		const shallow = mkdtempSync(join(tmpdir(), "atomic-changelog-shallow-"));
+		try {
+			createReleaseHistory(repository);
+			const url = pathToFileURL(repository).href;
+			git([...TEST_GIT_SETTINGS, "clone", "--quiet", "--depth=1", url, shallow], repository);
+			git([...TEST_GIT_SETTINGS, "fetch", "--quiet", "--depth=1", "origin", "+refs/tags/*:refs/tags/*"], shallow);
+
+			const tags = repositoryTags(shallow);
+			assert.deepEqual([...tags].sort(), ["0.10.3", "0.10.5", "v0.10.4", "v0.8.23"]);
+			assert.equal(resolveTag("0.10.3", tags), "0.10.3");
+			assert.equal(resolveTag("0.8.23", tags), "v0.8.23");
+		} finally {
+			rmSync(repository, { recursive: true, force: true });
+			rmSync(shallow, { recursive: true, force: true });
+		}
+	});
+});
+
 // AGENTS.md: "A released section (`## [0.12.2]`) is immutable" and "New entries go under
 // `## [Unreleased]`". Once a version is tagged, its published notes are fixed, so the
 // released tail of every package changelog must still read exactly as it did at that tag.
 describe("released changelog sections", () => {
 	const changelogPaths = packageChangelogPaths();
+	let tags: ReadonlySet<string> | undefined;
+	const releaseTags = () => {
+		tags ??= repositoryTags();
+		return tags;
+	};
 
 	test("finds a package changelog to check", () => {
 		assert.ok(changelogPaths.length > 0, "no packages/*/CHANGELOG.md parsed into released sections");
@@ -232,7 +330,7 @@ describe("released changelog sections", () => {
 			// anything above it (an in-flight release, plus [Unreleased]) is still editable.
 			let anchor: { entry: ChangelogEntry; tag: string } | null = null;
 			for (const entry of current) {
-				const tag = resolveTag(entry.version);
+				const tag = resolveTag(entry.version, releaseTags());
 				if (tag) {
 					anchor = { entry, tag };
 					break;
@@ -242,12 +340,11 @@ describe("released changelog sections", () => {
 				// A first-release package has a version section but no tag yet — the tag
 				// is created by cut-release only after the changelog PR merges — so it has
 				// no released sections and immutability holds vacuously. Pass only when
-				// tags are actually present: an empty tag list means the suite ran without
-				// fetching tags and would otherwise pass every file blindly.
-				const tagsPresent = git(["tag", "--list"]).trim().length > 0;
+				// this repository's tags are actually present: none means the suite ran
+				// without fetching tags and would otherwise pass every file blindly.
 				assert.ok(
-					tagsPresent,
-					`no version in ${relativePath} resolves to a local tag; fetch tags before running this suite`,
+					releaseTags().size > 0,
+					`no version in ${relativePath} resolves to a tag of this repository; fetch tags before running this suite`,
 				);
 				return;
 			}

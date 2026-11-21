@@ -238,3 +238,18 @@ export function declaredMcpToolNames(branch: readonly SessionEntry[]): Set<strin
 			.filter(isRecordedToolName),
 	);
 }
+
+/**
+ * The system prompt section `name`, with its tags, as the branch's requests last sent it: the newest system message
+ * that sets or removes it, or the prompt a compaction carried over, which has every section.
+ */
+export function latestSystemSection(branch: readonly SessionEntry[], name: string): string | undefined {
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index]!;
+		if (entry.type === "compaction" && entry.systemMessage) return entry.systemMessage.sections?.[name] ?? undefined;
+		if (entry.type !== "message" || entry.message.role !== "system") continue;
+		const sections = entry.message.sections;
+		if (sections && Object.hasOwn(sections, name)) return sections[name] ?? undefined;
+	}
+	return undefined;
+}

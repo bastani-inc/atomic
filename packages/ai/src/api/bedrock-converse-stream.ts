@@ -304,9 +304,11 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					model,
 					disablePreferredStrictTools,
 				);
+				const additionalModelRequestFields = buildAdditionalModelRequestFields(model, reasoningOptions);
+				const budget = thinkingBudgetOf(additionalModelRequestFields);
 				let commandInput = {
 					modelId: model.id,
-					messages: convertMessages(normalizedContext, model, cacheRetention, options.env),
+					messages: convertMessages(normalizedContext, model, cacheRetention, options.env, budget),
 					system: buildSystemPrompt(initialSystemPrompt, model, cacheRetention, options.env),
 					inferenceConfig: {
 						...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
@@ -318,11 +320,10 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 							model.compat?.supportsTemperature !== false && { temperature: options.temperature }),
 					},
 					toolConfig: tools.toolConfig,
-					additionalModelRequestFields: buildAdditionalModelRequestFields(model, reasoningOptions),
+					additionalModelRequestFields,
 					...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 				};
-				const thinking = commandInput.additionalModelRequestFields?.thinking;
-				if (thinking?.type === "enabled") output.thinkingBudgetTokens = thinking.budget_tokens;
+				if (budget !== undefined) output.thinkingBudgetTokens = budget;
 				const nextCommandInput = await options?.onPayload?.(commandInput, model);
 				if (nextCommandInput !== undefined) {
 					commandInput = nextCommandInput as typeof commandInput;
@@ -1079,6 +1080,7 @@ function convertMessages(
 	model: Model<"bedrock-converse-stream">,
 	cacheRetention: CacheRetention,
 	env?: ProviderEnv,
+	thinkingBudget?: number,
 ): Message[] {
 	const result: Message[] = [];
 	const transformedMessages = transformMessages(
@@ -1092,6 +1094,9 @@ function convertMessages(
 	let checkpoint: CacheCut | undefined;
 	// Where the request the last sent reply answered ended: its newest input got that request's last cache point.
 	let replyCut: CacheCut | undefined;
+	// Whether that reply came from this request's model and thinking budget, so its prefix is cached where this request
+	// can read it.
+	let replyFromModel = false;
 	const inputCut = (): CacheCut | undefined => {
 		const index = result.length - 1;
 		const last = result[index];
@@ -1144,11 +1149,6 @@ function convertMessages(
 				break;
 			}
 			case "assistant": {
-				// Skip assistant messages with empty content (e.g., from aborted requests)
-				// Bedrock rejects messages with empty content arrays
-				if (m.content.length === 0) {
-					continue;
-				}
 				const contentBlocks: ContentBlock[] = [];
 				for (const c of m.content) {
 					switch (c.type) {
@@ -1209,11 +1209,23 @@ function convertMessages(
 							continue;
 					}
 				}
-				// Skip if all content blocks were filtered out
+				// Skip a reply with no content blocks left: Bedrock rejects messages with empty content arrays. Such a reply
+				// still answered the request before it.
+				// The reply came from this model with the same fixed thinking budget, which is part of the cached prefix.
+				const answeredByModel =
+					m.api === model.api &&
+					m.provider === model.provider &&
+					m.model === model.id &&
+					m.thinkingBudgetTokens === thinkingBudget;
 				if (contentBlocks.length === 0) {
+					if (inputCut()) {
+						replyCut = inputCut();
+						replyFromModel = answeredByModel;
+					}
 					continue;
 				}
 				replyCut = inputCut();
+				replyFromModel = answeredByModel;
 				result.push({
 					role: ConversationRole.ASSISTANT,
 					content: contentBlocks,
@@ -1268,13 +1280,29 @@ function convertMessages(
 			cachePoint: { type: CachePointType.DEFAULT, ...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}) },
 		});
 		const hasTail = lastMessage.role === ConversationRole.USER && lastMessage.content !== undefined;
-		// One turn can add so many blocks that the last cache point no longer reaches back to the previous request's.
-		const cut =
-			checkpoint ??
-			(hasTail && replyCut && blocksAfterCut(result, replyCut) >= CACHE_LOOKBACK_POSITIONS ? replyCut : undefined);
-		// The system prompt, this checkpoint and the last message take three of Claude's four cache points.
-		if (cut?.message.content && !(cut.message === lastMessage && cut.blocks === cut.message.content.length))
-			cut.message.content.splice(cut.blocks, 0, cachePoint());
+		const tail: CacheCut = {
+			message: lastMessage,
+			index: result.length - 1,
+			blocks: lastMessage.content?.length ?? 0,
+		};
+		const cuts: CacheCut[] = [];
+		if (checkpoint) {
+			cuts.push(checkpoint);
+			// The checkpoint ends a request no reply answered, so its prefix may never have been cached; the last answered
+			// request's is, when this model answered it. When the checkpoint is too far past that request's end to find its
+			// prefix, that end gets a cache point too.
+			const far = replyCut && blocksBetween(result, replyCut, checkpoint) >= CACHE_LOOKBACK_POSITIONS;
+			if (replyCut && replyFromModel && far && precedes(replyCut, checkpoint)) cuts.push(replyCut);
+		} else if (hasTail && replyCut && blocksBetween(result, replyCut, tail) >= CACHE_LOOKBACK_POSITIONS) {
+			// One turn can add so many blocks that the last cache point no longer reaches back to the previous request's.
+			cuts.push(replyCut);
+		}
+		// The system prompt, these cuts and the last message take at most Claude's four cache points. The later cut goes
+		// in first, so an earlier one in the same message keeps its place.
+		for (const cut of cuts) {
+			if (cut.message.content && !(cut.message === lastMessage && cut.blocks === cut.message.content.length))
+				cut.message.content.splice(cut.blocks, 0, cachePoint());
+		}
 		if (hasTail) lastMessage.content?.push(cachePoint());
 	}
 
@@ -1294,16 +1322,19 @@ interface CacheCut {
 	blocks: number;
 }
 
-/**
- * Blocks after the last block `cut` sent, through the last block of the request, counted until they reach the
- * lookback.
- */
-function blocksAfterCut(messages: Message[], cut: CacheCut): number {
-	let blocks = (cut.message.content?.length ?? 0) - cut.blocks;
-	for (let index = cut.index + 1; index < messages.length && blocks < CACHE_LOOKBACK_POSITIONS; index++) {
+/** Whether `cut` ends before `other` does. */
+function precedes(cut: CacheCut, other: CacheCut): boolean {
+	return cut.index < other.index || (cut.index === other.index && cut.blocks < other.blocks);
+}
+
+/** Blocks after the last block `from` sent, through the last block `to` sent, counted until they reach the lookback. */
+function blocksBetween(messages: Message[], from: CacheCut, to: CacheCut): number {
+	if (from.index === to.index) return to.blocks - from.blocks;
+	let blocks = (from.message.content?.length ?? 0) - from.blocks;
+	for (let index = from.index + 1; index < to.index && blocks < CACHE_LOOKBACK_POSITIONS; index++) {
 		blocks += messages[index]!.content?.length ?? 0;
 	}
-	return blocks;
+	return blocks + to.blocks;
 }
 
 function convertToolConfig(
@@ -1503,6 +1534,12 @@ function resolveThinkingOffOptions(
 	if (providerThinkingLevel === undefined) return options;
 	appendThinkingOffFallbackDiagnostic(output, level, providerThinkingLevel);
 	return reasoningOptions;
+}
+
+/** The fixed thinking budget a request's additional fields ask for, when thinking is enabled with one. */
+function thinkingBudgetOf(fields: Record<string, any> | undefined): number | undefined {
+	const thinking = fields?.thinking;
+	return thinking?.type === "enabled" ? thinking.budget_tokens : undefined;
 }
 
 function buildAdditionalModelRequestFields(

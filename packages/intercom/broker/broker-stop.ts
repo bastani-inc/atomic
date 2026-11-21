@@ -1,4 +1,5 @@
 import { IntercomBrokerStopTimeoutError } from "@bastani/atomic";
+import { type BrokerProcess, laterProcessProbe } from "./broker-process.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
 
 /** How long a stop waits for the broker to exit after its shutdown request; its multi-node close is bounded at 2 s. */
@@ -43,15 +44,19 @@ export async function requestBrokerShutdown(
 /**
  * Wait until the broker process `pid` has exited. The process, not the socket, decides: Windows can briefly accept a
  * named-pipe connection after its broker has terminated, and a successor can bind the pipe only once it has exited.
- * `onPoll` runs on every poll while it is alive.
+ * With `found`, the broker as it was found ({@link identifyBrokerProcess}), a pid that now names a later process also
+ * counts as exited, so a pid Windows gave to another process is not waited for until the bound. `onPoll` runs on every
+ * poll while it is alive.
  */
 export async function waitForBrokerExit(
 	pid: number,
 	timeoutMs: number = BROKER_STOP_TIMEOUT_MS,
 	onPoll?: () => void | Promise<void>,
+	found?: BrokerProcess | Promise<BrokerProcess>,
 ): Promise<void> {
 	const startedAt = Date.now();
-	while (isProcessAlive(pid)) {
+	const isLater = found === undefined ? () => false : laterProcessProbe(found);
+	while (isProcessAlive(pid) && !isLater()) {
 		const elapsedMs = Date.now() - startedAt;
 		if (elapsedMs >= timeoutMs) throw new IntercomBrokerStopTimeoutError({ pid, timeoutMs, elapsedMs });
 		await onPoll?.();
