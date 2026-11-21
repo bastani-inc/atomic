@@ -57,12 +57,37 @@ function getCreateJiti(): Promise<typeof createJiti> {
 	).then((module) =>
 		// jiti imports a module natively first under Bun, and Bun then resolves the module's own imports itself, so an
 		// extension's `typebox` or Atomic package imports could reach other copies than the host's. Every load is
-		// transformed instead, as under Node: each import goes through the host's modules and aliases.
+		// transformed instead, as under Node: each import goes through the host's modules and aliases. Atomic's own
+		// packages in a source checkout are the exception (see `bunImportsNatively`).
 		process.versions.bun === undefined
 			? module.createJiti
 			: (((id, options) => module.createJiti(id, { tryNative: false, ...options })) as typeof createJiti),
 	);
 	return createJitiPromise;
+}
+
+const HOST_TYPEBOX = "@bastani/atomic-schema/typebox";
+const sharesHostTypeboxByDir = new Map<string, boolean>();
+
+/**
+ * Under Bun, whether to import the entry of Atomic's own package at `extensionPath`, as a source checkout loads it,
+ * natively, as before Bun transformed every extension: Bun then resolves its imports itself, from the files the host
+ * loads, which reach the host's own instances as long as its TypeBox is the host's copy.
+ */
+function bunImportsNatively(extensionPath: string): boolean {
+	const bun = (globalThis as typeof globalThis & { Bun?: { resolveSync(id: string, parent: string): string } }).Bun;
+	if (bun === undefined || isBunBinary || isBundledBuild || !isSourceBuiltinExtensionPath(extensionPath)) return false;
+	const dir = path.dirname(extensionPath);
+	let shares = sharesHostTypeboxByDir.get(dir);
+	if (shares === undefined) {
+		try {
+			shares = bun.resolveSync(HOST_TYPEBOX, dir) === bun.resolveSync(HOST_TYPEBOX, currentModuleDir());
+		} catch {
+			shares = false;
+		}
+		sharesHostTypeboxByDir.set(dir, shares);
+	}
+	return shares;
 }
 
 /** Creates `dir` one level at a time below `root`, never `root` itself, so a removed agent directory stays removed. */
@@ -799,7 +824,11 @@ async function importExtensionModule(
 			const { code } = transformSource(options);
 			return { code: withReloadableScriptPrologue(code, options.filename ?? "", options.source) };
 		},
-		...(forceTransformedImports ? { tryNative: false } : {}),
+		...(forceTransformedImports
+			? { tryNative: false }
+			: bunImportsNatively(extensionPath)
+				? { tryNative: true }
+				: {}),
 		// A first native import can fall back to transformation too. Always share
 		// the live host instead of re-evaluating its graph through source aliases.
 		virtualModules: await getVirtualModules(),
@@ -853,8 +882,8 @@ async function importExtensionModule(
 	} else {
 		module = await importEntry();
 	}
-	// jiti transforms every load (see getCreateJiti); on Windows re-loads keep using the transformed path and its
-	// retained-evaluation reuse.
+	// jiti transforms every load except Atomic's own packages in a source checkout under Bun (see getCreateJiti); a
+	// native import's re-loads, and on Windows every re-load, use the transformed path and its retained-evaluation reuse.
 	if ((isWindows || jiti.options.tryNative) && !forceTransformedImports) {
 		nativelyImportedPaths.add(extensionPath);
 	}
@@ -919,7 +948,9 @@ export async function prepareExtensionEntries(
 	const createJitiImpl = await getCreateJiti();
 	// The options a load's jiti gets that decide whether it imports the entry natively and how it transforms modules.
 	const { options } = createJitiImpl(resolutionBaseUrl(import.meta.url), { moduleCache: false, fsCache: false });
-	const transformed = entries.filter((entry) => nativelyImportedPaths.has(entry) || !options.tryNative);
+	const transformed = entries.filter(
+		(entry) => nativelyImportedPaths.has(entry) || !(options.tryNative || bunImportsNatively(entry)),
+	);
 	const importPaths = await Promise.all(transformed.map((entry) => realpathJs(entry).catch(() => entry)));
 	await prepareSourceEntries(
 		{ createJiti: createJitiImpl, cacheDir, template: transformTemplate(options) },
@@ -953,8 +984,10 @@ export async function loadExtensionModule(
 	// (which requires jiti's transformed-import path).
 	// Every editable path retains the existing jiti/virtualModules behavior.
 	// A first load is transformed like any other (see getCreateJiti), from
-	// the persistent transpile cache when it holds the module. On Windows,
-	// re-loads of the same path take the retained-evaluation path below.
+	// the persistent transpile cache when it holds the module, except Atomic's
+	// own packages in a source checkout under Bun, which Bun imports itself.
+	// On Windows, re-loads of the same path take the retained-evaluation path
+	// below.
 	//
 	// A transformed re-import is not free. Measured on Windows CI, a transformed re-import
 	// costs ~15 ms per module file in the extension's transitive graph, so a
