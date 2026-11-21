@@ -484,7 +484,9 @@ export function agentPanelRows(
 	return rankPanelSession(session, window).rows;
 }
 
-const WIDGET_KEY = "atomic.agent-panel";
+/** The widget the idle panel is drawn as. */
+export const AGENT_PANEL_WIDGET_KEY = "atomic.agent-panel";
+const WIDGET_KEY = AGENT_PANEL_WIDGET_KEY;
 const TICK_MS = 1000;
 export const AGENT_PANEL_REFRESH_WINDOW_MS = 50;
 export const AGENT_PANEL_REFRESH_BUDGET_MS = 8;
@@ -1251,6 +1253,15 @@ export async function showAgentPanel(
 		}
 	}
 	await next?.();
+}
+
+/**
+ * Whether the idle panel of `session` opens again once the one view hiding it now closes: a panel is bound to the
+ * session, that view is its only hider, and the panel has rows to show.
+ */
+export function agentPanelReturnsOnShow(session: AgentPanelSession & object): boolean {
+	const state = panelState(session);
+	return state.hideCount === 1 && state.setVisible !== undefined && agentPanelHasRows(session);
 }
 
 export function setAgentPanelVisible(session: object, visible: boolean): void {

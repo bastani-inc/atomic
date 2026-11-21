@@ -1,10 +1,10 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { asyncScope } from "../async-scope.ts";
 import { drainExtensionAPIWork, retireExtensionAPI, runExtensionAPICleanup, sealExtensionAPI } from "./loader-api.ts";
 import { createExtensionContext } from "./runner-context.ts";
 import { noOpUIContext } from "./runner-ui.ts";
 import type { Extension, ExtensionRuntime } from "./types.ts";
 
-export const factoryAcquisitions = new AsyncLocalStorage<{
+export const factoryAcquisitions = asyncScope<{
 	pending?: Map<Extension, { cwd: string; runtime: ExtensionRuntime }>;
 	replacement?: boolean;
 }>();

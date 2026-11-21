@@ -226,6 +226,62 @@ function toolResultText(harness: Harness, toolCallId: string): string {
 	return result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
 
+describe("a restored worktree whose trust the session decides after it starts builds only after the decision (#5693)", () => {
+	function decidedLater(trusted: () => boolean) {
+		const decision = Promise.withResolvers<void>();
+		const prepare = (manager: SessionManager) =>
+			prepareSessionResume(manager, {
+				...options(),
+				blueprint: { ...options().blueprint, trusted },
+				trustDecidedLater: { applies: async () => true, decided: decision.promise },
+			});
+		return { prepare, decide: () => decision.resolve() };
+	}
+
+	test("the resume returns before any build step runs, and the build runs behind the first turn once trusted (#5693)", async () => {
+		const manager = await recordedProject();
+		let trusted = false;
+		const later = decidedLater(() => trusted);
+		const prepared = ready(await later.prepare(manager));
+		const sessionId = prepared.sessionManager.getSessionId();
+		assert.deepEqual(contexts(prepared.sessionManager), [BLUEPRINT_BUILDING_CONTEXT]);
+		assert.equal(blueprintBuildPending(sessionId), true, "tools wait for the build");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.deepEqual(ran(), [], "no project build step runs before the decision");
+
+		trusted = true;
+		later.decide();
+		await until(() => ran().includes("started"), "the build to start after the decision");
+		writeFileSync(gate(), "");
+		const report = await awaitBlueprintReady(sessionId);
+		assert.deepEqual(ran(), ["started", "built"]);
+		assert.match(report ?? "", /has finished\./);
+	});
+
+	test("a declined folder's restored worktree is reported untrusted and runs nothing (#5693)", async () => {
+		const manager = await recordedProject();
+		const later = decidedLater(() => false);
+		const prepared = ready(await later.prepare(manager));
+		later.decide();
+		const report = await awaitBlueprintReady(prepared.sessionManager.getSessionId());
+		assert.deepEqual(ran(), []);
+		assert.match(report ?? "", /the project is not trusted, so the build was skipped/);
+	});
+
+	test("Atomic exiting before the decision stops the waiting build without running it (#5693)", async () => {
+		const manager = await recordedProject();
+		const later = decidedLater(() => true);
+		const prepared = ready(await later.prepare(manager));
+		await stopBlueprintBuilds();
+		assert.equal(blueprintBuildPending(prepared.sessionManager.getSessionId()), true);
+		const report = await awaitBlueprintReady(prepared.sessionManager.getSessionId());
+		assert.match(report ?? "", /stopped before it finished/);
+		later.decide();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.deepEqual(ran(), []);
+	});
+});
+
 describe("resume.waitForBlueprint lets the first turn overlap the blueprint build (#4748)", () => {
 	test('the default "prompt" returns only after the build ended and holds no tool (#4748)', async () => {
 		const manager = await recordedProject();

@@ -1,5 +1,5 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import type { ExtensionBindings } from "./agent-session-types.js";
+import { asyncScope } from "./async-scope.ts";
 
 /** One eager interactive start. Independent SDK binds (even on this session) have no claim on its outcome. */
 export interface InitialBind {
@@ -12,7 +12,7 @@ export interface InitialBind {
 	joinedStart?: object;
 	cancelled?: boolean;
 }
-export const initialBindScope = new AsyncLocalStorage<WeakRef<InitialBind>>();
+export const initialBindScope = asyncScope<WeakRef<InitialBind>>();
 const bindingOwners = new WeakMap<ExtensionBindings, WeakRef<InitialBind>>();
 export function registerInitialBindings(
 	mode: object,
