@@ -53,6 +53,8 @@ export interface OwnerlessChildLaunch {
 	/** Stands in for the host's task id in the child's records. */
 	readonly launchId: string;
 	readonly result: Promise<SingleResult>;
+	/** Settles once the launch ended, also when it was stopped before it started, which `result` reports only later. */
+	readonly ended: Promise<void>;
 }
 
 /** How a child that pause or quit stopped before it was dispatched starts later, on its original launch. */
@@ -134,7 +136,7 @@ export function runOwnerlessChild(input: {
 	const signal = AbortSignal.any(
 		[input.options.signal, input.ownerSignal, stopper.signal].filter((candidate) => candidate !== undefined),
 	);
-	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
+	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile" | "worktreeCapturedAt"> = {};
 	let childLaunch: Pick<
 		SubagentChildRecordInput,
 		"launchModel" | "launchThinkingLevel" | "launchLeafId" | "launchLeafSeq"
@@ -236,6 +238,9 @@ export function runOwnerlessChild(input: {
 		child: SingleResult,
 		onBackground?: (result: SingleResult) => void,
 	): Promise<SingleResult> => {
+		// The records this run writes from now on say when its session last recorded a snapshot of a checkout.
+		if (child.worktreeCapturedAt !== undefined)
+			childSession = { ...childSession, worktreeCapturedAt: child.worktreeCapturedAt };
 		const stopped = takeSubagentChildStop(launchId);
 		const stoppedByControl = stopped !== undefined && child.status === "interrupted";
 		const ownerClosed = !stoppedByControl && child.status === "interrupted" && input.ownerSignal?.aborted === true;
@@ -311,6 +316,9 @@ export function runOwnerlessChild(input: {
 					childSession = {
 						childSessionId: session.sessionId,
 						...(session.sessionFile ? { childSessionFile: session.sessionFile } : {}),
+						...(childSession.childSessionId === session.sessionId && childSession.worktreeCapturedAt !== undefined
+							? { worktreeCapturedAt: childSession.worktreeCapturedAt }
+							: {}),
 					};
 					record("running");
 				},
@@ -382,7 +390,7 @@ export function runOwnerlessChild(input: {
 		},
 		execute,
 	);
-	return { launchId, result };
+	return { launchId, result, ended: settled.promise };
 }
 
 /** Children launched without a task host that are live or stopped while queued; counted by tests and the benchmark. */
