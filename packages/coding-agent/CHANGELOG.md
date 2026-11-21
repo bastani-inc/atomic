@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Subagents no longer show "Worktree snapshot unavailable: jsonl storage cannot hold snapshot blobs" when they change files. A subagent's session is kept where its run keeps it, so the advice to choose another session store did not apply to it. Subagents launched with `context: "fork"` from a session in a database still record snapshots. A main session whose store cannot hold snapshots shows the advice once, when a new session first changes files, and no longer again each time it is resumed.
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.

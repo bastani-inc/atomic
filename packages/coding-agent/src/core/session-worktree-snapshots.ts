@@ -110,8 +110,22 @@ export interface TurnSnapshotDependencies {
 	readonly settings: () => WorktreeSnapshotSettings;
 	/** Whether a registered tool declares `writesFiles`. */
 	readonly declaresWrites: (toolName: string) => boolean;
+	/**
+	 * Whether the session runs as a subagent; absent, it does not. A subagent's run chooses its storage, so a store of a
+	 * subagent that cannot hold snapshots is never reported.
+	 */
+	readonly isSubagent?: () => boolean;
 	/** Called once per distinct reason a snapshot could not be recorded. */
 	readonly onUnavailable: (reason: WorktreeSnapshotUnavailable) => void;
+}
+
+/**
+ * Whether to report that the session's store cannot hold snapshots: once, for a session this process started as a
+ * new session or a fork. A resumed or reopened session was told when it was new.
+ */
+function reportsUnsupportedStore(sessionManager: SessionManager): boolean {
+	// A session manager of an earlier Atomic version cannot say: its session counts as one it opened.
+	return typeof sessionManager.takeStartedSession === "function" && sessionManager.takeStartedSession();
 }
 
 function* isInside(parent: string, child: string): CanonicalSteps<boolean> {
@@ -170,12 +184,15 @@ export class SessionWorktreeSnapshotRecorder {
 		if (!settings.enabled || !this.deps.sessionManager.isPersisted()) return;
 		const blobs = this.deps.sessionManager.getSessionStore().snapshotBlobs;
 		if (!blobs) {
-			this.report(
-				new WorkspaceSnapshotError(
-					"blob-store-unsupported",
-					this.deps.sessionManager.getSessionStore().descriptor.adapter,
-				),
-			);
+			// Once per session rather than once per recorder: a session manager that starts another session in place
+			// reports it for that session too.
+			if (this.deps.isSubagent?.() !== true && reportsUnsupportedStore(this.deps.sessionManager))
+				this.deps.onUnavailable(
+					new WorkspaceSnapshotError(
+						"blob-store-unsupported",
+						this.deps.sessionManager.getSessionStore().descriptor.adapter,
+					),
+				);
 			return;
 		}
 		const checkouts = new Map<string, Checkout>();
@@ -2110,6 +2127,9 @@ export async function openResumedSession(
 					history: "tail",
 				})
 			: sessionManager;
+	// A session manager of an earlier Atomic version has none to hand over.
+	if (opened !== sessionManager && typeof sessionManager.handOverStartedSession === "function")
+		sessionManager.handOverStartedSession(opened);
 	const restoredHere = new Set(restored.map((mapping) => mapping.to));
 	const leftHere = new Set(unrestored.map((record) => `${record.snapshotId}\0${record.at}`));
 	return {

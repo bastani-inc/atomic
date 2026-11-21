@@ -9,13 +9,14 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { openResumedSession } from "../src/core/session-worktree-snapshots.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import { type PoolSlotRecord, pooledWorktreeHolder } from "../src/core/worktree-snapshot/pool.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import { formatWorktreeRestoreNotice, isWorkspaceConfigError, openSessionInWorktree } from "../src/index.ts";
-import { createHarness } from "./suite/harness.js";
+import { createHarness, type Harness } from "./suite/harness.js";
 
 let sandbox: GitSandbox;
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -275,17 +276,127 @@ describe("turn boundaries", () => {
 		return { directory, manager, harness, target: join(harness.tempDir, "written.txt") };
 	}
 
-	test("control: a turn that writes in a session whose store cannot hold blobs reports that once", async () => {
+	/** One turn that writes `path`, then ends. */
+	const writesFile = (path: string) => [
+		fauxAssistantMessage([fauxToolCall("write", { path, content: "x\n" })], { stopReason: "toolUse" }),
+		fauxAssistantMessage("done"),
+	];
+	const storageAdvice = (harness: Harness) =>
+		harness.eventsOfType("worktree_snapshot_unavailable").map((event) => event.reason.code);
+
+	test("control: a new session whose store cannot hold blobs reports that once, not on every turn that writes", async () => {
 		const { harness, target } = await jsonlHarness();
-		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("write", { path: target, content: "x\n" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
-		]);
+		harness.setResponses([...writesFile(target), ...writesFile(`${target}.2`)]);
 		await harness.session.prompt("write it");
+		await harness.session.prompt("write it again");
+		assert.deepEqual(storageAdvice(harness), ["blob-store-unsupported"]);
+	});
+
+	test("a session whose store cannot hold blobs, opened again, does not report it again", async () => {
+		const directory = sandbox.path("jsonl-reopened");
+		mkdirSync(directory, { recursive: true });
+		const created = await SessionManager.create(directory, directory);
+		const first = await createHarness({ sessionManager: created });
+		cleanups.push(() => first.cleanup());
+		first.setResponses(writesFile(join(first.tempDir, "first.txt")));
+		await first.session.prompt("write it");
+		assert.deepEqual(storageAdvice(first), ["blob-store-unsupported"], "the new session is told once");
+		await first.session.dispose();
+
+		const reopened = await createHarness({
+			sessionManager: await SessionManager.open(created.getSessionFile()!, directory),
+		});
+		cleanups.push(() => reopened.cleanup());
+		reopened.setResponses(writesFile(join(reopened.tempDir, "again.txt")));
+		await reopened.session.prompt("write it again");
+		assert.deepEqual(storageAdvice(reopened), []);
+	});
+
+	test("a session an interactive engine opens for the host that started it reports it once, as a new session does", async () => {
+		const directory = sandbox.path("jsonl-engine");
+		mkdirSync(directory, { recursive: true });
+		const hostSession = await SessionManager.create(directory, directory);
+		const engineSession = await SessionManager.open(hostSession.getSessionFile()!, directory);
+		engineSession.markSessionStarted();
+		const engine = await createHarness({ sessionManager: engineSession });
+		cleanups.push(() => engine.cleanup());
+		engine.setResponses([...writesFile(join(engine.tempDir, "a.txt")), ...writesFile(join(engine.tempDir, "b.txt"))]);
+		await engine.session.prompt("write it");
+		await engine.session.prompt("write it again");
+		assert.deepEqual(storageAdvice(engine), ["blob-store-unsupported"]);
+	});
+
+	test("a second session object on the same new session does not report it again", async () => {
+		const { manager, harness, target } = await jsonlHarness();
+		harness.setResponses(writesFile(target));
+		await harness.session.prompt("write it");
+		const second = await createHarness({ sessionManager: manager });
+		cleanups.push(() => second.cleanup());
+		second.setResponses(writesFile(join(second.tempDir, "second.txt")));
+		await second.session.prompt("write it again");
 		assert.deepEqual(
-			harness.eventsOfType("worktree_snapshot_unavailable").map((event) => event.reason.code),
+			[...storageAdvice(harness), ...storageAdvice(second)],
 			["blob-store-unsupported"],
+			"one report for the session, whichever session object writes first",
 		);
+	});
+
+	test("a session manager that starts another session in place reports it once for each session", async () => {
+		const { manager, harness, target } = await jsonlHarness();
+		harness.setResponses([...writesFile(target), ...writesFile(`${target}.2`), ...writesFile(`${target}.3`)]);
+		await harness.session.prompt("write it");
+		await manager.newSession();
+		await harness.session.prompt("write in the new session");
+		await harness.session.prompt("write in it again");
+		assert.deepEqual(storageAdvice(harness), ["blob-store-unsupported", "blob-store-unsupported"]);
+	});
+
+	test("a new session that a resume continues in another directory reports it once, there", async () => {
+		const { manager } = await jsonlHarness();
+		const { sessionManager: moved } = await openResumedSession(manager, sandbox.path("elsewhere"), []);
+		assert.notEqual(moved, manager);
+		const continued = await createHarness({ sessionManager: moved });
+		cleanups.push(() => continued.cleanup());
+		continued.setResponses([
+			...writesFile(join(continued.tempDir, "a.txt")),
+			...writesFile(join(continued.tempDir, "b.txt")),
+		]);
+		await continued.session.prompt("write it");
+		await continued.session.prompt("write it again");
+		assert.deepEqual(storageAdvice(continued), ["blob-store-unsupported"]);
+		assert.equal(manager.startedSession(), false, "the manager it replaced reports nothing more");
+	});
+
+	test("reading a new session again by its ID leaves the report to the session that writes", async () => {
+		const { manager, harness, target } = await jsonlHarness();
+		const reader = await manager.openSessionById(manager.getSessionId());
+		assert.equal(reader.startedSession(), false);
+		harness.setResponses(writesFile(target));
+		await harness.session.prompt("write it");
+		assert.deepEqual(storageAdvice(harness), ["blob-store-unsupported"]);
+	});
+
+	test("a session manager switched to a saved session file does not report it", async () => {
+		const { manager, harness, target } = await jsonlHarness();
+		const otherDirectory = sandbox.path("jsonl-other");
+		mkdirSync(otherDirectory, { recursive: true });
+		const saved = await SessionManager.create(otherDirectory, otherDirectory);
+		await manager.setSessionFile(saved.getSessionFile()!);
+		harness.setResponses(writesFile(target));
+		await harness.session.prompt("write it");
+		assert.deepEqual(storageAdvice(harness), []);
+	});
+
+	test("a fork that starts a new session reports it once, as a new session does", async () => {
+		const { manager, directory } = await jsonlHarness();
+		await manager.appendMessage({ role: "user", content: "copied into the fork", timestamp: Date.now() });
+		const fork = await createHarness({ sessionManager: await manager.forkTo(directory, directory) });
+		cleanups.push(() => fork.cleanup());
+		assert.notEqual(fork.sessionManager.getSessionId(), manager.getSessionId());
+		fork.setResponses([...writesFile(join(fork.tempDir, "fork.txt")), ...writesFile(join(fork.tempDir, "b.txt"))]);
+		await fork.session.prompt("write it");
+		await fork.session.prompt("write it again");
+		assert.deepEqual(storageAdvice(fork), ["blob-store-unsupported"]);
 	});
 
 	test("a turn whose own messages could not be saved is not snapshotted or reported", async () => {
