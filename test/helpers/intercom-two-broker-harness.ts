@@ -579,21 +579,28 @@ export class TwoBrokerHarness {
 		state.clients.push(attached);
 		options.beforeConnect?.(attached);
 		const now = Date.now();
-		await client.connect(
-			{
-				name,
-				model: "two-broker-harness",
-				cwd: this.root,
-				pid: process.pid,
-				status: "idle",
-				startedAt: now,
-				lastActivity: now,
-				group,
-				groups: [group],
-			},
-			options.supervisor,
-			options.supervisorOwnerToken,
-		);
+		try {
+			await client.connect(
+				{
+					name,
+					model: "two-broker-harness",
+					cwd: this.root,
+					pid: process.pid,
+					status: "idle",
+					startedAt: now,
+					lastActivity: now,
+					group,
+					groups: [group],
+				},
+				options.supervisor,
+				options.supervisorOwnerToken,
+			);
+		} catch (error) {
+			// A registration the broker refused never connected, so no `disconnected` event will come for it:
+			// `stopBroker` must not wait for it to disconnect.
+			attached.disconnected = true;
+			throw error;
+		}
 		return attached;
 	}
 
