@@ -16,7 +16,7 @@ import {
 	type CuratorWorkflow,
 } from "./web-search-config.js";
 import { buildCurationCancelledReturn, collectAllResultsAndUrls, extractDomain } from "./web-search-formatting.js";
-import type { SearchReturnBuilder } from "./web-search-return.js";
+import type { SearchReturnBuilder, SearchReturnPayload } from "./web-search-return.js";
 import { loadSummaryModelChoices } from "./web-search-summary.js";
 import type { PendingCurate, WebSearchRuntimeState } from "./web-search-types.js";
 
@@ -85,8 +85,8 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 				}
 				deps.closeCurator();
 
-				let resolvePromise: (value: unknown) => void = () => {};
-				const promise = new Promise<unknown>((resolve) => {
+				let resolvePromise: (value: SearchReturnPayload | PromiseLike<SearchReturnPayload>) => void = () => {};
+				const promise = new Promise<SearchReturnPayload>((resolve) => {
 					resolvePromise = resolve;
 				});
 				const includeContent = params.includeContent ?? false;
@@ -138,7 +138,7 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 				};
 
 				const onAbort = () => deps.closeCurator();
-				const finish = (value: unknown) => {
+				const finish = (value: SearchReturnPayload | PromiseLike<SearchReturnPayload>) => {
 					if (cancelled) return;
 					cancelled = true;
 					pc.abortSearches();
