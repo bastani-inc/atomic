@@ -6,13 +6,17 @@ import { createRequire } from "node:module";
 import { dirname, join, toNamespacedPath } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, test } from "vitest";
+import { NODE_TS_SOURCE_ARGS } from "../helpers/node-ts-sources.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const run = promisify(execFile);
 const require = createRequire(import.meta.url);
-const modules = new URL("../../packages/coding-agent/dist/core/worktree-snapshot/", import.meta.url);
-const clock = new URL("shared-clock.js", modules).href;
-const pool = new URL("pool.js", modules).href;
+const modules = new URL("../../packages/coding-agent/src/core/worktree-snapshot/", import.meta.url);
+const clock = new URL("shared-clock.ts", modules).href;
+const pool = new URL("pool.ts", modules).href;
+/** The runtime and the arguments that let it import Atomic's sources. */
+const sourceRuntime = (runtime: string): [string, string[]] =>
+	runtime === "Node" ? [process.execPath, NODE_TS_SOURCE_ARGS] : [bunExecutable(), []];
 let root: string;
 beforeEach(() => {
 	root = makeTempDirectory("pool-clock-");
@@ -33,7 +37,8 @@ test.each(["Node", "Bun"])("a cold %s lock does not load the native package (#56
 	`;
 	const file = join(root, "slot");
 	writeFileSync(file, "");
-	await run(runtime === "Node" ? process.execPath : bunExecutable(), ["--input-type=module", "-e", script], {
+	const [executable, sourceArgs] = sourceRuntime(runtime);
+	await run(executable, [...sourceArgs, "--input-type=module", "-e", script], {
 		env: { ...process.env, LOCK_FILE: file },
 	});
 });
@@ -42,14 +47,14 @@ test("a cold clock does not need a separate Windows module to acquire a lock (#5
 	const script = `
 		import { registerHooks } from 'node:module';
 		registerHooks({load(url, context, next) {
-			if (url.endsWith('/windows-temporary.js')) throw Error('unexpected Windows helper read');
+			if (url.endsWith('/windows-temporary.js') || url.endsWith('/windows-temporary.ts')) throw Error('unexpected Windows helper read');
 			return next(url, context);
 		}});
 		const { lockShared } = await import(${JSON.stringify(clock)});
 		const release = await lockShared(process.env.LOCK_FILE, { realpath: false });
 		await release();
 	`;
-	await run(process.execPath, ["--input-type=module", "-e", script], {
+	await run(process.execPath, [...NODE_TS_SOURCE_ARGS, "--input-type=module", "-e", script], {
 		env: { ...process.env, LOCK_FILE: join(root, "slot") },
 	});
 });
@@ -73,7 +78,7 @@ test("a Bun clock reading does not ask a registry for missing optional bindings 
 			join(root, "node_modules", "proper-lockfile"),
 			"junction",
 		);
-		copyFileSync(new URL("shared-clock.js", modules), join(root, "shared-clock.js"));
+		copyFileSync(new URL("shared-clock.ts", modules), join(root, "shared-clock.ts"));
 		writeFileSync(join(root, "package.json"), '{"type":"module"}');
 		writeFileSync(
 			join(root, "bunfig.toml"),
@@ -82,7 +87,7 @@ test("a Bun clock reading does not ask a registry for missing optional bindings 
 		mkdirSync(join(root, "store"));
 		writeFileSync(
 			join(root, "run.mjs"),
-			`import { sharedClockOffset } from './shared-clock.js'; const now = Date.now.bind(Date); Date.now = () => now()+180000; console.log(await sharedClockOffset('store'));`,
+			`import { sharedClockOffset } from './shared-clock.ts'; const now = Date.now.bind(Date); Date.now = () => now()+180000; console.log(await sharedClockOffset('store'));`,
 		);
 		const { stdout } = await run(bunExecutable(), ["--config=bunfig.toml", "run.mjs"], {
 			cwd: root,
@@ -127,7 +132,8 @@ test.runIf(process.platform === "win32").each(["Node", "Bun"])(
 			try { assert.deepEqual(permissions(join(storeDir,'pool',repositoryIdOf(remotes),'0.json')), permissions(control)); }
 			finally { await releaseRestoredWorktree(lease,state); }
 		`;
-		await run(runtime === "Node" ? process.execPath : bunExecutable(), ["--input-type=module", "-e", script], {
+		const [executable, sourceArgs] = sourceRuntime(runtime);
+		await run(executable, [...sourceArgs, "--input-type=module", "-e", script], {
 			env: { ...process.env, POOL_STORE: root },
 		});
 	},
@@ -158,7 +164,7 @@ test.runIf(process.platform === "win32")(
 			assert.equal(statSync(join(storeDir,'pool',repositoryIdOf(remotes),'0.json')).mode,statSync(control).mode);
 		} finally { await releaseRestoredWorktree(lease,state); }
 	`;
-		await run(process.execPath, ["--input-type=module", "-e", script], {
+		await run(process.execPath, [...NODE_TS_SOURCE_ARGS, "--input-type=module", "-e", script], {
 			env: { ...process.env, POOL_STORE: root, UV_THREADPOOL_SIZE: "1" },
 		});
 	},
@@ -182,7 +188,8 @@ test.runIf(process.platform === "win32").each(["Node", "Bun"])(
 		try { await sharedClockOffset(dir); } finally { natives.readWindowsClockProbe=read; }
 		assert.equal(seen.length,1,'one probe observed while it was held'); assert.equal(seen[0],mode);
 	`;
-		await run(runtime === "Node" ? process.execPath : bunExecutable(), ["--input-type=module", "-e", script], {
+		const [executable, sourceArgs] = sourceRuntime(runtime);
+		await run(executable, [...sourceArgs, "--input-type=module", "-e", script], {
 			env: { ...process.env, POOL_STORE: root },
 		});
 	},
@@ -201,7 +208,8 @@ test.runIf(process.platform === "win32").each(["Node", "Bun"])(
 		const offset=await sharedClockOffset(process.env.PROBE_DIRECTORY);
 		assert.ok(Math.abs(offset+180000)<10000, 'expected a filesystem reading; got '+offset);
 	`;
-		await run(runtime === "Node" ? process.execPath : bunExecutable(), ["--input-type=module", "-e", script], {
+		const [executable, sourceArgs] = sourceRuntime(runtime);
+		await run(executable, [...sourceArgs, "--input-type=module", "-e", script], {
 			env: { ...process.env, PROBE_DIRECTORY: directory },
 		});
 	},
@@ -313,7 +321,7 @@ public class SharedProbe {
 		$handle = [SharedProbe]::CreateFileW($env:PROBE_FILE,0x10080,7,[IntPtr]::Zero,3,128,[IntPtr]::Zero)
 		if ($handle.IsInvalid) { throw 'could not open the abandoned probe' }
 		try {
-			& $env:NODE_EXE $env:READ_CLOCK
+			& $env:NODE_EXE $env:NODE_TS_SOURCES $env:READ_CLOCK
 			if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 			if ((Get-ChildItem -Force -LiteralPath $env:PROBE_DIRECTORY).Name -contains '.clock-0123456789abcdef.probe') { throw 'abandoned probe still listed' }
 		} finally { $handle.Dispose() }
@@ -325,6 +333,7 @@ public class SharedProbe {
 					PROBE_FILE: file,
 					PROBE_DIRECTORY: root,
 					NODE_EXE: process.execPath,
+					NODE_TS_SOURCES: NODE_TS_SOURCE_ARGS.join("="),
 					READ_CLOCK: readClock,
 				},
 			},

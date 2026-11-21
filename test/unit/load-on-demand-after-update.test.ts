@@ -7,10 +7,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, test } from "vitest";
+import { NODE_TS_SOURCE_ARGS } from "../helpers/node-ts-sources.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
 const ROOT = join(moduleDir(import.meta.url), "../..");
-const DIST = join(ROOT, "packages/coding-agent/dist");
+// The source modules: the package bundles them and ships no file of their own.
+const SOURCE = join(ROOT, "packages/coding-agent/src");
 /** One child process that loads the helper and the host configuration: structural, not a slow test. */
 const CHILD_TIMEOUT_MS = 60_000;
 
@@ -56,8 +58,8 @@ function load(
 		`import { rmSync, writeFileSync } from "node:fs";
 const installation = ${JSON.stringify(installation)};
 writeFileSync(installation + "/package.json", JSON.stringify({ name: "@bastani/atomic", version: "0.10.90" }));
-const { loadOnDemand } = await import(${JSON.stringify(pathToFileURL(join(DIST, "utils/updated-install.js")).href)});
-const { wrapToolDefinition } = await import(${JSON.stringify(pathToFileURL(join(DIST, "core/tools/tool-definition-wrapper.js")).href)});
+const { loadOnDemand } = await import(${JSON.stringify(pathToFileURL(join(SOURCE, "utils/updated-install.ts")).href)});
+const { wrapToolDefinition } = await import(${JSON.stringify(pathToFileURL(join(SOURCE, "core/tools/tool-definition-wrapper.ts")).href)});
 await import(${JSON.stringify(pathToFileURL(join(modules, "earlier.mjs")).href)});
 ${
 	change === "update"
@@ -80,7 +82,7 @@ try {
 }
 `,
 	);
-	const result = spawnSyncCollect([process.execPath, script], {
+	const result = spawnSyncCollect([process.execPath, ...NODE_TS_SOURCE_ARGS, script], {
 		cwd: dir,
 		env: { ...process.env, NODE_OPTIONS: "", ATOMIC_PACKAGE_DIR: installation, PI_PACKAGE_DIR: "" },
 		timeout: CHILD_TIMEOUT_MS,
@@ -219,14 +221,14 @@ function userExtensionLoadError(): string {
 		`import { writeFileSync } from "node:fs";
 const installation = ${JSON.stringify(installation)};
 writeFileSync(installation + "/package.json", JSON.stringify({ name: "@bastani/atomic", version: "0.10.90" }));
-const { loadExtensions } = await import(${JSON.stringify(pathToFileURL(join(DIST, "core/extensions/loader-core.js")).href)});
+const { loadExtensions } = await import(${JSON.stringify(pathToFileURL(join(SOURCE, "core/extensions/loader-core.ts")).href)});
 writeFileSync(installation + "/package.json", JSON.stringify({ name: "@bastani/atomic", version: "0.10.91" }));
 const result = await loadExtensions([${JSON.stringify(extension)}], ${JSON.stringify(dir)}, undefined, undefined, undefined, undefined, ${JSON.stringify(join(dir, "agent"))});
 process.stdout.write(JSON.stringify(result.errors.map((entry) => entry.error)));
 process.exit(0);
 `,
 	);
-	const result = spawnSyncCollect([process.execPath, script], {
+	const result = spawnSyncCollect([process.execPath, ...NODE_TS_SOURCE_ARGS, script], {
 		cwd: dir,
 		env: { ...process.env, NODE_OPTIONS: "", ATOMIC_PACKAGE_DIR: installation, PI_PACKAGE_DIR: "", HOME: dir },
 		timeout: CHILD_TIMEOUT_MS,

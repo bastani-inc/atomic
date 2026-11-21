@@ -16,8 +16,10 @@
  *
  * Each bundled module keeps its own `import.meta.url`: the URL of its compiled file, from the file holding it, so it
  * finds its assets, siblings and workers as before, wherever the package is installed.
- * Dynamic imports become shared files loaded when they run, so what loaded lazily still does. Every other compiled
- * file stays in place: worker entries and the modules they import by URL run from them, in their own threads.
+ * Dynamic imports become shared files loaded when they run, so what loaded lazily still does. The compiled file of each
+ * bundled module is removed from `dist`, so the package holds each module once; a later split that runs without a fresh
+ * compile bundles it from the copy saved in the build state. The modules that run by path in a thread or process of
+ * their own (the workers and the compile-cache helper) keep their compiled files, and so do the modules they import.
  *
  * Source maps chain to the TypeScript sources through the compiled files' maps.
  */
@@ -26,6 +28,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, transform } from "esbuild";
+import { sharedFileName } from "./split-dist-names.mjs";
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(packageDir, "dist");
@@ -44,6 +47,21 @@ const OWNER_ENTRIES = [
 ];
 /** The public entries whose modules stay compiled files at their own paths. */
 const COMPILED_PUBLIC_ENTRIES = ["core/storage/index", "core/storage/testing"];
+/**
+ * Modules the compile-cache helper (`utils/compile-cache-warmup.ts`) loads by path besides `main` and `index`: entries
+ * at their own paths, so the helper compiles the files a session loads.
+ */
+const PATH_LOADED_ENTRIES = ["core/http-dispatcher", "cli/settings-startup", "modes/interactive-engine/engine-prewarm"];
+/**
+ * Modules that run from their compiled files in a thread or process of their own, each with the siblings it imports
+ * by a computed path: the extension source transform worker, the image resize worker and the compile-cache helper.
+ * They keep their compiled files, and so do the modules they import.
+ */
+const RUN_BY_PATH = {
+	"core/extensions/ts-transform-worker": ["core/extensions/transform-graph", "core/extensions/ts-source-specifiers"],
+	"utils/image-resize-worker": [],
+	"utils/compile-cache-warmup": [],
+};
 /** Where shared code goes, below `dist`. */
 export const SHARED_DIRECTORY = "_shared";
 /**
@@ -99,7 +117,7 @@ if (!existsSync(join(dist, "cli.js"))) throw new Error("split-dist: run tsc firs
  */
 const STATE_DIRECTORY = join(packageDir, "node_modules", ".cache", "atomic-split-dist");
 const STATE_FILE = join(STATE_DIRECTORY, "state.json");
-/** The compiled entries, saved before the split overwrites them. */
+/** The compiled entries, saved before the split overwrites them, and the compiled bundled modules it removed. */
 const COMPILED_ENTRIES = join(STATE_DIRECTORY, "compiled");
 const digest = (content) => createHash("sha256").update(content).digest("hex");
 /** @type {{ entries: Record<string, string> }} */
@@ -111,14 +129,27 @@ const writtenBySplit = (entry) => {
 };
 /** Whether `source` is a split's output rather than compiled code. */
 const splitOutput = (source) => source.includes(`/${SHARED_DIRECTORY}/`);
+/** Puts back `dist/<path>` and its map where an earlier split removed them. */
+const restoreCompiled = (path) => {
+	const saved = join(COMPILED_ENTRIES, path);
+	if (existsSync(join(dist, path)) || !existsSync(saved)) return;
+	for (const suffix of ["", ".map"])
+		if (existsSync(`${saved}${suffix}`)) writeFileSync(join(dist, `${path}${suffix}`), readFileSync(`${saved}${suffix}`));
+};
 /** The error for `dist/<path>` holding an earlier split's output when the compiled code it came from is gone. */
 const staleSplit = (path) =>
 	new Error(
 		`split-dist: dist/${path} is an earlier split's output, and the compiled code it was split from is gone, as after a fresh \`npm ci\`; run \`npm run build\` to compile and split again`,
 	);
-/** `dist/<path>` as compiled, also where an earlier split overwrote it. */
+/** `dist/<path>` as compiled, also where an earlier split overwrote or removed it. */
 const compiledSource = (path) => {
 	const entry = path.replace(/\.js$/, "");
+	if (!existsSync(join(dist, path))) {
+		const saved = join(COMPILED_ENTRIES, path);
+		if (!existsSync(saved))
+			throw new Error(`split-dist: dist/${path} is missing and no earlier split saved it; run \`npm run build\` to compile and split again`);
+		return readFileSync(saved, "utf8");
+	}
 	if (!writtenBySplit(entry)) {
 		const source = readFileSync(join(dist, path), "utf8");
 		if (splitOutput(source)) throw staleSplit(path);
@@ -138,32 +169,71 @@ const lateImports = new Set();
 /** Every import of a compiled module, static or dynamic, by its path in `dist`. */
 const compiledImports = [];
 const relativeImport = (from, specifier) => posix.normalize(posix.join(posix.dirname(from), specifier));
+/** The modules of this package that compiled module `path` imports: statically, and dynamically by a literal path. */
+const importsOf = (path, source) => {
+	const imports = { static: [], dynamic: [] };
+	for (const match of source.matchAll(/^(?:import|export)\b[^;]*?\bfrom\s*"(\.{1,2}\/[^"]+)"|^import\s*"(\.{1,2}\/[^"]+)"/gm))
+		imports.static.push(relativeImport(path, match[1] ?? match[2]));
+	for (const match of source.matchAll(/\bimport\(\s*([^)]*?)\s*\)/g)) {
+		const literal = /^"(\.{1,2}\/[^"]+)"$/.exec(match[1]);
+		if (literal !== null) imports.dynamic.push(relativeImport(path, literal[1]));
+		else if (/^["'`]\.{1,2}\//.test(match[1]) || /^`/.test(match[1]))
+			throw new Error(`split-dist: ${path} imports a computed path of this package: import(${match[1]})`);
+	}
+	return imports;
+};
 const visitCompiled = (path) => {
 	if (compiledModules.has(path)) return;
 	compiledModules.add(path);
-	const source = compiledSource(path);
-	for (const match of source.matchAll(/^(?:import|export)\b[^;]*?\bfrom\s*"(\.{1,2}\/[^"]+)"|^import\s*"(\.{1,2}\/[^"]+)"/gm)) {
-		const target = relativeImport(path, match[1] ?? match[2]);
+	restoreCompiled(path);
+	const imports = importsOf(path, compiledSource(path));
+	for (const target of imports.static) {
 		compiledImports.push({ from: path, target });
 		visitCompiled(target);
 	}
-	for (const match of source.matchAll(/\bimport\(\s*([^)]*?)\s*\)/g)) {
-		const literal = /^"(\.{1,2}\/[^"]+)"$/.exec(match[1]);
-		if (literal === null) {
-			if (/^["'`]\.{1,2}\//.test(match[1]) || /^`/.test(match[1]))
-				throw new Error(`split-dist: ${path} imports a computed path of this package: import(${match[1]})`);
-			continue;
-		}
-		const target = relativeImport(path, literal[1]);
+	for (const target of imports.dynamic) {
 		compiledImports.push({ from: path, target });
 		lateImports.add(target);
 	}
 };
 for (const entry of COMPILED_PUBLIC_ENTRIES) visitCompiled(`${entry}.js`);
+/** The modules that run by path in a thread or process of their own, and the modules they import. */
+const threadModules = new Set();
+const visitThread = (path) => {
+	if (threadModules.has(path)) return;
+	threadModules.add(path);
+	restoreCompiled(path);
+	const imports = importsOf(path, compiledSource(path));
+	for (const target of [...imports.static, ...imports.dynamic]) visitThread(target);
+};
+for (const [root, siblings] of Object.entries(RUN_BY_PATH)) for (const path of [root, ...siblings]) visitThread(`${path}.js`);
+/**
+ * The modules the bundled code imports dynamically by a literal path. Each is an entry at its own path: a process of an
+ * earlier version, still running from an install updated in place, imports such a module by that path when it first
+ * needs it, and finds it there, as it found the compiled file before.
+ */
+const lazyTargets = new Set();
+const bundledVisited = new Set();
+const visitBundled = (path) => {
+	if (bundledVisited.has(path) || compiledModules.has(path)) return;
+	bundledVisited.add(path);
+	const imports = importsOf(path, compiledSource(path));
+	for (const target of imports.static) visitBundled(target);
+	for (const target of imports.dynamic) {
+		lazyTargets.add(target);
+		visitBundled(target);
+	}
+};
+for (const entry of [...BUNDLED_ENTRIES, ...OWNER_ENTRIES, ...lateImports]) visitBundled(entry.endsWith(".js") ? entry : `${entry}.js`);
 const SPLIT_ENTRIES = [
-	...BUNDLED_ENTRIES,
-	...OWNER_ENTRIES,
-	...[...lateImports].filter((path) => !compiledModules.has(path)).map((path) => path.replace(/\.js$/, "")),
+	...new Set([
+		...BUNDLED_ENTRIES,
+		...OWNER_ENTRIES,
+		...PATH_LOADED_ENTRIES,
+		...[...lateImports, ...lazyTargets]
+			.filter((path) => !compiledModules.has(path) && !threadModules.has(path))
+			.map((path) => path.replace(/\.js$/, "")),
+	]),
 ];
 if (SPLIT_ENTRIES.some((entry) => compiledModules.has(`${entry}.js`)))
 	throw new Error("split-dist: a bundled entry is also loaded by a compiled public entry");
@@ -181,6 +251,7 @@ for (const entry of Object.keys(state.entries)) {
 /** Each bundled entry's compiled code with its compiled source map inlined, by its path in `dist`. */
 const compiledEntries = new Map();
 for (const entry of SPLIT_ENTRIES) {
+	restoreCompiled(`${entry}.js`);
 	const file = join(dist, `${entry}.js`);
 	const saved = join(COMPILED_ENTRIES, `${entry}.js`);
 	if (!writtenBySplit(entry)) {
@@ -242,13 +313,17 @@ const result = await build({
 				context.onResolve({ filter: /^\.{1,2}\// }, ({ path, resolveDir, kind }) => {
 					if (kind === "entry-point") return undefined;
 					const target = relative(dist, join(resolveDir, path)).split(sep).join("/");
-					return compiledModules.has(target) || owners.has(target)
-						? { path: `${DIST_PATH_MARK}${target}`, external: true }
-						: undefined;
+					if (compiledModules.has(target) || owners.has(target)) return { path: `${DIST_PATH_MARK}${target}`, external: true };
+					// A module an earlier split removed is bundled from its saved copy.
+					const file = join(dist, target);
+					return !existsSync(file) && existsSync(join(COMPILED_ENTRIES, target)) ? { path: file } : undefined;
 				});
 				context.onLoad({ filter: /\.js$/ }, async ({ path }) => {
 					if (!path.startsWith(dist + sep)) return undefined;
-					const entry = compiledEntries.get(path);
+					const saved = join(COMPILED_ENTRIES, relative(dist, path));
+					const entry =
+						compiledEntries.get(path) ??
+						(existsSync(path) ? undefined : inlineSourceMap(readFileSync(saved, "utf8"), `${saved}.map`));
 					const source = entry ?? readFileSync(path, "utf8");
 					if (!source.includes("import.meta")) return entry === undefined ? undefined : { contents: entry, loader: "js" };
 					// The compiled file's own map, inlined, so the transformed code still maps to its TypeScript source.
@@ -294,6 +369,36 @@ for (const { from, target } of compiledImports) {
 	throw new Error(`split-dist: compiled ${from} imports ${target}, whose code is also bundled`);
 }
 
+// The compiled files of the bundled modules go, but for the entries and the modules run by path. A module that names
+// a file of this package by its path, other than in an import the bundle follows, must name one that stays, and only
+// a module run by path may compute one.
+const removedModules = [...bundledModules].filter(
+	(path) => !SPLIT_ENTRIES.includes(path.replace(/\.js$/, "")) && !threadModules.has(path),
+);
+const removedSet = new Set(removedModules);
+/** The files of this package that a module names by its path. */
+const named = new Set();
+for (const path of new Set([...bundledModules, ...compiledModules, ...threadModules])) {
+	const source = compiledSource(path);
+	const computed = /\bnew URL\(\s*`\.{1,2}\/|\bimport\(\s*`/;
+	if (!/["'`]\.{1,2}\/[^"'`\r\n]*\.js["'`]/.test(source) && !computed.test(source)) continue;
+	// Token-aware: comments and the imports the bundle follows do not count. Minifying whitespace drops every comment, a
+	// comment inside an object literal too; printing the result again puts each import on a line of its own.
+	const minified = (await transform(source, { loader: "js", format: "esm", minifyWhitespace: true, legalComments: "none" }))
+		.code;
+	const code = (await transform(minified, { loader: "js", format: "esm" })).code
+		.replace(/^(?:import|export)\b[^;]*?\bfrom\s*"[^"]+"|^import\s*"[^"]+"/gm, "")
+		.replace(/\bimport\(\s*"[^"]+"\s*\)/g, "");
+	if (computed.test(code) && !(path.replace(/\.js$/, "") in RUN_BY_PATH))
+		throw new Error(`split-dist: ${path} computes the path of a file of this package; list it in RUN_BY_PATH`);
+	for (const match of code.matchAll(/["'`](\.{1,2}\/[^"'`\r\n]*\.js)["'`]/g)) {
+		const target = relativeImport(path, match[1]);
+		named.add(target);
+		if (removedSet.has(target))
+			throw new Error(`split-dist: ${path} names ${match[1]}, whose compiled file the split removes`);
+	}
+}
+
 // The packages bundled in are the inlined ones, and each one's own dependencies are bundled too: a dependency left
 // external would resolve from the shared file, not from the package that depends on it.
 const inlined = new Map();
@@ -316,29 +421,12 @@ for (const [name, directory] of [...inlined].sort(([a], [b]) => (a < b ? -1 : 1)
 	notices.push(`## ${name} ${manifest.version}\n\n${license}\n`);
 }
 
-// A shared file is named by the first of the modules it holds, by path (or, for one that only re-exports a dynamic
-// import, by that import's module), not by its content: an install updated in place keeps the path of every shared
-// file whose first module stays first, so a process still running from the earlier install resolves the new entries to
-// the modules it already loaded, as it did when each compiled module had a file of its own. Modules a release adds
-// after the first, or moves out of it, keep the name. esbuild names it by content; the name keeps esbuild's form and
-// length, so no source map shifts.
-const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-const groupName = (key) => {
-	const bytes = createHash("sha256").update(key).digest();
-	let name = "";
-	for (let index = 0; index < 8; index++) name += BASE32[(bytes[index] ?? 0) % 32];
-	return name;
-};
+// Each shared file is named by its first module and its exports (see `split-dist-names.mjs`).
 const renames = new Map();
 for (const [output, meta] of Object.entries(result.metafile.outputs)) {
 	const match = /^(.*\/)?([^/]+)-([A-Z2-7]{8})\.js$/.exec(output);
 	if (!output.startsWith(`dist/${SHARED_DIRECTORY}/`) || match === null) continue;
-	// A file that only re-exports a dynamically imported module holds no module of its own: that module names it.
-	// The package's own modules first: an inlined dependency's update must not rename a file.
-	const inputs = Object.keys(meta.inputs).sort();
-	const own = inputs.filter((input) => input.startsWith("dist/"));
-	const members = own.length > 0 ? own : inputs;
-	const renamed = `${match[2]}-${groupName(members.length > 0 ? `module:${members[0]}` : `entry:${meta.entryPoint ?? output}`)}.js`;
+	const renamed = sharedFileName(match[2], meta, output);
 	if ([...renames.values()].includes(renamed)) throw new Error(`split-dist: two shared files would be named ${renamed}`);
 	renames.set(`${match[2]}-${match[3]}.js`, renamed);
 }
@@ -381,7 +469,42 @@ writeFileSync(
 	}),
 );
 
+// Each removed file is saved first, so a later split without a fresh compile still bundles it.
+const removeCompiled = (path) => {
+	const file = join(dist, path);
+	if (!existsSync(file)) return;
+	const saved = join(COMPILED_ENTRIES, path);
+	mkdirSync(dirname(saved), { recursive: true });
+	for (const suffix of ["", ".map"]) {
+		if (existsSync(`${file}${suffix}`)) renameSync(`${file}${suffix}`, `${saved}${suffix}`);
+		else rmSync(`${saved}${suffix}`, { force: true });
+	}
+};
+for (const path of removedModules) removeCompiled(path);
+
+// A compiled file nothing loads, that imports a removed one (a module of the standalone binary's own entry, an unused
+// module), could not load either: it goes too, and so on, so that every file the package keeps finds what it imports.
+const written = new Set(outputFiles.map((file) => relative(dist, file.path).split(sep).join("/")));
+const leftovers = () =>
+	readdirSync(dist, { recursive: true })
+		.map((file) => String(file).split(sep).join("/"))
+		.filter((file) => file.endsWith(".js") && !file.startsWith(`${SHARED_DIRECTORY}/`) && !file.startsWith("builtin/"))
+		.filter((file) => !written.has(file));
+const unloadable = [];
+for (let changed = true; changed; ) {
+	changed = false;
+	for (const path of leftovers()) {
+		const { static: imports, dynamic } = importsOf(path, readFileSync(join(dist, path), "utf8"));
+		if ([...imports, ...dynamic].every((target) => existsSync(join(dist, target)))) continue;
+		if (compiledModules.has(path) || threadModules.has(path) || named.has(path))
+			throw new Error(`split-dist: ${path}, which the package loads, imports a file the split removes`);
+		removeCompiled(path);
+		unloadable.push(path);
+		changed = true;
+	}
+}
+
 const outputs = Object.keys(result.metafile.outputs).filter((output) => output.endsWith(".js"));
 console.log(
-	`split-dist: ${Object.keys(result.metafile.inputs).length} modules into ${SPLIT_ENTRIES.length} entries and ${outputs.length - SPLIT_ENTRIES.length} shared files`,
+	`split-dist: ${Object.keys(result.metafile.inputs).length} modules into ${SPLIT_ENTRIES.length} entries and ${outputs.length - SPLIT_ENTRIES.length} shared files; ${removedModules.length} compiled files removed, ${unloadable.length} more that could not load`,
 );

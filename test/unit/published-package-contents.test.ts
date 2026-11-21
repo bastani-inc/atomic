@@ -120,6 +120,24 @@ function publishedSourceFiles(directory: string): string[] {
 	});
 }
 
+/**
+ * Dependencies the package bundles into its shared files and that no published file loads by name any more. They stay
+ * declared for the release that stops shipping the compiled files that loaded them: a session that started on an
+ * earlier version and is updated in place still imports them by name from the code it loaded, and an upgrade removes
+ * every package the new version does not declare. Remove them from the dependencies in a later release.
+ */
+const KEPT_FOR_IN_PLACE_UPDATE = new Set([
+	"brace-expansion",
+	"cross-spawn",
+	"diff",
+	"fast-sha256",
+	"hosted-git-info",
+	"lovely-mermaid",
+	"lru-cache",
+	"semver",
+	"yaml",
+]);
+
 builtTest("@bastani/atomic depends on exactly the packages its published files load", () => {
 	const loaded = new Map<string, string>();
 	const named = new Set<string>();
@@ -150,9 +168,12 @@ builtTest("@bastani/atomic depends on exactly the packages its published files l
 	const required = new Set(
 		[...loaded.keys()].flatMap((name) => Object.keys(shrinkwrapPackages[`node_modules/${name}`]?.dependencies ?? {})),
 	);
-	const unused = [...declared].filter((name) => !loaded.has(name) && !named.has(name) && !required.has(name));
+	const notLoaded = [...declared].filter((name) => !loaded.has(name) && !named.has(name) && !required.has(name));
+	const unused = notLoaded.filter((name) => !KEPT_FOR_IN_PLACE_UPDATE.has(name));
+	// A package kept for in-place updates is one the published files no longer load, and still a dependency.
+	const keptNeedlessly = [...KEPT_FOR_IN_PLACE_UPDATE].filter((name) => !notLoaded.includes(name));
 	// An undeclared package is missing from installs; an unused one adds files to every install.
-	assert.deepEqual({ undeclared, unused }, { undeclared: [], unused: [] });
+	assert.deepEqual({ undeclared, unused, keptNeedlessly }, { undeclared: [], unused: [], keptNeedlessly: [] });
 });
 
 interface PackDryRunResult {
