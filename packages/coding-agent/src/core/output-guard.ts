@@ -23,7 +23,10 @@ let rawStdoutWriteTail: Promise<void> = Promise.resolve();
 /** Whether a raw stdout write failed, so that this process exits because whoever read its output is gone. */
 let rawStdoutFailed = false;
 
-/** Whether a write of {@link writeRawStdout} or {@link writeRawStdoutControl} failed; the process exits then. */
+/**
+ * Whether a write of {@link writeRawStdout} or {@link writeRawStdoutControl} failed for good; the process exits then,
+ * on Node possibly through the stream's own unhandled error event.
+ */
 export function rawStdoutWriteFailed(): boolean {
 	return rawStdoutFailed;
 }
@@ -97,11 +100,19 @@ async function writeRawStdoutChunk(text: string): Promise<void> {
 			await new Promise<void>((resolve, reject) => {
 				try {
 					getRawStdoutRecordWrite()(text, (error) => {
-						if (error) reject(error);
-						else resolve();
+						if (!error) {
+							resolve();
+							return;
+						}
+						// Recorded at once: on Node the stream's own error event follows before the rejection is
+						// handled, and ends the process if nothing listens to it.
+						if (!isRetryableWriteError(error)) rawStdoutFailed = true;
+						reject(error);
 					});
 				} catch (error) {
-					reject(error instanceof Error ? error : new Error(String(error)));
+					const writeError = error instanceof Error ? error : new Error(String(error));
+					if (!isRetryableWriteError(writeError)) rawStdoutFailed = true;
+					reject(writeError);
 				}
 			});
 			return;
