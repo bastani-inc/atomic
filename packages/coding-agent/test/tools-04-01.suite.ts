@@ -138,7 +138,8 @@ describe("Coding Agent Tools", () => {
 					onData: () => {},
 				}),
 			).rejects.toThrow("Custom shell path not found: /custom/bash");
-			expect(getShellConfigSpy).toHaveBeenCalledWith("/custom/bash");
+			// With the folder the command runs in, which a shell is never taken from.
+			expect(getShellConfigSpy).toHaveBeenCalledWith("/custom/bash", testDir);
 		});
 		it("should send commands over stdin when shell resolution requires it", async () => {
 			vi.spyOn(shellModule, "getShellConfigAsync").mockResolvedValueOnce({
