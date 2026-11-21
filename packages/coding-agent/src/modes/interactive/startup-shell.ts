@@ -261,27 +261,33 @@ class StartupShell {
 	 * message, error or uncaught failure ends the early editor before it is written.
 	 */
 	private guardOutput(): () => void {
+		// The wrappers outlive the early editor where something wrapped them in turn: once it has ended they only pass
+		// output on, and hold nothing of it.
+		let guarded: StartupShell | undefined = this;
 		const abort = () => {
-			if (this.state === "painting" || this.state === "holding") abortStartupShell();
+			if (guarded !== undefined && (guarded.state === "painting" || guarded.state === "holding"))
+				abortStartupShell();
 		};
 		const consoleMethods = ["log", "info", "warn", "error", "debug"] as const;
 		const originals = consoleMethods.map((name) => console[name]);
-		for (const [index, name] of consoleMethods.entries()) {
-			const original = originals[index]!;
-			console[name] = (...args: unknown[]) => {
-				abort();
-				original.apply(console, args);
-			};
-		}
+		const wrappers = originals.map((original) => (...args: unknown[]) => {
+			abort();
+			original.apply(console, args);
+		});
+		for (const [index, name] of consoleMethods.entries()) console[name] = wrappers[index]!;
 		const stderrWrite = process.stderr.write;
-		process.stderr.write = ((...args: Parameters<typeof process.stderr.write>) => {
+		const stderrWrapper = ((...args: Parameters<typeof process.stderr.write>) => {
 			abort();
 			return stderrWrite.apply(process.stderr, args);
 		}) as typeof process.stderr.write;
+		process.stderr.write = stderrWrapper;
 		process.on("uncaughtExceptionMonitor", abort);
 		return () => {
-			for (const [index, name] of consoleMethods.entries()) console[name] = originals[index]!;
-			process.stderr.write = stderrWrite;
+			guarded = undefined;
+			// What replaced a wrapper since stays: it is someone else's now.
+			for (const [index, name] of consoleMethods.entries())
+				if (console[name] === wrappers[index]) console[name] = originals[index]!;
+			if (process.stderr.write === stderrWrapper) process.stderr.write = stderrWrite;
 			process.off("uncaughtExceptionMonitor", abort);
 		};
 	}

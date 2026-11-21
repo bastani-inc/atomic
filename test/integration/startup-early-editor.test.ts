@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import xterm from "@xterm/headless";
 import { afterEach, describe, test } from "vitest";
@@ -16,6 +16,8 @@ const SESSION_HEADER = "guard-model";
 const SPLIT_PASTE_GAP_MS = 1_000;
 /** Longer than the terminal waits before it reads a lone Esc as one (10 ms locally, 100 ms over SSH). */
 const LONE_ESCAPE_GAP_MS = 300;
+/** Long enough for several of a 50 ms check's turns. */
+const WRITER_CHECK_WAIT_MS = 500;
 /** A real CLI child plus its startup under a loaded machine: structural, not a slow test. */
 const REAL_CLI_TEST_TIMEOUT_MS = 3 * CLI_TIMEOUT_MS;
 
@@ -260,6 +262,47 @@ test(
 		const exit = (await program.exited) as PtyExit;
 		assert.equal(exit.exitCode, 1);
 		assert.match(program.screen(), /Error: .*ATOMIC_STORAGE/);
+	},
+	REAL_CLI_TEST_TIMEOUT_MS,
+);
+
+test(
+	"console and stderr writers installed while the early editor shows are still in place once the session has taken over",
+	async () => {
+		const dir = makeTempDirectory("atomic-early-editor-writers-");
+		roots.push(dir);
+		const preload = join(dir, "late-writer.cjs");
+		const report = join(dir, "report.txt");
+		// Once the early editor has started drawing, wrap console.warn and stderr as a diagnostics tool would, and
+		// record whether both wrappers are still the ones in place.
+		writeFileSync(
+			preload,
+			`const fs = require("node:fs");
+const report = ${JSON.stringify(report)};
+const write = process.stdout.write;
+let mine;
+process.stdout.write = function (chunk, ...rest) {
+	if (mine === undefined && String(chunk).includes("\\x1b[?1049h")) {
+		const warn = console.warn;
+		const stderrWrite = process.stderr.write;
+		mine = { warn: (...args) => warn.apply(console, args), stderrWrite: (...args) => stderrWrite.apply(process.stderr, args) };
+		console.warn = mine.warn;
+		process.stderr.write = mine.stderrWrite;
+		setInterval(() => {
+			const kept = console.warn === mine.warn && process.stderr.write === mine.stderrWrite;
+			if (!kept || !fs.existsSync(report)) fs.writeFileSync(report, kept ? "kept" : "replaced");
+		}, 50).unref();
+	}
+	return write.call(this, chunk, ...rest);
+};
+`,
+		);
+		const program = startCli(["--approve"], { NODE_OPTIONS: `--require ${JSON.stringify(preload)}` });
+		await program.waitForScreen((screen) => screen.includes("❯"), CLI_TIMEOUT_MS, "the prompt");
+		await program.waitForScreen((screen) => screen.includes(SESSION_HEADER), CLI_TIMEOUT_MS, "the session");
+		// A few of the check's turns after the session took over.
+		await sleep(WRITER_CHECK_WAIT_MS);
+		assert.equal(readFileSync(report, "utf8"), "kept");
 	},
 	REAL_CLI_TEST_TIMEOUT_MS,
 );
