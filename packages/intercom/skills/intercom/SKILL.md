@@ -502,6 +502,8 @@ if (!result.delivered) {
 // Asks do not expire. Check what you are still waiting for, and cancel what you no longer need.
 intercom({ action: "pending" });
 intercom({ action: "cancel", askId: "4c4d8427" });
+// Close an ask sent to you that you will not answer (nothing is sent to its sender).
+intercom({ action: "cancel", replyTo: "9f2c1e07" });
 ```
 
 ## Troubleshooting

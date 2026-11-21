@@ -20,3 +20,9 @@ export function isDeliveryFailureReasonCode(value: string): value is DeliveryFai
  */
 export const ROUTE_UNAVAILABLE_REASON =
 	"No route Intercom can reach authorizes this reply yet: the ask's route is still being restored, or the broker that may keep it is unavailable. Try again shortly.";
+
+/**
+ * Why a reply to an ask is refused when no pending question route authorizes it and none can appear: the ask was
+ * answered, or its route expired. Final, unlike {@link ROUTE_UNAVAILABLE_REASON}: no reply to that ask can be delivered.
+ */
+export const UNAUTHORIZED_REPLY_REASON = "Pending question route does not authorize this public reply";

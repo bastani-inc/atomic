@@ -300,34 +300,48 @@ const SUBSCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
 ]);
 /** JSON Schema keywords whose value is an ordered list of schemas. */
 const SUBSCHEMA_LIST_KEYWORDS: ReadonlySet<string> = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
-/** JSON Schema keywords whose value maps names to schemas (`dependencies` also to lists of names, kept in order). */
+/** JSON Schema keywords whose value maps names to schemas. `dependencies` also maps names to lists of names. */
 const SUBSCHEMA_MAP_KEYWORDS: ReadonlySet<string> = new Set([
 	"$defs",
 	"definitions",
-	"dependencies",
 	"dependentSchemas",
 	"patternProperties",
 	"properties",
 ]);
+/** JSON Schema keywords whose value is a list of names (or of type names, for `type`) that form a set. */
+const NAME_SET_KEYWORDS: ReadonlySet<string> = new Set(["required", "type"]);
 
 function canonicalSchemaList(value: unknown): string {
 	return Array.isArray(value) ? `[${value.map(canonicalSchema).join(",")}]` : canonicalJson(value);
 }
 
+/** A list of names serialized in code point order, since the names it holds form a set; anything else as JSON. */
+function canonicalNameSet(value: unknown): string {
+	if (!Array.isArray(value) || !value.every((name) => typeof name === "string")) return canonicalJson(value);
+	return canonicalJson([...value].sort(compareCodePoints));
+}
+
 /**
- * A JSON Schema serialized like {@link canonicalJson}, except that a `required` list of names is sorted: the names it
- * lists form a set, so a schema that lists them in another order means the same. Only `required` where a schema is
- * expected counts; values (`enum`, `const`, `default`, `examples`), property names, tuples and lists of alternatives keep
+ * A JSON Schema serialized like {@link canonicalJson}, except that lists of names that form a set are sorted, so a
+ * schema that lists them in another order means the same: `required`, a list of `type`s, the names of
+ * `dependentRequired`, and the names a property of `dependencies` requires. Only these keywords where a schema is
+ * expected count; values (`enum`, `const`, `default`, `examples`), property names, tuples and lists of alternatives keep
  * their order.
  */
 function canonicalSchema(schema: unknown): string {
 	if (!isPlainObject(schema)) return canonicalJson(schema);
 	return canonicalObject(schema, (key, item) => {
-		if (key === "required" && Array.isArray(item) && item.every((name) => typeof name === "string")) {
-			return canonicalJson([...item].sort(compareCodePoints));
+		if (NAME_SET_KEYWORDS.has(key)) return canonicalNameSet(item);
+		if (key === "dependentRequired" && isPlainObject(item)) {
+			return canonicalObject(item, (_name, names) => canonicalNameSet(names));
 		}
 		if (SUBSCHEMA_KEYWORDS.has(key)) return Array.isArray(item) ? canonicalSchemaList(item) : canonicalSchema(item);
 		if (SUBSCHEMA_LIST_KEYWORDS.has(key)) return canonicalSchemaList(item);
+		if (key === "dependencies" && isPlainObject(item)) {
+			return canonicalObject(item, (_name, dependency) =>
+				Array.isArray(dependency) ? canonicalNameSet(dependency) : canonicalSchema(dependency),
+			);
+		}
 		if (SUBSCHEMA_MAP_KEYWORDS.has(key) && isPlainObject(item)) {
 			return canonicalObject(item, (_name, subschema) => canonicalSchema(subschema));
 		}
@@ -344,7 +358,7 @@ function canonicalDeclaration(declaration: Tool): string {
 
 /**
  * Whether two JSON Schemas describe the same values, as {@link declarationsEqual} compares tool parameters: object keys
- * in any order, and the names a `required` list holds in any order.
+ * in any order, and the names a `required`, `type` or `dependentRequired` list holds in any order.
  */
 export function jsonSchemasEqual(left: JsonSchema | undefined, right: JsonSchema | undefined): boolean {
 	return canonicalSchema(left) === canonicalSchema(right);
@@ -356,9 +370,9 @@ export function jsonSchemasEqual(left: JsonSchema | undefined, right: JsonSchema
  * Both sides go through {@link toToolDeclaration} first: its JSON round-trip drops the
  * schema metadata keys (TypeBox's non-enumerable kind marks) and `undefined` fields that a structural comparison would see.
  * Object keys are compared in a canonical order, so a schema rebuilt with its keys in another order, as a server may
- * send it after reconnecting, is not a new definition. A schema's `required` names form a set and may come in any order;
- * other arrays, such as `enum` values or tuple items, keep their order. This avoids a deep-equal dependency in a
- * browser-safe package.
+ * send it after reconnecting, is not a new definition. A schema's `required` names, its list of `type`s and the names
+ * `dependentRequired` or `dependencies` lists form sets and may come in any order; other arrays, such as `enum` values
+ * or tuple items, keep their order. This avoids a deep-equal dependency in a browser-safe package.
  */
 export function declarationsEqual(left: Tool, right: Tool): boolean {
 	const leftDeclaration = toToolDeclaration(left);

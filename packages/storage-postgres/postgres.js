@@ -68,31 +68,56 @@ const DATABASE_LOCK_SCOPE = "atomic";
 const MINIMUM_SERVER_VERSION = 140000;
 
 /**
+ * A rejection of the password source that carries a refused certificate's code, made for that one rejection, with the
+ * source's error as its cause and its message: the source's own request, to a secret store say, was refused a
+ * certificate, which says nothing about the server's, so the connection fails as for any other failure of the source.
+ */
+class PasswordSourceError extends Error {
+	/** @param {unknown} cause */
+	constructor(cause) {
+		super(cause instanceof Error ? cause.message : String(cause), { cause });
+	}
+}
+
+/**
+ * The link of `cause`'s chain that is a certificate TLS verification refused: its code is one of the certificate codes,
+ * or `UNSPECIFIED` with a certificate reason. Undefined when there is none, and for an https proxy's own certificate
+ * and a password source's failure, which are not the server's (#6112).
+ * @param {unknown} cause
+ * @returns {{ code: string, message: string } | undefined}
+ */
+function refusedCertificate(cause) {
+	/** @type {unknown} */
+	let current = cause;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		if (current instanceof ProxyTunnelError || current instanceof PasswordSourceError) return undefined;
+		const { code, message } = /** @type {{ code?: unknown, message?: unknown }} */ (current);
+		if (typeof code === "string" && isRefusedCertificate(code, typeof message === "string" ? message.trim() : ""))
+			return { code, message: /** @type {Error} */ (current).message };
+		current = /** @type {{ cause?: unknown }} */ (current).cause;
+	}
+	return undefined;
+}
+
+/**
  * The permanent failure a connection refused by TLS verification is (#5218), with the reason and the fix: a host name
  * the certificate names, or the CA in `sslrootcert`. Undefined for any other failure, and for an https proxy's own
- * certificate, which its tunnel failure names with the proxy's fix (#6112).
+ * certificate, which its tunnel failure names with the proxy's fix, or a password source's (#6112).
  * @param {unknown} cause
  * @returns {StorageError | undefined}
  */
 function tlsVerificationFailure(cause) {
-	/** @type {unknown} */
-	let current = cause;
-	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
-		if (current instanceof ProxyTunnelError) return undefined;
-		const { code, message } = /** @type {{ code?: unknown, message?: unknown }} */ (current);
-		if (typeof code === "string" && isRefusedCertificate(code, typeof message === "string" ? message.trim() : "")) {
-			const fix =
-				code === "ERR_TLS_CERT_ALTNAME_INVALID" || code === "HOSTNAME_MISMATCH"
-					? "Connect by a host name the certificate names, or, for an address it does not name such as a private IP address, add sslmode=verify-ca with sslrootcert=<CA file> to the URL"
-					: "Add sslrootcert=<CA file> with the server's CA to the URL; see TLS in docs/storage.md";
-			return new StorageError(
-				`The server's TLS certificate was not accepted (${code}: ${/** @type {Error} */ (current).message}). ${fix}. It is not retried`,
-				{ cause: /** @type {Error} */ (cause) },
-			);
-		}
-		current = /** @type {{ cause?: unknown }} */ (current).cause;
-	}
-	return undefined;
+	const refused = refusedCertificate(cause);
+	if (refused === undefined) return undefined;
+	const { code, message } = refused;
+	const fix =
+		code === "ERR_TLS_CERT_ALTNAME_INVALID" || code === "HOSTNAME_MISMATCH"
+			? "Connect by a host name the certificate names, or, for an address it does not name such as a private IP address, add sslmode=verify-ca with sslrootcert=<CA file> to the URL"
+			: "Add sslrootcert=<CA file> with the server's CA to the URL; see TLS in docs/storage.md";
+	return new StorageError(
+		`The server's TLS certificate was not accepted (${code}: ${message}). ${fix}. It is not retried`,
+		{ cause: /** @type {Error} */ (cause) },
+	);
 }
 
 /**
@@ -792,7 +817,16 @@ export async function openPostgresDatabase(options) {
 		return source === undefined
 			? undefined
 			: async () => {
-					const value = typeof source === "string" ? source : await source();
+					/** @type {unknown} */
+					let value;
+					try {
+						value = typeof source === "string" ? source : await source();
+					} catch (error) {
+						// The source's own request refused a certificate is not the server's (#6112): such a rejection is
+						// wrapped, for itself alone, so the connection fails as for any failure of the source; any other
+						// rejection is passed on as it is.
+						throw refusedCertificate(error) === undefined ? error : new PasswordSourceError(error);
+					}
 					if (typeof value !== "string" || value === "")
 						throw configError("password", "empty-token", "The password source gave an empty password");
 					passwords.add(value);

@@ -80,12 +80,17 @@ export function savedIntercomMessageIds(entries: Iterable<SessionEntry>): Set<st
 
 /**
  * Saved messages that never became an `intercom_message` card and were not otherwise handled, once each, in the
- * order they arrived.
+ * order they arrived. `taken` names the messages the session took in entries a resumed window left out (#6168): the
+ * window can keep a reply's saved arrival without the entry that took it.
  */
-export function unconsumedIntercomInbox(entries: Iterable<SessionEntry>): IntercomInboxRecord[] {
+export function unconsumedIntercomInbox(
+	entries: Iterable<SessionEntry>,
+	taken: Iterable<string> = [],
+): IntercomInboxRecord[] {
 	const branch = [...entries];
 	const consumed = consumedIntercomMessageIds(branch);
 	for (const id of handledIntercomMessageIds(branch)) consumed.add(id);
+	for (const id of taken) consumed.add(id);
 	const records = new Map<string, IntercomInboxRecord>();
 	for (const entry of branch) {
 		const record = inboxRecord(entry);
