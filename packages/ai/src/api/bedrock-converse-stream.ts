@@ -498,13 +498,15 @@ const CONNECTION_ERROR_CODE = /^(?:E[A-Z]+|ERR_SOCKET_[A-Z_]+)$/;
 /**
  * `message` with the code of the connection error it reports, when it does not name it: the HTTP handler's own errors
  * carry their reason in the code, such as `ECONNRESET` for a connection reset during a TLS handshake or before a proxy
- * answered, which is what the retry rules read.
+ * answered, which is what the retry rules read. Bun reports a connection closed under the request as its socket being
+ * closed (`ERR_SOCKET_CLOSED`), which is named as the reset it is.
  */
 function withConnectionCode(message: string, error: unknown, status: number | undefined): string {
 	if (status !== undefined || typeof error !== "object" || error === null) return message;
 	const code = (error as { code?: unknown }).code;
-	if (typeof code !== "string" || !CONNECTION_ERROR_CODE.test(code) || message.includes(code)) return message;
-	return `${message} (${code})`;
+	if (typeof code !== "string" || !CONNECTION_ERROR_CODE.test(code)) return message;
+	const reported = code === "ERR_SOCKET_CLOSED" ? "ECONNRESET" : code;
+	return message.includes(reported) ? message : `${message} (${reported})`;
 }
 
 type SdkErrorMetadata = { $metadata?: { httpStatusCode?: unknown; requestId?: unknown } };

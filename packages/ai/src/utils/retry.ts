@@ -70,7 +70,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"connection.?refused",
 	"connection.?lost",
 	"connection.?closed",
-	"(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE|ERR_SOCKET_CLOSED)(?![a-z0-9_])",
+	"(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE)(?![a-z0-9_])",
 	"connection reset by peer",
 	"connection.?reset",
 	"other side closed",

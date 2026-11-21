@@ -4,9 +4,11 @@ import diagnosticsChannel from "node:diagnostics_channel";
 import { type ClientRequest, type Server as HttpServer, createServer as createHttpServer } from "node:http";
 import { type Server as NetServer, createServer as createNetServer, type Socket } from "node:net";
 import { afterEach, describe, it } from "vitest";
+import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
+import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { getModel } from "../src/compat.ts";
-import type { AssistantMessage, Model } from "../src/types.ts";
+import type { Api, AssistantMessage, Model } from "../src/types.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -166,4 +168,62 @@ describe("Amazon Bedrock through a proxy whose connection fails", () => {
 		},
 		BUN_CHILD_TIMEOUT_MS,
 	);
+});
+
+describe("a provider's answer that names a connection error", () => {
+	it("is not retried for its text: an HTTP 400 whose body names a closed socket or a dropped proxy connection", async () => {
+		// What a connection error reads like on Node.js and Bun, quoted by a provider in an answer to a bad request.
+		const quoted = [
+			"ERR_SOCKET_CLOSED",
+			"Socket is closed",
+			"Proxy connection ended before receiving CONNECT response",
+			"Client network socket disconnected before secure TLS connection was established",
+		].join("; ");
+		const endpoint = createHttpServer((request, response) => {
+			request.resume();
+			response.writeHead(400, { "content-type": "application/json" });
+			response.end(JSON.stringify({ error: { type: "invalid_request_error", message: quoted }, message: quoted }));
+		});
+		const port = await listen(endpoint);
+		const baseUrl = `http://127.0.0.1:${port}`;
+		const model = <TApi extends Api>(api: TApi, url: string): Model<TApi> => ({
+			id: "test-model",
+			name: "Test Model",
+			api,
+			provider: "test-provider",
+			baseUrl: url,
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 10_000,
+			maxTokens: 1_000,
+		});
+		const bedrock = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const answers: [string, AssistantMessage][] = [
+			[
+				"Anthropic",
+				await streamAnthropic(model("anthropic-messages", baseUrl), context, { apiKey: "test-key", maxRetries: 0 }).result(),
+			],
+			[
+				"OpenAI Completions",
+				await streamOpenAICompletions(model("openai-completions", `${baseUrl}/v1`), context, {
+					apiKey: "test-key",
+					maxRetries: 0,
+				}).result(),
+			],
+			[
+				"Amazon Bedrock",
+				await streamBedrock({ ...bedrock, baseUrl }, context, {
+					cacheRetention: "none",
+					maxRetries: 0,
+					env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+				}).result(),
+			],
+		];
+		for (const [provider, message] of answers) {
+			assert.equal(message.stopReason, "error", provider);
+			assert.ok(message.errorMessage?.includes("ERR_SOCKET_CLOSED"), `${provider}: ${message.errorMessage}`);
+			assert.equal(isRetryableAssistantError(message), false, `${provider}: ${message.errorMessage}`);
+		}
+	});
 });
