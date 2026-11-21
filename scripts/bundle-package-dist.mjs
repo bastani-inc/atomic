@@ -48,6 +48,10 @@ import { pathToFileURL } from "node:url";
 export const MODULES_DIRECTORY = "_modules";
 /** A shared file's name: `dist/_<group>-<eight base32 characters>.js`. */
 const SHARED_FILE = /^_[a-zA-Z0-9.-]+-[A-Z2-7]{8}\.js$/;
+/** Whether `name`, a file directly in `dist`, is a shared file the bundle writes or its source map. */
+export function isSharedFile(/** @type {string} */ name) {
+	return SHARED_FILE.test(name.replace(/\.map$/, ""));
+}
 const MODULE_URL = "__atomicModuleUrl";
 /** Stands for a module's own URL in the bundled code until the file that holds the module is known. */
 const MODULE_URL_MARKER = "__atomic_module_url__:";
