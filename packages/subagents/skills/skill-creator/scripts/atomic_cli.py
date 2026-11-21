@@ -147,6 +147,28 @@ def _check_batch_arguments(command: Sequence[str], arguments: Sequence[str]) -> 
             )
 
 
+def remove_path(path: Path) -> None:
+    """Remove a temporary file or folder the scripts created, never raising.
+
+    On Windows a process that has not quite exited, or any other process, can hold one of its files
+    open; removal is retried for a bounded time and then left to the system's temporary folder, so
+    a query reports its own outcome rather than this cleanup.
+    """
+    for attempt in range(STOP_POLLS):
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if os.name != "nt" or attempt == STOP_POLLS - 1:
+                return
+            time.sleep(POLL_SECONDS)
+
+
 # ---------------------------------------------------------------------------
 # One Atomic process
 # ---------------------------------------------------------------------------
@@ -299,6 +321,9 @@ class AtomicProcess:
             if self._job is not None:
                 self._job.terminate()
                 self.process.wait()
+                # Every process in the job ends asynchronously and keeps its inherited handles,
+                # such as the query's error output file, until it has exited.
+                self._job.wait_until_empty()
             else:
                 _stop(self.process)
                 # A process it left behind can hold its output open, even after it exited by itself.
@@ -519,6 +544,27 @@ class _WindowsJob:
         kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
         kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
         kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        class Accounting(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_int64),
+                ("TotalKernelTime", ctypes.c_int64),
+                ("ThisPeriodTotalUserTime", ctypes.c_int64),
+                ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                ("TotalPageFaultCount", wintypes.DWORD),
+                ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD),
+                ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
+        self._accounting = Accounting
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        )
         kernel32.TerminateJobObject.restype = wintypes.BOOL
         kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
         kernel32.CloseHandle.restype = wintypes.BOOL
@@ -554,6 +600,23 @@ class _WindowsJob:
     def terminate(self) -> None:
         if self._handle is not None:
             self._kernel32.TerminateJobObject(self._handle, 1)
+
+    def wait_until_empty(self) -> None:
+        """Wait, for a bounded time, until no process of the job is left."""
+        basic_accounting_information = 1
+        accounting = self._accounting()
+        for _ in range(STOP_POLLS):
+            if self._handle is None or not self._kernel32.QueryInformationJobObject(
+                self._handle,
+                basic_accounting_information,
+                self._ctypes.byref(accounting),
+                self._ctypes.sizeof(accounting),
+                None,
+            ):
+                return
+            if accounting.ActiveProcesses == 0:
+                return
+            time.sleep(POLL_SECONDS)
 
     def close(self) -> None:
         if self._handle is not None:

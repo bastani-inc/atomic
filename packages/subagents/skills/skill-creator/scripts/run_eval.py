@@ -10,7 +10,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 import time
@@ -18,7 +17,16 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from scripts.atomic_cli import ISOLATED_RUN, AtomicProcess, Cancellation, Cancelled, Owner, atomic_command, run_main
+from scripts.atomic_cli import (
+    ISOLATED_RUN,
+    AtomicProcess,
+    Cancellation,
+    Cancelled,
+    Owner,
+    atomic_command,
+    remove_path,
+    run_main,
+)
 from scripts.utils import parse_skill_md
 
 # A trailing read selector such as :raw, :conflicts, :12, :10-20, :5+3 or :1-5,9-12.
@@ -225,10 +233,10 @@ def _run_query(
                         raise RuntimeError(f"atomic -p exited {status}: {atomic.stderr_tail()}")
                 return False
             finally:
-                stderr_path.unlink(missing_ok=True)
+                remove_path(stderr_path)
         finally:
             if own_folder is not None:
-                shutil.rmtree(own_folder, ignore_errors=True)
+                remove_path(own_folder)
 
 
 def _run_queries(
@@ -289,7 +297,7 @@ def _run_queries(
             executor.shutdown(wait=True, cancel_futures=True)
         cancellation.check()
     finally:
-        shutil.rmtree(folder, ignore_errors=True)
+        remove_path(folder)
     return query_triggers, query_items
 
 

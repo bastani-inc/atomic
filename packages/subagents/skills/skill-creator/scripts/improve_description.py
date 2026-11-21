@@ -9,13 +9,12 @@ Atomic sessions, no separate API key needed).
 import argparse
 import json
 import re
-import shutil
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-from scripts.atomic_cli import ISOLATED_RUN, AtomicProcess, Cancellation, Owner, run_main
+from scripts.atomic_cli import ISOLATED_RUN, AtomicProcess, Cancellation, Owner, remove_path, run_main
 from scripts.utils import parse_skill_md
 
 
@@ -47,7 +46,7 @@ def _call_atomic(prompt: str, model: str | None, timeout: int = 300, cancellatio
                     raise RuntimeError(f"atomic -p exited {status}\nstderr: {atomic.stderr_tail()}")
             return output.decode("utf-8", errors="replace")
         finally:
-            shutil.rmtree(folder, ignore_errors=True)
+            remove_path(folder)
 
 
 def improve_description(
