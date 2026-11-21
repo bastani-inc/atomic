@@ -302,7 +302,10 @@ class AtomicProcess:
             else:
                 _stop(self.process)
                 # A process it left behind can hold its output open, even after it exited by itself.
-                _end_orphans()
+                # While another query's Atomic runs, an orphan may still be working for that one,
+                # such as the rest of its credential command, so only a cancelled evaluation or the
+                # last Atomic to end clears them.
+                _end_orphans(only_when_idle=not self._cancellation.cancelled)
         finally:
             for thread, stream in ((self._writer, self.process.stdin), (self._reader, self.process.stdout)):
                 for _ in range(STOP_POLLS):
@@ -425,15 +428,18 @@ def _child_pids() -> set[int]:
     return pids
 
 
-def _end_orphans() -> None:
+def _end_orphans(only_when_idle: bool = False) -> None:
     """Kill and reap the orphans this process adopted from its Atomic processes, then theirs.
 
-    Runs only when this process adopts orphans. Each one is an unreaped child of this process while
-    the lock is held, so its process ID still names it when it is signalled.
+    Runs only when this process adopts orphans and, with `only_when_idle`, only when none of its
+    Atomic processes runs. Each orphan is an unreaped child of this process while the lock is held,
+    so its process ID still names it when it is signalled.
     """
     if not _adopts_orphans:
         return
     with _children_lock:
+        if only_when_idle and _owned_pids:
+            return
         while orphans := _child_pids() - _owned_pids:
             for pid in orphans:
                 os.kill(pid, signal.SIGCONT)
