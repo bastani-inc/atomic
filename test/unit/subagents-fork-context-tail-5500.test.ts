@@ -611,8 +611,8 @@ for (const setup of ["current", "rebranched", "no-acknowledgement", "nonmatching
 				assert.equal(
 					stripVTControlCharacters(card.render(120)[0]!).trim(),
 					evidence || setup === "ordinary"
-						? "◼ docs worker stopped"
-						: "⏸ docs worker timed out: quit · awaiting resume",
+						? "◯ docs worker stopped"
+						: "◯ docs worker timed out: quit · awaiting resume",
 				);
 			}
 			const raw = (await store.load(child.getSessionId())).entries;

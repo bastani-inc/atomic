@@ -49,7 +49,7 @@ test("parallel result labels preserve count expansion beyond 50 children", () =>
 	const headers = text.split("\n").filter((line) => /Agent\(/.test(line));
 	assert.deepEqual(
 		headers.map((line) => line.trim()),
-		[...Array.from({ length: 51 }, () => "∀ Agent(alpha · Repeated)"), "∀ Agent(beta · Last)"],
+		[...Array.from({ length: 51 }, () => "◯ Agent(alpha · Repeated)"), "◯ Agent(beta · Last)"],
 	);
 	assert.equal(text.split("\n").filter((line) => /⎿ {2}Running/.test(line)).length, 52);
 });

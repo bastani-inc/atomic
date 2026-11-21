@@ -28,7 +28,7 @@ import {
 	renderNavHintLine,
 	TwoPressConfirm,
 } from "./nav-keys.ts";
-import { DONE_TASK_MARKER, RUNNING_TASK_MARKER, STOPPED_TASK_MARKER, WAITING_MARKER } from "./notice-line.ts";
+import { TASK_MARKS, taskMark } from "./task-marks.ts";
 import { taskDisplayText } from "./task-row.js";
 
 export type AgentPanelRow = AgentPanelItem;
@@ -323,31 +323,8 @@ export class AgentPanelModel {
 	}
 }
 
-interface PanelMark {
-	readonly glyph: string;
-	readonly color: "muted" | "dim" | "accent" | "success" | "error" | "warning";
-}
-
 const OPEN_CIRCLE = "◯";
 const FILLED_CIRCLE = "●";
-
-/**
- * A row's mark for each state. Each state has its own mark and colour, and every mark is one cell, so a row keeps its
- * columns when its state changes. A subagent shows an open circle while it runs and when it was stopped (in the error
- * colour), and a filled one once done.
- */
-const PANEL_MARKS: Readonly<Record<AgentPanelState, PanelMark>> = {
-	running: RUNNING_TASK_MARKER,
-	input: { glyph: "◆", color: "warning" },
-	paused: { glyph: "‖", color: "warning" },
-	queued: { glyph: "○", color: "dim" },
-	stopping: { glyph: "◼", color: "warning" },
-	waiting: WAITING_MARKER,
-	done: DONE_TASK_MARKER,
-	failed: { glyph: "✗", color: "error" },
-	stopped: STOPPED_TASK_MARKER,
-};
-const RUNNING_SHELL_MARK: PanelMark = { glyph: "⧗", color: "accent" };
 
 /**
  * How a row reads, first match wins: the chat on screen is bold in the default colour, a faded finished row is dim, the
@@ -374,12 +351,16 @@ function paintRow(style: AgentPanelStyle, tone: RowTone, text: string): string {
 	}
 }
 
-/** A subagent row's mark: the chat on screen fills its open circle; a running circle reads in its row's colour. */
+/**
+ * A subagent row's mark: the marks every view of a task shares (`TASK_MARKS`). Each state has its own mark and colour,
+ * and every mark is one cell, so a row keeps its columns when its state changes. The chat on screen fills its open
+ * circle; a running circle reads in its row's colour.
+ */
 function glyph(row: AgentPanelRow, style: AgentPanelStyle, tone: RowTone): string {
-	const mark = row.state === "running" && row.kind === "shell" ? RUNNING_SHELL_MARK : PANEL_MARKS[row.state];
+	const mark = taskMark(row.state, row.kind === "shell");
 	const shape = tone === "onScreen" && mark.glyph === OPEN_CIRCLE ? FILLED_CIRCLE : mark.glyph;
 	const colored =
-		mark === PANEL_MARKS.running && (tone === "onScreen" || tone === "selected")
+		mark === TASK_MARKS.running && (tone === "onScreen" || tone === "selected")
 			? style.text(shape)
 			: style[mark.color](shape);
 	return tone === "onScreen" ? style.bold(colored) : tone === "faded" ? style.dim(colored) : colored;

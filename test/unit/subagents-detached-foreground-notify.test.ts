@@ -135,7 +135,7 @@ test("detached foreground completion notices render like background notification
 				detached.content,
 				`${status} detached output is not the raw notification body`,
 			);
-			assert.match(detachedRendered, /[●✗◼] codebase-analyzer (completed|failed|interrupted)/);
+			assert.match(detachedRendered, /[●✗◯] codebase-analyzer (completed|failed|interrupted)/);
 			assert.match(detachedRendered, /⎿ {2}(Findings report content|boom)/);
 			assert.match(detachedRendered, /ctrl\+o full notification/);
 			assert.doesNotMatch(detachedRendered, /Additional detail/);
