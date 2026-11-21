@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { getUserConfigPaths } from "@bastani/atomic";
 import { afterAll, afterEach, beforeEach, test, vi } from "vitest";
@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeEach, test, vi } from "vitest";
 // The web-access modules resolve their config paths from the home directory
 // when they load, so the temporary home must exist before the dynamic import.
 const previousEnv = {
+	PATH: process.env.PATH,
 	HOME: process.env.HOME,
 	USERPROFILE: process.env.USERPROFILE,
 	EXA_API_KEY: process.env.EXA_API_KEY,
@@ -18,6 +19,14 @@ const previousEnv = {
 const home = mkdtempSync(join(tmpdir(), "web-search-unconfigured-home-"));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
+// The browser launcher is looked up on PATH before it is started, so every machine needs one; Windows always has cmd.
+const launchers = join(home, "bin");
+const launcher = process.platform === "darwin" ? "open" : "xdg-open";
+if (process.platform !== "win32") {
+	mkdirSync(launchers);
+	writeFileSync(join(launchers, launcher), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+	process.env.PATH = `${launchers}${delimiter}${process.env.PATH ?? ""}`;
+}
 delete process.env.EXA_API_KEY;
 delete process.env.PERPLEXITY_API_KEY;
 delete process.env.GEMINI_API_KEY;
@@ -116,6 +125,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.unstubAllEnvs();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 });
@@ -159,6 +169,24 @@ test("web_search falls back to raw results when the curator cannot open, instead
 	assert.match(text, /curator/i);
 	assert.match(text, /\/curator off/);
 	assert.ok(execCalls.length > 0, "the curator browser launch should have been attempted");
+	if (process.platform !== "win32") assert.equal(execCalls[0], join(launchers, launcher));
+});
+
+test("web_search falls back to raw results when no browser opener is installed at all (#4087)", async () => {
+	writeConfig({ workflow: "summary-review" });
+	// A headless machine: neither xdg-open, open nor cmd on PATH.
+	const noOpener = join(home, "no-opener");
+	mkdirSync(noOpener, { recursive: true });
+	vi.stubEnv("PATH", noOpener);
+
+	const result = await search({ hasUI: true, hasHumanInput: true });
+
+	const text = result.content[0]?.text ?? "";
+	assert.notEqual(result.details.cancelled, true);
+	assert.doesNotMatch(text, /curation cancelled/i);
+	assert.match(text, /Atomic is a coding agent\./);
+	assert.match(text, /curator/i);
+	assert.match(text, /\/curator off/);
 });
 
 test("web_search names the provider settings and /curator when no provider can be reached (#4087)", async () => {
