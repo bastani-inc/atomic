@@ -132,6 +132,8 @@ abstract class RemoteRenderer implements Component {
 	private readonly clickChecks: { command: RemoteRenderCommand; baseline?: string[]; changed(): void }[] = [];
 	private toggleAfterChecks = false;
 	private clickCancellation?: AbortSignal;
+	/** The latest state is owed to the engine once the click comparison under way ends (see sendLatestState). */
+	private latestStateOwed = false;
 	protected expanded = false;
 
 	protected readonly runtime: IsolatedInteractiveRuntime;
@@ -257,7 +259,13 @@ abstract class RemoteRenderer implements Component {
 	 * animating it, until a frame request tells it the call settled.
 	 */
 	protected sendLatestState(): void {
-		if (this.requestId === 0 || !this.dirty) return;
+		if (this.requestId === 0 || this.disposed) return;
+		// A click's comparison of the two expansions is under way: the state goes once it ends, however it ends.
+		if (this.clickChecks.length > 0) {
+			this.latestStateOwed = true;
+			return;
+		}
+		if (!this.dirty) return;
 		RemoteRenderer.prototype.render.call(this, this.width);
 	}
 
@@ -272,6 +280,11 @@ abstract class RemoteRenderer implements Component {
 		this.clickChecks.length = 0;
 		this.toggleAfterChecks = false;
 		this.markDirty();
+		if (this.latestStateOwed) {
+			this.latestStateOwed = false;
+			// Once whatever ended the comparison (an expansion it decided, a cancel) has run.
+			queueMicrotask(() => this.sendLatestState());
+		}
 	};
 
 	isExpanded(): boolean {
