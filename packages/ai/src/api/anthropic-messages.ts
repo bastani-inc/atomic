@@ -588,8 +588,8 @@ function hashThreadPrefix(
  *   next request sends the same message as a string: "hi" vs [{ type: "text", text: "hi" }]. The
  *   same holds for a tool result's content.
  */
-/** The block OAuth requests send before the system prompt. */
-const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+/** The identity blocks OAuth requests send before the system prompt. */
+const oauthIdentityBlocks = new WeakSet<object>();
 
 /**
  * OAuth requests send the identity block before the system prompt. Its breakpoint gives way when a request needs one
@@ -599,7 +599,7 @@ const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for 
 function normalizeThreadSystem(system: MessageCreateParamsStreaming["system"]): MessageCreateParamsStreaming["system"] {
 	if (!Array.isArray(system) || system.length < 2) return system;
 	const [identity, prompt] = system;
-	if (identity?.type !== "text" || identity.text !== CLAUDE_CODE_IDENTITY || !prompt?.cache_control) return system;
+	if (!identity || !oauthIdentityBlocks.has(identity) || !prompt?.cache_control) return system;
 	if (identity.cache_control && JSON.stringify(identity.cache_control) !== JSON.stringify(prompt.cache_control))
 		return system;
 	const { cache_control: _cacheControl, ...rest } = identity;
@@ -1838,10 +1838,11 @@ function buildParams(
 		params.system = [
 			{
 				type: "text",
-				text: CLAUDE_CODE_IDENTITY,
+				text: "You are Claude Code, Anthropic's official CLI for Claude.",
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
+		oauthIdentityBlocks.add(params.system[0]!);
 		if (initialSystemText) {
 			params.system.push({
 				type: "text",
