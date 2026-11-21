@@ -17,6 +17,7 @@ import type {
 	SessionEntryRange,
 	SessionHistoryTotals,
 	SessionRecordHeader,
+	SessionRecoveryState,
 	SessionResume,
 	SessionSnapshotCut,
 	SessionStateEntry,
@@ -229,6 +230,7 @@ const ATOMIC_CUSTOM_TYPES = new Set([
 	"atomic.share",
 	"atomic.tool-output",
 	"intercom_ask",
+	"intercom_ask_closed",
 	"intercom_ask_settled",
 	"intercom_control_error",
 	"intercom_inbox",
@@ -473,6 +475,9 @@ class ResumeProtocols {
 		}
 		if (branchActive && kind === "intercom_sent" && typeof record(data.message).replyTo === "string")
 			this.settle(`inbound:${record(data.message).replyTo}`);
+		// #6168: an ask this session closed without a reply is done as an answered one is.
+		if (branchActive && kind === "intercom_ask_closed" && typeof data.messageId === "string")
+			this.settle(`inbound:${data.messageId}`);
 		updateWorkflowStarts(this.workflowStarts, entry, seq);
 		if (branchActive && kind === "intercom_reply_wait" && typeof data.toolCallId === "string")
 			this.keepPending(`wait:${data.toolCallId}`, seq);
@@ -1508,7 +1513,62 @@ export function sessionResumeFrom(
 			admissionDigests: index.admissions,
 			intercomDeliveredIds: index.delivered,
 			deliveryOpIds: index.deliveryOps,
+			...recoveryWitnessesOf(
+				returned.map((held) => held.entry),
+				settledKey(index),
+			),
 		},
+	};
+}
+
+/** Whether the active branch settled `key`, read from the index once something asks. */
+function settledKey(index: Pick<SessionResumeIndex, "settled">): (key: string) => boolean {
+	let settled: ReadonlySet<string> | undefined;
+	return (key) => {
+		settled ??= new Set(index.settled);
+		return settled.has(key);
+	};
+}
+
+/** Whether any of `states` reports that the active branch settled `key`, as {@link recoveryWitnessesOf} reads keys. */
+export function witnessedIn(...states: readonly SessionRecoveryState[]): (key: string) => boolean {
+	const keys = new Set<string>();
+	for (const state of states) {
+		for (const id of state.reconciledCardIds ?? []) keys.add(`protected:${id}`);
+		for (const id of state.intercomTakenIds ?? []) keys.add(`inbox:${id}`);
+		for (const id of state.answeredInboundIds ?? []) keys.add(`inbound:${id}`);
+	}
+	return (key) => keys.has(key);
+}
+
+/**
+ * Of the entries a resumed window holds, those the active branch already took in entries the window leaves out
+ * (#6168): the window keeps an Intercom reply, an unanswered ask or their cards for other reasons without the entries
+ * that took them. Only entries the window holds are named, so what is reported stays as small as the window.
+ */
+export function recoveryWitnessesOf(
+	entries: Iterable<SessionEntry>,
+	settled: (key: string) => boolean,
+): Pick<SessionRecoveryState, "reconciledCardIds" | "intercomTakenIds" | "answeredInboundIds"> {
+	const reconciledCardIds: string[] = [];
+	const intercomTakenIds: string[] = [];
+	const answeredInboundIds: string[] = [];
+	for (const entry of entries) {
+		if (entry.type === "custom_message") {
+			if (entry.protectedReconciliation && settled(`protected:${entry.id}`)) reconciledCardIds.push(entry.id);
+			if (entry.customType !== "intercom_message") continue;
+			const message = record(record(entry.details).message);
+			if (message.expectsReply === true && typeof message.id === "string" && settled(`inbound:${message.id}`))
+				answeredInboundIds.push(message.id);
+		} else if (entry.type === "custom" && entry.customType === "intercom_inbox") {
+			const id = record(record(entry.data).message).id;
+			if (typeof id === "string" && settled(`inbox:${id}`)) intercomTakenIds.push(id);
+		}
+	}
+	return {
+		...(reconciledCardIds.length > 0 ? { reconciledCardIds } : {}),
+		...(intercomTakenIds.length > 0 ? { intercomTakenIds } : {}),
+		...(answeredInboundIds.length > 0 ? { answeredInboundIds } : {}),
 	};
 }
 
