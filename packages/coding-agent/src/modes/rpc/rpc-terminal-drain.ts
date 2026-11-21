@@ -70,13 +70,21 @@ export class RpcTerminalDrain {
 	 * Only ownership survives death: request ids never repeat, so a late
 	 * admission can only ever address its own request. Every other engine frame
 	 * from the dead generation is swallowed here rather than reaching host state,
-	 * which would revive a PID, a heartbeat, an activity, or a mount.
+	 * which would revive a PID, a heartbeat, an activity, or a mount. A dead
+	 * engine's word that its Windows console was closed still reaches
+	 * `consoleClosed`: it concerns the host, whose console that is too.
 	 */
-	observe(generation: number, line: string, markAccepted: (requestId: string) => void): boolean {
+	observe(
+		generation: number,
+		line: string,
+		markAccepted: (requestId: string) => void,
+		consoleClosed: () => void = () => {},
+	): boolean {
 		if (!this.isDraining(generation)) return false;
 		const message = parseInteractiveEngineMessage(line);
 		if (!message) return false;
 		if (message.type === "engine_request_accepted") markAccepted(message.requestId);
+		else if (message.type === "engine_console_closed") consoleClosed();
 		return true;
 	}
 
