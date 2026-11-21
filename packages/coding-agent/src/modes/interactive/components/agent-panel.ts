@@ -315,11 +315,23 @@ export class AgentPanelModel {
 		return ordered;
 	}
 	faded(row: Pick<AgentPanelRow, "id">): boolean {
-		const taskId = agentPanelTaskId(row.id);
-		const since =
-			(taskId === undefined ? undefined : this.finishedTaskAt.get(taskId)?.since) ??
-			this.finishedAt.get(row.id)?.since;
+		const since = this.fadeStart(row);
 		return since !== undefined && this.now() - since >= AGENT_PANEL_FADE_MS;
+	}
+	/**
+	 * Whether a finished row is fading: listed since it finished and not faded yet. A finished row kept on the panel
+	 * without fading, as the subagent the screen shows, is not.
+	 */
+	fading(row: Pick<AgentPanelRow, "id">): boolean {
+		const since = this.fadeStart(row);
+		return since !== undefined && this.now() - since < AGENT_PANEL_FADE_MS;
+	}
+	private fadeStart(row: Pick<AgentPanelRow, "id">): number | undefined {
+		const taskId = agentPanelTaskId(row.id);
+		return (
+			(taskId === undefined ? undefined : this.finishedTaskAt.get(taskId)?.since) ??
+			this.finishedAt.get(row.id)?.since
+		);
 	}
 }
 
