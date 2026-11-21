@@ -24,6 +24,7 @@ import {
 	evaluateReloadableScript,
 	installReloadableScripts,
 	isReloadableScriptPath,
+	observeJsonReads,
 	withReloadableScriptPrologue,
 } from "./reloadable-scripts.ts";
 import {
@@ -418,7 +419,7 @@ function recordLateModule(
 	extensionPath: string,
 	owner: RetainedTransformedLoad,
 	filename: string | undefined,
-	source: string,
+	source: string | Buffer,
 ): void {
 	if (filename === undefined || retainedTransformedLoads.get(extensionPath) !== owner) return;
 	const file = path.normalize(filename);
@@ -788,6 +789,10 @@ async function importExtensionModule(
 		// the live host instead of re-evaluating its graph through source aliases.
 		virtualModules: await getVirtualModules(),
 		...(!isSingleFileBuild ? { alias: await getAliases() } : {}),
+	});
+	// A JSON file the evaluation reads after its graph was recorded joins the graph, as a module it evaluates then does.
+	observeJsonReads(jiti, (file, content) => {
+		if (retained) recordLateModule(extensionPath, retained, file, content);
 	});
 	if (sourceBuiltin) registerSourceBuiltinLoad(jiti, { createJiti: createJitiImpl, cacheDir });
 	const specifier = extensionImportSpecifier(importPath, cacheToken);

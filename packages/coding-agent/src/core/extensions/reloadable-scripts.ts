@@ -24,8 +24,12 @@ import type { createJiti } from "jiti";
  *   resolved it from the importing file, and the runtime loads what it finds, once per process.
  *   Only when that finds nothing does jiti resolve it (host aliases and
  *   virtual modules), as jiti did after a failed native load.
+ * - A JSON file it imports or requires by path is read once per load, as the
+ *   file is then, under the same rule. jiti would load it through the
+ *   runtime's `require`, whose cache keeps the content first read until the
+ *   process exits; the runtime's cache is left as it is.
  * - Everything else (Node builtins, TypeScript files, bare specifiers in
- *   TypeScript) keeps jiti's handling.
+ *   TypeScript, JSON a bare specifier names) keeps jiti's handling.
  *
  * jiti's transform makes every module strict; CommonJS keeps the sloppy mode
  * the runtime would have run it in, unless it asks for strict mode itself.
@@ -61,9 +65,14 @@ export type SettledPathImport = (
 /** One load of one extension: the modules it evaluated, so each file is evaluated once per load. */
 interface LoadContext {
 	cache: ModuleCache;
+	/** The JSON values the load read, by file, so each file is read once per load. */
+	json: Map<string, unknown>;
 	/** The `node_modules` package the load's entry is in, whose own files are reloadable too. */
 	packageRoot: string;
 }
+
+/** Told of each JSON file a load reads, with the content read; keyed by the options of the load's jiti. */
+const jsonReadObservers = new WeakMap<object, (file: string, content: Buffer) => void>();
 
 const SCRIPT_EXTENSIONS = new Set([".js", ".mjs", ".cjs"]);
 const BINDER_KEY = Symbol.for("atomic.extensions.reloadableScripts");
@@ -120,7 +129,7 @@ function loadContextOf(module: ModuleRecord): LoadContext {
 	let context = loadContexts.get(root);
 	if (!context) {
 		const filename = path.normalize(root.filename);
-		context = { cache: { [filename]: root }, packageRoot: packageRootOf(filename) };
+		context = { cache: { [filename]: root }, json: new Map(), packageRoot: packageRootOf(filename) };
 		loadContexts.set(root, context);
 	}
 	return context;
@@ -130,11 +139,46 @@ function isPathSpecifier(id: string): boolean {
 	return id.startsWith("./") || id.startsWith("../") || id.startsWith("file:") || path.isAbsolute(id);
 }
 
-/** The JavaScript file a path specifier names, when this load evaluates it itself. */
-function reloadableFile(id: string, require: Jiti, context: LoadContext): string | undefined {
+/** A file a path specifier names that this load reads itself: JavaScript it evaluates, or JSON. */
+interface OwnFile {
+	readonly kind: "script" | "json";
+	readonly filename: string;
+}
+
+function ownFile(id: string, require: Jiti, context: LoadContext): OwnFile | undefined {
 	const resolved = path.normalize(require.resolve(id.startsWith("file:") ? fileURLToPath(id) : id));
-	if (!isReloadableScriptPath(resolved)) return undefined;
-	return packageRootOf(resolved) === context.packageRoot ? resolved : undefined;
+	const kind = isReloadableScriptPath(resolved) ? "script" : path.extname(resolved) === ".json" ? "json" : undefined;
+	if (kind === undefined || packageRootOf(resolved) !== context.packageRoot) return undefined;
+	return { kind, filename: resolved };
+}
+
+/** The value of a JSON file, from the content read as the runtime's `require` reads it. */
+function parseJson(filename: string, content: Buffer): unknown {
+	const text = content.toString("utf8");
+	try {
+		return JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+	} catch (error) {
+		// Node's `require` names the file in the message; Bun's does not.
+		if (process.versions.bun === undefined && error instanceof Error) error.message = `${filename}: ${error.message}`;
+		throw error;
+	}
+}
+
+/**
+ * The JSON file `filename` as jiti gives it, read once for `context`'s load: with a `default` that is the value
+ * itself when the value has none, which jiti adds to the runtime's value.
+ */
+function readJson(filename: string, require: Jiti, context: LoadContext): unknown {
+	if (context.json.has(filename)) return context.json.get(filename);
+	// One read for the value and for the load's record of its files, which the graph recording observes.
+	const content = fsExports.readFileSync(filename);
+	jsonReadObservers.get(require.options)?.(filename, content);
+	const value = parseJson(filename, content);
+	// As jiti's own JSON load, including its TypeError for a value `in` cannot search.
+	if (value && !("default" in (value as object)))
+		Object.defineProperty(value, "default", { value, enumerable: false });
+	context.json.set(filename, value);
+	return value;
 }
 
 function evaluate(jiti: Jiti, filename: string, async: boolean, cache: ModuleCache): unknown {
@@ -165,8 +209,10 @@ function bindReloadableScriptLoaders(
 		apply(target, thisArg, args: [string]) {
 			const [id] = args;
 			if (isPathSpecifier(id)) {
-				const filename = reloadableFile(id, target, loadContextOf(module));
-				return filename === undefined ? Reflect.apply(target, thisArg, args) : load(filename, false);
+				const context = loadContextOf(module);
+				const own = ownFile(id, target, context);
+				if (own === undefined) return Reflect.apply(target, thisArg, args);
+				return own.kind === "json" ? readJson(own.filename, target, context) : load(own.filename, false);
 			}
 			if (!resolvesBareByRuntime) return Reflect.apply(target, thisArg, args);
 			const runtimeRequire = createRequire(module.filename);
@@ -181,8 +227,10 @@ function bindReloadableScriptLoaders(
 	const reloadableImport: JitiImport = async (id) => {
 		if (isBuiltin(id)) return jitiImport(id);
 		if (isPathSpecifier(id)) {
-			const filename = reloadableFile(id, require, loadContextOf(module));
-			if (filename !== undefined) return load(filename, true);
+			const context = loadContextOf(module);
+			const own = ownFile(id, require, context);
+			if (own?.kind === "json") return readJson(own.filename, require, context);
+			if (own !== undefined) return load(own.filename, true);
 			return (
 				(module.loaded === true ? settledPathImport?.(module, id, require, jitiImport) : undefined) ??
 				jitiImport(id)
@@ -199,6 +247,14 @@ function bindReloadableScriptLoaders(
 	};
 	const filename = path.normalize(module.filename);
 	return [reloadableRequire, reloadableImport, filename, path.dirname(filename)];
+}
+
+/**
+ * Tells `onRead` of each JSON file a load by `jiti` reads by path, with the content it read, which is what the load
+ * then uses.
+ */
+export function observeJsonReads(jiti: Jiti, onRead: (file: string, content: Buffer) => void): void {
+	jsonReadObservers.set(jiti.options, onRead);
 }
 
 /**
