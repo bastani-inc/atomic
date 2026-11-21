@@ -137,6 +137,11 @@ export function reportDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagn
 	}
 }
 
+export function isTruthyEnvFlag(value: string | undefined): boolean {
+	if (!value) return false;
+	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
 type DrainableWritable = NodeJS.WritableStream & {
 	destroyed?: boolean;
 	writable?: boolean;
