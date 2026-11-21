@@ -136,6 +136,7 @@ test("what another channel writes where the retired panel shows replaces it, and
 	const panel = screen.openPanel("remote_widget_1");
 	panel.render(80);
 	screen.answerFrame("remote_widget_1", PANEL_ROWS);
+	panel.render(80);
 	screen.setPending(true);
 	screen.deliver({ type: "engine_custom_close", componentId: "remote_widget_1" });
 	assert.equal(screen.controller.takeRetiredWidgetClear(AGENT_PANEL_WIDGET_KEY), true);
@@ -151,9 +152,21 @@ test("a panel closed with no navigation view on its way leaves at once, as befor
 	const panel = screen.openPanel("remote_widget_1");
 	panel.render(80);
 	screen.answerFrame("remote_widget_1", PANEL_ROWS);
+	panel.render(80);
 	screen.deliver({ type: "engine_custom_close", componentId: "remote_widget_1" });
 	assert.equal(screen.widgets.has(AGENT_PANEL_WIDGET_KEY), false);
 	assert.equal(screen.controller.takeRetiredWidgetClear(AGENT_PANEL_WIDGET_KEY), false);
+});
+
+test("a panel that never painted a row is not kept for a navigation view on its way", () => {
+	const screen = host();
+	const panel = screen.openPanel("remote_widget_1");
+	panel.render(80);
+	// Its frame arrives but is not painted before the engine closes it.
+	screen.answerFrame("remote_widget_1", PANEL_ROWS);
+	screen.setPending(true);
+	screen.deliver({ type: "engine_custom_close", componentId: "remote_widget_1" });
+	assert.equal(screen.widgets.has(AGENT_PANEL_WIDGET_KEY), false);
 });
 
 test("a view that hid the agent panel and closes as it opens again keeps the prompt's slot until the panel's first frame", async () => {
