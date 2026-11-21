@@ -1,15 +1,17 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { processStartToken, readProcessCreationTime, readProcessStartToken } from "@bastani/atomic";
+import * as atomicHost from "@bastani/atomic";
 import { hostCommandEnvironment } from "./host-command-environment.js";
 
 /**
  * A broker process found by its pid, told apart from a later process the OS gives the same pid (#6133). Windows gives
  * the pid of an exited process to another within seconds, so a pid alone names the broker only while it runs.
  *
- * On Windows a process is told by its creation time, on Linux by its start token (`/proc`). macOS has no start to read,
- * and its pids are given out again only after the whole range has been used, so there a pid is taken as the broker's.
+ * On Windows a process is told by its creation time, on Linux by its start token (`/proc`), on macOS by its start as `ps`
+ * prints it, to the second. macOS gives pids out again only after the whole range has been used, so a later process
+ * given the pid within the same second as the broker started is not told apart there.
  */
 export interface BrokerProcess {
 	readonly pid: number;
@@ -25,6 +27,37 @@ export interface BrokerProcess {
 	 * are too close to tell.
 	 */
 	readonly wroteBrokerPid: "yes" | "no" | "unknown" | "unavailable";
+}
+
+/**
+ * The host's process start readers. A host older than this package, as one still running while an update replaces this
+ * package's files, may lack any of them: a missing reader reads no start, so a pid decides alone, as before.
+ */
+const hostStarts = atomicHost as {
+	readonly processStartToken?: (pid: number) => string | undefined;
+	readonly readProcessStartToken?: (pid: number) => Promise<string | undefined>;
+	readonly readProcessCreationTime?: (pid: number) => Promise<string | undefined>;
+	readonly nativeProcessCreationTime?: (pid: number) => string | null | undefined;
+};
+
+/** The start token of process `pid` (Linux `/proc`), read now and synchronously; undefined where it cannot be read. */
+export function processStartToken(pid: number): string | undefined {
+	return hostStarts.processStartToken?.(pid);
+}
+
+/** The start token of process `pid`, read now without blocking; undefined where it cannot be read. */
+export async function readProcessStartToken(pid: number): Promise<string | undefined> {
+	return hostStarts.readProcessStartToken?.(pid);
+}
+
+/** When Windows process `pid` was created, read now; undefined where it cannot be read. */
+export async function readProcessCreationTime(pid: number): Promise<string | undefined> {
+	return hostStarts.readProcessCreationTime?.(pid);
+}
+
+/** When Windows process `pid` was created, from the native module only, without starting a process. */
+export function nativeProcessCreationTime(pid: number): string | undefined {
+	return hostStarts.nativeProcessCreationTime?.(pid) ?? undefined;
 }
 
 /** Windows file times count 100 ns intervals from 1601-01-01 UTC; Node reports times from 1970-01-01 UTC. */
@@ -71,11 +104,78 @@ function readBrokerPidRecord(pidPath: string): { readonly pid: number; readonly 
 	}
 }
 
+/** {@link readBrokerPidRecord} without blocking the event loop, for a session's own use. */
+async function readBrokerPidRecordAsync(
+	pidPath: string,
+): Promise<{ readonly pid: number; readonly writtenNs: bigint } | undefined> {
+	try {
+		const before = await stat(pidPath, { bigint: true });
+		const pid = Number.parseInt((await readFile(pidPath, "utf8")).trim(), 10);
+		const after = await stat(pidPath, { bigint: true });
+		if (before.mtimeNs !== after.mtimeNs || before.size !== after.size || !Number.isSafeInteger(pid)) return undefined;
+		return { pid, writtenNs: after.mtimeNs };
+	} catch {
+		return undefined;
+	}
+}
+
 /** When process `pid` started, as this platform records it, read now; undefined where it cannot be read. */
 export async function readProcessStart(pid: number): Promise<string | undefined> {
-	if (process.platform === "win32") return readProcessCreationTime(pid);
-	if (process.platform === "linux") return readProcessStartToken(pid);
+	try {
+		if (process.platform === "win32") return await readProcessCreationTime(pid);
+		if (process.platform === "linux") return await readProcessStartToken(pid);
+		if (process.platform === "darwin") return await readPsProcessStart(pid);
+	} catch {
+		// A reader that failed read no start.
+	}
 	return undefined;
+}
+
+/**
+ * When process `pid` started, as {@link readProcessStart} reads it, but only where reading it starts no process: Linux
+ * `/proc` and the Windows native module. Undefined elsewhere (the Windows PowerShell fallback, macOS `ps`).
+ */
+export async function readProcessStartWithoutProcess(pid: number): Promise<string | undefined> {
+	try {
+		if (process.platform === "linux") return await readProcessStartToken(pid);
+		if (process.platform === "win32") return nativeProcessCreationTime(pid);
+	} catch {
+		// A reader that failed read no start.
+	}
+	return undefined;
+}
+
+/** How long reading a start with `ps` may take before it is judged unreadable. */
+const PS_START_TIMEOUT_MS = 2_000;
+
+/**
+ * When process `pid` started, as `ps` prints it in UTC, to the second; undefined where `ps` cannot read it (the process
+ * is gone, or `ps` failed or took too long). The macOS reader, which starts `ps`: only the broker restart and upgrade
+ * paths read it.
+ */
+export function readPsProcessStart(pid: number): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		try {
+			execFile(
+				"/bin/ps",
+				["-o", "lstart=", "-p", String(pid)],
+				{
+					encoding: "utf8",
+					env: { ...hostCommandEnvironment(), LC_ALL: "C", TZ: "UTC" },
+					maxBuffer: 1024,
+					timeout: PS_START_TIMEOUT_MS,
+					windowsHide: true,
+				},
+				(error, stdout) => {
+					const started = error === null ? stdout.trim() : "";
+					resolve(started === "" ? undefined : started);
+				},
+			);
+		} catch {
+			// `ps` could not be started at all (a sandbox that denies it, for one): no start is read.
+			resolve(undefined);
+		}
+	});
 }
 
 /**
@@ -86,12 +186,29 @@ export async function readProcessStart(pid: number): Promise<string | undefined>
 export function identifyBrokerProcess(pid: number, pidPath: string): Promise<BrokerProcess> {
 	const reading = readProcessStart(pid);
 	const record = process.platform === "win32" ? readBrokerPidRecord(pidPath) : undefined;
-	return reading.then((started) => {
-		if (record === undefined || record.pid !== pid) return { pid, started, wroteBrokerPid: "unknown" };
-		if (record.writtenNs % COARSE_WRITE_TIME_NS === 0n) return { pid, started, wroteBrokerPid: "unavailable" };
-		if (started === undefined) return { pid, started, wroteBrokerPid: "unknown" };
-		return { pid, started, wroteBrokerPid: wroteFileAt(windowsCreationNs(started), record.writtenNs) };
-	});
+	return reading.then((started) => brokerProcess(pid, started, record));
+}
+
+/**
+ * {@link identifyBrokerProcess} for a session, which never blocks its event loop: `broker.pid` is read beside the start,
+ * starting before this returns, so call it, too, before the broker is asked to shut down. A `broker.pid` the broker has
+ * already removed by the time it is read proves nothing either way.
+ */
+export function identifyBrokerProcessAsync(pid: number, pidPath: string): Promise<BrokerProcess> {
+	const reading = readProcessStart(pid);
+	const record = process.platform === "win32" ? readBrokerPidRecordAsync(pidPath) : Promise.resolve(undefined);
+	return Promise.all([reading, record]).then(([started, written]) => brokerProcess(pid, started, written));
+}
+
+function brokerProcess(
+	pid: number,
+	started: string | undefined,
+	record: { readonly pid: number; readonly writtenNs: bigint } | undefined,
+): BrokerProcess {
+	if (record === undefined || record.pid !== pid) return { pid, started, wroteBrokerPid: "unknown" };
+	if (record.writtenNs % COARSE_WRITE_TIME_NS === 0n) return { pid, started, wroteBrokerPid: "unavailable" };
+	if (started === undefined) return { pid, started, wroteBrokerPid: "unknown" };
+	return { pid, started, wroteBrokerPid: wroteFileAt(windowsCreationNs(started), record.writtenNs) };
 }
 
 /**
@@ -99,7 +216,10 @@ export function identifyBrokerProcess(pid: number, pidPath: string): Promise<Bro
  * one read of the pid's start when none is running, and answers with what the reads so far found. A start that cannot
  * be read is no proof either way, and neither is anything before `found` resolves.
  */
-export function laterProcessProbe(found: BrokerProcess | Promise<BrokerProcess>): () => boolean {
+export function laterProcessProbe(
+	found: BrokerProcess | Promise<BrokerProcess>,
+	readCurrentStart: (pid: number) => Promise<string | undefined> = readProcessStart,
+): () => boolean {
 	let broker: BrokerProcess | undefined;
 	let later = false;
 	let reading = false;
@@ -114,7 +234,7 @@ export function laterProcessProbe(found: BrokerProcess | Promise<BrokerProcess>)
 		if (broker !== undefined && !later && !reading && broker.started !== undefined) {
 			const { pid, started } = broker;
 			reading = true;
-			void readProcessStart(pid).then(
+			void readCurrentStart(pid).then(
 				(current) => {
 					reading = false;
 					if (current !== undefined && current !== started) later = true;
@@ -240,7 +360,7 @@ const UNANSWERED_BROKER_STOP_WAIT_MS = 5_000;
  *   the volume's write times cannot tell (`unavailable`), in which case the pid is taken as the broker's, as before.
  *   Without a creation time nothing is ended.
  * - Linux: with SIGTERM while the pid's start token is still `broker.started`, read just before the signal.
- * - macOS: with SIGTERM to the pid, as before.
+ * - macOS: with SIGTERM to the pid, as before, unless its start, read again just before, shows another process.
  */
 export async function endUnansweredBroker(broker: BrokerProcess): Promise<void> {
 	if (process.platform === "win32") {
@@ -255,6 +375,10 @@ export async function endUnansweredBroker(broker: BrokerProcess): Promise<void> 
 	// Linux: the check and the signal run in one turn of the event loop, with no await between them.
 	if (process.platform === "linux" && (broker.started === undefined || processStartToken(broker.pid) !== broker.started)) {
 		return;
+	}
+	if (process.platform === "darwin" && broker.started !== undefined) {
+		const current = await readPsProcessStart(broker.pid);
+		if (current !== undefined && current !== broker.started) return;
 	}
 	try {
 		process.kill(broker.pid, "SIGTERM");

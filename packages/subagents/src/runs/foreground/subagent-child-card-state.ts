@@ -477,6 +477,20 @@ function hasEveryKeyOf(record: SubagentChildRecord, merged: SubagentChildRecord)
  * own records gave, which may be newer. With `saved`, the record is the one in that entry, and the index points at the
  * entry when it holds everything the child's merged record has.
  */
+/**
+ * `next`, a newer record of a child, merged over `previous`. A record names only what changed, except a launch: one
+ * that names its launch leaf carries all of that launch's fields, so none an earlier launch recorded survives into it
+ * (a later launch that did not know its leaf's position or its thinking level leaves them unknown).
+ */
+export function mergeSubagentChildRecord(
+	previous: SubagentChildRecord,
+	next: SubagentChildRecord,
+): SubagentChildRecord {
+	if (next.launchLeafId === undefined) return { ...previous, ...next };
+	const { launchModel: _model, launchThinkingLevel: _thinking, launchLeafSeq: _seq, ...rest } = previous;
+	return { ...rest, ...next };
+}
+
 export function observeSubagentChildRecord(
 	record: SubagentChildRecord,
 	copied = false,
@@ -486,7 +500,7 @@ export function observeSubagentChildRecord(
 	if (!acceptsObservation(existing, copied)) return record;
 	const sameOwner = existing?.ownerSessionId === record.owner?.sessionId;
 	const previous = existing === undefined || !sameOwner ? undefined : readableRecordOf(existing);
-	const merged = previous ? { ...previous, ...record } : record;
+	const merged = previous ? mergeSubagentChildRecord(previous, record) : record;
 	const complete = saved !== undefined && hasEveryKeyOf(record, merged);
 	if (complete) unsavedRecords.delete(record.childId);
 	else unsavedRecords.set(record.childId, merged);
@@ -583,7 +597,7 @@ function observeEntries(
 		if (!isSubagentChildRecord(entry)) continue;
 		const data = entry.data as SubagentChildRecord;
 		const previous = folded.get(data.childId);
-		const record = previous === undefined ? data : { ...previous.record, ...data };
+		const record = previous === undefined ? data : mergeSubagentChildRecord(previous.record, data);
 		folded.set(data.childId, { record, latest: data, entryId: entry.id });
 		if (acceptsObservation(entries.get(data.childId), copiedInto(data, sessionId))) indexTaskId(record);
 	}
@@ -666,7 +680,7 @@ function mergeOverArchived(
 				observeSubagentChildRecord(fold, copied);
 				return;
 			}
-			const full = { ...record, ...fold };
+			const full = mergeSubagentChildRecord(record, fold);
 			if (hasEveryKeyOf(latest, full)) observeSubagentChildRecord(latest, copied, saved);
 			else observeSubagentChildRecord(full, copied);
 		});
