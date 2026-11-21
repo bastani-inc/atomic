@@ -653,7 +653,7 @@
       <h2>Review Complete</h2>
       <p>Your feedback has been saved. Go back to your Atomic session and say you are done reviewing.</p>
       <div class="btn-row">
-        <button onclick="closeDoneDialog()">OK</button>
+        <button id="done-close" onclick="closeDoneDialog()">OK</button>
       </div>
     </div>
   </div>
@@ -1011,8 +1011,7 @@
     let savedRevision = EMBEDDED_DATA.saved_revision ?? null;
     // Saving, as a state machine:
     //   idle    --save-->            sending (one request at a time)
-    //   sending --save-->            sending, with the latest wanted save waiting as `next` (a Submit waiting
-    //                                stays one: later edits go into it, as it is built when it is sent)
+    //   sending --save-->            sending, with the latest wanted save waiting as `next`
     //   sending --answer-->          idle, or sending `next`, from the revision the answer returned
     //   any     --refused (412)-->   conflict: nothing more is sent; the page says to reload
     // A save is built when it is sent, from the feedback as it is then.
@@ -1038,13 +1037,20 @@
 
     // status "in_progress" saves the runs with feedback; "complete" saves every run, so the model can tell
     // "no feedback" (looks good) from "not reviewed", and then shows the done dialog.
+    // From Submit until the done dialog is closed, the review is complete: every save is a complete one, so
+    // moving to another run meanwhile, or a save the box makes, never turns it back into an in-progress one.
+    let submitted = false;
+    // Submit, in a static page or with the server gone, downloads the feedback once.
+    let downloadIfUnsaved = false;
+
     function requestSave(status) {
+      if (submitted) status = "complete";
       if (saving.state === "conflict") {
         showSaveProblem(CONFLICT_MESSAGE);
         return;
       }
       if (saving.state === "sending") {
-        saving.next = saving.next === "complete" ? "complete" : status;
+        saving.next = status;
         return;
       }
       sendSave(status);
@@ -1092,8 +1098,12 @@
       }, () => {
         // Static mode or server unavailable: the feedback is downloaded on final submit.
         finishSave();
-        if (status === "complete") downloadFeedback(payload);
-        else setFeedbackStatus("Will download on submit");
+        if (status === "complete" && downloadIfUnsaved) {
+          downloadIfUnsaved = false;
+          downloadFeedback(payload);
+        } else if (!submitted) {
+          setFeedbackStatus("Will download on submit");
+        }
       });
     }
 
@@ -1145,11 +1155,14 @@
       clearTimeout(saveTimeout);
       saveTimeout = null;
       keepCurrentFeedback();
+      submitted = true;
+      downloadIfUnsaved = true;
       requestSave("complete");
     }
 
     function closeDoneDialog() {
-      // Reset status back to in_progress
+      // Back to reviewing: the review is in progress again.
+      submitted = false;
       saveCurrentFeedback();
       document.getElementById("done-overlay").classList.remove("visible");
     }
