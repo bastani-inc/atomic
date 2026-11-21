@@ -31,9 +31,9 @@ const HOLD_MS: u64 = 4_500;
 
 /// On Windows, calls back when the user's session ends, and keeps Windows waiting while the process shuts down: until
 /// the callback answers false, the process exits, or 4.5 seconds have passed. A sign-out that another program cancels
-/// calls nothing. Windows also ends the process before the programs it started, so they still run while it shuts down.
-/// The window is made on a thread of its own, without waiting for it; only the first call in a process starts one.
-/// Elsewhere it does nothing.
+/// calls nothing. Windows also ends the process before the programs it started that keep Windows's default order, so
+/// they still run while it shuts down. The window is made on a thread of its own, without waiting for it; only the
+/// first call in a process starts one. Elsewhere it does nothing.
 #[napi(js_name = "watchSessionEnd")]
 pub fn watch_session_end(
 	#[napi(ts_arg_type = "(endedMsAgo: number) => boolean")] on_end: SessionEndCallback,
@@ -61,7 +61,7 @@ mod windows {
 		WM_CLOSE, WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSEXW, WS_OVERLAPPED,
 	};
 
-	/// Above the default 0x280 of every other program, so Windows ends this process before the ones it started.
+	/// Above the default 0x280, so Windows ends this process before the programs it started that keep the default.
 	/// 0x300 is the first value of the range Windows keeps for programs that end first.
 	const SHUTDOWN_LEVEL: u32 = 0x300;
 	const CLASS_NAME: &str = "AtomicSessionEnd";

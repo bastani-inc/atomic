@@ -984,9 +984,9 @@ export type WaitOutcome =
 /**
  * On Windows, calls back when the user's session ends, and keeps Windows waiting while the process shuts down: until
  * the callback answers false, the process exits, or 4.5 seconds have passed. A sign-out that another program cancels
- * calls nothing. Windows also ends the process before the programs it started, so they still run while it shuts down.
- * The window is made on a thread of its own, without waiting for it; only the first call in a process starts one.
- * Elsewhere it does nothing.
+ * calls nothing. Windows also ends the process before the programs it started that keep Windows's default order, so
+ * they still run while it shuts down. The window is made on a thread of its own, without waiting for it; only the
+ * first call in a process starts one. Elsewhere it does nothing.
  */
 export declare function watchSessionEnd(onEnd: (endedMsAgo: number) => boolean): void
 
