@@ -124,6 +124,12 @@ export type InteractiveEngineMessage =
 			 * subagent once that panel has drawn too.
 			 */
 			panel?: true;
+			/**
+			 * With `keepScreen`: `/tasks` hid the agent panel, and it lists the subagent once the screen shows it, though it
+			 * may list nothing now. A host that tells the engine (`set_viewed_agent`) what it is about to show before it
+			 * waits shows the subagent once that panel has drawn; an older host ignores it.
+			 */
+			panelOnView?: true;
 	  }
 	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
@@ -312,6 +318,12 @@ export type InteractiveEngineCommand =
 			compareExpansion?: true;
 			inspectHistoryReplay?: true;
 			rendererTaskId?: string;
+			/**
+			 * What the chat showing this call offers for the task its result left running: its `/tasks` lists it, the
+			 * waited-shell key opens it, or nothing. A host sends it only for a chat that decides this, such as a
+			 * subagent's chat; without it the engine offers what it did before.
+			 */
+			keptTaskAction?: "tasks" | "ownTasks" | "openWaited" | "none";
 			args: JsonValue;
 			result?: JsonObject;
 			/** Display-only summary for a saved read whose body was too large for its page. */
@@ -578,6 +590,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						taskId: value.taskId,
 						...(value.keepScreen === true ? { keepScreen: true } : {}),
 						...(value.panel === true ? { panel: true } : {}),
+						...(value.panelOnView === true ? { panelOnView: true } : {}),
 					}
 				: undefined;
 		case "engine_activity_started":
@@ -817,6 +830,13 @@ function layoutField(value: unknown): { layout?: TranscriptFrameLayout } {
 	return layout === undefined ? {} : { layout };
 }
 
+const KEPT_TASK_ACTIONS: ReadonlySet<JsonValue> = new Set(["tasks", "ownTasks", "openWaited", "none"]);
+
+/** What a host's chat offers for the task a call left running, as a render command names it. */
+function isKeptTaskAction(value: JsonValue): value is "tasks" | "ownTasks" | "openWaited" | "none" {
+	return KEPT_TASK_ACTIONS.has(value);
+}
+
 function isCellCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -964,6 +984,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			...(value.inspectHistoryReplay === true ? { inspectHistoryReplay: true } : {}),
 			...(value.compareExpansion === true ? { compareExpansion: true } : {}),
 			...(value.rendererTaskId === undefined ? {} : { rendererTaskId: value.rendererTaskId }),
+			...(isKeptTaskAction(value.keptTaskAction) ? { keptTaskAction: value.keptTaskAction } : {}),
 			toolCallId: value.toolCallId,
 			args: value.args,
 			result: isJsonObject(value.result) ? value.result : undefined,
