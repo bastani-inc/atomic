@@ -51,6 +51,8 @@ interface Counts {
 	attempts: number[];
 	begins: number;
 	commits: number;
+	/** Requests sent to the connection's thread and not answered yet. */
+	inFlight: number;
 }
 
 /**
@@ -63,11 +65,14 @@ async function fixture(options?: Parameters<typeof openNodeSqliteDatabase>[1]) {
 	const database = await openNodeSqliteDatabase(path, options);
 	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
 	const holder = new DatabaseSync(path);
-	const counts: Counts = { attempts: [], begins: 0, commits: 0 };
+	const counts: Counts = { attempts: [], begins: 0, commits: 0, inFlight: 0 };
 	// The adapter's connection runs on a thread of its own: its attempts and commits are counted as it sends them.
 	const counting = interceptConnectionRequests(async (request, send) => {
 		if (request.kind === "begin") counts.attempts.push(performance.now());
-		const answer = await send(request);
+		counts.inFlight += 1;
+		const answer = await send(request).finally(() => {
+			counts.inFlight -= 1;
+		});
 		if (request.kind === "begin") counts.begins += 1;
 		if (isExec(request, "COMMIT")) counts.commits += 1;
 		return answer;
@@ -120,6 +125,17 @@ async function untilTickets(writers: string, count: number): Promise<string[]> {
 /** Waits until the adapter's waiting writer has scheduled its next recheck under fake timers. */
 async function untilWaiting(): Promise<void> {
 	while (vi.getTimerCount() === 0) await turn();
+}
+
+/**
+ * Waits until the fixture's writer is quiet, waiting for its recheck timer with no request on the connection's thread,
+ * or until its transaction settled. The connection's thread runs a request whenever the system schedules it, also
+ * between two statements a raw holder runs in one `exec`, so a holder that commits and takes the lock again would race
+ * an attempt still on its way; and a fake-time step taken while the writer is still attempting fires nothing, so the
+ * recheck it arms afterwards never fires.
+ */
+async function untilQuiet(counts: Counts, write: { readonly settled: boolean }): Promise<void> {
+	while (!write.settled && (vi.getTimerCount() === 0 || counts.inFlight > 0)) await turn();
 }
 
 /** Freezes the database clock every connection reads at `nowMs` until the test ends; see `freezeDatabaseClock`. */
@@ -818,18 +834,21 @@ test("a writer never takes over a file already named like its ticket, and fails 
 });
 
 test("commits by other connections keep a waiting writer from giving up, however long the lock stays busy (#4316)", async () => {
-	const { database, holder } = await fixture({ lockWaitMs: 300 });
+	const { database, holder, counts } = await fixture({ lockWaitMs: 300 });
 	holder.exec("CREATE TABLE other (n INTEGER)");
 	holder.exec("BEGIN IMMEDIATE; INSERT INTO other VALUES (0)");
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('patient through progress')"));
 	const write$ = settledFlag(write);
-	await untilWaiting();
+	// The holder commits and takes the lock again between the writer's looks at it, every 200 ms.
 	for (let round = 1; round <= 6; round++) {
+		await untilQuiet(counts, write$);
 		await vi.advanceTimersByTimeAsync(200);
+		await untilQuiet(counts, write$);
 		holder.exec(`COMMIT; BEGIN IMMEDIATE; INSERT INTO other VALUES (${round})`);
 	}
 	await vi.advanceTimersByTimeAsync(200);
+	await untilQuiet(counts, write$);
 	assert.equal(write$.settled, false, "still waiting after 1400 ms of a busy lock with a 300 ms lock wait");
 	holder.exec("COMMIT");
 	await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
