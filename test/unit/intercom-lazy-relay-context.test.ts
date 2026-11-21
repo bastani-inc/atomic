@@ -41,6 +41,7 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 	const entries: Array<{ type: string; data: { error?: string } }> = [];
 	const inboundMessages: CapturedInboundMessage[] = [];
 	const deliveryAcks: Array<{ requestId?: string; delivered?: boolean; error?: string }> = [];
+	const firstAck = Promise.withResolvers<void>();
 	let remainingLateRouteRejections = options.rejectLateRoutes ?? 0;
 	const ctx = {
 		hasUI: false,
@@ -91,6 +92,7 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 			emit(name: string, payload: unknown) {
 				if (name === "subagent:result-intercom-delivery") {
 					deliveryAcks.push(payload as { requestId?: string; delivered?: boolean; error?: string });
+					firstAck.resolve();
 				}
 				for (const handler of eventHandlers.get(name) ?? []) void handler(payload);
 			},
@@ -101,6 +103,8 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 		entries,
 		inboundMessages,
 		deliveryAcks,
+		/** Settles with the relay's first delivery acknowledgement. */
+		firstAck: firstAck.promise,
 		async fire(name: string, event: Record<string, unknown>) {
 			for (const handler of handlers.get(name) ?? []) await handler(event, ctx);
 		},
@@ -110,8 +114,11 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 	};
 }
 
-async function settle(done: () => boolean): Promise<void> {
-	for (let attempt = 0; attempt < 200 && !done(); attempt++) await sleep(5);
+/**
+ * Waits for the relay's first acknowledgement, however long a loaded machine takes to load its modules on first use.
+ */
+async function settle(acknowledged: Promise<void>): Promise<void> {
+	await acknowledged;
 	// One extra tick so any spurious follow-up work (extra acks, error
 	// entries) has a chance to surface before assertions.
 	await sleep(10);
@@ -132,7 +139,7 @@ describe("lazy relay lifecycle-context fallback", () => {
 		});
 
 		current.emitResult("req-lifecycle-ctx");
-		await settle(() => current.deliveryAcks.length > 0);
+		await settle(current.firstAck);
 
 		assert.deepEqual(current.deliveryAcks, [{ requestId: "req-lifecycle-ctx", delivered: true }]);
 		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
@@ -144,7 +151,7 @@ describe("lazy relay lifecycle-context fallback", () => {
 		await current.fire("session_start", { type: "session_start", reason: "startup" });
 
 		current.emitResult("req-session-start");
-		await settle(() => current.deliveryAcks.length > 0);
+		await settle(current.firstAck);
 
 		assert.deepEqual(current.deliveryAcks, [{ requestId: "req-session-start", delivered: true }]);
 		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
@@ -157,7 +164,7 @@ describe("lazy relay lifecycle-context fallback", () => {
 		// initialize, so the relay must fall back to an undelivered ack without
 		// appending misleading connection-error entries.
 		current.emitResult("req-cold");
-		await settle(() => current.deliveryAcks.length > 0);
+		await settle(current.firstAck);
 
 		assert.equal(current.deliveryAcks.length, 1);
 		assert.equal(current.deliveryAcks[0]?.requestId, "req-cold");

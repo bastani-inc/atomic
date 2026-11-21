@@ -2966,11 +2966,37 @@ test.each(["override", "cleanup"] as const)("failed reload preparation releases 
 	assert.deepEqual(shutdowns, [2, 1]);
 });
 
+/**
+ * How long a step that must not wait for work a test holds back may take on a loaded machine before the test calls it
+ * one that waits for that work: most of the test's budget, so only a step that would wait for the held work reaches it.
+ */
+const STEP_WITHOUT_HELD_WORK_MS = 20_000;
+
+/** Whether `step` settles, either way, within {@link STEP_WITHOUT_HELD_WORK_MS}. */
+async function settlesWithoutHeldWork(step: Promise<unknown>): Promise<boolean> {
+	let bound: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			step.then(
+				() => true,
+				() => true,
+			),
+			new Promise<boolean>((resolve) => {
+				bound = setTimeout(() => resolve(false), STEP_WITHOUT_HELD_WORK_MS);
+			}),
+		]);
+	} finally {
+		clearTimeout(bound);
+	}
+}
+
 test.each([1, 2])("disposal cancels %i admitted background summaries without waiting", async (count) => {
 	const { createAssistantMessageEventStream } = await import("@bastani/atomic-ai/compat");
 	const cwd = mkdtempSync(join(tmpdir(), "sdk-summary-cancel-"));
 	const release = Promise.withResolvers<void>();
 	const signals: AbortSignal[] = [];
+	/** Settles once the summary request after each turn has reached the provider. */
+	const summariesStarted = Array.from({ length: count }, () => Promise.withResolvers<void>());
 	let active = 0;
 	const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth"), modelsPath: null });
 	await modelRuntime.setRuntimeApiKey("anthropic", "fixture", {});
@@ -3003,6 +3029,7 @@ test.each([1, 2])("disposal cancels %i admitted background summaries without wai
 		if (JSON.stringify(context.messages).includes("Describe this coding session in one short sentence")) {
 			active++;
 			signals.push(options!.signal!);
+			summariesStarted[signals.length - 1]?.resolve();
 			void release.promise.then(() => {
 				active--;
 				complete();
@@ -3024,13 +3051,11 @@ test.each([1, 2])("disposal cancels %i admitted background summaries without wai
 	try {
 		for (let index = 0; index < count; index++) {
 			await session.prompt(`turn ${index}`);
-			await vi.waitFor(() => assert.equal(active, index + 1));
+			await summariesStarted[index]!.promise;
+			assert.equal(active, index + 1);
 		}
-		let closed = false;
-		const closing = session.dispose().then(() => {
-			closed = true;
-		});
-		await vi.waitFor(() => assert.equal(closed, true));
+		const closing = session.dispose();
+		assert.ok(await settlesWithoutHeldWork(closing), "disposal does not wait for the gated summaries");
 		assert.equal(active, count, "disposal completes while the summary providers remain gated");
 		assert.equal(signals.length, count);
 		assert.ok(signals.every((signal) => signal.aborted));
@@ -5102,11 +5127,13 @@ test.each([false, true])(
 		);
 		try {
 			await admitted.promise;
-			await vi.waitFor(() =>
-				assert.throws(() => {
-					const unsubscribe = other.events.on("probe", () => {});
-					unsubscribe();
-				}, /closed|stale/i),
+			await vi.waitFor(
+				() =>
+					assert.throws(() => {
+						const unsubscribe = other.events.on("probe", () => {});
+						unsubscribe();
+					}, /closed|stale/i),
+				{ timeout: STEP_WITHOUT_HELD_WORK_MS },
 			);
 			assert.deepEqual(log, [], "all omitted callbacks precede the first shutdown");
 			assert.equal(
@@ -5119,7 +5146,8 @@ test.each([false, true])(
 			assert.throws(() => omitted.events.on("fresh", () => {}), /closed|stale/i);
 			cleanupWork.resolve();
 			if (startupFails) selectedWork.resolve();
-			await vi.waitFor(() => assert.ok(completed, "omitted cleanup waited on selected sibling"));
+			assert.ok(await settlesWithoutHeldWork(creating), "omitted cleanup waited on selected sibling");
+			assert.ok(completed);
 			const error = await creating;
 			if (startupFails) assert.ok(error instanceof AggregateError);
 			else assert.equal(error, undefined);
