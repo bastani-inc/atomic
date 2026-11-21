@@ -1,4 +1,5 @@
 import { asyncScope } from "./async-scope.ts";
+import { withTranspileCacheWriteOwner } from "./extensions/transpile-cache-writes.js";
 import type { SessionStore } from "./storage/session/types.js";
 import { withWindowsDirectorySecurityOwner } from "./tools/windows-directory-security.ts";
 
@@ -124,10 +125,13 @@ export function trackSessionWork<T>(session: object, operation: () => Promise<T>
 	pending.add(settled);
 	const ancestors = new Set(currentWork.getStore());
 	ancestors.add(settled);
+	const inherit = !sessionWorkOwners.has(session);
 	const result = currentWork.run(ancestors, () =>
-		withWindowsDirectorySecurityOwner(sessionLifetime(session), async () => operation(), {
-			inherit: !sessionWorkOwners.has(session),
-		}),
+		withWindowsDirectorySecurityOwner(
+			sessionLifetime(session),
+			() => withTranspileCacheWriteOwner(session, async () => operation(), { inherit }),
+			{ inherit },
+		),
 	);
 	void result
 		.finally(() => {

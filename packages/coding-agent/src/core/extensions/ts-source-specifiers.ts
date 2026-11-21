@@ -197,12 +197,14 @@ function babelHostFor(createJitiImpl: CreateJiti, id: string): BabelHost {
  * A jiti `transform` that runs jiti's own Babel transform plus the specifier
  * rewrite. Use it with jiti's `fsCache: false`: jiti keys its cache on the
  * importer source alone, while a rewrite also depends on which siblings exist.
- * `cacheDir` must already exist; the transform never creates it.
+ * `cacheDir` must already exist; the transform never creates it. `onWrite` is
+ * handed each write of a stored transform as it starts.
  */
 export function createTypeScriptSourceSpecifierTransform(
 	createJitiImpl: CreateJiti,
 	id: string,
 	cacheDir: () => string | undefined,
+	onWrite?: (write: Promise<void>) => void,
 ): JitiTransform & {
 	flush: () => Promise<void>;
 	cached: (options: JitiTransformOptions) => TransformedModule | undefined;
@@ -230,6 +232,7 @@ export function createTypeScriptSourceSpecifierTransform(
 			const write = writeCached(cached, storedForm(transformed));
 			writes.add(write);
 			void write.then(() => writes.delete(write));
+			onWrite?.(write);
 		}
 		return transformed;
 	};

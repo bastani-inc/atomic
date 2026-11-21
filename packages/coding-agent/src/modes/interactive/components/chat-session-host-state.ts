@@ -1,7 +1,12 @@
 import type { Component, EditorComponent, MarkdownTheme, TUI } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
-import { type QueueUpdateDeliveries, queuedTextsUnderWay } from "../../../core/queued-message-delivery.ts";
+import {
+	type QueuedMessageReceipt,
+	type QueueUpdateDeliveries,
+	queuedReceiptsUnderWay,
+	queuedTextsUnderWay,
+} from "../../../core/queued-message-delivery.ts";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { rowSource, savedRowKey, savedSeqOf, savedTaskRowKey } from "../../../core/tasks/transcript-origin.js";
@@ -187,6 +192,10 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	/** The texts of `lane` the chat draws as queued ahead of its queue while the agent delivers them. */
 	deliveringTexts(lane: "steer" | "followUp"): string[] {
 		return queuedTextsUnderWay(this.deliveringQueuedMessages, lane);
+	}
+	/** The receipts of the messages {@link deliveringTexts} lists, in its order. */
+	deliveringReceipts(lane: "steer" | "followUp"): (QueuedMessageReceipt | undefined)[] {
+		return queuedReceiptsUnderWay(this.deliveringQueuedMessages, lane);
 	}
 	/** Messages sent while the agent works that its queue does not list yet; shown as queued from submit (#4696). */
 	unconfirmedQueuedMessages: readonly { text: string; mode: "steer" | "followUp" }[] = [];
