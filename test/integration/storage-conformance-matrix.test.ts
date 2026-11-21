@@ -23,6 +23,7 @@ import {
 	registerCrossNodeHeldRoundTripConformance,
 	registerCrossNodeRoundTripConformance,
 	registerHeldSendStoreConformance,
+	registerIdOwnerConformance,
 	registerKnownSessionStoreConformance,
 	registerOutboxStoreConformance,
 	registerPendingAskStoreConformance,
@@ -203,6 +204,15 @@ for (const backend of storageBackends) {
 	const intercom = `Intercom routing on ${name}`;
 	registerBrokerLeaseStoreConformance(run, intercom, scopeFixture(backend, openSqlBrokerLeaseStore));
 	registerKnownSessionStoreConformance(run, intercom, scopeFixture(backend, openSqlKnownSessionStore));
+	// The lease store's table is there first, as in a broker: an unanswered claim's `reclaim` reads it.
+	registerIdOwnerConformance(
+		run,
+		intercom,
+		scopeFixture(backend, async (options) => {
+			await openSqlBrokerLeaseStore(options);
+			return openSqlKnownSessionStore(options);
+		}),
+	);
 	registerOutboxStoreConformance(run, intercom, scopeFixture(backend, openSqlOutboxStore));
 	registerPendingAskStoreConformance(run, intercom, scopeFixture(backend, openSqlPendingAskStore));
 	registerReleasedAskStoreConformance(run, intercom, scopeFixture(backend, openSqlReleasedAskStore));
