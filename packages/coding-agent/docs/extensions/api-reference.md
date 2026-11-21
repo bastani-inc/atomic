@@ -1004,6 +1004,8 @@ const result = await pi.exec("git", ["status"], { signal, timeout: 5000 });
 // result.stdout, result.stderr, result.code, result.killed, result.truncated
 ```
 
+On Windows, a `command` named without a path, such as `git`, runs only from the absolute directories on `PATH`, never from the working directory or Atomic's own, so a project folder cannot supply it; one it finds nowhere fails with `ENOENT` as a missing program does. A `command` with a path, such as `.\tools\build.exe`, runs as written.
+
 Options: `signal` and `timeout` terminate the command, `cwd` sets the working directory, and `maxBuffer` limits stdout and stderr combined (default 256 MiB). When output exceeds `maxBuffer`, Atomic terminates the command and returns the output up to the limit with `truncated: true`, `killed: true`, and a nonzero `code`. `killed` is true whenever Atomic terminated the command: timeout, abort, `maxBuffer`, or quitting the interactive app. A command that ignores SIGTERM gets SIGKILL after 5 seconds. When you quit the interactive app, a command still running, and the processes it started in its process group, get SIGTERM and, one second later, SIGKILL, so that they cannot hold up `session_shutdown` handlers; a command a `session_shutdown` handler runs is not ended. Print mode and an SDK host's `dispose()` wait for the command instead. A command terminated by a signal, by Atomic or otherwise, reports 128 + the signal number as `code`, like a shell: 143 for SIGTERM, 137 for SIGKILL.
 
 ### pi.getActiveTools() / pi.getAllTools() / pi.setActiveTools(names)

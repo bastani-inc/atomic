@@ -6,6 +6,7 @@ import { constants as bufferConstants } from "node:buffer";
 import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
+import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "../utils/helper-command.ts";
 import { spawnHostProcess } from "../utils/host-spawn.ts";
 import { descendantsOf, type IdentifiedProcess, signalIfSame } from "./process-descendants.js";
 
@@ -70,16 +71,22 @@ export async function execCommand(
 		throw new RangeError(`maxBuffer must be an integer between 0 and ${bufferConstants.MAX_STRING_LENGTH} bytes`);
 	}
 
+	// Pass the environment explicitly. Bun snapshots the process environment
+	// at startup for spawns that omit `env`, so an inherited default would
+	// still carry values this process deleted from `process.env` — including
+	// the interactive-engine control variables and their --api-key. Preserve
+	// Atomic's child attribution in the same explicit environment.
+	const env = createChildProcessEnvironment();
+	// Windows looks for a program named without a path in the working directory before PATH: look it up in PATH's
+	// absolute directories instead, so a project folder cannot supply it. A name found nowhere fails as before (ENOENT).
+	const launch: HelperLaunch =
+		process.platform === "win32" ? await helperLaunchAsync(command, { env, cwd }) : { file: command };
 	// Without fork where that costs the host time in proportion to its memory (#5345).
-	const proc = spawnHostProcess(command, args, {
+	const proc = spawnHostProcess(launch.file, args, {
 		cwd,
-		// Pass the environment explicitly. Bun snapshots the process environment
-		// at startup for spawns that omit `env`, so an inherited default would
-		// still carry values this process deleted from `process.env` — including
-		// the interactive-engine control variables and their --api-key. Preserve
-		// Atomic's child attribution in the same explicit environment.
-		env: createChildProcessEnvironment(),
+		env,
 		stdio: ["ignore", "pipe", "pipe"],
+		...missingHelperOptions(launch),
 	});
 
 	let stdout = "";
