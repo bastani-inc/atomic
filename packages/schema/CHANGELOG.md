@@ -7,6 +7,7 @@ This package is Atomic's fork of `@earendil-works/pi-schema`. Its history up to 
 ### Added
 
 - `@bastani/atomic-schema/typebox` and its subpaths (`/compile`, `/error`, `/format`, `/guard`, `/schema`, `/system`, `/type`, `/value`) export TypeBox 1.3.27, bundled in this package. Atomic and the extensions it loads use this one copy.
+
 ### Changed
 - The package no longer includes declaration maps (`.d.ts.map`). They pointed at TypeScript sources that the package does not include, so editors could not follow them. The declarations themselves are unchanged.
 

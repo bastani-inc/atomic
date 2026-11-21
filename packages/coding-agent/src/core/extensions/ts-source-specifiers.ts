@@ -150,8 +150,11 @@ interface ProgramPath {
 	unshiftContainer(key: "body", node: object): void;
 }
 
-/** The names jiti's module wrapper gives the functions its transform calls for `import()` and `import.meta.resolve`. */
-const JITI_FUNCTION_NAMES = ["jitiImport", "jitiESMResolve"];
+/**
+ * Names the code jiti's transform adds reads where the module wrote other code: the functions jiti's module wrapper
+ * gives it for `import()` and `import.meta.resolve`, and `Promise`, which an `import()` becomes a call of.
+ */
+const JITI_FUNCTION_NAMES = ["jitiImport", "jitiESMResolve", "Promise"];
 
 interface BabelApi {
 	types: { identifier(name: string): object; callExpression(callee: object, args: object[]): object };
@@ -169,8 +172,8 @@ interface BabelApi {
  * platform writes it, as for a module Node or Bun loads itself.
  *
  * The code this adds never reads the module's own bindings: the function that returns the object has a name no other
- * binding in the module has, and reads Node's globals through `globalThis`, so a module's own `process` or `require`
- * never stands in for them. It is a hoisted function, so code an import cycle runs before the module's own can call it.
+ * binding in the module has, and reads the globals it uses through `globalThis`, so a module's own `process`, `require`,
+ * `URL` or `Error` never stands in for them. It is a hoisted function, so code an import cycle runs before the module's own can call it.
  */
 function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) {
 	// The file's path as the platform writes it: jiti names it with forward slashes on Windows too.
@@ -187,7 +190,7 @@ function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) 
 			// This runs before any plugin's visitors: jiti's own rewrites the module's direct reads of its URL, dirname
 			// and filename as soon as it enters the program.
 			const program = file.path;
-			// A binding of the module's own with a name jiti's wrapper gives its functions would stand in for them.
+			// A binding of the module's own with one of those names would stand in for what jiti's code reads.
 			const renameJitiNames = (scope: ScopeLike) => {
 				for (const name of JITI_FUNCTION_NAMES) if (scope.hasOwnBinding(name)) scope.rename(name);
 			};
@@ -248,16 +251,20 @@ function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) 
 						"body",
 						babel.template.statement.ast(
 							`function ${importMeta}() {
-								${importMeta}.meta ??= ((nodeProcess, jitiResolve) => {
+								${importMeta}.meta ??= ((nodeProcess, jitiResolve, URL, Error) => {
 									const nodeModule = nodeProcess.getBuiltinModule("node:module");
 									const resolve = (specifier, parent) => {
 										if (nodeModule.isBuiltin(specifier)) return specifier.includes(":") ? specifier : "node:" + specifier;
 										try {
 											return jitiResolve(specifier, parent);
 										} catch (error) {
-											if (!/^(?:\\.{0,2}\\/|[a-zA-Z][a-zA-Z\\d+.-]*:)/.test(specifier)) {
+											// Bun throws for a Windows path with a drive it cannot find; Node reads the drive as a URL scheme.
+											const missingDrivePath = nodeProcess.versions.bun !== undefined && /^[a-zA-Z]:[\\\\/]/.test(specifier);
+											if (missingDrivePath || !/^(?:\\.{0,2}\\/|[a-zA-Z][a-zA-Z\\d+.-]*:)/.test(specifier)) {
 												if (error?.code !== "MODULE_NOT_FOUND") throw error;
-												throw Object.assign(new Error(error.message, { cause: error }), { code: "ERR_MODULE_NOT_FOUND" });
+												const notFound = new Error(error.message, { cause: error });
+												notFound.code = "ERR_MODULE_NOT_FOUND";
+												throw notFound;
 											}
 											return new URL(specifier, parent ?? ${literal(url)}).href;
 										}
@@ -266,7 +273,7 @@ function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) 
 									if (nodeProcess.versions.bun === undefined) return meta;
 									const require = nodeModule.createRequire(${literal(filename)});
 									return { ...meta, path: ${literal(filename)}, dir: ${literal(dirname)}, file: ${literal(file)}, main: false, require };
-								})(globalThis.process, jitiESMResolve);
+								})(globalThis.process, jitiESMResolve, globalThis.URL, globalThis.Error);
 								return ${importMeta}.meta;
 							}`,
 						),
