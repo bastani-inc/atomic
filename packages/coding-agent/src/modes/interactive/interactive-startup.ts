@@ -176,6 +176,12 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 	this.ui.requestRender();
 };
 
+InteractiveModeBase.prototype.startManagedToolReadiness = function (this: InteractiveModeBase): void {
+	if (this.managedToolReadiness === "started" || this.isShuttingDown) return;
+	this.managedToolReadiness = "started";
+	void this.ensureManagedToolsReady();
+};
+
 /** Bring fd, rg, and git to readiness, reporting progress into the transcript. */
 InteractiveModeBase.prototype.ensureManagedToolsReady = function (this: InteractiveModeBase): Promise<void> {
 	const statusGeneration = ++this.managedToolStatusGeneration;
@@ -454,8 +460,8 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 
 	// fd/rg readiness runs after first paint so slow downloads never make
 	// startup appear frozen. Progress reports land in the transcript: a console
-	// write here lands in the alternate screen and corrupts the frame.
-	void this.ensureManagedToolsReady();
+	// write here lands in the alternate screen and corrupts the frame. Under run() it waits for the editor to take input.
+	if (this.managedToolReadiness === "on-init") this.startManagedToolReadiness();
 
 	// When startup resources are deferred, keep the already-painted editor responsive.
 	// Extension UI bindings are installed at the deferred reload boundary, not here,
@@ -526,6 +532,7 @@ export function showResumeNotices(
 
 InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): Promise<void> {
 	const startup = this.sessionStartup;
+	if (this.managedToolReadiness === "on-init") this.managedToolReadiness = "after-input";
 	await this.init();
 	if (this.isShuttingDown || startup?.cancelled || this.sessionStartup?.cancelled) return;
 
@@ -579,9 +586,12 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 		this.showWarning(modelFallbackMessage, this.startupNoticesContainer);
 	}
 
+	const startupPrompt = Boolean(initialMessage || (initialMessages && initialMessages.length > 0));
+	// A prompt given on the command line runs before the editor takes input; its turn may use fd, rg and git.
+	if (startupPrompt) this.startManagedToolReadiness();
 	// CLI-provided startup prompts need extension tools/resources; wait before sending them,
 	// but do not block the normal no-prompt input loop from becoming ready.
-	if (this.deferredStartupPending && (initialMessage || (initialMessages && initialMessages.length > 0))) {
+	if (this.deferredStartupPending && startupPrompt) {
 		await this.ensureDeferredStartupComplete();
 	}
 
@@ -608,7 +618,11 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 
 	// Main interactive loop
 	while (true) {
-		const userInput = await this.getUserInput();
+		// getUserInput marks input-handler-ready before it returns once the editor waits for input; input typed while
+		// Atomic started comes back at once instead, and its turn runs first.
+		const nextInput = this.getUserInput();
+		this.startManagedToolReadiness();
+		const userInput = await nextInput;
 		await this.runUserPromptTurn(userInput);
 	}
 };

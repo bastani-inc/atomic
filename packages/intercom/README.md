@@ -414,13 +414,13 @@ Create `~/.atomic/agent/intercom/config.json` for Atomic. Legacy pi-compatible i
 }
 ```
 
-The default `npx --no-install tsx` pair is a compatibility sentinel: intercom recognizes it and starts the broker through the current Atomic/Pi runtime (`process.execPath`). It never resolves or executes `tsx` — Node-based installs run the broker with Atomic's bundled `jiti` loader, which is dependency-free pure JavaScript; Bun source-checkout runs use the current Bun executable directly; standalone Atomic Bun binaries re-enter the split launcher through a narrow internal broker handoff. Default startup therefore does not rely on `npx`, `tsx`, or `bun` being on `PATH`.
+The default `npx --no-install tsx` pair is a compatibility sentinel: intercom recognizes it and starts the broker through the current Atomic/Pi runtime (`process.execPath`). It never resolves or executes `tsx` — installed packages run the prebuilt broker (`broker/broker.bundle.mjs`) directly, a Node source checkout runs `broker/broker.ts` with Atomic's bundled `jiti` loader, which is dependency-free pure JavaScript, Bun source-checkout runs use the current Bun executable directly, and standalone Atomic Bun binaries re-enter the split launcher through a narrow internal broker handoff. Default startup therefore does not rely on `npx`, `tsx`, or `bun` being on `PATH`.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `brokerCommand` | `"npx"` | Command used to start the local broker process; the default sentinel is hardened internally to avoid PATH lookup |
 | `brokerArgs` | `["--no-install", "tsx"]` | Arguments passed to `brokerCommand` before the broker script path |
-| `brokerStartupTimeoutMs` | `30000` | How long a session waits for a newly spawned broker to answer on its socket, in milliseconds (at least `1000`). A broker loads its modules through jiti, which takes about 0.5 s on an idle machine and several seconds on a busy one or with an empty jiti cache (the first start after a reboot); raise it if Intercom start-up reports `Broker failed to start within timeout` on a very slow machine |
+| `brokerStartupTimeoutMs` | `30000` | How long a session waits for a newly spawned broker to answer on its socket, in milliseconds (at least `1000`). An installed broker listens within a fraction of a second; one started from a source checkout loads its modules through jiti, which takes about 0.5 s on an idle machine and several seconds on a busy one or with an empty jiti cache (the first start after a reboot); raise it if Intercom start-up reports `Broker failed to start within timeout` on a very slow machine |
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
