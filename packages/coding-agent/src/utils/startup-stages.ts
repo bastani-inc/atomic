@@ -5,11 +5,13 @@
  *
  * The build writes the stages (`scripts/write-startup-stages.mjs`) next to this build's modules, in `startup-stages/`:
  * loading them in order, then the session's entry modules, runs every module exactly once and in the order the runtime
- * runs them for the entry modules alone. None of them awaits at its top level in this build (the build checks it), so
- * each stage has run in full by the turn after it; a stage that has not (an installed package awaiting at its top level)
- * ends the stages there, so that nothing waits on a later stage.
+ * runs them for the entry modules alone. None of them awaits at its top level in this build (the build checks it); a
+ * stage that would (an installed package's version awaiting at its top level) ends the stages there, so that nothing
+ * waits on a later stage.
  */
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { startupNodeOptions } from "@bastani/atomic-codemode/node-options";
 
 interface StartupStages {
@@ -34,6 +36,10 @@ const RESOLUTION_OPTIONS = new Set([
 	"--conditions",
 	"-C",
 	"--no-addons",
+	// A configuration file can hold any of these, which then show nowhere in the process's own options.
+	"--experimental-config-file",
+	"--experimental-default-config-file",
+	"--config-file",
 ]);
 
 /** Where this build's stages are: beside its own modules, found as this module's own imports are. */
@@ -49,9 +55,8 @@ function readStageCount(): number {
 }
 
 /**
- * Loads the stages one at a time, with a turn of the event loop after each. A stage that fails, or has not run in full
- * by the turn after it, ends the stages: the session's own imports then take the rest as before, and report a failure
- * where they always did. Without stages (a source checkout, a build without them), or with a preload, a module loader
+ * Loads the stages one at a time, with a turn of the event loop after each. A stage that fails, or that would await,
+ * ends the stages: the session's own imports then take the rest as before, and report a failure where they always did. Without stages (a source checkout, a build without them), or with a preload, a module loader
  * or another option that changes how modules resolve, nothing loads here.
  */
 export async function loadStartupStages(): Promise<void> {
@@ -59,18 +64,17 @@ export async function loadStartupStages(): Promise<void> {
 	if (process.versions.bun !== undefined) return;
 	if (startupNodeOptions().some((option) => RESOLUTION_OPTIONS.has(option.name))) return;
 	const count = readStageCount();
+	// `require` loads an ES module and what it imports in one synchronous step, the same modules as `import()` would,
+	// and unlike `import()` it does not walk every module already loaded again for each stage.
+	const loadStage = createRequire(import.meta.url);
 	for (let stage = 0; stage < count; stage++) {
-		// Each stage has run in full before the next one starts: the order of the modules depends on it.
-		const run: { outcome: "running" | "loaded" | "failed" } = { outcome: "running" };
-		import(new URL(`${stage}.js`, STAGES_DIR).href).then(
-			() => {
-				run.outcome = "loaded";
-			},
-			() => {
-				run.outcome = "failed";
-			},
-		);
+		try {
+			loadStage(fileURLToPath(new URL(`${stage}.js`, STAGES_DIR)));
+		} catch {
+			// A module failed, or one awaits at its top level (an installed version this build did not check), which
+			// `require` refuses before it runs any of the stage: the session's own imports take the rest from here.
+			return;
+		}
 		await new Promise<void>((resolve) => setImmediate(resolve));
-		if (run.outcome !== "loaded") return;
 	}
 }
