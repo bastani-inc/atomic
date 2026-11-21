@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import { startPtyProgram } from "../helpers/pty-program.js";
@@ -73,6 +73,50 @@ describe.skipIf(python === undefined || process.platform === "win32")(
 				assert.ok(Date.now() - stoppedAt < STOP_ESCALATION_MS + 5_000);
 				await waitUntilGone(startedPids(records), 5_000);
 				assert.deepEqual(readdirSync(box.temp), []);
+			},
+			STALLED_TEST_MS,
+		);
+
+		test.skipIf(process.platform !== "linux")(
+			"leaves the browser that run_loop opened for its report running when a stop signal ends the evaluation (#5625)",
+			async () => {
+				const box = sandbox();
+				const browserPid = join(box.dir, "browser.pid");
+				// A browser command that starts the browser in a session of its own and returns.
+				const opener = join(box.dir, "open-browser");
+				writeFileSync(
+					opener,
+					`#!/bin/sh\nsetsid sleep 120 </dev/null >/dev/null 2>&1 &\necho $! > '${browserPid}'\n`,
+					{
+						mode: 0o755,
+					},
+				);
+				const evalSet = box.writeEvalSet([{ query: "stalled", should_trigger: true }]);
+				const args = ["--eval-set", evalSet, "--skill-path", box.skill, "--model", "local/model"];
+				const script = spawnProcess(
+					[
+						python ?? "python3",
+						"-m",
+						"scripts.run_loop",
+						...args,
+						"--holdout",
+						"0",
+						"--report",
+						join(box.dir, "report.html"),
+					],
+					{ cwd: box.project, env: box.env({ FAKE_ATOMIC_SCENARIO: "stalled-child", BROWSER: `${opener} %s` }) },
+				);
+				const records = await box.waitForRecords(1, START_MS);
+				const browser = Number(readFileSync(browserPid, "utf8"));
+				try {
+					script.kill("SIGTERM");
+					await script.exited;
+					assert.equal(script.signalCode, "SIGTERM");
+					await waitUntilGone(startedPids(records), 5_000);
+					assert.ok(processRuns(browser), "the report's browser still runs");
+				} finally {
+					process.kill(browser, "SIGKILL");
+				}
 			},
 			STALLED_TEST_MS,
 		);

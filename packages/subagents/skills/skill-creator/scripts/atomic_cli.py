@@ -320,8 +320,8 @@ _owned_pids: set[int] = set()
 # children instead of init's, so they can be found and ended.
 _adopts_orphans = False
 # Every Atomic this process starts, and what those start, inherit this variable unless they replace
-# their environment. While an evaluation runs, an adopted orphan is ended only if it carries it, so
-# a browser that run_loop.py opened for its report stays open.
+# their environment. An adopted orphan is ended only if it carries it, or if the leader of its
+# session or process group did, so the browser run_loop.py opens for its report is never signalled.
 OWNER_VARIABLE = "SKILL_CREATOR_EVALUATION"
 _owner_token = f"{os.getpid()}-{os.urandom(8).hex()}"
 
@@ -416,19 +416,36 @@ def _started_by_us(pid: int) -> bool:
     return f"{OWNER_VARIABLE}={_owner_token}".encode() in environment.split(b"\0")
 
 
-def _end_orphans(everything: bool = False) -> None:
+def _group_and_session(pid: int) -> tuple[int, int] | None:
+    try:
+        # The fields after the parenthesized command name: state, parent, group, session.
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return int(fields[2]), int(fields[3])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _end_orphans() -> None:
     """Kill and reap the orphans this process adopted from its Atomic processes, then theirs.
 
-    With `everything`, every child this process has that is not a running Atomic of its own is
-    ended: all of them descend from this process. Runs only when this process adopts orphans.
-    Each one is an unreaped child of this process while the lock is held, so its process ID still
-    names it when it is signalled.
+    An orphan is Atomic's when it carries this process's owner variable, or when it belongs to
+    the session or process group of one that does (a process Atomic started in its own session
+    may start others with an environment of their own). Runs only when this process adopts
+    orphans. Each one is an unreaped child of this process while the lock is held, so its process
+    ID still names it when it is signalled.
     """
     if not _adopts_orphans:
         return
     with _children_lock:
+        owners: set[int] = set()
         while True:
-            orphans = {pid for pid in _child_pids() - _owned_pids if everything or _started_by_us(pid)}
+            adopted = _child_pids() - _owned_pids
+            owners.update(pid for pid in adopted if _started_by_us(pid))
+            orphans = {
+                pid
+                for pid in adopted
+                if pid in owners or not owners.isdisjoint(_group_and_session(pid) or ())
+            }
             if not orphans:
                 return
             for pid in orphans:
@@ -637,8 +654,7 @@ def run_main(main: Callable[[], None]) -> None:
         print(f"Error: {error}", file=sys.stderr)
         sys.exit(1)
     finally:
-        # After a stop signal, everything this process started ends with it.
-        _end_orphans(everything=_stop_signal is not None)
+        _end_orphans()
         _finished.set()
     if _stop_signal is not None:
         _exit_by_signal(_stop_signal)
