@@ -149,3 +149,27 @@ export async function waitUntilGone(pids: readonly number[], timeoutMs: number):
 		await sleep(25);
 	}
 }
+
+/** The first line a stream prints. */
+export async function readLine(stream: ReadableStream<Uint8Array> | null): Promise<string> {
+	return readUntil(stream, /^(.*)\n/u);
+}
+
+/** The first capture group of `pattern` in what a stream prints, once it appears; fails if the stream ends first. */
+export async function readUntil(stream: ReadableStream<Uint8Array> | null, pattern: RegExp): Promise<string> {
+	if (stream === null) throw new Error("the stream is not piped");
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	let text = "";
+	try {
+		for (;;) {
+			const match = pattern.exec(text);
+			if (match) return match[1] ?? "";
+			const { value, done } = await reader.read();
+			if (done) throw new Error(`output ended before ${pattern}: ${text}`);
+			text += decoder.decode(value, { stream: true });
+		}
+	} finally {
+		reader.releaseLock();
+	}
+}
