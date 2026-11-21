@@ -425,16 +425,7 @@ test("a call header drawn with an earlier version's stopped or paused mark still
 			`legacy-${mark}`,
 			{},
 			{},
-			{
-				name: "custom",
-				label: "generic-label",
-				description: "custom",
-				parameters: SubagentParams,
-				execute: async () => {
-					throw new Error("Rendering must not execute the tool");
-				},
-				renderCall: () => header as never,
-			},
+			{ label: "generic-label", renderCall: () => header as never },
 			{ requestRender() {} } as TUI,
 			process.cwd(),
 		);
