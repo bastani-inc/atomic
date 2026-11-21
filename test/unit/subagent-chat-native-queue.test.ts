@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import type { TranscriptContext } from "@bastani/atomic-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
@@ -310,6 +311,29 @@ test(
 			["user:child steer", "user:child fu"],
 			"both reach the model, in order, once",
 		);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a subagent's chat names the file its session is kept in, for a host that loses its engine to read",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const child = launchChild(env, "native-queue-session-file", [
+			fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "one" }, { id: "wait-1" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+		await until(() => env.answers.length === 1, LIVE_CHILD_START_WAIT_MS);
+		const source = child.source()!;
+		const file = source.getSessionFile?.();
+		assert.ok(file !== undefined, "the subagent's transcript names its session file");
+		const header = JSON.parse(readFileSync(file, "utf8").split("\n")[0]!) as { type?: string; id?: string };
+		assert.equal(header.type, "session");
+		assert.equal(header.id, source.getSessionId(), "the file is the subagent's own session");
+		answer(env, 0, "round one");
+		assert.equal((await child.result).status, "ok");
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );

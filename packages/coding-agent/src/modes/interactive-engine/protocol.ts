@@ -1053,5 +1053,28 @@ function parseAgentViewStatus(value: JsonValue | undefined): AgentViewStatus | u
 		isStringList(queued.steering) &&
 		isStringList(queued.followUp) &&
 		(value.unsaved === undefined || isStringList(value.unsaved));
-	return valid ? (value as unknown as AgentViewStatus) : undefined;
+	if (!valid) return undefined;
+	// Receipts that are not as an engine writes them are left out: its messages are then reported as unconfirmed.
+	if (value.receipts !== undefined && !isAgentViewReceipts(value.receipts)) {
+		const { receipts: _receipts, ...status } = value;
+		return status as unknown as AgentViewStatus;
+	}
+	return value as unknown as AgentViewStatus;
+}
+
+function isAgentViewReceipts(value: JsonValue): boolean {
+	if (!isJsonObject(value) || typeof value.sessionId !== "string" || !Array.isArray(value.taken)) return false;
+	if (value.sessionFile !== undefined && typeof value.sessionFile !== "string") return false;
+	return value.taken.every(
+		(receipt) =>
+			receipt === null ||
+			(isJsonObject(receipt) &&
+				typeof receipt.id === "string" &&
+				typeof receipt.after === "number" &&
+				Number.isSafeInteger(receipt.after) &&
+				receipt.after >= 0 &&
+				(receipt.epoch === undefined || typeof receipt.epoch === "string") &&
+				(receipt.typed === undefined || typeof receipt.typed === "string") &&
+				(receipt.local === undefined || receipt.local === true)),
+	);
 }

@@ -970,11 +970,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	/**
 	 * Ask the engine, a replacement of the lost one, which of `messages` (what the lost engine was delivering) its
-	 * session's store holds, by their receipts: answers the receipt ids found saved and those provably never saved. A
+	 * session's store holds (or, with `session`, that session's, such as a subagent's), by their receipts: answers the receipt ids found saved and those provably never saved. A
 	 * message without a receipt (from an engine that keeps none) is in neither.
 	 */
 	async findQueuedMessages(
-		messages: readonly QueuedDeliveryEntry[],
+		messages: readonly { readonly receipt?: QueuedMessageReceipt }[],
+		session?: { readonly sessionId: string; readonly sessionFile?: string },
 	): Promise<{ readonly saved: ReadonlySet<string>; readonly absent: ReadonlySet<string> }> {
 		const saved = new Set<string>();
 		const absent = new Set<string>();
@@ -994,6 +995,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				ids: receipts.map((receipt) => receipt.id),
 				after,
 				...(epoch === undefined ? {} : { epoch }),
+				...(session === undefined ? {} : { sessionId: session.sessionId }),
+				...(session?.sessionFile === undefined ? {} : { sessionFile: session.sessionFile }),
 			});
 			for (const id of found.saved) saved.add(id);
 			// Only an engine whose writes ended with it can have saved nothing more after it was lost.
