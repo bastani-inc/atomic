@@ -56,6 +56,22 @@ describe("the single chat screen's switcher", () => {
 		assert.deepEqual(told, [undefined, "b"]);
 	});
 
+	test("readies the screen for the correction before it shows the kept screen again, for the request ended unshown", async () => {
+		const events: string[] = [];
+		const switcher = new AgentViewSwitcher(
+			async () => undefined,
+			() => {},
+			() => () => events.push("screen shown again"),
+		);
+		tellEngineViewed(
+			switcher,
+			(taskId) => events.push(`tell ${taskId}`),
+			(taskId) => events.push(`before correction ${taskId}`),
+		);
+		assert.equal(await switcher.view(id("a"), { keepScreen: true }), false);
+		assert.deepEqual(events, ["before correction a", "tell undefined", "screen shown again"]);
+	});
+
 	test("tells the engine first what it is about to show when its panel lists the subagent only once shown", () => {
 		const events: string[] = [];
 		const switcher = {
@@ -63,8 +79,8 @@ describe("the single chat screen's switcher", () => {
 				events.push(`show ${taskId} keepScreen=${options?.keepScreen} panel=${options?.panel}`),
 		};
 		const tell = (taskId: TaskId | undefined) => events.push(`tell ${taskId}`);
-		showForEngine(switcher, { taskId: "a", keepScreen: true, panelOnView: true }, tell);
-		showForEngine(switcher, { taskId: "b", keepScreen: true, panel: true }, tell);
+		assert.equal(showForEngine(switcher, { taskId: "a", keepScreen: true, panelOnView: true }, tell), "a");
+		assert.equal(showForEngine(switcher, { taskId: "b", keepScreen: true, panel: true }, tell), undefined);
 		showForEngine(switcher, { taskId: "c" }, tell);
 		showForEngine(switcher, { taskId: null, keepScreen: true, panelOnView: true }, tell);
 		assert.deepEqual(events, [
