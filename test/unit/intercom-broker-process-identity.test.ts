@@ -73,9 +73,10 @@ describe.skipIf(!READS_PROCESS_STARTS)("a broker pid that names a later process"
 	});
 
 	test("a broker that did not answer is ended while its pid names it, and only the broker, not a process it started", async () => {
-		// The stand-in broker starts a child of its own and reports its pid.
+		// The stand-in broker starts a child of its own and reports its pid. Detached, so that on Windows it is outside the
+		// job object that ends a process's other children with it, as a broker's own detached helpers are.
 		const { child, recorded } = await liveProcess(
-			`const c = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+			`const c = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", detached: true });
 			process.stdout.write(String(c.pid) + "\\n"); setInterval(() => {}, 1000);`,
 		);
 		const [line] = (await once(child.stdout!, "data")) as [Buffer];
