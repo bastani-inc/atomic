@@ -84,3 +84,27 @@ for (const platform of ["browser", "node"] as const) {
 		);
 	});
 }
+
+test("a bundler's source maps for the forked packages still reach their TypeScript sources", async () => {
+	const result = await build({
+		stdin: {
+			contents: 'export { getProviderEnvValue } from "@bastani/atomic-ai/utils/provider-env";',
+			resolveDir: repositoryRoot,
+			loader: "js",
+		},
+		bundle: true,
+		platform: "browser",
+		format: "esm",
+		write: false,
+		sourcemap: "external",
+		outfile: join(repositoryRoot, "out.js"),
+		logLevel: "silent",
+	});
+	const map = JSON.parse(result.outputFiles.find((file) => file.path.endsWith(".map"))?.text ?? "{}") as {
+		sources: string[];
+		sourcesContent: Array<string | null>;
+	};
+	const index = map.sources.findIndex((source) => source.endsWith("packages/ai/src/utils/provider-env.ts"));
+	assert.ok(index >= 0, map.sources.join("\n"));
+	assert.match(map.sourcesContent[index] ?? "", /export function getProviderEnvValue/);
+});
