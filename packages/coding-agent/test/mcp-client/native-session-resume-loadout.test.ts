@@ -266,16 +266,18 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 	}
 
 	/**
-	 * How long a first process may take to list its server's tools. The in-memory server answers at once, but the
-	 * session's startup work before the listing can take seconds on a loaded machine.
+	 * How long a session may take to show what a server listed once it connects, or that it failed to. The in-memory
+	 * server answers at once, but the session's own work around the listing can take seconds on a loaded machine, more
+	 * than vi.waitFor's default of one second.
 	 */
-	const TOOLS_LISTED_TIMEOUT_MS = 10_000;
+	const SERVER_SETTLED_TIMEOUT_MS = 10_000;
+	const untilServerSettled = (assertion: () => void) => vi.waitFor(assertion, { timeout: SERVER_SETTLED_TIMEOUT_MS });
 
 	/** A first process that declared the server's tools; it sends one more request (the control) and quits. */
 	async function liveSession(fixture: Fixture, options: StartOptions, tool = "mcp__docs__search") {
 		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
 		const live = await startSession(fixture, manager, options);
-		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain(tool), { timeout: TOOLS_LISTED_TIMEOUT_MS });
+		await untilServerSettled(() => expect(live.getActiveToolNames()).toContain(tool));
 		fixture.faux.setResponses([fixture.reply("one")]);
 		await live.prompt("first");
 		// The control: the request the same process sends next, without a resume.
@@ -329,7 +331,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(fixture.requests.at(-1)).toBe(control);
 
 		server.release();
-		await vi.waitFor(() =>
+		await untilServerSettled(() =>
 			expect(resumed.getAllTools().find((tool) => tool.name === "mcp__docs__search")?.sourceInfo).toBeDefined(),
 		);
 		fixture.faux.setResponses([fixture.reply("four")]);
@@ -524,7 +526,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		const unrecorded = await withoutRecords(fixture, sessionFile, "unrecorded");
 
 		const inTime = await resume(fixture, unrecorded, { servers: { docs: { tools: [SEARCH], calls: [] } } });
-		await vi.waitFor(() =>
+		await untilServerSettled(() =>
 			expect(
 				inTime.sessionManager
 					.getBranch()
@@ -550,7 +552,9 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 			servers: { docs: { tools: [SEARCH], calls: [] } },
 			exposure: "deferred",
 		});
-		await vi.waitFor(() => expect(live.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search"));
+		await untilServerSettled(() =>
+			expect(live.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search"),
+		);
 		fixture.faux.setResponses([
 			(context: Context) => {
 				fixture.requests.push(flatTools(context));
@@ -595,9 +599,9 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 				a__b: { tools: [lookUp("c")], ready: later.ready, calls: [] },
 			},
 		});
-		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain("mcp__a__b__c"));
+		await untilServerSettled(() => expect(live.getActiveToolNames()).toContain("mcp__a__b__c"));
 		later.release();
-		await vi.waitFor(() =>
+		await untilServerSettled(() =>
 			expect(live.getActiveToolNames().filter((name) => name.startsWith("mcp__a__b__c"))).toHaveLength(2),
 		);
 		fixture.faux.setResponses([fixture.reply("one")]);
@@ -613,7 +617,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		const before = resumed.messages.length;
 		// `a__b` keeps the name it was declared under in the first process.
 		const aBName = createMcpToolName("a__b", "c", (name) => name === "mcp__a__b__c");
-		await vi.waitFor(() => expect(resumed.getAllTools().map((tool) => tool.name)).toContain(aBName));
+		await untilServerSettled(() => expect(resumed.getAllTools().map((tool) => tool.name)).toContain(aBName));
 		await promptCalling(fixture, resumed, "mcp__a__b__c", () => slowA.release());
 
 		expect(a.calls).toEqual(["b__c"]);
@@ -638,9 +642,9 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 			},
 		});
 		const aBName = createMcpToolName("a__b", "c", (name) => name === "mcp__a__b__c");
-		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain("mcp__a__b__c"));
+		await untilServerSettled(() => expect(live.getActiveToolNames()).toContain("mcp__a__b__c"));
 		later.release();
-		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain(aBName));
+		await untilServerSettled(() => expect(live.getActiveToolNames()).toContain(aBName));
 		fixture.faux.setResponses([fixture.reply("one")]);
 		await live.prompt("first");
 		// The user turns `a`'s tool off; `a__b`'s keeps the hashed name it got when `a`'s had the plain one.
@@ -669,7 +673,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		const firstRequest = async (tools: ListedTool[], dir: string) => {
 			const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, dir));
 			const session = await startSession(fixture, manager, { servers: { docs: { tools, calls: [] } } });
-			await vi.waitFor(() => expect(session.getActiveToolNames()).toContain("mcp__docs__fetch"));
+			await untilServerSettled(() => expect(session.getActiveToolNames()).toContain("mcp__docs__fetch"));
 			fixture.faux.setResponses([fixture.reply("one")]);
 			await session.prompt("first");
 			await session.dispose();
@@ -725,7 +729,7 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(fixture.requests.at(-1)).toBe(control);
 
 		server.fail(new Error("server crashed"));
-		await vi.waitFor(() => expect(resumed.getActiveToolNames()).not.toContain("list_mcp_resources"));
+		await untilServerSettled(() => expect(resumed.getActiveToolNames()).not.toContain("list_mcp_resources"));
 		fixture.faux.setResponses([fixture.reply("four")]);
 		await resumed.prompt("after the failure");
 		expect(toolChanges(resumed, before)).toEqual([
