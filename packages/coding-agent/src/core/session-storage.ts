@@ -6,7 +6,7 @@ import { getAgentDir, getProjectConfigPaths } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { SettingsManager } from "./settings-manager.ts";
-import { deepMergeSettings } from "./settings-merge.ts";
+import { deepMergeSettings } from "./settings-merge.js";
 import { SessionStorageSelectionSchema } from "./settings-schema.ts";
 import type { Settings } from "./settings-types.ts";
 import { StorageConfigError } from "./storage/errors.js";

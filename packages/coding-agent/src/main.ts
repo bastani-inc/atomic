@@ -74,7 +74,7 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
-import { extensionsCanDecideProjectTrust } from "./core/project-trust-electorate.ts";
+import { extensionsCanDecideProjectTrust } from "./core/project-trust-electorate.js";
 import {
 	pendingProjectResourcesTrusted,
 	projectTrustedBeforeExtensions,
@@ -170,7 +170,7 @@ import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
-import { IsolatedInteractiveRuntime } from "./modes/interactive-engine/isolated-runtime.ts";
+import { IsolatedInteractiveRuntime } from "./modes/interactive-engine/isolated-runtime.js";
 import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
