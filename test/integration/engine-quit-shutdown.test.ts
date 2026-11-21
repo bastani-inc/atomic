@@ -11,6 +11,13 @@ import {
 	readRecords,
 } from "../helpers/event-loop-guard-fixture.js";
 import { type PtyExit, type PtyProgram, startPtyProgram } from "../helpers/pty-program.js";
+import {
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	stillRuns,
+	waitUntilGone,
+} from "../helpers/recorded-process.js";
 import { fileExistsSync, makeTempDirectory, moduleDir, readTextSync, sleep } from "../helpers/runtime.js";
 
 const PACKAGE = join(moduleDir(import.meta.url), "../../packages/coding-agent");
@@ -47,8 +54,8 @@ interface EndedSession {
 	readonly enginePid: number;
 	/** When the session's process exited, on the `performance.now()` clock. */
 	readonly exitedAt: number;
-	/** The process the extension started in the engine's process group, when asked to. */
-	readonly groupChildPid: number | undefined;
+	/** The process the extension started in the engine's process group, when asked to, recorded while it ran. */
+	readonly groupChild: RecordedProcess | undefined;
 }
 
 /**
@@ -71,7 +78,7 @@ async function endSession(
 	const eventLoopLog = join(root, "event-loop.jsonl");
 	const groupChild = join(root, "group-child");
 	let program: PtyProgram | undefined;
-	let groupChildPid: number | undefined;
+	let groupChildProcess: RecordedProcess | undefined;
 	try {
 		prepareAgentDir(agentDir, "http://127.0.0.1:9");
 		prepareInstalledPackage(PACKAGE, installed);
@@ -129,8 +136,9 @@ export default (pi) => {
 		assert.ok(host?.type === "start" && engine?.type === "start", "the session ran in an engine process");
 
 		if (options.groupChild) {
-			groupChildPid = Number(readTextSync(groupChild, "utf8"));
-			assert.ok(processIsRunning(groupChildPid), "the extension started its process");
+			// The engine, and so its process group, is running: the pid names the extension's process.
+			groupChildProcess = await recordProcess(Number(readTextSync(groupChild, "utf8")));
+			assert.ok(await stillRuns(groupChildProcess), "the extension started its process");
 		}
 		await end({ program, hostPid: host.pid, handlerStarted: () => fileExistsSync(shutdown) });
 		const exit = await program.exited;
@@ -149,7 +157,7 @@ export default (pi) => {
 			records: readRecords(eventLoopLog),
 			enginePid: engine.pid,
 			exitedAt,
-			groupChildPid,
+			groupChild: groupChildProcess,
 		};
 	} finally {
 		program?.kill();
@@ -177,15 +185,6 @@ test(
 	},
 	CLI_TIMEOUT_MS + 10_000,
 );
-
-function processIsRunning(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 // Windows delivers neither signal to a process: closing its console ends it at once.
 describe.skipIf(process.platform === "win32")("a host signal", () => {
@@ -223,16 +222,18 @@ describe.skipIf(process.platform === "win32")("a host signal", () => {
 				{ groupChild: true },
 			);
 
-			const pid = ended.groupChildPid;
-			assert.ok(pid !== undefined);
+			const child = ended.groupChild;
+			assert.ok(child !== undefined);
 			try {
 				assert.equal(ended.exit.timedOut, false, ended.screen);
 				assert.equal(ended.calls.length, 2, "the engine ran its extension's shutdown");
-				const deadline = Date.now() + GROUP_CHILD_GONE_MS;
-				while (processIsRunning(pid) && Date.now() < deadline) await sleep(RECORD_POLL_MS);
-				assert.equal(processIsRunning(pid), false, "the extension's process outlived the engine");
+				assert.equal(
+					await waitUntilGone(child, GROUP_CHILD_GONE_MS),
+					true,
+					"the extension's process outlived the engine",
+				);
 			} finally {
-				if (processIsRunning(pid)) process.kill(pid, "SIGKILL");
+				await signalRecordedProcess(child);
 			}
 		},
 		CLI_TIMEOUT_MS + 10_000,
