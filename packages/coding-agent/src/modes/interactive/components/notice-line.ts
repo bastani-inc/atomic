@@ -1,12 +1,16 @@
 import { type Component, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { type ThemeColor, theme } from "../theme/theme.js";
+import { TASK_MARKS } from "./task-marks.ts";
 import { collapseToolBlockLines, ToolBlock } from "./tool-block.ts";
 
 /**
  * How the subject of a notice ended or stands. A started subject reads as `success`; `waiting` is a subagent released
  * while it waits on a call, which wakes by itself when that call finishes; `heartbeat` marks a periodic check on work
- * that is still running.
+ * that is still running. `agent-running` and `shell-running` mark a subagent and a background shell that keep running,
+ * `input` a subagent that waits for an answer, and `task-stopped` a subagent or background task that was stopped, with
+ * the marks the agent panel and `/tasks` show them with. `running` is a tool call in progress, and `stopped` one that
+ * was interrupted or not run.
  */
 export type NoticeStatus =
 	| "success"
@@ -16,6 +20,10 @@ export type NoticeStatus =
 	| "paused"
 	| "waiting"
 	| "running"
+	| "agent-running"
+	| "shell-running"
+	| "input"
+	| "task-stopped"
 	| "info"
 	| "heartbeat";
 
@@ -42,31 +50,30 @@ export interface NoticeLineSpec {
 }
 
 /**
- * The mark of a subagent released while it waits: still and dim, not the pause mark. Its completion notice, launch
- * card, `/tasks` row and detail, the agent panel and a chat's task footer all show it with this one mark.
+ * The marker and colour of each status, so a status reads without colour too. A task's states use its marks; `running`
+ * is a tool call in progress, which a block draws as the working `∀`, and `stopped` one that was interrupted, which is
+ * not an error.
  */
-export const WAITING_MARKER = { glyph: "◌", color: "dim" } as const;
-
-/**
- * The marks the agent panel, the `/tasks` list and a chat's task rows share: an open circle while the work runs (grey,
- * still), a filled one once it is done, and an open circle in the error colour once it was stopped.
- */
-export const RUNNING_TASK_MARKER = { glyph: "◯", color: "muted" } as const;
-export const DONE_TASK_MARKER = { glyph: "●", color: "success" } as const;
-export const STOPPED_TASK_MARKER = { glyph: "◯", color: "error" } as const;
-
-/** The marker and colour of each status, so a status reads without colour too. */
 export const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: string; readonly color: ThemeColor }>> = {
-	success: { glyph: "●", color: "success" },
-	failure: { glyph: "✗", color: "error" },
+	success: TASK_MARKS.done,
+	failure: TASK_MARKS.failed,
 	stopped: { glyph: "◼", color: "muted" },
 	warning: { glyph: "!", color: "warning" },
-	paused: { glyph: "⏸", color: "muted" },
-	waiting: WAITING_MARKER,
+	paused: TASK_MARKS.paused,
+	waiting: TASK_MARKS.waiting,
 	running: { glyph: "∀", color: "accent" },
+	"agent-running": TASK_MARKS.running,
+	"shell-running": TASK_MARKS.shell,
+	input: TASK_MARKS.input,
+	"task-stopped": TASK_MARKS.stopped,
 	info: { glyph: "›", color: "muted" },
 	heartbeat: { glyph: "♥", color: "muted" },
 };
+
+/** A notice reports a task, so it shows a task's marks: running and stopped as the agent panel shows them. */
+function noticeStatus(status: NoticeStatus): NoticeStatus {
+	return status === "running" ? "agent-running" : status === "stopped" ? "task-stopped" : status;
+}
 
 export const DETAIL_FIRST_PREFIX = "  ⎿  ";
 export const DETAIL_PREFIX = "     ";
@@ -96,7 +103,7 @@ function metaText(meta: readonly string[] | undefined): string {
 /** The notice as plain text, one line, as a screen reader or a log reads it. */
 export function noticeLineText(spec: NoticeLineSpec): string {
 	const subject = spec.subject === undefined ? undefined : oneLine(spec.subject);
-	return `${STATUS_MARKERS[spec.status].glyph} ${oneLine(spec.label)}${quoted(subject)}${outcomeText(spec.outcome)}${metaText(spec.meta)}`;
+	return `${STATUS_MARKERS[noticeStatus(spec.status)].glyph} ${oneLine(spec.label)}${quoted(subject)}${outcomeText(spec.outcome)}${metaText(spec.meta)}`;
 }
 
 /** The subject shortened so the whole line fits `width`, or undefined when even one character of it does not. */
@@ -134,7 +141,7 @@ export class NoticeLine implements Component {
 			this.spec.detail === undefined ? "" : terminalDisplayText(this.spec.detail).replaceAll("\t", "    ").trimEnd();
 		const safeDetail = detail.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ");
 		return new ToolBlock({
-			status: this.spec.status,
+			status: noticeStatus(this.spec.status),
 			title: new Text(title, 0, 0),
 			meta: this.spec.meta?.map(oneLine).filter(Boolean),
 			details:

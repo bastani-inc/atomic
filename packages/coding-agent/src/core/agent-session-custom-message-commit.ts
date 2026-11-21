@@ -13,6 +13,7 @@ import {
 } from "./agent-session-persistent-custom-messages.ts";
 import { deliverQueuedInputIfIdle } from "./agent-session-prompt.ts";
 import { abortTurnRetries } from "./agent-session-retry.ts";
+import { joinCommandTurn } from "./command-deliveries.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 
@@ -185,7 +186,8 @@ async function commitCustomMessage<T>(
 			await appendDurableStageAdmission(self, appMessage);
 		}
 	} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
-		const interrupt = self._enqueueInterruptCustomMessage(appMessage, options);
+		// The interrupt starts its own turn, which this delivery does not wait for (#6113).
+		const interrupt = joinCommandTurn(self, self._enqueueInterruptCustomMessage(appMessage, options));
 		void interrupt.catch(() => {});
 	} else if (
 		(self.isStreaming || self._isPreparingRun) &&

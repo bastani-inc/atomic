@@ -75,6 +75,10 @@ For SDK session requests, explicit `cacheRetention` takes precedence over `ATOMI
 
 Atomic sets `AI_AGENT=atomic` for itself and every subprocess it launches, replacing a caller-supplied value. Scripts can use it to identify an Atomic-owned invocation. The caller's environment object is not mutated.
 
+## TLS certificates
+
+`NODE_EXTRA_CA_CERTS` names a PEM file of CA certificates Atomic trusts in addition to the built-in ones, for model providers, an `https://` proxy and the PostgreSQL store. Set it when a provider endpoint, or a proxy that inspects TLS traffic, uses a certificate from a private or corporate CA, and restart Atomic: it is read when Atomic starts. Both the npm-installed `atomic` and the standalone binary read it. A request refused for its certificate fails at once, naming the host and the reason, and is not retried.
+
 ## Provider credentials
 
 Provider keys include `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, `GEMINI_API_KEY`, AWS/Bedrock credentials, and the variables listed in [Providers](/providers#environment-variables-or-auth-file). `ANTHROPIC_AUTH_TOKEN` is a distinct header-only bearer credential for Anthropic-compatible gateways: Atomic sends `Authorization: Bearer …` without requiring or inventing an API key, including normal turns, isolated execution, and branch summaries. Custom headers remain independent.

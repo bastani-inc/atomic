@@ -55,6 +55,7 @@ import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { type InlineImageMimeType, inlineImageMimeType, unsupportedImagePlaceholder } from "../utils/inline-images.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
+import { recordTlsCertificateRefusal, transportFailure } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
@@ -277,6 +278,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		try {
 			const supportsStrictMode = model.compat?.supportsStrictMode ?? false;
 			const client = new BedrockRuntimeClient(config);
+			addTransportFailureMiddleware(client);
 			let observedRawResponse = false;
 			if (options.onResponse) {
 				addResponseHeadersMiddleware(client, options.onResponse, model, () => {
@@ -291,7 +293,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
 			const initialSystemMessage = getInitialSystemMessage(normalizedContext.messages);
 			const initialSystemPrompt = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : undefined;
-			let disablePreferredStrictTools = strictToolLimitsExceeded(options.sessionId, normalizedContext.messages);
+			let disablePreferredStrictTools = strictToolLimitsExceeded(options.sessionId, context.messages);
 			const reasoningOptions = resolveThinkingOffOptions(model, options, output);
 			let response: ConverseStreamCommandOutput;
 			for (;;) {
@@ -319,6 +321,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					additionalModelRequestFields: buildAdditionalModelRequestFields(model, reasoningOptions),
 					...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 				};
+				const thinking = commandInput.additionalModelRequestFields?.thinking;
+				if (thinking?.type === "enabled") output.thinkingBudgetTokens = thinking.budget_tokens;
 				const nextCommandInput = await options?.onPayload?.(commandInput, model);
 				if (nextCommandInput !== undefined) {
 					commandInput = nextCommandInput as typeof commandInput;
@@ -422,6 +426,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				typeof error === "object" && error !== null ? getProviderRetryAfterMs(error) : undefined;
 			if (output.stopReason === "error") {
 				appendBedrockFailureDiagnostic(output, error, responseRequestId);
+				recordTlsCertificateRefusal(output, error);
 			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -558,6 +563,26 @@ function bedrockUserAgent(identity: ClientIdentity | undefined): string | [strin
  * SigV4 / auth headers (`x-amz-*`, `authorization`, `host`) are silently skipped;
  * all other caller headers override any existing same-named header on the request.
  */
+/**
+ * Reports what the HTTP handler rejects with, below every response, as the request's own transport failure for its
+ * host, so only a refused certificate on that connection is read as one (#6114).
+ */
+function addTransportFailureMiddleware(client: BedrockRuntimeClient): void {
+	const middleware: DeserializeMiddleware<object, MetadataBearer> = (next) => async (args) => {
+		try {
+			return await next(args);
+		} catch (error) {
+			const request = args.request as Partial<{ protocol: string; hostname: string; port: number }> | undefined;
+			if (!request?.hostname) throw error;
+			throw transportFailure(
+				error,
+				`${request.protocol ?? "https:"}//${request.hostname}${request.port ? `:${request.port}` : ""}`,
+			);
+		}
+	};
+	client.middlewareStack.add(middleware, { step: "deserialize", name: "atomic-transport-failure", priority: "low" });
+}
+
 function addCustomHeadersMiddleware(client: BedrockRuntimeClient, headers: Record<string, string>): void {
 	const middleware: BuildMiddleware<object, MetadataBearer> = (next) => async (args) => {
 		const request = args.request;
@@ -1064,10 +1089,18 @@ function convertMessages(
 
 	// The input sent up to a message with a `cacheBreakpoint` hint ends with the last user message converted so far
 	// once that message is converted.
-	let checkpoint: { message: Message; blocks: number } | undefined;
+	let checkpoint: CacheCut | undefined;
+	// Where the request the last sent reply answered ended: its newest input got that request's last cache point.
+	let replyCut: CacheCut | undefined;
+	const inputCut = (): CacheCut | undefined => {
+		const index = result.length - 1;
+		const last = result[index];
+		return last?.role === ConversationRole.USER && last.content
+			? { message: last, index, blocks: last.content.length }
+			: undefined;
+	};
 	const markCheckpoint = (): void => {
-		const last = result.at(-1);
-		if (last?.role === ConversationRole.USER && last.content) checkpoint = { message: last, blocks: last.content.length };
+		checkpoint = inputCut() ?? checkpoint;
 	};
 	// Converse rejects two user messages in a row, as after input steered in after tool results, so their content
 	// is joined into one message.
@@ -1180,6 +1213,7 @@ function convertMessages(
 				if (contentBlocks.length === 0) {
 					continue;
 				}
+				replyCut = inputCut();
 				result.push({
 					role: ConversationRole.ASSISTANT,
 					content: contentBlocks,
@@ -1233,16 +1267,43 @@ function convertMessages(
 		const cachePoint = (): ContentBlock => ({
 			cachePoint: { type: CachePointType.DEFAULT, ...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}) },
 		});
+		const hasTail = lastMessage.role === ConversationRole.USER && lastMessage.content !== undefined;
+		// One turn can add so many blocks that the last cache point no longer reaches back to the previous request's.
+		const cut =
+			checkpoint ??
+			(hasTail && replyCut && blocksAfterCut(result, replyCut) >= CACHE_LOOKBACK_POSITIONS ? replyCut : undefined);
 		// The system prompt, this checkpoint and the last message take three of Claude's four cache points.
-		if (
-			checkpoint?.message.content &&
-			!(checkpoint.message === lastMessage && checkpoint.blocks === checkpoint.message.content.length)
-		)
-			checkpoint.message.content.splice(checkpoint.blocks, 0, cachePoint());
-		if (lastMessage.role === ConversationRole.USER && lastMessage.content) lastMessage.content.push(cachePoint());
+		if (cut?.message.content && !(cut.message === lastMessage && cut.blocks === cut.message.content.length))
+			cut.message.content.splice(cut.blocks, 0, cachePoint());
+		if (hasTail) lastMessage.content?.push(cachePoint());
 	}
 
 	return result;
+}
+
+/**
+ * Claude finds an earlier request's cached prefix from a cache point only within this many blocks, the block before
+ * the cache point included.
+ */
+const CACHE_LOOKBACK_POSITIONS = 20;
+
+/** The end of the input a request sent: a message, its index, and how many of its blocks were sent then. */
+interface CacheCut {
+	message: Message;
+	index: number;
+	blocks: number;
+}
+
+/**
+ * Blocks after the last block `cut` sent, through the last block of the request, counted until they reach the
+ * lookback.
+ */
+function blocksAfterCut(messages: Message[], cut: CacheCut): number {
+	let blocks = (cut.message.content?.length ?? 0) - cut.blocks;
+	for (let index = cut.index + 1; index < messages.length && blocks < CACHE_LOOKBACK_POSITIONS; index++) {
+		blocks += messages[index]!.content?.length ?? 0;
+	}
+	return blocks;
 }
 
 function convertToolConfig(

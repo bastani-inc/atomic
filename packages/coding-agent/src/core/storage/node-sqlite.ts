@@ -1377,6 +1377,45 @@ function invalidTextParam(params: readonly SqliteValue[]): number {
 	return params.findIndex((value) => typeof value === "string" && value.includes("\0"));
 }
 
+/**
+ * How connection threads read a caller's signal while they run a sequence made with it: a flag shared with them, which
+ * a signal derived from the caller's raises. Only an actual abort of the caller's signal reaches the derived one: no
+ * other listener can keep the event from it, and an abort event dispatched on the caller's signal without aborting it
+ * does not reach it.
+ *
+ * Every sequence made with the same signal shares one watch (#6106): a derived signal made for each call would stay
+ * referenced from the caller's signal until that signal is released, which on Node 22 grows with every page an index
+ * build writes. The listener is attached only while such a sequence runs, so a watch keeps nothing alive after its
+ * last sequence returned, and the watch itself goes with the caller's signal. Once the signal has aborted the flag
+ * stays raised; no request is sent with a signal that has aborted.
+ */
+interface SignalWatch {
+	readonly derived: AbortSignal;
+	readonly flag: SharedArrayBuffer;
+	readonly raise: () => void;
+	/** Sequences running with the signal. */
+	running: number;
+}
+
+const signalWatches = new WeakMap<AbortSignal, SignalWatch>();
+
+/** Starts watching `signal` for a sequence; `unwatchSignal` ends that sequence's watch. */
+function watchSignal(signal: AbortSignal): SignalWatch {
+	let watch = signalWatches.get(signal);
+	if (watch === undefined) {
+		const flag = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+		const raised = new Int32Array(flag);
+		watch = { derived: AbortSignal.any([signal]), flag, raise: () => Atomics.store(raised, 0, 1), running: 0 };
+		signalWatches.set(signal, watch);
+	}
+	if (watch.running++ === 0) watch.derived.addEventListener("abort", watch.raise);
+	return watch;
+}
+
+function unwatchSignal(watch: SignalWatch): void {
+	if (--watch.running === 0) watch.derived.removeEventListener("abort", watch.raise);
+}
+
 class NodeSqliteDatabase implements SqliteDatabase {
 	readonly descriptor: StorageDescriptor;
 	private readonly connection: SqliteConnection;
@@ -1799,12 +1838,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			signal?.throwIfAborted();
 			throw new StorageInvalidTextError(repeatInvalid);
 		}
-		const shared = signal === undefined ? undefined : new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
-		// Only an actual abort of `signal` reaches a signal made from it: no other listener can keep the event from this
-		// one, and an abort event dispatched on `signal` without aborting it does not reach it.
-		const watched = signal === undefined ? undefined : AbortSignal.any([signal]);
-		const raise = () => Atomics.store(new Int32Array(shared!), 0, 1);
-		watched?.addEventListener("abort", raise);
+		const watch = signal === undefined ? undefined : watchSignal(signal);
 		try {
 			const pending = statements[Symbol.iterator]();
 			let invalid = -1;
@@ -1834,7 +1868,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 						? { repeat: { ...repeats, statement: sendableStatement(repeats.statement) } }
 						: {}),
 					statements: batch,
-					...(shared === undefined ? {} : { abort: shared }),
+					...(watch === undefined ? {} : { abort: watch.flag }),
 				};
 				const answer = (await connection.request(request).catch((cause: unknown) => {
 					throw unavailable(this.descriptor, cause);
@@ -1848,7 +1882,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			}
 			return repeated;
 		} finally {
-			watched?.removeEventListener("abort", raise);
+			if (watch !== undefined) unwatchSignal(watch);
 		}
 	}
 

@@ -15,6 +15,7 @@ import type {
 } from "../types.ts";
 import { combineAbortSignals } from "../utils/abort-signals.ts";
 import { appendProviderResponseFailureDiagnostic, truncateErrorText } from "../utils/error-body.ts";
+import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
@@ -189,6 +190,7 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatMistralError(error);
 			appendProviderResponseFailureDiagnostic(output, error);
+			recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -337,7 +339,7 @@ async function requestMistralStream(
 	// The timeout covers only the wait for response headers. Long streams (e.g. extended thinking)
 	// must not be cut off by a fixed deadline; body stalls are left to the stream idle deadline.
 	const timeoutMs = options?.timeoutMs ?? 60_000;
-	const fetch = await admitFetch(options?.fetch, requestSignal);
+	const fetch = transportFetch(await admitFetch(options?.fetch, requestSignal));
 	const headerTimeoutSignal = AbortSignal.timeout(timeoutMs);
 	const combinedSignal = combineAbortSignals([requestSignal, headerTimeoutSignal]);
 	let response: Response;

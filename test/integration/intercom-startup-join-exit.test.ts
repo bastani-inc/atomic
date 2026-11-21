@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "vitest";
-import { isProcessAlive } from "../../packages/intercom/broker/broker-stop.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { startPtyProgram } from "../helpers/pty-program.js";
+import {
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	waitUntilGone,
+} from "../helpers/recorded-process.js";
 import { makeTempDirectory, moduleDir, sleep } from "../helpers/runtime.js";
 import { startScriptedChatServer } from "../helpers/scripted-chat-server.js";
 
@@ -14,12 +20,15 @@ const CLI_START_TIMEOUT_MS = 60_000;
 const EXIT_BOUND_MS = 3_000;
 const BROKER_GONE_BOUND_MS = 2_000;
 
-/** A broker that starts, announces itself as a real one does, and never listens. */
+/** A broker that starts, announces itself as a real one does (with when it was created, when asked), and never listens. */
 const HUNG_BROKER = `
 const fs = require("node:fs");
 const path = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_PATH;
 const token = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_TOKEN;
-if (path && token) fs.writeFileSync(path, token + " " + process.pid + "\\n");
+const started = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_START === "1" && process.platform === "win32"
+	? require(${JSON.stringify(createRequire(import.meta.url).resolve("@bastani/atomic-natives"))}).processCreationTime(process.pid)
+	: null;
+if (path && token) fs.writeFileSync(path, token + " " + process.pid + (started === null ? "" : " " + started) + "\\n");
 fs.writeFileSync(process.argv[2], String(process.pid));
 setInterval(() => {}, 1000);
 `;
@@ -153,7 +162,7 @@ describe("quitting a session whose startup join is waiting for a broker that nev
 					cols: 160,
 					rows: 40,
 				});
-				let brokerPid: number | undefined;
+				let broker: RecordedProcess | undefined;
 				try {
 					await session.waitForScreen((s) => s.includes("❯"), CLI_START_TIMEOUT_MS, "the prompt");
 					if (host === "in-process") {
@@ -164,12 +173,14 @@ describe("quitting a session whose startup join is waiting for a broker that nev
 						await session.waitForScreen((s) => s.includes("B-ACK"), CLI_START_TIMEOUT_MS, "the first reply");
 					}
 					const deadline = Date.now() + CLI_START_TIMEOUT_MS;
-					brokerPid = profile.brokerPid();
+					let brokerPid = profile.brokerPid();
 					while (brokerPid === undefined) {
 						assert.ok(Date.now() < deadline, "the session never started a broker");
 						await sleep(50);
 						brokerPid = profile.brokerPid();
 					}
+					// #6125: recorded while it waits to be stopped, so a later process given its pid is not taken for it.
+					broker = await recordProcess(brokerPid);
 					session.write("/quit");
 					await session.waitForScreen((s) => s.includes("❯ /quit"), CLI_START_TIMEOUT_MS, "the quit command");
 					const quitAt = performance.now();
@@ -177,16 +188,14 @@ describe("quitting a session whose startup join is waiting for a broker that nev
 					assert.equal((await session.exited).exitCode, 0);
 					const exitMs = performance.now() - quitAt;
 					assert.ok(exitMs < EXIT_BOUND_MS, `quitting waited ${Math.round(exitMs)} ms for the broker start`);
-					const goneBy = Date.now() + BROKER_GONE_BOUND_MS;
-					while (isProcessAlive(brokerPid) && Date.now() < goneBy) await sleep(50);
-					assert.equal(isProcessAlive(brokerPid), false, "the broker the session started outlived it");
+					assert.equal(
+						await waitUntilGone(broker, BROKER_GONE_BOUND_MS, 50),
+						true,
+						"the broker the session started outlived it",
+					);
 				} finally {
 					session.kill();
-					if (brokerPid !== undefined && isProcessAlive(brokerPid)) {
-						try {
-							process.kill(brokerPid, "SIGKILL");
-						} catch {}
-					}
+					if (broker !== undefined) await signalRecordedProcess(broker);
 					await profile.close();
 				}
 			},

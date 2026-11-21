@@ -1,4 +1,4 @@
-import { replaceControlCharacters, ScrollView, VStack } from "@bastani/atomic-tui";
+import { replaceControlCharacters, ScrollView, TuiAltScreen, VStack } from "@bastani/atomic-tui";
 import { markEventLoopStartupComplete } from "../../core/event-loop-monitor.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
@@ -206,12 +206,47 @@ InteractiveModeBase.prototype.showManagedToolStatus = function (this: Interactiv
 	this.ui.requestRender();
 };
 
-function refreshResourceDisclosure(mode: InteractiveModeBase): void {
+function refreshResourceDisclosure(mode: InteractiveModeBase, options?: { keepSections?: boolean }): void {
 	mode.showLoadedResources({
 		force: true,
 		showDiagnosticsWhenQuiet: true,
 		targetContainer: mode.resourceDisclosureContainer,
+		...(options?.keepSections ? { keepSections: true } : {}),
 	});
+}
+
+/** How often a held approval checks again whether the screen is idle. */
+const APPROVED_LISTING_RETRY_MS = 250;
+const heldApprovedListings = new WeakMap<InteractiveModeBase, NodeJS.Timeout>();
+
+function cancelApprovedResourceListing(mode: InteractiveModeBase): void {
+	clearTimeout(heldApprovedListings.get(mode));
+	heldApprovedListings.delete(mode);
+}
+
+/**
+ * Lists the resources an approval added in the mounted resource list, in place: each section that stays keeps its
+ * expansion. Rows only move while nothing on screen depends on where they are: no row above the chat's first visible
+ * one changes (the chat shows its start or follows its end) and no text is selected or being selected, pressed,
+ * searched or dragged. Until then the listing waits and checks again (#5693).
+ */
+function listApprovedResources(mode: InteractiveModeBase): void {
+	cancelApprovedResourceListing(mode);
+	if (!mode.isInitialized || !mode.settingsManager.isProjectTrusted()) return;
+	if (mode.resourceDisclosureContainer.children.length === 0 || !mode.usesFullscreenRenderer) return;
+	const view = mode.transcriptScrollView;
+	const idle =
+		mode.ui instanceof TuiAltScreen &&
+		mode.ui.isPointerIdle() &&
+		(view?.isFollowingEnd === true || view?.scrollTop === 0);
+	if (!idle) {
+		const retry = setTimeout(() => listApprovedResources(mode), APPROVED_LISTING_RETRY_MS);
+		retry.unref?.();
+		heldApprovedListings.set(mode, retry);
+		return;
+	}
+	refreshResourceDisclosure(mode, { keepSections: true });
+	mode.ui.requestRender();
 }
 
 export function attachInteractiveEngineResourceExtensionRefresh(mode: InteractiveModeBase): () => void {
@@ -296,9 +331,13 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 			const trusted = this.settingsManager.isProjectTrusted();
 			void this.themeController.applyFromSettings({ keepPreview: trusted });
 			if (this.isInitialized) {
-				// Withholding resources removes any preliminary project data. Approval publishes to future views;
-				// it must not insert rows into a transcript the user may be selecting or searching.
-				if (!trusted) refreshResourceDisclosure(this);
+				// Withholding resources removes any preliminary project data. Approval lists the approved resources in the
+				// mounted resource list in place, once nothing on screen depends on where its rows are (#5693). An open
+				// completion menu keeps its rows; the next lookup offers the approved commands.
+				if (!trusted) {
+					cancelApprovedResourceListing(this);
+					refreshResourceDisclosure(this);
+				} else listApprovedResources(this);
 				this.setupAutocompleteProvider(trusted ? { preserveSelection: true } : undefined);
 			}
 		}

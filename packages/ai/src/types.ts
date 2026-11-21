@@ -679,6 +679,12 @@ export interface SystemMessage {
 	toolsAdded?: Tool[];
 	/** Tools that stop being available at this point. */
 	toolsRemoved?: ToolReference[];
+	/**
+	 * Earlier requests of the conversation sent `strict: "prefer"` tools without strict schemas because the provider
+	 * rejected them for its strict-tool limits; see {@link AssistantMessage.strictToolsDisabled}. A compaction sets it on
+	 * the system message it replays, so the choice outlives the replies that recorded it.
+	 */
+	strictToolsDisabled?: boolean;
 	timestamp: number; // Unix timestamp in milliseconds
 }
 

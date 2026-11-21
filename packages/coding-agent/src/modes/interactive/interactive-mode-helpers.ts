@@ -25,8 +25,8 @@ export class ExpandableText extends Text implements Expandable {
 	private contentWidth: number | undefined;
 	private readonly textPaddingX: number;
 
-	private declare readonly getCollapsedText: (width?: number) => string;
-	private declare readonly getExpandedText: (width?: number) => string;
+	private declare getCollapsedText: (width?: number) => string;
+	private declare getExpandedText: (width?: number) => string;
 
 	constructor(
 		getCollapsedText: (width?: number) => string,
@@ -52,6 +52,13 @@ export class ExpandableText extends Text implements Expandable {
 
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
+		this.refresh();
+	}
+
+	/** Show new text, keeping whether the block is expanded. */
+	replaceText(getCollapsedText: (width?: number) => string, getExpandedText: (width?: number) => string): void {
+		this.getCollapsedText = getCollapsedText;
+		this.getExpandedText = getExpandedText;
 		this.refresh();
 	}
 

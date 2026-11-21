@@ -58,6 +58,94 @@ export const TLS_VERIFICATION_CODES = new Set([
 ]);
 
 /**
+ * Node and Bun report a verification result outside their table as `UNSPECIFIED`, with OpenSSL's reason for it, such as
+ * "key usage does not include certificate signing" for a root that may not sign certificates (#6112). These are those
+ * reasons that describe the certificate, lowercase, from OpenSSL 3 and BoringSSL. `UNSPECIFIED` with any other message,
+ * such as OpenSSL's own failures or an error that did not come from TLS at all, is not a refused certificate. Atomic's
+ * model requests hold the same list (`packages/ai/src/utils/tls-certificate.ts`).
+ * @type {readonly string[]}
+ */
+export const UNSPECIFIED_CERTIFICATE_REASONS = [
+	"authority and issuer serial number mismatch",
+	"authority and subject key identifier mismatch",
+	"authority key identifier marked critical",
+	"basic constraints of ca cert not marked critical",
+	"ca cert does not include key usage extension",
+	"ca certificate key too weak",
+	"ca signature digest algorithm too weak",
+	"cannot find certificate signature algorithm",
+	"cert info signature and signature algorithm mismatch",
+	"certificate public key has explicit ecc parameters",
+	"certificate transparency required, but no valid scts found",
+	"crl path validation error",
+	"different crl scope",
+	"ee certificate key too weak",
+	"email address mismatch",
+	"empty subject alternative name extension",
+	"excluded subtree violation",
+	"invalid non-ca certificate (has ca markings)",
+	"invalid or inconsistent certificate extension",
+	"invalid or inconsistent certificate policy extension",
+	"ip address mismatch",
+	"issuer certificate doesn't have a public key",
+	"issuer has name constraints but leaf has no sans",
+	"issuer name empty",
+	"key usage does not include certificate signing",
+	"key usage does not include crl signing",
+	"key usage does not include digital signature",
+	"key usage keycertsign invalid for non-ca cert",
+	"missing authority key identifier",
+	"missing subject key identifier",
+	"name constraints minimum and maximum not supported",
+	"no explicit policy",
+	"no matching dane tlsa records",
+	"ocsp unknown cert",
+	"ocsp verification failed",
+	"ocsp verification needed",
+	"path length given without key usage keycertsign",
+	"path length invalid for non-ca cert",
+	"path loop",
+	"permitted subtree violation",
+	"proxy certificates not allowed, please set the appropriate flag",
+	"proxy path length constraint exceeded",
+	"proxy subject name violation",
+	"raw public key untrusted, no trusted keys configured",
+	"rfc 3779 resource not subset of parent's resources",
+	"subject empty and subject alt name extension not critical",
+	"subject issuer mismatch",
+	"subject key identifier marked critical",
+	"subject name empty",
+	"subject signature algorithm and issuer public key algorithm mismatch",
+	"suite b: cannot sign p-384 with p-256",
+	"suite b: certificate version invalid",
+	"suite b: curve not allowed for this los",
+	"suite b: invalid ecc curve",
+	"suite b: invalid public key algorithm",
+	"suite b: invalid signature algorithm",
+	"unable to get crl issuer certificate",
+	"unhandled critical crl extension",
+	"unhandled critical extension",
+	"unsupported extension feature",
+	"unsupported name constraint type",
+	"unsupported or invalid name constraint syntax",
+	"unsupported or invalid name syntax",
+	"using cert extension requires at least x509v3",
+];
+
+/**
+ * Whether TLS verification refused a certificate with `code`, whose message is `reason`: a code in
+ * `TLS_VERIFICATION_CODES`, or `UNSPECIFIED` with a reason in `UNSPECIFIED_CERTIFICATE_REASONS`.
+ * @param {string} code
+ * @param {string} reason
+ */
+export function isRefusedCertificate(code, reason) {
+	if (TLS_VERIFICATION_CODES.has(code)) return true;
+	if (code !== "UNSPECIFIED") return false;
+	const text = reason.toLowerCase();
+	return UNSPECIFIED_CERTIFICATE_REASONS.some((known) => text.startsWith(known));
+}
+
+/**
  * @typedef {{ readonly host: string, readonly port: number }} ProxyTarget
  * @typedef {{ readonly [name: string]: string | undefined }} ProxyEnvironment
  * @typedef {{
@@ -299,10 +387,15 @@ function reasonText(/** @type {string} */ text) {
 	return text.replace(/[^\x20-\x7e]/g, "").trim().slice(0, MAX_REASON_LENGTH);
 }
 
-/** The code of a TLS verification failure along `cause`, or undefined. */
+/**
+ * How a failure names the certificate TLS verification refused with `cause`, or undefined: its code, and for
+ * `UNSPECIFIED`, which says nothing on its own, the reason too.
+ */
 function tlsVerificationCode(/** @type {unknown} */ cause) {
-	const code = /** @type {{ code?: unknown }} */ (cause ?? {}).code;
-	return typeof code === "string" && TLS_VERIFICATION_CODES.has(code) ? code : undefined;
+	const { code, message } = /** @type {{ code?: unknown, message?: unknown }} */ (cause ?? {});
+	const reason = typeof message === "string" ? message.trim() : "";
+	if (typeof code !== "string" || !isRefusedCertificate(code, reason)) return undefined;
+	return code === "UNSPECIFIED" && reason !== "" ? `${code}: ${reason}` : code;
 }
 
 /**
@@ -373,10 +466,11 @@ export function openProxyTunnel(proxy, target, options = {}) {
 		});
 		socket.on("error", (/** @type {Error} */ cause) => {
 			const tls = tlsVerificationCode(cause);
+			// The proxy's certificate is checked against the CAs Node.js trusts, never the server's `sslrootcert` (#6112).
 			if (tls !== undefined)
 				return fail(
 					"proxy-unreachable",
-					`the proxy ${proxy.label} showed a TLS certificate that was not accepted (${tls}), so no tunnel to ${authority} was opened`,
+					`the proxy ${proxy.label} showed a TLS certificate that was not accepted (${tls}), so no tunnel to ${authority} was opened. The proxy's certificate is checked against the CAs Node.js trusts: if a private or corporate CA issued it, add that CA to NODE_EXTRA_CA_CERTS`,
 					true,
 					{ cause },
 				);

@@ -10,6 +10,8 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 	class BedrockRuntimeServiceException extends Error {}
 
 	class BedrockRuntimeClient {
+		middlewareStack = { add: () => {} };
+
 		send(): Promise<unknown> {
 			const events = bedrockMock.streamEvents;
 			if (!events) return Promise.reject(new Error("mock send"));

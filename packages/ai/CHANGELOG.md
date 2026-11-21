@@ -4,6 +4,21 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Added
+
+- `fittedThinkingBudget()` returns the thinking budget a budget-based Claude request asks for and the budget it sends once fitted under the context window. Amazon Bedrock replies now record `thinkingBudgetTokens`, as Anthropic replies do ([#6117](https://github.com/bastani-inc/atomic/issues/6117)).
+- `SystemMessage.strictToolsDisabled` records that the provider rejected the conversation's preferred strict tools for its strict-tool limits. Anthropic and Amazon Bedrock read it from the transcript before folding its system messages and send those tools without strict schemas, so a compaction that removes the replies recording the rejection can keep it ([#6119](https://github.com/bastani-inc/atomic/issues/6119)).
+- `jsonSchemasEqual()` compares two JSON Schemas as `declarationsEqual()` compares tool parameters ([#6130](https://github.com/bastani-inc/atomic/issues/6130)).
+- `findTlsCertificateRefusal()`, `getTlsCertificateRefusal()`, `isRefusedCertificate()`, `isTlsVerificationError()` and `recordTlsCertificateRefusal()` tell a request refused for its TLS certificate from other failures, from the failure's cause chain or a failed assistant message's `provider_tls_certificate_refused` diagnostic. `transportFetch()` and `transportFailure()` report a request's own connection failures, the only ones that count ([#6114](https://github.com/bastani-inc/atomic/issues/6114))
+
+### Fixed
+
+- Fixed a turn that adds 20 or more content blocks, such as many parallel tool calls and their results, missing the prompt cache on Anthropic, Amazon Bedrock and OpenAI-compatible Claude routes: Claude looks back only 20 positions from a breakpoint. The request now also puts a breakpoint where the previous request put its newest one. OAuth requests give up the identity block's breakpoint for it, and an Anthropic message thread keeps continuing across such a request ([#6103](https://github.com/bastani-inc/atomic/issues/6103)).
+- Fixed an Anthropic request with a `cacheBreakpoint` hint on tool results that later text joins, as a resumed session's prompt update and input do, putting the breakpoint after the joined text instead of after the tool results ([#6103](https://github.com/bastani-inc/atomic/issues/6103)).
+- Fixed fitting a budget-based Claude thinking budget under the context window counting a tool declared again unchanged, or a removed tool, as new input on requests that declare their tools at the top ([#6117](https://github.com/bastani-inc/atomic/issues/6117)).
+- `declarationsEqual()` and `getToolStateChanges()` treat the names in a schema's `required` list as a set, so a tool whose `required` names come back in another order is no longer declared again. Other arrays, such as `enum` values and tuple items, keep their order ([#6130](https://github.com/bastani-inc/atomic/issues/6130)).
+- A request refused for its endpoint's TLS certificate, such as a self-signed certificate or one from a corporate TLS-inspecting proxy without `NODE_EXTRA_CA_CERTS`, is no longer retried as a network error by the provider SDK retries, the OpenAI Codex SSE retries or `retryAssistantCall()`, and OpenAI Codex no longer falls back from WebSocket to SSE for it. The failed message now names the host, the code and the runtime's reason, and how to trust a private CA, instead of `Connection error.` or `fetch failed`, on every chat adapter. Only a refusal the request's own connection reports counts: a connection reset during the handshake, a response or stream error event whose body names a certificate code, and a failure of a hook such as `onPayload` are still retried as before ([#6114](https://github.com/bastani-inc/atomic/issues/6114))
+
 ## [0.10.2] - 2026-11-20
 
 ### Added
@@ -795,7 +810,6 @@ Copilot discovery now preserves readable model names alongside exact request IDs
 
 - Treat any HTTP 413 from a provider as request-size overflow, so a GitHub Copilot request over its byte-size limit (`413 ... failed to parse request`) now compacts and retries instead of surfacing a raw API error ([pi 73f8de80](https://github.com/earendil-works/pi/commit/73f8de80bc87021375f8b525292ac07492253002))
 
-
 ## [0.9.38] - 2026-10-18
 
 ### Breaking Changes
@@ -1572,7 +1586,6 @@ Cumulative release of the `0.9.18-alpha.5` through `0.9.18-alpha.7` prereleases.
 - Fixed the Amazon Bedrock forced-tool-choice guard running after the early returns in `convertToolConfig`, so a forced choice paired with an empty or absent tool list was discarded in silence instead of rejected. The validation now runs before both returns. `toolChoice: "none"` is unaffected, since `none` is never a forced choice.
 - Fixed Anthropic OAuth requests for Claude Fable 5.1 being rejected with a 400 `claude_code_version_too_old`. The OAuth path impersonates Claude Code, and Anthropic gates newer models on the `claude-cli/<version>` user agent alone; the pinned `2.1.75` predated Fable 5.1's floor, so every OAuth turn for that model failed with "version 2.1.251 or newer is required" regardless of the betas or other identity headers sent. The advertised version is now `2.1.251`, the exact published minimum the API accepts, bisected against the live endpoint rather than read off the error text. It is a strict capability superset of the old value: every Claude model this package ships answers normally at the new version. API-key requests are unaffected, since only the OAuth branch sends a Claude Code user agent.
 - Fixed a `fallback` content block corrupting the content indices that follow it when a response is replayed through the faux provider. The block was skipped without occupying its slot in the streamed `partial.content`, so every later block was addressed one position short: a `[text, fallback, text]` message aborted the stream with an error and lost its second text block, and a tool call after a fallback was announced at an index holding something else. The marker now occupies its slot and simply receives no stream event, matching how the real Anthropic path already records it, so `contentIndex` continues to address `partial.content` directly for consumers that index it.
-
 
 ## [0.9.16] - 2026-08-29
 

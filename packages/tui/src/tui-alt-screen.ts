@@ -608,6 +608,26 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return this.getSelectionBounds() !== undefined;
 	}
 
+	/**
+	 * Whether nothing on screen depends on where rows are now: no text selection or press to extend it, no press a
+	 * component took or a click still waiting to tell a single from a double click, no scrollbar drag and no search.
+	 * Content may move under the pointer only then.
+	 */
+	isPointerIdle(): boolean {
+		return (
+			this.selectionAnchor === undefined &&
+			this.selectionFocus === undefined &&
+			!this.selectionPressActive &&
+			this.mousePressTarget === undefined &&
+			this.mouseCapture === undefined &&
+			this.waitingSingleClicks.size === 0 &&
+			this.scrollbarDrag === undefined &&
+			this.activeSearch === undefined &&
+			this.pressedUrl === undefined &&
+			this.pressedHint === undefined
+		);
+	}
+
 	/** Copy the active fullscreen text selection, if any, using the configured selection clipboard path. */
 	async copyActiveSelectionToClipboard(): Promise<boolean> {
 		return this.copyActiveSelection();

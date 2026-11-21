@@ -27,6 +27,7 @@ import type {
 } from "./agent-session-types.js";
 import { formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
+import { joinCommandSend, joinCommandTurn, runCommandHandler } from "./command-deliveries.ts";
 import type { CustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import {
@@ -601,6 +602,10 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		}
 		const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
 		this._runSystemPromptOptions = result.systemPromptOptions;
+		if (this._resumeBudgetCheckpoint) {
+			await this._compactBeforeResumedPrompt(updateMessage, messages);
+			assertCurrent();
+		}
 		if (updateMessage) messages.unshift(updateMessage);
 	} catch (error) {
 		if (preparingRun) this._isPreparingRun = false;
@@ -635,7 +640,23 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	}
 }
 
-export async function _runAgentPrompt(
+export function _runAgentPrompt(
+	this: AgentSession,
+	messages: AgentMessage | AgentMessage[],
+	promptStarted?: () => void,
+	reportDispatch?: (disposition: PromptDisposition) => void,
+	prepared = false,
+	customStarter?: CustomMessage,
+	fallbackGeneration?: number,
+): Promise<void> {
+	// A turn an extension command's message starts outlives that message's delivery; print mode waits for it (#6113).
+	return joinCommandTurn(
+		this,
+		runAgentPrompt.call(this, messages, promptStarted, reportDispatch, prepared, customStarter, fallbackGeneration),
+	);
+}
+
+async function runAgentPrompt(
 	this: AgentSession,
 	messages: AgentMessage | AgentMessage[],
 	promptStarted?: () => void,
@@ -1158,7 +1179,7 @@ export async function _tryExecuteExtensionCommand(this: AgentSession, text: stri
 	try {
 		await runCallback(
 			{ kind: "extension.hook", name: `command:${commandName}`, sourcePath: command.sourceInfo.path },
-			() => command.handler(args, ctx),
+			() => runCommandHandler(this, () => command.handler(args, ctx)),
 		);
 		return true;
 	} catch (err) {
@@ -1383,7 +1404,19 @@ export async function followUp(
  * @param options.deliverAs Delivery mode when streaming: "steer" or "followUp"
  * @param options.expandPromptTemplates Whether to dispatch extension commands and expand skill commands and prompt templates. Default: false.
  */
-export async function sendUserMessage(
+export function sendUserMessage(
+	this: AgentSession,
+	content: string | (TextContent | ImageContent)[],
+	options?: {
+		deliverAs?: "steer" | "followUp";
+		expandPromptTemplates?: boolean;
+	},
+): Promise<void> {
+	// #6113: print mode waits for what an extension command sends before it prints and closes the session.
+	return joinCommandSend(this, () => sendUserMessageNow.call(this, content, options));
+}
+
+async function sendUserMessageNow(
 	this: AgentSession,
 	content: string | (TextContent | ImageContent)[],
 	options?: {

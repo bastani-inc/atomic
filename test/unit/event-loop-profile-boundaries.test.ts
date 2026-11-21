@@ -88,8 +88,11 @@ for (const runtime of RUNTIMES) {
 
 	test(`the profiler on ${runtime.name} keeps different render definitions in the same file distinct (#5544)`, () => {
 		const records = runChild(runtime, "names");
-		const block = records.find((record) => record.type === "block");
-		assert.ok(block?.type === "block");
+		// The fixture's stall is the block that sampled a render; a loaded child can stall in its own startup first.
+		const block = records.find(
+			(record) => record.type === "block" && record.hotFrames.some((entry) => entry.frame.startsWith("render ")),
+		);
+		assert.ok(block?.type === "block", JSON.stringify(records));
 		const renders = block.hotFrames.filter((entry) => entry.frame.startsWith("render "));
 		assert.equal(renders.length, 2, JSON.stringify(block));
 		assert.notEqual(renders[0]?.frame, renders[1]?.frame);

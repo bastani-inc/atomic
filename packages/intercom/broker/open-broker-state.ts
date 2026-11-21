@@ -21,7 +21,7 @@ import { openSqlEndedChildQueueStore } from "./sql-ended-child-queue-store.js";
 import { openSqlHeldSendStore } from "./sql-held-send-store.js";
 import { openSqlKnownSessionStore } from "./sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "./sql-lease-store.js";
-import { openSqlOutboxStore } from "./sql-outbox-store.js";
+import { openSqlOutboxStore, withoutFailedWake } from "./sql-outbox-store.js";
 import { openSqlPendingAskStore } from "./sql-pending-ask-store.js";
 import { openSqlReleasedAskStore } from "./sql-released-ask-store.js";
 import { openSqlRestoringReservationStore } from "./sql-restoring-reservation-store.js";
@@ -158,11 +158,12 @@ export async function openIntercomBrokerState(
 			sentMessages,
 			knownSessions,
 			reserveAndEnqueue(reservation, request) {
-				return database.transaction(async (tx) => {
+				// #5607: written again, without it, when only an offline recipient's wake-up hint failed.
+				return withoutFailedWake(request, (attempt) => database.transaction(async (tx) => {
 					const key = { messageId: reservation.messageId, digest: reservation.digest };
 					const earlier = await sentMessages.lookupIn(tx, key);
 					if (earlier.status === "conflict") return { status: "conflict", messageId: reservation.messageId } as const;
-					const enqueued = await outbox.enqueueIn(tx, request);
+					const enqueued = await outbox.enqueueIn(tx, attempt);
 					if (enqueued.status === "full") {
 						// Refused before anything was written, so the transaction has no commit to sync.
 						if (earlier.status === "match") await sentMessages.forgetIn(tx, key);
@@ -171,7 +172,7 @@ export async function openIntercomBrokerState(
 					// Its answer is not needed: the outbox's unique message id is the authority for a row it holds (spec §5.5).
 					await sentMessages.reserveIn(tx, reservation);
 					return enqueued;
-				});
+				}));
 			},
 			openEndedChildQueue(owner) {
 				return openSqlEndedChildQueueStore(options, owner);

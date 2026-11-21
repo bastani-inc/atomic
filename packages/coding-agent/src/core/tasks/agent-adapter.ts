@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { asyncScope } from "../async-scope.ts";
 import { TaskCleanupError, type TaskCleanupPhase } from "./cleanup-error.js";
 import type * as C from "./contracts.js";
 import { trackAdmittedAgentTask } from "./execution-scope.js";
@@ -33,7 +34,7 @@ interface RunnerHandoff {
 }
 
 // S1 converges repeated live-scope bindings on one owner, so dispatch context is shared too.
-const runners = new AsyncLocalStorage<RunnerHandoff>();
+const runners = asyncScope<RunnerHandoff>();
 
 /**
  * Runs a callback in the async context of this module's load, outside every session. An owner can outlive the
