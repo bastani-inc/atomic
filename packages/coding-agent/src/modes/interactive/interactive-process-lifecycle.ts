@@ -1,7 +1,13 @@
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
-import { gracefullyStoppedEnginePids, terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
+import { exitWithStatus } from "../../utils/process-exit-status.js";
+import { CONSOLE_CLOSED_EXIT_CODE, CONSOLE_CLOSED_SHUTDOWN_MS } from "../../utils/windows-console-close.js";
+import {
+	gracefullyStoppedEnginePids,
+	onEngineConsoleClosed,
+	terminateInteractiveEngine,
+} from "../interactive-engine/extension-ui-bridge.ts";
 import { ENGINE_SHUTDOWN_GRACE_MS } from "../rpc/rpc-client-process.js";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
 import {
@@ -31,21 +37,6 @@ const TERMINAL_LOST_EXIT_CODE = 129;
  * engine's grace period, then its guardian's and its tree kill's windows.
  */
 const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
-/**
- * Exit status once the Windows console is closed or the Windows session ends: STATUS_CONTROL_C_EXIT, which Windows
- * gives a console program it ends then.
- */
-const CONSOLE_CLOSED_EXIT_CODE = 0xc000013a;
-/**
- * How long Windows lets a process run after its console was closed before it ends the process itself, and how long it
- * waits for a program at the end of the session before it lists it as one keeping the user from signing out.
- */
-const CONSOLE_CLOSE_TIMEOUT_MS = 5_000;
-/**
- * Once the Windows console is closed or the session ends, the longest the session's shutdown may take: Atomic ends its
- * children and exits then, leaving the rest of Windows's timeout for its own exit.
- */
-const CONSOLE_CLOSED_SHUTDOWN_MS = CONSOLE_CLOSE_TIMEOUT_MS - 1_000;
 
 /** How an interactive host is ending, beyond whether it has started to shut down. */
 interface HostEnding {
@@ -84,11 +75,11 @@ function terminalLostExitCode(ending: HostEnding): number {
 }
 
 /**
- * The Windows console was closed, or the Windows session ended, `closedMsAgo` milliseconds ago. Windows reports a
- * closed console as SIGHUP, and nothing else, then ends the process {@link CONSOLE_CLOSE_TIMEOUT_MS} later; at the end
- * of the session it waits about as long for Atomic's window. The session shuts down as when its terminal is gone,
- * within a bound that ends before Windows's, counted from when Windows said so, and Atomic exits with the status
- * Windows gives a console program it ends then.
+ * The Windows console was closed, or the Windows session ended, `closedMsAgo` milliseconds ago: this host was told so
+ * (SIGHUP, or its hidden window at the end of the session), or its interactive engine, which hears of a closed console
+ * first, said so. The session shuts down as when its terminal is gone, within a bound that ends before Windows would
+ * end this process, counted from when Windows said so, and Atomic exits with the status Windows gives a console program
+ * it ends then.
  */
 function consoleClosed(mode: InteractiveModeBase, closedMsAgo = 0): void {
 	const ending = hostEnding(mode);
@@ -106,11 +97,9 @@ function listenForConsoleClose(mode: InteractiveModeBase): void {
 	if (process.platform !== "win32") return;
 	const handler = () => consoleClosed(mode);
 	process.prependListener("SIGHUP", handler);
-	const stopHearingSessionEnd = onWindowsSessionEnd((endedMsAgo) => consoleClosed(mode, endedMsAgo));
-	mode.signalCleanupHandlers.push(() => {
-		process.off("SIGHUP", handler);
-		stopHearingSessionEnd();
-	});
+	mode.signalCleanupHandlers.push(() => process.off("SIGHUP", handler));
+	mode.signalCleanupHandlers.push(onEngineConsoleClosed(mode.runtimeHost, handler));
+	mode.signalCleanupHandlers.push(onWindowsSessionEnd((endedMsAgo) => consoleClosed(mode, endedMsAgo)));
 }
 
 /**
@@ -229,7 +218,7 @@ InteractiveModeBase.prototype.shutdown = async function (
 			await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 			if (!ending.terminalLost) stopTerminal(this);
 		}
-		process.exit(ending.terminalLost ? terminalLostExitCode(ending) : 0);
+		exitWithStatus(ending.terminalLost ? terminalLostExitCode(ending) : 0);
 	}
 
 	// Drain any in-flight Kitty key release events briefly before stopping.
@@ -251,10 +240,10 @@ InteractiveModeBase.prototype.shutdown = async function (
 	}
 	await Promise.race([this.exitOutputWritten, ending.terminalLoss]);
 	await this.runtimeHost.dispose();
-	if (ending.terminalLost) process.exit(terminalLostExitCode(ending));
+	if (ending.terminalLost) exitWithStatus(terminalLostExitCode(ending));
 	const resumeCommand = await formatResumeCommand(this.sessionManager);
 	// The terminal can be lost while the hint is being looked up; then it is not written.
-	if (ending.terminalLost) process.exit(terminalLostExitCode(ending));
+	if (ending.terminalLost) exitWithStatus(terminalLostExitCode(ending));
 	if (resumeCommand) {
 		process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 	}
@@ -295,7 +284,8 @@ InteractiveModeBase.prototype.emergencyTerminalExit = function (this: Interactiv
 	killTrackedDetachedChildren();
 	killSupervisedProcessTrees();
 	// The terminal is gone. Do not run normal shutdown because TUI and
-	// extension cleanup can write restore sequences and re-trigger EIO.
+	// extension cleanup can write restore sequences and re-trigger EIO. The shutdown has not finished, so the
+	// runtime's own exit still runs, whatever part of the status it keeps.
 	process.exit(terminalLostExitCode(hostEnding(this)));
 };
 
