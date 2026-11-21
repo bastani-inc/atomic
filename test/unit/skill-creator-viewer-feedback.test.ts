@@ -1,21 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { runInNewContext } from "node:vm";
-import { parseHTML } from "linkedom";
 import { afterEach, describe, test } from "vitest";
-import { removeTempDirectory, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import { removeTempDirectory, type spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import { createScriptSandbox, python, type ScriptSandbox, skillCreatorDir } from "../helpers/skill-creator-scripts.js";
 import {
-	createScriptSandbox,
-	python,
-	readUntil,
-	type ScriptSandbox,
-	skillCreatorDir,
-} from "../helpers/skill-creator-scripts.js";
-
-// A Python start for the viewer; seconds under load.
-const VIEWER_START_MS = 15_000;
-const viewerScript = join(skillCreatorDir, "eval-viewer", "generate_review.py");
+	iteration,
+	openPage,
+	openServedPage,
+	savedReviews,
+	startViewer as startViewerFor,
+	viewerScript,
+} from "../helpers/skill-creator-viewer.js";
 
 const sandboxes: ScriptSandbox[] = [];
 const viewers: ReturnType<typeof spawnProcess>[] = [];
@@ -33,110 +29,8 @@ function sandbox(): ScriptSandbox {
 	return created;
 }
 
-interface Review {
-	readonly run_id: string;
-	readonly feedback: string;
-}
-
-/** An iteration folder with one run per eval, each with a text output, and optionally its saved feedback. */
-function iteration(box: ScriptSandbox, name: string, evals: readonly string[], feedback?: readonly Review[]): string {
-	const folder = join(box.dir, name);
-	for (const id of evals) {
-		const outputs = join(folder, id, "with_skill", "outputs");
-		mkdirSync(outputs, { recursive: true });
-		writeFileSync(join(outputs, "answer.txt"), `answer for ${id}`);
-	}
-	if (feedback !== undefined) {
-		writeFileSync(join(folder, "feedback.json"), JSON.stringify({ reviews: feedback, status: "in_progress" }));
-	}
-	return folder;
-}
-
-function savedReviews(folder: string): Review[] {
-	const data = JSON.parse(readFileSync(join(folder, "feedback.json"), "utf8")) as { reviews: Review[] };
-	return data.reviews.map(({ run_id, feedback }) => ({ run_id, feedback }));
-}
-
-/** Starts the viewer on a free port and returns its URL. */
-async function startViewer(box: ScriptSandbox, args: readonly string[]): Promise<string> {
-	const viewer = spawnProcess([python ?? "python3", viewerScript, ...args, "--port", "0"], {
-		cwd: box.dir,
-		env: box.env(),
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	viewers.push(viewer);
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		return await Promise.race([
-			readUntil(viewer.stdout, /URL:\s+(\S+)/u),
-			new Promise<never>((_resolve, reject) => {
-				timer = setTimeout(() => reject(new Error("the viewer did not print its URL")), VIEWER_START_MS);
-			}),
-		]);
-	} finally {
-		clearTimeout(timer);
-	}
-}
-
-/** The review page, run as a browser runs it, with its requests going to `server` (none for a static page). */
-function openPage(html: string, server?: string) {
-	const { window, document } = parseHTML(html);
-	const requests: Promise<unknown>[] = [];
-	// The feedback box's save waits 800 ms after typing; these tests save by moving to another run instead.
-	const context = {
-		window,
-		document,
-		console,
-		atob,
-		URL,
-		Blob,
-		globalThis: undefined as unknown,
-		setTimeout: () => 0,
-		clearTimeout: () => undefined,
-		fetch: (path: string, init?: RequestInit) => {
-			const request =
-				server === undefined
-					? Promise.reject(new TypeError("Failed to fetch"))
-					: fetch(new URL(path, server), init).then(async (response) => {
-							await response.arrayBuffer();
-							return response;
-						});
-			requests.push(request.catch(() => undefined));
-			return request;
-		},
-	};
-	context.globalThis = context;
-	for (const script of document.querySelectorAll("script")) {
-		if (!script.hasAttribute("src")) runInNewContext(script.textContent ?? "", context);
-	}
-	const textarea = () => document.getElementById("feedback") as unknown as { value: string };
-	return {
-		document,
-		context,
-		feedback: () => textarea().value,
-		previousFeedback: () => document.getElementById("prev-feedback-text")?.textContent ?? "",
-		type(text: string) {
-			textarea().value = text;
-			document.getElementById("feedback")?.dispatchEvent(new window.Event("input"));
-		},
-		/** An arrow key outside the feedback box: moves to the previous or next run, saving the current one. */
-		press(key: "ArrowLeft" | "ArrowRight") {
-			const event = new window.Event("keydown", { bubbles: true });
-			Object.defineProperty(event, "key", { value: key });
-			document.body.dispatchEvent(event);
-		},
-		async settled() {
-			for (let count = -1; count !== requests.length; ) {
-				count = requests.length;
-				await Promise.all(requests);
-			}
-		},
-	};
-}
-
-async function openServedPage(url: string) {
-	return openPage(await (await fetch(url)).text(), url);
+function startViewer(box: ScriptSandbox, args: readonly string[]): Promise<string> {
+	return startViewerFor(box, args, viewers);
 }
 
 describe.skipIf(python === undefined)("skill-creator review viewer feedback", () => {

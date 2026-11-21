@@ -5,7 +5,10 @@
  *
  * The build writes the stages (`scripts/write-startup-stages.mjs`) next to this build's modules, in `startup-stages/`:
  * loading them in order, then the session's entry modules, runs every module exactly once and in the order the runtime
- * runs them for the entry modules alone. None of them awaits at its top level in this build (the build checks it), so
+ * the build ran on runs them for the entry modules alone. `cli.js` imports its entry modules at the same time, and
+ * runtimes differ in which of their module graphs they run first (Node 22 does not run them in the order Node 24
+ * does): the stages run them in the build runtime's order everywhere, one of the orders the language lets any runtime
+ * run them in. None of them awaits at its top level in this build (the build checks it), so
  * each stage has run in full by the turn after it; a stage that has not (an installed package awaiting at its top level)
  * ends the stages there, so that nothing waits on a later stage.
  */
