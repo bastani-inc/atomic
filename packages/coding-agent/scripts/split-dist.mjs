@@ -130,7 +130,10 @@ const result = await build({
 
 // Each file is written whole before it takes its name. Shared files of earlier builds stay: a process started from
 // them may still load one. A fresh build, as a release's, has none.
-for (const file of result.outputFiles) {
+// Shared files first and the entries last, so an entry never names a shared file not written yet.
+const entryFiles = new Set(SPLIT_ENTRIES.flatMap((entry) => [join(dist, `${entry}.js`), join(dist, `${entry}.js.map`)]));
+const ordered = [...result.outputFiles].sort((a, b) => Number(entryFiles.has(a.path)) - Number(entryFiles.has(b.path)));
+for (const file of ordered) {
 	mkdirSync(dirname(file.path), { recursive: true });
 	writeFileSync(`${file.path}.split`, file.contents);
 	renameSync(`${file.path}.split`, file.path);
