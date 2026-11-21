@@ -243,11 +243,12 @@ describe.each(runtimes)("$name process lifetime", ({ name, command, available })
 			const { stdout } = await promisify(execFile)(command, [fixture, how], { timeout: 20000 });
 			const lines = stdout.trim().split(/\r?\n/);
 			expect(lines).toHaveLength(2);
-			const result = JSON.parse(lines[0]) as { type: string; kind: string; elapsedMs: number };
+			const result = JSON.parse(lines[0]) as { type: string; kind: string; elapsedMs: number; settledMs: number };
 			const exit = JSON.parse(lines[1]) as { type: string; elapsedMs: number };
 			expect(result).toMatchObject({ type: "result", kind: how === "timeout" ? "timeout" : "aborted" });
 			expect(exit.type).toBe("exit");
-			expect(result.elapsedMs).toBeLessThan(1000);
+			// Timed from the abort, the close or the end of the timeout: starting the worker before it is not part of it.
+			expect(result.settledMs).toBeLessThan(1000);
 			if (name === "Node") expect(exit.elapsedMs - result.elapsedMs).toBeLessThan(1000);
 		},
 		25000,
