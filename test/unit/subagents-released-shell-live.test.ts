@@ -213,7 +213,10 @@ test(
 		});
 		await dispatcher.whenIdle();
 
-		assert.deepEqual(released()?.heldMessages?.messages, ["build task finished"]);
+		assert.deepEqual(released()?.heldNotices, [
+			{ customType: "task_completion", content: "build task finished", details: { completionId: "done-1" } },
+		]);
+		assert.equal(released()?.heldMessages, undefined, "held as its notice, never as a message");
 		assert.deepEqual(
 			wakes.map((wake) => [wake.id, wake.kind]),
 			[["task-completion:done-1", "task-completion"]],

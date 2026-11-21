@@ -13,6 +13,7 @@ import {
 } from "@bastani/atomic";
 import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
 import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
+import { lateToolResultNoticeIds, legacyLateToolResultMessage } from "./late-tool-result-notice.js";
 import { SUBAGENT_OWNER_GENERATION } from "./owner-generation.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
 import { SUBAGENT_QUESTION_TOOLS } from "./released-child-questions.js";
@@ -305,13 +306,15 @@ function textOf(content: string | ReadonlyArray<{ readonly type: string; readonl
 
 /**
  * The ids of `results` the child's transcript already holds: recorded as their call's own result (one that is not
- * "still running"), or read as a late result's message. A run that saved them and then stopped, failed or lost its
- * owner before it reported them leaves them held; they are not delivered again (#5012).
+ * "still running"), or delivered as a late result, in the notice a woken child reads it in or as the message builds
+ * before that notice sent. A run that saved them and then stopped, failed or lost its owner before it reported them
+ * leaves them held; they are not delivered again (#5012).
  */
 export function savedToolResultIds(
 	sessionManager: Pick<SessionManager, "buildSessionProjection">,
 	results: readonly DetachedToolResult[],
 ): string[] {
+	if (results.length === 0) return [];
 	const messages = sessionManager.buildSessionProjection().messages;
 	const answered = new Set(
 		messages.flatMap((message) =>
@@ -320,32 +323,30 @@ export function savedToolResultIds(
 				: [],
 		),
 	);
+	const noticed = new Set(
+		messages.flatMap((message) => (message.role === "custom" ? lateToolResultNoticeIds(message) : [])),
+	);
 	const read = new Set(messages.flatMap((message) => (message.role === "user" ? [textOf(message.content)] : [])));
 	return results
-		.filter((result) => answered.has(result.toolCallId) || read.has(lateToolResultMessage(result)))
+		.filter(
+			(result) =>
+				answered.has(result.toolCallId) ||
+				noticed.has(result.toolCallId) ||
+				read.has(legacyLateToolResultMessage(result)),
+		)
 		.map((result) => result.toolCallId);
 }
 
-function resultText(result: DetachedToolResult): string {
-	const text = (result.result.content ?? [])
-		.map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
-		.join("\n")
-		.trim();
-	return text || "(no output)";
-}
-
-/** A result that arrived after its call was answered, delivered as a message. */
-export function lateToolResultMessage(result: DetachedToolResult): string {
-	return `The ${result.toolName} call ${result.toolCallId} that kept running in the background ${result.isError ? "failed" : "finished"}:\n${resultText(result)}`;
-}
-
-/** How a woken child continues: results recorded as its pending calls' results, then messages and its prompt. */
+/** How a woken child continues: results recorded as its pending calls' results, then its late results and prompt. */
 export interface ReleasedChildWakePlan {
 	/** Results for the calls its transcript ends on, including a still-running result for each call with none yet. */
 	readonly resumeToolResults: readonly DetachedToolResult[];
-	/** Results of calls answered already, delivered as messages before the prompt, in arrival order. */
-	readonly lateMessages: readonly string[];
-	/** The wake is only those results: the continued turn is the whole run. */
+	/**
+	 * Results of calls answered already, in arrival order: the child reads them in one notice delivered with its turn,
+	 * which starts that turn when nothing else does.
+	 */
+	readonly lateResults: readonly DetachedToolResult[];
+	/** Nothing but results woke it: the continued turn, or its late results' own turn, is the whole run. */
 	readonly skipPrompt: boolean;
 }
 
@@ -354,7 +355,7 @@ export interface ReleasedChildWakePlan {
  * pending call and nothing else woke the child, the turn simply continues. Otherwise every pending call is answered
  * first, a call still running with {@link SUBAGENT_STILL_RUNNING_RESULT} and one that died with an earlier owner
  * process with {@link SUBAGENT_INTERRUPTED_BY_RESTART_RESULT}, so the transcript never ends on a call without a result
- * before a new message.
+ * before a new message. A result whose call was answered already is late: it is read in a notice, never as a prompt.
  */
 export function planReleasedChildWake(
 	pending: ReadonlyMap<string, string>,
@@ -380,8 +381,8 @@ export function planReleasedChildWake(
 		});
 	return {
 		resumeToolResults: [...onTime, ...stillRunning],
-		lateMessages: late.map(lateToolResultMessage),
-		skipPrompt: !hasOtherInput && late.length === 0,
+		lateResults: late,
+		skipPrompt: !hasOtherInput,
 	};
 }
 
@@ -563,12 +564,13 @@ function completionIdOf(details: object): string {
 }
 
 /**
- * The route the completions of shell tasks a released child launched take to that child: each is held in its record
- * and wakes it, or waits for its resume when it is stopped. A child that runs again or has ended holds none: the route
- * refuses it, and the parent's task owner keeps it for the child's next run. The session that launched it never gets it.
+ * The route the completions of shell tasks a released child launched take to that child: each notice is held in its
+ * record and wakes it, or waits for its resume when it is stopped, and reaches it as the notice a running child gets,
+ * never as a message. A child that runs again or has ended holds none: the route refuses it, and the parent's task owner
+ * keeps it for the child's next run. The session that launched it never gets it.
  */
 export function releasedChildShellRoute(
-	holdMessages: NonNullable<SubagentChildRecordSink["holdMessages"]>,
+	holdNotices: NonNullable<SubagentChildRecordSink["holdNotices"]>,
 	ownerSessionId: string,
 	childId: string,
 	dispatcher: AgentWakeDispatcher,
@@ -576,7 +578,9 @@ export function releasedChildShellRoute(
 	return {
 		isOpen: () => true,
 		deliver: async (message) => {
-			const outcome = await holdMessages(childId, [message.content]);
+			const outcome = await holdNotices(childId, [
+				{ customType: message.customType, content: message.content, details: message.details },
+			]);
 			if (outcome === "not-held") throw new ReleasedChildError("completion-not-held", { ownerSessionId, childId });
 			if (outcome === "released")
 				outsideAnyTask(
@@ -595,13 +599,13 @@ export function releasedChildShellRoute(
  */
 export function routeReleasedChildShellCompletions(
 	released: Pick<SubagentReleased, "routeShellCompletions">,
-	holdMessages: NonNullable<SubagentChildRecordSink["holdMessages"]>,
+	holdNotices: NonNullable<SubagentChildRecordSink["holdNotices"]>,
 	ownerSessionId: string,
 	childId: string,
 	dispatcher: AgentWakeDispatcher,
 ): void {
 	try {
-		released.routeShellCompletions?.(releasedChildShellRoute(holdMessages, ownerSessionId, childId, dispatcher));
+		released.routeShellCompletions?.(releasedChildShellRoute(holdNotices, ownerSessionId, childId, dispatcher));
 	} catch (error) {
 		observeChildRecordFailure(
 			ownerSessionId,

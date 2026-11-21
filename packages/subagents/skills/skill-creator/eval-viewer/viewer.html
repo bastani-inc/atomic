@@ -649,28 +649,15 @@
     /*__EMBEDDED_DATA__*/
 
     // ---- State ----
-    let feedbackMap = {};  // run_id -> feedback text
+    // run_id -> feedback text. A served page starts from the feedback already saved for this workspace,
+    // so reopening or reloading it, or starting the viewer again, keeps that feedback, and the next save
+    // includes it. A static page starts empty.
+    let feedbackMap = { ...(EMBEDDED_DATA.saved_feedback || {}) };
     let currentIndex = 0;
     let visitedRuns = new Set();
 
     // ---- Init ----
-    async function init() {
-      // Load saved feedback from server — but only if this isn't a fresh
-      // iteration (indicated by previous_feedback being present). When
-      // previous feedback exists, the feedback.json on disk is stale from
-      // the prior iteration and should not pre-fill the textareas.
-      const hasPrevious = Object.keys(EMBEDDED_DATA.previous_feedback || {}).length > 0
-        || Object.keys(EMBEDDED_DATA.previous_outputs || {}).length > 0;
-      if (!hasPrevious) {
-        try {
-          const resp = await fetch("/api/feedback");
-          const data = await resp.json();
-          if (data.reviews) {
-            for (const r of data.reviews) feedbackMap[r.run_id] = r.feedback;
-          }
-        } catch { /* first run, no feedback yet */ }
-      }
-
+    function init() {
       document.getElementById("skill-name").textContent = EMBEDDED_DATA.skill_name;
       showRun(0);
 

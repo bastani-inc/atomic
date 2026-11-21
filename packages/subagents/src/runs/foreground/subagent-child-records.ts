@@ -3,13 +3,14 @@ import {
 	type DetachedToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
+	releaseSubagentSnapshotRefs,
 	type SessionEntry,
 	sliceHead,
 	type TaskElapsedSpan,
 	type WorktreeRootMapping,
 } from "@bastani/atomic";
 import type { AgentSource } from "../../agents/agent-types.js";
-import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
+import type { MaxOutputConfig, OutputMode, RunSyncOptions, SingleResult } from "../../shared/types.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
 import {
 	isReleasedChildError,
@@ -60,6 +61,11 @@ export interface SubagentChildHeldMessages {
 	 * prompt's text is delivered like any other. Absent in records written before, which may hold the wake prompt.
 	 */
 	readonly withoutWakePrompt?: true;
+	/**
+	 * No message is a copy of a late result: written since a woken child reads those in a notice, never as a message.
+	 * Absent in records written before, which may hold one (see `withoutLegacyLateMessages`).
+	 */
+	readonly withoutLateResults?: true;
 }
 
 /** The held messages a finished child attempt reports, in the form `recordChild` takes them. */
@@ -67,6 +73,7 @@ export interface SubagentChildPendingMessages {
 	readonly messages: readonly string[];
 	readonly taskExpands: boolean;
 	readonly withoutWakePrompt?: true;
+	readonly withoutLateResults?: true;
 }
 
 /**
@@ -87,6 +94,7 @@ export function pendingMessagesOfResult(result: {
 		messages: result.pendingMessages,
 		taskExpands: result.pendingTaskExpands === true,
 		withoutWakePrompt: true,
+		withoutLateResults: true,
 	};
 }
 
@@ -239,6 +247,12 @@ export interface SubagentChildRecord {
 	 * attempt), in arrival order. The next wake or resume delivers them once; empty after that.
 	 */
 	readonly heldToolResults?: readonly DetachedToolResult[];
+	/**
+	 * Notices of finished background tasks the child launched that reached it while it could not take them (released,
+	 * paused or quit), in arrival order. Its next run that saves them delivers each as the notice a running child gets,
+	 * never as a message; empty after that. Records written before Atomic kept them held their text as messages instead.
+	 */
+	readonly heldNotices?: readonly SubagentChildHeldNotice[];
 	readonly ownerGeneration?: string;
 	readonly wakeFailure?: SubagentChildWakeFailure;
 	/**
@@ -247,6 +261,13 @@ export interface SubagentChildRecord {
 	 * restored on another machine. Absent when the launch had none.
 	 */
 	readonly worktreeRootMappings?: readonly WorktreeRootMapping[];
+}
+
+/** A finished background task's notice, as its owner hands it to the child that launched the task. */
+export interface SubagentChildHeldNotice {
+	readonly customType: string;
+	readonly content: string;
+	readonly details: { readonly completionId: string; readonly [key: string]: unknown };
 }
 
 export interface SubagentChildWakeFailure {
@@ -401,9 +422,12 @@ export interface SubagentChildRecordSink {
 	flushed?(): Promise<void>;
 	/** Settles once the latest record this sink was given is appended: `false` when it could not be. */
 	saved?(): Promise<boolean>;
+	/** Whether a record of child `childId` reached the owner's session from another process since this one wrote. */
+	recordedElsewhere?(childId: string): Promise<boolean>;
 	clearHeldToolResults?(childId: string, toolCallIds: readonly string[]): Promise<void>;
-	/** Keep messages for a released or stopped child, for its next wake or resume; see {@link holdSubagentChildMessages}. */
-	holdMessages?(childId: string, messages: readonly string[]): Promise<HeldMessagesOutcome>;
+	/** Keep notices for a released or stopped child, for its next wake or resume; see {@link holdSubagentChildNotices}. */
+	holdNotices?(childId: string, notices: readonly SubagentChildHeldNotice[]): Promise<HeldMessagesOutcome>;
+	clearHeldNotices?(childId: string, completionIds: readonly string[]): Promise<void>;
 }
 
 /** Session recovery restores children that had not settled. */
@@ -602,9 +626,12 @@ export function createSubagentChildRecordSink(
 		},
 		flushed: () => appended.then(() => undefined),
 		saved: () => appended,
+		recordedElsewhere: (childId) => childRecordedElsewhere(ctx.sessionManager, childId),
 		clearHeldToolResults: (childId, toolCallIds) =>
 			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds),
-		holdMessages: (childId, messages) => holdSubagentChildMessages(pi, owner.sessionId, childId, messages),
+		holdNotices: (childId, notices) => holdSubagentChildNotices(pi, owner.sessionId, childId, notices),
+		clearHeldNotices: (childId, completionIds) =>
+			clearSubagentChildHeldNotices(pi, owner.sessionId, childId, completionIds),
 	};
 }
 
@@ -647,12 +674,72 @@ export async function holdSubagentChildMessages(
 					messages: [...messagesSent(held), ...messages],
 					taskExpands: held?.taskExpands ?? false,
 					withoutWakePrompt: true,
+					// Messages an earlier build held may include its copies of late results: they keep saying so.
+					...(held === undefined || held.withoutLateResults === true ? { withoutLateResults: true } : {}),
 				},
 			}),
 		);
 		outcome = kind;
 	});
 	return outcome;
+}
+
+/**
+ * Add `notices` after the ones a released or stopped child already holds, in the owner's append order, each once, so its
+ * next run delivers them as notices. A child that runs again or has ended holds none: the caller delivers them some other
+ * way.
+ */
+export async function holdSubagentChildNotices(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	notices: readonly SubagentChildHeldNotice[],
+): Promise<HeldMessagesOutcome> {
+	let outcome: HeldMessagesOutcome = "not-held";
+	await inOrder(ownerSessionId, async () => {
+		const reading = recordReadable(ownerSessionId, childId);
+		if (reading !== undefined) await reading;
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		if (latest?.state !== "terminal") return;
+		const kind =
+			latest.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS
+				? "released"
+				: STOPPED_STATUSES.has(latest.terminalStatus)
+					? "stopped"
+					: undefined;
+		if (kind === undefined) return;
+		const held = [...(latest.heldNotices ?? [])];
+		for (const notice of notices)
+			if (!held.some((kept) => kept.details.completionId === notice.details.completionId)) held.push(notice);
+		await appendObserved(pi, observeSubagentChildRecord({ ...latest, heldNotices: held }));
+		outcome = kind;
+	});
+	return outcome;
+}
+
+/** Stop holding the notices of `completionIds`: a run of the child saved them. */
+export async function clearSubagentChildHeldNotices(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	completionIds: readonly string[],
+): Promise<void> {
+	await inOrder(ownerSessionId, async () => {
+		const reading = recordReadable(ownerSessionId, childId);
+		if (reading !== undefined) await reading;
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		const held = latest?.heldNotices ?? [];
+		const kept = held.filter((notice) => !completionIds.includes(notice.details.completionId));
+		if (latest === undefined || kept.length === held.length) return;
+		await appendObserved(pi, observeSubagentChildRecord({ ...latest, heldNotices: kept }));
+	}).catch((error: Error) => {
+		observeChildRecordFailure(
+			ownerSessionId,
+			isReleasedChildError(error)
+				? error
+				: new ReleasedChildError("record-append-failed", { ownerSessionId, childId }, { cause: error }),
+		);
+	});
 }
 
 /**
@@ -975,4 +1062,47 @@ export function findSubagentChildRecord<T extends Pick<SubagentChildRecord, "tas
 /** Owners with appends in flight and stop requests not taken yet; both are empty when nothing is happening. */
 export function subagentChildRecordRegistrySizes(): { readonly appendChains: number; readonly stopRequests: number } {
 	return { appendChains: appendChains.size, stopRequests: stopRequests.size };
+}
+
+/**
+ * Once the record that a child's run ended for good (done, failed or killed, not released, paused, quit or left for its
+ * owner's restart) is saved, the refs its captures in this process wrote for its snapshot commits go, as a deleted
+ * session's do: it is no longer continued where it worked. A record that could not be saved keeps them.
+ */
+export async function releaseEndedChildRefs(
+	sink: Pick<SubagentChildRecordSink, "saved" | "recordedElsewhere"> | undefined,
+	childId: string,
+	childSessionId: string | undefined,
+	child: Pick<SingleResult, "status" | "released">,
+	stoppedByControl: boolean,
+): Promise<void> {
+	if (childSessionId === undefined || child.released !== undefined || stoppedByControl) return;
+	if (child.status !== "ok" && child.status !== "error" && child.status !== "killed") return;
+	await releaseSubagentSnapshotRefs(childSessionId, sink?.saved?.() ?? Promise.resolve(true), async () => {
+		const elsewhere = await sink?.recordedElsewhere?.(childId);
+		return elsewhere !== true;
+	});
+}
+
+/**
+ * Whether the owner's stored session holds a record of child `childId` past its last entry `owner` holds, as another
+ * process appends one when it runs the child. True when that cannot be read.
+ */
+async function childRecordedElsewhere(
+	owner: Pick<ExtensionContext["sessionManager"], "getSessionStore" | "getSessionId" | "getLastSeq">,
+	childId: string,
+): Promise<boolean> {
+	const store = owner.getSessionStore();
+	if (store.readRange === undefined) return false;
+	try {
+		const { entries } = await store.readRange(owner.getSessionId(), owner.getLastSeq() + 1, Number.MAX_SAFE_INTEGER);
+		return entries.some(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === SUBAGENT_CHILD_RECORD_TYPE &&
+				(entry.data as { readonly childId?: unknown } | undefined)?.childId === childId,
+		);
+	} catch {
+		return true;
+	}
 }

@@ -710,10 +710,13 @@ function continuationInput(session: AgentSession): AgentMessage[] {
 /**
  * Clear the context before the first request after a resume when what only the resume added (blueprint context,
  * recovery notices, the prompt `update` the resume brings) would otherwise lower the thinking budget the restored
- * history was sent with ({@link clearsForResumedBudget}). Runs once per resume, once the request's `input` and `update`
- * are final, through the automatic compaction, whose boundary covers the restored history only. What was added after
- * the session opened counts with the input: a session that kept running would have sent it too. Resolves whether it
- * cleared.
+ * history was sent with ({@link clearsForResumedBudget}). Runs once the request's `input` and `update` are final,
+ * through the automatic compaction, whose boundary covers the restored history only. What was added after the session
+ * opened counts with the input: a session that kept running would have sent it too. Resolves whether it cleared.
+ *
+ * The check runs again for a later run when no request followed this one (the run stopped before its request, or the
+ * request's provider setup failed): the first request the provider gets is checked with its own input. Only that
+ * request, or this clear, retires the checkpoint.
  */
 export async function _compactBeforeResumedPrompt(
 	this: AgentSession,
@@ -721,7 +724,6 @@ export async function _compactBeforeResumedPrompt(
 	input: readonly AgentMessage[],
 ): Promise<boolean> {
 	const checkpoint = this._resumeBudgetCheckpoint;
-	this._resumeBudgetCheckpoint = undefined;
 	const model = this.model;
 	if (!checkpoint || !model || !this.settingsManager.getCompactionSettings(model).enabled) return false;
 	if (
@@ -758,7 +760,10 @@ export async function _compactBeforeResumedPrompt(
 		cleared: [...(head ? [head] : []), boundary, ...added],
 	});
 	// The boundary covers the restored history only, so what the resume added stays in the context as it was.
-	return clears && (await this._runAutoCompaction("threshold", false, "recoverable", entryId)) === "compacted";
+	if (!clears || (await this._runAutoCompaction("threshold", false, "recoverable", entryId)) !== "compacted")
+		return false;
+	if (this._resumeBudgetCheckpoint === checkpoint) this._resumeBudgetCheckpoint = undefined;
+	return true;
 }
 
 /**
