@@ -708,6 +708,10 @@ export async function _compactBeforeResumedPrompt(
 		this._autoCompactionAbortController !== undefined
 	)
 		return false;
+	// A forced system prompt or an extension's `context` handler changes what the request sends from what the
+	// transcript holds, so the transcript cannot tell what the resume's additions cost.
+	const forced = this._runSystemPromptOptions?.forceSystemPrompt ?? this._baseSystemPromptOptions.forceSystemPrompt;
+	if (forced !== undefined || this._extensionRunner.hasHandlers("context")) return false;
 	const messages = this.agent.state.messages;
 	const at = messages.indexOf(checkpoint);
 	const entryId = at === -1 ? undefined : this._findPersistedMessageEntryId(checkpoint);
