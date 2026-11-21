@@ -6,7 +6,9 @@ import {
 	type EditorTheme,
 	isHintActivation,
 	isKeyRepeat,
+	type Keybinding,
 	type KeyId,
+	keyInputData,
 	matchesKey,
 	renderFakeCursor,
 	type TUI,
@@ -15,7 +17,7 @@ import {
 } from "@bastani/atomic-tui";
 import { keybindingIdentity } from "../../../core/keybinding-identity.js";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
-import { isPhysicalEscape } from "../interactive-key-identity.ts";
+import { isPhysicalCtrlC, isPhysicalEscape } from "../interactive-key-identity.ts";
 import { theme } from "../theme/theme.js";
 import type { AtomicWorkingLoader } from "./atomic-working-status.ts";
 import { renderComposerRule, sanitizeRuleLabel } from "./composer-rule.ts";
@@ -106,6 +108,39 @@ const BORDER_LINE_PATTERN = /^[─ ↑↓0-9more]+$/;
 /** Exact Empty Bracketed Paste sequence from the terminal (image-only macOS Cmd+V). */
 const EMPTY_BRACKETED_PASTE = "\x1b[200~\x1b[201~";
 
+/**
+ * Actions that take their keys before the back key (`app.nav.back`) reaches the prompt: its own Esc, exit, help, paste
+ * and history keys, and the keys the screen takes from an empty prompt (Ctrl+C, the agent panel, the background-work
+ * chord, a waited shell). A back key bound to one of them stays theirs.
+ */
+const KEYS_TAKEN_BEFORE_BACK: readonly Keybinding[] = [
+	"app.interrupt",
+	"app.clear",
+	"app.exit",
+	"app.keys.help",
+	"app.clipboard.pasteImage",
+	"app.agents.focus",
+	"app.agents.chord",
+	"app.tasks.openWaited",
+	"tui.editor.historyPrevious",
+	"tui.editor.historyNext",
+];
+/**
+ * Runs the extension shortcut a key press is bound to, answering whether there was one. `takes` answers the same
+ * without running it, so a hint never names a key an extension takes.
+ */
+export type ExtensionShortcutHandler = ((data: string) => boolean) & { readonly takes?: (data: string) => boolean };
+
+/** What the prompt holds when the back key arrives. */
+export interface NavBackInput {
+	/** Nothing typed (whitespace, a newline or a paste is text) and no completion menu. */
+	readonly promptEmpty: boolean;
+	/** A click on the key's hint pressed it. */
+	readonly clicked: boolean;
+	/** Whether the key is one of the prompt's {@link CustomEditor.navBackKeys}; asked only when it would go back. */
+	isBackKey(): boolean;
+}
+
 function isMacosNativeImagePasteSignal(data: string): boolean {
 	if (process.platform !== "darwin") {
 		return false;
@@ -132,7 +167,12 @@ export class CustomEditor extends Editor {
 	public onCtrlD?: () => void;
 	public onPasteImage?: () => void;
 	/** Handler for extension-registered shortcuts. Returns true if handled. */
-	public onExtensionShortcut?: (data: string) => boolean;
+	public onExtensionShortcut?: ExtensionShortcutHandler;
+	/**
+	 * A back key (`app.nav.back`) that nothing before it took, set while there is somewhere to go back to: answers
+	 * whether it went back. When it did not, the key moves the cursor as usual.
+	 */
+	public onNavBack?: (input: NavBackInput) => boolean;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: CustomEditorOptions) {
 		const editorTheme = { ...theme };
@@ -343,6 +383,35 @@ export class CustomEditor extends Editor {
 	}
 
 	/**
+	 * The keys of `app.nav.back` that go back. Each is judged by what it sends, which is also what a click on its hint
+	 * presses: never Esc or Ctrl+C (`ctrl+[` sends Esc), and nothing an extension shortcut or an action handled before
+	 * the back key takes. A hint that names the back key names these.
+	 */
+	navBackKeys(): KeyId[] {
+		const taken = [...KEYS_TAKEN_BEFORE_BACK, ...this.actionHandlers.keys()];
+		return this.keybindings.getKeys("app.nav.back").filter((key) => {
+			const data = keyInputData(key);
+			return (
+				data !== undefined &&
+				!isPhysicalEscape(data) &&
+				!isPhysicalCtrlC(data) &&
+				!taken.some((action) => this.keybindings.matches(data, action)) &&
+				this.onExtensionShortcut?.takes?.(data) !== true
+			);
+		});
+	}
+
+	/** Whether `data` is one of {@link navBackKeys}. */
+	isNavBackKey(data: string): boolean {
+		return this.navBackKeys().some((key) => matchesKey(data, key));
+	}
+
+	/** Whether a typed back key goes back now: the prompt holds nothing and shows no completion menu. */
+	navBackEmpty(): boolean {
+		return this.getText().length === 0 && !this.isShowingAutocomplete();
+	}
+
+	/**
 	 * Buffer captured immediately before the base editor consumed an input event.
 	 *
 	 * pi-tui's `submitValue()` expands paste markers, trims, and clears the editor
@@ -449,6 +518,19 @@ export class CustomEditor extends Editor {
 				handler();
 				return true;
 			}
+		}
+
+		// The back key goes back from an empty prompt, or from a click on its hint; otherwise it moves the cursor.
+		if (
+			this.onNavBack &&
+			this.keybindings.matches(data, "app.nav.back") &&
+			this.onNavBack({
+				promptEmpty: this.navBackEmpty(),
+				clicked: isHintActivation(),
+				isBackKey: () => this.isNavBackKey(data),
+			})
+		) {
+			return true;
 		}
 
 		// Snapshot the live buffer for the same synchronous dispatch that may submit

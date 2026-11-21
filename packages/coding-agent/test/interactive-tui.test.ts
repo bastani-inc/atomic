@@ -702,6 +702,7 @@ type WorkingLoaderStopContext = {
 	setEditorWorkingStatusIndicator(indicator: undefined): boolean;
 	statusContainer: Container;
 	settingsManager: { getClearOnShrink(): boolean };
+	ui: { requestRender(): void };
 };
 type WorkingLoaderPrototype = {
 	clearWorkingLoader(this: WorkingLoaderStopContext): void;
@@ -717,12 +718,14 @@ describe("clear-on-shrink working status spacing", () => {
 	test("an embedded working indicator does not reserve standalone status height", () => {
 		const stop = vi.fn();
 		const clearEditorIndicator = vi.fn(() => true);
+		const requestRender = vi.fn();
 		const context: WorkingLoaderStopContext = {
 			loadingAnimation: { stop },
 			workingIndicatorEmbedded: true,
 			setEditorWorkingStatusIndicator: clearEditorIndicator,
 			statusContainer: new Container(),
 			settingsManager: { getClearOnShrink: () => true },
+			ui: { requestRender },
 		};
 
 		workingLoaderPrototype.stopWorkingLoader.call(context);
@@ -730,6 +733,8 @@ describe("clear-on-shrink working status spacing", () => {
 		expect(stop).toHaveBeenCalledOnce();
 		expect(clearEditorIndicator).toHaveBeenCalledWith(undefined);
 		expect(context.statusContainer.children).toHaveLength(0);
+		// The status leaves the prompt's border in a frame of its own (#6134).
+		expect(requestRender).toHaveBeenCalledOnce();
 	});
 
 	test("the new-session teardown clears an embedded indicator from the editor border", async () => {
@@ -740,6 +745,7 @@ describe("clear-on-shrink working status spacing", () => {
 		editor.setWorkingStatusIndicator(loader);
 		assert.match(editor.render(40)[0] ?? "", /∀/);
 
+		const requestRender = vi.fn();
 		const context = {
 			ensureDeferredStartupComplete: async () => {},
 			loadingAnimation: loader,
@@ -750,25 +756,31 @@ describe("clear-on-shrink working status spacing", () => {
 			},
 			statusContainer: new Container(),
 			runtimeHost: { newSession: async () => ({ cancelled: true }) },
+			ui: { requestRender },
 		};
 
 		await workingLoaderPrototype.handleClearCommand.call(context as unknown as Record<string, unknown>);
 
 		assert.doesNotMatch(editor.render(40)[0] ?? "", /∀/);
 		assert.equal(context.loadingAnimation, undefined);
+		assert.equal(requestRender.mock.calls.length, 1, "the border is drawn again without the status (#6134)");
 	});
 
 	test("a standalone working indicator reserves clear-on-shrink status height", () => {
+		const requestRender = vi.fn();
 		const context: WorkingLoaderStopContext = {
 			loadingAnimation: { stop: vi.fn() },
 			workingIndicatorEmbedded: false,
 			setEditorWorkingStatusIndicator: vi.fn(() => false),
 			statusContainer: new Container(),
 			settingsManager: { getClearOnShrink: () => true },
+			ui: { requestRender },
 		};
 
 		workingLoaderPrototype.stopWorkingLoader.call(context);
 		expect(context.statusContainer.children).toHaveLength(1);
+		// The working row's place is drawn again, as the idle status, in a frame of its own (#6134).
+		expect(requestRender).toHaveBeenCalledOnce();
 	});
 
 	test("switching to a non-opting custom editor remounts an active loader as a standalone row", () => {

@@ -83,6 +83,8 @@ export interface VerbatimCompactionApplyOptions {
 	reason: "manual" | "threshold" | "overflow";
 	/** Reports when a session_before_compact override becomes the active compaction source. */
 	onCompactionSource?: (fromExtension: boolean) => void;
+	/** Last entry the boundary covers; the entries after it stay in the context as they are. Default: all of them. */
+	coveredThroughEntryId?: string;
 }
 
 /**
@@ -353,6 +355,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_maybeGenerateSessionSummary(): Promise<void>;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
 	_compactBeforeContinuation(): Promise<boolean>;
+	_compactBeforeResumedPrompt(update: AgentMessage | undefined, input: readonly AgentMessage[]): Promise<boolean>;
 	_continueAgentAfterCompactionCheck(): Promise<void>;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): Promise<void>;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
@@ -363,6 +366,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		reason: "overflow" | "threshold",
 		willRetry: boolean,
 		urgency?: AutoCompactionUrgency,
+		coveredThroughEntryId?: string,
 	): Promise<AutoCompactionRunOutcome>;
 	_preflightPostToolContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]>;
 	_finishPostToolCompactionPreflight(messages: AgentMessage[]): AgentMessage[];
@@ -743,6 +747,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_transformedPromptHead?: import("./transformed-system-prompt.ts").TransformedPrompt;
 	_contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	_requestContextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
+	/** The restored history's last message until the first request after a resume; see `_compactBeforeResumedPrompt`. */
+	_resumeBudgetCheckpoint?: AgentMessage;
 	_runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;

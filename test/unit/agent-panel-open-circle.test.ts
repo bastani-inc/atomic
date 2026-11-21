@@ -279,11 +279,11 @@ test("the /tasks list and a chat's task rows draw the panel's marks for running,
 		done: { glyph: "●", color: "success" },
 		stopped: { glyph: "◯", color: "error" },
 		input: { glyph: "◆", color: "warning" },
-		queued: { glyph: "○", color: "muted" },
+		queued: { glyph: "○", color: "dim" },
 		stopping: { glyph: "◼", color: "warning" },
 		waiting: { glyph: "◌", color: "dim" },
 		failed: { glyph: "✗", color: "error" },
-		paused: { glyph: "‖", color: "muted" },
+		paused: { glyph: "‖", color: "warning" },
 	};
 	for (const [state, mark] of Object.entries(board) as [TaskBoardState, { glyph: string; color: string }][]) {
 		assert.deepEqual(stateGlyph(state, "agent"), mark, state);
@@ -314,9 +314,10 @@ test("the /tasks list and a chat's task rows draw the panel's marks for running,
 		[running, "Running", "◯", "muted"],
 		[settled("done", { kind: "completed", output: running.output }), "Completed", "●", "success"],
 		[settled("shell", { kind: "cancelled", cause: "user" }, "command"), "Stopped", "◯", "error"],
-		// A row's own states keep their marks: a subagent stopped for good, or awaiting resume.
-		[settled("killed", { kind: "cancelled", cause: "user" }), "Killed (non-resumable)", "■", "warning"],
-		[settled("quit", { kind: "cancelled", cause: "quit" }), "Paused · awaiting resume", "‖", "warning"],
+		// A row's own words, with the mark /tasks shows: a subagent stopped for good, or until it is resumed.
+		[settled("killed", { kind: "cancelled", cause: "user" }), "Killed (non-resumable)", "◯", "error"],
+		[settled("quit", { kind: "cancelled", cause: "quit" }), "Paused · awaiting resume", "◯", "error"],
+		[taskRecord("shell", "command"), "Running", "⧗", "accent"],
 	];
 	for (const [task, label, glyph, color] of cases) {
 		assert.deepEqual(taskStatusAppearance(task), { label, icon: glyph, color });

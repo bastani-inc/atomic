@@ -3,6 +3,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
+import {
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	stillRuns,
+	waitUntilGone,
+} from "../../../../../test/helpers/recorded-process.js";
 import type { OperationId, Result } from "../../../src/core/tasks/contracts.ts";
 import { TaskSupervisor } from "../../../src/core/tasks/supervisor.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
@@ -25,14 +32,6 @@ const directories: string[] = [];
 function value<T, E>(result: Result<T, E>): T {
 	assert.equal(result.ok, true, result.ok ? "accepted" : JSON.stringify(result.error));
 	return result.value;
-}
-function alive(pid: number) {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
 }
 async function waitFor(predicate: () => boolean, ms: number) {
 	const deadline = Date.now() + ms;
@@ -67,7 +66,8 @@ test.runIf(process.platform !== "win32").each<FatalExit>(["uncaughtCrash", "emer
 			},
 		});
 		const owner = value(supervisor.openTaskOwner(host, scope));
-		let descendant = 0;
+		// #6125: recorded while it runs, so neither the assertion nor the cleanup takes a later process for it.
+		let descendant: RecordedProcess | undefined;
 		try {
 			value(
 				await supervisor.startCommandTask(
@@ -81,8 +81,8 @@ test.runIf(process.platform !== "win32").each<FatalExit>(["uncaughtCrash", "emer
 				),
 			);
 			assert.ok(await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "", 10_000));
-			descendant = Number(readFileSync(pidFile, "utf8").trim());
-			assert.ok(alive(descendant));
+			descendant = await recordProcess(Number(readFileSync(pidFile, "utf8").trim()));
+			assert.equal(await stillRuns(descendant), true);
 
 			const exit = vi.spyOn(process, "exit").mockImplementation((() => {
 				throw new ProcessExitError();
@@ -98,10 +98,10 @@ test.runIf(process.platform !== "win32").each<FatalExit>(["uncaughtCrash", "emer
 			assert.throws(() => prototype[path].call(context, new Error("crash")), ProcessExitError);
 			assert.equal(exit.mock.calls.length, 1);
 			// SIGKILL went out before exit: well inside the default TERM grace an owner close would wait for.
-			assert.ok(await waitFor(() => !alive(descendant), 1000), "the descendant outlived the fatal exit");
+			assert.ok(await waitUntilGone(descendant, 1000), "the descendant outlived the fatal exit");
 		} finally {
 			vi.restoreAllMocks();
-			if (descendant && alive(descendant)) process.kill(descendant, "SIGKILL");
+			if (descendant !== undefined) await signalRecordedProcess(descendant);
 			await supervisor.closeTaskOwner(owner, "session-close");
 		}
 	},

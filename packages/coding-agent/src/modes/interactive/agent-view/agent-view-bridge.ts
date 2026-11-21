@@ -20,6 +20,11 @@ export interface AgentViewRequestOptions {
 	 * is shown or cannot be, so the main chat's prompt is never painted in between.
 	 */
 	readonly keepScreen?: boolean;
+	/**
+	 * With `keepScreen`: what asked for it hid the agent panel and shows it again as it closes, in another process. The
+	 * subagent is shown once that panel can draw too, so the screen never shows it without the panel's rows.
+	 */
+	readonly panel?: boolean;
 }
 
 const bridges = new WeakMap<object, AgentViewBridge>();

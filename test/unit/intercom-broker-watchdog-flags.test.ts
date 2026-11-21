@@ -24,7 +24,8 @@ const WATCHDOG_MODULE = JSON.stringify(
 	pathToFileURL(join(moduleDir(import.meta.url), "../../packages/intercom/broker/watchdog.ts")).href,
 );
 
-test("the broker watchdog probes from a process started with --input-type=module and runs its preload once (#6079)", () => {
+/** Runs a broker stand-in with the watchdog in a Node child started with `flags` and `env`; returns the preload's runs. */
+function probeWatchdog(flags: readonly string[], env: Record<string, string> = {}): string {
 	const dir = makeTempDirectory("ic-watchdog-flags-");
 	const preloadLog = join(dir, "preload.log");
 	const socketPath =
@@ -32,6 +33,10 @@ test("the broker watchdog probes from a process started with --input-type=module
 			? `\\\\.\\pipe\\atomic-watchdog-flags-${process.pid}-${Date.now()}`
 			: join(dir, "b.sock");
 	try {
+		// The child ends itself 15 s after starting if no probe comes. The bound ends one that would never end (its
+		// script never reached), so that the test fails instead of stalling the run, and leaves room for a loaded machine.
+		// A child ended for running past it throws ETIMEDOUT here.
+		const CHILD_TIMEOUT_MS = 60_000;
 		// A broker stand-in: the watchdog's first health request (a 4-byte length, then JSON) shows its thread is running.
 		const result = spawnSyncCollect(
 			[
@@ -40,7 +45,7 @@ test("the broker watchdog probes from a process started with --input-type=module
 				dataUrl(COUNTING_PRELOAD),
 				"--import",
 				dataUrl(RESOLVE_TS_SOURCES),
-				"--input-type=module",
+				...flags,
 				"--eval",
 				`import { startBrokerWatchdog } from ${WATCHDOG_MODULE};
 				import { createServer } from "node:net";
@@ -66,14 +71,28 @@ test("the broker watchdog probes from a process started with --input-type=module
 					ATOMIC_TEST_PRELOAD_LOG: preloadLog,
 					WATCHDOG_SOCKET: socketPath,
 					WATCHDOG_LOG: join(dir, "watchdog.log"),
+					...env,
 				},
+				timeout: CHILD_TIMEOUT_MS,
 			},
 		);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
 		assert.equal(result.stdout.toString(), '"health"');
 		assert.ok(fileExistsSync(preloadLog));
-		assert.equal(readTextSync(preloadLog, "utf8"), "ran\n", "the preload ran again for the watchdog thread");
+		return readTextSync(preloadLog, "utf8");
 	} finally {
 		removeTempDirectory(dir);
 	}
+}
+
+test("the broker watchdog probes from a process started with --input-type=module and runs its preload once (#6079)", () => {
+	assert.equal(probeWatchdog(["--input-type=module"]), "ran\n", "the preload ran again for the watchdog thread");
+});
+
+test("the broker watchdog probes in a process whose NODE_OPTIONS holds --input-type=module (#6110)", () => {
+	assert.equal(
+		probeWatchdog([], { NODE_OPTIONS: "--input-type=module" }),
+		"ran\n",
+		"the preload ran again for the watchdog thread",
+	);
 });

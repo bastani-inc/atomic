@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, test } from "vitest";
+import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { sleep } from "../helpers/runtime.ts";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -13,7 +14,6 @@ const previousLegacyAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 delete process.env.PI_CODING_AGENT_DIR;
 
-const { getBrokerPidPath } = await import("../../packages/intercom/broker/paths.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
 const { SUBAGENT_AWAIT_INTERCOM_PEER_EVENT } = await import("../../packages/intercom/session-recovery.js");
@@ -142,18 +142,17 @@ async function waitForName(name: string): Promise<void> {
 	throw new Error(`${name} never registered with the broker`);
 }
 
-afterAll(() => {
+afterAll(async () => {
 	try {
-		const pid = Number.parseInt(readFileSync(getBrokerPidPath(agentDir), "utf8").trim(), 10);
-		if (Number.isFinite(pid) && pid > 0) process.kill(pid, "SIGKILL");
-	} catch {
-		// No broker was spawned, or it already exited.
+		// #6125: only the broker that answers in this agent dir, and only while its pid still names it.
+		await stopDetachedBroker(agentDir);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+		if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
+		removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 	}
-	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
-	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-	removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 });
 
 test(

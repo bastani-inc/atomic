@@ -20,8 +20,10 @@ import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AgentViewSwitcher } from "./agent-view/agent-view-switcher.ts";
+import { VIEWED_AGENT_BACK_LABEL, viewedAgentBackKeys } from "./agent-view/viewed-keys.ts";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import { type AtomicWorkingLoader, DEFAULT_WORKING_MESSAGE } from "./components/atomic-working-status.ts";
+import type { ExtensionShortcutHandler } from "./components/custom-editor.ts";
 import { mainComposerFooterHints } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { PromptSlot } from "./components/prompt-slot.ts";
@@ -343,7 +345,7 @@ export class InteractiveModeBase {
 
 	reloadCoordinator: KeybindingsReloadCoordinator;
 
-	interactiveEngineShortcutHandler: ((data: string) => boolean) | undefined;
+	interactiveEngineShortcutHandler: ExtensionShortcutHandler | undefined;
 
 	disposeInteractiveEngineHost: () => void = () => {};
 	disposeMarkitDiagnosticSink: () => void = () => {};
@@ -812,7 +814,15 @@ export class InteractiveModeBase {
 			undefined,
 			() => this.navigationInlineCustomUiDepth > 0,
 			undefined,
-			() => mainComposerFooterHints(this.keybindings),
+			() => {
+				// While a subagent is shown, `← main chat` leads the hints whenever ← would go there.
+				const back = viewedAgentBackKeys(this);
+				return mainComposerFooterHints(
+					this.keybindings,
+					undefined,
+					back === undefined ? undefined : { keys: back, label: VIEWED_AGENT_BACK_LABEL },
+				);
+			},
 		);
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);

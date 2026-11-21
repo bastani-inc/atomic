@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { test } from "vitest";
 import type { CommandIntent, OperationId, Result } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { type TaskLease, TaskSupervisor } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { isGone, type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import { fileExists, readText, sleep } from "../helpers/runtime.js";
 
 const posix = process.platform !== "win32";
@@ -49,14 +50,6 @@ function setup() {
 	});
 	return { supervisor, owner: value(supervisor.openTaskOwner(host, scope)) };
 }
-function alive(pid: number) {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
 async function pidFrom(path: string, deadlineMs = 10_000): Promise<number> {
 	const deadline = Date.now() + deadlineMs;
 	while (!(await fileExists(path)) || (await readText(path)).trim() === "") {
@@ -93,7 +86,9 @@ test.runIf(posix).each(cases)(
 		const directory = await mkdtemp(join(tmpdir(), "task-tree-5057-"));
 		const pidFile = join(directory, "pid");
 		const { supervisor, owner } = setup();
-		let descendant = 0;
+		// #6125: recorded while it runs, so neither the assertions nor the cleanup take a later process given its pid
+		// for it.
+		let descendant: RecordedProcess | undefined;
 		try {
 			const intent: CommandIntent = {
 				kind: "command",
@@ -102,8 +97,8 @@ test.runIf(posix).each(cases)(
 				...(end === "execution-timeout" ? { executionTimeoutMs: 1500 } : {}),
 			};
 			const task = value(await supervisor.startCommandTask(owner, intent, "tree" as OperationId));
-			descendant = await pidFrom(pidFile);
-			assert.ok(alive(descendant));
+			descendant = await recordProcess(await pidFrom(pidFile));
+			assert.equal(await isGone(descendant), false);
 			let cleanup: string;
 			if (end === "owner-close") {
 				cleanup = value(await supervisor.closeTaskOwner(owner, "session-close")).tasks[0].cleanup.kind;
@@ -120,9 +115,9 @@ test.runIf(posix).each(cases)(
 				cleanup = await finalCleanup(supervisor, task);
 			}
 			assert.equal(cleanup, "reaped");
-			assert.equal(alive(descendant), false, "cleanup reported reaped while the descendant lives");
+			assert.equal(await isGone(descendant), true, "cleanup reported reaped while the descendant lives");
 		} finally {
-			if (descendant && alive(descendant)) process.kill(descendant, "SIGKILL");
+			if (descendant !== undefined) await signalRecordedProcess(descendant);
 			await supervisor.closeTaskOwner(owner, "session-close");
 			await rm(directory, { recursive: true, force: true });
 		}
@@ -136,7 +131,8 @@ test.runIf(posix)(
 		const directory = await mkdtemp(join(tmpdir(), "task-tree-pty-5057-"));
 		const pidFile = join(directory, "pid");
 		const { supervisor, owner } = setup();
-		let descendant = 0;
+		// #6125: recorded while it runs, so neither the assertion nor the cleanup takes a later process for it.
+		let descendant: RecordedProcess | undefined;
 		try {
 			const task = value(
 				await supervisor.startCommandTask(
@@ -150,13 +146,13 @@ test.runIf(posix)(
 					"pty-tree" as OperationId,
 				),
 			);
-			descendant = await pidFrom(pidFile);
+			descendant = await recordProcess(await pidFrom(pidFile));
 			const settled = value(await supervisor.waitForTask(task, 20_000));
 			assert.equal(settled.kind, "settled");
 			assert.equal(await finalCleanup(supervisor, task), "reaped");
-			assert.equal(alive(descendant), false, "cleanup reported reaped while the descendant lives");
+			assert.equal(await isGone(descendant), true, "cleanup reported reaped while the descendant lives");
 		} finally {
-			if (descendant && alive(descendant)) process.kill(descendant, "SIGKILL");
+			if (descendant !== undefined) await signalRecordedProcess(descendant);
 			await supervisor.closeTaskOwner(owner, "session-close");
 			await rm(directory, { recursive: true, force: true });
 		}
@@ -183,10 +179,19 @@ test.runIf(posix).each(hostDeaths)(
 			stdio: "ignore",
 		});
 		const exited = new Promise<void>((done) => host.once("exit", () => done()));
-		const pids: number[] = [];
+		// #6125: recorded while they run, so neither the assertion nor the cleanup takes a later process for one of them.
+		const processes: RecordedProcess[] = [];
+		const running = async () => {
+			const left: number[] = [];
+			for (const recorded of processes) if (!(await isGone(recorded))) left.push(recorded.pid);
+			return left;
+		};
 		try {
 			const ready = await pidFrom(join(directory, "ready"), 15_000);
-			pids.push(await pidFrom(join(directory, "shell")), await pidFrom(join(directory, "inner")));
+			processes.push(
+				await recordProcess(await pidFrom(join(directory, "shell"))),
+				await recordProcess(await pidFrom(join(directory, "inner"))),
+			);
 			if (how === "guardian-first") {
 				// A command that kills every `sh` it can, as `pkill sh` would, takes the guardian down first.
 				const [guardian] = guardianOf(host.pid ?? 0);
@@ -204,11 +209,11 @@ test.runIf(posix).each(hostDeaths)(
 			await exited;
 			// The command was started with a 2 s execution timeout before `ready`; allow a second for the kernel.
 			const deadline = ready + 3000;
-			while (pids.some(alive) && Date.now() < deadline) await sleep(20);
-			assert.deepEqual(pids.filter(alive), [], "processes outlived the host and their execution timeout");
+			while ((await running()).length > 0 && Date.now() < deadline) await sleep(20);
+			assert.deepEqual(await running(), [], "processes outlived the host and their execution timeout");
 		} finally {
 			host.kill("SIGKILL");
-			for (const pid of pids) if (alive(pid)) process.kill(pid, "SIGKILL");
+			for (const recorded of processes) await signalRecordedProcess(recorded);
 			await rm(directory, { recursive: true, force: true });
 		}
 	},

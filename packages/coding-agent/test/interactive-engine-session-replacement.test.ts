@@ -296,6 +296,44 @@ test("isolated host loads no project resources while the engine's decision can s
 	}
 });
 
+test("an isolated host that started without the folder's resources keeps them out until the decision, even when no handler has declined yet (#5693)", async () => {
+	const harness = await createHarness();
+	try {
+		// A saved "Trust" that a user or global extension could still overturn: the host starts without the folder.
+		harness.settingsManager.setProjectTrusted(false);
+		const probe = createUnresponsiveEngineClient();
+		let report: { projectTrusted?: boolean; pendingProjectResourcesTrusted?: boolean } = {
+			pendingProjectResourcesTrusted: true,
+		};
+		probe.client.getState = async () => ({ ...createState(), ...report });
+		const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {
+			throw new Error("unused runtime factory");
+		});
+		const runtime = new IsolatedInteractiveRuntime(
+			localRuntime,
+			async () => {
+				throw new Error("unexpected replacement");
+			},
+			probe.client as never,
+		);
+		const reload = vi.spyOn(harness.session.resourceLoader, "reload").mockResolvedValue();
+
+		// Until the engine dispatches the decision, an extension can still register a handler that declines.
+		await runtime.initializeFromEngine();
+		expect(harness.settingsManager.isProjectTrusted()).toBe(false);
+		expect(reload).not.toHaveBeenCalled();
+		expect(runtime.isProjectTrustPending()).toBe(true);
+
+		report = { projectTrusted: true };
+		await runtime.initializeFromEngine();
+		expect(runtime.isProjectTrustPending()).toBe(false);
+		expect(harness.settingsManager.isProjectTrusted()).toBe(true);
+		expect(reload).toHaveBeenCalledTimes(1);
+	} finally {
+		harness.cleanup();
+	}
+});
+
 test("isolated host mirrors the child's startup trust decision before startup trust settles", async () => {
 	const harness = await createHarness();
 	try {

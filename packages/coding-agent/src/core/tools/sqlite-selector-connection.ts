@@ -1,6 +1,6 @@
 import { isBuiltin } from "node:module";
 import { Worker } from "node:worker_threads";
-import { evalWorkerExecArgv } from "../../utils/worker-threads.js";
+import { EVAL_WORKER_BUILTIN, evalWorkerExecArgv } from "../../utils/worker-threads.js";
 import type { SqliteRow, SqliteValue } from "../storage/database.js";
 
 export type SqliteSelectorValue = string | number | boolean | null;
@@ -10,7 +10,8 @@ const MISSING_NODE_SQLITE =
 	"SQLite selectors need node:sqlite (Node >= 22.13 or Bun >= 1.4.2); this runtime does not provide it.";
 
 const CONNECTION_SOURCE = `
-const { parentPort, workerData } = require("node:worker_threads");
+${EVAL_WORKER_BUILTIN}
+const { parentPort, workerData } = builtin("node:worker_threads");
 process.emitWarning = () => {};
 let database;
 
@@ -45,7 +46,7 @@ const statements = {
 
 let DatabaseSync;
 try {
-	({ DatabaseSync } = require("node:sqlite"));
+	({ DatabaseSync } = builtin("node:sqlite"));
 } catch (error) {
 	parentPort.postMessage({ id: 0, failure: failure(error, true) });
 }

@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { resolve } from "node:path";
-import { INSTALLED_EXTENSION_ENTRIES } from "../builtin-install-layout.ts";
+import { INSTALLED_EXTENSION_ENTRIES, SOURCE_EXTENSION_ENTRIES } from "../builtin-install-layout.ts";
 import { getBuiltinPackageLocations } from "../builtin-packages.ts";
 
 let nativeBuiltinExtensionEntries: Promise<ReadonlySet<string>> | undefined;
@@ -26,6 +26,16 @@ export function getNativeBuiltinExtensionEntries(): Promise<ReadonlySet<string>>
 
 export async function isNativeBuiltinExtensionPath(resolvedPath: string): Promise<boolean> {
 	return (await getNativeBuiltinExtensionEntries()).has(resolvedPath);
+}
+
+/**
+ * Whether `resolvedPath` is the TypeScript source entry of an identity-verified Atomic builtin package, as a source
+ * checkout loads it. Installed layouts load the bundled entries instead.
+ */
+export function isSourceBuiltinExtensionPath(resolvedPath: string): boolean {
+	return getBuiltinPackageLocations().some(
+		({ distDirName, packageDir }) => resolve(packageDir, SOURCE_EXTENSION_ENTRIES[distDirName]) === resolvedPath,
+	);
 }
 
 /** Reset memoized discovery after a test changes the simulated install layout. */
